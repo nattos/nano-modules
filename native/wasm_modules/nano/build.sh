@@ -161,14 +161,25 @@ echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+flo
 # triangulate — topology-following GPU Delaunay triangulation. Feature maps
 # (blur + derivatives) → JFA Voronoi → stochastic-takeover seed relaxation →
 # triple-point Delaunay edges rasterized as instanced line quads.
-#   feature — pre-blurred input → ridge/corner/density importance field (rgba16f).
-#   present — importance field / input → tex_out (debug views + mesh compositing).
+#   downsample — viewport input → proc-res (linear sampler).
+#   feature    — pre-blurred input → ridge/corner/density importance field (rgba16f).
+#   jfa_init/splat/step — Jump-Flood Voronoi over the seed pool (r32float id tex).
+#   score_clear/score   — per-cell mass/centroid/argmax-importance candidate (atomics).
+#   takeover   — stochastic confidence-gated seed teleport.
+#   present    — importance/voronoi/points/input → tex_out (debug + mesh compositing).
 #   (uses the shared fx::GaussianBlur → needs blur_shaders.h for effect_blur.h.)
 compile_shaders_compute_spv blur
+compile_shaders_compute_var_spv triangulate downsample
 compile_shaders_compute_var_spv triangulate feature
+compile_shaders_compute_var_spv triangulate jfa_init
+compile_shaders_compute_var_spv triangulate jfa_splat
+compile_shaders_compute_var_spv triangulate jfa_step
+compile_shaders_compute_var_spv triangulate score_clear
+compile_shaders_compute_var_spv triangulate score
+compile_shaders_compute_var_spv triangulate takeover
 compile_shaders_compute_var_spv triangulate present
-_emit_spv_header_var triangulate feature present
-echo "  triangulate shaders compiled (SPV: feature + present; blur)"
+_emit_spv_header_var triangulate downsample feature jfa_init jfa_splat jfa_step score_clear score takeover present
+echo "  triangulate shaders compiled (SPV: downsample+feature+jfa+score+takeover+present; blur)"
 
 echo "=== Building WASM (nano) ==="
 

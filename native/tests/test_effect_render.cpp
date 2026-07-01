@@ -1981,3 +1981,99 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   CHECK(transparent > W * H / 2);     // mostly TRANSPARENT, not opaque black
 }
 #endif  // TEXT_WASM_PATH
+
+// triangulate — the topology-following GPU triangulation effect (nano bundle).
+// Validates the P2 pipeline end-to-end on Metal: downsample→blur→feature (via
+// the Density debug view — a left-bright/right-dark input must read brighter on
+// the left) and the JFA Voronoi partition (via the Voronoi debug view — the
+// random per-cell colouring must produce high spatial variance, which is only
+// possible if the seed pool splatted and the jump-flood propagated).
+#ifdef NANO_WASM_PATH
+static double stddev_luma(const std::vector<uint8_t>& px) {
+  double m = mean_rgb(px), s = 0; long n = 0;
+  for (size_t i = 0; i + 3 < px.size(); i += 4) {
+    double l = (px[i] + px[i + 1] + px[i + 2]) / 3.0;
+    s += (l - m / 3.0) * (l - m / 3.0); ++n;   // mean_rgb averages 3 channels
+  }
+  return n ? std::sqrt(s / n) : 0.0;
+}
+
+TEST_CASE("WASM GPU effect renders topology triangulation (triangulate)", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  auto bytecode = load_file(NANO_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  INFO("last_error: " << host.last_error());
+  REQUIRE(id >= 0);
+  host.set_gpu_backend(id, backend.get());
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id))
+    if (e.id == "filter.mesh.triangulate") { w = &e; break; }
+  REQUIRE(w != nullptr);
+
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(registry.registerWasmEffect("filter.mesh.triangulate", "Triangulate", &host, id, *w));
+  EffectInstance* inst = rt.instanceFor("filter.mesh.triangulate", "k0");
+  REQUIRE(inst != nullptr);
+
+  const uint32_t W = 128, H = 128;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // Left half bright, right half dark.
+  std::vector<uint8_t> inPixels(W * H * 4, 0);
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x) {
+      size_t i = (y * W + x) * 4;
+      uint8_t v = (x < W / 2) ? 210 : 25;
+      inPixels[i] = inPixels[i + 1] = inPixels[i + 2] = v; inPixels[i + 3] = 255;
+    }
+  backend->writeTexture(inTex, W, H, inPixels.data(), (uint32_t)inPixels.size());
+  inst->setTextureField("tex_in", inTex);
+  inst->setTextureField("tex_out", outTex);
+  inst->setParamFloat("density", 0.4f);
+  inst->setParamFloat("feature_scale", 0.35f);
+
+  auto halves = [&](const std::vector<uint8_t>& px, double& left, double& right) {
+    double sl = 0, sr = 0; long nl = 0, nr = 0;
+    for (uint32_t y = 0; y < H; ++y)
+      for (uint32_t x = 0; x < W; ++x) {
+        size_t i = (y * W + x) * 4;
+        double l = (px[i] + px[i + 1] + px[i + 2]) / 3.0;
+        if (x < W / 2) { sl += l; ++nl; } else { sr += l; ++nr; }
+      }
+    left = nl ? sl / nl : 0; right = nr ? sr / nr : 0;
+  };
+
+  // A. Density debug view → left (bright input) reads brighter than right.
+  inst->setParamFloat("debug_view", 1.0f);
+  inst->doRender(W, H);
+  inst->doRender(W, H);
+  auto density = backend->readbackTexture(outTex, W, H);
+  REQUIRE(density.size() == W * H * 4);
+  double dl = 0, dr = 0; halves(density, dl, dr);
+  INFO("density view: left " << dl << "  right " << dr);
+  CHECK(dl > dr + 20.0);
+
+  // B. Voronoi debug view → random per-cell colours → high spatial variance.
+  inst->setParamFloat("debug_view", 5.0f);
+  inst->doRender(W, H);
+  auto voronoi = backend->readbackTexture(outTex, W, H);
+  double sd = stddev_luma(voronoi);
+  INFO("voronoi view stddev " << sd);
+  CHECK(sd > 20.0);
+
+  host.shutdown();
+}
+#endif  // NANO_WASM_PATH
