@@ -29,6 +29,7 @@ import { loadSpectralLfoData, SpectralLfoData, type MorphResult } from './spectr
 import '../widgets/scalar-slider';
 import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
+import '../widgets/help-slot';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -453,7 +454,9 @@ export class SpectralLfoInspector extends MobxLitElement {
     if (!this.binding) return html``;
     const b = this.binding;
     return html`
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
       <div class="section">Shape</div>
+      <help-slot .binding=${b} .path=${'@group/standard'}></help-slot>
       <spectral-lfo-xy-pad .label=${''} .binding=${b}></spectral-lfo-xy-pad>
       <spectral-lfo-preview .binding=${b}></spectral-lfo-preview>
       <field-tab-bar .fieldPath=${'metric'} .label=${'Metric'} ?wrap=${true}
@@ -468,6 +471,7 @@ export class SpectralLfoInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
 
       <div class="section">Satellites</div>
+      <help-slot .binding=${b} .path=${'@group/satellites'}></help-slot>
       <field-toggle .fieldPath=${'satellites'} .label=${'Satellites'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       ${Number(b.getValue('satellites') ?? 0) !== 0 ? html`
@@ -478,6 +482,7 @@ export class SpectralLfoInspector extends MobxLitElement {
       ` : ''}
 
       <div class="section">Autopilot</div>
+      <help-slot .binding=${b} .path=${'@group/autopilot'}></help-slot>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}

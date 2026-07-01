@@ -26,6 +26,7 @@ import '../widgets/scalar-slider';
 import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
+import '../widgets/help-slot';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -176,7 +177,9 @@ export class ShapeFoldInspector extends MobxLitElement {
     if (!this.binding) return html``;
     const b = this.binding;
     return html`
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
       <div class="section">Shape</div>
+      <help-slot .binding=${b} .path=${'@group/shape'}></help-slot>
       <shape-fold-xy-pad .label=${''} .binding=${b}></shape-fold-xy-pad>
 
       <scalar-slider style="width: 100%;" .fieldPath=${'temporal_complexity'} .label=${'Temporal'}
@@ -185,6 +188,7 @@ export class ShapeFoldInspector extends MobxLitElement {
         .min=${0.1} .max=${8} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
 
       <div class="section">Animation</div>
+      <help-slot .binding=${b} .path=${'@group/animation'}></help-slot>
       <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.58} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
@@ -193,6 +197,7 @@ export class ShapeFoldInspector extends MobxLitElement {
         .min=${0.02} .max=${1} .step=${0.01} .defaultValue=${0.45} .binding=${b}></scalar-slider>
 
       <div class="section">Autopilot</div>
+      <help-slot .binding=${b} .path=${'@group/autopilot'}></help-slot>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
@@ -206,10 +211,12 @@ export class ShapeFoldInspector extends MobxLitElement {
       <field-trigger .fieldPath=${'ap_jump'} .label=${'Jump'} .binding=${b}></field-trigger>
 
       <div class="section">Levels</div>
+      <help-slot .binding=${b} .path=${'@group/levels'}></help-slot>
       <scalar-slider style="width: 100%;" .fieldPath=${'level_ease'} .label=${'Level Ease'}
         .min=${0} .max=${0.5} .step=${0.005} .defaultValue=${0.25} .binding=${b}></scalar-slider>
 
       <div class="section">Output</div>
+      <help-slot .binding=${b} .path=${'@group/output'}></help-slot>
       <scalar-slider style="width: 100%;" .fieldPath=${'exposure'} .label=${'Exposure'}
         .min=${0} .max=${4} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
       <field-tab-bar .fieldPath=${'output_mode'} .label=${'Mode'} ?wrap=${true}

@@ -28,6 +28,7 @@ import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from '../widgets/field-editor';
 import { type EnvPoint, evalEnvelope, parseCurve, serializeCurve, clamp01 } from './envelope-math';
 import '../widgets/scalar-slider';
+import '../widgets/help-slot';
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -701,7 +702,9 @@ export class EnvelopeInspector extends MobxLitElement implements FieldEditorElem
     // `points` is synced imperatively via the rAF loop (so a drag isn't clobbered
     // by re-renders); here we just wire the element + its callbacks.
     return html`
+      <help-slot .binding=${this.binding} .path=${'intro'}></help-slot>
       ${this.label ? html`<div class="label">${this.label}${mixed ? html`<span class="mixed-tag">multiple</span>` : ''}</div>` : ''}
+      <help-slot .binding=${this.binding} .path=${'@group/envelope'}></help-slot>
       <envelope-graph
         class=${mixed ? 'mixed' : ''}
         .onChange=${this.onChange}

@@ -27,6 +27,7 @@ import '../widgets/scalar-slider';
 import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
+import '../widgets/help-slot';
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -396,6 +397,7 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
     if (!this.binding) return html``;
     const b = this.binding;
     return html`
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
       ${this.label ? html`<div class="label">${this.label}</div>` : ''}
       <field-tab-bar .fieldPath=${'mode'} .label=${''} ?wrap=${true}
         .options=${MODE_OPTIONS} .defaultValue=${0} .binding=${b}></field-tab-bar>
@@ -403,6 +405,7 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
       <div class="hint">drag a handle to set a phase time · drag a segment to bend its slope (or the sustain plateau to set its level)</div>
 
       <div class="section">Phases</div>
+      <help-slot .binding=${b} .path=${'@group/shape'}></help-slot>
       <div class="row">
         <scalar-slider .fieldPath=${'attack'} .label=${'Attack'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.05} .binding=${b}></scalar-slider>
         <scalar-slider .fieldPath=${'decay'} .label=${'Decay'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.3} .binding=${b}></scalar-slider>
@@ -418,12 +421,14 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
       <scalar-slider style="width:100%;" .fieldPath=${'release_curve'} .label=${'Release slope'} .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
 
       <div class="section">Voices</div>
+      <help-slot .binding=${b} .path=${'@group/polyphony'}></help-slot>
       <div class="row">
         <scalar-slider .fieldPath=${'voices'} .label=${'Voices'} .min=${1} .max=${16} .step=${1} .defaultValue=${1} .binding=${b}></scalar-slider>
         <field-tab-bar .fieldPath=${'retrigger'} .label=${'Retrigger'} .options=${RETRIG_OPTIONS} .defaultValue=${0} .binding=${b}></field-tab-bar>
       </div>
 
       <div class="section">Trigger</div>
+      <help-slot .binding=${b} .path=${'@group/trigger'}></help-slot>
       <scalar-slider style="width:100%;" .fieldPath=${'auto_rate'} .label=${'Auto rate'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
       <div class="row">
         <field-toggle .fieldPath=${'gate'} .label=${'Gate'} .defaultValue=${0} .binding=${b}></field-toggle>

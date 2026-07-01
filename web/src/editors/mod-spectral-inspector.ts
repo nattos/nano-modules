@@ -18,6 +18,7 @@ import { METRIC_OPTIONS, type SpectralLfoPreview } from './spectral-lfo-inspecto
 import '../widgets/scalar-slider';
 import '../widgets/field-tab-bar';
 import '../widgets/field-toggle';
+import '../widgets/help-slot';
 
 @customElement('mod-spectral-inspector')
 export class ModSpectralInspector extends MobxLitElement {
@@ -55,7 +56,9 @@ export class ModSpectralInspector extends MobxLitElement {
     if (!this.binding) return html``;
     const b = this.binding;
     return html`
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
       <div class="section">Manifold</div>
+      <help-slot .binding=${b} .path=${'@group/shape'}></help-slot>
       <spectral-lfo-xy-pad .label=${''} .binding=${b}></spectral-lfo-xy-pad>
       <spectral-lfo-preview .binding=${b}></spectral-lfo-preview>
       <field-tab-bar .fieldPath=${'metric'} .label=${'Metric'} ?wrap=${true}
@@ -66,6 +69,7 @@ export class ModSpectralInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
 
       <div class="section">Input</div>
+      <help-slot .binding=${b} .path=${'@group/signal'}></help-slot>
       <scalar-slider style="width: 100%;" .fieldPath=${'input'} .label=${'Input'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
     `;

@@ -24,6 +24,7 @@ import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from
 import '../widgets/scalar-slider';
 import '../widgets/field-toggle';
 import '../widgets/field-tab-bar';
+import '../widgets/help-slot';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -176,7 +177,9 @@ export class PhaseFoldInspector extends MobxLitElement {
     const isTracer = mode === 1;          // tracer with a drawn ring
     const isTrace = mode === 1 || mode === 2;  // any flow tracer
     return html`
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
       <div class="section">Shape</div>
+      <help-slot .binding=${b} .path=${'@group/shape'}></help-slot>
       <phase-fold-xy-pad .label=${''} .binding=${b}></phase-fold-xy-pad>
       <scalar-slider style="width: 100%;" .fieldPath=${'jitter'} .label=${'Jitter'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
@@ -188,6 +191,7 @@ export class PhaseFoldInspector extends MobxLitElement {
         .defaultValue=${1} .binding=${b}></field-toggle>
 
       <div class="section">Dynamics</div>
+      <help-slot .binding=${b} .path=${'@group/domain'}></help-slot>
       <scalar-slider style="width: 100%;" .fieldPath=${'wind'} .label=${'Wind (z)'}
         .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'wind_jitter'} .label=${'Wind Jitter'}
@@ -198,6 +202,7 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${-0.6} .max=${0.6} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>
 
       <div class="section">Backdrop</div>
+      <help-slot .binding=${b} .path=${'@group/backdrop'}></help-slot>
       <field-tab-bar .fieldPath=${'shading_mode'} .label=${'Shading'} ?wrap=${true}
         .options=${[{ label: 'Bands', value: 0 }, { label: 'Gradient', value: 1 },
                     { label: 'Magma', value: 2 }, { label: 'Inferno', value: 3 },
@@ -212,6 +217,7 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.42} .binding=${b}></scalar-slider>
 
       <div class="section">Streamlines</div>
+      <help-slot .binding=${b} .path=${'@group/streamlines'}></help-slot>
       <field-toggle .fieldPath=${'show_streamlines'} .label=${'Show Streamlines'}
         .defaultValue=${1} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'flow_speed'} .label=${'Flow Speed'}
@@ -224,6 +230,7 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.55} .binding=${b}></scalar-slider>
 
       <div class="section">Limit Cycle</div>
+      <help-slot .binding=${b} .path=${'@group/limit_cycle'}></help-slot>
       <field-toggle .fieldPath=${'show_limit_cycle'} .label=${'Show Limit Cycle'}
         .defaultValue=${1} .binding=${b}></field-toggle>
       <field-tab-bar .fieldPath=${'cycle_mode'} .label=${'Algorithm'}
@@ -267,6 +274,7 @@ export class PhaseFoldInspector extends MobxLitElement {
         .min=${0} .max=${0.4} .step=${0.005} .defaultValue=${0.05} .binding=${b}></scalar-slider>` : ''}
 
       <div class="section">Autopilot</div>
+      <help-slot .binding=${b} .path=${'@group/autopilot'}></help-slot>
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
