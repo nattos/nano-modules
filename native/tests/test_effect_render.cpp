@@ -2074,6 +2074,26 @@ TEST_CASE("WASM GPU effect renders topology triangulation (triangulate)", "[effe
   INFO("voronoi view stddev " << sd);
   CHECK(sd > 20.0);
 
+  // C. Mesh output (debug off, dark backdrop, white edges): the Delaunay edges
+  // must rasterize as lit pixels over the black background — validates edge
+  // extraction + the instanced line render pass over the compute backdrop.
+  inst->setParamFloat("debug_view", 0.0f);
+  inst->setParamFloat("bg_mode", 1.0f);     // dark
+  inst->setParamFloat("density", 0.05f);    // sparse enough for gaps on a 128px canvas
+  inst->setParamFloat("line_width", 0.0f);  // thin (~1px) lines
+  inst->setParamArray("line_color", {1.0f, 1.0f, 1.0f});
+  inst->doRender(W, H);
+  inst->doRender(W, H);
+  auto mesh = backend->readbackTexture(outTex, W, H);
+  long lit = 0, dark = 0;
+  for (size_t i = 0; i + 3 < mesh.size(); i += 4) {
+    double l = (mesh[i] + mesh[i + 1] + mesh[i + 2]) / 3.0;
+    if (l > 60.0) ++lit; else ++dark;
+  }
+  INFO("mesh: lit " << lit << "  dark " << dark << " / " << (W * H));
+  CHECK(lit > 40);                          // edges drawn (mesh rasterizes)
+  CHECK(dark > (long)(W * H) / 10);         // structured wireframe, not a full-screen fill
+
   host.shutdown();
 }
 #endif  // NANO_WASM_PATH

@@ -30,7 +30,8 @@
 namespace triangulate {
 
 // ---- constants -------------------------------------------------------------
-static constexpr int   MAX_SEEDS         = 4096;   // pool ceiling (10-bit-packed proc coords)
+static constexpr int   MAX_SEEDS         = 4096;   // pool ceiling (16-bit-packed edge indices)
+static constexpr int   MAX_EDGES         = 65536;  // Delaunay edge-buffer ceiling
 static constexpr int   PROC_MAX          = 640;    // internal long-edge cap (< 1024)
 static constexpr int   MAX_JFA_STEPS     = 12;
 static constexpr float FEATURE_BLUR_SCALE= 0.6f;
@@ -38,6 +39,7 @@ static constexpr float STENCIL_MAX_PX    = 7.0f;
 static constexpr float RIDGE_GAIN        = 40.0f;
 static constexpr float CORNER_GAIN       = 4000.0f;
 static constexpr float POINT_RADIUS_UV   = 0.006f;
+static constexpr float LINE_HALF_W_MAX   = 5.0f;   // line_width=1 → 0.5..5.5 px half-width
 
 // ---- uniform layouts (must match the HLSL cbuffers) ------------------------
 struct FeatureUniforms {
@@ -57,15 +59,24 @@ struct PresentUniforms {
   uint32_t debug_view, bg_mode, proc_w, proc_h;
   float aspect, point_r; uint32_t count, _p0;
 };
+struct ClearEdgeUniforms { uint32_t max, _p0, _p1, _p2; };
+struct EdgeUniforms { uint32_t w, h, max, _p; };
+struct LineUniforms {
+  float vp_x, vp_y, half_w, _p0;
+  float cr, cg, cb, _p1;
+};
 
 // ---- per-instance state ----------------------------------------------------
 struct State {
   // GPU-resident pool + accumulators.
   gpu::Buffer seed_buf;      // Seed[MAX_SEEDS]
   gpu::Buffer accum_buf;     // uint[MAX_SEEDS * 4]
+  gpu::Buffer edge_buf;      // uint[MAX_EDGES] packed (a<<16)|b
+  gpu::Buffer edge_count_buf;// uint append counter
 
   // Uniform buffers (one write per pass, per frame).
   gpu::Buffer feature_buf, splat_buf, clear_buf, score_buf, takeover_buf, present_buf;
+  gpu::Buffer edge_clear_buf, edge_uniform_buf, line_buf;
   gpu::Buffer step_buf[MAX_JFA_STEPS];
 
   // Textures (proc-res unless noted).
@@ -93,7 +104,9 @@ struct State {
 // ---- type-shared PSOs ------------------------------------------------------
 static gpu::ComputePSO s_pso_downsample, s_pso_feature, s_pso_jfa_init,
                        s_pso_jfa_splat, s_pso_jfa_step, s_pso_score_clear,
-                       s_pso_score, s_pso_takeover, s_pso_present;
+                       s_pso_score, s_pso_takeover, s_pso_present,
+                       s_pso_edge_clear, s_pso_edges;
+static gpu::RenderPSO s_pso_lines;
 static fx::GaussianBlur s_blur;
 
 void module_init() {
@@ -148,6 +161,10 @@ void module_init() {
   state::registerShaderSPV("triangulate_score",      SCORE_SPV,      SCORE_SPV_SIZE);
   state::registerShaderSPV("triangulate_takeover",   TAKEOVER_SPV,   TAKEOVER_SPV_SIZE);
   state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE);
+  state::registerShaderSPV("triangulate_edge_clear", EDGE_CLEAR_SPV, EDGE_CLEAR_SPV_SIZE);
+  state::registerShaderSPV("triangulate_edges",      EDGES_SPV,      EDGES_SPV_SIZE);
+  state::registerShaderSPV("triangulate_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
+  state::registerShaderSPV("triangulate_line_fs",    LINE_FS_SPV,    LINE_FS_SPV_SIZE);
 
   auto cs_ds  = gpu::Device::createShaderModuleByName("triangulate_downsample");
   auto cs_ft  = gpu::Device::createShaderModuleByName("triangulate_feature");
@@ -158,7 +175,12 @@ void module_init() {
   auto cs_s   = gpu::Device::createShaderModuleByName("triangulate_score");
   auto cs_tk  = gpu::Device::createShaderModuleByName("triangulate_takeover");
   auto cs_pr  = gpu::Device::createShaderModuleByName("triangulate_present");
-  if (!cs_ds || !cs_ft || !cs_ji || !cs_jp || !cs_js || !cs_sc || !cs_s || !cs_tk || !cs_pr) return;
+  auto cs_ec  = gpu::Device::createShaderModuleByName("triangulate_edge_clear");
+  auto cs_ed  = gpu::Device::createShaderModuleByName("triangulate_edges");
+  auto vs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_vs");
+  auto fs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_fs");
+  if (!cs_ds || !cs_ft || !cs_ji || !cs_jp || !cs_js || !cs_sc || !cs_s || !cs_tk || !cs_pr
+      || !cs_ec || !cs_ed || !vs_ln || !fs_ln) return;
 
   s_pso_downsample = gpu::Device::createComputePSO(cs_ds, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8));
@@ -178,6 +200,14 @@ void module_init() {
       .storage(0).tex2d(1).storageRW(2).uniform(3));
   s_pso_present = gpu::Device::createComputePSO(cs_pr, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).tex2d(2).storage(3).storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
+  s_pso_edge_clear = gpu::Device::createComputePSO(cs_ec, "main", gpu::Bindings()
+      .storageRW(0).storageRW(1).uniform(2));
+  s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()
+      .tex2d(0).storageRW(1).storageRW(2).uniform(3));
+  s_pso_lines = gpu::Device::createInstancedRenderPSO(
+      vs_ln, "main", fs_ln, "main", gpu::TextureFormat::Surface,
+      gpu::Bindings().uniform(0).storage(1).storage(2),
+      gpu::Device::BlendMode::AlphaOver);
   s_blur.init();
 
   state::log("triangulate: module initialized");
@@ -187,12 +217,17 @@ void* create() {
   auto* s = new State();
   s->seed_buf  = gpu::Device::createBuffer(sizeof(float) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
+  s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
+  s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
   s->feature_buf  = gpu::Device::createBuffer(sizeof(FeatureUniforms),  gpu::BufferUsage::Uniform);
   s->splat_buf    = gpu::Device::createBuffer(sizeof(SplatUniforms),    gpu::BufferUsage::Uniform);
   s->clear_buf    = gpu::Device::createBuffer(sizeof(ClearUniforms),    gpu::BufferUsage::Uniform);
   s->score_buf    = gpu::Device::createBuffer(sizeof(ScoreUniforms),    gpu::BufferUsage::Uniform);
   s->takeover_buf = gpu::Device::createBuffer(sizeof(TakeoverUniforms), gpu::BufferUsage::Uniform);
   s->present_buf  = gpu::Device::createBuffer(sizeof(PresentUniforms),  gpu::BufferUsage::Uniform);
+  s->edge_clear_buf   = gpu::Device::createBuffer(sizeof(ClearEdgeUniforms), gpu::BufferUsage::Uniform);
+  s->edge_uniform_buf = gpu::Device::createBuffer(sizeof(EdgeUniforms),      gpu::BufferUsage::Uniform);
+  s->line_buf         = gpu::Device::createBuffer(sizeof(LineUniforms),      gpu::BufferUsage::Uniform);
   for (int i = 0; i < MAX_JFA_STEPS; i++)
     s->step_buf[i] = gpu::Device::createBuffer(sizeof(StepUniforms), gpu::BufferUsage::Uniform);
   s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
@@ -203,8 +238,10 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->seed_buf.release(); s->accum_buf.release();
+  s->edge_buf.release(); s->edge_count_buf.release();
   s->feature_buf.release(); s->splat_buf.release(); s->clear_buf.release();
   s->score_buf.release(); s->takeover_buf.release(); s->present_buf.release();
+  s->edge_clear_buf.release(); s->edge_uniform_buf.release(); s->line_buf.release();
   for (int i = 0; i < MAX_JFA_STEPS; i++) s->step_buf[i].release();
   if (s->small_tex.valid()) s->small_tex.release();
   if (s->blur_tex.valid())  s->blur_tex.release();
@@ -407,6 +444,34 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
+  // 4b. Delaunay edges (only when the mesh is actually shown).
+  const bool show_mesh = (s->debug_view == 0);
+  if (show_mesh) {
+    ClearEdgeUniforms ce = { (uint32_t)MAX_EDGES, 0, 0, 0 };
+    s->edge_clear_buf.writeOne(ce);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_edge_clear);
+      cp.setBuffer(s->edge_buf, 0);
+      cp.setBuffer(s->edge_count_buf, 1);
+      cp.setBuffer(s->edge_clear_buf, 2);
+      cp.dispatch((MAX_EDGES + 63) / 64, 1);
+      cp.end();
+    }
+    EdgeUniforms eu = { (uint32_t)pw, (uint32_t)ph, (uint32_t)MAX_EDGES, 0 };
+    s->edge_uniform_buf.writeOne(eu);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_edges);
+      cp.setTexture(*id_tex, 0, 0);
+      cp.setBuffer(s->edge_buf, 1);
+      cp.setBuffer(s->edge_count_buf, 2);
+      cp.setBuffer(s->edge_uniform_buf, 3);
+      cp.dispatch(pgx, pgy);
+      cp.end();
+    }
+  }
+
   // 5. Present (uses this frame's consistent pre-takeover state).
   {
     PresentUniforms pu = {};
@@ -426,6 +491,22 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->present_buf, 5);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
+  }
+
+  // 5b. Draw the Delaunay mesh over the present backdrop (wireframe).
+  if (show_mesh) {
+    LineUniforms lu = {};
+    lu.vp_x = (float)vp_w; lu.vp_y = (float)vp_h;
+    lu.half_w = 0.5f + s->line_width * LINE_HALF_W_MAX;
+    lu.cr = s->line_r; lu.cg = s->line_g; lu.cb = s->line_b;
+    s->line_buf.writeOne(lu);
+    auto rp = gpu::RenderPass::beginLoad(out);
+    rp.setPSO(s_pso_lines);
+    rp.setBuffer(s->line_buf, 0);
+    rp.setBuffer(s->edge_buf, 1);
+    rp.setBuffer(s->seed_buf, 2);
+    rp.draw(6, MAX_EDGES);
+    rp.end();
   }
 
   // 6. Takeover: stochastic teleport of mismatched seeds — updates NEXT frame.

@@ -45,8 +45,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
       uint id = (uint)cid;
       c = float3(tri_hash_f(id * 3u + 1u), tri_hash_f(id * 3u + 2u), tri_hash_f(id * 3u + 3u));
     }
-  } else {
-    c = inc;                                                 // 0 off / 6 points
+  } else if (u_debug_view == 6u) {
+    c = inc;                                                 // points: over input
+  } else {                                                   // 0 off: mesh backdrop
+    if      (u_bg_mode == 1u) c = float3(0.0, 0.0, 0.0);     // dark
+    else if (u_bg_mode == 2u) c = f.aaa * 0.5;              // feature (dim importance)
+    else                       c = inc;                      // input
   }
 
   // Seed dots overlay (debug 6, and also on the voronoi view).
