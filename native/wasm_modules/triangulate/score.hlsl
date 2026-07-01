@@ -30,4 +30,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
   InterlockedAdd(accum[b + 2], (uint)(W * uv.y * TRI_FX), prev);
   uint packed = tri_pack_cand(W, gid.x, gid.y);
   InterlockedMax(accum[b + 3], packed, prev);
+  // Unweighted (area) centroid — the dispersion target.
+  InterlockedAdd(accum[b + 4], 1u, prev);
+  InterlockedAdd(accum[b + 5], (uint)(uv.x * TRI_FX), prev);
+  InterlockedAdd(accum[b + 6], (uint)(uv.y * TRI_FX), prev);
 }

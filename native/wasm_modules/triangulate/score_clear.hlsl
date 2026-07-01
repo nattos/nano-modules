@@ -13,8 +13,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
   uint i = gid.x;
   if (i >= u_count) return;
   uint b = i * TRI_ACCUM_STRIDE;
-  accum[b + 0] = 0u;
-  accum[b + 1] = 0u;
-  accum[b + 2] = 0u;
-  accum[b + 3] = 0u;
+  [unroll]
+  for (uint k = 0u; k < TRI_ACCUM_STRIDE; ++k) accum[b + k] = 0u;
 }

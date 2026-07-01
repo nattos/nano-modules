@@ -5,9 +5,8 @@
 
 RWStructuredBuffer<Seed> seeds : register(u0);
 Texture2D<float4>        feat  : register(t1);   // a = importance W
-RWStructuredBuffer<uint> nbr   : register(u2);
 
-cbuffer PrepUniforms : register(b3) {
+cbuffer PrepUniforms : register(b2) {
   uint u_count;
   uint u_w;
   uint u_h;
@@ -22,5 +21,4 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int2 p = int2(clamp(s.pos, float2(0.0, 0.0), float2(0.99999, 0.99999)) * float2(u_w, u_h));
   s.score = max(0.0, feat.Load(int3(p, 0)).a);
   seeds[i] = s;
-  nbr[i] = 0u;
 }

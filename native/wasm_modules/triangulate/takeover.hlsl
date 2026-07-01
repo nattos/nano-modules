@@ -7,7 +7,6 @@
 StructuredBuffer<uint>  accum : register(t0);
 Texture2D<float4>       feat  : register(t1);   // a = importance W
 RWStructuredBuffer<Seed> seeds : register(u2);
-StructuredBuffer<uint>  nbr   : register(t4);   // per-seed neighbour-max weight
 
 cbuffer TakeoverUniforms : register(b3) {
   uint  u_count;
@@ -58,27 +57,35 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
 
+  // Unweighted (area) centroid — the dispersion target.
+  float pixN = float(max(accum[b + 4], 1u));
+  float2 area_ctr = float2(float(accum[b + 5]), float(accum[b + 6])) / (pixN * TRI_FX);
+
   float2 target;
   float confidence;   // 0..1 margin-normalized merge strength
   if (u_mode == 0u) {
-    // Ridge protect: compare the seed's own weight to its Delaunay neighbours'.
-    //   local max (>= every neighbour)  → PROTECT: it's a ridge/corner, lock it.
-    //   uphill neighbour exists (slope) → MERGE uphill toward the feature, with
-    //     strength ∝ the gradient (steep slope merges hard → contrast; flat void
-    //     barely moves → coverage kept).
-    float my_w    = s.score;                       // stamped in seed_prep
-    float nbr_max = tri_dqw(nbr[i]);
-    float slope   = nbr_max - my_w;
-    // Feature lock: a local maximum (no meaningfully-higher neighbour) is a
-    // ridge/corner → protect. The threshold shrinks as decimation rises so more
-    // vertices become eligible to merge.
-    float protect = (0.02 + u_confidence * 0.06) * (1.0 - 0.9 * u_decimation);
-    if (slope <= protect) { seeds[i] = s; return; }
-    target = candPos;                              // climb toward the cell's peak
-    // decimation drives how gentle a slope still fully merges: high decimation →
-    // small scale → even shallow slopes merge hard (sparse slopes, big contrast).
-    float slope_scale = 0.30 * (1.0 - u_decimation) + 0.015;
-    confidence = saturate(slope / slope_scale);
+    // Ridge Protect — a BIDIRECTIONAL balance so `decimation` is a live knob:
+    //   CONCENTRATE: merge uphill onto the cell's peak feature (favoured by HIGH
+    //     decimation) → sparse slopes, dense features, big contrast triangles.
+    //   DISPERSE: fall back toward the cell's area-centroid (favoured by LOW
+    //     decimation) → even, uniform coverage.
+    // Both are discrete teleports gated by how far off the seed is, so settled
+    // seeds stay put (crisp, no swim); lowering decimation re-spreads and raising
+    // it re-coalesces. Features are protected implicitly: at high decimation the
+    // disperse term is small AND a peak's candPos == its own spot (nothing to
+    // climb), so it holds.
+    float rate = rate_hz * u_dt;
+    float my_w = s.score;                           // stamped in seed_prep
+    float merge_gain = saturate((candW - my_w) / (0.30 * (1.0 - u_decimation) + 0.02));
+    float p_merge = 1.0 - exp(-rate * u_decimation * merge_gain);
+    float2 dd = (s.pos - area_ctr) * float2(u_aspect, 1.0);
+    float disp_gain = saturate(length(dd) / 0.12);
+    float p_disp = 1.0 - exp(-rate * (1.0 - u_decimation) * disp_gain);
+    float r = tri_hash_f(i * 2654435761u + u_frame);
+    if (r < p_merge)                 s.pos = saturate(candPos);
+    else if (r < p_merge + p_disp)   s.pos = saturate(area_ctr);
+    seeds[i] = s;
+    return;
   } else if (u_mode == 1u) {
     // Cell residual: how far the seed sits from its cell's weighted centre.
     target = ctr;

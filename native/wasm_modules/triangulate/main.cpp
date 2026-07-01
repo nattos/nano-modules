@@ -74,7 +74,6 @@ struct State {
   gpu::Buffer accum_buf;     // uint[MAX_SEEDS * 4]
   gpu::Buffer edge_buf;      // uint[MAX_EDGES] packed (a<<16)|b
   gpu::Buffer edge_count_buf;// uint append counter
-  gpu::Buffer nbr_buf;       // uint[MAX_SEEDS] per-seed neighbour-max weight
   gpu::Buffer seen_buf;      // uint[SEEN_WORDS] per-pair edge dedup bitmask
 
   // Uniform buffers (one write per pass, per frame).
@@ -209,9 +208,9 @@ void module_init() {
   s_pso_score = gpu::Device::createComputePSO(cs_s, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F).tex2d(1).storageRW(2).uniform(3));
   s_pso_seed_prep = gpu::Device::createComputePSO(cs_sp, "main", gpu::Bindings()
-      .storageRW(0).tex2d(1).storageRW(2).uniform(3));
+      .storageRW(0).tex2d(1).uniform(2));
   s_pso_takeover = gpu::Device::createComputePSO(cs_tk, "main", gpu::Bindings()
-      .storage(0).tex2d(1).storageRW(2).uniform(3).storage(4));
+      .storage(0).tex2d(1).storageRW(2).uniform(3));
   s_pso_present = gpu::Device::createComputePSO(cs_pr, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).storageTex2dRW(2, gpu::TextureFormat::R32F).storage(3)
       .storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
@@ -219,7 +218,7 @@ void module_init() {
       .storageRW(0).storageRW(1).storageRW(2).uniform(3));
   s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F).storageRW(1).storageRW(2)
-      .storage(3).storageRW(4).storageRW(5).uniform(6));
+      .storageRW(3).uniform(4));
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_ln, "main", fs_ln, "main", gpu::TextureFormat::Surface,
       gpu::Bindings().uniform(0).storage(1).storage(2),
@@ -232,10 +231,9 @@ void module_init() {
 void* create() {
   auto* s = new State();
   s->seed_buf  = gpu::Device::createBuffer(sizeof(float) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
-  s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
+  s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 8 * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
   s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
-  s->nbr_buf   = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->seen_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * SEEN_WORDS, gpu::BufferUsage::Storage);
   s->feature_buf  = gpu::Device::createBuffer(sizeof(FeatureUniforms),  gpu::BufferUsage::Uniform);
   s->splat_buf    = gpu::Device::createBuffer(sizeof(SplatUniforms),    gpu::BufferUsage::Uniform);
@@ -256,7 +254,7 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->seed_buf.release(); s->accum_buf.release();
-  s->edge_buf.release(); s->edge_count_buf.release(); s->nbr_buf.release(); s->seen_buf.release();
+  s->edge_buf.release(); s->edge_count_buf.release(); s->seen_buf.release();
   s->feature_buf.release(); s->splat_buf.release(); s->clear_buf.release();
   s->score_buf.release(); s->takeover_buf.release(); s->present_buf.release();
   s->edge_clear_buf.release(); s->edge_uniform_buf.release(); s->line_buf.release();
@@ -471,8 +469,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_seed_prep);
     cp.setBuffer(s->seed_buf, 0);
     cp.setTexture(s->feat_tex, 1, 0);
-    cp.setBuffer(s->nbr_buf, 2);
-    cp.setBuffer(s->splat_buf, 3);
+    cp.setBuffer(s->splat_buf, 2);
     cp.dispatch(sgx, 1);
     cp.end();
   }
@@ -502,10 +499,8 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setTexture(*id_tex, 0, 2);
       cp.setBuffer(s->edge_buf, 1);
       cp.setBuffer(s->edge_count_buf, 2);
-      cp.setBuffer(s->seed_buf, 3);
-      cp.setBuffer(s->nbr_buf, 4);
-      cp.setBuffer(s->seen_buf, 5);
-      cp.setBuffer(s->edge_uniform_buf, 6);
+      cp.setBuffer(s->seen_buf, 3);
+      cp.setBuffer(s->edge_uniform_buf, 4);
       cp.dispatch(pgx, pgy);
       cp.end();
     }
@@ -561,7 +556,6 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(s->feat_tex, 1, 0);
     cp.setBuffer(s->seed_buf, 2);
     cp.setBuffer(s->takeover_buf, 3);
-    cp.setBuffer(s->nbr_buf, 4);
     cp.dispatch(sgx, 1);
     cp.end();
   }

@@ -11,11 +11,9 @@
 [[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u0);
 RWStructuredBuffer<uint> edges   : register(u1);
 RWStructuredBuffer<uint> counter : register(u2);
-StructuredBuffer<Seed>   seeds   : register(t3);
-RWStructuredBuffer<uint> nbr     : register(u4);   // per-seed neighbour-max weight
-RWStructuredBuffer<uint> seen    : register(u5);   // dedup bitmask (MAX_SEEDS^2 bits)
+RWStructuredBuffer<uint> seen    : register(u3);   // dedup bitmask (MAX_SEEDS^2 bits)
 
-cbuffer EdgeUniforms : register(b6) {
+cbuffer EdgeUniforms : register(b4) {
   uint u_w;
   uint u_h;
   uint u_max;
@@ -30,13 +28,6 @@ void try_pair(uint a, uint b) {
   uint old;
   InterlockedOr(seen[word], bit, old);
   if (old & bit) return;                       // this edge already emitted
-
-  // First touch → adjacency + append.
-  uint wlo = tri_qw(seeds[lo].score);
-  uint whi = tri_qw(seeds[hi].score);
-  uint o2;
-  InterlockedMax(nbr[lo], whi, o2);
-  InterlockedMax(nbr[hi], wlo, o2);
   uint slot;
   InterlockedAdd(counter[0], 1u, slot);
   if (slot < u_max) edges[slot] = (lo << 16) | hi;
