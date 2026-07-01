@@ -281,50 +281,91 @@ static void spawn_sparks(State& s, int count) {
 }
 
 void module_init() {
-  state::init("source.light.side_jet", {2, 0, 0},
+  state::init("source.light.side_jet", {2, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Side Jet\n"
+        "A JPL-style rocket engine-test plume: the nozzle is fixed at the left "
+        "edge and a supersonic jet blasts rightward — shock diamonds, Mach disk, "
+        "shear vortices, crackle and rim sparks all react live to the throttle. "
+        "Built for LED bars and for direct screen use.\n\n"
+        "**How to drive it:** toggle **Ignition** to light the engine, then ride "
+        "**Throttle** — the plume spools up with real inertia and overshoots on "
+        "light-up. **Try:** turn **Drama** up and sweep the throttle for a "
+        "one-knob performance that resculpts the whole plume through its power "
+        "band; drop **Mixture** for a tighter blue core, or crank **Zoom** to fill "
+        "the frame with the shock train.")
       // --- Drive (performable) ---
-      .boolField ("ignition",          true,                     state::PrimaryInput)
-      .floatField("throttle",          0.7f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("mixture",           0.3f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("intensity",         1.0f,  0.0f, 3.0f,        state::PrimaryInput)
-      .floatField("drama",             0.0f,  0.0f, 1.0f,        state::PrimaryInput)
+      .group("drive", "Drive")
+        .groupHelp(
+          "The performable core. **Ignition** lights the engine (a rising edge "
+          "sprays sparks and kicks a startup overshoot); **Throttle** then drives "
+          "everything downstream through spool inertia. **Mixture** shifts the "
+          "chemistry — lower is a tighter, bluer core, higher over-expands and "
+          "pushes the Mach disk out. **Drama** is a one-knob macro: turn it up and "
+          "the throttle sweep alone resculpts sharpness, diamond spacing, crackle "
+          "and brightness across the power band.")
+      .boolField ("ignition",          true,                     state::PrimaryInput).label("Ignition", "Ign")
+      .floatField("throttle",          0.7f,  0.0f, 1.0f,        state::PrimaryInput).label("Throttle", "Thrt")
+      .floatField("mixture",           0.3f,  0.0f, 1.0f,        state::PrimaryInput).label("Mixture", "Mix")
+      .floatField("intensity",         1.0f,  0.0f, 3.0f,        state::PrimaryInput).label("Intensity", "Int")
+      .floatField("drama",             0.0f,  0.0f, 1.0f,        state::PrimaryInput).label("Drama", "Drama")
       // --- Engine dynamics ---
-      .floatField("spool_time",        0.06f, 0.01f, 1.0f,       state::PrimaryInput)
-      .floatField("startup_overshoot", 0.4f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("overshoot_time",    0.18f, 0.02f, 2.0f,       state::PrimaryInput)
+      .group("engine", "Engine Dynamics")
+      .floatField("spool_time",        0.06f, 0.01f, 1.0f,       state::PrimaryInput).label("Spool Time", "Spool")
+      .floatField("startup_overshoot", 0.4f,  0.0f, 1.0f,        state::PrimaryInput).label("Startup Overshoot", "OShoot")
+      .floatField("overshoot_time",    0.18f, 0.02f, 2.0f,       state::PrimaryInput).label("Overshoot Time", "OvrT")
       // --- Geometry ---
-      .floatField("centerline_y",      0.5f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("nozzle_radius",     0.45f, 0.02f, 0.5f,       state::PrimaryInput)
-      .floatField("spread",            0.15f, 0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("length_scale",      1.0f,  0.2f, 1.5f,        state::PrimaryInput)
+      .group("geometry", "Geometry")
+      .floatField("centerline_y",      0.5f,  0.0f, 1.0f,        state::PrimaryInput).label("Centerline Y", "Ctr Y")
+      .floatField("nozzle_radius",     0.45f, 0.02f, 0.5f,       state::PrimaryInput).label("Nozzle Radius", "Nozzle")
+      .floatField("spread",            0.15f, 0.0f, 1.0f,        state::PrimaryInput).label("Spread", "Sprd")
+      .floatField("length_scale",      1.0f,  0.2f, 1.5f,        state::PrimaryInput).label("Length", "Len")
       // --- Plume structure ---
-      .floatField("core_brightness",   1.7f,  0.0f, 3.0f,        state::PrimaryInput)
-      .floatField("radial_sharpness",  5.0f,  1.0f, 16.0f,       state::PrimaryInput)
-      .floatField("diamond_amp",       0.6f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("diamond_spacing",   0.06f, 0.01f, 0.2f,       state::PrimaryInput)
-      .floatField("mach_disk_amp",     0.8f,  0.0f, 2.0f,        state::PrimaryInput)
-      .floatField("core_length",       1.0f,  0.2f, 3.0f,        state::PrimaryInput)
+      .group("plume", "Plume Structure")
+        .groupHelp(
+          "The shock train inside the jet. **Core Brightness** and **Radial "
+          "Sharpness** set how hot and tight the potential core reads; **Core "
+          "Length** slides the white-to-blue handoff downstream. The **Diamond** "
+          "controls size and space the standing shock cells, and the **Mach Disk** "
+          "is the bright normal shock that appears as the flow over-expands.")
+      .floatField("core_brightness",   1.7f,  0.0f, 3.0f,        state::PrimaryInput).label("Core Brightness", "Core B")
+      .floatField("radial_sharpness",  5.0f,  1.0f, 16.0f,       state::PrimaryInput).label("Radial Sharpness", "Sharp")
+      .floatField("diamond_amp",       0.6f,  0.0f, 1.0f,        state::PrimaryInput).label("Diamond Amount", "Diam")
+      .floatField("diamond_spacing",   0.06f, 0.01f, 0.2f,       state::PrimaryInput).label("Diamond Spacing", "DiamSp")
+      .floatField("mach_disk_amp",     0.8f,  0.0f, 2.0f,        state::PrimaryInput).label("Mach Disk", "Mach")
+      .floatField("core_length",       1.0f,  0.2f, 3.0f,        state::PrimaryInput).label("Core Length", "CoreL")
       // --- Detail (screen) ---
-      .floatField("shear_turbulence",  0.5f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("shear_scale",       18.0f, 4.0f, 40.0f,       state::PrimaryInput)
-      .floatField("crackle",           0.3f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("shimmer_rate_hz",   9.0f,  0.0f, 30.0f,       state::PrimaryInput)
-      .floatField("kh_rate_hz",        6.0f,  0.0f, 30.0f,       state::PrimaryInput)
-      .floatField("crackle_rate_hz",   22.0f, 0.0f, 60.0f,       state::PrimaryInput)
+      .group("detail", "Detail")
+        .groupHelp(
+          "Fine turbulent texture layered on the plume. **Shear Turbulence** and "
+          "**Scale** grow Kelvin-Helmholtz vortices along the jet edge; **Crackle** "
+          "adds the sharp popping speckle of a hot exhaust. The **Rate** knobs set "
+          "how fast the shimmer, shear and crackle churn — pull them down for a "
+          "slow-motion look, push them up for a violent, energetic burn.")
+      .floatField("shear_turbulence",  0.5f,  0.0f, 1.0f,        state::PrimaryInput).label("Shear Turbulence", "Shear")
+      .floatField("shear_scale",       18.0f, 4.0f, 40.0f,       state::PrimaryInput).label("Shear Scale", "ShrScl")
+      .floatField("crackle",           0.3f,  0.0f, 1.0f,        state::PrimaryInput).label("Crackle", "Crkl")
+      .floatField("shimmer_rate_hz",   9.0f,  0.0f, 30.0f,       state::PrimaryInput).label("Shimmer Rate", "Shim")
+      .floatField("kh_rate_hz",        6.0f,  0.0f, 30.0f,       state::PrimaryInput).label("Shear Rate", "ShrRt")
+      .floatField("crackle_rate_hz",   22.0f, 0.0f, 60.0f,       state::PrimaryInput).label("Crackle Rate", "CrklRt")
       // --- View ---
-      .floatField("zoom",              1.0f,  1.0f, 12.0f,       state::PrimaryInput)
+      .group("view", "View")
+      .floatField("zoom",              1.0f,  1.0f, 12.0f,       state::PrimaryInput).label("Zoom", "Zoom")
       // --- Solver / detail amount ---
-      .floatField("propagation",       0.6f,  0.0f, 1.0f,        state::PrimaryInput)
-      .intField  ("substeps",          128, 8, 256,              state::PrimaryInput)
-      .floatField("motion_scale",      0.5f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("spark_amount",      0.6f,  0.0f, 1.0f,        state::PrimaryInput)
-      .floatField("spark_rate",        12.0f, 0.0f, 60.0f,       state::PrimaryInput)
-      .floatField("spark_scale",       1.0f,  0.1f, 5.0f,        state::PrimaryInput)
-      .floatField("spark_speed",       1.6f,  0.1f, 5.0f,        state::PrimaryInput)
-      .intField  ("seed",              0x5A1E7, 0, 0x7FFFFFFF,   state::PrimaryInput)
+      .group("solver", "Solver & Sparks")
+      .floatField("propagation",       0.6f,  0.0f, 1.0f,        state::PrimaryInput).label("Propagation", "Prop")
+      .intField  ("substeps",          128, 8, 256,              state::PrimaryInput).label("Substeps", "Subst")
+      .floatField("motion_scale",      0.5f,  0.0f, 1.0f,        state::PrimaryInput).label("Motion Scale", "Motion")
+      .floatField("spark_amount",      0.6f,  0.0f, 1.0f,        state::PrimaryInput).label("Spark Amount", "SpkAmt")
+      .floatField("spark_rate",        12.0f, 0.0f, 60.0f,       state::PrimaryInput).label("Spark Rate", "SpkRt")
+      .floatField("spark_scale",       1.0f,  0.1f, 5.0f,        state::PrimaryInput).label("Spark Size", "SpkSz")
+      .floatField("spark_speed",       1.6f,  0.1f, 5.0f,        state::PrimaryInput).label("Spark Speed", "SpkSpd")
+      .intField  ("seed",              0x5A1E7, 0, 0x7FFFFFFF,   state::PrimaryInput).label("Seed", "Seed")
       // --- Debug ---
-      .boolField ("debug_show_axis",   false,                    state::PrimaryInput)
+      .group("debug", "Debug")
+      .boolField ("debug_show_axis",   false,                    state::PrimaryInput).label("Show Axis", "Axis")
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

@@ -48,12 +48,27 @@ static inline float clampf(float v, float lo, float hi) {
 }
 
 void module_init() {
-  state::init("filter.lights_sim", {1, 0, 0},
+  state::init("filter.lights_sim", {1, 0, 1},
     state::Schema()
-      .intField  ("segments",      13, 1, 256,         state::PrimaryInput)
-      .floatField("inset_h",       0.8f,  0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("inset_v",       0.05f, 0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("input_opacity", 0.25f, 0.0f, 1.0f,  state::PrimaryInput)
+      .helpField("intro",
+        "## Lights Sim\n"
+        "Turns your input into a **Resolume-style LED wall** — four vertical bars, each "
+        "split into stacked LED *Segments*, sampling their colour from the underlying "
+        "image. It's a filter: the source shows through, faded by *Input Opacity*.\n\n"
+        "**Try:** drop *Segments* low for chunky pixel-strip bars, or push it high for a "
+        "smooth column read; tuck the bars into their quarters with the *Inset* knobs and "
+        "lower *Input Opacity* to let the raw footage bleed between them.")
+      // --- LED bars ---
+      .group("bars", "LED Bars")
+        .groupHelp(
+          "Four vertical bars sample the input at the centre of each quarter. *Segments* "
+          "sets the vertical LED resolution; the *Inset* pair pads the bars inside their "
+          "quarters (horizontal gap vs. top/bottom gap); *Input Opacity* fades the "
+          "underlying source behind them.")
+      .intField  ("segments",      13, 1, 256,         state::PrimaryInput).label("Segments", "Segs")
+      .floatField("inset_h",       0.8f,  0.0f, 1.0f,  state::PrimaryInput).label("Horizontal Inset", "InsetH")
+      .floatField("inset_v",       0.05f, 0.0f, 1.0f,  state::PrimaryInput).label("Vertical Inset", "InsetV")
+      .floatField("input_opacity", 0.25f, 0.0f, 1.0f,  state::PrimaryInput).label("Input Opacity", "InOpac")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

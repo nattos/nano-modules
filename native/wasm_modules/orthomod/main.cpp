@@ -476,40 +476,74 @@ static float channel_value(int code_msb, int code_lsb, double mod_phase) {
 
 // Type-level setup: schema + the shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("source.light.orthomod", {1, 0, 0},
+  state::init("source.light.orthomod", {1, 0, 1},
     state::Schema()
-      // --- Standard ---
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Orthomod\n"
+        "A beat-synced bar pattern driven by orthogonal code systems (Hadamard/Walsh "
+        "and friends). An envelope fires on the beat (or on gate/trigger) and, as it "
+        "decays, sweeps the four bars from a solid flash down through progressively "
+        "busier stripe patterns. It also publishes **ch1–ch4** and **env** rails to "
+        "modulate other effects.\n\n"
+        "**Try:** set *Beat Sync* and let it pulse; sweep *Codebook* for different "
+        "stripe families; tap the **env** rail into another effect for beat-locked motion.")
+      // --- Trigger ---
+      .group("trigger", "Trigger")
+        .groupHelp(
+          "How the envelope is fired. **Beat Sync** locks pulses to the transport (set "
+          "*Off* to go manual). **Gate** re-fires on each rising edge and holds the "
+          "decay phase; **Trigger** is a one-shot. All three snap the envelope to full "
+          "and then let it fall.")
       // Manual trigger surface. gate = rising-edge re-fire; trigger = one
       // shot event. Both snap the envelope to 1 just like a beat crossing,
       // and work even when beat_multiplier is "Off".
-      .boolField ("gate",            false,                  state::PrimaryInput)
-      .eventField("trigger",                                 state::PrimaryInput)
+      .boolField ("gate",            false,                  state::PrimaryInput).label("Gate", "Gate")
+      .eventField("trigger",                                 state::PrimaryInput).label("Trigger", "Trig")
       .selectField("beat_multiplier", 2, state::PrimaryInput,
-                   {{"Off", 5}, {"1/4", 0}, {"1/2", 1}, {"1", 2}, {"2", 3}, {"4", 4}})
-      .floatField("primary_hue",            0.08f, 0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("saturation",             0.9f,  0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("intensity",              1.0f,  0.0f, 2.0f,  state::PrimaryInput)
-      .floatField("decay_time_beats",       1.0f,  0.05f, 4.0f, state::PrimaryInput)
-      .floatField("decay_curve",            0.0f, -1.0f, 1.0f,  state::PrimaryInput)
-      .floatField("release_time_beats",     0.5f,  0.05f, 4.0f, state::PrimaryInput)
-      .floatField("release_curve",          0.0f, -1.0f, 1.0f,  state::PrimaryInput)
-      .floatField("scatter_max",            0.15f, 0.0f, 0.5f,  state::PrimaryInput)
-      .floatField("channel_brightness_mod", 0.5f,  0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("env_brightness_curve",   0.0f, -1.0f, 1.0f,  state::PrimaryInput)
-      .floatField("mod_rate_hz",            15.0f, 0.0f, 30.0f, state::PrimaryInput)
-      // --- Tuning ---
+                   {{"Off", 5}, {"1/4", 0}, {"1/2", 1}, {"1", 2}, {"2", 3}, {"4", 4}}).label("Beat Sync", "Beat")
+      // --- Appearance ---
+      .group("appearance", "Appearance")
+      .floatField("primary_hue",            0.08f, 0.0f, 1.0f,  state::PrimaryInput).label("Hue", "Hue")
+      .floatField("saturation",             0.9f,  0.0f, 1.0f,  state::PrimaryInput).label("Saturation", "Sat")
+      .floatField("intensity",              1.0f,  0.0f, 2.0f,  state::PrimaryInput).label("Intensity", "Int")
+      // --- Envelope ---
+      .group("envelope", "Envelope")
+        .groupHelp(
+          "Shapes the fall after each hit. **Decay** runs while the gate is held (or "
+          "after a beat/trigger); **Release** takes over once the gate is let go — give "
+          "it a faster time for a snappier tail. The *Curve* knobs bend each phase "
+          "(negative = crushed/percussive, positive = sustained).")
+      .floatField("decay_time_beats",       1.0f,  0.05f, 4.0f, state::PrimaryInput).label("Decay Time", "Decay")
+      .floatField("decay_curve",            0.0f, -1.0f, 1.0f,  state::PrimaryInput).label("Decay Curve", "DecCrv")
+      .floatField("release_time_beats",     0.5f,  0.05f, 4.0f, state::PrimaryInput).label("Release Time", "Rel")
+      .floatField("release_curve",          0.0f, -1.0f, 1.0f,  state::PrimaryInput).label("Release Curve", "RelCrv")
+      // --- Modulation ---
+      .group("modulation", "Modulation")
+      .floatField("scatter_max",            0.15f, 0.0f, 0.5f,  state::PrimaryInput).label("Scatter", "Scat")
+      .floatField("channel_brightness_mod", 0.5f,  0.0f, 1.0f,  state::PrimaryInput).label("Channel Mod", "ChMod")
+      .floatField("env_brightness_curve",   0.0f, -1.0f, 1.0f,  state::PrimaryInput).label("Env Brightness", "EnvBri")
+      .floatField("mod_rate_hz",            15.0f, 0.0f, 30.0f, state::PrimaryInput).label("Mod Rate", "Rate")
+      // --- Pattern ---
+      .group("pattern", "Pattern")
+        .groupHelp(
+          "The code system that draws the bars. **Codebook** picks the stripe family "
+          "(Walsh = clean sequency, Thue-Morse = fractal, etc.). *Sweep Start/End* set "
+          "the order→chaos range the envelope traverses (set Start > End to sweep in "
+          "reverse). **Size**/**Bits** control resolution; **Seed** re-rolls the whole "
+          "arrangement.")
       .selectField("codebook", CB_WALSH, state::PrimaryInput,
                    {{"Walsh", CB_WALSH}, {"Random", CB_RANDOM}, {"LFSR", CB_LFSR},
-                    {"Gray", CB_GRAY}, {"Binary", CB_BINARY}, {"Thue-Morse", CB_THUE_MORSE}}, /*wrap=*/true)
-      .floatField("start",         0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("end",           1.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .boolField ("keep_flash",    true,             state::PrimaryInput)
-      .intField  ("hadamard_size", 32, 4, MAX_HADAMARD, state::PrimaryInput)
-      .intField  ("render_bits",   13, 1, 64,           state::PrimaryInput)
-      .floatField("inset_top",     0.0f, 0.0f, 0.5f,    state::PrimaryInput)
-      .floatField("inset_bottom",  0.0f, 0.0f, 0.5f,    state::PrimaryInput)
-      .floatField("decay_jitter",  0.0f, 0.0f, 1.0f,    state::PrimaryInput)
-      .intField  ("seed",          1, 0, 0x7FFFFFFF,    state::PrimaryInput)
+                    {"Gray", CB_GRAY}, {"Binary", CB_BINARY}, {"Thue-Morse", CB_THUE_MORSE}}, /*wrap=*/true).label("Codebook", "Code")
+      .floatField("start",         0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Sweep Start", "Start")
+      .floatField("end",           1.0f, 0.0f, 1.0f, state::PrimaryInput).label("Sweep End", "End")
+      .boolField ("keep_flash",    true,             state::PrimaryInput).label("Keep Flash", "Flash")
+      .intField  ("hadamard_size", 32, 4, MAX_HADAMARD, state::PrimaryInput).label("Pattern Size", "Size")
+      .intField  ("render_bits",   13, 1, 64,           state::PrimaryInput).label("Render Bits", "Bits")
+      .floatField("inset_top",     0.0f, 0.0f, 0.5f,    state::PrimaryInput).label("Inset Top", "Top")
+      .floatField("inset_bottom",  0.0f, 0.0f, 0.5f,    state::PrimaryInput).label("Inset Bottom", "Bottom")
+      .floatField("decay_jitter",  0.0f, 0.0f, 1.0f,    state::PrimaryInput).label("Decay Jitter", "Jitter")
+      .intField  ("seed",          1, 0, 0x7FFFFFFF,    state::PrimaryInput).label("Seed", "Seed")
       // --- Output rails (5 separate floats per meta-question #3) ---
       .floatField("ch1", 0.0f, 0.0f, 1.0f, state::PrimaryOutput)
       .floatField("ch2", 0.0f, 0.0f, 1.0f, state::PrimaryOutput)

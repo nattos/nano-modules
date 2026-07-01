@@ -384,81 +384,123 @@ static void compute_voice_gpu(State* s, const Voice& v, VoiceGpu& o) {
 // --- ABI -----------------------------------------------------------------
 
 void module_init() {
-  state::init("source.light.chroma_wave", {1, 0, 0},
+  state::init("source.light.chroma_wave", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Chroma Wave\n"
+        "A charge-and-burst prismatic bloom. Hold the *Gate* to charge a soft blob — "
+        "as pressure builds it flattens and curls into a downward crescent; release "
+        "and it **bursts**, opening while prismatic colour bands travel down the "
+        "gradient. It's **polyphonic**, so many waves can overlap.\n\n"
+        "**Try:** play it rhythmically with the trigger for stacked bursts; raise "
+        "*Auto Rate* to let it self-fire; push *Intensity* for glowing additive colour.")
       // --- Standard trigger surface ---
-      .boolField ("gate",               false,                  state::PrimaryInput)
-      .eventField("trigger",                                    state::PrimaryInput)
-      .floatField("level",              0.0f, 0.0f, 1.0f,       state::PrimaryInput)
-      .floatField("auto_rate",          0.15f, 0.0f, 1.0f,      state::PrimaryInput)
-      .boolField ("default_gate_state", false,                  state::PrimaryInput)
+      .group("trigger", "Trigger")
+        .groupHelp(
+          "How the effect is *played*. Hold **Gate** (or push *Level* past halfway) to "
+          "charge one sustained voice; fire **Trigger** for momentary one-shot bursts. "
+          "**Auto Rate** self-fires at random (Poisson) — great for hands-off ambience. "
+          "*Default On* keeps a voice charging with no input.")
+      .boolField ("gate",               false,                  state::PrimaryInput).label("Gate", "Gate")
+      .eventField("trigger",                                    state::PrimaryInput).label("Trigger", "Trig")
+      .floatField("level",              0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Level", "Lvl")
+      .floatField("auto_rate",          0.15f, 0.0f, 1.0f,      state::PrimaryInput).label("Auto Rate", "Auto")
+      .boolField ("default_gate_state", false,                  state::PrimaryInput).label("Default On", "Def")
 
       // --- Polyphony ---
-      .intField  ("voice_limit",        8, 1, MAX_VOICES,       state::PrimaryInput)
-      .floatField("voice_pos_jitter",   0.5f, 0.0f, 2.0f,       state::PrimaryInput)
-      .floatField("voice_hue_jitter",   0.1f, 0.0f, 1.0f,       state::PrimaryInput)
+      .group("polyphony", "Polyphony")
+        .groupHelp(
+          "Multiple waves run at once. *Voices* caps how many overlap (older bursts get "
+          "stolen past the limit). *Position* and *Hue Jitter* scatter one-shots so they "
+          "read as distinct waves. **Hue Interact** decides how overlaps blend: 0 "
+          "averages their colour, higher values rotate and compound the bands.")
+      .intField  ("voice_limit",        8, 1, MAX_VOICES,       state::PrimaryInput).label("Voices", "Vox")
+      .floatField("voice_pos_jitter",   0.5f, 0.0f, 2.0f,       state::PrimaryInput).label("Position Jitter", "PosJit")
+      .floatField("voice_hue_jitter",   0.1f, 0.0f, 1.0f,       state::PrimaryInput).label("Hue Jitter", "HueJit")
       // Overlapping voices interact in the band-phase domain: 0 averages their
       // hues, 1 sums them (hue rotates further + bands compound), >1 over-rotates.
-      .floatField("hue_interact",       0.8f, 0.0f, 2.0f,       state::PrimaryInput)
+      .floatField("hue_interact",       0.8f, 0.0f, 2.0f,       state::PrimaryInput).label("Hue Interact", "HueInt")
 
       // --- Position ---
-      .floatField("position_x",         0.0f,  -2.0f, 2.0f,     state::PrimaryInput)
-      .floatField("position_y",         -0.7f, -2.0f, 2.0f,     state::PrimaryInput)
+      .group("position", "Position")
+      .floatField("position_x",         0.0f,  -2.0f, 2.0f,     state::PrimaryInput).label("Position X", "X")
+      .floatField("position_y",         -0.7f, -2.0f, 2.0f,     state::PrimaryInput).label("Position Y", "Y")
 
       // --- Charge / pressure shape ---
-      .floatField("charge_s",           0.6f,  0.05f, 3.0f,     state::PrimaryInput)
-      .floatField("base_radius",        0.12f, 0.01f, 10.0f,    state::PrimaryInput)
-      .floatField("charge_expand",      2.3f,  1.0f, 8.0f,      state::PrimaryInput)
-      .floatField("size_smoothing",     0.06f, 0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("gaussian_sharpness", 4.0f,  1.0f, 20.0f,     state::PrimaryInput)
-      .floatField("plateau_amount",     0.6f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("squish_amount",      0.5f,  0.0f, 2.0f,      state::PrimaryInput)
-      .floatField("crescent_amount",    0.7f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("crescent_offset",    0.5f,  0.1f, 1.5f,      state::PrimaryInput)
+      .group("charge", "Charge & Pressure")
+        .groupHelp(
+          "Sculpts the blob *while it charges*. **Charge Time** is how long a held gate "
+          "takes to reach full pressure; **Base Radius** and **Charge Expand** set its "
+          "size and growth. As pressure builds, *Plateau*, *Squish* and *Crescent* flatten "
+          "the top and curl the mass into a downward hook — push them for a heavier swell.")
+      .floatField("charge_s",           0.6f,  0.05f, 3.0f,     state::PrimaryInput).label("Charge Time", "Chrg")
+      .floatField("base_radius",        0.12f, 0.01f, 10.0f,    state::PrimaryInput).label("Base Radius", "Rad")
+      .floatField("charge_expand",      2.3f,  1.0f, 8.0f,      state::PrimaryInput).label("Charge Expand", "Expand")
+      .floatField("size_smoothing",     0.06f, 0.0f, 1.0f,      state::PrimaryInput).label("Size Smoothing", "Smooth")
+      .floatField("gaussian_sharpness", 4.0f,  1.0f, 20.0f,     state::PrimaryInput).label("Sharpness", "Sharp")
+      .floatField("plateau_amount",     0.6f,  0.0f, 1.0f,      state::PrimaryInput).label("Plateau", "Plat")
+      .floatField("squish_amount",      0.5f,  0.0f, 2.0f,      state::PrimaryInput).label("Squish", "Squish")
+      .floatField("crescent_amount",    0.7f,  0.0f, 1.0f,      state::PrimaryInput).label("Crescent", "Cres")
+      .floatField("crescent_offset",    0.5f,  0.1f, 1.5f,      state::PrimaryInput).label("Crescent Offset", "CresOf")
 
       // --- Burst ---
-      .floatField("release_s",          0.7f,  0.05f, 20.0f,    state::PrimaryInput)
-      .floatField("release_expand",     3.0f,  1.0f, 20.0f,     state::PrimaryInput)
+      .group("burst", "Burst")
+      .floatField("release_s",          0.7f,  0.05f, 20.0f,    state::PrimaryInput).label("Release Time", "Rel")
+      .floatField("release_expand",     3.0f,  1.0f, 20.0f,     state::PrimaryInput).label("Release Expand", "RelExp")
       // Signed power curve (style guide §8.3): +1 front-loads the burst,
       // -1 is a gradual swell, 0 linear.
-      .floatField("release_curve",      0.4f,  -1.0f, 1.0f,     state::PrimaryInput)
-      .floatField("min_sustain_s",      0.2f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("burst_shallow",      0.7f,  0.0f, 0.95f,     state::PrimaryInput)
+      .floatField("release_curve",      0.4f,  -1.0f, 1.0f,     state::PrimaryInput).label("Release Curve", "RelCrv")
+      .floatField("min_sustain_s",      0.2f,  0.0f, 1.0f,      state::PrimaryInput).label("Min Sustain", "MinSus")
+      .floatField("burst_shallow",      0.7f,  0.0f, 0.95f,     state::PrimaryInput).label("Burst Shallow", "Shallow")
 
       // --- Colour grade ---
-      .floatField("base_hue",           0.55f, 0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("hue_span",           0.18f, 0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("saturation",         0.85f, 0.0f, 1.0f,      state::PrimaryInput)
+      .group("grade", "Colour Grade")
+        .groupHelp(
+          "The prismatic colour. **Base Hue** + **Hue Span** set where the spectrum sits "
+          "and how wide it sweeps; the per-channel *Hue Shift* knobs twist the wheel. "
+          "**Band Freq** and **Fold Rate** control the travelling stripe density during "
+          "charge vs burst. Crank **Intensity** for a glowing additive over the input.")
+      .floatField("base_hue",           0.55f, 0.0f, 1.0f,      state::PrimaryInput).label("Base Hue", "Hue")
+      .floatField("hue_span",           0.18f, 0.0f, 1.0f,      state::PrimaryInput).label("Hue Span", "Span")
+      .floatField("saturation",         0.85f, 0.0f, 1.0f,      state::PrimaryInput).label("Saturation", "Sat")
       // Twist the hue wheel: shift the hue by these amounts where it lands on
       // red / green / blue, smoothly interpolated around the wheel.
-      .floatField("hue_shift_r",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput)
-      .floatField("hue_shift_g",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput)
-      .floatField("hue_shift_b",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput)
-      .floatField("grade_freq_hold",    1.5f,  0.0f, 8.0f,      state::PrimaryInput)
-      .floatField("grade_freq_burst",   7.0f,  0.0f, 16.0f,     state::PrimaryInput)
-      .floatField("fold_rate",          1.5f,  0.0f, 8.0f,      state::PrimaryInput)
-      .floatField("band_contrast",      0.6f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("band_tilt",          0.0f,  -2.0f, 2.0f,     state::PrimaryInput)
-      .floatField("alpha_gamma",        1.2f,  0.25f, 4.0f,     state::PrimaryInput)
-      .rgbField  ("blob_color",         1.0f,  1.0f, 1.0f,      state::PrimaryInput)
-      .floatField("overlay_alpha_hold", 0.3f,  0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("overlay_alpha_burst",0.7f,  0.0f, 1.0f,      state::PrimaryInput)
+      .floatField("hue_shift_r",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput).label("Hue Shift R", "ShiftR")
+      .floatField("hue_shift_g",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput).label("Hue Shift G", "ShiftG")
+      .floatField("hue_shift_b",        0.0f,  -1.0f, 1.0f,     state::PrimaryInput).label("Hue Shift B", "ShiftB")
+      .floatField("grade_freq_hold",    1.5f,  0.0f, 8.0f,      state::PrimaryInput).label("Band Freq Hold", "FrqHld")
+      .floatField("grade_freq_burst",   7.0f,  0.0f, 16.0f,     state::PrimaryInput).label("Band Freq Burst", "FrqBst")
+      .floatField("fold_rate",          1.5f,  0.0f, 8.0f,      state::PrimaryInput).label("Fold Rate", "Fold")
+      .floatField("band_contrast",      0.6f,  0.0f, 1.0f,      state::PrimaryInput).label("Band Contrast", "BndCon")
+      .floatField("band_tilt",          0.0f,  -2.0f, 2.0f,     state::PrimaryInput).label("Band Tilt", "Tilt")
+      .floatField("alpha_gamma",        1.2f,  0.25f, 4.0f,     state::PrimaryInput).label("Alpha Gamma", "Gamma")
+      .rgbField  ("blob_color",         1.0f,  1.0f, 1.0f,      state::PrimaryInput).label("Colour", "Col")
+      .floatField("overlay_alpha_hold", 0.3f,  0.0f, 1.0f,      state::PrimaryInput).label("Alpha Hold", "AlpHld")
+      .floatField("overlay_alpha_burst",0.7f,  0.0f, 1.0f,      state::PrimaryInput).label("Alpha Burst", "AlpBst")
       // Crankable master gain; soft per-channel rolloff for juicy colour.
-      .floatField("intensity",          1.0f,  0.0f, 32.0f,     state::PrimaryInput)
+      .floatField("intensity",          1.0f,  0.0f, 32.0f,     state::PrimaryInput).label("Intensity", "Int")
 
       // --- Motion --- (the knob's [0,1] maps to an internal [0,0.25] gain;
       // the raw optical-flow vectors are otherwise quite extreme.)
-      .floatField("motion_scale",       1.0f,  0.0f, 1.0f,      state::PrimaryInput)
+      .group("motion", "Motion")
+        .groupHelp(
+          "Emits an *optical-flow* vector field (the expanding bursts' velocity) for "
+          "downstream motion-aware effects — it doesn't change this effect's own pixels. "
+          "**Motion Scale** sets the strength; **Warp** collapses the spray into a "
+          "coherent downward wavefront; **Edge Mask** isolates the bands' leading edges.")
+      .floatField("motion_scale",       1.0f,  0.0f, 1.0f,      state::PrimaryInput).label("Motion Scale", "Motion")
       // Perceptual wavefront warp: damp the lateral spread of the motion field
       // so a squat/crescent blob reads as a coherent downward front, not rays
       // fanning from the center. 0 = analytic, 1 = fully vertical.
-      .floatField("motion_warp",        0.4f,  0.0f, 1.0f,      state::PrimaryInput)
+      .floatField("motion_warp",        0.4f,  0.0f, 1.0f,      state::PrimaryInput).label("Motion Warp", "Warp")
       // Isolate the motion to the bands' OUTWARD (leading) edges: 0 = whole
       // band, 1 = only the leading fronts (rippling-wavefront feel).
-      .floatField("motion_edge_mask",   0.0f,  0.0f, 1.0f,      state::PrimaryInput)
+      .floatField("motion_edge_mask",   0.0f,  0.0f, 1.0f,      state::PrimaryInput).label("Motion Edge Mask", "Edge")
 
       // --- Debug ---
-      .boolField ("debug_field",        false,                  state::PrimaryInput)
+      .group("debug", "Debug")
+      .boolField ("debug_field",        false,                  state::PrimaryInput).label("Debug Field", "Debug")
 
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

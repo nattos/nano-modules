@@ -430,17 +430,41 @@ static void update_breaks(State& s, double dt) {
 // Type-level setup: schema + the shared color compute PSO. Runs once
 // per type.
 void module_init() {
-  state::init("source.light.plasma_beam_cannon", {1, 0, 0},
+  state::init("source.light.plasma_beam_cannon", {1, 0, 1},
     state::Schema()
-      // --- Standard ---
-      .boolField ("gate",            false,                        state::PrimaryInput)
-      .eventField("trigger",                                       state::PrimaryInput)
-      .floatField("seed_y",          0.5f, 0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("seed_height",     0.06f, 0.0f, 0.5f,            state::PrimaryInput)
-      .floatField("attack_s",        0.15f, 0.0f, 1.0f,            state::PrimaryInput)
-      .floatField("decay_s",         0.10f, 0.0f, 0.5f,            state::PrimaryInput)
-      .floatField("sustain_s",       0.40f, 0.0f, 4.0f,            state::PrimaryInput)
-      .floatField("release_s",       1.50f, 0.1f, 5.0f,            state::PrimaryInput)
+      .helpField("intro",
+        "## Plasma Beam Cannon\n"
+        "A triggered, 90s-anime **power-up beam**. Each shot runs one linked ADSR: a "
+        "small seed at *Seed Y* charges up (**Attack**), grows to a full vertical beam "
+        "(**Decay**), holds lit (**Sustain**), then in **Release** a swarm of break "
+        "particles eats the beam away and a flicker tail sputters it out.\n\n"
+        "**Fire it** from the *Gate*/*Trigger* inputs (wire a clock or hit it live), or "
+        "raise *Auto Rate* above 0 to let it self-fire on a bar clock. **Try:** shorten "
+        "*Release* and raise *Break Count* for a violent dissolve; sculpt how the beam is "
+        "eaten with *Length Start/End* and *Grow Response*; add a *Flicker Tail* for the "
+        "classic sputter-out.")
+      // --- Trigger ---
+      .group("trigger", "Trigger")
+        .groupHelp(
+          "Fire the cannon from *Gate* (a level input — a rising edge starts a shot) or "
+          "*Trigger* (a momentary event, replay-safe). With no external clock, set *Auto "
+          "Rate* (Beam section) above 0 and it self-fires on its own bar clock. Each shot "
+          "runs the full ADSR once.")
+      .boolField ("gate",            false,                        state::PrimaryInput).label("Gate", "Gate")
+      .eventField("trigger",                                       state::PrimaryInput).label("Trigger", "Trig")
+      // --- Envelope (ADSR) ---
+      .group("envelope", "Envelope")
+        .groupHelp(
+          "The beam's whole life is one ADSR. *Attack* charges the seed in, *Decay* grows "
+          "it to the full bar, *Sustain* holds it lit, and *Release* runs the dissolve. "
+          "The signed *Curve* sliders bend each phase's shape: -1 = slow-start/fast-finish, "
+          "0 = linear, +1 = fast-start/slow-finish.")
+      .floatField("seed_y",          0.5f, 0.0f, 1.0f,             state::PrimaryInput).label("Seed Y", "SeedY")
+      .floatField("seed_height",     0.06f, 0.0f, 0.5f,            state::PrimaryInput).label("Seed Height", "SeedH")
+      .floatField("attack_s",        0.15f, 0.0f, 1.0f,            state::PrimaryInput).label("Attack", "Atk")
+      .floatField("decay_s",         0.10f, 0.0f, 0.5f,            state::PrimaryInput).label("Decay", "Dec")
+      .floatField("sustain_s",       0.40f, 0.0f, 4.0f,            state::PrimaryInput).label("Sustain", "Sus")
+      .floatField("release_s",       1.50f, 0.1f, 5.0f,            state::PrimaryInput).label("Release", "Rel")
       // Per-phase shape curves (signed sliders; style guide §1.3).
       //   -1 → exp 8   → slow start, fast finish
       //    0 → linear
@@ -449,45 +473,54 @@ void module_init() {
       // bar lerp. Release warps release_t globally — all release-
       // phase time-dependent machinery (length target, activation
       // thresholds, flicker onset) sees the warped time.
-      .floatField("attack_curve",    0.0f, -1.0f, 1.0f,            state::PrimaryInput)
-      .floatField("decay_curve",     0.0f, -1.0f, 1.0f,            state::PrimaryInput)
-      .floatField("release_curve",   0.0f, -1.0f, 1.0f,            state::PrimaryInput)
-      .rgbField  ("beam_color",      1.0f, 0.95f, 0.8f,            state::PrimaryInput)
-      .floatField("intensity",       1.0f, 0.0f, 2.0f,             state::PrimaryInput)
-      .intField  ("bar_target",      0, 0, 3,                      state::PrimaryInput)
-      .boolField ("bar_target_all",  true,                         state::PrimaryInput)
-      .floatField("auto_rate",       0.2f, 0.0f, 1.0f,             state::PrimaryInput)
+      .floatField("attack_curve",    0.0f, -1.0f, 1.0f,            state::PrimaryInput).label("Attack Curve", "AtkCrv")
+      .floatField("decay_curve",     0.0f, -1.0f, 1.0f,            state::PrimaryInput).label("Decay Curve", "DecCrv")
+      .floatField("release_curve",   0.0f, -1.0f, 1.0f,            state::PrimaryInput).label("Release Curve", "RelCrv")
+      // --- Beam ---
+      .group("beam", "Beam")
+      .rgbField  ("beam_color",      1.0f, 0.95f, 0.8f,            state::PrimaryInput).label("Beam Color", "Color")
+      .floatField("intensity",       1.0f, 0.0f, 2.0f,             state::PrimaryInput).label("Intensity", "Int")
+      .intField  ("bar_target",      0, 0, 3,                      state::PrimaryInput).label("Bar Target", "Bar")
+      .boolField ("bar_target_all",  true,                         state::PrimaryInput).label("All Bars", "All")
+      .floatField("auto_rate",       0.2f, 0.0f, 1.0f,             state::PrimaryInput).label("Auto Rate", "Auto")
 
       // --- Break particles (tuning) ---
-      .intField  ("break_count_per_bar",   12,    1, MAX_BREAKS_PER_BAR, state::PrimaryInput)
-      .floatField("attractor_fraction",    0.25f, 0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("spacer_fraction",       0.25f, 0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("min_break_size",        0.015f, 0.001f, 0.2f,          state::PrimaryInput)
-      .floatField("max_break_size",        0.12f,  0.01f, 0.5f,           state::PrimaryInput)
-      .floatField("force_strength",        0.4f,  0.0f, 2.0f,             state::PrimaryInput)
+      .group("breaks", "Break Particles")
+        .groupHelp(
+          "During Release, a pool of break particles chews the beam apart. *Break Count* "
+          "sets how many; *Attractor*/*Spacer Fraction* set the mix of pulling, pushing "
+          "and spacing agents; the force, softening and damping knobs are their physics. "
+          "Start with *Length Start/End* and *Grow Response* — they drive how much beam "
+          "gets eaten over the release.")
+      .intField  ("break_count_per_bar",   12,    1, MAX_BREAKS_PER_BAR, state::PrimaryInput).label("Break Count", "Count")
+      .floatField("attractor_fraction",    0.25f, 0.0f, 1.0f,             state::PrimaryInput).label("Attractor Fraction", "Attr")
+      .floatField("spacer_fraction",       0.25f, 0.0f, 1.0f,             state::PrimaryInput).label("Spacer Fraction", "Spacer")
+      .floatField("min_break_size",        0.015f, 0.001f, 0.2f,          state::PrimaryInput).label("Min Size", "MinSz")
+      .floatField("max_break_size",        0.12f,  0.01f, 0.5f,           state::PrimaryInput).label("Max Size", "MaxSz")
+      .floatField("force_strength",        0.4f,  0.0f, 2.0f,             state::PrimaryInput).label("Force Strength", "Force")
       // Multiplier on spacer-only force magnitude (relative to
       // `force_strength`). Spacers are repulsion-only "stay apart"
       // markers; at 1.0 they easily dominate and fling solids to the
       // poles. Default 0.3 keeps them a gentle nudge.
-      .floatField("spacer_strength",       0.3f,  0.0f, 1.0f,             state::PrimaryInput)
+      .floatField("spacer_strength",       0.3f,  0.0f, 1.0f,             state::PrimaryInput).label("Spacer Force", "SpcFrc")
       // Plummer softening for the 1/r² pair force — bounds the max
       // close-range force. Without this (i.e. tiny softening) any
       // two particles that seed near each other slingshot themselves
       // and everything around them to the bar edges, even with
       // force_strength near zero. Keep at the 0.05 default unless you
       // explicitly want sharper short-range physics.
-      .floatField("force_softening",       0.05f, 0.005f, 0.5f,           state::PrimaryInput)
-      .floatField("damping_per_s",         4.0f,  0.1f, 10.0f,            state::PrimaryInput)
-      .floatField("interaction_radius",    0.3f,  0.05f, 1.0f,            state::PrimaryInput)
+      .floatField("force_softening",       0.05f, 0.005f, 0.5f,           state::PrimaryInput).label("Force Softening", "Soften")
+      .floatField("damping_per_s",         4.0f,  0.1f, 10.0f,            state::PrimaryInput).label("Damping", "Damp")
+      .floatField("interaction_radius",    0.3f,  0.05f, 1.0f,            state::PrimaryInput).label("Interaction Radius", "Radius")
       // Per-break teleport: each active break has a per-frame Poisson
       // chance to jump to a new random y. Rate is biased by current
       // size — smallest breaks teleport at full rate, largest never.
       // Slider [0, 1] maps to rate via §4.1: pow(60, slider) - 1 Hz.
-      .floatField("teleport_rate",         0.2f,  0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("length_target_start",   0.1f,  0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("length_target_end",     0.7f,  0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("length_target_curve",   1.0f,  0.25f, 4.0f,            state::PrimaryInput)
-      .floatField("grow_response",         1.0f,  0.0f, 4.0f,             state::PrimaryInput)
+      .floatField("teleport_rate",         0.2f,  0.0f, 1.0f,             state::PrimaryInput).label("Teleport Rate", "Telep")
+      .floatField("length_target_start",   0.1f,  0.0f, 1.0f,             state::PrimaryInput).label("Length Start", "LenSt")
+      .floatField("length_target_end",     0.7f,  0.0f, 1.0f,             state::PrimaryInput).label("Length End", "LenEnd")
+      .floatField("length_target_curve",   1.0f,  0.25f, 4.0f,            state::PrimaryInput).label("Length Curve", "LenCrv")
+      .floatField("grow_response",         1.0f,  0.0f, 4.0f,             state::PrimaryInput).label("Grow Response", "Grow")
       // Activation stagger — each break gets a random threshold in
       // release_t ∈ [activation_min, 1.0]. It's invisible (and doesn't
       // exert force) until release passes that threshold. Slider [-1,+1]
@@ -495,27 +528,33 @@ void module_init() {
       //   -1 → exponent 8   → thresholds cluster near 0 → EARLY
       //    0 → exponent 1   → uniform across [min, 1]
       //   +1 → exponent 1/8 → thresholds cluster near 1 → LATE
-      .floatField("activation_curve",      0.0f, -1.0f, 1.0f,             state::PrimaryInput)
-      .floatField("activation_min",        0.0f,  0.0f, 1.0f,             state::PrimaryInput)
+      .floatField("activation_curve",      0.0f, -1.0f, 1.0f,             state::PrimaryInput).label("Activation Curve", "ActCrv")
+      .floatField("activation_min",        0.0f,  0.0f, 1.0f,             state::PrimaryInput).label("Activation Min", "ActMin")
       // Bimodal break-size population. Each break is binary-classed
       // into "stays at min_break_size" or "free to grow to
       // max_break_size" with probability = growth_fraction. The
       // length-target controller then pushes each break toward its
       // personal cap — small breaks hit theirs immediately and stop,
       // large breaks keep growing.
-      .floatField("growth_fraction",       0.4f,  0.0f, 1.0f,             state::PrimaryInput)
-      .intField  ("break_seed",            0x12345, 0, 0x7FFFFFFF,        state::PrimaryInput)
+      .floatField("growth_fraction",       0.4f,  0.0f, 1.0f,             state::PrimaryInput).label("Growth Fraction", "Growth")
+      .intField  ("break_seed",            0x12345, 0, 0x7FFFFFFF,        state::PrimaryInput).label("Break Seed", "Seed")
       // When on (default), an internal counter increments per trigger
       // and is folded into the effective seed — every cycle gets a
       // fresh, deterministic break arrangement. Turn off to lock the
       // exact same arrangement every time (useful when staging cues).
-      .boolField ("cycle_seed",            true,                          state::PrimaryInput)
+      .boolField ("cycle_seed",            true,                          state::PrimaryInput).label("Cycle Seed", "Cycle")
 
       // --- Flicker tail (tuning) ---
-      .floatField("flicker_start_t",       0.7f,  0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("flicker_duty_start",    0.8f,  0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("flicker_duty_end",      0.05f, 0.0f, 1.0f,             state::PrimaryInput)
-      .floatField("flicker_freq_hz",       24.0f, 1.0f, 60.0f,            state::PrimaryInput)
+      .group("flicker", "Flicker Tail")
+        .groupHelp(
+          "Near the end of Release the beam sputters like a dying tube. *Flicker Start* is "
+          "when (in release) the flicker begins; the on-time *Duty* ramps from *Start* to "
+          "*End* (lower = darker, choppier) and *Flicker Freq* sets the strobe rate. Push "
+          "*Duty End* toward 0 for a hard cut-out.")
+      .floatField("flicker_start_t",       0.7f,  0.0f, 1.0f,             state::PrimaryInput).label("Flicker Start", "Start")
+      .floatField("flicker_duty_start",    0.8f,  0.0f, 1.0f,             state::PrimaryInput).label("Duty Start", "DutySt")
+      .floatField("flicker_duty_end",      0.05f, 0.0f, 1.0f,             state::PrimaryInput).label("Duty End", "DtyEnd")
+      .floatField("flicker_freq_hz",       24.0f, 1.0f, 60.0f,            state::PrimaryInput).label("Flicker Freq", "Freq")
 
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

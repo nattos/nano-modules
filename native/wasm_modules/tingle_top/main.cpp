@@ -194,43 +194,87 @@ static void fire_note(State* s, bool held) {
 }
 
 void module_init() {
-  state::init("source.light.tingle_top", {1, 0, 0},
+  state::init("source.light.tingle_top", {1, 0, 1},
     state::Schema()
-      .boolField ("gate",                false,                state::PrimaryInput)
-      .eventField("trigger",                                   state::PrimaryInput)
-      .floatField("level",               0.0f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("auto_rate",           0.0f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("top_band_height",     0.1f, 0.01f, 0.5f,    state::PrimaryInput)
-      .floatField("release_s",           0.8f, 0.05f, 4.0f,    state::PrimaryInput)
-      .floatField("release_curve",       1.5f, 0.25f, 4.0f,    state::PrimaryInput)
-      .floatField("release_tilt",        0.0f, -1.0f, 1.0f,    state::PrimaryInput)
-      .floatField("min_sustain_s",       0.3f, 0.0f, 2.0f,     state::PrimaryInput)
-      .boolField ("default_gate_state",  false,                state::PrimaryInput)
-      .floatField("intensity",           1.0f, 0.0f, 2.0f,     state::PrimaryInput)
-      .floatField("hue",                 0.12f, 0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("hue_jitter",          0.08f, 0.0f, 0.5f,    state::PrimaryInput)
-      .intField  ("density",             60, 1, 400,           state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Tingle Top\n"
+        "Bundles sparkles at the top of each bar while a note is held, then releases "
+        "them as a wave that cascades and drains off the bottom when you let go. It's "
+        "polyphonic — overlapping releases pile up — and can be driven by a gate, a "
+        "trigger pulse, an audio level, or its own auto-fire.\n\n"
+        "**Try:** drive *Gate* or *Trigger* from a MIDI note or beat; shape the fall "
+        "with *Release Time*, *Release Curve* and *Release Tilt*; turn up *Auto Rate* "
+        "for a self-running shimmer. Switch *Default Gate* on for a permanently-"
+        "sustaining bed.")
+      // --- Trigger ---
+      .group("trigger", "Trigger")
+        .groupHelp(
+          "How sparkles are summoned. Any of *Gate* (held), *Trigger* (a pulse), or "
+          "*Level* (≥ 0.5) starts a held cluster at the top of the bar; *Auto Rate* "
+          "fires its own random notes on top. Drive these from MIDI, envelopes, or "
+          "audio to make the sparkles play along.")
+      .boolField ("gate",                false,                state::PrimaryInput).label("Gate", "Gate")
+      .eventField("trigger",                                   state::PrimaryInput).label("Trigger", "Trig")
+      .floatField("level",               0.0f, 0.0f, 1.0f,     state::PrimaryInput).label("Level", "Lvl")
+      .floatField("auto_rate",           0.0f, 0.0f, 1.0f,     state::PrimaryInput).label("Auto Rate", "Auto")
+      // --- Release Wave ---
+      .group("release", "Release Wave")
+        .groupHelp(
+          "When a note lets go, its cluster drops as a wave. *Release Time* is how "
+          "long the fall lasts; *Release Curve* accelerates the trailing edge; "
+          "*Release Tilt* slides the dense peak between the top and bottom of the "
+          "wave. *Min Sustain* keeps very short notes on screen long enough to read.")
+      .floatField("top_band_height",     0.1f, 0.01f, 0.5f,    state::PrimaryInput).label("Top Band Height", "Band")
+      .floatField("release_s",           0.8f, 0.05f, 4.0f,    state::PrimaryInput).label("Release Time", "Rel")
+      .floatField("release_curve",       1.5f, 0.25f, 4.0f,    state::PrimaryInput).label("Release Curve", "RCurve")
+      .floatField("release_tilt",        0.0f, -1.0f, 1.0f,    state::PrimaryInput).label("Release Tilt", "Tilt")
+      .floatField("min_sustain_s",       0.3f, 0.0f, 2.0f,     state::PrimaryInput).label("Min Sustain", "Sus")
+      .boolField ("default_gate_state",  false,                state::PrimaryInput).label("Default Gate", "DefGt")
+      // --- Appearance ---
+      .group("appearance", "Appearance")
+      .floatField("intensity",           1.0f, 0.0f, 2.0f,     state::PrimaryInput).label("Intensity", "Int")
+      .floatField("hue",                 0.12f, 0.0f, 1.0f,    state::PrimaryInput).label("Hue", "Hue")
+      .floatField("hue_jitter",          0.08f, 0.0f, 0.5f,    state::PrimaryInput).label("Hue Jitter", "HueJit")
+      .intField  ("density",             60, 1, 400,           state::PrimaryInput).label("Density", "Dens")
+      // --- Bars ---
+      .group("bars", "Bars")
       .selectField("bar_target_mode",    BAR_ALL, state::PrimaryInput,
-                   {{"one_bar", BAR_ONE}, {"random_bar", BAR_RANDOM}, {"all_bars", BAR_ALL}})
-      .intField  ("one_bar_target",      0, 0, 3,              state::PrimaryInput)
-      .floatField("particle_life_ms",    200.0f, 10.0f, 1000.0f, state::PrimaryInput)
-      .floatField("respawn_delay_ms",    30.0f, 0.0f, 500.0f,  state::PrimaryInput)
-      .floatField("life_jitter",         0.4f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("size",                0.008f, 0.001f, 0.05f, state::PrimaryInput)
-      .floatField("size_jitter",         0.5f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("frame_alpha_jitter",  0.6f, 0.0f, 1.0f,     state::PrimaryInput)
+                   {{"one_bar", BAR_ONE}, {"random_bar", BAR_RANDOM}, {"all_bars", BAR_ALL}}).label("Bar Target", "Bars")
+      .intField  ("one_bar_target",      0, 0, 3,              state::PrimaryInput).label("Target Bar", "Bar")
+      // --- Particles ---
+      .group("particles", "Particles")
+        .groupHelp(
+          "The sparkle grains themselves — how long each lives, how big it is, and "
+          "how it twinkles. *Shape* picks the grain sprite; *Size* / *Size Jitter* set "
+          "the footprint; *Alpha Jitter* and *Alpha Curve* control the per-frame "
+          "flicker. *Pool Max* caps the total grain budget.")
+      .floatField("particle_life_ms",    200.0f, 10.0f, 1000.0f, state::PrimaryInput).label("Particle Life", "Life")
+      .floatField("respawn_delay_ms",    30.0f, 0.0f, 500.0f,  state::PrimaryInput).label("Respawn Delay", "Delay")
+      .floatField("life_jitter",         0.4f, 0.0f, 1.0f,     state::PrimaryInput).label("Life Jitter", "LfJit")
+      .floatField("size",                0.008f, 0.001f, 0.05f, state::PrimaryInput).label("Size", "Size")
+      .floatField("size_jitter",         0.5f, 0.0f, 1.0f,     state::PrimaryInput).label("Size Jitter", "SzJit")
+      .floatField("frame_alpha_jitter",  0.6f, 0.0f, 1.0f,     state::PrimaryInput).label("Alpha Jitter", "AJit")
       .selectField("shape_kind",         2, state::PrimaryInput,
-                   {{"solid", 0}, {"circle", 1}, {"gaussian", 2}})
-      .floatField("shape_param",         0.7f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("alpha_curve",         1.5f, 0.25f, 4.0f,    state::PrimaryInput)
-      .intField  ("pool_max",            1024, 8, 2048,        state::PrimaryInput)
-      .intField  ("seed",                12345, 0, 0x7FFFFFFF, state::PrimaryInput)
-      .floatField("particle_velocity_y", 0.0f, -2.0f, 2.0f,    state::PrimaryInput)
-      .floatField("particle_velocity_x", 0.0f, -2.0f, 2.0f,    state::PrimaryInput)
-      .floatField("velocity_y_jitter",   0.0f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("velocity_x_jitter",   0.0f, 0.0f, 1.0f,     state::PrimaryInput)
-      .boolField ("respect_position_bounds", true,             state::PrimaryInput)
-      .boolField ("debug_show_region",   false,                state::PrimaryInput)
+                   {{"solid", 0}, {"circle", 1}, {"gaussian", 2}}).label("Shape", "Shape")
+      .floatField("shape_param",         0.7f, 0.0f, 1.0f,     state::PrimaryInput).label("Shape Param", "Shp")
+      .floatField("alpha_curve",         1.5f, 0.25f, 4.0f,    state::PrimaryInput).label("Alpha Curve", "ACurve")
+      .intField  ("pool_max",            1024, 8, 2048,        state::PrimaryInput).label("Pool Max", "Pool")
+      .intField  ("seed",                12345, 0, 0x7FFFFFFF, state::PrimaryInput).label("Seed", "Seed")
+      // --- Velocity ---
+      .group("velocity", "Velocity")
+        .groupHelp(
+          "An optional per-particle drift on top of the fall. *Velocity X/Y* push "
+          "every grain in a direction; the *Jitter* knobs randomize it per particle. "
+          "*Respect Bounds* keeps drifting grains inside the bar.")
+      .floatField("particle_velocity_y", 0.0f, -2.0f, 2.0f,    state::PrimaryInput).label("Velocity Y", "VelY")
+      .floatField("particle_velocity_x", 0.0f, -2.0f, 2.0f,    state::PrimaryInput).label("Velocity X", "VelX")
+      .floatField("velocity_y_jitter",   0.0f, 0.0f, 1.0f,     state::PrimaryInput).label("Vel Y Jitter", "VYJit")
+      .floatField("velocity_x_jitter",   0.0f, 0.0f, 1.0f,     state::PrimaryInput).label("Vel X Jitter", "VXJit")
+      .boolField ("respect_position_bounds", true,             state::PrimaryInput).label("Respect Bounds", "Bounds")
+      // --- Debug ---
+      .group("debug", "Debug")
+      .boolField ("debug_show_region",   false,                state::PrimaryInput).label("Show Region", "Region")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)

@@ -688,34 +688,41 @@ describe('describeEffect — schema-only, no instance', () => {
 // the schema JSON brutal_fold publishes from its module_init.
 // ---------------------------------------------------------------------------
 describe('schema metadata round-trip (groups / names / help)', () => {
-  it('brutal_fold emits groups, per-field name/short/group, and a help field', async () => {
-    const bytes = getWasmBytes();
-    if (!bytes) { console.warn('no nano.wasm — skipping'); return; }
-
+  // Instantiate a real bundle and capture the schema JSON each requested effect
+  // publishes from its module_init (via a capturing set_schema override).
+  async function captureSchemas(wasmPath: string, effectIds: string[]): Promise<Map<string, any>> {
+    let bytes: Buffer | null = null;
+    try { bytes = readFileSync(wasmPath); } catch {}
+    if (!bytes) return new Map();
     const host = new WasmHost();
     const imports = buildImports(host);
-    const captured = new Map<string, string>();
+    const raw = new Map<string, string>();
     const dec = new TextDecoder();
-    // Override the stub set_schema to capture the raw JSON per effect id.
     (imports.state as any).set_schema = (idPtr: number, idLen: number, _v: number,
                                          sPtr: number, sLen: number) => {
       const mem = (host as any).memory as WebAssembly.Memory;
-      const id = dec.decode(new Uint8Array(mem.buffer, idPtr, idLen));
-      const s = dec.decode(new Uint8Array(mem.buffer, sPtr, sLen));
-      captured.set(id, s);
+      raw.set(dec.decode(new Uint8Array(mem.buffer, idPtr, idLen)),
+              dec.decode(new Uint8Array(mem.buffer, sPtr, sLen)));
     };
-
     const result = await WebAssembly.instantiate(bytes as BufferSource, imports);
     const instance = (result as WebAssembly.WebAssemblyInstantiatedSource).instance;
     (host as any).instance = instance;
     (host as any).memory = instance.exports.memory as WebAssembly.Memory;
     (instance.exports._initialize as (() => void) | undefined)?.();
     (instance.exports.nano_module_main as (() => void))();
-    host.activateEffect('source.brutal_fold');   // runs module_init → set_schema
+    const out = new Map<string, any>();
+    for (const id of effectIds) {
+      host.activateEffect(id);   // runs module_init → set_schema
+      const s = raw.get(id);
+      if (s) out.set(id, JSON.parse(s));   // JSON.parse throws on truncation/corruption
+    }
+    return out;
+  }
 
-    const raw = captured.get('source.brutal_fold');
-    expect(raw).toBeTruthy();
-    const schema = JSON.parse(raw!);
+  it('brutal_fold emits groups, per-field name/short/group, and a help field', async () => {
+    const schemas = await captureSchemas(NANO_BUNDLE_PATH, ['source.brutal_fold']);
+    const schema = schemas.get('source.brutal_fold');
+    if (!schema) { console.warn('no nano.wasm — skipping'); return; }
 
     // First-class groups with metadata.
     expect(schema.groups?.shape?.name).toBe('Form');
@@ -735,5 +742,34 @@ describe('schema metadata round-trip (groups / names / help)', () => {
     expect(schema.fields?.intro?.type).toBe('help');
     expect(schema.fields?.intro?.io).toBe(0);
     expect(schema.fields?.intro?.default).toContain('Brutal Fold');
+  });
+
+  it('lights bundle: every effect emits VALID schema JSON with groups + labels + intro help', async () => {
+    const LIGHTS = resolve(__dirname, '../public/wasm/lights.wasm');
+    const ids = [
+      'source.light.chroma_wave', 'source.light.orthomod', 'warp.dispersion',
+      'source.light.plasma_beam_cannon', 'source.light.motion_blobs', 'filter.lights_sim',
+      'source.light.side_jet', 'source.light.bounce_resonator', 'source.light.strobe_channel',
+      'source.light.soft_glow', 'source.light.tingle_top', 'filter.glitch.block_dehance',
+    ];
+    // captureSchemas JSON.parses each — a truncated/corrupt schema would throw here.
+    const schemas = await captureSchemas(LIGHTS, ids);
+    if (schemas.size === 0) { console.warn('no lights.wasm — skipping'); return; }
+    expect(schemas.size).toBe(ids.length);   // all present, all valid JSON
+
+    for (const [id, schema] of schemas) {
+      // Every lights effect gained groups + an intro help field + labelled inputs.
+      expect(Object.keys(schema.groups ?? {}).length, `${id} groups`).toBeGreaterThan(0);
+      expect(schema.fields?.intro?.type, `${id} intro`).toBe('help');
+      const labelled = Object.values(schema.fields ?? {})
+        .filter((f: any) => f?.type !== 'help' && (f?.io & 1) && typeof f?.name === 'string');
+      expect(labelled.length, `${id} labelled inputs`).toBeGreaterThan(0);
+      // Every labelled field points at a declared group.
+      for (const f of labelled) {
+        if ((f as any).group !== undefined) {
+          expect(schema.groups?.[(f as any).group], `${id} field group ${(f as any).group}`).toBeTruthy();
+        }
+      }
+    }
   });
 });

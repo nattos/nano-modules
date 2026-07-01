@@ -104,35 +104,85 @@ static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (
 static inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (v > hi ? hi : v); }
 
 void module_init() {
-  state::init("filter.glitch.block_dehance", {1, 0, 0},
+  state::init("filter.glitch.block_dehance", {1, 0, 1},
     state::Schema()
-      .intField  ("count",                 6, 0, 64,            state::PrimaryInput)
-      .floatField("life_s",                1.5f, 0.05f, 10.0f,  state::PrimaryInput)
-      .floatField("respawn_delay_s",       1.0f, 0.0f, 10.0f,   state::PrimaryInput)
-      .floatField("life_jitter",           0.3f, 0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("rect_width",            0.18f, 0.005f, 1.0f, state::PrimaryInput)
-      .floatField("rect_height",           0.06f, 0.005f, 1.0f, state::PrimaryInput)
-      .floatField("rect_size_jitter",      0.4f, 0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("move_chance",           0.0f, 0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("move_amount",           0.03f, 0.0f, 0.5f,   state::PrimaryInput)
-      .floatField("move_delay_max",        0.3f, 0.0f, 5.0f,    state::PrimaryInput)
-      .floatField("mask_temperature",      0.5f, 0.0f, 4.0f,    state::PrimaryInput)
-      .floatField("mode_black_weight",     0.33f, 0.0f, 1.0f,   state::PrimaryInput)
-      .floatField("mode_mosaic_weight",    0.33f, 0.0f, 1.0f,   state::PrimaryInput)
-      .floatField("mode_noise_weight",     0.33f, 0.0f, 1.0f,   state::PrimaryInput)
-      .rgbaField ("fill_color",            0.0f, 0.0f, 0.0f, 1.0f, state::SecondaryInput)
-      .floatField("mosaic_cell_size",      0.02f, 0.001f, 0.2f, state::PrimaryInput)
-      .floatField("mosaic_cell_size_jitter", 0.5f, 0.0f, 1.0f,  state::PrimaryInput)
-      .boolField ("noise_temporal",        true,                state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Block Dehance\n"
+        "Scatters glitch rectangles across the image that *dehance* whatever they "
+        "cover — crushing it to a fill colour, blocking it into a coarse mosaic, or "
+        "replacing it with noise. Rectangles continuously bright-seek the picture (or "
+        "a wired mask), so they cluster on the brightest, most eye-catching regions.\n\n"
+        "**Try:** balance the three *Mode Weights* to mix black / mosaic / noise "
+        "blocks; raise *Count* and drop *Lifetime* for a frantic strobe; wire a *Mask* "
+        "input to steer the blocks onto specific areas; add *Flicker* for a "
+        "broken-signal stutter.")
+      // --- Rectangles ---
+      .group("rects", "Rectangles")
+        .groupHelp(
+          "The pool of glitch rectangles. *Count* is how many are live at once; "
+          "*Lifetime* and *Respawn Delay* set how fast they cycle. *Width* / *Height* "
+          "size them and the *Jitter* knobs vary each one. A rectangle picks its "
+          "dehance mode on spawn and keeps it for its whole life.")
+      .intField  ("count",                 6, 0, 64,            state::PrimaryInput).label("Count", "Count")
+      .floatField("life_s",                1.5f, 0.05f, 10.0f,  state::PrimaryInput).label("Lifetime", "Life")
+      .floatField("respawn_delay_s",       1.0f, 0.0f, 10.0f,   state::PrimaryInput).label("Respawn Delay", "Delay")
+      .floatField("life_jitter",           0.3f, 0.0f, 1.0f,    state::PrimaryInput).label("Life Jitter", "LfJit")
+      .floatField("rect_width",            0.18f, 0.005f, 1.0f, state::PrimaryInput).label("Width", "Width")
+      .floatField("rect_height",           0.06f, 0.005f, 1.0f, state::PrimaryInput).label("Height", "Height")
+      .floatField("rect_size_jitter",      0.4f, 0.0f, 1.0f,    state::PrimaryInput).label("Size Jitter", "SzJit")
+      // --- Movement ---
+      .group("movement", "Movement")
+        .groupHelp(
+          "Optional per-rectangle jumps. *Move Chance* sets how often a rect hops to "
+          "a new spot; *Move Amount* is how far, and *Move Delay* spaces the hops out "
+          "in time. Leave *Move Chance* at 0 to keep blocks pinned where they spawn.")
+      .floatField("move_chance",           0.0f, 0.0f, 1.0f,    state::PrimaryInput).label("Move Chance", "Move")
+      .floatField("move_amount",           0.03f, 0.0f, 0.5f,   state::PrimaryInput).label("Move Amount", "Amt")
+      .floatField("move_delay_max",        0.3f, 0.0f, 5.0f,    state::PrimaryInput).label("Move Delay", "MvDly")
+      // --- Mask Targeting ---
+      .group("mask", "Mask Targeting")
+        .groupHelp(
+          "Rectangles bright-seek the image (or a wired *Mask* input) to place "
+          "themselves on the most prominent regions. *Mask Temperature* controls how "
+          "greedy that search is — low values snap hard to the brightest spot, high "
+          "values spread the placement out.")
+      .floatField("mask_temperature",      0.5f, 0.0f, 4.0f,    state::PrimaryInput).label("Mask Temperature", "Temp")
+      // --- Dehance Modes ---
+      .group("modes", "Dehance Modes")
+        .groupHelp(
+          "Each rectangle randomly picks one dehance style, weighted by these knobs: "
+          "*Black* crushes to the fill colour, *Mosaic* blocks the area into big "
+          "pixels, *Noise* replaces it with static. Set a weight to 0 to drop that "
+          "style. *Fill Colour* is what the black mode paints.")
+      .floatField("mode_black_weight",     0.33f, 0.0f, 1.0f,   state::PrimaryInput).label("Black Weight", "Black")
+      .floatField("mode_mosaic_weight",    0.33f, 0.0f, 1.0f,   state::PrimaryInput).label("Mosaic Weight", "Mosaic")
+      .floatField("mode_noise_weight",     0.33f, 0.0f, 1.0f,   state::PrimaryInput).label("Noise Weight", "Noise")
+      .rgbaField ("fill_color",            0.0f, 0.0f, 0.0f, 1.0f, state::SecondaryInput).label("Fill Colour", "Fill")
+      // --- Mosaic ---
+      .group("mosaic", "Mosaic")
+      .floatField("mosaic_cell_size",      0.02f, 0.001f, 0.2f, state::PrimaryInput).label("Cell Size", "Cell")
+      .floatField("mosaic_cell_size_jitter", 0.5f, 0.0f, 1.0f,  state::PrimaryInput).label("Cell Jitter", "CJit")
+      // --- Noise ---
+      .group("noise", "Noise")
+      .boolField ("noise_temporal",        true,                state::PrimaryInput).label("Temporal Noise", "Temp")
       .selectField("noise_color_mode",     0, state::PrimaryInput,
-                   {{"rgb", 0}, {"grayscale", 1}, {"luma_preserve", 2}})
-      .floatField("noise_intensity",       1.0f, 0.0f, 1.0f,    state::PrimaryInput)
-      .intField  ("pool_max",              32, 8, 128,          state::PrimaryInput)
-      .intField  ("mask_samples",          8, 4, 16,            state::PrimaryInput)
-      .floatField("flicker_rate_hz",       0.0f, 0.0f, 60.0f,   state::PrimaryInput)
-      .floatField("flicker_duty",          0.5f, 0.0f, 1.0f,    state::PrimaryInput)
-      .intField  ("seed",                  12345, 0, 0x7FFFFFFF, state::PrimaryInput)
-      .boolField ("debug_show_rects",      false,               state::PrimaryInput)
+                   {{"rgb", 0}, {"grayscale", 1}, {"luma_preserve", 2}}).label("Noise Colour", "Colour")
+      .floatField("noise_intensity",       1.0f, 0.0f, 1.0f,    state::PrimaryInput).label("Noise Intensity", "Int")
+      // --- Pool ---
+      .group("pool", "Pool")
+      .intField  ("pool_max",              32, 8, 128,          state::PrimaryInput).label("Pool Max", "Pool")
+      .intField  ("mask_samples",          8, 4, 16,            state::PrimaryInput).label("Mask Samples", "Smpls")
+      // --- Flicker ---
+      .group("flicker", "Flicker")
+      .floatField("flicker_rate_hz",       0.0f, 0.0f, 60.0f,   state::PrimaryInput).label("Flicker Rate", "Rate")
+      .floatField("flicker_duty",          0.5f, 0.0f, 1.0f,    state::PrimaryInput).label("Flicker Duty", "Duty")
+      // --- Seed ---
+      .group("seed", "Seed")
+      .intField  ("seed",                  12345, 0, 0x7FFFFFFF, state::PrimaryInput).label("Seed", "Seed")
+      // --- Debug ---
+      .group("debug", "Debug")
+      .boolField ("debug_show_rects",      false,               state::PrimaryInput).label("Show Rects", "Rects")
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("mask_in", state::SecondaryInput)

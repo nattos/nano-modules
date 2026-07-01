@@ -92,18 +92,41 @@ static int quantize_block(float norm, int levels, int max_block) {
 
 // Type-level setup: schema + the shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("warp.dispersion", {1, 0, 0},
+  state::init("warp.dispersion", {1, 0, 1},
     state::Schema()
-      .floatField("vertical_block_norm",   0.1f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("horizontal_block_norm", 0.1f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("offset_max",            0.08f, 0.0f, 0.5f, state::PrimaryInput)
-      .floatField("intensity",             1.0f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("temporal_rate_hz",      60.0f, 0.0f, 60.0f, state::PrimaryInput)
-      .intField  ("quantization_levels_vertical",   16, 4, 64, state::PrimaryInput)
-      .intField  ("quantization_levels_horizontal", 16, 4, 64, state::PrimaryInput)
-      .intField  ("block_max_pixels_vertical",      64, 1, 512, state::PrimaryInput)
-      .intField  ("block_max_pixels_horizontal",    64, 1, 512, state::PrimaryInput)
-      .intField  ("seed",                  12345, 0,    65535, state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Dispersion\n"
+        "Chops the image into a grid of blocks and jitters each block's sampling "
+        "offset, for a blocky *displacement / datamosh* feel. Block sizes snap to a "
+        "discrete ladder so nudging a slider re-rolls the whole layout instead of "
+        "smoothly sliding.\n\n"
+        "**Try:** big blocks + high *Offset* for chunky glitch tears; tiny blocks + "
+        "low *Offset* for a shimmering grain; drop *Rate* to freeze the pattern.")
+      // --- Blocks ---
+      .group("blocks", "Blocks")
+        .groupHelp(
+          "Sets how the frame is diced up. *Vertical* and *Horizontal Blocks* pick the "
+          "cell size along each axis independently — pull them apart for tall streaks "
+          "or wide bands rather than square tiles.")
+      .floatField("vertical_block_norm",   0.1f,  0.0f, 1.0f, state::PrimaryInput).label("Vertical Blocks", "V Size")
+      .floatField("horizontal_block_norm", 0.1f,  0.0f, 1.0f, state::PrimaryInput).label("Horizontal Blocks", "H Size")
+      // --- Displacement ---
+      .group("displacement", "Displacement")
+      .floatField("offset_max",            0.08f, 0.0f, 0.5f, state::PrimaryInput).label("Offset", "Off")
+      .floatField("intensity",             1.0f,  0.0f, 1.0f, state::PrimaryInput).label("Intensity", "Amt")
+      .floatField("temporal_rate_hz",      60.0f, 0.0f, 60.0f, state::PrimaryInput).label("Rate", "Rate")
+      // --- Block ladder ---
+      .group("ladder", "Block Ladder")
+        .groupHelp(
+          "The *discrete* machinery behind the blocks. *Steps* set how many quantized "
+          "sizes a slider can land on (fewer = coarser jumps); *Max Pixels* caps the "
+          "largest block per axis. *Seed* re-rolls every block's random arrangement.")
+      .intField  ("quantization_levels_vertical",   16, 4, 64, state::PrimaryInput).label("Vertical Steps", "V Stp")
+      .intField  ("quantization_levels_horizontal", 16, 4, 64, state::PrimaryInput).label("Horizontal Steps", "H Stp")
+      .intField  ("block_max_pixels_vertical",      64, 1, 512, state::PrimaryInput).label("Max Vertical Px", "V Max")
+      .intField  ("block_max_pixels_horizontal",    64, 1, 512, state::PrimaryInput).label("Max Horizontal Px", "H Max")
+      .intField  ("seed",                  12345, 0,    65535, state::PrimaryInput).label("Seed", "Seed")
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

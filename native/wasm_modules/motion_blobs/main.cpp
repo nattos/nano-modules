@@ -349,32 +349,58 @@ static void spawn_one(State& st, CpuBlob& b, bool scattered) {
 
 // Type-level setup: schema + the two shared compute PSOs.
 void module_init() {
-  state::init("source.light.motion_blobs", {1, 0, 0},
+  state::init("source.light.motion_blobs", {1, 0, 1},
     state::Schema()
-      // --- Standard ---
-      .floatField("density",               0.4f,  0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("traverse_speed",        0.7f,  0.0f, 3.0f,    state::PrimaryInput)
-      .floatField("traverse_speed_jitter", 0.5f,  0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("drift",                 0.0f, -1.0f, 1.0f,    state::PrimaryInput)
-      .floatField("center_bias",           0.0f, -1.0f, 1.0f,    state::PrimaryInput)
-      .floatField("arc_bias",              0.0f, -1.0f, 1.0f,    state::PrimaryInput)
-      .floatField("arc_scale",             0.5f,  0.0f, 1.5f,    state::PrimaryInput)
-      .floatField("motion_strength",       1.0f,  0.0f, 2.0f,    state::PrimaryInput)
-      .floatField("motion_extent",         1.0f,  0.0f, 1.0f,    state::PrimaryInput)
-      .floatField("shadow_darkness",       0.0f,  0.0f, 1.0f,    state::PrimaryInput)
-      .rgbField  ("shadow_tint",           0.0f,  0.0f, 0.0f,    state::PrimaryInput)
-      .floatField("blob_size",             0.12f, 0.0f, 1.0f,    state::PrimaryInput)
+      .helpField("intro",
+        "## Motion Blobs\n"
+        "A pool of soft blobs that drift across the frame and drive **two outputs at "
+        "once**: a motion-vector field (for motion blur) and a colour darkening (for "
+        "shadow flyovers). The same blob field powers both — mix them with *Motion "
+        "Strength* and *Shadow Darkness*.\n\n"
+        "**Try:** *Motion Strength* 1 / *Shadow Darkness* 0 for invisible motion rain; "
+        "flip it to 0 / 0.7 for gliding shadows; or run both at ~0.5 for cinematic shadow "
+        "with motion blur. Steer travel with *Traverse Speed* and the *Arc*/*Center* bias.")
+      // --- Blobs & motion ---
+      .group("field", "Blobs & Motion")
+        .groupHelp(
+          "*Density* sets how many blobs live at once. They enter from the spawn edge and "
+          "cross the frame at *Traverse Speed* (jittered per blob); *Drift* slides them "
+          "along the edge. *Center Bias* pulls travel toward the middle, and the *Arc* "
+          "controls curve their paths — dial these to get lazy sweeps or tight fly-bys.")
+      .floatField("density",               0.4f,  0.0f, 1.0f,    state::PrimaryInput).label("Density", "Dens")
+      .floatField("traverse_speed",        0.7f,  0.0f, 3.0f,    state::PrimaryInput).label("Traverse Speed", "Trav")
+      .floatField("traverse_speed_jitter", 0.5f,  0.0f, 1.0f,    state::PrimaryInput).label("Traverse Jitter", "TrvJit")
+      .floatField("drift",                 0.0f, -1.0f, 1.0f,    state::PrimaryInput).label("Drift", "Drift")
+      .floatField("center_bias",           0.0f, -1.0f, 1.0f,    state::PrimaryInput).label("Center Bias", "CtrBia")
+      .floatField("arc_bias",              0.0f, -1.0f, 1.0f,    state::PrimaryInput).label("Arc Bias", "ArcBia")
+      .floatField("arc_scale",             0.5f,  0.0f, 1.5f,    state::PrimaryInput).label("Arc Scale", "ArcScl")
+      // --- Output (motion field + shadow) ---
+      .group("output", "Output")
+        .groupHelp(
+          "The one blob field feeds both outputs independently. *Motion Strength* scales "
+          "the emitted motion vectors (for downstream motion blur) and *Motion Extent* "
+          "limits their reach; *Shadow Darkness* + *Shadow Tint* paint the blobs as a "
+          "travelling darkening. Set either to 0 to use just the other.")
+      .floatField("motion_strength",       1.0f,  0.0f, 2.0f,    state::PrimaryInput).label("Motion Strength", "Motion")
+      .floatField("motion_extent",         1.0f,  0.0f, 1.0f,    state::PrimaryInput).label("Motion Extent", "MotExt")
+      .floatField("shadow_darkness",       0.0f,  0.0f, 1.0f,    state::PrimaryInput).label("Shadow Darkness", "Shadow")
+      .rgbField  ("shadow_tint",           0.0f,  0.0f, 0.0f,    state::PrimaryInput).label("Shadow Tint", "Tint")
+      // --- Shape & spawn ---
+      .group("shape", "Shape & Spawn")
+      .floatField("blob_size",             0.12f, 0.0f, 1.0f,    state::PrimaryInput).label("Blob Size", "Size")
       .selectField("spawn_edge",           EDGE_TOP, state::PrimaryInput,
-                   {{"Top", 0}, {"Bottom", 1}, {"Left", 2}, {"Right", 3}})
+                   {{"Top", 0}, {"Bottom", 1}, {"Left", 2}, {"Right", 3}}).label("Spawn Edge", "Edge")
       // --- Tuning ---
-      .intField  ("blob_count_max",        8, 1, MAX_BLOBS,      state::PrimaryInput)
-      .floatField("blob_size_jitter",      0.3f, 0.0f, 1.0f,     state::PrimaryInput)
-      .floatField("drift_jitter",          0.1f, 0.0f, 0.5f,     state::PrimaryInput)
-      .floatField("softness_curve",        4.0f, 1.0f, 16.0f,    state::PrimaryInput)
-      .boolField ("spawn_edge_random",     false,                state::PrimaryInput)
-      .intField  ("seed",                  0x82C00, 0, 0x7FFFFFFF, state::PrimaryInput)
+      .group("tuning", "Tuning")
+      .intField  ("blob_count_max",        8, 1, MAX_BLOBS,      state::PrimaryInput).label("Max Blobs", "MaxN")
+      .floatField("blob_size_jitter",      0.3f, 0.0f, 1.0f,     state::PrimaryInput).label("Size Jitter", "SzJit")
+      .floatField("drift_jitter",          0.1f, 0.0f, 0.5f,     state::PrimaryInput).label("Drift Jitter", "DrfJit")
+      .floatField("softness_curve",        4.0f, 1.0f, 16.0f,    state::PrimaryInput).label("Softness Curve", "SoftCv")
+      .boolField ("spawn_edge_random",     false,                state::PrimaryInput).label("Random Edge", "RndEdg")
+      .intField  ("seed",                  0x82C00, 0, 0x7FFFFFFF, state::PrimaryInput).label("Seed", "Seed")
       // --- Debug ---
-      .boolField ("debug_show_blobs",      false,                state::PrimaryInput)
+      .group("debug", "Debug")
+      .boolField ("debug_show_blobs",      false,                state::PrimaryInput).label("Show Blobs", "Blobs")
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

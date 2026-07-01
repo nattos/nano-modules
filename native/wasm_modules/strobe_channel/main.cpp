@@ -65,17 +65,40 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("source.light.strobe_channel", {1, 0, 0},
+  state::init("source.light.strobe_channel", {1, 0, 1},
     state::Schema()
-      .floatField("r",                 3.95f, 0.0f, 4.0f,  state::PrimaryInput)
-      .intField  ("iterations",        6,     1,    16,    state::PrimaryInput)
-      .floatField("ping_pong_rate_hz", 0.5f,  0.05f, 20.0f, state::PrimaryInput)
-      .floatField("seed_low",          0.1f,  0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("seed_high",         0.9f,  0.0f, 1.0f,  state::PrimaryInput)
-      .rgbField  ("flash_color",       1.0f,  1.0f, 1.0f,  state::PrimaryInput)
-      .floatField("intensity",         1.0f,  0.0f, 2.0f,  state::PrimaryInput)
-      .floatField("intensity_mod",     0.0f, -1.0f, 1.0f,  state::PrimaryInput)
-      .intField  ("bar_count",         4,     2,    16,    state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Strobe Channel\n"
+        "A chaos-driven bar selector: a ping-ponging seed is fed through the "
+        "logistic map, and the result picks which one of the bars flashes each "
+        "frame. The jumps look deterministic-but-unpredictable — a strobing, "
+        "glitchy channel-hop.\n\n"
+        "**How to use it:** set **Bar Count** for how many slots to hop between, "
+        "then shape the motion with **Chaos** and **Ping-Pong Rate**. **Try:** "
+        "keep **Chaos** just below 4 for wild, near-random hopping, or pull it "
+        "down toward 3 for locked, repeating patterns; a slow rate gives lazy "
+        "sweeps, a fast one a frantic strobe.")
+      // --- Chaos engine ---
+      .group("chaos", "Chaos")
+        .groupHelp(
+          "The logistic map `x' = r·x·(1-x)` is what makes the selection dance. "
+          "**Chaos (r)** is the whole character: below ~3 it settles, above ~3.57 "
+          "it goes chaotic (values near 4 are the wildest). **Iterations** sets how "
+          "many times the map runs each frame — more iterations scrambles the "
+          "output harder. **Ping-Pong Rate** and the **Seed Low/High** bounds sweep "
+          "the input seed back and forth, feeding fresh values into the map.")
+      .floatField("r",                 3.95f, 0.0f, 4.0f,  state::PrimaryInput).label("Chaos", "Chaos")
+      .intField  ("iterations",        6,     1,    16,    state::PrimaryInput).label("Iterations", "Iter")
+      .floatField("ping_pong_rate_hz", 0.5f,  0.05f, 20.0f, state::PrimaryInput).label("Ping-Pong Rate", "Rate")
+      .floatField("seed_low",          0.1f,  0.0f, 1.0f,  state::PrimaryInput).label("Seed Low", "Lo")
+      .floatField("seed_high",         0.9f,  0.0f, 1.0f,  state::PrimaryInput).label("Seed High", "Hi")
+      // --- Appearance ---
+      .group("appearance", "Appearance")
+      .rgbField  ("flash_color",       1.0f,  1.0f, 1.0f,  state::PrimaryInput).label("Flash Color", "Color")
+      .floatField("intensity",         1.0f,  0.0f, 2.0f,  state::PrimaryInput).label("Intensity", "Int")
+      .floatField("intensity_mod",     0.0f, -1.0f, 1.0f,  state::PrimaryInput).label("Intensity Mod", "IntMod")
+      .intField  ("bar_count",         4,     2,    16,    state::PrimaryInput).label("Bar Count", "Bars")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::Generator)

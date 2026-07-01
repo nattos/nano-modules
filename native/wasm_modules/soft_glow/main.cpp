@@ -253,35 +253,80 @@ static void seed_all(State& st) {
 
 // Type-level setup: schema + the two shared compute PSOs.
 void module_init() {
-  state::init("source.light.soft_glow", {1, 0, 0},
+  state::init("source.light.soft_glow", {1, 0, 1},
     state::Schema()
-      .floatField("intensity",        1.0f, 0.0f, 2.0f, state::PrimaryInput)
-      .floatField("intensity_mod",    0.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .intField  ("blob_count",       12,   0,    MAX_BLOBS, state::PrimaryInput)
-      .floatField("fade_time",        3.0f, 0.05f, 10.0f, state::PrimaryInput)
-      .floatField("blob_size",        0.4f, 0.05f, 1.0f, state::PrimaryInput)
-      .floatField("blob_size_jitter", 0.3f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_rate",       0.2f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_x_bias",     0.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("drift_y_bias",     0.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("hue",              0.05f, 0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("hue_shift",        0.30f, -3.0f, 3.0f, state::PrimaryInput)
-      .floatField("hue_curve",        0.0f,  -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("overflow_band",    0.0f,  0.0f,  3.0f, state::PrimaryInput)
-      .floatField("color_strength",   1.0f,  0.0f,  4.0f, state::PrimaryInput)
-      .floatField("saturation",       0.95f, 0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("intensity_skew",   0.0f,  0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("ramp_curve",       0.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("white_point",      1.5f, 0.5f, 3.0f, state::PrimaryInput)
-      .floatField("pulse_depth",      0.4f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("pulse_rate",       0.6f, 0.0f, 3.0f, state::PrimaryInput)
-      .floatField("amp_drift_depth",  0.9f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("amp_drift_rate",   0.08f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("motion_strength",  1.0f,  0.0f, 8.0f,  state::PrimaryInput)
-      .floatField("motion_skew",      0.0f,  0.0f, 1.0f,  state::PrimaryInput)
-      .floatField("motion_curl",      0.0f, -1.0f, 1.0f,  state::PrimaryInput)
-      .floatField("motion_extent",    1.0f,  0.0f, 1.0f,  state::PrimaryInput)
-      .intField  ("seed",             0,    0,    65535, state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Soft Glow\n"
+        "Lays a bed of soft, drifting Gaussian blobs over the image — a warm "
+        "atmospheric glow that breathes and wanders. Each blob pulses in brightness "
+        "and shifts hue as it fades, then respawns to keep the field alive.\n\n"
+        "**Try:** raise *Blob Count* and *Blob Size* for a dense wash; set a *Drift X/Y* "
+        "bias to make the bed sweep across the frame like wind-blown cloud; push *Hue "
+        "Shift* and *Overflow Band* for rolling colour bands. Wire the motion output "
+        "downstream to let the glow drive optical-flow effects.")
+      // --- Output ---
+      .group("output", "Output")
+      .floatField("intensity",        1.0f, 0.0f, 2.0f, state::PrimaryInput).label("Intensity", "Int")
+      .floatField("intensity_mod",    0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Intensity Mod", "Mod")
+      // --- Blobs ---
+      .group("blobs", "Blobs")
+        .groupHelp(
+          "The glow is a pool of soft blobs orbiting on their own little ellipses. "
+          "*Count* sets how many are alive at once; *Size* and *Size Jitter* set their "
+          "footprint and how much it varies blob-to-blob. *Fade Time* smooths how "
+          "gently blobs appear and disappear when the count changes.")
+      .intField  ("blob_count",       12,   0,    MAX_BLOBS, state::PrimaryInput).label("Blob Count", "Count")
+      .floatField("fade_time",        3.0f, 0.05f, 10.0f, state::PrimaryInput).label("Fade Time", "Fade")
+      .floatField("blob_size",        0.4f, 0.05f, 1.0f, state::PrimaryInput).label("Blob Size", "Size")
+      .floatField("blob_size_jitter", 0.3f, 0.0f, 1.0f, state::PrimaryInput).label("Size Jitter", "SzJit")
+      // --- Drift ---
+      .group("drift", "Drift")
+        .groupHelp(
+          "How the whole bed wanders. *Rate* sets the orbital speed; the *X/Y Bias* "
+          "knobs push a steady wind so blobs sweep across the frame and respawn "
+          "upwind. Leave the biases at 0 to let the field breathe in place.")
+      .floatField("drift_rate",       0.2f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Rate", "Rate")
+      .floatField("drift_x_bias",     0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Drift X", "X")
+      .floatField("drift_y_bias",     0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Drift Y", "Y")
+      // --- Colour ---
+      .group("color", "Colour")
+        .groupHelp(
+          "Blobs are tinted from a hue ramp keyed to their brightness. *Hue* is the "
+          "colour at full amplitude; *Hue Shift* rotates it as a blob fades, and "
+          "*Overflow Band* keeps that rotation going past the peak for hard colour "
+          "banding. *Saturation*, *White Point* and the two curves shape richness "
+          "and how the tone rolls off.")
+      .floatField("hue",              0.05f, 0.0f, 1.0f,  state::PrimaryInput).label("Hue", "Hue")
+      .floatField("hue_shift",        0.30f, -3.0f, 3.0f, state::PrimaryInput).label("Hue Shift", "Shift")
+      .floatField("hue_curve",        0.0f,  -1.0f, 1.0f, state::PrimaryInput).label("Hue Curve", "HCurve")
+      .floatField("overflow_band",    0.0f,  0.0f,  3.0f, state::PrimaryInput).label("Overflow Band", "Band")
+      .floatField("color_strength",   1.0f,  0.0f,  4.0f, state::PrimaryInput).label("Colour Strength", "Str")
+      .floatField("saturation",       0.95f, 0.0f, 1.0f,  state::PrimaryInput).label("Saturation", "Sat")
+      .floatField("intensity_skew",   0.0f,  0.0f, 1.0f,  state::PrimaryInput).label("Intensity Skew", "Skew")
+      .floatField("ramp_curve",       0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Ramp Curve", "Ramp")
+      .floatField("white_point",      1.5f, 0.5f, 3.0f, state::PrimaryInput).label("White Point", "White")
+      // --- Pulse & Breathing ---
+      .group("pulse", "Pulse & Breathing")
+      .floatField("pulse_depth",      0.4f, 0.0f, 1.0f, state::PrimaryInput).label("Pulse Depth", "Depth")
+      .floatField("pulse_rate",       0.6f, 0.0f, 3.0f, state::PrimaryInput).label("Pulse Rate", "Rate")
+      .floatField("amp_drift_depth",  0.9f,  0.0f, 1.0f, state::PrimaryInput).label("Drift Depth", "DrDep")
+      .floatField("amp_drift_rate",   0.08f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Rate", "DrRat")
+      // --- Motion Output ---
+      .group("motion", "Motion Output")
+        .groupHelp(
+          "Emits an optical-flow field matching the blobs' movement, for downstream "
+          "motion-driven effects (it doesn't change the glow itself). *Strength* "
+          "scales the emitted velocity; *Skew* biases it toward the leading edge; "
+          "*Curl* rotates it for a swirling feel; *Extent* shrinks the footprint "
+          "toward blob centres.")
+      .floatField("motion_strength",  1.0f,  0.0f, 8.0f,  state::PrimaryInput).label("Motion Strength", "Str")
+      .floatField("motion_skew",      0.0f,  0.0f, 1.0f,  state::PrimaryInput).label("Motion Skew", "Skew")
+      .floatField("motion_curl",      0.0f, -1.0f, 1.0f,  state::PrimaryInput).label("Motion Curl", "Curl")
+      .floatField("motion_extent",    1.0f,  0.0f, 1.0f,  state::PrimaryInput).label("Motion Extent", "Ext")
+      // --- Seed ---
+      .group("seed", "Seed")
+      .intField  ("seed",             0,    0,    65535, state::PrimaryInput).label("Seed", "Seed")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)

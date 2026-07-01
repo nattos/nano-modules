@@ -192,31 +192,61 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("source.light.bounce_resonator", {1, 0, 0},
+  state::init("source.light.bounce_resonator", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Bounce Resonator\n"
+        "Four light bars wired into a diffusion network: fire an impulse into one "
+        "bar and its energy bounces and bleeds between the others, ringing out and "
+        "decaying like a plucked resonator. Great for reactive LED-bar chases and "
+        "glowing accents.\n\n"
+        "**How to play it:** pick an **Impulse Mode** (one bar, a random bar, all "
+        "bars, or sample from the incoming video), then drive it with **Gate** / "
+        "**Trigger**, or let **Auto Rate** self-fire. **Try:** push **Feedback** "
+        "near 1 for a long, humming decay; raise **Cycle Rate** so the bouncing "
+        "pattern shimmers; and add **Hue Spread** to let each bounce drift the "
+        "colour across the bars.")
       // --- Standard trigger surface ---
-      .boolField ("gate",                false,                  state::PrimaryInput)
-      .eventField("trigger",                                     state::PrimaryInput)
-      .floatField("auto_rate",           0.3f,  0.0f, 1.0f,      state::PrimaryInput)
+      .group("trigger", "Trigger")
+        .groupHelp(
+          "How and where impulses enter the network. **Gate** and **Trigger** both "
+          "fire on a rising edge; **Auto Rate** self-fires at random (Poisson) so "
+          "it lives on its own. **Impulse Mode** chooses the target — a fixed bar, "
+          "a random bar, all four at once, or sampling colour straight from the "
+          "incoming video. **Try:** hold a steady auto rate and modulate the mode "
+          "for an evolving, hands-off light show.")
+      .boolField ("gate",                false,                  state::PrimaryInput).label("Gate", "Gate")
+      .eventField("trigger",                                     state::PrimaryInput).label("Trigger", "Trig")
+      .floatField("auto_rate",           0.3f,  0.0f, 1.0f,      state::PrimaryInput).label("Auto Rate", "Auto")
       .selectField("impulse_mode",       MODE_ONE_BAR,           state::PrimaryInput,
                    {{"tex_in", MODE_TEX_IN}, {"one_bar", MODE_ONE_BAR},
-                    {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}}, /*wrap=*/true)
-      .intField  ("one_bar_target",      0, 0, 3,                state::PrimaryInput)
-      .floatField("tex_in_boost",        1.0f, 0.0f, 10.0f,      state::PrimaryInput)
+                    {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}}, /*wrap=*/true).label("Impulse Mode", "Mode")
+      .intField  ("one_bar_target",      0, 0, 3,                state::PrimaryInput).label("Target Bar", "Bar")
+      .floatField("tex_in_boost",        1.0f, 0.0f, 10.0f,      state::PrimaryInput).label("Input Boost", "Boost")
       // --- Diffusion network ---
-      .floatField("feedback",            0.90f, 0.0f, 1.2f,      state::PrimaryInput)
-      .floatField("spread",              0.30f, 0.0f, 1.0f,      state::PrimaryInput)
-      .floatField("spread_contrast",     0.0f, 0.0f, 1.0f,       state::PrimaryInput)
-      .floatField("decay_shaping",       0.0f, -1.0f, 1.0f,      state::PrimaryInput)
-      .floatField("hue_spread",          0.0f, 0.0f, 1.0f,       state::PrimaryInput)
-      .floatField("hue_converge",        0.0f, 0.0f, 1.0f,       state::PrimaryInput)
-      .intField  ("seed",                0, 0, 0x7FFFFFFF,       state::PrimaryInput)
-      .intField  ("pattern_count",       4, 1, 16,               state::PrimaryInput)
-      .floatField("cycle_rate",          6.0f, 0.0f, 60.0f,      state::PrimaryInput)
-      .floatField("impulse_strength",    1.0f,  0.0f, 2.0f,      state::PrimaryInput)
-      .rgbField  ("band_color",          1.0f, 0.92f, 0.78f,     state::PrimaryInput)
-      .floatField("intensity",           1.0f, 0.0f, 10.0f,      state::PrimaryInput)
-      .floatField("input_opacity",       1.0f, 0.0f, 1.0f,       state::PrimaryInput)
+      .group("network", "Diffusion Network")
+        .groupHelp(
+          "The bouncing engine. **Feedback** sets how long energy rings before it "
+          "dies (near 1 = a long resonant tail); **Spread** and **Contrast** shape "
+          "how much each hop bleeds into its neighbours. **Cycle Rate** and "
+          "**Pattern Count** drive how fast and how variedly the exchange matrix "
+          "shuffles, while the **Hue** knobs let colour wander or converge on the "
+          "bar colour. **Bar Color**, **Intensity** and **Input Opacity** set the "
+          "final look.")
+      .floatField("feedback",            0.90f, 0.0f, 1.2f,      state::PrimaryInput).label("Feedback", "Fbk")
+      .floatField("spread",              0.30f, 0.0f, 1.0f,      state::PrimaryInput).label("Spread", "Sprd")
+      .floatField("spread_contrast",     0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Spread Contrast", "SprCon")
+      .floatField("decay_shaping",       0.0f, -1.0f, 1.0f,      state::PrimaryInput).label("Decay Shaping", "Decay")
+      .floatField("hue_spread",          0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Hue Spread", "HueSp")
+      .floatField("hue_converge",        0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Hue Converge", "HueCv")
+      .intField  ("seed",                0, 0, 0x7FFFFFFF,       state::PrimaryInput).label("Seed", "Seed")
+      .intField  ("pattern_count",       4, 1, 16,               state::PrimaryInput).label("Pattern Count", "Ptn")
+      .floatField("cycle_rate",          6.0f, 0.0f, 60.0f,      state::PrimaryInput).label("Cycle Rate", "Cycle")
+      .floatField("impulse_strength",    1.0f,  0.0f, 2.0f,      state::PrimaryInput).label("Impulse Strength", "Impls")
+      .rgbField  ("band_color",          1.0f, 0.92f, 0.78f,     state::PrimaryInput).label("Bar Color", "Color")
+      .floatField("intensity",           1.0f, 0.0f, 10.0f,      state::PrimaryInput).label("Intensity", "Int")
+      .floatField("input_opacity",       1.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Input Opacity", "Opac")
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
