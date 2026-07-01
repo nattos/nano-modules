@@ -35,8 +35,9 @@ float2 tri_perimeter(uint i, uint bnd) {
   return float2(0.0, 1.0 - t);
 }
 
-static const float DEC_GAMMA = 8.0;   // decimation → survival-importance exponent
-static const float DEC_HYST  = 0.06;  // activation hysteresis (stickiness)
+static const float DEC_GAMMA   = 10.0;  // decimation → survival-importance exponent
+static const float DEC_TOPCULL = 0.95;  // extra global thinning at high decimation
+static const float DEC_HYST    = 0.06;  // activation hysteresis (stickiness)
 
 float feat_at(float2 pos) {
   int2 p = int2(clamp(pos, float2(0.0, 0.0), float2(0.99999, 0.99999)) * float2(u_w, u_h));
@@ -100,7 +101,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float my_w  = s.score;                              // importance at this seed
     bool active = s.flags > 0.5;
     float r_i   = tri_hash_f(i * 2246822519u) * 0.9;    // fixed survival threshold
+    // Importance-graded survival, PLUS a quadratic top-cull so that near
+    // decimation 1 even the strongest features thin out (they otherwise pin at
+    // W^γ = 1 and never coalesce). Low/mid decimation stays gentle.
     float keep  = pow(max(my_w, 1e-3), u_decimation * DEC_GAMMA);
+    keep *= (1.0 - DEC_TOPCULL * u_decimation * u_decimation);
     if (tri_hash_f(i * 3266489917u + u_frame) < pflip) {
       if (active) { if (keep < r_i - DEC_HYST) active = false; }
       else        { if (keep > r_i + DEC_HYST) { active = true; s.pos = importance_sample(i); } }
