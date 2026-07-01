@@ -98,64 +98,106 @@ static gpu::ComputePSO s_pso_render;
 void module_init() {
   state::init("warp.tri_shear", {1, 0, 0},
     state::Schema()
-      // ---- Standard ----
+      .helpField("intro",
+        "## Triangle Shear\n"
+        "Discovers **three natural lines forming a triangle** and shears the image by chaining "
+        "the single-plane shear once per edge. The triangle follows the input's strongest edges "
+        "(or lowest-energy seams), sized and shaped by you. It is *stiff*: it snaps to a fresh "
+        "triangle at the update rate (or on **Trigger**), never drifting.\n\n"
+        "**Try:** raise *Obliqueness* for scalene triangles and *Obliqueness Jitter* to reshuffle "
+        "each update; *Direction* -1 rifts, +1 overlaps, 0 slips. Set *Update Rate* to 0 and drive "
+        "**Trigger** on the beat. Raise *Tint* to colour the three wedges + centre.")
+
+      .group("triangle", "Triangle")
+        .groupHelp(
+          "How the three lines are found. *Algorithm* picks the feature they follow; *Size* is "
+          "the target scale (small = a tight central triangle); *Obliqueness* frees each edge to "
+          "tilt to features (0 = equilateral); *Obliqueness Jitter* rolls a fresh obliqueness "
+          "around that value on every update.")
       .selectField("algorithm", ALG_STRONGEST, state::PrimaryInput, {
-        {"Strongest Edges",   ALG_STRONGEST},
-        {"Low-energy Seams",  ALG_SEAM},
-      })
-      .floatField("size", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Triangle scale (target incircle radius). Small values → tight central triangle.")
-      .floatField("obliqueness", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "0 = equilateral (edges locked 120° apart); 1 = each edge tilts freely to features (oblique / scalene).")
-      .floatField("obliqueness_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Each update, roll a fresh effective obliqueness around the center value by ± this much.")
-      .floatField("update_rate", 0.4f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "How often the triangle is re-chosen (higher = faster; exp-mapped).")
-      .floatField("direction", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "-1 = halves apart (rift), +1 = together (overlap), 0 = slip along each edge.")
-      .floatField("duration", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Shear ease time. 0 = snap to max instantly.")
+        {"Strongest Edges", ALG_STRONGEST}, {"Low-energy Seams", ALG_SEAM},
+      }, false, "Which feature the three edges follow.").label("Algorithm", "Algo")
+      .floatField("size", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Triangle scale (target incircle radius). Small values → tight central triangle.").label("Size", "Size")
+      .floatField("obliqueness", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "0 = equilateral (edges locked 120° apart); 1 = each edge tilts freely to features (oblique / scalene).").label("Obliqueness", "Obliq")
+      .floatField("obliqueness_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Each update, roll a fresh effective obliqueness around the centre value by ± this much.").label("Obliqueness Jitter", "Jit")
+
+      .group("motion", "Motion")
+        .groupHelp(
+          "How the halves of each edge move. *Direction* morphs between rift (-1, apart), overlap "
+          "(+1, together) and slip (0, along the edge). *Distance* is the throw shared by all three "
+          "edges; *Mult A/B* scale (and can flip) each side.")
+      .floatField("direction", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "-1 = halves apart (rift), +1 = together (overlap), 0 = slip along each edge.").label("Direction", "Dir")
+      .floatField("distance", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Overall shear translation, shared by all three edges.").label("Distance", "Dist")
+      .floatField("mult_a", 1.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Signed multiplier for side A's translation (negative flips it).").label("Mult A", "MulA")
+      .floatField("mult_b", 1.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Signed multiplier for side B's translation (negative flips it).").label("Mult B", "MulB")
+
+      .group("timing", "Timing")
+        .groupHelp(
+          "When the triangle re-chooses and how the shear animates. *Update Rate* 0 = never "
+          "auto-update (manual **Trigger** only). *Duration* is the ease time (0 = instant); "
+          "*Anim Mode* is one-shot / ping-pong / loop; *Retrigger* restarts on retarget; "
+          "*Trigger* re-chooses the triangle and restarts the animation now.")
+      .floatField("update_rate", 0.4f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How often the triangle is re-chosen (0 = never, manual trigger only; higher = faster).").label("Update Rate", "Rate")
+      .floatField("duration", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Shear ease time. 0 = snap to max instantly.").label("Duration", "Dur")
       .selectField("anim_mode", ANIM_ONESHOT, state::PrimaryInput, {
-        {"One-shot Hold", ANIM_ONESHOT},
-        {"Ping-pong",     ANIM_PINGPONG},
-        {"Loop",          ANIM_LOOP},
-      })
+        {"One-shot Hold", ANIM_ONESHOT}, {"Ping-pong", ANIM_PINGPONG}, {"Loop", ANIM_LOOP},
+      }, false, "How the shear animates over each cycle.").label("Anim Mode", "Anim")
       .boolField("retrigger", true, state::PrimaryInput,
-                 "Restart the shear animation from 0 when the triangle retargets.")
-      .eventField("trigger", state::PrimaryInput)
-      .floatField("distance", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Overall shear translation distance, shared by all three edges.")
-      .floatField("mult_a", 1.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("mult_b", 1.0f, -1.0f, 1.0f, state::PrimaryInput)
-      // ---- Fill / overlap ----
+                 "Restart the shear animation from 0 when the triangle retargets.").label("Retrigger", "Retrig")
+      .eventField("trigger", state::PrimaryInput).label("Trigger", "Trig")
+
+      .group("fills", "Fills")
+        .groupHelp(
+          "What fills the exposed regions. *Rift Fill* is the gap between halves pulled apart; "
+          "*Edge Fill* is the viewport border a slid half reveals; *Overlap* is how halves "
+          "combine where they cover each other. Rift/Edge default to solid black.")
       .selectField("rift_fill", 4, state::SecondaryInput, {
         {"Transparent", 0}, {"Original", 1}, {"Edge Stretch", 2}, {"Mirror", 3}, {"Black", 4},
-      })
+      }, false, "Fills the rift gap between halves pulled apart.").label("Rift Fill", "Rift")
       .selectField("edge_fill", 4, state::SecondaryInput, {
         {"Transparent", 0}, {"Original", 1}, {"Edge Stretch", 2}, {"Mirror", 3}, {"Black", 4},
-      })
+      }, false, "Fills the viewport border a slid half reveals.").label("Edge Fill", "Edge")
       .selectField("overlap_mode", 0, state::SecondaryInput, {
         {"A On Top", 0}, {"Blend", 1}, {"Additive", 2},
-      })
-      // ---- Colour tint (per triangle region) ----
-      .floatField("tint", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Colour tint amount. Each of the 3 outer wedges and the center is tinted with its own colour.")
+      }, false, "How the halves combine where they overlap.").label("Overlap", "Over")
+
+      .group("tint", "Colour Tint")
+        .groupHelp(
+          "Tint each triangle region with its own colour. *Tint* is the strength; *Tint Mode* is "
+          "multiply / add / blend; *Wedge 0/1/2* are the three outer regions and *Centre* is "
+          "inside the triangle.")
+      .floatField("tint", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Colour tint amount. Each of the 3 outer wedges and the centre is tinted with its own colour.").label("Tint", "Tint")
       .selectField("tint_mode", 0, state::SecondaryInput, {
         {"Multiply", 0}, {"Add", 1}, {"Blend", 2},
-      })
-      .rgbField("tint_0",      1.0f, 0.30f, 0.30f, state::SecondaryInput)
-      .rgbField("tint_1",      0.30f, 1.0f, 0.40f, state::SecondaryInput)
-      .rgbField("tint_2",      0.40f, 0.50f, 1.0f, state::SecondaryInput)
-      .rgbField("tint_center", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
-      // ---- Tuning ----
-      .floatField("ease_curve", 0.0f, -1.0f, 1.0f, state::SecondaryInput, nullptr, 0.0f, nullptr,
-                  "Shear ease shape. -1 slow-in, +1 slow-out.")
-      // ---- Debug ----
-      .boolField("debug_show_plane", false, state::SecondaryInput)
-      // ---- I/O ----
+      }, false, "How the tint colour is combined with the image.").label("Tint Mode", "Mode")
+      .rgbField("tint_0",      1.0f, 0.30f, 0.30f, state::SecondaryInput).label("Wedge 0 Colour", "W0")
+      .rgbField("tint_1",      0.30f, 1.0f, 0.40f, state::SecondaryInput).label("Wedge 1 Colour", "W1")
+      .rgbField("tint_2",      0.40f, 0.50f, 1.0f, state::SecondaryInput).label("Wedge 2 Colour", "W2")
+      .rgbField("tint_center", 1.0f, 1.0f, 1.0f, state::SecondaryInput).label("Centre Colour", "Ctr")
+
+      .group("tuning", "Tuning")
+        .groupHelp("Fine-tuning. *Ease Curve* shapes the shear ramp.")
+      .floatField("ease_curve", 0.0f, -1.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Shear ease shape. -1 slow-in, +1 slow-out.").label("Ease Curve", "Ease")
+
+      .group("debug", "Debug")
+        .groupHelp("Inspection aids. *Show Triangle* overlays the three discovered edges.")
+      .boolField("debug_show_plane", false, state::SecondaryInput,
+                 "Overlay the three discovered edge lines.").label("Show Triangle", "Tri")
+      .endGroup()
+      .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
-      .capability(state::Capability::SeekableApproximate)
   );
 
   if (gpu::Device::backend() == gpu::Backend::None) return;

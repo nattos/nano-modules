@@ -117,61 +117,100 @@ void eval_visibility(int n, const char* pb, const int* off, const int* len, cons
 void module_init() {
   state::init("warp.plane_shear", {1, 1, 0},
     state::Schema()
-      // ---- Standard ----
+      .helpField("intro",
+        "## Plane Shear\n"
+        "Finds a **natural dividing line** in the input — a strong edge, a low-energy seam, "
+        "the dominant grain, or the content's principal axis — and **shears the two halves** "
+        "across it. The plane is *stiff*: it snaps to a fresh choice at the update rate (or "
+        "only when you hit **Trigger**), never drifting. Only the translation animates.\n\n"
+        "**Try:** *Direction* -1 rifts the halves apart, +1 overlaps them, 0 slips them along "
+        "the plane; push *Distance* for a bigger throw. Set *Update Rate* to 0 and drive "
+        "**Trigger** on the beat. Raise *Tint* to colour each side; turn on *Show Plane* to see it.")
+
+      .group("plane", "Plane")
+        .groupHelp(
+          "How the dividing line is chosen. *Algorithm* picks the feature it follows; "
+          "*Centering* biases the line toward the image centre; *Lock Angle* fixes the "
+          "orientation so the algorithm only picks the position.")
       .selectField("algorithm", ALG_DOMINANT, state::PrimaryInput, {
-        {"Dominant Edge",    ALG_DOMINANT},
-        {"Strongest Edge",   ALG_HOUGH},
-        {"Low-energy Seam",  ALG_SEAM},
-        {"Content Centroid", ALG_PCA},
-      })
-      .floatField("update_rate", 0.4f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "How often the plane is re-chosen (higher = faster; exp-mapped).")
-      .floatField("direction", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "-1 = halves apart (rift), +1 = together (overlap), 0 = slip along the plane.")
-      .floatField("duration", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Shear ease time. 0 = snap to max instantly.")
-      .selectField("anim_mode", ANIM_ONESHOT, state::PrimaryInput, {
-        {"One-shot Hold", ANIM_ONESHOT},
-        {"Ping-pong",     ANIM_PINGPONG},
-        {"Loop",          ANIM_LOOP},
-      })
-      .boolField("retrigger", true, state::PrimaryInput,
-                 "Restart the shear animation from 0 when the plane retargets.")
-      .eventField("trigger", state::PrimaryInput)
-      .floatField("distance", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Overall shear translation distance, shared by both halves (scaled per half by mult_a/mult_b).")
-      .floatField("mult_a", 1.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("mult_b", 1.0f, -1.0f, 1.0f, state::PrimaryInput)
-      // ---- Fixed angle ----
+        {"Dominant Edge", ALG_DOMINANT}, {"Strongest Edge", ALG_HOUGH},
+        {"Low-energy Seam", ALG_SEAM}, {"Content Centroid", ALG_PCA},
+      }, false, "Which natural feature the dividing line follows.").label("Algorithm", "Algo")
+      .floatField("center_weight", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Bias the plane toward the image centre. 0 = wherever the algorithm lands; 1 = always through the centre.").label("Centering", "Center")
       .boolField("lock_angle", false, state::PrimaryInput,
-                 "Fix the plane angle; the algorithm only picks the position.")
-      .floatField("angle", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Fixed plane angle when locked. -1..1 → -90°..90°.")
-      .floatField("center_weight", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Bias plane selection toward the center. 0 = wherever the algorithm lands; 1 = always through the center.")
-      // ---- Fill / overlap ----
+                 "Fix the plane angle; the algorithm then only picks the position.").label("Lock Angle", "Lock")
+      .floatField("angle", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Fixed plane angle when locked. -1..1 → -90°..90°.").label("Angle", "Angle")
+
+      .group("motion", "Motion")
+        .groupHelp(
+          "How the two halves move. *Direction* morphs between rift (-1, apart), overlap "
+          "(+1, together) and slip (0, sliding along the plane). *Distance* is the throw, "
+          "shared by both halves; *Mult A/B* scale (and can flip) each half.")
+      .floatField("direction", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "-1 = halves apart (rift), +1 = together (overlap), 0 = slip along the plane.").label("Direction", "Dir")
+      .floatField("distance", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Overall shear translation, shared by both halves (scaled per half by Mult A/B).").label("Distance", "Dist")
+      .floatField("mult_a", 1.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Signed multiplier for side A's translation (negative flips it).").label("Mult A", "MulA")
+      .floatField("mult_b", 1.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Signed multiplier for side B's translation (negative flips it).").label("Mult B", "MulB")
+
+      .group("timing", "Timing")
+        .groupHelp(
+          "When the plane re-chooses and how the shear animates. *Update Rate* 0 = never "
+          "auto-update (manual **Trigger** only). *Duration* is the ease time (0 = instant); "
+          "*Anim Mode* is one-shot / ping-pong / loop; *Retrigger* restarts on retarget; "
+          "*Trigger* re-chooses the plane and restarts the animation now.")
+      .floatField("update_rate", 0.4f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How often the plane is re-chosen (0 = never, manual trigger only; higher = faster).").label("Update Rate", "Rate")
+      .floatField("duration", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Shear ease time. 0 = snap to max instantly.").label("Duration", "Dur")
+      .selectField("anim_mode", ANIM_ONESHOT, state::PrimaryInput, {
+        {"One-shot Hold", ANIM_ONESHOT}, {"Ping-pong", ANIM_PINGPONG}, {"Loop", ANIM_LOOP},
+      }, false, "How the shear animates over each cycle.").label("Anim Mode", "Anim")
+      .boolField("retrigger", true, state::PrimaryInput,
+                 "Restart the shear animation from 0 when the plane retargets.").label("Retrigger", "Retrig")
+      .eventField("trigger", state::PrimaryInput).label("Trigger", "Trig")
+
+      .group("fills", "Fills")
+        .groupHelp(
+          "What fills the exposed regions. *Rift Fill* is the gap between halves pulled apart; "
+          "*Edge Fill* is the viewport border a slid half reveals; *Overlap* is how halves "
+          "combine where they cover each other. Rift/Edge default to solid black.")
       .selectField("rift_fill", 4, state::SecondaryInput, {
         {"Transparent", 0}, {"Original", 1}, {"Edge Stretch", 2}, {"Mirror", 3}, {"Black", 4},
-      })
+      }, false, "Fills the rift gap between halves pulled apart.").label("Rift Fill", "Rift")
       .selectField("edge_fill", 4, state::SecondaryInput, {
         {"Transparent", 0}, {"Original", 1}, {"Edge Stretch", 2}, {"Mirror", 3}, {"Black", 4},
-      })
+      }, false, "Fills the viewport border a slid half reveals.").label("Edge Fill", "Edge")
       .selectField("overlap_mode", 0, state::SecondaryInput, {
         {"A On Top", 0}, {"Blend", 1}, {"Additive", 2},
-      })
-      // ---- Colour tint (per side) ----
-      .floatField("tint", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.0f, nullptr,
-                  "Colour tint amount. Each side of the plane is tinted with its own colour.")
+      }, false, "How the halves combine where they overlap.").label("Overlap", "Over")
+
+      .group("tint", "Colour Tint")
+        .groupHelp(
+          "Tint each side of the plane with its own colour. *Tint* is the strength; *Tint "
+          "Mode* is multiply / add / blend; *Side A/B Colour* are the two tints.")
+      .floatField("tint", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Colour tint amount. Each side of the plane is tinted with its own colour.").label("Tint", "Tint")
       .selectField("tint_mode", 0, state::SecondaryInput, {
         {"Multiply", 0}, {"Add", 1}, {"Blend", 2},
-      })
-      .rgbField("tint_a", 1.0f, 0.45f, 0.30f, state::SecondaryInput)
-      .rgbField("tint_b", 0.30f, 0.55f, 1.0f, state::SecondaryInput)
-      // ---- Tuning ----
-      .floatField("ease_curve", 0.0f, -1.0f, 1.0f, state::SecondaryInput, nullptr, 0.0f, nullptr,
-                  "Shear ease shape. -1 slow-in, +1 slow-out.")
-      // ---- Debug ----
-      .boolField("debug_show_plane", false, state::SecondaryInput)
+      }, false, "How the tint colour is combined with the image.").label("Tint Mode", "Mode")
+      .rgbField("tint_a", 1.0f, 0.45f, 0.30f, state::SecondaryInput).label("Side A Colour", "A")
+      .rgbField("tint_b", 0.30f, 0.55f, 1.0f, state::SecondaryInput).label("Side B Colour", "B")
+
+      .group("tuning", "Tuning")
+        .groupHelp("Fine-tuning. *Ease Curve* shapes the shear ramp.")
+      .floatField("ease_curve", 0.0f, -1.0f, 1.0f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Shear ease shape. -1 slow-in, +1 slow-out.").label("Ease Curve", "Ease")
+
+      .group("debug", "Debug")
+        .groupHelp("Inspection aids. *Show Plane* overlays the dividing line.")
+      .boolField("debug_show_plane", false, state::SecondaryInput,
+                 "Overlay the dividing line.").label("Show Plane", "Plane")
+      .endGroup()
       // ---- I/O ----
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
