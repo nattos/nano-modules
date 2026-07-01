@@ -64,26 +64,22 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 target;
   float confidence;   // 0..1 margin-normalized merge strength
   if (u_mode == 0u) {
-    // Ridge Protect — a BIDIRECTIONAL balance so `decimation` is a live knob:
-    //   CONCENTRATE: merge uphill onto the cell's peak feature (favoured by HIGH
-    //     decimation) → sparse slopes, dense features, big contrast triangles.
-    //   DISPERSE: fall back toward the cell's area-centroid (favoured by LOW
-    //     decimation) → even, uniform coverage.
-    // Both are discrete teleports gated by how far off the seed is, so settled
-    // seeds stay put (crisp, no swim); lowering decimation re-spreads and raising
-    // it re-coalesces. Features are protected implicitly: at high decimation the
-    // disperse term is small AND a peak's candPos == its own spot (nothing to
-    // climb), so it holds.
-    float rate = rate_hz * u_dt;
-    float my_w = s.score;                           // stamped in seed_prep
-    float merge_gain = saturate((candW - my_w) / (0.30 * (1.0 - u_decimation) + 0.02));
-    float p_merge = 1.0 - exp(-rate * u_decimation * merge_gain);
-    float2 dd = (s.pos - area_ctr) * float2(u_aspect, 1.0);
-    float disp_gain = saturate(length(dd) / 0.12);
-    float p_disp = 1.0 - exp(-rate * (1.0 - u_decimation) * disp_gain);
-    float r = tri_hash_f(i * 2654435761u + u_frame);
-    if (r < p_merge)                 s.pos = saturate(candPos);
-    else if (r < p_merge + p_disp)   s.pos = saturate(area_ctr);
+    // Ridge Protect — the mesh density follows the importance field W, with
+    // `decimation` setting HOW PEAKED. A single stable target, blended by
+    // decimation, keeps it crisp (teleport only when the seed is far off; then
+    // it settles) and live (raising/lowering decimation moves the target both
+    // ways). ctr = W-weighted centroid (density ∝ W); area_ctr = unweighted
+    // (uniform); candPos = the cell's argmax-W pixel (peak).
+    //   decimation 0.0 → uniform          (ignores W)
+    //   decimation 0.5 → density ∝ W       (weights fully shape the mesh)
+    //   decimation 1.0 → peaked on the W maxima (max contrast)
+    float2 target = (u_decimation < 0.5)
+        ? lerp(area_ctr, ctr, u_decimation * 2.0)
+        : lerp(ctr, candPos, (u_decimation - 0.5) * 2.0);
+    float2 dd = (s.pos - target) * float2(u_aspect, 1.0);
+    float conf = saturate(length(dd) / 0.10);
+    if (tri_hash_f(i * 2654435761u + u_frame) < 1.0 - exp(-rate_hz * u_dt * conf))
+      s.pos = saturate(target);
     seeds[i] = s;
     return;
   } else if (u_mode == 1u) {
