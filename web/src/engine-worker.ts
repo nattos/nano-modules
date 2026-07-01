@@ -1212,7 +1212,7 @@ async function reloadWasmModule(wasmUrl: string) {
     type: 'effectsDiscovered',
     effects: effects.map(e => ({
       id: e.id, name: e.name, description: e.description,
-      category: e.category, keywords: e.keywords,
+      category: e.category, keywords: e.keywords, bundle: moduleType,
     })),
   });
   markDirty();
@@ -1240,7 +1240,7 @@ async function loadModule(moduleType: string) {
     post({
       type: 'effectsDiscovered', effects: existing.effects.map(e => ({
         id: e.id, name: e.name, description: e.description,
-        category: e.category, keywords: e.keywords,
+        category: e.category, keywords: e.keywords, bundle: moduleType,
       }))
     });
     return;
@@ -1267,7 +1267,7 @@ async function loadModule(moduleType: string) {
     post({
       type: 'effectsDiscovered', effects: effects.map(e => ({
         id: e.id, name: e.name, description: e.description,
-        category: e.category, keywords: e.keywords,
+        category: e.category, keywords: e.keywords, bundle: moduleType,
       }))
     });
 

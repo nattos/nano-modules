@@ -12,6 +12,8 @@ export interface EffectInfo {
   description: string;
   category: string;
   keywords: string[];
+  /** The wasm bundle that registered this effect (e.g. "com.nano.lights"). */
+  bundle?: string;
 }
 
 // --- Plugin info (read-only snapshot for UI) ---

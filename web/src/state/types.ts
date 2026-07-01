@@ -47,6 +47,8 @@ export interface AvailableEffect {
   description: string;
   category: string;
   keywords: string[];
+  /** The wasm bundle that registered this effect (e.g. "com.nano.lights"). */
+  bundle?: string;
   /**
    * Effect kind. Defaults to a normal WASM-backed image `'effect'`. Distinct
    * kinds (e.g. `'dashboard'`) are handled specially by the UI — different card

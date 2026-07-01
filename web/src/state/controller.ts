@@ -863,7 +863,7 @@ export class AppController {
       const existing = appState.local.availableEffects;
       for (const e of effects) {
         if (!existing.some(x => x.id === e.id)) {
-          existing.push({ id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords });
+          existing.push({ id: e.id, name: e.name, description: e.description, category: e.category, keywords: e.keywords, bundle: e.bundle });
         }
       }
       // util.dashboard is a real, schema-backed core-bundle effect, but the UI

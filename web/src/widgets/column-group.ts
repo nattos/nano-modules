@@ -235,6 +235,15 @@ export class ColumnGroup extends MobxLitElement {
    * `typeLongEdit` so it commits as one undo point and disappears on cancel.
    */
   private insertCtx: { instanceKey: string; insertIdx: number; prefill?: string } | null = null;
+  /**
+   * Bumped every time a NEW type-edit session begins (retype or insert).
+   * Terminal smart-input events (preview/commit/cancel/delete-request) close
+   * over the session id at render time; a STALE event firing after the user
+   * has already moved on to a different card (e.g. a delayed blur landing
+   * after a new session started) compares its captured id against the
+   * current one and no-ops instead of mutating the wrong session's edit.
+   */
+  private editSession = 0;
 
   static styles = css`
     :host {
@@ -1013,6 +1022,7 @@ export class ColumnGroup extends MobxLitElement {
   private renderEffectCard(chainIdx: number, entry: ModuleEntry) {
     const tappingMode = this.ds.tappingMode;
     const isEditingType = this.editingTypeChainIdx === chainIdx;
+    const session = this.editSession;
     const effectPath = `effect/${this.sketchId}/${this.colIdx}/${chainIdx}`;
     const isSelected = this.ctl.isSelected(effectPath);
     const isCollapsed = isEffectCollapsed(this.ds.getSketch(this.sketchId), entry.instance_key);
@@ -1074,10 +1084,10 @@ export class ColumnGroup extends MobxLitElement {
                   .effects=${this.ds.availableEffects}
                   .initialValue=${this.insertCtx ? (this.insertCtx.prefill ?? '') : entry.module_type}
                   .autoSelect=${true}
-                  @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, e.detail)}
-                  @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, e.detail)}
-                  @delete-request=${() => this.handleTypeDeleteRequest(chainIdx)}
-                  @cancel=${() => this.handleTypeCancel()}
+                  @preview=${(e: CustomEvent) => this.handleTypePreview(chainIdx, session, e.detail)}
+                  @commit=${(e: CustomEvent) => this.handleTypeCommit(chainIdx, session, e.detail)}
+                  @delete-request=${() => this.handleTypeDeleteRequest(chainIdx, session)}
+                  @cancel=${(e: CustomEvent) => this.handleTypeCancel(chainIdx, session, e.detail)}
                 ></smart-input>
               ` : html`
                 <span class="effect-card-name"
@@ -1135,11 +1145,29 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Open the smart-input for a chain entry. */
   beginEditType(chainIdx: number) {
+    this.finishPendingEdit();
     this.editingTypeChainIdx = chainIdx;
+    this.editSession++;
     this.requestUpdate();
   }
 
-  private handleTypePreview(chainIdx: number, effectId: string) {
+  /**
+   * Resolve any currently-open type-edit session before starting a new one —
+   * an abandoned retype reverts to its original type, an abandoned insertion
+   * backs out. Without this, starting a second session while the first is
+   * still live would leave `typeLongEdit`/`insertCtx` pointing at only the
+   * newer one, orphaning the first edit's preview in the live document.
+   */
+  private finishPendingEdit() {
+    if (this.insertCtx && this.typeLongEdit) this.ctl.cancelInsertEffect(this.typeLongEdit);
+    else if (this.typeLongEdit) this.ctl.cancelChangeEffectType(this.typeLongEdit);
+    this.typeLongEdit = null;
+    this.insertCtx = null;
+    this.editingTypeChainIdx = -1;
+  }
+
+  private handleTypePreview(chainIdx: number, session: number, effectId: string) {
+    if (session !== this.editSession) return; // stale — a newer session has since begun
     if (this.insertCtx) {
       // Insertion: the long edit already exists (it added the placeholder) —
       // just re-point it at the previewed type.
@@ -1155,7 +1183,8 @@ export class ColumnGroup extends MobxLitElement {
     }
   }
 
-  private handleTypeCommit(chainIdx: number, effectId: string) {
+  private handleTypeCommit(chainIdx: number, session: number, effectId: string) {
+    if (session !== this.editSession) return;
     if (this.insertCtx) {
       // Commit the insertion at the chosen type → one "Add <type>" undo point.
       this.ctl.updateInsertEffect(
@@ -1175,12 +1204,18 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   /**
-   * Escape or click-away. For a fresh insertion this backs out entirely
-   * (the placeholder is removed, no undo point); for an existing effect it
-   * reverts to the original type.
+   * Escape always abandons the edit: for a fresh insertion this backs it out
+   * entirely (the placeholder is removed, no undo point); for an existing
+   * effect it reverts to the original type. Clicking away (blur) is softer —
+   * for a fresh insertion it ACCEPTS whatever type is currently set (even the
+   * category's untouched default), landing one "Add <type>" undo point;
+   * for an existing effect it still reverts, same as Escape.
    */
-  private handleTypeCancel() {
-    if (this.insertCtx && this.typeLongEdit) {
+  private handleTypeCancel(chainIdx: number, session: number, reason: 'escape' | 'blur') {
+    if (session !== this.editSession) return;
+    if (reason === 'blur' && this.insertCtx && this.typeLongEdit) {
+      this.typeLongEdit.accept();
+    } else if (this.insertCtx && this.typeLongEdit) {
       this.ctl.cancelInsertEffect(this.typeLongEdit);
     } else if (this.typeLongEdit) {
       this.ctl.cancelChangeEffectType(this.typeLongEdit);
@@ -1194,7 +1229,8 @@ export class ColumnGroup extends MobxLitElement {
    * point. For an existing effect it means "delete this effect" (its own undo
    * point); any in-progress type preview is reverted first.
    */
-  private handleTypeDeleteRequest(chainIdx: number) {
+  private handleTypeDeleteRequest(chainIdx: number, session: number) {
+    if (session !== this.editSession) return;
     if (this.insertCtx && this.typeLongEdit) {
       this.ctl.cancelInsertEffect(this.typeLongEdit);
     } else {
@@ -2073,12 +2109,22 @@ export class ColumnGroup extends MobxLitElement {
     return has(CATEGORY_FALLBACK) ? CATEGORY_FALLBACK : (avail[0]?.id ?? CATEGORY_FALLBACK);
   }
 
-  /** Insert the category's default effect as a committed edit and select it — it
-   *  does NOT open the type editor (double-click the card name to retype). */
+  /**
+   * Begin inserting a new effect for a category — seeds the category default
+   * and opens the smart-input drilled into "<category>." so the user picks
+   * the exact effect within that category. The whole insertion rides one long
+   * edit: Escape backs it out entirely (no undo point); clicking away or
+   * committing a pick accepts the current type as a single "Add <type>" undo
+   * point — see handleTypeCancel/handleTypeCommit.
+   */
   private insertCategoryEffectAt(category: string, insertIdx: number) {
-    const { edit } = this.ctl.beginInsertEffect(
+    this.finishPendingEdit();
+    const { edit, instanceKey } = this.ctl.beginInsertEffect(
       this.sketchId, this.colIdx, insertIdx, this.categoryDefault(category));
-    edit.accept();
+    this.typeLongEdit = edit;
+    this.insertCtx = { instanceKey, insertIdx, prefill: `${category}.` };
+    this.editingTypeChainIdx = insertIdx;
+    this.editSession++;
     this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${insertIdx}`);
     this.requestUpdate();
     // Bring the freshly-inserted card into view (the scroller is an ancestor).

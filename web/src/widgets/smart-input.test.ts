@@ -103,12 +103,16 @@ describe('smart-input drill-down completion', () => {
     expect(effects).toContain('source.light.chroma_wave');
   });
 
-  it('a full dotted id resolves to its effect (seeds preview / express commit)', () => {
-    // The type editor is seeded with the full module id (e.g. when retyping an
-    // existing effect); typing it back must resolve to exactly that effect so
-    // an express commit bakes in a real id.
-    const { effects } = complete('color.tone.curve');
-    expect(effects[0]).toBe('color.tone.curve');
+  it('a full dotted id shows the same browse view as drilling into its category', () => {
+    // The type editor opens seeded with the full module id when retyping an
+    // existing effect. Before any edit, the dropdown should read like a
+    // fresh drill into the category ("color."), not a query narrowed down
+    // to just that one leaf's name.
+    const viaId = complete('color.tone.curve');
+    const viaCategory = complete('color.');
+    expect(viaId.folders.sort()).toEqual(viaCategory.folders.sort());
+    expect(viaId.effects.sort()).toEqual(viaCategory.effects.sort());
+    expect(viaId.effects).toContain('color.tone.curve');
   });
 
   it('root fuzzy search stays flat across all effects', () => {
@@ -141,5 +145,67 @@ describe('smart-input drill-down completion', () => {
     const flat = complete('blur');
     const gaussian = flat.raw.find(o => o.detail === 'filter.blur.gaussian');
     expect(gaussian.category).toBe('filter');
+  });
+});
+
+function beff(id: string, name: string, bundle: string): AvailableEffect {
+  return { id, name, description: '', category: id.split('.')[0], keywords: [], bundle };
+}
+
+const BUNDLED_EFFECTS: AvailableEffect[] = [
+  beff('source.gradient', 'Gradient', 'com.nano.core'),
+  beff('color.invert', 'Invert', 'com.nano.core'),
+  beff('source.light.chroma_wave', 'Chroma Wave', 'com.nano.lights'),
+  beff('source.light.soft_glow', 'Soft Glow', 'com.nano.lights'),
+  beff('filter.blur.gaussian', 'Blur', 'com.nano.lights'),
+];
+
+function completeWith(effects: AvailableEffect[], query: string) {
+  const el = new SmartInput();
+  el.effects = effects;
+  const ctx = { state: { doc: { toString: () => query } } } as any;
+  const result = (el as any).completionSource(ctx);
+  const opts: any[] = result?.options ?? [];
+  return {
+    folders: opts.filter(o => o.type === 'namespace').map(o => o.label as string),
+    effects: opts.filter(o => o.type !== 'namespace' && o.detail).map(o => o.detail as string),
+    raw: opts,
+  };
+}
+
+describe('smart-input bundle grouping', () => {
+  it('lists bundles as additional top-level folders alongside taxonomy domains', () => {
+    const { folders } = completeWith(BUNDLED_EFFECTS, '');
+    expect(folders).toEqual(expect.arrayContaining(['Core', 'Lights']));
+  });
+
+  it('drilling into a bundle folder flatly lists every effect it ships, across domains', () => {
+    const { effects, folders } = completeWith(BUNDLED_EFFECTS, 'com.nano.lights.');
+    expect(folders).toEqual([]); // flat listing — no further sub-folders
+    expect(effects.sort()).toEqual([
+      'filter.blur.gaussian',
+      'source.light.chroma_wave',
+      'source.light.soft_glow',
+    ]);
+  });
+
+  it('a bundle folder option drills via its bundle id, not its display name', () => {
+    vi.useFakeTimers();
+    try {
+      const { raw } = completeWith(BUNDLED_EFFECTS, '');
+      const lights = raw.find(o => o.label === 'Lights');
+      expect(lights).toBeTruthy();
+      let inserted = '';
+      const view = { dispatch: (tr: any) => { inserted = tr.changes.insert; } } as any;
+      lights.apply(view, null, 0, 0);
+      expect(inserted).toBe('com.nano.lights.');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('effects with no .bundle field spawn no bundle folders', () => {
+    const { folders } = complete(''); // the original fixture never sets .bundle
+    expect(folders.sort()).toEqual(['color/', 'composite/', 'filter/', 'source/']);
   });
 });

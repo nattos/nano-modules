@@ -12,8 +12,11 @@
  *                    with a non-empty selection
  *   delete-request — Enter/Tab on an empty / whitespace-only field (express
  *                    commit of "nothing")
- *   cancel         — Escape, OR blur / clicking away (click-away is a cancel,
- *                    never a commit)
+ *   cancel         — detail: 'escape' | 'blur'. Escape always means "abandon
+ *                    this edit". Blur (clicking away) is a softer signal —
+ *                    most consumers still treat it as an abandon, but it's
+ *                    reported separately so one that wants to (e.g. a fresh
+ *                    effect insertion) can instead accept the current value.
  */
 
 import { LitElement, html, css } from 'lit';
@@ -32,8 +35,12 @@ import {
 import { standardKeymap } from '@codemirror/commands';
 import type { AvailableEffect } from '../state/types';
 import { effectDomain } from './category-color';
+import { EFFECT_BUNDLE_NAMES } from '../effect-bundles';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
+
+/** Human-readable label for a bundle folder row (falls back to the raw id). */
+function bundleName(id: string): string { return EFFECT_BUNDLE_NAMES[id] ?? id; }
 
 /** Simple fuzzy match: all query chars must appear in order in the target. */
 function fuzzyMatch(q: string, t: string): boolean {
@@ -129,10 +136,21 @@ export class SmartInput extends LitElement {
       border-radius: 1px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     }
-    .cm-tooltip-autocomplete {
-      max-height: 200px;
+    /* The scrollable element is the inner <ul>, not the outer tooltip div —
+       CodeMirror's own base theme caps IT at 10em via the compound selector
+       ".cm-tooltip.cm-tooltip-autocomplete > ul", which outranks a plain
+       ".cm-tooltip-autocomplete > ul" rule by specificity regardless of
+       source order. Match its specificity (plus !important) on both, or the
+       10em built-in wins and the outer max-height below does nothing. */
+    .cm-tooltip.cm-tooltip-autocomplete {
+      max-height: 1260px !important;
+      min-height: 630px !important;
+      min-width: 340px !important;
     }
-    .cm-tooltip-autocomplete > ul {
+    .cm-tooltip.cm-tooltip-autocomplete > ul {
+      max-height: 1260px !important;
+      min-height: 630px !important;
+      min-width: 340px !important;
       font-family: inherit;
       font-size: var(--app-fs-md);
     }
@@ -254,7 +272,7 @@ export class SmartInput extends LitElement {
         {
           key: 'Escape',
           run: () => {
-            self.emitCancel();
+            self.emitCancel('escape');
             return true;
           },
         },
@@ -316,17 +334,22 @@ export class SmartInput extends LitElement {
       parent: this.editorContainer,
     });
 
-    // Auto-focus, then either select-all (retype) or, for a category drill-down
-    // seed ("source."), place the cursor at the end so typing appends within the
+    // Auto-focus, then either select everything AFTER the category segment
+    // (retype — e.g. "color.tone.auto_level" selects "tone.auto_level",
+    // leaving "color." as an untouched prefix so one Backspace collapses
+    // back to just the category) or, for a category drill-down seed
+    // ("source."), place the cursor at the end so typing appends within the
     // category. Either way open the completion dropdown.
     if (this.autoSelect) {
       this.editorView.focus();
       const drill = this.initialValue.endsWith('.');
-      this.editorView.dispatch({
-        selection: drill
-          ? { anchor: this.initialValue.length }
-          : { anchor: 0, head: this.initialValue.length },
-      });
+      if (drill) {
+        this.editorView.dispatch({ selection: { anchor: this.initialValue.length } });
+      } else {
+        const firstDot = this.initialValue.indexOf('.');
+        const categoryEnd = firstDot >= 0 ? firstDot + 1 : 0;
+        this.editorView.dispatch({ selection: { anchor: categoryEnd, head: this.initialValue.length } });
+      }
       startCompletion(this.editorView);
     } else {
       this.editorView.focus();
@@ -346,7 +369,7 @@ export class SmartInput extends LitElement {
     this.editorView.contentDOM.addEventListener('blur', () => {
       setTimeout(() => {
         if (!this.isConnected || this.finished) return;
-        this.emitCancel();
+        this.emitCancel('blur');
       }, 150);
     });
   }
@@ -368,58 +391,120 @@ export class SmartInput extends LitElement {
     let prefix = lastDot >= 0 ? query.slice(0, lastDot + 1) : '';
     let subQuery = lastDot >= 0 ? query.slice(lastDot + 1) : query;
 
-    // If the typed prefix isn't a real path (no effect lives under it), fall
-    // back to a flat fuzzy search over the whole query.
-    if (prefix && !this.effects.some(e => e.id.startsWith(prefix))) {
+    // The doc exactly names a real effect — e.g. freshly opened to retype an
+    // existing effect, before any edit. Show the same browse view as if the
+    // user had drilled straight into its top-level category, not a query
+    // narrowed down to just that one effect's leaf name.
+    const exactEffect = this.effects.find(e => e.id === query);
+    if (exactEffect) {
+      prefix = `${effectDomain(exactEffect.id)}.`;
+      subQuery = '';
+    }
+
+    // A bundle is a package-level grouping (e.g. "com.nano.lights") — cuts
+    // across the id-taxonomy folders below, so it's recognized by `bundle`,
+    // not by id prefix. Its drill-down prefix is just its bundle id + ".",
+    // which can never collide with a real (bundle-relative) effect id.
+    const bundleIds = new Set(this.effects.map(e => e.bundle).filter((b): b is string => !!b));
+    const drilledBundle = prefix && bundleIds.has(prefix.slice(0, -1)) ? prefix.slice(0, -1) : null;
+
+    // If the typed prefix isn't a real path (no effect lives under it) and
+    // isn't a recognized bundle either, fall back to a flat fuzzy search.
+    if (prefix && !drilledBundle && !this.effects.some(e => e.id.startsWith(prefix))) {
       prefix = '';
       subQuery = query;
     }
 
     const sub = subQuery.toLowerCase();
-    const under = this.effects.filter(e => e.id.length > prefix.length && e.id.startsWith(prefix));
+    const under = drilledBundle
+      ? this.effects.filter(e => e.bundle === drilledBundle)
+      : this.effects.filter(e => e.id.length > prefix.length && e.id.startsWith(prefix));
 
     const options: any[] = [];
 
-    // --- Sub-folders: the next path segment of any deeper effect under the
-    // current prefix. A segment is a folder when at least one effect has a
-    // further dot beyond it (i.e. there's something to descend into).
-    const folderCounts = new Map<string, number>();
-    for (const e of under) {
-      const remainder = e.id.slice(prefix.length);
-      const dot = remainder.indexOf('.');
-      if (dot <= 0) continue; // leaf at this level, not a folder
-      const seg = remainder.slice(0, dot);
-      folderCounts.set(seg, (folderCounts.get(seg) ?? 0) + 1);
+    if (!drilledBundle) {
+      // --- Sub-folders: the next path segment of any deeper effect under the
+      // current prefix. A segment is a folder when at least one effect has a
+      // further dot beyond it (i.e. there's something to descend into).
+      const folderCounts = new Map<string, number>();
+      for (const e of under) {
+        const remainder = e.id.slice(prefix.length);
+        const dot = remainder.indexOf('.');
+        if (dot <= 0) continue; // leaf at this level, not a folder
+        const seg = remainder.slice(0, dot);
+        folderCounts.set(seg, (folderCounts.get(seg) ?? 0) + 1);
+      }
+
+      const folders = [...folderCounts.keys()]
+        .filter(seg => sub.length === 0 || seg.toLowerCase().startsWith(sub) || fuzzyMatch(sub, seg.toLowerCase()))
+        .sort();
+
+      for (const seg of folders) {
+        const fullPath = prefix + seg;
+        const count = folderCounts.get(seg)!;
+        options.push({
+          label: `${seg}/`,
+          detail: `${count} effect${count !== 1 ? 's' : ''}`,
+          type: 'namespace',
+          category: effectDomain(fullPath),
+          apply: (view: EditorView, _completion: any, from: number, to: number) => {
+            // Drill down: replace text with "<path>." and re-trigger completion
+            view.dispatch({
+              changes: { from, to, insert: fullPath + '.' },
+              selection: { anchor: fullPath.length + 1 },
+            });
+            setTimeout(() => startCompletion(view), 0);
+          },
+          boost: 1000 + (seg.toLowerCase().startsWith(sub) ? 100 : 0),
+        });
+      }
     }
 
-    const folders = [...folderCounts.keys()]
-      .filter(seg => sub.length === 0 || seg.toLowerCase().startsWith(sub) || fuzzyMatch(sub, seg.toLowerCase()))
-      .sort();
+    // --- Bundles: package-level folders, only offered at the root. Drilling
+    // into one flatly lists every effect it ships, regardless of taxonomy.
+    if (prefix.length === 0) {
+      const bundleCounts = new Map<string, number>();
+      for (const e of this.effects) {
+        if (e.bundle) bundleCounts.set(e.bundle, (bundleCounts.get(e.bundle) ?? 0) + 1);
+      }
+      const bundles = [...bundleCounts.keys()]
+        .filter(b => {
+          const name = bundleName(b).toLowerCase();
+          return sub.length === 0 || name.startsWith(sub) || fuzzyMatch(sub, name);
+        })
+        .sort((a, b) => bundleName(a).localeCompare(bundleName(b)));
 
-    for (const seg of folders) {
-      const fullPath = prefix + seg;
-      const count = folderCounts.get(seg)!;
-      options.push({
-        label: `${seg}/`,
-        detail: `${count} effect${count !== 1 ? 's' : ''}`,
-        type: 'namespace',
-        category: effectDomain(fullPath),
-        apply: (view: EditorView, _completion: any, from: number, to: number) => {
-          // Drill down: replace text with "<path>." and re-trigger completion
-          view.dispatch({
-            changes: { from, to, insert: fullPath + '.' },
-            selection: { anchor: fullPath.length + 1 },
-          });
-          setTimeout(() => startCompletion(view), 0);
-        },
-        boost: 1000 + (seg.toLowerCase().startsWith(sub) ? 100 : 0),
-      });
+      for (const b of bundles) {
+        const count = bundleCounts.get(b)!;
+        options.push({
+          label: bundleName(b),
+          detail: `${count} effect${count !== 1 ? 's' : ''}`,
+          type: 'namespace',
+          apply: (view: EditorView, _completion: any, from: number, to: number) => {
+            view.dispatch({
+              changes: { from, to, insert: `${b}.` },
+              selection: { anchor: b.length + 1 },
+            });
+            setTimeout(() => startCompletion(view), 0);
+          },
+          boost: 900,
+        });
+      }
     }
 
     // --- Effects. While searching, reach into deeper folders too so a fuzzy
     // match can jump straight to a nested effect.
     let effects: AvailableEffect[];
-    if (sub.length === 0 && prefix.length === 0) {
+    if (drilledBundle) {
+      // Flat listing of everything the bundle ships — no further sub-folders.
+      effects = sub.length === 0
+        ? [...under].sort((a, b) => a.id.localeCompare(b.id))
+        : under
+            .map(e => ({ e, s: matchScore(subQuery, e) }))
+            .filter(x => x.s >= 0)
+            .sort((a, b) => a.s - b.s)
+            .map(x => x.e);
+    } else if (sub.length === 0 && prefix.length === 0) {
       // Root with no query: just the (dotless) leaf effects — the top-level
       // folders are listed separately above. Don't dump every effect flat.
       effects = under.filter(e => !e.id.slice(prefix.length).includes('.'));
@@ -474,7 +559,7 @@ export class SmartInput extends LitElement {
       if (this.lastPreviewedId) {
         value = this.lastPreviewedId;
       } else {
-        this.emitCancel();
+        this.emitCancel('escape');
         return;
       }
     }
@@ -492,12 +577,13 @@ export class SmartInput extends LitElement {
     this.dispatchEvent(new CustomEvent('delete-request'));
   }
 
-  /** Escape or click-away — abandon the edit. */
-  private emitCancel() {
+  /** Escape or click-away — abandon the edit (the consumer decides what to
+   *  do with a 'blur' reason; 'escape' should always mean abandon). */
+  private emitCancel(reason: 'escape' | 'blur') {
     if (this.finished) return;
     this.finished = true;
     if (this.editorView) closeCompletion(this.editorView);
-    this.dispatchEvent(new CustomEvent('cancel'));
+    this.dispatchEvent(new CustomEvent('cancel', { detail: reason }));
   }
 
   render() {

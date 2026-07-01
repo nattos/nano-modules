@@ -16,3 +16,16 @@ export const EFFECT_BUNDLES = [
 ] as const;
 
 export type EffectBundleId = (typeof EFFECT_BUNDLES)[number];
+
+/** Human-readable label for a bundle id, e.g. for the smart-input's "browse by
+ *  bundle" top-level entries. Falls back to the raw id for anything unlisted
+ *  (e.g. `com.nano.testonly`, deliberately excluded from `EFFECT_BUNDLES`). */
+export const EFFECT_BUNDLE_NAMES: Record<string, string> = {
+  'com.nano.core': 'Core',
+  'com.nano.nano': 'Nano',
+  'com.nano.lights': 'Lights',
+  'com.nano.text': 'Text',
+  'com.nano.richtext': 'Rich Text',
+  'com.nano.legacy': 'Legacy',
+  'com.nano.testonly': 'Test Only',
+};
