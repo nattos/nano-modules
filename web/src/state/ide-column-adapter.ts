@@ -107,7 +107,7 @@ const taps: ColumnTaps = {
     tapsConnect.beginFromFieldDrag(e, sourceEl, sketchId, key, info),
   beginFromFieldClick: (sketchId, key, info) =>
     tapsConnect.beginFromFieldClick(sketchId, key, info),
-  completeOnField: (key) => tapsConnect.completeOnField(key),
+  completeOnField: (key, info) => tapsConnect.completeOnField(key, info),
   consumeClickSuppression: () => tapsConnect.consumeClickSuppression(),
 };
 

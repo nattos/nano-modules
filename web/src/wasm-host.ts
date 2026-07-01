@@ -1471,7 +1471,7 @@ export class WasmHost {
       // document context (Workers tolerate it, but we run in tests
       // from a regular page). Default text behavior is fine — we
       // read xhr.responseText below.
-      xhr.send(entry.bytes);
+      xhr.send(entry.bytes as Uint8Array<ArrayBuffer>);
       if (xhr.status !== 200) {
         console.error(`[wasm-host] naga bridge returned ${xhr.status} for shader '${name}': ${xhr.responseText}`);
         return null;

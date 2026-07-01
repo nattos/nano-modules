@@ -23,7 +23,7 @@ async function loadHost(): Promise<{ host: WasmHost; module: import('./wasm-host
 
   // We need to instantiate manually since fetch() doesn't work in Node
   const imports = buildImports(host);
-  const result = await WebAssembly.instantiate(bytes, imports);
+  const result = await WebAssembly.instantiate(bytes as BufferSource, imports);
   const instance = result.instance;
   (host as any).instance = instance;
   (host as any).memory = instance.exports.memory as WebAssembly.Memory;

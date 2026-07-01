@@ -25,7 +25,7 @@ describe('clipTarget.staticHiddenFor — per-instance resolution', () => {
     store.fieldVisUnsupported.clear();
     const track = store.composition.tracks.find((t) => t.kind === 'track')!;
     trackId = track.id;
-    const path = store.createEmptyClip(trackId, 0, 8);
+    const path = store.createEmptyClip(trackId, 0, 8)!;
     clipId = path.split('/')[2];
     // Two effects of the SAME module type, distinguished by hue_shift state.
     store.addClipDeviceType(trackId, clipId, 'color.hsl');

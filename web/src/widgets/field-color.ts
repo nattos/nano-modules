@@ -119,23 +119,21 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
           next[3] = val;
           this.binding?.setValue(this.fieldPath, next);
         },
-        beginContinuousEdit: this.binding?.beginContinuousEdit
-          ? (_p: string, val: any): ContinuousEditHandle => {
-              const next = this.vec.slice();
-              if (typeof val === 'number') next[3] = val;
-              const edit = this.binding!.beginContinuousEdit!(this.fieldPath, next);
-              return {
-                update: (cv: any) => {
-                  if (typeof cv !== 'number') return;
-                  const cur = this.vec.slice();
-                  cur[3] = cv;
-                  edit.update(cur);
-                },
-                accept: () => edit.accept(),
-                cancel: () => edit.cancel(),
-              };
-            }
-          : undefined,
+        beginContinuousEdit: (_p: string, val: any): ContinuousEditHandle => {
+          const next = this.vec.slice();
+          if (typeof val === 'number') next[3] = val;
+          const edit = this.binding?.beginContinuousEdit?.(this.fieldPath, next);
+          return {
+            update: (cv: any) => {
+              if (typeof cv !== 'number') return;
+              const cur = this.vec.slice();
+              cur[3] = cv;
+              edit?.update(cur);
+            },
+            accept: () => edit?.accept(),
+            cancel: () => edit?.cancel(),
+          };
+        },
       };
       alphaEl = html`
         <div class="alpha-row">

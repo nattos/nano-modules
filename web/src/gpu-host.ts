@@ -628,7 +628,7 @@ export class GPUHost {
   writeBuffer(bufHandle: number, offset: number, data: Uint8Array) {
     const buffer = this.get(bufHandle) as GPUBuffer;
     if (!buffer) return;
-    this.device.queue.writeBuffer(buffer, offset, data);
+    this.device.queue.writeBuffer(buffer, offset, data as Uint8Array<ArrayBuffer>);
   }
 
   // --- Command encoding ---

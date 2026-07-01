@@ -115,7 +115,7 @@ export class GPURenderer {
     });
     this.device.queue.writeTexture(
       { texture: this.fontTexture },
-      atlasData,
+      atlasData as Uint8Array<ArrayBuffer>,
       { bytesPerRow: FONT_ATLAS_W },
       [FONT_ATLAS_W, FONT_ATLAS_H],
     );

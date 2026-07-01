@@ -82,23 +82,21 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
           next[i] = value;
           this.binding?.setValue(this.fieldPath, next);
         },
-        beginContinuousEdit: this.binding?.beginContinuousEdit
-          ? (_path: string, value: any): ContinuousEditHandle => {
-              const next = this.vec.slice();
-              if (typeof value === 'number') next[i] = value;
-              const edit = this.binding!.beginContinuousEdit!(this.fieldPath, next);
-              return {
-                update: (cv: any) => {
-                  if (typeof cv !== 'number') return;
-                  const cur = this.vec.slice();
-                  cur[i] = cv;
-                  edit.update(cur);
-                },
-                accept: () => edit.accept(),
-                cancel: () => edit.cancel(),
-              };
-            }
-          : undefined,
+        beginContinuousEdit: (_path: string, value: any): ContinuousEditHandle => {
+          const next = this.vec.slice();
+          if (typeof value === 'number') next[i] = value;
+          const edit = this.binding?.beginContinuousEdit?.(this.fieldPath, next);
+          return {
+            update: (cv: any) => {
+              if (typeof cv !== 'number') return;
+              const cur = this.vec.slice();
+              cur[i] = cv;
+              edit?.update(cur);
+            },
+            accept: () => edit?.accept(),
+            cancel: () => edit?.cancel(),
+          };
+        },
       };
       rows.push(html`
         <div class="row">

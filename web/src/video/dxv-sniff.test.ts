@@ -45,14 +45,14 @@ describe('classifySource', () => {
   it('finds the DXV tag inside a quicktime moov atom', async () => {
     const moov = atom('moov', atom('stsd', txt('xxxxxxxxDXD3yyyy')));
     const file = concat(atom('ftyp', txt('qt  ')), moov, atom('mdat', new Uint8Array(64)));
-    const blob = new Blob([file], { type: 'video/quicktime' });
+    const blob = new Blob([file as Uint8Array<ArrayBuffer>], { type: 'video/quicktime' });
     expect(await classifySource(blob)).toBe('dxv');
   });
 
   it('routes a non-DXV quicktime (e.g. ProRes/h264 .mov) to video', async () => {
     const moov = atom('moov', atom('stsd', txt('xxxxxxxxavc1yyyy')));
     const file = concat(atom('ftyp', txt('qt  ')), moov, atom('mdat', new Uint8Array(64)));
-    const blob = new Blob([file], { type: 'video/quicktime' });
+    const blob = new Blob([file as Uint8Array<ArrayBuffer>], { type: 'video/quicktime' });
     expect(await classifySource(blob)).toBe('video');
   });
 });

@@ -164,7 +164,7 @@ export interface ColumnTaps {
   readonly state: unknown | null;
   beginFromFieldDrag(e: PointerEvent, sourceEl: HTMLElement, sketchId: string, key: string, info: FieldConnectInfo): void;
   beginFromFieldClick(sketchId: string, key: string, info: FieldConnectInfo): void;
-  completeOnField(key: string): void;
+  completeOnField(key: string, info?: FieldConnectInfo): void;
   consumeClickSuppression(): boolean;
 }
 

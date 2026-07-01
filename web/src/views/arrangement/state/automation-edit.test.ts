@@ -15,7 +15,7 @@ describe('arrangement automation editing', () => {
   beforeEach(() => {
     const track = store.composition.tracks.find((t) => t.kind === 'track')!;
     trackId = track.id;
-    const path = store.createEmptyClip(trackId, 0, 8);
+    const path = store.createEmptyClip(trackId, 0, 8)!;
     clipId = path.split('/')[2];
     store.addClipDeviceType(trackId, clipId, 'color.hsl');
   });
