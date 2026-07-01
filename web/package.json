@@ -33,6 +33,7 @@
     "codemirror": "^6.0.2",
     "immer": "^11.1.4",
     "line-awesome": "^1.3.0",
+    "marked": "^12.0.2",
     "mp4-muxer": "^5.2.2",
     "naga-wasm": "^1.0.0",
     "wasm-naga": "^0.3.2"
