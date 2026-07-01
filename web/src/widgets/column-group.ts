@@ -1635,6 +1635,18 @@ export class ColumnGroup extends MobxLitElement {
       setHelp: (slotPath: string, patch: { scope?: 'global' | 'local'; text?: string }) => {
         this.ctl.setInstanceHelp(this.sketchId, entry.instance_key, slotPath, patch);
       },
+      // The effect-authored default lives ONCE in the schema: a group's help
+      // (`@group/<id>`) or a help field's default. Custom inspectors reference
+      // slot paths and let this resolve the text (no re-typed duplication).
+      helpDefault: (slotPath: string) => {
+        if (slotPath.startsWith('@group/')) {
+          const gid = slotPath.slice('@group/'.length);
+          const h = plugin?.groups?.[gid]?.help;
+          return typeof h === 'string' ? h : undefined;
+        }
+        const d = (plugin?.schema as any)?.[slotPath]?.default;
+        return typeof d === 'string' ? d : undefined;
+      },
     };
   }
 

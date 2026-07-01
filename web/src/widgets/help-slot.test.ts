@@ -97,6 +97,20 @@ describe('<help-slot> scope resolution', () => {
     expect(body(el)!.textContent).not.toContain('SHOULD NOT SHOW');
   });
 
+  it('resolves the effect default from the schema via binding.helpDefault (no `default` prop)', async () => {
+    // Custom inspectors reference a slot path and pass NO `default` prop — the
+    // schema-authored text arrives via helpDefault (single source of truth).
+    const b = binding({ helpMode: true, moduleType: 'test.helpdefault' });
+    (b as any).helpDefault = (p: string) => (p === '@group/foo' ? 'FROM **SCHEMA**' : undefined);
+    const el = await mount((e) => {
+      e.path = '@group/foo';
+      // no e.default set
+      e.binding = b;
+    });
+    expect(body(el)!.textContent).toContain('FROM');
+    expect(body(el)!.querySelector('strong')?.textContent).toBe('SCHEMA');
+  });
+
   it('renders a "double-click to add" placeholder when there is no text anywhere', async () => {
     const el = await mount((e) => {
       e.path = '@group/empty';

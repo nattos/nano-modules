@@ -30,34 +30,6 @@ import './brutal-fold-previews';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-// Authored help defaults for the sections that ship with a manual entry. These
-// mirror the schema-side helpField / groupHelp defaults (main.cpp) and share
-// their slot paths, so a user's global/local override applies whether the effect
-// renders via this custom inspector or the generic one. Sections without an entry
-// pass '' — <help-slot> then shows a "double-click to add" customization point.
-const HELP_INTRO =
-  '## Brutal Fold\n' +
-  'A brutalist axonometric-prism generator — solid 3D forms **without a ' +
-  'vanishing point**. Drag the XY pad to explore the baked atlas: **X** adds ' +
-  'structural complexity, **Y** adds order.\n\n' +
-  '**Try:** keep *Speed* low (it reads best slow); add a little *Volumetrics* ' +
-  'for a drifting fog blob; flip on *Autopilot* to let it wander on its own.';
-const HELP_SHAPE =
-  'The **atlas** is a montage of pre-baked structures. *Complexity* (X) and ' +
-  '*Order* (Y) interpolate between neighbouring cells; *Liveliness* picks how ' +
-  'richly the cell animates. *Scale* zooms the form; *Balance* trades zoom ' +
-  'between the two co-folded structures.';
-const HELP_VOLUMETRICS =
-  'A 3D **fog blob** that concentrates the depth fog into a shape instead of ' +
-  'a uniform haze. *Amount* blends it in (0 = the old uniform fog). *Shape* ' +
-  'morphs sphere → slab → solid; *Radius*, *Depth* and the two *Softness* ' +
-  'knobs size and feather it. Pair with **Drift** to make it breathe.';
-const HELP_AUTOPILOT =
-  "Spirals the shape's XY position on its own, **without touching** your " +
-  'Complexity/Order inputs (it broadcasts the live position instead). *Speed* ' +
-  'sets the orbit rate. Turn on **Snap** to hop between held positions every ' +
-  '*Hold* seconds (with optional *Jitter*), or fire **Jump** to leap manually.';
-
 /**
  * The draggable atlas XY pad. A multi-field FieldEditorElement controlling
  * `complexity` (x) and `order` (y) — so the framework treats it as a normal
@@ -202,11 +174,12 @@ export class BrutalFoldInspector extends MobxLitElement {
     }
   `;
 
-  /** A section header + its help slot (reused across every section). */
-  private section(title: string, path: string, help = '') {
+  /** A section header + its help slot (reused across every section). The slot's
+   *  default markdown is single-sourced from the schema via binding.helpDefault. */
+  private section(title: string, path: string) {
     return html`
       <div class="section">${title}</div>
-      <help-slot .binding=${this.binding} .path=${path} .default=${help}></help-slot>
+      <help-slot .binding=${this.binding} .path=${path}></help-slot>
     `;
   }
 
@@ -214,8 +187,8 @@ export class BrutalFoldInspector extends MobxLitElement {
     if (!this.binding) return html``;
     const b = this.binding;
     return html`
-      <help-slot .binding=${b} .path=${'intro'} .default=${HELP_INTRO}></help-slot>
-      ${this.section('Form', '@group/shape', HELP_SHAPE)}
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
+      ${this.section('Form', '@group/shape')}
       <brutal-fold-xy-pad .label=${''} .binding=${b}></brutal-fold-xy-pad>
       <scalar-slider style="width: 100%;" .fieldPath=${'liveliness'} .label=${'Liveliness'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
@@ -290,7 +263,7 @@ export class BrutalFoldInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'sky_bri'} .label=${'Sky Bright'}
         .min=${0} .max=${2} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
 
-      ${this.section('Volumetrics', '@group/volumetrics', HELP_VOLUMETRICS)}
+      ${this.section('Volumetrics', '@group/volumetrics')}
       <scalar-slider style="width: 100%;" .fieldPath=${'vol_amount'} .label=${'Amount'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'vol_shape'} .label=${'Shape'}
@@ -328,7 +301,7 @@ export class BrutalFoldInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'drift_angle'} .label=${'Angle Drift'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
 
-      ${this.section('Autopilot', '@group/autopilot', HELP_AUTOPILOT)}
+      ${this.section('Autopilot', '@group/autopilot')}
       <field-toggle .fieldPath=${'autopilot'} .label=${'Autopilot'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}

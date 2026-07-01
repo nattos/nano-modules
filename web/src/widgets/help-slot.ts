@@ -103,6 +103,13 @@ export class HelpSlot extends MobxLitElement {
     return mt ? fieldDocsStore.get(mt, this.path) : undefined;
   }
 
+  /** The effect-authored default markdown — single-sourced from the schema via
+   *  the binding (a helpField default or group help), falling back to the
+   *  `default` prop (used by the generic inspector / tests). */
+  private get effectDefault(): string {
+    return this.binding?.helpDefault?.(this.path) ?? this.default ?? '';
+  }
+
   /** Which layer is shown outside editing (defaults to 'global'). */
   private get scope(): Scope {
     return this.localHelp?.scope === 'local' ? 'local' : 'global';
@@ -119,7 +126,7 @@ export class HelpSlot extends MobxLitElement {
    *  placeholder. */
   private textFor(scope: Scope): string {
     if (scope === 'local') return this.localHelp?.text ?? '';
-    return this.globalText ?? this.default ?? '';
+    return this.globalText ?? this.effectDefault;
   }
 
   private enterEdit = (e: Event) => {

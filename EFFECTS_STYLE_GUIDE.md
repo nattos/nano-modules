@@ -120,6 +120,30 @@ Why this shape:
 
 `description` surfaces as the control's tooltip. Keep it short; it's free text (escaped into the schema for you). These are pure UI metadata — adding them is a PATCH-level change (no serialized-state impact; see §Versioning).
 
+**Legibility: display names, groups, and help text — declare them on every effect.**
+
+Internal field ids are terse and often cryptic (`diff_hue_lo`, `vol_softness_xy`). Give every param a human name, cluster params into named **groups** (sections), and add **help text** at the section level. All of it is pure UI metadata (PATCH-level — no serialized-state impact), and all of it is authored right in the schema. `source.brutal_fold` is the reference.
+
+- **`.label("Display Name", "Short")`** — a *chained modifier* on the field just declared. `Display Name` is human Title Case; `Short` is a compact/truncated form for narrow contexts (tap chips, dense columns). Neither has to be unique. Add a label to **every** non-obvious field.
+  ```cpp
+  .floatField("vol_softness_xy", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Screen Softness", "Soft XY")
+  ```
+- **`.group("id", "Display Name")`** — a *sticky* marker: every field declared after it belongs to that group until the next `.group(...)` (or `.endGroup()`). Groups render as section headers, matching the hand-rolled `.section` headers custom inspectors already use. Enrich a group with **`.groupHelp("…markdown…")`** (section manual) and optionally `.groupShort("…")`.
+  ```cpp
+  .group("color", "Colour & Atmosphere")
+    .groupHelp("How the tone→hue twist works, and what each knot does…")
+  .floatField("fog", 1.f, 0.f, 5.f, state::PrimaryInput).label("Fog", "Fog")
+  ```
+- **`.helpField("name", "…markdown…")`** — a standalone **help slot** interspersed among the fields (no instance-state backing: `io=0`, never replayed). Use it for a top-of-effect **intro** ("what is this / how to use / what to try"). Its `name` is its addressable *slot path*.
+
+**Help text is Ableton-manual tone — informative, not just descriptive.** Explain *how to use* the section and *interesting things to try*, not just what each knob is. It's **markdown**. **Do NOT put help on every field** — that's noise. The right density is: one `.helpField("intro", …)` per effect, plus `.groupHelp` on the sections that genuinely benefit. Section headers with no authored help still become customization points (see below).
+
+**How it surfaces.** A global **"?" help mode** (a sibling of "A" automation / "W" wires; keyboard `?` on every surface) reveals help inline; off, it collapses. Users can **override** any slot's text — a **global** override (browser-wide, all sketches) or a **local** one (this sketch) — via double-click; the shown scope is stored in the sketch. So authored defaults are a starting point, and every section is a place users can annotate their own findings.
+
+**Custom inspectors** get this for free: render `<help-slot .binding=${b} .path=${'@group/<id>'}></help-slot>` under each section header (and `.path=${'intro'}` for the intro). Don't re-type the markdown — the default is single-sourced from the schema via `binding.helpDefault(path)`. See `web/src/editors/brutal-fold-inspector.ts` (`section()` helper). Effects on the **generic** inspector need zero TS — groups, labels, and help render automatically from the schema.
+
+**Checklist per effect:** every meaningful field has `.label(display, short)`; params are clustered under `.group(id, name)` sections; one `.helpField("intro", …)`; `.groupHelp` on sections that warrant it; help reads like a manual (how-to + what-to-try), markdown, and is NOT on every field.
+
 **GPU platform features** — what the host actually supports. Reach for the right tool instead of working around what you assume isn't there.
 
 | Capability                              | API                                                                                          | When it's the right answer                                                            |
@@ -939,6 +963,7 @@ For `bool`-typed debug toggles, the `mute`-style schema entry works well:
 
 - [ ] Uses the per-instance ABI (§0): mutable state in `struct State` threaded via `self`; only immutable type-shared resources (PSOs, shader modules, samplers) are file-static. No file-static mutable state.
 - [ ] All parameters declared in `state::Schema` with `order:` and a sensible `io:` flag.
+- [ ] **Legible** (§0 "Legibility"): every meaningful field has `.label(display, short)`; params are clustered under `.group(id, name)` sections; one `.helpField("intro", …)` plus `.groupHelp` on the sections that warrant it (help is markdown, manual-tone — how-to + what-to-try — and NOT on every field).
 - [ ] Declares its capability tags (§0 "Capabilities") — including a **temporal contract** (§2.3): `TimeIndependent` / `SeekableApproximate` / none. Generators and modulation sources/shapers declare their role tags too.
 - [ ] Standard params come first; tuning / debug params after.
 - [ ] Every parameter is on a normalized range OR has a documented perceptual mapping in its description.

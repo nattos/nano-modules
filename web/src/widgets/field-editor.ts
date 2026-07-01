@@ -88,6 +88,14 @@ export interface FieldBinding {
   getHelp?(slotPath: string): { scope?: 'global' | 'local'; text?: string } | undefined;
 
   /**
+   * The effect-AUTHORED default markdown for a slot path — the single source of
+   * truth in the schema: a `helpField`'s `default`, or `groups[id].help` for a
+   * `@group/<id>` path. Lets custom inspectors reference slot paths without
+   * re-typing the help text. Undefined when the schema authored none.
+   */
+  helpDefault?(slotPath: string): string | undefined;
+
+  /**
    * Merge a partial help override (scope and/or local text) for a slot path into
    * the sketch. One undo point per call (commit on blur / segment switch).
    */
