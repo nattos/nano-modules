@@ -231,7 +231,7 @@ void module_init() {
 void* create() {
   auto* s = new State();
   s->seed_buf  = gpu::Device::createBuffer(sizeof(float) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
-  s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 8 * MAX_SEEDS, gpu::BufferUsage::Storage);
+  s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
   s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
   s->seen_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * SEEN_WORDS, gpu::BufferUsage::Storage);
@@ -281,7 +281,7 @@ static void seed_pool(State* s) {
       buf[j * 4 + 0] = next();  // pos.x
       buf[j * 4 + 1] = next();  // pos.y
       buf[j * 4 + 2] = 0.0f;    // score
-      buf[j * 4 + 3] = 0.0f;    // flags
+      buf[j * 4 + 3] = 1.0f;    // flags: active
     }
     s->seed_buf.writeBytes(buf, sizeof(float) * 4 * n, sizeof(float) * 4 * base);
   }

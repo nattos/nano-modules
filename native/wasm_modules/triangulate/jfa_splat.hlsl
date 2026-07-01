@@ -18,6 +18,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   uint i = gid.x;
   if (i >= u_count) return;
   Seed s = seeds[i];
+  if (s.flags < 0.5) return;            // inactive (decimated) → not a Voronoi cell
   int2 p = int2(clamp(s.pos, float2(0.0, 0.0), float2(0.99999, 0.99999)) * float2(u_w, u_h));
   idTex[p] = (float)i;
 }

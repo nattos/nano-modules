@@ -22,6 +22,9 @@ cbuffer TakeoverUniforms : register(b3) {
   uint  u_pad1, u_pad2;
 };
 
+static const float DEC_GAMMA = 8.0;   // decimation → survival-importance exponent
+static const float DEC_HYST  = 0.06;  // activation hysteresis (stickiness)
+
 float feat_at(float2 pos) {
   int2 p = int2(clamp(pos, float2(0.0, 0.0), float2(0.99999, 0.99999)) * float2(u_w, u_h));
   return max(0.0, feat.Load(int3(p, 0)).a);
@@ -48,41 +51,56 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 candPos = (float2(tri_cand_px(cand), tri_cand_py(cand)) + 0.5) / float2(u_w, u_h);
 
   float rate_hz = pow(60.0, u_churn) - 1.0;
+  float pflip = 1.0 - exp(-rate_hz * u_dt);
 
-  // Starved cell (owns ~no pixels): stochastically respawn to break stasis.
-  if (mass < 1e-4) {
-    float p = 1.0 - exp(-rate_hz * u_dt);
-    if (tri_hash_f(i * 9781u + u_frame) < p) s.pos = tri_hash2(i + 1u, u_frame * 3u + 1u);
+  if (u_mode == 0u) {
+    // Ridge Protect. Two mechanisms, both weight-driven:
+    //   POSITION — relax toward the W-weighted centroid so vertex density ∝ W
+    //     (the ridge/corner/void weights shape WHERE detail goes).
+    //   DECIMATION via ACTIVATION — each seed survives with a STICKY, stochastic
+    //     probability that falls off with its importance: keep = W^(decimation·γ).
+    //     A fixed per-seed threshold + hysteresis makes the survivor set stable
+    //     (sticky) and random (stochastic); flips happen at the Poisson rate.
+    //     Deactivated seeds drop out of the Voronoi entirely → fewer vertices →
+    //     genuinely coarser, coalesced triangles (still a full Delaunay of the
+    //     survivors → no holes). This is what lets decimation act STRONGLY.
+    float my_w  = s.score;                              // importance at this seed
+    bool active = s.flags > 0.5;
+    float r_i   = tri_hash_f(i * 2246822519u) * 0.9;    // fixed survival threshold
+    float keep  = pow(max(my_w, 1e-3), u_decimation * DEC_GAMMA);
+    if (tri_hash_f(i * 3266489917u + u_frame) < pflip) {
+      if (active) { if (keep < r_i - DEC_HYST) active = false; }
+      else        { if (keep > r_i + DEC_HYST) active = true; }
+    }
+    if (active) {
+      if (mass < 1e-4) {                                // active but homeless → respawn
+        if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = tri_hash2(i + 1u, u_frame * 3u + 1u);
+      } else {
+        float2 dd = (s.pos - ctr) * float2(u_aspect, 1.0);
+        float conf = saturate(length(dd) / 0.10);
+        if (tri_hash_f(i * 2654435761u + u_frame) < 1.0 - exp(-rate_hz * u_dt * conf))
+          s.pos = saturate(ctr);
+      }
+    }
+    // Inactive seeds freeze in place (they re-enter where they left).
+    s.flags = active ? 1.0 : 0.0;
     seeds[i] = s;
     return;
   }
 
-  // Unweighted (area) centroid — the dispersion target.
-  float pixN = float(max(accum[b + 4], 1u));
-  float2 area_ctr = float2(float(accum[b + 5]), float(accum[b + 6])) / (pixN * TRI_FX);
+  // Modes 1/2/3 keep every seed active (no activation decimation).
+  s.flags = 1.0;
+
+  // Starved cell (owns ~no pixels): stochastically respawn to break stasis.
+  if (mass < 1e-4) {
+    if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = tri_hash2(i + 1u, u_frame * 3u + 1u);
+    seeds[i] = s;
+    return;
+  }
 
   float2 target;
   float confidence;   // 0..1 margin-normalized merge strength
-  if (u_mode == 0u) {
-    // Ridge Protect — the mesh density follows the importance field W, with
-    // `decimation` setting HOW PEAKED. A single stable target, blended by
-    // decimation, keeps it crisp (teleport only when the seed is far off; then
-    // it settles) and live (raising/lowering decimation moves the target both
-    // ways). ctr = W-weighted centroid (density ∝ W); area_ctr = unweighted
-    // (uniform); candPos = the cell's argmax-W pixel (peak).
-    //   decimation 0.0 → uniform          (ignores W)
-    //   decimation 0.5 → density ∝ W       (weights fully shape the mesh)
-    //   decimation 1.0 → peaked on the W maxima (max contrast)
-    float2 target = (u_decimation < 0.5)
-        ? lerp(area_ctr, ctr, u_decimation * 2.0)
-        : lerp(ctr, candPos, (u_decimation - 0.5) * 2.0);
-    float2 dd = (s.pos - target) * float2(u_aspect, 1.0);
-    float conf = saturate(length(dd) / 0.10);
-    if (tri_hash_f(i * 2654435761u + u_frame) < 1.0 - exp(-rate_hz * u_dt * conf))
-      s.pos = saturate(target);
-    seeds[i] = s;
-    return;
-  } else if (u_mode == 1u) {
+  if (u_mode == 1u) {
     // Cell residual: how far the seed sits from its cell's weighted centre.
     target = ctr;
     float2 d = (s.pos - ctr) * float2(u_aspect, 1.0);

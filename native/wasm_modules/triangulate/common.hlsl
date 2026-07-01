@@ -45,15 +45,11 @@ static const float TRI_FX = 1024.0;
 uint  tri_qw(float w)  { return (uint)(saturate(w) * 65535.0); }
 float tri_dqw(uint q)  { return (float)q / 65535.0; }
 
-// Accumulator layout: 8 uints per seed.
+// Accumulator layout: 4 uints per seed.
 //   [0] massFx   = Σ W·TRI_FX         (importance-weighted mass)
-//   [1] wxFx     = Σ W·x·TRI_FX
+//   [1] wxFx     = Σ W·x·TRI_FX       (weighted-centroid numerator)
 //   [2] wyFx     = Σ W·y·TRI_FX
 //   [3] candPack = InterlockedMax of tri_pack_cand(...)  (argmax-importance pixel)
-//   [4] pixCount = Σ 1                 (unweighted cell area, in pixels)
-//   [5] sxFx     = Σ x·TRI_FX          (unweighted centroid numerator)
-//   [6] syFx     = Σ y·TRI_FX
-//   [7] (pad)
-static const uint TRI_ACCUM_STRIDE = 8u;
+static const uint TRI_ACCUM_STRIDE = 4u;
 
 #endif
