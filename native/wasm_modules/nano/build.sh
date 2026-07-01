@@ -161,10 +161,14 @@ echo "  phase_fold shaders compiled (SPV: backdrop+stream+solve+cycle+select+flo
 # triangulate — topology-following GPU Delaunay triangulation. Feature maps
 # (blur + derivatives) → JFA Voronoi → stochastic-takeover seed relaxation →
 # triple-point Delaunay edges rasterized as instanced line quads.
-#   P0: passthrough (tex_in → tex_out) only; later phases add the passes above.
-compile_shaders_compute_var_spv triangulate passthrough
-_emit_spv_header_var triangulate passthrough
-echo "  triangulate shaders compiled (SPV: passthrough)"
+#   feature — pre-blurred input → ridge/corner/density importance field (rgba16f).
+#   present — importance field / input → tex_out (debug views + mesh compositing).
+#   (uses the shared fx::GaussianBlur → needs blur_shaders.h for effect_blur.h.)
+compile_shaders_compute_spv blur
+compile_shaders_compute_var_spv triangulate feature
+compile_shaders_compute_var_spv triangulate present
+_emit_spv_header_var triangulate feature present
+echo "  triangulate shaders compiled (SPV: feature + present; blur)"
 
 echo "=== Building WASM (nano) ==="
 

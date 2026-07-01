@@ -25,15 +25,39 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_blur.h>
 #include "triangulate_shaders.h"
 
 #include <cstdint>
+#include <cmath>
 
 namespace triangulate {
 
+// Tuning constants (folded into uniforms; not yet exposed as fields).
+static constexpr float FEATURE_BLUR_SCALE = 0.6f;  // feature_scale=1 → radius 0.6 of the blur ceiling
+static constexpr float STENCIL_MAX_PX     = 7.0f;  // derivative stencil widens with feature_scale
+static constexpr float RIDGE_GAIN         = 40.0f; // soft-normalize gains (tuned via debug views)
+static constexpr float CORNER_GAIN        = 4000.0f;
+
+struct FeatureUniforms {
+  float ridge_w, corner_w, void_w, stencil;
+  float ridge_gain, corner_gain, _pad0, _pad1;
+};
+static_assert(sizeof(FeatureUniforms) == 32, "FeatureUniforms layout");
+
+struct PresentUniforms {
+  uint32_t debug_view, bg_mode;
+  float _pad0, _pad1;
+};
+static_assert(sizeof(PresentUniforms) == 16, "PresentUniforms layout");
+
 // ---- Schema-mirrored params (defaults match the schema) --------------------
 struct State {
-  gpu::Buffer  uniform_buf;    // reserved for later passes
+  gpu::Buffer  feature_buf;    // FeatureUniforms
+  gpu::Buffer  present_buf;    // PresentUniforms
+  gpu::Texture blur_tex;       // RGBA8 pre-blur of the input
+  gpu::Texture feat_tex;       // RGBA16F: r=density g=ridge b=corner a=importance
+  int          tex_w = 0, tex_h = 0;
   bool         initialized = false;
 
   // Standard
@@ -58,7 +82,9 @@ struct State {
 };
 
 // Type-shared, compiled once.
-static gpu::ComputePSO s_pso_passthrough;
+static gpu::ComputePSO s_pso_feature;
+static gpu::ComputePSO s_pso_present;
+static fx::GaussianBlur s_blur;
 
 void module_init() {
   state::init("filter.mesh.triangulate", {1, 0, 0},
@@ -106,33 +132,54 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("passthrough", PASSTHROUGH_SPV, PASSTHROUGH_SPV_SIZE);
-  auto cs = gpu::Device::createShaderModuleByName("passthrough");
-  if (!cs) return;
-  s_pso_passthrough = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8));
+  state::registerShaderSPV("triangulate_feature", FEATURE_SPV, FEATURE_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("triangulate_present", PRESENT_SPV, PRESENT_SPV_SIZE);
+  auto cs_feature = gpu::Device::createShaderModuleByName("triangulate_feature");
+  auto cs_present = gpu::Device::createShaderModuleByName("triangulate_present");
+  if (!cs_feature || !cs_present) return;
+
+  s_pso_feature = gpu::Device::createComputePSO(cs_feature, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
+  s_pso_present = gpu::Device::createComputePSO(cs_present, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+  s_blur.init();
 
   state::log("triangulate: module initialized");
 }
 
 void* create() {
   auto* s = new State();
-  s->uniform_buf = gpu::Device::createBuffer(16, gpu::BufferUsage::Uniform);
+  s->feature_buf = gpu::Device::createBuffer(sizeof(FeatureUniforms), gpu::BufferUsage::Uniform);
+  s->present_buf = gpu::Device::createBuffer(sizeof(PresentUniforms), gpu::BufferUsage::Uniform);
   return s;
 }
 
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  if (s->uniform_buf.valid()) s->uniform_buf.release();
+  if (s->feature_buf.valid()) s->feature_buf.release();
+  if (s->present_buf.valid()) s->present_buf.release();
+  if (s->blur_tex.valid())    s->blur_tex.release();
+  if (s->feat_tex.valid())    s->feat_tex.release();
   delete s;
 }
 
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  if (!s_pso_passthrough.valid()) return;
+  if (!s_pso_feature.valid() || !s_pso_present.valid()) return;
   s->initialized = true;
+}
+
+static void ensureTextures(State* s, int w, int h) {
+  if (s->blur_tex.valid() && s->tex_w == w && s->tex_h == h) return;
+  if (s->blur_tex.valid()) s->blur_tex.release();
+  if (s->feat_tex.valid()) s->feat_tex.release();
+  s->blur_tex = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA8);
+  s->feat_tex = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
+  s->tex_w = w;
+  s->tex_h = h;
 }
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
@@ -169,13 +216,50 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // P0: passthrough. Later phases replace this with the full pipeline.
-  auto cp = gpu::ComputePass::begin();
-  cp.setPSO(s_pso_passthrough);
-  cp.setTexture(in, 0, 0);
-  cp.setTexture(out, 1, 1);
-  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-  cp.end();
+  ensureTextures(s, vp_w, vp_h);
+  if (!s->blur_tex.valid() || !s->feat_tex.valid()) return;
+
+  const int gx = (vp_w + 7) / 8;
+  const int gy = (vp_h + 7) / 8;
+
+  // 1. Pre-blur the input so the derivatives read a smooth field.
+  s_blur.applyWithRadius(in, s->blur_tex, vp_w, vp_h,
+                         s->feature_scale * FEATURE_BLUR_SCALE, s->quality);
+
+  // 2. Feature maps → importance field W (rgba16f).
+  FeatureUniforms fu = {};
+  fu.ridge_w    = s->ridge_weight;
+  fu.corner_w   = s->corner_weight;
+  fu.void_w     = s->void_weight;
+  fu.stencil    = 1.0f + s->feature_scale * STENCIL_MAX_PX;
+  fu.ridge_gain = RIDGE_GAIN;
+  fu.corner_gain= CORNER_GAIN;
+  s->feature_buf.writeOne(fu);
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_feature);
+    cp.setTexture(s->blur_tex, 0, 0);
+    cp.setTexture(s->feat_tex, 1, 1);
+    cp.setBuffer(s->feature_buf, 2);
+    cp.dispatch(gx, gy);
+    cp.end();
+  }
+
+  // 3. Present: mesh comes later; for now show the input, or a debug map.
+  PresentUniforms pu = {};
+  pu.debug_view = (uint32_t)s->debug_view;
+  pu.bg_mode    = (uint32_t)s->bg_mode;
+  s->present_buf.writeOne(pu);
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_present);
+    cp.setTexture(s->feat_tex, 0, 0);
+    cp.setTexture(in, 1, 0);
+    cp.setTexture(out, 2, 1);
+    cp.setBuffer(s->present_buf, 3);
+    cp.dispatch(gx, gy);
+    cp.end();
+  }
 
   gpu::Device::submit();
 }
