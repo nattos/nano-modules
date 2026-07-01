@@ -135,51 +135,75 @@ static gpu::ComputePSO s_pso_buildlut;
 static gpu::ComputePSO s_pso_present;
 
 void module_init() {
-  state::init("source.shape_fold", {1, 0, 0},
+  state::init("source.shape_fold", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Shape Fold\n"
+        "An evolving-shape generator. Drag the XY pad to explore a baked atlas of "
+        "resolved shapes: **X** raises *Frequency* (denser detail), **Y** raises "
+        "*Simplicity* (cleaner forms). The field is auto-leveled and shown as "
+        "grayscale or a colormap — raw material for downstream effects to style.\n\n"
+        "**Try:** push *Temporal Complexity* up and *Speed* low for a slow, richly "
+        "animating field; turn on *Autopilot* to let it wander the atlas on its own; "
+        "swap the *Colormap* to recolour the whole look.")
       // --- Shape axes (the custom XY pad drives frequency + simplicity) ---
-      .floatField("frequency", 0.25f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("simplicity", 0.85f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("shape", "Shape")
+        .groupHelp(
+          "The core look. *Frequency* (X) sets how dense the detail is; *Simplicity* "
+          "(Y) trades chaos for clean forms. *Temporal Complexity* picks how richly "
+          "the chosen shape animates, and *Scale* zooms the field in or out.")
+      .floatField("frequency", 0.25f, 0.0f, 1.0f, state::PrimaryInput).label("Frequency", "Freq")
+      .floatField("simplicity", 0.85f, 0.0f, 1.0f, state::PrimaryInput).label("Simplicity", "Simp")
       // Temporal-complexity (z): 0 = hold still → 1 = animate as richly as the
       // shape allows (trilinear trajectory layer select).
-      .floatField("temporal_complexity", 0.66f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("temporal_complexity", 0.66f, 0.0f, 1.0f, state::PrimaryInput).label("Temporal Complexity", "Temp")
       // Zoom. Higher = zoom IN (bigger features); lower zooms out, revealing
       // more of the periodic field beyond the prototype's [-1,1] window.
-      .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput)
+      .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput).label("Scale", "Scale")
       // --- Animation ---
+      .group("animation", "Animation")
       // Autoplay clock speed (0 = frozen). [0,1] with a quadratic bend onto the
       // real 0..3 range, so the low end has fine control.
-      .floatField("time_speed", 0.58f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("time_speed", 0.58f, 0.0f, 1.0f, state::PrimaryInput).label("Speed", "Spd")
       // Time-warp (bipolar). τ(t) = t − (ease/2π)·sin(2π t). +1 = rest at the
       // loop point, surge through the middle; −1 = surge at the loop point, rest
       // in the middle; 0 = uniform. |ease|≤1 keeps it monotone.
-      .floatField("ease", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("ease", 0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Ease", "Ease")
       // How gradually AND-edges fade in/out (the soft birth gate width).
-      .floatField("birth_softness", 0.45f, 0.02f, 1.0f, state::PrimaryInput)
+      .floatField("birth_softness", 0.45f, 0.02f, 1.0f, state::PrimaryInput).label("Birth Softness", "Birth")
       // --- Autopilot (non-destructive XY override + broadcast) ---
-      .boolField("autopilot", false, state::PrimaryInput)
+      .group("autopilot", "Autopilot")
+        .groupHelp(
+          "Spirals the shape's XY position on its own, **without touching** your "
+          "Frequency/Simplicity inputs. *Orbit Speed* sets the rate. Turn on **Snap** "
+          "to hold each shape and hop to a new one every *Hold* seconds (with optional "
+          "*Jitter*), or fire **Jump** to leap manually.")
+      .boolField("autopilot", false, state::PrimaryInput).label("Autopilot", "Auto")
       // Orbit speed. [0,1] with a quadratic bend onto the real 0.05..3 range.
-      .floatField("ap_speed", 0.43f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("ap_speed", 0.43f, 0.0f, 1.0f, state::PrimaryInput).label("Orbit Speed", "Spd")
       // Snap: hold the current shape, then jump to a new point.
-      .boolField("ap_snap", false, state::PrimaryInput)
+      .boolField("ap_snap", false, state::PrimaryInput).label("Snap", "Snap")
       // Hold seconds between auto-jumps. 0 = never auto-jump (hold until the
       // jump trigger fires).
-      .floatField("ap_hold_period", 2.0f, 0.0f, 8.0f, state::PrimaryInput)
+      .floatField("ap_hold_period", 2.0f, 0.0f, 8.0f, state::PrimaryInput).label("Hold Period", "Hold")
       // Randomize each hold interval by ± this fraction of the base period.
-      .floatField("ap_hold_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("ap_hold_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Hold Jitter", "Jit")
       // Jump now — switch to a fresh point immediately (and reset the hold timer).
-      .eventField("ap_jump", state::PrimaryInput)
+      .eventField("ap_jump", state::PrimaryInput).label("Jump", "Jump")
       // --- Auto-levels (histogram normalization, median → 0) ---
+      .group("levels", "Auto-levels")
       // Below this contrast, taper the auto-levels boost so the field eases
       // toward black instead of flashing as it collapses to solid.
-      .floatField("level_ease", 0.25f, 0.0f, 0.5f, state::PrimaryInput)
+      .floatField("level_ease", 0.25f, 0.0f, 0.5f, state::PrimaryInput).label("Level Ease", "LvlEas")
       // --- Output ---
+      .group("output", "Output")
       // Pre-grade value drive: >1 boosts (pushes brights into the rolloff),
       // <1 reduces toward mid. 1 = unity.
-      .floatField("exposure", 1.0f, 0.0f, 4.0f, state::PrimaryInput)
+      .floatField("exposure", 1.0f, 0.0f, 4.0f, state::PrimaryInput).label("Exposure", "Expo")
       .selectField("output_mode", 1, state::PrimaryInput,
                    {{"Grayscale", 0}, {"Magma", 1}, {"Inferno", 2},
-                    {"Viridis", 3}, {"Plasma", 4}, {"Turbo", 5}}, /*wrap=*/true)
+                    {"Viridis", 3}, {"Plasma", 4}, {"Turbo", 5}}, /*wrap=*/true).label("Colormap", "Color")
       // Broadcast: the effective XY (epicycle when autopilot is on, else the
       // input XY) so the custom editor can show the live position.
       .floatField("autopilot_x", 0.25f, 0.0f, 1.0f, state::SecondaryOutput)

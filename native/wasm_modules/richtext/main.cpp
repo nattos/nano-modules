@@ -136,11 +136,36 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 }
 
 void module_init() {
-  state::init("source.text.rich", {1, 0, 0},
+  state::init("source.text.rich", {1, 0, 1},
     state::Schema()
-      .textField   ("html",  GEN_RICHTEXT_DEFAULT_HTML, state::PrimaryInput)
-      .textField   ("css",   GEN_RICHTEXT_DEFAULT_CSS,  state::PrimaryInput)
-      .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Rich Text\n"
+        "A full **HTML + CSS** document laid out by Blitz (Stylo cascade, Taffy "
+        "flex/grid, parley shaping) and rendered through the same MSDF atlas as "
+        "plain Text — so flexbox, coloured spans, mixed sizes/weights and complex "
+        "scripts all *just work*, crisp at any scale and byte-identical in the "
+        "browser and native.\n\n"
+        "**Try:** the default doc drives its whole look from a handful of CSS "
+        "variables in `:root` — retune colours and the master font-size there in "
+        "one place. Use flexbox for lower-thirds and layouts, then wire the output "
+        "into a filter chain for animated motion-graphics titles.")
+      .group("content", "Content")
+        .groupHelp(
+          "**Structure** and **styling** are split into two editors. *HTML* is the "
+          "document body (it's wrapped in a real `<html><body>` scaffold so block "
+          "elements size correctly); *CSS* is dropped into a `<style>` block ahead "
+          "of it. Full CSS cascade + flexbox/grid are supported — treat it like a "
+          "tiny web page.")
+      .textField   ("html",  GEN_RICHTEXT_DEFAULT_HTML, state::PrimaryInput).label("HTML", "HTML")
+      .textField   ("css",   GEN_RICHTEXT_DEFAULT_CSS,  state::PrimaryInput).label("CSS", "CSS")
+      .group("layout", "Layout")
+        .groupHelp(
+          "The document lays out into the output's pixel viewport, so CSS pixels map "
+          "1:1 to output pixels and `100vw` fills the node. *Scale* is a zoom over "
+          "that mapping (2 = twice as large) — handy for hidpi output without "
+          "editing every size in the CSS.")
+      .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput).label("Scale", "Scale")
       .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
       // Generates its image; the tex_in overlay is optional (transparent when

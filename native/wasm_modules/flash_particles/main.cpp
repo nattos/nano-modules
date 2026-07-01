@@ -263,62 +263,115 @@ static void apply_count_change(State& s) {
 
 // Type-level setup: schema + shared compute/render PSOs.
 void module_init() {
-  state::init("source.particles.flash_particles", {1, 0, 0},
+  state::init("source.particles.flash_particles", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Flash Particles\n"
+        "A **mask-driven particle compositor**. It keeps a GPU pool of "
+        "short-lived particles, spawning each where a **mask** is brightest and "
+        "capturing the underlying image colour there. Particles live, fade on an "
+        "alpha curve, then respawn — a continuous shimmer keyed to image "
+        "content, composited straight over the input.\n\n"
+        "**Try:** wire a *mask* input (a luma, edge, or motion pass) to steer "
+        "where particles land — with none wired it falls back to the image "
+        "itself. Push *Count* up and *Lifetime* down for a fast sparkle, dial "
+        "*Global Color* + *Color Blend* to tint between captured and chosen "
+        "colour, and switch *Composite* to **Add** for glowing light bursts.")
       // ---- Pool ----
-      .intField  ("count",            64,    1,    MAX_PARTICLES, state::PrimaryInput)
+      .group("pool", "Pool")
+      .intField  ("count",            64,    1,    MAX_PARTICLES, state::PrimaryInput).label("Count", "Count")
       // ---- Lifetime ----
-      .floatField("life",             1.5f,  0.05f, 10.0f,        state::PrimaryInput)
-      .floatField("respawn_delay",    0.3f,  0.0f,  10.0f,        state::PrimaryInput)
-      .floatField("life_jitter",      0.3f,  0.0f,  1.0f,         state::PrimaryInput)
+      .group("lifetime", "Lifetime & Spawn")
+        .groupHelp(
+          "How long each particle lives and how it respawns. *Lifetime* is the "
+          "visible span; *Respawn Delay* is the dark gap before a slot fires "
+          "again; *Lifetime Jitter* randomizes per particle so they don't pulse "
+          "in lockstep. *Mask Temperature* controls spawn adherence: 0 always "
+          "picks the brightest mask candidate; higher values scatter toward "
+          "darker areas (very high approaches uniform random).")
+      .floatField("life",             1.5f,  0.05f, 10.0f,        state::PrimaryInput).label("Lifetime", "Life")
+      .floatField("respawn_delay",    0.3f,  0.0f,  10.0f,        state::PrimaryInput).label("Respawn Delay", "Respwn")
+      .floatField("life_jitter",      0.3f,  0.0f,  1.0f,         state::PrimaryInput).label("Lifetime Jitter", "L Jit")
       // Temperature on the mask-sample softmax. 0 = greedy / argmax
       // (always pick the brightest of K candidates — sharpest
       // adherence to the mask). Increasing it spreads the spawn
       // probability across darker candidates too; very large values
       // → uniform random.
-      .floatField("mask_temperature", 0.0f,  0.0f,  4.0f,         state::PrimaryInput)
+      .floatField("mask_temperature", 0.0f,  0.0f,  4.0f,         state::PrimaryInput).label("Mask Temperature", "M Temp")
       // ---- Geometry (isotropic uv — equal w/h is a pixel square) ----
-      .floatField("width",            0.05f, 0.001f, 1.0f,        state::PrimaryInput)
-      .floatField("height",           0.05f, 0.001f, 1.0f,        state::PrimaryInput)
-      .floatField("width_jitter",     0.3f,  0.0f,  1.0f,         state::PrimaryInput)
-      .floatField("height_jitter",    0.3f,  0.0f,  1.0f,         state::PrimaryInput)
-      .floatField("global_scale",     1.0f,  0.01f, 4.0f,         state::PrimaryInput)
-      .floatField("rotation",         0.0f,  -360.0f, 360.0f,     state::PrimaryInput)
-      .floatField("rotation_jitter",  30.0f, 0.0f,  360.0f,       state::PrimaryInput)
+      .group("geometry", "Geometry")
+        .groupHelp(
+          "Particle size and orientation. Sizes are in *isotropic uv* — equal "
+          "*Width* and *Height* always render as a true pixel square regardless "
+          "of viewport aspect. *Global Scale* multiplies everything at once; the "
+          "*Jitter* knobs (width / height / rotation) randomize each particle so "
+          "the spray looks organic rather than stamped.")
+      .floatField("width",            0.05f, 0.001f, 1.0f,        state::PrimaryInput).label("Width", "Width")
+      .floatField("height",           0.05f, 0.001f, 1.0f,        state::PrimaryInput).label("Height", "Height")
+      .floatField("width_jitter",     0.3f,  0.0f,  1.0f,         state::PrimaryInput).label("Width Jitter", "W Jit")
+      .floatField("height_jitter",    0.3f,  0.0f,  1.0f,         state::PrimaryInput).label("Height Jitter", "H Jit")
+      .floatField("global_scale",     1.0f,  0.01f, 4.0f,         state::PrimaryInput).label("Global Scale", "Scale")
+      .floatField("rotation",         0.0f,  -360.0f, 360.0f,     state::PrimaryInput).label("Rotation", "Rot")
+      .floatField("rotation_jitter",  30.0f, 0.0f,  360.0f,       state::PrimaryInput).label("Rotation Jitter", "R Jit")
       // ---- Mask shape ----
+      .group("shape", "Shape")
       .selectField("shape_kind",      SHAPE_GAUSSIAN,             state::PrimaryInput, {
         {"Solid",    SHAPE_SOLID},
         {"Circle",   SHAPE_CIRCLE},
         {"Gaussian", SHAPE_GAUSSIAN},
-      })
-      .floatField("shape_param",      0.5f,  0.0f,  1.0f,         state::PrimaryInput)
+      }).label("Shape", "Shape")
+      .floatField("shape_param",      0.5f,  0.0f,  1.0f,         state::PrimaryInput).label("Shape Param", "Param")
       // ---- Alpha decay + frame jitter ----
-      .floatField("alpha_curve",      1.5f,  0.25f, 4.0f,         state::PrimaryInput)
-      .floatField("frame_alpha_jitter", 0.0f, 0.0f, 1.0f,         state::PrimaryInput)
+      .group("alpha", "Alpha")
+      .floatField("alpha_curve",      1.5f,  0.25f, 4.0f,         state::PrimaryInput).label("Alpha Curve", "Curve")
+      .floatField("frame_alpha_jitter", 0.0f, 0.0f, 1.0f,         state::PrimaryInput).label("Frame Alpha Jitter", "FA Jit")
       // ---- Color ----
-      .rgbField  ("global_color",     1.0f, 1.0f, 1.0f,           state::PrimaryInput)
-      .floatField("color_blend",      0.5f,  0.0f,  1.0f,         state::PrimaryInput)
-      .floatField("hue_jitter",       0.1f,  0.0f,  1.0f,         state::PrimaryInput)
-      .floatField("brightness_jitter", 0.1f, 0.0f,  1.0f,         state::PrimaryInput)
-      .floatField("saturation_jitter", 0.1f, 0.0f,  1.0f,         state::PrimaryInput)
-      .floatField("alpha_jitter",     0.1f,  0.0f,  1.0f,         state::PrimaryInput)
+      .group("color", "Color")
+        .groupHelp(
+          "Each particle can wear the colour it captured from the image at spawn "
+          "or a chosen *Global Color* — *Color Blend* cross-fades between them "
+          "(0 = captured, 1 = global). The *Jitter* knobs (hue / brightness / "
+          "saturation / alpha) spread each particle around that colour for a "
+          "livelier, less flat spray.")
+      .rgbField  ("global_color",     1.0f, 1.0f, 1.0f,           state::PrimaryInput).label("Global Color", "Color")
+      .floatField("color_blend",      0.5f,  0.0f,  1.0f,         state::PrimaryInput).label("Color Blend", "Blend")
+      .floatField("hue_jitter",       0.1f,  0.0f,  1.0f,         state::PrimaryInput).label("Hue Jitter", "Hue")
+      .floatField("brightness_jitter", 0.1f, 0.0f,  1.0f,         state::PrimaryInput).label("Brightness Jitter", "Bright")
+      .floatField("saturation_jitter", 0.1f, 0.0f,  1.0f,         state::PrimaryInput).label("Saturation Jitter", "Sat")
+      .floatField("alpha_jitter",     0.1f,  0.0f,  1.0f,         state::PrimaryInput).label("Alpha Jitter", "A Jit")
       // ---- Composite ----
+      .group("composite", "Composite")
+        .groupHelp(
+          "How the particles land on the frame. **Alpha** blends over the input; "
+          "**Add** accumulates light for glowing bursts. *Input Alpha* dims the "
+          "underlying image (0 = particles on black), *Exposure* boosts particle "
+          "intensity (clips to white), and *Color Alpha* fades the whole colour "
+          "pass out — at 0 it's skipped entirely, yet the motion rail still "
+          "emits for downstream effects.")
       .selectField("blend_mode",      BLEND_ALPHA,                state::PrimaryInput, {
         {"Alpha", BLEND_ALPHA},
         {"Add",   BLEND_ADD},
-      })
-      .floatField("input_alpha",      1.0f,  0.0f,  1.0f,         state::PrimaryInput)
+      }).label("Blend Mode", "Blend")
+      .floatField("input_alpha",      1.0f,  0.0f,  1.0f,         state::PrimaryInput).label("Input Alpha", "In A")
       // RGB multiplier applied per-fragment after the captured/global
       // color blend. Alpha is untouched, so a >1 value boosts intensity
       // and naturally clips to white in the rgba8 surface format.
-      .floatField("exposure",         1.0f,  0.0f,  8.0f,         state::PrimaryInput)
+      .floatField("exposure",         1.0f,  0.0f,  8.0f,         state::PrimaryInput).label("Exposure", "Expo")
       // Global multiplier on the color render's output alpha. At 0 the
       // color raster pass is skipped entirely (motion vectors still
       // emit), letting the user fade particles out without losing the
       // motion-vector channel a downstream effect may consume.
-      .floatField("color_alpha",      1.0f,  0.0f,  1.0f,         state::PrimaryInput)
+      .floatField("color_alpha",      1.0f,  0.0f,  1.0f,         state::PrimaryInput).label("Color Alpha", "Col A")
       // ---- Motion ----
-      .floatField("motion_strength",  0.5f,  0.0f,  1.0f,         state::PrimaryInput)
+      .group("motion", "Motion")
+        .groupHelp(
+          "Particles can also write a **motion-vector** rail for downstream "
+          "motion-blur or optical-flow effects. *Motion Strength* scales the "
+          "emitted velocity; pixels no particle covers inherit the upstream "
+          "motion. This pass only runs when something downstream consumes the "
+          "rail.")
+      .floatField("motion_strength",  0.5f,  0.0f,  1.0f,         state::PrimaryInput).label("Motion Strength", "Motion")
       // ---- Standard I/O ----
       .textureField("tex_in",  state::PrimaryInput)
       // Optional secondary mask. Falls back to tex_in C++-side when

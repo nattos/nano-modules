@@ -293,100 +293,139 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("source.particles.flow_swarm", {1, 0, 0},
+  state::init("source.particles.flow_swarm", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Flow Swarm\n"
+        "A GPU particle swarm that **rides a flow field**. Wire a `flow_field` "
+        "rail (from *phase_fold* or any flow generator) into it and up to a "
+        "million particles are advected along the sampled velocity, each capturing "
+        "the input colour where it spawns and respawning to keep density steady.\n\n"
+        "**Try:** start with a modest *Count* and low *Speed* to read the field, "
+        "then raise *Momentum* for silky trailing inertia; switch *Mode* to **Force** "
+        "and add *Weight* for overshoot; enable *Interactions* to let the swarm "
+        "spread itself evenly or stream in packs.")
       // ---- Pool / advection (the live controls) ----
-      .intField  ("count",        150000, 1, MAX_PARTICLES, state::PrimaryInput)
+      .group("advection", "Pool & Advection")
+        .groupHelp(
+          "The core motion. *Count* sets how many particles are live (the pool is "
+          "pre-sized to 1M, so dial it freely). **Velocity** mode treats the field "
+          "as a target velocity — add *Momentum* for inertia; **Force** mode drives "
+          "a mass (*Weight*) so the field becomes a hint and overshoot emerges. "
+          "*Settle* glues motion back toward the flow, *Substeps* stabilises fast "
+          "flow, and *Jitter* sprays a little life along the direction of travel.")
+      .intField  ("count",        150000, 1, MAX_PARTICLES, state::PrimaryInput).label("Count", "Count")
       // Acceleration mode: Velocity treats the field as a velocity (momentum
       // blends inertia in); Force treats it as a force/acceleration on a mass
       // (weight), so the field becomes a hint and overshoot emerges.
       .selectField("mode",        MODE_VELOCITY, state::PrimaryInput, {
         {"Velocity", MODE_VELOCITY},
         {"Force",    MODE_FORCE},
-      })
-      .floatField("speed",        1.5f,  0.0f,  8.0f,  state::PrimaryInput)
+      }).label("Mode", "Mode")
+      .floatField("speed",        1.5f,  0.0f,  8.0f,  state::PrimaryInput).label("Speed", "Spd")
       // Velocity mode only: 0 = clean sim of the field, →1 = heavy inertia.
-      .floatField("momentum",     0.0f,  0.0f,  0.99f, state::PrimaryInput)
+      .floatField("momentum",     0.0f,  0.0f,  0.99f, state::PrimaryInput).label("Momentum", "Mom")
       // Force mode only: particle mass (accel = field / weight).
-      .floatField("weight",       1.0f,  0.05f, 8.0f,  state::PrimaryInput)
+      .floatField("weight",       1.0f,  0.05f, 8.0f,  state::PrimaryInput).label("Weight", "Wt")
       // Integration substeps per frame: the motion is integrated this many times
       // with dt/substeps, re-sampling the field each time. Higher = stabler /
       // less overshoot for force mode & fast flow (at proportional GPU cost).
-      .intField  ("substeps",     1,     1,     16,    state::PrimaryInput)
+      .intField  ("substeps",     1,     1,     16,    state::PrimaryInput).label("Substeps", "Sub")
       // Settle (both modes): pull each particle's velocity back toward the
       // field flow, keeping it in the stable zone (the limit cycle) and damping
       // force-mode overshoot. 0 = free, 1 = strongly glued to the field.
-      .floatField("pull",         0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("pull",         0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Settle", "Pull")
       // Jitter: a forward SPRAY — ±wobble on the forward speed plus a slight
       // directional spread, scaled by the particle's own speed (rides the flow,
       // not an isotropic cloud).
-      .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput)
+      .floatField("jitter",       0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Jitter", "Jit")
+      .floatField("drag",         0.1f,  0.0f,  4.0f,  state::PrimaryInput).label("Drag", "Drag")
       // ---- Geometry / lifetime ----
+      .group("geometry", "Geometry & Lifetime")
       // size is a [0,1] slider mapped quadratically to a (small) uv size — the
       // IDE clips to 2 decimals so a raw uv range was too coarse at the bottom.
-      .floatField("size",         0.3f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("size_jitter",  0.5f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("life",         4.0f,  0.1f,  30.0f, state::PrimaryInput)
-      .floatField("life_jitter",  0.4f,  0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("size",         0.3f,  0.0f,  1.0f,  state::PrimaryInput).label("Size", "Size")
+      .floatField("size_jitter",  0.5f,  0.0f,  1.0f,  state::PrimaryInput).label("Size Jitter", "SzJit")
+      .floatField("life",         4.0f,  0.1f,  30.0f, state::PrimaryInput).label("Lifetime", "Life")
+      .floatField("life_jitter",  0.4f,  0.0f,  1.0f,  state::PrimaryInput).label("Life Jitter", "LfJit")
       // ---- Color ----
-      .floatField("color_blend",  0.3f,  0.0f,  1.0f,  state::PrimaryInput)
-      .rgbField  ("solid_color",  1.0f, 1.0f, 1.0f,    state::PrimaryInput)
-      .floatField("tint_by_flow", 0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      .group("color", "Colour")
+      .floatField("color_blend",  0.3f,  0.0f,  1.0f,  state::PrimaryInput).label("Colour Blend", "Blend")
+      .rgbField  ("solid_color",  1.0f, 1.0f, 1.0f,    state::PrimaryInput).label("Solid Colour", "Colour")
+      .floatField("tint_by_flow", 0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Tint By Flow", "Tint")
       // ---- Undertow: a depth-gated secondary flow ----
+      .group("undertow", "Undertow")
+        .groupHelp(
+          "A **second current** hidden inside the swarm. Every particle is born "
+          "with a secret depth; *Split* softly selects which depths peel off into "
+          "the undertow (0 = none, 1 = all). Those members run at *Polarity* × the "
+          "field (negative to flow **backwards**, >1 to race ahead) and can *Curl* "
+          "90° off-axis, tinted by *Tint*/*Alpha* — great for counter-flowing layers.")
       // Each particle gets a hidden depth ∈[0,1] at spawn. `split` softly
       // selects which depths join the undertow stream (0 none → 1 all).
-      .floatField("undertow_split",    0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("undertow_split",    0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Undertow Split", "Split")
       // Members travel at `polarity` × the field (1 normal, -1 reverse, 2 = 2×).
-      .floatField("undertow_polarity", 1.0f, -2.0f,  2.0f,  state::PrimaryInput)
+      .floatField("undertow_polarity", 1.0f, -2.0f,  2.0f,  state::PrimaryInput).label("Undertow Polarity", "Polar")
       // Curl rotates the undertow direction: -1 = 90° left, +1 = 90° right.
-      .floatField("undertow_curl",     0.0f, -1.0f,  1.0f,  state::PrimaryInput)
+      .floatField("undertow_curl",     0.0f, -1.0f,  1.0f,  state::PrimaryInput).label("Undertow Curl", "Curl")
       // Members blend toward this tint by membership, with this alpha multiplier.
-      .rgbField  ("undertow_tint",     0.2f, 0.45f, 1.0f,   state::PrimaryInput)
-      .floatField("undertow_alpha",    1.0f,  0.0f,  2.0f,  state::PrimaryInput)
+      .rgbField  ("undertow_tint",     0.2f, 0.45f, 1.0f,   state::PrimaryInput).label("Undertow Tint", "Tint")
+      .floatField("undertow_alpha",    1.0f,  0.0f,  2.0f,  state::PrimaryInput).label("Undertow Alpha", "Alpha")
       // ---- Interactions (particle-vs-particle, via a density buffer) ----
+      .group("interactions", "Interactions")
+        .groupHelp(
+          "Lets particles feel their neighbours through a 1-frame crowding buffer "
+          "(off by default — it adds a splat pass). *Radius* is the sensing range. "
+          "**Density Death** thins over-packed areas back toward even coverage; "
+          "**Avoidance** pushes down the crowd gradient (add *Curl* to swirl, "
+          "*Noise* to unstick symmetric clumps); **Streaming** aligns (+) or "
+          "scatters (−) each particle with its local group. Flip **Debug Density** "
+          "to see the buffer as a heat map while tuning.")
       // Splats particles to a 1-frame-delayed crowding buffer so they can react
       // to each other. Off by default (an extra splat pass).
-      .boolField ("interactions",        false,                state::PrimaryInput)
+      .boolField ("interactions",        false,                state::PrimaryInput).label("Interactions", "Inter")
       // Halo radius in the density buffer — the interaction RANGE.
-      .floatField("interaction_radius",  0.015f, 0.002f, 0.08f, state::PrimaryInput)
+      .floatField("interaction_radius",  0.015f, 0.002f, 0.08f, state::PrimaryInput).label("Interaction Radius", "Radius")
       // Density death: over `threshold` crowding (≈ neighbour count, soft knee)
       // particles get a `death`-scaled chance to die & respawn → uniform density.
-      .floatField("density_threshold",   4.0f,   0.0f,  32.0f, state::PrimaryInput)
-      .floatField("density_death",       0.0f,   0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("density_threshold",   4.0f,   0.0f,  32.0f, state::PrimaryInput).label("Density Threshold", "Thresh")
+      .floatField("density_death",       0.0f,   0.0f,  1.0f,  state::PrimaryInput).label("Density Death", "Death")
       // Avoidance: push down the density gradient (away from neighbours); curl
       // rotates that push ±90° for a swirling avoidance.
-      .floatField("avoid",               0.0f,   0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("avoid_curl",          0.0f,  -1.0f,  1.0f,  state::PrimaryInput)
+      .floatField("avoid",               0.0f,   0.0f,  1.0f,  state::PrimaryInput).label("Avoidance", "Avoid")
+      .floatField("avoid_curl",          0.0f,  -1.0f,  1.0f,  state::PrimaryInput).label("Avoid Curl", "Curl")
       // Random jitter on the avoidance so particles still scatter where the
       // density gradient is flat (a symmetric clump's centre). Default on.
-      .floatField("avoid_noise",         0.08f,  0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("avoid_noise",         0.08f,  0.0f,  1.0f,  state::PrimaryInput).label("Avoid Noise", "Noise")
       // Stream: align (+) or diverge (-) each particle's velocity DIRECTION with
       // the local group's mean motion (read from the proximity texture's motion
       // channels). stream_density scales how many proximate, motion-contributing
       // neighbours are needed to reach ~maximum effect.
-      .floatField("stream",              0.0f,  -1.0f,  1.0f,  state::PrimaryInput)
-      .floatField("stream_density",      3.0f,   0.5f,  32.0f, state::PrimaryInput)
+      .floatField("stream",              0.0f,  -1.0f,  1.0f,  state::PrimaryInput).label("Streaming", "Stream")
+      .floatField("stream_density",      3.0f,   0.5f,  32.0f, state::PrimaryInput).label("Stream Density", "StrDen")
       // Debug: render the density buffer itself (heat map) instead of the swarm.
-      .boolField ("debug_density",       false,                state::PrimaryInput)
+      .boolField ("debug_density",       false,                state::PrimaryInput).label("Debug Density", "Debug")
       // ---- Composite ----
+      .group("composite", "Composite")
       .selectField("blend_mode",  BLEND_ADD, state::PrimaryInput, {
         {"Add",   BLEND_ADD},
         {"Alpha", BLEND_ALPHA},
-      })
-      .floatField("opacity",      1.0f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("input_alpha",  1.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      }).label("Blend Mode", "Blend")
+      .floatField("opacity",      1.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Opacity", "Opac")
+      .floatField("input_alpha",  1.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Input Alpha", "InAlph")
       // ---- Tuning / shape ----
+      .group("shape", "Shape & Tuning")
       .selectField("shape_kind",  SHAPE_POINT, state::PrimaryInput, {
         {"Point",    SHAPE_POINT},
         {"Gaussian", SHAPE_GAUSSIAN},
         {"Circle",   SHAPE_CIRCLE},
         {"Solid",    SHAPE_SOLID},
-      })
-      .floatField("shape_param",  0.5f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("alpha_curve",  0.6f,  0.25f, 4.0f,  state::PrimaryInput)
-      .floatField("exposure",     1.0f,  0.0f,  8.0f,  state::PrimaryInput)
-      .intField  ("seed",         0,     0,     65535, state::PrimaryInput)
+      }).label("Shape", "Shape")
+      .floatField("shape_param",  0.5f,  0.0f,  1.0f,  state::PrimaryInput).label("Shape Param", "Param")
+      .floatField("alpha_curve",  0.6f,  0.25f, 4.0f,  state::PrimaryInput).label("Alpha Curve", "Curve")
+      .floatField("exposure",     1.0f,  0.0f,  8.0f,  state::PrimaryInput).label("Exposure", "Exp")
+      .intField  ("seed",         0,     0,     65535, state::PrimaryInput).label("Seed", "Seed")
       // ---- I/O ----
       .textureField("tex_in",  state::PrimaryInput)
       .flowField(state::PrimaryInput, "flow_field_in")

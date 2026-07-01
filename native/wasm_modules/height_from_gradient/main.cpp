@@ -184,9 +184,29 @@ static gpu::ComputePSO s_pso_mm_reduce;
 static gpu::ComputePSO s_pso_present;
 
 void module_init() {
-  state::init("filter.height_from_gradient", {1, 0, 0},
+  state::init("filter.height_from_gradient", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Height From Gradient\n"
+        "Reconstructs a 3D **height field** from the image: it synthesizes a "
+        "gradient, then solves the Poisson equation for the surface whose slope "
+        "best matches it, and renders that surface as **hillshade, grayscale, "
+        "normals, or contour lines**.\n\n"
+        "**Try:** start with *Gradient Source* = Radial and *Display* = "
+        "Hillshade, then sweep the *Light Angle* to relight the relief. Switch "
+        "Source to *Level Curves* to read the image as a topo map, or feed a "
+        "Motion / Normal / Gradient rail to integrate an existing vector field.")
       // --- Standard (live) ---
+      .group("source", "Gradient Source")
+        .groupHelp(
+          "Where the height's gradient comes from. **Radial** pushes outward "
+          "from the *Center* (magnitude = luma); **Level Curves** treats the "
+          "image as a contour map; **Motion / Normal Map / Gradient Field** "
+          "integrate an existing vector rail. *Gradient Gain* is the master "
+          "strength; the **Core** knobs tame the radial singularity, the "
+          "**Bias / Edge** knobs steer level-curve sign and step, and the "
+          "**Channel / Vector** knobs decode a packed vector source.")
       // Gradient source. Radial — outward from `center`, magnitude = luma.
       // Level Curves — treat the input as a contour map. Motion Vectors — use
       // the incoming render_outputs/motion field. Normal Map — input is a
@@ -194,72 +214,87 @@ void module_init() {
       // the gradient directly.
       .selectField("source", 0, state::PrimaryInput,
                    {{"Radial", 0}, {"Level Curves", 1}, {"Motion Vectors", 2},
-                    {"Normal Map", 3}, {"Gradient Field", 4}}, /*wrap=*/true)
+                    {"Normal Map", 3}, {"Gradient Field", 4}}, /*wrap=*/true).label("Gradient Source", "Source")
       // Anchor (cover-square, aspect-correct; (0,0)=viewport center, §1.5).
       // Radial source: the field center. Level Curves + Radial bias: the
       // up/downhill reference point.
-      .vec2Field("center", 0.0f, 0.0f, state::PrimaryInput, -1.0f, 1.0f)
+      .vec2Field("center", 0.0f, 0.0f, state::PrimaryInput, -1.0f, 1.0f).label("Center", "Center")
       // Gradient magnitude scale (master).
-      .floatField("grad_gain", 1.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("grad_gain", 1.0f, 0.0f, 1.0f, state::PrimaryInput).label("Gradient Gain", "Gain")
       // (Radial) Core smoothing — tames the 1/r divergence singularity at the
       // anchor. `core_radius` sets the flattened-core size (cover-square
       // units); the magnitude ramps from zero across it, turning the spike
       // into a smooth dome. 0 = off (raw spiky field).
-      .floatField("core_radius", 0.12f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("core_radius", 0.12f, 0.0f, 1.0f, state::PrimaryInput).label("Core Radius", "Core R")
       // (Radial) How gradually the core's suppression feathers out.
-      .floatField("core_softness", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("core_softness", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Core Softness", "Core S")
       // (Level Curves) How the uphill/downhill sign is resolved: Radial =
       // height rises outward from `center` (great for nested closed contours);
       // Linear = height rises along `sweep_angle`.
-      .selectField("bias_mode", 0, state::PrimaryInput, {{"Radial", 0}, {"Linear", 1}})
+      .selectField("bias_mode", 0, state::PrimaryInput, {{"Radial", 0}, {"Linear", 1}}).label("Bias Mode", "Bias")
       // (Level Curves, Linear bias) Sweep direction, 0..1 → full circle.
-      .floatField("sweep_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("sweep_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Sweep Angle", "Sweep")
       // (Level Curves) Per-contour step: Uniform = every contour is one equal
       // step (faithful topo map); Proportional = step ∝ edge strength.
-      .selectField("edge_mode", 0, state::PrimaryInput, {{"Uniform", 0}, {"Proportional", 1}})
+      .selectField("edge_mode", 0, state::PrimaryInput, {{"Uniform", 0}, {"Proportional", 1}}).label("Edge Mode", "Edge")
       // (Level Curves, Uniform) Edge-energy cutoff that counts as a contour.
-      .floatField("edge_threshold", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("edge_threshold", 0.1f, 0.0f, 1.0f, state::PrimaryInput).label("Edge Threshold", "Thresh")
       // (Level Curves, Proportional) Edge-strength → step-height scale.
-      .floatField("edge_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("edge_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Edge Gain", "E Gain")
       // (Motion / Normal Map / Gradient Field) How the 2D vector is packed:
       // RG, RG with the Y channel flipped (the GL↔DX normal gotcha), or AG
       // (BC5/DXT5nm swizzle).
       .selectField("channel_mode", 0, state::PrimaryInput,
-                   {{"RG", 0}, {"RG Flip-Y", 1}, {"AG", 2}})
+                   {{"RG", 0}, {"RG Flip-Y", 1}, {"AG", 2}}).label("Channel Packing", "Chan")
       // (Motion / Normal Map / Gradient Field) Zero convention: Signed = 0.0 is
       // zero ([-1,1]); Unsigned = 0.5 is zero ([0,1], remapped).
       .selectField("vector_sign", 0, state::PrimaryInput,
-                   {{"Signed", 0}, {"Unsigned", 1}})
+                   {{"Signed", 0}, {"Unsigned", 1}}).label("Vector Sign", "Sign")
+      // --- Solver ---
+      .group("solver", "Solver")
+        .groupHelp(
+          "How hard the Poisson solve works. More *Iterations* = a smoother, "
+          "more globally consistent surface (the low-frequency shape propagates "
+          "farther) at a linear cost. Drop it for a rougher, faster result.")
       // Jacobi relaxation sweeps per pyramid level (solver tuning, all modes).
       // More = closer to the true least-squares solution (smoother, more
       // global), at linear cost.
-      .intField("iterations", 16, 1, 200, state::PrimaryInput)
+      .intField("iterations", 16, 1, 200, state::PrimaryInput).label("Iterations", "Iters")
+      // --- Display ---
+      .group("display", "Display")
+        .groupHelp(
+          "How the reconstructed height is shown. **Hillshade** relights it "
+          "(sweep *Light Angle* / *Elevation*); **Grayscale** maps height to "
+          "brightness; **Normals** shows the surface normal; **Contours** draws "
+          "iso-lines of the result. *Mix* cross-fades back toward the input, "
+          "and *Tint* colours the shaded / contour output.")
       // How to visualize the reconstructed height. Contours draws iso-lines of
       // OUR reconstructed height — a contour map of the result.
       .selectField("present_mode", 0, state::PrimaryInput,
-                   {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}, {"Contours", 3}}, /*wrap=*/true)
+                   {{"Hillshade", 0}, {"Grayscale", 1}, {"Normals", 2}, {"Contours", 3}}, /*wrap=*/true).label("Display Mode", "Mode")
       // Cross-fade the visualization back toward the input image (all modes).
-      .floatField("mix", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("mix", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Mix", "Mix")
       // Hillshade light azimuth (0..1 → full circle) and elevation
       // (0..1 → horizon→overhead).
-      .floatField("light_angle", 0.375f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("light_elevation", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("light_angle", 0.375f, 0.0f, 1.0f, state::PrimaryInput).label("Light Angle", "L Ang")
+      .floatField("light_elevation", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Light Elevation", "L Elev")
       // Relief steepness — scales the surface slope used to build the normal.
-      .floatField("relief_scale", 0.4f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("light_gain", 1.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("ambient", 0.15f, 0.0f, 1.0f, state::PrimaryInput)
-      .rgbField("tint", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
+      .floatField("relief_scale", 0.4f, 0.0f, 1.0f, state::PrimaryInput).label("Relief Scale", "Relief")
+      .floatField("light_gain", 1.0f, 0.0f, 1.0f, state::PrimaryInput).label("Light Gain", "L Gain")
+      .floatField("ambient", 0.15f, 0.0f, 1.0f, state::PrimaryInput).label("Ambient", "Amb")
+      .rgbField("tint", 1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Tint", "Tint")
       // Grayscale-mode brightness mapping (height is defined up to a constant,
       // so its DC is user-dialed here).
-      .floatField("height_scale", 1.0f, 0.0f, 8.0f, state::PrimaryInput)
-      .floatField("height_offset", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("height_scale", 1.0f, 0.0f, 8.0f, state::PrimaryInput).label("Height Scale", "H Scl")
+      .floatField("height_offset", 0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Height Offset", "H Off")
       // (Contours mode) Iso-level count (how finely the height is sliced) and
       // line thickness (exponential — low values are razor-thin). tint colors
       // the lines. At density 0 the stage is skipped and the output is black.
-      .floatField("contour_density", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("line_width", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("contour_density", 0.2f, 0.0f, 1.0f, state::PrimaryInput).label("Contour Density", "Dens")
+      .floatField("line_width", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Line Width", "Width")
       // --- Debug (last) ---
-      .boolField("debug_show_gradient", false, state::PrimaryInput)
+      .group("debug", "Debug")
+      .boolField("debug_show_gradient", false, state::PrimaryInput).label("Show Gradient", "Grad")
       .capability(state::Capability::TimeIndependent)
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)

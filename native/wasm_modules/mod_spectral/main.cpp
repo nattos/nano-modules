@@ -35,19 +35,40 @@ struct State {
 };
 
 void module_init() {
-  state::init("mod.shaper.spectral", {1, 0, 0},
+  state::init("mod.shaper.spectral", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Spectral Curve\n"
+        "A **modulation shaper**: it bends an incoming modulation signal through a "
+        "spectrally-morphed curve. Instead of sweeping the curve over time (like the "
+        "Spectral LFO), it uses your **Input** value to *look up* the curve — so the "
+        "curve becomes an arbitrary remapping of the signal.\n\n"
+        "**Try:** wire an LFO or envelope into *Input*, then drag the **Morph** pad to "
+        "reshape the response; switch the **Metric** for a wholly different family of "
+        "curves; drop **Amplitude** to soften the effect toward a flat passthrough.")
+      // --- Signal ---
+      .group("signal", "Signal")
       // The signal to remap (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the shaper auto-connect locates it).
-      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned")
+      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned").label("Input", "In")
+      // --- Curve shape (spectral morph manifold) ---
+      .group("shape", "Curve Shape")
+        .groupHelp(
+          "The remapping curve is a snapshot of the **Spectral LFO** morph atlas. "
+          "*Morph X/Y* pick and blend which shape you land on; *Metric* selects which "
+          "spectral feature the atlas is built from (each is a different curve family). "
+          "Turn **Interpolate** off to snap to a single crisp shape instead of blending.")
       // Manifold position — picks/blends the LFO shape that becomes the curve.
-      .floatField("morph_x", 0.5f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("morph_y", 0.5f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("morph_x", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Morph X", "MrphX")
+      .floatField("morph_y", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Morph Y", "MrphY")
       .selectField("metric", 0, state::PrimaryInput,
                    {{"FFT Magnitude", 0}, {"Phase Coherence", 1}, {"Roughness", 2},
-                    {"Spectral vs TD", 3}, {"Combined", 4}}, /*wrap=*/true)
-      .boolField("interpolation", true, state::PrimaryInput)   // off = snap to one shape
-      .floatField("amplitude", 1.0f, 0.f, 1.f, state::SecondaryInput)  // scales around 0.5
+                    {"Spectral vs TD", 3}, {"Combined", 4}}, /*wrap=*/true).label("Metric", "Metric")
+      .boolField("interpolation", true, state::PrimaryInput).label("Interpolate", "Interp")   // off = snap to one shape
+      // --- Amount ---
+      .group("amount", "Amount")
+      .floatField("amplitude", 1.0f, 0.f, 1.f, state::SecondaryInput).label("Amplitude", "Amp")  // scales around 0.5
       // Remapped value. Rectifies into [0,1] (the curve's y window), so unsigned —
       // same convention as mod.shaper.remap / mod.shaper.envelope.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")

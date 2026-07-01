@@ -124,28 +124,68 @@ static gpu::ComputePSO s_pso_motion;
 
 // Type-level setup: schema + the two shared compute PSOs.
 void module_init() {
-  state::init("motion.field", {1, 0, 0},
+  state::init("motion.field", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Motion Field\n"
+        "Turns an input **image into a motion-vector field** on the `motion` rail — "
+        "downstream effects (swarms, warps, blurs) read it as velocity. Bright pixels "
+        "(above *Threshold*) emit motion; the *Direction* is a weighted blend of a "
+        "fixed rotation, a radial push, and the image's own luma gradient.\n\n"
+        "**Try:** raise *Vis Opacity* to see the field as a colour wheel while you "
+        "tune, then drop it back to 0 for production. Push *Gradient Weight* with a "
+        "±90° *Gradient Bias* to get flow that hugs the edges of your image, and add a "
+        "little *Evolution Rate* so the field breathes over time.")
       // Activation
-      .floatField("threshold",         0.5f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("softness",          0.05f, 0.0f,  0.5f,  state::PrimaryInput)
+      .group("activation", "Activation")
+        .groupHelp(
+          "Which pixels move. A pixel's luma is soft-thresholded: below *Threshold* "
+          "it emits **zero** motion, above it emits full motion, with *Softness* "
+          "controlling the ramp width between. Lower the threshold to animate more of "
+          "the frame; widen softness to feather the moving region's edges.")
+      .floatField("threshold",         0.5f,  0.0f,  1.0f,  state::PrimaryInput).label("Threshold", "Thresh")
+      .floatField("softness",          0.05f, 0.0f,  0.5f,  state::PrimaryInput).label("Softness", "Soft")
       // Magnitude
-      .floatField("magnitude",         0.005f, 0.0f, 0.05f, state::PrimaryInput)
-      .floatField("mag_jitter",        0.5f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("mag_noise_scale",   16.0f, 1.0f,  100.0f, state::PrimaryInput)
-      // Direction — static
-      .floatField("rotation",          0.0f,  -360.f, 360.f, state::PrimaryInput)
-      .floatField("rotation_weight",   1.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      .group("magnitude", "Magnitude")
+        .groupHelp(
+          "How fast active pixels move. *Magnitude* is the base speed; *Jitter* "
+          "breaks it up with locally-smooth noise (patches breathe together instead "
+          "of flickering), and *Noise Scale* sets how large those patches are.")
+      .floatField("magnitude",         0.005f, 0.0f, 0.05f, state::PrimaryInput).label("Magnitude", "Mag")
+      .floatField("mag_jitter",        0.5f,  0.0f,  1.0f,  state::PrimaryInput).label("Magnitude Jitter", "Jit")
+      .floatField("mag_noise_scale",   16.0f, 1.0f,  100.0f, state::PrimaryInput).label("Magnitude Noise Scale", "Scale")
+      // Direction — static / radial / luma gradient
+      .group("direction", "Direction")
+        .groupHelp(
+          "The heading of each vector is a **weighted sum** of three sources, then "
+          "normalised. *Rotation* is a fixed angle; *Radial* pushes outward from the "
+          "*Anchor*; *Gradient* follows the image's luma slope, and *Gradient Bias* "
+          "rotates it — 0° climbs uphill, ±90° runs **along** iso-luma contours for "
+          "an edge-flow look. Balance the three weights to taste.")
+      .floatField("rotation",          0.0f,  -360.f, 360.f, state::PrimaryInput).label("Rotation", "Rot")
+      .floatField("rotation_weight",   1.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Rotation Weight", "RotWt")
       // Direction — radial
-      .floatField("radial_weight",     0.0f,  0.0f,  1.0f,  state::PrimaryInput)
+      .floatField("radial_weight",     0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Radial Weight", "RadWt")
       .vec2Field ("radial_anchor",     0.5f,  0.5f,         state::PrimaryInput,
-                  0.0f, 1.0f)
+                  0.0f, 1.0f).label("Radial Anchor", "Anchor")
       // Direction — luma gradient
-      .floatField("gradient_weight",   0.0f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("gradient_bias",     90.0f, -180.f, 180.f, state::PrimaryInput)
+      .floatField("gradient_weight",   0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Gradient Weight", "GrdWt")
+      .floatField("gradient_bias",     90.0f, -180.f, 180.f, state::PrimaryInput).label("Gradient Bias", "Bias")
       // Per-pixel angular jitter
-      .floatField("angle_jitter",      0.0f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("angle_noise_scale", 16.0f, 1.0f,  100.0f, state::PrimaryInput)
+      .group("jitter", "Angular Jitter")
+        .groupHelp(
+          "A locally-smooth swirl added on top of the heading so the field turns "
+          "coherently instead of going salt-and-pepper. *Jitter* is the amount; "
+          "*Noise Scale* sizes the swirls.")
+      .floatField("angle_jitter",      0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Angle Jitter", "Jit")
+      .floatField("angle_noise_scale", 16.0f, 1.0f,  100.0f, state::PrimaryInput).label("Angle Noise Scale", "Scale")
+      // Evolution
+      .group("evolution", "Time Evolution")
+        .groupHelp(
+          "How fast the magnitude and angle noise fields mutate. **0 freezes** the "
+          "field (deterministic per pixel); higher values interpolate through fresh "
+          "noise snapshots faster for an ever-shifting, chaotic flow.")
       // Hz at which the noise pattern mutates over time. 0 freezes
       // the field (deterministic per pixel); higher values stagger
       // per-cell ticks faster. At 60 Hz cells average one tick per
@@ -154,11 +194,17 @@ void module_init() {
       // will quietly drop it (no field by that name in the new
       // schema) and pick up the default evolution_rate of 0,
       // matching the old static behaviour.
-      .floatField("evolution_rate",    0.0f,  0.0f,  60.0f, state::PrimaryInput)
+      .floatField("evolution_rate",    0.0f,  0.0f,  60.0f, state::PrimaryInput).label("Evolution Rate", "Evolve")
       // Visualization (off by default — production effects are
       // expected to pass through tex_in unchanged).
-      .floatField("vis_opacity",       0.0f,  0.0f,  1.0f,  state::PrimaryInput)
-      .floatField("vis_scale",         100.0f, 1.0f, 500.0f, state::PrimaryInput)
+      .group("viz", "Visualization")
+        .groupHelp(
+          "A tuning aid: overlays the motion vectors on the image as an HSV colour "
+          "wheel (hue = direction, brightness = speed). *Opacity* fades it in; "
+          "*Scale* exaggerates short vectors so faint motion is visible. Leave "
+          "*Opacity* at 0 in production — the image otherwise passes through untouched.")
+      .floatField("vis_opacity",       0.0f,  0.0f,  1.0f,  state::PrimaryInput).label("Overlay Opacity", "Opac")
+      .floatField("vis_scale",         100.0f, 1.0f, 500.0f, state::PrimaryInput).label("Overlay Scale", "Scale")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryOutput)

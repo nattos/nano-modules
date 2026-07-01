@@ -243,93 +243,142 @@ static gpu::RenderPSO  s_pso_lines;
 static gpu::RenderPSO  s_pso_contour;
 
 void module_init() {
-  state::init("source.phase_fold", {1, 0, 0},
+  state::init("source.phase_fold", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Phase Fold\n"
+        "An emergent **phase-portrait** generator — it draws the flow and limit "
+        "cycles of a dynamical system. Drag the XY pad to explore a baked atlas of "
+        "fields: **X** sets eccentricity, **Y** sets lobedness. Three layers stack "
+        "up: a banded **backdrop** height field, tracing **streamlines**, and a "
+        "discovered **limit cycle**.\n\n"
+        "**Try:** push **Wind** up until the orbit distorts and finally snaps open "
+        "(a SNIC bifurcation — the cycle dies); add a little **Jitter** for organic "
+        "wander; flip on **Autopilot** to let the whole portrait drift on its own.")
       // --- Shape axes (the custom XY pad drives eccentricity + lobedness) ---
-      .floatField("eccentricity", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("lobedness", 0.2f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("shape", "Shape")
+        .groupHelp(
+          "The **atlas** is a montage of pre-baked dynamical fields. *Eccentricity* "
+          "(X) and *Lobedness* (Y) interpolate between neighbouring cells to reshape "
+          "the orbit. **Wind** is the non-potential force that warps the cycle and, "
+          "pushed far enough, kills it outright (the orbit collapses to a point). "
+          "Add **Wind Jitter** for a restless, fling-ey wobble on that force.")
+      .floatField("eccentricity", 0.2f, 0.0f, 1.0f, state::PrimaryInput).label("Eccentricity", "Ecc")
+      .floatField("lobedness", 0.2f, 0.0f, 1.0f, state::PrimaryInput).label("Lobedness", "Lobes")
       // Wind (z): the non-potential force that distorts the cycle and, past the
       // bifurcation, kills it (the orbit collapses to a fixed point).
-      .floatField("wind", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("wind", 0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Wind", "Wind")
       // Wind jitter: a chaotic, weighty/fling-ey wobble of the wind value (the
       // 1D analogue of the XY jitter) with its own speed.
-      .floatField("wind_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("wind_jitter_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("wind_jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Wind Jitter", "WJit")
+      .floatField("wind_jitter_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Wind Jitter Speed", "WJSpd")
+      // --- Domain ---
+      .group("domain", "Domain")
       // Bias shifts the cycle level → slides the limit cycle across contours.
-      .floatField("bias", 0.0f, -0.6f, 0.6f, state::PrimaryInput)
+      .floatField("bias", 0.0f, -0.6f, 0.6f, state::PrimaryInput).label("Bias", "Bias")
       // Domain zoom. Higher = zoom IN (bigger features); lower zooms out.
-      .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput)
-      .boolField("interpolate", true, state::PrimaryInput)
+      .floatField("scale", 1.0f, 0.1f, 8.0f, state::PrimaryInput).label("Scale", "Scl")
+      .boolField("interpolate", true, state::PrimaryInput).label("Interpolate", "Interp")
       // --- Backdrop ---
+      .group("backdrop", "Backdrop")
+        .groupHelp(
+          "The coloured field behind everything — a contoured map of the system's "
+          "scalar height. *Shading* switches between the banded height field, the "
+          "wind-aware flow gradient, and a set of matplotlib colormaps. *Bands* and "
+          "*Contrast* set how the contours read; drop *Backdrop Dim* to mute it so "
+          "the streamlines and cycle stand out.")
       // Shading: height-field Bands, the wind-aware flow Gradient, or a banded
       // matplotlib colormap of the height field.
       .selectField("shading_mode", 0, state::PrimaryInput,
                    {{"Bands", 0}, {"Gradient", 1}, {"Magma", 2}, {"Inferno", 3},
-                    {"Viridis", 4}, {"Plasma", 5}, {"Turbo", 6}}, /*wrap=*/true)
-      .floatField("bands", 13.0f, 2.0f, 24.0f, state::PrimaryInput)
-      .floatField("contrast", 1.6f, 0.4f, 4.0f, state::PrimaryInput)
-      .floatField("backdrop_dim", 0.42f, 0.0f, 1.0f, state::PrimaryInput)
+                    {"Viridis", 4}, {"Plasma", 5}, {"Turbo", 6}}, /*wrap=*/true).label("Shading", "Shade")
+      .floatField("bands", 13.0f, 2.0f, 24.0f, state::PrimaryInput).label("Bands", "Bands")
+      .floatField("contrast", 1.6f, 0.4f, 4.0f, state::PrimaryInput).label("Contrast", "Cntr")
+      .floatField("backdrop_dim", 0.42f, 0.0f, 1.0f, state::PrimaryInput).label("Backdrop Dim", "Dim")
       // --- Streamlines (toggleable stage) ---
-      .boolField("show_streamlines", true, state::PrimaryInput)
-      .floatField("stream_width", 0.012f, 0.002f, 0.05f, state::PrimaryInput)
+      .group("streamlines", "Streamlines")
+        .groupHelp(
+          "A grid of glowing lines traced through the flow field — the moving "
+          "current of the portrait. *Seed Spread* above 1 starts lines outside the "
+          "frame so they flow inward and keep it dense. *Flow Speed* animates the "
+          "glow travelling down each line (0 freezes it); *Line Width* and *Opacity* "
+          "set their weight.")
+      .boolField("show_streamlines", true, state::PrimaryInput).label("Streamlines", "Stream")
+      .floatField("stream_width", 0.012f, 0.002f, 0.05f, state::PrimaryInput).label("Line Width", "Width")
       // Seed-grid spread: >1 seeds streamlines outside the window so they flow in
       // and keep the frame dense (the flow converges toward the centre).
-      .floatField("stream_spread", 1.6f, 0.5f, 4.0f, state::PrimaryInput)
-      .floatField("flow_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("line_opacity", 0.55f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("stream_spread", 1.6f, 0.5f, 4.0f, state::PrimaryInput).label("Seed Spread", "Sprd")
+      .floatField("flow_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Flow Speed", "Flow")
+      .floatField("line_opacity", 0.55f, 0.0f, 1.0f, state::PrimaryInput).label("Opacity", "Opac")
       // --- Limit-cycle tracer (toggleable stage) ---
-      .boolField("show_limit_cycle", true, state::PrimaryInput)
+      .group("limit_cycle", "Limit Cycle")
+        .groupHelp(
+          "Discovers and draws the system's **limit cycle** — the closed orbit the "
+          "flow settles onto. *Algorithm* picks how it's found: **Relax** springs a "
+          "particle ring onto the cycle, **Tracer** follows the flow until it closes "
+          "a loop, **Trace** shows the raw trajectory, **Contour** draws the level "
+          "set directly. Most knobs below only apply to the active algorithm — push "
+          "**Wind** until the cycle breaks open and watch it fail to close.")
+      .boolField("show_limit_cycle", true, state::PrimaryInput).label("Limit Cycle", "Cycle")
       // Algorithm: Relax = GPU spring-solver ring; Tracer = a CPU flow tracer that
       // detects a closed loop and pulls a momentum ring onto it; Trace = the same
       // tracer but draws its raw trajectory (debug viz); Contour = draw the height
       // field's zero level-set directly (no particles).
       .selectField("cycle_mode", 0, state::PrimaryInput,
-                   {{"Relax", 0}, {"Tracer", 1}, {"Trace", 2}, {"Contour", 3}})
-      .floatField("cycle_width", 0.02f, 0.004f, 0.06f, state::PrimaryInput)
+                   {{"Relax", 0}, {"Tracer", 1}, {"Trace", 2}, {"Contour", 3}}).label("Algorithm", "Algo")
+      .floatField("cycle_width", 0.02f, 0.004f, 0.06f, state::PrimaryInput).label("Cycle Width", "Width")
       // Tracer: where on the resting cycle the tracer restarts (arc fraction).
-      .floatField("arc_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("arc_angle", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Restart Arc", "Arc")
       // Tracer ring: how hard the ring accelerates toward the detected loop.
-      .floatField("trace_pull", 0.05f, 0.0f, 0.4f, state::PrimaryInput)
+      .floatField("trace_pull", 0.05f, 0.0f, 0.4f, state::PrimaryInput).label("Ring Pull", "Pull")
       // Tracer integration step size (how far the tracer moves per step).
-      .floatField("trace_step", 0.02f, 0.002f, 0.06f, state::PrimaryInput)
+      .floatField("trace_step", 0.02f, 0.002f, 0.06f, state::PrimaryInput).label("Trace Step", "TrStep")
       // Tracer steps advanced per frame (how fast it traces).
-      .floatField("trace_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
+      .floatField("trace_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput).label("Trace Rate", "TrRate")
       // Loop-close distance — how near the tracer must return to count as closed.
-      .floatField("trace_eps", 0.06f, 0.01f, 0.2f, state::PrimaryInput)
+      .floatField("trace_eps", 0.06f, 0.01f, 0.2f, state::PrimaryInput).label("Close Dist", "Close")
       // Newton relaxation steps per frame — how hard the ring solves onto the cycle.
-      .floatField("solve_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput)
+      .floatField("solve_steps", 4.0f, 1.0f, 16.0f, state::PrimaryInput).label("Solve Steps", "Solve")
       // How far each relaxation step pushes (scales the per-step force).
       // Exponential: the [0,1] slider maps to PF_STEP_MIN..PF_STEP_MAX
       // (~0.001 .. 0.5) so the small end has fine control.
-      .floatField("step_size", 0.75f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("step_size", 0.75f, 0.0f, 1.0f, state::PrimaryInput).label("Step Size", "Step")
       // Velocity retention — particles carry momentum, so the ring wobbles
       // around the cycle (underdamped). 0 = no wobble, ~0.9 = very springy.
-      .floatField("momentum", 0.6f, 0.0f, 0.95f, state::PrimaryInput)
+      .floatField("momentum", 0.6f, 0.0f, 0.95f, state::PrimaryInput).label("Momentum", "Mom")
       // Good-cycle morph rate — how fast the remembered cycle tracks the live
       // one (when closed) or decays back to the resting cycle (when broken).
-      .floatField("morph_rate", 0.1f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("morph_rate", 0.1f, 0.0f, 1.0f, state::PrimaryInput).label("Morph Rate", "Morph")
       // Respawn when the cycle is broken and its longest chain's arc length is
       // shorter than this (the discovery attempt has clearly failed).
-      .floatField("respawn_arc", 1.0f, 0.0f, 4.0f, state::PrimaryInput)
+      .floatField("respawn_arc", 1.0f, 0.0f, 4.0f, state::PrimaryInput).label("Respawn Arc", "RspArc")
       // Doubling-back sensitivity: break the cycle where the polyline reverses.
       // 0 = off; 0.5 = break turns sharper than 90°; 1 = very aggressive.
-      .floatField("break_turn", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("break_turn", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Break Turn", "Turn")
       // Break sensitivity: the max gap between adjacent particles before the
       // cycle is considered broken there (and that segment is dropped).
-      .floatField("break_dist", 0.2f, 0.05f, 0.6f, state::PrimaryInput)
+      .floatField("break_dist", 0.2f, 0.05f, 0.6f, state::PrimaryInput).label("Break Gap", "Gap")
       // Hard re-seed timer — periodically respawn the ring on the resting cycle.
-      .floatField("respawn_time", 2.0f, 0.1f, 10.0f, state::PrimaryInput)
+      .floatField("respawn_time", 2.0f, 0.1f, 10.0f, state::PrimaryInput).label("Respawn Time", "RspTim")
       // Exploration: how far particles random-walk back and forth along the
       // contour each frame (jitters a true cycle, explores otherwise).
-      .floatField("explore", 0.3f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("explore", 0.3f, 0.0f, 1.0f, state::PrimaryInput).label("Explore", "Expl")
       // Spread: neighbour-spacing gain that keeps the ring evenly distributed.
-      .floatField("spread", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("spread", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Spread", "Sprd")
       // --- Autopilot (non-destructive XY override + broadcast) ---
-      .boolField("autopilot", false, state::PrimaryInput)
-      .floatField("ap_speed", 0.35f, 0.0f, 1.0f, state::PrimaryInput)
+      .group("autopilot", "Autopilot")
+        .groupHelp(
+          "Spirals the shape's XY position on its own, **without touching** your "
+          "Eccentricity/Lobedness inputs (it broadcasts the live position instead). "
+          "*Orbit Speed* sets the drift rate. **Jitter** layers a weighty, fling-ey "
+          "chaotic wobble over whatever XY is active (user or autopilot); push its "
+          "*Speed* up and the portrait flickers across cells frame to frame.")
+      .boolField("autopilot", false, state::PrimaryInput).label("Autopilot", "Auto")
+      .floatField("ap_speed", 0.35f, 0.0f, 1.0f, state::PrimaryInput).label("Orbit Speed", "Spd")
       // Jitter: chaotically orbit the (user or autopilot) XY — weighty, fling-ey.
-      .floatField("jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("jitter_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("jitter", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Jitter", "Jit")
+      .floatField("jitter_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Jitter Speed", "JitSpd")
       // Broadcast: effective XY so the custom editor shows the live position.
       .floatField("autopilot_x", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)
       .floatField("autopilot_y", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)

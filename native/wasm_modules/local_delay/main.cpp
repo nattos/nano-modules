@@ -168,43 +168,61 @@ static gpu::ComputePSO s_pso_color;
 static gpu::ComputePSO s_pso_motion;
 
 void module_init() {
-  state::init("motion.local_delay", {1, 0, 0},
+  state::init("motion.local_delay", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Local Delay\n"
+        "A motion-driven echo. It estimates the **optical flow** of the incoming "
+        "video and smears each pixel *along* that flow — sampling the live image at "
+        "the endpoint, so the trails stay solid instead of ghosting. The result is a "
+        "clean directional motion echo that only appears where things move.\n\n"
+        "**Try:** raise *Steps* + *Delay Amount* together for a longer trail; flip "
+        "*Direction* to Future to throw the echo **ahead** of the motion; add a little "
+        "*Twitch* for a nervous, roaming cut-out.")
       // --- Standard (live) ---
+      .group("standard", "Standard")
+        .groupHelp(
+          "The everyday controls. *Delay Amount* × *Steps* set how long the echo "
+          "trails; *Direction* points it behind (Past) or ahead (Future) of the "
+          "motion. *Flow Source* picks whether the flow is estimated here or read "
+          "from an upstream motion rail. The *Noise*, *Vignette* and *Twitch* knobs "
+          "mask **where** the delay is allowed to act — useful for keeping the echo "
+          "off a subject or roaming it around the frame.")
       // Advection step scale: how far each step walks along the flow (× the
       // per-step gain and the spatial mask). Larger = longer trail / more delay.
-      .floatField("delay_amount",      0.7f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("delay_amount",      0.7f,  0.0f, 1.0f, state::PrimaryInput).label("Delay Amount", "Delay")
       // Number of forward-advection steps along the flow streamline (integer).
       // More steps = longer, smoother trail (and more cost). Total reach ≈
       // delay_steps × delay_amount frames of motion.
-      .floatField("delay_steps",       12.0f, 1.0f, 32.0f, state::PrimaryInput)
+      .floatField("delay_steps",       12.0f, 1.0f, 32.0f, state::PrimaryInput).label("Steps", "Steps")
       // Which way the echo trails. Past = causal (behind the motion, where it
       // came from); Future = anti-causal (ahead, where it's going).
-      .selectField("delay_direction",  0, state::PrimaryInput, {{"Past", 0}, {"Future", 1}})
+      .selectField("delay_direction",  0, state::PrimaryInput, {{"Past", 0}, {"Future", 1}}).label("Direction", "Dir")
       // Where the flow comes from. Estimate = our pyramidal Lucas-Kanade on the
       // input image; Incoming = use the render_outputs_in/motion vectors fed in
       // upstream (e.g. from motion_field / a renderer), skipping the estimator.
-      .selectField("flow_source",      0, state::PrimaryInput, {{"Estimate", 0}, {"Incoming", 1}})
+      .selectField("flow_source",      0, state::PrimaryInput, {{"Estimate", 0}, {"Incoming", 1}}).label("Flow Source", "Flow")
       // Temporal smoothing of the FLOW/index field (dt-based EMA, half-life =
       // smoothing^2 * 1.5s, frame-rate independent). Removes flicker, since the
       // per-frame flow estimate is otherwise noisy and zeroes out on duplicate
       // frames when render fps outpaces the source. Independent of the color
       // tails — it only stabilizes which temporal level each pixel reaches.
       // 0 = no smoothing (instant, snappy but flickery).
-      .floatField("smoothing",         0.4f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("smoothing",         0.4f,  0.0f, 1.0f, state::PrimaryInput).label("Smoothing", "Smooth")
       // Probability a pixel is affected by noise (clean binary selection).
       // Affected pixels get a balanced ×[0,2] multiplier (boost some, cut
       // others, averaging 1), so sweeping this adds stochastic variation
       // without dimming the average effect. Re-rolls over time via noise_motion.
-      .floatField("noise_weight",      0.0f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("noise_weight",      0.0f,  0.0f, 1.0f, state::PrimaryInput).label("Noise Weight", "NseWt")
       // Noise re-roll rate, Hz = pow(60, noise_motion) - 1 (0 = frozen field).
       // Each pixel re-rolls on its own staggered clock.
-      .floatField("noise_motion",      0.0f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("noise_motion",      0.0f,  0.0f, 1.0f, state::PrimaryInput).label("Noise Motion", "NseMot")
       // Signed center vignette: + suppresses motion OUTSIDE the radius,
       // - suppresses INSIDE it, 0 = no spatial mask.
-      .floatField("vignette",          0.0f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("vignette_radius",   0.5f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("vignette_softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("vignette",          0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Vignette", "Vig")
+      .floatField("vignette_radius",   0.5f,  0.0f, 1.0f, state::PrimaryInput).label("Vignette Radius", "VigRad")
+      .floatField("vignette_softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Vignette Softness", "VigSft")
       // Twitch: a roaming vignette that picks a new random anchor +
       // intensity EACH FRAME. `twitch_amount` (0 = off): 0..0.5 ramps the
       // modulation depth in; 0.5..1 holds depth full and boosts the random
@@ -213,33 +231,42 @@ void module_init() {
       // the centre); magnitude morphs |1| radial → |0.5| linear → |0| solid.
       // `twitch_position` biases WHERE it spawns: -1 = an oval around the
       // outside, +1 = an oval in the centre.
-      .floatField("twitch_amount",       0.0f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("twitch_shape",       -0.5f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("twitch_radius",       0.3f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("twitch_softness",     0.3f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("twitch_position",     0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("twitch_amount",       0.0f,  0.0f, 1.0f, state::PrimaryInput).label("Twitch Amount", "Twitch")
+      .floatField("twitch_shape",       -0.5f, -1.0f, 1.0f, state::PrimaryInput).label("Twitch Shape", "TwShp")
+      .floatField("twitch_radius",       0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Twitch Radius", "TwRad")
+      .floatField("twitch_softness",     0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Twitch Softness", "TwSft")
+      .floatField("twitch_position",     0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Twitch Position", "TwPos")
       // Power curve on the blend weight (-1 crush / +1 lift, §1.3).
-      .floatField("squash",            0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("squash",            0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Squash", "Squash")
       // --- Tuning ---
+      .group("tuning", "Tuning")
+        .groupHelp(
+          "Under-the-hood knobs for the flow estimator and the published motion "
+          "rail. *Sensitivity* and *Max Flow* set how much motion registers and its "
+          "ceiling; *Align* polishes the raw estimate; *Motion Gain* scales the "
+          "vectors written to `render_outputs/motion` for a downstream motion blur. "
+          "The defaults are well-tuned — reach here only when the echo over- or "
+          "under-reacts.")
       // uv/frame ceiling on the flow magnitude.
-      .floatField("max_flow",          0.03f, 0.0f, 0.1f, state::PrimaryInput)
+      .floatField("max_flow",          0.03f, 0.0f, 0.1f, state::PrimaryInput).label("Max Flow", "MaxFlw")
       // Motion sensitivity: scales |flow| into the temporal-lookup index
       // (higher = more delay/reach for the same motion). Normalized 0..1, with
       // an effective range of 0..2048 internally (typical flow is tiny).
-      .floatField("weight_gain",       0.5f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("weight_gain",       0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Sensitivity", "Sens")
       // Raw↔colinear-aligned flow lerp (a polish on the LK estimate).
-      .floatField("align_amount",      0.5f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("align_sharpness",   4.0f,  1.0f, 16.0f, state::PrimaryInput)
+      .floatField("align_amount",      0.5f,  0.0f, 1.0f, state::PrimaryInput).label("Align Amount", "Align")
+      .floatField("align_sharpness",   4.0f,  1.0f, 16.0f, state::PrimaryInput).label("Align Sharpness", "AlgnSh")
       // Scale of the motion vectors published on render_outputs/motion.
       // Normalized 0..1. In Estimate mode the effective range is 0..128 (the
       // estimated flow is tiny); in Incoming mode the base is ×1 so 1.0 = unit
       // gain (re-publishes the incoming vectors unchanged). Also boosted by
       // `smoothing` (×1 at 0 → ×5 at 1) since heavier smoothing averages the
       // per-frame flow magnitude down.
-      .floatField("motion_gain",       0.03f,  0.0f, 1.0f, state::PrimaryInput)
-      .intField  ("seed",              0,     0,    1000,  state::PrimaryInput)
+      .floatField("motion_gain",       0.03f,  0.0f, 1.0f, state::PrimaryInput).label("Motion Gain", "MotGn")
+      .intField  ("seed",              0,     0,    1000,  state::PrimaryInput).label("Seed", "Seed")
       // --- Debug (last) ---
-      .boolField ("debug_show_motion", false,              state::PrimaryInput)
+      .group("debug", "Debug")
+      .boolField ("debug_show_motion", false,              state::PrimaryInput).label("Show Motion", "ShowMo")
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

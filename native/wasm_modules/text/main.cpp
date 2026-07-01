@@ -62,17 +62,43 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 }
 
 void module_init() {
-  state::init("source.text.plain", {1, 0, 0},
+  state::init("source.text.plain", {1, 0, 1},
     state::Schema()
-      .textField  ("text",         "Text", state::PrimaryInput)
-      .textField  ("font",         "",     state::PrimaryInput)
-      .textField  ("lang",         "",     state::PrimaryInput)
-      .boolField  ("bold",         false,  state::PrimaryInput)
-      .boolField  ("italic",       false,  state::PrimaryInput)
-      .floatField ("size",         64.0f,  8.0f, 512.0f, state::PrimaryInput)
-      .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput)
-      .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput)
-      .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput)
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Text\n"
+        "Renders crisp multiline text into a texture via the host type engine "
+        "(FreeType + HarfBuzz + msdfgen). Because it's MSDF, it stays sharp at "
+        "**any scale** — zoom in without pixelation.\n\n"
+        "**Try:** leave *Font* blank for the primary UI font, or name any OS / "
+        "bundled family; set *Max Width* above 0 to wrap into a paragraph; wire the "
+        "output into a filter chain (glow, displacement) for animated titles.")
+      .group("content", "Content")
+        .groupHelp(
+          "The text to draw. Newlines break lines; set a *Language* tag only when "
+          "you need region-specific Han forms (Japanese vs. Simplified/Traditional "
+          "Chinese) that the system locale would otherwise pick for you.")
+      .textField  ("text",         "Text", state::PrimaryInput).label("Text", "Text")
+      .textField  ("lang",         "",     state::PrimaryInput).label("Language", "Lang")
+      .group("typography", "Typography")
+        .groupHelp(
+          "Pick the typeface and weight. Leave *Font* empty to use the host's "
+          "primary font; otherwise name any installed OS or bundled family — the "
+          "host resolves the matching **Bold** / **Italic** face for you. *Size* is "
+          "the cap height in output pixels (MSDF keeps it crisp when scaled).")
+      .textField  ("font",         "",     state::PrimaryInput).label("Font", "Font")
+      .boolField  ("bold",         false,  state::PrimaryInput).label("Bold", "Bold")
+      .boolField  ("italic",       false,  state::PrimaryInput).label("Italic", "Ital")
+      .floatField ("size",         64.0f,  8.0f, 512.0f, state::PrimaryInput).label("Size", "Size")
+      .group("color", "Colour")
+      .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Colour", "Col")
+      .group("layout", "Layout")
+        .groupHelp(
+          "*Max Width* controls wrapping — 0 keeps everything on one line; any "
+          "positive value (in pixels) wraps the text into a column. *Line Spacing* "
+          "is a multiplier on the font's natural leading (1.0 = tight, 1.5 = airy).")
+      .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput).label("Max Width", "Width")
+      .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput).label("Line Spacing", "Lead")
       .textureField("tex_in",  state::PrimaryInput)   // overlay text on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
       // Generates its image; the tex_in overlay is optional (transparent when

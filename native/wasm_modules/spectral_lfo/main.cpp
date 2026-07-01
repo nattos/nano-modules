@@ -116,28 +116,57 @@ static void on_state_ready(void* self) {
 
 // ─── Lifecycle ─────────────────────────────────────────────────────────
 void module_init() {
-  state::init("mod.source.spectral_lfo", {1, 0, 0},
+  state::init("mod.source.spectral_lfo", {1, 0, 1},
     state::Schema()
+      // Top-level manual: high-level "what is this / how to use / what to try".
+      .helpField("intro",
+        "## Spectral LFO\n"
+        "A morphing modulation source. It navigates a **map of ~2000 LFO shapes** "
+        "laid out by spectral similarity: the *Morph X/Y* position picks the "
+        "surrounding shapes and **spectrally blends** them into one smooth curve, "
+        "which a phase clock plays back as the `output` value in [0,1].\n\n"
+        "**Try:** wire `output` into any modulatable parameter and sweep *Morph X/Y* "
+        "to hunt for a shape; turn on **Autopilot** to drift the map hands-free; enable "
+        "**Satellites** for three phase-locked variations to modulate several targets "
+        "at once.")
       // Standard — the live performer reaches for these.
-      .floatField("rate", 0.4f, 0.f, 1.f, state::PrimaryInput)        // exp → Hz; 0 = frozen
-      .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)   // scales around 0.5
-      .floatField("morph_x", 0.5f, 0.f, 1.f, state::PrimaryInput)     // manifold X (t-SNE plane)
-      .floatField("morph_y", 0.5f, 0.f, 1.f, state::PrimaryInput)     // manifold Y
+      .group("standard", "Standard")
+        .groupHelp(
+          "The core controls. *Rate* sets the LFO speed (0 freezes it); *Amplitude* "
+          "scales the swing around the centre. *Morph X/Y* is the position on the "
+          "shape map — the heart of the effect — and *Metric* chooses which map "
+          "(how the shapes are grouped). Turn *Interpolation* off to snap to a single "
+          "shape instead of blending.")
+      .floatField("rate", 0.4f, 0.f, 1.f, state::PrimaryInput).label("Rate", "Rate")        // exp → Hz; 0 = frozen
+      .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput).label("Amplitude", "Amp")   // scales around 0.5
+      .floatField("morph_x", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Morph X", "MorphX")     // manifold X (t-SNE plane)
+      .floatField("morph_y", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Morph Y", "MorphY")     // manifold Y
       .selectField("metric", 0, state::PrimaryInput,
                    {{"FFT Magnitude", 0}, {"Phase Coherence", 1}, {"Roughness", 2},
-                    {"Spectral vs TD", 3}, {"Combined", 4}}, /*wrap=*/true)
-      .boolField("interpolation", true, state::PrimaryInput)          // off = snap to one shape
+                    {"Spectral vs TD", 3}, {"Combined", 4}}, /*wrap=*/true).label("Metric", "Metric")
+      .boolField("interpolation", true, state::PrimaryInput).label("Interpolation", "Interp")          // off = snap to one shape
       // Autopilot — orbit the manifold and broadcast the live position.
-      .boolField("autopilot", false, state::PrimaryInput)
-      .floatField("ap_speed", 0.3f, 0.f, 1.f, state::PrimaryInput)
+      .group("autopilot", "Autopilot")
+        .groupHelp(
+          "Drifts the *Morph X/Y* position around the shape map on its own, so the "
+          "modulation curve keeps evolving hands-free. *Orbit Speed* sets how fast it "
+          "wanders.")
+      .boolField("autopilot", false, state::PrimaryInput).label("Autopilot", "Auto")
+      .floatField("ap_speed", 0.3f, 0.f, 1.f, state::PrimaryInput).label("Orbit Speed", "Spd")
       // Manifold position broadcast as outputs — unipolar [0,1]. min/max is the
       // modulation-range contract the UI band draws from (see env_lfo note).
       .floatField("autopilot_x", 0.5f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       .floatField("autopilot_y", 0.5f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       // Satellites — three extra taps offset in a triangle around the center.
-      .boolField("satellites", false, state::PrimaryInput)
-      .floatField("sat_spread", 0.3f, 0.f, 1.f, state::PrimaryInput)    // triangle size
-      .floatField("sat_rotation", 0.0f, 0.f, 1.f, state::PrimaryInput)  // full turn
+      .group("satellites", "Satellites")
+        .groupHelp(
+          "Emits three extra outputs (`output_a/b/c`) sampled from points offset in a "
+          "triangle around the main *Morph* position — phase-locked variations of the "
+          "main curve. *Spread* sizes the triangle and *Rotation* spins it. Use them "
+          "to modulate several targets with related-but-distinct motion.")
+      .boolField("satellites", false, state::PrimaryInput).label("Satellites", "Sats")
+      .floatField("sat_spread", 0.3f, 0.f, 1.f, state::PrimaryInput).label("Spread", "Sprd")    // triangle size
+      .floatField("sat_rotation", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Rotation", "Rot")  // full turn
       // Live LFO phase [0,1) — broadcast so the editor can draw a playhead.
       .floatField("phase", 0.0f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
       // Output — unipolar [0,1] LFO value.
