@@ -5,7 +5,7 @@
  * the real DXV decoder and a real WebGPU device.
  */
 
-const RUNNER = 'http://localhost:5173/video-service-test-runner.html';
+const RUNNER = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/video-service-test-runner.html';
 const VIDEO  = '/test-videos/test01_dxv.mov';
 
 // Each test uses a distinct salt so clip-profile state doesn't bleed

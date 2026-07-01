@@ -7,16 +7,19 @@
  * `host.capabilities` when the effect publishes its schema during
  * module_init. This verifies the array round-trips to the web host the
  * same way it does to the native ModuleRegistry, and that the optional
- * `seek` effect-export (declared in the ABI but implemented by no effect)
- * surfaces as an absent `module.seek`.
+ * `seek` effect-export (declared in the ABI, implemented by the LFO's
+ * backward-seek but not by stateless/trigger effects) surfaces as a
+ * present/absent `module.seek` accordingly.
  */
+
+const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 
 describe('Effect capabilities (schema → WasmHost)', () => {
   jest.setTimeout(30000);
 
-  it('surfaces temporal capability tags and the (unimplemented) seek export', async () => {
+  it('surfaces temporal capability tags and the seek export', async () => {
     page.on('console', (msg) => console.log('[browser]', msg.text()));
-    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
     const result = await page.evaluate(`(async () => {
       const { GPUHost } = await import('/src/gpu-host.ts');
@@ -73,10 +76,11 @@ describe('Effect capabilities (schema → WasmHost)', () => {
     expect(r.adsr.caps).not.toContain('seekable_approximate');
     expect(r.adsr.caps).not.toContain('seekable_prefill');
 
-    // seek() is declared in the ABI but no effect implements it, so the
-    // optional export resolves to absent on the module wrapper.
+    // seek() is optional. The free-running LFO implements a backward-seek
+    // (recompute phase from absolute time), so its export is present; the
+    // stateless tone op and the trigger-driven ADSR don't implement it.
     expect(r.brightness.hasSeek).toBe(false);
-    expect(r.lfo.hasSeek).toBe(false);
+    expect(r.lfo.hasSeek).toBe(true);
     expect(r.adsr.hasSeek).toBe(false);
 
     // util.sketch_output exposes sketch OUTPUTS; util.dashboard the symmetric

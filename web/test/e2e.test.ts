@@ -2,11 +2,13 @@
 // Requires dev server running on port 5173 (`npm run dev`).
 // Run: npm run dev (in another terminal), then npm run test:e2e
 
+const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
+
 describe('NanoLooper Web Harness E2E', () => {
   jest.setTimeout(15000);
 
   beforeAll(async () => {
-    await page.goto('http://localhost:5173/module-test-app.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/module-test-app.html`, { waitUntil: 'networkidle0' });
   });
 
   it('page loads without errors', async () => {

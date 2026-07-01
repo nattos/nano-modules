@@ -22,7 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 
-const RUNNER = 'http://localhost:5173/dxv-test-runner.html';
+const RUNNER = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/dxv-test-runner.html';
 const VIDEO  = '/test-videos/test01_dxv.mov';
 const DUMP_DIR = '/tmp/gpu-test-dumps';
 

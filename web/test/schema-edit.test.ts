@@ -13,12 +13,14 @@
  * `host.hiddenFields`.
  */
 
+const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
+
 describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
   jest.setTimeout(30000);
 
   it('crop: default Span hides inset fields, mode toggle flips visibility', async () => {
     page.on('console', (msg) => console.log('[browser]', msg.text()));
-    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
     const result = await page.evaluate(`(async () => {
       const { GPUHost } = await import('/src/gpu-host.ts');
@@ -82,7 +84,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
     // option and silently fell back to the first one. We declare
     // `?selected` per option instead, which is order-independent.
     page.on('console', (msg) => console.log('[browser]', msg.text()));
-    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
     const result = await page.evaluate(`(async () => {
       await import('/src/widgets/field-select.ts');
       const sel = document.createElement('field-select');
@@ -112,7 +114,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
     // Same correctness contract as field-select, but with a single
     // click on a row of buttons instead of a dropdown menu.
     page.on('console', (msg) => console.log('[browser]', msg.text()));
-    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
     const result = await page.evaluate(`(async () => {
       const { GPUHost } = await import('/src/gpu-host.ts');
@@ -190,7 +192,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
     // val::asNumber) silently coerces them to 0 — visibility never
     // flips and the value gets clobbered on the next replay.
     page.on('console', (msg) => console.log('[browser]', msg.text()));
-    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
     const result = await page.evaluate(`(async () => {
       const { GPUHost } = await import('/src/gpu-host.ts');
@@ -259,7 +261,7 @@ describe('Schema-edit lifecycle (setFieldHidden + on_state_ready)', () => {
     //      restored mode value (not the init default) when deciding
     //      visibility. The IDE never sees the Span layout.
     page.on('console', (msg) => console.log('[browser]', msg.text()));
-    await page.goto('http://localhost:5173/gpu-test-runner.html', { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/gpu-test-runner.html`, { waitUntil: 'networkidle0' });
 
     const result = await page.evaluate(`(async () => {
       const { GPUHost } = await import('/src/gpu-host.ts');

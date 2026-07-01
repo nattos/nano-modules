@@ -5,7 +5,7 @@
  * exercised here; the underlying service has its own E2E coverage.
  */
 
-const URL = 'http://localhost:5173/video-testbed.html';
+const URL = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/video-testbed.html';
 
 describe('Video testbed smoke', () => {
   jest.setTimeout(30_000);

@@ -8,7 +8,7 @@
  * comes up, and nothing throws an uncaught error during startup.
  */
 
-const IDE = 'http://localhost:5173/index.html';
+const IDE = (process.env.GPU_TEST_BASE_URL || 'http://localhost:5173') + '/index.html';
 
 describe('Effects IDE boot (post video-player swap)', () => {
   jest.setTimeout(30_000);
