@@ -37,6 +37,24 @@ export interface PluginInfo {
    * what the effect is FOR. See `state::Capability` in host.h. Empty when none.
    */
   capabilities?: string[];
+  /**
+   * First-class parameter GROUPS from the schema's top-level `groups` object,
+   * keyed by group id. Each field may carry a matching `group` key. See the
+   * `.group()` builder in host.h.
+   */
+  groups?: Record<string, ParamGroupInfo>;
+}
+
+/** Metadata for a first-class parameter group (schema `groups[id]`). */
+export interface ParamGroupInfo {
+  /** Human display name (section header). */
+  name?: string;
+  /** Short/compact name. */
+  short?: string;
+  /** Long-form markdown help shown at the section header in "?" help mode. */
+  help?: string;
+  /** Declaration order among groups. */
+  order?: number;
 }
 
 export interface ParamInfo {

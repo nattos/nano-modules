@@ -51,7 +51,14 @@ export type InspectorFieldDef =
    * structured objects, GPU arrays, textures. Rendered as
    * <field-placeholder> so the tap/layout system still registers it.
    */
-  | { type: 'placeholder'; label: string; path: string; kind: string; direction: 'input' | 'output' };
+  | { type: 'placeholder'; label: string; path: string; kind: string; direction: 'input' | 'output' }
+  /**
+   * A HELP slot (schema `type:'help'`). Renders long-form markdown in the
+   * inspector's "?" help mode via <help-slot>; collapses when help mode is off.
+   * `path` is the slot path (used to key global/local overrides); `default` is
+   * the effect-authored markdown. Has no instance-state backing.
+   */
+  | { type: 'help'; label: string; path: string; default: string; group?: string };
 
 // --- Field renderers ---
 

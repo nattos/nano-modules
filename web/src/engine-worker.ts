@@ -1562,6 +1562,11 @@ function broadcastState() {
         capabilities: matchedHost?.capabilities
           ?? WasmHost.capabilitiesById.get(entry.metadata?.id ?? '')
           ?? [],
+        // Parameter groups: bridge core keeps only `fields`, so (like capabilities)
+        // groups ride the live host / a static per-id map, not `entry.schema`.
+        groups: matchedHost?.groups
+          ?? WasmHost.groupsById.get(entry.metadata?.id ?? '')
+          ?? {},
       });
     }
   }

@@ -128,9 +128,11 @@ void StateDocument::collect_legacy_params(const json& fields, json& params_out) 
     std::string type = f.def.value("type", "");
     int io_flags = f.def.value("io", 0);
     // Skip non-scalar types (textures, objects, arrays — including GPU arrays,
-    // and vector primitives which don't fit the FFGL-style legacy param model).
+    // and vector primitives which don't fit the FFGL-style legacy param model),
+    // and `help` slots (UI-only documentation, no instance-state backing).
     if (type == "texture" || type == "object" || type == "array"
-        || type == "float2" || type == "float3" || type == "float4") continue;
+        || type == "float2" || type == "float3" || type == "float4"
+        || type == "help") continue;
 
     int param_type = 10;
     if (type == "bool") param_type = 0;

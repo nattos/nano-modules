@@ -240,6 +240,12 @@ export class WasmHost {
   // what the effect is FOR; see host.h Capability. Empty when none declared.
   capabilities: string[] = [];
 
+  // Parameter GROUPS from the schema's top-level `groups` object (a first-class
+  // section per group id → { name, short?, help?, order? }). Bridge core keeps
+  // only `fields`, so — like capabilities/moduleVersion — this rides the host and
+  // a static per-id map so DISCOVERED-but-not-instantiated effects surface it too.
+  groups: Record<string, any> = {};
+
   // Host<->effect ABI version this bundle was built against (its
   // `nano_abi_version()` export; see NANO_ABI_VERSION in module_api.h). 0 when
   // the export is absent (a legacy bundle). A coarse compatibility signal — the
@@ -264,6 +270,11 @@ export class WasmHost {
   // never instantiated (no live host) — the entire palette. The per-instance
   // `capabilities` field below only exists while a host is live.
   static capabilitiesById = new Map<string, string[]>();
+
+  // Per-effect-id parameter groups, captured on EVERY set_schema and kept here so
+  // broadcastState can surface an effect's groups (section headers + group help)
+  // even for effects that were merely LOADED but never instantiated.
+  static groupsById = new Map<string, Record<string, any>>();
 
   // Global SPV→WGSL translation cache, keyed by shader content (see fetchShaderWgsl).
   // Shared across ALL host instances so re-instantiating an effect never re-pays the
@@ -603,11 +614,15 @@ export class WasmHost {
             this.capabilities = Array.isArray(schemaJson.capabilities)
               ? schemaJson.capabilities.filter((c: any) => typeof c === 'string')
               : [];
+            this.groups = (schemaJson.groups && typeof schemaJson.groups === 'object')
+              ? schemaJson.groups
+              : {};
             if (Array.isArray(schemaJson.moduleVersion) && schemaJson.moduleVersion.length === 3) {
               this.moduleVersion = schemaJson.moduleVersion.map((n: any) => n | 0).join('.');
             }
             WasmHost.moduleVersionsById.set(id, this.moduleVersion);
             WasmHost.capabilitiesById.set(id, this.capabilities);
+            WasmHost.groupsById.set(id, this.groups);
 
             // Derive params and ioDecls from schema for backward compat
             this.params = [];
@@ -615,7 +630,10 @@ export class WasmHost {
             let paramIdx = 0;
             for (const [name, field] of Object.entries(this.schema) as [string, any][]) {
               const ioFlags = field.io ?? 0;
-              if (field.type === 'texture') {
+              if (field.type === 'help') {
+                // UI-only documentation slot — no param row, no io declaration.
+                continue;
+              } else if (field.type === 'texture') {
                 const dir = (ioFlags & 1) ? 0 : 1; // Input=0, Output=1
                 const role = (ioFlags & 4) ? 0 : 1; // Primary=0, Secondary=1
                 this.ioDecls.push({ index: this.ioDecls.length, name, kind: dir, role });
@@ -665,7 +683,9 @@ export class WasmHost {
           } catch {
             this.schema = {};
             this.capabilities = [];
+            this.groups = {};
             WasmHost.capabilitiesById.set(id, []);
+            WasmHost.groupsById.set(id, {});
           }
 
           if (bc) {
