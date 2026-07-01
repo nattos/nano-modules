@@ -87,51 +87,40 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float rate_hz = pow(60.0, u_churn) - 1.0;
   float pflip = 1.0 - exp(-rate_hz * u_dt);
 
-  if (u_mode == 0u) {
-    // Ridge Protect. Two mechanisms, both weight-driven:
-    //   POSITION — relax toward the W-weighted centroid so vertex density ∝ W
-    //     (the ridge/corner/void weights shape WHERE detail goes).
-    //   DECIMATION via ACTIVATION — each seed survives with a STICKY, stochastic
-    //     probability that falls off with its importance: keep = W^(decimation·γ).
-    //     A fixed per-seed threshold + hysteresis makes the survivor set stable
-    //     (sticky) and random (stochastic); flips happen at the Poisson rate.
-    //     Deactivated seeds drop out of the Voronoi entirely → fewer vertices →
-    //     genuinely coarser, coalesced triangles (still a full Delaunay of the
-    //     survivors → no holes). This is what lets decimation act STRONGLY.
-    float my_w  = s.score;                              // importance at this seed
-    bool active = s.flags > 0.5;
-    float r_i   = tri_hash_f(i * 2246822519u) * 0.9;    // fixed survival threshold
-    // Importance-graded survival, PLUS a quadratic top-cull so that near
-    // decimation 1 even the strongest features thin out (they otherwise pin at
-    // W^γ = 1 and never coalesce). Low/mid decimation stays gentle.
-    float keep  = pow(max(my_w, 1e-3), u_decimation * DEC_GAMMA);
-    keep *= (1.0 - DEC_TOPCULL * u_decimation * u_decimation);
-    if (tri_hash_f(i * 3266489917u + u_frame) < pflip) {
-      if (active) { if (keep < r_i - DEC_HYST) active = false; }
-      else        { if (keep > r_i + DEC_HYST) { active = true; s.pos = importance_sample(i); } }
-    }
-    if (active) {
-      if (mass < 1e-4) {                                // active but homeless → respawn onto a feature
-        if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = importance_sample(i);
-      } else {
-        float2 dd = (s.pos - ctr) * float2(u_aspect, 1.0);
-        float conf = saturate(length(dd) / 0.10);
-        if (tri_hash_f(i * 2654435761u + u_frame) < 1.0 - exp(-rate_hz * u_dt * conf))
-          s.pos = saturate(ctr);
-      }
-    }
-    // Inactive seeds freeze in place (they re-enter where they left).
-    s.flags = active ? 1.0 : 0.0;
+  // --- DECIMATION via sticky stochastic ACTIVATION (ALL modes) ---
+  // Each seed survives with a STICKY, stochastic probability that falls off with
+  // its importance: keep = W^(decimation·γ) · (1 - topcull·decimation²). A fixed
+  // per-seed threshold + hysteresis makes the survivor set stable (sticky) and
+  // random (stochastic); flips happen at the Poisson rate. Deactivated seeds drop
+  // out of the Voronoi entirely → fewer vertices → coarser, coalesced triangles
+  // (still a full Delaunay of the survivors → no holes). The scoring_mode only
+  // decides WHERE the surviving seeds sit; decimation thins them the same way in
+  // every mode.
+  float my_w  = s.score;                              // importance at this seed
+  bool active = s.flags > 0.5;
+  float r_i   = tri_hash_f(i * 2246822519u) * 0.9;    // fixed survival threshold
+  float keep  = pow(max(my_w, 1e-3), u_decimation * DEC_GAMMA);
+  keep *= (1.0 - DEC_TOPCULL * u_decimation * u_decimation);
+  if (tri_hash_f(i * 3266489917u + u_frame) < pflip) {
+    if (active) { if (keep < r_i - DEC_HYST) active = false; }
+    else        { if (keep > r_i + DEC_HYST) { active = true; s.pos = importance_sample(i); } }
+  }
+  if (!active) { s.flags = 0.0; seeds[i] = s; return; }   // inactive → frozen, out of the Voronoi
+  s.flags = 1.0;
+
+  // Active but homeless (no cell) → respawn onto a feature.
+  if (mass < 1e-4) {
+    if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = importance_sample(i);
     seeds[i] = s;
     return;
   }
 
-  // Modes 1/2/3 keep every seed active (no activation decimation).
-  s.flags = 1.0;
-
-  // Starved cell (owns ~no pixels): stochastically respawn to break stasis.
-  if (mass < 1e-4) {
-    if (tri_hash_f(i * 9781u + u_frame) < pflip) s.pos = tri_hash2(i + 1u, u_frame * 3u + 1u);
+  // --- Mode 0: relax toward the W-weighted centroid (density ∝ W) ---
+  if (u_mode == 0u) {
+    float2 dd = (s.pos - ctr) * float2(u_aspect, 1.0);
+    float conf = saturate(length(dd) / 0.10);
+    if (tri_hash_f(i * 2654435761u + u_frame) < 1.0 - exp(-rate_hz * u_dt * conf))
+      s.pos = saturate(ctr);
     seeds[i] = s;
     return;
   }
