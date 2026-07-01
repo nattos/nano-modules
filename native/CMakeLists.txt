@@ -779,6 +779,32 @@ if(APPLE)
     catch_discover_tests(test_effect_render)
   endif()
 
+  # End-to-end GPU render of warp.plane_shear (nano.wasm) on a real Metal backend.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    add_executable(test_plane_shear tests/test_plane_shear.cpp)
+    target_link_libraries(test_plane_shear PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_plane_shear PRIVATE
+      NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    target_compile_options(test_plane_shear PRIVATE -Wno-attributes)
+    catch_discover_tests(test_plane_shear)
+  endif()
+
+  # End-to-end GPU render of warp.tri_shear (nano.wasm) on a real Metal backend.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    add_executable(test_tri_shear tests/test_tri_shear.cpp)
+    target_link_libraries(test_tri_shear PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_tri_shear PRIVATE
+      NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    target_compile_options(test_tri_shear PRIVATE -Wno-attributes)
+    catch_discover_tests(test_tri_shear)
+  endif()
+
   # Shared-runtime instance isolation: two namespaced executors on one runtime.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     add_executable(test_barrel_isolation tests/test_barrel_isolation.cpp)

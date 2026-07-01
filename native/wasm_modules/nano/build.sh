@@ -193,6 +193,25 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var triangulate downsample feature hist cdf remap jfa_init jfa_splat jfa_step score_clear score seed_prep takeover present edge_clear edges line_vs line_fs
 echo "  triangulate shaders compiled (SPV: downsample+feature+jfa+score+takeover+present+edges+lines; blur)"
 
+# plane_shear — analysis-driven shear / rift. Sharing common.hlsl:
+#   accumulate — coarse-grid gradient scatter → stats buffer (atomic, selected alg).
+#   solve      — single-thread reduction → latched plane (center + normal).
+#   render     — per-pixel inverse-mapped shear warp (rift / overlap / slip).
+compile_shaders_compute_var_spv plane_shear accumulate
+compile_shaders_compute_var_spv plane_shear solve
+compile_shaders_compute_var_spv plane_shear render
+_emit_spv_header_var plane_shear accumulate solve render
+echo "  plane_shear shaders compiled (SPV: accumulate + solve + render)"
+
+# tri_shear — three-plane triangle shear. accumulate.hlsl #includes plane_shear's
+# (shared grid); solve.hlsl finds 3 lines; render.hlsl is plane_shear's render + a
+# line_index selecting one of the 3 edges (host chains it 3× with ping-pong textures).
+compile_shaders_compute_var_spv tri_shear accumulate
+compile_shaders_compute_var_spv tri_shear solve
+compile_shaders_compute_var_spv tri_shear render
+_emit_spv_header_var tri_shear accumulate solve render
+echo "  tri_shear shaders compiled (SPV: accumulate + solve + render)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -220,6 +239,8 @@ wasm_build \
   ../spectral_lfo/main.cpp \
   ../spectral_lfo/spectral_curve.cpp \
   ../mod_spectral/main.cpp \
-  ../triangulate/main.cpp
+  ../triangulate/main.cpp \
+  ../plane_shear/main.cpp \
+  ../tri_shear/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

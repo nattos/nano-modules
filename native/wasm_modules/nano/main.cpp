@@ -24,6 +24,8 @@ NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
 NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
 NANO_DECLARE_INSTANCE_EFFECT(mod_spectral)
 NANO_DECLARE_INSTANCE_EFFECT(triangulate)
+NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
+NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 
 extern "C" {
 
@@ -155,6 +157,27 @@ void nano_module_main() {
         "filter",
         "triangulation,delaunay,voronoi,mesh,topology,ridges,stippling,jfa,gpu,stylize",
         NANO_INSTANCE_LIFECYCLE(triangulate),
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.plane_shear",
+        "Plane Shear",
+        "Analysis-driven shear / rift. Picks a \"natural\" dividing plane (a 2D line) from the input via one of four algorithms — Dominant Edge (global structure tensor), Strongest Edge (Hough), Low-energy Seam, or Content Centroid (PCA) — then shears the two halves on either side of it. Any algorithm can run at a fixed angle (it then only picks the position). The plane is stiff: held between updates and hard-snapped (never lerped) when it retargets at the configurable rate. Only the shear translation animates (CPU-timed one-shot hold / ping-pong / loop, with an optional retrigger on retarget). A signed direction morphs the per-half motion between rift (halves apart), overlap (halves together), and slip (halves sliding along the plane), with separate signed translation + multiplier per half. Rift gaps and overlaps each have selectable fills/blends.",
+        "warp",
+        "shear,rift,split,plane,slice,warp,analysis,structure-tensor,hough,seam,pca,glitch",
+        NANO_INSTANCE_LIFECYCLE(plane_shear),
+        nullptr, nullptr, nullptr, &plane_shear::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.tri_shear",
+        "Triangle Shear",
+        "Three-plane triangle shear. Discovers THREE natural lines (strongest edges, or lowest-energy seams) biased to enclose a large triangle — a size param weights the large-area reward — then shears the image by chaining the single-plane shear three times, once per triangle edge. Like warp.plane_shear, the triangle is stiff (held then hard-snapped at the update rate) and only the shear translation animates (one-shot / ping-pong / loop, with a retrigger and a trigger-now button). Signed direction morphs each edge's motion between rift, overlap, and slip; rift gaps, border reveals, and overlaps each have selectable fills/blends (defaulting to black).",
+        "warp",
+        "shear,rift,triangle,tri,three,plane,split,slice,warp,glitch,hough,seam",
+        NANO_INSTANCE_LIFECYCLE(tri_shear),
     });
 }
 
