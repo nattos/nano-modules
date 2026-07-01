@@ -132,8 +132,11 @@ describe('<help-slot> editing', () => {
     });
     body(el)!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await el.updateComplete;
-    // Segment buttons: [Global, Local].
-    const btns = [...el.renderRoot.querySelectorAll('.seg button')] as HTMLButtonElement[];
+    // The selector is a <field-tab-bar>; its buttons live in its own shadow root.
+    const tabBar = el.renderRoot.querySelector('field-tab-bar') as any;
+    await tabBar.updateComplete;
+    const btns = [...tabBar.renderRoot.querySelectorAll('button')] as HTMLButtonElement[];
+    expect(btns.map((x) => x.textContent?.trim())).toEqual(['Global', 'Local']);
     btns[1].click();   // → Local
     await el.updateComplete;
     expect(b.helpWrites.some((w) => w.scope === 'local')).toBe(true);

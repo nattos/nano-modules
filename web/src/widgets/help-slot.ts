@@ -25,6 +25,7 @@ import { marked } from 'marked';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding } from './field-editor';
 import { fieldDocsStore } from '../state/field-docs-store';
+import './field-tab-bar';
 
 type Scope = 'global' | 'local';
 
@@ -79,18 +80,7 @@ export class HelpSlot extends MobxLitElement {
     .help-body strong { color: var(--app-text-color1, #e0e0e0); }
 
     .editor { margin: 2px 0 6px; }
-    .seg {
-      display: inline-flex; gap: 0; margin-bottom: 4px;
-      border: 1px solid var(--app-tint-3, rgba(255,255,255,0.14)); border-radius: 3px;
-      overflow: hidden;
-    }
-    .seg button {
-      font-size: var(--app-fs-xs); padding: 2px 10px; border: 0; cursor: pointer;
-      background: transparent; color: var(--app-text-color2, #b8b8b8);
-    }
-    .seg button.active {
-      background: var(--app-hi-color1, #6a9bd8); color: #fff;
-    }
+    .seg-wrap { margin-bottom: 5px; }
     textarea {
       width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical;
       font-family: var(--app-mono, monospace); font-size: var(--app-fs-xs);
@@ -137,11 +127,18 @@ export class HelpSlot extends MobxLitElement {
     this.editScope = this.scope;
     this.draft = this.textFor(this.editScope);
     this.editing = true;
-    this.updateComplete.then(() => {
-      const ta = this.renderRoot.querySelector('textarea');
-      ta?.focus();
-    });
+    this.focusEditor(true);
   };
+
+  /** Focus the textarea after the next render; optionally select all its content. */
+  private focusEditor(selectAll = false) {
+    this.updateComplete.then(() => {
+      const ta = this.renderRoot.querySelector('textarea') as HTMLTextAreaElement | null;
+      if (!ta) return;
+      ta.focus();
+      if (selectAll) ta.select();
+    });
+  }
 
   /** Persist `draft` into the currently-edited scope. */
   private commitDraft(scope: Scope) {
@@ -161,6 +158,8 @@ export class HelpSlot extends MobxLitElement {
     // Record the shown-scope selection in the sketch.
     this.binding?.setHelp?.(this.path, { scope: next });
     this.draft = this.textFor(next);
+    // Content fully changed → re-select so a retype replaces it cleanly.
+    this.focusEditor(true);
   }
 
   private finishEdit() {
@@ -185,13 +184,25 @@ export class HelpSlot extends MobxLitElement {
     if (!this.binding?.helpMode) return nothing;
 
     if (this.editing) {
+      // A tiny binding maps the tab bar's pseudo-field to editScope. Recreated
+      // each render so its identity changes → <field-tab-bar> re-renders and the
+      // active segment tracks editScope. mousedown-preventDefault on the wrapper
+      // keeps the textarea focused (so its @blur doesn't commit + close the editor
+      // before the segment click lands — the switching bug).
+      const scopeBinding: FieldBinding = {
+        instanceKey: 'help-scope',
+        getValue: () => this.editScope,
+        setValue: (_f, v) => this.switchScope(v as Scope),
+        beginContinuousEdit: () => ({ update: () => {}, accept: () => {}, cancel: () => {} }),
+      };
       return html`
         <div class="editor">
-          <div class="seg">
-            <button class=${this.editScope === 'global' ? 'active' : ''}
-              @click=${() => this.switchScope('global')}>Global</button>
-            <button class=${this.editScope === 'local' ? 'active' : ''}
-              @click=${() => this.switchScope('local')}>Local</button>
+          <div class="seg-wrap" @mousedown=${(e: Event) => e.preventDefault()}>
+            <field-tab-bar
+              .fieldPath=${'scope'}
+              .options=${[{ label: 'Global', value: 'global' }, { label: 'Local', value: 'local' }]}
+              .binding=${scopeBinding}
+            ></field-tab-bar>
           </div>
           <textarea
             .value=${this.draft}
