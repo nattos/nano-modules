@@ -128,49 +128,93 @@ static gpu::RenderPSO s_pso_lines;
 static fx::GaussianBlur s_blur;
 
 void module_init() {
-  state::init("filter.mesh.triangulate", {1, 2, 0},
+  state::init("filter.mesh.triangulate", {1, 2, 1},
     state::Schema()
-      .floatField("density",      0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Mesh density — how many seed points populate the triangulation.")
-      .floatField("ridge_weight", 0.6f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "How strongly seeds are pulled onto ridgelines.")
-      .floatField("corner_weight",0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "How strongly seeds are pulled onto corners / maxima.")
-      .floatField("void_weight",  0.2f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Baseline coverage of low-feature density (general fill).")
-      .floatField("churn",        0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Stochastic-takeover rate — how eagerly mismatched vertices jump (0 = frozen).")
-      .floatField("decimation",   0.6f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Slope-merge strength (Ridge Protect) — how aggressively slope vertices merge uphill onto features. Higher = sparser slopes, bigger contrast triangles; 0 = near-uniform.")
-      .floatField("line_width",   0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Triangulation edge thickness.")
-      .rgbField  ("line_color",   1.f, 1.f, 1.f, state::PrimaryInput)
-      .rgbField  ("feature_color",1.f, 0.45f, 0.15f, state::PrimaryInput)
-      .floatField("edge_threshold",0.5f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Binary edge colouring: edges whose feature weight exceeds this get feature_color, the rest line_color.")
-      .intField  ("frame_points", 8, 0, 24, state::PrimaryInput, 1, nullptr,
-                  "Fixed anchor points per frame edge — the mesh triangulates out to the border (0 = off).")
+      .helpField("intro",
+        "## Triangulate\n"
+        "Re-draws an input as a **Delaunay mesh that follows its topology** — dense on "
+        "ridgelines and corners, coarse across flat voids. Feature maps (ridge, corner, "
+        "density) are histogram auto-levelled, a persistent seed pool is partitioned by a "
+        "GPU Voronoi, and the vertices *stochastically settle* onto features (no swim) and "
+        "*decimate* to coalesce triangles. Works on video frames or sparse point clouds.\n\n"
+        "**Try:** push *Decimation* to coarsen the mesh into big feature-hugging triangles; "
+        "bias *Ridge* vs *Corner* weight to choose which features keep detail; drop *Feature "
+        "Threshold* to light more edges in the *Feature Colour*. Step *Debug View* to watch "
+        "the importance field and Voronoi cells while you tune.")
 
+      .group("budget", "Points")
+        .groupHelp(
+          "The vertex ceiling. *Density* is the maximum number of seed points; *Decimation* "
+          "(under Dynamics) thins from it, so density sets the finest detail and decimation "
+          "sets how far it coalesces.")
+      .floatField("density",      0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Mesh density — how many seed points populate the triangulation.").label("Density", "Dens")
+
+      .group("features", "Feature Weighting")
+        .groupHelp(
+          "What counts as a feature to follow. The ridge (crest), corner (peak) and void "
+          "(general density) maps are each histogram auto-levelled per frame, then mixed by "
+          "these weights into one importance field — so only the RELATIVE mix matters, and it "
+          "chooses which features win. *Feature Scale* sets the smoothing before the "
+          "derivatives (bigger = coarser, smoother features).")
+      .floatField("ridge_weight", 0.6f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "How strongly seeds are pulled onto ridgelines.").label("Ridge Weight", "Ridge")
+      .floatField("corner_weight",0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "How strongly seeds are pulled onto corners / maxima.").label("Corner Weight", "Corner")
+      .floatField("void_weight",  0.2f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Baseline coverage of low-feature density (general fill).").label("Void Weight", "Void")
       .floatField("feature_scale",0.4f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
-                  nullptr, "Smoothing radius applied before derivatives (larger = coarser features).")
-      .floatField("confidence",   0.4f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
-                  nullptr, "Takeover margin — a candidate must beat the incumbent by this much to displace it (higher = crisper/stiller).")
+                  nullptr, "Smoothing radius applied before derivatives (larger = coarser features).").label("Feature Scale", "Scale")
+
+      .group("dynamics", "Dynamics")
+        .groupHelp(
+          "How the vertices move and thin. *Churn* is how eagerly mismatched vertices "
+          "resettle (0 = frozen). *Decimation* removes low-importance vertices to coalesce "
+          "triangles — crank it for big, sparse, feature-hugging triangles. *Mode* picks the "
+          "placement rule; *Confidence* is the settle deadband for the relaxation modes.")
+      .floatField("churn",        0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Stochastic-takeover rate — how eagerly mismatched vertices jump (0 = frozen).").label("Churn", "Churn")
+      .floatField("decimation",   0.6f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "How aggressively low-importance vertices are dropped to coalesce triangles. Higher = sparser mesh, bigger contrast triangles; 0 = full density.").label("Decimation", "Decim")
       .selectField("scoring_mode", 0, state::SecondaryInput,
                    {{"Ridge Protect", 0}, {"Cell Residual", 1}, {"Feature Weight", 2}, {"Weight + Blue-noise", 3}},
-                   false, "Seed dynamics. Ridge Protect (default): lock feature maxima, merge slopes uphill for contrast, keep voids. Others are relaxation variants.")
+                   false, "Where the surviving vertices sit. Ridge Protect (default): relax toward the importance-weighted centre. Others are relaxation variants.").label("Dynamics Mode", "Mode")
+      .floatField("confidence",   0.4f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
+                  nullptr, "Takeover margin — a candidate must beat the incumbent by this much to displace it (higher = crisper/stiller). Relaxation modes only.").label("Confidence", "Conf")
+
+      .group("style", "Mesh Style")
+        .groupHelp(
+          "The drawn mesh. *Line Width/Colour* is the base edge; edges whose feature weight "
+          "beats *Feature Threshold* switch to *Feature Colour* (binary) so ridges stand out. "
+          "*Frame Anchors* pin points around the border so the mesh triangulates out to the "
+          "edges. *Backdrop* is what sits behind the mesh.")
+      .floatField("line_width",   0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Triangulation edge thickness.").label("Line Width", "Width")
+      .rgbField  ("line_color",   1.f, 1.f, 1.f, state::PrimaryInput).label("Line Colour", "Line")
+      .rgbField  ("feature_color",1.f, 0.45f, 0.15f, state::PrimaryInput).label("Feature Colour", "Feat")
+      .floatField("edge_threshold",0.5f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Binary edge colouring: edges whose feature weight exceeds this get feature_color, the rest line_color.").label("Feature Threshold", "Thresh")
+      .intField  ("frame_points", 8, 0, 24, state::PrimaryInput, 1, nullptr,
+                  "Fixed anchor points per frame edge — the mesh triangulates out to the border (0 = off).").label("Frame Anchors", "Frame")
+      .floatField("fill_opacity", 0.0f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
+                  nullptr, "Opacity of solid triangle fills (0 = wireframe only).").label("Fill Opacity", "Fill")
       .selectField("bg_mode", 1, state::SecondaryInput,
                    {{"Input", 0}, {"Dark", 1}, {"Feature", 2}},
-                   false, "Backdrop the mesh is drawn over.")
-      .floatField("fill_opacity", 0.0f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
-                  nullptr, "Opacity of solid triangle fills (0 = wireframe only).")
-      .floatField("quality",      0.3f, 0.05f, 1.f, state::SecondaryInput, nullptr, 0.01f,
-                  nullptr, "Blur sample density for the feature pass (tuning).")
+                   false, "Backdrop the mesh is drawn over.").label("Backdrop", "BG")
 
+      .group("debug", "Debug")
+        .groupHelp(
+          "Inspection aids. *Debug View* shows an internal stage — the density / ridge / "
+          "corner maps, the blended importance field, the Voronoi cells or the seed points — "
+          "instead of the mesh. *Blur Quality* tunes the feature-map blur sampling.")
       .selectField("debug_view", 0, state::SecondaryInput,
                    {{"Off", 0}, {"Density", 1}, {"Ridge", 2}, {"Corner", 3},
                     {"Importance", 4}, {"Voronoi", 5}, {"Points", 6}},
-                   true, "Visualize an internal stage instead of the mesh.")
+                   true, "Visualize an internal stage instead of the mesh.").label("Debug View", "Debug")
+      .floatField("quality",      0.3f, 0.05f, 1.f, state::SecondaryInput, nullptr, 0.01f,
+                  nullptr, "Blur sample density for the feature pass (tuning).").label("Blur Quality", "Qual")
 
+      .endGroup()
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
