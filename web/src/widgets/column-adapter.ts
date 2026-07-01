@@ -77,6 +77,8 @@ export interface ColumnCapabilities {
 export interface ColumnDataSource {
   readonly caps: ColumnCapabilities;
   readonly tappingMode: boolean;
+  /** Whether the surface's "?" help mode is on (help slots + section help shown). */
+  readonly helpMode: boolean;
   readonly availableEffects: AvailableEffect[];
   /** True in the resolume/barrel editor (bound to a NanoBarrel instance). Lets
    *  shared widgets tailor empty-states — e.g. "this barrel reported no
@@ -138,6 +140,11 @@ export interface ColumnController {
   // clipboard (caps.clipboard)
   snapshotEffect(sketchId: string, instanceKey: string): EffectClipboard | null;
   insertEffectFromClipboard(sketchId: string, colIdx: number, insertIdx: number, payload: EffectClipboard): void;
+
+  // help text ("?" mode) — merge a partial help override (scope and/or local
+  // markdown text) for a slot path on an instance. One undo point per call.
+  setInstanceHelp(sketchId: string, instanceKey: string, slotPath: string,
+                  patch: { scope?: 'global' | 'local'; text?: string }): void;
 
   // smoothing (caps.smoothing)
   setFieldSmoothing(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string, patch: Partial<ParamSmoothing>): void;

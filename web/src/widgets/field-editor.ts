@@ -69,6 +69,29 @@ export interface FieldBinding {
    * bindings.
    */
   inUseValues?(fieldPath: string): unknown[];
+
+  // --- Help text ("?" help mode) ---
+  // These support the <help-slot> widget. All optional so non-help bindings
+  // (tests, older adapters) keep working.
+
+  /** The effect TYPE id, used to key the browser-global help override store. */
+  moduleType?: string;
+
+  /** Whether the surface's "?" help mode is currently on (help slots visible). */
+  helpMode?: boolean;
+
+  /**
+   * The sketch-LOCAL help override for a slot path (scope + text), or undefined
+   * when none is stored. The global override + effect default are resolved by
+   * the widget itself (via the global doc store + the schema-authored default).
+   */
+  getHelp?(slotPath: string): { scope?: 'global' | 'local'; text?: string } | undefined;
+
+  /**
+   * Merge a partial help override (scope and/or local text) for a slot path into
+   * the sketch. One undo point per call (commit on blur / segment switch).
+   */
+  setHelp?(slotPath: string, patch: { scope?: 'global' | 'local'; text?: string }): void;
 }
 
 /** Handle for an in-progress multi-field continuous edit (XY pad, etc.). */

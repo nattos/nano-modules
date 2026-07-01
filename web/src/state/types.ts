@@ -199,6 +199,8 @@ export interface LocalState {
   engine: EngineStatus;
   /** Whether tap configuration mode is active. */
   tappingMode: boolean;
+  /** Whether "?" help mode is active (help slots + section help shown inline). */
+  helpMode: boolean;
 
   // --- Selection / Inspector ---
   /** Currently selected item (drives the inspector panel). */

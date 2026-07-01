@@ -35,6 +35,7 @@ const ALL_CAPS: ColumnCapabilities = {
 const data: ColumnDataSource = {
   get caps() { return ALL_CAPS; },
   get tappingMode() { return appState.local.tappingMode; },
+  get helpMode() { return appState.local.helpMode; },
   get availableEffects(): AvailableEffect[] { return appState.local.availableEffects; },
   get barrelMode(): boolean { return appState.local.barrelMode; },
   getSketch(sketchId: string): Sketch | undefined { return appState.database.sketches[sketchId]; },
@@ -81,6 +82,9 @@ const controller: ColumnController = {
   snapshotEffect: (s, k): EffectClipboard | null => appController.snapshotEffect(s, k),
   insertEffectFromClipboard: (s, c, idx, payload: EffectClipboard) =>
     appController.insertEffectFromClipboard(s, c, idx, payload),
+
+  setInstanceHelp: (s, instanceKey, slotPath, patch) =>
+    appController.setInstanceHelp(s, instanceKey, slotPath, patch),
 
   setFieldSmoothing: (s, c, ch, fp, patch: Partial<ParamSmoothing>) =>
     appController.setFieldSmoothing(s, c, ch, fp, patch),

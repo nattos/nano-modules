@@ -59,6 +59,22 @@ export interface InstanceState {
    * about migrations later.
    */
   version?: { module: [number, number, number]; effect: [number, number, number] };
+  /**
+   * Per-slot help-text state, keyed by slot path (a `helpField` name or a
+   * `@group/<id>` group-help path). `scope` selects which layer is SHOWN outside
+   * editing — 'local' shows this sketch's `text`, 'global' shows the browser-wide
+   * override (STORE_FIELD_DOCS) falling back to the effect-authored default.
+   * Absent entry ⇒ default scope ('global') and no local override.
+   */
+  help?: Record<string, InstanceHelp>;
+}
+
+/** Per-slot help-text override stored in the sketch (see InstanceState.help). */
+export interface InstanceHelp {
+  /** Which layer is shown outside editing. Defaults to 'global' when absent. */
+  scope?: 'global' | 'local';
+  /** The sketch-local markdown override (only meaningful for scope 'local'). */
+  text?: string;
 }
 
 /**

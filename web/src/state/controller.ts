@@ -710,6 +710,26 @@ export class AppController {
     this.mutate('Set knob', this.dashboardKnobRecipe(sketchId, instanceKey, idx, value));
   }
 
+  // --- Help text ("?" mode) — per-instance, per-slot markdown overrides ---
+
+  /**
+   * Merge a partial help override (scope and/or sketch-local markdown text) into
+   * an instance's `help[slotPath]`. The GLOBAL override lives in IndexedDB
+   * (field-docs-store), not here — this only touches the sketch-local layer +
+   * the per-slot scope selection. One undo point per call.
+   */
+  setInstanceHelp(sketchId: string, instanceKey: string, slotPath: string,
+                  patch: { scope?: 'global' | 'local'; text?: string }) {
+    this.mutate('Edit help text', (draft: DatabaseState) => {
+      const inst = draft.sketches[sketchId]?.instances?.[instanceKey];
+      if (!inst) return;
+      inst.help ??= {};
+      const cur = (inst.help[slotPath] ??= {});
+      if (patch.scope !== undefined) cur.scope = patch.scope;
+      if (patch.text !== undefined) cur.text = patch.text;
+    });
+  }
+
   /** Begin a continuous knob edit (drag). Pushes live so wired consumers update. */
   beginSetDashboardKnob(sketchId: string, instanceKey: string, idx: number, value: number): LongEdit {
     const edit = this.history.beginLongEdit('Set knob', this.dashboardKnobRecipe(sketchId, instanceKey, idx, value));

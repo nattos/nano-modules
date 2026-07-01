@@ -369,6 +369,8 @@ export class ArrangementStore {
   automationMode = false;
   /** Global wires mode: reveals the rail modulation wires. */
   wiresMode = true;
+  /** Global "?" help mode: reveals inline effect help text + section help. */
+  helpMode = false;
 
   // Viewport (warped-units horizontal transform lives in beat-grid.ts).
   pxPerBeat = 22;

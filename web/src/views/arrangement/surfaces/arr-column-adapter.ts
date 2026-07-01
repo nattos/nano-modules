@@ -510,6 +510,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
       return { ...CAPS, wiring: store.wiresMode, inlineWireArcs: store.wiresMode, ...(self.target.capsOverride ?? {}) };
     },
     get tappingMode() { return store.wiresMode; },
+    get helpMode() { return store.helpMode; },
     get availableEffects() { return availableEffects(); },
     get barrelMode() { return false; },   // arrangement editor is never barrel-bound
     getSketch: (sketchId: string): Sketch | undefined => {
@@ -525,7 +526,14 @@ export class ArrColumnAdapter implements ColumnAdapter {
           type: 'module' as const, module_type: d.moduleType, instance_key: d.id,
         })),
         instances: Object.fromEntries(
-          devices.map((d) => [d.id, { module_type: d.moduleType, state: (d.state ?? {}) as Record<string, unknown> }]),
+          devices.map((d) => {
+            const st = (d.state ?? {}) as Record<string, unknown>;
+            // Local help overrides ride a reserved __help__ key in device state
+            // (mirrors __ui_only__ collapse) so they round-trip with the clip.
+            const help = (st['__help__'] && typeof st['__help__'] === 'object')
+              ? st['__help__'] as Record<string, any> : undefined;
+            return [d.id, { module_type: d.moduleType, state: st, help }];
+          }),
         ),
         // Read through the store so the overlay re-renders when wires change.
         // Multi-edit synthesizes the COMMON wires (rep ids); single-clip/track
@@ -715,6 +723,22 @@ export class ArrColumnAdapter implements ColumnAdapter {
       const id = this.target.insertAt(insertIdx, payload.moduleType);
       if (id) this.target.replace(id, { state: JSON.parse(JSON.stringify(payload.state)) });
     },
+    // Help text ("?" mode): local overrides ride a reserved __help__ key in the
+    // device state (mirrors __ui_only__), so they round-trip with the clip. The
+    // GLOBAL layer lives in IndexedDB (field-docs-store), not here.
+    setInstanceHelp: (_s, instanceKey, slotPath, patch) => {
+      const dev = this.device(instanceKey);
+      if (!dev) return;
+      const help = (dev.state?.['__help__'] && typeof dev.state['__help__'] === 'object')
+        ? dev.state['__help__'] as Record<string, any> : {};
+      const cur = { ...(help[slotPath] ?? {}) };
+      if (patch.scope !== undefined) cur.scope = patch.scope;
+      if (patch.text !== undefined) cur.text = patch.text;
+      this.target.replace(instanceKey, {
+        state: { ...(dev.state ?? {}), ['__help__']: { ...help, [slotPath]: cur } },
+      });
+    },
+
     // smoothing is capability-gated off → never invoked.
     setFieldSmoothing: () => {},
     beginSetFieldSmoothing: (): EditHandle => ({ accept: () => {}, cancel: () => {} }),

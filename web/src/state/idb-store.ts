@@ -51,6 +51,13 @@ export const STORE_MEDIA = 'mediaHandles';
  * single permission grant on the library root unlocks everything beneath it.
  */
 export const STORE_LIBRARY = 'libraryPaths';
+/**
+ * Global (browser-wide, cross-sketch) help-text overrides. Keyed by a composite
+ * `key` of `${effectTypeId}|${slotPath}` — the user's customized markdown for a
+ * given effect's help slot, shared across every sketch and surface. Stores
+ * `{ key, text }`. Per-sketch (local) overrides live in the sketch instead.
+ */
+export const STORE_FIELD_DOCS = 'fieldDocs';
 
 /** Every store + its keyPath. `ensureStores` creates any that are missing. */
 const STORE_KEYPATHS: Record<string, string> = {
@@ -62,6 +69,7 @@ const STORE_KEYPATHS: Record<string, string> = {
   [STORE_WORKSPACE]: 'id',
   [STORE_MEDIA]: 'sourceKey',
   [STORE_LIBRARY]: 'id',
+  [STORE_FIELD_DOCS]: 'key',
 };
 
 function ensureStores(db: IDBDatabase) {

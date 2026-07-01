@@ -1559,6 +1559,7 @@ export class ColumnGroup extends MobxLitElement {
     entry: ModuleEntry,
     plugin: PluginInfo | undefined,
   ): FieldBinding {
+    const self = this;   // for the non-arrow helpMode getter below
     return {
       instanceKey: entry.instance_key,
       getValue: (fieldPath: string) => {
@@ -1622,6 +1623,18 @@ export class ColumnGroup extends MobxLitElement {
       // single-target adapters, so single-clip + track cards never see it).
       isMixed: (fieldPath: string) => this.ds.fieldMixed?.(entry.instance_key, fieldPath) ?? false,
       inUseValues: (fieldPath: string) => this.ds.fieldInUse?.(entry.instance_key, fieldPath) ?? [],
+      // Help text ("?" mode): the effect type keys the global override store;
+      // helpMode gates visibility; local overrides live on the instance and are
+      // read via the (surface-synthesized) sketch, written via the controller.
+      moduleType: entry.module_type,
+      get helpMode() { return self.ds.helpMode; },
+      getHelp: (slotPath: string) => {
+        const sketch = this.ds.getSketch(this.sketchId);
+        return sketch?.instances?.[entry.instance_key]?.help?.[slotPath];
+      },
+      setHelp: (slotPath: string, patch: { scope?: 'global' | 'local'; text?: string }) => {
+        this.ctl.setInstanceHelp(this.sketchId, entry.instance_key, slotPath, patch);
+      },
     };
   }
 
