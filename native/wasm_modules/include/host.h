@@ -686,6 +686,70 @@ public:
     return *this;
   }
 
+  /// Attach a human display name and an optional short/compact name to the
+  /// field JUST declared (chained modifier — call it immediately after a
+  /// *Field). Both are non-unique / contextual, purely UI metadata. Reopens the
+  /// field's closing brace, injects `"name"`/`"short"`, re-closes.
+  Schema& label(const char* display, const char* shortName = nullptr) {
+    if (len_ > 0 && buf_[len_ - 1] == '}') len_--;   // reopen the just-closed field
+    if (display && *display) { appendRaw(",\"name\":\""); appendJsonString(display); appendRaw("\""); }
+    if (shortName && *shortName) { appendRaw(",\"short\":\""); appendJsonString(shortName); appendRaw("\""); }
+    appendRaw("}");
+    return *this;
+  }
+
+  /// Begin a parameter GROUP (a first-class section — a natural home for
+  /// section-level metadata). STICKY: every field declared afterward is tagged
+  /// with this group `id` until the next group() (or group("")/endGroup() to
+  /// clear). Passing `display` declares the group's metadata object once (name +
+  /// declaration order); enrich it with groupHelp()/groupShort().
+  Schema& group(const char* id, const char* display = nullptr) {
+    currentGroupLen_ = 0;
+    if (id) {
+      while (id[currentGroupLen_] && currentGroupLen_ < (int)sizeof(currentGroup_) - 1) {
+        currentGroup_[currentGroupLen_] = id[currentGroupLen_]; currentGroupLen_++;
+      }
+    }
+    currentGroup_[currentGroupLen_] = '\0';
+    if (currentGroupLen_ > 0 && display) {
+      const int cap = (int)sizeof(groupsBuf_);
+      if (groupCount_ > 0) rawInto(groupsBuf_, groupsLen_, cap, ",");
+      rawInto(groupsBuf_, groupsLen_, cap, "\"");
+      jsonInto(groupsBuf_, groupsLen_, cap, currentGroup_);
+      rawInto(groupsBuf_, groupsLen_, cap, "\":{\"name\":\"");
+      jsonInto(groupsBuf_, groupsLen_, cap, display);
+      rawInto(groupsBuf_, groupsLen_, cap, "\",\"order\":");
+      intInto(groupsBuf_, groupsLen_, cap, groupCount_);
+      rawInto(groupsBuf_, groupsLen_, cap, "}");
+      groupCount_++;
+    }
+    return *this;
+  }
+  /// Clear the sticky group (subsequent fields are ungrouped).
+  Schema& endGroup() { currentGroupLen_ = 0; currentGroup_[0] = '\0'; return *this; }
+
+  /// Enrich the most-recently declared group() with long-form markdown help
+  /// (shown at the section header in "?" help mode) or a short/compact name.
+  Schema& groupHelp(const char* markdown) { return groupMeta("help", markdown); }
+  Schema& groupShort(const char* shortName) { return groupMeta("short", shortName); }
+
+  /// A HELP slot: renders long-form markdown documentation in the inspector's
+  /// "?" help mode, interspersed at this position among the fields. Has NO
+  /// instance-state backing (io defaults to None → the executor never replays
+  /// it). `markdown` is the authored default; users can override it (global or
+  /// per-sketch) in the UI. The field `name` is its addressable "slot path"
+  /// (custom inspectors hook the same path).
+  Schema& helpField(const char* name, const char* markdown, int io = None) {
+    beginField(name);
+    appendRaw("\"type\":\"help\",\"default\":\"");
+    appendJsonString(markdown);
+    appendRaw("\",\"io\":");
+    appendInt(io);
+    appendOrder();
+    appendRaw("}");
+    return *this;
+  }
+
   /// Declare an effect capability (a queryable classification tag — see the
   /// Capability enum). Chainable and repeatable; declare BOTH the umbrella tag
   /// and the arity/channel-specific tag. Emitted as a top-level `capabilities`
@@ -703,7 +767,7 @@ public:
   /// Finalize the schema JSON and call the host function.
   void apply(const char* moduleId, Version version) const {
     // Close the JSON
-    char finalized[16384];
+    char finalized[65536];
     int flen = len_;
     if (flen > (int)sizeof(finalized) - 64) flen = (int)sizeof(finalized) - 64;
     for (int i = 0; i < flen; i++) finalized[i] = buf_[i];
@@ -714,6 +778,13 @@ public:
       for (const char* p = pfx; *p && flen < (int)sizeof(finalized) - 4; ++p) finalized[flen++] = *p;
       for (int i = 0; i < capLen_ && flen < (int)sizeof(finalized) - 4; i++) finalized[flen++] = capBuf_[i];
       if (flen < (int)sizeof(finalized) - 2) finalized[flen++] = ']';
+    }
+    // Top-level `groups` object (sibling to "fields"), when any declared.
+    if (groupCount_ > 0) {
+      const char* pfx = ",\"groups\":{";
+      for (const char* p = pfx; *p && flen < (int)sizeof(finalized) - 4; ++p) finalized[flen++] = *p;
+      for (int i = 0; i < groupsLen_ && flen < (int)sizeof(finalized) - 4; i++) finalized[flen++] = groupsBuf_[i];
+      if (flen < (int)sizeof(finalized) - 2) finalized[flen++] = '}';
     }
     // Version contract: this effect's own version + its bundle's module version,
     // both as [major,minor,patch]. Recorded onto serialized instances so a load
@@ -745,11 +816,11 @@ public:
 
 private:
   // Schema JSON accumulator. Sized generously so parameter-rich effects (the
-  // style guide encourages exposing lots of params) don't silently overflow —
-  // a truncated schema yields invalid JSON that the web's strict JSON.parse
-  // drops entirely, so the inspector shows NO parameters. Keep `finalized[]`
-  // in apply() the same size.
-  char buf_[16384];
+  // style guide encourages exposing lots of params) AND their long-form help
+  // markdown defaults don't silently overflow — a truncated schema yields
+  // invalid JSON that the web's strict JSON.parse drops entirely, so the
+  // inspector shows NO parameters. Keep `finalized[]` in apply() the same size.
+  char buf_[65536];
   int len_ = 0;
   // Capability tags, accumulated as the body of the top-level `capabilities`
   // array (e.g. `"modulation_source","modulation_source_single"`) and emitted
@@ -758,6 +829,16 @@ private:
   char capBuf_[512];
   int capLen_ = 0;
   int capCount_ = 0;
+  // Group metadata, accumulated as the body of the top-level `groups` object
+  // (e.g. `"form":{"name":"Form","order":0}`). Separate from buf_ because the
+  // `fields` object is still open while fields (and their groups) are declared.
+  char groupsBuf_[8192];
+  int groupsLen_ = 0;
+  int groupCount_ = 0;
+  // The sticky current group id (NUL-terminated) stamped onto each field's
+  // "group" key; empty when no group() is active.
+  char currentGroup_[64] = {0};
+  int currentGroupLen_ = 0;
   // Per-depth field count: index 0 = top-level fields, 1+ = nested objects.
   int objectFieldCounts_[8] = {0,0,0,0,0,0,0,0};
   int objectDepth_ = 0;
@@ -774,10 +855,29 @@ private:
     fieldCount_ = objectFieldCounts_[0];
   }
 
-  // Append the "order" field based on declaration order at the current depth.
+  // Append the "order" field based on declaration order at the current depth,
+  // plus the sticky group id (top-level fields only) when a group() is active.
   void appendOrder() {
     appendRaw(",\"order\":");
     appendInt(objectFieldCounts_[objectDepth_] - 1);
+    if (currentGroupLen_ > 0 && objectDepth_ == 0) {
+      appendRaw(",\"group\":\"");
+      appendJsonString(currentGroup_);
+      appendRaw("\"");
+    }
+  }
+
+  // Reopen the most-recently declared group's object and inject a string key.
+  Schema& groupMeta(const char* key, const char* val) {
+    if (groupCount_ == 0 || !val || !*val) return *this;
+    const int cap = (int)sizeof(groupsBuf_);
+    if (groupsLen_ > 0 && groupsBuf_[groupsLen_ - 1] == '}') groupsLen_--;  // reopen last group
+    rawInto(groupsBuf_, groupsLen_, cap, ",\"");
+    rawInto(groupsBuf_, groupsLen_, cap, key);
+    rawInto(groupsBuf_, groupsLen_, cap, "\":\"");
+    jsonInto(groupsBuf_, groupsLen_, cap, val);
+    rawInto(groupsBuf_, groupsLen_, cap, "\"}");
+    return *this;
   }
 
   Schema& vecField(const char* name, const char* type, int io,
@@ -809,37 +909,51 @@ private:
     return *this;
   }
 
-  void appendRaw(const char* s) {
-    while (*s && len_ < (int)sizeof(buf_) - 1) buf_[len_++] = *s++;
+  // --- Buffer-append primitives (static so both buf_ and groupsBuf_ reuse them) ---
+  static void rawInto(char* dst, int& len, int cap, const char* s) {
+    while (*s && len < cap - 1) dst[len++] = *s++;
   }
+  static void intInto(char* dst, int& len, int cap, int v) {
+    if (v < 0) { rawInto(dst, len, cap, "-"); v = -v; }
+    if (v == 0) { rawInto(dst, len, cap, "0"); return; }
+    char tmp[16]; int tl = 0;
+    while (v > 0 && tl < 15) { tmp[tl++] = (char)('0' + (v % 10)); v /= 10; }
+    for (int i = tl - 1; i >= 0; i--) if (len < cap - 1) dst[len++] = tmp[i];
+  }
+  // Append `s` as the body of a JSON string literal, escaping any character
+  // JSON forbids raw (see appendJsonString's note — help/CSS defaults may carry
+  // quotes, newlines, control bytes).
+  static void jsonInto(char* dst, int& len, int cap, const char* s) {
+    static const char kHex[] = "0123456789abcdef";
+    while (*s && len < cap - 7) {   // -7 leaves room for \u00XX
+      unsigned char c = (unsigned char)*s++;
+      switch (c) {
+        case '"':  dst[len++]='\\'; dst[len++]='"';  break;
+        case '\\': dst[len++]='\\'; dst[len++]='\\'; break;
+        case '\n': dst[len++]='\\'; dst[len++]='n';  break;
+        case '\r': dst[len++]='\\'; dst[len++]='r';  break;
+        case '\t': dst[len++]='\\'; dst[len++]='t';  break;
+        case '\b': dst[len++]='\\'; dst[len++]='b';  break;
+        case '\f': dst[len++]='\\'; dst[len++]='f';  break;
+        default:
+          if (c < 0x20) {                            // other control → \u00XX
+            dst[len++]='\\'; dst[len++]='u'; dst[len++]='0'; dst[len++]='0';
+            dst[len++]=kHex[(c >> 4) & 0xF]; dst[len++]=kHex[c & 0xF];
+          } else {
+            dst[len++] = (char)c;                    // UTF-8 bytes pass through
+          }
+      }
+    }
+  }
+
+  void appendRaw(const char* s) { rawInto(buf_, len_, (int)sizeof(buf_), s); }
 
   // Append `s` into the schema JSON as the body of a string literal, escaping
   // any character that JSON forbids raw. A textField default can be a whole
   // multi-line stylesheet (source.text.rich) with embedded quotes and newlines; a
   // raw control byte / unescaped quote corrupts the schema JSON and the web's
   // strict JSON.parse rejects it. (Native nlohmann is lenient and would hide it.)
-  void appendJsonString(const char* s) {
-    static const char kHex[] = "0123456789abcdef";
-    while (*s && len_ < (int)sizeof(buf_) - 7) {   // -7 leaves room for \u00XX
-      unsigned char c = (unsigned char)*s++;
-      switch (c) {
-        case '"':  buf_[len_++]='\\'; buf_[len_++]='"';  break;
-        case '\\': buf_[len_++]='\\'; buf_[len_++]='\\'; break;
-        case '\n': buf_[len_++]='\\'; buf_[len_++]='n';  break;
-        case '\r': buf_[len_++]='\\'; buf_[len_++]='r';  break;
-        case '\t': buf_[len_++]='\\'; buf_[len_++]='t';  break;
-        case '\b': buf_[len_++]='\\'; buf_[len_++]='b';  break;
-        case '\f': buf_[len_++]='\\'; buf_[len_++]='f';  break;
-        default:
-          if (c < 0x20) {                            // other control → \u00XX
-            buf_[len_++]='\\'; buf_[len_++]='u'; buf_[len_++]='0'; buf_[len_++]='0';
-            buf_[len_++]=kHex[(c >> 4) & 0xF]; buf_[len_++]=kHex[c & 0xF];
-          } else {
-            buf_[len_++] = (char)c;                  // UTF-8 bytes pass through
-          }
-      }
-    }
-  }
+  void appendJsonString(const char* s) { jsonInto(buf_, len_, (int)sizeof(buf_), s); }
 
   // Optional, shared UI metadata: a `units` suffix ("ms", "Hz", "%") and a
   // human `description`/tooltip. Emitted only when supplied; both go through
@@ -851,17 +965,7 @@ private:
     }
   }
 
-  void appendInt(int v) {
-    char tmp[16];
-    int neg = v < 0;
-    if (neg) { v = -v; appendRaw("-"); }
-    if (v == 0) { appendRaw("0"); return; }
-    int tl = 0;
-    while (v > 0 && tl < 15) { tmp[tl++] = '0' + (v % 10); v /= 10; }
-    for (int i = tl - 1; i >= 0; i--) {
-      if (len_ < (int)sizeof(buf_) - 1) buf_[len_++] = tmp[i];
-    }
-  }
+  void appendInt(int v) { intInto(buf_, len_, (int)sizeof(buf_), v); }
 
   void appendFloat(float v) {
     int neg = v < 0;
