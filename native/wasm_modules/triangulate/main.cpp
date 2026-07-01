@@ -54,7 +54,7 @@ struct ScoreUniforms { uint32_t w, h; float _p0, _p1; };
 struct TakeoverUniforms {
   uint32_t count, w, h, frame;
   float dt, churn, confidence, aspect;
-  uint32_t mode; float decimation; uint32_t _p1, _p2;
+  uint32_t mode; float decimation; uint32_t bnd, _p2;
 };
 struct PresentUniforms {
   uint32_t debug_view, bg_mode, proc_w, proc_h;
@@ -63,8 +63,9 @@ struct PresentUniforms {
 struct ClearEdgeUniforms { uint32_t max_edges, seen_words, _p1, _p2; };
 struct EdgeUniforms { uint32_t w, h, max, _p; };
 struct LineUniforms {
-  float vp_x, vp_y, half_w, _p0;
+  float vp_x, vp_y, half_w, threshold;
   float cr, cg, cb, _p1;
+  float fcr, fcg, fcb, _p2;
 };
 
 // ---- per-instance state ----------------------------------------------------
@@ -97,6 +98,9 @@ struct State {
   float density = 0.3f, ridge_weight = 0.6f, corner_weight = 0.3f, void_weight = 0.2f;
   float churn = 0.3f, decimation = 0.6f, line_width = 0.3f;
   float line_r = 1.f, line_g = 1.f, line_b = 1.f;
+  float feat_r = 1.f, feat_g = 0.45f, feat_b = 0.15f;
+  float edge_threshold = 0.5f;
+  int   frame_points = 8;
   float feature_scale = 0.4f, confidence = 0.4f;
   int   scoring_mode = 0, bg_mode = 1;
   float fill_opacity = 0.0f, quality = 0.3f;
@@ -112,7 +116,7 @@ static gpu::RenderPSO s_pso_lines;
 static fx::GaussianBlur s_blur;
 
 void module_init() {
-  state::init("filter.mesh.triangulate", {1, 1, 0},
+  state::init("filter.mesh.triangulate", {1, 2, 0},
     state::Schema()
       .floatField("density",      0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Mesh density — how many seed points populate the triangulation.")
@@ -129,6 +133,11 @@ void module_init() {
       .floatField("line_width",   0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Triangulation edge thickness.")
       .rgbField  ("line_color",   1.f, 1.f, 1.f, state::PrimaryInput)
+      .rgbField  ("feature_color",1.f, 0.45f, 0.15f, state::PrimaryInput)
+      .floatField("edge_threshold",0.5f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Binary edge colouring: edges whose feature weight exceeds this get feature_color, the rest line_color.")
+      .intField  ("frame_points", 8, 0, 24, state::PrimaryInput, 1, nullptr,
+                  "Fixed anchor points per frame edge — the mesh triangulates out to the border (0 = off).")
 
       .floatField("feature_scale",0.4f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
                   nullptr, "Smoothing radius applied before derivatives (larger = coarser features).")
@@ -315,6 +324,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "decimation"))    s->decimation    = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_width"))    s->line_width    = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_color"))  { auto v = state::patchVec3(i); s->line_r=v.x; s->line_g=v.y; s->line_b=v.z; }
+    else if (state::pathIs(p, l, "feature_color")){ auto v = state::patchVec3(i); s->feat_r=v.x; s->feat_g=v.y; s->feat_b=v.z; }
+    else if (state::pathIs(p, l, "edge_threshold")) s->edge_threshold = state::patchFloat(i);
+    else if (state::pathIs(p, l, "frame_points"))   s->frame_points    = state::patchInt(i);
     else if (state::pathIs(p, l, "feature_scale")) s->feature_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "confidence"))    s->confidence    = state::patchFloat(i);
     else if (state::pathIs(p, l, "scoring_mode"))  s->scoring_mode  = state::patchInt(i);
@@ -345,9 +357,17 @@ static void ensureTextures(State* s, int vp_w, int vp_h) {
   s->proc_w = pw; s->proc_h = ph;
 }
 
+static inline int boundary_count(const State* s) {
+  int fp = s->frame_points;
+  if (fp < 0) fp = 0;
+  if (fp > 24) fp = 24;
+  return 4 * fp;   // evenly spaced around the perimeter; corners included
+}
+
 static inline int seed_count(const State* s) {
   int c = (int)lroundf(128.0f + s->density * (float)(MAX_SEEDS - 128));
-  if (c < 16) c = 16;
+  int bnd = boundary_count(s);
+  if (c < bnd + 16) c = bnd + 16;   // keep room for interior seeds
   if (c > MAX_SEEDS) c = MAX_SEEDS;
   return c;
 }
@@ -532,7 +552,9 @@ void render(void* self, int vp_w, int vp_h) {
     LineUniforms lu = {};
     lu.vp_x = (float)vp_w; lu.vp_y = (float)vp_h;
     lu.half_w = 0.5f + s->line_width * LINE_HALF_W_MAX;
+    lu.threshold = s->edge_threshold;
     lu.cr = s->line_r; lu.cg = s->line_g; lu.cb = s->line_b;
+    lu.fcr = s->feat_r; lu.fcg = s->feat_g; lu.fcb = s->feat_b;
     s->line_buf.writeOne(lu);
     auto rp = gpu::RenderPass::beginLoad(out);
     rp.setPSO(s_pso_lines);
@@ -549,6 +571,7 @@ void render(void* self, int vp_w, int vp_h) {
     tu.count = (uint32_t)count; tu.w = (uint32_t)pw; tu.h = (uint32_t)ph; tu.frame = s->frame;
     tu.dt = dt; tu.churn = s->churn; tu.confidence = s->confidence;
     tu.aspect = aspect; tu.mode = (uint32_t)s->scoring_mode; tu.decimation = s->decimation;
+    tu.bnd = (uint32_t)boundary_count(s);
     s->takeover_buf.writeOne(tu);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_takeover);

@@ -19,8 +19,21 @@ cbuffer TakeoverUniforms : register(b3) {
   float u_aspect;       // proc_w / proc_h
   uint  u_mode;         // 0 ridge-protect, 1 cell-residual, 2 feature-weight, 3 blue-noise
   float u_decimation;   // 0..1 slope-merge strength (Ridge Protect)
-  uint  u_pad1, u_pad2;
+  uint  u_bnd;          // # of reserved frame-anchor seeds [0, u_bnd)
+  uint  u_pad2;
 };
+
+// Distribute seed i (< bnd) evenly around the frame perimeter; corners land on
+// the segment boundaries when bnd is a multiple of 4.
+float2 tri_perimeter(uint i, uint bnd) {
+  float f = (float)i / (float)max(bnd, 1u) * 4.0;
+  uint seg = min((uint)f, 3u);
+  float t = f - (float)seg;
+  if (seg == 0u) return float2(t, 0.0);
+  if (seg == 1u) return float2(1.0, t);
+  if (seg == 2u) return float2(1.0 - t, 1.0);
+  return float2(0.0, 1.0 - t);
+}
 
 static const float DEC_GAMMA = 8.0;   // decimation → survival-importance exponent
 static const float DEC_HYST  = 0.06;  // activation hysteresis (stickiness)
@@ -38,6 +51,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // NaN guard.
   if (s.pos.x != s.pos.x || s.pos.y != s.pos.y) s.pos = tri_hash2(i, u_frame);
+
+  // Frame anchors: reserved seeds pinned to the perimeter, always active, never
+  // relaxed/decimated — the Delaunay then triangulates out to the border.
+  if (i < u_bnd) {
+    s.pos = tri_perimeter(i, u_bnd);
+    s.flags = 1.0;
+    seeds[i] = s;
+    return;
+  }
 
   uint b = i * TRI_ACCUM_STRIDE;
   uint m0 = accum[b + 0];

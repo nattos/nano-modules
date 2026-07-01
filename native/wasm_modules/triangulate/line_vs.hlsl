@@ -10,9 +10,10 @@ StructuredBuffer<Seed> seeds : register(t2);
 cbuffer LineUniforms : register(b0) {
   float u_vp_x;
   float u_vp_y;
-  float u_half_w;   // half line width in viewport pixels
-  float u_pad0;
-  float u_cr, u_cg, u_cb, u_pad1;
+  float u_half_w;     // half line width in viewport pixels
+  float u_threshold;  // binary edge-colour threshold on feature weight
+  float u_cr, u_cg, u_cb, u_pad1;      // base colour (below threshold)
+  float u_fcr, u_fcg, u_fcb, u_pad2;   // feature colour (above threshold)
 };
 
 struct VsOut {
@@ -32,6 +33,11 @@ VsOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   uint e = edges[iid];
   if (e == 0xFFFFFFFFu) { o.pos = float4(2, 2, 2, 1); o.local = float2(0, 0); return o; }
   uint a = e >> 16, b = e & 0xFFFFu;
+
+  // Binary edge colour by feature weight: an edge is a "feature edge" when BOTH
+  // endpoints sit on a feature (min of the two importance weights > threshold).
+  float ew = min(seeds[a].score, seeds[b].score);
+  o.color = (ew > u_threshold) ? float3(u_fcr, u_fcg, u_fcb) : float3(u_cr, u_cg, u_cb);
 
   float2 vp = float2(u_vp_x, u_vp_y);
   float2 p0 = seeds[a].pos * vp;
