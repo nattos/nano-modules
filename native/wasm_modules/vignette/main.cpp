@@ -77,14 +77,32 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("filter.vignette", {1, 0, 0},
+  state::init("filter.vignette", {1, 0, 1},
     state::Schema()
-      .floatField("amount",   -0.5f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("radius",    0.6f,  0.f, 1.f, state::PrimaryInput)
-      .floatField("softness",  0.4f,  0.f, 1.f, state::PrimaryInput)
-      .vec2Field("center", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
-      .floatField("shape",     0.0f,  0.f, 1.f, state::SecondaryInput)
-      .floatField("squash",    0.0f, -1.f, 1.f, state::SecondaryInput)
+      .helpField("intro",
+        "## Vignette\n"
+        "Darkens (or brightens) the frame toward its edges to focus the eye on "
+        "the centre. *Amount* is signed: negative darkens the corners, positive "
+        "lifts them. *Radius* and *Softness* place and feather the falloff.\n\n"
+        "**Try:** a subtle negative *Amount* to ground a shot, or a positive value "
+        "for a dreamy glow. Reshape the oval with *Shape* and *Squash*, and slide "
+        "*Center* off-axis for an off-centre spotlight.")
+      .group("vignette", "Vignette")
+        .groupHelp(
+          "*Amount* sets darken (negative) vs brighten (positive). *Radius* is how "
+          "far the clear centre reaches before falloff begins; *Softness* feathers "
+          "the transition from a hard edge to a gentle gradient.")
+      .floatField("amount",   -0.5f, -1.f, 1.f, state::PrimaryInput).label("Amount", "Amt")
+      .floatField("radius",    0.6f,  0.f, 1.f, state::PrimaryInput).label("Radius", "Rad")
+      .floatField("softness",  0.4f,  0.f, 1.f, state::PrimaryInput).label("Softness", "Soft")
+      .group("geometry", "Shape")
+        .groupHelp(
+          "Position and distort the vignette oval. *Center* slides it off-axis; "
+          "*Shape* morphs from a round falloff toward the frame's rectangle; "
+          "*Squash* stretches it wider or taller.")
+      .vec2Field("center", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f).label("Center", "Ctr")
+      .floatField("shape",     0.0f,  0.f, 1.f, state::SecondaryInput).label("Shape", "Shp")
+      .floatField("squash",    0.0f, -1.f, 1.f, state::SecondaryInput).label("Squash", "Sqsh")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

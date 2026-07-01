@@ -41,9 +41,16 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("source.solid_color", {1, 0, 0},
+  state::init("source.solid_color", {1, 0, 1},
     state::Schema()
-      .rgbField("color", 0.5f, 0.5f, 0.5f, state::PrimaryInput)
+      .helpField("intro",
+        "## Solid Colour\n"
+        "Fills the whole frame with a single flat colour. The simplest generator "
+        "there is.\n\n"
+        "**Try:** use it as a background layer, a coloured wash under a blend, or "
+        "a solid fill for masking; wire *Colour* to a rail to strobe or cycle it.")
+      .group("color", "Colour")
+      .rgbField("color", 0.5f, 0.5f, 0.5f, state::PrimaryInput).label("Colour", "Color")
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::TimeIndependent)

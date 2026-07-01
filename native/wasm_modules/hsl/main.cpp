@@ -49,11 +49,20 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.hsl", {1, 0, 0},
+  state::init("color.hsl", {1, 0, 1},
     state::Schema()
-      .floatField("hue_shift",  0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("saturation", 0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("lightness",  0.0f, -1.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## HSL\n"
+        "Hue / Saturation / Lightness grading in HSL space, so the hue rotation is "
+        "uniform across brightness levels. *Hue Shift* spins the whole colour wheel "
+        "(±1 = ±180°); *Saturation* runs from greyscale (−1) through neutral (0) to "
+        "doubled (+1); *Lightness* lifts toward white or crushes toward black.\n\n"
+        "**Try:** a slow *Hue Shift* automation for a psychedelic cycle, or pull "
+        "*Saturation* to −1 for an instant black-and-white pass.")
+      .group("hsl", "Hue / Sat / Light")
+      .floatField("hue_shift",  0.0f, -1.f, 1.f, state::PrimaryInput).label("Hue Shift", "Hue")
+      .floatField("saturation", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Saturation", "Sat")
+      .floatField("lightness",  0.0f, -1.f, 1.f, state::PrimaryInput).label("Lightness", "Light")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

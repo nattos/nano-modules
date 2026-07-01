@@ -43,9 +43,17 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.invert", {1, 0, 0},
+  state::init("color.invert", {1, 0, 1},
     state::Schema()
-      .boolField("invert_alpha", false, state::SecondaryInput)
+      .helpField("intro",
+        "## Invert\n"
+        "Flips RGB to its photographic negative. There's no *amount* knob — dial in "
+        "partial strength with the effect's built-in opacity instead. *Invert Alpha* "
+        "is off by default so the matte isn't flipped by accident.\n\n"
+        "**Try:** drop opacity to ~50% for a solarised half-negative, and only enable "
+        "*Invert Alpha* when you actually want to swap the transparency too.")
+      .group("invert", "Invert")
+      .boolField("invert_alpha", false, state::SecondaryInput).label("Invert Alpha", "Alpha")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

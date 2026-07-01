@@ -75,8 +75,24 @@ static void recompute(State& s) {
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.shaper.remap", {1, 0, 0},
+  state::init("mod.shaper.remap", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Remap\n"
+        "Reshapes an incoming modulation signal exactly like a wire's **remap** "
+        "option: it rescales an input window onto an output window and bends the "
+        "response with ease curves.\n\n"
+        "**Try:** narrow the *Input Range* to make a source react over just part of "
+        "its travel, flip the *Output Range* (max below min) to invert, or add a "
+        "*Power* curve to bias toward the low or high end. Set *In Min* below 0 to "
+        "reshape a bipolar source.")
+      // --- Input range: the window mapped onto [0,1] before shaping ---
+      .group("input", "Input Range")
+        .groupHelp(
+          "Defines the slice of the incoming signal that the curves act on. Values "
+          "at *In Min* map to the bottom of the response and *In Max* to the top; "
+          "narrowing the window makes the shaper react over a smaller part of the "
+          "source's travel. Set *In Min* below 0 to accept a bipolar source.")
       // The signal to shape (wire target). Declared [0,1] so an unsigned source
       // passes straight through the default identity window; a signed source's
       // wire folds into this range like any consumer input (set in_min<0 to
@@ -85,24 +101,33 @@ void module_init() {
       // output) — that's how the executor's shaper auto-connect locates it among
       // the tuning float params (in_min/out_max/...). The value ("unsigned") is
       // just the channel's nominal polarity; it doesn't constrain wired sources.
-      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned")
+      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned").label("Input", "In")
       // Input window mapped to [0,1] before the curves.
-      .floatField("in_min", 0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("in_max", 1.0f, -1.f, 1.f, state::PrimaryInput)
+      .floatField("in_min", 0.0f, -1.f, 1.f, state::PrimaryInput).label("In Min", "InMin")
+      .floatField("in_max", 1.0f, -1.f, 1.f, state::PrimaryInput).label("In Max", "InMax")
+      // --- Output range: the window the shaped [0,1] is mapped onto ---
+      .group("output", "Output Range")
       // Output window the shaped [0,1] is mapped onto.
-      .floatField("out_min", 0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("out_max", 1.0f, -1.f, 1.f, state::PrimaryInput)
+      .floatField("out_min", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Out Min", "OutMin")
+      .floatField("out_max", 1.0f, -1.f, 1.f, state::PrimaryInput).label("Out Max", "OutMax")
+      // --- Curves & tuning: ease shaping, power exponent, clip, post-scale ---
+      .group("curves", "Curves & Tuning")
+        .groupHelp(
+          "Bend the linear map into a curve. *Curve In* and *Curve Out* apply "
+          "ease-in and ease-out shaping (the *Power* curve reads *Exponent*). "
+          "*Saturate* hard-clips out-of-range values, and *Scale* multiplies the "
+          "result last, in modulation space — flip it negative to invert.")
       // Ease-in / ease-out shaping curves (same set as the wire remap).
       .selectField("curve_in", 0, state::PrimaryInput,
                    {{"Linear", 0}, {"Quad", 1}, {"Circular", 2},
-                    {"Power", 3}, {"Foldback", 4}}, /*wrap=*/true)
+                    {"Power", 3}, {"Foldback", 4}}, /*wrap=*/true).label("Curve In", "CrvIn")
       .selectField("curve_out", 0, state::PrimaryInput,
                    {{"Linear", 0}, {"Quad", 1}, {"Circular", 2},
-                    {"Power", 3}, {"Foldback", 4}}, /*wrap=*/true)
+                    {"Power", 3}, {"Foldback", 4}}, /*wrap=*/true).label("Curve Out", "CrvOut")
       // Tuning: exponent for the Power curve, hard clip, post-scale.
-      .floatField("exponent", 2.0f, 0.25f, 8.f, state::SecondaryInput)
-      .boolField("saturate", false, state::SecondaryInput)
-      .floatField("scale", 1.0f, -2.f, 2.f, state::SecondaryInput)
+      .floatField("exponent", 2.0f, 0.25f, 8.f, state::SecondaryInput).label("Exponent", "Exp")
+      .boolField("saturate", false, state::SecondaryInput).label("Saturate", "Sat")
+      .floatField("scale", 1.0f, -2.f, 2.f, state::SecondaryInput).label("Scale", "Scale")
       // Shaped value. min/max is the modulation-range contract (the UI band
       // samples this declared range, matching the default out window). Unipolar
       // by default; set out_min<0 for a bipolar reshape (the contract stays

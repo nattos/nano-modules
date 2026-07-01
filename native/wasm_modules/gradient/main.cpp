@@ -69,13 +69,27 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("source.gradient", {1, 0, 0},
+  state::init("source.gradient", {1, 0, 1},
     state::Schema()
-      .floatField("angle",    0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("offset",   0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("softness", 1.0f,  0.f, 1.f, state::PrimaryInput)
-      .rgbField("color_a", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
-      .rgbField("color_b", 0.0f, 0.0f, 0.0f, state::SecondaryInput)
+      .helpField("intro",
+        "## Gradient\n"
+        "A smooth two-colour ramp filling the frame. *Angle* aims the sweep, "
+        "*Offset* slides the midpoint, and *Softness* sets how gradual the blend "
+        "is.\n\n"
+        "**Try:** drop *Softness* toward 0 for a hard split (a two-tone wipe or a "
+        "horizon line); animate *Angle* or wire *Offset* to a rail for a moving "
+        "sweep; use it as a mask/backdrop under other layers.")
+      .group("ramp", "Ramp")
+        .groupHelp(
+          "*Angle* rotates the whole sweep (±1 wraps a full turn). *Offset* slides "
+          "where the two colours meet; *Softness* controls the transition width — "
+          "1 is a gentle wash, near 0 is a crisp edge.")
+      .floatField("angle",    0.0f, -1.f, 1.f, state::PrimaryInput).label("Angle", "Angle")
+      .floatField("offset",   0.0f, -1.f, 1.f, state::PrimaryInput).label("Offset", "Offset")
+      .floatField("softness", 1.0f,  0.f, 1.f, state::PrimaryInput).label("Softness", "Soft")
+      .group("colors", "Colours")
+      .rgbField("color_a", 1.0f, 1.0f, 1.0f, state::SecondaryInput).label("Colour A", "A")
+      .rgbField("color_b", 0.0f, 0.0f, 0.0f, state::SecondaryInput).label("Colour B", "B")
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::TimeIndependent)

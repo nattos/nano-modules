@@ -37,9 +37,20 @@ struct State {
 
 // Type-level setup: schema + backend check. Runs once per type.
 void module_init() {
-  state::init("filter.blur.fast", {1, 0, 0},
+  state::init("filter.blur.fast", {1, 0, 1},
     state::Schema()
-      .intField("iterations", 4, 1, fx::FastBlur::MAX_ITERATIONS, state::PrimaryInput)
+      .helpField("intro",
+        "## Fast Blur\n"
+        "A cheap dual-filter blur that fakes a big Gaussian by ping-ponging down "
+        "and back up a mip pyramid. *Iterations* is the only knob: more passes = "
+        "a wider, softer blur for very little extra cost.\n\n"
+        "**Try:** reach for this over *Gaussian Blur* whenever you want a large, "
+        "hazy spread cheaply — it's the go-to base for bloom and glow.")
+      .group("blur", "Blur")
+        .groupHelp(
+          "Each iteration roughly doubles the blur reach almost for free. Low "
+          "counts stay tight; crank it up for a soft, dreamy wash across the frame.")
+      .intField("iterations", 4, 1, fx::FastBlur::MAX_ITERATIONS, state::PrimaryInput).label("Iterations", "Iter")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

@@ -62,13 +62,33 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.tone.levels", {1, 0, 0},
+  state::init("color.tone.levels", {1, 0, 1},
     state::Schema()
-      .floatField("in_low",   0.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("in_high",  1.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("gamma",    0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("out_low",  0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("out_high", 1.0f, 0.f, 1.f, state::SecondaryInput)
+      .helpField("intro",
+        "## Levels\n"
+        "Photoshop-style input/output remapping with a mid-tone gamma. Set the black "
+        "and white *input* points to stretch the used range, bend the mids with "
+        "*Gamma*, then optionally compress the result into a narrower *output* range. "
+        "It's the workhorse for fixing washed-out or crushed footage.\n\n"
+        "**Try:** pull *Input Low* up and *Input High* down to add snap and contrast; "
+        "then lift *Output Low* slightly for a faded, filmic 'lifted blacks' look.")
+      .group("input", "Input")
+        .groupHelp(
+          "Everything below *Input Low* becomes black and everything above *Input "
+          "High* becomes white, so tightening these two points maximises contrast. "
+          "*Gamma* is symmetric around 0: negative crushes mids darker, positive "
+          "lifts them brighter, 0 is untouched.")
+      .floatField("in_low",   0.0f, 0.f, 1.f, state::PrimaryInput).label("Input Low", "In Lo")
+      .floatField("in_high",  1.0f, 0.f, 1.f, state::PrimaryInput).label("Input High", "In Hi")
+      .floatField("gamma",    0.0f, -1.f, 1.f, state::PrimaryInput).label("Gamma", "Gamma")
+      .group("output", "Output")
+        .groupHelp(
+          "Remaps the corrected image into a new brightness window — raise *Output "
+          "Low* to lift blacks toward grey, or lower *Output High* to hold back "
+          "highlights. Most patches leave these at the defaults; reach for them when "
+          "matching two shots or building a faded grade.")
+      .floatField("out_low",  0.0f, 0.f, 1.f, state::SecondaryInput).label("Output Low", "Out Lo")
+      .floatField("out_high", 1.0f, 0.f, 1.f, state::SecondaryInput).label("Output High", "Out Hi")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

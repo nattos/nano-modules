@@ -36,14 +36,22 @@ struct State {
 };
 
 void module_init() {
-  state::init("mod.shaper.delay", {1, 0, 0},
+  state::init("mod.shaper.delay", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Delay\n"
+        "A modulation **echo**: it holds the incoming signal and replays it a set "
+        "time later, mirroring whatever polarity drives it.\n\n"
+        "**Try:** wire one modulation source into two params, delaying one copy — "
+        "you get call-and-response between them. Spread several stages by different "
+        "*Delay* times for a phased cascade across channels.")
+      .group("delay", "Delay")
       // The signal to delay (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect
       // locates it); the value is just the channel's nominal polarity.
-      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned")
+      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned").label("Input", "In")
       // Delay time in seconds. 0 ⇒ passthrough. Bounded by the ring-buffer span.
-      .floatField("delay", 0.25f, 0.f, 2.f, state::PrimaryInput)
+      .floatField("delay", 0.25f, 0.f, 2.f, state::PrimaryInput).label("Delay Time", "Delay")
       // Delayed value. Range-preserving (a time-shifted copy of input), so the
       // output polarity INHERITS the input's — it mirrors whatever drives the
       // input (a signed source stays signed down a shaper chain). min/max is the

@@ -55,10 +55,25 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.tone.curve", {1, 0, 0},
+  state::init("color.tone.curve", {1, 0, 1},
     state::Schema()
-      .floatField("rgb",   0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("alpha", 0.0f, -1.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Curve\n"
+        "A single-slider power curve for reshaping tone. Negative values squash "
+        "toward black (darker mids), positive values lift toward white (brighter "
+        "mids); **0 is identity**. Colour and matte have independent sliders so you "
+        "can bend one without touching the other.\n\n"
+        "**Try:** a small positive *RGB* to open up shadows without blowing "
+        "highlights; shape *Alpha* alone to feather or harden a matte's edge "
+        "falloff while leaving colour untouched.")
+      .group("curve", "Curve")
+        .groupHelp(
+          "Both sliders are symmetric around 0 and feed an exponential exponent, so "
+          "the perceived push feels even in either direction. *RGB* bends the colour "
+          "channels together; *Alpha* bends the matte's transparency ramp — handy "
+          "for tightening or softening composited edges.")
+      .floatField("rgb",   0.0f, -1.f, 1.f, state::PrimaryInput).label("RGB Curve", "RGB")
+      .floatField("alpha", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Alpha Curve", "Alpha")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

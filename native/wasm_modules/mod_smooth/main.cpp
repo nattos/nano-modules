@@ -36,15 +36,24 @@ struct State {
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.shaper.smooth", {1, 0, 0},
+  state::init("mod.shaper.smooth", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Smooth\n"
+        "Glides the incoming modulation toward each new value over a fixed time, "
+        "so a jumpy source (a stepped sequencer, a noisy envelope) slides instead "
+        "of snapping.\n\n"
+        "**Try:** raise *Time* to soften abrupt steps into ramps; it's identical to "
+        "enabling smoothing directly on a wire, so use it when you want that lag "
+        "shared across several destinations.")
+      .group("smooth", "Smooth")
       // The signal to smooth (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect
       // locates it); the value is just the channel's nominal polarity.
-      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned")
+      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned").label("Input", "In")
       // Linear ramp duration in seconds (the built-in smoothing's `duration`).
       // 0 ⇒ instant passthrough. Reaches the target in finite time.
-      .floatField("duration", 0.25f, 0.f, 2.f, state::PrimaryInput)
+      .floatField("duration", 0.25f, 0.f, 2.f, state::PrimaryInput).label("Smooth Time", "Time")
       // Smoothed value. Range-preserving (just a lagged copy of input), so the
       // output polarity INHERITS the input's: it mirrors whatever drives the
       // input (so a signed source stays signed down a shaper chain). min/max is

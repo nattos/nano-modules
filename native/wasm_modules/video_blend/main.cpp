@@ -56,8 +56,23 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("composite.blend", {1, 0, 0},
+  state::init("composite.blend", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Blend\n"
+        "Composites two images with a selectable **blend mode**. Input A is the "
+        "base; input B is layered on top using a Photoshop-style formula, then "
+        "composited *over* A by B's alpha × *Opacity*.\n\n"
+        "**Try:** *Add* or *Screen* for glow and light stacking, *Multiply* for "
+        "shadows and tint, *Difference* for psychedelic edges. Alpha is preserved, "
+        "so a transparent B reveals A and the result stays composable downstream. "
+        "Modulate *Opacity* from a wire to fade the layer in and out.")
+      .group("blend", "Blend")
+        .groupHelp(
+          "*Mode* picks the blend math applied to B before it's laid over A. "
+          "*Opacity* is a straight crossfade — 0 shows A untouched, 1 shows the "
+          "fully blended result — and it scales the top layer's coverage in every "
+          "mode.")
       .selectField("mode", Normal, state::PrimaryInput, {
         {"Normal", Normal}, {"Add", Add}, {"Multiply", Multiply},
         {"Screen", Screen}, {"Overlay", Overlay}, {"Darken", Darken},
@@ -66,9 +81,11 @@ void module_init() {
         {"Difference", Difference}, {"Exclusion", Exclusion},
         {"Subtract", Subtract}, {"Divide", Divide}, {"Linear Burn", LinearBurn},
       }, /*wrap=*/true, /*description=*/"Photoshop-style blend math applied before opacity")
+        .label("Blend Mode", "Mode")
       .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput,
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   /*description=*/"Crossfade: A (0) → fully blended result (1)")
+        .label("Opacity", "Opac")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_a", state::PrimaryInput)
       .textureField("tex_b", state::PrimaryInput)

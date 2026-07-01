@@ -91,20 +91,34 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("source.noise", {1, 0, 0},
+  state::init("source.noise", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Noise\n"
+        "A procedural noise generator. Pick an *Algorithm* — smooth *Value* / "
+        "fractal *FBM* for organic texture, or *White* / *Static* for grain — then "
+        "shape it with *Scale*, *Contrast* and *Seed*.\n\n"
+        "**Try:** FBM with a few *Octaves* for cloud/smoke fields; raise *Speed* for "
+        "animated TV-static grain; wire the output as a mask or displacement "
+        "source; nudge *Seed* to get a different pattern with the same look.")
+      .group("noise", "Noise")
+        .groupHelp(
+          "*Algorithm* sets the character: *Value*/*FBM* are smooth and organic, "
+          "*White*/*Static* are per-pixel grain. *Scale* zooms the pattern, "
+          "*Contrast* pushes it toward black/white, and *Seed* rerolls it.")
       .selectField("algorithm", AlgoWhite, state::PrimaryInput, {
           {"White",  AlgoWhite},
           {"Value",  AlgoValue},
           {"FBM",    AlgoFbm},
           {"Static", AlgoStatic},
-      })
-      .floatField("scale",   0.5f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("contrast",0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("seed",    0.0f, 0.f, 1.f, state::PrimaryInput)
-      .intField("octaves",   4,    1, 6,    state::SecondaryInput)
-      .floatField("color",   0.0f, 0.f, 1.f, state::SecondaryInput)
-      .floatField("speed",   0.5f, 0.f, 1.f, state::SecondaryInput)
+      }).label("Algorithm", "Algo")
+      .floatField("scale",   0.5f, 0.f, 1.f, state::PrimaryInput).label("Scale", "Scale")
+      .floatField("contrast",0.0f, -1.f, 1.f, state::PrimaryInput).label("Contrast", "Cntrst")
+      .floatField("seed",    0.0f, 0.f, 1.f, state::PrimaryInput).label("Seed", "Seed")
+      .group("detail", "Detail")
+      .intField("octaves",   4,    1, 6,    state::SecondaryInput).label("Octaves", "Octvs")
+      .floatField("color",   0.0f, 0.f, 1.f, state::SecondaryInput).label("Colour", "Color")
+      .floatField("speed",   0.5f, 0.f, 1.f, state::SecondaryInput).label("Speed", "Speed")
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::SeekableApproximate)

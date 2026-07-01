@@ -63,19 +63,39 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("warp.transform", {1, 0, 0},
+  state::init("warp.transform", {1, 0, 1},
     state::Schema()
-      .floatField("scale",        0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("rotation",     0.0f, -1.f, 1.f, state::PrimaryInput)
-      .vec2Field("translate",     0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f)
-      .vec2Field("pivot",         0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
-      .floatField("scale_aspect", 0.0f, -1.f, 1.f, state::SecondaryInput)
+      .helpField("intro",
+        "## Transform\n"
+        "Scales, rotates and moves the image. *Scale*, *Rotation* and *Translate* "
+        "are the main controls; *Pivot* sets the point everything rotates and "
+        "scales around, and *Wrap* decides what shows in the area the image no "
+        "longer covers.\n\n"
+        "**Try:** wire *Rotation* or *Translate* to a rail for spins and slides; "
+        "use *Repeat* or *Mirror* wrap when scaling down to tile the frame; shift "
+        "*Pivot* off-centre for orbiting motion; *Aspect* squashes or stretches "
+        "without touching overall scale.")
+      .group("transform", "Transform")
+        .groupHelp(
+          "*Scale* zooms, *Rotation* spins, and *Translate* pans (all bipolar — 0 "
+          "is neutral). These compose around the *Pivot* point, so move the pivot "
+          "to change where rotation and scaling are anchored.")
+      .floatField("scale",        0.0f, -1.f, 1.f, state::PrimaryInput).label("Scale", "Scale")
+      .floatField("rotation",     0.0f, -1.f, 1.f, state::PrimaryInput).label("Rotation", "Rot")
+      .vec2Field("translate",     0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f).label("Translate", "Move")
+      .vec2Field("pivot",         0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f).label("Pivot", "Pivot")
+      .floatField("scale_aspect", 0.0f, -1.f, 1.f, state::SecondaryInput).label("Aspect", "Aspect")
+      .group("edge", "Edge")
+        .groupHelp(
+          "*Wrap* controls what fills the region the transformed image no longer "
+          "covers: **Clamp** stretches edge pixels, **Transparent** leaves it "
+          "empty, and **Repeat**/**Mirror** tile the image outward.")
       .selectField("wrap_mode", WrapClamp, state::SecondaryInput, {
           {"Clamp",       WrapClamp},
           {"Transparent", WrapTransparent},
           {"Repeat",      WrapRepeat},
           {"Mirror",      WrapMirror},
-      }, /*wrap=*/true)
+      }, /*wrap=*/true).label("Wrap Mode", "Wrap")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

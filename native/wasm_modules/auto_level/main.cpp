@@ -61,13 +61,28 @@ static gpu::ComputePSO s_pso_buildlut;
 static gpu::ComputePSO s_pso_apply;
 
 void module_init() {
-  state::init("color.tone.auto_level", {1, 0, 0},
+  state::init("color.tone.auto_level", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Auto Level\n"
+        "Reads the image's own brightness histogram every frame and remaps tone to "
+        "make the most of the available range — chroma is preserved, so only "
+        "lightness moves. It reacts live, so it tracks fades and moving content.\n\n"
+        "**Try:** dial *Equalize* up for a punchy, contrast-maximised look, or leave "
+        "it off and use *Median Pull* alone to gently re-centre exposure toward a "
+        "target without crushing the extremes.")
+      .group("auto_level", "Auto Level")
+        .groupHelp(
+          "*Equalize* blends from the untouched image toward a fully flattened "
+          "(histogram-equalised) distribution — great for reviving flat, low-contrast "
+          "footage, but strong values can look harsh. *Median Pull* nudges the "
+          "image's median brightness toward *Median Target*; keep pull low for a "
+          "subtle auto-exposure that rides the source.")
       // Flatten the whole curve toward an even (equalized) distribution.
-      .floatField("equalize", 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("equalize", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Equalize", "Equal")
       // Pull the median toward this value, weighted by median_pull.
-      .floatField("median_target", 0.5f, 0.0f, 1.0f, state::PrimaryInput)
-      .floatField("median_pull",   0.0f, 0.0f, 1.0f, state::PrimaryInput)
+      .floatField("median_target", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Median Target", "Target")
+      .floatField("median_pull",   0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Median Pull", "Pull")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

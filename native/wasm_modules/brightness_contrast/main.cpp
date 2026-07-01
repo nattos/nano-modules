@@ -46,10 +46,20 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.tone.brightness_contrast", {1, 0, 0},
+  state::init("color.tone.brightness_contrast", {1, 0, 1},
     state::Schema()
-      .floatField("brightness", 0.f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("contrast", 0.f, -1.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Brightness & Contrast\n"
+        "The classic two-knob tone tweak. *Brightness* lifts or drops the whole "
+        "image; *Contrast* pushes tones away from (or toward) mid-grey. Both are "
+        "signed with **0 as neutral**, so the effect is a free passthrough when "
+        "untouched.\n\n"
+        "**Try:** a touch of positive contrast with a hair of negative brightness "
+        "for a punchier, slightly moodier grade; pull contrast negative to flatten "
+        "an image before stacking a stronger look on top.")
+      .group("tone", "Tone")
+      .floatField("brightness", 0.f, -1.f, 1.f, state::PrimaryInput).label("Brightness", "Bright")
+      .floatField("contrast", 0.f, -1.f, 1.f, state::PrimaryInput).label("Contrast", "Cntrst")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

@@ -73,14 +73,28 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("source.grid", {1, 0, 0},
+  state::init("source.grid", {1, 0, 1},
     state::Schema()
-      .floatField("cell_size",  0.1f,  0.f, 1.f, state::PrimaryInput)
-      .floatField("line_width", 0.04f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("softness",   0.1f,  0.f, 1.f, state::PrimaryInput)
-      .vec2Field("offset", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f)
-      .rgbaField("line", 1.0f, 1.0f, 1.0f, 1.0f, state::SecondaryInput)
-      .rgbaField("bg",   0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput)
+      .helpField("intro",
+        "## Grid\n"
+        "A tileable grid of lines. *Cell Size* sets the spacing, *Line Width* the "
+        "thickness, and *Softness* feathers the line edges. Colours for the lines "
+        "and background are separate (both support alpha).\n\n"
+        "**Try:** set the *Background* alpha to 0 for a grid overlay you can stack "
+        "on video; animate *Offset* to scroll the grid; crank *Softness* for a soft "
+        "glowing lattice instead of crisp lines.")
+      .group("grid", "Grid")
+        .groupHelp(
+          "*Cell Size* is the spacing between lines, *Line Width* their thickness, "
+          "and *Softness* how much their edges are feathered. *Offset* shifts the "
+          "whole lattice, useful for scrolling or aligning against another layer.")
+      .floatField("cell_size",  0.1f,  0.f, 1.f, state::PrimaryInput).label("Cell Size", "Cell")
+      .floatField("line_width", 0.04f, 0.f, 1.f, state::PrimaryInput).label("Line Width", "Width")
+      .floatField("softness",   0.1f,  0.f, 1.f, state::PrimaryInput).label("Softness", "Soft")
+      .vec2Field("offset", 0.0f, 0.0f, state::SecondaryInput, -1.f, 1.f).label("Offset", "Offset")
+      .group("colors", "Colours")
+      .rgbaField("line", 1.0f, 1.0f, 1.0f, 1.0f, state::SecondaryInput).label("Line Colour", "Line")
+      .rgbaField("bg",   0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput).label("Background", "BG")
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::TimeIndependent)

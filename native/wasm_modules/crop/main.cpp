@@ -100,25 +100,40 @@ void eval_visibility(int n, const char* pb, const int* off, const int* len, cons
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("warp.crop", {1, 0, 0},
+  state::init("warp.crop", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Crop\n"
+        "Cuts the image down to a rectangular region; everything outside is "
+        "replaced by the *Fill* colour. Pick how you define the box with *Mode*: "
+        "**Span** places a centred rectangle by size, **Inset** trims in from each "
+        "edge.\n\n"
+        "**Try:** *Span* mode to frame a subject, then wire *Centre* to pan the "
+        "crop; *Inset* mode for letterbox bars; raise *Feather* for a soft vignette "
+        "edge; set *Fill* alpha to 0 to crop to transparency.")
+      .group("region", "Region")
+        .groupHelp(
+          "*Mode* chooses how the box is defined. In **Span** you set the *Centre* "
+          "and *Width*/*Height* of the kept rectangle; in **Inset** you trim in "
+          "from each edge independently. The unused set of controls is hidden.")
       // Mode selector — drives which downstream fields are visible.
       .selectField("mode", ModeSpan, state::PrimaryInput, {
           {"Span", ModeSpan},
           {"Inset", ModeInset},
-      })
+      }).label("Mode", "Mode")
       // Span-mode parameters.
-      .vec2Field("center",  0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f)
-      .floatField("width",   1.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("height",  1.0f, 0.f, 1.f, state::PrimaryInput)
+      .vec2Field("center",  0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f).label("Centre", "Center")
+      .floatField("width",   1.0f, 0.f, 1.f, state::PrimaryInput).label("Width", "Width")
+      .floatField("height",  1.0f, 0.f, 1.f, state::PrimaryInput).label("Height", "Height")
       // Inset-mode parameters.
-      .floatField("inset_left",   0.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("inset_right",  0.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("inset_top",    0.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("inset_bottom", 0.0f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("inset_left",   0.0f, 0.f, 1.f, state::PrimaryInput).label("Inset Left", "Left")
+      .floatField("inset_right",  0.0f, 0.f, 1.f, state::PrimaryInput).label("Inset Right", "Right")
+      .floatField("inset_top",    0.0f, 0.f, 1.f, state::PrimaryInput).label("Inset Top", "Top")
+      .floatField("inset_bottom", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Inset Bottom", "Bottom")
       // Common parameters.
-      .floatField("feather", 0.0f, 0.f, 1.f, state::PrimaryInput)
-      .rgbaField("fill", 0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput)
+      .group("edge", "Edge")
+      .floatField("feather", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Feather", "Fthr")
+      .rgbaField("fill", 0.0f, 0.0f, 0.0f, 0.0f, state::SecondaryInput).label("Fill Colour", "Fill")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

@@ -46,16 +46,25 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.color_space", {1, 0, 0},
+  state::init("color.color_space", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Colour Space\n"
+        "Reinterprets RGB between encoding spaces — **sRGB** (gamma-encoded) and "
+        "**Linear** (light-linear). Set *From* to the space your footage is already "
+        "in and *To* the space you want; the conversion routes through linear "
+        "internally, so any pairing (including a no-op) is exact. Alpha is untouched.\n\n"
+        "**Try:** drop `Linear → sRGB` just before a display, or `sRGB → Linear` "
+        "upstream of blends and blurs that should math in linear light.")
+      .group("convert", "Conversion")
       .selectField("in_space",  SpaceSRGB,   state::PrimaryInput, {
           {"sRGB",   SpaceSRGB},
           {"Linear", SpaceLinear},
-      })
+      }).label("From Space", "From")
       .selectField("out_space", SpaceLinear, state::PrimaryInput, {
           {"sRGB",   SpaceSRGB},
           {"Linear", SpaceLinear},
-      })
+      }).label("To Space", "To")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

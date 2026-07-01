@@ -40,15 +40,28 @@ struct State {
 };
 
 void module_init() {
-  state::init("mod.shaper.envelope", {1, 0, 0},
+  state::init("mod.shaper.envelope", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Envelope\n"
+        "Remaps an incoming modulation signal through a curve you **draw by hand** — "
+        "the input value looks up its shaped output along the graph.\n\n"
+        "**Try:** double-click the graph to add or remove points, and drag a "
+        "segment to bend its easing. Draw a rising-then-falling arc to turn a "
+        "steady ramp into a swell, or a stepped shape to quantize a smooth source.")
+      .group("envelope", "Envelope")
+        .groupHelp(
+          "The curve maps input (horizontal) to output (vertical). Add points by "
+          "double-clicking and drag them to sculpt the response; drag between "
+          "points to bend the easing of that segment. The default straight line is "
+          "an identity passthrough.")
       // The signal to remap (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect
       // locates it); the value is just the channel's nominal polarity.
-      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned")
+      .floatField("input", 0.0f, 0.f, 1.f, state::PrimaryInput, "unsigned").label("Input", "In")
       // The drawn curve: a flat JSON number array of (x,y,ease) triples. Edited
       // by the custom envelope graph inspector (not a raw text box).
-      .textField("curve", kDefaultCurve, state::SecondaryInput)
+      .textField("curve", kDefaultCurve, state::SecondaryInput).label("Curve", "Curve")
       // Remapped value. min/max is the modulation-range contract (the curve's y
       // window); unipolar by default, same convention as mod.source.lfo.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")

@@ -32,10 +32,21 @@ struct State {
 
 // Type-level setup: publish the schema + backend check once per type.
 void module_init() {
-  state::init("filter.blur.gaussian", {1, 0, 0},
+  state::init("filter.blur.gaussian", {1, 0, 1},
     state::Schema()
-      .floatField("radius",  0.25f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("quality", 1.0f,  0.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Gaussian Blur\n"
+        "A clean, true Gaussian softening of the incoming image. *Radius* sets "
+        "how far the blur spreads; *Quality* trades speed for smoothness.\n\n"
+        "**Try:** a tiny radius to knock off aliasing, or push it wide and mix "
+        "the result back with a *composite* for a soft bloom/glow base.")
+      .group("blur", "Blur")
+        .groupHelp(
+          "*Radius* is the softening amount — small values clean up edges, large "
+          "values dissolve the picture into colour fields. Drop *Quality* if you "
+          "need the speed; the difference only shows at large radii.")
+      .floatField("radius",  0.25f, 0.f, 1.f, state::PrimaryInput).label("Radius", "Rad")
+      .floatField("quality", 1.0f,  0.f, 1.f, state::PrimaryInput).label("Quality", "Qual")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

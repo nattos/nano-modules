@@ -46,9 +46,18 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.vibrance", {1, 0, 0},
+  state::init("color.vibrance", {1, 0, 1},
     state::Schema()
-      .floatField("amount", 0.0f, -1.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Vibrance\n"
+        "A smarter saturation boost that pulls hardest on the **dull, grey-ish** "
+        "pixels and eases off ones that are already vivid — so skin tones and hot "
+        "LEDs don't blow out into mush. Positive *Amount* raises saturation, "
+        "negative lowers it (already-grey pixels stay grey).\n\n"
+        "**Try:** a moderate positive *Amount* to lift a flat, hazy shot without "
+        "wrecking the saturated highlights; go negative for a gentle desaturate.")
+      .group("vibrance", "Vibrance")
+      .floatField("amount", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Amount", "Amt")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

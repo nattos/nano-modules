@@ -207,24 +207,44 @@ static void on_state_ready(void* self) {
 // Type-level setup: schema + shared shader modules, pyramid-reduce PSO,
 // and the linear sampler.
 void module_init() {
-  state::init("motion.blur", {1, 4, 0},
+  state::init("motion.blur", {1, 4, 1},
     state::Schema()
-      .floatField("strength", 1.0f, 0.f, 4.f, state::PrimaryInput)
-      .intField("samples",    12,   4,   32,  state::PrimaryInput)
+      .helpField("intro",
+        "## Motion Blur\n"
+        "Smears the image along a per-pixel motion field (from an upstream "
+        "generator's `motion` output) to fake camera- or object-motion blur. "
+        "*Strength* scales the streak length; *Samples* and *Quality* trade cost "
+        "for smoothness.\n\n"
+        "**Try:** a moderate *Strength* to give fast movement natural weight, then "
+        "turn on *Chromatic Delay* and spread the R/G/B offsets for a stylized "
+        "RGB-trail look along the direction of motion.")
+      .group("blur", "Blur")
+        .groupHelp(
+          "*Strength* is the streak length — how far each pixel smears along its "
+          "motion vector. Raise *Samples* to smooth out banding in long streaks, "
+          "and use *Quality* to pick the reconstruction cost/quality tradeoff.")
+      .floatField("strength", 1.0f, 0.f, 4.f, state::PrimaryInput).label("Strength", "Str")
+      .intField("samples",    12,   4,   32,  state::PrimaryInput).label("Samples", "Smpl")
       .selectField("quality", QUALITY_MEDIUM, state::PrimaryInput, {
         {"Low",    QUALITY_LOW},
         {"Medium", QUALITY_MEDIUM},
         {"High",   QUALITY_HIGH},
-      })
+      }).label("Quality", "Qual")
+      .group("chroma", "Chromatic Trail")
+        .groupHelp(
+          "A stylized chromatic aberration along the motion direction. With "
+          "*Chromatic Delay* on, each of R/G/B samples at its own offset, giving "
+          "channels a velocity-proportional shift. Spread the three offsets apart "
+          "for a bold rainbow trail, or leave them near 0 for a subtle fringe.")
       // Stylized chromatic-aberration-along-motion. When on, R/G/B
       // are sampled at independently offset positions along V_max,
       // giving each channel its own velocity-proportional shift —
       // classic RGB-trail look. R/G/B fields below are hidden in the
       // inspector when this is off.
-      .boolField("chroma_delay", true, state::PrimaryInput)
-      .floatField("chroma_r",  0.5f,  -1.f, 1.f, state::PrimaryInput)
-      .floatField("chroma_g",  0.0f,  -1.f, 1.f, state::PrimaryInput)
-      .floatField("chroma_b", -0.5f,  -1.f, 1.f, state::PrimaryInput)
+      .boolField("chroma_delay", true, state::PrimaryInput).label("Chromatic Delay", "Chrom")
+      .floatField("chroma_r",  0.5f,  -1.f, 1.f, state::PrimaryInput).label("Red Offset", "R")
+      .floatField("chroma_g",  0.0f,  -1.f, 1.f, state::PrimaryInput).label("Green Offset", "G")
+      .floatField("chroma_b", -0.5f,  -1.f, 1.f, state::PrimaryInput).label("Blue Offset", "B")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput)

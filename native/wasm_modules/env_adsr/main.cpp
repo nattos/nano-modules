@@ -176,29 +176,60 @@ static int triggerVoice(State* s, bool momentary, const Shape& sh) {
 }
 
 void module_init() {
-  state::init("mod.source.adsr", {1, 0, 0},
+  state::init("mod.source.adsr", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## ADSR Envelope\n"
+        "A triggered [0,1] modulation source: each trigger fires an attack / decay "
+        "/ sustain / release contour you wire into any param for plucks, swells, "
+        "and gated shapes.\n\n"
+        "**Try:** the default *Decay* mode is an instant-attack fall — great for "
+        "percussive hits. Raise *Auto Rate* to let it self-trigger, or feed a "
+        "*Gate* to hold at the sustain level. Switch to **ADSR** mode for full "
+        "independent control.")
+      // --- Shape: which phases run, their times, and per-phase slope ---
+      .group("shape", "Shape")
+        .groupHelp(
+          "Sets the envelope contour. *Mode* chooses which phases are active — "
+          "*Decay* is an instant fall, *ADSR* is the full four-stage shape. "
+          "*Attack* / *Decay* / *Release* are phase TIMES and *Sustain* is the "
+          "held LEVEL; the three *Curve* knobs bend each phase's slope (positive = "
+          "snappier). **Try** a long attack for a slow swell.")
       .selectField("mode", ModeD, state::PrimaryInput,
                    {{"Decay", ModeD},
                     {"Attack-Decay", ModeAD},
                     {"Attack-Decay-Sustain", ModeADS},
-                    {"ADSR", ModeADSR}}, /*wrap=*/true)
-      .floatField("attack", 0.05f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("decay", 0.30f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("sustain", 0.50f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("release", 0.30f, 0.f, 1.f, state::PrimaryInput)
+                    {"ADSR", ModeADSR}}, /*wrap=*/true).label("Mode", "Mode")
+      .floatField("attack", 0.05f, 0.f, 1.f, state::PrimaryInput).label("Attack", "Atk")
+      .floatField("decay", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Decay", "Dec")
+      .floatField("sustain", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Sustain", "Sus")
+      .floatField("release", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Release", "Rel")
       // Per-phase slope: ease ∈ [-1,1] (envelope.h convention; >0 snappier).
-      .floatField("attack_curve", 0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("decay_curve", 0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("release_curve", 0.0f, -1.f, 1.f, state::PrimaryInput)
-      .intField("voices", 1, 1, kMaxVoices, state::PrimaryInput)
+      .floatField("attack_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Attack Curve", "AtkCrv")
+      .floatField("decay_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Decay Curve", "DecCrv")
+      .floatField("release_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Release Curve", "RelCrv")
+      // --- Polyphony: how many envelopes run at once + retrigger policy ---
+      .group("polyphony", "Polyphony")
+        .groupHelp(
+          "Controls overlapping triggers. *Voices* sets how many envelopes can run "
+          "simultaneously (the output is their max). *Retrigger* decides what a new "
+          "trigger does: **Reset** restarts a single voice, **Legato** re-gates "
+          "without re-attacking, **Poly** allocates a fresh voice each time.")
+      .intField("voices", 1, 1, kMaxVoices, state::PrimaryInput).label("Voices", "Voices")
       .selectField("retrigger", RetrigReset, state::PrimaryInput,
                    {{"Reset", RetrigReset},
                     {"Legato", RetrigLegato},
-                    {"Poly", RetrigPoly}})
-      .floatField("auto_rate", 0.2f, 0.f, 1.f, state::PrimaryInput)
-      .boolField("gate", false, state::PrimaryInput)
-      .eventField("trigger", state::PrimaryInput)
+                    {"Poly", RetrigPoly}}).label("Retrigger", "Retrig")
+      // --- Trigger: what fires the envelope ---
+      .group("trigger", "Trigger")
+        .groupHelp(
+          "Fires the envelope. *Auto Rate* self-triggers at random (Poisson) — 0 "
+          "stops it. Wire a *Gate*: its rising edge fires and, while held, keeps "
+          "the sustain level until it falls. *Trigger* is a momentary one-shot that "
+          "plays an attack-decay-release pluck.")
+      .floatField("auto_rate", 0.2f, 0.f, 1.f, state::PrimaryInput).label("Auto Rate", "Auto")
+      .boolField("gate", false, state::PrimaryInput).label("Gate", "Gate")
+      .eventField("trigger", state::PrimaryInput).label("Trigger", "Trig")
       // Unipolar [0,1] envelope — declared unsigned (the modulation-range
       // contract; the UI band samples this declared range).
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")

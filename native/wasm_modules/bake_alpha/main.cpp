@@ -41,9 +41,18 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("composite.bake_alpha", {1, 0, 0},
+  state::init("composite.bake_alpha", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Bake Alpha\n"
+        "Composites the input *over* a solid background colour — the practical way "
+        "to **flatten transparency**. Feed it a transparent image and it lands on "
+        "the chosen colour (default opaque black), producing an opaque result.\n\n"
+        "**Try:** leave the background opaque to strip alpha before a stage that "
+        "needs solid pixels; or set the background's own alpha below 1 to keep the "
+        "input's transparency while still tinting the empty areas.")
       .rgbaField("color", 0.0f, 0.0f, 0.0f, 1.0f, state::PrimaryInput)
+        .label("Background", "BG")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

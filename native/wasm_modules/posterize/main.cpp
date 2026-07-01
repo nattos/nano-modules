@@ -62,10 +62,20 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.posterize", {1, 0, 0},
+  state::init("color.posterize", {1, 0, 1},
     state::Schema()
-      .floatField("amount", 0.5f, 0.f, 1.f, state::PrimaryInput)
-      .boolField("quantize_alpha", false, state::SecondaryInput)
+      .helpField("intro",
+        "## Posterize\n"
+        "Collapses smooth gradients into a handful of flat colour bands for a "
+        "screen-print / comic look. *Amount* sets how aggressive the banding is — "
+        "from a near-passthrough 256 levels down to a stark 2 — with an exponential "
+        "response so the slider feels even.\n\n"
+        "**Try:** keep *Amount* moderate and stack after a contrast boost for clean, "
+        "poster-like edges; enable *Quantize Alpha* to band the matte too when "
+        "you want hard-edged cut-outs.")
+      .group("posterize", "Posterize")
+      .floatField("amount", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Amount", "Amt")
+      .boolField("quantize_alpha", false, state::SecondaryInput).label("Quantize Alpha", "Alpha")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

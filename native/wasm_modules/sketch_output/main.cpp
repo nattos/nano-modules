@@ -38,17 +38,37 @@ struct State { bool initialized = false; };
 // in) AND an output channel (the relay write-capture republishes it).
 void module_init() {
   state::Schema schema;
+  schema.helpField("intro",
+    "## Sketch Output\n"
+    "The sketch's 8 scalar **outputs** — the mirror image of the Dashboard. Where "
+    "the dashboard exposes inputs, this node exposes channels that a parent context "
+    "reads out. Wire any producer's scalar output into a slot and that value "
+    "becomes one of the whole sketch's outputs, letting the sketch behave like an "
+    "effect module that generates modulation.\n\n"
+    "**Try:** feed an envelope or LFO into a couple of slots to publish live "
+    "control signals up to a video-editor timeline. The image passes through "
+    "untouched — this node only carries the output values.");
+  schema.group("outputs", "Outputs")
+    .groupHelp(
+      "Eight sketch-level output channels. Each is a wire **destination** — connect "
+      "an internal producer INTO it — and the written value is republished as one "
+      "of the sketch's exposed outputs. There's no authored knob; the value comes "
+      "entirely from the incoming wire.");
   for (int i = 0; i < N_OUT; ++i) {
     char name[16];
     std::snprintf(name, sizeof(name), "out_%d", i);
+    char disp[16], shortl[8];
+    std::snprintf(disp, sizeof(disp), "Output %d", i + 1);
+    std::snprintf(shortl, sizeof(shortl), "O%d", i + 1);
     schema.floatField(name, 0.0f, 0.0f, 1.0f,
-                      state::SecondaryInput | state::SecondaryOutput);
+                      state::SecondaryInput | state::SecondaryOutput)
+          .label(disp, shortl);
   }
   schema.textureField("tex_in",  state::PrimaryInput)
         .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::TimeIndependent)
         .capability(state::Capability::SketchOutputSource);
-  state::init("util.sketch_output", {1, 0, 0}, schema);
+  state::init("util.sketch_output", {1, 0, 1}, schema);
 }
 
 void* create() { return new State(); }

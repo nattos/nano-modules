@@ -62,11 +62,25 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.saturate", {1, 0, 0},
+  state::init("color.saturate", {1, 0, 1},
     state::Schema()
-      .floatField("prescale",        1.0f, 0.f, 4.f, state::PrimaryInput)
-      .floatField("asymm",           0.0f, -1.f, 1.f, state::PrimaryInput)
-      .floatField("linear_deadzone", 0.0f, 0.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Saturate\n"
+        "A per-channel tanh waveshaper that gently rolls highlights toward a soft "
+        "ceiling instead of hard-clipping. *Prescale* is the input gain (0 = black), "
+        "*Deadzone* keeps darks and mids linear, and *Shoulder* shapes how hard the "
+        "limiter bites above the deadzone. Alpha is untouched.\n\n"
+        "**Try:** push *Prescale* past 1 for a hot, filmic roll-off, then raise "
+        "*Deadzone* to protect the shadows.")
+      .group("shape", "Waveshaper")
+        .groupHelp(
+          "Signal is scaled by *Prescale*, passed straight through up to the "
+          "*Deadzone*, then folded by a tanh above it. The slopes match at the "
+          "boundary so sweeping *Deadzone* never pops. Positive *Shoulder* = a "
+          "sharper limit; negative = a softer, more linear knee.")
+      .floatField("prescale",        1.0f, 0.f, 4.f, state::PrimaryInput).label("Prescale", "Pre")
+      .floatField("asymm",           0.0f, -1.f, 1.f, state::PrimaryInput).label("Shoulder", "Shldr")
+      .floatField("linear_deadzone", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Deadzone", "Dead")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

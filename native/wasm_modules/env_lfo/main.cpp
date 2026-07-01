@@ -152,27 +152,50 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type.
 void module_init() {
-  state::init("mod.source.lfo", {1, 0, 0},
+  state::init("mod.source.lfo", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## LFO\n"
+        "A low-frequency oscillator — a repeating **bipolar** [-1,1] modulation "
+        "source that rests at 0, so several stacked LFOs cancel and reinforce "
+        "around the unmodulated value.\n\n"
+        "**Try:** pick a *Waveform* and set the *Speed*, then wire the output into "
+        "any param. Bend *Shape* to morph the wave, and switch to **Period** mode "
+        "when you want very slow cycles (up to 5 minutes).")
+      // --- Speed: how fast the wave cycles, in Freq or Period terms ---
+      .group("speed", "Speed")
+        .groupHelp(
+          "Choose how the cycle rate is set. **Freq** exposes a 0–10 Hz *Rate* "
+          "knob; **Period** instead sets the cycle length directly in seconds — up "
+          "to 5 minutes — for far slower sweeps than Freq mode reaches. Only the "
+          "knob for the active mode is shown.")
       // Tab-bar selector: how the speed knob below is interpreted.
       .selectField("mode", ModeFreq, state::PrimaryInput,
-                   {{"Freq", ModeFreq}, {"Period", ModePeriod}})
-      .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
+                   {{"Freq", ModeFreq}, {"Period", ModePeriod}}).label("Mode", "Mode")
+      .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Rate", "Rate")
       // Period mode: cycle length in seconds, up to 5 min. Hidden in Freq mode.
       .floatField("period", 1.0f, 0.1f, 300.f, state::PrimaryInput,
-                  nullptr, 0.f, "s")
-      .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput)
+                  nullptr, 0.f, "s").label("Period", "Period")
+      // --- Waveform: the shape of the cycle + its output swing ---
+      .group("waveform", "Waveform")
+        .groupHelp(
+          "Sets the wave shape and how far it swings. *Amplitude* scales the output "
+          "toward the full [-1,1]; *Shape* morphs the active waveform (softens a "
+          "sine, narrows a pulse, tilts a triangle, bows a saw, widens the random "
+          "modes). **Try** *Random Walk* or *Random FM* for organic, non-repeating "
+          "motion.")
+      .floatField("amplitude", 1.0f, 0.f, 1.f, state::PrimaryInput).label("Amplitude", "Amp")
       .selectField("waveform", ShapeSine, state::PrimaryInput,
                    {{"Sine", ShapeSine},
                     {"Square", ShapeSquare},
                     {"Triangle", ShapeTriangle},
                     {"Saw", ShapeSaw},
                     {"Random Walk", ShapeRandomWalk},
-                    {"Random FM", ShapeRandomFM}}, /*wrap=*/true)
+                    {"Random FM", ShapeRandomFM}}, /*wrap=*/true).label("Waveform", "Wave")
       // Morphs the active waveform (see file header for the per-shape meaning).
-      .floatField("shape", 0.0f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("shape", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Shape", "Shape")
       // Flip the output: negate (stays in [-1,1]).
-      .boolField("invert", false, state::PrimaryInput)
+      .boolField("invert", false, state::PrimaryInput).label("Invert", "Inv")
       // BIPOLAR [-1,1] output — declared so a wire's "Auto" magnitude maps it as
       // signed (rest at 0). min/max is the modulation-range contract: the UI band
       // samples this declared range, NOT the live amplitude-scaled swing (intentional).

@@ -34,6 +34,15 @@ struct State { bool initialized = false; };
 // identity texture passthrough. SecondaryOutput keeps tex_out the primary.
 void module_init() {
   state::Schema schema;
+  schema.helpField("intro",
+    "## Barrel Macros\n"
+    "Surfaces **NanoBarrel's 16 macro knobs** as tappable float rails. Running "
+    "inside Resolume (or ffgl_runner), the host injects the live knob values into "
+    "`Macro 1..16`; write-tap any of them onto a rail to route a hardware/host "
+    "macro anywhere in the sketch, then read-tap that rail into a parameter (add a "
+    "Mix Mode to modulate rather than replace).\n\n"
+    "**Note:** this is a NanoBarrel-specific control node — in the web IDE with no "
+    "Resolume host the outputs read 0. The image passes through untouched.");
   for (int i = 0; i < N_MACROS; ++i) {
     char name[16];
     std::snprintf(name, sizeof(name), "macro_%d", i);
@@ -42,7 +51,7 @@ void module_init() {
   schema.textureField("tex_in",  state::PrimaryInput)
         .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::TimeIndependent);
-  state::init("control.barrel_macros", {1, 0, 0}, schema);
+  state::init("control.barrel_macros", {1, 0, 1}, schema);
 }
 
 void* create() { return new State(); }

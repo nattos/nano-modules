@@ -49,9 +49,17 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.temperature", {1, 0, 0},
+  state::init("color.temperature", {1, 0, 1},
     state::Schema()
-      .floatField("temperature", 0.0f, -1.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Colour Temperature\n"
+        "A warm/cool white-balance shift along the orange–blue axis. Push "
+        "*Temperature* **positive** to warm the image (boost red, cut blue) or "
+        "**negative** to cool it; `0` passes through untouched.\n\n"
+        "**Try:** a touch of warmth on skin tones, or cool a daylight shot toward "
+        "dusk. Pair with `exposure` up- or downstream if you also want brightness.")
+      .group("balance", "White Balance")
+      .floatField("temperature", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Temperature", "Temp")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

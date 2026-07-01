@@ -47,13 +47,31 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("filter.edges", {1, 0, 0},
+  state::init("filter.edges", {1, 0, 1},
     state::Schema()
-      .floatField("threshold",  0.1f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("radius",     0.0f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("keep_input", 0.0f, 0.f, 1.f, state::SecondaryInput)
-      .rgbField("line", 1.0f, 1.0f, 1.0f, state::SecondaryInput)
-      .rgbField("bg",   0.0f, 0.0f, 0.0f, state::SecondaryInput)
+      .helpField("intro",
+        "## Edges\n"
+        "A Sobel edge detector that traces the outlines in the image and paints "
+        "them over a flat background. Tune *Threshold* and *Radius* to control "
+        "which edges survive, then restyle the result with the colours below.\n\n"
+        "**Try:** a low *Threshold* for delicate line art, or raise it to keep "
+        "only the boldest contours. Dial up *Keep Input* to blend the outlines "
+        "back over the original footage instead of a solid fill.")
+      .group("detect", "Detection")
+        .groupHelp(
+          "*Threshold* sets how strong a gradient must be to register as an edge — "
+          "low finds fine detail, high keeps only hard contours. *Radius* widens "
+          "the sampling so lines come out thicker and softer.")
+      .floatField("threshold",  0.1f, 0.f, 1.f, state::PrimaryInput).label("Threshold", "Thr")
+      .floatField("radius",     0.0f, 0.f, 1.f, state::PrimaryInput).label("Radius", "Rad")
+      .group("look", "Appearance")
+        .groupHelp(
+          "Recolour the result: *Line* is the edge colour, *Background* fills "
+          "everywhere else. *Keep Input* blends the original image back in behind "
+          "the lines, from a solid fill (0) to full footage (1).")
+      .floatField("keep_input", 0.0f, 0.f, 1.f, state::SecondaryInput).label("Keep Input", "Keep")
+      .rgbField("line", 1.0f, 1.0f, 1.0f, state::SecondaryInput).label("Line Colour", "Line")
+      .rgbField("bg",   0.0f, 0.0f, 0.0f, state::SecondaryInput).label("Background", "BG")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

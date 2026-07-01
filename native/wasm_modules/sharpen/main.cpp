@@ -37,10 +37,22 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("filter.sharpen", {1, 0, 0},
+  state::init("filter.sharpen", {1, 0, 1},
     state::Schema()
-      .floatField("amount", 0.4f, 0.f, 1.f, state::PrimaryInput)
-      .floatField("radius", 0.0f, 0.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Sharpen\n"
+        "An unsharp-mask sharpener that boosts local contrast to make edges read "
+        "crisper. *Amount* is the strength; *Radius* sets how wide the halo "
+        "around each edge extends.\n\n"
+        "**Try:** keep *Radius* small for detail crispening, or widen it for a "
+        "punchy, high-contrast clarity look. At *Amount* 0 it's a pass-through.")
+      .group("sharpen", "Sharpen")
+        .groupHelp(
+          "*Amount* drives the effect — push too far and edges gain bright/dark "
+          "halos. *Radius* controls the scale of what counts as an edge: small = "
+          "fine texture, large = broad shapes and structure.")
+      .floatField("amount", 0.4f, 0.f, 1.f, state::PrimaryInput).label("Amount", "Amt")
+      .floatField("radius", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Radius", "Rad")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

@@ -52,9 +52,19 @@ void prepare(void* self, int vp_w, int vp_h) {
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.tone.exposure", {1, 0, 0},
+  state::init("color.tone.exposure", {1, 0, 1},
     state::Schema()
-      .floatField("amount",      0.0f, -1.f, 1.f, state::PrimaryInput)
+      .helpField("intro",
+        "## Exposure\n"
+        "A clean multiplicative gain, metered in photographic **stops**. The slider "
+        "spans roughly -3 to +3 stops with **0 as neutral** (a free passthrough), so "
+        "each step doubles or halves brightness like a camera exposure.\n\n"
+        "**Try:** use this as your primary brightness control instead of "
+        "Brightness & Contrast when you want highlights and shadows to scale "
+        "together; for warm/cool shifts reach for *Color Temperature*, and pair with "
+        "*Levels* downstream if you need to tame clipped highlights.")
+      .group("exposure", "Exposure")
+      .floatField("amount",      0.0f, -1.f, 1.f, state::PrimaryInput).label("Exposure", "Stops")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

@@ -40,17 +40,37 @@ struct State { bool initialized = false; };
 // tex_out the primary image channel; each knob is tappable both ways.
 void module_init() {
   state::Schema schema;
+  schema.helpField("intro",
+    "## Dashboard\n"
+    "The sketch's **macro control panel** — a bank of 8 knobs that ARE the "
+    "sketch's exposed inputs. Wire a knob's output into any parameter to drive it, "
+    "then perform the knob live (or let an incoming wire or external surface "
+    "modulate it). Each knob is normalized to `[0, 1]` so it folds cleanly into "
+    "whatever it drives.\n\n"
+    "**Try:** route one knob to several parameters at once for a single \"scene\" "
+    "fader; or read-tap a knob from an LFO so a hands-off source animates your "
+    "whole patch. The image passes through untouched — this node only carries the "
+    "control values.");
+  schema.group("knobs", "Knobs")
+    .groupHelp(
+      "Eight general-purpose macro knobs. Each is both a **source** (its value "
+      "drives downstream params via an outgoing wire) and a **sink** (an incoming "
+      "wire modulates it). Name and arrange them per-sketch in the dashboard UI.");
   for (int i = 0; i < N_KNOBS; ++i) {
     char name[16];
     std::snprintf(name, sizeof(name), "knob_%d", i);
+    char disp[16], shortl[8];
+    std::snprintf(disp, sizeof(disp), "Knob %d", i + 1);
+    std::snprintf(shortl, sizeof(shortl), "K%d", i + 1);
     schema.floatField(name, 0.0f, 0.0f, 1.0f,
-                      state::SecondaryInput | state::SecondaryOutput);
+                      state::SecondaryInput | state::SecondaryOutput)
+          .label(disp, shortl);
   }
   schema.textureField("tex_in",  state::PrimaryInput)
         .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::TimeIndependent)
         .capability(state::Capability::SketchInputSource);
-  state::init("util.dashboard", {1, 0, 0}, schema);
+  state::init("util.dashboard", {1, 0, 1}, schema);
 }
 
 void* create() { return new State(); }

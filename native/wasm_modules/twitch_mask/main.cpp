@@ -52,18 +52,38 @@ static gpu::ComputePSO s_pso;
 static uint32_t s_seed_counter = 0x9E3779B9u;
 
 void module_init() {
-  state::init("filter.glitch.twitch_mask", {1, 0, 0},
+  state::init("filter.glitch.twitch_mask", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Twitch Mask\n"
+        "A stuttering glitch mask that randomly blacks out regions of the frame "
+        "on a per-frame basis. *Amount* drives the whole effect — it stays clean "
+        "at 0 and grows more violent as you raise it.\n\n"
+        "**Try:** a low *Amount* for occasional flicker, or push past the midpoint "
+        "for hard, frequent cuts. Shape the masked region with *Shape*, *Radius* "
+        "and *Position*, and modulate *Amount* from an LFO or the audio for "
+        "beat-synced glitching.")
+      .group("drive", "Trigger")
+        .groupHelp(
+          "*Amount* is the master control. From 0 to the midpoint it ramps how "
+          "deeply the mask cuts; past the midpoint it boosts the random per-frame "
+          "intensity, so cuts land harder and more often.")
       // 0 = off; modulation depth into the mask. 0..0.5 ramps depth, 0.5..1
       // boosts the random per-frame intensity (cuts harder, more often).
-      .floatField("amount",   0.0f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("amount",   0.0f,  0.0f, 1.0f, state::PrimaryInput).label("Amount", "Amt")
+      .group("mask", "Mask Shape")
+        .groupHelp(
+          "Where the glitch bites. *Shape* is bipolar — sign flips which side is "
+          "masked, magnitude morphs radial → linear → solid. *Radius* and "
+          "*Softness* size and feather the region; *Position* biases it from the "
+          "outer ring toward the centre.")
       // Bipolar pattern. Sign sets polarity (+ blacks the rim, - the centre);
       // magnitude morphs |1| radial → |0.5| linear gradient → |0| solid.
-      .floatField("shape",   -0.5f, -1.0f, 1.0f, state::PrimaryInput)
-      .floatField("radius",   0.3f,  0.0f, 1.0f, state::PrimaryInput)
-      .floatField("softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput)
+      .floatField("shape",   -0.5f, -1.0f, 1.0f, state::PrimaryInput).label("Shape", "Shp")
+      .floatField("radius",   0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Radius", "Rad")
+      .floatField("softness", 0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Softness", "Soft")
       // Spawn bias: -1 → outer ring, +1 → centre (scaled out by radius).
-      .floatField("position", 0.0f, -1.0f, 1.0f, state::PrimaryInput)
+      .floatField("position", 0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Position", "Pos")
       .capability(state::Capability::SeekableApproximate)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)

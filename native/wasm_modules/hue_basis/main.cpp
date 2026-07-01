@@ -67,15 +67,30 @@ void prepare(void* self, int vp_w, int vp_h);
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("color.hue_basis", {1, 0, 0},
+  state::init("color.hue_basis", {1, 0, 1},
     state::Schema()
+      .helpField("intro",
+        "## Hue Basis\n"
+        "Channel-mixes the image into a custom basis defined by **three hues**. Each "
+        "hue picks a fully-saturated colour axis; *Forward* projects the input onto "
+        "them, *Reverse* is the exact inverse. The default (0, ⅓, ⅔ = R, G, B) is "
+        "identity and passes through unchanged.\n\n"
+        "**Try:** rotate the three hues together for a stylised colour cast, then "
+        "place a second copy set to *Reverse* with the same hues later in the chain "
+        "to undo it — everything between the two is graded in your custom space. "
+        "Forward always preserves white.")
+      .group("basis", "Hue Basis")
+        .groupHelp(
+          "The three hues become the axes the image is decomposed onto. Spread them "
+          "far apart for a wild channel-swap, or nudge them slightly for a subtle "
+          "tint. *Direction* flips between the projection and its exact inverse.")
       .selectField("direction", DirForward, state::PrimaryInput, {
           {"Forward", DirForward},
           {"Reverse", DirReverse},
-      })
-      .floatField("hue_a", 0.0f,         0.f, 1.f, state::PrimaryInput)
-      .floatField("hue_b", 1.0f / 3.0f,  0.f, 1.f, state::PrimaryInput)
-      .floatField("hue_c", 2.0f / 3.0f,  0.f, 1.f, state::PrimaryInput)
+      }).label("Direction", "Dir")
+      .floatField("hue_a", 0.0f,         0.f, 1.f, state::PrimaryInput).label("Hue A", "Hue A")
+      .floatField("hue_b", 1.0f / 3.0f,  0.f, 1.f, state::PrimaryInput).label("Hue B", "Hue B")
+      .floatField("hue_c", 2.0f / 3.0f,  0.f, 1.f, state::PrimaryInput).label("Hue C", "Hue C")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent)

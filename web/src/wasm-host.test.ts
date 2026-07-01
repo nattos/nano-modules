@@ -744,6 +744,34 @@ describe('schema metadata round-trip (groups / names / help)', () => {
     expect(schema.fields?.intro?.default).toContain('Brutal Fold');
   });
 
+  it('core bundle: every effect emits VALID schema JSON; edited effects have groups/labels/help', async () => {
+    const CORE = resolve(__dirname, '../public/wasm/core.wasm');
+    const ids = [
+      'color.tone.auto_level', 'composite.bake_alpha', 'control.barrel_macros', 'filter.blur.gaussian',
+      'color.tone.brightness_contrast', 'color.color_space', 'color.temperature', 'warp.crop',
+      'color.tone.curve', 'util.dashboard', 'filter.edges', 'mod.source.adsr', 'mod.source.lfo',
+      'color.tone.exposure', 'filter.blur.fast', 'source.gradient', 'source.grid', 'color.hsl',
+      'color.hue_basis', 'color.invert', 'color.tone.levels', 'mod.shaper.delay', 'mod.shaper.envelope',
+      'mod.shaper.remap', 'mod.shaper.smooth', 'motion.blur', 'source.noise', 'color.posterize',
+      'color.saturate', 'filter.sharpen', 'util.sketch_output', 'source.solid_color', 'warp.transform',
+      'filter.glitch.twitch_mask', 'color.vibrance', 'composite.blend', 'filter.vignette',
+    ];
+    const schemas = await captureSchemas(CORE, ids);   // JSON.parse per effect — throws on corruption
+    if (schemas.size === 0) { console.warn('no core.wasm — skipping'); return; }
+    expect(schemas.size).toBe(ids.length);   // all present, all valid JSON (no truncation)
+
+    // Spot-check representative effects across domains: intro help + groups + a labelled input.
+    for (const id of ['color.tone.brightness_contrast', 'color.tone.levels', 'motion.blur',
+                      'util.dashboard', 'source.noise', 'mod.source.lfo']) {
+      const s = schemas.get(id);
+      expect(s?.fields?.intro?.type, `${id} intro`).toBe('help');
+      expect(Object.keys(s?.groups ?? {}).length, `${id} groups`).toBeGreaterThan(0);
+      const labelled = Object.values(s?.fields ?? {})
+        .filter((f: any) => f?.type !== 'help' && (f?.io & 1) && typeof f?.name === 'string');
+      expect(labelled.length, `${id} labelled inputs`).toBeGreaterThan(0);
+    }
+  });
+
   it('lights bundle: every effect emits VALID schema JSON with groups + labels + intro help', async () => {
     const LIGHTS = resolve(__dirname, '../public/wasm/lights.wasm');
     const ids = [
