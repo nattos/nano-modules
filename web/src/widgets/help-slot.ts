@@ -108,17 +108,17 @@ export class HelpSlot extends MobxLitElement {
     return this.localHelp?.scope === 'local' ? 'local' : 'global';
   }
 
-  /** The text to SHOW for the active scope (with fallbacks). */
+  /** The text to SHOW for the active scope. */
   private get displayedText(): string {
-    if (this.scope === 'local') {
-      return this.localHelp?.text ?? this.globalText ?? this.default ?? '';
-    }
-    return this.globalText ?? this.default ?? '';
+    return this.textFor(this.scope);
   }
 
-  /** The current text for a given scope (used to seed the editor). */
+  /** The current text for a given scope (used to seed the editor). Global falls
+   *  back to the effect-authored default; LOCAL is a separate personal-notes
+   *  space that starts blank (no inheritance) — see the "Notes go here"
+   *  placeholder. */
   private textFor(scope: Scope): string {
-    if (scope === 'local') return this.localHelp?.text ?? this.globalText ?? this.default ?? '';
+    if (scope === 'local') return this.localHelp?.text ?? '';
     return this.globalText ?? this.default ?? '';
   }
 
@@ -206,6 +206,7 @@ export class HelpSlot extends MobxLitElement {
           </div>
           <textarea
             .value=${this.draft}
+            placeholder=${this.editScope === 'local' ? 'Notes go here' : 'Help text (markdown)…'}
             @input=${(e: Event) => { this.draft = (e.target as HTMLTextAreaElement).value; }}
             @keydown=${this.onKeyDown}
             @blur=${() => this.finishEdit()}
@@ -220,8 +221,9 @@ export class HelpSlot extends MobxLitElement {
 
     const text = this.displayedText;
     if (!text) {
+      const addMsg = this.scope === 'local' ? 'Double-click to add notes…' : 'Double-click to add help…';
       return html`<div class="help-body placeholder" @dblclick=${this.enterEdit}
-        title="Double-click to add help text">Double-click to add help…</div>`;
+        title="Double-click to add help text">${addMsg}</div>`;
     }
     return html`<div class="help-body" @dblclick=${this.enterEdit}
       title="Double-click to edit help text">${unsafeHTML(renderMarkdown(text))}</div>`;

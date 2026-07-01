@@ -141,4 +141,21 @@ describe('<help-slot> editing', () => {
     await el.updateComplete;
     expect(b.helpWrites.some((w) => w.scope === 'local')).toBe(true);
   });
+
+  it('switching to Local with no local note yields a blank "Notes go here" editor', async () => {
+    const el = await mount((e) => {
+      e.path = 'intro';
+      e.default = 'THE GLOBAL DEFAULT';   // local must NOT inherit this
+      e.binding = binding({ helpMode: true, moduleType: 'test.blanklocal' });
+    });
+    body(el)!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await el.updateComplete;
+    const tabBar = el.renderRoot.querySelector('field-tab-bar') as any;
+    await tabBar.updateComplete;
+    (tabBar.renderRoot.querySelectorAll('button')[1] as HTMLButtonElement).click();  // → Local
+    await el.updateComplete;
+    const ta = el.renderRoot.querySelector('textarea') as HTMLTextAreaElement;
+    expect(ta.value).toBe('');                       // blank, not the global default
+    expect(ta.placeholder).toBe('Notes go here');
+  });
 });
