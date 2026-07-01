@@ -7,7 +7,7 @@
 // residual duplicates simply overdraw the same line.
 #include "common.hlsl"
 
-Texture2D<float>         idTex   : register(t0);
+[[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u0);
 RWStructuredBuffer<uint> edges   : register(u1);
 RWStructuredBuffer<uint> counter : register(u2);
 
@@ -36,10 +36,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int2 pe = min(p + int2(1, 1), dim - 1);
 
   float fs[4];
-  fs[0] = idTex.Load(int3(p,  0));
-  fs[1] = idTex.Load(int3(pr, 0));
-  fs[2] = idTex.Load(int3(pd, 0));
-  fs[3] = idTex.Load(int3(pe, 0));
+  fs[0] = idTex[p];
+  fs[1] = idTex[pr];
+  fs[2] = idTex[pd];
+  fs[3] = idTex[pe];
 
   int ids[4];
   int n = 0;

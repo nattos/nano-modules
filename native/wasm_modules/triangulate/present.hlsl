@@ -7,7 +7,7 @@
 
 Texture2D<float4>       featTex : register(t0);   // proc-res
 Texture2D<float4>       inTex   : register(t1);   // viewport-res
-Texture2D<float>        idTex   : register(t2);   // proc-res
+[[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u2);  // proc-res
 StructuredBuffer<Seed>  seeds   : register(t3);
 RWTexture2D<float4>     outTex  : register(u4);    // viewport-res
 
@@ -39,7 +39,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   else if (u_debug_view == 3u) c = float3(f.b, 0.0, f.b);   // corner (magenta)
   else if (u_debug_view == 4u) c = f.aaa;                   // importance
   else if (u_debug_view == 5u) {                            // voronoi cells
-    float cid = idTex.Load(int3(pp, 0));
+    float cid = idTex[pp];
     if (cid < 0.0) c = float3(0.0, 0.0, 0.0);
     else {
       uint id = (uint)cid;
@@ -55,7 +55,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // Seed dots overlay (debug 6, and also on the voronoi view).
   if (u_debug_view == 6u || u_debug_view == 5u) {
-    float cid = idTex.Load(int3(pp, 0));
+    float cid = idTex[pp];
     if (cid >= 0.0) {
       float2 sp = seeds[(uint)cid].pos;
       float2 d = (uv - sp) * float2(u_aspect, 1.0);

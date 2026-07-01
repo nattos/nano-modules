@@ -154,13 +154,17 @@ void module_init() {
 
   state::registerShaderSPV("triangulate_downsample", DOWNSAMPLE_SPV, DOWNSAMPLE_SPV_SIZE, "rgba8unorm", "write");
   state::registerShaderSPV("triangulate_feature",    FEATURE_SPV,    FEATURE_SPV_SIZE,    "rgba16float", "write");
-  state::registerShaderSPV("triangulate_jfa_init",   JFA_INIT_SPV,   JFA_INIT_SPV_SIZE,   "r32float", "write");
-  state::registerShaderSPV("triangulate_jfa_splat",  JFA_SPLAT_SPV,  JFA_SPLAT_SPV_SIZE,  "r32float", "write");
-  state::registerShaderSPV("triangulate_jfa_step",   JFA_STEP_SPV,   JFA_STEP_SPV_SIZE,   "r32float", "write");
+  // JFA/score/edges pin their r32f id textures with [[vk::image_format]] and
+  // bind them read_write (WebGPU rejects r32f write-only / sampled), so no
+  // format override is needed. present carries an rgba8 output too, so it takes
+  // the rgba8unorm,write override for that (its r32f id stays pinned).
+  state::registerShaderSPV("triangulate_jfa_init",   JFA_INIT_SPV,   JFA_INIT_SPV_SIZE);
+  state::registerShaderSPV("triangulate_jfa_splat",  JFA_SPLAT_SPV,  JFA_SPLAT_SPV_SIZE);
+  state::registerShaderSPV("triangulate_jfa_step",   JFA_STEP_SPV,   JFA_STEP_SPV_SIZE);
   state::registerShaderSPV("triangulate_score_clear",SCORE_CLEAR_SPV,SCORE_CLEAR_SPV_SIZE);
   state::registerShaderSPV("triangulate_score",      SCORE_SPV,      SCORE_SPV_SIZE);
   state::registerShaderSPV("triangulate_takeover",   TAKEOVER_SPV,   TAKEOVER_SPV_SIZE);
-  state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE);
+  state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE, "rgba8unorm", "write");
   state::registerShaderSPV("triangulate_edge_clear", EDGE_CLEAR_SPV, EDGE_CLEAR_SPV_SIZE);
   state::registerShaderSPV("triangulate_edges",      EDGES_SPV,      EDGES_SPV_SIZE);
   state::registerShaderSPV("triangulate_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
@@ -187,23 +191,25 @@ void module_init() {
   s_pso_feature = gpu::Device::createComputePSO(cs_ft, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
   s_pso_jfa_init = gpu::Device::createComputePSO(cs_ji, "main", gpu::Bindings()
-      .storageTex2d(0, gpu::TextureFormat::R32F));
+      .storageTex2dRW(0, gpu::TextureFormat::R32F));
   s_pso_jfa_splat = gpu::Device::createComputePSO(cs_jp, "main", gpu::Bindings()
-      .storage(0).storageTex2d(1, gpu::TextureFormat::R32F).uniform(2));
+      .storage(0).storageTex2dRW(1, gpu::TextureFormat::R32F).uniform(2));
   s_pso_jfa_step = gpu::Device::createComputePSO(cs_js, "main", gpu::Bindings()
-      .tex2d(0).storage(1).storageTex2d(2, gpu::TextureFormat::R32F).uniform(3));
+      .storageTex2dRW(0, gpu::TextureFormat::R32F).storage(1)
+      .storageTex2dRW(2, gpu::TextureFormat::R32F).uniform(3));
   s_pso_score_clear = gpu::Device::createComputePSO(cs_sc, "main", gpu::Bindings()
       .storageRW(0).uniform(1));
   s_pso_score = gpu::Device::createComputePSO(cs_s, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).storageRW(2).uniform(3));
+      .storageTex2dRW(0, gpu::TextureFormat::R32F).tex2d(1).storageRW(2).uniform(3));
   s_pso_takeover = gpu::Device::createComputePSO(cs_tk, "main", gpu::Bindings()
       .storage(0).tex2d(1).storageRW(2).uniform(3));
   s_pso_present = gpu::Device::createComputePSO(cs_pr, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).tex2d(2).storage(3).storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
+      .tex2d(0).tex2d(1).storageTex2dRW(2, gpu::TextureFormat::R32F).storage(3)
+      .storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
   s_pso_edge_clear = gpu::Device::createComputePSO(cs_ec, "main", gpu::Bindings()
       .storageRW(0).storageRW(1).uniform(2));
   s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()
-      .tex2d(0).storageRW(1).storageRW(2).uniform(3));
+      .storageTex2dRW(0, gpu::TextureFormat::R32F).storageRW(1).storageRW(2).uniform(3));
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_ln, "main", fs_ln, "main", gpu::TextureFormat::Surface,
       gpu::Bindings().uniform(0).storage(1).storage(2),
@@ -385,7 +391,7 @@ void render(void* self, int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_jfa_init);
-    cp.setTexture(s->jfa_a, 0, 1);
+    cp.setTexture(s->jfa_a, 0, 2);
     cp.dispatch(pgx, pgy);
     cp.end();
   }
@@ -395,7 +401,7 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_jfa_splat);
     cp.setBuffer(s->seed_buf, 0);
-    cp.setTexture(s->jfa_a, 1, 1);
+    cp.setTexture(s->jfa_a, 1, 2);
     cp.setBuffer(s->splat_buf, 2);
     cp.dispatch(sgx, 1);
     cp.end();
@@ -410,9 +416,9 @@ void render(void* self, int vp_w, int vp_h) {
     s->step_buf[sidx].writeOne(st);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_jfa_step);
-    cp.setTexture(*src, 0, 0);
+    cp.setTexture(*src, 0, 2);
     cp.setBuffer(s->seed_buf, 1);
-    cp.setTexture(*dst, 2, 1);
+    cp.setTexture(*dst, 2, 2);
     cp.setBuffer(s->step_buf[sidx], 3);
     cp.dispatch(pgx, pgy);
     cp.end();
@@ -436,7 +442,7 @@ void render(void* self, int vp_w, int vp_h) {
     s->score_buf.writeOne(scu);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_score);
-    cp.setTexture(*id_tex, 0, 0);
+    cp.setTexture(*id_tex, 0, 2);
     cp.setTexture(s->feat_tex, 1, 0);
     cp.setBuffer(s->accum_buf, 2);
     cp.setBuffer(s->score_buf, 3);
@@ -463,7 +469,7 @@ void render(void* self, int vp_w, int vp_h) {
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_edges);
-      cp.setTexture(*id_tex, 0, 0);
+      cp.setTexture(*id_tex, 0, 2);
       cp.setBuffer(s->edge_buf, 1);
       cp.setBuffer(s->edge_count_buf, 2);
       cp.setBuffer(s->edge_uniform_buf, 3);
@@ -485,7 +491,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_present);
     cp.setTexture(s->feat_tex, 0, 0);
     cp.setTexture(in, 1, 0);
-    cp.setTexture(*id_tex, 2, 0);
+    cp.setTexture(*id_tex, 2, 2);
     cp.setBuffer(s->seed_buf, 3);
     cp.setTexture(out, 4, 1);
     cp.setBuffer(s->present_buf, 5);

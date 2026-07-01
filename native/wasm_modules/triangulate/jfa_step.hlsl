@@ -2,9 +2,9 @@
 // at the current step (and itself), the seed whose position is nearest.
 #include "common.hlsl"
 
-Texture2D<float>       srcId : register(t0);
+[[vk::image_format("r32f")]] RWTexture2D<float> srcId : register(u0);
 StructuredBuffer<Seed> seeds : register(t1);
-RWTexture2D<float>     dstId : register(u2);
+[[vk::image_format("r32f")]] RWTexture2D<float> dstId : register(u2);
 
 cbuffer StepUniforms : register(b3) {
   int   u_step;
@@ -27,7 +27,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     for (int ox = -1; ox <= 1; ++ox) {
       int2 q = int2(gid.xy) + int2(ox, oy) * u_step;
       if (q.x < 0 || q.y < 0 || q.x >= dim.x || q.y >= dim.y) continue;
-      float cid = srcId.Load(int3(q, 0));
+      float cid = srcId[q];
       if (cid < 0.0) continue;
       float2 sp = seeds[(uint)cid].pos;
       float2 d = (uv - sp) * float2(u_aspect, 1.0);

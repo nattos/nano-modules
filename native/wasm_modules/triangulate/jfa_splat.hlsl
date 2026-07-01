@@ -4,7 +4,7 @@
 #include "common.hlsl"
 
 StructuredBuffer<Seed> seeds   : register(t0);
-RWTexture2D<float>      idTex   : register(u1);
+[[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u1);
 
 cbuffer SplatUniforms : register(b2) {
   uint  u_count;

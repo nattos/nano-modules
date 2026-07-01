@@ -3,7 +3,7 @@
 // the cell's argmax-importance candidate.
 #include "common.hlsl"
 
-Texture2D<float>         idTex : register(t0);
+[[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u0);
 Texture2D<float4>        feat  : register(t1);   // a = importance W
 RWStructuredBuffer<uint> accum : register(u2);
 
@@ -16,7 +16,7 @@ cbuffer ScoreUniforms : register(b3) {
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= u_w || gid.y >= u_h) return;
-  float cid = idTex.Load(int3(gid.xy, 0));
+  float cid = idTex[gid.xy];
   if (cid < 0.0) return;
   uint i = (uint)cid;
 
