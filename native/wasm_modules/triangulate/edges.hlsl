@@ -1,10 +1,11 @@
-// triangulate — Delaunay edge extraction from the JFA Voronoi id texture.
-// A 2×2 forward block containing >=3 distinct cell ids is a Voronoi vertex (a
-// Delaunay circumcenter): the participating seeds are mutually Delaunay-adjacent,
-// so we append their connecting edges. Each Delaunay edge is captured at the two
-// vertices bounding its shared Voronoi boundary. Emission is gated to the pixel
-// whose own cell is the block's minimum id (canonical) to cut duplicates; any
-// residual duplicates simply overdraw the same line.
+// triangulate — COMPLETE Delaunay edge extraction from the JFA Voronoi id map.
+// Two seeds are Delaunay-adjacent iff their Voronoi cells share a boundary, i.e.
+// some pixel has one cell id and its right/down neighbour has another. Scanning
+// every 4-neighbour boundary captures the WHOLE triangulation with no missed
+// edges (the earlier triple-point scan dropped edges → holes). A per-pair bitmask
+// dedups so each edge is appended exactly once (no buffer overflow → no dropped
+// edges either). The same first-touch also accumulates per-seed neighbour-max
+// weight for the Ridge Protect dynamics.
 #include "common.hlsl"
 
 [[vk::image_format("r32f")]] RWTexture2D<float> idTex : register(u0);
@@ -12,25 +13,30 @@ RWStructuredBuffer<uint> edges   : register(u1);
 RWStructuredBuffer<uint> counter : register(u2);
 StructuredBuffer<Seed>   seeds   : register(t3);
 RWStructuredBuffer<uint> nbr     : register(u4);   // per-seed neighbour-max weight
+RWStructuredBuffer<uint> seen    : register(u5);   // dedup bitmask (MAX_SEEDS^2 bits)
 
-cbuffer EdgeUniforms : register(b5) {
+cbuffer EdgeUniforms : register(b6) {
   uint u_w;
   uint u_h;
   uint u_max;
   uint u_pad;
 };
 
-void emit(uint a, uint b) {
+void try_pair(uint a, uint b) {
   if (a == b) return;
-  // Delaunay adjacency: record each endpoint's best neighbour weight (for the
-  // feature-protect dynamics). Idempotent, so duplicate emits are harmless.
-  uint wa = tri_qw(seeds[a].score);
-  uint wb = tri_qw(seeds[b].score);
-  uint old;
-  InterlockedMax(nbr[a], wb, old);
-  InterlockedMax(nbr[b], wa, old);
-  // Edge append for the mesh render.
   uint lo = min(a, b), hi = max(a, b);
+  uint key  = lo * TRI_MAX_SEEDS + hi;         // < MAX_SEEDS^2
+  uint word = key >> 5, bit = 1u << (key & 31u);
+  uint old;
+  InterlockedOr(seen[word], bit, old);
+  if (old & bit) return;                       // this edge already emitted
+
+  // First touch → adjacency + append.
+  uint wlo = tri_qw(seeds[lo].score);
+  uint whi = tri_qw(seeds[hi].score);
+  uint o2;
+  InterlockedMax(nbr[lo], whi, o2);
+  InterlockedMax(nbr[hi], wlo, o2);
   uint slot;
   InterlockedAdd(counter[0], 1u, slot);
   if (slot < u_max) edges[slot] = (lo << 16) | hi;
@@ -39,36 +45,17 @@ void emit(uint a, uint b) {
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= u_w || gid.y >= u_h) return;
-  int2 dim = int2(u_w, u_h);
-  int2 p  = int2(gid.xy);
-  int2 pr = min(p + int2(1, 0), dim - 1);
-  int2 pd = min(p + int2(0, 1), dim - 1);
-  int2 pe = min(p + int2(1, 1), dim - 1);
+  int2 p = int2(gid.xy);
+  float c0 = idTex[p];
+  if (c0 < 0.0) return;
+  uint a = (uint)c0;
 
-  float fs[4];
-  fs[0] = idTex[p];
-  fs[1] = idTex[pr];
-  fs[2] = idTex[pd];
-  fs[3] = idTex[pe];
-
-  int ids[4];
-  int n = 0;
-  [unroll]
-  for (int k = 0; k < 4; ++k) {
-    if (fs[k] < 0.0) continue;
-    int v = (int)fs[k];
-    bool dup = false;
-    for (int m = 0; m < n; ++m) if (ids[m] == v) dup = true;
-    if (!dup) ids[n++] = v;
+  if (gid.x + 1u < u_w) {
+    float cr = idTex[p + int2(1, 0)];
+    if (cr >= 0.0) try_pair(a, (uint)cr);
   }
-  if (n < 3) return;
-
-  // Canonical emitter: only the pixel whose own cell is the min id.
-  int mn = ids[0];
-  for (int m = 1; m < n; ++m) mn = min(mn, ids[m]);
-  if (fs[0] < 0.0 || (int)fs[0] != mn) return;
-
-  for (int a = 0; a < n; ++a)
-    for (int b = a + 1; b < n; ++b)
-      emit((uint)ids[a], (uint)ids[b]);
+  if (gid.y + 1u < u_h) {
+    float cd = idTex[p + int2(0, 1)];
+    if (cd >= 0.0) try_pair(a, (uint)cd);
+  }
 }

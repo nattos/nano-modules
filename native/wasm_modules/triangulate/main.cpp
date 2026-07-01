@@ -32,6 +32,7 @@ namespace triangulate {
 // ---- constants -------------------------------------------------------------
 static constexpr int   MAX_SEEDS         = 4096;   // pool ceiling (16-bit-packed edge indices)
 static constexpr int   MAX_EDGES         = 65536;  // Delaunay edge-buffer ceiling
+static constexpr int   SEEN_WORDS        = (MAX_SEEDS * MAX_SEEDS) / 32;  // edge dedup bitmask (2 MB)
 static constexpr int   PROC_MAX          = 640;    // internal long-edge cap (< 1024)
 static constexpr int   MAX_JFA_STEPS     = 12;
 static constexpr float FEATURE_BLUR_SCALE= 0.6f;
@@ -53,13 +54,13 @@ struct ScoreUniforms { uint32_t w, h; float _p0, _p1; };
 struct TakeoverUniforms {
   uint32_t count, w, h, frame;
   float dt, churn, confidence, aspect;
-  uint32_t mode, _p0, _p1, _p2;
+  uint32_t mode; float decimation; uint32_t _p1, _p2;
 };
 struct PresentUniforms {
   uint32_t debug_view, bg_mode, proc_w, proc_h;
   float aspect, point_r; uint32_t count, _p0;
 };
-struct ClearEdgeUniforms { uint32_t max, _p0, _p1, _p2; };
+struct ClearEdgeUniforms { uint32_t max_edges, seen_words, _p1, _p2; };
 struct EdgeUniforms { uint32_t w, h, max, _p; };
 struct LineUniforms {
   float vp_x, vp_y, half_w, _p0;
@@ -74,6 +75,7 @@ struct State {
   gpu::Buffer edge_buf;      // uint[MAX_EDGES] packed (a<<16)|b
   gpu::Buffer edge_count_buf;// uint append counter
   gpu::Buffer nbr_buf;       // uint[MAX_SEEDS] per-seed neighbour-max weight
+  gpu::Buffer seen_buf;      // uint[SEEN_WORDS] per-pair edge dedup bitmask
 
   // Uniform buffers (one write per pass, per frame).
   gpu::Buffer feature_buf, splat_buf, clear_buf, score_buf, takeover_buf, present_buf;
@@ -94,7 +96,7 @@ struct State {
 
   // Schema-mirrored params.
   float density = 0.3f, ridge_weight = 0.6f, corner_weight = 0.3f, void_weight = 0.2f;
-  float churn = 0.3f, line_width = 0.3f;
+  float churn = 0.3f, decimation = 0.6f, line_width = 0.3f;
   float line_r = 1.f, line_g = 1.f, line_b = 1.f;
   float feature_scale = 0.4f, confidence = 0.4f;
   int   scoring_mode = 0, bg_mode = 1;
@@ -123,6 +125,8 @@ void module_init() {
                   nullptr, "Baseline coverage of low-feature density (general fill).")
       .floatField("churn",        0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Stochastic-takeover rate — how eagerly mismatched vertices jump (0 = frozen).")
+      .floatField("decimation",   0.6f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Slope-merge strength (Ridge Protect) — how aggressively slope vertices merge uphill onto features. Higher = sparser slopes, bigger contrast triangles; 0 = near-uniform.")
       .floatField("line_width",   0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Triangulation edge thickness.")
       .rgbField  ("line_color",   1.f, 1.f, 1.f, state::PrimaryInput)
@@ -212,10 +216,10 @@ void module_init() {
       .tex2d(0).tex2d(1).storageTex2dRW(2, gpu::TextureFormat::R32F).storage(3)
       .storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
   s_pso_edge_clear = gpu::Device::createComputePSO(cs_ec, "main", gpu::Bindings()
-      .storageRW(0).storageRW(1).uniform(2));
+      .storageRW(0).storageRW(1).storageRW(2).uniform(3));
   s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F).storageRW(1).storageRW(2)
-      .storage(3).storageRW(4).uniform(5));
+      .storage(3).storageRW(4).storageRW(5).uniform(6));
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_ln, "main", fs_ln, "main", gpu::TextureFormat::Surface,
       gpu::Bindings().uniform(0).storage(1).storage(2),
@@ -232,6 +236,7 @@ void* create() {
   s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
   s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
   s->nbr_buf   = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_SEEDS, gpu::BufferUsage::Storage);
+  s->seen_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * SEEN_WORDS, gpu::BufferUsage::Storage);
   s->feature_buf  = gpu::Device::createBuffer(sizeof(FeatureUniforms),  gpu::BufferUsage::Uniform);
   s->splat_buf    = gpu::Device::createBuffer(sizeof(SplatUniforms),    gpu::BufferUsage::Uniform);
   s->clear_buf    = gpu::Device::createBuffer(sizeof(ClearUniforms),    gpu::BufferUsage::Uniform);
@@ -251,7 +256,7 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->seed_buf.release(); s->accum_buf.release();
-  s->edge_buf.release(); s->edge_count_buf.release(); s->nbr_buf.release();
+  s->edge_buf.release(); s->edge_count_buf.release(); s->nbr_buf.release(); s->seen_buf.release();
   s->feature_buf.release(); s->splat_buf.release(); s->clear_buf.release();
   s->score_buf.release(); s->takeover_buf.release(); s->present_buf.release();
   s->edge_clear_buf.release(); s->edge_uniform_buf.release(); s->line_buf.release();
@@ -309,6 +314,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "corner_weight")) s->corner_weight = state::patchFloat(i);
     else if (state::pathIs(p, l, "void_weight"))   s->void_weight   = state::patchFloat(i);
     else if (state::pathIs(p, l, "churn"))         s->churn         = state::patchFloat(i);
+    else if (state::pathIs(p, l, "decimation"))    s->decimation    = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_width"))    s->line_width    = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_color"))  { auto v = state::patchVec3(i); s->line_r=v.x; s->line_g=v.y; s->line_b=v.z; }
     else if (state::pathIs(p, l, "feature_scale")) s->feature_scale = state::patchFloat(i);
@@ -476,15 +482,16 @@ void render(void* self, int vp_w, int vp_h) {
   // need the neighbour-max weights this pass accumulates.
   const bool show_mesh = (s->debug_view == 0);
   {
-    ClearEdgeUniforms ce = { (uint32_t)MAX_EDGES, 0, 0, 0 };
+    ClearEdgeUniforms ce = { (uint32_t)MAX_EDGES, (uint32_t)SEEN_WORDS, 0, 0 };
     s->edge_clear_buf.writeOne(ce);
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_edge_clear);
       cp.setBuffer(s->edge_buf, 0);
       cp.setBuffer(s->edge_count_buf, 1);
-      cp.setBuffer(s->edge_clear_buf, 2);
-      cp.dispatch((MAX_EDGES + 63) / 64, 1);
+      cp.setBuffer(s->seen_buf, 2);
+      cp.setBuffer(s->edge_clear_buf, 3);
+      cp.dispatch((SEEN_WORDS + 63) / 64, 1);
       cp.end();
     }
     EdgeUniforms eu = { (uint32_t)pw, (uint32_t)ph, (uint32_t)MAX_EDGES, 0 };
@@ -497,7 +504,8 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setBuffer(s->edge_count_buf, 2);
       cp.setBuffer(s->seed_buf, 3);
       cp.setBuffer(s->nbr_buf, 4);
-      cp.setBuffer(s->edge_uniform_buf, 5);
+      cp.setBuffer(s->seen_buf, 5);
+      cp.setBuffer(s->edge_uniform_buf, 6);
       cp.dispatch(pgx, pgy);
       cp.end();
     }
@@ -545,7 +553,7 @@ void render(void* self, int vp_w, int vp_h) {
     TakeoverUniforms tu = {};
     tu.count = (uint32_t)count; tu.w = (uint32_t)pw; tu.h = (uint32_t)ph; tu.frame = s->frame;
     tu.dt = dt; tu.churn = s->churn; tu.confidence = s->confidence;
-    tu.aspect = aspect; tu.mode = (uint32_t)s->scoring_mode;
+    tu.aspect = aspect; tu.mode = (uint32_t)s->scoring_mode; tu.decimation = s->decimation;
     s->takeover_buf.writeOne(tu);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_takeover);

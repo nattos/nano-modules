@@ -19,7 +19,8 @@ cbuffer TakeoverUniforms : register(b3) {
   float u_confidence;   // 0..1 → takeover margin (deadband)
   float u_aspect;       // proc_w / proc_h
   uint  u_mode;         // 0 ridge-protect, 1 cell-residual, 2 feature-weight, 3 blue-noise
-  uint  u_pad0, u_pad1, u_pad2;
+  float u_decimation;   // 0..1 slope-merge strength (Ridge Protect)
+  uint  u_pad1, u_pad2;
 };
 
 float feat_at(float2 pos) {
@@ -68,10 +69,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float my_w    = s.score;                       // stamped in seed_prep
     float nbr_max = tri_dqw(nbr[i]);
     float slope   = nbr_max - my_w;
-    float protect = 0.005 + u_confidence * 0.10;
-    if (slope <= protect) { seeds[i] = s; return; }  // feature / flat void → keep
+    // Feature lock: a local maximum (no meaningfully-higher neighbour) is a
+    // ridge/corner → protect. The threshold shrinks as decimation rises so more
+    // vertices become eligible to merge.
+    float protect = (0.02 + u_confidence * 0.06) * (1.0 - 0.9 * u_decimation);
+    if (slope <= protect) { seeds[i] = s; return; }
     target = candPos;                              // climb toward the cell's peak
-    float slope_scale = 0.04 + u_confidence * 0.30;
+    // decimation drives how gentle a slope still fully merges: high decimation →
+    // small scale → even shallow slopes merge hard (sparse slopes, big contrast).
+    float slope_scale = 0.30 * (1.0 - u_decimation) + 0.015;
     confidence = saturate(slope / slope_scale);
   } else if (u_mode == 1u) {
     // Cell residual: how far the seed sits from its cell's weighted centre.

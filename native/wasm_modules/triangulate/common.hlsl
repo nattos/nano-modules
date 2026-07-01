@@ -34,6 +34,10 @@ float tri_cand_w(uint p)  { return (float)(p >> 20) / 4095.0; }
 uint  tri_cand_px(uint p) { return p & 1023u; }
 uint  tri_cand_py(uint p) { return (p >> 10) & 1023u; }
 
+// Seed-pool ceiling (must match MAX_SEEDS in main.cpp) — used as the edge
+// dedup key stride (key = lo*TRI_MAX_SEEDS + hi, one bit per unordered pair).
+static const uint TRI_MAX_SEEDS = 4096u;
+
 // Fixed-point scale for the atomic mass / weighted-centroid sums.
 static const float TRI_FX = 1024.0;
 
