@@ -47,8 +47,15 @@ describe('main sketch monitor fallback', () => {
       const { traceController } = await import('/src/state/trace-controller.ts');
       const reg = traceController.registrations.get('edit_preview');
       function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      // The raw #preview-canvas is gone — the monitor is now the shared
+      // <sketch-monitor> widget, which nests a <texture-monitor>'s own
+      // (unlabeled) canvas inside its shadow tree.
+      let monitor = null;
+      for (const el of walk(document)) { if (el.tagName === 'SKETCH-MONITOR') { monitor = el; break; } }
       let canvas = null;
-      for (const el of walk(document)) { if (el.id === 'preview-canvas') { canvas = el; break; } }
+      if (monitor?.shadowRoot) {
+        for (const el of walk(monitor.shadowRoot)) { if (el.tagName === 'CANVAS') { canvas = el; break; } }
+      }
       let nonBlank = false;
       if (canvas) {
         const ctx = canvas.getContext('2d');

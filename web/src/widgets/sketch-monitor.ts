@@ -1,9 +1,18 @@
 /**
- * <ide-monitor> — Right-panel monitor for the IDE.
+ * <sketch-monitor> — Main preview + transport panel, shared by the Effect
+ * IDE (`effect-ide-app.ts`) and the Resolume sketch IDE's edit tab
+ * (`edit-tab.ts`). Both render a single-column sketch on the left and this
+ * monitor on the right, so the panel — and its bottom transport strip
+ * (undo/redo/copy/cut/paste/pause/step/fps) — lives here once instead of
+ * being hand-rolled per view.
  *
- * Renders the current project's `sketch_output` trace via the existing
- * `<texture-monitor>` widget, plus transport controls (undo / redo /
- * pause / frame-step).
+ * Callers own what to preview: pass `sketchId` (only used for the empty-state
+ * check + default trace target) and `traceTarget` (defaults to that sketch's
+ * `sketch_output` when omitted — pass an explicit target, e.g. one that
+ * follows the current selection, to retarget dynamically). `traceTarget` is
+ * sanitized before being handed to `<texture-monitor>` since it may come
+ * straight off a MobX-observable selection, which can't cross the
+ * postMessage boundary to the executor worker.
  *
  * Pause state lives in `userSettings.paused` so it survives reloads. The
  * engine command is sent through `appController.setPaused`, and `boot.ts`
@@ -11,15 +20,17 @@
  */
 
 import { html, css } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
-import { MobxLitElement } from '../../mobx-lit-element';
-import { appState } from '../../state/app-state';
-import { appController } from '../../state/controller';
+import { customElement, property, state } from 'lit/decorators.js';
+import { toJS } from 'mobx';
+import { MobxLitElement } from '../mobx-lit-element';
+import { appState } from '../state/app-state';
+import { appController } from '../state/controller';
+import type { TracePoint } from '../engine-types';
 
-import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../gpu-headroom';
+import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../views/gpu-headroom';
 
-import '../../widgets/texture-monitor';
-import '../../widgets/ui-button';
+import './texture-monitor';
+import './ui-button';
 
 /** Fixed internal capture resolution of the monitor (the canvas/trace size).
  *  Independent of the on-screen display size, which scales to fit. */
@@ -29,8 +40,21 @@ const ASPECT = CAPTURE_W / CAPTURE_H;
 /** Magnification when the zoom toggle is active. */
 const ZOOM_FACTOR = 4;
 
-@customElement('ide-monitor')
-export class IdeMonitor extends MobxLitElement {
+@customElement('sketch-monitor')
+export class SketchMonitor extends MobxLitElement {
+  /** Sketch being previewed. Only used for the empty-state check and the
+   *  default trace target — pass `traceTarget` explicitly to retarget. */
+  @property() sketchId: string | null = null;
+
+  /** Unique trace registration id (must be unique across monitors on-screen). */
+  @property() traceId = 'sketch_monitor';
+
+  /** Trace target. Defaults to `{type:'sketch_output', sketchId}` when unset. */
+  @property({ attribute: false }) traceTarget: TracePoint['target'] | null = null;
+
+  /** Shown in the empty state when `sketchId` is null. */
+  @property() emptyMessage = 'No sketch selected.';
+
   /** Content-box size of `.preview` (padding excluded), tracked via ResizeObserver. */
   @state() private availW = 0;
   @state() private availH = 0;
@@ -159,28 +183,33 @@ export class IdeMonitor extends MobxLitElement {
   }
 
   render() {
-    const sel = appState.local.userSettings.selectedProjectId;
-    const sketch = sel ? appState.database.sketches[sel] : null;
+    const sketchId = this.sketchId;
     const paused = appState.local.userSettings.paused;
     const fps = appState.local.engine.fps;
     const error = appState.local.engine.error;
     const gpuMs = appState.local.engine.gpuTimeMs;
     const targetFps = appState.local.userSettings.targetFps;
+    // Sanitize: `traceTarget` may be a MobX-observable pulled straight off the
+    // current selection, which can't be structured-cloned across postMessage
+    // to the executor worker (see CLAUDE.md's serialization-boundary rule).
+    const target = this.traceTarget
+      ? (JSON.parse(JSON.stringify(toJS(this.traceTarget))) as TracePoint['target'])
+      : (sketchId ? ({ type: 'sketch_output', sketchId } as TracePoint['target']) : null);
     const { w, h } = this.stageSize();
     return html`
       <div class="preview ${this.zoomed ? 'zoomed' : ''}">
-        ${sel && sketch
+        ${sketchId && target
           ? html`<div class="stage" style="width:${w}px;height:${h}px">
               <texture-monitor
                 fit
-                .traceId=${`ide_preview:${sel}`}
-                .traceTarget=${{ type: 'sketch_output', sketchId: sel } as any}
+                .traceId=${this.traceId}
+                .traceTarget=${target as any}
                 .width=${CAPTURE_W}
                 .height=${CAPTURE_H}
                 resolution="high"
               ></texture-monitor>
             </div>`
-          : html`<div class="empty">No project selected.<br>Pick one in the explorer to begin.</div>`}
+          : html`<div class="empty">${this.emptyMessage}</div>`}
       </div>
       <div class="transport">
         <ui-button
@@ -206,6 +235,12 @@ export class IdeMonitor extends MobxLitElement {
           title="Copy effect (⌘C)"
           ?disabled=${!appController.canCopy}
           @click=${this.onCopy}>
+        </ui-button>
+        <ui-button
+          icon="la-cut"
+          title="Cut effect (⌘X)"
+          ?disabled=${!appController.canCut}
+          @click=${this.onCut}>
         </ui-button>
         <ui-button
           icon="la-paste"
@@ -267,6 +302,7 @@ export class IdeMonitor extends MobxLitElement {
   private onUndo = () => appController.undo();
   private onRedo = () => appController.redo();
   private onCopy = () => appController.copySelection();
+  private onCut = () => appController.cutSelection();
   private onPaste = () => appController.pasteClipboard();
 
   private onToggleZoom = () => {

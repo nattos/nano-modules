@@ -277,6 +277,19 @@ function moveInArray<T>(arr: T[], from: number, to: number) {
   arr.splice(Math.max(0, Math.min(dest, arr.length)), 0, item);
 }
 
+/**
+ * Same wire shape as the effect-IDE/sketch-IDE's `EffectClipboard`
+ * (state/types.ts) — kept as an independent local type (this store
+ * deliberately doesn't couple to AppController, see the header comment) but
+ * interoperable via the OS clipboard's JSON text, since it's the shape that
+ * needs to match, not a shared TS type.
+ */
+interface EffectClipboardPayload {
+  kind: 'effect';
+  moduleType: string;
+  state: Record<string, unknown>;
+}
+
 export class ArrangementStore {
   // ── Persisted document ────────────────────────────────────────────────
   // Boot empty (one starter track over the main bus). A remembered workspace
@@ -414,6 +427,12 @@ export class ArrangementStore {
   /** Which clipboard was filled last — paste applies THAT, regardless of the
    *  current mode (paste in the "wrong" mode still applies the data). */
   lastClipboardKind: 'clips' | 'auto' | null = null;
+  /** Ephemeral SINGLE-EFFECT clipboard (per-card copy/cut/paste, gated by
+   *  `hasChainFocus` — independent of the clip/automation clipboards above,
+   *  which operate on the timeline surface instead). Fallback source for
+   *  `pasteAtChainFocus` when the OS clipboard (see `copyChainFocus`) doesn't
+   *  hold a recognizable effect JSON. */
+  private effectClipboard: EffectClipboardPayload | null = null;
 
   // ── Engine telemetry (ephemeral; mirrors appState.local.engine) ────────
   /**
@@ -1323,6 +1342,119 @@ export class ArrangementStore {
       if (m && common) this.removeClipsDevice(this.targetsFromIdByClip(m, common.idByClip));
     }
     this.clearChainFocus();
+  }
+
+  /**
+   * Resolve the focused effect card to enough info to copy/cut/paste it: its
+   * live `Device`, an `insertAfter` that pastes a payload right after it (same
+   * convention as the effect-IDE/sketch-IDE: "an effect card pastes after
+   * itself"), and a `remove`. Null when focus isn't on a single effect card —
+   * wire/other focus, or a multi-edit "common effect" row (fan-out copy/paste
+   * across several clips isn't supported; only single clip/track targets are).
+   */
+  private resolveChainFocusEffect(): {
+    device: Device;
+    insertAfter(payload: EffectClipboardPayload): void;
+    remove(): void;
+  } | null {
+    const path = this.chainFocusPath;
+    if (!path || !path.startsWith('effect/')) return null;
+    const rest = path.slice('effect/'.length);
+    const parts = rest.split('/');
+    const chainIdx = Number(parts.pop());
+    parts.pop(); // colIdx (always 0 here)
+    const sketchId = parts.join('/');
+    if (!Number.isFinite(chainIdx)) return null;
+
+    if (sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = sketchId.split('/');
+      const device = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
+      if (!device) return null;
+      return {
+        device,
+        insertAfter: (payload) => {
+          const id = this.insertClipDeviceAt(trackId, clipId, chainIdx + 1, payload.moduleType);
+          if (id) this.replaceClipDevice(trackId, clipId, id, { state: JSON.parse(JSON.stringify(payload.state)) });
+        },
+        remove: () => this.removeClipDevice(trackId, clipId, device.id),
+      };
+    }
+    if (sketchId.startsWith('track/')) {
+      const trackId = sketchId.split('/')[1];
+      const device = this.trackById(trackId)?.sketch.devices[chainIdx];
+      if (!device) return null;
+      return {
+        device,
+        insertAfter: (payload) => {
+          const id = this.insertTrackDeviceAt(trackId, chainIdx + 1, payload.moduleType);
+          if (id) this.replaceTrackDevice(trackId, id, { state: JSON.parse(JSON.stringify(payload.state)) });
+        },
+        remove: () => this.removeTrackDevice(trackId, device.id),
+      };
+    }
+    return null; // multi/ — per-effect clipboard doesn't fan out across clips
+  }
+
+  /**
+   * Copy the focused effect card. Fills the in-app `effectClipboard` AND
+   * mirrors it to the OS clipboard as JSON (mirroring the effect-IDE/
+   * sketch-IDE's `copySelection` — see controller.ts) so it can be pasted
+   * into a text editor, or into/from those other surfaces. Best-effort: a
+   * browser denying clipboard-write never blocks the in-app copy.
+   */
+  copyChainFocus(): boolean {
+    const target = this.resolveChainFocusEffect();
+    if (!target) return false;
+    const payload: EffectClipboardPayload = {
+      kind: 'effect',
+      moduleType: target.device.moduleType,
+      state: JSON.parse(JSON.stringify(target.device.state ?? {})),
+    };
+    this.effectClipboard = payload;
+    void navigator.clipboard?.writeText?.(JSON.stringify(payload, null, 2)).catch(() => {});
+    return true;
+  }
+
+  /** Cut the focused effect card: copy it, then remove it as one undo point. */
+  cutChainFocus() {
+    if (!this.copyChainFocus()) return;
+    const target = this.resolveChainFocusEffect();
+    target?.remove();
+    this.clearChainFocus();
+  }
+
+  /**
+   * Paste after the focused effect card. Prefers the OS clipboard's text (lets
+   * you paste effect JSON copied — or hand-edited — outside the app, or
+   * copied from the effect-IDE/sketch-IDE), falling back to the in-app
+   * `effectClipboard` when the OS clipboard is empty, unreadable, or doesn't
+   * hold a recognizable effect JSON. A no-op if the pasted moduleType isn't in
+   * arrangement's own effect catalog (`insertClipDeviceAt`/`insertTrackDeviceAt`
+   * return null for an unknown type).
+   */
+  async pasteAtChainFocus() {
+    const target = this.resolveChainFocusEffect();
+    if (!target) return;
+    const payload = await this.resolveEffectClipboardPayload();
+    if (!payload) return;
+    target.insertAfter(payload);
+  }
+
+  private async resolveEffectClipboardPayload(): Promise<EffectClipboardPayload | null> {
+    try {
+      const text = await navigator.clipboard?.readText?.();
+      if (text) {
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.kind === 'effect' && typeof parsed.moduleType === 'string'
+          && parsed.state && typeof parsed.state === 'object') {
+          return parsed as EffectClipboardPayload;
+        }
+      }
+    } catch {
+      // Not JSON, no clipboard-read permission, or no OS clipboard access —
+      // fall through to the in-app clipboard below.
+    }
+    return this.effectClipboard;
   }
 
   /** Rebuild the multi-edit reconciliation for the CURRENT selection, but only

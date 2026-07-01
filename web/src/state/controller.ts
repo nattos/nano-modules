@@ -491,21 +491,73 @@ export class AppController {
     this.select(`effect/${sketchId}/${colIdx}/${insertIdx}`);
   }
 
-  /** Copy the current selection to the clipboard, if it's copyable. Re-resolves
-   *  the live selectable by path so re-registered (fresh-closure) cards win. */
+  /**
+   * Copy the current selection to the clipboard, if it's copyable. Re-resolves
+   * the live selectable by path so re-registered (fresh-closure) cards win.
+   * Also mirrors the payload to the OS clipboard as pretty-printed JSON, so it
+   * can be pasted into a text editor (or shared/versioned as a plain file) —
+   * see `pasteClipboard`'s matching read-back. Best-effort: a browser denying
+   * clipboard-write (no secure context, no permission) never blocks the
+   * in-app copy, which always succeeds independent of the OS clipboard.
+   */
   copySelection() {
     const path = appState.local.selection?.path;
     const sel = path ? (this.selectableRegistry.get(path) ?? appState.local.selection) : null;
     const payload = sel?.copy?.();
     if (!payload) return;
     runInAction(() => { appState.local.clipboard = payload; });
+    void navigator.clipboard?.writeText?.(JSON.stringify(payload, null, 2)).catch(() => {});
+  }
+
+  /**
+   * Cut the current selection: copy it (including to the OS clipboard, see
+   * `copySelection`), then remove it from its chain as one undo point. A
+   * no-op when nothing copyable is selected.
+   */
+  cutSelection() {
+    const path = appState.local.selection?.path;
+    if (!path) return;
+    this.copySelection();
+    if (!appState.local.clipboard) return; // nothing was actually copyable
+    const parts = path.split('/');
+    if (parts[0] !== 'effect' || parts.length < 4) return;
+    const sketchId = parts[1];
+    const colIdx = parseInt(parts[2], 10);
+    const chainIdx = parseInt(parts[3], 10);
+    if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
+    this.select(null);
+    this.removeEffectFromChain(sketchId, colIdx, chainIdx);
+  }
+
+  /**
+   * Resolve the payload to paste: prefer the OS clipboard's text (lets you
+   * paste effect JSON copied — or hand-edited — outside the app, in a text
+   * editor or from another machine); fall back to the in-app clipboard when
+   * the OS clipboard is empty, unreadable (no permission / insecure context),
+   * or doesn't hold a recognizable effect JSON.
+   */
+  private async resolveClipboardPayload(): Promise<ClipboardPayload | null> {
+    try {
+      const text = await navigator.clipboard?.readText?.();
+      if (text) {
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.kind === 'effect' && typeof parsed.moduleType === 'string'
+          && parsed.state && typeof parsed.state === 'object') {
+          return parsed as EffectClipboard;
+        }
+      }
+    } catch {
+      // Not JSON, no clipboard-read permission, or no OS clipboard access —
+      // fall through to the in-app clipboard below.
+    }
+    return appState.local.clipboard;
   }
 
   /** Paste the clipboard. Routes to the selected selectable's `paste` (effect →
    *  after itself; tab → at its slot); with nothing pasteable selected, appends
    *  at the bottom of the active project's stack. */
-  pasteClipboard() {
-    const payload = appState.local.clipboard;
+  async pasteClipboard() {
+    const payload = await this.resolveClipboardPayload();
     if (!payload) return;
     const path = appState.local.selection?.path;
     const sel = path ? this.selectableRegistry.get(path) : undefined;
@@ -521,7 +573,15 @@ export class AppController {
     return !!appState.local.selection?.copy;
   }
 
-  /** True when there's a clipboard payload to paste (drives the Paste button). */
+  /** True when the current selection can be cut — same requirement as copy,
+   *  since cut is copy + remove-from-chain. */
+  get canCut(): boolean {
+    return this.canCopy;
+  }
+
+  /** True when there's an in-app clipboard payload to paste (drives the Paste
+   *  button). This can't see the OS clipboard synchronously — `pasteClipboard`
+   *  itself always also tries that, even when this is false. */
   get canPaste(): boolean {
     return !!appState.local.clipboard;
   }

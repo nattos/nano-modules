@@ -25,7 +25,7 @@ import './ide-icon-bar';
 import './ide-explorer';
 import './ide-project-editor';
 import './ide-debug-info';
-import './ide-monitor';
+import '../../widgets/sketch-monitor';
 import '../../widgets/splitter';
 
 @customElement('effect-ide-app')
@@ -117,6 +117,7 @@ export class EffectIdeApp extends MobxLitElement {
     const fps = appState.local.engine.fps;
     const error = appState.local.engine.error;
     const effectCount = appState.local.availableEffects.length;
+    const sel = settings.selectedProjectId;
     return html`
       <ide-icon-bar></ide-icon-bar>
       <div class="left-panel" style="width: ${leftWidth}px">
@@ -135,7 +136,11 @@ export class EffectIdeApp extends MobxLitElement {
         @resize=${this.onResize}
       ></ide-splitter>
       <div class="right-panel">
-        <ide-monitor></ide-monitor>
+        <sketch-monitor
+          .sketchId=${sel}
+          .traceId=${`ide_preview:${sel}`}
+          emptyMessage="No project selected. Pick one in the explorer to begin."
+        ></sketch-monitor>
         <div class="status-strip">
           ${error ? `Error: ${error}` : `${effectCount} effect${effectCount === 1 ? '' : 's'} discovered · ${fps} FPS`}
         </div>

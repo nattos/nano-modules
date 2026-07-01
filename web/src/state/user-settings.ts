@@ -23,6 +23,7 @@ export function defaultUserSettings(): UserSettings {
     activeTab: 'create',
     editingSketchId: null,
     targetFps: 60,
+    editLeftPanelWidth: 320,
   };
 }
 

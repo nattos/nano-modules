@@ -10,7 +10,9 @@
  * `state` aliased so reads/writes stay live), synthesizes `PluginInfo` from the
  * catalog so the generic inspector renders real param sliders, and routes
  * mutations through the target. Capabilities the arrangement doesn't plumb yet
- * (tracing/wiring/smoothing/clipboard) are off; param editing + add/retype are on.
+ * (tracing/wiring/smoothing) are off; param editing, add/retype, and per-card
+ * clipboard are on (the Cmd+C/X/V shortcuts themselves are driven by the store's
+ * chainFocusPath, not column-group's Selectable.copy/paste — see arrangement-app.ts).
  */
 
 import type {
@@ -117,7 +119,7 @@ const CAPS: ColumnCapabilities = {
   wiring: false,
   smoothing: false,
   typeEditing: true,
-  clipboard: false,
+  clipboard: true,
   reorder: true,
   fieldClickSelect: true, // click a field → per-owner automation-field selection
   inlineWirePanel: true,  // STABLE: pip click opens the floating wire-mod panel (any mode)
@@ -699,9 +701,21 @@ export class ArrColumnAdapter implements ColumnAdapter {
     cancelInsertEffect: (edit) => edit.cancel(),
     moveEffect: (_s, _c, from, to) => this.target.move(from, to),
 
-    // clipboard / smoothing are capability-gated off → never invoked.
-    snapshotEffect: (): EffectClipboard | null => null,
-    insertEffectFromClipboard: () => {},
+    // Per-card copy/cut/paste — column-group's own Selectable.copy/paste path.
+    // Arrangement's actual Cmd+C/X/V shortcuts don't route through this (they
+    // go via store.copyChainFocus()/cutChainFocus()/pasteAtChainFocus(), driven
+    // by chainFocusPath — see arrangement-app.ts's onKey), but this keeps the
+    // ColumnController interface honest in case something else calls it.
+    snapshotEffect: (_s, instanceKey): EffectClipboard | null => {
+      const dev = this.device(instanceKey);
+      if (!dev) return null;
+      return { kind: 'effect', moduleType: dev.moduleType, state: JSON.parse(JSON.stringify(dev.state ?? {})) };
+    },
+    insertEffectFromClipboard: (_s, _c, insertIdx, payload) => {
+      const id = this.target.insertAt(insertIdx, payload.moduleType);
+      if (id) this.target.replace(id, { state: JSON.parse(JSON.stringify(payload.state)) });
+    },
+    // smoothing is capability-gated off → never invoked.
     setFieldSmoothing: () => {},
     beginSetFieldSmoothing: (): EditHandle => ({ accept: () => {}, cancel: () => {} }),
     updateSetFieldSmoothing: () => {},

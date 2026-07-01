@@ -51,13 +51,16 @@ describe('wire select / break', () => {
 
     const wireCount = () => page.evaluate(`(window.appState.database.sketches['sk_w'].wires || []).length`);
     const selectedPath = () => page.evaluate(`window.appState.local.selection?.path ?? null`);
-    // The right-panel inspector header text (the selected Selectable's label).
-    const inspectorHeader = () => page.evaluate(`(() => {
+    // Selecting a wire delegates to its DEST field's inspector, rendered inline
+    // by <taps-overlay> as a floating `.field-card` beside the field (there is
+    // no separate right-panel inspector anymore — edit-tab's layout now matches
+    // the effect IDE, which never had one either).
+    const inspectorCard = () => page.evaluate(`(() => {
       function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
       for (const el of walk(document)) {
-        if (el.tagName === 'EDIT-TAB') {
-          const h = el.shadowRoot.querySelector('.right-panel .section-header');
-          return h ? h.textContent.trim() : null;
+        if (el.tagName === 'TAPS-OVERLAY') {
+          const c = el.shadowRoot.querySelector('.field-card');
+          return c ? c.textContent.replace(/\\s+/g, ' ').trim() : null;
         }
       }
       return null;
@@ -72,8 +75,9 @@ describe('wire select / break', () => {
     await new Promise(r => setTimeout(r, 400));
     expect(await wireCount()).toBe(1);                       // still there
     expect(await selectedPath()).toBe('wire/sk_w/w0');       // selected as a Selectable
-    // Inspector shows the DEST field's content (delegated): header is the wire's label.
-    expect(await inspectorHeader()).toBe('Wire → brightness');
+    // Inspector card shows the DEST field's content (delegated), including the
+    // wire's other endpoint (the source, "lfo.output").
+    expect(await inspectorCard()).toContain('lfo.output');
 
     // Double click → breaks.
     await page.evaluate(`(${findHit}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);

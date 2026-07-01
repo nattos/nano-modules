@@ -536,6 +536,9 @@ export class ArrangementApp extends MobxLitElement {
       e.preventDefault();
       store.cutTime(); // copy slices, then ripple-delete
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+      // A focused effect card copies first (works regardless of surface — the
+      // chain lives in the inspector), same precedence as Delete above.
+      if (store.hasChainFocus) { e.preventDefault(); store.copyChainFocus(); return; }
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
       // Automation mode: every row is an envelope → copy the region's nodes.
@@ -543,12 +546,16 @@ export class ArrangementApp extends MobxLitElement {
         if (store.hasTimeSelection) store.copyAutomation(store.timeSelStart!, store.timeSelEnd);
       } else store.copyClips();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'x') {
+      if (store.hasChainFocus) { e.preventDefault(); store.cutChainFocus(); return; }
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
       if (store.automationMode) {
         if (store.hasTimeSelection) store.cutAutomation(store.timeSelStart!, store.timeSelEnd);
       } else store.cutClips();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+      // Paste follows chain focus first (an effect card pastes after itself),
+      // then falls back to the timeline clipboard.
+      if (store.hasChainFocus) { e.preventDefault(); void store.pasteAtChainFocus(); return; }
       if (this.lastSurface !== 'timeline') return;
       e.preventDefault();
       // Paste follows the CLIPBOARD, not the current mode — pasting in the "wrong"

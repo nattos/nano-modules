@@ -136,6 +136,8 @@ export interface UserSettings {
   editingSketchId: string | null;
   /** Target framerate the GPU headroom estimate is measured against (FPS). */
   targetFps: number;
+  /** Width in pixels of the Resolume sketch-IDE edit tab's left panel. */
+  editLeftPanelWidth: number;
 }
 
 // --- Local state (ephemeral, not in undo history) ---

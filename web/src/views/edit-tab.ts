@@ -1,6 +1,13 @@
 /**
- * <edit-tab> — Multi-column sketch editor with drag-drop, field widgets,
+ * <edit-tab> — Single-column sketch editor with drag-drop, field widgets,
  * and configurable rail/tap routing.
+ *
+ * Layout mirrors the Effect IDE's main area (`effect-ide-app.ts`): a
+ * resizable `.left-panel` holding the column editor, an `<ide-splitter>`,
+ * and a `.right-panel` holding the shared `<sketch-monitor>` (preview +
+ * bottom transport strip). The width is persisted as
+ * `userSettings.editLeftPanelWidth`, the IDE's own `ideLeftPanelWidth`
+ * counterpart.
  *
  * Uses <columns-view> for virtualized column management. Each column is a
  * <column-group> custom element; columns outside the viewport are detached
@@ -11,14 +18,12 @@
  * top of effect cards, using bounding boxes from the FieldLayoutManager.
  */
 
-import { html, css, nothing, TemplateResult } from 'lit';
+import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { autorun, IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { Sketch } from '../sketch-types';
-import { sketchChain, ensureChain, chainEntryAt } from '../sketch-types';
+import { ensureChain, chainEntryAt } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
 import type { FieldBinding } from '../widgets/field-editor';
@@ -29,11 +34,12 @@ import '../widgets/columns-view';
 import '../widgets/column-group';
 import { ideColumnAdapter } from '../state/ide-column-adapter';
 import '../widgets/taps-overlay';
-import '../widgets/texture-monitor';
+import '../widgets/sketch-monitor';
+import '../widgets/splitter';
 import '../widgets/spark-chart';
 import { editorRegistry } from '../editor-registry';
-import { traceController } from '../state/trace-controller';
 import { isTypingInEditable } from '../utils/keyboard';
+import { handleCommonEditShortcut } from '../utils/common-edit-shortcuts';
 
 // Import inspector registrations (self-registering) — single barrel shared with
 // the effects IDE so the lists can't drift.
@@ -41,10 +47,6 @@ import '../editors/all-inspectors';
 
 @customElement('edit-tab')
 export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
-  private previewDisposer: IReactionDisposer | null = null;
-  private previewTargetDisposer: IReactionDisposer | null = null;
-  private lastPreviewTargetKey = '';
-
   // Cached column-group elements by column index
   private columnCache = new Map<number, HTMLElement>();
 
@@ -72,55 +74,11 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
   connectedCallback() {
     super.connectedCallback();
-    this.previewDisposer = autorun(() => {
-      const _gen = appState.local.engine.frameGeneration;
-      const bitmap = appState.local.engine.tracedFrames['edit_preview'];
-      if (!bitmap) return;
-      const canvas = this.renderRoot.querySelector('#preview-canvas') as HTMLCanvasElement | null;
-      if (!canvas) return;
-      canvas.width = bitmap.width;
-      canvas.height = bitmap.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.drawImage(bitmap, 0, 0);
-    });
-    // Keep the main monitor's `edit_preview` trace registered for the whole
-    // edit-tab lifetime, re-targeting it reactively: show the selected
-    // selectable's texture if it has one, else the sketch's final output. This
-    // is what makes the monitor fall back to the final output on deselect
-    // instead of going blank (the registration is never dropped, only retargeted).
-    this.previewTargetDisposer = autorun(() => {
-      const sketchId = appState.local.editingSketchId;
-      if (!sketchId) {
-        if (this.lastPreviewTargetKey) { traceController.unregister('edit_preview'); this.lastPreviewTargetKey = ''; }
-        return;
-      }
-      const rawTarget = appState.local.selection?.traceTarget
-        ?? { type: 'sketch_output', sketchId };
-      const key = JSON.stringify(rawTarget);
-      if (key === this.lastPreviewTargetKey) return;   // avoid redundant re-flush
-      this.lastPreviewTargetKey = key;
-      traceController.register({
-        id: 'edit_preview',
-        // Parse back from the JSON key → a plain object. The selection's
-        // traceTarget is a MobX proxy, which can't be structured-cloned across
-        // postMessage to the worker; this sanitizes it.
-        target: JSON.parse(key),
-        resolution: 'high',
-        // See controller.editSketch's old note: 640×360 covers the 320×180
-        // canvas at ~2× DPR without forcing a 1920×1080 barrel readback.
-        size: { width: 640, height: 360 },
-      });
-    });
     document.addEventListener('keydown', this.handleGlobalKeyDown);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    this.previewDisposer?.();
-    this.previewDisposer = null;
-    this.previewTargetDisposer?.();
-    this.previewTargetDisposer = null;
-    if (this.lastPreviewTargetKey) { traceController.unregister('edit_preview'); this.lastPreviewTargetKey = ''; }
     document.removeEventListener('keydown', this.handleGlobalKeyDown);
     for (const [, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(
@@ -138,6 +96,9 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   private handleGlobalKeyDown = (e: KeyboardEvent) => {
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
+    // Copy/Cut/Paste/Undo/Redo (⌘/Ctrl+C/X/V/Z), shared with the effect IDE
+    // so the two surfaces can't drift apart on these.
+    if (handleCommonEditShortcut(e)) return;
     // `W` toggles wires (taps) mode (global, when not typing) — same key as the
     // arrangement view, so the two surfaces are consistent.
     if (e.key === 'w' || e.key === 'W') {
@@ -186,6 +147,14 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       flex: 1;
       min-height: 0;
     }
+    .left-panel {
+      background: var(--app-bg-color2);
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
     .columns-wrap {
       position: relative;
       flex: 1;
@@ -193,175 +162,62 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       display: flex;
     }
     .right-panel {
-      width: 340px;
-      min-width: 260px;
-      background: var(--app-bg-color2);
-      border-left: 1px solid var(--app-tint-3);
+      flex: 1;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-    }
-    .right-content { flex: 1; overflow-y: auto; min-height: 0; padding: var(--app-sp-5); font-size: var(--app-fs-md); }
-    .inspector-field {
-      display: flex; align-items: center; gap: var(--app-sp-3);
-      padding: 4px 0;
-    }
-    .inspector-field-label {
-      min-width: 70px; color: var(--app-text-color2);
-      font-size: var(--app-fs-sm); flex-shrink: 0;
-    }
-    .inspector-field-value {
-      flex: 1; min-width: 0;
-      color: var(--app-text-color1);
-      font-size: var(--app-fs-sm);
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .inspector-separator {
-      height: 1px; background: var(--app-tint-2);
-      margin: 8px 0;
-    }
-    .preview-area {
-      border-top: 1px solid var(--app-tint-3);
-      padding: var(--app-sp-4);
-      flex-shrink: 0;
-    }
-    .preview-area canvas {
-      width: 100%; aspect-ratio: 16/9;
-      border-radius: 1px; display: block;
-      /* Same Photoshop-style transparency checkerboard as
-         <texture-monitor>. The preview texture often carries an alpha
-         channel (eg generators like soft_glow output a glow over
-         transparency); against a solid black canvas those pixels would
-         disappear. The checkerboard shows the actual content. */
-      background-color: #999;
-      background-image:
-        linear-gradient(45deg,  #777 25%, transparent 25%),
-        linear-gradient(-45deg, #777 25%, transparent 25%),
-        linear-gradient(45deg,  transparent 75%, #777 75%),
-        linear-gradient(-45deg, transparent 75%, #777 75%);
-      background-size: 16px 16px;
-      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
-    }
-
-    /* --- Buttons --- */
-    .btn {
-      background: var(--app-tint-3);
-      border: 1px solid var(--app-tint-4);
-      color: var(--app-text-color1);
-      font-size: var(--app-fs-sm); padding: 2px 8px;
-      border-radius: 1px; cursor: pointer;
-      font-family: inherit;
-    }
-    .btn:hover { background: var(--app-tint-5); }
-    .btn:disabled { opacity: 0.4; cursor: default; }
-    .btn-row { display: flex; gap: var(--app-sp-3); padding: 0 0 8px; }
-    .btn-row .btn { flex: 1; text-align: center; padding: var(--app-sp-3); }
-    .btn[active] {
-      background: var(--app-hi-color2);
-      border-color: var(--app-hi-color2);
-      color: #fff;
-    }
-    .section-header {
-      font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--app-text-color2); margin-bottom: 8px;
     }
     .empty-state {
       color: var(--app-text-color2); font-size: var(--app-fs-lg);
       text-align: center; padding: 32px 16px;
     }
-
-    /* --- Right panel tap config --- */
-    .rail-list { display: flex; flex-direction: column; gap: var(--app-sp-2); margin-bottom: 12px; }
-    .rail-item {
-      display: flex; align-items: center; gap: var(--app-sp-3);
-      padding: 6px 8px;
-      background: var(--app-tint-1);
-      border: 1px solid var(--app-tint-2);
-      border-radius: 1px;
-      font-size: var(--app-fs-md);
-      cursor: pointer;
-    }
-    .rail-item:hover { background: var(--app-tint-3); }
-    .tap-row {
-      display: flex; align-items: center; gap: var(--app-sp-3);
-      padding: 6px 8px;
-      background: var(--app-tint-2);
-      border: 1px solid var(--app-tint-3);
-      border-radius: 1px;
-      font-size: var(--app-fs-md);
-      margin-bottom: 4px;
-    }
-    .tap-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dir-btn {
-      background: var(--app-tint-2);
-      border: 1px solid var(--app-tint-4);
-      color: var(--app-text-color2);
-      font-size: var(--app-fs-xs); padding: 2px 6px;
-      border-radius: 1px; cursor: pointer;
-      font-family: inherit; text-transform: uppercase;
-    }
-    .dir-btn[active] {
-      background: var(--app-hi-color2);
-      border-color: var(--app-hi-color2);
-      color: #fff;
-    }
   `;
 
   render() {
     const sketchId = appState.local.editingSketchId;
+    const leftWidth = appState.local.userSettings.editLeftPanelWidth;
     if (!sketchId || !appState.database.sketches[sketchId]) {
       return html`
         <div style="flex:1;display:flex;align-items:center;justify-content:center">
           <div class="empty-state">No sketch selected for editing.<br>Go to Organize and pick one.</div>
         </div>
-        <div class="right-panel"></div>
       `;
     }
 
-    const sketch = appState.database.sketches[sketchId];
-
-    // Register preview monitor as selectable
-    const previewPath = `preview/${sketchId}`;
-    appController.defineSelectable({
-      path: previewPath,
-      label: 'Sketch Preview',
-      renderInspectorContent: () => html`
-        <div class="inspector-field">
-          <span class="inspector-field-label">Sketch</span>
-          <span class="inspector-field-value">${sketchId}</span>
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Chain</span>
-          <span class="inspector-field-value">${sketchChain(sketch).length}</span>
-        </div>
-        <div class="inspector-field">
-          <span class="inspector-field-label">Anchor</span>
-          <span class="inspector-field-value">${sketch.anchor ?? 'none'}</span>
-        </div>
-        <div class="inspector-separator"></div>
-        <div class="section-header">Full Preview</div>
-        <texture-monitor
-          .traceId=${'edit_preview_inspector'}
-          .traceTarget=${{ type: 'sketch_output', sketchId } as any}
-          .width=${300}
-          .height=${169}
-        ></texture-monitor>
-      `,
-    });
+    const traceTarget = appState.local.selection?.traceTarget
+      ?? ({ type: 'sketch_output', sketchId } as any);
 
     return html`
-      <div class="columns-wrap">
-        <columns-view .host=${this as ColumnHost}
-          @click=${(e: Event) => {
-            // Deselect when clicking on empty space (not handled by a child)
-            if (e.target === e.currentTarget) appController.select(null);
-          }}
-        ></columns-view>
-        <taps-overlay .sketchId=${sketchId}></taps-overlay>
+      <div class="left-panel" style="width: ${leftWidth}px">
+        <div class="columns-wrap">
+          <columns-view .host=${this as ColumnHost}
+            @click=${(e: Event) => {
+              // Deselect when clicking on empty space (not handled by a child)
+              if (e.target === e.currentTarget) appController.select(null);
+            }}
+          ></columns-view>
+          <taps-overlay .sketchId=${sketchId}></taps-overlay>
+        </div>
       </div>
-      ${this.renderRightPanel(sketchId, sketch)}
+      <ide-splitter
+        .width=${leftWidth}
+        @resize=${this.onResize}
+      ></ide-splitter>
+      <div class="right-panel">
+        <sketch-monitor
+          .sketchId=${sketchId}
+          traceId="edit_preview"
+          .traceTarget=${traceTarget}
+          emptyMessage="No sketch selected for editing."
+        ></sketch-monitor>
+      </div>
     `;
   }
+
+  private onResize = (e: CustomEvent<{ width: number }>) => {
+    appController.setUserSetting('editLeftPanelWidth', e.detail.width);
+  };
 
   // ========================================================================
   // ColumnHost implementation
@@ -452,62 +308,6 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     }
     return el;
   }
-
-  // ========================================================================
-  // Right panel
-  // ========================================================================
-
-  private renderRightPanel(sketchId: string, sketch: Sketch) {
-    const selection = appState.local.selection;
-    // Read renderInspectorContent from the registry (always fresh),
-    // not from the stored selection (which is only set once on select/queue-promote).
-    const registryEntry = selection
-      ? appController.getSelectable(selection.path)
-      : null;
-    const inspectorContent = registryEntry?.renderInspectorContent?.();
-
-    return html`
-      <div class="right-panel">
-        <div class="right-content">
-          ${inspectorContent
-            ? html`
-              <div class="section-header">${registryEntry!.label}</div>
-              ${inspectorContent}
-            `
-            : this.renderDefaultInspector(sketchId, sketch)
-          }
-        </div>
-        <div class="preview-area"
-          @click=${() => appController.select(`preview/${sketchId}`)}>
-          <canvas id="preview-canvas" width="320" height="180"></canvas>
-        </div>
-      </div>
-    `;
-  }
-
-  /** Default inspector content when nothing specific is selected. */
-  private renderDefaultInspector(_sketchId: string, _sketch: Sketch) {
-    const tappingMode = appState.local.tappingMode;
-
-    return html`
-      <div class="section-header">Tools</div>
-      <div class="btn-row">
-        <button class="btn" ?active=${tappingMode}
-          title="Toggle wires mode (W)"
-          @click=${() => appController.setTappingMode(!tappingMode)}>Wires</button>
-        <button class="btn" ?disabled=${!appController.history.canUndo}
-          @click=${() => appController.undo()}>Undo</button>
-        <button class="btn" ?disabled=${!appController.history.canRedo}
-          @click=${() => appController.redo()}>Redo</button>
-      </div>
-      ${tappingMode
-        ? html`<div class="empty-state" style="padding:16px 0">
-            Press <b>T</b> to toggle. Click a field to select it, then click a rail badge to connect.
-          </div>`
-        : nothing}
-    `;
-  }
-
 
   // ========================================================================
   // Drag & Drop (PointerDragOp-based)

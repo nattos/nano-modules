@@ -97,12 +97,12 @@ describe('effect copy / paste', () => {
     expect(appState.local.clipboard?.moduleType).toBe('video.bc');
   });
 
-  it('pastes AFTER the selected effect card with a fresh, independent instance', () => {
+  it('pastes AFTER the selected effect card with a fresh, independent instance', async () => {
     seed();
     defineEffectSelectable(0, 'bc0');
     appController.select('effect/sk/0/0');
     appController.copySelection();
-    appController.pasteClipboard();
+    await appController.pasteClipboard();
 
     expect(moduleTypes()).toEqual(['video.bc', 'video.bc']);
     const keys = instanceKeys();
@@ -117,30 +117,121 @@ describe('effect copy / paste', () => {
       .toBe('effect/sk/0/1');
   });
 
-  it('pastes AT the slot when an insert tab is selected', () => {
+  it('pastes AT the slot when an insert tab is selected', async () => {
     seed();
     const payload: EffectClipboard = { kind: 'effect', moduleType: 'video.glow', state: { amount: 2 } };
     runInAction(() => { appState.local.clipboard = payload; });
     defineTabSelectable(0); // gap above the only card
     appController.select('tab/sk/0/0');
 
-    appController.pasteClipboard();
+    await appController.pasteClipboard();
     expect(moduleTypes()).toEqual(['video.glow', 'video.bc']);
   });
 
-  it('appends at the bottom of the active stack when nothing is selected', () => {
+  it('appends at the bottom of the active stack when nothing is selected', async () => {
     seed();
     const payload: EffectClipboard = { kind: 'effect', moduleType: 'video.glow', state: {} };
     runInAction(() => { appState.local.clipboard = payload; });
     expect(appState.local.selection).toBeNull();
 
-    appController.pasteClipboard();
+    await appController.pasteClipboard();
     expect(moduleTypes()).toEqual(['video.bc', 'video.glow']);
   });
 
-  it('pasteClipboard is a no-op with an empty clipboard', () => {
+  it('pasteClipboard is a no-op with an empty clipboard', async () => {
     seed();
-    appController.pasteClipboard();
+    await appController.pasteClipboard();
     expect(moduleTypes()).toEqual(['video.bc']);
+  });
+});
+
+describe('effect cut', () => {
+  it('cutSelection copies then removes the selected effect as one undo point', () => {
+    seed();
+    defineEffectSelectable(0, 'bc0');
+    appController.select('effect/sk/0/0');
+    expect(appController.canCut).toBe(true);
+    const undo0 = appController.history.history.length;
+
+    appController.cutSelection();
+
+    expect(moduleTypes()).toEqual([]);
+    expect(appState.local.clipboard?.moduleType).toBe('video.bc');
+    expect(appController.history.history.length).toBe(undo0 + 1);
+    expect(appState.local.selection).toBeNull();
+  });
+
+  it('canCut is false with nothing copyable selected', () => {
+    seed();
+    expect(appController.canCut).toBe(false);
+  });
+
+  it('cutSelection is a no-op with nothing selected', () => {
+    seed();
+    appController.cutSelection();
+    expect(moduleTypes()).toEqual(['video.bc']);
+  });
+});
+
+describe('OS clipboard interop', () => {
+  const realClipboard = navigator.clipboard;
+  afterEach(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: realClipboard, configurable: true });
+  });
+
+  it('copySelection mirrors the payload to the OS clipboard as JSON', () => {
+    seed();
+    defineEffectSelectable(0, 'bc0');
+    appController.select('effect/sk/0/0');
+    let written: string | null = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: (t: string) => { written = t; return Promise.resolve(); } },
+      configurable: true,
+    });
+
+    appController.copySelection();
+
+    expect(written).not.toBeNull();
+    const parsed = JSON.parse(written!);
+    expect(parsed.kind).toBe('effect');
+    expect(parsed.moduleType).toBe('video.bc');
+  });
+
+  it('pasteClipboard prefers a valid effect JSON found on the OS clipboard', async () => {
+    seed();
+    const external = { kind: 'effect', moduleType: 'video.glow', state: { amount: 3 } };
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText: () => Promise.resolve(JSON.stringify(external)) },
+      configurable: true,
+    });
+    // Stale in-app clipboard should be ignored in favor of the OS clipboard.
+    runInAction(() => { appState.local.clipboard = { kind: 'effect', moduleType: 'video.bc', state: {} }; });
+
+    await appController.pasteClipboard();
+    expect(moduleTypes()).toEqual(['video.bc', 'video.glow']);
+  });
+
+  it('pasteClipboard falls back to the in-app clipboard when the OS clipboard has non-JSON text', async () => {
+    seed();
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText: () => Promise.resolve('just some plain text, not JSON') },
+      configurable: true,
+    });
+    runInAction(() => { appState.local.clipboard = { kind: 'effect', moduleType: 'video.glow', state: {} }; });
+
+    await appController.pasteClipboard();
+    expect(moduleTypes()).toEqual(['video.bc', 'video.glow']);
+  });
+
+  it('pasteClipboard falls back to the in-app clipboard when OS clipboard access throws', async () => {
+    seed();
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText: () => Promise.reject(new Error('denied')) },
+      configurable: true,
+    });
+    runInAction(() => { appState.local.clipboard = { kind: 'effect', moduleType: 'video.glow', state: {} }; });
+
+    await appController.pasteClipboard();
+    expect(moduleTypes()).toEqual(['video.bc', 'video.glow']);
   });
 });
