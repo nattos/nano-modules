@@ -1,16 +1,19 @@
 /**
- * GPU e2e: COMP MODE A/B pixel parity. The same deterministic composition is
- * rendered twice — once through the legacy TS build-and-push path, once with
- * the in-wasm composition executor (`?compMode=1`) — and the monitor pixels
- * must match. Byte-equal sketch in ⇒ identical pixels out (same executor), so
- * any drift here means the comp executor's document mirror / tree eval /
- * sketch build diverged from the TS reference at runtime.
+ * GPU e2e: the in-wasm COMPOSITION EXECUTOR (the arrangement's only live path
+ * since Phase E removed the legacy TS build-and-push seam). Covers: composite
+ * rendering, the worker-owned transport (advance / mirror-back / loop / pause /
+ * scrub), the document-mirror refresh on media relink, the native Precise
+ * gate's readiness loop with real video, and the rails read-wire path.
+ *
+ * Sketch-build parity with the TS twins (which the EXPORT path still uses) is
+ * pinned by the comp goldens (comp-goldens.test.ts ↔ test_comp_build) and the
+ * native pixel test (test_comp_render), not here.
  *
  * Scenario: three tracks —
  *   top    = solid_color [0.2, 0.4, 0.8]
  *   middle = solid_color [1, 0, 0], track level 0.5 (composite.blend opacity)
  *   bottom = effect-only clip (color.invert) processing the composite above
- * All time-independent → stable pixels for the A/B comparison.
+ * All time-independent → stable pixels.
  *
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-comp-mode
  */
@@ -99,27 +102,18 @@ async function renderAndSample(url: string): Promise<number[]> {
   return a!;
 }
 
-describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
+describe('Arrangement composition executor (GPU)', () => {
   jest.setTimeout(120_000);
 
-  it('renders identical pixels through the TS path and the in-wasm comp executor', async () => {
-    const legacy = await renderAndSample(URL);
-    const comp = await renderAndSample(`${URL}?compMode=1`);
-
-    expect(comp.length).toBe(legacy.length);
-    let maxDiff = 0;
-    for (let i = 0; i < legacy.length; i++) {
-      maxDiff = Math.max(maxDiff, Math.abs(legacy[i] - comp[i]));
-    }
-    // Same executor, deep-equal sketch → identical pixels (≤1 for 2d-canvas
-    // premultiplication rounding safety).
-    expect(maxDiff).toBeLessThanOrEqual(1);
-    // And the scene actually renders something non-trivial (inverted blue mix).
-    expect(Math.max(...legacy)).toBeGreaterThan(30);
+  it('renders a layered composite (blend + opacity + adjustment) with stable pixels', async () => {
+    const px = await renderAndSample(URL);
+    // The scene renders something non-trivial (inverted blue mix), and
+    // renderAndSample already asserted two consecutive samples were identical.
+    expect(Math.max(...px)).toBeGreaterThan(30);
   });
 
   it('worker-owned transport advances, mirrors back, loops at the brace, and pauses', async () => {
-    await renderAndSample(`${URL}?compMode=1`); // boots + parks the playhead at 42
+    await renderAndSample(URL); // boots + parks the playhead at 42
     await page.evaluate(() => {
       const store = (window as any).arrangementStore;
       store.loopEnabled = true;
@@ -160,7 +154,7 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     // wire fold on the same field, clobbering the writer every frame — rails
     // sat pinned at base and read wires never moved their targets. A live
     // wire now wins; the re-assert only applies when the writer is gone.
-    await page.goto(`${URL}?compMode=1`, { waitUntil: 'networkidle0' });
+    await page.goto(URL, { waitUntil: 'networkidle0' });
     await page.waitForFunction(
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },
@@ -221,7 +215,7 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     // document mirror, so the relink must still bump docRev (mirror refresh)
     // or the pump opens the dead URL forever: the gate gives up (transport
     // runs) but the video never shows. Simulates exactly that flow.
-    await page.goto(`${URL}?compMode=1`, { waitUntil: 'networkidle0' });
+    await page.goto(URL, { waitUntil: 'networkidle0' });
     await page.waitForFunction(
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },
@@ -274,7 +268,7 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     // UNCONDITIONAL cadence. They used to ride the monitor's reactive
     // showComposite — which never fires while a hold freezes the beat — so
     // video playback deadlocked (only the 2.5s force-bypass leaked frames).
-    await page.goto(`${URL}?compMode=1`, { waitUntil: 'networkidle0' });
+    await page.goto(URL, { waitUntil: 'networkidle0' });
     await page.waitForFunction(
       () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
       { timeout: 20_000 },

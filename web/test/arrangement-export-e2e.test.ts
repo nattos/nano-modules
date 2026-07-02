@@ -3,9 +3,9 @@
  * h264 video clip) to an MP4 blob — end-to-end through the second engine
  * worker, the deterministic ExportVideoPump, WebCodecs encode, and mp4-muxer.
  *
- * Runs the SAME export from a plain page AND a ?compMode=1 page: the exporter
- * deliberately stays on the legacy TS seam (Phase E migrates it later), so the
- * comp flag must not affect it — this pins that isolation.
+ * The live path is the in-wasm composition executor; the exporter deliberately
+ * stays on the TS sketch-builder seam (its own second worker) until the export
+ * migration — this pins that the two coexist on one page.
  *
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-export-e2e
  */
@@ -76,15 +76,9 @@ async function runExport(url: string): Promise<{ frames: number; blobSize: numbe
 describe('Arrangement offline export (GPU, real media)', () => {
   jest.setTimeout(180_000);
 
-  it('exports an MP4 from the legacy page', async () => {
+  it('exports an MP4 (TS-builder export seam beside the live comp executor)', async () => {
     const r = await runExport(URL);
     // 2 beats @120BPM = 1s @12fps ⇒ 12-13 frames.
-    expect(r.frames).toBeGreaterThanOrEqual(10);
-    expect(r.blobSize).toBeGreaterThan(1000);
-  });
-
-  it('exports the same composition with comp mode ON (exporter stays legacy)', async () => {
-    const r = await runExport(`${URL}?compMode=1`);
     expect(r.frames).toBeGreaterThanOrEqual(10);
     expect(r.blobSize).toBeGreaterThan(1000);
   });

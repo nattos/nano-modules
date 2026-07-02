@@ -16,7 +16,6 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
-import { TransportController } from './engine/transport-clock';
 import { engineBridge } from './engine/engine-bridge';
 import { generatorThumbCapturer } from './media/generator-thumb-capture';
 import { setGeneratorThumbPersist } from './media/generator-thumb-cache';
@@ -192,8 +191,6 @@ export class ArrangementApp extends MobxLitElement {
   `;
 
   private raf = 0;
-  private lastT = 0;
-  private transport = new TransportController();
   /** Which surface the user last interacted with (gates timeline deletions). */
   private lastSurface: 'timeline' | 'inspector' | 'clipview' | 'other' = 'other';
 
@@ -205,8 +202,7 @@ export class ArrangementApp extends MobxLitElement {
     this.addEventListener('dragover', this.onDragOver);
     this.addEventListener('dragleave', this.onDragLeave);
     this.addEventListener('drop', this.onDrop);
-    this.lastT = performance.now();
-    this.tick(this.lastT);
+    this.tick(0);
     // Boot the engine eagerly so it discovers every effect's schema — the
     // add-effect palette + inspector read store.enginePlugins, which is empty
     // until the engine warms the bundles (an empty timeline never triggers the
@@ -409,34 +405,21 @@ export class ArrangementApp extends MobxLitElement {
    * playhead moves faster where the grid clumps, slower where it spreads.
    */
   private tick = (now: number) => {
-    const dt = (now - this.lastT) / 1000;
-    this.lastT = now;
-    // Precise mode: don't step the transport while a video input for the current
-    // beat is still decoding (time must never run ahead of the picture). The
-    // pump keeps decoding the held beat, so the stall self-resolves.
-    // Comp mode: the WORKER's composition executor owns the transport (advance,
-    // loop wrap, Precise gate); the playhead mirrors back via the engine bridge.
-    if (!engineBridge.compMode &&
-        !(store.playing && !engineBridge.inputsReady())) this.transport.advance(store, dt);
+    void now;
+    // The WORKER's composition executor owns the transport (advance, loop wrap,
+    // Precise gate, automation, effect clock); the playhead mirrors back via
+    // the engine bridge. This rAF is the UNCONDITIONAL upkeep cadence: the
+    // bridge's store→worker sync must run even while a Precise hold freezes
+    // the beat (the monitor's reactive path doesn't fire then).
+    engineBridge.compTick();
     // Disk-activity light: while playing, are active video clips still decoding?
-    // Precise → we're STALLED (the gate above held the playhead); Live → we're
+    // Precise → we're STALLED (the gate held the playhead); Live → we're
     // STREAMING (barrelling through frames that aren't decoded yet). Else idle.
     store.setDiskState(
       store.playing && engineBridge.decodePending()
         ? (store.transportMode === 'precise' ? 'stalled' : 'streaming')
         : 'idle',
     );
-    // Comp-mode upkeep on an unconditional rAF: readiness edges for the native
-    // Precise gate must flow even while the playhead is frozen by a hold (the
-    // monitor's reactive showComposite doesn't fire then).
-    engineBridge.compTick();
-    // Drive the engine's effect clock from the transport: effects animate in
-    // lock-step with the playhead (and hold still when it's paused), instead of
-    // free-running on wall time. Deduped inside the bridge.
-    engineBridge.setTime(this.transport.secondsAt(store));
-    // Evaluate automation curves at the playhead and push them to the executor
-    // (deduped inside the bridge, so a paused/unedited playhead stays quiet).
-    engineBridge.pushAutomation();
     // Opportunistically push-capture generator-clip thumbnails from the live render
     // (throttled + only while a clip has uncached samples — see the capturer). Never
     // blocks: it taps the worker-produced trace bitmap and downscales async.

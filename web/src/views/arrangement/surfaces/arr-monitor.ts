@@ -165,7 +165,7 @@ export class ArrMonitor extends MobxLitElement {
     // Reflect the TIMELINE at the playhead into the engine (deduped inside the
     // bridge), then repaint. Reading the observables in render() establishes
     // tracking so transport/edit changes drive these updates.
-    engineBridge.showComposite(store.compositeLayersAtBeat(store.positionBeat));
+    engineBridge.showComposite();
     this.redraw();
   }
 

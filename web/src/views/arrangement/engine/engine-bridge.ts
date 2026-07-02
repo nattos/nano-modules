@@ -1,18 +1,26 @@
 /**
  * EngineBridge — the app-wide seam between the arrangement store and ONE live
- * `ArrEngine` (Component C wired into the real app, not just the testbed).
+ * `ArrEngine`, whose worker runs the in-wasm COMPOSITION EXECUTOR (comp_* ABI):
+ * the worker owns the transport, timeline evaluation, sketch building, the
+ * Precise gate, and rendering. Steady-state playback sends ZERO per-frame
+ * main→worker messages.
  *
  * Responsibilities:
  *  - Own a single `ArrEngine`, booted **lazily** on first renderable selection
  *    (so pages/tests that never render don't spawn a worker + WebGPU device).
- *  - Translate "the timeline at the playhead" into engine calls: fold all active
- *    ENGINE layers into ONE combined chain (`buildCompositeSketch`) so effect
- *    clips process the composite of the tracks above them, and show it — deduped
- *    so steady-state transport ticks don't re-issue commands.
- *  - RETAIN the latest combined composite frame (`engineComposite()`) and notify
- *    a listener (`setOnComposite`) each frame. The monitor draws that composite
- *    and layers decoded media frames around it (media isn't in the GPU chain).
+ *  - MIRROR the composition document into the worker (diff-pushed on
+ *    `store.docRev`) and send transport/gate commands on change; the playhead
+ *    mirrors BACK via the per-frame comp report (`handleCompInfo`).
+ *  - Run the video decode pump on the worker-reported active set and push
+ *    edge-triggered per-clip frame readiness to the native Precise gate.
+ *  - RETAIN the latest composite frame (`engineComposite()`) and notify a
+ *    listener (`setOnComposite`) each frame; the monitor draws that composite.
  *  - An optional capture tap (Component D live thumbnails) sees the composite.
+ *
+ * The OFFLINE EXPORT path deliberately does NOT go through this bridge or the
+ * comp executor: it drives a second worker via the TS sketch builder
+ * (composite-frame.ts / clip-sketch.ts), which is why those twins remain —
+ * pinned against the C++ build by the comp goldens — until export migrates.
  */
 
 import { ArrEngine } from './arr-engine';
@@ -21,10 +29,10 @@ import { debugPerf } from '../state/debug-perf';
 import { clipInstanceKey } from './clip-sketch';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
 import { makeWarpClock } from './warp-clock';
-import { videoInputsReady as gateVideoReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
-import { automationEntriesAtBeat, buildCompositeRenderAtBeat, videoDescFor } from './composite-frame';
+import { videoInputsReady as gateVideoReady } from './precise-gate';
+import { videoDescFor } from './composite-frame';
 import { store } from '../state/store';
-import { deviceIsSource, type Clip, type Track } from '../model/composition';
+import { deviceIsSource } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
 import { EFFECT_BUNDLES } from '../../../effect-bundles';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
@@ -43,28 +51,8 @@ const COMPOSITE_ID = 'arr-composite';
 /** How far ahead (in beats) to pre-open + pre-decode upcoming video clips. */
 const LOOKAHEAD_BEATS = 8;
 
-/**
- * Comp mode: the arrangement compositor runs IN-WASM (the comp_* composition
- * executor) instead of the TS build-and-push path. Opt-in while it soaks:
- * `?compMode=1` in the URL, or `localStorage['nano.compMode'] = '1'`.
- * D1 shape: the TS side still steers the beat (a per-frame seek) and keeps the
- * Precise gate + decode pump; the worker evaluates the timeline, builds the
- * sketch, and renders — zero per-frame sketch/automation pushes.
- */
-function detectCompMode(): boolean {
-  try {
-    if (typeof location !== 'undefined' &&
-        new URLSearchParams(location.search).get('compMode') === '1') return true;
-    if (typeof localStorage !== 'undefined' &&
-        localStorage.getItem('nano.compMode') === '1') return true;
-  } catch { /* non-browser env */ }
-  return false;
-}
-
 export class EngineBridge {
   private engine: ArrEngine | null = null;
-  /** In-wasm composition-executor mode (see detectCompMode). */
-  readonly compMode = detectCompMode();
   /** store.docRev of the last document mirror pushed to the comp executor. */
   private sentDocRev = -1;
   private sentClipTiming: boolean | null = null;
@@ -90,9 +78,6 @@ export class EngineBridge {
   private onCompositeCb: CompositeListener | null = null;
   private tap: FrameTap | null = null;
 
-  /** Signature of the combined composite sketch (for dedupe). */
-  private compositeSig = '';
-
   /** Video clips of the TARGET composite (current beat) — the Precise gate waits on
    *  these to be decoded + injected before issuing. */
   private lastVideoDescs: VideoClipDesc[] = [];
@@ -100,10 +85,6 @@ export class EngineBridge {
    *  while a Precise hold is pending so the held frame's textures aren't torn down
    *  (else the held composite goes transparent → the layers beneath flash through). */
   private displayedVideoDescs: VideoClipDesc[] = [];
-  /** "Precise" mode: layers held back from the engine until their video inputs
-   *  decode (so we never flash a not-yet-ready clip). Null = nothing held. */
-  private pendingPrecise: Array<{ clip: Clip; opacity?: number; blendMode?: number; track?: Track }> | null = null;
-  private preciseTimer: ReturnType<typeof setTimeout> | null = null;
   /** Latest retained composite frame (the monitor draws this). */
   private compositeFrame: ImageBitmap | null = null;
   /** Number of active ENGINE layers folded into the composite (diagnostic). */
@@ -242,8 +223,6 @@ export class EngineBridge {
     this.engine?.resize(w, h);
     const r = store.composition.meta.resolution;
     this.video?.setRenderSize(w, h, Math.max(1, r.width), Math.max(1, r.height));
-    // Force a re-issue so the trace re-renders at the new size next frame.
-    this.compositeSig = '';
   }
 
   /** Boot the engine on first real use; idempotent. */
@@ -271,10 +250,8 @@ export class EngineBridge {
     // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
     // all effects are reachable — not just those a clip already references.
     void e.warmBundles(EFFECT_BUNDLES);
-    if (this.compMode) {
-      e.onCompInfo = (info) => this.handleCompInfo(info);
-      void e.compEnable(COMPOSITE_ID);
-    }
+    e.onCompInfo = (info) => this.handleCompInfo(info);
+    void e.compEnable(COMPOSITE_ID);
     this.engine = e;
     return e;
   }
@@ -346,19 +323,8 @@ export class EngineBridge {
     if (this.engine) this.engine.setInstanceTexture(instanceKey, bitmap);
     else bitmap?.close();
     // A video frame just landed — the native Precise gate may now have all its
-    // inputs: push the readiness edge immediately (the comp-mode twin of the
-    // pendingPrecise re-check below).
-    if (this.compMode) {
-      this.pushCompVideoReadiness();
-      return;
-    }
-    // A video frame just landed — a held "Precise" composite may now have all
-    // its inputs. Re-evaluate (showComposite re-holds if others are still out).
-    if (this.pendingPrecise && this.videoInputsReady()) {
-      const layers = this.pendingPrecise;
-      this.pendingPrecise = null;
-      this.showComposite(layers);
-    }
+    // inputs: push the readiness edge immediately.
+    this.pushCompVideoReadiness();
   }
 
   /** True when every active video clip has its current-beat frame injected (see
@@ -369,12 +335,6 @@ export class EngineBridge {
     return gateVideoReady(this.lastVideoDescs, !!this.video, (id) => this.video!.clipReady(id, beat, bpm));
   }
 
-  /** Whether the transport may step this frame (Precise mode stalls on unready
-   *  video inputs so time never runs ahead of the picture). */
-  inputsReady(): boolean {
-    return store.transportMode !== 'precise' || this.videoInputsReady();
-  }
-
   /** True when there are active video clips at the playhead still waiting on a
    *  decoded frame — i.e. the disk is busy (regardless of transport mode). Drives
    *  the transport bar's "D" light. */
@@ -382,42 +342,6 @@ export class EngineBridge {
     return this.lastVideoDescs.length > 0 && !this.videoInputsReady();
   }
 
-  private clearPreciseHold() {
-    this.pendingPrecise = null;
-    if (this.preciseTimer) { clearTimeout(this.preciseTimer); this.preciseTimer = null; }
-  }
-
-  private lastTimeSent: number | null = null;
-  /** Drive the engine's effect clock from the transport time (seconds). Deduped
-   *  so a paused transport doesn't spam the worker. No-op until booted. */
-  setTime(seconds: number) {
-    if (this.compMode) return; // the comp transport owns the effect clock
-    if (!this.engine || this.lastTimeSent === seconds) return;
-    this.lastTimeSent = seconds;
-    this.engine.setTime(seconds);
-  }
-
-  /**
-   * Per frame: evaluate every active CLIP's automation lanes at the playhead and
-   * push the values to the executor, which folds each into its target field via
-   * tap_mod (no sketch re-issue). Deduped so a paused, unedited playhead is quiet.
-   *
-   * Both CLIP lanes (clip devices, clip-relative beats) and TRACK lanes (the
-   * track's FX bus, absolute beats) drive — each active layer contributes its
-   * clip's lanes (keyed `clip_*`) AND its track's lanes (keyed `track_*`). A
-   * track's lanes are evaluated only here, where the track has an active clip and
-   * its FX chain is in the composite.
-   */
-  pushAutomation() {
-    if (!this.engine) return;
-    if (this.compMode) return; // the comp executor evaluates automation in-wasm
-    const entries = automationEntriesAtBeat(store.positionBeat);
-    const sig = JSON.stringify(entries);
-    if (sig === this.lastAutoSig) return;
-    this.lastAutoSig = sig;
-    this.engine.setAutomation(entries);
-  }
-  private lastAutoSig = '';
 
   /** Listen for new engine frames (the monitor recomposites). Returns unsub. */
   setOnComposite(cb: CompositeListener | null): () => void {
@@ -446,11 +370,6 @@ export class EngineBridge {
     return this.engine ? [...this.engine.discovered] : [];
   }
 
-  /** create/update sketch call count (diagnostic). */
-  showCount(): number {
-    return this.engine?.showCount ?? 0;
-  }
-
   setDebugMode(on: boolean) { this.engine?.setDebugMode(on); }
   debugStats(): unknown { return this.engine?.lastDebugStats ?? null; }
 
@@ -459,137 +378,14 @@ export class EngineBridge {
   }
 
   /**
-   * Reflect the timeline at the playhead into the engine. The ENGINE layers
-   * (clips without decoded media) are folded into ONE combined chain — top track
-   * first — so an effect clip processes the composite of the tracks above it and
-   * per-track opacity / alpha composite correctly (see `buildCompositeSketch`).
-   * Media clips (decoded video) are excluded here; the monitor draws those.
-   * Idempotent + cheap to call every frame: it re-issues only when the combined
-   * composite actually changes, and clears the trace when nothing renders.
+   * Reflect the timeline at the playhead into the engine — the monitor's
+   * reactive entry (tracked reads in its render() re-fire this on edits /
+   * playhead moves). The full sync ALSO runs from the app's unconditional rAF
+   * ticker (compTick): while the native Precise gate holds, the beat freezes,
+   * nothing observable changes, and this reaction never fires.
    */
-  showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number; track?: Track }>, force = false) {
-    // ── Comp mode: the whole store→worker sync runs from compSyncFromStore —
-    // reachable from BOTH this (reactive) path and the unconditional rAF tick.
-    // It must never depend on this reaction alone: while the native gate HOLDS,
-    // the beat freezes, no observable changes, and this never fires (see
-    // compSyncFromStore).
-    if (this.compMode) {
-      this.compSyncFromStore();
-      return;
-    }
-
-    // Keep the engine + video render size matched to the composition resolution
-    // (aspect-correct) before building/issuing this frame.
-    this.syncResolution();
-    // Every layer renders through the GPU composite now — video clips included
-    // (their source.video.file entry outputs the host-injected decoded frame).
-    const engineLayers = layers;
-    this.engineLayerN = engineLayers.length;
-    // NOTE: `hasContent` is updated only on COMMIT (below), never here from the target
-    // — else during a Precise hold it flips true while the retained frame is still the
-    // previous clip's, and the monitor draws that stale frame (the video→video flash).
-
-    // Reconcile the main-thread video decode pumps with the active video clips
-    // (each feeds its `source.video.file` entry). Cheap + diffed; the pump's own
-    // rAF maps the live transport clock → frame, so this only handles the set.
-    const videoDescs: VideoClipDesc[] = [];
-    for (const l of engineLayers) {
-      const d = videoDescFor(l.clip);
-      if (d) videoDescs.push(d);
-    }
-    this.lastVideoDescs = videoDescs; // the Precise gate waits on these (the target)
-
-    // Lookahead precache: pre-open + pre-decode video clips coming up soon (their ENTRY
-    // frame — see VideoCompositor), so reaching them doesn't stall (Precise) or hiccup.
-    const warmDescs = [...videoDescs];
-    const seen = new Set(videoDescs.map((d) => d.clipId));
-    for (const clip of store.videoClipsInWindow(store.positionBeat, store.positionBeat + LOOKAHEAD_BEATS)) {
-      if (seen.has(clip.id)) continue;
-      const d = videoDescFor(clip);
-      if (d) { warmDescs.push(d); seen.add(clip.id); }
-    }
-
-    // ── "Precise" transport gate ───────────────────────────────────────────
-    // Never composite a frame that isn't fully possible: hold the displayed composite
-    // until every ACTIVE video clip has its current-beat frame decoded + injected.
-    // `force` bypasses (a fail-safe timeout so a stuck decode can't freeze forever).
-    const holding = shouldHoldPrecise({
-      precise: store.transportMode === 'precise',
-      force,
-      activeVideoCount: videoDescs.length,
-      ready: this.videoInputsReady(),
-    });
-
-    if (holding) {
-      // Warm the target AND keep the clips CURRENTLY ON SCREEN alive (their textures
-      // must not be torn down while we hold on them); leave the issued composite as-is.
-      this.reconcilePump(pumpActiveSet(true, warmDescs, this.displayedVideoDescs));
-      this.pendingPrecise = layers;
-      if (!this.preciseTimer) {
-        this.preciseTimer = setTimeout(() => {
-          this.preciseTimer = null;
-          const held = this.pendingPrecise;
-          this.pendingPrecise = null;
-          if (held) this.showComposite(held, /*force*/ true);
-        }, 2500); // generous: only bail on a genuinely-stuck decode, not a slow cold one
-      }
-      return; // hold — the previous (ready) composite + its textures stay on screen
-    }
-    this.clearPreciseHold();
-
-    // Fold the active engine layers into ONE composite sketch — rail base-curve
-    // values + each clip's absolute start-seconds baked in (warp-aware). Shared
-    // VERBATIM with the offline exporter (composite-frame.ts) so they render alike.
-    const render = buildCompositeRenderAtBeat(store.positionBeat);
-
-    if (!render) {
-      // Issue the empty composite (clear the trace) BEFORE dropping pumps, so an on-
-      // screen clip's texture isn't torn down while its composite is still displayed.
-      if (this.compositeSig !== '') {
-        this.compositeSig = '';
-        this.compositeKeys = [];
-        this.refreshDeviceTraces();
-        this.engine?.deleteSketch(COMPOSITE_ID);
-        void this.engine?.showComposite([]); // clear the trace → placeholder
-        this.compositeFrame?.close();
-        this.compositeFrame = null;
-        this.onCompositeCb?.();
-      }
-      this.reconcilePump(warmDescs);
-      this.displayedVideoDescs = [];
-      this.hasContent = false; // committed: background only → the monitor draws the backdrop
-      return;
-    }
-
-    // Issue the target composite FIRST (its inputs are ready), THEN switch the pump to
-    // the target set. ORDER MATTERS: dropping the old on-screen clips clears their
-    // textures, and that must reach the worker AFTER the new composite — else a render
-    // tick landing between the two messages shows the OLD composite with a torn-down
-    // texture (the layers beneath flash through). This is the video→video flash.
-    if (render.sig !== this.compositeSig) {
-      const newKeys = (render.sketch.chain ?? []).map((e) => (e as { instance_key?: string }).instance_key ?? '');
-      // STRUCTURE = the chain's instance keys. A PARAM-only edit (slider drag) keeps
-      // the SAME structure — only state values differ — so the worker reuses the same
-      // video instances and their bound textures persist (re-bound each tick). Only a
-      // STRUCTURE change actually recreates the source.video.file instances (dropping
-      // their textures) and needs a frame re-inject.
-      const sameStructure =
-        newKeys.length === this.compositeKeys.length && newKeys.every((k, i) => k === this.compositeKeys[i]);
-      this.compositeSig = render.sig;
-      this.compositeKeys = newKeys;
-      void this.ensureEngine().showComposite([
-        { sketchId: COMPOSITE_ID, sketch: render.sketch, opts: render.opts },
-      ]);
-      this.refreshDeviceTraces();
-      // Re-inject ONLY on a structure change. Doing it on a param-only re-issue marks
-      // each clip's frame not-ready (reinjectActive resets lastKey), which makes the
-      // Precise transport gate stall the playhead for a frame — so a continuous slider
-      // drag over a still image stalled it EVERY frame (the playhead crawled).
-      if (!sameStructure) this.video?.reinjectActive();
-    }
-    this.reconcilePump(warmDescs);
-    this.displayedVideoDescs = videoDescs;
-    this.hasContent = true; // committed: a composite is on screen
+  showComposite() {
+    this.compSyncFromStore();
   }
 
   /**
@@ -713,7 +509,7 @@ export class EngineBridge {
    *  compSyncFromStore). No-op outside comp mode / before the engine boots
    *  (boot stays lazy via the monitor's reactive path). */
   compTick() {
-    if (!this.compMode || !this.engine) return;
+    if (!this.engine) return; // boot stays lazy via the monitor's reactive path
     this.compSyncFromStore();
   }
 
@@ -726,7 +522,6 @@ export class EngineBridge {
   }
 
   destroy() {
-    this.clearPreciseHold();
     this.video?.destroy();
     this.video = null;
     this.engine?.destroy();
@@ -741,7 +536,6 @@ export class EngineBridge {
     this.compPumpDescs = null;
     this.onCompositeCb = null;
     this.tap = null;
-    this.compositeSig = '';
     this.engineLayerN = 0;
     this.compositeFrame?.close();
     this.compositeFrame = null;

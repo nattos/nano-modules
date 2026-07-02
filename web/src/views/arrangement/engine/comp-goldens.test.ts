@@ -29,7 +29,6 @@ import {
 } from '../model/composition';
 import { WarpClock } from './warp-clock';
 import { clipSourceTimeAt, clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
-import { TransportController, type TransportState } from './transport-clock';
 import { videoInputsReady, shouldHoldPrecise, pumpActiveSet } from './precise-gate';
 import { buildCompositeRenderAtBeat, automationEntriesAtBeat } from './composite-frame';
 import { seedTestPlugins, TEST_PLUGINS } from './test-plugins';
@@ -356,125 +355,11 @@ function buildClipTimeFixture() {
 }
 
 // ---------------------------------------------------------------------------
-// transport.json — TransportController advance/loop-wrap/re-anchor
+// transport.json — FROZEN fixture. Its TS reference (transport-clock.ts) was
+// deleted when the C++ comp transport became the only implementation; the
+// fixture is pinned by native test_comp_time alone and can no longer be
+// regenerated (change the C++ deliberately + hand-update if ever needed).
 // ---------------------------------------------------------------------------
-
-interface TransportCaseSpec {
-  name: string;
-  clock: ClockSpec;
-  state: { playing: boolean; positionBeat: number; loopEnabled: boolean; loopStartBeat: number; loopEndBeat: number };
-  steps: Array<{ dt: number; playing?: boolean; scrubBeat?: number }>;
-}
-
-const TRANSPORT_CASES: TransportCaseSpec[] = [
-  {
-    name: 'flat-advance',
-    clock: FLAT_120,
-    state: { playing: true, positionBeat: 0, loopEnabled: false, loopStartBeat: 0, loopEndBeat: 32 },
-    steps: [{ dt: 0.5 }, { dt: 1.0 }, { dt: 0.016 }, { dt: 0 }],
-  },
-  {
-    name: 'paused-then-resume',
-    clock: FLAT_120,
-    state: { playing: false, positionBeat: 5, loopEnabled: false, loopStartBeat: 0, loopEndBeat: 32 },
-    steps: [{ dt: 1.0 }, { dt: 0.5, playing: true }, { dt: 0.25, playing: false }, { dt: 0.5, playing: true }],
-  },
-  {
-    name: 'scrub-reanchor',
-    clock: FLAT_120,
-    state: { playing: true, positionBeat: 0, loopEnabled: false, loopStartBeat: 0, loopEndBeat: 32 },
-    steps: [{ dt: 0.5 }, { dt: 0.5, scrubBeat: 10 }, { dt: 0.5 }],
-  },
-  {
-    name: 'loop-wrap-inside',
-    clock: FLAT_120,
-    state: { playing: true, positionBeat: 7.5, loopEnabled: true, loopStartBeat: 4, loopEndBeat: 8 },
-    steps: [{ dt: 0.5 }, { dt: 0.5 }, { dt: 2.5 }],
-  },
-  {
-    name: 'loop-no-yank-outside',
-    clock: FLAT_120,
-    state: { playing: true, positionBeat: 9, loopEnabled: true, loopStartBeat: 4, loopEndBeat: 8 },
-    steps: [{ dt: 0.5 }, { dt: 0.5 }],
-  },
-  {
-    name: 'warped-local-rate',
-    clock: WARPED,
-    state: { playing: true, positionBeat: 4, loopEnabled: false, loopStartBeat: 0, loopEndBeat: 32 },
-    steps: [{ dt: 0.01 }, { dt: 0.01 }, { dt: 0.25 }, { dt: 0.25 }, { dt: 1.5 }],
-  },
-  {
-    name: 'warped-loop-wrap',
-    clock: WARPED,
-    state: { playing: true, positionBeat: 6.5, loopEnabled: true, loopStartBeat: 2, loopEndBeat: 7 },
-    steps: [{ dt: 0.3 }, { dt: 0.3 }, { dt: 0.3 }, { dt: 4.0 }],
-  },
-  {
-    name: 'negative-dt-clamped',
-    clock: FLAT_120,
-    state: { playing: true, positionBeat: 2, loopEnabled: false, loopStartBeat: 0, loopEndBeat: 32 },
-    steps: [{ dt: -0.5 }, { dt: 0.5 }],
-  },
-];
-
-/** Build a Composition whose derivedWarpSegments equal `spec.segments`. */
-function compositionForClock(spec: ClockSpec): Composition {
-  const track: Track = {
-    id: 't', name: 'T', kind: 'track', parentId: null,
-    sketch: { devices: [] }, automation: [],
-    clips: spec.segments.map((s, i) => ({
-      id: `wc${i}`, name: `W${i}`, startBeat: s.startBeat, lengthBeat: s.endBeat - s.startBeat,
-      kind: 'effect' as const, sketch: { devices: [] },
-      loop: { mode: 'time' as const, startSec: 0, speed: 1, direction: 'forward' as const },
-      automation: [], exports: [],
-      warps: [{
-        id: `w${i}`, sourceDeviceId: 'd', waveform: s.waveform,
-        amplitude: s.amplitude, periodBeats: s.periodBeats, phase: s.phase,
-      }],
-    })),
-  };
-  // A silent filler clip pins compositionLengthBeats to the spec's totalBeats so
-  // the TS controller's internally-built curve matches the fixture's table size.
-  const filler: Track = {
-    id: 'fill', name: 'F', kind: 'track', parentId: null,
-    sketch: { devices: [] }, automation: [],
-    clips: [{
-      id: 'fill-c', name: 'F', startBeat: 0, lengthBeat: spec.totalBeats,
-      kind: 'effect' as const, sketch: { devices: [] },
-      loop: { mode: 'time' as const, startSec: 0, speed: 1, direction: 'forward' as const },
-      automation: [], exports: [], warps: [],
-    }],
-  };
-  return {
-    meta: { resolution: { width: 16, height: 16 }, baseBPM: spec.bpm, timeSignature: [4, 4] },
-    tracks: [track, filler],
-    rails: [],
-    playMode: { defaultMode: 'time' },
-  };
-}
-
-function buildTransportFixture() {
-  return {
-    cases: TRANSPORT_CASES.map((spec) => {
-      // Guard: the TS controller derives its curve extent from the composition;
-      // it must match the fixture totalBeats the C++ side will use.
-      const comp = compositionForClock(spec.clock);
-      const tc = new TransportController();
-      const s: TransportState & { setPosition(b: number): void } = {
-        ...spec.state,
-        composition: comp,
-        setPosition(beat: number) { this.positionBeat = Math.max(0, beat); },
-      };
-      const expected = spec.steps.map((step) => {
-        if (step.playing !== undefined) s.playing = step.playing;
-        if (step.scrubBeat !== undefined) s.positionBeat = step.scrubBeat;
-        tc.advance(s, step.dt);
-        return { beat: s.positionBeat, seconds: tc.secondsAt(s) };
-      });
-      return { name: spec.name, clock: spec.clock, state: spec.state, steps: spec.steps, expect: expected };
-    }),
-  };
-}
 
 // ---------------------------------------------------------------------------
 // gate.json — precise-gate truth tables
@@ -823,7 +708,6 @@ function buildBuildFixture() {
 describe('comp goldens (lock-step fixtures for native/src/sketch/comp)', () => {
   it('warp.json — WarpCurve/WarpClock', () => checkFixture('warp.json', buildWarpFixture()));
   it('clip-time.json — clipSourceTimeAt/FrameAt', () => checkFixture('clip-time.json', buildClipTimeFixture()));
-  it('transport.json — TransportController', () => checkFixture('transport.json', buildTransportFixture()));
   it('gate.json — precise gate', () => checkFixture('gate.json', buildGateFixture()));
   it('build.json — tree eval + sketch build + automation', () => checkFixture('build.json', buildBuildFixture()));
 });

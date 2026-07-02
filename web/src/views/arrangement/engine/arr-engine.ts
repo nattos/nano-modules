@@ -77,8 +77,6 @@ export class ArrEngine {
   onCompInfo: ((info: CompFrameInfo) => void) | null = null;
   /** Union of effect ids discovered across loaded bundles (diagnostic). */
   readonly discovered = new Set<string>();
-  /** Count of create/update sketch calls (diagnostic). */
-  showCount = 0;
   /** Last debug stats (when debug mode on; diagnostic). */
   lastDebugStats: unknown = null;
 
@@ -187,7 +185,6 @@ export class ArrEngine {
       this.instantiated.add(effectId);
       await delay(60);
     }
-    this.showCount++;
     if (this.shownSketches.has(sketchId)) {
       this.proxy.updateSketch(sketchId, sketch);
     } else {
@@ -230,7 +227,6 @@ export class ArrEngine {
         this.shownSketches.add(l.sketchId);
       }
     }
-    this.showCount++;
     await delay(30);
     this.baseTraces = layers.map((l) => ({ id: l.sketchId, target: { type: 'sketch_output' as const, sketchId: l.sketchId } }));
     this.applyTraces();

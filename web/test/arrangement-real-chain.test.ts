@@ -1,12 +1,10 @@
 /**
  * GPU e2e for Component F: REAL clip effect chains. A clip hosts real catalog
  * effects (a generator + an effect); the engine renders the real multi-entry
- * chain, and a real param edit flows back into the engine (re-issued sketch).
+ * chain, and a real param edit flows through the comp executor to the pixels.
  *
- *   clip = [source.noise → color.hsl] renders; editing hsl.lightness re-issues
- *   the sketch to the executor (showCount increases).
- *
- * (Pixel-colour assertions were dropped with the testonly opaque-blue anchor.)
+ *   clip = [source.noise → color.hsl] renders; editing hsl.lightness to 0.9
+ *   visibly brightens the monitor output.
  *
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-real-chain
  */
@@ -64,17 +62,41 @@ describe('Arrangement real clip chain (GPU)', () => {
     );
     expect(discovered).toEqual(expect.arrayContaining(['source.noise', 'color.hsl']));
 
-    // A real param edit re-issues the sketch to the executor.
-    const c0 = await page.evaluate(() => (window as any).__engineBridge.showCount() as number);
+    // A real param edit reaches the engine: the composition executor re-syncs
+    // the document mirror (docRev) and the rendered pixels move. lightness 0.9
+    // pushes the HSL output toward white — the monitor mean must rise.
+    const meanLuma = () => page.evaluate(() => {
+      const app = document.querySelector('arrangement-app') as any;
+      const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
+      if (!cv || !cv.width) return null;
+      const ctx = cv.getContext('2d')!;
+      let sum = 0, n = 0;
+      for (let i = 0; i < 5; i++) {
+        const d = ctx.getImageData(Math.floor((cv.width * (i + 0.5)) / 5), Math.floor(cv.height / 2), 1, 1).data;
+        sum += 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]; n++;
+      }
+      return sum / n;
+    });
+    const before = await meanLuma();
     await page.evaluate((ids) => {
       (window as any).arrangementStore.setClipDeviceField(ids.trackId, ids.clipId, ids.deviceId, 'lightness', 0.9);
     }, ids);
     await page.waitForFunction(
-      (c0) => (window as any).__engineBridge.showCount() > c0,
+      async (b0) => {
+        const app = document.querySelector('arrangement-app') as any;
+        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
+        if (!cv || !cv.width) return false;
+        const ctx = cv.getContext('2d')!;
+        let sum = 0, n = 0;
+        for (let i = 0; i < 5; i++) {
+          const d = ctx.getImageData(Math.floor((cv.width * (i + 0.5)) / 5), Math.floor(cv.height / 2), 1, 1).data;
+          sum += 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]; n++;
+        }
+        return sum / n > (b0 as number) + 40;
+      },
       { timeout: 20_000 },
-      c0,
+      before,
     );
-    expect(await page.evaluate(() => (window as any).__engineBridge.showCount() as number)).toBeGreaterThan(c0);
 
     expect(errors).toEqual([]);
   });

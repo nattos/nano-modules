@@ -5,7 +5,7 @@
  * modes, plays through it in Precise transport mode, and records how often the
  * transport STALLS — i.e. a frame where playback wanted to advance but the
  * video provider hadn't decoded the current-beat picture yet
- * (`store.playing && !engineBridge.inputsReady()`). Precise mode HOLDS the
+ * (store.diskState === 'stalled'). Precise mode HOLDS the
  * playhead on an unready frame (time never runs ahead of the picture), so a
  * stall frame is a real, user-visible hitch — the metric we want to drive down.
  *
@@ -27,10 +27,7 @@
  */
 
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
-// COMP_MODE=1 runs the same benchmark through the in-wasm composition executor
-// (comp mode) instead of the legacy TS build-and-push path — compare the two.
-const COMP = process.env.COMP_MODE === '1';
-const URL = `${BASE}/arrangement.html${COMP ? '?compMode=1' : ''}`;
+const URL = `${BASE}/arrangement.html`;
 const BENCH = `${BASE}/test-videos/bench`;
 
 // Cursor-path clips come from the generated manifest; DXV is an existing
@@ -210,7 +207,7 @@ describe('Video provider stall benchmark', () => {
     const realtimePct = nominalBeatsPerSec ? (100 * beatsPerSec / nominalBeatsPerSec) : 0;
     /* eslint-disable no-console */
     console.log('\n┌─ VIDEO PROVIDER STALL BENCHMARK ──────────────────────────────');
-    console.log(`│ ${LAYOUT.flat().length} clips / ${LAYOUT.length} tracks, span ${endBeat} beats, Precise mode${COMP ? ' [COMP MODE]' : ''}`);
+    console.log(`│ ${LAYOUT.flat().length} clips / ${LAYOUT.length} tracks, span ${endBeat} beats, Precise mode`);
     console.log(`│ advanced to beat ${report.positionBeat} in ${report.wallSec}s → ${beatsPerSec.toFixed(2)} beat/s vs ${nominalBeatsPerSec.toFixed(2)} nominal = ${realtimePct.toFixed(0)}% realtime`);
     console.log(`│ STALLS: ${report.episodes} episodes, ${report.stallFrames}/${report.frames} frames (${stallPct.toFixed(1)}%)`);
     console.log(`│ decode-pending frames: ${report.decodePendingFrames}   disk state: ${JSON.stringify(report.byState)}`);
