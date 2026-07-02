@@ -25,6 +25,7 @@ import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from
 import '../widgets/scalar-slider';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
+import '../widgets/field-select';
 import '../widgets/help-slot';
 import './brutal-fold-previews';
 
@@ -319,8 +320,15 @@ export class BrutalFoldInspector extends MobxLitElement {
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_edge'} .label=${'Edge Bias'}
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_var'} .label=${'Variance Wt'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_edge'} .label=${'Edge Wt'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_motion'} .label=${'Motion Wt'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+      <field-select .fieldPath=${'skip_debug'} .label=${'Debug View'}
+        .options=${[{ label: 'Off', value: 0 }, { label: 'Variance', value: 1 }, { label: 'Edge', value: 2 }, { label: 'Motion', value: 3 }, { label: 'Combined', value: 4 }]}
+        .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.85} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}

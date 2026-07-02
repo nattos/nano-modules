@@ -35,6 +35,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <vector>
 
 namespace brutal_fold {
 
@@ -135,7 +136,8 @@ static constexpr float kSkipStdSpan    = 0.12f;
 static constexpr int   kTileGrid     = 16;      // must match edge.hlsl kTileGrid
 static constexpr int   kSampleGrid   = 256;     // must match edge.hlsl; fixed sampling grid
 static constexpr int   kNumTiles     = kTileGrid * kTileGrid;
-static constexpr int   kStatsInts    = kNumTiles * 4;  // [edge_sum,luma,luma²,count] per tile
+static constexpr int   kSlots        = 5;       // per tile: [edge,luma,luma²,motion,count]
+static constexpr int   kStatsInts    = kNumTiles * kSlots;
 static constexpr float kStatsScale   = 65536.0f; // must match edge.hlsl kStatsScale
 static constexpr float kEdgeNormGain = 2.0f;    // higher = more edge-sensitive per tile
 // Deadzone on local luma std to absorb residual fixed-point quantization noise
@@ -168,9 +170,17 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == (48 + 256) * 4, "Uniforms layout");
 
+// Small uniform for the debug visualizer pass (debug.hlsl).
+struct DebugUniforms {
+  float res_x, res_y, mode, _pad0;      // mode: 1=var 2=edge 3=motion 4=combined
+  float w_var, w_edge, w_motion, _pad1;
+};
+
 struct State {
   gpu::Buffer uniform_buf;
   gpu::Buffer stats_buf;            // GPU flatness reduce (edge.hlsl) → readback
+  gpu::Buffer prev_luma_buf;        // persistent per-sample previous-frame luma (motion)
+  gpu::Buffer debug_uniform_buf;    // debug visualizer params
   bool skip_gpu_ready = false;      // true once the first GPU readback has arrived
   bool initialized = false;
 
@@ -241,7 +251,11 @@ struct State {
   // --- Skip empty: detect dead (flat solid-colour) frames and jog past them ---
   bool  skip_empty        = false;  // master enable for detector + jog
   float skip_thresh       = 0.2f;   // Sensitivity [0,1] → variance trigger (× kSkipStdSpan)
-  float skip_edge         = 0.7f;   // Edge Bias [0,1]: 0 = variance, 1 = edge energy
+  // Per-feature weights [0,1] combined by weighted MAX (variance / edge / motion).
+  float skip_w_var        = 1.0f;
+  float skip_w_edge       = 0.7f;
+  float skip_w_motion     = 1.0f;
+  int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
   float skip_recover      = 0.85f;  // Recover [0,1]: how fast the jog STOPS on content (1 = instant)
   float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
   bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
@@ -279,7 +293,10 @@ static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty) {
   state::setFieldHidden("ap_hold_jitter", !(autopilot && ap_snap));
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
   state::setFieldHidden("skip_thresh",     !skip_empty);
-  state::setFieldHidden("skip_edge",       !skip_empty);
+  state::setFieldHidden("skip_w_var",      !skip_empty);
+  state::setFieldHidden("skip_w_edge",     !skip_empty);
+  state::setFieldHidden("skip_w_motion",   !skip_empty);
+  state::setFieldHidden("skip_debug",      !skip_empty);
   state::setFieldHidden("skip_recover",    !skip_empty);
   state::setFieldHidden("skip_rate",       !skip_empty);
   // Jogging the orbit only means anything under autopilot.
@@ -303,10 +320,11 @@ static void on_state_ready(void* self);
 
 // Type-shared, compiled once in module_init().
 static gpu::ComputePSO s_pso_present;
-static gpu::ComputePSO s_pso_edge;      // Sobel/variance reduce over tex_out
+static gpu::ComputePSO s_pso_edge;      // Sobel/variance/motion reduce over tex_out
+static gpu::ComputePSO s_pso_debug;     // per-tile feature heatmap (debug viz)
 
 void module_init() {
-  state::init("source.brutal_fold", {1, 0, 2},
+  state::init("source.brutal_fold", {1, 1, 0},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -449,12 +467,24 @@ void module_init() {
                   "How readily a frame counts as flat/empty. Higher flags more scenes "
                   "(lower visual variance tolerated); 1 catches almost anything but the "
                   "busiest frames.").label("Sensitivity", "Sens")
-      .floatField("skip_edge", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
+      // Per-feature weights, combined by weighted MAX. Any weighted feature clearing
+      // the trigger keeps the frame from reading as flat. 0 disables that feature.
+      .floatField("skip_w_var", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
-                  "How much emphasis the flatness test puts on EDGES (hard face/sky "
-                  "boundaries) vs overall tonal variance. Higher favours fine prism "
-                  "detail — a few big flat blocks then read as empty; 0 = pure variance.")
-                  .label("Edge Bias", "Edge")
+                  "Weight of local tonal VARIANCE in the flatness test.")
+                  .label("Variance Wt", "Var")
+      .floatField("skip_w_edge", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Weight of spatial EDGES (hard face/sky boundaries) in the flatness test.")
+                  .label("Edge Wt", "Edge")
+      .floatField("skip_w_motion", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Weight of MOTION (frame-to-frame change) in the flatness test — keeps "
+                  "the jog running only while the frame is both flat AND still.")
+                  .label("Motion Wt", "Motn")
+      .selectField("skip_debug", 0, state::PrimaryInput,
+                   {{"Off", 0}, {"Variance", 1}, {"Edge", 2}, {"Motion", 3}, {"Combined", 4}})
+                  .label("Debug View", "Dbg")
       .floatField("skip_recover", 0.85f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "How fast the jog STOPS once content reappears (the empty→happening "
@@ -477,6 +507,7 @@ void module_init() {
 
   state::registerShaderSPV("brutal_fold_present", PRESENT_SPV, PRESENT_SPV_SIZE);
   state::registerShaderSPV("brutal_fold_edge", EDGE_SPV, EDGE_SPV_SIZE);
+  state::registerShaderSPV("brutal_fold_debug", DEBUG_SPV, DEBUG_SPV_SIZE);
 
   auto cs_present = gpu::Device::createShaderModuleByName("brutal_fold_present");
   if (!cs_present) return;
@@ -488,9 +519,17 @@ void module_init() {
   auto cs_edge = gpu::Device::createShaderModuleByName("brutal_fold_edge");
   if (!cs_edge) return;
   s_pso_edge = gpu::Device::createComputePSO(cs_edge, "main", gpu::Bindings()
-      .uniform(0)     // shared cbuffer U (res_x/res_y)
-      .tex2d(1)       // tex_out (read)
-      .storageRW(2)); // stats (read-write atomics)
+      .uniform(0)      // shared cbuffer U (res_x/res_y)
+      .tex2d(1)        // tex_out (read)
+      .storageRW(2)    // stats (read-write atomics)
+      .storageRW(3));  // prevLuma (per-sample motion history)
+
+  auto cs_debug = gpu::Device::createShaderModuleByName("brutal_fold_debug");
+  if (!cs_debug) return;
+  s_pso_debug = gpu::Device::createComputePSO(cs_debug, "main", gpu::Bindings()
+      .uniform(0)      // debug uniform
+      .storage(1)      // stats (read)
+      .storageTex2d(2, gpu::TextureFormat::RGBA8)); // tex_out (write viz)
 
   state::log("brutal_fold: module initialized");
 }
@@ -504,6 +543,8 @@ void* create() {
   s->rng = s_seed_counter ^ 0xC0FFEEu;
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->stats_buf = gpu::Device::createBuffer(kStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
+  s->prev_luma_buf = gpu::Device::createBuffer(kSampleGrid * kSampleGrid * sizeof(float), gpu::BufferUsage::Storage);
+  s->debug_uniform_buf = gpu::Device::createBuffer(sizeof(DebugUniforms), gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -512,6 +553,8 @@ void destroy(void* self) {
   if (!s) return;
   s->uniform_buf.release();
   s->stats_buf.release();
+  s->prev_luma_buf.release();
+  s->debug_uniform_buf.release();
   delete s;
 }
 
@@ -519,12 +562,16 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->initialized = false;
-  if (!s_pso_present.valid() || !s_pso_edge.valid()) return;
-  if (!s->uniform_buf.valid() || !s->stats_buf.valid()) return;
+  if (!s_pso_present.valid() || !s_pso_edge.valid() || !s_pso_debug.valid()) return;
+  if (!s->uniform_buf.valid() || !s->stats_buf.valid() ||
+      !s->prev_luma_buf.valid() || !s->debug_uniform_buf.valid()) return;
   // Zero the stats so the first poll (before any edge pass has run) reads count=0
   // and the detector stays on the CPU fallback until a real readback arrives.
   int32_t z[kStatsInts] = {};
   s->stats_buf.write(z, kStatsInts);
+  // Sentinel <0 so the first frame's motion reads 0 (no spurious spike).
+  std::vector<float> negs(kSampleGrid * kSampleGrid, -1.0f);
+  s->prev_luma_buf.write(negs.data(), (int)negs.size());
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
 }
@@ -602,27 +649,33 @@ void tick(void* self, double dt) {
     // the jog so this frame's decision uses the freshest available metric.
     int32_t raw[kStatsInts];
     if (s->stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw)) {
-      // Reduce PER TILE and take the MAX: any single region with local luma
-      // variance OR a concentrated edge makes the whole frame read as non-flat.
-      float edgeBias = clampf(s->skip_edge, 0.0f, 1.0f);
+      // Reduce PER TILE and take the weighted MAX over three features: any single
+      // region with local luma variance OR a concentrated edge OR motion makes the
+      // whole frame read as non-flat.
+      float wv = clampf(s->skip_w_var, 0.0f, 1.0f);
+      float we = clampf(s->skip_w_edge, 0.0f, 1.0f);
+      float wm = clampf(s->skip_w_motion, 0.0f, 1.0f);
       float content = 0.0f;
       bool any = false;
       for (int t = 0; t < kNumTiles; t++) {
-        int cnt = raw[t * 4 + 3];
+        int base = t * kSlots;
+        int cnt = raw[base + 4];
         if (cnt <= 0) continue;
         any = true;
         float ne = (float)cnt;
-        float lu = ((float)raw[t * 4 + 1] / kStatsScale) / ne;   // tile mean luma
-        float lq = ((float)raw[t * 4 + 2] / kStatsScale) / ne;   // tile mean luma²
+        float lu = ((float)raw[base + 1] / kStatsScale) / ne;    // tile mean luma
+        float lq = ((float)raw[base + 2] / kStatsScale) / ne;    // tile mean luma²
         float var = lq - lu * lu; if (var < 0.0f) var = 0.0f;
-        float sd = std::sqrt(var);                                // local luma std
-        sd = sd > kVarFloor ? sd - kVarFloor : 0.0f;              // drop quantization noise
-        // Soft edge sum (contrast-squashed) / √tilePixels: a concentrated edge —
-        // even low-contrast gray-on-gray — saturates regardless of the area it covers.
-        float edgeSum = (float)raw[t * 4 + 0] / kStatsScale;
-        float edge = clampf(edgeSum / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f) * edgeBias;
-        float local = sd > edge ? sd : edge;                      // this tile: luma OR edge
-        if (local > content) content = local;                     // max over tiles
+        float sd = std::sqrt(var);
+        sd = sd > kVarFloor ? sd - kVarFloor : 0.0f;             // local luma std (deadzoned)
+        // Soft edge/motion sums (contrast-squashed) / √tilePixels: a concentrated
+        // feature saturates regardless of the area it covers.
+        float edge   = clampf((float)raw[base + 0] / kStatsScale / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f);
+        float motion = clampf((float)raw[base + 3] / kStatsScale / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f);
+        float local = sd * wv;
+        float ew = edge * we;   if (ew > local) local = ew;
+        float mw = motion * wm; if (mw > local) local = mw;
+        if (local > content) content = local;                    // max over tiles
       }
       if (any) { s->content = content; s->skip_gpu_ready = true; }
     }
@@ -795,7 +848,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     }
     else if (state::pathIs(path, plen, "skip_empty"))    { bool v = state::patchFloat(i) != 0.0f; if (v != s->skip_empty) { s->skip_empty = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "skip_thresh"))   s->skip_thresh = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "skip_edge"))     s->skip_edge = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_w_var"))    s->skip_w_var = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_w_edge"))   s->skip_w_edge = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_w_motion")) s->skip_w_motion = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_debug"))    s->skip_debug = state::patchInt(i);
     else if (state::pathIs(path, plen, "skip_recover"))  s->skip_recover = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_rate"))     s->skip_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_autopilot")) s->skip_autopilot = state::patchFloat(i) != 0.0f;
@@ -1083,7 +1139,7 @@ static void bf_build_params(State* s, float sx, float sy, float t, Uniforms& u) 
   if (!s->skip_empty) {
     s->content = 1.0f;
   } else if (!s->skip_gpu_ready) {
-    s->content = bf_content(P, on2, s->skip_edge);
+    s->content = bf_content(P, on2, s->skip_w_edge);
   }
   // else: GPU-driven (s->content set in tick from the readback) — leave it.
 }
@@ -1119,9 +1175,26 @@ void render(void* self, int vp_w, int vp_h) {
     ep.setBuffer(s->uniform_buf, 0);
     ep.setTexture(out, 1, 0);            // access 0 = Read
     ep.setBuffer(s->stats_buf, 2);
+    ep.setBuffer(s->prev_luma_buf, 3);
     ep.dispatch((kSampleGrid + 7) / 8, (kSampleGrid + 7) / 8);   // fixed grid, not per-pixel
     ep.end();
     s->stats_buf.requestReadback(kStatsInts * sizeof(int32_t));
+
+    // Debug: overwrite tex_out with a per-tile heatmap of the selected feature.
+    // Reads the stats the edge pass just wrote (same submit) → no tex_out hazard.
+    if (s->skip_debug != 0) {
+      DebugUniforms du = {};
+      du.res_x = (float)vp_w; du.res_y = (float)vp_h; du.mode = (float)s->skip_debug;
+      du.w_var = s->skip_w_var; du.w_edge = s->skip_w_edge; du.w_motion = s->skip_w_motion;
+      s->debug_uniform_buf.writeOne(du);
+      auto dp = gpu::ComputePass::begin();
+      dp.setPSO(s_pso_debug);
+      dp.setBuffer(s->debug_uniform_buf, 0);
+      dp.setBuffer(s->stats_buf, 1);
+      dp.setTexture(out, 2, 1);          // access 1 = Write
+      dp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      dp.end();
+    }
   }
 
   gpu::Device::submit();

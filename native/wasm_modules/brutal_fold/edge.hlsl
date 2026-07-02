@@ -15,13 +15,18 @@
 #include "common.hlsl"   // cbuffer U (res_x/res_y) + nano_luminance
 
 Texture2D<float4>    tex_out : register(t1);
-// Per-TILE stats: a kTileGrid×kTileGrid grid, 4 ints each
-// [edge_count, luma_sum, luma2_sum, pixel_count]. The CPU forms each tile's local
-// variance + edge density and takes the MAX over tiles, so any single structured
-// region (an edge OR luma variance anywhere) reads as non-flat — a global stat
-// would dilute a small busy area away.
-RWStructuredBuffer<int> stats : register(u2);
+// Per-TILE stats: a kTileGrid×kTileGrid grid, kSlots ints each
+// [edge_sum, luma_sum, luma2_sum, motion_sum, pixel_count]. The CPU forms each
+// tile's local variance + edge + motion and takes the weighted MAX over tiles, so
+// any single structured region reads as non-flat — a global stat would dilute a
+// small busy area away.
+RWStructuredBuffer<int>   stats     : register(u2);
+// Persistent previous-frame luma at each sample point (motion = |L - prevL|). Sized
+// to the fixed sample grid, so it never reallocs on viewport resize. Sentinel <0 on
+// the first frame → motion 0 (no spurious spike). Each thread owns one slot (no race).
+RWStructuredBuffer<float> prevLuma  : register(u3);
 
+static const int   kSlots       = 5;            // ints per tile (must match main.cpp)
 static const int   kTileGrid    = 16;           // must match main.cpp kTileGrid
 // Sample on a fixed grid, NOT per output pixel: bounded, resolution-independent
 // work (256² threads regardless of viewport) + far less atomic contention. Each
@@ -70,13 +75,21 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);  // contrast-squashed
   float L = l11;
 
-  // Route this sample into its tile's 4 slots (tile from the SAMPLE grid).
+  // Motion = temporal frame difference at this sample, same contrast-squash as edges.
+  int sidx = (int)gid.y * kSampleGrid + (int)gid.x;
+  float pl = prevLuma[sidx];
+  float m = (pl < 0.0) ? 0.0 : abs(L - pl);
+  float me = pow(saturate((m - kEdgeFloor) / kEdgeSpan), kEdgeGamma);
+  prevLuma[sidx] = L;
+
+  // Route this sample into its tile's slots (tile from the SAMPLE grid).
   int2 tile = clamp(int2(gid.xy) * kTileGrid / kSampleGrid, int2(0, 0), int2(kTileGrid - 1, kTileGrid - 1));
-  int ti = (tile.y * kTileGrid + tile.x) * 4;
+  int ti = (tile.y * kTileGrid + tile.x) * kSlots;
 
   int prev;   // round (not truncate) to halve quantization error
   InterlockedAdd(stats[ti + 0], (int)(e * kStatsScale + 0.5),     prev);  // soft edge sum
   InterlockedAdd(stats[ti + 1], (int)(L * kStatsScale + 0.5),     prev);
   InterlockedAdd(stats[ti + 2], (int)(L * L * kStatsScale + 0.5), prev);
-  InterlockedAdd(stats[ti + 3], 1,                                prev);
+  InterlockedAdd(stats[ti + 3], (int)(me * kStatsScale + 0.5),    prev);  // soft motion sum
+  InterlockedAdd(stats[ti + 4], 1,                                prev);
 }
