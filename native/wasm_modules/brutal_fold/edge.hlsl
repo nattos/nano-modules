@@ -29,7 +29,12 @@ static const int   kTileGrid    = 16;           // must match main.cpp kTileGrid
 // is res/256 (~4-8px), so region/shelf edges are still captured; raise if features
 // thinner than that get missed at high res.
 static const int   kSampleGrid  = 256;          // must match main.cpp kSampleGrid
-static const float kStatsScale = 128.0;
+// Fixed-point scale for the atomic sums. Must be LARGE: the variance is
+// E[L²]−E[L]², and quantizing luma_sum and luma²_sum independently leaves a
+// residual ~1/scale that shows up as spurious variance on a UNIFORM frame (at
+// scale 128 that was ~0.03 std — enough to hide flat frames from the detector).
+// 65536 drops it to <0.005; per-tile sums (≤256 samples) stay far under int32.
+static const float kStatsScale = 65536.0;
 static const float kSobelNorm  = 5.65685425;    // sqrt(32): max Sobel |grad| for luma in [0,1]
 // Per-pixel edge weight is a CONTRAST-SQUASHED soft measure, not a binary count.
 //   floor — deadzone: gradients below this (noise, AA fuzz, smooth shading/fog
@@ -69,9 +74,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int2 tile = clamp(int2(gid.xy) * kTileGrid / kSampleGrid, int2(0, 0), int2(kTileGrid - 1, kTileGrid - 1));
   int ti = (tile.y * kTileGrid + tile.x) * 4;
 
-  int prev;
-  InterlockedAdd(stats[ti + 0], (int)(e * kStatsScale),     prev);  // soft edge sum
-  InterlockedAdd(stats[ti + 1], (int)(L * kStatsScale),     prev);
-  InterlockedAdd(stats[ti + 2], (int)(L * L * kStatsScale), prev);
-  InterlockedAdd(stats[ti + 3], 1,                          prev);
+  int prev;   // round (not truncate) to halve quantization error
+  InterlockedAdd(stats[ti + 0], (int)(e * kStatsScale + 0.5),     prev);  // soft edge sum
+  InterlockedAdd(stats[ti + 1], (int)(L * kStatsScale + 0.5),     prev);
+  InterlockedAdd(stats[ti + 2], (int)(L * L * kStatsScale + 0.5), prev);
+  InterlockedAdd(stats[ti + 3], 1,                                prev);
 }

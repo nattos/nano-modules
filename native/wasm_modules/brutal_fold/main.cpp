@@ -135,8 +135,11 @@ static constexpr int   kTileGrid     = 16;      // must match edge.hlsl kTileGri
 static constexpr int   kSampleGrid   = 256;     // must match edge.hlsl; fixed sampling grid
 static constexpr int   kNumTiles     = kTileGrid * kTileGrid;
 static constexpr int   kStatsInts    = kNumTiles * 4;  // [edge_sum,luma,luma²,count] per tile
-static constexpr float kStatsScale   = 128.0f;  // must match edge.hlsl kStatsScale (luma sums)
+static constexpr float kStatsScale   = 65536.0f; // must match edge.hlsl kStatsScale
 static constexpr float kEdgeNormGain = 2.0f;    // higher = more edge-sensitive per tile
+// Deadzone on local luma std to absorb residual fixed-point quantization noise
+// (~0.005 at kStatsScale 65536) so a truly uniform frame reads as flat variance.
+static constexpr float kVarFloor     = 0.008f;
 
 // Autopilot epicycle constants (verbatim from the shape_fold autopilot). Two
 // summed circular motions, 90° out of phase, incommensurate rates → sweeps the
@@ -604,6 +607,7 @@ void tick(void* self, double dt) {
         float lq = ((float)raw[t * 4 + 2] / kStatsScale) / ne;   // tile mean luma²
         float var = lq - lu * lu; if (var < 0.0f) var = 0.0f;
         float sd = std::sqrt(var);                                // local luma std
+        sd = sd > kVarFloor ? sd - kVarFloor : 0.0f;              // drop quantization noise
         // Soft edge sum (contrast-squashed) / √tilePixels: a concentrated edge —
         // even low-contrast gray-on-gray — saturates regardless of the area it covers.
         float edgeSum = (float)raw[t * 4 + 0] / kStatsScale;
