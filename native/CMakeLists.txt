@@ -720,6 +720,8 @@ if(APPLE)
     src/sketch/wasm_executor_driver.cpp
     src/sketch/wasm_bundles.cpp
     src/sketch/text_host_wasm.cpp
+    src/sketch/comp/comp_executor.cpp
+    src/sketch/comp/comp_api.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sketch_executor PUBLIC
@@ -794,6 +796,18 @@ if(APPLE)
 
   # End-to-end GPU render of a WASM effect on a real Metal backend.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    # Composition executor end-to-end GPU render (Metal-gated): pixel parity
+    # vs a plain executor, param-op plan reuse, automation drive, live
+    # published-output fold.
+    add_executable(test_comp_render tests/test_comp_render.cpp)
+    target_link_libraries(test_comp_render PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_comp_render PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    catch_discover_tests(test_comp_render)
+
     add_executable(test_effect_render tests/test_effect_render.cpp)
     target_link_libraries(test_effect_render PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend

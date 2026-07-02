@@ -28,6 +28,7 @@ namespace {
 EffectRuntime* g_rt = nullptr;
 std::vector<EffectInstance*> g_byHandle;
 std::unordered_map<EffectInstance*, int32_t> g_handleByInst;
+std::function<std::string(EffectInstance*)> g_publishedStateFn;
 
 EffectInstance* resolve(int32_t h) {
   return (h >= 0 && h < static_cast<int32_t>(g_byHandle.size())) ? g_byHandle[h]
@@ -42,6 +43,12 @@ void effrtSetRuntime(EffectRuntime* rt) {
   g_rt = rt;
   g_byHandle.clear();
   g_handleByInst.clear();
+}
+
+// See effrt.h — backs effrt_published_state_json (the barrel wires its state
+// document here; tests can synthesize values). Default: none → 0/absent.
+void effrtSetPublishedStateProvider(std::function<std::string(EffectInstance*)> fn) {
+  g_publishedStateFn = std::move(fn);
 }
 }  // namespace sketch_executor
 
@@ -101,6 +108,18 @@ void effrt_set_field_connected(int32_t inst, const char* path, int32_t path_len,
 void effrt_set_will_render(int32_t inst, int32_t v) {
   if (auto* i = resolve(inst)) i->setWillRender(v != 0);
 }
+int32_t effrt_published_state_json(int32_t inst, char* out, int32_t cap) {
+  auto* i = resolve(inst);
+  if (!i || !g_publishedStateFn) return 0;
+  const std::string s = g_publishedStateFn(i);
+  const int32_t len = static_cast<int32_t>(s.size());
+  if (out && cap > 0 && len > 0) {
+    const int32_t copy = len < cap ? len : cap;
+    std::memcpy(out, s.data(), static_cast<size_t>(copy));
+  }
+  return len;
+}
+
 void effrt_tick(int32_t inst, double dt) {
   if (auto* i = resolve(inst)) i->doTick(dt);
 }

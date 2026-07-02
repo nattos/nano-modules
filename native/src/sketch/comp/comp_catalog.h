@@ -88,6 +88,27 @@ class Catalog {
     if (f->contains("max") && (*f)["max"].is_number()) mx = (*f)["max"].get<double>();
   }
 
+  /**
+   * PURE-OUTPUT scalar fields (io&2 set, io&1 clear; not object/array/texture)
+   * — the producer outputs the executor's write-taps read from instance state,
+   * which the comp executor mirrors from the live plugin state each frame.
+   * Mirrors executor-host.ts's producer-output filter exactly.
+   */
+  std::vector<std::string> publishedOutFields(const std::string& moduleType) const {
+    std::vector<std::string> out;
+    auto it = byType_.find(moduleType);
+    if (it == byType_.end()) return out;
+    for (auto& [key, def] : it->second.schema.items()) {
+      if (!def.is_object()) continue;
+      const int io = def.contains("io") && def["io"].is_number() ? def["io"].get<int>() : 0;
+      if (!((io & 2) && !(io & 1))) continue;
+      const std::string type = def.value("type", std::string());
+      if (type == "object" || type == "array" || type == "texture") continue;
+      out.push_back(key);
+    }
+    return out;
+  }
+
  private:
   static bool isFloatWithIo(const nlohmann::json& def, int bit) {
     if (!def.is_object()) return false;

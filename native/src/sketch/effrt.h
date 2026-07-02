@@ -64,6 +64,15 @@ void effrt_set_field_connected(int32_t inst, const char* path, int32_t path_len,
 EFFRT_IMPORT("set_will_render")
 void effrt_set_will_render(int32_t inst, int32_t v);
 
+// Serialize the instance's LIVE plugin state (the values state::set_val
+// published during its last tick) as JSON into out[0..cap). Returns the FULL
+// length (caller grows + retries when > cap); 0 when unavailable. The
+// composition executor folds PURE-OUTPUT scalars from this into its cached
+// sketch each frame — the in-module twin of the web host's producer-output
+// mirror (executor-host.ts step 3) / the barrel's state-doc-backed sketch.
+EFFRT_IMPORT("published_state_json")
+int32_t effrt_published_state_json(int32_t inst, char* out, int32_t cap);
+
 // --- Lifecycle drive ---
 EFFRT_IMPORT("tick")       void effrt_tick(int32_t inst, double dt);
 EFFRT_IMPORT("render")     void effrt_render(int32_t inst, int32_t w, int32_t h);
@@ -97,3 +106,19 @@ int32_t effrt_build_fused_source(const int32_t* insts, int32_t count,
                                  char* out, int32_t cap);
 
 }  // extern "C"
+
+#if !defined(__wasm__)
+#include <functional>
+#include <string>
+namespace effect_runtime { class EffectInstance; }
+namespace sketch_executor {
+/**
+ * Native provider backing effrt_published_state_json (default: none → 0/absent).
+ * The host wires this to wherever its published scalars live (the barrel's
+ * state document; a test can synthesize values). Returns the instance's plugin
+ * state as a JSON object string, or empty for "nothing published".
+ */
+void effrtSetPublishedStateProvider(
+    std::function<std::string(effect_runtime::EffectInstance*)> fn);
+}  // namespace sketch_executor
+#endif

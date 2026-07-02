@@ -40,6 +40,8 @@ SOURCES=(
   "$SRC_DIR/sketch/sketch_executor.cpp"
   "$SRC_DIR/sketch/sketch_augment.cpp"
   "$SRC_DIR/sketch/executor_api.cpp"
+  "$SRC_DIR/sketch/comp/comp_executor.cpp"
+  "$SRC_DIR/sketch/comp/comp_api.cpp"
 )
 
 echo "Building $MODULE_NAME.wasm..."

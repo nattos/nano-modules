@@ -670,6 +670,15 @@ export class WasmSketchExecutor {
       set_will_render: (h: number, v: number) => {
         const i = this.resolve(h); if (i) i.host.willRender = v !== 0;
       },
+      // The instance's LIVE plugin state (state::set_val publishes) as JSON —
+      // the composition executor folds PURE-OUTPUT scalars from this into its
+      // cached sketch each frame (the in-module twin of step 3 below).
+      published_state_json: (h: number, out: number, cap: number): number => {
+        const i = this.resolve(h);
+        const ps = i?.host.pluginState;
+        if (!ps || typeof ps !== 'object') return 0;
+        return this.writeStringInto(out, cap, JSON.stringify(ps));
+      },
       tick: (h: number, dt: number) => {
         const i = this.resolve(h); if (i) i.module.tick(dt);
       },

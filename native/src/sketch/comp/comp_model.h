@@ -149,6 +149,7 @@ struct EnvPointM {
 
 /** Track- or clip-level automation of one field (composition.ts AutomationLane). */
 struct LaneM {
+  std::string id;
   std::string targetDeviceId;
   std::string targetField;
   std::vector<EnvPointM> points;
@@ -190,6 +191,11 @@ struct ClipM {
   std::optional<int> blendMode;
   /** clip.source?.url presence (the video/media path). */
   bool hasSourceUrl = false;
+  /** Raw clip.source object (url/sourceKey/durationFrames/fps/scaleMode/
+   *  transform...) — consumed by the video-desc build (videoDescFor twin). */
+  nlohmann::json sourceJson;
+  /** Raw clip.loop object — shipped verbatim on VideoClipDesc.loop. */
+  nlohmann::json loopJson;
   SketchSpecM sketch;
   std::vector<LaneM> automation;
   std::vector<RailExportM> exports;
@@ -285,6 +291,7 @@ inline std::vector<LaneM> parseLanes(const nlohmann::json& arr) {
   for (const auto& l : arr) {
     if (!l.is_object()) continue;
     LaneM lane;
+    lane.id = l.value("id", std::string());
     lane.targetDeviceId = l.value("targetDeviceId", std::string());
     lane.targetField = l.value("targetField", std::string());
     lane.points = parsePoints(l.contains("points") ? l["points"] : nlohmann::json());
@@ -311,9 +318,11 @@ inline ClipM parseClip(const nlohmann::json& j) {
     c.blendMode = j["blendMode"].get<int>();
   if (j.contains("source") && j["source"].is_object()) {
     const auto& src = j["source"];
+    c.sourceJson = src;
     c.hasSourceUrl = src.contains("url") && src["url"].is_string() &&
                      !src["url"].get<std::string>().empty();
   }
+  if (j.contains("loop") && j["loop"].is_object()) c.loopJson = j["loop"];
   c.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());
   c.automation = parseLanes(j.contains("automation") ? j["automation"] : nlohmann::json());
   if (j.contains("exports") && j["exports"].is_array()) {
