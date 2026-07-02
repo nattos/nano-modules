@@ -1145,7 +1145,17 @@ export class WasmHost {
           },
         };
       })(),
-      gpu: {
+      // On a SCHEMA-ONLY host (no gpuHost — the bundle warm-up describes) the
+      // WHOLE gpu import module is Proxy-wrapped so ANY name resolves: a
+      // hand-kept stub list silently rotted when the gpu ABI grew
+      // (create_instanced_render_pso_blend_layout), LinkError'ing three
+      // bundles out of discovery — no schemas, no generator roles, no palette
+      // entries, no thumbnails. The fallback is a no-op returning -1; spreads
+      // can't carry a Proxy's get trap, hence the wrap at this outer level.
+      gpu: ((gpuImports: WebAssembly.ModuleImports) =>
+        this.gpuHost
+          ? gpuImports
+          : new Proxy(gpuImports, { get: (t, name: string) => (name in t ? (t as any)[name] : () => -1) }))({
         ...(this.gpuHost
           ? {
               ...this.gpuHost.buildImports(
@@ -1173,7 +1183,9 @@ export class WasmHost {
               },
             }
           : {
-              // Stubs if no GPU host
+              // Stubs if no GPU host (see the Proxy wrap on the whole `gpu`
+              // object below — this explicit list only keeps tuned return
+              // values; unknown names fall through to the () => -1 fallback).
               get_backend: () => -1,
               create_shader_module_named: () => -1,
               create_buffer: () => -1,
@@ -1227,7 +1239,7 @@ export class WasmHost {
           const path = this.readString(pathPtr, pathLen);
           return this.gpuBufferFields.get(path) ?? 0;
         },
-      },
+      }),
       // text — host text shaping/rendering service. Delegates to the shared
       // TextEngine (one text_engine.wasm + the WebGPU MSDF compositor). Must be
       // initialized (TextEngine.init) before any effect that uses text renders.
