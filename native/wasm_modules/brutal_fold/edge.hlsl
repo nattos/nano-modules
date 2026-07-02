@@ -22,7 +22,13 @@ Texture2D<float4>    tex_out : register(t1);
 // would dilute a small busy area away.
 RWStructuredBuffer<int> stats : register(u2);
 
-static const int   kTileGrid   = 16;            // must match main.cpp kTileGrid
+static const int   kTileGrid    = 16;           // must match main.cpp kTileGrid
+// Sample on a fixed grid, NOT per output pixel: bounded, resolution-independent
+// work (256² threads regardless of viewport) + far less atomic contention. Each
+// 16×16 tile gets 16×16 = 256 samples, plenty for per-tile stats. Sample spacing
+// is res/256 (~4-8px), so region/shelf edges are still captured; raise if features
+// thinner than that get missed at high res.
+static const int   kSampleGrid  = 256;          // must match main.cpp kSampleGrid
 static const float kStatsScale = 128.0;
 static const float kSobelNorm  = 5.65685425;    // sqrt(32): max Sobel |grad| for luma in [0,1]
 // Per-pixel edge weight is a CONTRAST-SQUASHED soft measure, not a binary count.
@@ -42,13 +48,16 @@ float lumAt(int2 p, int2 res) {
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
+  if ((int)gid.x >= kSampleGrid || (int)gid.y >= kSampleGrid) return;
   int2 res = int2((int)res_x, (int)res_y);
-  if ((int)gid.x >= res.x || (int)gid.y >= res.y) return;
-  int2 p = int2(gid.xy);
+  // Map this sample to a pixel centre; the Sobel reads its 3x3 neighbourhood spaced
+  // `cell` pixels apart (a coarse full-frame Sobel at the sampling resolution).
+  int2 cell = max(res / kSampleGrid, int2(1, 1));
+  int2 p = clamp(int2(gid.xy) * res / kSampleGrid + cell / 2, int2(0, 0), res - 1);
 
-  float l00 = lumAt(p + int2(-1, -1), res), l10 = lumAt(p + int2(0, -1), res), l20 = lumAt(p + int2(1, -1), res);
-  float l01 = lumAt(p + int2(-1,  0), res), l11 = lumAt(p,                res), l21 = lumAt(p + int2(1,  0), res);
-  float l02 = lumAt(p + int2(-1,  1), res), l12 = lumAt(p + int2(0,  1), res), l22 = lumAt(p + int2(1,  1), res);
+  float l00 = lumAt(p + int2(-cell.x, -cell.y), res), l10 = lumAt(p + int2(0, -cell.y), res), l20 = lumAt(p + int2(cell.x, -cell.y), res);
+  float l01 = lumAt(p + int2(-cell.x,  0), res),      l11 = lumAt(p,                       res), l21 = lumAt(p + int2(cell.x,  0), res);
+  float l02 = lumAt(p + int2(-cell.x, cell.y), res),  l12 = lumAt(p + int2(0, cell.y), res),   l22 = lumAt(p + int2(cell.x, cell.y), res);
 
   float gx = (l20 + 2.0 * l21 + l22) - (l00 + 2.0 * l01 + l02);
   float gy = (l02 + 2.0 * l12 + l22) - (l00 + 2.0 * l10 + l20);
@@ -56,8 +65,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);  // contrast-squashed
   float L = l11;
 
-  // Route this pixel into its tile's 4 slots.
-  int2 tile = clamp(p * kTileGrid / res, int2(0, 0), int2(kTileGrid - 1, kTileGrid - 1));
+  // Route this sample into its tile's 4 slots (tile from the SAMPLE grid).
+  int2 tile = clamp(int2(gid.xy) * kTileGrid / kSampleGrid, int2(0, 0), int2(kTileGrid - 1, kTileGrid - 1));
   int ti = (tile.y * kTileGrid + tile.x) * 4;
 
   int prev;

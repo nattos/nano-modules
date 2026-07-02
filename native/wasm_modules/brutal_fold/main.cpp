@@ -132,6 +132,7 @@ static constexpr float kSkipStdSpan    = 0.12f;
 // — reads as non-flat. edge_count per tile is normalized by the tile's LINEAR
 // dimension (√pixels) so a concentrated edge saturates regardless of its area.
 static constexpr int   kTileGrid     = 16;      // must match edge.hlsl kTileGrid
+static constexpr int   kSampleGrid   = 256;     // must match edge.hlsl; fixed sampling grid
 static constexpr int   kNumTiles     = kTileGrid * kTileGrid;
 static constexpr int   kStatsInts    = kNumTiles * 4;  // [edge_sum,luma,luma²,count] per tile
 static constexpr float kStatsScale   = 128.0f;  // must match edge.hlsl kStatsScale (luma sums)
@@ -1102,7 +1103,7 @@ void render(void* self, int vp_w, int vp_h) {
     ep.setBuffer(s->uniform_buf, 0);
     ep.setTexture(out, 1, 0);            // access 0 = Read
     ep.setBuffer(s->stats_buf, 2);
-    ep.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    ep.dispatch((kSampleGrid + 7) / 8, (kSampleGrid + 7) / 8);   // fixed grid, not per-pixel
     ep.end();
     s->stats_buf.requestReadback(kStatsInts * sizeof(int32_t));
   }
