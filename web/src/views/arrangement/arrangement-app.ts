@@ -426,6 +426,10 @@ export class ArrangementApp extends MobxLitElement {
         ? (store.transportMode === 'precise' ? 'stalled' : 'streaming')
         : 'idle',
     );
+    // Comp-mode upkeep on an unconditional rAF: readiness edges for the native
+    // Precise gate must flow even while the playhead is frozen by a hold (the
+    // monitor's reactive showComposite doesn't fire then).
+    engineBridge.compTick();
     // Drive the engine's effect clock from the transport: effects animate in
     // lock-step with the playhead (and hold still when it's paused), instead of
     // free-running on wall time. Deduped inside the bridge.

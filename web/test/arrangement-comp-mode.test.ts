@@ -153,4 +153,43 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     const p3 = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
     expect(p3).toBeCloseTo(41, 5);
   });
+
+  it('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
+    // Regression: readiness edges for the native gate must flow on an
+    // UNCONDITIONAL cadence. They used to ride the monitor's reactive
+    // showComposite — which never fires while a hold freezes the beat — so
+    // video playback deadlocked (only the 2.5s force-bypass leaked frames).
+    await page.goto(`${URL}?compMode=1`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(() => (window as any).__engineBridge?.isBooted
+      || !!(window as any).__engineBridge, { timeout: 20_000 });
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
+      { timeout: 30_000 },
+    );
+
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const trackId = store.addTrack();
+      const path = store.addVideoClip(trackId, 0, {
+        sourceKey: 'test_h264', url: '/media/test_h264.mp4',
+        frameCount: 55, fps: 30, width: 1280, height: 720, label: 'h264',
+      }, 8);
+      if (!path) throw new Error('addVideoClip failed');
+      store.setTransportMode('precise');
+      store.setPosition(1);
+    });
+    await new Promise((r) => setTimeout(r, 2000)); // pump open + precache
+    await page.evaluate(() => { (window as any).arrangementStore.playing = true; });
+
+    // 3s of playback at 120 BPM ≈ 6 beats. The old deadlock advanced ~1 frame
+    // per 2.5s; require real progress with generous slack for CI decode jitter.
+    await new Promise((r) => setTimeout(r, 3000));
+    const beat = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    expect(beat).toBeGreaterThan(4);
+  });
 });

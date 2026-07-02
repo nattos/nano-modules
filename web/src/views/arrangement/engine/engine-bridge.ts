@@ -79,6 +79,11 @@ export class EngineBridge {
   private seekQuietUntil = 0;
   /** The worker-reported decode-pump active set (comp mode owns the union). */
   private compPumpDescs: VideoClipDesc[] | null = null;
+  /** Latest comp-executor frame report (comp mode; diagnostic/tests). */
+  lastCompInfo: CompFrameInfo | null = null;
+  /** The last warm (active + lookahead) desc set — the readiness scan's clip
+   *  list, retained so pushes can run OUTSIDE the reactive showComposite path. */
+  private lastWarmDescs: VideoClipDesc[] = [];
   /** Current engine render size (composition aspect, capped). */
   private renderW = 640;
   private renderH = 360;
@@ -278,6 +283,7 @@ export class EngineBridge {
    *  bookkeeping the plain path derives locally, plus the playhead mirror-back
    *  (the comp transport owns the beat while playing). */
   private handleCompInfo(info: CompFrameInfo) {
+    this.lastCompInfo = info;
     this.hasContent = info.hasContent;
     if (info.chainKeys) {
       this.compositeKeys = info.chainKeys;
@@ -335,6 +341,13 @@ export class EngineBridge {
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
     if (this.engine) this.engine.setInstanceTexture(instanceKey, bitmap);
     else bitmap?.close();
+    // A video frame just landed — the native Precise gate may now have all its
+    // inputs: push the readiness edge immediately (the comp-mode twin of the
+    // pendingPrecise re-check below).
+    if (this.compMode) {
+      this.pushCompVideoReadiness();
+      return;
+    }
     // A video frame just landed — a held "Precise" composite may now have all
     // its inputs. Re-evaluate (showComposite re-holds if others are still out).
     if (this.pendingPrecise && this.videoInputsReady()) {
@@ -620,11 +633,31 @@ export class EngineBridge {
       this.seekQuietUntil = performance.now() + 150;
     }
 
-    // Edge-triggered per-clip readiness for the native Precise gate. The pump
-    // computes readiness against the store playhead exactly like the TS gate.
+    // Edge-triggered per-clip readiness for the native Precise gate.
+    this.lastWarmDescs = warmDescs;
+    this.pushCompVideoReadiness();
+
+    // The worker's pump set (target ∪ displayed while holding) wins; fall back
+    // to the local warm set until the first report lands.
+    this.reconcilePump(this.compPumpDescs ?? warmDescs);
+    this.displayedVideoDescs = videoDescs;
+  }
+
+  /**
+   * Scan the warm clips' frame readiness and push CHANGES to the native Precise
+   * gate. MUST run on an unconditional cadence, not just from showComposite:
+   * the monitor's showComposite is a MobX reaction, and while the native gate
+   * HOLDS the beat is frozen — nothing observable changes, the reaction never
+   * fires, and a ready=true edge would never be sent (a hold deadlock the 2.5s
+   * force-bypass only papers over one frame at a time). Called from the app's
+   * rAF tick (compTick) and synchronously on every frame injection.
+   */
+  private pushCompVideoReadiness() {
+    const e = this.engine;
+    if (!e) return;
     const bpm = store.composition.meta.baseBPM;
     const liveIds = new Set<string>();
-    for (const d of warmDescs) {
+    for (const d of this.lastWarmDescs) {
       liveIds.add(d.clipId);
       const ready = !!this.video?.clipReady(d.clipId, store.positionBeat, bpm);
       if (this.sentVideoReady.get(d.clipId) !== ready) {
@@ -640,11 +673,14 @@ export class EngineBridge {
         this.sentVideoReady.delete(id);
       }
     }
+  }
 
-    // The worker's pump set (target ∪ displayed while holding) wins; fall back
-    // to the local warm set until the first report lands.
-    this.reconcilePump(this.compPumpDescs ?? warmDescs);
-    this.displayedVideoDescs = videoDescs;
+  /** Comp-mode per-rAF upkeep, called from the app's transport ticker (an
+   *  unconditional rAF — deliberately NOT a MobX reaction; see
+   *  pushCompVideoReadiness). No-op outside comp mode. */
+  compTick() {
+    if (!this.compMode || !this.engine) return;
+    this.pushCompVideoReadiness();
   }
 
   /** Reconcile the video decode pump with `descs` (active target + lookahead). */
