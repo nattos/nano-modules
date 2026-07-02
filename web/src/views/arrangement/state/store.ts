@@ -551,6 +551,11 @@ export class ArrangementStore {
    *  per-editor) `buildBeatGrid` warp-curve cache so it rebuilds the expensive warp
    *  curve only after an EDIT, not on every scroll/zoom/playhead frame. */
   warpEpoch = 0;
+  /** Bumps on EVERY document mutation (incl. param/xform drags) + undo/redo
+   *  + document replacement — the comp-mode bridge re-pushes the document
+   *  mirror when this changes. Distinct from warpEpoch (which deliberately
+   *  skips drag edits). */
+  docRev = 0;
 
   private mutate(
     description: string,
@@ -558,6 +563,7 @@ export class ArrangementStore {
     coalesceKey?: string,
   ) {
     this.history.record(description, recipe, coalesceKey);
+    this.docRev++;
     // Bump the warp/structure epoch (warp-curve cache + the bridge's warp-clock
     // refresh key) — but NOT for continuously-dragged edits that can't change the
     // beat grid or warp timing: effect PARAM values and clip TRANSFORM. Bumping on
@@ -571,10 +577,12 @@ export class ArrangementStore {
   undo() {
     this.applyHistoryWithAutoSelect(() => this.history.undo());
     this.warpEpoch++;
+    this.docRev++;
   }
   redo() {
     this.applyHistoryWithAutoSelect(() => this.history.redo());
     this.warpEpoch++;
+    this.docRev++;
   }
 
   /** Snapshot every clip id + track id across the document. */
@@ -636,6 +644,7 @@ export class ArrangementStore {
       this.currentName = name;
       this.composition = comp;
       this.warpEpoch++; // fresh document → invalidate the warp-curve cache
+      this.docRev++;
       this.ensureMainBus(); // legacy / hand-made files may lack the master track
       this.normalizeTrackOrder(); // heal any non-contiguous group nesting from older files
       // Restore persisted loop markers (omitted on legacy files ⇒ keep defaults).
@@ -891,6 +900,7 @@ export class ArrangementStore {
       this.persistenceEnabled = false;
       this.composition = demo;
       this.warpEpoch++;
+      this.docRev++;
       this.ensureMainBus();
       this.clearSelection();
     });
@@ -927,6 +937,7 @@ export class ArrangementStore {
         this.currentName = null;
         this.composition = emptyComposition();
         this.warpEpoch++;
+        this.docRev++;
         this.persistenceEnabled = false;
         this.clearSelection();
       });

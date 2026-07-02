@@ -53,17 +53,23 @@ CompExecutor* comp_create() {
   CompExecutor* c = new CompExecutor(nullptr, nullptr, nullptr);
 #ifdef __wasm__
   // Route the preview hooks to the "trace" host imports so the composite +
-  // per-device trace capture works exactly like a plain executor slot.
-  c->sketchExecutor()->setChainEntryHook(
+  // per-device trace capture works exactly like a plain executor slot. Set via
+  // the CompExecutor (not the inner executor) so a reset re-wires them.
+  c->setTraceHooks(
       [](int colIdx, int chainIdx, int32_t in, int32_t out, int w, int h) {
         trace_chain_entry(colIdx, chainIdx, in, out, w, h);
-      });
-  c->sketchExecutor()->setSketchOutputHook(
-      [](int32_t handle, int w, int h) { trace_sketch_output(handle, w, h); });
-  c->sketchExecutor()->setBarrierPredicate(
+      },
+      [](int32_t handle, int w, int h) { trace_sketch_output(handle, w, h); },
       [](int colIdx, int chainIdx) -> bool { return trace_is_barrier(colIdx, chainIdx) != 0; });
 #endif
   return c;
+}
+
+// Rebuild the internal executor (see CompExecutor::resetInternalExecutor) —
+// the host's revive guard when a pruned instance re-enters the chain.
+EXEC_EXPORT("comp_reset_executor")
+void comp_reset_executor(CompExecutor* c) {
+  if (c) c->resetInternalExecutor();
 }
 
 EXEC_EXPORT("comp_destroy")

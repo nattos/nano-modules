@@ -72,6 +72,36 @@ interface ExecutorExports {
   executor_set_automation(ex: number, json: number, len: number): void;
   executor_debug_stats(ex: number, out: number): void;
   executor_modulation_json(ex: number, out: number, cap: number): number;
+  // ── Composition executor (comp_api.cpp) ──
+  comp_create(): number;
+  comp_destroy(c: number): void;
+  comp_sketch_executor(c: number): number;
+  comp_register_schema(c: number, mt: number, mtLen: number, fields: number, len: number): void;
+  comp_register_capabilities(c: number, mt: number, mtLen: number, caps: number, len: number): void;
+  comp_load_document(c: number, json: number, len: number): void;
+  comp_doc_epoch(c: number): number;
+  comp_set_device_param(c: number, owner: number, ownerLen: number, dev: number, devLen: number,
+                        field: number, fieldLen: number, value: number, valueLen: number): void;
+  comp_set_track_level(c: number, track: number, trackLen: number, level: number): void;
+  comp_set_lane_points(c: number, owner: number, ownerLen: number, lane: number, laneLen: number,
+                       xyBend: number, nPoints: number): void;
+  comp_set_rail_base(c: number, track: number, trackLen: number, xyBend: number, nPoints: number): void;
+  comp_play(c: number): void;
+  comp_pause(c: number): void;
+  comp_seek_beat(c: number, beat: number): void;
+  comp_set_loop(c: number, enabled: number, startBeat: number, endBeat: number): void;
+  comp_set_transport_mode(c: number, precise: number): void;
+  comp_set_clip_auto_timing(c: number, loopMode: number): void;
+  comp_set_ignore_solo(c: number, on: number): void;
+  comp_position_beat(c: number): number;
+  comp_position_sec(c: number): number;
+  comp_set_video_ready(c: number, clipId: number, len: number, ready: number): void;
+  comp_update(c: number, dtSec: number): number;
+  comp_render(c: number, inTex: number, outTex: number, w: number, h: number, dt: number): number;
+  comp_required_json(c: number, out: number, cap: number): number;
+  comp_chain_keys_json(c: number, out: number, cap: number): number;
+  comp_video_descs_json(c: number, out: number, cap: number): number;
+  comp_reset_executor(c: number): void;
 }
 
 // Per-sketch executor C++ instance: separate intermediate pool / delayed-wire
@@ -318,17 +348,21 @@ export class WasmSketchExecutor {
   // the math is identical to native.
   getModulationData(): Record<string, any> {
     const result: Record<string, any> = {};
-    for (const slot of this.slots.values()) {
+    // The comp executor's internal slot reports alongside the plain ones (its
+    // handle is re-read per call — comp_reset_executor invalidates old ones).
+    const exPtrs = [...this.slots.values()].map((s) => s.exPtr);
+    if (this.compPtr) exPtrs.push(this.exports.comp_sketch_executor(this.compPtr));
+    for (const exPtr of exPtrs) {
       if (this.modScratchCap === 0) {
         this.modScratchCap = 4096;
         this.modScratch = this.exports.malloc(this.modScratchCap);
       }
-      let n = this.exports.executor_modulation_json(slot.exPtr, this.modScratch, this.modScratchCap);
+      let n = this.exports.executor_modulation_json(exPtr, this.modScratch, this.modScratchCap);
       if (n > this.modScratchCap) {
         this.exports.free(this.modScratch);
         this.modScratchCap = n + 256;
         this.modScratch = this.exports.malloc(this.modScratchCap);
-        n = this.exports.executor_modulation_json(slot.exPtr, this.modScratch, this.modScratchCap);
+        n = this.exports.executor_modulation_json(exPtr, this.modScratch, this.modScratchCap);
       }
       if (n <= 2) continue;  // "" or "{}" → nothing modulated in this slot
       try {
@@ -603,6 +637,220 @@ export class WasmSketchExecutor {
     s.dispatchesSaved += a[4];
     s.gpuDispatches += a[5];
     s.identitySkipped += a[6];
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Composition executor (comp mode) — the arrangement compositor running
+  // IN-WASM (comp_* ABI). The worker toggles it on via compEnable and drives
+  // compFrame once per tick; edits/transport arrive as comp* calls. Mirrors
+  // executeAllColumns' async-instance seam: comp_update never touches effrt,
+  // instances are ensured host-side, then comp_render drives synchronously.
+  // ══════════════════════════════════════════════════════════════════════
+
+  private compPtr = 0;
+  private compScratch = 0;
+  private compScratchCap = 0;
+  private compRequired: Array<{ moduleType: string; instanceKey: string }> = [];
+  /** Chain instance keys the comp executor currently needs — the worker's
+   *  pruneInstancesExcept must union these or comp instances churn every frame. */
+  readonly compRequiredKeys = new Set<string>();
+  /** Keys the comp's internal executor has applied state for (revive guard). */
+  private compAppliedKeys = new Set<string>();
+  private compOutTex = 0;
+  private compOutW = 0;
+  private compOutH = 0;
+
+  get compActive(): boolean { return this.compPtr !== 0; }
+
+  private ensureComp(): number {
+    if (!this.compPtr) this.compPtr = this.exports.comp_create();
+    return this.compPtr;
+  }
+
+  /** Marshal a string into wasm memory around `fn` (malloc/copy/free). */
+  private withBytes<T>(s: string, fn: (ptr: number, len: number) => T): T {
+    const bytes = encoder.encode(s);
+    const ptr = this.exports.malloc(bytes.length);
+    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+    try { return fn(ptr, bytes.length); } finally { this.exports.free(ptr); }
+  }
+
+  /** Grow-and-retry readback into the persistent comp scratch buffer. */
+  private compRead(call: (out: number, cap: number) => number): string {
+    if (!this.compScratchCap) {
+      this.compScratchCap = 4096;
+      this.compScratch = this.exports.malloc(this.compScratchCap);
+    }
+    let n = call(this.compScratch, this.compScratchCap);
+    if (n > this.compScratchCap) {
+      this.exports.free(this.compScratch);
+      this.compScratchCap = n + 1024;
+      this.compScratch = this.exports.malloc(this.compScratchCap);
+      n = call(this.compScratch, this.compScratchCap);
+    }
+    return n > 0 ? this.readString(this.compScratch, n) : '';
+  }
+
+  compEnable(): void { this.ensureComp(); }
+
+  /** Seed one module's schema + capabilities into the comp catalog (idempotent
+   *  per type; the worker feeds every discovered plugin). */
+  compRegisterSchema(moduleType: string, fieldsJson: string, capsJson: string): void {
+    const c = this.ensureComp();
+    this.withBytes(moduleType, (mp, ml) =>
+      this.withBytes(fieldsJson, (sp, sl) => this.exports.comp_register_schema(c, mp, ml, sp, sl)));
+    this.withBytes(moduleType, (mp, ml) =>
+      this.withBytes(capsJson, (cp, cl) => this.exports.comp_register_capabilities(c, mp, ml, cp, cl)));
+  }
+
+  compLoadDocument(json: string): void {
+    const c = this.ensureComp();
+    this.withBytes(json, (p, l) => this.exports.comp_load_document(c, p, l));
+  }
+
+  compControl(msg: { op: string; beat?: number; enabled?: boolean; startBeat?: number;
+                     endBeat?: number; precise?: boolean; loopMode?: boolean; on?: boolean;
+                     clipId?: string; ready?: boolean }): void {
+    const c = this.ensureComp();
+    switch (msg.op) {
+      case 'play': this.exports.comp_play(c); break;
+      case 'pause': this.exports.comp_pause(c); break;
+      case 'seek': this.exports.comp_seek_beat(c, msg.beat ?? 0); break;
+      case 'loop':
+        this.exports.comp_set_loop(c, msg.enabled ? 1 : 0, msg.startBeat ?? 0, msg.endBeat ?? 0);
+        break;
+      case 'mode': this.exports.comp_set_transport_mode(c, msg.precise ? 1 : 0); break;
+      case 'clipTiming': this.exports.comp_set_clip_auto_timing(c, msg.loopMode ? 1 : 0); break;
+      case 'ignoreSolo': this.exports.comp_set_ignore_solo(c, msg.on ? 1 : 0); break;
+      case 'videoReady':
+        this.withBytes(msg.clipId ?? '', (p, l) =>
+          this.exports.comp_set_video_ready(c, p, l, msg.ready ? 1 : 0));
+        break;
+    }
+  }
+
+  compOp(msg: { op: string; ownerId?: string; deviceId?: string; field?: string;
+                valueJson?: string; trackId?: string; level?: number; laneId?: string;
+                points?: number[] }): void {
+    const c = this.ensureComp();
+    switch (msg.op) {
+      case 'param':
+        this.withBytes(msg.ownerId ?? '', (op_, ol) =>
+          this.withBytes(msg.deviceId ?? '', (dp, dl) =>
+            this.withBytes(msg.field ?? '', (fp, fl) =>
+              this.withBytes(msg.valueJson ?? 'null', (vp, vl) =>
+                this.exports.comp_set_device_param(c, op_, ol, dp, dl, fp, fl, vp, vl)))));
+        break;
+      case 'trackLevel':
+        this.withBytes(msg.trackId ?? '', (p, l) =>
+          this.exports.comp_set_track_level(c, p, l, msg.level ?? 1));
+        break;
+      case 'lanePoints': {
+        const pts = msg.points ?? [];
+        const ptr = this.exports.malloc(pts.length * 8);
+        new Float64Array(this.memory.buffer, ptr, pts.length).set(pts);
+        this.withBytes(msg.ownerId ?? '', (op_, ol) =>
+          this.withBytes(msg.laneId ?? '', (lp, ll) =>
+            this.exports.comp_set_lane_points(c, op_, ol, lp, ll, ptr, pts.length / 3)));
+        this.exports.free(ptr);
+        break;
+      }
+      case 'railBase': {
+        const pts = msg.points ?? [];
+        const ptr = this.exports.malloc(pts.length * 8);
+        new Float64Array(this.memory.buffer, ptr, pts.length).set(pts);
+        this.withBytes(msg.trackId ?? '', (p, l) =>
+          this.exports.comp_set_rail_base(c, p, l, ptr, pts.length / 3));
+        this.exports.free(ptr);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Drive one comp frame: comp_update (advance/eval/rebuild, no effrt), then
+   * ensure this frame's instances host-side (the SAME pre-await + revive seam
+   * as executeAllColumns), then comp_render. Returns the output handle plus the
+   * per-frame report the worker ships to the main thread.
+   */
+  async compFrame(
+    dt: number, frameState: FrameState, width: number, height: number,
+    onInstancesReady?: () => void,
+  ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
+               holding: boolean; positionBeat: number; positionSec: number;
+               chainKeys?: string[]; videoDescs?: string }> {
+    const c = this.ensureComp();
+    const flags = this.exports.comp_update(c, dt);
+    const structureChanged = !!(flags & 1);
+    const hasContent = !!(flags & 2);
+    const holding = !!(flags & 4);
+    const videoSetChanged = !!(flags & 8);
+
+    let chainKeys: string[] | undefined;
+    if (structureChanged) {
+      const reqJson = this.compRead((o, n) => this.exports.comp_required_json(c, o, n));
+      this.compRequired = reqJson ? JSON.parse(reqJson) : [];
+      this.compRequiredKeys.clear();
+      for (const r of this.compRequired) this.compRequiredKeys.add(r.instanceKey);
+      // Revive guard (the plain path's slot rebuild): a required key whose web
+      // instance is GONE (pruned) but whose state the comp's internal executor
+      // already applied would render with DEFAULT params — rebuild the internal
+      // executor so all state re-applies from scratch.
+      const reviving = this.compRequired.some((r) =>
+        !this.instances.has(r.instanceKey) && !this.inflight.has(r.instanceKey) &&
+        this.compAppliedKeys.has(r.instanceKey));
+      if (reviving) {
+        this.exports.comp_reset_executor(c);
+        this.compAppliedKeys.clear();
+      }
+      for (const r of this.compRequired) this.compAppliedKeys.add(r.instanceKey);
+      const keysJson = this.compRead((o, n) => this.exports.comp_chain_keys_json(c, o, n));
+      chainKeys = keysJson ? JSON.parse(keysJson) : [];
+    }
+
+    // Ensure every chain entry's instance + thread the frame state onto its
+    // host (effrt tick/render read host.frameState) — executeAllColumns step 1.
+    for (const r of this.compRequired) {
+      const inst = await this.ensureInstance(r.moduleType, r.instanceKey);
+      if (!inst) continue;
+      const fs = inst.host.frameState;
+      fs.elapsedTime = frameState.elapsedTime;
+      fs.deltaTime = frameState.deltaTime;
+      fs.barPhase = frameState.barPhase;
+      fs.bpm = frameState.bpm;
+      fs.viewportW = width;
+      fs.viewportH = height;
+    }
+    onInstancesReady?.();
+
+    // Frame-local effrt handle table (repopulated by effrt_instance_for).
+    this.byHandle = [];
+    this.handleByKey.clear();
+
+    if (!this.compOutTex || this.compOutW !== width || this.compOutH !== height) {
+      if (this.compOutTex) this.gpuHost.release(this.compOutTex);
+      this.compOutTex = this.gpuHost.createTexture(width, height, /*RGBA8*/ 1);
+      this.compOutW = width;
+      this.compOutH = height;
+    }
+
+    this.currentSketchId = 'arr-composite';
+    const handle = this.exports.comp_render(
+      c, -1, this.compOutTex, width, height, frameState.execDeltaTime ?? frameState.deltaTime);
+    this.accumulateDebugStats(this.exports.comp_sketch_executor(c));
+
+    const out: { handle: number; hasContent: boolean; structureChanged: boolean;
+                 holding: boolean; positionBeat: number; positionSec: number;
+                 chainKeys?: string[]; videoDescs?: string } = {
+      handle, hasContent, structureChanged, holding,
+      positionBeat: this.exports.comp_position_beat(c),
+      positionSec: this.exports.comp_position_sec(c),
+    };
+    if (chainKeys) out.chainKeys = chainKeys;
+    if (videoSetChanged) {
+      out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
+    }
+    return out;
   }
 
   // ---- effrt host imports (mirror native/src/sketch/effrt_impls.cpp) ----

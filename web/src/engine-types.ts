@@ -210,7 +210,36 @@ export type WorkerCommand =
   // fields effect `moduleType` hides for `state`, via its registered
   // `eval_visibility` evaluator. Answered with a `fieldVisibility` event.
   | { type: 'requestFieldVisibility'; reqId: number; moduleType: string; state: Record<string, unknown> }
-  | { type: 'debugDump' };
+  | { type: 'debugDump' }
+  // ── Composition executor (arrangement comp mode) ──────────────────────────
+  // Toggle comp mode: the worker drives the in-wasm composition executor
+  // (comp_* ABI) each tick instead of a host-pushed 'arr-composite' sketch.
+  | { type: 'compMode'; on: boolean }
+  // Full composition document replace (open/undo/redo/any structural edit).
+  | { type: 'compLoadDoc'; json: string }
+  // Transport + Precise-gate commands.
+  | { type: 'compControl';
+      op: 'play' | 'pause' | 'seek' | 'loop' | 'mode' | 'clipTiming' | 'ignoreSolo' | 'videoReady';
+      beat?: number; enabled?: boolean; startBeat?: number; endBeat?: number;
+      precise?: boolean; loopMode?: boolean; on?: boolean; clipId?: string; ready?: boolean }
+  // Cheap edit ops (drag fast paths — the document mirror patches in place).
+  | { type: 'compOp';
+      op: 'param' | 'trackLevel' | 'lanePoints' | 'railBase';
+      ownerId?: string; deviceId?: string; field?: string; valueJson?: string;
+      trackId?: string; level?: number; laneId?: string; points?: number[] };
+
+/** Per-frame composition-executor report riding the 'frame' event (comp mode). */
+export interface CompFrameInfo {
+  hasContent: boolean;
+  structureChanged: boolean;
+  holding: boolean;
+  positionBeat: number;
+  positionSec: number;
+  /** Ordered chain instance keys — present only when the structure changed. */
+  chainKeys?: string[];
+  /** Decode-pump active set (VideoClipDesc[] JSON) — present when it changed. */
+  videoDescs?: string;
+}
 
 // --- Worker events (worker → main) ---
 
@@ -231,7 +260,7 @@ export type WorkerEvent =
   | { type: 'ready' }
   | { type: 'state'; state: EngineState }
   | { type: 'effectsDiscovered'; effects: EffectInfo[] }
-  | { type: 'frame'; fps: number; gpuTimeMs?: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; modulationDataDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[] }
+  | { type: 'frame'; fps: number; gpuTimeMs?: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; modulationDataDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[]; comp?: CompFrameInfo }
   | { type: 'error'; message: string }
   // Worker → main: a text spec named a styled face the engine doesn't have;
   // asks the main thread to resolve it via Local Font Access and register it

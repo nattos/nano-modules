@@ -53,9 +53,35 @@ CompExecutor::CompExecutor(effect_runtime::EffectRuntime* rt,
                            sketch_executor::ModuleRegistry* registry,
                            gpu::GPUBackend* gpuBackend)
     : rt_(rt),
+      registry_(registry),
+      gpu_(gpuBackend),
       ex_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)) {}
 
 CompExecutor::~CompExecutor() = default;
+
+void CompExecutor::setTraceHooks(sketch_executor::SketchExecutor::ChainEntryHook chainEntry,
+                                 sketch_executor::SketchExecutor::SketchOutputHook output,
+                                 sketch_executor::SketchExecutor::BarrierPredicate barrier) {
+  chainEntryHook_ = std::move(chainEntry);
+  outputHook_ = std::move(output);
+  barrierHook_ = std::move(barrier);
+  ex_->setChainEntryHook(chainEntryHook_);
+  ex_->setSketchOutputHook(outputHook_);
+  ex_->setBarrierPredicate(barrierHook_);
+}
+
+void CompExecutor::resetInternalExecutor() {
+  ex_ = std::make_unique<sketch_executor::SketchExecutor>(rt_, registry_, gpu_);
+  ex_->setChainEntryHook(chainEntryHook_);
+  ex_->setSketchOutputHook(outputHook_);
+  ex_->setBarrierPredicate(barrierHook_);
+  catalog_.forEach([&](const std::string& type, const nlohmann::json& schema,
+                       const std::vector<std::string>& caps) {
+    ex_->registerModuleSchema(type, schema);
+    ex_->registerModuleCapabilities(type, std::vector<std::string>(caps));
+  });
+  dirty_ = true;  // the fresh executor must re-apply every instance's state
+}
 
 void CompExecutor::registerSchema(const std::string& moduleType, const nlohmann::json& fields) {
   catalog_.registerSchema(moduleType, fields);

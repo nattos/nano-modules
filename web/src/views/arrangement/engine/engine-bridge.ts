@@ -16,6 +16,7 @@
  */
 
 import { ArrEngine } from './arr-engine';
+import type { CompFrameInfo } from '../../../engine-types';
 import { debugPerf } from '../state/debug-perf';
 import { clipInstanceKey } from './clip-sketch';
 import { VideoCompositor, type VideoClipDesc } from './video-compositor';
@@ -42,8 +43,32 @@ const COMPOSITE_ID = 'arr-composite';
 /** How far ahead (in beats) to pre-open + pre-decode upcoming video clips. */
 const LOOKAHEAD_BEATS = 8;
 
+/**
+ * Comp mode: the arrangement compositor runs IN-WASM (the comp_* composition
+ * executor) instead of the TS build-and-push path. Opt-in while it soaks:
+ * `?compMode=1` in the URL, or `localStorage['nano.compMode'] = '1'`.
+ * D1 shape: the TS side still steers the beat (a per-frame seek) and keeps the
+ * Precise gate + decode pump; the worker evaluates the timeline, builds the
+ * sketch, and renders — zero per-frame sketch/automation pushes.
+ */
+function detectCompMode(): boolean {
+  try {
+    if (typeof location !== 'undefined' &&
+        new URLSearchParams(location.search).get('compMode') === '1') return true;
+    if (typeof localStorage !== 'undefined' &&
+        localStorage.getItem('nano.compMode') === '1') return true;
+  } catch { /* non-browser env */ }
+  return false;
+}
+
 export class EngineBridge {
   private engine: ArrEngine | null = null;
+  /** In-wasm composition-executor mode (see detectCompMode). */
+  readonly compMode = detectCompMode();
+  /** store.docRev of the last document mirror pushed to the comp executor. */
+  private sentDocRev = -1;
+  private lastSeekSent = Number.NaN;
+  private sentClipTiming: boolean | null = null;
   /** Current engine render size (composition aspect, capped). */
   private renderW = 640;
   private renderH = 360;
@@ -231,8 +256,30 @@ export class EngineBridge {
     // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
     // all effects are reachable — not just those a clip already references.
     void e.warmBundles(EFFECT_BUNDLES);
+    if (this.compMode) {
+      e.onCompInfo = (info) => this.handleCompInfo(info);
+      // D1: the TS side keeps the Precise gate (it steers the seek), so the
+      // native gate runs in 'live' (never holds — readiness is never pushed).
+      void e.compEnable(COMPOSITE_ID).then(() => {
+        e.compControl({ op: 'mode', precise: false });
+      });
+    }
     this.engine = e;
     return e;
+  }
+
+  /** Per-frame comp-executor report (comp mode): hasContent + structure-change
+   *  bookkeeping the plain path derives locally. */
+  private handleCompInfo(info: CompFrameInfo) {
+    this.hasContent = info.hasContent;
+    if (info.chainKeys) {
+      this.compositeKeys = info.chainKeys;
+      this.refreshDeviceTraces();
+      // A structure change recreated the source.video.file instances (their
+      // bound textures dropped) — re-inject the active frames (plain-path twin:
+      // showComposite's !sameStructure branch).
+      this.video?.reinjectActive();
+    }
   }
 
   /** Retain the combined composite frame, tap it, then notify. */
@@ -326,6 +373,7 @@ export class EngineBridge {
    */
   pushAutomation() {
     if (!this.engine) return;
+    if (this.compMode) return; // the comp executor evaluates automation in-wasm
     const entries = automationEntriesAtBeat(store.positionBeat);
     const sig = JSON.stringify(entries);
     if (sig === this.lastAutoSig) return;
@@ -442,6 +490,30 @@ export class EngineBridge {
     }
     this.clearPreciseHold();
 
+    // ── Comp mode: the worker evaluates the timeline + builds + renders. The
+    // TS side only mirrors the document (on docRev change), steers the beat
+    // (D1: per-frame seek), and keeps the decode pump + gate above. hasContent
+    // and the chain keys flow BACK via handleCompInfo.
+    if (this.compMode) {
+      const e = this.ensureEngine();
+      if (store.docRev !== this.sentDocRev) {
+        this.sentDocRev = store.docRev;
+        e.compLoadDoc(JSON.stringify(store.composition));
+      }
+      const timing = store.clipAutoTiming === 'loop';
+      if (timing !== this.sentClipTiming) {
+        this.sentClipTiming = timing;
+        e.compControl({ op: 'clipTiming', loopMode: timing });
+      }
+      if (store.positionBeat !== this.lastSeekSent) {
+        this.lastSeekSent = store.positionBeat;
+        e.compControl({ op: 'seek', beat: store.positionBeat });
+      }
+      this.reconcilePump(warmDescs);
+      this.displayedVideoDescs = videoDescs;
+      return;
+    }
+
     // Fold the active engine layers into ONE composite sketch — rail base-curve
     // values + each clip's absolute start-seconds baked in (warp-aware). Shared
     // VERBATIM with the offline exporter (composite-frame.ts) so they render alike.
@@ -511,6 +583,9 @@ export class EngineBridge {
     this.video = null;
     this.engine?.destroy();
     this.engine = null;
+    this.sentDocRev = -1;
+    this.lastSeekSent = Number.NaN;
+    this.sentClipTiming = null;
     this.onCompositeCb = null;
     this.tap = null;
     this.compositeSig = '';

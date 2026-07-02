@@ -3,7 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
-import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue, DebugStats, DebugConsoleEntry, FontRequest } from './engine-types';
+import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue, DebugStats, DebugConsoleEntry, FontRequest, CompFrameInfo } from './engine-types';
 import type { Sketch } from './sketch-types';
 
 export class EngineProxy {
@@ -30,6 +30,9 @@ export class EngineProxy {
   /// produced any log output.
   onDebugConsoleLog: ((entries: DebugConsoleEntry[]) => void) | null = null;
   onError: ((message: string) => void) | null = null;
+  /// Per-frame composition-executor report (comp mode). Fired BEFORE
+  /// onTracedFrames so hasContent is current when the composite bitmap lands.
+  onCompInfo: ((info: CompFrameInfo) => void) | null = null;
   /// The worker's text engine saw a spec naming a styled face it doesn't have.
   /// The main thread resolves it via Local Font Access and calls registerFont().
   onFontRequest: ((req: FontRequest) => void) | null = null;
@@ -59,6 +62,7 @@ export class EngineProxy {
         case 'frame':
           this.onFps?.(event.fps);
           if (event.gpuTimeMs !== undefined) this.onGpuTime?.(event.gpuTimeMs);
+          if (event.comp) this.onCompInfo?.(event.comp);
           this.onTracedFrames?.(event.tracedFrames);
           this.onSketchStateDiff?.(event.sketchStateDiff);
           this.onPluginStatesDiff?.(event.pluginStatesDiff);
@@ -225,6 +229,16 @@ export class EngineProxy {
 
   setFusionMode(mode: 'auto' | 'force-on' | 'force-off') {
     this.send({ type: 'setFusionMode', mode });
+  }
+
+  // ── Composition executor (arrangement comp mode) ──
+  compMode(on: boolean) { this.send({ type: 'compMode', on }); }
+  compLoadDoc(json: string) { this.send({ type: 'compLoadDoc', json }); }
+  compControl(msg: Omit<Extract<WorkerCommand, { type: 'compControl' }>, 'type'>) {
+    this.send({ type: 'compControl', ...msg });
+  }
+  compOp(msg: Omit<Extract<WorkerCommand, { type: 'compOp' }>, 'type'>) {
+    this.send({ type: 'compOp', ...msg });
   }
 
   /**

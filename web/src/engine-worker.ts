@@ -120,6 +120,38 @@ const moduleRenderTargets = new Map<string, { tex: GPUTexture; handle: number }>
 // Per-sketch output texture handles (from current frame)
 const sketchOutputs = new Map<string, number>();
 
+// ── Composition executor (arrangement comp mode) ──
+// When on, simulateTick drives the in-wasm comp executor each frame (its output
+// lands in sketchOutputs under 'arr-composite', so trace capture is unchanged).
+let compActive = false;
+// How many discovered plugins have been seeded into the comp catalog — the comp
+// executor needs every referenced module's schema BEFORE it evaluates the
+// timeline (role/defaults). Re-checked each tick; new discoveries re-seed.
+let compSeededPlugins = 0;
+// The latest compFrame report, attached to the next 'frame' post.
+let compFrameInfo: import('./engine-types').CompFrameInfo | null = null;
+
+/** Seed the comp catalog from every discovered plugin (schema + capabilities),
+ *  the same source broadcastState wraps into PluginInfo. Cheap when count is
+ *  unchanged. */
+function compSeedSchemas() {
+  if (!executor || !bridgeCore) return;
+  const entries = bridgeCore.getAt('/global')?.plugins as any[] | undefined;
+  if (!entries || entries.length === compSeededPlugins) return;
+  // Dedup by id, LAST entry wins (mirrors broadcastState's HMR rule).
+  const byId = new Map<string, any>();
+  for (const entry of entries) {
+    const id = entry?.metadata?.id ?? entry?.key ?? '';
+    if (id) byId.set(id, entry);
+  }
+  for (const [id, entry] of byId) {
+    const schema = entry.schema ?? {};
+    const caps = WasmHost.capabilitiesById.get(id) ?? [];
+    executor.compRegisterSchema(id, JSON.stringify(schema), JSON.stringify(caps));
+  }
+  compSeededPlugins = entries.length;
+}
+
 // Render loop state
 let running = false;
 let frameInFlight = false;
@@ -350,6 +382,23 @@ async function handleCommand(cmd: WorkerCommand) {
       break;
     case 'setAutomation':
       executor?.setAutomation(cmd.json);
+      break;
+    // ── Composition executor (arrangement comp mode) ──
+    case 'compMode':
+      compActive = !!cmd.on;
+      if (compActive) {
+        executor?.compEnable();
+        compSeededPlugins = 0; // re-seed schemas on the next tick
+      }
+      break;
+    case 'compLoadDoc':
+      executor?.compLoadDocument(cmd.json);
+      break;
+    case 'compControl':
+      executor?.compControl(cmd);
+      break;
+    case 'compOp':
+      executor?.compOp(cmd);
       break;
     case 'setDebugMode':
       debugMode = !!cmd.on;
@@ -833,10 +882,37 @@ async function simulateTick(dt: number, execDt: number = dt) {
       console.error(`[sketch ${sketchId}]`, err);
     }
   }
+  // ── Composition executor (comp mode): drive the in-wasm compositor. Its
+  // output lands under 'arr-composite' so the existing trace capture +
+  // transferToImageBitmap machinery works unchanged.
+  compFrameInfo = null;
+  if (compActive) {
+    compSeedSchemas();
+    try {
+      const r = await exec.compFrame(dt, frameState, w, h, applyInstanceTextures);
+      if (r.hasContent && r.handle >= 0) sketchOutputs.set('arr-composite', r.handle);
+      compFrameInfo = {
+        hasContent: r.hasContent,
+        structureChanged: r.structureChanged,
+        holding: r.holding,
+        positionBeat: r.positionBeat,
+        positionSec: r.positionSec,
+        ...(r.chainKeys ? { chainKeys: r.chainKeys } : {}),
+        ...(r.videoDescs !== undefined ? { videoDescs: r.videoDescs } : {}),
+      };
+    } catch (err) {
+      console.error('[comp]', err);
+    }
+  }
+
   // Free chain instances for entries that left every sketch this frame (bounds
   // WASM memory: the arrangement's combined composite chain churns as clips come
-  // and go / are split — otherwise instances accumulate until OOM).
-  exec.pruneInstancesExcept(sketchInstanceKeys);
+  // and go / are split — otherwise instances accumulate until OOM). The comp
+  // executor's required keys must survive the prune too.
+  const keepKeys = compActive
+    ? new Set([...sketchInstanceKeys, ...exec.compRequiredKeys])
+    : sketchInstanceKeys;
+  exec.pruneInstancesExcept(keepKeys);
 
   // 5. Tick and render remaining real modules not used by any sketch or anchor
   for (const [key, { host, module: mod }] of realModules) {
@@ -1020,7 +1096,7 @@ function captureAndSendFrame() {
   }
 
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, []);
+    post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog, ...(compFrameInfo ? { comp: compFrameInfo } : {}) }, []);
     return;
   }
 
@@ -1040,7 +1116,7 @@ function captureAndSendFrame() {
     }
   }
 
-  post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog }, transfers);
+  post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog, ...(compFrameInfo ? { comp: compFrameInfo } : {}) }, transfers);
 }
 
 // ========================================================================

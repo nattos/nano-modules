@@ -67,8 +67,26 @@ class CompExecutor {
   CompExecutor& operator=(const CompExecutor&) = delete;
 
   /** The internal executor — the host reuses executor_debug_stats /
-   *  executor_modulation_json / executor_set_fusion_enabled against it. */
+   *  executor_modulation_json / executor_set_fusion_enabled against it.
+   *  NOTE: invalidated by resetInternalExecutor(); don't cache across frames. */
   sketch_executor::SketchExecutor* sketchExecutor() { return ex_.get(); }
+
+  /** Editor-preview hooks, retained so a reset re-wires them (comp_api routes
+   *  these to the "trace" host imports on web). */
+  void setTraceHooks(sketch_executor::SketchExecutor::ChainEntryHook chainEntry,
+                     sketch_executor::SketchExecutor::SketchOutputHook output,
+                     sketch_executor::SketchExecutor::BarrierPredicate barrier);
+
+  /**
+   * Rebuild the internal SketchExecutor from scratch (schemas re-seeded from the
+   * catalog, hooks re-wired, next render dirty). The web host calls this when a
+   * previously-applied instance was pruned and re-enters the chain — a fresh web
+   * instance holds DEFAULT params while the old executor's lastAppliedState_
+   * still matches the sketch, so the per-key apply would be skipped (the exact
+   * revive bug the plain path fixes by rebuilding its slot). Document, transport,
+   * and gate state all live HERE, so the reset is render-state-only.
+   */
+  void resetInternalExecutor();
 
   /** Register a module's schema: feeds the role/defaults catalog AND the
    *  internal executor. Must cover every referenced module type before the
@@ -140,6 +158,11 @@ class CompExecutor {
   static nlohmann::json pumpUnion(const nlohmann::json& target, const nlohmann::json& displayed);
 
   effect_runtime::EffectRuntime* rt_;  // native effrt rebind; null in wasm
+  sketch_executor::ModuleRegistry* registry_;  // for internal-executor rebuilds
+  gpu::GPUBackend* gpu_;
+  sketch_executor::SketchExecutor::ChainEntryHook chainEntryHook_;
+  sketch_executor::SketchExecutor::SketchOutputHook outputHook_;
+  sketch_executor::SketchExecutor::BarrierPredicate barrierHook_;
   Catalog catalog_;
   CompositionM doc_;
   bool docLoaded_ = false;

@@ -15,7 +15,7 @@
 
 import { EngineProxy } from '../../../engine-proxy';
 import type { Sketch } from '../../../sketch-types';
-import type { TracePoint, StateDiff, PluginInfo } from '../../../engine-types';
+import type { TracePoint, StateDiff, PluginInfo, CompFrameInfo, WorkerCommand } from '../../../engine-types';
 
 /** One parameter-automation write for a frame: the host's evaluated curve value
  *  for a composite instance's field, plus how it folds in (tap_mod vocab). */
@@ -73,6 +73,8 @@ export class ArrEngine {
   onPluginStatesDiff: ((diff: StateDiff) => void) | null = null;
   /** Full plugin schemas as the worker discovers/warms them (for real editors). */
   onPlugins: ((plugins: PluginInfo[]) => void) | null = null;
+  /** Per-frame composition-executor report (comp mode; fired before frames). */
+  onCompInfo: ((info: CompFrameInfo) => void) | null = null;
   /** Union of effect ids discovered across loaded bundles (diagnostic). */
   readonly discovered = new Set<string>();
   /** Count of create/update sketch calls (diagnostic). */
@@ -98,6 +100,7 @@ export class ArrEngine {
       for (const e of effects) this.discovered.add(e.id);
     };
     this.proxy.onDebugStats = (s) => { this.lastDebugStats = s; };
+    this.proxy.onCompInfo = (info) => this.onCompInfo?.(info);
     this.readyPromise = this.waitReady();
   }
 
@@ -242,6 +245,29 @@ export class ArrEngine {
   async evaluateVisibility(moduleType: string, state: Record<string, unknown>): Promise<string[] | null> {
     await this.readyPromise;
     return this.proxy.requestFieldVisibility(moduleType, state);
+  }
+
+  // ── Composition executor (comp mode) ──────────────────────────────────
+
+  /** Enable comp mode in the worker and register the composite output trace
+   *  (the comp executor publishes under the fixed 'arr-composite' sketch id —
+   *  nobody calls showComposite in comp mode, so the base trace is set here). */
+  async compEnable(compositeId: string) {
+    await this.readyPromise;
+    this.proxy.compMode(true);
+    this.baseTraces = [{ id: compositeId, target: { type: 'sketch_output', sketchId: compositeId } }];
+    this.applyTraces();
+  }
+
+  /** Full composition document replace (open/undo/redo/structural edits). */
+  compLoadDoc(json: string) { this.proxy.compLoadDoc(json); }
+  /** Transport + Precise-gate commands. */
+  compControl(msg: Omit<Extract<WorkerCommand, { type: 'compControl' }>, 'type'>) {
+    this.proxy.compControl(msg);
+  }
+  /** Cheap edit ops (drag fast paths). */
+  compOp(msg: Omit<Extract<WorkerCommand, { type: 'compOp' }>, 'type'>) {
+    this.proxy.compOp(msg);
   }
 
   /** Drop a composite layer's sketch entirely. */

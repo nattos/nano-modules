@@ -109,6 +109,15 @@ class Catalog {
     return out;
   }
 
+  /** Visit every registered (type, schema, capabilities) — the re-seed source
+   *  when the owning executor is rebuilt. */
+  template <typename Fn>
+  void forEach(Fn&& fn) const {
+    for (const auto& [type, e] : byType_) {
+      if (e.registered) fn(type, e.schema, e.caps);
+    }
+  }
+
  private:
   static bool isFloatWithIo(const nlohmann::json& def, int bit) {
     if (!def.is_object()) return false;
