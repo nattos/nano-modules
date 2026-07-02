@@ -127,9 +127,13 @@ static constexpr float kSkipStdSpan    = 0.12f;
 // shader's fixed-point scale. kEdgeGpuGain calibrates the 1px-Sobel edge term to
 // the luminance-std anchor (a 1px gradient is a large multiple of the old CPU
 // 120px-grid one) — tune live against the skip_variance broadcast.
-static constexpr int   kStatsInts   = 4;        // [edge_sum, luma_sum, luma2_sum, count]
-static constexpr float kStatsScale  = 128.0f;   // must match edge.hlsl kStatsScale
-static constexpr float kEdgeGpuGain = 0.15f;    // GPU edge-term weight in the blend
+static constexpr int   kStatsInts    = 4;       // [edge_count, luma_sum, luma2_sum, count]
+static constexpr float kStatsScale   = 128.0f;  // must match edge.hlsl kStatsScale (luma sums)
+// Edge term = edge_pixel_count normalized by a LINEAR dimension (√N), so a
+// concentrated hard edge (a bar boundary) saturates regardless of its area — the
+// fix for "a bar entered but the frame-mean edge barely moved". Higher = more
+// edge-sensitive; a fraction of one full-height edge already reads as non-flat.
+static constexpr float kEdgeNormGain = 2.0f;
 
 // Autopilot epicycle constants (verbatim from the shape_fold autopilot). Two
 // summed circular motions, 90° out of phase, incommensurate rates → sweeps the
@@ -583,13 +587,16 @@ void tick(void* self, double dt) {
     // the jog so this frame's decision uses the freshest available metric.
     int32_t raw[kStatsInts];
     if (s->stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw) && raw[3] > 0) {
-      float N   = (float)raw[3];
-      float edge = ((float)raw[0] / kStatsScale) / N;   // mean edge energy
+      float N    = (float)raw[3];
       float lu   = ((float)raw[1] / kStatsScale) / N;   // mean luminance
       float lq   = ((float)raw[2] / kStatsScale) / N;   // mean luminance²
       float var  = lq - lu * lu; if (var < 0.0f) var = 0.0f;
-      float sd   = std::sqrt(var);
-      s->content = lerpf(sd, edge * kEdgeGpuGain, clampf(s->skip_edge, 0.0f, 1.0f));
+      float sd   = std::sqrt(var);                       // luminance std-dev
+      // Edge-pixel count / √N: a full-height edge (~H px) over √(W·H) ≈ O(1), so a
+      // concentrated edge saturates while distributed weak gradients (rejected by
+      // the shader's per-pixel threshold) contribute nothing.
+      float edge = clampf((float)raw[0] / std::sqrt(N) * kEdgeNormGain, 0.0f, 1.0f);
+      s->content = lerpf(sd, edge, clampf(s->skip_edge, 0.0f, 1.0f));
       s->skip_gpu_ready = true;
     }
     // Sensitivity [0,1] → luminance-std trigger. Higher = flags more scenes as flat.

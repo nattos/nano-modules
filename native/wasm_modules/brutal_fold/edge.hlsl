@@ -15,10 +15,16 @@
 #include "common.hlsl"   // cbuffer U (res_x/res_y) + nano_luminance
 
 Texture2D<float4>    tex_out : register(t1);
-RWStructuredBuffer<int> stats : register(u2);   // [edge_sum, luma_sum, luma2_sum, count]
+RWStructuredBuffer<int> stats : register(u2);   // [edge_count, luma_sum, luma2_sum, count]
 
 static const float kStatsScale = 128.0;
 static const float kSobelNorm  = 5.65685425;    // sqrt(32): max Sobel |grad| for luma in [0,1]
+// A pixel counts as an EDGE when its Sobel magnitude clears this. Low enough to
+// catch a clear black/gray boundary (~0.35) yet reject smooth shading/fog
+// gradients (~1e-3). Edges are counted (not summed as energy) and normalized by a
+// LINEAR dimension on the CPU, so a concentrated edge registers regardless of the
+// area it covers — a frame-mean would wash a 1-D edge out by the 2-D pixel count.
+static const float kEdgeThresh = 0.06;
 
 float lumAt(int2 p, int2 res) {
   p = clamp(p, int2(0, 0), res - 1);
@@ -37,11 +43,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float gx = (l20 + 2.0 * l21 + l22) - (l00 + 2.0 * l01 + l02);
   float gy = (l02 + 2.0 * l12 + l22) - (l00 + 2.0 * l10 + l20);
-  float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);   // edge energy [0,1]
+  float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);   // edge magnitude [0,1]
   float L = l11;
 
   int prev;
-  InterlockedAdd(stats[0], (int)(g * kStatsScale),     prev);
+  if (g > kEdgeThresh) InterlockedAdd(stats[0], 1, prev);     // edge-pixel count
   InterlockedAdd(stats[1], (int)(L * kStatsScale),     prev);
   InterlockedAdd(stats[2], (int)(L * L * kStatsScale), prev);
   InterlockedAdd(stats[3], 1,                          prev);
