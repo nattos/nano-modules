@@ -296,6 +296,10 @@ export class EngineBridge {
     if (info.videoDescs !== undefined) {
       try {
         this.compPumpDescs = JSON.parse(info.videoDescs) as VideoClipDesc[];
+        // Apply immediately — worker reports arrive independent of any MobX
+        // reaction, and a hold's fresh pump set must open its clips NOW (the
+        // hold is waiting on exactly those decodes).
+        this.reconcilePump(this.compPumpDescs);
       } catch { /* malformed — keep the previous set */ }
     }
     // Mirror the advancing playhead back to the store while playing. Skipped
@@ -464,6 +468,16 @@ export class EngineBridge {
    * composite actually changes, and clears the trace when nothing renders.
    */
   showComposite(layers: Array<{ clip: Clip; opacity?: number; blendMode?: number; track?: Track }>, force = false) {
+    // ── Comp mode: the whole store→worker sync runs from compSyncFromStore —
+    // reachable from BOTH this (reactive) path and the unconditional rAF tick.
+    // It must never depend on this reaction alone: while the native gate HOLDS,
+    // the beat freezes, no observable changes, and this never fires (see
+    // compSyncFromStore).
+    if (this.compMode) {
+      this.compSyncFromStore();
+      return;
+    }
+
     // Keep the engine + video render size matched to the composition resolution
     // (aspect-correct) before building/issuing this frame.
     this.syncResolution();
@@ -493,16 +507,6 @@ export class EngineBridge {
       if (seen.has(clip.id)) continue;
       const d = videoDescFor(clip);
       if (d) { warmDescs.push(d); seen.add(clip.id); }
-    }
-
-    // ── Comp mode (D2): the worker owns transport, timeline eval, sketch
-    // build, AND the Precise gate. The TS side mirrors the document (docRev),
-    // sends transport/gate commands on change, pushes edge-triggered per-clip
-    // readiness, and follows the worker-reported pump set. hasContent, the
-    // chain keys, and the playhead flow BACK via handleCompInfo.
-    if (this.compMode) {
-      this.syncComp(videoDescs, warmDescs);
-      return;
     }
 
     // ── "Precise" transport gate ───────────────────────────────────────────
@@ -586,6 +590,35 @@ export class EngineBridge {
     this.reconcilePump(warmDescs);
     this.displayedVideoDescs = videoDescs;
     this.hasContent = true; // committed: a composite is on screen
+  }
+
+  /**
+   * Comp-mode full store→worker sync, derived from the store at the CURRENT
+   * playhead. Runs from BOTH the monitor's reactive showComposite AND the
+   * app's unconditional rAF ticker (compTick): while the native gate holds,
+   * the beat is frozen, no observable changes, and the reaction never fires —
+   * anything applied only there (pump reconcile, transport diffs, readiness)
+   * would starve, deadlocking the hold. Everything inside is diffed, so the
+   * double per-frame call is cheap.
+   */
+  private compSyncFromStore() {
+    this.syncResolution();
+    const layers = store.compositeLayersAtBeat(store.positionBeat);
+    this.engineLayerN = layers.length;
+    const videoDescs: VideoClipDesc[] = [];
+    for (const l of layers) {
+      const d = videoDescFor(l.clip);
+      if (d) videoDescs.push(d);
+    }
+    this.lastVideoDescs = videoDescs; // decodePending()/inputsReady() read these
+    const warmDescs = [...videoDescs];
+    const seen = new Set(videoDescs.map((d) => d.clipId));
+    for (const clip of store.videoClipsInWindow(store.positionBeat, store.positionBeat + LOOKAHEAD_BEATS)) {
+      if (seen.has(clip.id)) continue;
+      const d = videoDescFor(clip);
+      if (d) { warmDescs.push(d); seen.add(clip.id); }
+    }
+    this.syncComp(videoDescs, warmDescs);
   }
 
   /**
@@ -677,10 +710,11 @@ export class EngineBridge {
 
   /** Comp-mode per-rAF upkeep, called from the app's transport ticker (an
    *  unconditional rAF — deliberately NOT a MobX reaction; see
-   *  pushCompVideoReadiness). No-op outside comp mode. */
+   *  compSyncFromStore). No-op outside comp mode / before the engine boots
+   *  (boot stays lazy via the monitor's reactive path). */
   compTick() {
     if (!this.compMode || !this.engine) return;
-    this.pushCompVideoReadiness();
+    this.compSyncFromStore();
   }
 
   /** Reconcile the video decode pump with `descs` (active target + lookahead). */

@@ -29,6 +29,14 @@ WASM_LDFLAGS=(
   -lc++ -lc++abi
   -Wl,--no-entry
   -Wl,--allow-undefined
+  # Declare a memory MAXIMUM (512 MB). Without one, V8 reserves ~10 GB of
+  # virtual address space PER LIVE INSTANCE (4 GB + guard pages) against a
+  # ~1 TB per-process wasm budget — so ~96 concurrent instances exhaust it and
+  # every later WebAssembly.instantiate throws Out-of-memory. The web engine
+  # holds a WasmHost per warmed effect + per chain entry (hundreds), which blew
+  # that cap. A declared max bounds the reservation to 512 MB, far above any
+  # real effect heap, and WAMR (native) simply honors it.
+  -Wl,--max-memory=536870912
 )
 
 # Common exports all modules share

@@ -656,6 +656,8 @@ export class WasmSketchExecutor {
   readonly compRequiredKeys = new Set<string>();
   /** Keys the comp's internal executor has applied state for (revive guard). */
   private compAppliedKeys = new Set<string>();
+  /** Keys whose instance creation failed (warn once until it succeeds). */
+  private compEnsureWarned = new Set<string>();
   private compOutTex = 0;
   private compOutW = 0;
   private compOutH = 0;
@@ -813,9 +815,23 @@ export class WasmSketchExecutor {
 
     // Ensure every chain entry's instance + thread the frame state onto its
     // host (effrt tick/render read host.frameState) — executeAllColumns step 1.
+    // Per-instance failures (e.g. a WebAssembly OOM) DEGRADE, never abort: the
+    // frame renders without that entry (transparent layer), transport +
+    // mirror-back keep flowing, and the next frame retries. One bad instance
+    // killing the whole comp frame blacked out the entire arrangement.
     for (const r of this.compRequired) {
-      const inst = await this.ensureInstance(r.moduleType, r.instanceKey);
+      let inst: WebEffectInstance | null = null;
+      try {
+        inst = await this.ensureInstance(r.moduleType, r.instanceKey);
+      } catch (err) {
+        if (!this.compEnsureWarned.has(r.instanceKey)) {
+          this.compEnsureWarned.add(r.instanceKey);
+          console.error(`[comp] instance create failed (skipping) ${r.moduleType} ${r.instanceKey}:`, err);
+        }
+        continue;
+      }
       if (!inst) continue;
+      this.compEnsureWarned.delete(r.instanceKey);
       const fs = inst.host.frameState;
       fs.elapsedTime = frameState.elapsedTime;
       fs.deltaTime = frameState.deltaTime;

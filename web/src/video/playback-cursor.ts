@@ -212,15 +212,31 @@ export class PlaybackCursor {
     return d;
   }
 
+  /**
+   * The duration we can actually decode to: the DECLARED duration capped by the
+   * element's real one once metadata is known. Clip metadata can OVERSTATE the
+   * file (a bad probe, a re-encode) — a target beyond the real end could then
+   * never be "ready" (the element clamps every seek short of it), deadlocking
+   * the Precise gate. All target clamping goes through this, so overstated
+   * metadata degrades to holding the last real frame instead.
+   */
+  private effDurationSec(): number {
+    const d = this.video.duration;
+    return Number.isFinite(d) && d > 0 ? Math.min(this.durationSec, d) : this.durationSec;
+  }
+
   /** True when the presented frame is within ~a frame of `targetSec` and no seek is in
    *  flight — i.e. the texture shows the right frame. The Precise gate reads this. */
   ready(targetSec: number): boolean {
     if (this.released || this.lastFilledFrame < 0 || this.seeking) return false;
     if (this.video.readyState < 2) return false;
+    // Clamp into the DECODABLE range (see effDurationSec) — an off-the-end
+    // target is satisfied by the last real frame.
+    const t = clampSec(targetSec, this.effDurationSec(), 1 / Math.max(1, this.fps));
     // Ready if the target frame is resident in the cache (e.g. a pinned loop-start, mid-seek)
     // OR the live element is within ~a frame of the target.
-    if (this.cache.has(Math.max(0, Math.floor(targetSec * this.fps)))) return true;
-    return Math.abs(this.foldedOffset(targetSec)) <= 1.5 / Math.max(1, this.fps);
+    if (this.cache.has(Math.max(0, Math.floor(t * this.fps)))) return true;
+    return Math.abs(this.foldedOffset(t)) <= 1.5 / Math.max(1, this.fps);
   }
 
   /**
@@ -234,10 +250,14 @@ export class PlaybackCursor {
     const v = this.video;
     if (v.readyState < 1 || !Number.isFinite(v.duration)) return null; // metadata not loaded yet
 
+    // Clamp the pursuit into the decodable range (metadata may overstate the
+    // file — see effDurationSec). The decision + in-sync checks then agree with
+    // what a seek can actually land.
+    targetSec = clampSec(targetSec, this.effDurationSec(), 1 / Math.max(1, this.fps));
     const action = decideCursorAction({
       curSec: v.currentTime,
       targetSec,
-      durationSec: this.durationSec,
+      durationSec: this.effDurationSec(),
       fps: this.fps,
       rate,
       seeking: this.seeking,
@@ -323,7 +343,7 @@ export class PlaybackCursor {
   seek(targetSec: number): void {
     if (this.released) return;
     if (!this.video.paused) this.video.pause();
-    this.beginSeek(clampSec(targetSec, this.durationSec, 1 / Math.max(1, this.fps)));
+    this.beginSeek(clampSec(targetSec, this.effDurationSec(), 1 / Math.max(1, this.fps)));
   }
 
   private beginSeek(sec: number): void {

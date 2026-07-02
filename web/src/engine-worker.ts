@@ -1395,16 +1395,38 @@ const warmupHosts: WasmHost[] = [];
 const warmupByEffect = new Map<string, WasmHost>();
 
 async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string }[]) {
+  // ONE host per BUNDLE, describing every effect on it — mirroring native WAMR,
+  // where a single module instance serves ALL of a bundle's registrations.
+  // (describeEffect is per-effect-idempotent on a shared host: moduleInitedIds.)
+  //
+  // The old one-host-PER-EFFECT shape allocated ~90 WebAssembly.Memory objects
+  // at boot. V8 reserves ~10 GB of address space per memory (4 GB + guards)
+  // against a ~1 TB per-process budget, so ~96 live memories is a HARD cap —
+  // warmup alone nearly exhausted it and every later instantiate (chain
+  // instances, video decoders) threw Out-of-memory. Declared memory maximums
+  // don't shrink V8's reservation; only fewer live instances do.
+  let wh: WasmHost;
+  try {
+    wh = new WasmHost();
+    wh.bridgeCore = bridgeCore;
+    // SCHEMA-ONLY host: NO gpu backend (the same contract native bundle
+    // loading documents — "schema still publishes; GPU effects skip shader
+    // compile"). Two reasons: (1) dozens of module_inits sharing one host
+    // would collide in its per-NAME shader/WGSL caches ("pixel"/"compute" are
+    // reused across effects) and compile broken PSOs; (2) warm hosts should
+    // never pay for GPU resources they'll never render with.
+    wh.gpuHost = null;
+    await wh.load(compiled);
+  } catch (err) {
+    console.warn('[warmup] bundle warm host failed:', err);
+    return;
+  }
+  warmupHosts.push(wh);
   for (const eff of effects) {
     try {
-      const wh = new WasmHost();
-      wh.bridgeCore = bridgeCore;
-      wh.gpuHost = gpuHost;
-      await wh.load(compiled);
       // Schema-only: run module_init (publishes the schema, registers the
       // plugin + `@0` key) WITHOUT standing up a rendering instance.
       wh.describeEffect(eff.id);
-      warmupHosts.push(wh);
       warmupByEffect.set(eff.id, wh);
     } catch (err) {
       console.warn(`[warmup] schema registration failed for ${eff.id}:`, err);
@@ -1428,7 +1450,13 @@ async function evalHostForType(moduleType: string): Promise<WasmHost | null> {
   // 1. A parked warmup host (already loaded + described for this exact effect;
   //    describeEffect resolved its self-less eval_visibility fn).
   const warm = warmupByEffect.get(resolved) ?? warmupByEffect.get(moduleType);
-  if (warm) return warm;
+  if (warm) {
+    // The bundle-shared warm host's evaluator slot points at whichever effect
+    // was described LAST — re-describe to re-point it at THIS type (idempotent
+    // module_init; cheap fn-table resolve).
+    try { warm.describeEffect(resolved); } catch { /* fall through to others */ }
+    if (warm.evalVisibilityFn) return warm;
+  }
   // 2. A live instance of this type (its host carries the same evaluator).
   for (const [key, v] of realModules) {
     if (key === `${resolved}@0` || key.startsWith(`${resolved}@`)) {
@@ -1479,23 +1507,28 @@ async function instantiateEffect(effectId: string) {
     // warmup host's module_init already ran, so activateEffect skips it and
     // just stands up the instance on the same `@0` plugin key. Subsequent
     // instantiations of the same id fall through to a fresh host.
-    const warm = warmupByEffect.get(found.resolvedId);
-    let host: WasmHost;
-    let mod: WasmModule;
-    if (warm) {
-      warmupByEffect.delete(found.resolvedId);
-      host = warm;
-      mod = host.activateEffect(found.resolvedId);
-    } else {
-      host = new WasmHost();
-      host.bridgeCore = bridgeCore;
-      host.gpuHost = gpuHost;
-      await host.load(found.compiled);
-      mod = host.activateEffect(found.resolvedId);
-    }
+    // Always a FRESH host: warm hosts are SCHEMA-ONLY (no gpu backend — their
+    // module_init skipped shader compile), so they can never be promoted to a
+    // rendering instance. The old promote-to-`@0` fast path is gone; the live
+    // registration gets the next plugin key and the id-deduped plugin list
+    // resolves to it.
+    const host = new WasmHost();
+    host.bridgeCore = bridgeCore;
+    host.gpuHost = gpuHost;
+    await host.load(found.compiled);
+    const mod = host.activateEffect(found.resolvedId);
 
     const key = host.pluginKey || `${resolvedId}@0`;
     realModules.set(key, { host, module: mod });
+    // `<id>@0` CONTRACT: test fixtures + the IDE recipe anchor sketches on
+    // `<id>@0` — historically satisfied by promoting the warm host (which had
+    // claimed `@0` at schema registration). Warm hosts are schema-only now, so
+    // the bridge assigns the live host `@1`; ALIAS the first live instance
+    // under `@0` so those instance-key lookups still resolve.
+    const zeroKey = `${found.resolvedId}@0`;
+    if (key !== zeroKey && !realModules.has(zeroKey)) {
+      realModules.set(zeroKey, { host, module: mod });
+    }
 
     // Ensure the unassigned bucket sketch exists
     if (!sketches.has(BUCKET_SKETCH_ID)) {

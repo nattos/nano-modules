@@ -720,9 +720,13 @@ export class WasmHost {
             this.consoleLogs = this.consoleLogs.slice(-100);
           }
           // Also surface to the browser/devtools console so E2E test
-          // logging can see what the WASM module emitted.
+          // logging can see what the WASM module emitted. A SCHEMA-ONLY host
+          // (no gpu backend — the bundle warm-up describes) demotes to debug:
+          // its effects legitimately complain about the backend they'll never
+          // render with ("no GPU backend"), which isn't an app error.
           const tag = `[wasm:${this.metadata?.id ?? this.pluginKey ?? '?'}]`;
-          if (level === 1) console.warn(tag, message);
+          if (!this.gpuHost) console.debug(tag, message);
+          else if (level === 1) console.warn(tag, message);
           else if (level === 2) console.error(tag, message);
           else console.log(tag, message);
           this.onLog(entry);
