@@ -29,7 +29,7 @@ import { buildMultiEditModel, clipInsertIndex, aggregateField, multiSketchId, ty
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
-import { clipInstanceKey } from '../engine/clip-sketch';
+import { clipInstanceKey } from '../engine/instance-keys';
 
 /**
  * Stable fingerprint of a candidate device state for the static-visibility

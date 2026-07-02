@@ -40,7 +40,7 @@ import {
 import { makeFakeComposition } from '../model/fake-data';
 import { DocHistory } from './history';
 import { effects, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
-import type { CompositeNode } from '../engine/clip-sketch';
+import type { CompositeNode } from '../engine/instance-keys';
 import { clipSourceTimeAt, type ClipTimeCtx } from '../engine/clip-time';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';

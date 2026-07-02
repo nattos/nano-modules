@@ -17,20 +17,18 @@
  *    listener (`setOnComposite`) each frame; the monitor draws that composite.
  *  - An optional capture tap (Component D live thumbnails) sees the composite.
  *
- * The OFFLINE EXPORT path deliberately does NOT go through this bridge or the
- * comp executor: it drives a second worker via the TS sketch builder
- * (composite-frame.ts / clip-sketch.ts), which is why those twins remain —
- * pinned against the C++ build by the comp goldens — until export migrates.
+ * The OFFLINE EXPORT path deliberately does NOT go through this bridge: it
+ * drives a SECOND worker running its own comp executor (export-renderer.ts),
+ * paused and stepped seek-by-seek — same in-wasm builder, so export ≡ preview.
  */
 
 import { ArrEngine } from './arr-engine';
 import type { CompFrameInfo } from '../../../engine-types';
 import { debugPerf } from '../state/debug-perf';
-import { clipInstanceKey } from './clip-sketch';
-import { VideoCompositor, type VideoClipDesc } from './video-compositor';
+import { clipInstanceKey } from './instance-keys';
+import { VideoCompositor, videoDescFor, type VideoClipDesc } from './video-compositor';
 import { makeWarpClock } from './warp-clock';
 import { videoInputsReady as gateVideoReady } from './precise-gate';
-import { videoDescFor } from './composite-frame';
 import { store } from '../state/store';
 import { deviceIsSource } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';

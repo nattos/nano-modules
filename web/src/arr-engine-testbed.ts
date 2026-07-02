@@ -8,7 +8,7 @@
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
-import { buildCompositeSketch, clipInstanceKey, trackInstanceKey } from './views/arrangement/engine/clip-sketch';
+import { clipInstanceKey, trackInstanceKey } from './views/arrangement/engine/instance-keys';
 import { EFFECT_BUNDLES } from './effect-bundles';
 import { store } from './views/arrangement/state/store';
 
@@ -32,12 +32,11 @@ engine.onFrame = (_id, bitmap) => {
 engine.onError = (m) => { status.textContent = `error: ${m}`; };
 // Mirror the real arrangement boot (engineBridge.ensureEngine):
 //  - feed discovered plugin schemas into the store so the effect registry
-//    (catalogEffect/role/defaultStateFor) resolves — WITHOUT this, buildCompositeSketch
-//    can't recognize a clip's devices and falls back to a default solid stand-in;
-//  - warm EVERY shipping bundle (buildCompositeSketch issues no per-sketch bundle
-//    list, relying on this warm), then settle briefly so the worker finishes
-//    registering modules before the first render (the real app renders well after
-//    boot, so it never hits this window).
+//    (catalogEffect/role/defaultStateFor) resolves;
+//  - warm EVERY shipping bundle (the baked probe sketches issue no per-sketch
+//    bundle list, relying on this warm), then settle briefly so the worker
+//    finishes registering modules before the first render (the real app renders
+//    well after boot, so it never hits this window).
 engine.onPlugins = (plugins) => store.setEnginePlugins(plugins);
 const settle = () => new Promise<void>((r) => setTimeout(r, 800));
 engine.ready
@@ -78,16 +77,30 @@ async function clearComposite() {
   await engine.showComposite([]); // playhead off all clips → empty composite
 }
 // Background baked at the COMPOSITOR level: a neutral effect-only clip over a
-// custom background, built through buildCompositeSketch — the output should read
-// as the background color (the effect passes the bg base through).
+// custom background — the output should read as the background color (the effect
+// passes the bg base through). The sketch is the BAKED output of the retired TS
+// builder for this probe (the live builder is now native sketch_build.h, pinned
+// by the frozen build goldens); instance keys ride the instance-keys contract.
 async function showBgProbe(color: string) {
   frames = 0;
-  const clip = {
-    id: 'p',
-    sketch: { devices: [{ id: 'b', moduleType: 'color.tone.brightness_contrast', name: '', capabilities: [], state: { brightness: 0, contrast: 0 } }] },
+  const hex = color.replace('#', '');
+  const rgb = [0, 1, 2].map((i) => parseInt(hex.slice(i * 2, i * 2 + 2), 16) / 255);
+  const sketch = {
+    anchor: null,
+    chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'arr_bg' },
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: clipInstanceKey('p', 'b') },
+    ],
+    wires: [],
+    instances: {
+      arr_bg: { module_type: 'source.solid_color', state: { color: rgb } },
+      [clipInstanceKey('p', 'b')]: {
+        module_type: 'color.tone.brightness_contrast',
+        state: { brightness: 0, contrast: 0 },
+      },
+    },
   } as any;
-  const r = buildCompositeSketch([{ clip, opacity: 1 }], { mode: 'custom', color });
-  if (r) await engine.showComposite([{ sketchId: COMP, sketch: r.sketch, opts: r.opts }]);
+  await engine.showComposite([{ sketchId: COMP, sketch, opts: {} }]);
 }
 
 // UPDATE path: the composite never empties — it's re-issued (updateSketch) with a
@@ -113,14 +126,25 @@ function setAuto(field: string, value: number, combine = 'replace') {
 // the TRACK device via setAutomation to prove track automation reaches it.
 async function showTrackFxProbe() {
   frames = 0;
-  const clip = { id: 'p', sketch: { devices: [
-    { id: 's', moduleType: 'source.solid_color', name: '', capabilities: ['generator'], state: { color: [0.4, 0.4, 0.4] } },
-  ] } } as any;
-  const track = { id: 'tk', sketch: { devices: [
-    { id: 'b', moduleType: 'color.tone.brightness_contrast', name: '', capabilities: [], state: { brightness: 0, contrast: 0 } },
-  ] } } as any;
-  const r = buildCompositeSketch([{ clip, track, opacity: 1 }], { mode: 'transparent' });
-  if (r) await engine.showComposite([{ sketchId: COMP, sketch: r.sketch, opts: r.opts }]);
+  // Baked builder output: clip solid source, then the TRACK FX bus entry keyed
+  // track_<id>_<dev> (transparent background → no arr_bg anchor entry).
+  const sketch = {
+    anchor: null,
+    chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: clipInstanceKey('p', 's') },
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: trackInstanceKey('tk', 'b') },
+    ],
+    wires: [],
+    instances: {
+      [clipInstanceKey('p', 's')]: {
+        module_type: 'source.solid_color', state: { color: [0.4, 0.4, 0.4] },
+      },
+      [trackInstanceKey('tk', 'b')]: {
+        module_type: 'color.tone.brightness_contrast', state: { brightness: 0, contrast: 0 },
+      },
+    },
+  } as any;
+  await engine.showComposite([{ sketchId: COMP, sketch, opts: {} }]);
 }
 function setTrackAuto(field: string, value: number, combine = 'replace') {
   engine.setAutomation([

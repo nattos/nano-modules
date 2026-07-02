@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
 import type { Track } from '../model/composition';
-import type { CompositeNode, CompositeGroupNode } from '../engine/clip-sketch';
+import type { CompositeNode, CompositeGroupNode } from '../engine/instance-keys';
 import { seedTestPlugins } from '../engine/test-plugins';
 
 // addClipDeviceType('color.hsl') needs the registry to resolve offline.

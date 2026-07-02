@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from '../state/store';
 import { buildClipFieldBinding } from './arr-column-adapter';
-import { clipInstanceKey } from '../engine/clip-sketch';
+import { clipInstanceKey } from '../engine/instance-keys';
 import { seedTestPlugins } from '../engine/test-plugins';
 
 // addClipDeviceType('color.hsl') + the field fallback need the registry offline.

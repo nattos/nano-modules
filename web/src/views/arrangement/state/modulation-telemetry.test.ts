@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
 import { ArrColumnAdapter, clipTarget, trackTarget } from '../surfaces/arr-column-adapter';
-import { clipInstanceKey } from '../engine/clip-sketch';
+import { clipInstanceKey } from '../engine/instance-keys';
 import { engineBridge } from '../engine/engine-bridge';
 
 /**

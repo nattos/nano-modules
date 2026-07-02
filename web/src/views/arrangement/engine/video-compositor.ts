@@ -21,8 +21,10 @@ import type { VideoPlaybackService, ClipHandle } from '../../../video/playback-s
 import { classifySource } from '../../../video/dxv-sniff';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { clipSourceTimeAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
-import type { ClipLoopConfig } from '../model/composition';
-import { RANDOM_DEFAULTS } from '../model/composition';
+import { clipInstanceKey } from './instance-keys';
+import { VIDEO_SOURCE_TYPE } from './effect-catalog';
+import type { Clip, ClipLoopConfig } from '../model/composition';
+import { RANDOM_DEFAULTS, resolveSourceTransform } from '../model/composition';
 import { debugPerf, type ClipPerf } from '../state/debug-perf';
 
 /**
@@ -62,6 +64,30 @@ export interface VideoClipDesc {
   transform?: BlitTransform;
   /** Play-mode timing (slice + mode); drives the beat→source-frame mapping. */
   loop?: ClipLoopConfig;
+}
+
+/** Build the decode-pump descriptor for a video-backed clip (or null if it isn't
+ *  one). The `instanceKey` MUST match the clip's `source.video.file` entry in the
+ *  comp executor's built chain, or the injected frame goes nowhere. */
+export function videoDescFor(clip: Clip): VideoClipDesc | null {
+  const src = clip.source;
+  if (!src?.url) return null;
+  const dev = clip.sketch.devices.find((d) => d.moduleType === VIDEO_SOURCE_TYPE);
+  if (!dev) return null;
+  return {
+    clipId: clip.id,
+    instanceKey: clipInstanceKey(clip.id, dev.id),
+    url: src.url,
+    sourceKey: src.sourceKey ?? clip.id,
+    startBeat: clip.startBeat,
+    lengthBeat: clip.lengthBeat,
+    durationFrames: src.durationFrames,
+    fps: src.fps,
+    speed: clip.loop?.speed,
+    scaleMode: src.scaleMode ?? 'fit',
+    transform: resolveSourceTransform(src.transform),
+    loop: clip.loop,
+  };
 }
 
 /** Current transport position the frame mapping reads. */

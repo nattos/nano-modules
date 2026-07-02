@@ -1,11 +1,9 @@
 /**
  * GPU e2e: OFFLINE EXPORT renders a real composition (solid + effect + real
- * h264 video clip) to an MP4 blob — end-to-end through the second engine
- * worker, the deterministic ExportVideoPump, WebCodecs encode, and mp4-muxer.
- *
- * The live path is the in-wasm composition executor; the exporter deliberately
- * stays on the TS sketch-builder seam (its own second worker) until the export
- * migration — this pins that the two coexist on one page.
+ * h264 video clip) to an MP4 blob — end-to-end through the SECOND engine
+ * worker's own comp executor (paused, seek-stepped per frame), the
+ * deterministic ExportVideoPump, WebCodecs encode, and mp4-muxer. Pins that
+ * two comp executors (live preview + export) coexist on one page.
  *
  *   GPU_TEST_BASE_URL=http://localhost:5174 npx jest arrangement-export-e2e
  */
@@ -13,7 +11,7 @@
 const BASE = process.env.GPU_TEST_BASE_URL || process.env.ARR_BASE_URL || 'http://localhost:5173';
 const URL = `${BASE}/arrangement.html`;
 
-async function runExport(url: string): Promise<{ frames: number; blobSize: number; durationSec: number }> {
+async function runExport(url: string): Promise<{ frames: number; engineFrames: number; blobSize: number; durationSec: number }> {
   const errors: string[] = [];
   page.removeAllListeners('pageerror');
   page.removeAllListeners('console');
@@ -65,7 +63,7 @@ async function runExport(url: string): Promise<{ frames: number; blobSize: numbe
       bitrate: 500_000,
       ignoreSolo: false,
     });
-    return { frames: r.frames, blobSize: r.blob ? r.blob.size : 0, durationSec: r.durationSec };
+    return { frames: r.frames, engineFrames: r.engineFrames, blobSize: r.blob ? r.blob.size : 0, durationSec: r.durationSec };
   });
 
   if ((res as any).unsupported) throw new Error('WebCodecs export unsupported in this browser build');
@@ -76,10 +74,14 @@ async function runExport(url: string): Promise<{ frames: number; blobSize: numbe
 describe('Arrangement offline export (GPU, real media)', () => {
   jest.setTimeout(180_000);
 
-  it('exports an MP4 (TS-builder export seam beside the live comp executor)', async () => {
+  it('exports an MP4 (second comp-executor worker beside the live one)', async () => {
     const r = await runExport(URL);
     // 2 beats @120BPM = 1s @12fps ⇒ 12-13 frames.
     expect(r.frames).toBeGreaterThanOrEqual(10);
+    // Clips cover the whole range → every frame must come from the comp
+    // executor, none from the backdrop fallback (catches a silent
+    // discovery/schema failure that would export pure background).
+    expect(r.engineFrames).toBe(r.frames);
     expect(r.blobSize).toBeGreaterThan(1000);
   });
 });

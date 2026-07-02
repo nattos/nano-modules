@@ -661,6 +661,9 @@ export class WasmSketchExecutor {
   private compOutTex = 0;
   private compOutW = 0;
   private compOutH = 0;
+  /** Comp positionSec at the END of the last compFrame — the effect-clock anchor
+   *  (see compFrame). Null until the first frame. */
+  private compPrevSec: number | null = null;
 
   get compActive(): boolean { return this.compPtr !== 0; }
 
@@ -784,7 +787,10 @@ export class WasmSketchExecutor {
     const c = this.ensureComp();
     // The effect clock advances by the COMP transport's motion, not wall time:
     // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
-    const prevSec = this.exports.comp_position_sec(c);
+    // prevSec persists ACROSS frames (not read fresh here): a seek lands between
+    // ticks, so a fresh read would absorb the jump and effects would never seek.
+    // The paused-seek stepper (offline export, scrubbing) depends on this.
+    const prevSec = this.compPrevSec ?? this.exports.comp_position_sec(c);
     const flags = this.exports.comp_update(c, dt);
     const structureChanged = !!(flags & 1);
     const hasContent = !!(flags & 2);
@@ -854,7 +860,9 @@ export class WasmSketchExecutor {
     }
 
     this.currentSketchId = 'arr-composite';
-    const execDt = this.exports.comp_position_sec(c) - prevSec;
+    const nowSec = this.exports.comp_position_sec(c);
+    const execDt = nowSec - prevSec;
+    this.compPrevSec = nowSec;
     const handle = this.exports.comp_render(c, -1, this.compOutTex, width, height, execDt);
     this.accumulateDebugStats(this.exports.comp_sketch_executor(c));
 

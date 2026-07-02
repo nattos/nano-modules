@@ -1,21 +1,23 @@
 /**
  * export-renderer — render the arrangement to an MP4 (H.264) offline.
  *
- * Strategy (the user's instinct, realized): spin a SECOND `ArrEngine` — its own
- * worker + WebGPU device — at the FULL composition resolution, hold it PAUSED, and
+ * Strategy: spin a SECOND `ArrEngine` — its own worker + WebGPU device — at the
+ * FULL composition resolution, running the SAME in-wasm composition executor as
+ * the live preview (so export ≡ preview by construction), hold it PAUSED, and
  * drive it one frame at a time. For each output frame we:
  *   1. map the output time (real, warp-aware seconds) → its (warped) beat,
  *   2. await-decode every active video clip's exact source frame (ExportVideoPump),
  *      injecting each as a host texture,
- *   3. fold the active engine layers into one composite (the SAME builder the live
- *      preview uses — composite-frame.ts — so the export matches the preview),
- *   4. push automation, set the effect clock to the frame's seconds, `stepFrame()`,
- *   5. capture the traced composite ImageBitmap and feed it to a WebCodecs
+ *   3. `comp_seek_beat` + `stepFrame()` — the comp executor evaluates the timeline,
+ *      automation, and rails at that beat and renders the composite (the effect
+ *      clock advances by the seek's seconds delta: exactly 1/fps per frame),
+ *   4. capture the traced composite ImageBitmap and feed it to a WebCodecs
  *      `VideoEncoder`, muxed to MP4 via mp4-muxer.
  *
  * Because step 2 AWAITS each decode, every frame is fully resolved before it's
- * composited — no realtime Precise-gate, no dropped frames. The live preview engine
- * is untouched, so the editor keeps working while an export runs.
+ * composited — the comp transport stays in Fluid mode (no realtime Precise gate,
+ * readiness is guaranteed by construction), no dropped frames. The live preview
+ * engine is untouched, so the editor keeps working while an export runs.
  *
  * The frame PLANNER (`planExportFrames`) and the small numeric helpers are pure and
  * unit-tested; the GPU/encoder loop needs a real browser (WebGPU + WebCodecs).
@@ -23,13 +25,14 @@
 
 import { ArrEngine } from './arr-engine';
 import { ExportVideoPump } from './export-video-pump';
-import { automationEntriesAtBeat, buildCompositeRenderAtBeat, videoDescFor } from './composite-frame';
+import { videoDescFor } from './video-compositor';
 import { makeWarpClock, type WarpClock } from './warp-clock';
 import { store } from '../state/store';
+import { EFFECT_BUNDLES } from '../../../effect-bundles';
 import { compositionLengthBeats, exportFps, type BackgroundConfig } from '../model/composition';
 
-/** The export engine's single composite sketch id (its sole trace target). */
-const EXPORT_SKETCH_ID = 'arr-export';
+/** The comp executor publishes its output under this fixed sketch id. */
+const COMPOSITE_ID = 'arr-composite';
 
 export interface FramePlan {
   /** 0-based output frame index. */
@@ -142,6 +145,10 @@ export interface ExportResult {
   height: number;
   fps: number;
   frames: number;
+  /** How many frames the comp executor rendered (the rest were the backdrop
+   *  fallback for timeline gaps) — a 0 here on a non-empty timeline means the
+   *  export engine never produced content (diagnostic). */
+  engineFrames: number;
   durationSec: number;
 }
 
@@ -199,8 +206,33 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   engine.onFrameSet = (frames) => {
     const r = resolveFrame;
     resolveFrame = null;
-    r?.(frames[EXPORT_SKETCH_ID]);
+    r?.(frames[COMPOSITE_ID]);
   };
+
+  // Boot the comp executor: warm every shipping bundle, wait for effect discovery
+  // to settle (the worker seeds each discovered plugin's schema into the comp
+  // catalog before the first update — an unknown module type renders a stand-in),
+  // then mirror the document once. The transport stays PAUSED in Fluid mode: each
+  // frame is an explicit seek + step, and decode is awaited host-side, so the
+  // Precise gate has nothing to guard.
+  await engine.warmBundles(EFFECT_BUNDLES);
+  await (async () => {
+    const t0 = Date.now();
+    let last = -1;
+    while (Date.now() - t0 < 20_000) {
+      const n = engine.discovered.size;
+      if (n > 0 && n === last) return;
+      last = n;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (engine.discovered.size === 0) throw new Error('export: effect discovery timed out');
+  })();
+  await engine.compEnable(COMPOSITE_ID);
+  engine.compLoadDoc(JSON.stringify(comp));
+  engine.compControl({ op: 'pause' });
+  engine.compControl({ op: 'mode', precise: false });
+  engine.compControl({ op: 'loop', enabled: false });
+  engine.compControl({ op: 'ignoreSolo', on: !!opts.ignoreSolo });
 
   const pump = new ExportVideoPump(width, height);
   await pump.init();
@@ -213,7 +245,7 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   });
 
   const keyEvery = Math.max(1, fps * 2); // a keyframe roughly every 2 seconds
-  let lastSig = '';
+  let engineFrames = 0;
 
   try {
     for (const fr of plan) {
@@ -229,21 +261,16 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
         engine.setInstanceTexture(d.instanceKey, bmp);
       }
 
-      const render = buildCompositeRenderAtBeat(fr.beat, opts.ignoreSolo);
-      let bitmap: ImageBitmap | undefined;
-      if (render) {
-        if (render.sig !== lastSig) {
-          lastSig = render.sig;
-          await engine.showComposite([{ sketchId: EXPORT_SKETCH_ID, sketch: render.sketch, opts: render.opts }]);
-        }
-        engine.setAutomation(automationEntriesAtBeat(fr.beat, opts.ignoreSolo));
-        engine.setTime(fr.tSec);
-        bitmap = await stepAndCapture();
-      }
-      if (!bitmap) {
+      // Seek + step: the comp executor rebuilds/evaluates at exactly this beat and
+      // publishes under COMPOSITE_ID; a gap in the timeline steps too (the frame
+      // event still fires) and resolves undefined → the backdrop below.
+      engine.compControl({ op: 'seek', beat: fr.beat });
+      let bitmap = await stepAndCapture();
+      if (bitmap) {
+        engineFrames++;
+      } else {
         // No engine layer at this beat → emit the composition backdrop.
         bitmap = await backgroundBitmap(width, height, comp.meta.background);
-        lastSig = ''; // re-issue the sketch when content returns
       }
 
       const vf = new VideoFrame(bitmap, {
@@ -264,10 +291,10 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
     muxer.finalize();
     if (opts.writable) {
       await opts.writable.close(); // commit the streamed file to disk
-      return { width, height, fps, frames: total, durationSec: total / fps };
+      return { width, height, fps, frames: total, engineFrames, durationSec: total / fps };
     }
     const blob = new Blob([memTarget!.buffer], { type: 'video/mp4' });
-    return { blob, width, height, fps, frames: total, durationSec: total / fps };
+    return { blob, width, height, fps, frames: total, engineFrames, durationSec: total / fps };
   } finally {
     try { encoder.close(); } catch { /* already errored / closed */ }
     engine.destroy();
