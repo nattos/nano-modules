@@ -154,6 +154,66 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     expect(p3).toBeCloseTo(41, 5);
   });
 
+  it('rails: a return-track read wire modulates its target (writer beats base re-assert)', async () => {
+    // Regression: the arrangement re-asserts each rail's BASE via per-frame
+    // automation (combine replace). The executor applied automation AFTER the
+    // wire fold on the same field, clobbering the writer every frame — rails
+    // sat pinned at base and read wires never moved their targets. A live
+    // wire now wins; the re-assert only applies when the writer is gone.
+    await page.goto(`${URL}?compMode=1`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('mod.source.lfo'),
+      { timeout: 30_000 },
+    );
+
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const trackId = store.addTrack();
+      const path = store.createEmptyClip(trackId, 0, 16);
+      const [, tId, cId] = path.split('/');
+      store.addClipDeviceType(tId, cId, 'source.solid_color');
+      store.addClipDeviceType(tId, cId, 'mod.source.lfo');
+      store.addClipDeviceType(tId, cId, 'color.tone.brightness_contrast');
+      const railTrackId = store.addReturn();
+      const railId = store.trackById(railTrackId).railId;
+      // Re-resolve AFTER the last mutate (history rebuilds objects).
+      const clip = store.trackById(tId).clips.find((c: any) => c.id === cId);
+      const [solid, lfo, bc] = clip.sketch.devices;
+      Object.assign(solid.state ??= {}, { color: [1, 1, 1] });
+      Object.assign(lfo.state ??= {}, { rate: 2, amplitude: 1 });
+      clip.exports.push({ id: 'e1', railId, sourceDeviceId: lfo.id, sourceField: 'output', combine: 'add', magnitude: 'auto' });
+      clip.reads ??= [];
+      clip.reads.push({ id: 'r1', railId, targetDeviceId: bc.id, targetField: 'brightness', combine: 'replace', magnitude: 'auto' });
+      store.docRev++;
+      store.setTransportMode('precise');
+      store.setPosition(1);
+      store.playing = true;
+    });
+
+    // Sample monitor luma while the LFO sweeps: the read wire must MOVE the
+    // brightness (a pinned rail renders a constant frame).
+    const lumas: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      const l = await page.evaluate(() => {
+        const app = document.querySelector('arrangement-app') as any;
+        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
+        if (!cv || !cv.width) return null;
+        const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
+        return Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
+      });
+      if (l !== null) lumas.push(l);
+    }
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    const spread = Math.max(...lumas) - Math.min(...lumas);
+    expect(lumas.length).toBeGreaterThan(5);
+    expect(spread).toBeGreaterThan(60); // modulation visibly sweeps the brightness
+  });
+
   it('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
     // Regression: loading an arrangement leaves DEAD blob URLs in the doc until
     // relinkMedia() re-mints them — an update that deliberately bypasses

@@ -335,3 +335,66 @@ TEST_CASE("live LFO→param wire folds via effrt_published_state_json", "[comp_r
   INFO("output mean " << m << " (expect ~128 grey)");
   CHECK(std::abs(m - 128.0) < 20.0);
 }
+
+TEST_CASE("automation baseline yields to a live wire on the same field", "[comp_render]") {
+  // The arrangement re-asserts each rail's BASE via per-frame automation
+  // (combine 'replace') so a DROPPED writer resets the rail — but a LIVE wire
+  // must win on a shared field, else the writer's fold is clobbered every
+  // frame (rails sat pinned at base; read wires downstream never moved).
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  // white -> lfo (resting output 0.5 baked into instance state, the host
+  // mirror's shape) -> brightness_contrast. Wire lfo.output -> bc.brightness
+  // (replace); automation ALSO targets bc.brightness with value 0 (-> dest min
+  // -1 -> black). Wire wins => brightness 0 (neutral) => contrast -0.5 grey.
+  auto sketch = json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "source.solid_color", "instance_key": "src",
+        "params": { "color": [1.0, 1.0, 1.0] } },
+      { "type": "module", "module_type": "mod.source.lfo", "instance_key": "lfo",
+        "params": { "rate": 0.0, "amplitude": 1.0 } },
+      { "type": "module", "module_type": "color.tone.brightness_contrast", "instance_key": "bc",
+        "params": { "brightness": 1.0, "contrast": -0.5 } }
+    ],
+    "instances": {
+      "src": { "module_type": "source.solid_color", "state": { "color": [1.0, 1.0, 1.0] } },
+      "lfo": { "module_type": "mod.source.lfo", "state": { "output": 0.5 } },
+      "bc":  { "module_type": "color.tone.brightness_contrast",
+               "state": { "brightness": 1.0, "contrast": -0.5 } }
+    },
+    "wires": [
+      { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" },
+        "dest": { "instanceKey": "bc", "field": "brightness" }, "combine": "replace" }
+    ]
+  })JSON");
+  const auto automation = json::parse(R"JSON([
+    { "instance": "bc", "field": "brightness", "value": 0.0,
+      "combine": "replace", "magnitude": "unsigned" }
+  ])JSON");
+
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+
+  // WITH the wire: the wire's fold survives (lfo 0.5 -> signed [-1,1] dest ->
+  // ~0.5-ish brightness; the exact value is tap_mod's, pinned elsewhere). The
+  // automation value 0 -> dest min (-1) -> BLACK must NOT be what renders.
+  sketch_executor::SketchExecutor exWired(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  exWired.setKeyNamespace("autoprec-a/");
+  exWired.setAutomation(automation);
+  const int32_t outA = exWired.execute(sketch, inTex, outTex, W, H, 1.0 / 60.0, true);
+  const double withWire = meanRgb(hx.read(outA));
+
+  // WITHOUT the wire: automation applies -> brightness -1 -> black.
+  auto sketchNoWire = sketch;
+  sketchNoWire["wires"] = json::array();
+  sketch_executor::SketchExecutor exAuto(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  exAuto.setKeyNamespace("autoprec-b/");
+  exAuto.setAutomation(automation);
+  int32_t outTex2 = hx.makeTex();
+  const int32_t outB = exAuto.execute(sketchNoWire, inTex, outTex2, W, H, 1.0 / 60.0, true);
+  const double autoOnly = meanRgb(hx.read(outB));
+
+  INFO("withWire " << withWire << " autoOnly " << autoOnly);
+  CHECK(autoOnly < 20.0);              // automation alone applies (black)
+  CHECK(withWire > autoOnly + 60.0);   // the live wire beat the re-assert
+}

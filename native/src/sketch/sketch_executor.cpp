@@ -1763,6 +1763,14 @@ void SketchExecutor::applyAutomation(
     if (!a.is_object()) continue;
     const std::string field = a.value("field", std::string());
     if (field.empty()) continue;
+    // A live read tap (wire) drove this field THIS frame — the wire already
+    // folded from the authored baseline, and automation's job on a shared
+    // field is only to re-assert that baseline when NO writer exists (the
+    // arrangement's per-frame rail-base reset: a dropped writer returns the
+    // rail to its base). Overwriting here clobbered the modulation every
+    // frame — a rail with an active writer sat pinned at its base, so read
+    // wires downstream never moved.
+    if (outModulatedScalars && outModulatedScalars->count(field)) continue;
     const float value = (float)a.value("value", 0.0);
     // Dest field [min,max] from the schema (defaults 0..1) — the range the
     // normalized curve value maps into, exactly as a wire's destMin/destMax.
