@@ -1,0 +1,3192 @@
+{
+ "cases": [
+  {
+   "name": "one-shot-basic",
+   "loop": {
+    "mode": "one-shot",
+    "startSec": 0,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 4,
+    "lengthBeat": 16,
+    "videoDurSec": 5
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 150,
+   "samples": [
+    {
+     "beat": 2.7,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 3.522033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 4.330366666666667,
+     "timeSec": 0.16518333333333368,
+     "frame": 4
+    },
+    {
+     "beat": 5.1387,
+     "timeSec": 0.56935,
+     "frame": 17
+    },
+    {
+     "beat": 5.947033333333334,
+     "timeSec": 0.9735166666666668,
+     "frame": 29
+    },
+    {
+     "beat": 6.755366666666667,
+     "timeSec": 1.3776833333333336,
+     "frame": 41
+    },
+    {
+     "beat": 7.563700000000001,
+     "timeSec": 1.7818500000000004,
+     "frame": 53
+    },
+    {
+     "beat": 8.372033333333334,
+     "timeSec": 2.186016666666667,
+     "frame": 65
+    },
+    {
+     "beat": 9.180366666666668,
+     "timeSec": 2.590183333333334,
+     "frame": 77
+    },
+    {
+     "beat": 9.988700000000001,
+     "timeSec": 2.9943500000000007,
+     "frame": 89
+    },
+    {
+     "beat": 10.797033333333335,
+     "timeSec": 3.3985166666666675,
+     "frame": 101
+    },
+    {
+     "beat": 11.605366666666669,
+     "timeSec": 3.8026833333333343,
+     "frame": 114
+    },
+    {
+     "beat": 12.413700000000002,
+     "timeSec": 4.206850000000001,
+     "frame": 126
+    },
+    {
+     "beat": 13.222033333333336,
+     "timeSec": 4.611016666666668,
+     "frame": 138
+    },
+    {
+     "beat": 14.03036666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 14.838700000000003,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 15.647033333333336,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 16.455366666666666,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 17.263700000000004,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 18.072033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 18.880366666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 19.6887,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 20.497033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 21.305366666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 22.1,
+     "timeSec": null,
+     "frame": null
+    }
+   ]
+  },
+  {
+   "name": "one-shot-speed-2.5",
+   "loop": {
+    "mode": "one-shot",
+    "startSec": 1,
+    "speed": 2.5,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 24,
+    "videoDurSec": 10
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 300,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": -0.14463333333333322,
+     "timeSec": 0.8192083333333335,
+     "frame": 24
+    },
+    {
+     "beat": 0.9970333333333337,
+     "timeSec": 2.246291666666667,
+     "frame": 67
+    },
+    {
+     "beat": 2.1387,
+     "timeSec": 3.673375,
+     "frame": 110
+    },
+    {
+     "beat": 3.2803666666666675,
+     "timeSec": 5.100458333333334,
+     "frame": 153
+    },
+    {
+     "beat": 4.422033333333333,
+     "timeSec": 6.527541666666666,
+     "frame": 195
+    },
+    {
+     "beat": 5.563700000000001,
+     "timeSec": 7.954625000000001,
+     "frame": 238
+    },
+    {
+     "beat": 6.705366666666667,
+     "timeSec": 9.381708333333334,
+     "frame": 281
+    },
+    {
+     "beat": 7.847033333333335,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 8.9887,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 10.130366666666665,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 11.272033333333335,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 12.4137,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 13.555366666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 14.697033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 15.838700000000003,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 16.98036666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 18.122033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 19.2637,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 20.405366666666666,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 21.54703333333333,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 22.688700000000004,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 23.83036666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 24.972033333333336,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 26.1,
+     "timeSec": null,
+     "frame": null
+    }
+   ]
+  },
+  {
+   "name": "one-shot-reverse",
+   "loop": {
+    "mode": "one-shot",
+    "startSec": 4,
+    "speed": 1,
+    "direction": "reverse"
+   },
+   "ctx": {
+    "startBeat": 2,
+    "lengthBeat": 16,
+    "videoDurSec": 5
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 150,
+   "samples": [
+    {
+     "beat": 0.7,
+     "timeSec": 4.65,
+     "frame": 139
+    },
+    {
+     "beat": 1.5220333333333333,
+     "timeSec": 4.2389833333333335,
+     "frame": 127
+    },
+    {
+     "beat": 2.330366666666667,
+     "timeSec": 3.8348166666666668,
+     "frame": 115
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 3.43065,
+     "frame": 102
+    },
+    {
+     "beat": 3.9470333333333336,
+     "timeSec": 3.026483333333333,
+     "frame": 90
+    },
+    {
+     "beat": 4.755366666666667,
+     "timeSec": 2.6223166666666664,
+     "frame": 78
+    },
+    {
+     "beat": 5.563700000000001,
+     "timeSec": 2.2181499999999996,
+     "frame": 66
+    },
+    {
+     "beat": 6.372033333333334,
+     "timeSec": 1.8139833333333328,
+     "frame": 54
+    },
+    {
+     "beat": 7.180366666666668,
+     "timeSec": 1.409816666666666,
+     "frame": 42
+    },
+    {
+     "beat": 7.9887000000000015,
+     "timeSec": 1.0056499999999993,
+     "frame": 30
+    },
+    {
+     "beat": 8.797033333333333,
+     "timeSec": 0.6014833333333334,
+     "frame": 18
+    },
+    {
+     "beat": 9.605366666666667,
+     "timeSec": 0.19731666666666658,
+     "frame": 5
+    },
+    {
+     "beat": 10.4137,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 11.222033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 12.030366666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 12.838700000000001,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 13.647033333333335,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 14.455366666666666,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 15.263700000000002,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 16.072033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 16.880366666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 17.6887,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 18.497033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 19.305366666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 20.1,
+     "timeSec": null,
+     "frame": null
+    }
+   ]
+  },
+  {
+   "name": "one-shot-negative-start",
+   "loop": {
+    "mode": "one-shot",
+    "startSec": -1.5,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 16,
+    "videoDurSec": 4
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 24,
+   "frameCount": 96,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": -0.4779666666666666,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 0.33036666666666686,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 1.1387000000000003,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 1.9470333333333338,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 2.755366666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 3.5637000000000008,
+     "timeSec": 0.2818500000000004,
+     "frame": 6
+    },
+    {
+     "beat": 4.372033333333334,
+     "timeSec": 0.6860166666666672,
+     "frame": 16
+    },
+    {
+     "beat": 5.180366666666668,
+     "timeSec": 1.090183333333334,
+     "frame": 26
+    },
+    {
+     "beat": 5.9887000000000015,
+     "timeSec": 1.4943500000000007,
+     "frame": 35
+    },
+    {
+     "beat": 6.797033333333334,
+     "timeSec": 1.898516666666667,
+     "frame": 45
+    },
+    {
+     "beat": 7.605366666666668,
+     "timeSec": 2.302683333333334,
+     "frame": 55
+    },
+    {
+     "beat": 8.4137,
+     "timeSec": 2.70685,
+     "frame": 64
+    },
+    {
+     "beat": 9.222033333333334,
+     "timeSec": 3.111016666666667,
+     "frame": 74
+    },
+    {
+     "beat": 10.030366666666668,
+     "timeSec": 3.5151833333333338,
+     "frame": 84
+    },
+    {
+     "beat": 10.838700000000001,
+     "timeSec": 3.9193500000000006,
+     "frame": 94
+    },
+    {
+     "beat": 11.647033333333335,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 12.455366666666666,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 13.263700000000002,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 14.072033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 14.880366666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 15.6887,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 16.497033333333334,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 17.305366666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 18.1,
+     "timeSec": null,
+     "frame": null
+    }
+   ]
+  },
+  {
+   "name": "time-loop-slice",
+   "loop": {
+    "mode": "time",
+    "startSec": 1,
+    "endSec": 3,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": 0.35,
+     "frame": 10
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 1.09435,
+     "frame": 32
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 1.8318499999999998,
+     "frame": 54
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 2.56935,
+     "frame": 77
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 1.3068499999999998,
+     "frame": 39
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 2.0443499999999997,
+     "frame": 61
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 2.7818500000000004,
+     "frame": 83
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 1.5193499999999993,
+     "frame": 45
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 2.256849999999999,
+     "frame": 67
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 2.994349999999999,
+     "frame": 89
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 1.7318499999999997,
+     "frame": 51
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 2.4693499999999986,
+     "frame": 74
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 1.2068499999999993,
+     "frame": 36
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 1.94435,
+     "frame": 58
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 2.681849999999999,
+     "frame": 80
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 1.4193499999999997,
+     "frame": 42
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 2.1568499999999986,
+     "frame": 64
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 2.8943499999999993,
+     "frame": 86
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 1.6318499999999982,
+     "frame": 48
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 2.3693500000000007,
+     "frame": 71
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 1.1068499999999997,
+     "frame": 33
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 1.8443499999999986,
+     "frame": 55
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 2.5818499999999958,
+     "frame": 77
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 1.31935,
+     "frame": 39
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 2.0500000000000007,
+     "frame": 61
+    }
+   ]
+  },
+  {
+   "name": "time-pingpong",
+   "loop": {
+    "mode": "time",
+    "startSec": 1,
+    "endSec": 3,
+    "speed": 1,
+    "direction": "forward",
+    "pingpong": true
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": 0.35,
+     "frame": 10
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 1.09435,
+     "frame": 32
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 1.8318499999999998,
+     "frame": 54
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 2.56935,
+     "frame": 77
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 2.69315,
+     "frame": 80
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 1.9556500000000003,
+     "frame": 58
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 1.2181499999999996,
+     "frame": 36
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 1.5193499999999993,
+     "frame": 45
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 2.256849999999999,
+     "frame": 67
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 2.994349999999999,
+     "frame": 89
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 2.2681500000000003,
+     "frame": 68
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 1.5306500000000014,
+     "frame": 45
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 1.2068499999999993,
+     "frame": 36
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 1.94435,
+     "frame": 58
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 2.681849999999999,
+     "frame": 80
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 2.5806500000000003,
+     "frame": 77
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 1.8431500000000014,
+     "frame": 55
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 1.1056500000000007,
+     "frame": 33
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 1.6318499999999982,
+     "frame": 48
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 2.3693500000000007,
+     "frame": 71
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 2.8931500000000003,
+     "frame": 86
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 2.1556500000000014,
+     "frame": 64
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 1.4181500000000042,
+     "frame": 42
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 1.31935,
+     "frame": 39
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 2.0500000000000007,
+     "frame": 61
+    }
+   ]
+  },
+  {
+   "name": "time-reverse-slow",
+   "loop": {
+    "mode": "time",
+    "startSec": 0.5,
+    "endSec": 4.5,
+    "speed": 0.5,
+    "direction": "reverse"
+   },
+   "ctx": {
+    "startBeat": 8,
+    "lengthBeat": 24,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": 6.7,
+     "timeSec": 0.825,
+     "frame": 24
+    },
+    {
+     "beat": 7.855366666666667,
+     "timeSec": 0.5361583333333333,
+     "frame": 16
+    },
+    {
+     "beat": 8.997033333333334,
+     "timeSec": 4.250741666666666,
+     "frame": 127
+    },
+    {
+     "beat": 10.1387,
+     "timeSec": 3.965325,
+     "frame": 118
+    },
+    {
+     "beat": 11.280366666666668,
+     "timeSec": 3.6799083333333336,
+     "frame": 110
+    },
+    {
+     "beat": 12.422033333333333,
+     "timeSec": 3.394491666666667,
+     "frame": 101
+    },
+    {
+     "beat": 13.5637,
+     "timeSec": 3.109075,
+     "frame": 93
+    },
+    {
+     "beat": 14.705366666666666,
+     "timeSec": 2.8236583333333334,
+     "frame": 84
+    },
+    {
+     "beat": 15.847033333333336,
+     "timeSec": 2.538241666666666,
+     "frame": 76
+    },
+    {
+     "beat": 16.9887,
+     "timeSec": 2.2528249999999996,
+     "frame": 67
+    },
+    {
+     "beat": 18.130366666666667,
+     "timeSec": 1.9674083333333332,
+     "frame": 59
+    },
+    {
+     "beat": 19.272033333333336,
+     "timeSec": 1.6819916666666659,
+     "frame": 50
+    },
+    {
+     "beat": 20.413700000000002,
+     "timeSec": 1.3965749999999995,
+     "frame": 41
+    },
+    {
+     "beat": 21.555366666666668,
+     "timeSec": 1.111158333333333,
+     "frame": 33
+    },
+    {
+     "beat": 22.697033333333334,
+     "timeSec": 0.8257416666666666,
+     "frame": 24
+    },
+    {
+     "beat": 23.838700000000003,
+     "timeSec": 0.5403249999999993,
+     "frame": 16
+    },
+    {
+     "beat": 24.98036666666667,
+     "timeSec": 4.254908333333333,
+     "frame": 127
+    },
+    {
+     "beat": 26.122033333333334,
+     "timeSec": 3.9694916666666664,
+     "frame": 119
+    },
+    {
+     "beat": 27.2637,
+     "timeSec": 3.684075,
+     "frame": 110
+    },
+    {
+     "beat": 28.405366666666666,
+     "timeSec": 3.3986583333333336,
+     "frame": 101
+    },
+    {
+     "beat": 29.54703333333333,
+     "timeSec": 3.113241666666667,
+     "frame": 93
+    },
+    {
+     "beat": 30.688700000000004,
+     "timeSec": 2.827824999999999,
+     "frame": 84
+    },
+    {
+     "beat": 31.83036666666667,
+     "timeSec": 2.5424083333333325,
+     "frame": 76
+    },
+    {
+     "beat": 32.972033333333336,
+     "timeSec": 2.256991666666666,
+     "frame": 67
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 1.9749999999999996,
+     "frame": 59
+    }
+   ]
+  },
+  {
+   "name": "time-playstart-inside",
+   "loop": {
+    "mode": "time",
+    "startSec": 1,
+    "endSec": 3,
+    "playStartSec": 2.2,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": 1.5500000000000003,
+     "frame": 46
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 2.29435,
+     "frame": 68
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 1.03185,
+     "frame": 30
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 1.7693500000000002,
+     "frame": 53
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 2.50685,
+     "frame": 75
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 1.2443500000000007,
+     "frame": 37
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 1.9818499999999997,
+     "frame": 59
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 2.7193499999999995,
+     "frame": 81
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 1.4568499999999993,
+     "frame": 43
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 2.19435,
+     "frame": 65
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 2.9318500000000007,
+     "frame": 87
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 1.669349999999998,
+     "frame": 50
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 2.4068499999999986,
+     "frame": 72
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 1.1443499999999993,
+     "frame": 34
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 1.88185,
+     "frame": 56
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 2.6193500000000007,
+     "frame": 78
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 1.356849999999998,
+     "frame": 40
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 2.0943499999999986,
+     "frame": 62
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 2.8318499999999993,
+     "frame": 84
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 1.56935,
+     "frame": 47
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 2.3068500000000007,
+     "frame": 69
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 1.044349999999998,
+     "frame": 31
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 1.7818499999999986,
+     "frame": 53
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 2.5193499999999993,
+     "frame": 75
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 1.25,
+     "frame": 37
+    }
+   ]
+  },
+  {
+   "name": "time-preroll",
+   "loop": {
+    "mode": "time",
+    "startSec": 2,
+    "endSec": 4,
+    "playStartSec": 0.5,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 0.5943499999999999,
+     "frame": 17
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 1.3318499999999998,
+     "frame": 39
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 2.06935,
+     "frame": 62
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 2.80685,
+     "frame": 84
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 3.54435,
+     "frame": 106
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 2.2818500000000004,
+     "frame": 68
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 3.0193499999999993,
+     "frame": 90
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 3.756849999999999,
+     "frame": 112
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 2.494349999999999,
+     "frame": 74
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 3.2318499999999997,
+     "frame": 96
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 3.9693499999999986,
+     "frame": 119
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 2.7068499999999993,
+     "frame": 81
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 3.44435,
+     "frame": 103
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 2.181849999999999,
+     "frame": 65
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 2.9193499999999997,
+     "frame": 87
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 3.6568499999999986,
+     "frame": 109
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 2.3943499999999993,
+     "frame": 71
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 3.1318499999999982,
+     "frame": 93
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 3.8693500000000007,
+     "frame": 116
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 2.6068499999999997,
+     "frame": 78
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 3.3443499999999986,
+     "frame": 100
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 2.0818499999999958,
+     "frame": 62
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 2.81935,
+     "frame": 84
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 3.5500000000000007,
+     "frame": 106
+    }
+   ]
+  },
+  {
+   "name": "time-preroll-off-file",
+   "loop": {
+    "mode": "time",
+    "startSec": 1,
+    "endSec": 3,
+    "playStartSec": -0.8,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 0.03184999999999982,
+     "frame": 0
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 0.76935,
+     "frame": 23
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 1.5068499999999998,
+     "frame": 45
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 2.24435,
+     "frame": 67
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 2.9818499999999997,
+     "frame": 89
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 1.7193499999999995,
+     "frame": 51
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 2.4568499999999993,
+     "frame": 73
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 1.1943499999999991,
+     "frame": 35
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 1.9318499999999998,
+     "frame": 57
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 2.669349999999999,
+     "frame": 80
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 1.4068499999999995,
+     "frame": 42
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 2.1443499999999993,
+     "frame": 64
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 2.8818499999999982,
+     "frame": 86
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 1.619349999999999,
+     "frame": 48
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 2.356849999999998,
+     "frame": 70
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 1.0943499999999986,
+     "frame": 32
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 1.8318499999999975,
+     "frame": 54
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 2.56935,
+     "frame": 77
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 1.306849999999999,
+     "frame": 39
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 2.044349999999998,
+     "frame": 61
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 2.781849999999997,
+     "frame": 83
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 1.5193499999999993,
+     "frame": 45
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 2.25,
+     "frame": 67
+    }
+   ]
+  },
+  {
+   "name": "beat-sync-4",
+   "loop": {
+    "mode": "beat-sync",
+    "startSec": 0,
+    "endSec": 2,
+    "speed": 1,
+    "direction": "forward",
+    "syncBeats": 4
+   },
+   "ctx": {
+    "startBeat": 4,
+    "lengthBeat": 24,
+    "videoDurSec": 4
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 120,
+   "samples": [
+    {
+     "beat": 2.7,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 3.855366666666667,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 4.997033333333334,
+     "timeSec": 0.49851666666666716,
+     "frame": 14
+    },
+    {
+     "beat": 6.1387,
+     "timeSec": 1.06935,
+     "frame": 32
+    },
+    {
+     "beat": 7.2803666666666675,
+     "timeSec": 1.6401833333333338,
+     "frame": 49
+    },
+    {
+     "beat": 8.422033333333333,
+     "timeSec": 0.21101666666666663,
+     "frame": 6
+    },
+    {
+     "beat": 9.5637,
+     "timeSec": 0.7818500000000004,
+     "frame": 23
+    },
+    {
+     "beat": 10.705366666666666,
+     "timeSec": 1.3526833333333332,
+     "frame": 40
+    },
+    {
+     "beat": 11.847033333333336,
+     "timeSec": 1.9235166666666679,
+     "frame": 57
+    },
+    {
+     "beat": 12.988700000000001,
+     "timeSec": 0.49435000000000073,
+     "frame": 14
+    },
+    {
+     "beat": 14.130366666666667,
+     "timeSec": 1.0651833333333336,
+     "frame": 31
+    },
+    {
+     "beat": 15.272033333333336,
+     "timeSec": 1.6360166666666682,
+     "frame": 49
+    },
+    {
+     "beat": 16.413700000000002,
+     "timeSec": 0.2068500000000011,
+     "frame": 6
+    },
+    {
+     "beat": 17.555366666666668,
+     "timeSec": 0.777683333333334,
+     "frame": 23
+    },
+    {
+     "beat": 18.697033333333334,
+     "timeSec": 1.3485166666666668,
+     "frame": 40
+    },
+    {
+     "beat": 19.838700000000003,
+     "timeSec": 1.9193500000000014,
+     "frame": 57
+    },
+    {
+     "beat": 20.98036666666667,
+     "timeSec": 0.4901833333333343,
+     "frame": 14
+    },
+    {
+     "beat": 22.122033333333334,
+     "timeSec": 1.0610166666666672,
+     "frame": 31
+    },
+    {
+     "beat": 23.2637,
+     "timeSec": 1.63185,
+     "frame": 48
+    },
+    {
+     "beat": 24.405366666666666,
+     "timeSec": 0.20268333333333288,
+     "frame": 6
+    },
+    {
+     "beat": 25.54703333333333,
+     "timeSec": 0.7735166666666657,
+     "frame": 23
+    },
+    {
+     "beat": 26.688700000000004,
+     "timeSec": 1.3443500000000022,
+     "frame": 40
+    },
+    {
+     "beat": 27.83036666666667,
+     "timeSec": 1.915183333333335,
+     "frame": 57
+    },
+    {
+     "beat": 28.972033333333336,
+     "timeSec": 0.4860166666666679,
+     "frame": 14
+    },
+    {
+     "beat": 30.1,
+     "timeSec": 1.0500000000000007,
+     "frame": 31
+    }
+   ]
+  },
+  {
+   "name": "beat-sync-bpm",
+   "loop": {
+    "mode": "beat-sync",
+    "startSec": 0.5,
+    "endSec": 3.5,
+    "speed": 1,
+    "direction": "forward",
+    "syncUseBpm": true,
+    "syncBpm": 90
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 5
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 150,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 0.6257999999999999,
+     "frame": 18
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 1.609133333333333,
+     "frame": 48
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 2.5924666666666667,
+     "frame": 77
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 0.5757999999999996,
+     "frame": 17
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 1.5591333333333335,
+     "frame": 46
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 2.542466666666667,
+     "frame": 76
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 0.5257999999999985,
+     "frame": 15
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 1.5091333333333328,
+     "frame": 45
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 2.4924666666666653,
+     "frame": 74
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 3.4757999999999996,
+     "frame": 104
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 1.4591333333333303,
+     "frame": 43
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 2.4424666666666663,
+     "frame": 73
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 3.4258000000000006,
+     "frame": 102
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 1.4091333333333314,
+     "frame": 42
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 2.3924666666666674,
+     "frame": 71
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 3.375799999999998,
+     "frame": 101
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 1.3591333333333324,
+     "frame": 40
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 2.342466666666663,
+     "frame": 70
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 3.325800000000001,
+     "frame": 99
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 1.3091333333333317,
+     "frame": 39
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 2.2924666666666624,
+     "frame": 68
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 3.2757999999999967,
+     "frame": 98
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 1.2591333333333345,
+     "frame": 37
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 2.2333333333333343
+    }
+   ]
+  },
+  {
+   "name": "beat-sync-pingpong-reverse",
+   "loop": {
+    "mode": "beat-sync",
+    "startSec": 0,
+    "endSec": 2,
+    "speed": 1,
+    "direction": "reverse",
+    "pingpong": true,
+    "syncBeats": 3
+   },
+   "ctx": {
+    "startBeat": 1,
+    "lengthBeat": 24,
+    "videoDurSec": 4
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 25,
+   "frameCount": 100,
+   "samples": [
+    {
+     "beat": -0.30000000000000004,
+     "timeSec": 0.8666666666666667,
+     "frame": 21
+    },
+    {
+     "beat": 0.8553666666666668,
+     "timeSec": 0.09642222222222212,
+     "frame": 2
+    },
+    {
+     "beat": 1.9970333333333337,
+     "timeSec": 0.6646888888888896,
+     "frame": 16
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 1.4257999999999997,
+     "frame": 35
+    },
+    {
+     "beat": 4.2803666666666675,
+     "timeSec": 1.8130888888888883,
+     "frame": 45
+    },
+    {
+     "beat": 5.422033333333333,
+     "timeSec": 1.0519777777777772,
+     "frame": 26
+    },
+    {
+     "beat": 6.563700000000001,
+     "timeSec": 0.29086666666666616,
+     "frame": 7
+    },
+    {
+     "beat": 7.705366666666667,
+     "timeSec": 0.4702444444444449,
+     "frame": 11
+    },
+    {
+     "beat": 8.847033333333334,
+     "timeSec": 1.231355555555556,
+     "frame": 30
+    },
+    {
+     "beat": 9.9887,
+     "timeSec": 1.9924666666666662,
+     "frame": 49
+    },
+    {
+     "beat": 11.130366666666665,
+     "timeSec": 1.2464222222222228,
+     "frame": 31
+    },
+    {
+     "beat": 12.272033333333335,
+     "timeSec": 0.4853111111111099,
+     "frame": 12
+    },
+    {
+     "beat": 13.4137,
+     "timeSec": 0.27580000000000027,
+     "frame": 6
+    },
+    {
+     "beat": 14.555366666666668,
+     "timeSec": 1.0369111111111113,
+     "frame": 25
+    },
+    {
+     "beat": 15.697033333333334,
+     "timeSec": 1.7980222222222224,
+     "frame": 44
+    },
+    {
+     "beat": 16.838700000000003,
+     "timeSec": 1.4408666666666647,
+     "frame": 36
+    },
+    {
+     "beat": 17.98036666666667,
+     "timeSec": 0.6797555555555537,
+     "frame": 16
+    },
+    {
+     "beat": 19.122033333333334,
+     "timeSec": 0.08135555555555563,
+     "frame": 2
+    },
+    {
+     "beat": 20.2637,
+     "timeSec": 0.8424666666666667,
+     "frame": 21
+    },
+    {
+     "beat": 21.405366666666666,
+     "timeSec": 1.6035777777777778,
+     "frame": 40
+    },
+    {
+     "beat": 22.54703333333333,
+     "timeSec": 1.635311111111113,
+     "frame": 40
+    },
+    {
+     "beat": 23.688700000000004,
+     "timeSec": 0.8741999999999965,
+     "frame": 21
+    },
+    {
+     "beat": 24.83036666666667,
+     "timeSec": 0.11308888888888724,
+     "frame": 2
+    },
+    {
+     "beat": 25.972033333333336,
+     "timeSec": 0.6480222222222238,
+     "frame": 16
+    },
+    {
+     "beat": 27.1,
+     "timeSec": 1.4000000000000021
+    }
+   ]
+  },
+  {
+   "name": "beat-sync-playstart",
+   "loop": {
+    "mode": "beat-sync",
+    "startSec": 1,
+    "endSec": 3,
+    "playStartSec": 1.7,
+    "speed": 1,
+    "direction": "forward",
+    "syncBeats": 4
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 24,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": 1.0499999999999998,
+     "frame": 31
+    },
+    {
+     "beat": -0.14463333333333322,
+     "timeSec": 1.6276833333333334,
+     "frame": 48
+    },
+    {
+     "beat": 0.9970333333333337,
+     "timeSec": 2.198516666666667,
+     "frame": 65
+    },
+    {
+     "beat": 2.1387,
+     "timeSec": 2.76935,
+     "frame": 83
+    },
+    {
+     "beat": 3.2803666666666675,
+     "timeSec": 1.340183333333334,
+     "frame": 40
+    },
+    {
+     "beat": 4.422033333333333,
+     "timeSec": 1.9110166666666668,
+     "frame": 57
+    },
+    {
+     "beat": 5.563700000000001,
+     "timeSec": 2.4818500000000006,
+     "frame": 74
+    },
+    {
+     "beat": 6.705366666666667,
+     "timeSec": 1.0526833333333334,
+     "frame": 31
+    },
+    {
+     "beat": 7.847033333333335,
+     "timeSec": 1.6235166666666672,
+     "frame": 48
+    },
+    {
+     "beat": 8.9887,
+     "timeSec": 2.19435,
+     "frame": 65
+    },
+    {
+     "beat": 10.130366666666665,
+     "timeSec": 2.765183333333333,
+     "frame": 82
+    },
+    {
+     "beat": 11.272033333333335,
+     "timeSec": 1.3360166666666675,
+     "frame": 40
+    },
+    {
+     "beat": 12.4137,
+     "timeSec": 1.9068500000000004,
+     "frame": 57
+    },
+    {
+     "beat": 13.555366666666668,
+     "timeSec": 2.4776833333333332,
+     "frame": 74
+    },
+    {
+     "beat": 14.697033333333334,
+     "timeSec": 1.048516666666666,
+     "frame": 31
+    },
+    {
+     "beat": 15.838700000000003,
+     "timeSec": 1.6193500000000007,
+     "frame": 48
+    },
+    {
+     "beat": 16.98036666666667,
+     "timeSec": 2.1901833333333336,
+     "frame": 65
+    },
+    {
+     "beat": 18.122033333333334,
+     "timeSec": 2.7610166666666665,
+     "frame": 82
+    },
+    {
+     "beat": 19.2637,
+     "timeSec": 1.3318499999999993,
+     "frame": 39
+    },
+    {
+     "beat": 20.405366666666666,
+     "timeSec": 1.9026833333333322,
+     "frame": 57
+    },
+    {
+     "beat": 21.54703333333333,
+     "timeSec": 2.473516666666665,
+     "frame": 74
+    },
+    {
+     "beat": 22.688700000000004,
+     "timeSec": 1.0443500000000014,
+     "frame": 31
+    },
+    {
+     "beat": 23.83036666666667,
+     "timeSec": 1.6151833333333343,
+     "frame": 48
+    },
+    {
+     "beat": 24.972033333333336,
+     "timeSec": 2.186016666666667,
+     "frame": 65
+    },
+    {
+     "beat": 26.1,
+     "timeSec": 2.75,
+     "frame": 82
+    }
+   ]
+  },
+  {
+   "name": "one-shot-warped",
+   "loop": {
+    "mode": "one-shot",
+    "startSec": 0,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 2,
+    "lengthBeat": 24,
+    "videoDurSec": 20
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": [
+     {
+      "startBeat": 0,
+      "endBeat": 32,
+      "waveform": "sine",
+      "amplitude": 0.4,
+      "periodBeats": 8,
+      "phase": 0
+     }
+    ]
+   },
+   "fps": 30,
+   "frameCount": 600,
+   "samples": [
+    {
+     "beat": 0.7,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 1.8553666666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 2.9970333333333334,
+     "timeSec": 0.677996180118563,
+     "frame": 20
+    },
+    {
+     "beat": 4.1387,
+     "timeSec": 1.3221665738348065,
+     "frame": 39
+    },
+    {
+     "beat": 5.2803666666666675,
+     "timeSec": 1.776341485016701,
+     "frame": 53
+    },
+    {
+     "beat": 6.422033333333333,
+     "timeSec": 2.1283095395128235,
+     "frame": 63
+    },
+    {
+     "beat": 7.563700000000001,
+     "timeSec": 2.5424881942239526,
+     "frame": 76
+    },
+    {
+     "beat": 8.705366666666666,
+     "timeSec": 3.136537727744777,
+     "frame": 94
+    },
+    {
+     "beat": 9.847033333333334,
+     "timeSec": 3.893050728130145,
+     "frame": 116
+    },
+    {
+     "beat": 10.9887,
+     "timeSec": 4.672596082423108,
+     "frame": 140
+    },
+    {
+     "beat": 12.130366666666665,
+     "timeSec": 5.318244163386763,
+     "frame": 159
+    },
+    {
+     "beat": 13.272033333333335,
+     "timeSec": 5.773602644080579,
+     "frame": 173
+    },
+    {
+     "beat": 14.4137,
+     "timeSec": 6.125710222736361,
+     "frame": 183
+    },
+    {
+     "beat": 15.555366666666668,
+     "timeSec": 6.538882334315303,
+     "frame": 196
+    },
+    {
+     "beat": 16.697033333333334,
+     "timeSec": 7.131515255269906,
+     "frame": 213
+    },
+    {
+     "beat": 17.838700000000003,
+     "timeSec": 7.887237419790918,
+     "frame": 236
+    },
+    {
+     "beat": 18.98036666666667,
+     "timeSec": 8.667195984727652,
+     "frame": 260
+    },
+    {
+     "beat": 20.122033333333334,
+     "timeSec": 9.314263876143187,
+     "frame": 279
+    },
+    {
+     "beat": 21.2637,
+     "timeSec": 9.770863803144454,
+     "frame": 293
+    },
+    {
+     "beat": 22.405366666666666,
+     "timeSec": 10.123110905959898,
+     "frame": 303
+    },
+    {
+     "beat": 23.54703333333333,
+     "timeSec": 10.535276474406654,
+     "frame": 316
+    },
+    {
+     "beat": 24.688700000000004,
+     "timeSec": 11.12649278279504,
+     "frame": 333
+    },
+    {
+     "beat": 25.83036666666667,
+     "timeSec": 11.88142411145169,
+     "frame": 356
+    },
+    {
+     "beat": 26.972033333333336,
+     "timeSec": 12.661795887032195,
+     "frame": 379
+    },
+    {
+     "beat": 28.1,
+     "timeSec": 13.303463173909048,
+     "frame": 399
+    }
+   ]
+  },
+  {
+   "name": "time-warped",
+   "loop": {
+    "mode": "time",
+    "startSec": 1,
+    "endSec": 3,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 2,
+    "lengthBeat": 24,
+    "videoDurSec": 6
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": [
+     {
+      "startBeat": 0,
+      "endBeat": 32,
+      "waveform": "sine",
+      "amplitude": 0.4,
+      "periodBeats": 8,
+      "phase": 0
+     }
+    ]
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": 0.7,
+     "timeSec": 0.13330325547095812,
+     "frame": 3
+    },
+    {
+     "beat": 1.8553666666666668,
+     "timeSec": 0.898864036469373,
+     "frame": 26
+    },
+    {
+     "beat": 2.9970333333333334,
+     "timeSec": 1.677996180118563,
+     "frame": 50
+    },
+    {
+     "beat": 4.1387,
+     "timeSec": 2.3221665738348065,
+     "frame": 69
+    },
+    {
+     "beat": 5.2803666666666675,
+     "timeSec": 2.776341485016701,
+     "frame": 83
+    },
+    {
+     "beat": 6.422033333333333,
+     "timeSec": 1.1283095395128235,
+     "frame": 33
+    },
+    {
+     "beat": 7.563700000000001,
+     "timeSec": 1.5424881942239526,
+     "frame": 46
+    },
+    {
+     "beat": 8.705366666666666,
+     "timeSec": 2.136537727744777,
+     "frame": 64
+    },
+    {
+     "beat": 9.847033333333334,
+     "timeSec": 2.893050728130145,
+     "frame": 86
+    },
+    {
+     "beat": 10.9887,
+     "timeSec": 1.6725960824231079,
+     "frame": 50
+    },
+    {
+     "beat": 12.130366666666665,
+     "timeSec": 2.3182441633867628,
+     "frame": 69
+    },
+    {
+     "beat": 13.272033333333335,
+     "timeSec": 2.7736026440805794,
+     "frame": 83
+    },
+    {
+     "beat": 14.4137,
+     "timeSec": 1.1257102227363607,
+     "frame": 33
+    },
+    {
+     "beat": 15.555366666666668,
+     "timeSec": 1.5388823343153026,
+     "frame": 46
+    },
+    {
+     "beat": 16.697033333333334,
+     "timeSec": 2.131515255269907,
+     "frame": 63
+    },
+    {
+     "beat": 17.838700000000003,
+     "timeSec": 2.8872374197909174,
+     "frame": 86
+    },
+    {
+     "beat": 18.98036666666667,
+     "timeSec": 1.6671959847276518,
+     "frame": 50
+    },
+    {
+     "beat": 20.122033333333334,
+     "timeSec": 2.314263876143187,
+     "frame": 69
+    },
+    {
+     "beat": 21.2637,
+     "timeSec": 2.7708638031444544,
+     "frame": 83
+    },
+    {
+     "beat": 22.405366666666666,
+     "timeSec": 1.1231109059598978,
+     "frame": 33
+    },
+    {
+     "beat": 23.54703333333333,
+     "timeSec": 1.535276474406654,
+     "frame": 46
+    },
+    {
+     "beat": 24.688700000000004,
+     "timeSec": 2.12649278279504,
+     "frame": 63
+    },
+    {
+     "beat": 25.83036666666667,
+     "timeSec": 2.8814241114516896,
+     "frame": 86
+    },
+    {
+     "beat": 26.972033333333336,
+     "timeSec": 1.661795887032195,
+     "frame": 49
+    },
+    {
+     "beat": 28.1,
+     "timeSec": 2.303463173909048,
+     "frame": 69
+    }
+   ]
+  },
+  {
+   "name": "beat-sync-warped",
+   "loop": {
+    "mode": "beat-sync",
+    "startSec": 0,
+    "endSec": 2,
+    "speed": 1,
+    "direction": "forward",
+    "syncBeats": 4
+   },
+   "ctx": {
+    "startBeat": 2,
+    "lengthBeat": 24,
+    "videoDurSec": 4
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": [
+     {
+      "startBeat": 0,
+      "endBeat": 32,
+      "waveform": "sine",
+      "amplitude": 0.4,
+      "periodBeats": 8,
+      "phase": 0
+     }
+    ]
+   },
+   "fps": 30,
+   "frameCount": 120,
+   "samples": [
+    {
+     "beat": 0.7,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 1.8553666666666668,
+     "timeSec": null,
+     "frame": null
+    },
+    {
+     "beat": 2.9970333333333334,
+     "timeSec": 0.4985166666666667,
+     "frame": 14
+    },
+    {
+     "beat": 4.1387,
+     "timeSec": 1.06935,
+     "frame": 32
+    },
+    {
+     "beat": 5.2803666666666675,
+     "timeSec": 1.6401833333333338,
+     "frame": 49
+    },
+    {
+     "beat": 6.422033333333333,
+     "timeSec": 0.21101666666666663,
+     "frame": 6
+    },
+    {
+     "beat": 7.563700000000001,
+     "timeSec": 0.7818500000000004,
+     "frame": 23
+    },
+    {
+     "beat": 8.705366666666666,
+     "timeSec": 1.3526833333333332,
+     "frame": 40
+    },
+    {
+     "beat": 9.847033333333334,
+     "timeSec": 1.923516666666667,
+     "frame": 57
+    },
+    {
+     "beat": 10.9887,
+     "timeSec": 0.49434999999999985,
+     "frame": 14
+    },
+    {
+     "beat": 12.130366666666665,
+     "timeSec": 1.0651833333333327,
+     "frame": 31
+    },
+    {
+     "beat": 13.272033333333335,
+     "timeSec": 1.6360166666666673,
+     "frame": 49
+    },
+    {
+     "beat": 14.4137,
+     "timeSec": 0.2068500000000002,
+     "frame": 6
+    },
+    {
+     "beat": 15.555366666666668,
+     "timeSec": 0.777683333333334,
+     "frame": 23
+    },
+    {
+     "beat": 16.697033333333334,
+     "timeSec": 1.3485166666666668,
+     "frame": 40
+    },
+    {
+     "beat": 17.838700000000003,
+     "timeSec": 1.9193500000000014,
+     "frame": 57
+    },
+    {
+     "beat": 18.98036666666667,
+     "timeSec": 0.4901833333333343,
+     "frame": 14
+    },
+    {
+     "beat": 20.122033333333334,
+     "timeSec": 1.0610166666666672,
+     "frame": 31
+    },
+    {
+     "beat": 21.2637,
+     "timeSec": 1.63185,
+     "frame": 48
+    },
+    {
+     "beat": 22.405366666666666,
+     "timeSec": 0.20268333333333288,
+     "frame": 6
+    },
+    {
+     "beat": 23.54703333333333,
+     "timeSec": 0.7735166666666657,
+     "frame": 23
+    },
+    {
+     "beat": 24.688700000000004,
+     "timeSec": 1.3443500000000022,
+     "frame": 40
+    },
+    {
+     "beat": 25.83036666666667,
+     "timeSec": 1.915183333333335,
+     "frame": 57
+    },
+    {
+     "beat": 26.972033333333336,
+     "timeSec": 0.4860166666666679,
+     "frame": 14
+    },
+    {
+     "beat": 28.1,
+     "timeSec": 1.0500000000000007,
+     "frame": 31
+    }
+   ]
+  },
+  {
+   "name": "random-default",
+   "loop": {
+    "mode": "random",
+    "startSec": 0.5,
+    "endSec": 4.5,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6,
+    "seed": 0.8749875087438793
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": 1.3648615923652998,
+     "frame": 40
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 2.627999260166591,
+     "frame": 78
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 2.46776237964072,
+     "frame": 74
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 3.5752812682038106,
+     "frame": 107
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 2.2699727695749212,
+     "frame": 68
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 0.7607495725035669,
+     "frame": 22
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 3.7221285474486496,
+     "frame": 111
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 3.2426374472660227,
+     "frame": 97
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 1.9801421936411578,
+     "frame": 59
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 1.7836001417371778,
+     "frame": 53
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 2.3878276077296303,
+     "frame": 71
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 3.8432948531192155,
+     "frame": 115
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 2.0715485075792106,
+     "frame": 62
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 1.9438955512568201,
+     "frame": 58
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 2.271379028930307,
+     "frame": 68
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 2.7541841140775656,
+     "frame": 82
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 3.9246463435740075,
+     "frame": 117
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 1.051860939949236,
+     "frame": 31
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 1.728526584266585,
+     "frame": 51
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 3.8845929362831066,
+     "frame": 116
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 2.6579756872687823,
+     "frame": 79
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 2.2027660746419317,
+     "frame": 66
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 1.5039573828860262,
+     "frame": 45
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 3.045492035712244,
+     "frame": 91
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 3.4527520995288907,
+     "frame": 103
+    }
+   ]
+  },
+  {
+   "name": "random-fast-dwell",
+   "loop": {
+    "mode": "random",
+    "startSec": 0,
+    "endSec": 6,
+    "speed": 1,
+    "direction": "forward",
+    "dwell": 0.25
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 32,
+    "videoDurSec": 6,
+    "seed": 0.875087438792845
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": 2.367643411362134,
+     "frame": 71
+    },
+    {
+     "beat": 0.1886999999999998,
+     "timeSec": 4.04287574283396,
+     "frame": 121
+    },
+    {
+     "beat": 1.6636999999999997,
+     "timeSec": 2.4001770971529512,
+     "frame": 72
+    },
+    {
+     "beat": 3.1387,
+     "timeSec": 0.8936894796241843,
+     "frame": 26
+    },
+    {
+     "beat": 4.6137,
+     "timeSec": 2.5105443241148087,
+     "frame": 75
+    },
+    {
+     "beat": 6.0887,
+     "timeSec": 1.0585101657704954,
+     "frame": 31
+    },
+    {
+     "beat": 7.5637,
+     "timeSec": 1.9616057003792597,
+     "frame": 58
+    },
+    {
+     "beat": 9.038699999999999,
+     "timeSec": 1.2924738995569647,
+     "frame": 38
+    },
+    {
+     "beat": 10.513699999999998,
+     "timeSec": 2.3919264947763526,
+     "frame": 71
+    },
+    {
+     "beat": 11.988699999999998,
+     "timeSec": 3.997589783479623,
+     "frame": 119
+    },
+    {
+     "beat": 13.4637,
+     "timeSec": 2.087306690625705,
+     "frame": 62
+    },
+    {
+     "beat": 14.938699999999997,
+     "timeSec": 4.630162522762708,
+     "frame": 138
+    },
+    {
+     "beat": 16.4137,
+     "timeSec": 4.634841396516205,
+     "frame": 139
+    },
+    {
+     "beat": 17.8887,
+     "timeSec": 4.191947958866894,
+     "frame": 125
+    },
+    {
+     "beat": 19.363699999999998,
+     "timeSec": 4.681436037826284,
+     "frame": 140
+    },
+    {
+     "beat": 20.8387,
+     "timeSec": 3.5132670385116507,
+     "frame": 105
+    },
+    {
+     "beat": 22.313699999999997,
+     "timeSec": 4.968248466696988,
+     "frame": 149
+    },
+    {
+     "beat": 23.7887,
+     "timeSec": 2.424650647988176,
+     "frame": 72
+    },
+    {
+     "beat": 25.263699999999996,
+     "timeSec": 2.1282644825535186,
+     "frame": 63
+    },
+    {
+     "beat": 26.7387,
+     "timeSec": 3.2210423793175718,
+     "frame": 96
+    },
+    {
+     "beat": 28.2137,
+     "timeSec": 0.9145380264509956,
+     "frame": 27
+    },
+    {
+     "beat": 29.688699999999997,
+     "timeSec": 1.7841629431307795,
+     "frame": 53
+    },
+    {
+     "beat": 31.163699999999995,
+     "timeSec": 1.068429660257253,
+     "frame": 32
+    },
+    {
+     "beat": 32.6387,
+     "timeSec": 2.19385643470823,
+     "frame": 65
+    },
+    {
+     "beat": 34.1,
+     "timeSec": 2.4433774070945975,
+     "frame": 73
+    }
+   ]
+  },
+  {
+   "name": "random-dwell-sec",
+   "loop": {
+    "mode": "random",
+    "startSec": 0,
+    "endSec": 6,
+    "speed": 1,
+    "direction": "forward",
+    "dwell": 2,
+    "dwellUnit": "sec"
+   },
+   "ctx": {
+    "startBeat": 4,
+    "lengthBeat": 32,
+    "videoDurSec": 6,
+    "seed": 0.8751873688418107
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 180,
+   "samples": [
+    {
+     "beat": 2.7,
+     "timeSec": 4.038469299923966,
+     "frame": 121
+    },
+    {
+     "beat": 4.1887,
+     "timeSec": 3.770890137232112,
+     "frame": 113
+    },
+    {
+     "beat": 5.6637,
+     "timeSec": 3.172133126323823,
+     "frame": 95
+    },
+    {
+     "beat": 7.1387,
+     "timeSec": 2.9535070081059667,
+     "frame": 88
+    },
+    {
+     "beat": 8.6137,
+     "timeSec": 3.4199222107615794,
+     "frame": 102
+    },
+    {
+     "beat": 10.0887,
+     "timeSec": 4.2104716269904685,
+     "frame": 126
+    },
+    {
+     "beat": 11.5637,
+     "timeSec": 4.673514095718409,
+     "frame": 140
+    },
+    {
+     "beat": 13.038699999999999,
+     "timeSec": 4.481220247699952,
+     "frame": 134
+    },
+    {
+     "beat": 14.5137,
+     "timeSec": 3.868674263654958,
+     "frame": 116
+    },
+    {
+     "beat": 15.988699999999998,
+     "timeSec": 3.293551361296496,
+     "frame": 98
+    },
+    {
+     "beat": 17.4637,
+     "timeSec": 2.9175314108878236,
+     "frame": 87
+    },
+    {
+     "beat": 18.938699999999997,
+     "timeSec": 2.479455107925621,
+     "frame": 74
+    },
+    {
+     "beat": 20.4137,
+     "timeSec": 1.6930959866982052,
+     "frame": 50
+    },
+    {
+     "beat": 21.8887,
+     "timeSec": 0.7245986743392236,
+     "frame": 21
+    },
+    {
+     "beat": 23.363699999999998,
+     "timeSec": 0.1988606881467897,
+     "frame": 5
+    },
+    {
+     "beat": 24.8387,
+     "timeSec": 0.6693842116300425,
+     "frame": 20
+    },
+    {
+     "beat": 26.313699999999997,
+     "timeSec": 2.060517539623296,
+     "frame": 61
+    },
+    {
+     "beat": 27.7887,
+     "timeSec": 3.652202708459189,
+     "frame": 109
+    },
+    {
+     "beat": 29.263699999999996,
+     "timeSec": 4.6502484674875015,
+     "frame": 139
+    },
+    {
+     "beat": 30.7387,
+     "timeSec": 4.8041767881209925,
+     "frame": 144
+    },
+    {
+     "beat": 32.2137,
+     "timeSec": 4.49356480678922,
+     "frame": 134
+    },
+    {
+     "beat": 33.6887,
+     "timeSec": 4.24247784670527,
+     "frame": 127
+    },
+    {
+     "beat": 35.1637,
+     "timeSec": 4.185752921687564,
+     "frame": 125
+    },
+    {
+     "beat": 36.6387,
+     "timeSec": 4.025721862687974,
+     "frame": 120
+    },
+    {
+     "beat": 38.1,
+     "timeSec": 3.487698364199853,
+     "frame": 104
+    }
+   ]
+  },
+  {
+   "name": "still-image",
+   "loop": {
+    "mode": "time",
+    "startSec": 0,
+    "speed": 1,
+    "direction": "forward"
+   },
+   "ctx": {
+    "startBeat": 0,
+    "lengthBeat": 16,
+    "videoDurSec": 0.03333333333333333
+   },
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "fps": 30,
+   "frameCount": 1,
+   "samples": [
+    {
+     "beat": -1.3,
+     "timeSec": null,
+     "frame": 0
+    },
+    {
+     "beat": -0.4779666666666666,
+     "timeSec": null,
+     "frame": 0
+    },
+    {
+     "beat": 0.33036666666666686,
+     "timeSec": 0.03185000000000011,
+     "frame": 0
+    },
+    {
+     "beat": 1.1387000000000003,
+     "timeSec": 0.002683333333333482,
+     "frame": 0
+    },
+    {
+     "beat": 1.9470333333333338,
+     "timeSec": 0.0068500000000002725,
+     "frame": 0
+    },
+    {
+     "beat": 2.755366666666667,
+     "timeSec": 0.011016666666666841,
+     "frame": 0
+    },
+    {
+     "beat": 3.5637000000000008,
+     "timeSec": 0.015183333333333632,
+     "frame": 0
+    },
+    {
+     "beat": 4.372033333333334,
+     "timeSec": 0.019350000000000644,
+     "frame": 0
+    },
+    {
+     "beat": 5.180366666666668,
+     "timeSec": 0.023516666666667435,
+     "frame": 0
+    },
+    {
+     "beat": 5.9887000000000015,
+     "timeSec": 0.027683333333334226,
+     "frame": 0
+    },
+    {
+     "beat": 6.797033333333334,
+     "timeSec": 0.031850000000000565,
+     "frame": 0
+    },
+    {
+     "beat": 7.605366666666668,
+     "timeSec": 0.00268333333333403,
+     "frame": 0
+    },
+    {
+     "beat": 8.4137,
+     "timeSec": 0.006850000000000377,
+     "frame": 0
+    },
+    {
+     "beat": 9.222033333333334,
+     "timeSec": 0.011016666666667167,
+     "frame": 0
+    },
+    {
+     "beat": 10.030366666666668,
+     "timeSec": 0.015183333333333958,
+     "frame": 0
+    },
+    {
+     "beat": 10.838700000000001,
+     "timeSec": 0.01935000000000075,
+     "frame": 0
+    },
+    {
+     "beat": 11.647033333333335,
+     "timeSec": 0.02351666666666754,
+     "frame": 0
+    },
+    {
+     "beat": 12.455366666666666,
+     "timeSec": 0.02768333333333344,
+     "frame": 0
+    },
+    {
+     "beat": 13.263700000000002,
+     "timeSec": 0.03185000000000112,
+     "frame": 0
+    },
+    {
+     "beat": 14.072033333333334,
+     "timeSec": 0.00268333333333369,
+     "frame": 0
+    },
+    {
+     "beat": 14.880366666666667,
+     "timeSec": 0.006850000000000481,
+     "frame": 0
+    },
+    {
+     "beat": 15.6887,
+     "timeSec": 0.011016666666667271,
+     "frame": 0
+    },
+    {
+     "beat": 16.497033333333334,
+     "timeSec": 0.015183333333334062,
+     "frame": 0
+    },
+    {
+     "beat": 17.305366666666668,
+     "timeSec": 0.019350000000000853,
+     "frame": 0
+    },
+    {
+     "beat": 18.1,
+     "timeSec": 0.01666666666666762,
+     "frame": 0
+    }
+   ]
+  }
+ ],
+ "noiseSeeds": [
+  {
+   "id": "clip-a",
+   "seed": 0.8749875087438793
+  },
+  {
+   "id": "clip-b",
+   "seed": 0.875087438792845
+  },
+  {
+   "id": "clip-c",
+   "seed": 0.8751873688418107
+  },
+  {
+   "id": "c1",
+   "seed": 0.3115818926751274
+  },
+  {
+   "id": "a-very-long-clip-identifier-000",
+   "seed": 0.24053162786049764
+  }
+ ]
+}

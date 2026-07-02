@@ -1,0 +1,367 @@
+{
+ "cases": [
+  {
+   "name": "flat-advance",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 0,
+    "loopEnabled": false,
+    "loopStartBeat": 0,
+    "loopEndBeat": 32
+   },
+   "steps": [
+    {
+     "dt": 0.5
+    },
+    {
+     "dt": 1
+    },
+    {
+     "dt": 0.016
+    },
+    {
+     "dt": 0
+    }
+   ],
+   "expect": [
+    {
+     "beat": 1,
+     "seconds": 0.5
+    },
+    {
+     "beat": 3,
+     "seconds": 1.5
+    },
+    {
+     "beat": 3.032,
+     "seconds": 1.516
+    },
+    {
+     "beat": 3.032,
+     "seconds": 1.516
+    }
+   ]
+  },
+  {
+   "name": "paused-then-resume",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "state": {
+    "playing": false,
+    "positionBeat": 5,
+    "loopEnabled": false,
+    "loopStartBeat": 0,
+    "loopEndBeat": 32
+   },
+   "steps": [
+    {
+     "dt": 1
+    },
+    {
+     "dt": 0.5,
+     "playing": true
+    },
+    {
+     "dt": 0.25,
+     "playing": false
+    },
+    {
+     "dt": 0.5,
+     "playing": true
+    }
+   ],
+   "expect": [
+    {
+     "beat": 5,
+     "seconds": 2.5
+    },
+    {
+     "beat": 6,
+     "seconds": 3
+    },
+    {
+     "beat": 6,
+     "seconds": 3
+    },
+    {
+     "beat": 7,
+     "seconds": 3.5
+    }
+   ]
+  },
+  {
+   "name": "scrub-reanchor",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 0,
+    "loopEnabled": false,
+    "loopStartBeat": 0,
+    "loopEndBeat": 32
+   },
+   "steps": [
+    {
+     "dt": 0.5
+    },
+    {
+     "dt": 0.5,
+     "scrubBeat": 10
+    },
+    {
+     "dt": 0.5
+    }
+   ],
+   "expect": [
+    {
+     "beat": 1,
+     "seconds": 0.5
+    },
+    {
+     "beat": 11,
+     "seconds": 5.5
+    },
+    {
+     "beat": 12,
+     "seconds": 6
+    }
+   ]
+  },
+  {
+   "name": "loop-wrap-inside",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 7.5,
+    "loopEnabled": true,
+    "loopStartBeat": 4,
+    "loopEndBeat": 8
+   },
+   "steps": [
+    {
+     "dt": 0.5
+    },
+    {
+     "dt": 0.5
+    },
+    {
+     "dt": 2.5
+    }
+   ],
+   "expect": [
+    {
+     "beat": 4.5,
+     "seconds": 2.25
+    },
+    {
+     "beat": 5.5,
+     "seconds": 2.75
+    },
+    {
+     "beat": 6.5,
+     "seconds": 3.25
+    }
+   ]
+  },
+  {
+   "name": "loop-no-yank-outside",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 9,
+    "loopEnabled": true,
+    "loopStartBeat": 4,
+    "loopEndBeat": 8
+   },
+   "steps": [
+    {
+     "dt": 0.5
+    },
+    {
+     "dt": 0.5
+    }
+   ],
+   "expect": [
+    {
+     "beat": 10,
+     "seconds": 5
+    },
+    {
+     "beat": 11,
+     "seconds": 5.5
+    }
+   ]
+  },
+  {
+   "name": "warped-local-rate",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": [
+     {
+      "startBeat": 0,
+      "endBeat": 32,
+      "waveform": "sine",
+      "amplitude": 0.4,
+      "periodBeats": 8,
+      "phase": 0
+     }
+    ]
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 4,
+    "loopEnabled": false,
+    "loopStartBeat": 0,
+    "loopEndBeat": 32
+   },
+   "steps": [
+    {
+     "dt": 0.01
+    },
+    {
+     "dt": 0.01
+    },
+    {
+     "dt": 0.25
+    },
+    {
+     "dt": 0.25
+    },
+    {
+     "dt": 1.5
+    }
+   ],
+   "expect": [
+    {
+     "beat": 4.020399908131608,
+     "seconds": 2.5188866906246785
+    },
+    {
+     "beat": 4.040799816263218,
+     "seconds": 2.5288866906246787
+    },
+    {
+     "beat": 4.594956844322013,
+     "seconds": 2.7788866906246787
+    },
+    {
+     "beat": 5.274591292616626,
+     "seconds": 3.0288866906246787
+    },
+    {
+     "beat": 8.92803273780776,
+     "seconds": 4.528886690624679
+    }
+   ]
+  },
+  {
+   "name": "warped-loop-wrap",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": [
+     {
+      "startBeat": 0,
+      "endBeat": 32,
+      "waveform": "sine",
+      "amplitude": 0.4,
+      "periodBeats": 8,
+      "phase": 0
+     }
+    ]
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 6.5,
+    "loopEnabled": true,
+    "loopStartBeat": 2,
+    "loopEndBeat": 7
+   },
+   "steps": [
+    {
+     "dt": 0.3
+    },
+    {
+     "dt": 0.3
+    },
+    {
+     "dt": 0.3
+    },
+    {
+     "dt": 4
+    }
+   ],
+   "expect": [
+    {
+     "beat": 2.1896613346135525,
+     "seconds": 1.3869907074839034
+    },
+    {
+     "beat": 2.625154317670667,
+     "seconds": 1.6869907074839032
+    },
+    {
+     "beat": 3.082991006435497,
+     "seconds": 1.9869907074839037
+    },
+    {
+     "beat": 7.2474485460838425,
+     "seconds": 3.666909322382048
+    }
+   ]
+  },
+  {
+   "name": "negative-dt-clamped",
+   "clock": {
+    "bpm": 120,
+    "totalBeats": 64,
+    "segments": []
+   },
+   "state": {
+    "playing": true,
+    "positionBeat": 2,
+    "loopEnabled": false,
+    "loopStartBeat": 0,
+    "loopEndBeat": 32
+   },
+   "steps": [
+    {
+     "dt": -0.5
+    },
+    {
+     "dt": 0.5
+    }
+   ],
+   "expect": [
+    {
+     "beat": 2,
+     "seconds": 1
+    },
+    {
+     "beat": 3,
+     "seconds": 1.5
+    }
+   ]
+  }
+ ]
+}

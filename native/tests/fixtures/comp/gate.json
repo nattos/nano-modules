@@ -1,0 +1,310 @@
+{
+ "shouldHold": [
+  {
+   "precise": false,
+   "force": false,
+   "activeVideoCount": 0,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": false,
+   "activeVideoCount": 0,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": false,
+   "activeVideoCount": 2,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": false,
+   "activeVideoCount": 2,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": true,
+   "activeVideoCount": 0,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": true,
+   "activeVideoCount": 0,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": true,
+   "activeVideoCount": 2,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": false,
+   "force": true,
+   "activeVideoCount": 2,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": false,
+   "activeVideoCount": 0,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": false,
+   "activeVideoCount": 0,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": false,
+   "activeVideoCount": 2,
+   "ready": false,
+   "expect": true
+  },
+  {
+   "precise": true,
+   "force": false,
+   "activeVideoCount": 2,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": true,
+   "activeVideoCount": 0,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": true,
+   "activeVideoCount": 0,
+   "ready": true,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": true,
+   "activeVideoCount": 2,
+   "ready": false,
+   "expect": false
+  },
+  {
+   "precise": true,
+   "force": true,
+   "activeVideoCount": 2,
+   "ready": true,
+   "expect": false
+  }
+ ],
+ "videoInputsReady": [
+  {
+   "active": [],
+   "hasPump": false,
+   "readyIds": [],
+   "expect": true
+  },
+  {
+   "active": [],
+   "hasPump": true,
+   "readyIds": [],
+   "expect": true
+  },
+  {
+   "active": [
+    "a"
+   ],
+   "hasPump": false,
+   "readyIds": [
+    "a"
+   ],
+   "expect": false
+  },
+  {
+   "active": [
+    "a"
+   ],
+   "hasPump": true,
+   "readyIds": [],
+   "expect": false
+  },
+  {
+   "active": [
+    "a"
+   ],
+   "hasPump": true,
+   "readyIds": [
+    "a"
+   ],
+   "expect": true
+  },
+  {
+   "active": [
+    "a",
+    "b"
+   ],
+   "hasPump": true,
+   "readyIds": [
+    "a"
+   ],
+   "expect": false
+  },
+  {
+   "active": [
+    "a",
+    "b"
+   ],
+   "hasPump": true,
+   "readyIds": [
+    "a",
+    "b"
+   ],
+   "expect": true
+  }
+ ],
+ "pumpActiveSet": [
+  {
+   "holding": false,
+   "target": [
+    {
+     "clipId": "a",
+     "tag": "t"
+    },
+    {
+     "clipId": "b",
+     "tag": "t"
+    }
+   ],
+   "displayed": [
+    {
+     "clipId": "b",
+     "tag": "d"
+    },
+    {
+     "clipId": "c",
+     "tag": "d"
+    }
+   ],
+   "expect": [
+    {
+     "clipId": "a",
+     "tag": "t"
+    },
+    {
+     "clipId": "b",
+     "tag": "t"
+    }
+   ]
+  },
+  {
+   "holding": true,
+   "target": [
+    {
+     "clipId": "a",
+     "tag": "t"
+    },
+    {
+     "clipId": "b",
+     "tag": "t"
+    }
+   ],
+   "displayed": [
+    {
+     "clipId": "b",
+     "tag": "d"
+    },
+    {
+     "clipId": "c",
+     "tag": "d"
+    }
+   ],
+   "expect": [
+    {
+     "clipId": "b",
+     "tag": "t"
+    },
+    {
+     "clipId": "c",
+     "tag": "d"
+    },
+    {
+     "clipId": "a",
+     "tag": "t"
+    }
+   ]
+  },
+  {
+   "holding": true,
+   "target": [],
+   "displayed": [
+    {
+     "clipId": "x",
+     "tag": "d"
+    }
+   ],
+   "expect": [
+    {
+     "clipId": "x",
+     "tag": "d"
+    }
+   ]
+  },
+  {
+   "holding": true,
+   "target": [
+    {
+     "clipId": "x",
+     "tag": "t"
+    }
+   ],
+   "displayed": [],
+   "expect": [
+    {
+     "clipId": "x",
+     "tag": "t"
+    }
+   ]
+  },
+  {
+   "holding": true,
+   "target": [
+    {
+     "clipId": "a",
+     "tag": "t"
+    }
+   ],
+   "displayed": [
+    {
+     "clipId": "a",
+     "tag": "d"
+    },
+    {
+     "clipId": "a",
+     "tag": "d2"
+    }
+   ],
+   "expect": [
+    {
+     "clipId": "a",
+     "tag": "t"
+    }
+   ]
+  }
+ ]
+}
