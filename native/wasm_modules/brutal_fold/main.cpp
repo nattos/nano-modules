@@ -127,13 +127,15 @@ static constexpr float kSkipStdSpan    = 0.12f;
 // shader's fixed-point scale. kEdgeGpuGain calibrates the 1px-Sobel edge term to
 // the luminance-std anchor (a 1px gradient is a large multiple of the old CPU
 // 120px-grid one) — tune live against the skip_variance broadcast.
-static constexpr int   kStatsInts    = 4;       // [edge_count, luma_sum, luma2_sum, count]
+// Flatness is measured PER TILE (kTileGrid², 4 int slots each) and reduced by MAX
+// over tiles, so any single structured region — an edge or luma variance anywhere
+// — reads as non-flat. edge_count per tile is normalized by the tile's LINEAR
+// dimension (√pixels) so a concentrated edge saturates regardless of its area.
+static constexpr int   kTileGrid     = 16;      // must match edge.hlsl kTileGrid
+static constexpr int   kNumTiles     = kTileGrid * kTileGrid;
+static constexpr int   kStatsInts    = kNumTiles * 4;  // [edge_count,luma,luma²,count] per tile
 static constexpr float kStatsScale   = 128.0f;  // must match edge.hlsl kStatsScale (luma sums)
-// Edge term = edge_pixel_count normalized by a LINEAR dimension (√N), so a
-// concentrated hard edge (a bar boundary) saturates regardless of its area — the
-// fix for "a bar entered but the frame-mean edge barely moved". Higher = more
-// edge-sensitive; a fraction of one full-height edge already reads as non-flat.
-static constexpr float kEdgeNormGain = 2.0f;
+static constexpr float kEdgeNormGain = 2.0f;    // higher = more edge-sensitive per tile
 
 // Autopilot epicycle constants (verbatim from the shape_fold autopilot). Two
 // summed circular motions, 90° out of phase, incommensurate rates → sweeps the
@@ -508,7 +510,7 @@ void init(void* self) {
   if (!s->uniform_buf.valid() || !s->stats_buf.valid()) return;
   // Zero the stats so the first poll (before any edge pass has run) reads count=0
   // and the detector stays on the CPU fallback until a real readback arrives.
-  int32_t z[kStatsInts] = {0, 0, 0, 0};
+  int32_t z[kStatsInts] = {};
   s->stats_buf.write(z, kStatsInts);
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
@@ -586,18 +588,28 @@ void tick(void* self, double dt) {
     // Until then s->content holds the CPU proxy from bf_build_params. Poll before
     // the jog so this frame's decision uses the freshest available metric.
     int32_t raw[kStatsInts];
-    if (s->stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw) && raw[3] > 0) {
-      float N    = (float)raw[3];
-      float lu   = ((float)raw[1] / kStatsScale) / N;   // mean luminance
-      float lq   = ((float)raw[2] / kStatsScale) / N;   // mean luminance²
-      float var  = lq - lu * lu; if (var < 0.0f) var = 0.0f;
-      float sd   = std::sqrt(var);                       // luminance std-dev
-      // Edge-pixel count / √N: a full-height edge (~H px) over √(W·H) ≈ O(1), so a
-      // concentrated edge saturates while distributed weak gradients (rejected by
-      // the shader's per-pixel threshold) contribute nothing.
-      float edge = clampf((float)raw[0] / std::sqrt(N) * kEdgeNormGain, 0.0f, 1.0f);
-      s->content = lerpf(sd, edge, clampf(s->skip_edge, 0.0f, 1.0f));
-      s->skip_gpu_ready = true;
+    if (s->stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw)) {
+      // Reduce PER TILE and take the MAX: any single region with local luma
+      // variance OR a concentrated edge makes the whole frame read as non-flat.
+      float edgeBias = clampf(s->skip_edge, 0.0f, 1.0f);
+      float content = 0.0f;
+      bool any = false;
+      for (int t = 0; t < kNumTiles; t++) {
+        int cnt = raw[t * 4 + 3];
+        if (cnt <= 0) continue;
+        any = true;
+        float ne = (float)cnt;
+        float lu = ((float)raw[t * 4 + 1] / kStatsScale) / ne;   // tile mean luma
+        float lq = ((float)raw[t * 4 + 2] / kStatsScale) / ne;   // tile mean luma²
+        float var = lq - lu * lu; if (var < 0.0f) var = 0.0f;
+        float sd = std::sqrt(var);                                // local luma std
+        // edge_count / √tilePixels: a concentrated edge saturates regardless of area.
+        float edge = clampf((float)raw[t * 4 + 0] / std::sqrt(ne) * kEdgeNormGain,
+                            0.0f, 1.0f) * edgeBias;
+        float local = sd > edge ? sd : edge;                      // this tile: luma OR edge
+        if (local > content) content = local;                     // max over tiles
+      }
+      if (any) { s->content = content; s->skip_gpu_ready = true; }
     }
     // Sensitivity [0,1] → luminance-std trigger. Higher = flags more scenes as flat.
     float lo = clampf(s->skip_thresh, 0.0f, 1.0f) * kSkipStdSpan;
@@ -1082,7 +1094,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Reset runs BEFORE the pass; the tick() poll reads last frame's stats before
   // this reset each frame, so the CPU zero-write is race-free (plan Risk #2).
   if (s->skip_empty) {
-    int32_t zeros[kStatsInts] = {0, 0, 0, 0};
+    int32_t zeros[kStatsInts] = {};
     s->stats_buf.write(zeros, kStatsInts);
     auto ep = gpu::ComputePass::begin();
     ep.setPSO(s_pso_edge);

@@ -15,8 +15,14 @@
 #include "common.hlsl"   // cbuffer U (res_x/res_y) + nano_luminance
 
 Texture2D<float4>    tex_out : register(t1);
-RWStructuredBuffer<int> stats : register(u2);   // [edge_count, luma_sum, luma2_sum, count]
+// Per-TILE stats: a kTileGrid×kTileGrid grid, 4 ints each
+// [edge_count, luma_sum, luma2_sum, pixel_count]. The CPU forms each tile's local
+// variance + edge density and takes the MAX over tiles, so any single structured
+// region (an edge OR luma variance anywhere) reads as non-flat — a global stat
+// would dilute a small busy area away.
+RWStructuredBuffer<int> stats : register(u2);
 
+static const int   kTileGrid   = 16;            // must match main.cpp kTileGrid
 static const float kStatsScale = 128.0;
 static const float kSobelNorm  = 5.65685425;    // sqrt(32): max Sobel |grad| for luma in [0,1]
 // A pixel counts as an EDGE when its Sobel magnitude clears this. Low enough to
@@ -46,9 +52,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);   // edge magnitude [0,1]
   float L = l11;
 
+  // Route this pixel into its tile's 4 slots.
+  int2 tile = clamp(p * kTileGrid / res, int2(0, 0), int2(kTileGrid - 1, kTileGrid - 1));
+  int ti = (tile.y * kTileGrid + tile.x) * 4;
+
   int prev;
-  if (g > kEdgeThresh) InterlockedAdd(stats[0], 1, prev);     // edge-pixel count
-  InterlockedAdd(stats[1], (int)(L * kStatsScale),     prev);
-  InterlockedAdd(stats[2], (int)(L * L * kStatsScale), prev);
-  InterlockedAdd(stats[3], 1,                          prev);
+  if (g > kEdgeThresh) InterlockedAdd(stats[ti + 0], 1, prev);     // edge-pixel count
+  InterlockedAdd(stats[ti + 1], (int)(L * kStatsScale),     prev);
+  InterlockedAdd(stats[ti + 2], (int)(L * L * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 3], 1,                          prev);
 }
