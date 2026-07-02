@@ -250,10 +250,11 @@ struct State {
   float ap_hold_jitter    = 0.0f;   // 0..1 → randomize each hold interval ±fraction
   // --- Skip empty: detect dead (flat solid-colour) frames and jog past them ---
   bool  skip_empty        = false;  // master enable for detector + jog
-  float skip_thresh       = 0.2f;   // Sensitivity [0,1] → variance trigger (× kSkipStdSpan)
+  float skip_thresh       = 0.7f;   // Sensitivity [0,1] → variance trigger (× kSkipStdSpan)
   // Per-feature weights [0,1] combined by weighted MAX (variance / edge / motion).
-  float skip_w_var        = 1.0f;
-  float skip_w_edge       = 0.7f;
+  // Default tuning: motion-dominant, a touch of edge, variance off.
+  float skip_w_var        = 0.0f;
+  float skip_w_edge       = 0.07f;
   float skip_w_motion     = 1.0f;
   int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
   float skip_recover      = 0.85f;  // Recover [0,1]: how fast the jog STOPS on content (1 = instant)
@@ -324,7 +325,7 @@ static gpu::ComputePSO s_pso_edge;      // Sobel/variance/motion reduce over tex
 static gpu::ComputePSO s_pso_debug;     // per-tile feature heatmap (debug viz)
 
 void module_init() {
-  state::init("source.brutal_fold", {1, 1, 0},
+  state::init("source.brutal_fold", {1, 1, 1},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -462,18 +463,18 @@ void module_init() {
           "or, if **Snap** is on, hops straight to a fresh position the moment it "
           "goes empty.")
       .boolField("skip_empty", false, state::PrimaryInput).label("Skip Empty", "Skip")
-      .floatField("skip_thresh", 0.2f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_thresh", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "How readily a frame counts as flat/empty. Higher flags more scenes "
                   "(lower visual variance tolerated); 1 catches almost anything but the "
                   "busiest frames.").label("Sensitivity", "Sens")
       // Per-feature weights, combined by weighted MAX. Any weighted feature clearing
       // the trigger keeps the frame from reading as flat. 0 disables that feature.
-      .floatField("skip_w_var", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_w_var", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "Weight of local tonal VARIANCE in the flatness test.")
                   .label("Variance Wt", "Var")
-      .floatField("skip_w_edge", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_w_edge", 0.07f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "Weight of spatial EDGES (hard face/sky boundaries) in the flatness test.")
                   .label("Edge Wt", "Edge")
