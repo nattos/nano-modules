@@ -1,18 +1,23 @@
-// comp_model.h — the composition-executor's document model (Phase A subset).
+// comp_model.h — the composition-executor's document model.
 //
 // LOCK-STEP: web/src/views/arrangement/model/composition.ts. These structs are
 // the C++ twins of the arrangement document types; keep field names, defaults,
 // and optionality byte-for-byte in sync (shared goldens:
-// native/tests/test_comp_time.cpp ↔ web/.../engine/comp-goldens.test.ts).
+// native/tests/test_comp_time.cpp + test_comp_build.cpp ↔
+// web/.../engine/comp-goldens.test.ts).
 //
-// Phase A carries only what the pure timing/gate ports need (WarpSegment,
-// ClipLoopConfig). The full Composition mirror lands with comp_model.cpp.
+// Opaque payloads the sketch build spreads verbatim (device `state`, sketch
+// `wires`) are kept as RAW nlohmann::json — modeling them structurally would
+// only risk drift; the build copies them into the emitted sketch exactly like
+// the TS object spreads do.
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -114,5 +119,345 @@ struct ClipLoopConfig {
     return c;
   }
 };
+
+// -------------------------------------------------------------------------
+// Full composition document (composition.ts Composition / Track / Clip / ...)
+// -------------------------------------------------------------------------
+
+/** Stable id of the master/main-bus group (composition.ts MAIN_BUS_ID). */
+inline constexpr const char* kMainBusId = "main-bus";
+
+/** One effect in a clip/track sketch. `state` stays raw JSON (opaque payload). */
+struct DeviceM {
+  std::string id;
+  std::string moduleType;
+  nlohmann::json state = nlohmann::json::object();
+};
+
+/** Clip/track sketch: device list + raw modulation wires (spread verbatim). */
+struct SketchSpecM {
+  std::vector<DeviceM> devices;
+  nlohmann::json wires = nlohmann::json::array();
+};
+
+/** An automation/envelope point ({x, y, bend}). */
+struct EnvPointM {
+  double x = 0;
+  double y = 0;
+  double bend = 0;
+};
+
+/** Track- or clip-level automation of one field (composition.ts AutomationLane). */
+struct LaneM {
+  std::string targetDeviceId;
+  std::string targetField;
+  std::vector<EnvPointM> points;
+  std::optional<std::string> combine;    // ?? 'replace' at the use site
+  std::optional<std::string> magnitude;  // ?? 'unsigned' at the use site
+};
+
+/** A modulation a clip writes onto a rail (composition.ts RailExport). */
+struct RailExportM {
+  std::string railId;
+  std::string sourceDeviceId;
+  std::string sourceField;
+  std::string combine = "replace";
+  std::optional<double> scale;
+};
+
+/** A modulation a clip reads FROM a rail (composition.ts RailRead). */
+struct RailReadM {
+  std::string railId;
+  std::string targetDeviceId;
+  std::string targetField;
+  std::string combine = "replace";
+  std::optional<double> scale;
+};
+
+/** A clip device that warps the beat grid (composition.ts WarpBinding). */
+struct WarpBindingM {
+  Waveform waveform = Waveform::Sine;
+  double amplitude = 0;
+  double periodBeats = 1;
+  double phase = 0;
+};
+
+struct ClipM {
+  std::string id;
+  double startBeat = 0;
+  double lengthBeat = 0;
+  bool bypassed = false;
+  std::optional<int> blendMode;
+  /** clip.source?.url presence (the video/media path). */
+  bool hasSourceUrl = false;
+  SketchSpecM sketch;
+  std::vector<LaneM> automation;
+  std::vector<RailExportM> exports;
+  std::vector<RailReadM> reads;
+  std::vector<WarpBindingM> warps;
+  ClipLoopConfig loop;
+};
+
+enum class TrackKind : uint8_t { Track, Group, Rail };
+
+/** A group's compositing input (composition.ts GroupInput). */
+struct GroupInputM {
+  std::string mode = "transparent";
+  std::optional<std::string> color;
+  bool present = false;  // track.groupInput ?? {mode:'transparent'}
+};
+
+struct TrackM {
+  std::string id;
+  TrackKind kind = TrackKind::Track;
+  /** Empty string = null (root). */
+  std::string parentId;
+  bool bypassed = false;
+  bool soloed = false;
+  std::optional<double> level;
+  std::optional<int> blendMode;
+  GroupInputM groupInput;
+  std::string railId;
+  bool railSigned = false;
+  std::vector<EnvPointM> baseCurve;
+  bool hasBaseCurve = false;
+  SketchSpecM sketch;
+  std::vector<LaneM> automation;
+  std::vector<ClipM> clips;
+};
+
+/** Composite backdrop (composition.ts BackgroundConfig; absent ⇒ mode 'black'). */
+struct BackgroundM {
+  std::string mode = "black";
+  std::optional<std::string> color;
+};
+
+struct CompositionM {
+  double baseBPM = 120;
+  BackgroundM background;
+  std::vector<TrackM> tracks;
+};
+
+// ── JSON parsing (defensive: bad/missing fields fall back to defaults) ──────
+
+namespace model_detail {
+
+inline std::optional<double> optNum(const nlohmann::json& j, const char* key) {
+  if (j.contains(key) && j[key].is_number()) return j[key].get<double>();
+  return std::nullopt;
+}
+
+inline std::vector<EnvPointM> parsePoints(const nlohmann::json& arr) {
+  std::vector<EnvPointM> out;
+  if (!arr.is_array()) return out;
+  for (const auto& p : arr) {
+    if (!p.is_object()) continue;
+    EnvPointM e;
+    e.x = p.value("x", 0.0);
+    e.y = p.value("y", 0.0);
+    e.bend = p.contains("bend") && p["bend"].is_number() ? p["bend"].get<double>() : 0.0;
+    out.push_back(e);
+  }
+  return out;
+}
+
+inline SketchSpecM parseSketchSpec(const nlohmann::json& j) {
+  SketchSpecM s;
+  if (!j.is_object()) return s;
+  if (j.contains("devices") && j["devices"].is_array()) {
+    for (const auto& d : j["devices"]) {
+      if (!d.is_object()) continue;
+      DeviceM dev;
+      dev.id = d.value("id", std::string());
+      dev.moduleType = d.value("moduleType", std::string());
+      dev.state = d.contains("state") && d["state"].is_object() ? d["state"]
+                                                                : nlohmann::json::object();
+      s.devices.push_back(std::move(dev));
+    }
+  }
+  if (j.contains("wires") && j["wires"].is_array()) s.wires = j["wires"];
+  return s;
+}
+
+inline std::vector<LaneM> parseLanes(const nlohmann::json& arr) {
+  std::vector<LaneM> out;
+  if (!arr.is_array()) return out;
+  for (const auto& l : arr) {
+    if (!l.is_object()) continue;
+    LaneM lane;
+    lane.targetDeviceId = l.value("targetDeviceId", std::string());
+    lane.targetField = l.value("targetField", std::string());
+    lane.points = parsePoints(l.contains("points") ? l["points"] : nlohmann::json());
+    if (l.contains("combine") && l["combine"].is_string())
+      lane.combine = l["combine"].get<std::string>();
+    if (l.contains("magnitude") && l["magnitude"].is_string())
+      lane.magnitude = l["magnitude"].get<std::string>();
+    out.push_back(std::move(lane));
+  }
+  return out;
+}
+
+}  // namespace model_detail
+
+inline ClipM parseClip(const nlohmann::json& j) {
+  using namespace model_detail;
+  ClipM c;
+  if (!j.is_object()) return c;
+  c.id = j.value("id", std::string());
+  c.startBeat = j.value("startBeat", 0.0);
+  c.lengthBeat = j.value("lengthBeat", 0.0);
+  c.bypassed = j.value("bypassed", false);
+  if (j.contains("blendMode") && j["blendMode"].is_number())
+    c.blendMode = j["blendMode"].get<int>();
+  if (j.contains("source") && j["source"].is_object()) {
+    const auto& src = j["source"];
+    c.hasSourceUrl = src.contains("url") && src["url"].is_string() &&
+                     !src["url"].get<std::string>().empty();
+  }
+  c.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());
+  c.automation = parseLanes(j.contains("automation") ? j["automation"] : nlohmann::json());
+  if (j.contains("exports") && j["exports"].is_array()) {
+    for (const auto& e : j["exports"]) {
+      if (!e.is_object()) continue;
+      RailExportM x;
+      x.railId = e.value("railId", std::string());
+      x.sourceDeviceId = e.value("sourceDeviceId", std::string());
+      x.sourceField = e.value("sourceField", std::string());
+      x.combine = e.value("combine", std::string("replace"));
+      x.scale = optNum(e, "scale");
+      c.exports.push_back(std::move(x));
+    }
+  }
+  if (j.contains("reads") && j["reads"].is_array()) {
+    for (const auto& r : j["reads"]) {
+      if (!r.is_object()) continue;
+      RailReadM x;
+      x.railId = r.value("railId", std::string());
+      x.targetDeviceId = r.value("targetDeviceId", std::string());
+      x.targetField = r.value("targetField", std::string());
+      x.combine = r.value("combine", std::string("replace"));
+      x.scale = optNum(r, "scale");
+      c.reads.push_back(std::move(x));
+    }
+  }
+  if (j.contains("warps") && j["warps"].is_array()) {
+    for (const auto& w : j["warps"]) {
+      if (!w.is_object()) continue;
+      WarpBindingM b;
+      b.waveform = waveformFromString(w.value("waveform", std::string("sine")));
+      b.amplitude = w.value("amplitude", 0.0);
+      b.periodBeats = w.value("periodBeats", 1.0);
+      b.phase = w.value("phase", 0.0);
+      c.warps.push_back(b);
+    }
+  }
+  c.loop = ClipLoopConfig::fromJson(j.contains("loop") ? j["loop"] : nlohmann::json());
+  return c;
+}
+
+inline TrackM parseTrack(const nlohmann::json& j) {
+  using namespace model_detail;
+  TrackM t;
+  if (!j.is_object()) return t;
+  t.id = j.value("id", std::string());
+  const std::string kind = j.value("kind", std::string("track"));
+  t.kind = kind == "group" ? TrackKind::Group : kind == "rail" ? TrackKind::Rail
+                                                               : TrackKind::Track;
+  if (j.contains("parentId") && j["parentId"].is_string())
+    t.parentId = j["parentId"].get<std::string>();
+  t.bypassed = j.value("bypassed", false);
+  t.soloed = j.value("soloed", false);
+  t.level = optNum(j, "level");
+  if (j.contains("blendMode") && j["blendMode"].is_number())
+    t.blendMode = j["blendMode"].get<int>();
+  if (j.contains("groupInput") && j["groupInput"].is_object()) {
+    t.groupInput.present = true;
+    t.groupInput.mode = j["groupInput"].value("mode", std::string("transparent"));
+    if (j["groupInput"].contains("color") && j["groupInput"]["color"].is_string())
+      t.groupInput.color = j["groupInput"]["color"].get<std::string>();
+  }
+  t.railId = j.value("railId", std::string());
+  t.railSigned = j.value("railSigned", false);
+  if (j.contains("baseCurve") && j["baseCurve"].is_array()) {
+    t.hasBaseCurve = true;
+    t.baseCurve = parsePoints(j["baseCurve"]);
+  }
+  t.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());
+  t.automation = parseLanes(j.contains("automation") ? j["automation"] : nlohmann::json());
+  if (j.contains("clips") && j["clips"].is_array()) {
+    for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c));
+  }
+  return t;
+}
+
+inline CompositionM parseComposition(const nlohmann::json& j) {
+  CompositionM comp;
+  if (!j.is_object()) return comp;
+  if (j.contains("meta") && j["meta"].is_object()) {
+    const auto& meta = j["meta"];
+    comp.baseBPM = meta.value("baseBPM", 120.0);
+    if (meta.contains("background") && meta["background"].is_object()) {
+      comp.background.mode = meta["background"].value("mode", std::string("black"));
+      if (meta["background"].contains("color") && meta["background"]["color"].is_string())
+        comp.background.color = meta["background"]["color"].get<std::string>();
+    }
+  }
+  if (j.contains("tracks") && j["tracks"].is_array()) {
+    for (const auto& t : j["tracks"]) comp.tracks.push_back(parseTrack(t));
+  }
+  return comp;
+}
+
+// ── Document derivations (composition.ts helpers) ───────────────────────────
+
+/** track.kind === 'group' && track.id === MAIN_BUS_ID. */
+inline bool isMainBus(const TrackM& t) {
+  return t.kind == TrackKind::Group && t.id == kMainBusId;
+}
+
+inline const TrackM* mainBusTrack(const CompositionM& comp) {
+  for (const auto& t : comp.tracks) {
+    if (isMainBus(t)) return &t;
+  }
+  return nullptr;
+}
+
+inline const TrackM* railTrackFor(const CompositionM& comp, const std::string& railId) {
+  for (const auto& t : comp.tracks) {
+    if (t.kind == TrackKind::Rail && t.railId == railId) return &t;
+  }
+  return nullptr;
+}
+
+/** Effective warp segments from every clip's warp bindings. */
+inline std::vector<WarpSegment> derivedWarpSegments(const CompositionM& comp) {
+  std::vector<WarpSegment> segs;
+  for (const auto& track : comp.tracks) {
+    for (const auto& clip : track.clips) {
+      for (const auto& w : clip.warps) {
+        WarpSegment s;
+        s.startBeat = clip.startBeat;
+        s.endBeat = clip.startBeat + clip.lengthBeat;
+        s.waveform = w.waveform;
+        s.amplitude = w.amplitude;
+        s.periodBeats = w.periodBeats;
+        s.phase = w.phase;
+        segs.push_back(s);
+      }
+    }
+  }
+  return segs;
+}
+
+/** Total beats spanned by the composition (ruler extent), min 64. */
+inline double compositionLengthBeats(const CompositionM& comp) {
+  double end = 64;
+  for (const auto& t : comp.tracks) {
+    for (const auto& c : t.clips) {
+      end = std::max(end, c.startBeat + c.lengthBeat);
+    }
+  }
+  return end;
+}
 
 }  // namespace comp

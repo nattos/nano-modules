@@ -306,6 +306,15 @@ target_compile_definitions(test_comp_time PRIVATE
 target_link_libraries(test_comp_time PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_comp_time)
 
+# Composition-executor document/tree-eval/sketch-build ports — deep-equal JSON
+# parity against the TS-generated build.json golden.
+add_executable(test_comp_build tests/test_comp_build.cpp)
+target_include_directories(test_comp_build PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(test_comp_build PRIVATE
+  COMP_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/comp")
+target_link_libraries(test_comp_build PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_comp_build)
+
 # Shared spectral-morph curve generator (reused by mod.source.spectral_lfo +
 # mod.shaper.spectral). Compiles standalone (no wasm host deps); pulls in the 1.2MB atlas.
 add_executable(test_spectral_curve tests/test_spectral_curve.cpp
