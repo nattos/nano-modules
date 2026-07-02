@@ -700,6 +700,11 @@ export class ArrangementStore {
       runInAction(() => {
         for (const t of this.composition.tracks)
           for (const c of t.clips) if (c.source?.sourceKey === key) c.source.url = url;
+        // Deliberately NOT an undoable mutate() â but the comp-mode document
+        // MIRROR must still refresh, or it keeps serving the dead pre-reload
+        // blob URL to the decode pump (video decodes fine in previews yet
+        // never shows in the composite). docRev is the mirror key, not history.
+        this.docRev++;
       });
     }
   }
@@ -1060,6 +1065,7 @@ export class ArrangementStore {
         if (c.source.width === width && c.source.height === height) return;
         c.source.width = width;
         c.source.height = height;
+        this.docRev++; // direct (non-undoable) doc write â keep the comp mirror fresh
         return;
       }
     });

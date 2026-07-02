@@ -139,7 +139,7 @@ export class VideoCompositor {
    *  (with a short backoff) and only treat a clip as permanently broken — letting the
    *  Precise gate barrel past it (transparent, no stall) — after {@link FAIL_GIVEUP_TRIES}
    *  attempts. Cleared on success / source swap. */
-  private failedAt = new Map<string, { at: number; tries: number }>();
+  private failedAt = new Map<string, { at: number; tries: number; url: string }>();
   private raf = 0;
 
   /** Notified with a clip's TRUE decoded pixel size the first time it opens, so the
@@ -236,7 +236,11 @@ export class VideoCompositor {
       } else if (!this.opening.has(d.clipId)) {
         // Open new — or RETRY a recent failure after a backoff (cold-start failures
         // recover), but stop re-attempting once it's declared permanently broken.
-        const f = this.failedAt.get(d.clipId);
+        // A CHANGED url forgets the failure entirely: the old attempts hit a
+        // different source (e.g. a dead pre-reload blob URL that media relink
+        // has since replaced) and say nothing about the new one.
+        let f = this.failedAt.get(d.clipId);
+        if (f && f.url !== d.url) { this.failedAt.delete(d.clipId); f = undefined; }
         if (!f || (f.tries < FAIL_GIVEUP_TRIES && nowMs() - f.at >= FAIL_RETRY_MS)) {
           void this.openClip(d);
         }
@@ -313,7 +317,7 @@ export class VideoCompositor {
       // often fails once on a cold service, then opens) and only declared permanently
       // broken after FAIL_GIVEUP_TRIES, at which point the Precise gate barrels past it.
       const prev = this.failedAt.get(d.clipId);
-      this.failedAt.set(d.clipId, { at: nowMs(), tries: (prev?.tries ?? 0) + 1 });
+      this.failedAt.set(d.clipId, { at: nowMs(), tries: (prev?.tries ?? 0) + 1, url: d.url });
       if (!this.pumps.has(d.clipId)) this.setInstanceTexture(d.instanceKey, null);
     } finally {
       this.opening.delete(d.clipId);

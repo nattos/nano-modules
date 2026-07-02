@@ -154,6 +154,61 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     expect(p3).toBeCloseTo(41, 5);
   });
 
+  it('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
+    // Regression: loading an arrangement leaves DEAD blob URLs in the doc until
+    // relinkMedia() re-mints them — an update that deliberately bypasses
+    // mutate() (not undoable). The comp-mode pump is fed from the WORKER's
+    // document mirror, so the relink must still bump docRev (mirror refresh)
+    // or the pump opens the dead URL forever: the gate gives up (transport
+    // runs) but the video never shows. Simulates exactly that flow.
+    await page.goto(`${URL}?compMode=1`, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
+      { timeout: 30_000 },
+    );
+
+    const clipId = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const trackId = store.addTrack();
+      // A dead URL — as a persisted blob: URL is after a reload.
+      const path = store.addVideoClip(trackId, 0, {
+        sourceKey: 'relink-test', url: 'blob:http://localhost/00000000-dead-dead-dead-000000000000',
+        frameCount: 55, fps: 30, width: 1280, height: 720, label: 'dead',
+      }, 8);
+      if (!path) throw new Error('addVideoClip failed');
+      store.setTransportMode('precise');
+      store.setPosition(1);
+      return path.split('/')[2];
+    });
+
+    // Let the pump exhaust its open retries on the dead URL (give-up ≈ 4 tries).
+    await new Promise((r) => setTimeout(r, 3000));
+    const before = await page.evaluate(() => (window as any).__engineBridge.videoFramesInjected() as number);
+    expect(before).toBe(0);
+
+    // Simulate relinkMedia(): swap the url IN PLACE (no mutate) + docRev++.
+    await page.evaluate((id) => {
+      const store = (window as any).arrangementStore;
+      for (const t of store.composition.tracks) {
+        for (const c of t.clips) if (c.id === id) c.source.url = '/media/test_h264.mp4';
+      }
+      store.docRev++;
+    }, clipId);
+
+    // The mirror refresh + url-aware failure reset must reopen and inject.
+    await page.waitForFunction(
+      () => (window as any).__engineBridge.videoFramesInjected() > 0,
+      { timeout: 15_000 },
+    );
+    const hasPump = await page.evaluate((id) =>
+      !!(window as any).__engineBridge.video?.pumps?.has?.(id), clipId);
+    expect(hasPump).toBe(true);
+  });
+
   it('video clip plays through without stalling (native Precise gate readiness loop)', async () => {
     // Regression: readiness edges for the native gate must flow on an
     // UNCONDITIONAL cadence. They used to ride the monitor's reactive
