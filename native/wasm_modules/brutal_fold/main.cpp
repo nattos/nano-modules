@@ -257,7 +257,7 @@ struct State {
   float skip_w_edge       = 0.07f;
   float skip_w_motion     = 1.0f;
   int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
-  float skip_recover      = 0.85f;  // Recover [0,1]: how fast the jog STOPS on content (1 = instant)
+  float skip_recover      = 1.0f;   // Recover [0,1]: how fast the jog STOPS on content (1 = instant)
   float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
   bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
 
@@ -325,7 +325,7 @@ static gpu::ComputePSO s_pso_edge;      // Sobel/variance/motion reduce over tex
 static gpu::ComputePSO s_pso_debug;     // per-tile feature heatmap (debug viz)
 
 void module_init() {
-  state::init("source.brutal_fold", {1, 1, 1},
+  state::init("source.brutal_fold", {1, 1, 2},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -486,7 +486,7 @@ void module_init() {
       .selectField("skip_debug", 0, state::PrimaryInput,
                    {{"Off", 0}, {"Variance", 1}, {"Edge", 2}, {"Motion", 3}, {"Combined", 4}})
                   .label("Debug View", "Dbg")
-      .floatField("skip_recover", 0.85f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_recover", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "How fast the jog STOPS once content reappears (the empty→happening "
                   "transition). Higher = snappier so it doesn't skip past the content; "
