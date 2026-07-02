@@ -28,6 +28,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <val.h>
+#include <effect_utils.h>
 #include "brutal_fold_shaders.h"
 #include "brutal_fold_atlas.h"
 
@@ -97,6 +98,39 @@ static constexpr float kVolSoftXYMax = 2.0f;   // softness_xy slider 1 → 2.0
 static constexpr float kVolSoftZMax  = 1.0f;   // softness_z  slider 1 → 1.0
 static constexpr float kVolDepthMax  = 0.6f;   // depth       slider 1 → 0.6 (Z half-extent)
 
+// Skip-empty jog: when the front reads as flat solid colour (all sky or all
+// panel), engage a C2 ramp (fx::SkipJog) that gently advances the loop clock
+// (and, under autopilot, the orbit) to move past the dead stretch. The jog is a
+// MULTIPLE of the current rate (not an absolute speed) — so at Speed 0 the clock
+// stays frozen (no surprise auto-play), and a faster Speed skips faster.
+static constexpr float kSkipTimeMult  = 8.0f;  // jog up to Nx the current loop speed
+static constexpr float kSkipOrbitMult = 6.0f;  // jog up to Nx the current orbit speed
+// Asymmetric C2 ramp: gentle ease-IN (glide into the skip), quick ease-OUT — once
+// a live frame returns we're leaving a solid colour, so a harsher slowdown reads
+// fine and stops the jog promptly instead of coasting on.
+static constexpr float kSkipRampInSec  = 0.6f;
+static constexpr float kSkipRampOutSec = 0.15f;
+// Recovery is deliberately eager: the moment content climbs back above the empty
+// threshold we ease out. A tiny gap above the trigger is the most sensitive a
+// hysteresis latch can be without chattering (recover must stay ≥ engage). Want
+// it even more eager? Lower Sensitivity — that drops both the engage AND recover
+// point together.
+static constexpr float kSkipHyst       = 0.004f; // recover variance above the trigger
+static constexpr int   kMaxLayers      = 6;     // BF_MAXL — receding layers/structure
+// Sensitivity is a normalized [0,1] knob; this is the luminance std-dev it maps to
+// at FULL sensitivity. Kept small so the knob resolves the low-variance regime
+// where flat/near-flat frames actually live — only a genuinely busy frame climbs
+// past even the top of the range.
+static constexpr float kSkipStdSpan    = 0.12f;
+// GPU flatness detector: a Sobel/variance reduce over the rendered tex_out
+// (edge.hlsl) writes 4 int slots read back to the CPU. kStatsScale mirrors the
+// shader's fixed-point scale. kEdgeGpuGain calibrates the 1px-Sobel edge term to
+// the luminance-std anchor (a 1px gradient is a large multiple of the old CPU
+// 120px-grid one) — tune live against the skip_variance broadcast.
+static constexpr int   kStatsInts   = 4;        // [edge_sum, luma_sum, luma2_sum, count]
+static constexpr float kStatsScale  = 128.0f;   // must match edge.hlsl kStatsScale
+static constexpr float kEdgeGpuGain = 0.15f;    // GPU edge-term weight in the blend
+
 // Autopilot epicycle constants (verbatim from the shape_fold autopilot). Two
 // summed circular motions, 90° out of phase, incommensurate rates → sweeps the
 // annulus without stalling at the centre.
@@ -125,6 +159,8 @@ static_assert(sizeof(Uniforms) == (48 + 256) * 4, "Uniforms layout");
 
 struct State {
   gpu::Buffer uniform_buf;
+  gpu::Buffer stats_buf;            // GPU flatness reduce (edge.hlsl) → readback
+  bool skip_gpu_ready = false;      // true once the first GPU readback has arrived
   bool initialized = false;
 
   // --- Schema-mirrored params ---
@@ -191,10 +227,18 @@ struct State {
   bool  ap_snap           = false;
   float ap_hold_period    = 2.0f;   // seconds; 0 = no auto-jump (trigger only)
   float ap_hold_jitter    = 0.0f;   // 0..1 → randomize each hold interval ±fraction
+  // --- Skip empty: detect dead (flat solid-colour) frames and jog past them ---
+  bool  skip_empty        = false;  // master enable for detector + jog
+  float skip_thresh       = 0.2f;   // Sensitivity [0,1] → variance trigger (× kSkipStdSpan)
+  float skip_edge         = 0.7f;   // Edge Bias [0,1]: 0 = variance, 1 = edge energy
+  float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
+  bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
 
   // --- Internal clocks (advanced in tick) ---
   float clock_t    = 0.0f;          // loop phase 0..1
   float orbit      = 0.0f;          // autopilot epicycle phase
+  fx::SkipJog jog;                  // skip-empty C2 engagement ramp
+  float content    = 1.0f;          // last frame's front content [0,1] (1 = rich)
   float snap_accum = 0.0f;          // snap-mode hold timer
   float next_hold  = 0.0f;          // jittered target for the current interval
   uint32_t rng     = 0x2545F491u;   // per-instance PRNG state (seeded in create)
@@ -216,33 +260,40 @@ struct State {
   float eff_vol_shape = 1.0f, eff_vol_angle = 0.0f;
 };
 
-static void apply_visibility(bool autopilot, bool ap_snap) {
+static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty) {
   state::setFieldHidden("ap_speed",       !autopilot);
   state::setFieldHidden("ap_snap",        !autopilot);
   state::setFieldHidden("ap_hold_period", !(autopilot && ap_snap));
   state::setFieldHidden("ap_hold_jitter", !(autopilot && ap_snap));
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
+  state::setFieldHidden("skip_thresh",     !skip_empty);
+  state::setFieldHidden("skip_edge",       !skip_empty);
+  state::setFieldHidden("skip_rate",       !skip_empty);
+  // Jogging the orbit only means anything under autopilot.
+  state::setFieldHidden("skip_autopilot",  !(skip_empty && autopilot));
 }
 
 // Static (self-less) visibility evaluator — pure over a candidate state.
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
-  bool autopilot = false, ap_snap = false;
+  bool autopilot = false, ap_snap = false, skip_empty = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "autopilot")) autopilot = state::patchFloat(i) != 0.0f;
-    else if (state::pathIs(p, l, "ap_snap"))   ap_snap   = state::patchFloat(i) != 0.0f;
+    if      (state::pathIs(p, l, "autopilot"))  autopilot  = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "ap_snap"))    ap_snap    = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "skip_empty")) skip_empty = state::patchFloat(i) != 0.0f;
   }
-  apply_visibility(autopilot, ap_snap);
+  apply_visibility(autopilot, ap_snap, skip_empty);
 }
 
 static void on_state_ready(void* self);
 
 // Type-shared, compiled once in module_init().
 static gpu::ComputePSO s_pso_present;
+static gpu::ComputePSO s_pso_edge;      // Sobel/variance reduce over tex_out
 
 void module_init() {
-  state::init("source.brutal_fold", {1, 0, 1},
+  state::init("source.brutal_fold", {1, 0, 2},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -366,6 +417,37 @@ void module_init() {
       // Broadcast: the effective XY so the custom editor can show the live position.
       .floatField("autopilot_x", 0.6f, 0.0f, 1.0f, state::SecondaryOutput)
       .floatField("autopilot_y", 0.6f, 0.0f, 1.0f, state::SecondaryOutput)
+      // --- Skip empty: jog past dead (flat solid-colour) stretches ---
+      .group("skip", "Skip Empty")
+        .groupHelp(
+          "The atlas and the in/out animation sometimes settle into a **flat, "
+          "near-solid-colour** frame — all sky, or one solid panel. Turn this on "
+          "and the effect gently **jogs the loop forward** (on a smooth C2 curve) to "
+          "glide past those dead stretches instead of dwelling on them. Detection is "
+          "by low visual **variance**, so it catches a screen full of one flat shape "
+          "as readily as an empty sky. *Sensitivity* sets how flat a frame has to get "
+          "before it kicks in; *Jog Rate* how "
+          "briskly it skips. With **Autopilot** on it also nudges the orbit onward — "
+          "or, if **Snap** is on, hops straight to a fresh position the moment it "
+          "goes empty.")
+      .boolField("skip_empty", false, state::PrimaryInput).label("Skip Empty", "Skip")
+      .floatField("skip_thresh", 0.2f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "How readily a frame counts as flat/empty. Higher flags more scenes "
+                  "(lower visual variance tolerated); 1 catches almost anything but the "
+                  "busiest frames.").label("Sensitivity", "Sens")
+      .floatField("skip_edge", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "How much emphasis the flatness test puts on EDGES (hard face/sky "
+                  "boundaries) vs overall tonal variance. Higher favours fine prism "
+                  "detail — a few big flat blocks then read as empty; 0 = pure variance.")
+                  .label("Edge Bias", "Edge")
+      .floatField("skip_rate", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Jog Rate", "Rate")
+      .boolField("skip_autopilot", true, state::PrimaryInput).label("Jog Autopilot", "JogAP")
+      // Broadcast: the live engagement [0,1] so an editor can show when it fires.
+      .floatField("skip_active", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
+      // Broadcast: the live flatness metric (luminance std/edge blend) for tuning.
+      .floatField("skip_variance", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- I/O: pure generator (no input) ---
       .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::Generator)
@@ -375,6 +457,7 @@ void module_init() {
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   state::registerShaderSPV("brutal_fold_present", PRESENT_SPV, PRESENT_SPV_SIZE);
+  state::registerShaderSPV("brutal_fold_edge", EDGE_SPV, EDGE_SPV_SIZE);
 
   auto cs_present = gpu::Device::createShaderModuleByName("brutal_fold_present");
   if (!cs_present) return;
@@ -382,6 +465,13 @@ void module_init() {
   s_pso_present = gpu::Device::createComputePSO(cs_present, "main", gpu::Bindings()
       .uniform(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA8)); // tex_out
+
+  auto cs_edge = gpu::Device::createShaderModuleByName("brutal_fold_edge");
+  if (!cs_edge) return;
+  s_pso_edge = gpu::Device::createComputePSO(cs_edge, "main", gpu::Bindings()
+      .uniform(0)     // shared cbuffer U (res_x/res_y)
+      .tex2d(1)       // tex_out (read)
+      .storageRW(2)); // stats (read-write atomics)
 
   state::log("brutal_fold: module initialized");
 }
@@ -394,6 +484,7 @@ void* create() {
   s_seed_counter = s_seed_counter * 1664525u + 1013904223u;
   s->rng = s_seed_counter ^ 0xC0FFEEu;
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s->stats_buf = gpu::Device::createBuffer(kStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
   return s;
 }
 
@@ -401,6 +492,7 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->uniform_buf.release();
+  s->stats_buf.release();
   delete s;
 }
 
@@ -408,8 +500,12 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->initialized = false;
-  if (!s_pso_present.valid()) return;
-  if (!s->uniform_buf.valid()) return;
+  if (!s_pso_present.valid() || !s_pso_edge.valid()) return;
+  if (!s->uniform_buf.valid() || !s->stats_buf.valid()) return;
+  // Zero the stats so the first poll (before any edge pass has run) reads count=0
+  // and the detector stays on the CPU fallback until a real readback arrives.
+  int32_t z[kStatsInts] = {0, 0, 0, 0};
+  s->stats_buf.write(z, kStatsInts);
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
 }
@@ -417,12 +513,16 @@ void init(void* self) {
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  apply_visibility(s->autopilot, s->ap_snap);
+  apply_visibility(s->autopilot, s->ap_snap, s->skip_empty);
 }
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static inline float lerpf(float a, float b, float f) { return a + (b - a) * f; }
 static inline int   clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static inline float smoothstepf(float e0, float e1, float x) {
+  float t = clampf((x - e0) / (e1 - e0 + 1e-9f), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
 
 // Per-instance uniform random in [0,1) (LCG).
 static inline float rng_unit(State* s) {
@@ -471,11 +571,49 @@ void tick(void* self, double dt) {
   float aps = s->ap_speed;
   float ap_actual = kApMin + aps * aps * (kApMax - kApMin);
 
-  s->clock_t += fdt * time_actual;
+  // Skip-empty: engage the C2 ramp on last frame's front content. It always jogs
+  // the loop clock forward; under autopilot it also nudges the orbit (or, in Snap
+  // mode, fires a one-shot hop). `content` lags a frame — that's fine (the ramp
+  // is smooth and hysteretic, and it reuses render()'s field scan for free).
+  float skip_e = 0.0f;
+  if (s->skip_empty) {
+    // Prefer the GPU flatness metric (Sobel/variance over the REAL rendered
+    // frame, computed by last frame's edge pass) once a readback has arrived.
+    // Until then s->content holds the CPU proxy from bf_build_params. Poll before
+    // the jog so this frame's decision uses the freshest available metric.
+    int32_t raw[kStatsInts];
+    if (s->stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw) && raw[3] > 0) {
+      float N   = (float)raw[3];
+      float edge = ((float)raw[0] / kStatsScale) / N;   // mean edge energy
+      float lu   = ((float)raw[1] / kStatsScale) / N;   // mean luminance
+      float lq   = ((float)raw[2] / kStatsScale) / N;   // mean luminance²
+      float var  = lq - lu * lu; if (var < 0.0f) var = 0.0f;
+      float sd   = std::sqrt(var);
+      s->content = lerpf(sd, edge * kEdgeGpuGain, clampf(s->skip_edge, 0.0f, 1.0f));
+      s->skip_gpu_ready = true;
+    }
+    // Sensitivity [0,1] → luminance-std trigger. Higher = flags more scenes as flat.
+    float lo = clampf(s->skip_thresh, 0.0f, 1.0f) * kSkipStdSpan;
+    float hi = lo + kSkipHyst;
+    skip_e = s->jog.update(s->content, lo, hi, kSkipRampInSec, kSkipRampOutSec, fdt);
+    // Snap mode: the moment we go empty, hop straight to a fresh held position.
+    if (s->autopilot && s->skip_autopilot && s->ap_snap && s->jog.rising())
+      s->ap_jump_pending = true;
+  } else {
+    s->jog = fx::SkipJog{};          // fully reset when disabled (no residual jog)
+  }
+  // Jog is a MULTIPLE of the current rate, so Speed 0 stays frozen (no auto-play)
+  // and a faster Speed skips proportionally faster.
+  float time_jog = skip_e * s->skip_rate * time_actual * kSkipTimeMult;
+  // Extra orbit advance from the orbit jog — only in continuous (non-Snap) mode.
+  float orbit_jog = (s->skip_autopilot && !s->ap_snap)
+                        ? skip_e * s->skip_rate * ap_actual * kSkipOrbitMult : 0.0f;
+
+  s->clock_t += fdt * (time_actual + time_jog);
   s->clock_t -= std::floor(s->clock_t);
 
   if (s->autopilot) {
-    s->orbit -= fdt * ap_actual;                 // clockwise drift
+    s->orbit -= fdt * (ap_actual + orbit_jog);   // clockwise drift (+ skip jog)
 
     bool trig = s->ap_jump_pending;
     s->ap_jump_pending = false;
@@ -517,6 +655,12 @@ void tick(void* self, double dt) {
   auto vy = val::number(s->eff_y);
   state::setValPath("autopilot_y", vy);
   val::release(vy);
+  auto vsk = val::number(skip_e);
+  state::setValPath("skip_active", vsk);
+  val::release(vsk);
+  auto vsv = val::number(s->content);   // live flatness metric (for calibration)
+  state::setValPath("skip_variance", vsv);
+  val::release(vsv);
 
   // --- Volumetric blob drift (bounded 2nd-order random walks) ---
   float sp = s->drift_speed;
@@ -613,8 +757,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       if (v != 0.0f && s->ap_jump_prev == 0.0f) s->ap_jump_pending = true;  // rising edge
       s->ap_jump_prev = v;
     }
+    else if (state::pathIs(path, plen, "skip_empty"))    { bool v = state::patchFloat(i) != 0.0f; if (v != s->skip_empty) { s->skip_empty = v; mode_changed = true; } }
+    else if (state::pathIs(path, plen, "skip_thresh"))   s->skip_thresh = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_edge"))     s->skip_edge = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_rate"))     s->skip_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_autopilot")) s->skip_autopilot = state::patchFloat(i) != 0.0f;
   }
-  if (mode_changed) apply_visibility(s->autopilot, s->ap_snap);
+  if (mode_changed) apply_visibility(s->autopilot, s->ap_snap, s->skip_empty);
 }
 
 // ---- CPU atlas resolve (port of field.ts: corners / occ / levelFor / build) ----
@@ -671,6 +820,105 @@ static float bf_levelFor(const float* P, int base, float thresh) {
     }
   }
   return mn + thresh * (mx - mn);
+}
+
+// Rendered-luminance proxy at screen point (px,py) — in present-shader p0 units,
+// [-1,1] over the visible window. Mirrors bf_fieldVal: walk the receding layers of
+// BOTH structures near→far, take the frontmost solid one, compute its face tone
+// (front / recession-revealed top vs side, exactly as bf_drawLayer's gradient
+// split), fade it toward the sky by depth fog. Sky where nothing is solid. Tilt
+// and window-detail micro-texture are dropped (immaterial to a flatness measure);
+// the volumetric blob is ignored (an optional feature, off by default).
+static float bf_sample_lum(const float* P, bool on2, float px, float py) {
+  const int sb1 = SB1;
+  float sky1 = P[sb1 + S_SKY_VAL];
+  float fog  = P[sb1 + S_FOG];
+  float bl = P[sb1 + S_BACK_LEN], ba = P[sb1 + S_BACK_ANG], sep = P[sb1 + S_SEP];
+  float exR = bl * std::cos(ba), eyR = -bl * std::sin(ba);   // recession vector
+  float cba = std::cos(ba), sba = std::sin(ba);
+  int n1 = clampi((int)P[sb1 + S_LAYERS], 1, kMaxLayers);
+  int n2 = on2 ? clampi((int)P[STR + sb1 + S_LAYERS], 1, kMaxLayers) : 0;
+  float nm1 = std::max((float)n1 - 1.0f, 1.0f);
+  float nm2 = std::max((float)n2 - 1.0f, 1.0f);
+  for (int s = 0; s < 2 * kMaxLayers; s++) {   // near → far, interleaved S1 / S2
+    int base; float d, depthT;
+    if ((s & 1) == 0) {
+      int dd = s / 2; if (dd >= n1) continue;
+      base = 0; d = (float)dd; depthT = d / nm1;
+    } else {
+      if (!on2) continue;
+      int lidx = (s - 1) / 2; if (lidx >= n2) continue;
+      base = STR; d = (float)s * 0.5f; depthT = (float)lidx / nm2;
+    }
+    int b = base + sb1;
+    float fs = P[b + S_FORM_SCALE];
+    float level = P[b + SCN];
+    float face = P[b + S_FACE], sky = P[b + S_SKY_VAL];
+    float frontT = sky - face;
+    float topT = sky - face * 0.42f;
+    float sideT = std::max(sky - face * 1.75f, 0.0f);
+    float extr = P[b + S_EXTRUDE];
+    float Ex = cba * extr, Ey = -sba * extr;             // extrude (back-face) vector
+    float offx = exR * (d * sep), offy = eyR * (d * sep);
+    float psx = px - offx, psy = py - offy;
+    bool front = bf_occ(P, base, psx * fs, psy * fs) > level;
+    float qx = psx - Ex, qy = psy - Ey;
+    float br = bf_occ(P, base, qx * fs, qy * fs);
+    bool back = br > level;
+    if (!(front || back)) continue;                       // this layer not drawn here
+    float t;
+    if (!front) {
+      float e = 0.02f;                                    // top vs side via gradient
+      float g1 = bf_occ(P, base, (qx + e) * fs, qy * fs) - br;
+      float g2 = bf_occ(P, base, qx * fs, (qy + e) * fs) - br;
+      float sm = smoothstepf(0.45f, 0.7f,
+                             std::fabs(g2) / (std::fabs(g1) + std::fabs(g2) + 1e-6f));
+      t = lerpf(sideT, topT, sm);
+    } else {
+      t = frontT;
+    }
+    float fogv = clampf(fog * depthT, 0.0f, 1.0f);
+    return lerpf(t, sky1, fogv);                          // fade to sky by depth
+  }
+  return sky1;                                            // nothing solid → sky
+}
+
+// "Not empty" estimate from the rendered luminance over the visible window,
+// blending two structure signals per `edge_bias` (0 = variance, 1 = edges):
+//   • VARIANCE  — the luminance std-dev. Low for any flat screen (all-sky, or one
+//     solid tone), but a scene split into a few big flat blocks still scores high.
+//   • EDGES     — RMS of the local (neighbour) gradient. This is what tells a busy
+//     brutalist field (many hard face/sky boundaries) from a couple of big blocks:
+//     large flat regions contribute no gradient, only their borders do.
+// Both are in luminance units, so they blend and compare against the Sensitivity
+// threshold on the same scale. 16×16 grid; paid only when the detector is on.
+static float bf_content(const float* P, bool on2, float edge_bias) {
+  const int NG = 16;
+  float lum[NG * NG];
+  for (int gi = 0; gi < NG; gi++) {
+    for (int gj = 0; gj < NG; gj++) {
+      float px = ((gi + 0.5f) / NG) * 2.0f - 1.0f;
+      float py = ((gj + 0.5f) / NG) * 2.0f - 1.0f;
+      lum[gi * NG + gj] = bf_sample_lum(P, on2, px, py);
+    }
+  }
+  // Variance (std-dev).
+  float sum = 0.0f, sum2 = 0.0f;
+  for (int k = 0; k < NG * NG; k++) { sum += lum[k]; sum2 += lum[k] * lum[k]; }
+  float n = (float)(NG * NG);
+  float mean = sum / n;
+  float sd = std::sqrt(std::max(sum2 / n - mean * mean, 0.0f));
+  // Edge energy (RMS of forward differences along both axes).
+  float ge = 0.0f; int gc = 0;
+  for (int gi = 0; gi < NG; gi++) {
+    for (int gj = 0; gj < NG; gj++) {
+      float c = lum[gi * NG + gj];
+      if (gi + 1 < NG) { float d = lum[(gi + 1) * NG + gj] - c; ge += d * d; gc++; }
+      if (gj + 1 < NG) { float d = lum[gi * NG + (gj + 1)] - c; ge += d * d; gc++; }
+    }
+  }
+  float edge = std::sqrt(ge / (float)(gc > 0 ? gc : 1));
+  return lerpf(sd, edge, clampf(edge_bias, 0.0f, 1.0f));
 }
 
 static void bf_build_struct(State* s, float* P, int base, bool useB, bool animate,
@@ -791,6 +1039,16 @@ static void bf_build_params(State* s, float sx, float sy, float t, Uniforms& u) 
   u.vol_softness_xy = s->vol_softness_xy * kVolSoftXYMax;
   u.vol_softness_z = s->vol_softness_z * kVolSoftZMax;
   u.vol_depth = s->vol_depth * kVolDepthMax;
+
+  // CPU flatness proxy — used only as the WARMUP fallback until the GPU edge
+  // readback arrives (then tick() drives s->content from the real rendered
+  // frame). Off → a high "clearly not flat" so the detector never engages.
+  if (!s->skip_empty) {
+    s->content = 1.0f;
+  } else if (!s->skip_gpu_ready) {
+    s->content = bf_content(P, on2, s->skip_edge);
+  }
+  // else: GPU-driven (s->content set in tick from the readback) — leave it.
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -811,6 +1069,23 @@ void render(void* self, int vp_w, int vp_h) {
   cp.setTexture(out, 1, 1);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
+
+  // GPU flatness detector: Sobel/variance reduce over the composited tex_out into
+  // stats_buf, then request an async readback. Only when the detector is on.
+  // Reset runs BEFORE the pass; the tick() poll reads last frame's stats before
+  // this reset each frame, so the CPU zero-write is race-free (plan Risk #2).
+  if (s->skip_empty) {
+    int32_t zeros[kStatsInts] = {0, 0, 0, 0};
+    s->stats_buf.write(zeros, kStatsInts);
+    auto ep = gpu::ComputePass::begin();
+    ep.setPSO(s_pso_edge);
+    ep.setBuffer(s->uniform_buf, 0);
+    ep.setTexture(out, 1, 0);            // access 0 = Read
+    ep.setBuffer(s->stats_buf, 2);
+    ep.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    ep.end();
+    s->stats_buf.requestReadback(kStatsInts * sizeof(int32_t));
+  }
 
   gpu::Device::submit();
 }

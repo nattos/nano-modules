@@ -979,6 +979,24 @@ static void gpu_write_buffer(wasm_exec_env_t env, int32_t buf, int32_t offset, i
   if (data) g->writeBuffer(buf, offset, data, data_len);
 }
 
+// GPU→CPU readback. Native buffers are CPU-coherent (MTLStorageModeShared), so
+// there is nothing to stage on request; the poll reads directly (after draining
+// in-flight GPU work in readBuffer). Kept as a request/poll pair to match the web
+// ABI, where readback is genuinely async.
+static void gpu_request_readback(wasm_exec_env_t env, int32_t buf, int32_t byte_len) {
+  (void)env; (void)buf; (void)byte_len;  // no-op on native (coherent buffers)
+}
+
+static int32_t gpu_poll_readback(wasm_exec_env_t env, int32_t buf, int32_t dst_ptr, int32_t byte_len) {
+  auto* g = get_gpu(env);
+  if (!g || byte_len <= 0) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, dst_ptr, byte_len)) return 0;
+  auto* dst = wasm_runtime_addr_app_to_native(inst, dst_ptr);
+  if (!dst) return 0;
+  return g->readBuffer(buf, 0, dst, (uint32_t)byte_len);
+}
+
 static int32_t gpu_begin_compute_pass(wasm_exec_env_t env) {
   auto* g = get_gpu(env); return g ? g->beginComputePass() : -1;
 }
@@ -1337,6 +1355,8 @@ static NativeSymbol gpu_symbols[] = {
     {"create_compute_pso", reinterpret_cast<void*>(gpu_create_compute_pso), "(iii)i", nullptr},
     {"create_render_pso", reinterpret_cast<void*>(gpu_create_render_pso), "(iiiiiii)i", nullptr},
     {"write_buffer", reinterpret_cast<void*>(gpu_write_buffer), "(iiii)", nullptr},
+    {"request_readback", reinterpret_cast<void*>(gpu_request_readback), "(ii)", nullptr},
+    {"poll_readback", reinterpret_cast<void*>(gpu_poll_readback), "(iii)i", nullptr},
     {"begin_compute_pass", reinterpret_cast<void*>(gpu_begin_compute_pass), "()i", nullptr},
     {"compute_set_pso", reinterpret_cast<void*>(gpu_compute_set_pso), "(ii)", nullptr},
     {"compute_set_buffer", reinterpret_cast<void*>(gpu_compute_set_buffer), "(iiii)", nullptr},

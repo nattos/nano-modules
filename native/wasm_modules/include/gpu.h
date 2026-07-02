@@ -69,6 +69,16 @@ extern "C" {
                                               int binding_count, const int* bindings);
   __attribute__((import_module("gpu"), import_name("write_buffer")))
   void gpu_write_buffer(int buf, int offset, const void* data, int data_len);
+  // GPU→CPU async readback. `request_readback` schedules an async copy of the
+  // buffer's first `byte_len` bytes (call each frame); `poll_readback` copies the
+  // latest COMPLETED snapshot into `dst` and returns bytes copied (0 = not ready
+  // yet). Web latency is ~1-2 frames (mapAsync); native is CPU-coherent so polls
+  // are satisfied almost immediately. Idempotent — repeated polls return the same
+  // snapshot until a newer one completes.
+  __attribute__((import_module("gpu"), import_name("request_readback")))
+  void gpu_request_readback(int buf, int byte_len);
+  __attribute__((import_module("gpu"), import_name("poll_readback")))
+  int gpu_poll_readback(int buf, void* dst, int byte_len);
   __attribute__((import_module("gpu"), import_name("begin_compute_pass")))
   int gpu_begin_compute_pass(void);
   __attribute__((import_module("gpu"), import_name("compute_set_pso")))
@@ -403,6 +413,17 @@ struct Buffer : Handle {
   template<typename T>
   void writeOne(const T& value, int offset = 0) {
     gpu_write_buffer(id, offset, &value, static_cast<int>(sizeof(T)));
+  }
+
+  // Async GPU→CPU readback (see gpu_request_readback / gpu_poll_readback).
+  // Call requestReadback() each frame after the pass that writes this buffer;
+  // pollReadback() copies the latest completed snapshot and returns bytes copied
+  // (0 if none ready yet).
+  void requestReadback(int byteCount) {
+    gpu_request_readback(id, byteCount);
+  }
+  int pollReadback(void* dst, int byteCount) {
+    return gpu_poll_readback(id, dst, byteCount);
   }
 };
 

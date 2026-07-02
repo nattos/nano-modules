@@ -513,6 +513,21 @@ public:
     return buf ? [buf contents] : nullptr;
   }
 
+  int readBuffer(int32_t bufHandle, uint32_t offset, void* dst, uint32_t len) override {
+    id<MTLBuffer> buf = getAs<id<MTLBuffer>>(bufHandle);
+    if (!buf || !dst) return 0;
+    // A CPU read needs the producing GPU work COMPLETE, not just scheduled. When
+    // the last flush only waited for scheduling (the FFGL fast path), block on
+    // its completion here — same idiom as readbackTexture.
+    if (lastCommitted_) {
+      [lastCommitted_ waitUntilCompleted];
+      lastCommitted_ = nil;
+    }
+    if (offset + len > (uint32_t)[buf length]) return 0;
+    memcpy(dst, (const uint8_t*)[buf contents] + offset, len);
+    return (int)len;
+  }
+
   // --- Compute pass ---
 
   int32_t beginComputePass() override {

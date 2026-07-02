@@ -125,9 +125,11 @@ echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present)"
 # layers with depth fog in a single pass (the solid threshold is CPU-resolved,
 # so no auto-levels):
 #   present  — composite both structures' depth layers → grayscale (rgba8).
+#   edge     — Sobel + variance reduce over tex_out → int stats buffer (skip-empty).
 compile_shaders_compute_var_spv brutal_fold present
-_emit_spv_header_var brutal_fold present
-echo "  brutal_fold shaders compiled (SPV: present)"
+compile_shaders_compute_var_spv brutal_fold edge
+_emit_spv_header_var brutal_fold present edge
+echo "  brutal_fold shaders compiled (SPV: present + edge)"
 
 # phase_fold — emergent limit-cycle phase-portrait generator. A baked atlas of
 # limit-cycle fields is uploaded to the GPU; the field, streamline tracing,

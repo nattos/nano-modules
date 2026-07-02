@@ -313,6 +313,18 @@ export class BrutalFoldInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_hold_jitter'} .label=${'Hold Jit'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <field-trigger .fieldPath=${'ap_jump'} .label=${'Jump'} .binding=${b}></field-trigger>
+
+      ${this.section('Skip Empty', '@group/skip')}
+      <field-toggle .fieldPath=${'skip_empty'} .label=${'Skip Empty'}
+        .defaultValue=${0} .binding=${b}></field-toggle>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_edge'} .label=${'Edge Bias'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
+      <field-toggle .fieldPath=${'skip_autopilot'} .label=${'Jog Autopilot'}
+        .defaultValue=${1} .binding=${b}></field-toggle>
     `;
   }
 }

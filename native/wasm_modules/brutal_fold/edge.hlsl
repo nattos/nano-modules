@@ -1,0 +1,48 @@
+// source.brutal_fold — edge/variance reduce over the rendered tex_out.
+//
+// A GPU flatness detector for the "skip empty" feature. One thread per output
+// pixel: read the 3x3 luma neighbourhood of the COMPOSITED frame, run a Sobel
+// operator, and scatter four running sums into a small int stats buffer via
+// atomics. The CPU reads these back (gpu_poll_readback) and forms the flatness
+// metric = blend(luminance std-dev, mean edge energy). This measures the ACTUAL
+// rendered output (colour grade + fog + receding layers), unlike the analytic
+// CPU proxy it supersedes.
+//
+// Fixed-point: all three summed quantities are normalized to [0,1] in-shader and
+// scaled by 128 for InterlockedAdd (int-only). Count is unscaled. Worst-case slot
+// at 4K ≈ N*128 ≈ 1.06e9 < int32 max — see main.cpp kStatsScale.
+
+#include "common.hlsl"   // cbuffer U (res_x/res_y) + nano_luminance
+
+Texture2D<float4>    tex_out : register(t1);
+RWStructuredBuffer<int> stats : register(u2);   // [edge_sum, luma_sum, luma2_sum, count]
+
+static const float kStatsScale = 128.0;
+static const float kSobelNorm  = 5.65685425;    // sqrt(32): max Sobel |grad| for luma in [0,1]
+
+float lumAt(int2 p, int2 res) {
+  p = clamp(p, int2(0, 0), res - 1);
+  return nano_luminance(tex_out.Load(int3(p, 0)).rgb);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 gid : SV_DispatchThreadID) {
+  int2 res = int2((int)res_x, (int)res_y);
+  if ((int)gid.x >= res.x || (int)gid.y >= res.y) return;
+  int2 p = int2(gid.xy);
+
+  float l00 = lumAt(p + int2(-1, -1), res), l10 = lumAt(p + int2(0, -1), res), l20 = lumAt(p + int2(1, -1), res);
+  float l01 = lumAt(p + int2(-1,  0), res), l11 = lumAt(p,                res), l21 = lumAt(p + int2(1,  0), res);
+  float l02 = lumAt(p + int2(-1,  1), res), l12 = lumAt(p + int2(0,  1), res), l22 = lumAt(p + int2(1,  1), res);
+
+  float gx = (l20 + 2.0 * l21 + l22) - (l00 + 2.0 * l01 + l02);
+  float gy = (l02 + 2.0 * l12 + l22) - (l00 + 2.0 * l10 + l20);
+  float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);   // edge energy [0,1]
+  float L = l11;
+
+  int prev;
+  InterlockedAdd(stats[0], (int)(g * kStatsScale),     prev);
+  InterlockedAdd(stats[1], (int)(L * kStatsScale),     prev);
+  InterlockedAdd(stats[2], (int)(L * L * kStatsScale), prev);
+  InterlockedAdd(stats[3], 1,                          prev);
+}

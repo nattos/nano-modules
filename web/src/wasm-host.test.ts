@@ -265,6 +265,8 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       create_compute_pso: () => -1,
       create_render_pso: () => -1,
       write_buffer: () => {},
+      request_readback: () => {},
+      poll_readback: () => 0,
       begin_compute_pass: () => -1,
       compute_set_pso: () => {},
       compute_set_buffer: () => {},

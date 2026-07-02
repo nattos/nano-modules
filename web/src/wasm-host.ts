@@ -1155,6 +1155,18 @@ export class WasmHost {
                 const name = this.readString(namePtr, nameLen);
                 return this.createShaderModuleByName(name);
               },
+              // Override the gpu-host stub: poll_readback must write the latest
+              // completed snapshot into wasm linear memory (re-derive the view
+              // every call — memory may have grown). Returns bytes copied.
+              poll_readback: (buf: number, destPtr: number, byteLen: number) => {
+                const gh = this.gpuHost;
+                if (!gh) return 0;
+                const { bytes, len } = gh.getReadback(buf);
+                if (!bytes || len <= 0) return 0;
+                const n = Math.min(byteLen, len);
+                new Uint8Array(this.memory.buffer, destPtr, n).set(bytes.subarray(0, n));
+                return n;
+              },
             }
           : {
               // Stubs if no GPU host
@@ -1172,6 +1184,8 @@ export class WasmHost {
               create_instanced_render_pso_layout: () => -1,
               create_instanced_render_pso_mrt_layout: () => -1,
               write_buffer: () => {},
+              request_readback: () => {},
+              poll_readback: () => 0,
               begin_compute_pass: () => -1,
               compute_set_pso: () => {},
               compute_set_buffer: () => {},

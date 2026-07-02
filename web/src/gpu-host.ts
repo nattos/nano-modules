@@ -291,8 +291,9 @@ export class GPUHost {
     if (usage === USAGE_VERTEX) gpuUsage |= GPUBufferUsage.VERTEX;
     if (usage === USAGE_STORAGE) gpuUsage |= GPUBufferUsage.STORAGE;
     if (usage === USAGE_UNIFORM) gpuUsage |= GPUBufferUsage.UNIFORM;
-    // Storage buffers also need VERTEX for reading as vertex in render pass
-    if (usage === USAGE_STORAGE) gpuUsage |= GPUBufferUsage.VERTEX;
+    // Storage buffers also need VERTEX for reading as vertex in render pass, and
+    // COPY_SRC so they can be copied into a MAP_READ staging buffer for readback.
+    if (usage === USAGE_STORAGE) gpuUsage |= GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC;
 
     const buffer = this.device.createBuffer({ size, usage: gpuUsage });
     return this.alloc('buffer', buffer);
@@ -932,10 +933,76 @@ export class GPUHost {
     }
   }
 
+  // --- Async GPU→CPU buffer readback (request/poll) ---
+  //
+  // Per source-buffer handle we keep a persistent MAP_READ staging buffer plus
+  // the latest completed snapshot. `requestReadback` records a copy onto this
+  // frame's encoder; after the frame's `flush()` submits, the staging buffer is
+  // mapped async and the bytes cached in `latest`. `poll_readback` (on WasmHost)
+  // then copies `latest` into wasm memory. Latency is ~1-2 frames.
+  private readbacks = new Map<number, {
+    staging: GPUBuffer;
+    capacity: number;
+    mapPending: boolean;   // a mapAsync is in flight — must NOT re-copy into it
+    needsMap: boolean;     // a fresh copy was recorded this frame; map after submit
+    copyLen: number;       // bytes copied this frame
+    latest: Uint8Array | null;
+    latestLen: number;
+  }>();
+
+  requestReadback(bufferHandle: number, byteLen: number) {
+    if (byteLen <= 0) return;
+    const src = this.getBufferByHandle(bufferHandle);
+    if (!src) return;
+    let rec = this.readbacks.get(bufferHandle);
+    if (!rec || rec.capacity < byteLen) {
+      if (rec) rec.staging.destroy();
+      const staging = this.device.createBuffer({
+        size: byteLen,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      rec = { staging, capacity: byteLen, mapPending: false, needsMap: false,
+              copyLen: 0, latest: rec?.latest ?? null, latestLen: rec?.latestLen ?? 0 };
+      this.readbacks.set(bufferHandle, rec);
+    }
+    // Recording a copy into a buffer that's currently mapped/pending is a WebGPU
+    // validation error — skip this frame's request if one is still outstanding.
+    if (rec.mapPending) return;
+    this.ensureEncoder().copyBufferToBuffer(src, 0, rec.staging, 0, byteLen);
+    rec.needsMap = true;
+    rec.copyLen = byteLen;
+  }
+
+  // Latest completed snapshot for a source buffer (null if none yet).
+  getReadback(bufferHandle: number): { bytes: Uint8Array | null; len: number } {
+    const rec = this.readbacks.get(bufferHandle);
+    return rec ? { bytes: rec.latest, len: rec.latestLen } : { bytes: null, len: 0 };
+  }
+
+  private mapPendingReadbacks() {
+    for (const rec of this.readbacks.values()) {
+      if (!rec.needsMap || rec.mapPending) continue;
+      rec.needsMap = false;
+      rec.mapPending = true;
+      const staging = rec.staging;
+      const len = rec.copyLen;
+      staging.mapAsync(GPUMapMode.READ, 0, len).then(() => {
+        const src = new Uint8Array(staging.getMappedRange(0, len));
+        if (!rec.latest || rec.latest.length < len) rec.latest = new Uint8Array(len);
+        rec.latest.set(src.subarray(0, len));
+        rec.latestLen = len;
+        staging.unmap();
+        rec.mapPending = false;
+      }).catch(() => { rec.mapPending = false; });
+    }
+  }
+
   flush() {
     if (this.encoder) {
       this.device.queue.submit([this.encoder.finish()]);
       this.encoder = null;
+      // Map any readbacks whose copy just rode this submit.
+      this.mapPendingReadbacks();
     }
   }
 
@@ -1116,6 +1183,10 @@ export class GPUHost {
       },
       write_buffer: (buf: number, offset: number, dataPtr: number, dataLen: number) =>
         this.writeBuffer(buf, offset, readMemory(dataPtr, dataLen)),
+      // request_readback lives here (no wasm-memory access); poll_readback is
+      // overridden on WasmHost because it must write into wasm linear memory.
+      request_readback: (buf: number, byteLen: number) =>
+        this.requestReadback(buf, byteLen),
       begin_compute_pass: () => this.beginComputePass(),
       compute_set_pso: (pass: number, pipeline: number) =>
         this.computeSetPipeline(pass, pipeline),

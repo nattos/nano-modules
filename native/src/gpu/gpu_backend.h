@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
@@ -154,6 +155,18 @@ public:
   // default, so the pointer is valid for both read and write and is
   // immediately coherent with GPU access.
   virtual void* bufferContents(int32_t bufHandle) { (void)bufHandle; return nullptr; }
+
+  // GPU→CPU readback of a small buffer region into `dst`. Returns bytes copied
+  // (0 if unavailable). The default reads directly from `bufferContents` (valid
+  // for CPU-coherent backends); a backend whose GPU writes aren't yet visible on
+  // the CPU (eg Metal, where the producing command buffer must complete first)
+  // overrides this to drain in-flight work before copying.
+  virtual int readBuffer(int32_t bufHandle, uint32_t offset, void* dst, uint32_t len) {
+    void* src = bufferContents(bufHandle);
+    if (!src || !dst) return 0;
+    memcpy(dst, static_cast<const uint8_t*>(src) + offset, len);
+    return static_cast<int>(len);
+  }
 
   // Compute pass
   virtual int32_t beginComputePass() = 0;

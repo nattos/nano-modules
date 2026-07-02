@@ -275,6 +275,12 @@ target_include_directories(test_tap_mod PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_tap_mod PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_tap_mod)
 
+# fx::SkipJog — shared C2 "skip empty" engagement ramp (effect_utils.h).
+add_executable(test_skip_jog tests/test_skip_jog.cpp)
+target_include_directories(test_skip_jog PRIVATE ${CMAKE_SOURCE_DIR}/wasm_modules/include)
+target_link_libraries(test_skip_jog PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_skip_jog)
+
 add_executable(test_param_smoothing tests/test_param_smoothing.cpp)
 target_include_directories(test_param_smoothing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_param_smoothing PRIVATE Catch2::Catch2WithMain)
@@ -331,6 +337,16 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
     NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm"
   )
   catch_discover_tests(test_nanolooper_wasm)
+endif()
+
+# GPU→CPU buffer readback (backend readBuffer) — no WASM module needed.
+if(APPLE)
+  add_executable(test_gpu_readback tests/test_gpu_readback.mm)
+  target_link_libraries(test_gpu_readback PRIVATE
+    gpu_backend Catch2::Catch2WithMain
+    "-framework Metal" "-framework Foundation"
+  )
+  catch_discover_tests(test_gpu_readback)
 endif()
 
 # Metal GPU pipeline test

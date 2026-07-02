@@ -37,6 +37,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <val.h>
+#include <effect_utils.h>
 #include "phase_fold_shaders.h"
 #include "phase_fold_atlas.h"
 
@@ -69,6 +70,20 @@ static constexpr float kPi = 3.14159265358979323846f;
 // Autopilot epicycle (port of app.js): two summed circular motions 90° out of
 // phase, incommensurate rates → sweeps the pad without stalling at the centre.
 static constexpr float kApA = 0.34f, kApB = 0.16f, kApW2 = 0.382f, kApPhi = kPi * 0.5f;
+
+// Skip-empty jog: the atlas has invalid "holes" that render as a flat dark fill.
+// When the effective XY nears one (its validity coverage drops), a C2 ramp
+// (fx::SkipJog) accelerates the autopilot orbit to glide through the dead patch.
+// There is no time lever here (the field is XY-only), so this needs autopilot on.
+// Jog is a MULTIPLE of the current orbit speed (not an absolute rate), and the
+// ramp is asymmetric: a gentle C2 ease-IN, a quick ease-OUT once a live field
+// returns (leaving a flat fill, so a harsher slowdown reads fine).
+static constexpr float kSkipOrbitMult  = 6.0f;  // jog up to Nx the current orbit speed
+static constexpr float kSkipRampInSec  = 0.6f;
+static constexpr float kSkipRampOutSec = 0.15f;
+// Eager recovery: ease out as soon as a valid field returns (a small gap above
+// the engage trigger — the most sensitive a stable hysteresis latch allows).
+static constexpr float kSkipHyst       = 0.03f;
 
 // Uniform block — mirrors `U` in common.hlsl (std140, 96 bytes).
 struct Uniforms {
@@ -159,10 +174,15 @@ struct State {
   float ap_speed     = 0.35f;
   float jitter       = 0.0f;    // chaotic, fling-ey orbit of the XY around its base
   float jitter_speed = 0.5f;
+  // --- Skip empty: sense the atlas holes and jog the orbit through them ---
+  bool  skip_empty   = false;   // master enable for detector + orbit jog
+  float skip_thresh  = 0.12f;   // validity floor [0,1]: engage below this
 
   // --- Internal clocks (advanced in tick) ---
   float flow_phase = 0.0f;
   float orbit      = 0.0f;
+  fx::SkipJog jog;                    // skip-empty C2 engagement ramp
+  float content    = 1.0f;            // last frame's validity coverage [0,1]
   float eff_x = 0.2f, eff_y = 0.2f;   // effective XY used for rendering
   float eff_wind = 0.0f;              // effective wind (base + jitter) used for rendering
 
@@ -183,11 +203,13 @@ struct State {
 };
 
 static void apply_visibility(bool show_streamlines, bool autopilot,
-                             bool show_limit_cycle, int cycle_mode) {
+                             bool show_limit_cycle, int cycle_mode,
+                             bool skip_empty) {
   state::setFieldHidden("stream_width", !show_streamlines);
   state::setFieldHidden("stream_spread", !show_streamlines);
   state::setFieldHidden("flow_speed",   !show_streamlines);
   state::setFieldHidden("ap_speed",     !autopilot);
+  state::setFieldHidden("skip_thresh",  !skip_empty);
 
   // Limit-cycle params depend on the selected algorithm.
   bool cyc   = show_limit_cycle;
@@ -219,6 +241,7 @@ static void apply_visibility(bool show_streamlines, bool autopilot,
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
   bool show_streamlines = true, autopilot = false, show_limit_cycle = true;
   int cycle_mode = 0;
+  bool skip_empty = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int l = len[i];
@@ -226,8 +249,9 @@ void eval_visibility(int n, const char* pb, const int* off, const int* len, cons
     else if (state::pathIs(p, l, "autopilot"))        autopilot = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(p, l, "show_limit_cycle")) show_limit_cycle = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(p, l, "cycle_mode"))       cycle_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "skip_empty"))       skip_empty = state::patchFloat(i) != 0.0f;
   }
-  apply_visibility(show_streamlines, autopilot, show_limit_cycle, cycle_mode);
+  apply_visibility(show_streamlines, autopilot, show_limit_cycle, cycle_mode, skip_empty);
 }
 
 static void on_state_ready(void* self);
@@ -243,7 +267,7 @@ static gpu::RenderPSO  s_pso_lines;
 static gpu::RenderPSO  s_pso_contour;
 
 void module_init() {
-  state::init("source.phase_fold", {1, 0, 1},
+  state::init("source.phase_fold", {1, 0, 2},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -382,6 +406,20 @@ void module_init() {
       // Broadcast: effective XY so the custom editor shows the live position.
       .floatField("autopilot_x", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)
       .floatField("autopilot_y", 0.2f, 0.0f, 1.0f, state::SecondaryOutput)
+      // --- Skip empty: glide the orbit through the atlas holes ---
+      .group("skip", "Skip Empty")
+        .groupHelp(
+          "The atlas has invalid **holes** that render as a flat dark fill. Turn "
+          "this on and — while **Autopilot** is running — the orbit **speeds up "
+          "smoothly** (on a C2 curve) as it nears a hole, so it glides through the "
+          "dead patch instead of parking in it, then eases back to normal once a "
+          "live field returns. *Sensitivity* sets how close to a hole it reacts. "
+          "(The field is position-only, so this needs Autopilot on to have "
+          "anything to move.)")
+      .boolField("skip_empty", false, state::PrimaryInput).label("Skip Empty", "Skip")
+      .floatField("skip_thresh", 0.12f, 0.0f, 0.5f, state::PrimaryInput).label("Sensitivity", "Sens")
+      // Broadcast: the live engagement [0,1] so an editor can show when it fires.
+      .floatField("skip_active", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- I/O: pure generator (no input) ---
       .textureField("tex_out", state::PrimaryOutput)
       // Flow field: the induced vector field, baked to a velocity texture so a
@@ -545,7 +583,7 @@ void init(void* self) {
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  apply_visibility(s->show_streamlines, s->autopilot, s->show_limit_cycle, s->cycle_mode);
+  apply_visibility(s->show_streamlines, s->autopilot, s->show_limit_cycle, s->cycle_mode, s->skip_empty);
 }
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -561,7 +599,8 @@ static inline float rng_unit(State* s) {
 // re-weighted by per-cell validity. Also returns the nearest cell (for the
 // limit-cycle seed) and whether any valid cell was hit.
 static void compute_corners(const State* s, float sx, float sy,
-                            float corners[4], float weights[4], int& nearest) {
+                            float corners[4], float weights[4], int& nearest,
+                            float* validity = nullptr) {
   const int G = PF_GRID;
   float fx = clampf(sx, 0.0f, 1.0f) * (G - 1);
   float fy = clampf(sy, 0.0f, 1.0f) * (G - 1);
@@ -580,6 +619,10 @@ static void compute_corners(const State* s, float sx, float sy,
   float w[4] = { (1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty };
   float sum = 0.0f;
   for (int i = 0; i < 4; i++) { w[i] *= PF_VALID[idx[i]]; sum += w[i]; }
+  // `sum` (pre-normalization) is the fraction of the bilinear weight landing on
+  // VALID cells — 1 fully inside the atlas, 0 in a hole. It's the skip-empty
+  // content signal (a hole renders as a flat dark fill).
+  if (validity) *validity = clampf(sum, 0.0f, 1.0f);
   if (sum > 1e-4f) for (int i = 0; i < 4; i++) w[i] /= sum;
   for (int i = 0; i < 4; i++) { corners[i] = (float)idx[i]; weights[i] = w[i]; }
   int c = clampi((int)std::lround(sx * (G - 1)), 0, G - 1);
@@ -646,11 +689,25 @@ void tick(void* self, double dt) {
   // Hard re-seed timer for the stateful cycle solver.
   s->respawn_accum += fdt;
 
+  // Skip-empty: engage the C2 ramp on last frame's validity coverage. The only
+  // lever on the (XY-only) field is the autopilot orbit, so this speeds the orbit
+  // up to glide through a hole; with autopilot off it's inert (we never mutate the
+  // user's XY). `content` lags a frame — fine (the ramp is smooth + hysteretic).
+  float skip_e = 0.0f;
+  if (s->skip_empty) {
+    float lo = s->skip_thresh;
+    float hi = std::min(lo + kSkipHyst, 0.95f);
+    skip_e = s->jog.update(s->content, lo, hi, kSkipRampInSec, kSkipRampOutSec, fdt);
+  } else {
+    s->jog = fx::SkipJog{};        // fully reset when disabled (no residual jog)
+  }
+
   // Base XY: autopilot epicycle, or the user's pad position.
   float base_x, base_y;
   if (s->autopilot) {
     float ap_actual = 0.05f + s->ap_speed * s->ap_speed * (1.6f - 0.05f);
-    s->orbit -= fdt * ap_actual;   // clockwise drift
+    float orbit_jog = skip_e * ap_actual * kSkipOrbitMult;  // accelerate through holes
+    s->orbit -= fdt * (ap_actual + orbit_jog);  // clockwise drift (+ skip jog)
     orbit_xy(s->orbit, base_x, base_y);
   } else {
     base_x = s->eccentricity;
@@ -758,6 +815,20 @@ void tick(void* self, double dt) {
   state::setValPath("autopilot_y", vy);
   val::release(vy);
 
+  // Sample the validity coverage at the (new) effective XY for next frame's
+  // skip-empty detector, and broadcast the live engagement. Computed here (not in
+  // render) so it stays fresh even when render() is skipped at opacity 0.
+  if (s->skip_empty) {
+    float cn[4], cw[4]; int cnear = 0; float validity = 1.0f;
+    compute_corners(s, s->eff_x, s->eff_y, cn, cw, cnear, &validity);
+    s->content = validity;
+  } else {
+    s->content = 1.0f;
+  }
+  auto vsk = val::number(skip_e);
+  state::setValPath("skip_active", vsk);
+  val::release(vsk);
+
   // Produce the flow field every frame — even when render() is skipped (opacity
   // 0), so downstream consumers always see fresh data.
   bake_flow_field(s);
@@ -812,8 +883,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "ap_speed"))       s->ap_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter"))         s->jitter = state::patchFloat(i);
     else if (state::pathIs(path, plen, "jitter_speed"))   s->jitter_speed = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_empty"))     { bool v = state::patchFloat(i) != 0.0f; if (v != s->skip_empty) { s->skip_empty = v; vis_changed = true; } }
+    else if (state::pathIs(path, plen, "skip_thresh"))    s->skip_thresh = state::patchFloat(i);
   }
-  if (vis_changed) apply_visibility(s->show_streamlines, s->autopilot, s->show_limit_cycle, s->cycle_mode);
+  if (vis_changed) apply_visibility(s->show_streamlines, s->autopilot, s->show_limit_cycle, s->cycle_mode, s->skip_empty);
 }
 
 // ---- Tracer mode (CPU) — a different limit-cycle algorithm ----------------

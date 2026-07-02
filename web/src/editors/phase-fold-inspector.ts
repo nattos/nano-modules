@@ -279,6 +279,13 @@ export class PhaseFoldInspector extends MobxLitElement {
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'ap_speed'} .label=${'AP Speed'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.35} .binding=${b}></scalar-slider>
+
+      <div class="section">Skip Empty</div>
+      <help-slot .binding=${b} .path=${'@group/skip'}></help-slot>
+      <field-toggle .fieldPath=${'skip_empty'} .label=${'Skip Empty'}
+        .defaultValue=${0} .binding=${b}></field-toggle>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
+        .min=${0} .max=${0.5} .step=${0.005} .defaultValue=${0.12} .binding=${b}></scalar-slider>
     `;
   }
 }
