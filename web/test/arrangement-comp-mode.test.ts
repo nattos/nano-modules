@@ -117,4 +117,40 @@ describe('Arrangement comp mode A/B pixel parity (GPU)', () => {
     // And the scene actually renders something non-trivial (inverted blue mix).
     expect(Math.max(...legacy)).toBeGreaterThan(30);
   });
+
+  it('worker-owned transport advances, mirrors back, loops at the brace, and pauses', async () => {
+    await renderAndSample(`${URL}?compMode=1`); // boots + parks the playhead at 42
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      store.loopEnabled = true;
+      store.loopStartBeat = 40;
+      store.loopEndBeat = 44;
+      store.playing = true;
+    });
+    // The playhead must ADVANCE (the worker's comp transport mirrors back)...
+    await page.waitForFunction(
+      () => (window as any).arrangementStore.positionBeat > 42.2,
+      { timeout: 10_000 },
+    );
+    // ...and stay inside the loop brace across a wrap (2 beats/s at 120 BPM →
+    // several wraps within the wait).
+    await new Promise((r) => setTimeout(r, 2500));
+    const during = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    expect(during).toBeGreaterThanOrEqual(40 - 0.25);
+    expect(during).toBeLessThan(44.5);
+
+    // Pause freezes the mirrored playhead.
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    await new Promise((r) => setTimeout(r, 300));
+    const p1 = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    await new Promise((r) => setTimeout(r, 400));
+    const p2 = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    expect(Math.abs(p2 - p1)).toBeLessThan(1e-6);
+
+    // A paused scrub takes effect (seek path) — the monitor keeps rendering.
+    await page.evaluate(() => (window as any).arrangementStore.setPosition(41));
+    await new Promise((r) => setTimeout(r, 300));
+    const p3 = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    expect(p3).toBeCloseTo(41, 5);
+  });
 });

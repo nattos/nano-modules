@@ -67,8 +67,18 @@ export class EngineBridge {
   readonly compMode = detectCompMode();
   /** store.docRev of the last document mirror pushed to the comp executor. */
   private sentDocRev = -1;
-  private lastSeekSent = Number.NaN;
   private sentClipTiming: boolean | null = null;
+  private sentPrecise: boolean | null = null;
+  private sentPlaying: boolean | null = null;
+  private sentLoopSig = '';
+  /** Edge-triggered per-clip readiness pushed to the native Precise gate. */
+  private sentVideoReady = new Map<string, boolean>();
+  /** The comp transport's last mirrored playhead (echo detection for scrubs). */
+  private mirroredBeat = Number.NaN;
+  /** Ignore mirror-backs briefly after sending a seek (in-flight echo guard). */
+  private seekQuietUntil = 0;
+  /** The worker-reported decode-pump active set (comp mode owns the union). */
+  private compPumpDescs: VideoClipDesc[] | null = null;
   /** Current engine render size (composition aspect, capped). */
   private renderW = 640;
   private renderH = 360;
@@ -258,18 +268,15 @@ export class EngineBridge {
     void e.warmBundles(EFFECT_BUNDLES);
     if (this.compMode) {
       e.onCompInfo = (info) => this.handleCompInfo(info);
-      // D1: the TS side keeps the Precise gate (it steers the seek), so the
-      // native gate runs in 'live' (never holds — readiness is never pushed).
-      void e.compEnable(COMPOSITE_ID).then(() => {
-        e.compControl({ op: 'mode', precise: false });
-      });
+      void e.compEnable(COMPOSITE_ID);
     }
     this.engine = e;
     return e;
   }
 
   /** Per-frame comp-executor report (comp mode): hasContent + structure-change
-   *  bookkeeping the plain path derives locally. */
+   *  bookkeeping the plain path derives locally, plus the playhead mirror-back
+   *  (the comp transport owns the beat while playing). */
   private handleCompInfo(info: CompFrameInfo) {
     this.hasContent = info.hasContent;
     if (info.chainKeys) {
@@ -279,6 +286,18 @@ export class EngineBridge {
       // bound textures dropped) — re-inject the active frames (plain-path twin:
       // showComposite's !sameStructure branch).
       this.video?.reinjectActive();
+    }
+    if (info.videoDescs !== undefined) {
+      try {
+        this.compPumpDescs = JSON.parse(info.videoDescs) as VideoClipDesc[];
+      } catch { /* malformed — keep the previous set */ }
+    }
+    // Mirror the advancing playhead back to the store while playing. Skipped
+    // briefly after WE send a seek — an in-flight report from before the seek
+    // would otherwise yank the playhead back (the echo problem).
+    if (store.playing && performance.now() >= this.seekQuietUntil) {
+      this.mirroredBeat = info.positionBeat;
+      store.setPosition(info.positionBeat);
     }
   }
 
@@ -355,6 +374,7 @@ export class EngineBridge {
   /** Drive the engine's effect clock from the transport time (seconds). Deduped
    *  so a paused transport doesn't spam the worker. No-op until booted. */
   setTime(seconds: number) {
+    if (this.compMode) return; // the comp transport owns the effect clock
     if (!this.engine || this.lastTimeSent === seconds) return;
     this.lastTimeSent = seconds;
     this.engine.setTime(seconds);
@@ -462,6 +482,16 @@ export class EngineBridge {
       if (d) { warmDescs.push(d); seen.add(clip.id); }
     }
 
+    // ── Comp mode (D2): the worker owns transport, timeline eval, sketch
+    // build, AND the Precise gate. The TS side mirrors the document (docRev),
+    // sends transport/gate commands on change, pushes edge-triggered per-clip
+    // readiness, and follows the worker-reported pump set. hasContent, the
+    // chain keys, and the playhead flow BACK via handleCompInfo.
+    if (this.compMode) {
+      this.syncComp(videoDescs, warmDescs);
+      return;
+    }
+
     // ── "Precise" transport gate ───────────────────────────────────────────
     // Never composite a frame that isn't fully possible: hold the displayed composite
     // until every ACTIVE video clip has its current-beat frame decoded + injected.
@@ -489,30 +519,6 @@ export class EngineBridge {
       return; // hold — the previous (ready) composite + its textures stay on screen
     }
     this.clearPreciseHold();
-
-    // ── Comp mode: the worker evaluates the timeline + builds + renders. The
-    // TS side only mirrors the document (on docRev change), steers the beat
-    // (D1: per-frame seek), and keeps the decode pump + gate above. hasContent
-    // and the chain keys flow BACK via handleCompInfo.
-    if (this.compMode) {
-      const e = this.ensureEngine();
-      if (store.docRev !== this.sentDocRev) {
-        this.sentDocRev = store.docRev;
-        e.compLoadDoc(JSON.stringify(store.composition));
-      }
-      const timing = store.clipAutoTiming === 'loop';
-      if (timing !== this.sentClipTiming) {
-        this.sentClipTiming = timing;
-        e.compControl({ op: 'clipTiming', loopMode: timing });
-      }
-      if (store.positionBeat !== this.lastSeekSent) {
-        this.lastSeekSent = store.positionBeat;
-        e.compControl({ op: 'seek', beat: store.positionBeat });
-      }
-      this.reconcilePump(warmDescs);
-      this.displayedVideoDescs = videoDescs;
-      return;
-    }
 
     // Fold the active engine layers into ONE composite sketch — rail base-curve
     // values + each clip's absolute start-seconds baked in (warp-aware). Shared
@@ -569,6 +575,78 @@ export class EngineBridge {
     this.hasContent = true; // committed: a composite is on screen
   }
 
+  /**
+   * Comp-mode per-frame sync (D2): diff-push the document + transport + gate
+   * state to the worker's composition executor, and keep the decode pump on
+   * the worker-reported active set (which folds in the hold union).
+   */
+  private syncComp(videoDescs: VideoClipDesc[], warmDescs: VideoClipDesc[]) {
+    const e = this.ensureEngine();
+
+    if (store.docRev !== this.sentDocRev) {
+      this.sentDocRev = store.docRev;
+      e.compLoadDoc(JSON.stringify(store.composition));
+    }
+    const timing = store.clipAutoTiming === 'loop';
+    if (timing !== this.sentClipTiming) {
+      this.sentClipTiming = timing;
+      e.compControl({ op: 'clipTiming', loopMode: timing });
+    }
+    const precise = store.transportMode === 'precise';
+    if (precise !== this.sentPrecise) {
+      this.sentPrecise = precise;
+      e.compControl({ op: 'mode', precise });
+    }
+    const loopSig = `${store.loopEnabled}|${store.loopStartBeat}|${store.loopEndBeat}`;
+    if (loopSig !== this.sentLoopSig) {
+      this.sentLoopSig = loopSig;
+      e.compControl({
+        op: 'loop', enabled: store.loopEnabled,
+        startBeat: store.loopStartBeat, endBeat: store.loopEndBeat,
+      });
+    }
+    if (store.playing !== this.sentPlaying) {
+      this.sentPlaying = store.playing;
+      e.compControl({ op: store.playing ? 'play' : 'pause' });
+      // (Re)starting playback re-anchors from wherever the playhead sits.
+      this.mirroredBeat = store.positionBeat;
+      e.compControl({ op: 'seek', beat: store.positionBeat });
+      this.seekQuietUntil = performance.now() + 150;
+    }
+    // A playhead move NOT explained by the mirror-back is a user scrub.
+    if (store.positionBeat !== this.mirroredBeat) {
+      this.mirroredBeat = store.positionBeat;
+      e.compControl({ op: 'seek', beat: store.positionBeat });
+      this.seekQuietUntil = performance.now() + 150;
+    }
+
+    // Edge-triggered per-clip readiness for the native Precise gate. The pump
+    // computes readiness against the store playhead exactly like the TS gate.
+    const bpm = store.composition.meta.baseBPM;
+    const liveIds = new Set<string>();
+    for (const d of warmDescs) {
+      liveIds.add(d.clipId);
+      const ready = !!this.video?.clipReady(d.clipId, store.positionBeat, bpm);
+      if (this.sentVideoReady.get(d.clipId) !== ready) {
+        this.sentVideoReady.set(d.clipId, ready);
+        e.compControl({ op: 'videoReady', clipId: d.clipId, ready });
+      }
+    }
+    for (const id of [...this.sentVideoReady.keys()]) {
+      if (!liveIds.has(id)) {
+        // A clip left the warm set — mark unready so a re-entry never trusts a
+        // stale flag, then forget it.
+        if (this.sentVideoReady.get(id)) e.compControl({ op: 'videoReady', clipId: id, ready: false });
+        this.sentVideoReady.delete(id);
+      }
+    }
+
+    // The worker's pump set (target ∪ displayed while holding) wins; fall back
+    // to the local warm set until the first report lands.
+    this.reconcilePump(this.compPumpDescs ?? warmDescs);
+    this.displayedVideoDescs = videoDescs;
+  }
+
   /** Reconcile the video decode pump with `descs` (active target + lookahead). */
   private reconcilePump(descs: VideoClipDesc[]) {
     if (descs.length > 0 || this.video) {
@@ -584,8 +662,13 @@ export class EngineBridge {
     this.engine?.destroy();
     this.engine = null;
     this.sentDocRev = -1;
-    this.lastSeekSent = Number.NaN;
     this.sentClipTiming = null;
+    this.sentPrecise = null;
+    this.sentPlaying = null;
+    this.sentLoopSig = '';
+    this.sentVideoReady.clear();
+    this.mirroredBeat = Number.NaN;
+    this.compPumpDescs = null;
     this.onCompositeCb = null;
     this.tap = null;
     this.compositeSig = '';

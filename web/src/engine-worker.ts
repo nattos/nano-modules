@@ -891,6 +891,9 @@ async function simulateTick(dt: number, execDt: number = dt) {
     try {
       const r = await exec.compFrame(dt, frameState, w, h, applyInstanceTextures);
       if (r.hasContent && r.handle >= 0) sketchOutputs.set('arr-composite', r.handle);
+      // The comp transport owns the playhead: keep the worker's host clock in
+      // lock-step so JS-side host frameStates track the composition time.
+      elapsed = r.positionSec;
       compFrameInfo = {
         hasContent: r.hasContent,
         structureChanged: r.structureChanged,

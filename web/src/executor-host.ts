@@ -780,6 +780,9 @@ export class WasmSketchExecutor {
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string }> {
     const c = this.ensureComp();
+    // The effect clock advances by the COMP transport's motion, not wall time:
+    // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
+    const prevSec = this.exports.comp_position_sec(c);
     const flags = this.exports.comp_update(c, dt);
     const structureChanged = !!(flags & 1);
     const hasContent = !!(flags & 2);
@@ -835,8 +838,8 @@ export class WasmSketchExecutor {
     }
 
     this.currentSketchId = 'arr-composite';
-    const handle = this.exports.comp_render(
-      c, -1, this.compOutTex, width, height, frameState.execDeltaTime ?? frameState.deltaTime);
+    const execDt = this.exports.comp_position_sec(c) - prevSec;
+    const handle = this.exports.comp_render(c, -1, this.compOutTex, width, height, execDt);
     this.accumulateDebugStats(this.exports.comp_sketch_executor(c));
 
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
