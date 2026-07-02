@@ -27,6 +27,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -128,6 +129,24 @@ class CompExecutor {
   /** Edge-triggered readiness from the host's decode pump (Precise gate). */
   void setVideoReady(const std::string& clipId, bool ready);
 
+  /**
+   * Drop the cached timeline evaluation (the eval-skip span) so the next
+   * update() re-evaluates the world. Called internally by loadDocument and by
+   * every cheap op that can reach the BUILT sketch (params, track levels, rail
+   * bases, ignoreSolo). This is THE hook for future incremental mutations —
+   * e.g. a session-view live clip trigger should mutate the mirror and call
+   * this (one re-eval next frame), never reload the document. If some future
+   * feature automates document-shaped state per frame, each tick invalidates
+   * and performance degrades to the old eval-every-frame behavior — correct,
+   * just slower.
+   */
+  void invalidateEval() { evalValid_ = false; }
+
+  /** Real (non-skipped) timeline evaluations so far (test/diagnostic). */
+  int64_t evalCount() const { return evalCount_; }
+  /** The cached span's end (the next beat needing re-eval; test/diagnostic). */
+  double evalBoundaryBeat() const { return evalNextBoundary_; }
+
   // ── Per frame ──
   /** Phase 1: advance + evaluate + (re)build. No effrt calls. Returns
    *  CompUpdateFlags. */
@@ -148,10 +167,17 @@ class CompExecutor {
  private:
   void rebuildClock();
   nlohmann::json videoDescFor(const ClipM& clip) const;
-  /** Active video-clip descs at `beat` (composite-tree leaves with media). */
-  nlohmann::json activeVideoDescsAtBeat(double beat) const;
-  /** Active + lookahead-window descs (the pump warm set). */
-  nlohmann::json warmVideoDescsAtBeat(double beat) const;
+  /** Active video-clip descs of an evaluated tree (leaves with media). */
+  nlohmann::json videoDescsForTree(const std::vector<CompNode>& tree) const;
+  /** Active + lookahead-window descs at `beat` (the pump warm set). */
+  nlohmann::json warmVideoDescs(const std::vector<CompNode>& tree, double beat) const;
+  /**
+   * Make the cached evaluation current for `beat`: skip when the span still
+   * covers it (evalValid_ && evalBeat_ <= beat < evalNextBoundary_), else
+   * re-evaluate the tree/sketch/descs, recompute the span, and fold any
+   * structure flags into `flags`. Returns true when a real eval ran.
+   */
+  bool ensureEvalAt(double beat, uint32_t& flags);
   bool videoReady(const nlohmann::json& descs) const;
   void foldPublishedOutputs(nlohmann::json& sketch);
   static std::string chainSigOf(const nlohmann::json& sketch);
@@ -183,6 +209,25 @@ class CompExecutor {
   std::string chainSig_;
   nlohmann::json automation_ = nlohmann::json::array();
   double transportSec_ = 0;
+
+  // ── Eval-skip span (see ensureEvalAt): the timeline evaluation at evalBeat_
+  // stays valid for beats in [evalBeat_, evalNextBoundary_) while the document
+  // is untouched, so steady playback inside one clip span skips the tree walk,
+  // sketch JSON build, desc builds, and deep compares entirely. The cached
+  // tree holds pointers INTO doc_ — any doc_ mutation must invalidateEval()
+  // (loadDocument additionally clears the tree; cheap ops mutate fields in
+  // place so the pointers stay alive until the next eval).
+  std::vector<CompNode> evalTree_;
+  nlohmann::json evalActiveDescs_ = nlohmann::json::array();
+  nlohmann::json evalWarmDescs_ = nlohmann::json::array();
+  bool evalValid_ = false;
+  double evalBeat_ = 0;
+  double evalNextBoundary_ = 0;
+  /** Recheck the pump target/displayed sets on the next non-holding frame even
+   *  without a re-eval (set while holding: the pump ran a displayed∪warm union
+   *  that must collapse back to warm-only after the hold releases). */
+  bool pumpRecheck_ = true;
+  int64_t evalCount_ = 0;
 
   // Precise gate state.
   std::set<std::string> readyClips_;

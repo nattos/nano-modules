@@ -13,6 +13,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -397,4 +398,245 @@ TEST_CASE("automation baseline yields to a live wire on the same field", "[comp_
   INFO("withWire " << withWire << " autoOnly " << autoOnly);
   CHECK(autoOnly < 20.0);              // automation alone applies (black)
   CHECK(withWire > autoOnly + 60.0);   // the live wire beat the re-assert
+}
+
+// ── Eval-skip span (next-boundary-beat) — update()-only, no GPU needed ──────
+
+namespace {
+
+/** A CompExecutor with null backends + hand-seeded minimal schemas: update()
+ *  never calls effrt/gpu, so the eval-skip contract tests run anywhere. */
+struct EvalHarness {
+  comp::CompExecutor cx{nullptr, nullptr, nullptr};
+  EvalHarness() {
+    cx.registerSchema("source.solid_color", json::object());
+    cx.registerCapabilities("source.solid_color", json::array({"generator"}));
+    cx.registerSchema("source.video.file", json::object());
+    cx.registerCapabilities("source.video.file", json::array({"generator"}));
+  }
+  /** Play forward `frames` ticks of `dt`, returning the OR of all flags. */
+  uint32_t run(int frames, double dt) {
+    uint32_t all = 0;
+    for (int i = 0; i < frames; i++) all |= cx.update(dt);
+    return all;
+  }
+};
+
+json mkVideoClip(const std::string& id, double startBeat, double lengthBeat) {
+  return mkClip(id, startBeat, lengthBeat,
+                json::array({mkDevice(id + "_v", "source.video.file")}),
+                {{"kind", "video"},
+                 {"source", {{"label", id + ".mp4"}, {"durationFrames", 300},
+                             {"sourceKey", id}, {"url", "blob:media/" + id}, {"fps", 30}}}});
+}
+
+}  // namespace
+
+TEST_CASE("eval-skip: steady playback inside one span evaluates once", "[comp_eval]") {
+  EvalHarness h;
+  // c1 spans [0,8); c2 enters at 4 — the only boundary ahead of beat 0.5 is 4.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                        json::array({mkDevice("d1", "source.solid_color")}))})),
+      mkTrack("t2", json::array({mkClip("c2", 4, 4,
+                                        json::array({mkDevice("d2", "source.solid_color")}))})),
+  })));
+  h.cx.seekBeat(0.5);
+  CHECK((h.cx.update(0.0) & comp::kCompStructureChanged) != 0);
+  CHECK(h.cx.evalCount() == 1);
+  CHECK(h.cx.evalBoundaryBeat() == 4.0);
+
+  // 60 paused frames: beat frozen inside the span — zero re-evals.
+  h.run(60, 1.0 / 60.0);
+  CHECK(h.cx.evalCount() == 1);
+
+  // Play 1 second (120 BPM → beat 0.5 → 2.5): still inside the span.
+  h.cx.play();
+  uint32_t flags = h.run(60, 1.0 / 60.0);
+  CHECK(h.cx.positionBeat() > 2.0);
+  CHECK(h.cx.evalCount() == 1);
+  CHECK((flags & comp::kCompStructureChanged) == 0);
+  CHECK((flags & comp::kCompHasContent) != 0);  // skipped frames still report content
+
+  // Play across beat 4: exactly ONE re-eval, and it reports the new topology.
+  flags = h.run(60, 1.0 / 60.0);  // → ~beat 4.5
+  CHECK(h.cx.positionBeat() > 4.0);
+  CHECK(h.cx.evalCount() == 2);
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  CHECK(h.cx.evalBoundaryBeat() == 8.0);
+}
+
+TEST_CASE("eval-skip: seeks re-eval only when they leave the span", "[comp_eval]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                        json::array({mkDevice("d1", "source.solid_color")}))})),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 1);
+
+  // Forward seek WITHIN the span [1, 8): the cached eval still holds.
+  h.cx.seekBeat(6.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 1);
+
+  // Backward seek (before the span start): conservative re-eval.
+  h.cx.seekBeat(0.5);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 2);
+
+  // Seek past the end boundary: re-eval (empty timeline there → content gone).
+  h.cx.seekBeat(9.0);
+  const uint32_t flags = h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 3);
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  CHECK((flags & comp::kCompHasContent) == 0);
+}
+
+TEST_CASE("eval-skip: cheap ops invalidate exactly when they reach the sketch",
+          "[comp_eval]") {
+  EvalHarness h;
+  json clip = mkClip("c1", 0, 8, json::array({mkDevice("d1", "source.solid_color")}),
+                     {{"automation", json::array({{{"id", "l1"},
+                                                   {"targetDeviceId", "d1"},
+                                                   {"targetField", "scale"},
+                                                   {"label", "x"},
+                                                   {"points", json::array({{{"x", 0}, {"y", 0}},
+                                                                           {{"x", 1}, {"y", 1}}})}}})}});
+  h.cx.loadDocument(mkComposition(json::array({mkTrack("t1", json::array({clip}))})));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 1);
+
+  // Steady frame: no re-eval.
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 1);
+
+  // A param reaches the built sketch → invalidates (propagation = rebuild).
+  h.cx.setDeviceParam("c1", "d1", "color", json::array({0.5, 0.5, 0.5}));
+  CHECK((h.cx.update(0.0) & comp::kCompStructureChanged) == 0);  // same topology
+  CHECK(h.cx.evalCount() == 2);
+
+  // Track level is baked as layer opacity → invalidates.
+  h.cx.setTrackLevel("t1", 0.5);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 3);
+
+  // Lane points never reach the sketch (read fresh through the cached tree
+  // every frame) → NO invalidation.
+  const double pts[6] = {0, 0.25, 0, 1, 0.75, 0};
+  h.cx.setLanePoints("c1", "l1", pts, 2);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 3);
+
+  // ...but the new lane VALUES flow into this frame's automation regardless
+  // (pinned indirectly: the golden automation tests cover values; here we pin
+  // the count contract only).
+
+  // The explicit invalidation hook (future live clip triggers) re-evals once.
+  h.cx.invalidateEval();
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 4);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 4);
+}
+
+TEST_CASE("eval-skip: the warm-lookahead window entry is a boundary", "[comp_eval]") {
+  EvalHarness h;
+  // A solid now, and a VIDEO clip far ahead at beat 20: the pump must learn
+  // about it when it enters the 8-beat lookahead window (beat 12), without a
+  // structure change.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("c1", 0, 32,
+                                        json::array({mkDevice("d1", "source.solid_color")}))})),
+      mkTrack("t2", json::array({mkVideoClip("v1", 20, 4)})),
+  })));
+  h.cx.setTransportMode(false);  // Fluid — don't hold on the (never-ready) video
+  h.cx.seekBeat(1.0);
+  uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompVideoSetChanged) == 0);  // pump target starts empty
+  CHECK(h.cx.evalCount() == 1);
+  CHECK(h.cx.evalBoundaryBeat() == 12.0);  // v1.start - LOOKAHEAD
+
+  // Within the span: seeking to 11.9 re-uses the eval.
+  h.cx.seekBeat(11.9);
+  flags = h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 1);
+
+  // Crossing into the lookahead window: one re-eval, pump set changes.
+  h.cx.seekBeat(12.5);
+  flags = h.cx.update(0.0);
+  CHECK(h.cx.evalCount() == 2);
+  CHECK((flags & comp::kCompVideoSetChanged) != 0);
+  CHECK(h.cx.videoDescsJson().find("blob:media/v1") != std::string::npos);
+  CHECK((flags & comp::kCompStructureChanged) == 0);  // v1 not ACTIVE yet
+  CHECK(h.cx.evalBoundaryBeat() == 20.0);
+}
+
+TEST_CASE("eval-skip: a Precise hold reuses the frozen-beat eval", "[comp_eval]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkVideoClip("v1", 0, 8)})),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.play();
+  // Precise (default) + active unready video → hold, beat frozen.
+  uint32_t flags = h.cx.update(1.0 / 60.0);
+  CHECK((flags & comp::kCompHoldingPrecise) != 0);
+  CHECK(h.cx.evalCount() == 1);
+  h.run(30, 1.0 / 60.0);  // held frames: no re-evals
+  CHECK(h.cx.evalCount() == 1);
+  CHECK(h.cx.positionBeat() == 1.0);
+
+  // Readiness releases the hold; playback resumes inside the same span.
+  h.cx.setVideoReady("v1", true);
+  flags = h.run(30, 1.0 / 60.0);
+  CHECK((flags & comp::kCompHoldingPrecise) == 0);
+  CHECK(h.cx.positionBeat() > 1.0);
+  CHECK(h.cx.evalCount() == 1);  // still the same span — no re-eval on release
+}
+
+// Hidden micro-benchmark: update()-loop cost with the eval-skip span vs with a
+// forced per-frame invalidation (≈ the old eval-every-frame behavior). Run
+// manually: ./build/test_comp_render "[.comp_bench]" -s
+TEST_CASE("eval-skip: update-loop micro-benchmark", "[.comp_bench]") {
+  EvalHarness h;
+  // A busy timeline: 8 tracks × 16 staggered 4-beat clips (+ some automation).
+  json tracks = json::array();
+  for (int t = 0; t < 8; t++) {
+    json clips = json::array();
+    for (int c = 0; c < 16; c++) {
+      json clip = mkClip("t" + std::to_string(t) + "c" + std::to_string(c), c * 4.0, 4.0,
+                         json::array({mkDevice("d0", "source.solid_color")}));
+      clip["automation"] = json::array(
+          {{{"id", "l"}, {"targetDeviceId", "d0"}, {"targetField", "scale"}, {"label", "x"},
+            {"points", json::array({{{"x", 0}, {"y", 0}}, {{"x", 1}, {"y", 1}}})}}});
+      clips.push_back(std::move(clip));
+    }
+    tracks.push_back(mkTrack("t" + std::to_string(t), std::move(clips)));
+  }
+  h.cx.loadDocument(mkComposition(std::move(tracks)));
+  h.cx.setTransportMode(false);
+  h.cx.play();
+
+  auto runLoop = [&](bool forceInvalidate) {
+    h.cx.seekBeat(0.0);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3600; i++) {  // 60s of playback at 60fps (120BPM → 120 beats… wraps off the end harmlessly)
+      if (forceInvalidate) h.cx.invalidateEval();
+      h.cx.update(1.0 / 60.0);
+    }
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+        .count();
+  };
+
+  runLoop(true);  // warm caches/allocators
+  const double everyFrameMs = runLoop(true);
+  const double skipMs = runLoop(false);
+  WARN("update() x3600 — eval-every-frame: " << everyFrameMs << " ms ("
+       << everyFrameMs / 3600.0 * 1000.0 << " us/frame), eval-skip: " << skipMs << " ms ("
+       << skipMs / 3600.0 * 1000.0 << " us/frame), speedup x"
+       << everyFrameMs / std::max(0.001, skipMs) << ", evals=" << h.cx.evalCount());
+  CHECK(skipMs < everyFrameMs);
 }

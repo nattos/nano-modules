@@ -17,6 +17,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -181,14 +182,14 @@ inline void railBasesAtBeat(const CompositionM& comp, const std::vector<CompNode
 }
 
 /**
- * Fold the active composite tree at `beat` into ONE composite sketch — group FX
+ * Fold an already-evaluated composite tree into ONE composite sketch — group FX
  * over composited children, rail bases + per-clip start-seconds baked in
- * (warp-aware). hasContent=false when nothing contributes.
+ * (warp-aware; startSec is baked onto the tree nodes in place). The tree must
+ * come from compositeTreeAtBeat over the SAME comp/beat/ignoreSolo.
  */
-inline SketchBuild buildCompositeRenderAtBeat(const CompositionM& comp, const Catalog& cat,
-                                              const WarpClock& clock, double beat,
-                                              bool ignoreSolo = false) {
-  std::vector<CompNode> tree = compositeTreeAtBeat(comp, beat, ignoreSolo);
+inline SketchBuild buildCompositeRenderFromTree(const CompositionM& comp, const Catalog& cat,
+                                                const WarpClock& clock,
+                                                std::vector<CompNode>& tree, double beat) {
   if (tree.empty()) return {};
   // Bake each clip leaf's absolute start time (s) onto its node, for effect seeks.
   std::vector<CompNode*> leaves;
@@ -207,13 +208,58 @@ inline SketchBuild buildCompositeRenderAtBeat(const CompositionM& comp, const Ca
 }
 
 /**
- * Evaluate this beat's parameter automation: every active clip lane
- * (clip-relative), track/group lane (absolute beats), plus a `replace`
- * re-assertion of each active rail's base onto its accumulator `input`.
+ * Fold the active composite tree at `beat` into ONE composite sketch —
+ * see buildCompositeRenderFromTree. (The goldens replay this entry point.)
+ */
+inline SketchBuild buildCompositeRenderAtBeat(const CompositionM& comp, const Catalog& cat,
+                                              const WarpClock& clock, double beat,
+                                              bool ignoreSolo = false) {
+  std::vector<CompNode> tree = compositeTreeAtBeat(comp, beat, ignoreSolo);
+  return buildCompositeRenderFromTree(comp, cat, clock, tree, beat);
+}
+
+/**
+ * The earliest beat at which the composite tree, the pump's active set, or the
+ * warm lookahead window can change again given a STATIC document — i.e. how far
+ * an evaluation at `beat` stays valid (the eval-skip span end). Candidates per
+ * clip: its start (activates at start, inclusive), its end (deactivates /
+ * leaves the warm window at start+length), and its warm-window entry
+ * (start - lookahead; STRICT predicate `beat > start-lookahead`, so an eval
+ * exactly ON that edge yields a zero-length span — re-evaluated next frame,
+ * correct but unskipped). Solo/bypass/lanes are beat-independent; rail BASE
+ * values vary continuously but are re-asserted per frame through the
+ * automation channel, so they deliberately do NOT bound the span. Returns
+ * +inf past the last edge. Anything that mutates the document must invalidate
+ * separately (CompExecutor::invalidateEval).
+ */
+inline double nextEvalBoundary(const CompositionM& comp, double beat, double lookaheadBeats) {
+  double next = std::numeric_limits<double>::infinity();
+  for (const auto& t : comp.tracks) {
+    if (t.kind != TrackKind::Track) continue;
+    for (const auto& c : t.clips) {
+      const double start = c.startBeat;
+      const double end = c.startBeat + c.lengthBeat;
+      const double warmEnter = start - lookaheadBeats;
+      if (start > beat) next = std::min(next, start);
+      if (end > beat) next = std::min(next, end);
+      if (warmEnter >= beat) next = std::min(next, warmEnter);
+    }
+  }
+  return next;
+}
+
+/**
+ * Evaluate this beat's parameter automation over an already-evaluated composite
+ * tree: every active clip lane (clip-relative), track/group lane (absolute
+ * beats), plus a `replace` re-assertion of each active rail's base onto its
+ * accumulator `input`. Lane/curve VALUES vary continuously with the beat, so
+ * this runs every frame — but the walked TREE only changes at eval boundaries,
+ * so a caller holding a cached tree skips the per-frame tree rebuild.
  * Returns the AutomationEntry[] as JSON (the executor's setAutomation shape).
  */
-inline nlohmann::json automationEntriesAtBeat(const CompositionM& comp, double beat,
-                                              bool ignoreSolo = false, bool clipLoopMode = true) {
+inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
+                                               const std::vector<CompNode>& tree, double beat,
+                                               bool clipLoopMode = true) {
   const double totalBeats = compositionLengthBeats(comp);
   nlohmann::json entries = nlohmann::json::array();
   std::set<std::string> seenRail;
@@ -267,12 +313,20 @@ inline nlohmann::json automationEntriesAtBeat(const CompositionM& comp, double b
           }
         }
       };
-  walk(compositeTreeAtBeat(comp, beat, ignoreSolo));
+  walk(tree);
   // The main bus isn't in the composite tree, but its master-FX chain does run
   // over the final composite, so emit its lanes too.
   const TrackM* bus = mainBusTrack(comp);
   if (bus && !bus->bypassed) pushTrackLanes(*bus);
   return entries;
+}
+
+/** automationEntriesForTree over a freshly-evaluated tree (the goldens replay
+ *  this entry point). */
+inline nlohmann::json automationEntriesAtBeat(const CompositionM& comp, double beat,
+                                              bool ignoreSolo = false, bool clipLoopMode = true) {
+  const std::vector<CompNode> tree = compositeTreeAtBeat(comp, beat, ignoreSolo);
+  return automationEntriesForTree(comp, tree, beat, clipLoopMode);
 }
 
 }  // namespace comp

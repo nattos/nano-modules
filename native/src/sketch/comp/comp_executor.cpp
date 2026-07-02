@@ -107,6 +107,9 @@ void CompExecutor::rebuildClock() {
 }
 
 void CompExecutor::loadDocument(const nlohmann::json& doc) {
+  // The cached eval tree points INTO the old doc_ — clear before replacing.
+  evalTree_.clear();
+  invalidateEval();
   doc_ = parseComposition(doc);
   docLoaded_ = true;
   docEpoch_++;
@@ -122,6 +125,9 @@ void CompExecutor::loadDocument(const nlohmann::json& doc) {
 
 void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string& deviceId,
                                   const std::string& field, const nlohmann::json& value) {
+  // Params are baked into the built sketch's instance states — the eval-skip
+  // span must not serve the stale bake (propagation = rebuild + deep-compare).
+  invalidateEval();
   // Merge ONE field (shallow-merge contract: never replace the state object).
   auto patch = [&](SketchSpecM& sketch) -> bool {
     for (auto& d : sketch.devices) {
@@ -141,6 +147,7 @@ void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string&
 }
 
 void CompExecutor::setTrackLevel(const std::string& trackId, double level) {
+  invalidateEval();  // levels are baked as layer opacity in the built sketch
   for (auto& t : doc_.tracks) {
     if (t.id == trackId) { t.level = level; return; }
   }
@@ -177,6 +184,12 @@ void CompExecutor::setLanePoints(const std::string& ownerId, const std::string& 
 
 void CompExecutor::setRailBase(const std::string& railTrackId, const double* xyBend,
                                int32_t nPoints) {
+  // The base value is baked into the built sketch (the per-frame automation
+  // re-assert would mask a stale bake, but keep the sketch honest anyway).
+  // NOTE setLanePoints deliberately does NOT invalidate: lanes never reach the
+  // built sketch, and the per-frame automation eval reads them fresh through
+  // the cached tree's pointers.
+  invalidateEval();
   for (auto& t : doc_.tracks) {
     if (t.id != railTrackId) continue;
     t.baseCurve = pointsFromTriples(xyBend, nPoints);
@@ -200,7 +213,10 @@ void CompExecutor::setLoop(bool enabled, double startBeat, double endBeat) {
   state_.loopEndBeat = endBeat;
 }
 
-void CompExecutor::setIgnoreSolo(bool on) { ignoreSolo_ = on; }
+void CompExecutor::setIgnoreSolo(bool on) {
+  if (ignoreSolo_ != on) invalidateEval();  // changes the evaluated tree
+  ignoreSolo_ = on;
+}
 
 double CompExecutor::positionSec() const { return transport_.secondsAt(state_, clock_); }
 
@@ -245,9 +261,8 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip) const {
   return d;
 }
 
-nlohmann::json CompExecutor::activeVideoDescsAtBeat(double beat) const {
+nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree) const {
   nlohmann::json descs = nlohmann::json::array();
-  std::vector<CompNode> tree = compositeTreeAtBeat(doc_, beat, ignoreSolo_);
   std::vector<const ClipM*> clips;
   build_detail::collectClips(tree, clips);
   for (const ClipM* clip : clips) {
@@ -257,10 +272,11 @@ nlohmann::json CompExecutor::activeVideoDescsAtBeat(double beat) const {
   return descs;
 }
 
-nlohmann::json CompExecutor::warmVideoDescsAtBeat(double beat) const {
+nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
+                                            double beat) const {
   // Active + the lookahead precache window (store.videoClipsInWindow — video
   // clips overlapping [beat, beat+LOOKAHEAD) on non-bypassed tracks).
-  nlohmann::json warm = activeVideoDescsAtBeat(beat);
+  nlohmann::json warm = videoDescsForTree(tree);
   std::set<std::string> seen;
   for (const auto& d : warm) seen.insert(d["clipId"].get<std::string>());
 
@@ -315,43 +331,16 @@ std::string CompExecutor::chainSigOf(const nlohmann::json& sketch) {
   return sig;
 }
 
-uint32_t CompExecutor::update(double dtSec) {
-  uint32_t flags = 0;
-  if (!docLoaded_) return 0;
+bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
+  // Span hit: the evaluation at evalBeat_ is valid for [evalBeat_, boundary).
+  // Backward motion (seek/loop wrap) falls out of the half-open interval and
+  // re-evaluates — even landing back inside a previously-evaluated span, one
+  // conservative re-eval beats tracking span history.
+  if (evalValid_ && beat >= evalBeat_ && beat < evalNextBoundary_) return false;
 
-  // ── Precise gate (engine-bridge showComposite + the app's advance rule):
-  // with unready active video the transport freezes AND the displayed
-  // composite holds; a fail-safe timeout forces through a stuck decode.
-  nlohmann::json activeDescs = activeVideoDescsAtBeat(state_.positionBeat);
-  const bool ready = videoReady(activeDescs);
-  holding_ = shouldHoldPrecise(precise_, forceBypass_,
-                               static_cast<int>(activeDescs.size()), ready);
-  if (holding_) {
-    holdClock_ += std::max(0.0, dtSec);
-    if (holdClock_ > kForceTimeoutSec) forceBypass_ = true;  // next frame forces through
-    flags |= kCompHoldingPrecise;
-    if (hasContent_) flags |= kCompHasContent;
-    // Keep the on-screen clips alive alongside the (warm) target while holding.
-    nlohmann::json warm = warmVideoDescsAtBeat(state_.positionBeat);
-    nlohmann::json unionSet = pumpUnion(warm, displayedDescs_);
-    if (unionSet != pumpDescs_) {
-      pumpDescs_ = std::move(unionSet);
-      flags |= kCompVideoSetChanged;
-    }
-    // Automation still evaluates (frozen beat → stable values).
-    automation_ = automationEntriesAtBeat(doc_, state_.positionBeat, ignoreSolo_, clipLoopMode_);
-    transportSec_ = transport_.secondsAt(state_, clock_);
-    return flags;
-  }
-  holdClock_ = 0;
-  forceBypass_ = false;
-
-  transport_.advance(state_, clock_, dtSec);
-  transportSec_ = transport_.secondsAt(state_, clock_);
-
-  // ── Evaluate + (re)build at the advanced playhead.
-  SketchBuild build =
-      buildCompositeRenderAtBeat(doc_, catalog_, clock_, state_.positionBeat, ignoreSolo_);
+  evalCount_++;
+  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_);
+  SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
   if (build.hasContent) {
     if (cleanSketch_.is_null() || build.sketch != cleanSketch_) {
@@ -363,7 +352,6 @@ uint32_t CompExecutor::update(double dtSec) {
       chainSig_ = std::move(sig);
       flags |= kCompStructureChanged;
     }
-    flags |= kCompHasContent;
   } else if (!cleanSketch_.is_null()) {
     cleanSketch_ = nlohmann::json();
     execSketch_ = nlohmann::json();
@@ -371,16 +359,72 @@ uint32_t CompExecutor::update(double dtSec) {
     dirty_ = false;
     flags |= kCompStructureChanged;
   }
+  evalActiveDescs_ = videoDescsForTree(evalTree_);
+  evalWarmDescs_ = warmVideoDescs(evalTree_, beat);
+  evalBeat_ = beat;
+  evalNextBoundary_ = nextEvalBoundary(doc_, beat, kLookaheadBeats);
+  evalValid_ = true;
+  return true;
+}
 
-  // ── Commit: the pump follows the (warm) target; displayed = the new active set.
-  nlohmann::json warm = warmVideoDescsAtBeat(state_.positionBeat);
-  displayedDescs_ = activeVideoDescsAtBeat(state_.positionBeat);
-  if (warm != pumpDescs_) {
-    pumpDescs_ = std::move(warm);
-    flags |= kCompVideoSetChanged;
+uint32_t CompExecutor::update(double dtSec) {
+  uint32_t flags = 0;
+  if (!docLoaded_) return 0;
+
+  // Make the eval current at the PRE-advance playhead (the gate decides on the
+  // frame the user is looking at) — this is where a seek's re-eval lands.
+  // Steady playback inside one span skips this.
+  bool evaled = ensureEvalAt(state_.positionBeat, flags);
+
+  // ── Precise gate (engine-bridge showComposite + the app's advance rule):
+  // with unready active video the transport freezes AND the displayed
+  // composite holds; a fail-safe timeout forces through a stuck decode.
+  const bool ready = videoReady(evalActiveDescs_);
+  holding_ = shouldHoldPrecise(precise_, forceBypass_,
+                               static_cast<int>(evalActiveDescs_.size()), ready);
+  if (holding_) {
+    holdClock_ += std::max(0.0, dtSec);
+    if (holdClock_ > kForceTimeoutSec) forceBypass_ = true;  // next frame forces through
+    flags |= kCompHoldingPrecise;
+    if (hasContent_) flags |= kCompHasContent;
+    // Keep the on-screen clips alive alongside the (warm) target while holding;
+    // the union must collapse back to warm-only once the hold releases.
+    pumpRecheck_ = true;
+    nlohmann::json unionSet = pumpUnion(evalWarmDescs_, displayedDescs_);
+    if (unionSet != pumpDescs_) {
+      pumpDescs_ = std::move(unionSet);
+      flags |= kCompVideoSetChanged;
+    }
+    // Automation still evaluates (frozen beat → stable values).
+    automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_);
+    transportSec_ = transport_.secondsAt(state_, clock_);
+    return flags;
+  }
+  holdClock_ = 0;
+  forceBypass_ = false;
+
+  transport_.advance(state_, clock_, dtSec);
+  transportSec_ = transport_.secondsAt(state_, clock_);
+
+  // ── Evaluate + (re)build at the advanced playhead (skipped within the span).
+  evaled |= ensureEvalAt(state_.positionBeat, flags);
+  if (hasContent_) flags |= kCompHasContent;
+
+  // ── Commit: the pump follows the (warm) target; displayed = the new active
+  // set. Within a span with an untouched document neither set can change, so
+  // the deep compares only run on a real eval (or right after a hold released).
+  if (evaled || pumpRecheck_) {
+    displayedDescs_ = evalActiveDescs_;
+    if (evalWarmDescs_ != pumpDescs_) {
+      pumpDescs_ = evalWarmDescs_;
+      flags |= kCompVideoSetChanged;
+    }
+    pumpRecheck_ = false;
   }
 
-  automation_ = automationEntriesAtBeat(doc_, state_.positionBeat, ignoreSolo_, clipLoopMode_);
+  // Lane/curve values vary continuously — evaluate every frame, but over the
+  // span's cached tree (no per-frame tree rebuild).
+  automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_);
   return flags;
 }
 
