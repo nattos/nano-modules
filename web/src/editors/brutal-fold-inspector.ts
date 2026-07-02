@@ -321,6 +321,8 @@ export class BrutalFoldInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_edge'} .label=${'Edge Bias'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.85} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'skip_autopilot'} .label=${'Jog Autopilot'}

@@ -105,11 +105,12 @@ static constexpr float kVolDepthMax  = 0.6f;   // depth       slider 1 → 0.6 (
 // stays frozen (no surprise auto-play), and a faster Speed skips faster.
 static constexpr float kSkipTimeMult  = 8.0f;  // jog up to Nx the current loop speed
 static constexpr float kSkipOrbitMult = 6.0f;  // jog up to Nx the current orbit speed
-// Asymmetric C2 ramp: gentle ease-IN (glide into the skip), quick ease-OUT — once
-// a live frame returns we're leaving a solid colour, so a harsher slowdown reads
-// fine and stops the jog promptly instead of coasting on.
+// Asymmetric C2 ramp: gentle ease-IN (glide into the skip), fast ease-OUT — once a
+// live frame returns we stop promptly so we don't jog past the content. The ease-
+// OUT duration is user-controlled (skip_recover); this is its slow end (recover=0).
+// recover=1 → ~0s = instant hard stop (SkipJog snaps the phase in one frame).
 static constexpr float kSkipRampInSec  = 0.6f;
-static constexpr float kSkipRampOutSec = 0.15f;
+static constexpr float kMaxRecoverSec  = 1.0f;
 // Recovery is deliberately eager: the moment content climbs back above the empty
 // threshold we ease out. A tiny gap above the trigger is the most sensitive a
 // hysteresis latch can be without chattering (recover must stay ≥ engage). Want
@@ -241,6 +242,7 @@ struct State {
   bool  skip_empty        = false;  // master enable for detector + jog
   float skip_thresh       = 0.2f;   // Sensitivity [0,1] → variance trigger (× kSkipStdSpan)
   float skip_edge         = 0.7f;   // Edge Bias [0,1]: 0 = variance, 1 = edge energy
+  float skip_recover      = 0.85f;  // Recover [0,1]: how fast the jog STOPS on content (1 = instant)
   float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
   bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
 
@@ -278,6 +280,7 @@ static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty) {
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
   state::setFieldHidden("skip_thresh",     !skip_empty);
   state::setFieldHidden("skip_edge",       !skip_empty);
+  state::setFieldHidden("skip_recover",    !skip_empty);
   state::setFieldHidden("skip_rate",       !skip_empty);
   // Jogging the orbit only means anything under autopilot.
   state::setFieldHidden("skip_autopilot",  !(skip_empty && autopilot));
@@ -452,6 +455,12 @@ void module_init() {
                   "boundaries) vs overall tonal variance. Higher favours fine prism "
                   "detail — a few big flat blocks then read as empty; 0 = pure variance.")
                   .label("Edge Bias", "Edge")
+      .floatField("skip_recover", 0.85f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "How fast the jog STOPS once content reappears (the empty→happening "
+                  "transition). Higher = snappier so it doesn't skip past the content; "
+                  "1 = instant hard stop. Lower eases out gently. (Onset stays a gentle "
+                  "C2 glide.)").label("Recover", "Rec")
       .floatField("skip_rate", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Jog Rate", "Rate")
       .boolField("skip_autopilot", true, state::PrimaryInput).label("Jog Autopilot", "JogAP")
       // Broadcast: the live engagement [0,1] so an editor can show when it fires.
@@ -620,7 +629,9 @@ void tick(void* self, double dt) {
     // Sensitivity [0,1] → luminance-std trigger. Higher = flags more scenes as flat.
     float lo = clampf(s->skip_thresh, 0.0f, 1.0f) * kSkipStdSpan;
     float hi = lo + kSkipHyst;
-    skip_e = s->jog.update(s->content, lo, hi, kSkipRampInSec, kSkipRampOutSec, fdt);
+    // Recover controls the ease-OUT (content→stop); 1 = instant (rampOut≈0 → snap).
+    float rampOut = (1.0f - clampf(s->skip_recover, 0.0f, 1.0f)) * kMaxRecoverSec;
+    skip_e = s->jog.update(s->content, lo, hi, kSkipRampInSec, rampOut, fdt);
     // Snap mode: the moment we go empty, hop straight to a fresh held position.
     if (s->autopilot && s->skip_autopilot && s->ap_snap && s->jog.rising())
       s->ap_jump_pending = true;
@@ -785,6 +796,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "skip_empty"))    { bool v = state::patchFloat(i) != 0.0f; if (v != s->skip_empty) { s->skip_empty = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "skip_thresh"))   s->skip_thresh = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_edge"))     s->skip_edge = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_recover"))  s->skip_recover = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_rate"))     s->skip_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_autopilot")) s->skip_autopilot = state::patchFloat(i) != 0.0f;
   }
