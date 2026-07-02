@@ -133,7 +133,7 @@ static constexpr float kSkipStdSpan    = 0.12f;
 // dimension (√pixels) so a concentrated edge saturates regardless of its area.
 static constexpr int   kTileGrid     = 16;      // must match edge.hlsl kTileGrid
 static constexpr int   kNumTiles     = kTileGrid * kTileGrid;
-static constexpr int   kStatsInts    = kNumTiles * 4;  // [edge_count,luma,luma²,count] per tile
+static constexpr int   kStatsInts    = kNumTiles * 4;  // [edge_sum,luma,luma²,count] per tile
 static constexpr float kStatsScale   = 128.0f;  // must match edge.hlsl kStatsScale (luma sums)
 static constexpr float kEdgeNormGain = 2.0f;    // higher = more edge-sensitive per tile
 
@@ -603,9 +603,10 @@ void tick(void* self, double dt) {
         float lq = ((float)raw[t * 4 + 2] / kStatsScale) / ne;   // tile mean luma²
         float var = lq - lu * lu; if (var < 0.0f) var = 0.0f;
         float sd = std::sqrt(var);                                // local luma std
-        // edge_count / √tilePixels: a concentrated edge saturates regardless of area.
-        float edge = clampf((float)raw[t * 4 + 0] / std::sqrt(ne) * kEdgeNormGain,
-                            0.0f, 1.0f) * edgeBias;
+        // Soft edge sum (contrast-squashed) / √tilePixels: a concentrated edge —
+        // even low-contrast gray-on-gray — saturates regardless of the area it covers.
+        float edgeSum = (float)raw[t * 4 + 0] / kStatsScale;
+        float edge = clampf(edgeSum / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f) * edgeBias;
         float local = sd > edge ? sd : edge;                      // this tile: luma OR edge
         if (local > content) content = local;                     // max over tiles
       }

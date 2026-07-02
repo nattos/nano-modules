@@ -25,12 +25,15 @@ RWStructuredBuffer<int> stats : register(u2);
 static const int   kTileGrid   = 16;            // must match main.cpp kTileGrid
 static const float kStatsScale = 128.0;
 static const float kSobelNorm  = 5.65685425;    // sqrt(32): max Sobel |grad| for luma in [0,1]
-// A pixel counts as an EDGE when its Sobel magnitude clears this. Low enough to
-// catch a clear black/gray boundary (~0.35) yet reject smooth shading/fog
-// gradients (~1e-3). Edges are counted (not summed as energy) and normalized by a
-// LINEAR dimension on the CPU, so a concentrated edge registers regardless of the
-// area it covers — a frame-mean would wash a 1-D edge out by the 2-D pixel count.
-static const float kEdgeThresh = 0.06;
+// Per-pixel edge weight is a CONTRAST-SQUASHED soft measure, not a binary count.
+//   floor — deadzone: gradients below this (noise, AA fuzz, smooth shading/fog
+//           gradients that spread over many px) contribute nothing.
+//   span  — the gradient that maps to a "full" edge (a strong gray/black step).
+//   gamma — <1 squash that lifts the low end so a subtle GRAY-ON-GRAY step still
+//           registers strongly instead of being dwarfed by high-contrast edges.
+static const float kEdgeFloor  = 0.015;
+static const float kEdgeSpan   = 0.20;
+static const float kEdgeGamma  = 0.5;
 
 float lumAt(int2 p, int2 res) {
   p = clamp(p, int2(0, 0), res - 1);
@@ -50,6 +53,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float gx = (l20 + 2.0 * l21 + l22) - (l00 + 2.0 * l01 + l02);
   float gy = (l02 + 2.0 * l12 + l22) - (l00 + 2.0 * l10 + l20);
   float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);   // edge magnitude [0,1]
+  float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);  // contrast-squashed
   float L = l11;
 
   // Route this pixel into its tile's 4 slots.
@@ -57,7 +61,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int ti = (tile.y * kTileGrid + tile.x) * 4;
 
   int prev;
-  if (g > kEdgeThresh) InterlockedAdd(stats[ti + 0], 1, prev);     // edge-pixel count
+  InterlockedAdd(stats[ti + 0], (int)(e * kStatsScale),     prev);  // soft edge sum
   InterlockedAdd(stats[ti + 1], (int)(L * kStatsScale),     prev);
   InterlockedAdd(stats[ti + 2], (int)(L * L * kStatsScale), prev);
   InterlockedAdd(stats[ti + 3], 1,                          prev);
