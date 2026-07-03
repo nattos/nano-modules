@@ -720,10 +720,15 @@ export class WasmSketchExecutor {
     this.withBytes(json, (p, l) => this.exports.comp_load_document(c, p, l));
   }
 
+  /** The last compControl `seq` applied — echoed on every compFrame report so
+   *  the bridge's playhead mirror-back can suppress pre-seek echoes exactly. */
+  private compControlSeq = 0;
+
   compControl(msg: { op: string; beat?: number; enabled?: boolean; startBeat?: number;
                      endBeat?: number; precise?: boolean; loopMode?: boolean; on?: boolean;
-                     clipId?: string; ready?: boolean }): void {
+                     clipId?: string; ready?: boolean; seq?: number }): void {
     const c = this.ensureComp();
+    if (msg.seq != null) this.compControlSeq = msg.seq;
     switch (msg.op) {
       case 'play': this.exports.comp_play(c); break;
       case 'pause': this.exports.comp_pause(c); break;
@@ -807,7 +812,7 @@ export class WasmSketchExecutor {
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-               scenes?: string }> {
+               scenes?: string; controlSeq: number }> {
     const c = this.ensureComp();
     // The effect clock advances by the COMP transport's motion, not wall time:
     // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
@@ -905,10 +910,11 @@ export class WasmSketchExecutor {
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
                  chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-                 scenes?: string } = {
+                 scenes?: string; controlSeq: number } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
       positionSec: this.exports.comp_position_sec(c),
+      controlSeq: this.compControlSeq,
     };
     if (chainKeys) out.chainKeys = chainKeys;
     if (layerTargets !== undefined) out.layerTargets = layerTargets;

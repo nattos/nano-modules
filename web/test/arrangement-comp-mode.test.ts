@@ -144,6 +144,40 @@ describe('Arrangement composition executor (GPU)', () => {
     expect(a).not.toEqual(before); // ...and visibly different from the boot render
   });
 
+  it('play start is smooth: no hold-then-pop on the mirrored playhead', async () => {
+    await renderAndSample(URL);
+    const samples = await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      store.positionBeat = 41;
+      await new Promise((r) => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(r));
+      const out: Array<{ t: number; beat: number }> = [];
+      const t0 = performance.now();
+      store.playing = true;
+      for (let i = 0; i < 45; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+        out.push({ t: performance.now() - t0, beat: store.positionBeat });
+      }
+      store.playing = false;
+      return out;
+    });
+    // The old 150ms seek-quiet window froze the UI playhead at the start beat,
+    // then POPPED it forward by ~0.3 beats in one frame. With seq-based echo
+    // suppression the mirror resumes on the first post-seek report: motion
+    // starts promptly and every frame-to-frame step stays small.
+    const first = samples.find((s) => s.beat > 41 + 1e-6);
+    expect(first).toBeDefined();
+    expect(first!.t).toBeLessThan(250); // prompt (old behavior: >150ms hold + pop)
+    let maxStep = 0;
+    for (let i = 1; i < samples.length; i++) {
+      maxStep = Math.max(maxStep, samples[i].beat - samples[i - 1].beat);
+      expect(samples[i].beat).toBeGreaterThanOrEqual(samples[i - 1].beat); // monotonic
+    }
+    expect(maxStep).toBeLessThan(0.2); // no single-frame pop (old: >=0.25)
+    // ...and it really is advancing (120 BPM ≈ 2 beats/s).
+    expect(samples[samples.length - 1].beat).toBeGreaterThan(41.5);
+  });
+
   it('worker-owned transport advances, mirrors back, loops at the brace, and pauses', async () => {
     await renderAndSample(URL); // boots + parks the playhead at 42
     await page.evaluate(() => {

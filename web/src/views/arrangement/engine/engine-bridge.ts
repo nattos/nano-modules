@@ -61,8 +61,16 @@ export class EngineBridge {
   private sentVideoReady = new Map<string, boolean>();
   /** The comp transport's last mirrored playhead (echo detection for scrubs). */
   private mirroredBeat = Number.NaN;
-  /** Ignore mirror-backs briefly after sending a seek (in-flight echo guard). */
-  private seekQuietUntil = 0;
+  /**
+   * Monotonic sequence stamped on every compControl; the worker echoes the
+   * last one it processed on each frame report. Mirror-backs are accepted only
+   * once the report's echo covers `seekSeq` (the latest seek we sent) — EXACT
+   * in-flight-echo suppression. The old fixed 150ms quiet window made pressing
+   * play freeze the UI playhead at the start beat for 150ms and then POP it
+   * forward to wherever the transport had already advanced.
+   */
+  private controlSeq = 0;
+  private seekSeq = 0;
   /** The worker-reported decode-pump active set (comp mode owns the union). */
   private compPumpDescs: VideoClipDesc[] | null = null;
   /** Latest comp-executor frame report (comp mode; diagnostic/tests). */
@@ -295,10 +303,12 @@ export class EngineBridge {
         this.reconcilePump(this.compPumpDescs);
       } catch { /* malformed — keep the previous set */ }
     }
-    // Mirror the advancing playhead back to the store while playing. Skipped
-    // briefly after WE send a seek — an in-flight report from before the seek
-    // would otherwise yank the playhead back (the echo problem).
-    if (store.playing && performance.now() >= this.seekQuietUntil) {
+    // Mirror the advancing playhead back to the store while playing — but only
+    // once the report's control-seq echo covers our latest seek: an in-flight
+    // report from BEFORE the seek would yank the playhead back (the echo
+    // problem). Seq matching resumes mirroring on the FIRST post-seek report
+    // (no fixed quiet window → no hold-then-pop at play start).
+    if (store.playing && (info.controlSeq ?? 0) >= this.seekSeq) {
       this.mirroredBeat = info.positionBeat;
       store.setPosition(info.positionBeat);
     }
@@ -479,17 +489,17 @@ export class EngineBridge {
     }
     if (store.playing !== this.sentPlaying) {
       this.sentPlaying = store.playing;
-      e.compControl({ op: store.playing ? 'play' : 'pause' });
+      e.compControl({ op: store.playing ? 'play' : 'pause', seq: ++this.controlSeq });
       // (Re)starting playback re-anchors from wherever the playhead sits.
       this.mirroredBeat = store.positionBeat;
-      e.compControl({ op: 'seek', beat: store.positionBeat });
-      this.seekQuietUntil = performance.now() + 150;
+      this.seekSeq = ++this.controlSeq;
+      e.compControl({ op: 'seek', beat: store.positionBeat, seq: this.seekSeq });
     }
     // A playhead move NOT explained by the mirror-back is a user scrub.
     if (store.positionBeat !== this.mirroredBeat) {
       this.mirroredBeat = store.positionBeat;
-      e.compControl({ op: 'seek', beat: store.positionBeat });
-      this.seekQuietUntil = performance.now() + 150;
+      this.seekSeq = ++this.controlSeq;
+      e.compControl({ op: 'seek', beat: store.positionBeat, seq: this.seekSeq });
     }
 
     // Edge-triggered per-clip readiness for the native Precise gate.

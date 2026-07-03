@@ -915,6 +915,7 @@ async function simulateTick(dt: number, execDt: number = dt) {
         holding: r.holding,
         positionBeat: r.positionBeat,
         positionSec: r.positionSec,
+        controlSeq: r.controlSeq,
         ...(r.chainKeys ? { chainKeys: r.chainKeys } : {}),
         ...(r.videoDescs !== undefined ? { videoDescs: r.videoDescs } : {}),
         ...(r.layerTargets !== undefined ? { layerTargets: r.layerTargets } : {}),

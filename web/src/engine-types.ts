@@ -217,11 +217,14 @@ export type WorkerCommand =
   | { type: 'compMode'; on: boolean }
   // Full composition document replace (open/undo/redo/any structural edit).
   | { type: 'compLoadDoc'; json: string }
-  // Transport + Precise-gate commands.
+  // Transport + Precise-gate commands. `seq` (monotonic, bridge-stamped) is
+  // echoed back on frame reports (CompFrameInfo.controlSeq) so the bridge can
+  // suppress playhead mirror-backs from reports that predate its latest seek.
   | { type: 'compControl';
       op: 'play' | 'pause' | 'seek' | 'loop' | 'mode' | 'clipTiming' | 'ignoreSolo' | 'videoReady';
       beat?: number; enabled?: boolean; startBeat?: number; endBeat?: number;
-      precise?: boolean; loopMode?: boolean; on?: boolean; clipId?: string; ready?: boolean }
+      precise?: boolean; loopMode?: boolean; on?: boolean; clipId?: string; ready?: boolean;
+      seq?: number }
   // Cheap edit ops (drag fast paths — the document mirror patches in place;
   // launchScene/stopScene/stopAllScenes mutate the TRANSIENT launch state).
   | { type: 'compOp';
@@ -249,6 +252,8 @@ export interface CompFrameInfo {
   /** Launched scenes ({trackId: {sceneId, launchBeat}} JSON) — present when
    *  the launch state changed (kCompScenesChanged). */
   scenes?: string;
+  /** The last compControl `seq` processed before this frame (echo guard). */
+  controlSeq?: number;
 }
 
 // --- Worker events (worker → main) ---
