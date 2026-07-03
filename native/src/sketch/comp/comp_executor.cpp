@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -341,9 +342,14 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   // EVAL-level `__layer__` bypass: compare the lane-driven decision vector at
   // the CURRENT beat against the vector captured at eval time — a threshold
   // flip is a structural change the span can't see (lanes are deliberately
-  // not span boundaries), so invalidate exactly when a decision flips.
+  // not span boundaries), so invalidate exactly when a decision flips. The
+  // RAIL-driven decisions (last frame's post-render readback) join the same
+  // compare — the 1-frame "iterative update" loop.
   std::map<std::string, bool> bypassDec = laneBypassDecisions(doc_, beat);
-  if (evalValid_ && bypassDec != evalBypassDecisions_) evalValid_ = false;
+  if (evalValid_ && (bypassDec != evalBypassDecisions_ ||
+                     railBypassDecisions_ != evalRailBypass_)) {
+    evalValid_ = false;
+  }
 
   // Span hit: the evaluation at evalBeat_ is valid for [evalBeat_, boundary).
   // Backward motion (seek/loop wrap) falls out of the half-open interval and
@@ -353,7 +359,8 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
 
   evalCount_++;
   evalBypassDecisions_ = std::move(bypassDec);
-  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_);
+  evalRailBypass_ = railBypassDecisions_;
+  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_);
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
   layerTargets_ = std::move(build.layerTargets);
@@ -514,7 +521,47 @@ int32_t CompExecutor::render(int32_t inTex, int32_t outTex, int32_t W, int32_t H
   ex_->setAutomation(automation_);
   const int32_t out = ex_->execute(execSketch_, inTex, outTex, W, H, dt, dirty_);
   dirty_ = false;
+  // Rail-driven structural bypass: sample the rails AFTER the frame computed
+  // them; the decisions feed the NEXT update()'s eval compare (1-frame loop).
+  readRailBypassSignals();
   return out;
+}
+
+void CompExecutor::readRailBypassSignals() {
+  railBypassDecisions_.clear();
+  for (const auto& t : doc_.tracks) {
+    if (t.kind == TrackKind::Rail || t.bypassed) continue;
+    for (const auto& read : t.reads) {
+      if (read.targetDeviceId != kLayerTargetId || read.targetField != "bypass") continue;
+      const std::string key = "rail_" + read.railId;
+      static constexpr const char* kRailType = "mod.shaper.remap";
+      const int32_t inst = effrt_instance_for(kRailType,
+                                              static_cast<int32_t>(std::strlen(kRailType)),
+                                              key.data(), static_cast<int32_t>(key.size()));
+      bool on = false;
+      if (inst >= 0) {
+        // The rail relay's live `output`, via the published-state mirror (the
+        // same seam foldPublishedOutputs reads producers through).
+        if (publishedScratch_.size() < 256) publishedScratch_.resize(256);
+        int32_t len = effrt_published_state_json(inst, publishedScratch_.data(),
+                                                 static_cast<int32_t>(publishedScratch_.size()));
+        if (len > static_cast<int32_t>(publishedScratch_.size())) {
+          publishedScratch_.resize(static_cast<size_t>(len));
+          len = effrt_published_state_json(inst, publishedScratch_.data(),
+                                           static_cast<int32_t>(publishedScratch_.size()));
+        }
+        if (len > 0) {
+          const auto ps = nlohmann::json::parse(
+              publishedScratch_.data(), publishedScratch_.data() + len, nullptr, false);
+          if (ps.is_object() && ps.contains("output") && ps["output"].is_number()) {
+            on = ps["output"].get<double>() >= 0.5;
+          }
+        }
+      }
+      auto it = railBypassDecisions_.find(t.id);
+      railBypassDecisions_[t.id] = (it != railBypassDecisions_.end() && it->second) || on;
+    }
+  }
 }
 
 const std::string& CompExecutor::requiredJson() {

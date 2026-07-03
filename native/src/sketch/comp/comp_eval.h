@@ -294,6 +294,26 @@ inline void seedGroupReadBases(const CompositionM& comp, const std::vector<CompN
 }
 
 /**
+ * Rails driving STRUCTURAL bypass (`__layer__`/bypass track-reads on any
+ * non-statically-bypassed track/group). Collected from the DOCUMENT, not the
+ * tree — the reading track may currently be dropped, and the rail must stay
+ * alive in the built sketch so its value can flip the track back in
+ * (CompExecutor's post-render readback loop).
+ */
+inline std::set<std::string> bypassReadRails(const CompositionM& comp) {
+  std::set<std::string> out;
+  for (const auto& t : comp.tracks) {
+    if (t.kind == TrackKind::Rail || t.bypassed) continue;
+    for (const auto& read : t.reads) {
+      if (read.targetDeviceId == kLayerTargetId && read.targetField == "bypass") {
+        out.insert(read.railId);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Fold an already-evaluated composite tree into ONE composite sketch — group FX
  * over composited children, rail bases + per-clip start-seconds baked in
  * (warp-aware; startSec is baked onto the tree nodes in place). The tree must
@@ -314,10 +334,26 @@ inline SketchBuild buildCompositeRenderFromTree(const CompositionM& comp, const 
   std::map<std::string, bool> railSigned;
   railBasesAtBeat(comp, leaves, beat, railBases, railSigned);
   seedGroupReadBases(comp, tree, beat, railBases, railSigned);
+  // Structural-bypass rails stay alive regardless of tree membership; seed
+  // their bases from the document too.
+  const std::set<std::string> keepAlive = bypassReadRails(comp);
+  {
+    const double totalBeats = compositionLengthBeats(comp);
+    for (const auto& railId : keepAlive) {
+      if (railBases.count(railId)) continue;
+      const TrackM* rt = railTrackFor(comp, railId);
+      railBases[railId] =
+          rt && rt->hasBaseCurve
+              ? evalCurveAt(rt->baseCurve, totalBeats > 0 ? beat / totalBeats : 0)
+              : 0;
+      railSigned[railId] = rt ? rt->railSigned : false;
+    }
+  }
   // The main bus runs its FX chain over the final composite unless bypassed.
   const TrackM* bus = mainBusTrack(comp);
   const TrackM* masterBus = bus && !bus->bypassed ? bus : nullptr;
-  return buildCompositeSketch(tree, comp.background, railBases, railSigned, masterBus, cat);
+  return buildCompositeSketch(tree, comp.background, railBases, railSigned, masterBus, cat,
+                              keepAlive.empty() ? nullptr : &keepAlive);
 }
 
 /**
@@ -458,6 +494,17 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
         }
       };
   walk(tree);
+  // Structural-bypass rails may have no in-tree reader (the reading track can
+  // be dropped) — re-assert their bases from the DOCUMENT so a dropped writer
+  // returns the rail (and the bypass decision) to its base.
+  for (const auto& t : comp.tracks) {
+    if (t.kind == TrackKind::Rail || t.bypassed) continue;
+    for (const auto& read : t.reads) {
+      if (read.targetDeviceId == kLayerTargetId && read.targetField == "bypass") {
+        pushRailBase(read);
+      }
+    }
+  }
   // The main bus isn't in the composite tree, but its master-FX chain does run
   // over the final composite, so emit its lanes too.
   const TrackM* bus = mainBusTrack(comp);

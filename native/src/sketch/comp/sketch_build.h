@@ -475,7 +475,15 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
                                         const BackgroundM& bg,
                                         const std::map<std::string, double>& railBases,
                                         const std::map<std::string, bool>& railSigned,
-                                        const TrackM* mainBus, const Catalog& cat) {
+                                        const TrackM* mainBus, const Catalog& cat,
+                                        // Rails to keep alive UNCONDITIONALLY: the
+                                        // rail-driven structural-bypass rails, whose
+                                        // reading track may currently be DROPPED from
+                                        // the tree — the rail node must survive so its
+                                        // value can flip the track back in (the comp
+                                        // readback loop). Writers live on other tracks
+                                        // by construction.
+                                        const std::set<std::string>* keepAliveRails = nullptr) {
   using namespace build_detail;
   Builder b{cat, railBases, railSigned};
   std::optional<std::string> accKey;
@@ -519,6 +527,9 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
       if (!catIds.count(read.targetDeviceId)) continue;
       pushRailNode(read.railId);
     }
+  }
+  if (keepAliveRails) {
+    for (const auto& railId : *keepAliveRails) pushRailNode(railId);
   }
   // Owner-level (track/group) reads pull their rails alive too. `__layer__`
   // opacity targets always resolve for a rendering layer; FX-device targets

@@ -1002,3 +1002,79 @@ TEST_CASE("a dynamically-bypassed track keeps its video decode warm", "[comp_byp
   // ...but the pump still warms it.
   CHECK(h.cx.videoDescsJson().find("blob:media/v1") != std::string::npos);
 }
+
+// ── Phase 5: rail-driven track/group bypass (post-render readback loop) ──────
+
+TEST_CASE("a return rail structurally toggles another track's bypass (1-frame loop)",
+          "[comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  // Writer: an LFO clip on t1 exporting onto rail R. Reader: t2 (a white
+  // solid) carries a TRACK-level read {R, __layer__, bypass} — never an
+  // executor wire; the comp executor samples the rail's live output after each
+  // render, thresholds >= 0.5, and re-evaluates on a decision flip. The rail's
+  // live output rides the published-state mirror — synthesize it (the barrel's
+  // state-doc seam) and flip it mid-test.
+  json writerClip = mkClip("cw", 0, 8,
+                           json::array({mkDevice("lfo", "mod.source.lfo",
+                                                 {{"rate", 0.0}, {"output", 0.0}})}));
+  writerClip["exports"] = json::array(
+      {{{"id", "e1"}, {"railId", "R"}, {"sourceDeviceId", "lfo"}, {"sourceField", "output"},
+        {"combine", "replace"}}});
+  json t1 = mkTrack("t1", json::array({writerClip}));
+  json t2 = mkTrack("t2", json::array({mkClip(
+      "c2", 0, 8,
+      json::array({mkDevice("d2", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})}))}));
+  t2["reads"] = json::array(
+      {{{"id", "r1"}, {"railId", "R"}, {"targetDeviceId", "__layer__"},
+        {"targetField", "bypass"}, {"combine", "replace"}}});
+  json rail = mkTrack("r", json::array(), {{"kind", "rail"}, {"railId", "R"}});
+  const json doc = mkComposition(json::array({t1, t2, rail}));
+
+  static double railOutput = 0.0;  // the synthesized live rail value
+  sketch_executor::effrtSetPublishedStateProvider(
+      [](effect_runtime::EffectInstance* i) -> std::string {
+        if (i->id() != "mod.shaper.remap") return std::string();
+        return std::string("{\"output\":") + std::to_string(railOutput) + "}";
+      });
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+  auto frame = [&]() {
+    cx.update(0.0);
+    return meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+  };
+
+  // Rail below threshold: t2 renders (white).
+  railOutput = 0.25;
+  double m = 0;
+  for (int i = 0; i < 3; i++) m = frame();
+  INFO("below-threshold mean " << m);
+  CHECK(m > 200.0);
+  const int64_t evalsSettled = cx.evalCount();
+
+  // Steady frames: decisions stable — no re-evals.
+  for (int i = 0; i < 5; i++) m = frame();
+  CHECK(cx.evalCount() == evalsSettled);
+
+  // Rail crosses the threshold: within a frame of readback latency t2 DROPS.
+  railOutput = 0.75;
+  for (int i = 0; i < 3; i++) m = frame();
+  INFO("above-threshold mean " << m);
+  CHECK(m < 30.0);  // white layer structurally gone (black bg + passthroughs)
+  CHECK(cx.evalCount() == evalsSettled + 1);  // exactly one re-eval per flip
+
+  // ...and back: the rail node survived the drop (keep-alive), so the value
+  // can flip the track back in.
+  railOutput = 0.25;
+  for (int i = 0; i < 3; i++) m = frame();
+  INFO("recovered mean " << m);
+  CHECK(m > 200.0);
+  CHECK(cx.evalCount() == evalsSettled + 2);
+
+  sketch_executor::effrtSetPublishedStateProvider(nullptr);
+}

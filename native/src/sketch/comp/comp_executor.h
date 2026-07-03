@@ -185,6 +185,11 @@ class CompExecutor {
   bool ensureEvalAt(double beat, uint32_t& flags);
   bool videoReady(const nlohmann::json& descs) const;
   void foldPublishedOutputs(nlohmann::json& sketch);
+  /** Post-render: read each structural-bypass rail's live `output` (published-
+   *  state mirror), threshold >= 0.5, and store per-track decisions. Next
+   *  update() compares against the vector used at eval → invalidateEval on a
+   *  flip (the 1-frame "iterative update" readback loop). */
+  void readRailBypassSignals();
   static std::string chainSigOf(const nlohmann::json& sketch);
   static nlohmann::json pumpUnion(const nlohmann::json& target, const nlohmann::json& displayed);
 
@@ -232,6 +237,12 @@ class CompExecutor {
   /** Lane-driven `__layer__`/bypass decisions captured at eval time; a flip at
    *  the current beat invalidates the span (see ensureEvalAt). */
   std::map<std::string, bool> evalBypassDecisions_;
+  /** Rail-driven structural-bypass decisions: written by the post-render
+   *  readback (readRailBypassSignals), consumed by the NEXT eval (1-frame
+   *  latency — rails are computed during render). */
+  std::map<std::string, bool> railBypassDecisions_;
+  /** The rail decision snapshot the current eval's tree was built with. */
+  std::map<std::string, bool> evalRailBypass_;
   /** Recheck the pump target/displayed sets on the next non-holding frame even
    *  without a re-eval (set while holding: the pump ran a displayed∪warm union
    *  that must collapse back to warm-only after the hold releases). */
