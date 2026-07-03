@@ -251,8 +251,19 @@ export class ArrScene extends MobxLitElement {
   private onHeaderDown = (e: PointerEvent) => {
     e.stopPropagation();
     const path = paths.clip(this.trackId, this.clip.id);
-    if (e.shiftKey) store.toggleSelect(path);
-    else store.select(path);
+    if (e.shiftKey) {
+      store.toggleSelect(path);
+    } else {
+      store.select(path);
+      // Box = the cell's extent, WITHOUT yanking the play-from marker (the
+      // arr-clip header behaves the same way).
+      store.setTimeSelection(
+        this.clip.startBeat,
+        this.clip.startBeat + this.clip.lengthBeat,
+        [this.trackId],
+        { movePlayhead: false },
+      );
+    }
     // Header drag moves the scene on the grid (rigid: siblings push aside) —
     // the same grid-driven machinery as arr-clip, incl. cross-track drags.
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);

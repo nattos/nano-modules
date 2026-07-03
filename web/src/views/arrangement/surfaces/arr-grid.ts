@@ -1550,9 +1550,11 @@ export class ArrGrid extends MobxLitElement {
 
     if (d.timebox && d.baseSel) {
       // Move (or, with Cmd, COPY) the in-box content by the X shift AND across
-      // tracks (Y). Track delta = source→dest in the plain-track order.
+      // tracks (Y). Track delta = source→dest in clip-lane order (plain +
+      // scene tracks — MUST match the store's moveTimeBoxContent lane list).
       const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
-      const plain = store.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
+      const plain = store.composition.tracks
+        .filter((t) => t.kind === 'track' || t.kind === 'scene').map((t) => t.id);
       const td = plain.indexOf(dest) - plain.indexOf(d.trackId);
       this.clipDropTrackId = td !== 0 ? dest : null;
       if (d.duplicate) {

@@ -69,6 +69,65 @@ describe('scene tracks', () => {
     expect(by(c)).toBe(12);                         // c chained
   });
 
+  it('push is BIDIRECTIONAL: a sibling overlapped on its right gives way LEFT', () => {
+    const id = store.addSceneTrack();
+    const a = addSceneWith(id);                     // [0,4)
+    store.moveClip(id, a, 4);                       // a → [4,8)
+    const b = addSceneWith(id);
+    store.setTrackLevel(id, 0.9);                   // break move-coalescing
+    store.moveClip(id, b, 8);                       // b → [8,12)
+    store.setTrackLevel(id, 1);
+    // Drag b LEFT onto a's right half: a's centre (6) < b's new centre (8) →
+    // a gives way LEFT (end pins to b's new start), not right.
+    store.moveClip(id, b, 6);
+    const t = store.trackById(id)!;
+    expect(t.clips.find((c) => c.id === b)!.startBeat).toBe(6);
+    expect(t.clips.find((c) => c.id === a)!.startBeat).toBe(2); // pushed left
+  });
+
+  it('a left-push with no room overflows to the right (stays rigid)', () => {
+    const id = store.addSceneTrack();
+    const a = addSceneWith(id);                     // [0,4)
+    const b = addSceneWith(id);                     // pushed → [4,8)
+    // Drag b onto [1,5): a (centre 2) wants to go left but 1-4 < 0 → jumps right.
+    store.moveClip(id, b, 1);
+    const t = store.trackById(id)!;
+    expect(t.clips.find((c) => c.id === b)!.startBeat).toBe(1);
+    expect(t.clips.find((c) => c.id === a)!.startBeat).toBe(5); // overflowed right
+  });
+
+  it('the caret resolves scene rows to a per-track scope (never global)', () => {
+    const id = store.addSceneTrack();
+    store.setCaret({ anchorBeat: 0, anchorTrackId: id, headBeat: 8, headTrackId: id });
+    expect(store.caretTrackIds).toEqual([id]);      // NOT [] (global)
+    expect(store.timeSelTrackIds).toEqual([id]);
+  });
+
+  it('moveTimeBoxContent moves whole scene cells (never slices) and lands rigid cells across tracks', () => {
+    const trk = store.addTrack();
+    const id = store.addSceneTrack();
+    const a = addSceneWith(id);                     // [0,4)
+    // Scene-track scope: shift the cell right by a bar — whole cell, no slicing.
+    store.moveTimeBoxContent(4, 0, { start: 0, end: 4, scope: [id] });
+    let t = store.trackById(id)!;
+    expect(t.clips.length).toBe(1);
+    expect(t.clips.find((c) => c.id === a)!.startBeat).toBe(4);
+
+    // Cross-track: a LONG normal clip moved onto the scene lane snaps to the
+    // rigid cell width (td = scene lane's offset from the source in lane order).
+    const path = store.createEmptyClip(trk, 0, 16)!;
+    const clipId = path.split('/')[2];
+    const lanes = store.composition.tracks
+      .filter((x) => x.kind === 'track' || x.kind === 'scene').map((x) => x.id);
+    const td = lanes.indexOf(id) - lanes.indexOf(trk);
+    store.moveTimeBoxContent(0, td, { start: 0, end: 16, scope: [trk] });
+    t = store.trackById(id)!;
+    const moved = t.clips.find((c) => c.id === clipId)!;
+    expect(moved).toBeDefined();
+    expect(moved.lengthBeat).toBe(store.barBeats);  // snapped, not sliced/carved
+    expect(store.trackById(trk)!.clips.length).toBe(0);
+  });
+
   it('clips drag to/from scene tracks (fixed width on the way in)', () => {
     const id = store.addSceneTrack();
     const trk = store.addTrack();

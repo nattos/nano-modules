@@ -182,6 +182,7 @@ function preserveLoopPhase(right: Clip, original: Clip, atBeat: number) {
 }
 
 function splitClipsAt(track: Track, beat: number) {
+  if (track.kind === 'scene') return; // rigid cells never split
   const next: Clip[] = [];
   for (const clip of track.clips) {
     const end = clip.startBeat + clip.lengthBeat;
@@ -221,16 +222,35 @@ function settleSceneTrack(track: Track, priorityId: string) {
   if (!p) return;
   const ps = p.startBeat;
   const pe = ps + p.lengthBeat;
+  const pMid = ps + p.lengthBeat / 2;
   const others = track.clips
     .filter((c) => c.id !== priorityId)
     .sort((a, b) => a.startBeat - b.startBeat);
-  let cursor = 0;
-  for (const c of others) {
-    let s = Math.max(c.startBeat, cursor);
-    // Jump past the pinned scene when the cell would overlap it.
-    if (s < pe - 1e-6 && s + c.lengthBeat > ps + 1e-6) s = pe;
-    c.startBeat = s;
-    cursor = s + c.lengthBeat;
+  // Push BOTH ways: a sibling whose centre sits left of the moved cell's
+  // centre gives way LEFT; centre right (ties included) gives way RIGHT.
+  const leftGroup = others.filter((c) => c.startBeat + c.lengthBeat / 2 < pMid - 1e-6);
+  const rightGroup = others.filter((c) => c.startBeat + c.lengthBeat / 2 >= pMid - 1e-6);
+  // Left side: sweep outward (nearest first), chaining; a cell that runs out
+  // of room at beat 0 overflows to the right side instead (stays rigid).
+  const overflow: Clip[] = [];
+  let cursor = ps;
+  for (const c of [...leftGroup].reverse()) {
+    if (c.startBeat + c.lengthBeat > cursor + 1e-6) {
+      const ns = cursor - c.lengthBeat;
+      if (ns < -1e-6) {
+        overflow.push(c);
+        continue;
+      }
+      c.startBeat = ns;
+    }
+    cursor = c.startBeat;
+  }
+  // Right side (+ left overflow): sweep outward, chaining pushes.
+  const rightAll = [...rightGroup, ...overflow].sort((a, b) => a.startBeat - b.startBeat);
+  cursor = pe;
+  for (const c of rightAll) {
+    if (c.startBeat < cursor - 1e-6) c.startBeat = cursor;
+    cursor = c.startBeat + c.lengthBeat;
   }
 }
 
@@ -1191,9 +1211,10 @@ export class ArrangementStore {
       } else if (path.startsWith('track/')) {
         const t = this.trackById(path.split('/')[1]);
         const full = compositionLengthBeats(this.composition);
-        if (t && (t.kind === 'track' || t.kind === 'rail')) {
-          // Selecting a track OR return/rail sets the time box (all beats × that
-          // track) but must NOT yank the play-from marker / playhead — keep them put.
+        if (t && (t.kind === 'track' || t.kind === 'rail' || t.kind === 'scene')) {
+          // Selecting a track OR return/rail/scene track sets the time box (all
+          // beats × that track) but must NOT yank the play-from marker /
+          // playhead — keep them put.
           this.setTimeSelection(0, full, [t.id], { movePlayhead: false });
         } else if (t && t.kind === 'group') {
           // Selecting a GROUP selects the full time across ALL its contained tracks
@@ -1217,7 +1238,7 @@ export class ArrangementStore {
     const scope = this.timeSelTrackIds;
     if (scope.length === 0) {
       const t = this.trackById(trackId);
-      return !!t && (t.kind === 'track' || t.kind === 'rail');
+      return !!t && (t.kind === 'track' || t.kind === 'rail' || t.kind === 'scene');
     }
     return scope.includes(trackId);
   }
@@ -2011,7 +2032,8 @@ export class ArrangementStore {
     // group rows to their tracks — the bus has no descendant tracks, so a bus-only
     // span resolves to the GLOBAL (all-tracks) scope, matching "everything sums here".
     return this.displayTracks.filter(
-      (t) => t.kind === 'track' || t.kind === 'rail' || t.kind === 'group',
+      (t) => t.kind === 'track' || t.kind === 'rail' || t.kind === 'group' ||
+             t.kind === 'scene',
     );
   }
 
@@ -2083,7 +2105,7 @@ export class ArrangementStore {
       const t = this.trackById(id);
       if (t && t.kind === 'group') {
         for (const d of this.composition.tracks) {
-          if (d.kind === 'track' && this.isAncestorTrack(id, d.id)) push(d.id);
+          if ((d.kind === 'track' || d.kind === 'scene') && this.isAncestorTrack(id, d.id)) push(d.id);
         }
       } else {
         push(id);
@@ -2110,11 +2132,13 @@ export class ArrangementStore {
     return this.caretTrackIds;
   }
 
-  /** Tracks the region applies to (empty span = every plain track). */
+  /** Tracks the region applies to (empty span = every clip-bearing lane:
+   *  plain tracks + scene tracks). */
   private regionTracks(): Track[] {
     const scope = this.caretTrackIds;
     return this.composition.tracks.filter(
-      (t) => t.kind === 'track' && (scope.length === 0 || scope.includes(t.id)),
+      (t) => (t.kind === 'track' || t.kind === 'scene') &&
+             (scope.length === 0 || scope.includes(t.id)),
     );
   }
 
@@ -2283,7 +2307,9 @@ export class ArrangementStore {
     const found = this.clipByPath(paths.clip(trackId, clipId));
     if (!found) return false;
     const scope = this.timeSelTrackIds;
-    const inScope = scope.length === 0 ? found.track.kind === 'track' : scope.includes(trackId);
+    const inScope = scope.length === 0
+      ? found.track.kind === 'track' || found.track.kind === 'scene'
+      : scope.includes(trackId);
     if (!inScope) return false;
     const c = found.clip;
     return (
@@ -2316,9 +2342,12 @@ export class ArrangementStore {
     // — bailing here would strand the clip one step out.
     const scopeIds = base ? base.scope : [...this.timeSelTrackIds];
 
-    const plainIds = this.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
+    // Clip-bearing lanes in render order: plain tracks AND scene tracks (scene
+    // cells ride the time box like clips — whole cells, never sliced).
+    const plainIds = this.composition.tracks
+      .filter((t) => t.kind === 'track' || t.kind === 'scene').map((t) => t.id);
     const scope = scopeIds.length ? scopeIds : plainIds;
-    // Clamp the track shift so the whole scope stays within the plain tracks.
+    // Clamp the track shift so the whole scope stays within the clip lanes.
     let td = trackDelta;
     const idxs = scope.map((id) => plainIds.indexOf(id)).filter((i) => i >= 0);
     if (idxs.length) {
@@ -2329,11 +2358,13 @@ export class ArrangementStore {
       const i = plainIds.indexOf(id);
       return i < 0 ? id : plainIds[Math.max(0, Math.min(plainIds.length - 1, i + td))];
     };
+    const barBeats = this.barBeats;
 
     this.mutate(
       'move time selection',
       (d) => {
-        // 1. Lift every in-box piece off its source track (split at the edges).
+        // 1. Lift every in-box piece off its source track (split at the edges;
+        //    scene tracks lift WHOLE cells — splitClipsAt no-ops on them).
         const pieces: Array<{ destId: string; clip: Clip }> = [];
         for (const track of d.tracks) {
           if (!scope.includes(track.id)) continue;
@@ -2347,10 +2378,17 @@ export class ArrangementStore {
           }
           track.clips = track.clips.filter((c) => !inBox(c));
         }
-        // 2. Drop them onto their destination tracks, carving what they cover.
+        // 2. Drop them onto their destination tracks: carve normal lanes;
+        //    scene lanes snap the piece to the rigid cell width and push.
         for (const { destId, clip } of pieces) {
           const dt = d.tracks.find((t) => t.id === destId);
           if (!dt) continue;
+          if (dt.kind === 'scene') {
+            clip.lengthBeat = barBeats;
+            dt.clips.push(clip);
+            settleSceneTrack(dt, clip.id);
+            continue;
+          }
           carveTrackSpan(dt, '__none__', clip.startBeat, clip.startBeat + clip.lengthBeat);
           dt.clips.push(clip);
         }
@@ -2384,7 +2422,8 @@ export class ArrangementStore {
     const b = base ? base.end : this.timeSelEnd;
     if (a == null || b <= a) return;
     const scopeIds = base ? base.scope : [...this.timeSelTrackIds];
-    const plainIds = this.composition.tracks.filter((t) => t.kind === 'track').map((t) => t.id);
+    const plainIds = this.composition.tracks
+      .filter((t) => t.kind === 'track' || t.kind === 'scene').map((t) => t.id);
     const scope = scopeIds.length ? scopeIds : plainIds;
     let td = trackDelta;
     const idxs = scope.map((id) => plainIds.indexOf(id)).filter((i) => i >= 0);
@@ -2396,14 +2435,17 @@ export class ArrangementStore {
       const i = plainIds.indexOf(id);
       return i < 0 ? id : plainIds[Math.max(0, Math.min(plainIds.length - 1, i + td))];
     };
+    const barBeats = this.barBeats;
     this.mutate(
       'duplicate time selection',
       (d) => {
         const pieces: Array<{ destId: string; clip: Clip }> = [];
         for (const track of d.tracks) {
           if (!scope.includes(track.id)) continue;
-          // Slice a DEEP COPY at the box edges so the source track is untouched.
-          const tmp = { clips: JSON.parse(JSON.stringify(track.clips)) } as Track;
+          // Slice a DEEP COPY at the box edges so the source track is untouched
+          // (scene tracks copy WHOLE cells — the tmp keeps the kind so
+          // splitClipsAt no-ops on them).
+          const tmp = { kind: track.kind, clips: JSON.parse(JSON.stringify(track.clips)) } as Track;
           splitClipsAt(tmp, a);
           splitClipsAt(tmp, b);
           const inBox = (c: Clip) => c.startBeat >= a - 1e-6 && c.startBeat < b - 1e-6;
@@ -2418,6 +2460,12 @@ export class ArrangementStore {
         for (const { destId, clip } of pieces) {
           const dt = d.tracks.find((t) => t.id === destId);
           if (!dt) continue;
+          if (dt.kind === 'scene') {
+            clip.lengthBeat = barBeats;
+            dt.clips.push(clip);
+            settleSceneTrack(dt, clip.id);
+            continue;
+          }
           carveTrackSpan(dt, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
           dt.clips.push(clip);
         }
