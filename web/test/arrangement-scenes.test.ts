@@ -211,12 +211,28 @@ describe('Arrangement scene tracks (GPU)', () => {
       return store.positionBeat as number;
     }, { st: ids.sceneTrackId, scene: videoScene });
 
-    // 3s at 120 BPM ≈ 6 beats. A brief decode hold is fine; a PERMANENT hold
-    // (the bug: ~1 forced frame per 2.5s) is not — require real progress.
-    await new Promise((r) => setTimeout(r, 3000));
-    const beatAfter = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    // 5s at 120 BPM ≈ 10 beats — PAST several loop wraps of the 1.83s media
+    // AND past the one-bar grid cell width (a second stall bug: the desc's
+    // lengthBeat was the cell width, so the pump declared the scene "over" one
+    // bar after launch — frames froze + the gate flickered stalls). A brief
+    // decode hold is fine; require sustained progress.
+    await new Promise((r) => setTimeout(r, 3500));
+    const frameMid = await page.evaluate((a) => {
+      const p = (window as any).__engineBridge?.video?.pumps?.get(a.scene);
+      return (p?.lastKey ?? null) as string | null;
+    }, { scene: videoScene });
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      const p = (window as any).__engineBridge?.video?.pumps?.get(a.scene);
+      return { beat: store.positionBeat as number, frame: (p?.lastKey ?? null) as string | null };
+    }, { scene: videoScene });
     await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
-    expect(beatAfter - beatAtLaunch).toBeGreaterThan(3);
+    expect(after.beat - beatAtLaunch).toBeGreaterThan(8);
+    // Frames must still ADVANCE well past the cell width / loop wraps (the
+    // frozen-frame regression: lastKey pinned at the cell-end frame forever).
+    expect(frameMid).not.toBeNull();
+    expect(after.frame).not.toBe(frameMid);
 
     expect(errors).toEqual([]);
   });

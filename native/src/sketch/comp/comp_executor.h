@@ -196,7 +196,10 @@ class CompExecutor {
    *  Also auto-stops elapsed one-shot scenes when called per frame. Sets
    *  scenesDirty_ + invalidateEval() on any change. */
   void healSceneLaunches();
-  nlohmann::json videoDescFor(const ClipM& clip, double anchorBeat) const;
+  /** `unbounded`: launched scenes play until stopped/replaced — their desc
+   *  window must not end at the grid cell's lengthBeat (the pump treats the
+   *  window end as "clip over": frames freeze + the Precise gate flickers). */
+  nlohmann::json videoDescFor(const ClipM& clip, double anchorBeat, bool unbounded = false) const;
   /** Active video-clip descs of an evaluated tree (leaves with media). */
   nlohmann::json videoDescsForTree(const std::vector<CompNode>& tree) const;
   /** Active + lookahead-window descs at `beat` (the pump warm set). */

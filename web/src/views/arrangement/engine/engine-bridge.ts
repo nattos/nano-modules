@@ -432,10 +432,15 @@ export class EngineBridge {
       const d = videoDescFor(l.clip);
       if (!d) continue;
       // A launched scene's local clock anchors at its LAUNCH beat, not the
-      // cell's grid position (the native descs already carry this; keep the
-      // pre-first-report fallback consistent so the pump never mis-anchors).
+      // cell's grid position, and it plays until stopped — its desc window
+      // must not end at the one-bar grid cell width (the pump treats the
+      // window end as "clip over": frames freeze one bar after launch and the
+      // Precise gate flickers stalls). The native descs already carry both;
+      // keep the pre-first-report fallback AND the local gate scan
+      // (lastVideoDescs → clipReady/decodePending) consistent.
       if (l.track.kind === 'scene') {
         d.startBeat = store.sceneLaunchState[l.track.id]?.launchBeat ?? d.startBeat;
+        d.lengthBeat = 1e9;
       }
       videoDescs.push(d);
     }

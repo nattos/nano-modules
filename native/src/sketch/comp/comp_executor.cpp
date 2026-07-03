@@ -331,7 +331,8 @@ void CompExecutor::healSceneLaunches() {
   }
 }
 
-nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat) const {
+nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat,
+                                          bool unbounded) const {
   // composite-frame.ts videoDescFor — the instanceKey MUST match the clip's
   // source.video.file chain entry or the injected frame goes nowhere.
   // `anchorBeat` = clip.startBeat for arrangement clips, the LAUNCH beat for
@@ -351,7 +352,9 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat) 
                         ? src["sourceKey"].get<std::string>()
                         : clip.id},
       {"startBeat", anchorBeat},
-      {"lengthBeat", clip.lengthBeat},
+      // A scene's lengthBeat is its one-bar GRID cell width (layout only);
+      // playback runs until stopped — ship an effectively-infinite window.
+      {"lengthBeat", unbounded ? 1e9 : clip.lengthBeat},
       {"durationFrames", src.contains("durationFrames") && src["durationFrames"].is_number()
                              ? src["durationFrames"]
                              : nlohmann::json(0)},
@@ -380,7 +383,8 @@ nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree
             walk(n.children);
             continue;
           }
-          nlohmann::json d = videoDescFor(*n.clip, n.anchorBeat);
+          const bool scene = n.track && n.track->kind == TrackKind::Scene;
+          nlohmann::json d = videoDescFor(*n.clip, n.anchorBeat, scene);
           if (!d.is_null()) descs.push_back(std::move(d));
         }
       };

@@ -1636,6 +1636,10 @@ TEST_CASE("scenes: a video-scene retrigger re-anchors the pump desc", "[comp_sce
   uint32_t flags = h.cx.update(0.0);
   CHECK((flags & comp::kCompVideoSetChanged) != 0);
   CHECK(json::parse(h.cx.videoDescsJson())[0]["startBeat"].get<double>() == 2.0);
+  // A launched scene plays until stopped — its desc window must NOT end at the
+  // grid cell's lengthBeat (the web pump treats the window end as "clip over":
+  // frames froze one bar after launch + the Precise gate flickered stalls).
+  CHECK(json::parse(h.cx.videoDescsJson())[0]["lengthBeat"].get<double>() > 1e6);
 
   // Retrigger at a later beat: same clip, new anchor → the pump must see a
   // changed desc (kCompVideoSetChanged) so it reconciles the source clock.
