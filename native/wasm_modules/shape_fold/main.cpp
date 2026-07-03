@@ -28,12 +28,14 @@
 #include <gpu.h>
 #include <host.h>
 #include <val.h>
+#include <effect_utils.h>
 #include "shape_fold_shaders.h"
 #include "shape_fold_atlas.h"
 
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <vector>
 
 namespace shape_fold {
 
@@ -54,6 +56,37 @@ static constexpr float kApA = 0.29f, kApB = 0.16f, kApW2 = 0.382f, kApPhi = kPi 
 // point is well-spread and distinct even when the orbit is barely drifting.
 static constexpr float kGoldenAngle = 2.39996323f;
 
+// --- Skip static: detect a large, mostly-STILL construct and jog past it -----
+// shape_fold is auto-leveled, so it's essentially never a flat solid colour (the
+// case brutal_fold hunts). What reads as "dead" here is a richly-detailed field
+// that just sits there barely moving. So the detector is MOTION-dominant, and the
+// motion is reduced by the GLOBAL MEAN over the frame (not the per-tile MAX
+// brutal_fold uses) — a small moving corner shouldn't veto jogging through an
+// otherwise-static frame. When engaged, a C2 ramp (fx::SkipJog) advances the loop
+// clock (and, under autopilot, the orbit) as a MULTIPLE of the current rate, so
+// Speed 0 stays frozen and a faster Speed skips faster.
+static constexpr float kSkipTimeMult  = 8.0f;   // jog up to Nx the current loop speed
+static constexpr float kSkipOrbitMult = 6.0f;   // jog up to Nx the current orbit speed
+static constexpr float kSkipRampInSec = 0.6f;   // gentle ease-IN into the skip
+static constexpr float kMaxRecoverSec = 1.0f;   // recover=0 → this slow ease-OUT (1 → instant)
+static constexpr float kSkipHyst      = 0.004f; // recover margin above the trigger (hysteresis)
+// Sensitivity [0,1] maps to this much MEAN squashed motion at the trigger. Motion
+// is squashed to [0,1] in edge.hlsl (kMotionSpan = a 0.05 luma delta → "full"),
+// so a slowly-evolving field lands at a small mean; keep the span low so the knob
+// resolves the near-static regime where the jog should actually fire. Tune live
+// against the skip_motion broadcast.
+static constexpr float kSkipTrigSpan  = 0.25f;
+
+// GPU detector geometry — must match edge.hlsl / debug.hlsl.
+static constexpr int   kTileGrid      = 16;
+static constexpr int   kSampleGrid    = 256;
+static constexpr int   kNumTiles      = kTileGrid * kTileGrid;
+static constexpr int   kSlots         = 5;       // per tile: [edge,luma,luma²,motion,count]
+static constexpr int   kEdgeStatsInts = kNumTiles * kSlots;
+static constexpr float kStatsScale    = 65536.0f;// must match edge.hlsl kStatsScale
+static constexpr float kEdgeNormGain  = 2.0f;    // per-tile edge/var-max sensitivity (tuning feats)
+static constexpr float kVarFloor      = 0.008f;  // deadzone on per-tile luma std (quantization noise)
+
 // Uniform block — mirrors SF_UNIFORMS in common.hlsl (std140). 3 scalar rows
 // then the resolved terms (per term: (theta,mtheta,curv,freq)(phase,h,k,amp)
 // (mix,spc,_,_)).
@@ -70,10 +103,20 @@ static constexpr int kStatsInts = 2 + SF_NB;
 // lut buffer (floats): [0..NB-1]=LUT, [NB]=lo, [NB+1]=hi, [NB+2]=blank.
 static constexpr int kLutFloats = SF_NB + 4;
 
+// Small uniform for the skip-static debug visualizer pass (debug.hlsl).
+struct DebugUniforms {
+  float res_x, res_y, mode, _pad0;      // mode: 1=var 2=edge 3=motion 4=combined
+  float w_var, w_edge, w_motion, _pad1;
+};
+
 struct State {
   gpu::Buffer uniform_buf;
-  gpu::Buffer stats_buf;
+  gpu::Buffer stats_buf;            // auto-levels min/max + histogram
   gpu::Buffer lut_buf;
+  gpu::Buffer edge_stats_buf;       // skip-static motion/variance reduce → readback
+  gpu::Buffer prev_luma_buf;        // persistent per-sample previous-frame luma (motion)
+  gpu::Buffer debug_uniform_buf;    // skip-static debug visualizer params
+  bool skip_gpu_ready = false;      // true once the first edge readback has arrived
   bool initialized = false;
 
   // --- Schema-mirrored params ---
@@ -93,9 +136,24 @@ struct State {
   float exposure            = 1.0f;    // pre-grade value drive (boost / reduce)
   int   output_mode         = 1;       // 0 = Grayscale, 1 = Magma (default)
 
+  // --- Skip static: detect a near-still construct and jog past it ---
+  bool  skip_empty        = false;  // master enable for detector + jog
+  float skip_thresh       = 0.7f;   // Sensitivity [0,1] → motion trigger (× kSkipTrigSpan)
+  // Per-feature weights [0,1]. shape_fold is never flat and has no hard edges, so
+  // variance/edge default OFF (they'd read "busy" every frame); MOTION drives it.
+  float skip_w_var        = 0.0f;
+  float skip_w_edge       = 0.0f;
+  float skip_w_motion     = 1.0f;
+  int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
+  float skip_recover      = 1.0f;   // Recover [0,1]: how fast the jog STOPS on motion (1 = instant)
+  float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
+  bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
+
   // --- Internal clocks (advanced in tick) ---
   float clock_t   = 0.0f;              // loop phase 0..1
   float orbit     = 0.0f;              // autopilot epicycle phase
+  fx::SkipJog jog;                     // skip-static C2 engagement ramp
+  float content   = 1.0f;              // last frame's activity metric [0,1] (1 = moving/rich)
   float snap_accum = 0.0f;            // snap-mode hold timer
   float next_hold  = 0.0f;            // jittered target for the current interval
   uint32_t rng     = 0x2545F491u;     // per-instance PRNG state (seeded in create)
@@ -106,24 +164,34 @@ struct State {
   bool  ap_jump_pending = false;       // a trigger fired since the last tick
 };
 
-static void apply_visibility(bool autopilot, bool ap_snap) {
+static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty) {
   state::setFieldHidden("ap_speed",       !autopilot);
   state::setFieldHidden("ap_snap",        !autopilot);
   state::setFieldHidden("ap_hold_period", !(autopilot && ap_snap));
   state::setFieldHidden("ap_hold_jitter", !(autopilot && ap_snap));
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
+  state::setFieldHidden("skip_thresh",     !skip_empty);
+  state::setFieldHidden("skip_w_var",      !skip_empty);
+  state::setFieldHidden("skip_w_edge",     !skip_empty);
+  state::setFieldHidden("skip_w_motion",   !skip_empty);
+  state::setFieldHidden("skip_debug",      !skip_empty);
+  state::setFieldHidden("skip_recover",    !skip_empty);
+  state::setFieldHidden("skip_rate",       !skip_empty);
+  // Jogging the orbit only means anything under autopilot.
+  state::setFieldHidden("skip_autopilot",  !(skip_empty && autopilot));
 }
 
 // Static (self-less) visibility evaluator — pure over state (see crop).
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
-  bool autopilot = false, ap_snap = false;
+  bool autopilot = false, ap_snap = false, skip_empty = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "autopilot")) autopilot = state::patchFloat(i) != 0.0f;
-    else if (state::pathIs(p, l, "ap_snap"))   ap_snap   = state::patchFloat(i) != 0.0f;
+    if      (state::pathIs(p, l, "autopilot"))  autopilot  = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "ap_snap"))    ap_snap    = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "skip_empty")) skip_empty = state::patchFloat(i) != 0.0f;
   }
-  apply_visibility(autopilot, ap_snap);
+  apply_visibility(autopilot, ap_snap, skip_empty);
 }
 
 static void on_state_ready(void* self);
@@ -133,9 +201,11 @@ static gpu::ComputePSO s_pso_minmax;
 static gpu::ComputePSO s_pso_hist;
 static gpu::ComputePSO s_pso_buildlut;
 static gpu::ComputePSO s_pso_present;
+static gpu::ComputePSO s_pso_edge;      // motion/variance reduce over tex_out (skip-static)
+static gpu::ComputePSO s_pso_debug;     // per-tile feature heatmap (debug viz)
 
 void module_init() {
-  state::init("source.shape_fold", {1, 0, 1},
+  state::init("source.shape_fold", {1, 1, 0},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -208,6 +278,56 @@ void module_init() {
       // input XY) so the custom editor can show the live position.
       .floatField("autopilot_x", 0.25f, 0.0f, 1.0f, state::SecondaryOutput)
       .floatField("autopilot_y", 0.85f, 0.0f, 1.0f, state::SecondaryOutput)
+      // --- Skip static: jog past a large near-still construct ---
+      .group("skip", "Skip Static")
+        .groupHelp(
+          "The atlas sometimes settles into a big, richly-detailed construct that "
+          "just **sits there, barely moving**. Turn this on and the effect gently "
+          "**jogs the loop forward** (on a smooth C2 curve) to glide past those "
+          "still stretches instead of dwelling on them. Because shape_fold is never "
+          "a flat solid colour, detection is by **motion** (how much the frame is "
+          "changing) — not by flatness. *Sensitivity* sets how still a frame has to "
+          "get before it kicks in; *Jog Rate* how briskly it skips. With "
+          "**Autopilot** on it also nudges the orbit onward — or, if **Snap** is on, "
+          "hops straight to a fresh shape the moment it goes still.")
+      .boolField("skip_empty", false, state::PrimaryInput).label("Skip Static", "Skip")
+      .floatField("skip_thresh", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "How readily a frame counts as still/dead. Higher flags more "
+                  "scenes (more residual motion tolerated); 1 catches almost "
+                  "anything but a briskly-animating frame.").label("Sensitivity", "Sens")
+      // Per-feature weights, combined by weighted MAX. Motion is the one that
+      // matters here; variance/edge default off (shape_fold is never flat).
+      .floatField("skip_w_var", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Weight of local tonal VARIANCE in the stillness test (off by "
+                  "default — the auto-leveled field is busy on every frame).")
+                  .label("Variance Wt", "Var")
+      .floatField("skip_w_edge", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Weight of spatial EDGES in the stillness test (off by default — "
+                  "shape_fold's soft SDF forms have no hard edges).")
+                  .label("Edge Wt", "Edge")
+      .floatField("skip_w_motion", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Weight of MOTION (frame-to-frame change, averaged over the whole "
+                  "frame) — the jog runs only while the frame is nearly still.")
+                  .label("Motion Wt", "Motn")
+      .selectField("skip_debug", 0, state::PrimaryInput,
+                   {{"Off", 0}, {"Variance", 1}, {"Edge", 2}, {"Motion", 3}, {"Combined", 4}})
+                  .label("Debug View", "Dbg")
+      .floatField("skip_recover", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "How fast the jog STOPS once the frame starts moving again "
+                  "(the still→moving transition). Higher = snappier so it doesn't "
+                  "skip past the motion; 1 = instant hard stop. Lower eases out "
+                  "gently. (Onset stays a gentle C2 glide.)").label("Recover", "Rec")
+      .floatField("skip_rate", 0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Jog Rate", "Rate")
+      .boolField("skip_autopilot", true, state::PrimaryInput).label("Jog Autopilot", "JogAP")
+      // Broadcast: the live engagement [0,1] so an editor can show when it fires.
+      .floatField("skip_active", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
+      // Broadcast: the live activity metric (mean motion / feature blend) for tuning.
+      .floatField("skip_motion", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- I/O: pure generator (no input) ---
       .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::Generator)
@@ -222,6 +342,8 @@ void module_init() {
   state::registerShaderSPV("shape_fold_hist",     HIST_SPV,     HIST_SPV_SIZE);
   state::registerShaderSPV("shape_fold_buildlut", BUILDLUT_SPV, BUILDLUT_SPV_SIZE);
   state::registerShaderSPV("shape_fold_present",  PRESENT_SPV,  PRESENT_SPV_SIZE);
+  state::registerShaderSPV("shape_fold_edge",     EDGE_SPV,     EDGE_SPV_SIZE);
+  state::registerShaderSPV("shape_fold_debug",    DEBUG_SPV,    DEBUG_SPV_SIZE);
 
   auto cs_minmax   = gpu::Device::createShaderModuleByName("shape_fold_minmax");
   auto cs_hist     = gpu::Device::createShaderModuleByName("shape_fold_hist");
@@ -247,6 +369,21 @@ void module_init() {
       .storage(1)                                   // lut (read)
       .storageTex2d(2, gpu::TextureFormat::RGBA8)); // tex_out
 
+  auto cs_edge = gpu::Device::createShaderModuleByName("shape_fold_edge");
+  if (!cs_edge) return;
+  s_pso_edge = gpu::Device::createComputePSO(cs_edge, "main", gpu::Bindings()
+      .uniform(0)      // shared cbuffer U (res_x/res_y)
+      .tex2d(1)        // tex_out (read)
+      .storageRW(2)    // edge stats (read-write atomics)
+      .storageRW(3));  // prevLuma (per-sample motion history)
+
+  auto cs_debug = gpu::Device::createShaderModuleByName("shape_fold_debug");
+  if (!cs_debug) return;
+  s_pso_debug = gpu::Device::createComputePSO(cs_debug, "main", gpu::Bindings()
+      .uniform(0)      // debug uniform
+      .storage(1)      // edge stats (read)
+      .storageTex2d(2, gpu::TextureFormat::RGBA8)); // tex_out (write viz)
+
   state::log("shape_fold: module initialized");
 }
 
@@ -260,6 +397,9 @@ void* create() {
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->stats_buf   = gpu::Device::createBuffer(kStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
   s->lut_buf     = gpu::Device::createBuffer(kLutFloats * sizeof(float), gpu::BufferUsage::Storage);
+  s->edge_stats_buf = gpu::Device::createBuffer(kEdgeStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
+  s->prev_luma_buf  = gpu::Device::createBuffer(kSampleGrid * kSampleGrid * sizeof(float), gpu::BufferUsage::Storage);
+  s->debug_uniform_buf = gpu::Device::createBuffer(sizeof(DebugUniforms), gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -269,6 +409,9 @@ void destroy(void* self) {
   s->uniform_buf.release();
   s->stats_buf.release();
   s->lut_buf.release();
+  s->edge_stats_buf.release();
+  s->prev_luma_buf.release();
+  s->debug_uniform_buf.release();
   delete s;
 }
 
@@ -277,8 +420,19 @@ void init(void* self) {
   if (!s) return;
   s->initialized = false;
   if (!s_pso_minmax.valid() || !s_pso_hist.valid() ||
-      !s_pso_buildlut.valid() || !s_pso_present.valid()) return;
-  if (!s->uniform_buf.valid() || !s->stats_buf.valid() || !s->lut_buf.valid()) return;
+      !s_pso_buildlut.valid() || !s_pso_present.valid() ||
+      !s_pso_edge.valid() || !s_pso_debug.valid()) return;
+  if (!s->uniform_buf.valid() || !s->stats_buf.valid() || !s->lut_buf.valid() ||
+      !s->edge_stats_buf.valid() || !s->prev_luma_buf.valid() ||
+      !s->debug_uniform_buf.valid()) return;
+  // Zero the edge stats so the first poll (before any edge pass) reads count=0
+  // and the detector stays inert (content=1) until a real readback arrives.
+  int32_t z[kEdgeStatsInts] = {};
+  s->edge_stats_buf.write(z, kEdgeStatsInts);
+  // Sentinel <0 so the first frame's motion reads 0 (no spurious spike).
+  std::vector<float> negs(kSampleGrid * kSampleGrid, -1.0f);
+  s->prev_luma_buf.write(negs.data(), (int)negs.size());
+  s->skip_gpu_ready = false;
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
 }
@@ -286,7 +440,7 @@ void init(void* self) {
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  apply_visibility(s->autopilot, s->ap_snap);
+  apply_visibility(s->autopilot, s->ap_snap, s->skip_empty);
 }
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -320,11 +474,77 @@ void tick(void* self, double dt) {
   float time_actual = s->time_speed * s->time_speed * 3.0f;
   float ap_actual   = 0.05f + s->ap_speed * s->ap_speed * (3.0f - 0.05f);
 
-  s->clock_t += fdt * time_actual / kLoopSecs;
+  // Skip static: engage the C2 ramp on last frame's activity. It always jogs the
+  // loop clock forward; under autopilot it also nudges the orbit (or, in Snap
+  // mode, fires a one-shot hop). `content` lags a frame — that's fine (the ramp
+  // is smooth and hysteretic).
+  float skip_e = 0.0f;
+  if (s->skip_empty) {
+    // Poll the GPU reduce (motion/variance over last frame's rendered tex_out).
+    // MOTION is reduced by the GLOBAL MEAN over the frame (so a small moving
+    // region doesn't veto jogging through an otherwise-still frame); variance and
+    // edge take the per-tile MAX (tuning features, default off). Poll before the
+    // jog so this frame's decision uses the freshest available metric.
+    int32_t raw[kEdgeStatsInts];
+    if (s->edge_stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw)) {
+      float wv = clampf(s->skip_w_var, 0.0f, 1.0f);
+      float we = clampf(s->skip_w_edge, 0.0f, 1.0f);
+      float wm = clampf(s->skip_w_motion, 0.0f, 1.0f);
+      float var_max = 0.0f, edge_max = 0.0f;
+      double motion_sum = 0.0;   // Σ squashed per-sample motion, over all tiles
+      long   count_sum  = 0;     // Σ samples, over all tiles
+      for (int t = 0; t < kNumTiles; t++) {
+        int base = t * kSlots;
+        int cnt = raw[base + 4];
+        if (cnt <= 0) continue;
+        float ne = (float)cnt;
+        float lu = ((float)raw[base + 1] / kStatsScale) / ne;    // tile mean luma
+        float lq = ((float)raw[base + 2] / kStatsScale) / ne;    // tile mean luma²
+        float var = lq - lu * lu; if (var < 0.0f) var = 0.0f;
+        float sd = std::sqrt(var);
+        sd = sd > kVarFloor ? sd - kVarFloor : 0.0f;             // local luma std (deadzoned)
+        if (sd > var_max) var_max = sd;
+        // Concentrated edge saturates regardless of area (/√tilePixels).
+        float edge = clampf((float)raw[base + 0] / kStatsScale / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f);
+        if (edge > edge_max) edge_max = edge;
+        motion_sum += (double)raw[base + 3] / kStatsScale;       // already squashed [0,1] per sample
+        count_sum  += cnt;
+      }
+      if (count_sum > 0) {
+        float motion_mean = (float)(motion_sum / (double)count_sum);   // global mean motion [0,1]
+        float content = motion_mean * wm;
+        float ev = edge_max * we; if (ev > content) content = ev;
+        float vv = var_max * wv;  if (vv > content) content = vv;
+        s->content = content;
+        s->skip_gpu_ready = true;
+      }
+    }
+    // Sensitivity [0,1] → mean-motion trigger. Higher = flags more scenes as still.
+    float lo = clampf(s->skip_thresh, 0.0f, 1.0f) * kSkipTrigSpan;
+    float hi = lo + kSkipHyst;
+    // Recover controls the ease-OUT (motion→stop); 1 = instant (rampOut≈0 → snap).
+    float rampOut = (1.0f - clampf(s->skip_recover, 0.0f, 1.0f)) * kMaxRecoverSec;
+    skip_e = s->jog.update(s->content, lo, hi, kSkipRampInSec, rampOut, fdt);
+    // Snap mode: the moment we go still, hop straight to a fresh held position.
+    if (s->autopilot && s->skip_autopilot && s->ap_snap && s->jog.rising())
+      s->ap_jump_pending = true;
+  } else {
+    s->jog = fx::SkipJog{};          // fully reset when disabled (no residual jog)
+    s->content = 1.0f;
+    s->skip_gpu_ready = false;
+  }
+  // Jog is a MULTIPLE of the current rate, so Speed 0 stays frozen (no auto-play)
+  // and a faster Speed skips proportionally faster.
+  float time_jog = skip_e * s->skip_rate * time_actual * kSkipTimeMult;
+  // Extra orbit advance from the orbit jog — only in continuous (non-Snap) mode.
+  float orbit_jog = (s->skip_autopilot && !s->ap_snap)
+                        ? skip_e * s->skip_rate * ap_actual * kSkipOrbitMult : 0.0f;
+
+  s->clock_t += fdt * (time_actual + time_jog) / kLoopSecs;
   s->clock_t -= std::floor(s->clock_t);
 
   if (s->autopilot) {
-    s->orbit -= fdt * ap_actual;                 // clockwise drift
+    s->orbit -= fdt * (ap_actual + orbit_jog);   // clockwise drift (+ skip jog)
 
     bool trig = s->ap_jump_pending;
     s->ap_jump_pending = false;
@@ -370,6 +590,12 @@ void tick(void* self, double dt) {
   auto vy = val::number(s->eff_y);
   state::setValPath("autopilot_y", vy);
   val::release(vy);
+  auto vsk = val::number(skip_e);
+  state::setValPath("skip_active", vsk);
+  val::release(vsk);
+  auto vsm = val::number(s->content);   // live activity metric (for calibration)
+  state::setValPath("skip_motion", vsm);
+  val::release(vsm);
 }
 
 
@@ -402,8 +628,17 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "level_ease"))          s->level_ease = state::patchFloat(i);
     else if (state::pathIs(path, plen, "exposure"))            s->exposure = state::patchFloat(i);
     else if (state::pathIs(path, plen, "output_mode"))         s->output_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_empty"))          { bool v = state::patchFloat(i) != 0.0f; if (v != s->skip_empty) { s->skip_empty = v; mode_changed = true; } }
+    else if (state::pathIs(path, plen, "skip_thresh"))         s->skip_thresh = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_w_var"))          s->skip_w_var = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_w_edge"))         s->skip_w_edge = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_w_motion"))       s->skip_w_motion = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_debug"))          s->skip_debug = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_recover"))        s->skip_recover = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_rate"))           s->skip_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_autopilot"))      s->skip_autopilot = state::patchFloat(i) != 0.0f;
   }
-  if (mode_changed) apply_visibility(s->autopilot, s->ap_snap);
+  if (mode_changed) apply_visibility(s->autopilot, s->ap_snap, s->skip_empty);
 }
 
 // CPU atlas resolve: bilinear over (x,y) for base/cell fields, trilinear over
@@ -531,6 +766,40 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(out, 2, 1);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
+  }
+
+  // 5 — skip-static detector: motion/variance reduce over the composited tex_out
+  // into edge_stats_buf, then request an async readback. Only when the detector
+  // is on. Reset runs BEFORE the pass; the tick() poll reads last frame's stats
+  // before this reset each frame, so the CPU zero-write is race-free.
+  if (s->skip_empty) {
+    int32_t zeros[kEdgeStatsInts] = {};
+    s->edge_stats_buf.write(zeros, kEdgeStatsInts);
+    auto ep = gpu::ComputePass::begin();
+    ep.setPSO(s_pso_edge);
+    ep.setBuffer(s->uniform_buf, 0);
+    ep.setTexture(out, 1, 0);            // access 0 = Read
+    ep.setBuffer(s->edge_stats_buf, 2);
+    ep.setBuffer(s->prev_luma_buf, 3);
+    ep.dispatch((kSampleGrid + 7) / 8, (kSampleGrid + 7) / 8);   // fixed grid, not per-pixel
+    ep.end();
+    s->edge_stats_buf.requestReadback(kEdgeStatsInts * sizeof(int32_t));
+
+    // Debug: overwrite tex_out with a per-tile heatmap of the selected feature.
+    // Reads the stats the edge pass just wrote (same submit) → no tex_out hazard.
+    if (s->skip_debug != 0) {
+      DebugUniforms du = {};
+      du.res_x = (float)vp_w; du.res_y = (float)vp_h; du.mode = (float)s->skip_debug;
+      du.w_var = s->skip_w_var; du.w_edge = s->skip_w_edge; du.w_motion = s->skip_w_motion;
+      s->debug_uniform_buf.writeOne(du);
+      auto dp = gpu::ComputePass::begin();
+      dp.setPSO(s_pso_debug);
+      dp.setBuffer(s->debug_uniform_buf, 0);
+      dp.setBuffer(s->edge_stats_buf, 1);
+      dp.setTexture(out, 2, 1);          // access 1 = Write
+      dp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      dp.end();
+    }
   }
 
   gpu::Device::submit();

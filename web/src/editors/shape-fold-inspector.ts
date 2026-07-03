@@ -24,6 +24,7 @@ import { editorRegistry } from '../editor-registry';
 import type { FieldBinding, FieldEditorElement, MultiContinuousEditHandle } from '../widgets/field-editor';
 import '../widgets/scalar-slider';
 import '../widgets/field-tab-bar';
+import '../widgets/field-select';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
 import '../widgets/help-slot';
@@ -224,6 +225,28 @@ export class ShapeFoldInspector extends MobxLitElement {
                     { label: 'Inferno', value: 2 }, { label: 'Viridis', value: 3 },
                     { label: 'Plasma', value: 4 }, { label: 'Turbo', value: 5 }]}
         .defaultValue=${1} .binding=${b}></field-tab-bar>
+
+      <div class="section">Skip Static</div>
+      <help-slot .binding=${b} .path=${'@group/skip'}></help-slot>
+      <field-toggle .fieldPath=${'skip_empty'} .label=${'Skip Static'}
+        .defaultValue=${0} .binding=${b}></field-toggle>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_var'} .label=${'Variance Wt'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_edge'} .label=${'Edge Wt'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_motion'} .label=${'Motion Wt'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+      <field-select .fieldPath=${'skip_debug'} .label=${'Debug View'}
+        .options=${[{ label: 'Off', value: 0 }, { label: 'Variance', value: 1 }, { label: 'Edge', value: 2 }, { label: 'Motion', value: 3 }, { label: 'Combined', value: 4 }]}
+        .defaultValue=${0} .binding=${b}></field-select>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
+      <field-toggle .fieldPath=${'skip_autopilot'} .label=${'Jog Autopilot'}
+        .defaultValue=${1} .binding=${b}></field-toggle>
     `;
   }
 }

@@ -112,12 +112,16 @@ echo "  height_from_gradient shaders compiled (SPV: gradient+divergence+restrict
 #   hist     — atomic histogram over the same grid.
 #   buildlut — invert the histogram into a median→0 CLAHE remap LUT.
 #   present  — auto-leveled field → grayscale / magma, square-fit (rgba8).
+#   edge     — motion/variance reduce over tex_out → int stats buffer (skip-static).
+#   debug    — per-tile feature heatmap over tex_out (skip-static tuning view).
 compile_shaders_compute_var_spv shape_fold minmax
 compile_shaders_compute_var_spv shape_fold hist
 compile_shaders_compute_var_spv shape_fold buildlut
 compile_shaders_compute_var_spv shape_fold present
-_emit_spv_header_var shape_fold minmax hist buildlut present
-echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present)"
+compile_shaders_compute_var_spv shape_fold edge
+compile_shaders_compute_var_spv shape_fold debug
+_emit_spv_header_var shape_fold minmax hist buildlut present edge debug
+echo "  shape_fold shaders compiled (SPV: minmax+hist+buildlut+present+edge+debug)"
 
 # brutal_fold — brutalist axonometric-prism generator. CPU resolves a baked
 # control surface (complexity × order × liveliness, + a co-folded second
