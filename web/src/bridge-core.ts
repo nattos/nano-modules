@@ -264,31 +264,50 @@ export class BridgeCore {
   // --- Plugin registration ---
 
   /**
-   * Bumped on every plugin registration. The CHEAP change signal for per-frame
-   * consumers (compSeedSchemas): registrations are the only way the /global
-   * plugin list grows, so comparing this integer replaces fetching /global —
-   * which nlohmann-serializes the ENTIRE state doc (every plugin's schema +
-   * state), copies it out of wasm, and JSON.parses it. Doing that each frame
-   * just to read plugins.length was >80% of the engine worker's CPU at idle.
+   * Bumped when a registration CHANGES the known plugin set: a new id, or a
+   * re-registration with a DIFFERENT schema (HMR). The cheap change signal for
+   * per-frame consumers (compSeedSchemas): comparing this integer replaces
+   * fetching /global — which nlohmann-serializes the ENTIRE state doc (every
+   * plugin's schema + state), copies it out of wasm, and JSON.parses it.
+   * Doing that each frame just to read plugins.length was >80% of the engine
+   * worker's CPU at idle; bumping on EVERY registration still re-fetched it on
+   * every instance re-activation (each activation re-registers its plugin) —
+   * a ~40ms hitch per scene switch. Content-compare = no bump, no fetch.
    */
   registrationEpoch = 0;
+  /**
+   * id → the last registered schema JSON ('' for schema-less registerPlugin,
+   * which never DOWNGRADES an id that already registered with a schema).
+   * Last-write-wins per id — exactly the /global dedup rule (HMR keeps the
+   * freshest schema) — so consumers can seed straight from this map instead of
+   * serializing /global out of the bridge.
+   */
+  readonly registeredSchemas = new Map<string, string>();
 
   registerPlugin(id: string, major: number, minor: number, patch: number): string {
-    this.registrationEpoch++;
-    return this.withString(id, (idPtr, idLen) => {
+    const key = this.withString(id, (idPtr, idLen) => {
       return this.readGrowable((buf, bufLen) =>
         this.exports.bridge_core_register_plugin(
           this.handle, idPtr, idLen, major, minor, patch, buf, bufLen)) ?? '';
     });
+    if (!this.registeredSchemas.has(id)) {
+      this.registeredSchemas.set(id, '');
+      this.registrationEpoch++;
+    }
+    return key;
   }
 
   registerWithSchema(id: string, major: number, minor: number, patch: number, schemaJson: string): string {
-    this.registrationEpoch++;
-    return this.withStrings([id, schemaJson], ([[idPtr, idLen], [sPtr, sLen]]) => {
+    const key = this.withStrings([id, schemaJson], ([[idPtr, idLen], [sPtr, sLen]]) => {
       return this.readGrowable((buf, bufLen) =>
         this.exports.bridge_core_register_with_schema(
           this.handle, idPtr, idLen, major, minor, patch, sPtr, sLen, buf, bufLen)) ?? '';
     });
+    if (this.registeredSchemas.get(id) !== schemaJson) {
+      this.registeredSchemas.set(id, schemaJson);
+      this.registrationEpoch++;
+    }
+    return key;
   }
 
   declareParam(pluginKey: string, index: number, name: string,

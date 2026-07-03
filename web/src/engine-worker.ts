@@ -129,6 +129,9 @@ let compActive = false;
 // timeline (role/defaults). Re-checked each tick (an integer compare); new
 // registrations re-seed. -1 ⇒ never seeded / force a re-seed.
 let compSeededEpoch = -1;
+// Per-id schema+caps signature already registered into the comp executor —
+// the incremental filter inside a re-seed (unchanged ids are skipped).
+const compSeededSchemaSig = new Map<string, string>();
 // The latest compFrame report, attached to the next 'frame' post.
 let compFrameInfo: import('./engine-types').CompFrameInfo | null = null;
 
@@ -137,25 +140,28 @@ let compFrameInfo: import('./engine-types').CompFrameInfo | null = null;
  *  registration epoch is unchanged (an integer compare — no bridge calls). */
 function compSeedSchemas() {
   if (!executor || !bridgeCore) return;
-  // CHEAP per-frame guard: the JS-side registration epoch. NEVER fetch /global
-  // here to detect changes — getAt('/global') serializes the whole state doc
-  // (every plugin's schema + state) out of nlohmann and JSON.parses it, and
-  // doing that each frame just to compare plugins.length pegged the worker at
-  // ~85% CPU while the transport was PAUSED. Registrations are the only way
-  // the plugin list grows, so the epoch is an exact change signal.
+  // CHEAP per-frame guard: the JS-side registration epoch (bumped only when a
+  // registration actually CHANGES the plugin set — instance re-activations
+  // don't). NEVER fetch /global here — getAt('/global') serializes the whole
+  // state doc (every plugin's schema + state) out of nlohmann and JSON.parses
+  // it: doing that each frame pegged the worker at ~85% CPU while PAUSED, and
+  // doing it per scene switch was a ~40ms hitch.
   if (bridgeCore.registrationEpoch === compSeededEpoch) return;
-  const entries = bridgeCore.getAt('/global')?.plugins as any[] | undefined;
-  if (!entries) return;
-  // Dedup by id, LAST entry wins (mirrors broadcastState's HMR rule).
-  const byId = new Map<string, any>();
-  for (const entry of entries) {
-    const id = entry?.metadata?.id ?? entry?.key ?? '';
-    if (id) byId.set(id, entry);
-  }
-  for (const [id, entry] of byId) {
-    const schema = entry.schema ?? {};
-    const caps = WasmHost.capabilitiesById.get(id) ?? [];
-    executor.compRegisterSchema(id, JSON.stringify(schema), JSON.stringify(caps));
+  // Seed INCREMENTALLY from BridgeCore's own id → schemaJson map (the same
+  // last-write-wins-per-id rule as /global's HMR dedup) — only ids whose
+  // schema/caps actually changed re-register. The registered doc is the FULL
+  // schema ({fields, capabilities, groups, ...}); the comp catalog wants the
+  // bare FIELDS map (what /global's entry.schema held) — extract on change.
+  for (const [id, schemaJson] of bridgeCore.registeredSchemas) {
+    const capsJson = JSON.stringify(WasmHost.capabilitiesById.get(id) ?? []);
+    const sig = schemaJson + '\x1f' + capsJson;
+    if (compSeededSchemaSig.get(id) === sig) continue;
+    let fieldsJson = '{}';
+    if (schemaJson) {
+      try { fieldsJson = JSON.stringify(JSON.parse(schemaJson).fields ?? {}); } catch { /* keep {} */ }
+    }
+    executor.compRegisterSchema(id, fieldsJson, capsJson);
+    compSeededSchemaSig.set(id, sig);
   }
   compSeededEpoch = bridgeCore.registrationEpoch;
 }
@@ -397,6 +403,7 @@ async function handleCommand(cmd: WorkerCommand) {
       if (compActive) {
         executor?.compEnable();
         compSeededEpoch = -1; // re-seed schemas on the next tick
+        compSeededSchemaSig.clear(); // (a fresh comp executor has an empty catalog)
       }
       break;
     case 'compLoadDoc':
