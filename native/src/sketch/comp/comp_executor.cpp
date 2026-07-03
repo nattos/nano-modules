@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -128,6 +129,10 @@ void CompExecutor::loadDocument(const nlohmann::json& doc) {
     state_.loopEndBeat = l.value("endBeat", state_.loopEndBeat);
   }
   rebuildClock();
+  // Launch state survives doc reloads (every undoable edit round-trips one);
+  // heal drops entries whose track/scene vanished — which IS how deleting a
+  // playing scene stops it.
+  healSceneLaunches();
 }
 
 void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string& deviceId,
@@ -232,9 +237,82 @@ void CompExecutor::setVideoReady(const std::string& clipId, bool ready) {
   else readyClips_.erase(clipId);
 }
 
-nlohmann::json CompExecutor::videoDescFor(const ClipM& clip) const {
+void CompExecutor::launchScene(const std::string& trackId, const std::string& sceneId) {
+  SceneLaunch& l = sceneLaunch_[trackId];
+  l.sceneId = sceneId;
+  l.launchBeat = state_.positionBeat;  // immediate: anchor at the current beat
+  l.launchSec = clock_.secondsAt(l.launchBeat);
+  scenesDirty_ = true;
+  invalidateEval();
+}
+
+void CompExecutor::stopScene(const std::string& trackId) {
+  if (!sceneLaunch_.erase(trackId)) return;
+  scenesDirty_ = true;
+  invalidateEval();
+}
+
+void CompExecutor::stopAllScenes() {
+  if (sceneLaunch_.empty()) return;
+  sceneLaunch_.clear();
+  scenesDirty_ = true;
+  invalidateEval();
+}
+
+void CompExecutor::healSceneLaunches() {
+  for (auto it = sceneLaunch_.begin(); it != sceneLaunch_.end();) {
+    const TrackM* track = nullptr;
+    for (const auto& t : doc_.tracks) {
+      if (t.id == it->first && t.kind == TrackKind::Scene) { track = &t; break; }
+    }
+    const ClipM* scene = nullptr;
+    if (track) {
+      for (const auto& c : track->clips) {
+        if (c.id == it->second.sceneId) { scene = &c; break; }
+      }
+    }
+    bool stop = !scene;
+    // One-shot scenes auto-stop once their content elapses (the track goes
+    // empty). Video: the source slice at its speed; effect-only: the scene's
+    // nominal lengthBeat. Loop-mode scenes play until replaced/stopped.
+    if (scene && scene->loop.mode == ClipPlayMode::OneShot) {
+      if (scene->hasSourceUrl) {
+        double sliceSec = -1;
+        if (scene->loop.endSec) {
+          sliceSec = *scene->loop.endSec - scene->loop.startSec;
+        } else if (scene->sourceJson.is_object() &&
+                   scene->sourceJson.contains("durationFrames") &&
+                   scene->sourceJson["durationFrames"].is_number()) {
+          const double fps = scene->sourceJson.contains("fps") &&
+                                     scene->sourceJson["fps"].is_number() &&
+                                     scene->sourceJson["fps"].get<double>() > 0
+                                 ? scene->sourceJson["fps"].get<double>()
+                                 : 30.0;
+          sliceSec = scene->sourceJson["durationFrames"].get<double>() / fps;
+        }
+        const double speed = std::max(1e-6, std::abs(scene->loop.speed));
+        if (sliceSec >= 0 && transportSec_ >= it->second.launchSec + sliceSec / speed) {
+          stop = true;
+        }
+      } else if (state_.positionBeat >= it->second.launchBeat + scene->lengthBeat) {
+        stop = true;
+      }
+    }
+    if (stop) {
+      it = sceneLaunch_.erase(it);
+      scenesDirty_ = true;
+      invalidateEval();
+    } else {
+      ++it;
+    }
+  }
+}
+
+nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat) const {
   // composite-frame.ts videoDescFor — the instanceKey MUST match the clip's
   // source.video.file chain entry or the injected frame goes nowhere.
+  // `anchorBeat` = clip.startBeat for arrangement clips, the LAUNCH beat for
+  // scenes (the pump maps beats to source time from the desc's startBeat).
   if (!clip.hasSourceUrl) return nullptr;
   const DeviceM* dev = nullptr;
   for (const auto& d : clip.sketch.devices) {
@@ -249,7 +327,7 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip) const {
       {"sourceKey", src.contains("sourceKey") && src["sourceKey"].is_string()
                         ? src["sourceKey"].get<std::string>()
                         : clip.id},
-      {"startBeat", clip.startBeat},
+      {"startBeat", anchorBeat},
       {"lengthBeat", clip.lengthBeat},
       {"durationFrames", src.contains("durationFrames") && src["durationFrames"].is_number()
                              ? src["durationFrames"]
@@ -269,13 +347,21 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip) const {
 }
 
 nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree) const {
+  // Walk leaves (same DFS as collectClips) keeping each leaf's anchorBeat —
+  // a launched scene's desc must carry its launch beat, not clip.startBeat.
   nlohmann::json descs = nlohmann::json::array();
-  std::vector<const ClipM*> clips;
-  build_detail::collectClips(tree, clips);
-  for (const ClipM* clip : clips) {
-    nlohmann::json d = videoDescFor(*clip);
-    if (!d.is_null()) descs.push_back(std::move(d));
-  }
+  std::function<void(const std::vector<CompNode>&)> walk =
+      [&](const std::vector<CompNode>& nodes) {
+        for (const auto& n : nodes) {
+          if (n.isGroup) {
+            walk(n.children);
+            continue;
+          }
+          nlohmann::json d = videoDescFor(*n.clip, n.anchorBeat);
+          if (!d.is_null()) descs.push_back(std::move(d));
+        }
+      };
+  walk(tree);
   return descs;
 }
 
@@ -310,7 +396,7 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
       if (!c.hasSourceUrl) continue;
       if (!(c.startBeat < beatEnd && c.startBeat + c.lengthBeat > beat)) continue;
       if (seen.count(c.id)) continue;
-      nlohmann::json d = videoDescFor(c);
+      nlohmann::json d = videoDescFor(c, c.startBeat);
       if (d.is_null()) continue;
       seen.insert(c.id);
       warm.push_back(std::move(d));
@@ -360,7 +446,7 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   evalCount_++;
   evalBypassDecisions_ = std::move(bypassDec);
   evalRailBypass_ = railBypassDecisions_;
-  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_);
+  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &sceneLaunch_);
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
   layerTargets_ = std::move(build.layerTargets);
@@ -392,6 +478,14 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
 uint32_t CompExecutor::update(double dtSec) {
   uint32_t flags = 0;
   if (!docLoaded_) return 0;
+
+  // Scene lifecycle first: elapsed one-shots auto-stop (and dangling entries
+  // drop) before this frame's eval, so the launch map the tree sees is current.
+  healSceneLaunches();
+  if (scenesDirty_) {
+    flags |= kCompScenesChanged;
+    scenesDirty_ = false;
+  }
 
   // Make the eval current at the PRE-advance playhead (the gate decides on the
   // frame the user is looking at) — this is where a seek's re-eval lands.
@@ -595,6 +689,15 @@ const std::string& CompExecutor::videoDescsJson() {
 const std::string& CompExecutor::layerTargetsJson() {
   layerTargetsScratch_ = layerTargets_.dump();
   return layerTargetsScratch_;
+}
+
+const std::string& CompExecutor::sceneStatesJson() {
+  nlohmann::json out = nlohmann::json::object();
+  for (const auto& [trackId, l] : sceneLaunch_) {
+    out[trackId] = {{"sceneId", l.sceneId}, {"launchBeat", l.launchBeat}};
+  }
+  sceneStatesScratch_ = out.dump();
+  return sceneStatesScratch_;
 }
 
 }  // namespace comp

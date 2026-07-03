@@ -190,6 +190,24 @@ void comp_set_video_ready(CompExecutor* c, const char* clipId, int32_t len, int3
   if (c) c->setVideoReady(std::string(clipId, static_cast<size_t>(len)), ready != 0);
 }
 
+// ── Scenes (transient launch state; cheap ops — never a document reload) ──
+
+EXEC_EXPORT("comp_launch_scene")
+void comp_launch_scene(CompExecutor* c, const char* trackId, int32_t track_len,
+                       const char* sceneId, int32_t scene_len) {
+  if (!c) return;
+  c->launchScene(std::string(trackId, static_cast<size_t>(track_len)),
+                 std::string(sceneId, static_cast<size_t>(scene_len)));
+}
+
+EXEC_EXPORT("comp_stop_scene")
+void comp_stop_scene(CompExecutor* c, const char* trackId, int32_t len) {
+  if (c) c->stopScene(std::string(trackId, static_cast<size_t>(len)));
+}
+
+EXEC_EXPORT("comp_stop_all_scenes")
+void comp_stop_all_scenes(CompExecutor* c) { if (c) c->stopAllScenes(); }
+
 // ── Per frame (two-phase; see comp_executor.h) ──
 
 EXEC_EXPORT("comp_update")
@@ -223,6 +241,11 @@ int32_t comp_video_descs_json(CompExecutor* c, char* out, int32_t cap) {
 EXEC_EXPORT("comp_layer_targets_json")
 int32_t comp_layer_targets_json(CompExecutor* c, char* out, int32_t cap) {
   return c ? writeOut(c->layerTargetsJson(), out, cap) : 0;
+}
+
+EXEC_EXPORT("comp_scene_states_json")
+int32_t comp_scene_states_json(CompExecutor* c, char* out, int32_t cap) {
+  return c ? writeOut(c->sceneStatesJson(), out, cap) : 0;
 }
 
 }  // extern "C"

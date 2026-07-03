@@ -334,6 +334,29 @@ export interface RailRead extends RailTap {
 }
 
 /**
+ * Trigger routing sentinel (lock-step: comp_model.h kGlobalTriggerRailId).
+ * The hidden global trigger bus: trigger sources with no explicit export write
+ * here, and scenes/scene-tracks with no explicit listen read from here. Purely
+ * a matcher address — never a Rail entity, a track, or an executor rail node.
+ */
+export const GLOBAL_TRIGGER_RAIL_ID = '__triggers__';
+
+/** A trigger-source device wired to write onto a rail (lock-step:
+ *  comp_model.h TriggerExportM). Trigger EVENTS ({on, channel, velocity})
+ *  never enter the scalar wire fold — this is routing, not modulation. */
+export interface TriggerExport {
+  id: string;
+  railId: string;
+  sourceDeviceId: string;
+}
+
+/** A scene's / scene track's trigger listen wire (which rail it launches from). */
+export interface TriggerRead {
+  id: string;
+  railId: string;
+}
+
+/**
  * Composition-param target sentinel (lock-step: comp_model.h kLayerTargetId).
  * A lane/read/wire whose targetDeviceId / dest.instanceKey is `__layer__`
  * addresses the OWNER's composition-level layer params instead of a device
@@ -467,9 +490,21 @@ export interface Clip {
   blendMode?: number;
   /** Bypassed clips are skipped in the composite (the "0" shortcut toggles it). */
   bypassed?: boolean;
+  // ── Scene fields (meaningful only on kind 'scene' tracks, where a clip IS a
+  // scene: startBeat pins to 0, array order = display order, lengthBeat is the
+  // scene's nominal duration in beats for one-shot auto-stop). ──
+  /** Explicit trigger channel. Omitted ⇒ 'auto' (position-assigned; see
+   *  {@link sceneChannelAssignments}). */
+  triggerChannel?: number;
+  /** Scene-level listen override. Omitted ⇒ the track's triggerRead ⇒ the
+   *  global trigger rail. */
+  triggerRead?: TriggerRead;
+  /** Trigger-source devices in this clip's sketch wired out to rails. Sources
+   *  with no export write to the global trigger rail. */
+  triggerExports?: TriggerExport[];
 }
 
-export type TrackKind = 'track' | 'group' | 'rail';
+export type TrackKind = 'track' | 'group' | 'rail' | 'scene';
 
 export interface Track {
   id: string;
@@ -512,6 +547,13 @@ export interface Track {
    *  params (targetField 'opacity' | 'bypass'), or a track-FX device id.
    *  Lock-step: comp_model.h TrackM.reads. */
   reads?: RailRead[];
+  /** For kind 'scene': the default listen rail for all scenes in this track.
+   *  Omitted ⇒ the global trigger rail. Lock-step: comp_model.h. */
+  triggerRead?: TriggerRead;
+  /** For kind 'rail': display names for trigger channels on this return track
+   *  (channel id → label). UI shows 8 channels by default with placeholder
+   *  names '1'..'8'; channels are numeric ids, names are per-return sugar. */
+  triggerChannelNames?: Record<string, string>;
 }
 
 export interface PlayModeConfig {
@@ -615,6 +657,7 @@ export interface WarpSegment {
 export function derivedWarpSegments(comp: Composition): WarpSegment[] {
   const segs: WarpSegment[] = [];
   for (const track of comp.tracks) {
+    if (track.kind === 'scene') continue; // scene extents are not timeline spans
     for (const clip of track.clips) {
       for (const w of clip.warps) {
         segs.push({
@@ -640,9 +683,31 @@ export function clipProcessesTexture(clip: Clip): boolean {
 export function compositionLengthBeats(comp: Composition): number {
   let end = 64;
   for (const t of comp.tracks) {
+    if (t.kind === 'scene') continue; // scenes don't occupy timeline extent
     for (const c of t.clips) {
       end = Math.max(end, c.startBeat + c.lengthBeat);
     }
   }
   return end;
+}
+
+/**
+ * Effective trigger channel per scene on a scene track (LOCK-STEP:
+ * comp_model.h sceneChannelAssignments). Pass 1: explicit triggerChannel
+ * values claim their number. Pass 2: in array order, explicit scenes keep
+ * their number; 'auto' scenes take the lowest positive integer not yet
+ * claimed (then claim it). Index-aligned with track.clips.
+ */
+export function sceneChannelAssignments(track: Track): number[] {
+  const claimed = new Set<number>();
+  for (const c of track.clips) {
+    if (c.triggerChannel != null) claimed.add(c.triggerChannel);
+  }
+  let next = 1;
+  return track.clips.map(c => {
+    if (c.triggerChannel != null) return c.triggerChannel;
+    while (claimed.has(next)) next++;
+    claimed.add(next);
+    return next;
+  });
 }

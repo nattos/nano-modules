@@ -1168,3 +1168,216 @@ TEST_CASE("a TRACK-chain mod source wires to its OWN layer opacity", "[comp_rend
   INFO("mean " << m << " (expect ~127: white layer at wire-driven opacity 0.5)");
   CHECK(std::abs(m - 127.0) < 25.0);
 }
+
+// ── Scene tracks: transient launch state (update()-only, no GPU) ────────────
+
+namespace {
+
+/** A scene track: kind 'scene'; clips are scenes (startBeat 0, array order). */
+json mkSceneTrack(const std::string& id, json scenes, json over = json::object()) {
+  json t = mkTrack(id, std::move(scenes), {{"kind", "scene"}});
+  t.update(over);
+  return t;
+}
+
+json mkScene(const std::string& id, double lengthBeat, json over = json::object()) {
+  json c = mkClip(id, 0, lengthBeat, json::array({mkDevice(id + "_d", "source.solid_color")}));
+  c.update(over);
+  return c;
+}
+
+}  // namespace
+
+TEST_CASE("scenes: launch/replace/retrigger/stop lifecycle", "[comp_scene]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkSceneTrack("st", json::array({mkScene("s1", 8), mkScene("s2", 8)})),
+  })));
+  h.cx.seekBeat(0.5);
+
+  // Nothing launched: a scene track alone composites nothing, and its scenes'
+  // fake extents contribute no eval boundaries (span = infinity).
+  uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompHasContent) == 0);
+  CHECK(h.cx.evalCount() == 1);
+  CHECK(h.cx.evalBoundaryBeat() == std::numeric_limits<double>::infinity());
+
+  // Launch s1: exactly one re-eval, content + structure + scenes flags.
+  h.cx.launchScene("st", "s1");
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompHasContent) != 0);
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  CHECK((flags & comp::kCompScenesChanged) != 0);
+  CHECK(h.cx.evalCount() == 2);
+  CHECK(json::parse(h.cx.chainKeysJson()).dump().find("clip_s1_") != std::string::npos);
+
+  // Steady playback: the launched scene holds without re-evals.
+  h.cx.play();
+  flags = h.run(60, 1.0 / 60.0);
+  CHECK(h.cx.evalCount() == 2);
+  CHECK((flags & comp::kCompScenesChanged) == 0);
+
+  // Launch s2: mutual exclusion — s2 replaces s1 on the track.
+  h.cx.launchScene("st", "s2");
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  const std::string keys2 = json::parse(h.cx.chainKeysJson()).dump();
+  CHECK(keys2.find("clip_s2_") != std::string::npos);
+  CHECK(keys2.find("clip_s1_") == std::string::npos);
+
+  // Retrigger s2: same topology, re-anchored launch beat.
+  const double beatBefore = h.cx.positionBeat();
+  const double anchorBefore =
+      json::parse(h.cx.sceneStatesJson())["st"]["launchBeat"].get<double>();
+  h.run(30, 1.0 / 60.0);  // advance half a second
+  h.cx.launchScene("st", "s2");
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompStructureChanged) == 0);
+  CHECK((flags & comp::kCompScenesChanged) != 0);
+  const double anchorAfter =
+      json::parse(h.cx.sceneStatesJson())["st"]["launchBeat"].get<double>();
+  CHECK(anchorAfter > anchorBefore);
+  CHECK(anchorAfter >= beatBefore);
+
+  // Stop: the track leaves the composite.
+  h.cx.stopScene("st");
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompHasContent) == 0);
+  CHECK((flags & comp::kCompScenesChanged) != 0);
+  CHECK(json::parse(h.cx.sceneStatesJson()).empty());
+}
+
+TEST_CASE("scenes: clip lanes anchor at the launch beat", "[comp_scene]") {
+  // Pure comp_eval check: a scene's clip-relative lane evaluates from the
+  // LAUNCH beat, not the scene's meaningless startBeat.
+  json scene = mkScene("s1", 8);
+  scene["automation"] = json::array({{{"id", "l1"},
+                                      {"targetDeviceId", "s1_d"},
+                                      {"targetField", "scale"},
+                                      {"points", json::array({{{"x", 0}, {"y", 0}},
+                                                              {{"x", 1}, {"y", 1}}})}}});
+  const comp::CompositionM comp = comp::parseComposition(
+      mkComposition(json::array({mkSceneTrack("st", json::array({scene}))})));
+  std::map<std::string, comp::SceneLaunch> launches;
+  launches["st"] = {"s1", 4.0, 2.0};
+
+  auto tree = comp::compositeTreeAtBeat(comp, 6.0, false, nullptr, &launches);
+  REQUIRE(tree.size() == 1);
+  CHECK(tree[0].anchorBeat == 4.0);
+  const json entries = comp::automationEntriesForTree(comp, tree, 6.0);
+  REQUIRE(entries.size() == 1);
+  // elapsed 2 of span 8 → x=0.25 on the 0→1 ramp.
+  CHECK(std::abs(entries[0]["value"].get<double>() - 0.25) < 1e-6);
+
+  // Without launch state (goldens / offline export) the scene track is empty.
+  CHECK(comp::compositeTreeAtBeat(comp, 6.0).empty());
+}
+
+TEST_CASE("scenes: doc reloads heal, deletes stop, opens reset", "[comp_scene]") {
+  EvalHarness h;
+  const json doc = mkComposition(json::array({
+      mkSceneTrack("st", json::array({mkScene("s1", 8), mkScene("s2", 8)})),
+  }));
+  h.cx.loadDocument(doc);
+  h.cx.seekBeat(0.5);
+  h.cx.launchScene("st", "s1");
+  h.cx.update(0.0);
+  CHECK(!json::parse(h.cx.sceneStatesJson()).empty());
+
+  // An unrelated edit round-trips as a doc reload: the launch SURVIVES.
+  h.cx.loadDocument(doc);
+  uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompHasContent) != 0);
+  CHECK(json::parse(h.cx.sceneStatesJson()).contains("st"));
+
+  // Deleting the playing scene lands as a reload without it: the launch heals
+  // away and the track empties.
+  json without = mkComposition(json::array({
+      mkSceneTrack("st", json::array({mkScene("s2", 8)})),
+  }));
+  h.cx.loadDocument(without);
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompHasContent) == 0);
+  CHECK((flags & comp::kCompScenesChanged) != 0);
+  CHECK(json::parse(h.cx.sceneStatesJson()).empty());
+
+  // Document open resets everything explicitly.
+  h.cx.loadDocument(doc);
+  h.cx.launchScene("st", "s2");
+  h.cx.update(0.0);
+  h.cx.stopAllScenes();
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompHasContent) == 0);
+  CHECK(json::parse(h.cx.sceneStatesJson()).empty());
+}
+
+TEST_CASE("scenes: one-shot scenes auto-stop when their content ends", "[comp_scene]") {
+  EvalHarness h;
+
+  SECTION("effect scene: lengthBeat is the nominal duration") {
+    json s = mkScene("s1", 2);  // 2 beats = 1s at 120 BPM
+    s["loop"]["mode"] = "one-shot";
+    h.cx.loadDocument(mkComposition(json::array({mkSceneTrack("st", json::array({s}))})));
+    h.cx.seekBeat(0.0);
+    h.cx.launchScene("st", "s1");
+    h.cx.update(0.0);
+    CHECK(!json::parse(h.cx.sceneStatesJson()).empty());
+    h.cx.play();
+    h.run(90, 1.0 / 60.0);  // 1.5s → beat 3 > launch(0) + 2
+    CHECK(h.cx.positionBeat() > 2.0);
+    CHECK(json::parse(h.cx.sceneStatesJson()).empty());
+    CHECK((h.cx.update(0.0) & comp::kCompHasContent) == 0);
+  }
+
+  SECTION("video scene: the source slice at its speed") {
+    json s = mkVideoClip("v1", 0, 32);  // long nominal length; the SLICE rules
+    s["loop"] = {{"mode", "one-shot"}, {"startSec", 0.0}, {"endSec", 1.0},
+                 {"speed", 1.0}, {"direction", "forward"}};
+    h.cx.loadDocument(mkComposition(json::array({mkSceneTrack("st", json::array({s}))})));
+    h.cx.setTransportMode(false);  // Fluid — never-ready test video must not hold
+    h.cx.seekBeat(0.0);
+    h.cx.launchScene("st", "v1");
+    h.cx.update(0.0);
+    h.cx.play();
+    h.run(90, 1.0 / 60.0);  // 1.5s > 1s slice
+    CHECK(json::parse(h.cx.sceneStatesJson()).empty());
+  }
+
+  SECTION("looping scene never auto-stops") {
+    json s = mkScene("s1", 2);  // mode stays 'time' (looping)
+    h.cx.loadDocument(mkComposition(json::array({mkSceneTrack("st", json::array({s}))})));
+    h.cx.seekBeat(0.0);
+    h.cx.launchScene("st", "s1");
+    h.cx.update(0.0);
+    h.cx.play();
+    h.run(240, 1.0 / 60.0);  // 4s → beat 8, far past lengthBeat
+    CHECK(!json::parse(h.cx.sceneStatesJson()).empty());
+  }
+}
+
+TEST_CASE("scenes: scene extents never perturb the timeline", "[comp_scene]") {
+  EvalHarness h;
+  // A normal clip [0,16) + a scene with fake extent [0,8): the eval span and
+  // the composition length must see only the arrangement clip.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("c1", 0, 16,
+                                        json::array({mkDevice("d1", "source.solid_color")}))})),
+      mkSceneTrack("st", json::array({mkScene("s1", 8)})),
+  })));
+  h.cx.seekBeat(0.5);
+  h.cx.update(0.0);
+  CHECK(h.cx.evalBoundaryBeat() == 16.0);  // not the scene's 8
+
+  // A launched scene's video desc carries the LAUNCH beat as its anchor.
+  EvalHarness h2;
+  h2.cx.loadDocument(mkComposition(json::array({
+      mkSceneTrack("st", json::array({mkVideoClip("v1", 0, 8)})),
+  })));
+  h2.cx.setTransportMode(false);
+  h2.cx.seekBeat(5.0);
+  h2.cx.launchScene("st", "v1");
+  h2.cx.update(0.0);
+  const json descs = json::parse(h2.cx.videoDescsJson());
+  REQUIRE(descs.size() == 1);
+  CHECK(descs[0]["startBeat"].get<double>() == 5.0);
+}

@@ -84,6 +84,25 @@ inline const ClipM* pickActiveClip(const TrackM& track, double beat) {
   return (!pick || pick->bypassed) ? nullptr : pick;
 }
 
+/** The launched scene on a scene track (or nullptr): scenes don't follow the
+ *  beat — the launch map replaces pickActiveClip's time overlap. Skips
+ *  bypassed/empty scenes and dangling scene ids. */
+inline const ClipM* pickActiveScene(const TrackM& track,
+                                    const std::map<std::string, SceneLaunch>* launches,
+                                    double* outLaunchBeat) {
+  if (!launches) return nullptr;
+  const auto it = launches->find(track.id);
+  if (it == launches->end()) return nullptr;
+  for (const auto& c : track.clips) {
+    if (c.id != it->second.sceneId) continue;
+    if (c.bypassed) return nullptr;
+    if (!c.hasSourceUrl && c.sketch.devices.empty()) return nullptr;  // empty scene
+    if (outLaunchBeat) *outLaunchBeat = it->second.launchBeat;
+    return &c;
+  }
+  return nullptr;
+}
+
 /**
  * True when `owner` (a track or group) has any modulation targeting its
  * `__layer__` OPACITY: an automation lane, a track-level rail read, or (clip
@@ -156,6 +175,8 @@ struct TreeBuilder {
   bool anySolo;
   /** P5 rail-driven bypass decisions (thresholded last-frame rail readbacks). */
   const std::map<std::string, bool>* railBypass = nullptr;
+  /** Launched-scene state per scene track (CompExecutor's transient map). */
+  const std::map<std::string, SceneLaunch>* sceneLaunch = nullptr;
 
   std::vector<const TrackM*> childrenOf(const std::string& parentId) const {
     std::vector<const TrackM*> out;
@@ -186,13 +207,22 @@ struct TreeBuilder {
       out.children = std::move(children);
       return true;
     }
-    if (track.kind != TrackKind::Track) return false;  // rails aren't composite layers
-    if (anySolo && !soloedHere) return false;          // solo restricts to soloed lineages
-    const ClipM* clip = pickActiveClip(track, beat);
+    if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene)
+      return false;                             // rails aren't composite layers
+    if (anySolo && !soloedHere) return false;   // solo restricts to soloed lineages
+    const ClipM* clip;
+    double anchor = 0;
+    if (track.kind == TrackKind::Scene) {
+      clip = pickActiveScene(track, sceneLaunch, &anchor);  // launch replaces the beat
+    } else {
+      clip = pickActiveClip(track, beat);
+      if (clip) anchor = clip->startBeat;
+    }
     if (!clip) return false;
     out.isGroup = false;
     out.clip = clip;
     out.track = &track;
+    out.anchorBeat = anchor;
     out.opacity = clamp01(track.level.value_or(1));
     out.blendMode = track.blendMode ? *track.blendMode : clip->blendMode.value_or(0);
     out.layerOpacityModulated = hasLayerOpacityModulation(track, clip);
@@ -212,17 +242,20 @@ inline void flattenLeaves(std::vector<CompNode>& tree, std::vector<CompNode*>& o
 
 /** The active composite as a tree, top → bottom (downward sum). Main bus
  *  excluded. `ignoreSolo` (the exporter) renders the full mix. `railBypass` =
- *  rail-driven structural bypass decisions (P5 readback loop), optional. */
+ *  rail-driven structural bypass decisions (P5 readback loop), optional.
+ *  `sceneLaunch` = the executor's transient launched-scene map (scene tracks
+ *  render nothing without it — e.g. the goldens and offline export). */
 inline std::vector<CompNode> compositeTreeAtBeat(
     const CompositionM& comp, double beat, bool ignoreSolo = false,
-    const std::map<std::string, bool>* railBypass = nullptr) {
+    const std::map<std::string, bool>* railBypass = nullptr,
+    const std::map<std::string, SceneLaunch>* sceneLaunch = nullptr) {
   bool anySolo = false;
   if (!ignoreSolo) {
     for (const auto& t : comp.tracks) {
       if (t.soloed) { anySolo = true; break; }
     }
   }
-  eval_detail::TreeBuilder builder{comp, anySolo, railBypass};
+  eval_detail::TreeBuilder builder{comp, anySolo, railBypass, sceneLaunch};
   std::vector<CompNode> roots;
   for (const TrackM* t : builder.childrenOf(std::string())) {
     CompNode n;
@@ -335,7 +368,7 @@ inline SketchBuild buildCompositeRenderFromTree(const CompositionM& comp, const 
   std::vector<CompNode*> leaves;
   eval_detail::flattenLeaves(tree, leaves);
   for (CompNode* leaf : leaves) {
-    leaf->startSec = clock.secondsAt(leaf->clip->startBeat);
+    leaf->startSec = clock.secondsAt(leaf->anchorBeat);
     leaf->hasStartSec = true;
   }
   std::map<std::string, double> railBases;
@@ -486,7 +519,7 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
           for (const auto& lane : clip.automation) {
             LaneOwnerCtx ctx;
             ctx.isClip = true;
-            ctx.startBeat = clip.startBeat;
+            ctx.startBeat = n.anchorBeat;  // launch beat for scenes
             ctx.spanBeats = clip.lengthBeat;
             ctx.loopMode = clipLoopMode;
             // A clip lane's `__layer__` owner is the owning TRACK (the layer

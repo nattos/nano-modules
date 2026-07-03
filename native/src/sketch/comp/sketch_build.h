@@ -45,6 +45,10 @@ struct CompNode {
   // Clip leaf:
   const ClipM* clip = nullptr;
   const TrackM* track = nullptr;  // owning track (its FX bus runs over the clip)
+  /** Local-time anchor: clip.startBeat for arrangement clips, the LAUNCH beat
+   *  for scenes. Feeds startSec, clip-relative lane timing, and the video-desc
+   *  startBeat. Set by the tree builder (comp_eval.h). */
+  double anchorBeat = 0;
   double startSec = 0;
   bool hasStartSec = false;
   // Group:

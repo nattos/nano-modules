@@ -55,6 +55,8 @@ enum CompUpdateFlags : uint32_t {
   kCompHoldingPrecise = 1u << 2,
   /** The decode pump's active set changed (comp_video_descs_json). */
   kCompVideoSetChanged = 1u << 3,
+  /** Launched-scene state changed (comp_scene_states_json). */
+  kCompScenesChanged = 1u << 4,
 };
 
 class CompExecutor {
@@ -130,6 +132,16 @@ class CompExecutor {
   /** Edge-triggered readiness from the host's decode pump (Precise gate). */
   void setVideoReady(const std::string& clipId, bool ready);
 
+  // ── Scenes (transient launch state — the "session-view live clip trigger"
+  // the invalidateEval doc-comment anticipated; never a document reload) ──
+  /** Launch `sceneId` on scene track `trackId`, anchored at the current beat.
+   *  Re-launching the active scene RETRIGGERS (re-anchors) it. */
+  void launchScene(const std::string& trackId, const std::string& sceneId);
+  /** Stop the playing scene on `trackId` (the track leaves the composite). */
+  void stopScene(const std::string& trackId);
+  /** Stop every playing scene (document open). */
+  void stopAllScenes();
+
   /**
    * Drop the cached timeline evaluation (the eval-skip span) so the next
    * update() re-evaluates the world. Called internally by loadDocument and by
@@ -168,10 +180,17 @@ class CompExecutor {
    *  each layer's opacity lives (SketchBuild.layerTargets). Refreshed per eval;
    *  the UI resolves modulation bands through it across per-clip key churn. */
   const std::string& layerTargetsJson();
+  /** Launched scenes: {trackId: {sceneId, launchBeat}} (UI playing highlight). */
+  const std::string& sceneStatesJson();
 
  private:
   void rebuildClock();
-  nlohmann::json videoDescFor(const ClipM& clip) const;
+  /** Drop launch entries whose track/scene vanished from the (re)loaded doc —
+   *  a delete lands as a doc reload, so this IS delete-playing-scene-stops-it.
+   *  Also auto-stops elapsed one-shot scenes when called per frame. Sets
+   *  scenesDirty_ + invalidateEval() on any change. */
+  void healSceneLaunches();
+  nlohmann::json videoDescFor(const ClipM& clip, double anchorBeat) const;
   /** Active video-clip descs of an evaluated tree (leaves with media). */
   nlohmann::json videoDescsForTree(const std::vector<CompNode>& tree) const;
   /** Active + lookahead-window descs at `beat` (the pump warm set). */
@@ -243,6 +262,11 @@ class CompExecutor {
   std::map<std::string, bool> railBypassDecisions_;
   /** The rail decision snapshot the current eval's tree was built with. */
   std::map<std::string, bool> evalRailBypass_;
+  /** Transient launched-scene state per scene track (comp_eval.h SceneLaunch).
+   *  OUTSIDE doc_: survives cheap ops and (healed) document reloads; reset only
+   *  by stopAllScenes (document open). Entries hold ids, not pointers. */
+  std::map<std::string, SceneLaunch> sceneLaunch_;
+  bool scenesDirty_ = true;  // ship sceneStatesJson on the next update
   /** Recheck the pump target/displayed sets on the next non-holding frame even
    *  without a re-eval (set while holding: the pump ran a displayed∪warm union
    *  that must collapse back to warm-only after the hold releases). */
@@ -262,6 +286,7 @@ class CompExecutor {
   std::string chainKeysScratch_;
   std::string videoDescsScratch_;
   std::string layerTargetsScratch_;
+  std::string sceneStatesScratch_;
   std::string publishedScratch_;
 };
 

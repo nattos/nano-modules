@@ -175,6 +175,21 @@ struct RailReadM {
   std::optional<double> scale;
 };
 
+/** A trigger-source device wired to write onto a rail (composition.ts TriggerExport). */
+struct TriggerExportM {
+  std::string railId;
+  std::string sourceDeviceId;
+};
+
+/**
+ * Trigger routing sentinel (lock-step: composition.ts GLOBAL_TRIGGER_RAIL_ID).
+ * The hidden global trigger bus: trigger sources with no explicit export write
+ * here, and scenes/scene-tracks with no explicit listen read from here. It is
+ * purely a matcher address — never a Rail entity, a track, or an executor rail
+ * node (trigger events never enter the scalar wire fold).
+ */
+inline constexpr const char* kGlobalTriggerRailId = "__triggers__";
+
 /**
  * Composition-param target sentinel (lock-step: composition.ts kLayerTargetId).
  * A lane/read/wire whose targetDeviceId / dest.instanceKey is `__layer__`
@@ -214,9 +229,16 @@ struct ClipM {
   std::vector<RailReadM> reads;
   std::vector<WarpBindingM> warps;
   ClipLoopConfig loop;
+  // ── Scene fields (meaningful only on kind:'scene' tracks) ──
+  /** Explicit trigger channel; absent ⇒ 'auto' (position-assigned). */
+  std::optional<int> triggerChannel;
+  /** Scene-level listen rail override (composition.ts Clip.triggerRead.railId). */
+  std::string triggerReadRailId;
+  /** Trigger-source devices wired out to rails (composition.ts Clip.triggerExports). */
+  std::vector<TriggerExportM> triggerExports;
 };
 
-enum class TrackKind : uint8_t { Track, Group, Rail };
+enum class TrackKind : uint8_t { Track, Group, Rail, Scene };
 
 /** A group's compositing input (composition.ts GroupInput). */
 struct GroupInputM {
@@ -246,6 +268,21 @@ struct TrackM {
    *  driving this track's own params (targetDeviceId `__layer__` for layer
    *  opacity/bypass, or a track-FX device id). */
   std::vector<RailReadM> reads;
+  /** Scene tracks: default listen rail for all scenes (composition.ts
+   *  Track.triggerRead.railId). Empty ⇒ the global trigger rail. */
+  std::string triggerReadRailId;
+};
+
+/**
+ * Transient launched-scene state for one scene track. Lives on CompExecutor
+ * (NOT in the document — launches are runtime state like the playhead: not
+ * undoable, healed across document reloads, reset on document open).
+ */
+struct SceneLaunch {
+  std::string sceneId;
+  double launchBeat = 0;
+  /** clock.secondsAt(launchBeat) at launch time (one-shot auto-stop). */
+  double launchSec = 0;
 };
 
 /** Composite backdrop (composition.ts BackgroundConfig; absent ⇒ mode 'black'). */
@@ -383,6 +420,19 @@ inline ClipM parseClip(const nlohmann::json& j) {
     }
   }
   c.loop = ClipLoopConfig::fromJson(j.contains("loop") ? j["loop"] : nlohmann::json());
+  if (j.contains("triggerChannel") && j["triggerChannel"].is_number())
+    c.triggerChannel = j["triggerChannel"].get<int>();
+  if (j.contains("triggerRead") && j["triggerRead"].is_object())
+    c.triggerReadRailId = j["triggerRead"].value("railId", std::string());
+  if (j.contains("triggerExports") && j["triggerExports"].is_array()) {
+    for (const auto& e : j["triggerExports"]) {
+      if (!e.is_object()) continue;
+      TriggerExportM x;
+      x.railId = e.value("railId", std::string());
+      x.sourceDeviceId = e.value("sourceDeviceId", std::string());
+      c.triggerExports.push_back(std::move(x));
+    }
+  }
   return c;
 }
 
@@ -392,8 +442,10 @@ inline TrackM parseTrack(const nlohmann::json& j) {
   if (!j.is_object()) return t;
   t.id = j.value("id", std::string());
   const std::string kind = j.value("kind", std::string("track"));
-  t.kind = kind == "group" ? TrackKind::Group : kind == "rail" ? TrackKind::Rail
-                                                               : TrackKind::Track;
+  t.kind = kind == "group"   ? TrackKind::Group
+           : kind == "rail"  ? TrackKind::Rail
+           : kind == "scene" ? TrackKind::Scene
+                             : TrackKind::Track;
   if (j.contains("parentId") && j["parentId"].is_string())
     t.parentId = j["parentId"].get<std::string>();
   t.bypassed = j.value("bypassed", false);
@@ -416,6 +468,8 @@ inline TrackM parseTrack(const nlohmann::json& j) {
   t.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());
   t.automation = parseLanes(j.contains("automation") ? j["automation"] : nlohmann::json());
   t.reads = parseReads(j.contains("reads") ? j["reads"] : nlohmann::json());
+  if (j.contains("triggerRead") && j["triggerRead"].is_object())
+    t.triggerReadRailId = j["triggerRead"].value("railId", std::string());
   if (j.contains("clips") && j["clips"].is_array()) {
     for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c));
   }
@@ -465,6 +519,7 @@ inline const TrackM* railTrackFor(const CompositionM& comp, const std::string& r
 inline std::vector<WarpSegment> derivedWarpSegments(const CompositionM& comp) {
   std::vector<WarpSegment> segs;
   for (const auto& track : comp.tracks) {
+    if (track.kind == TrackKind::Scene) continue;  // scene extents are not timeline spans
     for (const auto& clip : track.clips) {
       for (const auto& w : clip.warps) {
         WarpSegment s;
@@ -485,11 +540,47 @@ inline std::vector<WarpSegment> derivedWarpSegments(const CompositionM& comp) {
 inline double compositionLengthBeats(const CompositionM& comp) {
   double end = 64;
   for (const auto& t : comp.tracks) {
+    if (t.kind == TrackKind::Scene) continue;  // scenes don't occupy timeline extent
     for (const auto& c : t.clips) {
       end = std::max(end, c.startBeat + c.lengthBeat);
     }
   }
   return end;
+}
+
+/**
+ * Effective trigger channel per scene on a scene track (composition.ts
+ * sceneChannelAssignments — LOCK-STEP). Pass 1: explicit triggerChannel values
+ * claim their number. Pass 2: in array order, explicit scenes keep their
+ * number; 'auto' scenes take the lowest positive integer not yet claimed
+ * (then claim it). Returned in track-clip order (index-aligned with clips).
+ */
+inline std::vector<int> sceneChannelAssignments(const TrackM& track) {
+  std::vector<int> out(track.clips.size(), 0);
+  std::vector<bool> claimed;  // 1-indexed by channel number
+  auto isClaimed = [&](int ch) {
+    return ch > 0 && ch <= (int)claimed.size() && claimed[ch - 1];
+  };
+  auto claim = [&](int ch) {
+    if (ch <= 0) return;
+    if ((int)claimed.size() < ch) claimed.resize(ch, false);
+    claimed[ch - 1] = true;
+  };
+  for (const auto& c : track.clips) {
+    if (c.triggerChannel) claim(*c.triggerChannel);
+  }
+  int next = 1;
+  for (size_t i = 0; i < track.clips.size(); ++i) {
+    const auto& c = track.clips[i];
+    if (c.triggerChannel) {
+      out[i] = *c.triggerChannel;
+      continue;
+    }
+    while (isClaimed(next)) ++next;
+    out[i] = next;
+    claim(next);
+  }
+  return out;
 }
 
 }  // namespace comp
