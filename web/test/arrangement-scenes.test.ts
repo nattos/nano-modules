@@ -249,4 +249,59 @@ describe('Arrangement scene tracks (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+
+  it('header drag inside a multi-cell time box moves the GROUP; dblclick opens the clip panel', async () => {
+    const { ids, errors } = await boot();
+
+    // Arm a time box over BOTH cells (what a region select leaves), then drag
+    // RED's header right by 8 beats through the REAL pointer pipeline
+    // (onHeaderDown → grabWithinTimeBox keeps the box → beginClipMove timebox
+    // path). The regression: select() collapsed the box and only RED moved.
+    // 8 beats lands red in EMPTY space past green — a +4 drag would let the
+    // rigid push coincidentally shove green where the group move puts it.
+    const after = await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      const app = document.querySelector('arrangement-app') as any;
+      const grid = app?.shadowRoot?.querySelector('arr-grid') as any;
+      const cells = Array.from(grid?.shadowRoot?.querySelectorAll('arr-scene') ?? []) as any[];
+      const redCell = cells.find((el) => el.clip?.id === a.red);
+      const greenCell = cells.find((el) => el.clip?.id === a.green);
+      const bar = redCell?.shadowRoot?.querySelector('.bar') as HTMLElement | undefined;
+      if (!bar || !greenCell) return { err: 'cells not found' };
+      // 8 beats in pixels = 2× the red→green cell offset (they sit 4 beats apart).
+      const dx8 = 2 * (greenCell.getBoundingClientRect().x - redCell.getBoundingClientRect().x);
+      const r = bar.getBoundingClientRect();
+      const x0 = r.x + r.width / 2;
+      const y0 = r.y + r.height / 2;
+      store.setTimeSelection(0, 8, [a.sceneTrackId]);
+      store.selectClipsInCaret();
+      const opts = { bubbles: true, composed: true, button: 0, pointerId: 1 };
+      bar.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x0, clientY: y0 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x0 + 8, clientY: y0 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x0 + dx8, clientY: y0 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x0 + dx8, clientY: y0 }));
+      const t = store.trackById(a.sceneTrackId);
+      const beat = (id: string) => t.clips.find((c: any) => c.id === id)?.startBeat;
+      return { red: beat(a.red), green: beat(a.green) };
+    }, ids);
+    // Both cells shifted by the same 8 beats — the group moved, not just red
+    // (the bug leaves green stranded at 4).
+    expect(after).toEqual({ red: 8, green: 12 });
+
+    // Double-clicking a scene header opens the bottom clip panel (arr-clip parity).
+    const opened = await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      if (store.clipViewOpen) store.toggleClipView();
+      const app = document.querySelector('arrangement-app') as any;
+      const grid = app?.shadowRoot?.querySelector('arr-grid') as any;
+      const cells = Array.from(grid?.shadowRoot?.querySelectorAll('arr-scene') ?? []) as any[];
+      const bar = cells.find((el) => el.clip?.id === a.red)?.shadowRoot?.querySelector('.bar') as HTMLElement | undefined;
+      if (!bar) return null;
+      bar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
+      return store.clipViewOpen as boolean;
+    }, ids);
+    expect(opened).toBe(true);
+
+    expect(errors).toEqual([]);
+  });
 });

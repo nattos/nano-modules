@@ -203,7 +203,12 @@ export class ArrScene extends MobxLitElement {
     const chLabel = railTrack?.triggerChannelNames?.[String(channel)] ?? String(channel);
 
     return html`
-      <div class="bar" style="background:${this.accent}" @pointerdown=${this.onHeaderDown}>
+      <div
+        class="bar"
+        style="background:${this.accent}"
+        @pointerdown=${this.onHeaderDown}
+        @dblclick=${this.onHeaderDblClick}
+      >
         <span class="ch" title="Trigger channel${clip.triggerChannel == null ? ' (auto)' : ''}"
           >${chLabel}</span
         >
@@ -253,6 +258,11 @@ export class ArrScene extends MobxLitElement {
     const path = paths.clip(this.trackId, this.clip.id);
     if (e.shiftKey) {
       store.toggleSelect(path);
+    } else if (this.grabWithinTimeBox(e)) {
+      // Grabbed inside an existing multi-cell time box: keep the box so the
+      // drag moves the whole in-box group (arr-clip parity) — a plain select()
+      // here would collapse it to this one cell and only it would move.
+      store.selectClipOnly(path);
     } else {
       // select() sets the caret-box over the cell (play-from at its start,
       // box rides the caret) — arr-clip parity.
@@ -261,6 +271,27 @@ export class ArrScene extends MobxLitElement {
     // Header drag moves the scene on the grid (rigid: siblings push aside) —
     // the same grid-driven machinery as arr-clip, incl. cross-track drags.
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
+  };
+
+  /** True when the pointer grabbed a part of the header inside the current time
+   *  box (and this track is in the box's scope) — the arr-clip rule verbatim. */
+  private grabWithinTimeBox(e: PointerEvent): boolean {
+    if (!store.hasTimeSelection) return false;
+    if (store.primaryPath?.startsWith('track/')) return false;
+    const scope = store.timeSelTrackIds;
+    if (scope.length && !scope.includes(this.trackId)) return false;
+    const beat = buildBeatGrid().xToBeat(e.clientX - this.laneRect().left);
+    return beat >= store.timeSelStart! && beat <= store.timeSelEnd;
+  }
+
+  private laneRect(): DOMRect {
+    return (this.parentElement as HTMLElement).getBoundingClientRect();
+  }
+
+  /** Double-clicking the header opens the bottom clip panel (arr-clip parity). */
+  private onHeaderDblClick = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!store.clipViewOpen) store.toggleClipView();
   };
 
   private gridHost(): any {
