@@ -39,14 +39,17 @@ describe('selecting a track selects all time without moving the playhead', () =>
     expect(store.timeSelTrackIds).toEqual([a]);
   });
 
-  it('clip selection still DOES move the playhead (default behaviour)', () => {
+  it('clip selection moves play-from to the clip START (box spans the clip)', () => {
     const a = store.addTrack();
     store.setPlayFrom(0);
     const clipPath = store.createEmptyClip(a, 12, 4)!; // [12,16)
     store.select(clipPath);
-    // Clip selection syncs the box to the clip extent and moves play-from.
-    expect(store.playFromBeat).toBe(16);
-    expect(store.positionBeat).toBe(16);
+    // Clip selection cues playback FROM the clip (head at start, anchor at
+    // end — the caret-riding box spans the clip and follows header drags).
+    expect(store.playFromBeat).toBe(12);
+    expect(store.positionBeat).toBe(12);
+    expect(store.timeSelStart).toBe(12);
+    expect(store.timeSelEnd).toBe(16);
   });
 });
 

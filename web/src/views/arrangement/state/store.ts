@@ -1203,11 +1203,16 @@ export class ArrangementStore {
       // selecting a track selects a time box spanning the whole track.
       const found = this.clipByPath(path);
       if (found) {
-        this.setTimeSelection(
-          found.clip.startBeat,
-          found.clip.startBeat + found.clip.lengthBeat,
-          [found.track.id],
-        );
+        // Caret-box form (anchor at the clip END, head at its START): the
+        // play-from caret lands at the clip start (Space plays the clip), and
+        // the box RIDES the caret — so a header drag's box-follow works (an
+        // explicit timeBoxSpan would be left behind by moveTimeBoxContent).
+        this.setCaret({
+          anchorBeat: found.clip.startBeat + found.clip.lengthBeat,
+          anchorTrackId: found.track.id,
+          headBeat: found.clip.startBeat,
+          headTrackId: found.track.id,
+        });
       } else if (path.startsWith('track/')) {
         const t = this.trackById(path.split('/')[1]);
         const full = compositionLengthBeats(this.composition);
@@ -2396,11 +2401,18 @@ export class ArrangementStore {
       'move-time-box',
     );
 
-    // 3. The caret/box follows the moved content (live UI state).
+    // 3. The caret/box follows the moved content (live UI state). Preserve the
+    // caret's ORIENTATION (a clip select anchors at the END with play-from at
+    // the START — the follow must not flip it back to play-from-at-end), and
+    // slide an EXPLICIT timeBoxSpan too (a track-selection box).
     runInAction(() => {
       const movedScope = scopeIds.length ? scope.map(destFor) : [];
-      this.caretAnchorBeat = Math.max(0, a + deltaBeat);
-      this.playFromBeat = this.caretAnchorBeat + (b - a);
+      const ns = Math.max(0, a + deltaBeat);
+      const ne = ns + (b - a);
+      if (this.timeBoxSpan) this.timeBoxSpan = { start: ns, end: ne };
+      const flipped = this.caretAnchorBeat > this.playFromBeat;
+      this.caretAnchorBeat = flipped ? ne : ns;
+      this.playFromBeat = flipped ? ns : ne;
       this.caretAnchorTrackId = movedScope[0] ?? '';
       this.caretHeadTrackId = movedScope[movedScope.length - 1] ?? '';
     });
@@ -2519,12 +2531,14 @@ export class ArrangementStore {
     this.mutate('delete time', (d) => {
       for (const track of d.tracks) {
         if (!scope.includes(track.id)) continue;
-        // First split at both edges so trims are clean.
+        // First split at both edges so trims are clean (scene cells are rigid:
+        // splitClipsAt no-ops, and a PARTIALLY covered cell counts as fully in).
         splitClipsAt(track, start);
         splitClipsAt(track, end);
-        track.clips = track.clips.filter(
-          (c) => !(c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6),
-        );
+        const inRegion = track.kind === 'scene'
+          ? (c: Clip) => c.startBeat < end - 1e-6 && c.startBeat + c.lengthBeat > start + 1e-6
+          : (c: Clip) => c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6;
+        track.clips = track.clips.filter((c) => !inRegion(c));
         for (const c of track.clips) {
           if (c.startBeat >= end - 1e-6) c.startBeat -= span;
         }
@@ -2551,9 +2565,11 @@ export class ArrangementStore {
         if (!scope.includes(track.id)) continue;
         splitClipsAt(track, start);
         splitClipsAt(track, end);
-        track.clips = track.clips.filter(
-          (c) => !(c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6),
-        );
+        // Scene cells are rigid: a partially covered cell clears whole.
+        const inRegion = track.kind === 'scene'
+          ? (c: Clip) => c.startBeat < end - 1e-6 && c.startBeat + c.lengthBeat > start + 1e-6
+          : (c: Clip) => c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6;
+        track.clips = track.clips.filter((c) => !inRegion(c));
       }
     });
   }
@@ -2564,12 +2580,13 @@ export class ArrangementStore {
     this.insertTimeSpan(this.timeSelStart!, this.timeSelEnd - this.timeSelStart!);
   }
 
-  /** Insert `span` blank beats at `start` across every plain track (ripple). */
+  /** Insert `span` blank beats at `start` across every clip lane (ripple).
+   *  Scene cells ride along whole (rigid — never split). */
   insertTimeSpan(start: number, span: number) {
     if (span <= 1e-6) return;
     this.mutate('insert time', (d) => {
       for (const track of d.tracks) {
-        if (track.kind !== 'track') continue;
+        if (track.kind !== 'track' && track.kind !== 'scene') continue;
         splitClipsAt(track, start);
         for (const c of track.clips) if (c.startBeat >= start - 1e-6) c.startBeat += span;
       }
@@ -2603,6 +2620,15 @@ export class ArrangementStore {
           const s = Math.max(c.startBeat, start);
           const e = Math.min(c.startBeat + c.lengthBeat, end);
           if (e <= s + 1e-6) continue;
+          if (t.kind === 'scene') {
+            // Rigid cells: partial coverage copies the WHOLE cell, never a slice.
+            items.push({
+              trackOffset: ti - originIdx,
+              startBeat: c.startBeat - start,
+              clip: JSON.parse(JSON.stringify(c)),
+            });
+            continue;
+          }
           const slice: Clip = JSON.parse(JSON.stringify(c));
           slice.startBeat = s;
           slice.lengthBeat = e - s;
@@ -2629,7 +2655,9 @@ export class ArrangementStore {
     return true;
   }
 
-  /** Paste the clipboard at the caret head (time + track), carving overlaps. */
+  /** Paste the clipboard at the caret head (time + track), carving overlaps.
+   *  Pieces landing on a SCENE lane become rigid one-bar cells (pushed in,
+   *  never carved). */
   pasteClips() {
     const cb = this.clipClipboard;
     if (!cb) return;
@@ -2638,6 +2666,7 @@ export class ArrangementStore {
     const atBeat = this.playFromBeat;
     const headIdx = order.findIndex((t) => t.id === this.caretHeadTrackId);
     const atIdx = headIdx >= 0 ? headIdx : 0;
+    const barBeats = this.barBeats;
     const pasted: string[] = [];
     this.mutate('paste clips', (d) => {
       for (const item of cb.items) {
@@ -2649,6 +2678,13 @@ export class ArrangementStore {
         clip.id = uid('clip');
         freshClipIds(clip);
         clip.startBeat = Math.max(0, atBeat + item.startBeat);
+        if (dt.kind === 'scene') {
+          clip.lengthBeat = barBeats;
+          dt.clips.push(clip);
+          settleSceneTrack(dt, clip.id);
+          pasted.push(paths.clip(dt.id, clip.id));
+          continue;
+        }
         carveTrackSpan(dt, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
         dt.clips.push(clip);
         pasted.push(paths.clip(dt.id, clip.id));

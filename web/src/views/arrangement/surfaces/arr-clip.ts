@@ -702,17 +702,12 @@ export class ArrClip extends MobxLitElement {
     } else if (this.grabWithinTimeBox(e)) {
       store.selectClipOnly(path); // keep the box → split + move region
     } else {
-      store.select(path); // box tracks the clip
-      // Keep the time box = the clip's range, with play-from (the caret HEAD) at the
-      // clip START — so Space plays from the clip and Cmd+L loops it. Using the box
-      // form (anchor=end, head=start) instead of setPlayFrom, which would collapse
-      // the box to a zero-width caret (anchor==head ⇒ no time selection).
-      store.setTimeSelection(
-        this.clip.startBeat,
-        this.clip.startBeat + this.clip.lengthBeat,
-        [this.trackId],
-        { movePlayhead: false },
-      );
+      // select() sets the caret-box over the clip (anchor=end, head=start):
+      // play-from lands at the clip START (Space plays it, Cmd+L loops it) and
+      // the box rides the caret, so a header drag's box-follow works. An extra
+      // explicit setTimeSelection here would pin a timeBoxSpan the follow
+      // couldn't slide (the box-left-behind bug).
+      store.select(path);
     }
     this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };

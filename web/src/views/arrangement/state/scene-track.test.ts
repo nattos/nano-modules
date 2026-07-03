@@ -128,6 +128,68 @@ describe('scene tracks', () => {
     expect(store.trackById(trk)!.clips.length).toBe(0);
   });
 
+  it('selecting a clip cues play-from at its START and the box FOLLOWS a drag', () => {
+    const trk = store.addTrack();
+    const path = store.createEmptyClip(trk, 4, 8)!;
+    const clipId = path.split('/')[2];
+    store.select(path);
+    // Play-from (and the paused playhead) land at the clip START, not its end.
+    expect(store.playFromBeat).toBe(4);
+    expect(store.positionBeat).toBe(4);
+    expect(store.timeSelStart).toBe(4);
+    expect(store.timeSelEnd).toBe(12);
+    // A single-clip header drag (the timebox path) carries the box with it.
+    expect(store.timeBoxCoversClip(trk, clipId)).toBe(true);
+    const base = { start: store.timeSelStart!, end: store.timeSelEnd, scope: [...store.timeSelTrackIds] };
+    store.moveTimeBoxContent(2, 0, base);
+    expect(store.trackById(trk)!.clips.find((c) => c.id === clipId)!.startBeat).toBe(6);
+    expect(store.timeSelStart).toBe(6);
+    expect(store.timeSelEnd).toBe(14);
+    expect(store.playFromBeat).toBe(6); // orientation preserved: still at the start
+  });
+
+  it('copy treats partially-covered scene cells as WHOLE cells', () => {
+    const id = store.addSceneTrack();
+    const a = addSceneWith(id); // [0,4)
+    void a;
+    // Box covers only the cell's right half — the whole cell is copied.
+    store.setCaret({ anchorBeat: 6, anchorTrackId: id, headBeat: 2, headTrackId: id });
+    expect(store.copyClips()).toBe(true);
+    store.setCaret({ anchorBeat: 16, anchorTrackId: id, headBeat: 16, headTrackId: id });
+    store.pasteClips();
+    const t = store.trackById(id)!;
+    expect(t.clips.length).toBe(2);
+    const pasted = t.clips.find((c) => c.id !== a)!;
+    expect(pasted.lengthBeat).toBe(store.barBeats); // full cell, not a slice
+    // offset preserved: cell started 2 beats before the box start.
+    expect(pasted.startBeat).toBe(14);
+  });
+
+  it('cut removes partially-covered scene cells whole', () => {
+    const id = store.addSceneTrack();
+    addSceneWith(id); // [0,4)
+    store.setCaret({ anchorBeat: 6, anchorTrackId: id, headBeat: 2, headTrackId: id });
+    store.cutClips();
+    expect(store.trackById(id)!.clips.length).toBe(0); // no leftover left-half slice
+    expect(store.hasClipboard).toBe(true);
+  });
+
+  it('pasting a normal-clip slice onto a scene lane lands a rigid one-bar cell', () => {
+    const trk = store.addTrack();
+    const id = store.addSceneTrack();
+    store.createEmptyClip(trk, 0, 16);
+    // Copy a 2-beat slice of the long clip.
+    store.setCaret({ anchorBeat: 6, anchorTrackId: trk, headBeat: 4, headTrackId: trk });
+    expect(store.copyClips()).toBe(true);
+    // Paste at the scene track's caret head.
+    store.setCaret({ anchorBeat: 8, anchorTrackId: id, headBeat: 8, headTrackId: id });
+    store.pasteClips();
+    const t = store.trackById(id)!;
+    expect(t.clips.length).toBe(1);
+    expect(t.clips[0].startBeat).toBe(8);
+    expect(t.clips[0].lengthBeat).toBe(store.barBeats); // snapped to the cell width
+  });
+
   it('clips drag to/from scene tracks (fixed width on the way in)', () => {
     const id = store.addSceneTrack();
     const trk = store.addTrack();
