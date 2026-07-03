@@ -70,12 +70,14 @@ static constexpr float kSkipOrbitMult = 6.0f;   // jog up to Nx the current orbi
 static constexpr float kSkipRampInSec = 0.6f;   // gentle ease-IN into the skip
 static constexpr float kMaxRecoverSec = 1.0f;   // recover=0 → this slow ease-OUT (1 → instant)
 static constexpr float kSkipHyst      = 0.004f; // recover margin above the trigger (hysteresis)
-// Sensitivity [0,1] maps to this much MEAN squashed motion at the trigger. Motion
-// is squashed to [0,1] in edge.hlsl (kMotionSpan = a 0.05 luma delta → "full"),
-// so a slowly-evolving field lands at a small mean; keep the span low so the knob
-// resolves the near-static regime where the jog should actually fire. Tune live
-// against the skip_motion broadcast.
-static constexpr float kSkipTrigSpan  = 0.25f;
+// Sensitivity [0,1] maps to this much activity (mean squashed motion, blended with
+// the variance/edge feature weights) at the trigger. The activity metric lives in a
+// TINY numeric range — a nearly-static frame's mean squashed motion is ~1e-3 — so
+// the span is small and calibrated by eye: the default Sensitivity (0.5) sits right
+// at the useful operating point (trigger ≈ 0.0025) with ~2× headroom either way,
+// instead of jammed against the bottom of the knob. Tune live vs the skip_motion
+// broadcast; if the useful setting drifts back toward 0, shrink this span again.
+static constexpr float kSkipTrigSpan  = 0.005f;
 
 // GPU detector geometry — must match edge.hlsl / debug.hlsl.
 static constexpr int   kTileGrid      = 16;
@@ -138,14 +140,14 @@ struct State {
 
   // --- Skip static: detect a near-still construct and jog past it ---
   bool  skip_empty        = false;  // master enable for detector + jog
-  float skip_thresh       = 0.7f;   // Sensitivity [0,1] → motion trigger (× kSkipTrigSpan)
+  float skip_thresh       = 0.5f;   // Sensitivity [0,1] → activity trigger (× kSkipTrigSpan)
   // Per-feature weights [0,1]. shape_fold is never flat and has no hard edges, so
   // variance/edge default OFF (they'd read "busy" every frame); MOTION drives it.
-  float skip_w_var        = 0.0f;
+  float skip_w_var        = 0.30f;
   float skip_w_edge       = 0.0f;
   float skip_w_motion     = 1.0f;
   int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
-  float skip_recover      = 1.0f;   // Recover [0,1]: how fast the jog STOPS on motion (1 = instant)
+  float skip_recover      = 0.25f;  // Recover [0,1]: how fast the jog STOPS on motion (1 = instant)
   float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
   bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
 
@@ -291,14 +293,14 @@ void module_init() {
           "**Autopilot** on it also nudges the orbit onward — or, if **Snap** is on, "
           "hops straight to a fresh shape the moment it goes still.")
       .boolField("skip_empty", false, state::PrimaryInput).label("Skip Static", "Skip")
-      .floatField("skip_thresh", 0.7f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_thresh", 0.5f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "How readily a frame counts as still/dead. Higher flags more "
                   "scenes (more residual motion tolerated); 1 catches almost "
                   "anything but a briskly-animating frame.").label("Sensitivity", "Sens")
       // Per-feature weights, combined by weighted MAX. Motion is the one that
       // matters here; variance/edge default off (shape_fold is never flat).
-      .floatField("skip_w_var", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_w_var", 0.30f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "Weight of local tonal VARIANCE in the stillness test (off by "
                   "default — the auto-leveled field is busy on every frame).")
@@ -316,7 +318,7 @@ void module_init() {
       .selectField("skip_debug", 0, state::PrimaryInput,
                    {{"Off", 0}, {"Variance", 1}, {"Edge", 2}, {"Motion", 3}, {"Combined", 4}})
                   .label("Debug View", "Dbg")
-      .floatField("skip_recover", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_recover", 0.25f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "How fast the jog STOPS once the frame starts moving again "
                   "(the still→moving transition). Higher = snappier so it doesn't "

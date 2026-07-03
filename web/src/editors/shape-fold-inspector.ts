@@ -231,9 +231,9 @@ export class ShapeFoldInspector extends MobxLitElement {
       <field-toggle .fieldPath=${'skip_empty'} .label=${'Skip Static'}
         .defaultValue=${0} .binding=${b}></field-toggle>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_var'} .label=${'Variance Wt'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.3} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_edge'} .label=${'Edge Wt'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_motion'} .label=${'Motion Wt'}
@@ -242,7 +242,7 @@ export class ShapeFoldInspector extends MobxLitElement {
         .options=${[{ label: 'Off', value: 0 }, { label: 'Variance', value: 1 }, { label: 'Edge', value: 2 }, { label: 'Motion', value: 3 }, { label: 'Combined', value: 4 }]}
         .defaultValue=${0} .binding=${b}></field-select>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.25} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'skip_autopilot'} .label=${'Jog Autopilot'}
