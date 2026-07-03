@@ -83,6 +83,19 @@ export class WireConnect implements ColumnTaps {
     this.end();
   }
 
+  /** Complete a CLICK-mode connection onto a scene / scene-track TRIGGER
+   *  LISTEN endpoint (the arrangement's scene grid). */
+  completeOnTriggerListen(trackId: string, sceneId?: string) {
+    if (!this.state) return;
+    const info: FieldConnectInfo = {
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+      viewportY: this.state.pointerY, schemaDef: null,
+      triggerTrack: trackId, ...(sceneId ? { triggerScene: sceneId } : {}),
+    };
+    this.commit({ key: `trigger/${trackId}/${sceneId ?? ''}`, info });
+    this.end();
+  }
+
   /** Complete a CLICK-mode connection onto a track/group LAYER endpoint (the
    *  arrangement's mixer strip / opacity fader). */
   completeOnLayer(ownerId: string, layerField: string = 'opacity') {
@@ -103,6 +116,15 @@ export class WireConnect implements ColumnTaps {
       const rr = hit.getBoundingClientRect();
       return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
         viewportY: rr.top + rr.height / 2, schemaDef: null, railId: hit.dataset.railId };
+    }
+    // A scene / scene-track TRIGGER LISTEN endpoint (the arrangement's scene
+    // grid): carries the scene track id (+ optionally one scene's id).
+    if (hit.dataset.triggerTrack) {
+      const rr = hit.getBoundingClientRect();
+      return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+        viewportY: rr.top + rr.height / 2, schemaDef: null,
+        triggerTrack: hit.dataset.triggerTrack,
+        ...(hit.dataset.triggerScene ? { triggerScene: hit.dataset.triggerScene } : {}) };
     }
     // A track/group LAYER endpoint (the arrangement's mixer strip): carries the
     // owner id + which layer param it exposes.

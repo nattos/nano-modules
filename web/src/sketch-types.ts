@@ -369,5 +369,12 @@ export interface FieldConnectInfo {
   layerOwner?: string;
   /** Which layer param ('opacity' | 'bypass'); default 'opacity'. */
   layerField?: string;
+  /** Set when this endpoint is a scene track's TRIGGER LISTEN (the arrangement
+   *  scene grid): the scene track id. Pairs with a rail endpoint — the scenes
+   *  launch from that rail's trigger events instead of the global bus. */
+  triggerTrack?: string;
+  /** With `triggerTrack`: a single scene's listen override (else the whole
+   *  track's default). */
+  triggerScene?: string;
 }
 

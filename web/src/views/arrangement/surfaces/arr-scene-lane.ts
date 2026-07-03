@@ -11,6 +11,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { WireConnect } from '../../../widgets/taps-connect';
 import './arr-scene';
 
 @customElement('arr-scene-lane')
@@ -75,6 +76,30 @@ export class ArrSceneLane extends MobxLitElement {
       color: #fff;
       border-color: rgba(255, 255, 255, 0.4);
     }
+    /* Wires mode: the track-level trigger LISTEN pad — a rail dropped here
+       becomes the default listen rail for every scene in this track. */
+    .listen {
+      flex: 0 0 auto;
+      width: 26px;
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(70, 194, 194, 0.4);
+      border-radius: 4px;
+      color: var(--app-cat-mod, #46c2c2);
+      font-size: 10px;
+      cursor: crosshair;
+      writing-mode: vertical-rl;
+    }
+    .listen[tap-drop-target],
+    .listen:hover {
+      background: rgba(70, 194, 194, 0.18);
+      box-shadow: inset 0 0 0 2px var(--app-cat-mod, #46c2c2);
+    }
+    .listen.attached {
+      background: rgba(70, 194, 194, 0.12);
+    }
   `;
 
   render() {
@@ -93,6 +118,24 @@ export class ArrSceneLane extends MobxLitElement {
       >
         <div class="square"></div>
       </div>
+      ${store.wiresMode
+        ? html`<div
+            class="tap-overlay-hit listen ${track.triggerRead ? 'attached' : ''}"
+            title=${track.triggerRead
+              ? `All scenes listen on ${store.railTrackFor(track.triggerRead.railId)?.name ?? 'a return'} — drop the same rail to detach`
+              : 'Drop a return here: all scenes in this track launch from that rail’s triggers (default: the global trigger bus)'}
+            data-trigger-track=${this.trackId}
+            @pointerdown=${(e: PointerEvent) => {
+              const g = WireConnect.active;
+              if (!g) return;
+              e.preventDefault();
+              e.stopPropagation();
+              g.completeOnTriggerListen(this.trackId);
+            }}
+          >
+            trig
+          </div>`
+        : ''}
       ${repeat(
         track.clips,
         (c) => c.id,

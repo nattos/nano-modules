@@ -95,6 +95,7 @@ interface ExecutorExports {
   comp_set_ignore_solo(c: number, on: number): void;
   comp_position_beat(c: number): number;
   comp_position_sec(c: number): number;
+  comp_bpm(c: number): number;
   comp_set_video_ready(c: number, clipId: number, len: number, ready: number): void;
   comp_update(c: number, dtSec: number): number;
   comp_render(c: number, inTex: number, outTex: number, w: number, h: number, dt: number): number;
@@ -865,8 +866,13 @@ export class WasmSketchExecutor {
       const fs = inst.host.frameState;
       fs.elapsedTime = frameState.elapsedTime;
       fs.deltaTime = frameState.deltaTime;
-      fs.barPhase = frameState.barPhase;
-      fs.bpm = frameState.bpm;
+      // Comp mode owns the musical clock: barPhase from the REAL transport
+      // beat (4 beats/bar; exact even under warp) + the composition's tempo —
+      // the worker's frameState carries a wall-clock 120 BPM stand-in that
+      // would make beat-reactive effects (mod.trigger.beat) tick off-grid.
+      const compBeat = this.exports.comp_position_beat(c);
+      fs.barPhase = ((compBeat / 4) % 1 + 1) % 1;
+      fs.bpm = this.exports.comp_bpm(c);
       fs.viewportW = width;
       fs.viewportH = height;
     }

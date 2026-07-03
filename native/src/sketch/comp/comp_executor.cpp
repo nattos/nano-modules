@@ -23,6 +23,13 @@ namespace sketch_executor {
 // fold (which uses effrt_instance_for ahead of the internal execute()).
 void effrtSetRuntime(effect_runtime::EffectRuntime* rt);
 }  // namespace sketch_executor
+namespace effect_runtime {
+// host_impls.cpp — the process-wide host clock beat-reactive effects read
+// (host::barPhase / host::bpm). The comp transport owns them during a comp
+// render; the web build feeds the same values per instance via frameState.
+void setHostBarPhase(double p);
+void setHostBpm(double bpm);
+}  // namespace effect_runtime
 #endif
 
 namespace comp {
@@ -612,6 +619,11 @@ int32_t CompExecutor::render(int32_t inTex, int32_t outTex, int32_t W, int32_t H
   // frame-local and only execute() rebinds it — the fold's effrt_instance_for
   // would otherwise see a stale/null runtime on the first frame.
   sketch_executor::effrtSetRuntime(rt_);
+  // The comp transport owns the host clock during its render: barPhase from
+  // the REAL beat (exact even under warp; 4 beats/bar) — beat-reactive
+  // effects (mod.trigger.beat) would otherwise tick a wall-clock 120 BPM.
+  effect_runtime::setHostBarPhase(std::fmod(std::max(0.0, state_.positionBeat) / 4.0, 1.0));
+  effect_runtime::setHostBpm(doc_.baseBPM);
 #endif
   execSketch_ = cleanSketch_;  // fresh copy → last frame's folded outputs can't go stale
   foldPublishedOutputs(execSketch_);

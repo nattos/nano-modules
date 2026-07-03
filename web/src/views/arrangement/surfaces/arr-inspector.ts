@@ -946,6 +946,19 @@ export class ArrInspector extends MobxLitElement {
           }}
         />
       </span>
+    </div>
+    <div class="row">
+      <label title="Which return track's trigger events launch this scene (wire one in wires mode)">Listen</label>
+      <span class="val">
+        ${clip.triggerRead
+          ? html`<span class="tag">${store.railTrackFor(clip.triggerRead.railId)?.name ?? 'return'}</span>
+              <button class="segbtn" title="Back to the track default / global trigger bus"
+                @click=${() => store.connectTriggerListen(track.id, clip.id, clip.triggerRead!.railId)}
+              >✕</button>`
+          : track.triggerRead
+            ? html`<span class="tag">track: ${store.railTrackFor(track.triggerRead.railId)?.name ?? 'return'}</span>`
+            : html`<span class="tag" style="opacity:.7">global triggers</span>`}
+      </span>
     </div>`;
   }
 
@@ -1130,6 +1143,7 @@ export class ArrInspector extends MobxLitElement {
                 )}
               </span>
             </div>`}
+        ${isRail ? this.renderTriggerChannelNames(track) : ''}
         ${isRail
           ? '' /* Returns carry no effect chain — they're value-only rails. */
           : html`<div class="group-title chain-hdr"><span>Chain (sketch)</span></div>
@@ -1145,6 +1159,34 @@ export class ArrInspector extends MobxLitElement {
              not the inspector. -->
       </div>
     `;
+  }
+
+  /** Per-return display names for trigger channels: 8 rows by default (plus
+   *  any higher explicitly-named ids), placeholder = the numeric id. Scene
+   *  badges resolve their channel label through the scene's LISTEN rail. */
+  private renderTriggerChannelNames(track: Track): TemplateResult {
+    const names = track.triggerChannelNames ?? {};
+    const ids = new Set<number>(Array.from({ length: 8 }, (_, i) => i + 1));
+    for (const k of Object.keys(names)) {
+      const n = Number(k);
+      if (Number.isFinite(n) && n >= 1) ids.add(n);
+    }
+    return html`<div class="group-title"><span>Trigger channels</span></div>
+      ${[...ids].sort((a, b) => a - b).map(
+        (ch) => html`<div class="row">
+          <label>${ch}</label>
+          <span class="val" style="flex:1; min-width:0;">
+            <input
+              type="text"
+              style="width:100%"
+              placeholder=${String(ch)}
+              .value=${names[String(ch)] ?? ''}
+              @change=${(e: Event) =>
+                store.setTriggerChannelName(track.id, ch, (e.target as HTMLInputElement).value)}
+            />
+          </span>
+        </div>`,
+      )}`;
   }
 
   private renderRailInspector(path: string): TemplateResult {

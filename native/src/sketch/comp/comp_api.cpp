@@ -184,6 +184,9 @@ double comp_position_beat(CompExecutor* c) { return c ? c->positionBeat() : 0; }
 EXEC_EXPORT("comp_position_sec")
 double comp_position_sec(CompExecutor* c) { return c ? c->positionSec() : 0; }
 
+EXEC_EXPORT("comp_bpm")
+double comp_bpm(CompExecutor* c) { return c ? c->bpm() : 120.0; }
+
 // Edge-triggered per-clip frame readiness from the host's decode pump.
 EXEC_EXPORT("comp_set_video_ready")
 void comp_set_video_ready(CompExecutor* c, const char* clipId, int32_t len, int32_t ready) {

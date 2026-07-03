@@ -102,6 +102,8 @@ namespace env_lfo { void seek(void* self, double from, double to); } // optional
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
+NANO_DECLARE_INSTANCE_EFFECT(trigger_beat)
+
 extern "C" {
 
 NANO_EXPORT_ABI_VERSION()
@@ -562,6 +564,17 @@ void nano_module_main() {
         "envelope,adsr,modulation,automation,trigger,gate,generator",
         "la-chart-line",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.trigger.beat",
+        "Beat Trigger",
+        "Beat-clock trigger source: fires structured trigger events {on, channel, velocity} on a beat division of the transport (with a phase offset), published as a seq-numbered ring the composition executor consumes to launch scenes through return tracks (or the global trigger bus when unwired). The scalar 'output' pulses 1 on each tick with a short decay, doubling as an ordinary modulation source.",
+        "mod",
+        "trigger,scene,launch,beat,clock,modulation,event",
+        "la-bolt",
+        NANO_INSTANCE_LIFECYCLE(trigger_beat),
     });
 }
 

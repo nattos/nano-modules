@@ -1540,3 +1540,31 @@ TEST_CASE("triggers: rail routing overrides the global default", "[comp_trigger]
 
   sketch_executor::effrtSetPublishedStateProvider(nullptr);
 }
+
+TEST_CASE("triggers: mod.trigger.beat ships in core.wasm with the trigger_source cap",
+          "[comp_trigger]") {
+  // Natively the published-state provider is the barrel's (deferred) seam, so
+  // the real ring can't be observed here — the web e2e covers that end to end.
+  // This pins the BUNDLE: the effect registers, and its capability + schema
+  // reach the comp catalog (what rebuildTriggerRoutes and the UI key off).
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+  const auto* reg = hx.registry->find("mod.trigger.beat");
+  REQUIRE(reg != nullptr);
+  bool hasTrig = false;
+  for (const auto& c : reg->capabilities) hasTrig |= (c == "trigger_source");
+  CHECK(hasTrig);
+  comp::CompExecutor cx(nullptr, nullptr, nullptr);
+  hx.seed(cx);
+  // The route builder resolves it as a trigger source through the catalog.
+  const json doc = mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip(
+          "c1", 0, 8, json::array({mkDevice("trig", "mod.trigger.beat")}))})),
+      mkSceneTrack("st", json::array({mkScene("s1", 8)})),
+  }));
+  cx.loadDocument(doc);
+  cx.seekBeat(0.5);
+  // The trigger-source clip is modulation-only + alone on its track — it still
+  // enters the composite (devices present), so its instance would tick.
+  CHECK((cx.update(0.0) & comp::kCompHasContent) != 0);
+}

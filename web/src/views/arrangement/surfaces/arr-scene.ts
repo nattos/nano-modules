@@ -19,6 +19,7 @@ import {
   generatorFingerprint,
   isGeneratorClip,
 } from '../engine/generator-fingerprint';
+import { WireConnect } from '../../../widgets/taps-connect';
 import '../../../widgets/editable-label';
 
 @customElement('arr-scene')
@@ -87,6 +88,30 @@ export class ArrScene extends MobxLitElement {
       width: 100%;
       height: 100%;
       display: block;
+    }
+    /* Wires-mode drop target: attach a return rail as this scene's trigger
+       LISTEN (which rail launches it). Covers the body so a mid-gesture click
+       lands here instead of launching. */
+    .trigger-drop {
+      position: absolute;
+      inset: 0;
+      cursor: crosshair;
+    }
+    .trigger-drop[tap-drop-target],
+    .trigger-drop:hover {
+      background: rgba(70, 194, 194, 0.18);
+      box-shadow: inset 0 0 0 2px var(--app-cat-mod, #46c2c2);
+    }
+    .listen-tag {
+      position: absolute;
+      left: 4px;
+      bottom: 4px;
+      font-size: 9px;
+      padding: 0 3px;
+      border-radius: 2px;
+      background: rgba(70, 194, 194, 0.25);
+      color: var(--app-cat-mod, #46c2c2);
+      pointer-events: none;
     }
     .play {
       position: absolute;
@@ -188,10 +213,32 @@ export class ArrScene extends MobxLitElement {
         @pointerdown=${this.onBodyDown}
       >
         <canvas></canvas>
+        ${clip.triggerRead
+          ? html`<span class="listen-tag"
+              title="Listens on ${store.railTrackFor(clip.triggerRead.railId)?.name ?? 'a return'} (click in wires mode to detach)"
+              >⇐ ${store.railTrackFor(clip.triggerRead.railId)?.name ?? 'return'}</span>`
+          : ''}
         <div class="play"></div>
+        ${store.wiresMode
+          ? html`<div
+              class="tap-overlay-hit trigger-drop"
+              title="Drop a return here: this scene launches from that rail's triggers"
+              data-trigger-track=${this.trackId}
+              data-trigger-scene=${clip.id}
+              @pointerdown=${this.onTriggerDown}
+            ></div>`
+          : ''}
       </div>
     `;
   }
+
+  private onTriggerDown = (e: PointerEvent) => {
+    const g = WireConnect.active;
+    if (!g) return;
+    e.preventDefault();
+    e.stopPropagation();
+    g.completeOnTriggerListen(this.trackId, this.clip.id);
+  };
 
   private onHeaderDown = (e: PointerEvent) => {
     e.stopPropagation();

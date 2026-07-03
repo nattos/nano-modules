@@ -26,6 +26,7 @@ import {
   GroupInput,
   GroupInputMode,
   deviceIsSource,
+  deviceIsTriggerSource,
   resolveSourceTransform,
   compositionLengthBeats,
   compositionFps as fnCompositionFps,
@@ -3301,6 +3302,17 @@ export class ArrangementStore {
    * sketch.
    */
   connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    // Scene / scene-track TRIGGER-LISTEN endpoint: pairs with a rail — the
+    // scene (or the whole scene track) launches from that rail's trigger
+    // events instead of the global trigger bus.
+    const trig = a.triggerTrack ? a : b.triggerTrack ? b : null;
+    if (trig) {
+      const other = trig === a ? b : a;
+      if (other.railId) {
+        this.connectTriggerListen(trig.triggerTrack!, trig.triggerScene ?? null, other.railId!);
+      }
+      return;
+    }
     // Track/group LAYER endpoint (the mixer strip): from a rail → a track-level
     // rail read; from a mod output on the SAME track → an own-layer clip wire
     // (dest `__layer__`). Cross-track direct wires are rejected — that's what
@@ -3350,7 +3362,9 @@ export class ArrangementStore {
 
   /** Connect a clip device field to a return rail: an output field exports to the
    *  rail, an input field reads from it. Rail taps live on the clip (exports/reads),
-   *  so this only applies to a clip sketch (`clip/<trk>/<clip>`). */
+   *  so this only applies to a clip sketch (`clip/<trk>/<clip>`). A TRIGGER
+   *  source's output routes its EVENTS to the rail (a TriggerExport — one rail
+   *  per device, replace) instead of a scalar export. */
   private connectFieldToRail(field: FieldConnectInfo, railId: string) {
     if (!field.sketchId.startsWith('clip/')) return;
     const [, trackId, clipId] = field.sketchId.split('/');
@@ -3358,6 +3372,12 @@ export class ArrangementStore {
       const clip = d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId);
       const dev = clip?.sketch.devices[field.chainIdx];
       if (!clip || !dev) return;
+      if (field.isOutput && this.isTriggerSourceDevice(dev)) {
+        clip.triggerExports = (clip.triggerExports ?? []).filter(
+          (e) => e.sourceDeviceId !== dev.id);
+        clip.triggerExports.push({ id: uid('trig'), railId, sourceDeviceId: dev.id });
+        return;
+      }
       if (field.isOutput) {
         clip.exports = (clip.exports ?? []).filter(
           (e) => !(e.railId === railId && e.sourceDeviceId === dev.id && e.sourceField === field.fieldPath));
@@ -3393,6 +3413,58 @@ export class ArrangementStore {
         id: uid('rail'), railId, targetDeviceId: LAYER_TARGET_ID, targetField: field,
         combine: 'replace', magnitude: 'auto',
       });
+    });
+  }
+
+  /** A device emits trigger EVENTS: the DISCOVERED plugin's capability list is
+   *  authoritative (model Device.capabilities is a crude generator/effect
+   *  stamp); the model check is the offline fallback. */
+  private isTriggerSourceDevice(dev: Device): boolean {
+    return !!this.enginePlugin(dev.moduleType)?.capabilities?.includes('trigger_source')
+      || deviceIsTriggerSource(dev);
+  }
+
+  /** Attach a return rail as a trigger LISTEN: sceneId null ⇒ the whole scene
+   *  track's default; else that one scene's override. One listen per owner —
+   *  replace. Connecting to the same rail again REMOVES the listen (back to
+   *  the global trigger bus / the track default). */
+  connectTriggerListen(trackId: string, sceneId: string | null, railId: string) {
+    this.mutate('connect trigger', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t || t.kind !== 'scene') return;
+      if (sceneId == null) {
+        if (t.triggerRead?.railId === railId) delete t.triggerRead;  // toggle off
+        else t.triggerRead = { id: uid('trig'), railId };
+        return;
+      }
+      const scene = t.clips.find((c) => c.id === sceneId);
+      if (!scene) return;
+      if (scene.triggerRead?.railId === railId) delete scene.triggerRead;  // toggle off
+      else scene.triggerRead = { id: uid('trig'), railId };
+    });
+  }
+
+  /** Remove a trigger-source device's rail export (back to the global bus). */
+  removeTriggerExport(trackId: string, clipId: string, deviceId: string) {
+    this.mutate('remove trigger export', (d) => {
+      const clip = d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId);
+      if (!clip?.triggerExports) return;
+      clip.triggerExports = clip.triggerExports.filter((e) => e.sourceDeviceId !== deviceId);
+    });
+  }
+
+  /** Set (or clear with an empty name) a return track's display name for a
+   *  trigger channel id. */
+  setTriggerChannelName(railTrackId: string, channel: number, name: string) {
+    this.mutate('name trigger channel', (d) => {
+      const t = d.tracks.find((x) => x.id === railTrackId);
+      if (!t || t.kind !== 'rail') return;
+      const key = String(channel);
+      const names = { ...(t.triggerChannelNames ?? {}) };
+      if (name.trim()) names[key] = name.trim();
+      else delete names[key];
+      if (Object.keys(names).length) t.triggerChannelNames = names;
+      else delete t.triggerChannelNames;
     });
   }
 

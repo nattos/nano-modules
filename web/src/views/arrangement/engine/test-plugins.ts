@@ -75,6 +75,11 @@ export const TEST_PLUGINS: PluginInfo[] = [
     { key: 'out_min', min: -1, max: 1 }, { key: 'out_max', min: -1, max: 1, def: 1 },
     { key: 'output', out: true },
   ]),
+  // Trigger source: its output wire routes as a TriggerExport, never a scalar.
+  plugin('mod.trigger.beat', false, [
+    { key: 'phase' }, { key: 'channel', min: 1, max: 16, def: 1 }, { key: 'velocity', def: 1 },
+    { key: 'output', out: true },
+  ], ['modulation_source', 'modulation_source_single', 'trigger_source']),
 ];
 
 /** Seed `store.enginePlugins` so the registry resolves offline. Idempotent. */

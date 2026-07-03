@@ -219,6 +219,7 @@ export type DeviceCapability =
   | 'modulation_source_multi'
   | 'modulation_shaper'
   | 'modulation_shaper_unary'
+  | 'trigger_source'
   | 'offline_renderable';
 
 /** One effect in a clip/track sketch (maps to a ChainEntry in M2+). */
@@ -238,8 +239,15 @@ const MODULATION_ONLY_CAPS = new Set<DeviceCapability>([
   'modulation_source_multi',
   'modulation_shaper',
   'modulation_shaper_unary',
+  'trigger_source',
   'offline_renderable',
 ]);
+
+/** Does this device emit trigger EVENTS (a wire from its output routes to a
+ *  rail as a {@link TriggerExport}, never a scalar modulation)? */
+export function deviceIsTriggerSource(device: Device): boolean {
+  return device.capabilities.includes('trigger_source');
+}
 
 /**
  * A device processes texture frames unless *every* capability it carries is a

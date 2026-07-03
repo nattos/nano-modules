@@ -128,6 +128,8 @@ class CompExecutor {
   void setIgnoreSolo(bool on);
   double positionBeat() const { return state_.positionBeat; }
   double positionSec() const;
+  /** The composition's base tempo (frameState.bpm for comp-mode instances). */
+  double bpm() const { return doc_.baseBPM; }
 
   /** Edge-triggered readiness from the host's decode pump (Precise gate). */
   void setVideoReady(const std::string& clipId, bool ready);

@@ -134,6 +134,51 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
+  it('mod.trigger.beat launches scenes programmatically on the comp clock', async () => {
+    const { ids, errors } = await boot();
+
+    // Host a beat trigger in a long clip at the playhead: channel 1 → RED's
+    // auto-assigned channel. No wires — the global trigger bus is the default
+    // for both the source and the scenes.
+    await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      const base = store.composition.tracks.find((t: any) => t.kind === 'track');
+      const path = store.createEmptyClip(base.id, 0, 64);
+      const [, tId, cId] = path.split('/');
+      store.addClipDeviceType(tId, cId, 'mod.trigger.beat');
+      const clip = store.trackById(tId).clips.find((c: any) => c.id === cId);
+      // division 4 = every beat (0.5 s at 120 BPM) — fast, deterministic tests.
+      Object.assign(clip.sketch.devices[0].state ??= {}, { division: 4, channel: 1 });
+      store.docRev++; // direct state mutation (test-only) — re-mirror the doc
+      (window as any).__trig = { tId, cId, devId: clip.sketch.devices[0].id };
+      store.positionBeat = 0;
+      store.playing = true;
+    }, ids);
+
+    // The trigger fires within a beat or two and RED launches — through the
+    // REAL published ring + the comp-owned barPhase (not wall-clock 120).
+    await page.waitForFunction((a: any) => {
+      const s = (window as any).arrangementStore.sceneLaunchState[a.sceneTrackId];
+      return !!s && s.sceneId === a.red;
+    }, { timeout: 20_000 }, ids);
+    await waitForColor((c) => c.r > 120 && c.g < 60, 'red via trigger');
+
+    // Retarget the trigger to channel 2 → GREEN takes the slot on the next tick.
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const t = (window as any).__trig;
+      store.setClipDeviceField(t.tId, t.cId, t.devId, 'channel', 2);
+    });
+    await page.waitForFunction((a: any) => {
+      const s = (window as any).arrangementStore.sceneLaunchState[a.sceneTrackId];
+      return !!s && s.sceneId === a.green;
+    }, { timeout: 20_000 }, ids);
+    await waitForColor((c) => c.g > 120 && c.r < 60, 'green via trigger');
+
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    expect(errors).toEqual([]);
+  });
+
   it('clicking a scene cell body launches it (real component path)', async () => {
     const { ids, errors } = await boot();
 
