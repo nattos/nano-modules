@@ -1568,3 +1568,81 @@ TEST_CASE("triggers: mod.trigger.beat ships in core.wasm with the trigger_source
   // enters the composite (devices present), so its instance would tick.
   CHECK((cx.update(0.0) & comp::kCompHasContent) != 0);
 }
+
+TEST_CASE("scenes: solo/bypass/group interplay", "[comp_scene]") {
+  EvalHarness h;
+  json st = mkSceneTrack("st", json::array({mkScene("s1", 8)}));
+
+  SECTION("a soloed OTHER track drops the launched scene (solo lineage rule)") {
+    h.cx.loadDocument(mkComposition(json::array({
+        mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                          json::array({mkDevice("d1", "source.solid_color")}))}),
+                {{"soloed", true}}),
+        st,
+    })));
+    h.cx.seekBeat(0.5);
+    h.cx.launchScene("st", "s1");
+    h.cx.update(0.0);
+    const std::string keys = json::parse(h.cx.chainKeysJson()).dump();
+    CHECK(keys.find("clip_c1_") != std::string::npos);
+    CHECK(keys.find("clip_s1_") == std::string::npos);  // launched but not soloed
+  }
+
+  SECTION("a soloed scene track keeps its launched scene exclusively") {
+    st["soloed"] = true;
+    h.cx.loadDocument(mkComposition(json::array({
+        mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                          json::array({mkDevice("d1", "source.solid_color")}))})),
+        st,
+    })));
+    h.cx.seekBeat(0.5);
+    h.cx.launchScene("st", "s1");
+    h.cx.update(0.0);
+    const std::string keys = json::parse(h.cx.chainKeysJson()).dump();
+    CHECK(keys.find("clip_s1_") != std::string::npos);
+    CHECK(keys.find("clip_c1_") == std::string::npos);
+  }
+
+  SECTION("a bypassed scene track drops its launched scene (launch state persists)") {
+    st["bypassed"] = true;
+    h.cx.loadDocument(mkComposition(json::array({st})));
+    h.cx.seekBeat(0.5);
+    h.cx.launchScene("st", "s1");
+    uint32_t flags = h.cx.update(0.0);
+    CHECK((flags & comp::kCompHasContent) == 0);
+    // The launch entry survives (un-bypassing brings the scene back).
+    CHECK(json::parse(h.cx.sceneStatesJson()).contains("st"));
+  }
+
+  SECTION("a scene track inside a group composites through the group") {
+    json grp = mkTrack("g1", json::array(), {{"kind", "group"}});
+    st["parentId"] = "g1";
+    h.cx.loadDocument(mkComposition(json::array({grp, st})));
+    h.cx.seekBeat(0.5);
+    h.cx.launchScene("st", "s1");
+    CHECK((h.cx.update(0.0) & comp::kCompHasContent) != 0);
+    CHECK(json::parse(h.cx.chainKeysJson()).dump().find("clip_s1_") != std::string::npos);
+  }
+}
+
+TEST_CASE("scenes: a video-scene retrigger re-anchors the pump desc", "[comp_scene]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkSceneTrack("st", json::array({mkVideoClip("v1", 0, 8)})),
+  })));
+  h.cx.setTransportMode(false);
+  h.cx.seekBeat(2.0);
+  h.cx.launchScene("st", "v1");
+  uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompVideoSetChanged) != 0);
+  CHECK(json::parse(h.cx.videoDescsJson())[0]["startBeat"].get<double>() == 2.0);
+
+  // Retrigger at a later beat: same clip, new anchor → the pump must see a
+  // changed desc (kCompVideoSetChanged) so it reconciles the source clock.
+  h.cx.seekBeat(6.0);
+  h.cx.update(0.0);
+  h.cx.launchScene("st", "v1");
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompVideoSetChanged) != 0);
+  CHECK(json::parse(h.cx.videoDescsJson())[0]["startBeat"].get<double>() == 6.0);
+}
