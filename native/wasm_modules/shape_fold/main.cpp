@@ -83,11 +83,10 @@ static constexpr float kSkipTrigSpan  = 0.005f;
 static constexpr int   kTileGrid      = 16;
 static constexpr int   kSampleGrid    = 256;
 static constexpr int   kNumTiles      = kTileGrid * kTileGrid;
-// per tile: [edge,luma,luma²,motion,count, nx²,ny²,nxny,nx·dt,ny·dt,dt²,dt] — the
-// last 7 are SIGNED flow sums (see edge.hlsl): 5-10 feed the Lucas-Kanade uniform-
-// drift penalty, and 10-11 (Σdt²,Σdt) give the per-tile DC fraction that suppresses
-// spatially-uniform temporal change (auto-levels re-normalization flashes).
-static constexpr int   kSlots         = 12;
+// per tile: [edge,v,v²,motion,count, nx²,ny²,nxny,nx·dv,ny·dv,dv²] — features are
+// measured on the LEVELED FIELD (see edge.hlsl); the last 6 are the SIGNED Lucas-
+// Kanade flow sums feeding the uniform-drift penalty.
+static constexpr int   kSlots         = 11;
 static constexpr int   kEdgeStatsInts = kNumTiles * kSlots;
 static constexpr float kStatsScale    = 65536.0f;// must match edge.hlsl kStatsScale
 static constexpr float kEdgeNormGain  = 2.0f;    // per-tile edge/var-max sensitivity (tuning feats)
@@ -120,7 +119,7 @@ struct State {
   gpu::Buffer stats_buf;            // auto-levels min/max + histogram
   gpu::Buffer lut_buf;
   gpu::Buffer edge_stats_buf;       // skip-static motion/variance reduce → readback
-  gpu::Buffer prev_luma_buf;        // persistent per-sample previous-frame luma (motion)
+  gpu::Buffer prev_field_buf;        // persistent per-sample previous-frame LEVELED field (motion)
   gpu::Buffer debug_uniform_buf;    // skip-static debug visualizer params
   bool skip_gpu_ready = false;      // true once the first edge readback has arrived
   bool initialized = false;
@@ -392,10 +391,10 @@ void module_init() {
   auto cs_edge = gpu::Device::createShaderModuleByName("shape_fold_edge");
   if (!cs_edge) return;
   s_pso_edge = gpu::Device::createComputePSO(cs_edge, "main", gpu::Bindings()
-      .uniform(0)      // shared cbuffer U (res_x/res_y)
-      .tex2d(1)        // tex_out (read)
+      .uniform(0)      // shared cbuffer U (terms, res, domain_scale) — evaluates the field
+      .storage(1)      // lut (auto-levels lo/hi, read)
       .storageRW(2)    // edge stats (read-write atomics)
-      .storageRW(3));  // prevLuma (per-sample motion history)
+      .storageRW(3));  // prevField (per-sample leveled-field motion history)
 
   auto cs_debug = gpu::Device::createShaderModuleByName("shape_fold_debug");
   if (!cs_debug) return;
@@ -418,7 +417,7 @@ void* create() {
   s->stats_buf   = gpu::Device::createBuffer(kStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
   s->lut_buf     = gpu::Device::createBuffer(kLutFloats * sizeof(float), gpu::BufferUsage::Storage);
   s->edge_stats_buf = gpu::Device::createBuffer(kEdgeStatsInts * sizeof(int32_t), gpu::BufferUsage::Storage);
-  s->prev_luma_buf  = gpu::Device::createBuffer(kSampleGrid * kSampleGrid * sizeof(float), gpu::BufferUsage::Storage);
+  s->prev_field_buf  = gpu::Device::createBuffer(kSampleGrid * kSampleGrid * sizeof(float), gpu::BufferUsage::Storage);
   s->debug_uniform_buf = gpu::Device::createBuffer(sizeof(DebugUniforms), gpu::BufferUsage::Uniform);
   return s;
 }
@@ -430,7 +429,7 @@ void destroy(void* self) {
   s->stats_buf.release();
   s->lut_buf.release();
   s->edge_stats_buf.release();
-  s->prev_luma_buf.release();
+  s->prev_field_buf.release();
   s->debug_uniform_buf.release();
   delete s;
 }
@@ -443,7 +442,7 @@ void init(void* self) {
       !s_pso_buildlut.valid() || !s_pso_present.valid() ||
       !s_pso_edge.valid() || !s_pso_debug.valid()) return;
   if (!s->uniform_buf.valid() || !s->stats_buf.valid() || !s->lut_buf.valid() ||
-      !s->edge_stats_buf.valid() || !s->prev_luma_buf.valid() ||
+      !s->edge_stats_buf.valid() || !s->prev_field_buf.valid() ||
       !s->debug_uniform_buf.valid()) return;
   // Zero the edge stats so the first poll (before any edge pass) reads count=0
   // and the detector stays inert (content=1) until a real readback arrives.
@@ -451,7 +450,7 @@ void init(void* self) {
   s->edge_stats_buf.write(z, kEdgeStatsInts);
   // Sentinel <0 so the first frame's motion reads 0 (no spurious spike).
   std::vector<float> negs(kSampleGrid * kSampleGrid, -1.0f);
-  s->prev_luma_buf.write(negs.data(), (int)negs.size());
+  s->prev_field_buf.write(negs.data(), (int)negs.size());
   s->skip_gpu_ready = false;
   s->initialized = true;
   state::setOnStateReady(&on_state_ready);
@@ -500,11 +499,12 @@ void tick(void* self, double dt) {
   // is smooth and hysteretic).
   float skip_e = 0.0f;
   if (s->skip_empty) {
-    // Poll the GPU reduce (motion/variance over last frame's rendered tex_out).
-    // MOTION is reduced by the GLOBAL MEAN over the frame (so a small moving
-    // region doesn't veto jogging through an otherwise-still frame); variance and
-    // edge take the per-tile MAX (tuning features, default off). Poll before the
-    // jog so this frame's decision uses the freshest available metric.
+    // Poll the GPU reduce (motion/variance over last frame's LEVELED FIELD — the
+    // edge pass evaluates the field + stable linear levels, not the flashy tex_out).
+    // MOTION is reduced by the GLOBAL MEAN over the frame (so a small moving region
+    // doesn't veto jogging through an otherwise-still frame); variance and edge take
+    // the per-tile MAX (tuning features, default off). Poll before the jog so this
+    // frame's decision uses the freshest available metric.
     int32_t raw[kEdgeStatsInts];
     if (s->edge_stats_buf.pollReadback(raw, sizeof(raw)) == (int)sizeof(raw)) {
       float wv = clampf(s->skip_w_var, 0.0f, 1.0f);
@@ -529,14 +529,7 @@ void tick(void* self, double dt) {
         // Concentrated edge saturates regardless of area (/√tilePixels).
         float edge = clampf((float)raw[base + 0] / kStatsScale / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f);
         if (edge > edge_max) edge_max = edge;
-        // Discount spatially-UNIFORM temporal change per tile (a flash — e.g. the
-        // per-frame auto-levels re-normalization — has dt≈const across the tile, so
-        // its DC fraction (Σdt)²/(n·Σdt²) ≈ 1; real structured motion → ≈ 0). Keeps
-        // the motion scale (and the tuned Sensitivity) for genuine motion.
-        double sdt  = (double)raw[base + 11] / kStatsScale;
-        double sdt2 = (double)raw[base + 10] / kStatsScale;
-        double dcf  = (sdt2 > 1e-9) ? clampf((float)(sdt * sdt / (ne * sdt2)), 0.0f, 1.0f) : 0.0;
-        motion_sum += ((double)raw[base + 3] / kStatsScale) * (1.0 - dcf); // squashed |dt|, DC-suppressed
+        motion_sum += (double)raw[base + 3] / kStatsScale;       // squashed |dv| (leveled field)
         count_sum  += cnt;
         Sxx += (double)raw[base + 5] / kStatsScale;
         Syy += (double)raw[base + 6] / kStatsScale;
@@ -829,19 +822,20 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // 5 — skip-static detector: motion/variance reduce over the composited tex_out
-  // into edge_stats_buf, then request an async readback. Only when the detector
-  // is on. Reset runs BEFORE the pass; the tick() poll reads last frame's stats
-  // before this reset each frame, so the CPU zero-write is race-free.
+  // 5 — skip-static detector: motion/variance reduce over the LEVELED FIELD (the
+  // edge pass evaluates the field itself + the stable linear lo/hi from the lut,
+  // NOT the flashy equalized tex_out), then request an async readback. Only when
+  // the detector is on. Reset runs BEFORE the pass; the tick() poll reads last
+  // frame's stats before this reset each frame, so the CPU zero-write is race-free.
   if (s->skip_empty) {
     int32_t zeros[kEdgeStatsInts] = {};
     s->edge_stats_buf.write(zeros, kEdgeStatsInts);
     auto ep = gpu::ComputePass::begin();
     ep.setPSO(s_pso_edge);
     ep.setBuffer(s->uniform_buf, 0);
-    ep.setTexture(out, 1, 0);            // access 0 = Read
+    ep.setBuffer(s->lut_buf, 1);         // auto-levels lo/hi (evaluate the leveled field)
     ep.setBuffer(s->edge_stats_buf, 2);
-    ep.setBuffer(s->prev_luma_buf, 3);
+    ep.setBuffer(s->prev_field_buf, 3);
     ep.dispatch((kSampleGrid + 7) / 8, (kSampleGrid + 7) / 8);   // fixed grid, not per-pixel
     ep.end();
     s->edge_stats_buf.requestReadback(kEdgeStatsInts * sizeof(int32_t));
