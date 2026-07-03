@@ -83,9 +83,11 @@ static constexpr float kSkipTrigSpan  = 0.005f;
 static constexpr int   kTileGrid      = 16;
 static constexpr int   kSampleGrid    = 256;
 static constexpr int   kNumTiles      = kTileGrid * kTileGrid;
-// per tile: [edge,luma,luma²,motion,count, nx²,ny²,nxny,nx·dt,ny·dt,dt²] — the last 6
-// are the Lucas-Kanade flow sums (see edge.hlsl) for the uniform-drift penalty.
-static constexpr int   kSlots         = 11;
+// per tile: [edge,luma,luma²,motion,count, nx²,ny²,nxny,nx·dt,ny·dt,dt²,dt] — the
+// last 7 are SIGNED flow sums (see edge.hlsl): 5-10 feed the Lucas-Kanade uniform-
+// drift penalty, and 10-11 (Σdt²,Σdt) give the per-tile DC fraction that suppresses
+// spatially-uniform temporal change (auto-levels re-normalization flashes).
+static constexpr int   kSlots         = 12;
 static constexpr int   kEdgeStatsInts = kNumTiles * kSlots;
 static constexpr float kStatsScale    = 65536.0f;// must match edge.hlsl kStatsScale
 static constexpr float kEdgeNormGain  = 2.0f;    // per-tile edge/var-max sensitivity (tuning feats)
@@ -527,7 +529,14 @@ void tick(void* self, double dt) {
         // Concentrated edge saturates regardless of area (/√tilePixels).
         float edge = clampf((float)raw[base + 0] / kStatsScale / std::sqrt(ne) * kEdgeNormGain, 0.0f, 1.0f);
         if (edge > edge_max) edge_max = edge;
-        motion_sum += (double)raw[base + 3] / kStatsScale;       // already squashed [0,1] per sample
+        // Discount spatially-UNIFORM temporal change per tile (a flash — e.g. the
+        // per-frame auto-levels re-normalization — has dt≈const across the tile, so
+        // its DC fraction (Σdt)²/(n·Σdt²) ≈ 1; real structured motion → ≈ 0). Keeps
+        // the motion scale (and the tuned Sensitivity) for genuine motion.
+        double sdt  = (double)raw[base + 11] / kStatsScale;
+        double sdt2 = (double)raw[base + 10] / kStatsScale;
+        double dcf  = (sdt2 > 1e-9) ? clampf((float)(sdt * sdt / (ne * sdt2)), 0.0f, 1.0f) : 0.0;
+        motion_sum += ((double)raw[base + 3] / kStatsScale) * (1.0 - dcf); // squashed |dt|, DC-suppressed
         count_sum  += cnt;
         Sxx += (double)raw[base + 5] / kStatsScale;
         Syy += (double)raw[base + 6] / kStatsScale;

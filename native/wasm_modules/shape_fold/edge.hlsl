@@ -29,11 +29,12 @@
 Texture2D<float4>    tex_out : register(t1);
 // Per-TILE stats: a kTileGrid×kTileGrid grid, kSlots ints each.
 //   [0] edge_sum   [1] luma_sum   [2] luma2_sum   [3] motion_sum   [4] pixel_count
-// Slots 5-10 are the Lucas-Kanade flow sums (SIGNED) used to detect motion that is
-// a single uniform global drift — normalized gradient (nx,ny) vs signed temporal
-// diff dt, so the CPU can solve one global 2×2 for the drift velocity and discount
-// the coherent (same-direction) part of the motion:
-//   [5] Σnx²   [6] Σny²   [7] Σnx·ny   [8] Σnx·dt   [9] Σny·dt   [10] Σdt²
+// Slots 5-11 are SIGNED flow sums over the normalized gradient (nx,ny) and signed
+// temporal diff dt. Slots 5-10 let the CPU solve one global 2×2 Lucas-Kanade fit
+// (uniform-drift penalty); slots 10-11 give the per-tile mean/variance of dt so a
+// spatially-UNIFORM temporal change (e.g. an auto-levels re-normalization flash,
+// dt≈const across the tile) can be told from real structured motion and discounted:
+//   [5] Σnx²  [6] Σny²  [7] Σnx·ny  [8] Σnx·dt  [9] Σny·dt  [10] Σdt²  [11] Σdt
 RWStructuredBuffer<int>   stats     : register(u2);
 // Persistent previous-frame luma at each sample point (motion = |L - prevL|).
 // Sized to the fixed sample grid, so it never reallocs on viewport resize.
@@ -41,7 +42,7 @@ RWStructuredBuffer<int>   stats     : register(u2);
 // owns one slot (no race).
 RWStructuredBuffer<float> prevLuma  : register(u3);
 
-static const int   kSlots       = 11;           // ints per tile (must match main.cpp)
+static const int   kSlots       = 12;           // ints per tile (must match main.cpp)
 static const int   kTileGrid    = 16;           // must match main.cpp kTileGrid
 // Sample on a fixed grid, NOT per output pixel: bounded, resolution-independent
 // work (256² threads) + far less atomic contention. Each 16×16 tile gets 256
@@ -121,5 +122,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
   InterlockedAdd(stats[ti + 7], (int)round(nx * ny  * kStatsScale), prev);
   InterlockedAdd(stats[ti + 8], (int)round(nx * dts * kStatsScale), prev);
   InterlockedAdd(stats[ti + 9], (int)round(ny * dts * kStatsScale), prev);
-  InterlockedAdd(stats[ti + 10], (int)round(dts * dts * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 10], (int)round(dts * dts * kStatsScale), prev);   // Σdt²
+  InterlockedAdd(stats[ti + 11], (int)round(dts * kStatsScale), prev);         // Σdt (signed)
 }

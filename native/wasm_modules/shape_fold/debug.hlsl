@@ -18,7 +18,7 @@ RWTexture2D<float4>   outTex : register(u2);
 
 // Must match main.cpp / edge.hlsl.
 static const int   kTileGrid     = 16;
-static const int   kSlots        = 11;   // per-tile stride (must match edge.hlsl / main.cpp)
+static const int   kSlots        = 12;   // per-tile stride (must match edge.hlsl / main.cpp)
 static const float kStatsScale   = 65536.0;
 static const float kEdgeNormGain = 2.0;
 static const float kVarFloor     = 0.008;
@@ -41,6 +41,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float sd = sqrt(var); sd = max(sd - kVarFloor, 0.0);
     float edge   = saturate((float)stats[ti + 0] / kStatsScale / sqrt(ne) * kEdgeNormGain);
     float motion = saturate((float)stats[ti + 3] / kStatsScale / sqrt(ne) * kEdgeNormGain);
+    // Discount spatially-UNIFORM temporal change (a flash) — dt≈const across the
+    // tile → DC fraction (Σdt)²/(n·Σdt²) ≈ 1; structured motion → ≈ 0.
+    float sdt  = (float)stats[ti + 11] / kStatsScale;
+    float sdt2 = (float)stats[ti + 10] / kStatsScale;
+    float dcf  = (sdt2 > 1e-9) ? saturate(sdt * sdt / (ne * sdt2)) : 0.0;
+    motion *= (1.0 - dcf);
     int mode = (int)(dbg_mode + 0.5);
     if      (mode == 1) v = sd;
     else if (mode == 2) v = edge;
