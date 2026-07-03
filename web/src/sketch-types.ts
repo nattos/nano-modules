@@ -334,6 +334,19 @@ export const DASHBOARD_MODULE_TYPE = 'util.dashboard';
  *  (the sketch's exposed scalar outputs). Mirrors util.dashboard's relay fields. */
 export const SKETCH_OUTPUT_MODULE_TYPE = 'util.sketch_output';
 
+/**
+ * Synthetic schema defs for the ENGINE-RESERVED per-effect keys. They aren't
+ * plugin schema fields (the executor strips `__` keys before the plugin and
+ * consumes them itself: wet/dry opacity + the bypass gate), but wires and
+ * automation may target them — these defs supply the dest range contract
+ * ([0,1]; bypass thresholds at >= 0.5 executor-side) and let the wire UI treat
+ * them like ordinary float inputs.
+ */
+export const RESERVED_FIELD_DEFS: Record<string, { type: string; io: number; min: number; max: number; default: number }> = {
+  __opacity__: { type: 'float', io: 1, min: 0, max: 1, default: 1 },
+  __bypass__: { type: 'float', io: 1, min: 0, max: 1, default: 0 },
+};
+
 /** Identifies one end of a drag-to-connect operation. */
 export interface FieldConnectInfo {
   sketchId: string;
@@ -349,5 +362,12 @@ export interface FieldConnectInfo {
    *  other endpoint must be a device field; the wire becomes a rail export (from an
    *  output field) or rail read (into an input field). */
   railId?: string;
+  /** Set when this endpoint is a track/group LAYER param (the arrangement's
+   *  mixer strip): the owner track/group id. Wire from a mod OUTPUT on the SAME
+   *  track → an own-layer clip wire (dest `__layer__`); from a rail → a
+   *  track-level rail read. */
+  layerOwner?: string;
+  /** Which layer param ('opacity' | 'bypass'); default 'opacity'. */
+  layerField?: string;
 }
 

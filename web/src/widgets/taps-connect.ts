@@ -20,7 +20,7 @@
  */
 
 import type { FieldConnectInfo, Sketch } from '../sketch-types';
-import { chainEntryAt } from '../sketch-types';
+import { chainEntryAt, RESERVED_FIELD_DEFS } from '../sketch-types';
 import type { PluginInfo, ColumnTaps } from './column-adapter';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 import { appState } from '../state/app-state';
@@ -83,6 +83,19 @@ export class WireConnect implements ColumnTaps {
     this.end();
   }
 
+  /** Complete a CLICK-mode connection onto a track/group LAYER endpoint (the
+   *  arrangement's mixer strip / opacity fader). */
+  completeOnLayer(ownerId: string, layerField: string = 'opacity') {
+    if (!this.state) return;
+    const info: FieldConnectInfo = {
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+      viewportY: this.state.pointerY, schemaDef: null,
+      layerOwner: ownerId, layerField,
+    };
+    this.commit({ key: `layer/${ownerId}/${layerField}`, info });
+    this.end();
+  }
+
   private hitToInfo(hit: HTMLElement): FieldConnectInfo | null {
     // A rail / return endpoint (e.g. an <arr-rail-lane> drop target) carries only a
     // rail id — the other endpoint supplies the device field.
@@ -91,6 +104,15 @@ export class WireConnect implements ColumnTaps {
       return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
         viewportY: rr.top + rr.height / 2, schemaDef: null, railId: hit.dataset.railId };
     }
+    // A track/group LAYER endpoint (the arrangement's mixer strip): carries the
+    // owner id + which layer param it exposes.
+    if (hit.dataset.layerOwner) {
+      const rr = hit.getBoundingClientRect();
+      return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: false,
+        viewportY: rr.top + rr.height / 2, schemaDef: null,
+        layerOwner: hit.dataset.layerOwner,
+        layerField: hit.dataset.layerField || 'opacity' };
+    }
     const sketchId = hit.dataset.sketchId ?? '';
     const colIdx = parseInt(hit.dataset.colIdx ?? '-1', 10);
     const chainIdx = parseInt(hit.dataset.chainIdx ?? '-1', 10);
@@ -98,7 +120,9 @@ export class WireConnect implements ColumnTaps {
     if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
     const entry = chainEntryAt(this.host.getSketch(sketchId), chainIdx);
     if (entry?.type !== 'module') return null;
-    const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath] ?? null;
+    // Reserved engine keys aren't in the plugin schema — synthesize their defs.
+    const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath]
+      ?? RESERVED_FIELD_DEFS[fieldPath] ?? null;
     const r = hit.getBoundingClientRect();
     return { sketchId, colIdx, chainIdx, fieldPath,
       isOutput: hit.dataset.isOutput === 'true', viewportY: r.top + r.height / 2, schemaDef };
@@ -232,7 +256,8 @@ export class WireConnect implements ColumnTaps {
     const fieldPath = fp.join('/');
     const entry = chainEntryAt(this.host.getSketch(sketchId), chainIdx);
     if (entry?.type !== 'module') return null;
-    const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath] ?? null;
+    const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath]
+      ?? RESERVED_FIELD_DEFS[fieldPath] ?? null;
     const info: FieldConnectInfo = {
       sketchId, colIdx, chainIdx, fieldPath,
       isOutput: !!(((schemaDef as any)?.io ?? 0) & 2),

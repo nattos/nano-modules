@@ -208,6 +208,127 @@ describe('Arrangement composition executor (GPU)', () => {
     expect(spread).toBeGreaterThan(60); // modulation visibly sweeps the brightness
   });
 
+  it('layer opacity: a track-level rail read sweeps the layer in/out', async () => {
+    // The __layer__ composition-param path end-to-end: an LFO on one track
+    // exports to a return rail; ANOTHER track's track-level read (targetDeviceId
+    // __layer__) drives that track's LAYER OPACITY — resolved comp-side to the
+    // layer's blend `opacity` param. The white layer must visibly fade against
+    // the black backdrop as the LFO sweeps.
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('mod.source.lfo'),
+      { timeout: 30_000 },
+    );
+
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const t1 = store.addTrack();   // the white layer whose OPACITY is driven
+      const p1 = store.createEmptyClip(t1, 0, 16);
+      store.addClipDeviceType(t1, p1.split('/')[2], 'source.solid_color');
+      const t2 = store.addTrack();   // the writer (mod-only clip)
+      const p2 = store.createEmptyClip(t2, 0, 16);
+      store.addClipDeviceType(t2, p2.split('/')[2], 'mod.source.lfo');
+      const railTrackId = store.addReturn();
+      const railId = store.trackById(railTrackId).railId;
+      // Re-resolve AFTER the last mutate (history rebuilds objects).
+      const c1 = store.trackById(t1).clips[0];
+      Object.assign(c1.sketch.devices[0].state ??= {}, { color: [1, 1, 1] });
+      const c2 = store.trackById(t2).clips[0];
+      const lfo = c2.sketch.devices[0];
+      Object.assign(lfo.state ??= {}, { rate: 2, amplitude: 1 });
+      c2.exports.push({ id: 'e1', railId, sourceDeviceId: lfo.id, sourceField: 'output', combine: 'add', magnitude: 'auto' });
+      store.docRev++;
+      // The store-level attach (the mixer-strip wire gesture lands here).
+      store.connectLayerToRail(t1, railId, 'opacity');
+      store.setTransportMode('precise');
+      store.setPosition(1);
+      store.playing = true;
+    });
+
+    const lumas: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      const l = await page.evaluate(() => {
+        const app = document.querySelector('arrangement-app') as any;
+        const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
+        if (!cv || !cv.width) return null;
+        const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
+        return Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
+      });
+      if (l !== null) lumas.push(l);
+    }
+    // The bridge mirrored the build's layer resolution (band addressing).
+    // NOTE: read the key count IN-PAGE — MobX observables serialize to {}
+    // across an evaluate return.
+    const layerTargetKeys = await page.evaluate(() =>
+      Object.keys((window as any).arrangementStore.layerTargets ?? {}).length);
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    const spread = Math.max(...lumas) - Math.min(...lumas);
+    expect(lumas.length).toBeGreaterThan(5);
+    expect(spread).toBeGreaterThan(60); // the layer visibly fades in/out
+    expect(layerTargetKeys).toBeGreaterThan(0);
+  });
+
+  it('layer bypass: a __layer__/bypass lane structurally drops the layer past 0.5', async () => {
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.solid_color'),
+      { timeout: 30_000 },
+    );
+
+    await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      // A DIM base layer first (composited first = underneath), so the
+      // composite never empties when the white layer drops (an empty composite
+      // leaves the monitor's last frame on the canvas — we assert white → dim,
+      // not white → stale).
+      const tDim = store.addTrack();
+      const pDim = store.createEmptyClip(tDim, 0, 16);
+      store.addClipDeviceType(tDim, pDim.split('/')[2], 'source.solid_color');
+      // The WHITE layer on top, carrying the bypass lane.
+      const t1 = store.addTrack();
+      const p1 = store.createEmptyClip(t1, 0, 16);
+      store.addClipDeviceType(t1, p1.split('/')[2], 'source.solid_color');
+      const cDim = store.trackById(tDim).clips[0];
+      Object.assign(cDim.sketch.devices[0].state ??= {}, { color: [0.05, 0.05, 0.05] });
+      const c1 = store.trackById(t1).clips[0];
+      Object.assign(c1.sketch.devices[0].state ??= {}, { color: [1, 1, 1] });
+      // Track lane: bypass ramps 0 -> 1 over [0,8] (crosses 0.5 at beat 4).
+      store.trackById(t1).automation.push({
+        id: 'byp', targetDeviceId: '__layer__', targetField: 'bypass',
+        label: 'Layer · Bypass', points: [{ x: 0, y: 0 }, { x: 8, y: 1 }],
+      });
+      store.docRev++;
+      store.setPosition(1); // before the crossing: the white layer renders
+    });
+
+    const luma = async () => await page.evaluate(() => {
+      const app = document.querySelector('arrangement-app') as any;
+      const cv = app?.shadowRoot?.querySelector('arr-monitor')?.shadowRoot?.querySelector('canvas') as HTMLCanvasElement | null;
+      if (!cv || !cv.width) return null;
+      const d = cv.getContext('2d')!.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
+      return Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]);
+    });
+
+    await new Promise((r) => setTimeout(r, 1200));
+    const before = await luma();
+    await page.evaluate(() => { (window as any).arrangementStore.setPosition(7); });
+    await new Promise((r) => setTimeout(r, 1200));
+    const after = await luma();
+
+    expect(before).not.toBeNull();
+    expect(before!).toBeGreaterThan(200);  // white layer renders before the crossing
+    expect(after!).toBeLessThan(40);       // structurally dropped past it (black bg)
+  });
+
   it('media relink refreshes the document mirror (dead pre-reload URL → video recovers)', async () => {
     // Regression: loading an arrangement leaves DEAD blob URLs in the doc until
     // relinkMedia() re-mints them — an update that deliberately bypasses

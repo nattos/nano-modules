@@ -20,7 +20,7 @@ import {
   ROW_HEIGHT,
   AUTO_LANE_HEIGHT,
 } from './grid-shared';
-import { Track, Clip, AutomationLane, derivedWarpSegments, compositionLengthBeats } from '../model/composition';
+import { Track, Clip, AutomationLane, derivedWarpSegments, compositionLengthBeats , LAYER_TARGET_ID} from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
 import { setAnchor, AnchorKeys } from './anchor-registry';
 import '../../../widgets/editable-label';
@@ -785,8 +785,20 @@ export class ArrGrid extends MobxLitElement {
                   >S</button>
                   <button
                     class="sb bypass ${track.bypassed ? 'on' : ''}"
-                    title="Bypass / activator"
-                    @pointerdown=${(e: Event) => { e.stopPropagation(); store.toggleBypass(track.id); }}
+                    title=${store.wiresMode
+                      ? 'Layer bypass — click to select as an automation target'
+                      : 'Bypass / activator'}
+                    @pointerdown=${(e: Event) => {
+                      e.stopPropagation();
+                      // Wires mode: the B button selects the LAYER BYPASS
+                      // automation target (a __layer__/bypass lane structurally
+                      // drops the subtree past 0.5) instead of toggling.
+                      if (store.wiresMode) {
+                        store.selectAutoField(`track/${track.id}`, LAYER_TARGET_ID, 'bypass');
+                        return;
+                      }
+                      store.toggleBypass(track.id);
+                    }}
                   >B</button>
                 `}
           </div>

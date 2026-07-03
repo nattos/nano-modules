@@ -14,7 +14,7 @@ import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo } from '../sketch-types';
-import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
+import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS } from '../sketch-types';
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -1083,6 +1083,7 @@ export class ColumnGroup extends MobxLitElement {
             }}
             @dblclick=${(e: Event) => this.onHeaderDblClick(e, entry)}>
             <button
+              class="device-bypass-btn"
               title=${bypass ? 'Device off — click to enable' : 'Device on — click to bypass'}
               style="margin-right:6px;background:none;border:none;cursor:pointer;font-size:13px;line-height:1;padding:0 4px;opacity:${bypass ? 0.5 : 1};color:${bypass ? 'var(--app-text-color2)' : 'var(--app-text-color1)'}"
               @pointerdown=${(e: Event) => e.stopPropagation()}
@@ -1110,6 +1111,7 @@ export class ColumnGroup extends MobxLitElement {
               `}
             </div>
             <scalar-slider
+              class="device-opacity-slider"
               title=${`Opacity ${Math.round(opacity * 100)}%`}
               style="margin-left:auto;width:64px"
               .fieldPath=${'__opacity__'}
@@ -1429,6 +1431,37 @@ export class ColumnGroup extends MobxLitElement {
       `);
     }
 
+    // Engine-reserved header controls (bypass ⏻ + opacity) as wire/lane DESTS.
+    // They aren't schema fields — no layoutManager key — so measure their DOM
+    // rects directly and attach a synthetic [0,1] float schemaDef (the executor
+    // folds `__` dests through its own opacity/bypass decisions).
+    {
+      const headerEl = innerEl.querySelector('.effect-card-header') as HTMLElement | null;
+      const base = innerEl.getBoundingClientRect();
+      const pushReserved = (el: HTMLElement | null, fieldPath: string) => {
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
+        const key = `${keyPrefix}${fieldPath}`;
+        const schemaDef = RESERVED_FIELD_DEFS[fieldPath];
+        this.registerFieldSelectable(key, chainIdx, entry, fieldPath, false);
+        hits.push(html`
+          <div class="tap-overlay-hit" ?selected=${selectedPath === key}
+            data-sketch-id=${this.sketchId}
+            data-col-idx=${this.colIdx}
+            data-chain-idx=${chainIdx}
+            data-field-path=${fieldPath}
+            data-is-output="false"
+            style="top:${r.top - base.top}px;left:${r.left - base.left}px;width:${r.width}px;height:${r.height}px"
+            @pointerdown=${(e: PointerEvent) => this.onTapHitPointerDown(
+              e, key, fieldPath, false, schemaDef, chainIdx)}
+            @click=${(e: Event) => this.onTapOverlayClick(key, fieldPath, false, schemaDef, chainIdx, e)}></div>
+        `);
+      };
+      pushReserved(headerEl?.querySelector('.device-bypass-btn') ?? null, '__bypass__');
+      pushReserved(headerEl?.querySelector('.device-opacity-slider') ?? null, '__opacity__');
+    }
+
     return html`<div class="tap-overlay-container">${hits}</div>`;
   }
 
@@ -1572,6 +1605,10 @@ export class ColumnGroup extends MobxLitElement {
         const v = st?.[fieldPath];
         return typeof v === 'number' ? v : undefined;
       },
+      // Wire-driven reserved keys (__opacity__/__bypass__) record modulation
+      // bands like any float field — draw them on the header controls.
+      getModulation: (fieldPath: string) =>
+        this.ds.modulation(entry.instance_key)?.[fieldPath] ?? null,
       setValue: (fieldPath: string, value: any) => {
         this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
       },

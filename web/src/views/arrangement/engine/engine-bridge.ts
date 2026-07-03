@@ -268,6 +268,11 @@ export class EngineBridge {
       // showComposite's !sameStructure branch).
       this.video?.reinjectActive();
     }
+    if (info.layerTargets !== undefined) {
+      // The build's `__layer__` resolution — mixer strips resolve their
+      // modulation bands through it (the blend key churns with the active clip).
+      try { store.setLayerTargets(JSON.parse(info.layerTargets)); } catch { /* keep prev */ }
+    }
     if (info.videoDescs !== undefined) {
       try {
         this.compPumpDescs = JSON.parse(info.videoDescs) as VideoClipDesc[];

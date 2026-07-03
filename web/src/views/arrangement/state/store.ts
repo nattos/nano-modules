@@ -46,7 +46,7 @@ import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaP
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMedia, resolveMedia } from '../workspace/media-store';
-import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID } from '../model/composition';
+import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
 import { buildMultiEditModel, multiSketchId } from './multi-edit';
 
 /** Per-nesting-level budget (px) for the group gutter: one vertical group line
@@ -444,6 +444,15 @@ export class ArrangementStore {
    * live modulation bands. Not persisted, not undoable.
    */
   modulationData: Record<string, Record<string, { value: number; min: number; max: number; neutral: number }>> = {};
+  /** The comp build's `__layer__` resolution: ownerId (track/group id) →
+   *  {instanceKey, field} where that layer's opacity lives in the CURRENT build
+   *  (comp_layer_targets_json, mirrored by the bridge on structure changes).
+   *  UI modulation bands resolve track/group opacity through it — the blend
+   *  instance key churns with the active clip. */
+  layerTargets: Record<string, { instanceKey: string; field: string }> = {};
+  setLayerTargets(t: Record<string, { instanceKey: string; field: string }>) {
+    runInAction(() => { this.layerTargets = t; });
+  }
 
   /**
    * Per-frame published instance state (effect/source OUTPUTS + broadcasts) from
@@ -1254,9 +1263,16 @@ export class ArrangementStore {
     return undefined;
   }
   private autoFieldLabel(ownerKey: string, deviceId: string, field: string): string {
+    // Composition-level layer params (the __layer__ sentinel).
+    if (deviceId === LAYER_TARGET_ID) {
+      return `Layer · ${field === 'bypass' ? 'Bypass' : 'Opacity'}`;
+    }
     const dev = this.devicesForOwner(ownerKey)?.find((d) => d.id === deviceId);
     const name = dev ? (catalogEffect(dev.moduleType)?.name ?? dev.moduleType) : '?';
-    return `${name} · ${field}`;
+    // Engine-reserved per-device keys get friendly names.
+    const fieldName = field === '__opacity__' ? 'Opacity'
+      : field === '__bypass__' ? 'Bypass' : field;
+    return `${name} · ${fieldName}`;
   }
   /** Select (or replace) the owner's automation field. */
   selectAutoField(ownerKey: string, deviceId: string, field: string) {
@@ -3212,6 +3228,21 @@ export class ArrangementStore {
    * sketch.
    */
   connectSketchWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    // Track/group LAYER endpoint (the mixer strip): from a rail → a track-level
+    // rail read; from a mod output on the SAME track → an own-layer clip wire
+    // (dest `__layer__`). Cross-track direct wires are rejected — that's what
+    // rails are for (export → rail → track-level read).
+    const layer = a.layerOwner ? a : b.layerOwner ? b : null;
+    if (layer) {
+      const other = layer === a ? b : a;
+      if (other.railId) {
+        this.connectLayerToRail(layer.layerOwner!, other.railId!,
+          layer.layerField === 'bypass' ? 'bypass' : 'opacity');
+      } else if (!other.layerOwner) {
+        this.connectFieldToLayer(other, layer);
+      }
+      return;
+    }
     // Rail / return endpoint: one side is a rail, the other a device field. An OUTPUT
     // field becomes a rail EXPORT (writes the rail); an INPUT field becomes a rail READ.
     const rail = a.railId ? a : b.railId ? b : null;
@@ -3270,6 +3301,52 @@ export class ArrangementStore {
           combine: 'add', magnitude: 'auto',
         });
       }
+    });
+  }
+
+  /** Attach a return rail to a track/group's LAYER param: pushes a track-level
+   *  rail read (targetDeviceId `__layer__`). One read per layer field — replace.
+   *  Layer opacity reads default to `replace` (the rail VALUE becomes the
+   *  opacity; the per-frame rail-base re-assert returns it to the fader value
+   *  when the writer drops). `bypass` reads are accepted for the rail-driven
+   *  structural bypass (thresholded >= 0.5 comp-side). */
+  connectLayerToRail(trackId: string, railId: string, field: 'opacity' | 'bypass' = 'opacity') {
+    this.mutate('connect rail', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      t.reads = (t.reads ?? []).filter(
+        (r) => !(r.targetDeviceId === LAYER_TARGET_ID && r.targetField === field));
+      t.reads.push({
+        id: uid('rail'), railId, targetDeviceId: LAYER_TARGET_ID, targetField: field,
+        combine: 'replace', magnitude: 'auto',
+      });
+    });
+  }
+
+  /** Wire a clip's modulation OUTPUT to its OWN track/group layer opacity: a
+   *  clip wire with dest `__layer__`/opacity (resolved at build time to the
+   *  layer's blend param). Cross-track targets are rejected (use a rail);
+   *  `bypass` is rejected (self-killing: dropping the subtree removes the
+   *  wire's source). */
+  private connectFieldToLayer(field: FieldConnectInfo, layer: FieldConnectInfo) {
+    if ((layer.layerField ?? 'opacity') !== 'opacity') return;
+    if (!field.isOutput) return;                       // source must be a mod output
+    if (!field.sketchId.startsWith('clip/')) return;   // clip sketches only
+    const [, trackId] = field.sketchId.split('/');
+    if (trackId !== layer.layerOwner) return;          // own-layer only — rails for the rest
+    const id = uid('wire');
+    this.mutate('connect wire', (d) => {
+      const sk = draftSketch(d, field.sketchId);
+      const dev = sk?.devices[field.chainIdx];
+      if (!sk || !dev) return;
+      sk.wires = (sk.wires ?? []).filter(
+        (w) => !(w.dest.instanceKey === LAYER_TARGET_ID && w.dest.field === 'opacity'));
+      sk.wires.push({
+        id,
+        src: { instanceKey: dev.id, field: field.fieldPath },
+        dest: { instanceKey: LAYER_TARGET_ID, field: 'opacity' },
+        combine: 'replace',
+      });
     });
   }
 
