@@ -163,6 +163,10 @@ class CompExecutor {
   /** The decode pump's active set (VideoClipDesc[]; target ∪ displayed while
    *  holding — see precise_gate.pumpActiveSet). */
   const std::string& videoDescsJson();
+  /** The build's `__layer__` resolution: ownerId → {instanceKey, field} where
+   *  each layer's opacity lives (SketchBuild.layerTargets). Refreshed per eval;
+   *  the UI resolves modulation bands through it across per-clip key churn. */
+  const std::string& layerTargetsJson();
 
  private:
   void rebuildClock();
@@ -204,6 +208,7 @@ class CompExecutor {
 
   nlohmann::json cleanSketch_;  // structural basis (mirror-built, no live outputs)
   nlohmann::json execSketch_;   // clean + folded producer outputs (what execute() gets)
+  nlohmann::json layerTargets_ = nlohmann::json::object();  // ownerId → {instanceKey, field}
   bool hasContent_ = false;
   bool dirty_ = false;  // consumed by the next render()
   std::string chainSig_;
@@ -241,6 +246,7 @@ class CompExecutor {
   std::string requiredScratch_;
   std::string chainKeysScratch_;
   std::string videoDescsScratch_;
+  std::string layerTargetsScratch_;
   std::string publishedScratch_;
 };
 

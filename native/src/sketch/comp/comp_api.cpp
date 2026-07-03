@@ -220,4 +220,9 @@ int32_t comp_video_descs_json(CompExecutor* c, char* out, int32_t cap) {
   return c ? writeOut(c->videoDescsJson(), out, cap) : 0;
 }
 
+EXEC_EXPORT("comp_layer_targets_json")
+int32_t comp_layer_targets_json(CompExecutor* c, char* out, int32_t cap) {
+  return c ? writeOut(c->layerTargetsJson(), out, cap) : 0;
+}
+
 }  // extern "C"

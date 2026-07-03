@@ -761,3 +761,172 @@ TEST_CASE("engine-reserved __opacity__/__bypass__ accept wires + automation", "[
     CHECK(off > 235.0);  // wire crossed 0.5 -> dormant passthrough
   }
 }
+
+// ── Phase 2: __layer__ composition-param resolution + track-level rail reads ─
+
+TEST_CASE("layer targets resolve per bake site (and a lane forces the elided blend)",
+          "[comp_layer]") {
+  EvalHarness h;
+  const json opacityLane = json::array(
+      {{{"id", "L"}, {"targetDeviceId", "__layer__"}, {"targetField", "opacity"},
+        {"label", "op"}, {"points", json::array({{{"x", 0}, {"y", 1}}})}}});
+
+  SECTION("black bg: every source clip composites over arr_bg -> blend targets") {
+    h.cx.loadDocument(mkComposition(json::array({
+        mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                          json::array({mkDevice("d1", "source.solid_color")}))})),
+        mkTrack("t2", json::array({mkClip("c2", 0, 8,
+                                          json::array({mkDevice("d2", "source.solid_color")}))})),
+    })));
+    h.cx.seekBeat(1.0);
+    h.cx.update(0.0);
+    const json lt = json::parse(h.cx.layerTargetsJson());
+    REQUIRE(lt.is_object());
+    CHECK(lt["t1"]["instanceKey"] == "clip_c1_blend");
+    CHECK(lt["t1"]["field"] == "opacity");
+    CHECK(lt["t2"]["instanceKey"] == "clip_c2_blend");
+  }
+
+  SECTION("transparent bg: the TOP layer's opacity is the first device's __opacity__") {
+    json doc = mkComposition(json::array({
+        mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                          json::array({mkDevice("d1", "source.solid_color")}))})),
+    }));
+    doc["meta"]["background"] = {{"mode", "transparent"}};
+    h.cx.loadDocument(doc);
+    h.cx.seekBeat(1.0);
+    h.cx.update(0.0);
+    const json lt = json::parse(h.cx.layerTargetsJson());
+    CHECK(lt["t1"]["instanceKey"] == "clip_c1_d1");
+    CHECK(lt["t1"]["field"] == "__opacity__");
+  }
+
+  SECTION("effect-only clip: the adjustment layer's first fx device __opacity__") {
+    json doc = mkComposition(json::array({
+        mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                          json::array({mkDevice("d1", "source.solid_color")}))})),
+        mkTrack("t2", json::array({mkClip("fx1", 0, 8,
+                                          json::array({mkDevice("i1", "source.video.file")}))})),
+    }));
+    // Make fx1 a true effect-only clip: swap its device for a NON-generator.
+    h.cx.registerSchema("color.invert", json::object());
+    h.cx.registerCapabilities("color.invert", json::array());
+    doc["tracks"][1]["clips"][0]["sketch"]["devices"] =
+        json::array({mkDevice("i1", "color.invert")});
+    h.cx.loadDocument(doc);
+    h.cx.seekBeat(1.0);
+    h.cx.update(0.0);
+    const json lt = json::parse(h.cx.layerTargetsJson());
+    CHECK(lt["t2"]["instanceKey"] == "clip_fx1_i1");
+    CHECK(lt["t2"]["field"] == "__opacity__");
+  }
+
+  SECTION("a group __layer__ lane FORCES the blend `underlying`+opacity>=1 would elide") {
+    json g = mkTrack("g1", json::array(), {{"kind", "group"},
+                                           {"groupInput", {{"mode", "underlying"}}}});
+    json inner = mkTrack("t1", json::array({mkClip(
+        "c1", 0, 8, json::array({mkDevice("d1", "source.solid_color")}))}),
+        {{"parentId", "g1"}});
+    json below = mkTrack("t2", json::array({mkClip(
+        "c2", 0, 8, json::array({mkDevice("d2", "source.solid_color")}))}));
+    // Without the lane: underlying + opacity 1 elides the group blend.
+    h.cx.loadDocument(mkComposition(json::array({g, inner, below})));
+    h.cx.seekBeat(1.0);
+    h.cx.update(0.0);
+    CHECK(h.cx.chainKeysJson().find("group_g1_blend") == std::string::npos);
+    CHECK(json::parse(h.cx.layerTargetsJson()).contains("g1") == false);
+
+    // With a __layer__/opacity lane on the group: the blend must exist.
+    g["automation"] = opacityLane;
+    h.cx.loadDocument(mkComposition(json::array({g, inner, below})));
+    h.cx.update(0.0);
+    CHECK(h.cx.chainKeysJson().find("group_g1_blend") != std::string::npos);
+    const json lt = json::parse(h.cx.layerTargetsJson());
+    CHECK(lt["g1"]["instanceKey"] == "group_g1_blend");
+    CHECK(lt["g1"]["field"] == "opacity");
+  }
+}
+
+TEST_CASE("a __layer__ opacity lane and a track-level rail read reach the pixels",
+          "[comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  SECTION("track lane fades the layer (blend opacity 1 -> 0 across the clip)") {
+    // White solid over the black bg; a track lane drives __layer__/opacity from
+    // 1 (beat 0) to 0 (beat 8). At beat ~0 the layer is opaque white; at beat
+    // ~7.9 nearly transparent -> black bg shows through.
+    json t1 = mkTrack("t1", json::array({mkClip(
+        "c1", 0, 8,
+        json::array({mkDevice("d1", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})}))}));
+    t1["automation"] = json::array(
+        {{{"id", "L"}, {"targetDeviceId", "__layer__"}, {"targetField", "opacity"},
+          {"label", "op"},
+          {"points", json::array({{{"x", 0}, {"y", 1}}, {{"x", 8}, {"y", 0}}})}}});
+    const json doc = mkComposition(json::array({t1}));
+
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    cx.loadDocument(doc);
+    int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+
+    cx.seekBeat(0.01);
+    cx.update(0.0);
+    const double bright = meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+
+    cx.seekBeat(7.9);
+    cx.update(0.0);
+    const double dim = meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+
+    INFO("bright " << bright << " dim " << dim);
+    CHECK(bright > 220.0);
+    CHECK(dim < 30.0);
+  }
+
+  SECTION("a rail (return track) drives a track's layer opacity via track.reads") {
+    // Writer: a resting LFO (state output 0, declared [-1,1]) exported onto
+    // rail R -> remapped to 0.5. Reader: t2's TRACK-level read targets
+    // __layer__/opacity -> the white layer blends at 0.5 over black -> gray.
+    json writerClip = mkClip("cw", 0, 8,
+                             json::array({mkDevice("lfo", "mod.source.lfo",
+                                                   {{"rate", 0.0}, {"output", 0.0}})}));
+    writerClip["exports"] = json::array(
+        {{{"id", "e1"}, {"railId", "R"}, {"sourceDeviceId", "lfo"}, {"sourceField", "output"},
+          {"combine", "replace"}}});
+    json t1 = mkTrack("t1", json::array({writerClip}));
+    json t2 = mkTrack("t2", json::array({mkClip(
+        "c2", 0, 8,
+        json::array({mkDevice("d2", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})}))}));
+    t2["reads"] = json::array(
+        {{{"id", "r1"}, {"railId", "R"}, {"targetDeviceId", "__layer__"},
+          {"targetField", "opacity"}, {"combine", "replace"}}});
+    json rail = mkTrack("r", json::array(), {{"kind", "rail"}, {"railId", "R"}});
+    const json doc = mkComposition(json::array({t1, t2, rail}));
+
+    // The rail accumulator's live `output` flows through the published-state
+    // mirror (foldPublishedOutputs); natively that's the barrel's state-doc
+    // provider — synthesize the identity shaper's output here, exactly like
+    // the LFO-fold test above.
+    sketch_executor::effrtSetPublishedStateProvider(
+        [](effect_runtime::EffectInstance* i) -> std::string {
+          return i->id() == "mod.shaper.remap" ? std::string("{\"output\":0.5}")
+                                               : std::string();
+        });
+
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+    // The rail node precedes the writer in the chain (delayed tap) — settle a
+    // few frames before asserting.
+    double m = 0;
+    for (int i = 0; i < 4; i++) {
+      cx.update(0.0);
+      m = meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+    }
+    sketch_executor::effrtSetPublishedStateProvider(nullptr);
+    INFO("mean " << m << " (expect ~127: white layer at rail-driven opacity 0.5)");
+    CHECK(std::abs(m - 127.0) < 25.0);
+  }
+}

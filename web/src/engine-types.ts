@@ -239,6 +239,10 @@ export interface CompFrameInfo {
   chainKeys?: string[];
   /** Decode-pump active set (VideoClipDesc[] JSON) — present when it changed. */
   videoDescs?: string;
+  /** The build's `__layer__` resolution (ownerId → {instanceKey, field} JSON) —
+   *  present when the structure changed; UI modulation bands resolve track/
+   *  group opacity through it (the blend key churns with the active clip). */
+  layerTargets?: string;
 }
 
 // --- Worker events (worker → main) ---

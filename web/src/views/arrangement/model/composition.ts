@@ -333,6 +333,18 @@ export interface RailRead extends RailTap {
   magnitude: RailMagnitude;
 }
 
+/**
+ * Composition-param target sentinel (lock-step: comp_model.h kLayerTargetId).
+ * A lane/read/wire whose targetDeviceId / dest.instanceKey is `__layer__`
+ * addresses the OWNER's composition-level layer params instead of a device
+ * field: targetField 'opacity' (render-level — the C++ build resolves it to
+ * the layer's blend `opacity` param or the top layer's reserved `__opacity__`)
+ * or 'bypass' (eval-level — a structural drop consumed by the tree builder).
+ * Future out-of-sketch params (clip timing, loop params, ...) extend this
+ * vocabulary.
+ */
+export const LAYER_TARGET_ID = '__layer__';
+
 /** A device in this clip that warps the beat grid over the clip's range. */
 export interface WarpBinding {
   id: string;
@@ -495,6 +507,11 @@ export interface Track {
    *  how writer wires fold AND the lane's display range. Omitted ⇒ unsigned (most
    *  modulation sources are unsigned, and the default combine is add). */
   railSigned?: boolean;
+  /** TRACK-LEVEL rail reads: a return track driving this track's own params.
+   *  `targetDeviceId` is {@link LAYER_TARGET_ID} for the track/group's layer
+   *  params (targetField 'opacity' | 'bypass'), or a track-FX device id.
+   *  Lock-step: comp_model.h TrackM.reads. */
+  reads?: RailRead[];
 }
 
 export interface PlayModeConfig {

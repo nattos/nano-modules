@@ -53,6 +53,10 @@ struct CompNode {
   // Shared:
   double opacity = 1;
   int blendMode = 0;
+  /** The owner (track/group) has a lane/read/wire targeting `__layer__`
+   *  opacity — forces a blend node where the static build would elide one, so
+   *  the modulation has a target. Set by the tree builder (comp_eval.h). */
+  bool layerOpacityModulated = false;
   std::vector<CompNode> children;
 };
 
@@ -60,6 +64,17 @@ struct CompNode {
 struct SketchBuild {
   bool hasContent = false;
   nlohmann::json sketch;  // { anchor:null, chain, wires, instances }
+  /**
+   * Composition-param resolution map: ownerId (track/group id) →
+   * {instanceKey, field} — where that owner's LAYER OPACITY lives in THIS
+   * build (a blend node's `opacity` param, or the top/adjustment layer's
+   * reserved `__opacity__`). A SIBLING of the sketch (never serialized into
+   * it — the frozen build goldens stay byte-identical). Consumed by the
+   * automation emitter, rail-read wiring, own-layer clip wires, and shipped
+   * to the UI (comp_layer_targets_json) so modulation bands can resolve the
+   * per-build key churn.
+   */
+  nlohmann::json layerTargets = nlohmann::json::object();
 };
 
 namespace build_detail {
@@ -133,6 +148,8 @@ struct Builder {
   std::map<std::string, size_t> railWriterIdx;
   std::vector<Reader> railReaders;
   std::set<std::string> railNodeKeys;
+  /** ownerId → {instanceKey, field}: where each layer's opacity landed. */
+  nlohmann::json layerTargets = nlohmann::json::object();
 
   static bool isMod(const std::string& t) { return t.rfind("mod.", 0) == 0; }
 
@@ -188,6 +205,39 @@ struct Builder {
     return last;
   }
 
+  /** Record where owner `ownerId`'s layer opacity lives in this build. */
+  void recordLayerTarget(const std::string& ownerId, const std::string& instanceKey,
+                         const std::string& field) {
+    if (ownerId.empty()) return;
+    layerTargets[ownerId] = {{"instanceKey", instanceKey}, {"field", field}};
+  }
+
+  /** Collect an owner's (track/group) rail READS: `__layer__` targets resolve
+   *  to the owner's layer-opacity slot (`layerKey`/`layerField`, when this
+   *  build produced one); device targets resolve to the owner's FX-bus keys.
+   *  `__layer__`/bypass reads are eval-level (a structural drop) — never an
+   *  executor wire — so they're skipped here. */
+  void collectOwnerReads(const TrackM* owner, const std::string& layerKey,
+                         const std::string& layerField) {
+    if (!owner) return;
+    for (const auto& read : owner->reads) {
+      if (read.targetDeviceId == kLayerTargetId) {
+        if (read.targetField == "opacity" && !layerKey.empty()) {
+          railReaders.push_back({read.railId, layerKey, layerField, &read});
+        }
+        continue;
+      }
+      for (const auto& d : owner->sketch.devices) {
+        if (d.id != read.targetDeviceId) continue;
+        if (cat.has(d.moduleType) && !cat.isGenerator(d.moduleType)) {
+          railReaders.push_back({read.railId, trackInstanceKey(owner->id, d.id),
+                                 read.targetField, &read});
+        }
+        break;
+      }
+    }
+  }
+
   /** Composite ONE clip leaf over `acc` (source clip → wired blend; effect-only
    *  clip → inline adjustment layer). Returns the new accumulator key. */
   std::optional<std::string> compositeClip(const CompNode& node,
@@ -206,6 +256,12 @@ struct Builder {
       if (!cat.isGenerator(d->moduleType)) fx.push_back(d);
     }
     const double* startSec = node.hasStartSec ? &node.startSec : nullptr;
+
+    // Where this LAYER's opacity lands in the build (the `__layer__` target):
+    // the blend node's real `opacity` param when the layer composites over
+    // content below, else the top/adjustment layer's reserved `__opacity__`.
+    std::string layerKey;
+    std::string layerField;
 
     if (gen || catDevs.empty()) {
       // ── SOURCE clip: render standalone, then composite OVER the accumulator ──
@@ -234,6 +290,8 @@ struct Builder {
           // First (top) layer becomes the accumulator; sub-1 opacity fades via the
           // reserved wet/dry key.
           if (node.opacity < 1) instances[firstKey]["state"]["__opacity__"] = node.opacity;
+          layerKey = firstKey;
+          layerField = "__opacity__";
           acc = lastKey;
         } else {
           const std::string b = clipInstanceKey(clip.id, "blend");
@@ -245,6 +303,8 @@ struct Builder {
           wires.push_back({{"id", "w" + std::to_string(wid++)},
                            {"src", {{"instanceKey", lastKey}, {"field", "tex_out"}}},
                            {"dest", {{"instanceKey", b}, {"field", "1"}}}});
+          layerKey = b;
+          layerField = "opacity";
           acc = b;
         }
       }
@@ -253,8 +313,10 @@ struct Builder {
       bool appliedOpacity = false;
       for (const DeviceM* d : fx) {
         nlohmann::json state = defaultsPlus(*d);
-        if (!isMod(d->moduleType) && !appliedOpacity && node.opacity < 1) {
-          state["__opacity__"] = node.opacity;
+        if (!isMod(d->moduleType) && !appliedOpacity) {
+          if (node.opacity < 1) state["__opacity__"] = node.opacity;
+          layerKey = clipInstanceKey(clip.id, d->id);
+          layerField = "__opacity__";
           appliedOpacity = true;
         }
         push(d->moduleType, clipInstanceKey(clip.id, d->id), std::move(state), startSec);
@@ -263,20 +325,34 @@ struct Builder {
       if (acc) acc = pushTrackFx(node.track, *acc);  // track FX bus over the adjustment
     }
 
+    if (node.track && !layerKey.empty()) {
+      recordLayerTarget(node.track->id, layerKey, layerField);
+    }
+
     // Fold this clip's modulation wires in, remapping device ids → composite keys.
+    // A dest of `__layer__`/opacity remaps to this layer's opacity slot (an
+    // own-layer wire); `__layer__`/bypass would be self-killing (dropping the
+    // subtree removes the wire's source) and is dropped.
     std::set<std::string> pushed;
     for (const DeviceM* d : catDevs) pushed.insert(d->id);
     for (const auto& w : clip.sketch.wires) {
       if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
       const std::string srcKey = w["src"].value("instanceKey", std::string());
       const std::string destKey = w["dest"].value("instanceKey", std::string());
-      if (!pushed.count(srcKey) || !pushed.count(destKey)) continue;
+      const bool destIsLayer = destKey == kLayerTargetId;
+      if (!pushed.count(srcKey) || (!destIsLayer && !pushed.count(destKey))) continue;
+      if (destIsLayer &&
+          (w["dest"].value("field", std::string()) != "opacity" || layerKey.empty())) {
+        continue;
+      }
       nlohmann::json w2 = w;
       w2["id"] = "cw" + std::to_string(wid++);
       w2["src"] = {{"instanceKey", clipInstanceKey(clip.id, srcKey)},
                    {"field", w["src"].value("field", std::string())}};
-      w2["dest"] = {{"instanceKey", clipInstanceKey(clip.id, destKey)},
-                    {"field", w["dest"].value("field", std::string())}};
+      w2["dest"] = destIsLayer
+          ? nlohmann::json{{"instanceKey", layerKey}, {"field", layerField}}
+          : nlohmann::json{{"instanceKey", clipInstanceKey(clip.id, destKey)},
+                           {"field", w["dest"].value("field", std::string())}};
       wires.push_back(std::move(w2));
     }
 
@@ -304,6 +380,8 @@ struct Builder {
       railReaders.push_back({read.railId, clipInstanceKey(clip.id, read.targetDeviceId),
                              read.targetField, &read});
     }
+    // Track-level rail reads (the owner's layer opacity / FX-bus params).
+    collectOwnerReads(node.track, layerKey, layerField);
     return acc;
   }
 
@@ -334,8 +412,17 @@ struct Builder {
 
     // `underlying` at full opacity already CONTAINS the below content — it just
     // replaces the accumulator. Otherwise composite the group OVER the parent.
-    const bool needBlend = acc.has_value() && !(mode == "underlying" && node.opacity >= 1);
-    if (!needBlend) return inner;
+    // A modulated layer opacity FORCES the blend (the modulation needs a
+    // target even while the static value would elide it).
+    const bool needBlend =
+        acc.has_value() &&
+        (node.layerOpacityModulated || !(mode == "underlying" && node.opacity >= 1));
+    if (!needBlend) {
+      // No blend, no opacity application — a group over nothing has no layer
+      // opacity even statically; group FX-bus rail reads still resolve.
+      collectOwnerReads(node.group, std::string(), std::string());
+      return inner;
+    }
     const std::string b = "group_" + node.group->id + "_blend";
     push(kBlend, b, {{"mode", node.blendMode}, {"opacity", node.opacity}});
     wires.push_back({{"id", "gw" + std::to_string(wid++)},
@@ -344,6 +431,8 @@ struct Builder {
     wires.push_back({{"id", "gw" + std::to_string(wid++)},
                      {"src", {{"instanceKey", *inner}, {"field", "tex_out"}}},
                      {"dest", {{"instanceKey", b}, {"field", "1"}}}});
+    recordLayerTarget(node.group->id, b, "opacity");
+    collectOwnerReads(node.group, b, "opacity");
     return b;
   }
 
@@ -359,6 +448,18 @@ inline void collectClips(const std::vector<CompNode>& ns, std::vector<const Clip
   for (const auto& n : ns) {
     if (n.isGroup) collectClips(n.children, out);
     else out.push_back(n.clip);
+  }
+}
+
+/** Every owner (clip-leaf track + group) in the tree, depth-first. */
+inline void collectOwners(const std::vector<CompNode>& ns, std::vector<const TrackM*>& out) {
+  for (const auto& n : ns) {
+    if (n.isGroup) {
+      out.push_back(n.group);
+      collectOwners(n.children, out);
+    } else if (n.track) {
+      out.push_back(n.track);
+    }
   }
 }
 
@@ -395,6 +496,20 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
 
   // Rail accumulator nodes (one per rail with an active reader), pushed BEFORE
   // the clip layers. Each is an identity mod.shaper.remap relay.
+  auto pushRailNode = [&](const std::string& railId) {
+    const std::string key = "rail_" + railId;
+    if (b.railNodeKeys.count(key)) return;
+    b.railNodeKeys.insert(key);
+    const auto baseIt = railBases.find(railId);
+    nlohmann::json railState = {
+        {"input", baseIt != railBases.end() ? nlohmann::json(baseIt->second)
+                                            : nlohmann::json(0)}};
+    const auto signedIt = railSigned.find(railId);
+    if (signedIt != railSigned.end() && signedIt->second) {
+      railState.update({{"in_min", -1}, {"in_max", 1}, {"out_min", -1}, {"out_max", 1}});
+    }
+    b.push("mod.shaper.remap", key, std::move(railState));
+  };
   for (const ClipM* clip : flatClips) {
     std::set<std::string> catIds;
     for (const auto& d : clip->sketch.devices) {
@@ -402,18 +517,30 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
     }
     for (const auto& read : clip->reads) {
       if (!catIds.count(read.targetDeviceId)) continue;
-      const std::string key = "rail_" + read.railId;
-      if (b.railNodeKeys.count(key)) continue;
-      b.railNodeKeys.insert(key);
-      const auto baseIt = railBases.find(read.railId);
-      nlohmann::json railState = {
-          {"input", baseIt != railBases.end() ? nlohmann::json(baseIt->second)
-                                              : nlohmann::json(0)}};
-      const auto signedIt = railSigned.find(read.railId);
-      if (signedIt != railSigned.end() && signedIt->second) {
-        railState.update({{"in_min", -1}, {"in_max", 1}, {"out_min", -1}, {"out_max", 1}});
+      pushRailNode(read.railId);
+    }
+  }
+  // Owner-level (track/group) reads pull their rails alive too. `__layer__`
+  // opacity targets always resolve for a rendering layer; FX-device targets
+  // need a catalog device on the owner's bus. (`__layer__`/bypass reads are
+  // eval-level — no executor rail.)
+  {
+    std::vector<const TrackM*> owners;
+    collectOwners(nodes, owners);
+    for (const TrackM* o : owners) {
+      for (const auto& read : o->reads) {
+        if (read.targetDeviceId == kLayerTargetId) {
+          if (read.targetField == "opacity") pushRailNode(read.railId);
+          continue;
+        }
+        for (const auto& d : o->sketch.devices) {
+          if (d.id != read.targetDeviceId) continue;
+          if (cat.has(d.moduleType) && !cat.isGenerator(d.moduleType)) {
+            pushRailNode(read.railId);
+          }
+          break;
+        }
       }
-      b.push("mod.shaper.remap", key, std::move(railState));
     }
   }
 
@@ -466,6 +593,7 @@ inline SketchBuild buildCompositeSketch(const std::vector<CompNode>& nodes,
                 {"chain", std::move(b.chain)},
                 {"wires", std::move(b.wires)},
                 {"instances", std::move(b.instances)}};
+  out.layerTargets = std::move(b.layerTargets);
   return out;
 }
 

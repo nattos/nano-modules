@@ -84,6 +84,36 @@ inline const ClipM* pickActiveClip(const TrackM& track, double beat) {
   return (!pick || pick->bypassed) ? nullptr : pick;
 }
 
+/**
+ * True when `owner` (a track or group) has any modulation targeting its
+ * `__layer__` OPACITY: an automation lane, a track-level rail read, or (clip
+ * leaves) a lane/wire in the active clip with target `__layer__`. Render-level
+ * fold class: the build resolves the target once; values ride the per-frame
+ * automation/tap channels. (`__layer__`/bypass is the EVAL-level class — a
+ * structural drop consumed by the tree builder, never a build target.)
+ */
+inline bool hasLayerOpacityModulation(const TrackM& owner, const ClipM* activeClip) {
+  for (const auto& l : owner.automation) {
+    if (l.targetDeviceId == kLayerTargetId && l.targetField == "opacity") return true;
+  }
+  for (const auto& r : owner.reads) {
+    if (r.targetDeviceId == kLayerTargetId && r.targetField == "opacity") return true;
+  }
+  if (activeClip) {
+    for (const auto& l : activeClip->automation) {
+      if (l.targetDeviceId == kLayerTargetId && l.targetField == "opacity") return true;
+    }
+    for (const auto& w : activeClip->sketch.wires) {
+      if (!w.is_object() || !w.contains("dest")) continue;
+      if (w["dest"].value("instanceKey", std::string()) == kLayerTargetId &&
+          w["dest"].value("field", std::string()) == "opacity") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 namespace eval_detail {
 
 inline double clamp01(double v) { return std::max(0.0, std::min(1.0, v)); }
@@ -116,6 +146,7 @@ struct TreeBuilder {
       out.opacity = clamp01(track.level.value_or(1));
       out.blendMode = track.blendMode.value_or(0);
       out.input = track.groupInput.present ? track.groupInput : GroupInputM{};
+      out.layerOpacityModulated = hasLayerOpacityModulation(track, nullptr);
       out.children = std::move(children);
       return true;
     }
@@ -128,6 +159,7 @@ struct TreeBuilder {
     out.track = &track;
     out.opacity = clamp01(track.level.value_or(1));
     out.blendMode = track.blendMode ? *track.blendMode : clip->blendMode.value_or(0);
+    out.layerOpacityModulated = hasLayerOpacityModulation(track, clip);
     return true;
   }
 };
@@ -163,13 +195,38 @@ inline std::vector<CompNode> compositeTreeAtBeat(const CompositionM& comp, doubl
 
 // ── The shared per-frame seam (composite-frame.ts) ──────────────────────────
 
-/** Per-rail base value + signed flag at `beat` (railBasesAtBeat). */
+/** Per-rail base value + signed flag at `beat` (railBasesAtBeat). Seeds from
+ *  clip reads AND owner-level (track/group) reads — first-seen wins per rail
+ *  (the value depends only on the rail, so order is immaterial). */
 inline void railBasesAtBeat(const CompositionM& comp, const std::vector<CompNode*>& leaves,
                             double beat, std::map<std::string, double>& railBases,
                             std::map<std::string, bool>& railSigned) {
   const double totalBeats = compositionLengthBeats(comp);
+  auto seed = [&](const std::string& railId) {
+    if (railBases.count(railId)) return;
+    const TrackM* rt = railTrackFor(comp, railId);
+    railBases[railId] =
+        rt && rt->hasBaseCurve
+            ? evalCurveAt(rt->baseCurve, totalBeats > 0 ? beat / totalBeats : 0)
+            : 0;
+    railSigned[railId] = rt ? rt->railSigned : false;
+  };
   for (const CompNode* leaf : leaves) {
-    for (const auto& read : leaf->clip->reads) {
+    for (const auto& read : leaf->clip->reads) seed(read.railId);
+    if (leaf->track) {
+      for (const auto& read : leaf->track->reads) seed(read.railId);
+    }
+  }
+}
+
+/** Seed rail bases for GROUP-level reads (the leaf walk above misses groups). */
+inline void seedGroupReadBases(const CompositionM& comp, const std::vector<CompNode>& tree,
+                               double beat, std::map<std::string, double>& railBases,
+                               std::map<std::string, bool>& railSigned) {
+  const double totalBeats = compositionLengthBeats(comp);
+  for (const auto& n : tree) {
+    if (!n.isGroup) continue;
+    for (const auto& read : n.group->reads) {
       if (railBases.count(read.railId)) continue;
       const TrackM* rt = railTrackFor(comp, read.railId);
       railBases[read.railId] =
@@ -178,6 +235,7 @@ inline void railBasesAtBeat(const CompositionM& comp, const std::vector<CompNode
               : 0;
       railSigned[read.railId] = rt ? rt->railSigned : false;
     }
+    seedGroupReadBases(comp, n.children, beat, railBases, railSigned);
   }
 }
 
@@ -201,6 +259,7 @@ inline SketchBuild buildCompositeRenderFromTree(const CompositionM& comp, const 
   std::map<std::string, double> railBases;
   std::map<std::string, bool> railSigned;
   railBasesAtBeat(comp, leaves, beat, railBases, railSigned);
+  seedGroupReadBases(comp, tree, beat, railBases, railSigned);
   // The main bus runs its FX chain over the final composite unless bypassed.
   const TrackM* bus = mainBusTrack(comp);
   const TrackM* masterBus = bus && !bus->bypassed ? bus : nullptr;
@@ -259,20 +318,61 @@ inline double nextEvalBoundary(const CompositionM& comp, double beat, double loo
  */
 inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
                                                const std::vector<CompNode>& tree, double beat,
-                                               bool clipLoopMode = true) {
+                                               bool clipLoopMode = true,
+                                               const nlohmann::json* layerTargets = nullptr) {
   const double totalBeats = compositionLengthBeats(comp);
   nlohmann::json entries = nlohmann::json::array();
   std::set<std::string> seenRail;
 
+  // The build's `__layer__` resolution for `ownerId` (nullptr when the build
+  // produced no opacity slot for it, or no map was supplied).
+  auto resolveLayer = [&](const std::string& ownerId) -> const nlohmann::json* {
+    if (!layerTargets || !layerTargets->is_object()) return nullptr;
+    auto it = layerTargets->find(ownerId);
+    return (it != layerTargets->end() && it->is_object()) ? &*it : nullptr;
+  };
+  // Emit one lane entry: `__layer__`/opacity lanes resolve through the map;
+  // `__layer__`/bypass is EVAL-level (consumed by the tree builder) — never an
+  // executor entry. `ownerId` = the layer owner (track/group id).
+  auto pushLane = [&](const LaneM& lane, const std::string& deviceInstanceKey,
+                      const std::string& ownerId, const LaneOwnerCtx& ctx) {
+    std::string instance = deviceInstanceKey;
+    std::string field = lane.targetField;
+    if (lane.targetDeviceId == kLayerTargetId) {
+      if (lane.targetField != "opacity") return;
+      const nlohmann::json* t = resolveLayer(ownerId);
+      if (!t) return;
+      instance = (*t).value("instanceKey", std::string());
+      field = (*t).value("field", std::string());
+    }
+    entries.push_back({{"instance", std::move(instance)},
+                       {"field", std::move(field)},
+                       {"value", evalLaneAtBeat(lane.points, ctx, beat)},
+                       {"combine", lane.combine.value_or("replace")},
+                       {"magnitude", lane.magnitude.value_or("unsigned")}});
+  };
+
   auto pushTrackLanes = [&](const TrackM& track) {
     for (const auto& lane : track.automation) {
       LaneOwnerCtx ctx;  // kind 'track'
-      entries.push_back({{"instance", trackInstanceKey(track.id, lane.targetDeviceId)},
-                         {"field", lane.targetField},
-                         {"value", evalLaneAtBeat(lane.points, ctx, beat)},
-                         {"combine", lane.combine.value_or("replace")},
-                         {"magnitude", lane.magnitude.value_or("unsigned")}});
+      pushLane(lane, trackInstanceKey(track.id, lane.targetDeviceId), track.id, ctx);
     }
+  };
+  // Rail-base re-assert for a read's rail (once per rail): a dropped writer
+  // returns the rail to its base instead of holding the last modulated value.
+  auto pushRailBase = [&](const RailReadM& read) {
+    if (seenRail.count(read.railId)) return;
+    seenRail.insert(read.railId);
+    const TrackM* rt = railTrackFor(comp, read.railId);
+    const double base =
+        rt && rt->hasBaseCurve
+            ? evalCurveAt(rt->baseCurve, totalBeats > 0 ? beat / totalBeats : 0)
+            : 0;
+    entries.push_back({{"instance", std::string("rail_") + read.railId},
+                       {"field", "input"},
+                       {"value", base},
+                       {"combine", "replace"},
+                       {"magnitude", "unsigned"}});
   };
 
   std::function<void(const std::vector<CompNode>&)> walk =
@@ -280,6 +380,7 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
         for (const auto& n : nodes) {
           if (n.isGroup) {
             pushTrackLanes(*n.group);
+            for (const auto& read : n.group->reads) pushRailBase(read);
             walk(n.children);
             continue;
           }
@@ -290,26 +391,15 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
             ctx.startBeat = clip.startBeat;
             ctx.spanBeats = clip.lengthBeat;
             ctx.loopMode = clipLoopMode;
-            entries.push_back({{"instance", clipInstanceKey(clip.id, lane.targetDeviceId)},
-                               {"field", lane.targetField},
-                               {"value", evalLaneAtBeat(lane.points, ctx, beat)},
-                               {"combine", lane.combine.value_or("replace")},
-                               {"magnitude", lane.magnitude.value_or("unsigned")}});
+            // A clip lane's `__layer__` owner is the owning TRACK (the layer
+            // IS the track level) — clip-relative timing, track-resolved slot.
+            pushLane(lane, clipInstanceKey(clip.id, lane.targetDeviceId),
+                     n.track ? n.track->id : std::string(), ctx);
           }
           if (n.track) pushTrackLanes(*n.track);
-          for (const auto& read : clip.reads) {
-            if (seenRail.count(read.railId)) continue;
-            seenRail.insert(read.railId);
-            const TrackM* rt = railTrackFor(comp, read.railId);
-            const double base =
-                rt && rt->hasBaseCurve
-                    ? evalCurveAt(rt->baseCurve, totalBeats > 0 ? beat / totalBeats : 0)
-                    : 0;
-            entries.push_back({{"instance", std::string("rail_") + read.railId},
-                               {"field", "input"},
-                               {"value", base},
-                               {"combine", "replace"},
-                               {"magnitude", "unsigned"}});
+          for (const auto& read : clip.reads) pushRailBase(read);
+          if (n.track) {
+            for (const auto& read : n.track->reads) pushRailBase(read);
           }
         }
       };
@@ -322,7 +412,7 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
 }
 
 /** automationEntriesForTree over a freshly-evaluated tree (the goldens replay
- *  this entry point). */
+ *  this entry point; no layer map — `__layer__` lanes are skipped). */
 inline nlohmann::json automationEntriesAtBeat(const CompositionM& comp, double beat,
                                               bool ignoreSolo = false, bool clipLoopMode = true) {
   const std::vector<CompNode> tree = compositeTreeAtBeat(comp, beat, ignoreSolo);

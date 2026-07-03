@@ -101,6 +101,7 @@ interface ExecutorExports {
   comp_required_json(c: number, out: number, cap: number): number;
   comp_chain_keys_json(c: number, out: number, cap: number): number;
   comp_video_descs_json(c: number, out: number, cap: number): number;
+  comp_layer_targets_json(c: number, out: number, cap: number): number;
   comp_reset_executor(c: number): void;
 }
 
@@ -783,7 +784,7 @@ export class WasmSketchExecutor {
     onInstancesReady?: () => void,
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
-               chainKeys?: string[]; videoDescs?: string }> {
+               chainKeys?: string[]; videoDescs?: string; layerTargets?: string }> {
     const c = this.ensureComp();
     // The effect clock advances by the COMP transport's motion, not wall time:
     // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
@@ -798,7 +799,13 @@ export class WasmSketchExecutor {
     const videoSetChanged = !!(flags & 8);
 
     let chainKeys: string[] | undefined;
+    let layerTargets: string | undefined;
     if (structureChanged) {
+      // The build's `__layer__` resolution (ownerId → {instanceKey, field}) —
+      // shipped alongside chainKeys so UI modulation bands survive the
+      // per-clip blend-key churn.
+      layerTargets =
+          this.compRead((o, n) => this.exports.comp_layer_targets_json(c, o, n)) || '{}';
       const reqJson = this.compRead((o, n) => this.exports.comp_required_json(c, o, n));
       this.compRequired = reqJson ? JSON.parse(reqJson) : [];
       this.compRequiredKeys.clear();
@@ -868,12 +875,13 @@ export class WasmSketchExecutor {
 
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
-                 chainKeys?: string[]; videoDescs?: string } = {
+                 chainKeys?: string[]; videoDescs?: string; layerTargets?: string } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
       positionSec: this.exports.comp_position_sec(c),
     };
     if (chainKeys) out.chainKeys = chainKeys;
+    if (layerTargets !== undefined) out.layerTargets = layerTargets;
     if (videoSetChanged) {
       out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
     }

@@ -113,6 +113,12 @@ void CompExecutor::loadDocument(const nlohmann::json& doc) {
   doc_ = parseComposition(doc);
   docLoaded_ = true;
   docEpoch_++;
+  // Pinned-param lifecycle: removing a wire/lane can rebuild a byte-identical
+  // sketch, leaving the plugin runtime pinned at the last modulated value (the
+  // whole-state fast path would skip re-asserting the authored value). Doc
+  // loads are edit-rate, so force a full state re-assert on the next frame.
+  dirty_ = true;
+  ex_->forceStateReassert();
   // Restore persisted loop markers when present (the store mirrors these too).
   if (doc.is_object() && doc.contains("loop") && doc["loop"].is_object()) {
     const auto& l = doc["loop"];
@@ -342,6 +348,7 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_);
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
+  layerTargets_ = std::move(build.layerTargets);
   if (build.hasContent) {
     if (cleanSketch_.is_null() || build.sketch != cleanSketch_) {
       cleanSketch_ = std::move(build.sketch);
@@ -396,7 +403,8 @@ uint32_t CompExecutor::update(double dtSec) {
       flags |= kCompVideoSetChanged;
     }
     // Automation still evaluates (frozen beat → stable values).
-    automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_);
+    automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_,
+                                         &layerTargets_);
     transportSec_ = transport_.secondsAt(state_, clock_);
     return flags;
   }
@@ -424,7 +432,8 @@ uint32_t CompExecutor::update(double dtSec) {
 
   // Lane/curve values vary continuously — evaluate every frame, but over the
   // span's cached tree (no per-frame tree rebuild).
-  automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_);
+  automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_,
+                                         &layerTargets_);
   return flags;
 }
 
@@ -526,6 +535,11 @@ const std::string& CompExecutor::chainKeysJson() {
 const std::string& CompExecutor::videoDescsJson() {
   videoDescsScratch_ = pumpDescs_.dump();
   return videoDescsScratch_;
+}
+
+const std::string& CompExecutor::layerTargetsJson() {
+  layerTargetsScratch_ = layerTargets_.dump();
+  return layerTargetsScratch_;
 }
 
 }  // namespace comp

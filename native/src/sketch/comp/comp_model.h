@@ -175,6 +175,18 @@ struct RailReadM {
   std::optional<double> scale;
 };
 
+/**
+ * Composition-param target sentinel (lock-step: composition.ts kLayerTargetId).
+ * A lane/read/wire whose targetDeviceId / dest.instanceKey is `__layer__`
+ * addresses the OWNER's composition-level layer params instead of a device
+ * field. targetField vocabulary: "opacity" (render-level — resolved at build
+ * time to the layer's blend `opacity` param or the top layer's `__opacity__`),
+ * "bypass" (eval-level — a structural drop consumed by the tree builder).
+ * Future out-of-sketch params (clip timing, loop params, ...) extend this
+ * vocabulary; each new field declares which of the two fold classes it is.
+ */
+inline constexpr const char* kLayerTargetId = "__layer__";
+
 /** A clip device that warps the beat grid (composition.ts WarpBinding). */
 struct WarpBindingM {
   Waveform waveform = Waveform::Sine;
@@ -230,6 +242,10 @@ struct TrackM {
   SketchSpecM sketch;
   std::vector<LaneM> automation;
   std::vector<ClipM> clips;
+  /** Track-level rail reads (composition.ts Track.reads) — a return track
+   *  driving this track's own params (targetDeviceId `__layer__` for layer
+   *  opacity/bypass, or a track-FX device id). */
+  std::vector<RailReadM> reads;
 };
 
 /** Composite backdrop (composition.ts BackgroundConfig; absent ⇒ mode 'black'). */
@@ -306,6 +322,23 @@ inline std::vector<LaneM> parseLanes(const nlohmann::json& arr) {
 
 }  // namespace model_detail
 
+inline std::vector<RailReadM> parseReads(const nlohmann::json& arr) {
+  using namespace model_detail;
+  std::vector<RailReadM> out;
+  if (!arr.is_array()) return out;
+  for (const auto& r : arr) {
+    if (!r.is_object()) continue;
+    RailReadM x;
+    x.railId = r.value("railId", std::string());
+    x.targetDeviceId = r.value("targetDeviceId", std::string());
+    x.targetField = r.value("targetField", std::string());
+    x.combine = r.value("combine", std::string("replace"));
+    x.scale = optNum(r, "scale");
+    out.push_back(std::move(x));
+  }
+  return out;
+}
+
 inline ClipM parseClip(const nlohmann::json& j) {
   using namespace model_detail;
   ClipM c;
@@ -337,18 +370,7 @@ inline ClipM parseClip(const nlohmann::json& j) {
       c.exports.push_back(std::move(x));
     }
   }
-  if (j.contains("reads") && j["reads"].is_array()) {
-    for (const auto& r : j["reads"]) {
-      if (!r.is_object()) continue;
-      RailReadM x;
-      x.railId = r.value("railId", std::string());
-      x.targetDeviceId = r.value("targetDeviceId", std::string());
-      x.targetField = r.value("targetField", std::string());
-      x.combine = r.value("combine", std::string("replace"));
-      x.scale = optNum(r, "scale");
-      c.reads.push_back(std::move(x));
-    }
-  }
+  c.reads = parseReads(j.contains("reads") ? j["reads"] : nlohmann::json());
   if (j.contains("warps") && j["warps"].is_array()) {
     for (const auto& w : j["warps"]) {
       if (!w.is_object()) continue;
@@ -393,6 +415,7 @@ inline TrackM parseTrack(const nlohmann::json& j) {
   }
   t.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());
   t.automation = parseLanes(j.contains("automation") ? j["automation"] : nlohmann::json());
+  t.reads = parseReads(j.contains("reads") ? j["reads"] : nlohmann::json());
   if (j.contains("clips") && j["clips"].is_array()) {
     for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c));
   }
