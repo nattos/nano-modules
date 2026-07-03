@@ -24,6 +24,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -228,6 +229,9 @@ class CompExecutor {
   bool evalValid_ = false;
   double evalBeat_ = 0;
   double evalNextBoundary_ = 0;
+  /** Lane-driven `__layer__`/bypass decisions captured at eval time; a flip at
+   *  the current beat invalidates the span (see ensureEvalAt). */
+  std::map<std::string, bool> evalBypassDecisions_;
   /** Recheck the pump target/displayed sets on the next non-holding frame even
    *  without a re-eval (set while holding: the pump ran a displayed∪warm union
    *  that must collapse back to warm-only after the hold releases). */

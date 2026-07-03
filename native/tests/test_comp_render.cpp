@@ -930,3 +930,75 @@ TEST_CASE("a __layer__ opacity lane and a track-level rail read reach the pixels
     CHECK(std::abs(m - 127.0) < 25.0);
   }
 }
+
+// ── Phase 3: eval-level track/group bypass via __layer__/bypass lanes ────────
+
+TEST_CASE("a __layer__/bypass lane structurally drops the subtree at its crossing",
+          "[comp_bypass]") {
+  EvalHarness h;
+  // t1: content across [0,16); its bypass lane ramps 0 -> 1 over [0,8] with the
+  // 0.5 threshold crossing at beat 4. t2: a second track so hasContent stays
+  // true after the drop (we assert the STRUCTURE change, not content loss).
+  json t1 = mkTrack("t1", json::array({mkClip(
+      "c1", 0, 16, json::array({mkDevice("d1", "source.solid_color")}))}));
+  t1["automation"] = json::array(
+      {{{"id", "B"}, {"targetDeviceId", "__layer__"}, {"targetField", "bypass"},
+        {"label", "byp"},
+        {"points", json::array({{{"x", 0}, {"y", 0}}, {{"x", 8}, {"y", 1}}})}}});
+  json t2 = mkTrack("t2", json::array({mkClip(
+      "c2", 0, 16, json::array({mkDevice("d2", "source.solid_color")}))}));
+  h.cx.loadDocument(mkComposition(json::array({t1, t2})));
+
+  h.cx.seekBeat(0.5);
+  uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  CHECK(h.cx.chainKeysJson().find("clip_c1_d1") != std::string::npos);
+  CHECK(h.cx.evalCount() == 1);
+
+  // Play toward the crossing: within the span, decisions stable — no re-eval.
+  h.cx.play();
+  h.run(60, 1.0 / 60.0);  // -> ~beat 2.5
+  CHECK(h.cx.evalCount() == 1);
+
+  // Cross beat 4: the decision flips -> exactly one re-eval, structure changes,
+  // t1's chain leaves the composite (t2 remains -> content stays).
+  flags = h.run(60, 1.0 / 60.0);  // -> ~beat 4.5
+  CHECK(h.cx.positionBeat() > 4.0);
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  CHECK((flags & comp::kCompHasContent) != 0);
+  CHECK(h.cx.evalCount() == 2);
+  CHECK(h.cx.chainKeysJson().find("clip_c1_d1") == std::string::npos);
+  CHECK(h.cx.chainKeysJson().find("clip_c2_d2") != std::string::npos);
+
+  // Keep playing inside the dropped region: still one span, no churn.
+  h.run(60, 1.0 / 60.0);  // -> ~beat 6.5
+  CHECK(h.cx.evalCount() == 2);
+
+  // Seeking back before the crossing restores the layer (decision flips back).
+  h.cx.pause();
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.chainKeysJson().find("clip_c1_d1") != std::string::npos);
+}
+
+TEST_CASE("a dynamically-bypassed track keeps its video decode warm", "[comp_bypass]") {
+  EvalHarness h;
+  // A video clip on a track whose bypass lane is ON at the playhead: the layer
+  // is dropped (not ACTIVE), but the pump target must keep the clip warm — the
+  // warm scan deliberately uses STATIC bypass only, so an un-bypass doesn't
+  // stall on a cold decoder (Precise gate).
+  json t1 = mkTrack("t1", json::array({mkVideoClip("v1", 0, 8)}));
+  t1["automation"] = json::array(
+      {{{"id", "B"}, {"targetDeviceId", "__layer__"}, {"targetField", "bypass"},
+        {"label", "byp"}, {"points", json::array({{{"x", 0}, {"y", 1}}})}}});
+  json t2 = mkTrack("t2", json::array({mkClip(
+      "c2", 0, 8, json::array({mkDevice("d2", "source.solid_color")}))}));
+  h.cx.loadDocument(mkComposition(json::array({t1, t2})));
+  h.cx.setTransportMode(false);  // Fluid: don't hold on the (unready) video
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  // Dropped from the composite...
+  CHECK(h.cx.chainKeysJson().find("clip_v1_") == std::string::npos);
+  // ...but the pump still warms it.
+  CHECK(h.cx.videoDescsJson().find("blob:media/v1") != std::string::npos);
+}

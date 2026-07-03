@@ -338,6 +338,13 @@ std::string CompExecutor::chainSigOf(const nlohmann::json& sketch) {
 }
 
 bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
+  // EVAL-level `__layer__` bypass: compare the lane-driven decision vector at
+  // the CURRENT beat against the vector captured at eval time — a threshold
+  // flip is a structural change the span can't see (lanes are deliberately
+  // not span boundaries), so invalidate exactly when a decision flips.
+  std::map<std::string, bool> bypassDec = laneBypassDecisions(doc_, beat);
+  if (evalValid_ && bypassDec != evalBypassDecisions_) evalValid_ = false;
+
   // Span hit: the evaluation at evalBeat_ is valid for [evalBeat_, boundary).
   // Backward motion (seek/loop wrap) falls out of the half-open interval and
   // re-evaluates — even landing back inside a previously-evaluated span, one
@@ -345,6 +352,7 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   if (evalValid_ && beat >= evalBeat_ && beat < evalNextBoundary_) return false;
 
   evalCount_++;
+  evalBypassDecisions_ = std::move(bypassDec);
   evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_);
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;

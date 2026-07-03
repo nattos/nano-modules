@@ -114,6 +114,31 @@ inline bool hasLayerOpacityModulation(const TrackM& owner, const ClipM* activeCl
   return false;
 }
 
+/**
+ * EVAL-level `__layer__` bypass: true when any of the TRACK/GROUP's own
+ * `__layer__`/bypass lanes evaluates >= 0.5 at `beat`, or the (P5) rail
+ * decision map marks the owner. A dynamically-bypassed subtree DROPS from the
+ * composite exactly like static bypass — a structural change, integrated with
+ * the eval-skip span via CompExecutor's per-frame decision compare. CLIP lanes
+ * deliberately do NOT drive bypass: the active clip lives inside the subtree
+ * it would drop (self-killing — the lane leaves the tree with the clip and
+ * immediately un-drops, oscillating). Track/group lanes survive the drop (the
+ * track stays in the document; only its subtree leaves the composite).
+ */
+inline bool dynamicBypassed(const TrackM& track, double beat,
+                            const std::map<std::string, bool>* railBypass) {
+  for (const auto& l : track.automation) {
+    if (l.targetDeviceId != kLayerTargetId || l.targetField != "bypass") continue;
+    LaneOwnerCtx ctx;  // track lanes: absolute beats
+    if (evalLaneAtBeat(l.points, ctx, beat) >= 0.5) return true;
+  }
+  if (railBypass) {
+    auto it = railBypass->find(track.id);
+    if (it != railBypass->end() && it->second) return true;
+  }
+  return false;
+}
+
 namespace eval_detail {
 
 inline double clamp01(double v) { return std::max(0.0, std::min(1.0, v)); }
@@ -121,6 +146,8 @@ inline double clamp01(double v) { return std::max(0.0, std::min(1.0, v)); }
 struct TreeBuilder {
   const CompositionM& comp;
   bool anySolo;
+  /** P5 rail-driven bypass decisions (thresholded last-frame rail readbacks). */
+  const std::map<std::string, bool>* railBypass = nullptr;
 
   std::vector<const TrackM*> childrenOf(const std::string& parentId) const {
     std::vector<const TrackM*> out;
@@ -131,7 +158,8 @@ struct TreeBuilder {
   }
 
   bool build(const TrackM& track, bool ancestorSoloed, double beat, CompNode& out) const {
-    if (track.bypassed) return false;  // bypassed track/group → drop the subtree
+    // Bypassed track/group → drop the subtree (static OR modulated).
+    if (track.bypassed || dynamicBypassed(track, beat, railBypass)) return false;
     const bool soloedHere = ancestorSoloed || track.soloed;
     if (track.kind == TrackKind::Group) {
       if (isMainBus(track)) return false;  // master bus isn't a content group
@@ -175,22 +203,48 @@ inline void flattenLeaves(std::vector<CompNode>& tree, std::vector<CompNode*>& o
 }  // namespace eval_detail
 
 /** The active composite as a tree, top → bottom (downward sum). Main bus
- *  excluded. `ignoreSolo` (the exporter) renders the full mix. */
-inline std::vector<CompNode> compositeTreeAtBeat(const CompositionM& comp, double beat,
-                                                 bool ignoreSolo = false) {
+ *  excluded. `ignoreSolo` (the exporter) renders the full mix. `railBypass` =
+ *  rail-driven structural bypass decisions (P5 readback loop), optional. */
+inline std::vector<CompNode> compositeTreeAtBeat(
+    const CompositionM& comp, double beat, bool ignoreSolo = false,
+    const std::map<std::string, bool>* railBypass = nullptr) {
   bool anySolo = false;
   if (!ignoreSolo) {
     for (const auto& t : comp.tracks) {
       if (t.soloed) { anySolo = true; break; }
     }
   }
-  eval_detail::TreeBuilder builder{comp, anySolo};
+  eval_detail::TreeBuilder builder{comp, anySolo, railBypass};
   std::vector<CompNode> roots;
   for (const TrackM* t : builder.childrenOf(std::string())) {
     CompNode n;
     if (builder.build(*t, false, beat, n)) roots.push_back(std::move(n));
   }
   return roots;
+}
+
+/**
+ * The lane-driven structural-bypass decision vector at `beat`: ownerId → true
+ * for every track/group whose `__layer__`/bypass lanes threshold >= 0.5.
+ * CompExecutor compares this per frame against the vector captured at eval
+ * time and invalidates the eval-skip span exactly on flips — no boundary math,
+ * re-eval happens on actual threshold crossings (frame-quantized). Only tracks
+ * OWNING bypass lanes appear (an empty map ⇔ no bypass lanes anywhere).
+ */
+inline std::map<std::string, bool> laneBypassDecisions(const CompositionM& comp, double beat) {
+  std::map<std::string, bool> out;
+  for (const auto& t : comp.tracks) {
+    if (t.kind == TrackKind::Rail) continue;
+    for (const auto& l : t.automation) {
+      if (l.targetDeviceId != kLayerTargetId || l.targetField != "bypass") continue;
+      LaneOwnerCtx ctx;
+      const bool on = evalLaneAtBeat(l.points, ctx, beat) >= 0.5;
+      auto it = out.find(t.id);
+      if (it == out.end()) out[t.id] = on;
+      else it->second = it->second || on;  // multiple lanes OR (mirrors dynamicBypassed)
+    }
+  }
+  return out;
 }
 
 // ── The shared per-frame seam (composite-frame.ts) ──────────────────────────
