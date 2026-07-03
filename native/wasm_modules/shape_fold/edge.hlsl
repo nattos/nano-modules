@@ -7,19 +7,24 @@
 // the field DIRECTLY here (the same sf_field_at the present pass uses), no
 // equalization LUT, no grade — a static field → identical values → zero motion.
 //
-// Motion is the temporal diff of the RAW field, normalized only by dividing by the
-// linear range (hi-lo) for perceptual scale. It deliberately does NOT re-level each
-// frame the way v = (F-lo)/(hi-lo) would: subtracting the per-frame lo cancels a
-// pixel's LEVEL change (a shape brightening / fading / its fill pulsing) whenever
-// lo/hi move with it, and for shape_fold the birth/fade animation IS largely a level
-// change — so we keep it. Spatial features (Sobel edge, and the variance value V)
-// take the range-normalized field, where the lo offset cancels anyway.
+// Motion is the change in the VISIBLE value: the field clamped to [lo,hi] and leveled
+// to [0,1]. Two subtleties make it correct:
+//   • Clamp to [lo,hi] — field below lo displays as black, above hi as peak, so those
+//     changes aren't on screen and mustn't count (an all-black region whose field
+//     wiggles below lo would otherwise register).
+//   • Level BOTH frames against the CURRENT lo/hi. prevField stores the RAW previous
+//     field and we re-level it here, so a drifting lo/hi cancels — a static pixel (or
+//     one pinned at the black floor) shows no phantom motion when the range shifts —
+//     while a real level/fill change within the visible range still registers. (The
+//     naïve (F-lo)/(hi-lo) diff, which levels each frame against ITS OWN lo/hi, gets
+//     both wrong: static pixels flash when the range drifts, and floor-pinned pixels
+//     move with the floor.)
 //
 // One thread per fixed-grid sample: evaluate the field over a 3×3 neighbourhood
-// (Sobel edge + local stats), diff the centre vs the persistent previous-frame RAW
-// field (motion), and scatter running sums into the per-tile int stats buffer. Slots
-// 5-10 are the SIGNED Lucas-Kanade flow sums for the uniform-drift penalty
-// (range-normalized gradient vs signed dv). The CPU reads these back.
+// (Sobel edge + local stats), diff the visible centre value (motion), and scatter
+// running sums into the per-tile int stats buffer. Slots 5-10 are the SIGNED Lucas-
+// Kanade flow sums for the uniform-drift penalty (range-normalized gradient vs signed
+// dv). The CPU reads these back.
 
 #include "common.hlsl"   // cbuffer U (terms, res, domain_scale) + sf_field_at + SF_NB
 
@@ -77,11 +82,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float f01 = field_at(p + int2(-cell.x,  0), vp),      f11 = field_at(p,                    vp), f21 = field_at(p + int2(cell.x,  0), vp);
   float f02 = field_at(p + int2(-cell.x, cell.y), vp),  f12 = field_at(p + int2(0, cell.y), vp), f22 = field_at(p + int2(cell.x, cell.y), vp);
 
-  // Clamp to the VISIBLE range [lo,hi]: field below lo displays as black, above hi as
-  // peak, so their changes AREN'T on screen and must not count as motion (an "all
-  // black" region whose field is still wiggling below lo would otherwise register).
-  // Diffing the clamped value (not (F-lo)/range) still keeps level changes WITHIN the
-  // visible range while ignoring both the sub-black wiggle and the global re-level.
+  float f11raw = f11;   // raw centre field, kept for storage + re-leveling next frame
+
+  // Clamp the neighbourhood to the VISIBLE range [lo,hi] for the spatial features:
+  // field below lo displays as black, above hi as peak.
   f00 = clamp(f00, lo, hi); f10 = clamp(f10, lo, hi); f20 = clamp(f20, lo, hi);
   f01 = clamp(f01, lo, hi); f11 = clamp(f11, lo, hi); f21 = clamp(f21, lo, hi);
   f02 = clamp(f02, lo, hi); f12 = clamp(f12, lo, hi); f22 = clamp(f22, lo, hi);
@@ -93,16 +97,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);     // contrast-squashed
   float V = (f11 - lo) * invR;   // visible leveled value ∈ [0,1], for the variance feature
 
-  // Motion = temporal diff of the CLAMPED (visible-range) field, normalized by range.
-  // prevField stores the clamped value so the diff isn't re-leveled — a level/fill
-  // pulse within the visible range counts, but sub-black changes don't. `me` squashed
-  // magnitude; `dts` signed for the LK flow sums.
+  // Motion = change in the VISIBLE (clamped, leveled ∈ [0,1]) value — but with BOTH
+  // frames leveled against the CURRENT lo/hi. prevField holds the RAW previous field,
+  // which we re-level here, so a drifting lo/hi cancels (a static OR a below-black
+  // pixel stays put — no phantom motion when the range shifts) while a real level /
+  // fill change within the visible range still registers. `dts` signed for the LK.
   int sidx = (int)gid.y * kSampleGrid + (int)gid.x;
   float pf = prevField[sidx];
-  float dts = (pf < -1e29) ? 0.0 : (f11 - pf) * invR;   // sentinel: first frame → 0
+  float lev_prev = (pf < -1e29) ? V : saturate((pf - lo) * invR);   // sentinel: first frame → 0
+  float dts = V - lev_prev;
   float m = abs(dts);
   float me = pow(saturate((m - kMotionFloor) / kMotionSpan), kMotionGamma);
-  prevField[sidx] = f11;                                 // store CLAMPED visible-range value
+  prevField[sidx] = f11raw;                              // store RAW field (re-leveled next frame)
 
   float nx = gx / kSobelNorm;   // normalized gradient (‖(nx,ny)‖ ≤ 1)
   float ny = gy / kSobelNorm;
