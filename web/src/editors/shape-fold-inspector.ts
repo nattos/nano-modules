@@ -241,6 +241,8 @@ export class ShapeFoldInspector extends MobxLitElement {
       <field-select .fieldPath=${'skip_debug'} .label=${'Debug View'}
         .options=${[{ label: 'Off', value: 0 }, { label: 'Variance', value: 1 }, { label: 'Edge', value: 2 }, { label: 'Motion', value: 3 }, { label: 'Combined', value: 4 }]}
         .defaultValue=${0} .binding=${b}></field-select>
+      <scalar-slider style="width: 100%;" .fieldPath=${'skip_drift_penalty'} .label=${'Drift Penalty'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.25} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}

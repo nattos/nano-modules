@@ -18,7 +18,7 @@ RWTexture2D<float4>   outTex : register(u2);
 
 // Must match main.cpp / edge.hlsl.
 static const int   kTileGrid     = 16;
-static const int   kSlots        = 5;
+static const int   kSlots        = 11;   // per-tile stride (must match edge.hlsl / main.cpp)
 static const float kStatsScale   = 65536.0;
 static const float kEdgeNormGain = 2.0;
 static const float kVarFloor     = 0.008;

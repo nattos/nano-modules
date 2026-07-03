@@ -27,8 +27,13 @@
 #include "nano_color.hlsl"   // nano_luminance (Rec.601)
 
 Texture2D<float4>    tex_out : register(t1);
-// Per-TILE stats: a kTileGrid×kTileGrid grid, kSlots ints each
-// [edge_sum, luma_sum, luma2_sum, motion_sum, pixel_count].
+// Per-TILE stats: a kTileGrid×kTileGrid grid, kSlots ints each.
+//   [0] edge_sum   [1] luma_sum   [2] luma2_sum   [3] motion_sum   [4] pixel_count
+// Slots 5-10 are the Lucas-Kanade flow sums (SIGNED) used to detect motion that is
+// a single uniform global drift — normalized gradient (nx,ny) vs signed temporal
+// diff dt, so the CPU can solve one global 2×2 for the drift velocity and discount
+// the coherent (same-direction) part of the motion:
+//   [5] Σnx²   [6] Σny²   [7] Σnx·ny   [8] Σnx·dt   [9] Σny·dt   [10] Σdt²
 RWStructuredBuffer<int>   stats     : register(u2);
 // Persistent previous-frame luma at each sample point (motion = |L - prevL|).
 // Sized to the fixed sample grid, so it never reallocs on viewport resize.
@@ -36,7 +41,7 @@ RWStructuredBuffer<int>   stats     : register(u2);
 // owns one slot (no race).
 RWStructuredBuffer<float> prevLuma  : register(u3);
 
-static const int   kSlots       = 5;            // ints per tile (must match main.cpp)
+static const int   kSlots       = 11;           // ints per tile (must match main.cpp)
 static const int   kTileGrid    = 16;           // must match main.cpp kTileGrid
 // Sample on a fixed grid, NOT per output pixel: bounded, resolution-independent
 // work (256² threads) + far less atomic contention. Each 16×16 tile gets 256
@@ -86,12 +91,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);     // contrast-squashed
   float L = l11;
 
-  // Motion = temporal frame difference at this sample, with the sensitive squash.
+  // Motion = temporal frame difference at this sample. `me` is the sensitive-squash
+  // magnitude (the activity signal); `dts` is the RAW SIGNED diff used for the flow
+  // (Lucas-Kanade) sums below. First frame (prevLuma sentinel <0) → both 0.
   int sidx = (int)gid.y * kSampleGrid + (int)gid.x;
   float pl = prevLuma[sidx];
-  float m = (pl < 0.0) ? 0.0 : abs(L - pl);
+  float dts = (pl < 0.0) ? 0.0 : (L - pl);
+  float m = abs(dts);
   float me = pow(saturate((m - kMotionFloor) / kMotionSpan), kMotionGamma);
   prevLuma[sidx] = L;
+
+  // Normalized spatial gradient (‖(nx,ny)‖ ≤ 1) for the flow model dt ≈ -(nx,ny)·u.
+  float nx = gx / kSobelNorm;
+  float ny = gy / kSobelNorm;
 
   // Route this sample into its tile's slots (tile from the SAMPLE grid).
   int2 tile = clamp(int2(gid.xy) * kTileGrid / kSampleGrid, int2(0, 0), int2(kTileGrid - 1, kTileGrid - 1));
@@ -103,4 +115,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   InterlockedAdd(stats[ti + 2], (int)(L * L * kStatsScale + 0.5), prev);
   InterlockedAdd(stats[ti + 3], (int)(me * kStatsScale + 0.5),    prev);  // soft motion sum
   InterlockedAdd(stats[ti + 4], 1,                                prev);
+  // Flow sums (SIGNED; round handles negatives). Per-tile |Σ| ≤ 256 samples → fits.
+  InterlockedAdd(stats[ti + 5], (int)round(nx * nx  * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 6], (int)round(ny * ny  * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 7], (int)round(nx * ny  * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 8], (int)round(nx * dts * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 9], (int)round(ny * dts * kStatsScale), prev);
+  InterlockedAdd(stats[ti + 10], (int)round(dts * dts * kStatsScale), prev);
 }

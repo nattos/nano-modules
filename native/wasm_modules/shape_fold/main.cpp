@@ -83,7 +83,9 @@ static constexpr float kSkipTrigSpan  = 0.005f;
 static constexpr int   kTileGrid      = 16;
 static constexpr int   kSampleGrid    = 256;
 static constexpr int   kNumTiles      = kTileGrid * kTileGrid;
-static constexpr int   kSlots         = 5;       // per tile: [edge,luma,luma²,motion,count]
+// per tile: [edge,luma,luma²,motion,count, nx²,ny²,nxny,nx·dt,ny·dt,dt²] — the last 6
+// are the Lucas-Kanade flow sums (see edge.hlsl) for the uniform-drift penalty.
+static constexpr int   kSlots         = 11;
 static constexpr int   kEdgeStatsInts = kNumTiles * kSlots;
 static constexpr float kStatsScale    = 65536.0f;// must match edge.hlsl kStatsScale
 static constexpr float kEdgeNormGain  = 2.0f;    // per-tile edge/var-max sensitivity (tuning feats)
@@ -147,6 +149,9 @@ struct State {
   float skip_w_edge       = 0.0f;
   float skip_w_motion     = 1.0f;
   int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
+  // Penalize motion that is a uniform global DRIFT (same-direction scroll): [0,1],
+  // 1 = fully ignore pure translation (a scrolling shape reads as "still" → jog).
+  float skip_drift_penalty = 1.0f;
   float skip_recover      = 0.25f;  // Recover [0,1]: how fast the jog STOPS on motion (1 = instant)
   float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
   bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
@@ -156,6 +161,7 @@ struct State {
   float orbit     = 0.0f;              // autopilot epicycle phase
   fx::SkipJog jog;                     // skip-static C2 engagement ramp
   float content   = 1.0f;              // last frame's activity metric [0,1] (1 = moving/rich)
+  float coherence = 0.0f;              // last frame's uniform-drift fraction [0,1] (for tuning)
   float snap_accum = 0.0f;            // snap-mode hold timer
   float next_hold  = 0.0f;            // jittered target for the current interval
   uint32_t rng     = 0x2545F491u;     // per-instance PRNG state (seeded in create)
@@ -177,6 +183,7 @@ static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty) {
   state::setFieldHidden("skip_w_edge",     !skip_empty);
   state::setFieldHidden("skip_w_motion",   !skip_empty);
   state::setFieldHidden("skip_debug",      !skip_empty);
+  state::setFieldHidden("skip_drift_penalty", !skip_empty);
   state::setFieldHidden("skip_recover",    !skip_empty);
   state::setFieldHidden("skip_rate",       !skip_empty);
   // Jogging the orbit only means anything under autopilot.
@@ -318,6 +325,13 @@ void module_init() {
       .selectField("skip_debug", 0, state::PrimaryInput,
                    {{"Off", 0}, {"Variance", 1}, {"Edge", 2}, {"Motion", 3}, {"Combined", 4}})
                   .label("Debug View", "Dbg")
+      .floatField("skip_drift_penalty", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Penalize motion that is a uniform DRIFT — everything sliding the "
+                  "same direction (a scrolling shape isn't really evolving). Higher "
+                  "discounts that coherent drift so the jog treats it as still and "
+                  "skips through; a genuine morph or rotation is unaffected. 0 = off.")
+                  .label("Drift Penalty", "Drift")
       .floatField("skip_recover", 0.25f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   "How fast the jog STOPS once the frame starts moving again "
@@ -330,6 +344,8 @@ void module_init() {
       .floatField("skip_active", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // Broadcast: the live activity metric (mean motion / feature blend) for tuning.
       .floatField("skip_motion", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
+      // Broadcast: the live uniform-drift coherence [0,1] (1 = pure scroll) for tuning.
+      .floatField("skip_coherence", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- I/O: pure generator (no input) ---
       .textureField("tex_out", state::PrimaryOutput)
         .capability(state::Capability::Generator)
@@ -495,6 +511,8 @@ void tick(void* self, double dt) {
       float var_max = 0.0f, edge_max = 0.0f;
       double motion_sum = 0.0;   // Σ squashed per-sample motion, over all tiles
       long   count_sum  = 0;     // Σ samples, over all tiles
+      // Global Lucas-Kanade flow accumulators (raw signed sums summed over tiles).
+      double Sxx = 0, Syy = 0, Sxy = 0, Sxt = 0, Syt = 0, Stt = 0;
       for (int t = 0; t < kNumTiles; t++) {
         int base = t * kSlots;
         int cnt = raw[base + 4];
@@ -511,9 +529,37 @@ void tick(void* self, double dt) {
         if (edge > edge_max) edge_max = edge;
         motion_sum += (double)raw[base + 3] / kStatsScale;       // already squashed [0,1] per sample
         count_sum  += cnt;
+        Sxx += (double)raw[base + 5] / kStatsScale;
+        Syy += (double)raw[base + 6] / kStatsScale;
+        Sxy += (double)raw[base + 7] / kStatsScale;
+        Sxt += (double)raw[base + 8] / kStatsScale;
+        Syt += (double)raw[base + 9] / kStatsScale;
+        Stt += (double)raw[base + 10] / kStatsScale;
       }
+      // Uniform-drift coherence: fit ONE global translation u to the brightness-
+      // constancy model dt ≈ -(nx,ny)·u (least squares over all samples). The
+      // fraction of temporal energy it explains, coh = Σ(model²)/Σdt² ∈ [0,1], is
+      // ~1 for a shape merely scrolling in one direction and ~0 for a morph/rotation
+      // (whose flow cancels globally). Regularize the 2×2 for the aperture case.
+      float coh = 0.0f;
+      if (Stt > 1e-9) {
+        double eps = 1e-4 * (Sxx + Syy) + 1e-9;
+        double a11 = Sxx + eps, a22 = Syy + eps, a12 = Sxy;
+        double det = a11 * a22 - a12 * a12;
+        if (det > 1e-12) {
+          double bx = -Sxt, by = -Syt;                           // RHS of the normal eqs
+          double ux = ( a22 * bx - a12 * by) / det;
+          double uy = (-a12 * bx + a11 * by) / det;
+          double expl = ux * bx + uy * by;                       // Σ(model²) = u·b
+          coh = (float)clampf((float)(expl / Stt), 0.0f, 1.0f);
+        }
+      }
+      s->coherence = coh;
       if (count_sum > 0) {
         float motion_mean = (float)(motion_sum / (double)count_sum);   // global mean motion [0,1]
+        // Discount motion that is a uniform global drift: same-direction scrolling
+        // isn't really evolving, so let the jog treat it as "still" and skip through.
+        motion_mean *= (1.0f - clampf(s->skip_drift_penalty, 0.0f, 1.0f) * coh);
         float content = motion_mean * wm;
         float ev = edge_max * we; if (ev > content) content = ev;
         float vv = var_max * wv;  if (vv > content) content = vv;
@@ -598,6 +644,9 @@ void tick(void* self, double dt) {
   auto vsm = val::number(s->content);   // live activity metric (for calibration)
   state::setValPath("skip_motion", vsm);
   val::release(vsm);
+  auto vco = val::number(s->coherence); // live uniform-drift fraction (for calibration)
+  state::setValPath("skip_coherence", vco);
+  val::release(vco);
 }
 
 
@@ -636,6 +685,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "skip_w_edge"))         s->skip_w_edge = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_w_motion"))       s->skip_w_motion = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_debug"))          s->skip_debug = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "skip_drift_penalty"))  s->skip_drift_penalty = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_recover"))        s->skip_recover = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_rate"))           s->skip_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_autopilot"))      s->skip_autopilot = state::patchFloat(i) != 0.0f;
