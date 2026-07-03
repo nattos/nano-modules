@@ -3331,9 +3331,12 @@ export class ArrangementStore {
   private connectFieldToLayer(field: FieldConnectInfo, layer: FieldConnectInfo) {
     if ((layer.layerField ?? 'opacity') !== 'opacity') return;
     if (!field.isOutput) return;                       // source must be a mod output
-    if (!field.sketchId.startsWith('clip/')) return;   // clip sketches only
-    const [, trackId] = field.sketchId.split('/');
-    if (trackId !== layer.layerOwner) return;          // own-layer only — rails for the rest
+    // Own-layer only (rails for the rest): a clip sketch on the owner's track,
+    // or the owner's own track/group FX-bus sketch.
+    const ownTrackId = field.sketchId.startsWith('clip/') ? field.sketchId.split('/')[1]
+      : field.sketchId.startsWith('track/') ? field.sketchId.split('/')[1]
+      : undefined;
+    if (!ownTrackId || ownTrackId !== layer.layerOwner) return;
     const id = uid('wire');
     this.mutate('connect wire', (d) => {
       const sk = draftSketch(d, field.sketchId);

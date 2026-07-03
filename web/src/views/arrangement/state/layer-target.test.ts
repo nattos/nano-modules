@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { store } from './store';
+import { seedTestPlugins } from '../engine/test-plugins';
 import { LAYER_TARGET_ID } from '../model/composition';
 import type { FieldConnectInfo } from '../../../sketch-types';
 
@@ -25,6 +26,7 @@ describe('layer (__layer__) wiring + automation targets', () => {
   let railId: string;
 
   beforeEach(() => {
+    seedTestPlugins();  // insertTrackDeviceAt validates against the catalog
     trk = store.addTrack();
     store.addVideoClip(trk, 0, { sourceKey: 'k', url: 'blob:x', frameCount: 30, fps: 30, label: 'v' }, 4);
     const clip = store.trackById(trk)!.clips[0];
@@ -64,6 +66,18 @@ describe('layer (__layer__) wiring + automation targets', () => {
     const wires = store.trackById(trk)!.clips[0].sketch.wires ?? [];
     expect(wires.length).toBe(1);
     expect(wires[0].src).toEqual({ instanceKey: devId, field: 'output' });
+    expect(wires[0].dest).toEqual({ instanceKey: LAYER_TARGET_ID, field: 'opacity' });
+  });
+
+  it('a TRACK-chain mod output dropped on its own layer becomes a track-sketch wire', () => {
+    // Mod sources on tracks: the source lives on the track's FX-bus sketch
+    // ('track/<id>'), not a clip. Own-layer only, like clip sources.
+    store.insertTrackDeviceAt(trk, 0, 'mod.source.lfo');
+    const dev = store.trackById(trk)!.sketch.devices[0];
+    store.connectSketchWire(fieldInfo(`track/${trk}`, 'output', true), layerInfo(trk));
+    const wires = store.trackById(trk)!.sketch.wires ?? [];
+    expect(wires.length).toBe(1);
+    expect(wires[0].src).toEqual({ instanceKey: dev.id, field: 'output' });
     expect(wires[0].dest).toEqual({ instanceKey: LAYER_TARGET_ID, field: 'opacity' });
   });
 

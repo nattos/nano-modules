@@ -99,6 +99,14 @@ inline bool hasLayerOpacityModulation(const TrackM& owner, const ClipM* activeCl
   for (const auto& r : owner.reads) {
     if (r.targetDeviceId == kLayerTargetId && r.targetField == "opacity") return true;
   }
+  // Own-layer wires on the owner's OWN FX-bus sketch (mod sources on tracks).
+  for (const auto& w : owner.sketch.wires) {
+    if (!w.is_object() || !w.contains("dest")) continue;
+    if (w["dest"].value("instanceKey", std::string()) == kLayerTargetId &&
+        w["dest"].value("field", std::string()) == "opacity") {
+      return true;
+    }
+  }
   if (activeClip) {
     for (const auto& l : activeClip->automation) {
       if (l.targetDeviceId == kLayerTargetId && l.targetField == "opacity") return true;

@@ -212,6 +212,33 @@ struct Builder {
     layerTargets[ownerId] = {{"instanceKey", instanceKey}, {"field", field}};
   }
 
+  /** Fold an owner's (track/group) FX-bus sketch wires whose dest is
+   *  `__layer__`/opacity — a mod source ON THE TRACK driving its own layer.
+   *  Emitted here (not pushTrackFx) because the layer slot resolves only after
+   *  the layer composites. `__layer__`/bypass wires are self-killing → dropped.
+   *  Non-layer track wires were already folded by pushTrackFx. */
+  void pushOwnerLayerWires(const TrackM* owner, const std::string& layerKey,
+                           const std::string& layerField) {
+    if (!owner || layerKey.empty()) return;
+    std::set<std::string> tpushed;
+    for (const auto& d : owner->sketch.devices) {
+      if (cat.has(d.moduleType)) tpushed.insert(d.id);
+    }
+    for (const auto& w : owner->sketch.wires) {
+      if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
+      if (w["dest"].value("instanceKey", std::string()) != kLayerTargetId) continue;
+      if (w["dest"].value("field", std::string()) != "opacity") continue;
+      const std::string srcKey = w["src"].value("instanceKey", std::string());
+      if (!tpushed.count(srcKey)) continue;
+      nlohmann::json w2 = w;
+      w2["id"] = "tw" + std::to_string(wid++);
+      w2["src"] = {{"instanceKey", trackInstanceKey(owner->id, srcKey)},
+                   {"field", w["src"].value("field", std::string())}};
+      w2["dest"] = {{"instanceKey", layerKey}, {"field", layerField}};
+      wires.push_back(std::move(w2));
+    }
+  }
+
   /** Collect an owner's (track/group) rail READS: `__layer__` targets resolve
    *  to the owner's layer-opacity slot (`layerKey`/`layerField`, when this
    *  build produced one); device targets resolve to the owner's FX-bus keys.
@@ -380,8 +407,10 @@ struct Builder {
       railReaders.push_back({read.railId, clipInstanceKey(clip.id, read.targetDeviceId),
                              read.targetField, &read});
     }
-    // Track-level rail reads (the owner's layer opacity / FX-bus params).
+    // Track-level rail reads (the owner's layer opacity / FX-bus params) +
+    // the owner's own-layer sketch wires.
     collectOwnerReads(node.track, layerKey, layerField);
+    pushOwnerLayerWires(node.track, layerKey, layerField);
     return acc;
   }
 
@@ -433,6 +462,7 @@ struct Builder {
                      {"dest", {{"instanceKey", b}, {"field", "1"}}}});
     recordLayerTarget(node.group->id, b, "opacity");
     collectOwnerReads(node.group, b, "opacity");
+    pushOwnerLayerWires(node.group, b, "opacity");
     return b;
   }
 

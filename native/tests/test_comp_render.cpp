@@ -1078,3 +1078,93 @@ TEST_CASE("a return rail structurally toggles another track's bypass (1-frame lo
 
   sketch_executor::effrtSetPublishedStateProvider(nullptr);
 }
+
+TEST_CASE("a TRACK-chain LFO wire folds through the published-state mirror",
+          "[comp_render]") {
+  // The track-FX-bus twin of the clip-level LFO-fold test: the LFO + its wire
+  // live on the TRACK's sketch (mod sources on tracks), keyed
+  // track_<id>_<dev>. white clip -> track chain [lfo -> bc], track wire
+  // lfo.output -> bc.brightness. Live output 0 -> neutral brightness -> the
+  // -0.5 contrast alone -> grey ~128. A dropped track wire leaves brightness
+  // 1 -> much brighter.
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  json t1 = mkTrack("t1", json::array({mkClip(
+      "c1", 0, 8,
+      json::array({mkDevice("d1", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})}))}));
+  t1["sketch"] = {
+      {"devices", json::array({
+          mkDevice("lfo", "mod.source.lfo", {{"rate", 0.0}, {"amplitude", 1.0}}),
+          mkDevice("bc", "color.tone.brightness_contrast",
+                   {{"brightness", 1.0}, {"contrast", -0.5}})})},
+      {"wires", json::array({{{"id", "x1"},
+                              {"src", {{"instanceKey", "lfo"}, {"field", "output"}}},
+                              {"dest", {{"instanceKey", "bc"}, {"field", "brightness"}}}}})}};
+  const json doc = mkComposition(json::array({t1}));
+
+  sketch_executor::effrtSetPublishedStateProvider(
+      [](effect_runtime::EffectInstance* i) -> std::string {
+        return i->id() == "mod.source.lfo" ? std::string("{\"output\":0.0}") : std::string();
+      });
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+  cx.update(0.0);
+  // The track chain is IN the composite, keyed per-track.
+  CHECK(cx.chainKeysJson().find("track_t1_lfo") != std::string::npos);
+  CHECK(cx.chainKeysJson().find("track_t1_bc") != std::string::npos);
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+  const int32_t out = cx.render(inTex, outTex, W, H, 1.0 / 60.0);
+  const double m = meanRgb(hx.read(out));
+  sketch_executor::effrtSetPublishedStateProvider(nullptr);
+
+  INFO("output mean " << m << " (expect ~128 grey)");
+  CHECK(std::abs(m - 128.0) < 20.0);
+}
+
+TEST_CASE("a TRACK-chain mod source wires to its OWN layer opacity", "[comp_render]") {
+  // Mod sources on tracks driving the track's own layer: a track-sketch wire
+  // with dest __layer__/opacity resolves to the layer's blend param (emitted
+  // after the layer composites — pushOwnerLayerWires). White clip over black
+  // bg; the track LFO rests at 0 (signed decl → unsigned 0.5) → half fade.
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  json t1 = mkTrack("t1", json::array({mkClip(
+      "c1", 0, 8,
+      json::array({mkDevice("d1", "source.solid_color", {{"color", {1.0, 1.0, 1.0}}})}))}));
+  t1["sketch"] = {
+      {"devices", json::array({mkDevice("lfo", "mod.source.lfo",
+                                        {{"rate", 0.0}, {"amplitude", 1.0}})})},
+      {"wires", json::array({{{"id", "x1"},
+                              {"src", {{"instanceKey", "lfo"}, {"field", "output"}}},
+                              {"dest", {{"instanceKey", "__layer__"}, {"field", "opacity"}}},
+                              {"combine", "replace"}, {"magnitude", "unsigned"}}})}};
+  const json doc = mkComposition(json::array({t1}));
+
+  sketch_executor::effrtSetPublishedStateProvider(
+      [](effect_runtime::EffectInstance* i) -> std::string {
+        return i->id() == "mod.source.lfo" ? std::string("{\"output\":0.0}") : std::string();
+      });
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+  cx.update(0.0);
+  // The wire forced the layer target to resolve (a blend over arr_bg).
+  const json lt = json::parse(cx.layerTargetsJson());
+  REQUIRE(lt.contains("t1"));
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+  double m = 0;
+  for (int i = 0; i < 3; i++) {  // published-state fold has 1-frame latency
+    cx.update(0.0);
+    m = meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+  }
+  sketch_executor::effrtSetPublishedStateProvider(nullptr);
+  INFO("mean " << m << " (expect ~127: white layer at wire-driven opacity 0.5)");
+  CHECK(std::abs(m - 127.0) < 25.0);
+}

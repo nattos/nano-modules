@@ -29,7 +29,7 @@ import { buildMultiEditModel, clipInsertIndex, aggregateField, multiSketchId, ty
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
-import { clipInstanceKey } from '../engine/instance-keys';
+import { clipInstanceKey, trackInstanceKey } from '../engine/instance-keys';
 
 /**
  * Stable fingerprint of a candidate device state for the static-visibility
@@ -247,6 +247,16 @@ export function trackTarget(trackId: string): DeviceTarget {
     insertAt: (i, t, ck) => store.insertTrackDeviceAt(trackId, i, t, ck),
     remove: (d, ck) => store.removeTrackDevice(trackId, d, ck),
     move: (from, to) => store.moveTrackDevice(trackId, from, to),
+    // Track-FX-bus devices execute keyed per TRACK — without this, track-device
+    // output traces and modulation bands read nothing (they were dead).
+    engineKeyFor: (d) => trackInstanceKey(trackId, d),
+    staticHiddenFor: (mt, instanceKey) => {
+      const devices = store.trackById(trackId)?.sketch.devices;
+      const dev = (instanceKey ? devices?.find((d) => d.id === instanceKey) : undefined)
+        ?? devices?.find((d) => d.moduleType === mt);
+      if (!dev) return null;
+      return resolveStaticHiddenSingle(mt, (dev.state ?? {}) as Record<string, unknown>);
+    },
   };
 }
 
