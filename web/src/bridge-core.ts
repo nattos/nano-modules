@@ -263,7 +263,18 @@ export class BridgeCore {
 
   // --- Plugin registration ---
 
+  /**
+   * Bumped on every plugin registration. The CHEAP change signal for per-frame
+   * consumers (compSeedSchemas): registrations are the only way the /global
+   * plugin list grows, so comparing this integer replaces fetching /global —
+   * which nlohmann-serializes the ENTIRE state doc (every plugin's schema +
+   * state), copies it out of wasm, and JSON.parses it. Doing that each frame
+   * just to read plugins.length was >80% of the engine worker's CPU at idle.
+   */
+  registrationEpoch = 0;
+
   registerPlugin(id: string, major: number, minor: number, patch: number): string {
+    this.registrationEpoch++;
     return this.withString(id, (idPtr, idLen) => {
       return this.readGrowable((buf, bufLen) =>
         this.exports.bridge_core_register_plugin(
@@ -272,6 +283,7 @@ export class BridgeCore {
   }
 
   registerWithSchema(id: string, major: number, minor: number, patch: number, schemaJson: string): string {
+    this.registrationEpoch++;
     return this.withStrings([id, schemaJson], ([[idPtr, idLen], [sPtr, sLen]]) => {
       return this.readGrowable((buf, bufLen) =>
         this.exports.bridge_core_register_with_schema(

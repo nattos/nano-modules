@@ -124,20 +124,28 @@ const sketchOutputs = new Map<string, number>();
 // When on, simulateTick drives the in-wasm comp executor each frame (its output
 // lands in sketchOutputs under 'arr-composite', so trace capture is unchanged).
 let compActive = false;
-// How many discovered plugins have been seeded into the comp catalog — the comp
-// executor needs every referenced module's schema BEFORE it evaluates the
-// timeline (role/defaults). Re-checked each tick; new discoveries re-seed.
-let compSeededPlugins = 0;
+// The bridgeCore.registrationEpoch already seeded into the comp catalog — the
+// comp executor needs every referenced module's schema BEFORE it evaluates the
+// timeline (role/defaults). Re-checked each tick (an integer compare); new
+// registrations re-seed. -1 ⇒ never seeded / force a re-seed.
+let compSeededEpoch = -1;
 // The latest compFrame report, attached to the next 'frame' post.
 let compFrameInfo: import('./engine-types').CompFrameInfo | null = null;
 
 /** Seed the comp catalog from every discovered plugin (schema + capabilities),
- *  the same source broadcastState wraps into PluginInfo. Cheap when count is
- *  unchanged. */
+ *  the same source broadcastState wraps into PluginInfo. Free when the
+ *  registration epoch is unchanged (an integer compare — no bridge calls). */
 function compSeedSchemas() {
   if (!executor || !bridgeCore) return;
+  // CHEAP per-frame guard: the JS-side registration epoch. NEVER fetch /global
+  // here to detect changes — getAt('/global') serializes the whole state doc
+  // (every plugin's schema + state) out of nlohmann and JSON.parses it, and
+  // doing that each frame just to compare plugins.length pegged the worker at
+  // ~85% CPU while the transport was PAUSED. Registrations are the only way
+  // the plugin list grows, so the epoch is an exact change signal.
+  if (bridgeCore.registrationEpoch === compSeededEpoch) return;
   const entries = bridgeCore.getAt('/global')?.plugins as any[] | undefined;
-  if (!entries || entries.length === compSeededPlugins) return;
+  if (!entries) return;
   // Dedup by id, LAST entry wins (mirrors broadcastState's HMR rule).
   const byId = new Map<string, any>();
   for (const entry of entries) {
@@ -149,7 +157,7 @@ function compSeedSchemas() {
     const caps = WasmHost.capabilitiesById.get(id) ?? [];
     executor.compRegisterSchema(id, JSON.stringify(schema), JSON.stringify(caps));
   }
-  compSeededPlugins = entries.length;
+  compSeededEpoch = bridgeCore.registrationEpoch;
 }
 
 // Render loop state
@@ -388,7 +396,7 @@ async function handleCommand(cmd: WorkerCommand) {
       compActive = !!cmd.on;
       if (compActive) {
         executor?.compEnable();
-        compSeededPlugins = 0; // re-seed schemas on the next tick
+        compSeededEpoch = -1; // re-seed schemas on the next tick
       }
       break;
     case 'compLoadDoc':

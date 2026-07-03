@@ -246,7 +246,13 @@ export class EngineBridge {
     // `ensureFieldVisibility` + the adapter's static-hidden overlay.
     store.visibilityResolver = (moduleType, state) => e.evaluateVisibility(moduleType, state);
     // Scene launch/stop commands (transient — never document mutations).
-    store.sceneOpSink = (msg) => e.compOp(msg);
+    // Flush pending transport/document diffs FIRST: a launch anchors at the
+    // ENGINE's beat, and a same-tick scrub+launch would otherwise anchor at
+    // the pre-scrub beat (the seek normally rides the next rAF sync).
+    store.sceneOpSink = (msg) => {
+      this.compSyncFromStore();
+      e.compOp(msg);
+    };
     // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
     // all effects are reachable — not just those a clip already references.
     void e.warmBundles(EFFECT_BUNDLES);
