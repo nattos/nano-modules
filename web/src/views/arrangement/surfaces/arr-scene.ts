@@ -1,15 +1,18 @@
 /**
- * <arr-scene> — one scene cell in a scene track's lane. Unlike <arr-clip>,
- * scenes don't live on the timeline: the cell is a fixed-size launch pad —
- * a header (channel badge + editable name) over a body with a SINGLE
- * thumbnail. Clicking the BODY launches the scene (clicking the playing
- * scene retriggers it); clicking the HEADER selects it for the inspector.
+ * <arr-scene> — one scene cell on a scene track's lane. Scenes are GRID-PLACED
+ * like clips (they scroll + zoom with the timeline) but RIGID: fixed one-bar
+ * width, and moves push overlapping siblings aside instead of carving. The
+ * cell is a launch pad — a header (channel badge + editable name, drag to
+ * move) over a body with a SINGLE thumbnail. Clicking the BODY launches the
+ * scene (clicking the playing scene retriggers it); playback ignores the grid
+ * position — a launched scene anchors at its LAUNCH beat.
  */
 
 import { html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths } from '../state/store';
+import { buildBeatGrid } from './grid-shared';
 import type { Clip } from '../model/composition';
 import { sceneChannelAssignments } from '../model/composition';
 import { drawPlaceholderCell } from './film-reel';
@@ -30,11 +33,11 @@ export class ArrScene extends MobxLitElement {
 
   static styles = css`
     :host {
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
       display: flex;
       flex-direction: column;
-      width: 132px;
-      flex: 0 0 auto;
-      height: 100%;
       border-radius: 4px;
       overflow: hidden;
       background: var(--app-bg-2, #121318);
@@ -180,6 +183,11 @@ export class ArrScene extends MobxLitElement {
       if (d.state) void Object.values(d.state).join('|');
       void store.enginePlugin(d.moduleType);
     }
+    // Grid placement: scenes scroll + zoom with the timeline like any clip
+    // (fixed one-bar width — the store pins lengthBeat).
+    const grid = buildBeatGrid();
+    this.style.left = `${grid.beatToX(clip.startBeat)}px`;
+    this.style.width = `${Math.max(24, grid.spanWidth(clip.startBeat, clip.lengthBeat))}px`;
     const selected = store.isSelected(paths.clip(this.trackId, clip.id));
     const playing = this.playing;
     this.classList.toggle('selected', selected);
@@ -245,7 +253,16 @@ export class ArrScene extends MobxLitElement {
     const path = paths.clip(this.trackId, this.clip.id);
     if (e.shiftKey) store.toggleSelect(path);
     else store.select(path);
+    // Header drag moves the scene on the grid (rigid: siblings push aside) —
+    // the same grid-driven machinery as arr-clip, incl. cross-track drags.
+    this.gridHost()?.beginClipMove?.(e, this.trackId, this.clip, true);
   };
+
+  private gridHost(): any {
+    return this.getRootNode() instanceof ShadowRoot
+      ? ((this.getRootNode() as ShadowRoot).host as any)
+      : null;
+  }
 
   private onBodyDown = (e: PointerEvent) => {
     e.stopPropagation();

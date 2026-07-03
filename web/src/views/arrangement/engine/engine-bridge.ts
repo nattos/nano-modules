@@ -414,7 +414,14 @@ export class EngineBridge {
     const videoDescs: VideoClipDesc[] = [];
     for (const l of layers) {
       const d = videoDescFor(l.clip);
-      if (d) videoDescs.push(d);
+      if (!d) continue;
+      // A launched scene's local clock anchors at its LAUNCH beat, not the
+      // cell's grid position (the native descs already carry this; keep the
+      // pre-first-report fallback consistent so the pump never mis-anchors).
+      if (l.track.kind === 'scene') {
+        d.startBeat = store.sceneLaunchState[l.track.id]?.launchBeat ?? d.startBeat;
+      }
+      videoDescs.push(d);
     }
     this.lastVideoDescs = videoDescs; // decodePending()/inputsReady() read these
     const warmDescs = [...videoDescs];
@@ -496,7 +503,12 @@ export class EngineBridge {
     if (!e) return;
     const bpm = store.composition.meta.baseBPM;
     const liveIds = new Set<string>();
-    for (const d of this.lastWarmDescs) {
+    // The worker-reported pump set is authoritative in comp mode — it includes
+    // LAUNCHED SCENES (which the store's arrangement-time warm scan can't
+    // see); scanning only the local warm set starved the gate of the ready
+    // edge for a launched video scene → a permanent hold ("stalls on launch").
+    const descs = this.compPumpDescs ?? this.lastWarmDescs;
+    for (const d of descs) {
       liveIds.add(d.clipId);
       const ready = !!this.video?.clipReady(d.clipId, store.positionBeat, bpm);
       if (this.sentVideoReady.get(d.clipId) !== ready) {

@@ -27,7 +27,8 @@ import '../../../widgets/editable-label';
 import './arr-clip';
 import './arr-mixer-strip';
 import './arr-rail-lane';
-import './arr-scene-lane';
+import './arr-scene';
+import { WireConnect } from '../../../widgets/taps-connect';
 import './arr-automation-editor';
 import '../../../widgets/ui-icon';
 
@@ -179,6 +180,25 @@ export class ArrGrid extends MobxLitElement {
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1;
+    }
+    .sb.scenestop.on {
+      color: var(--app-cat-source, #57b47a);
+      border-color: var(--app-cat-source, #57b47a);
+    }
+    .trigpad {
+      flex-shrink: 0;
+      padding: 0 3px;
+      height: 14px;
+      line-height: 14px;
+      border: 1px solid rgba(70, 194, 194, 0.5);
+      border-radius: 2px;
+      color: var(--app-cat-mod, #46c2c2);
+      font-size: 8px;
+      cursor: crosshair;
+    }
+    .trigpad[tap-drop-target],
+    .trigpad:hover {
+      background: rgba(70, 194, 194, 0.2);
     }
     .sb {
       flex-shrink: 0;
@@ -780,6 +800,29 @@ export class ArrGrid extends MobxLitElement {
             ${isRail
               ? html`<span class="rtag">return</span>`
               : html`
+                  ${isScene
+                    ? html`<button
+                          class="sb scenestop ${store.sceneLaunchState[track.id] ? 'on' : ''}"
+                          title="Stop the playing scene"
+                          @pointerdown=${(e: PointerEvent) => { e.stopPropagation(); store.stopScene(track.id); }}
+                        >■</button>
+                        ${store.wiresMode
+                          ? html`<span
+                              class="tap-overlay-hit trigpad"
+                              title=${track.triggerRead
+                                ? `All scenes listen on ${store.railTrackFor(track.triggerRead.railId)?.name ?? 'a return'} — drop the same rail to detach`
+                                : 'Drop a return here: all scenes launch from that rail’s triggers (default: global bus)'}
+                              data-trigger-track=${track.id}
+                              @pointerdown=${(e: PointerEvent) => {
+                                const g = WireConnect.active;
+                                if (!g) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                g.completeOnTriggerListen(track.id);
+                              }}
+                            >trig</span>`
+                          : ''}`
+                    : ''}
                   <button
                     class="sb solo ${track.soloed ? 'on' : ''}"
                     title="Solo (exclusive) · Cmd-click to add to a multi-solo"
@@ -812,10 +855,6 @@ export class ArrGrid extends MobxLitElement {
           ? html`<div class="lane rail">
               <arr-rail-lane .trackId=${track.id}></arr-rail-lane>
             </div>`
-          : isScene
-          ? html`<div class="lane scene ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''}">
-              <arr-scene-lane .trackId=${track.id} .accent=${accent}></arr-scene-lane>
-            </div>`
           : html`<div
               class="lane ${isGroup ? 'group' : ''} ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''} ${this.clipDropTrackId === track.id ? 'dropok' : ''}"
               @dblclick=${(e: MouseEvent) => this.onLaneDblClick(e, track)}
@@ -823,16 +862,22 @@ export class ArrGrid extends MobxLitElement {
               ${isGroup
                 ? html`<span class="empty-hint">${isBus ? 'main bus — all tracks sum here' : 'group — child tracks sum here'}</span>`
                 : track.clips.length === 0
-                  ? html`<span class="empty-hint">double-click to add a clip · drag to select</span>`
+                  ? html`<span class="empty-hint">${isScene ? 'double-click to add a scene · click a scene to launch' : 'double-click to add a clip · drag to select'}</span>`
                   : ''}
               ${repeat(
                 track.clips,
                 (clip) => clip.id, // keyed: element identity tracks clip identity
-                (clip) => html`<arr-clip
-                  .trackId=${track.id}
-                  .clip=${clip}
-                  .accent=${accent}
-                ></arr-clip>`,
+                (clip) => isScene
+                  ? html`<arr-scene
+                      .trackId=${track.id}
+                      .clip=${clip}
+                      .accent=${accent}
+                    ></arr-scene>`
+                  : html`<arr-clip
+                      .trackId=${track.id}
+                      .clip=${clip}
+                      .accent=${accent}
+                    ></arr-clip>`,
               )}
               ${this.renderTrackAutoOverlay(track)}
             </div>`}
@@ -1323,7 +1368,7 @@ export class ArrGrid extends MobxLitElement {
     // In automation mode the clip row edits envelopes, not clips — never insert one.
     if (store.automationMode) return;
     if (track.kind === 'group') return;
-    if (e.target instanceof Element && e.target.closest('arr-clip')) return;
+    if (e.target instanceof Element && e.target.closest('arr-clip, arr-scene')) return;
     const laneRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const grid = buildBeatGrid();
     const beat = store.quantize(grid.xToBeat(e.clientX - laneRect.left));
@@ -1382,7 +1427,8 @@ export class ArrGrid extends MobxLitElement {
     // bottom (below the main bus) extends to the final lane instead of collapsing.
     const caretOK = (trackId: string) => {
       const t = store.trackById(trackId);
-      return !!t && (t.kind === 'track' || t.kind === 'rail' || t.kind === 'group');
+      return !!t && (t.kind === 'track' || t.kind === 'rail' || t.kind === 'group' ||
+                     t.kind === 'scene');
     };
     let idx = layout.findIndex((r) => contentY < r.bottom);
     if (idx < 0) idx = layout.length - 1;
@@ -1555,7 +1601,7 @@ export class ArrGrid extends MobxLitElement {
     let best = sourceTrackId;
     let bestDist = Infinity;
     for (let i = 0; i < tracks.length; i++) {
-      if (tracks[i].kind !== 'track') continue;
+      if (tracks[i].kind !== 'track' && tracks[i].kind !== 'scene') continue;
       const dist = Math.abs(center(layout[i]) - target);
       if (dist < bestDist) { bestDist = dist; best = tracks[i].id; }
     }

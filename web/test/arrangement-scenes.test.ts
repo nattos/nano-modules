@@ -26,16 +26,18 @@ const buildScenario = () => page.evaluate(() => {
     Object.assign(clip.sketch.devices[0].state ??= {}, { color: [0, 0, 0.3] });
   }
   const st = store.addSceneTrack();
-  const mkScene = (color: number[]) => {
-    const path = store.createEmptyClip(st, 0);
+  // Distinct grid spots: scenes are rigid one-bar cells now, and auto channels
+  // follow GRID order — red at bar 1 (channel 1), green at bar 2 (channel 2).
+  const mkScene = (color: number[], beat: number) => {
+    const path = store.createEmptyClip(st, beat);
     const [, tId, cId] = path.split('/');
     store.addClipDeviceType(tId, cId, 'source.solid_color');
     const clip = store.trackById(tId).clips.find((c: any) => c.id === cId);
     Object.assign(clip.sketch.devices[0].state ??= {}, { color });
     return cId;
   };
-  const red = mkScene([1, 0, 0]);
-  const green = mkScene([0, 1, 0]);
+  const red = mkScene([1, 0, 0], 0);
+  const green = mkScene([0, 1, 0], 4);
   store.docRev++; // direct state mutations above (test-only) — re-mirror the doc
   store.positionBeat = 42;
   return { sceneTrackId: st, red, green };
@@ -179,15 +181,55 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
+  it('launching a VIDEO scene does not stall the transport (readiness reaches the gate)', async () => {
+    const { ids, errors } = await boot();
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
+      { timeout: 30_000 },
+    );
+
+    // A real-media video scene + Precise mode (the stall repro: the gate held
+    // forever because the launched scene's clip never got a readiness edge).
+    const videoScene = await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      const path = store.addVideoClip(a.sceneTrackId, 8, {
+        sourceKey: 'test_h264', url: '/media/test_h264.mp4',
+        frameCount: 55, fps: 30, width: 1280, height: 720, label: 'h264',
+      }, 8);
+      if (!path) throw new Error('addVideoClip on the scene track failed');
+      store.setTransportMode('precise');
+      store.setPosition(40);
+      store.playing = true;
+      return path.split('/')[2] as string;
+    }, ids);
+
+    // Let the transport roll, then launch the video scene mid-playback.
+    await new Promise((r) => setTimeout(r, 800));
+    const beatAtLaunch = await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      store.launchScene(a.st, a.scene);
+      return store.positionBeat as number;
+    }, { st: ids.sceneTrackId, scene: videoScene });
+
+    // 3s at 120 BPM ≈ 6 beats. A brief decode hold is fine; a PERMANENT hold
+    // (the bug: ~1 forced frame per 2.5s) is not — require real progress.
+    await new Promise((r) => setTimeout(r, 3000));
+    const beatAfter = await page.evaluate(() => (window as any).arrangementStore.positionBeat as number);
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    expect(beatAfter - beatAtLaunch).toBeGreaterThan(3);
+
+    expect(errors).toEqual([]);
+  });
+
   it('clicking a scene cell body launches it (real component path)', async () => {
     const { ids, errors } = await boot();
 
-    // Click GREEN's cell body inside the nested shadow roots.
+    // Click GREEN's cell body inside the nested shadow roots (scene cells live
+    // directly on the grid lane now — grid-placed like clips).
     const clicked = await page.evaluate((a) => {
       const app = document.querySelector('arrangement-app') as any;
       const grid = app?.shadowRoot?.querySelector('arr-grid') as any;
-      const lane = grid?.shadowRoot?.querySelector('arr-scene-lane') as any;
-      const cells = Array.from(lane?.shadowRoot?.querySelectorAll('arr-scene') ?? []) as any[];
+      const cells = Array.from(grid?.shadowRoot?.querySelectorAll('arr-scene') ?? []) as any[];
       const cell = cells.find((el) => el.clip?.id === a.green);
       const body = cell?.shadowRoot?.querySelector('.body') as HTMLElement | undefined;
       if (!body) return false;
@@ -200,8 +242,8 @@ describe('Arrangement scene tracks (GPU)', () => {
     // The cell shows the playing highlight (engine mirror → class).
     await page.waitForFunction((a: any) => {
       const app = document.querySelector('arrangement-app') as any;
-      const lane = app?.shadowRoot?.querySelector('arr-grid')?.shadowRoot?.querySelector('arr-scene-lane') as any;
-      const cells = Array.from(lane?.shadowRoot?.querySelectorAll('arr-scene') ?? []) as any[];
+      const grid = app?.shadowRoot?.querySelector('arr-grid') as any;
+      const cells = Array.from(grid?.shadowRoot?.querySelectorAll('arr-scene') ?? []) as any[];
       return cells.some((el) => el.clip?.id === a.green && el.classList.contains('playing'));
     }, { timeout: 15_000 }, ids);
 

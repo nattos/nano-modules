@@ -536,11 +536,11 @@ inline std::vector<WarpSegment> derivedWarpSegments(const CompositionM& comp) {
   return segs;
 }
 
-/** Total beats spanned by the composition (ruler extent), min 64. */
+/** Total beats spanned by the composition (ruler extent), min 64. Scene cells
+ *  sit ON the grid, so they count toward the extent like any clip. */
 inline double compositionLengthBeats(const CompositionM& comp) {
   double end = 64;
   for (const auto& t : comp.tracks) {
-    if (t.kind == TrackKind::Scene) continue;  // scenes don't occupy timeline extent
     for (const auto& c : t.clips) {
       end = std::max(end, c.startBeat + c.lengthBeat);
     }
@@ -551,9 +551,10 @@ inline double compositionLengthBeats(const CompositionM& comp) {
 /**
  * Effective trigger channel per scene on a scene track (composition.ts
  * sceneChannelAssignments — LOCK-STEP). Pass 1: explicit triggerChannel values
- * claim their number. Pass 2: in array order, explicit scenes keep their
- * number; 'auto' scenes take the lowest positive integer not yet claimed
- * (then claim it). Returned in track-clip order (index-aligned with clips).
+ * claim their number. Pass 2: in GRID order (startBeat, then array index —
+ * scenes are grid-placed cells), explicit scenes keep their number; 'auto'
+ * scenes take the lowest positive integer not yet claimed (then claim it).
+ * Returned index-aligned with track.clips.
  */
 inline std::vector<int> sceneChannelAssignments(const TrackM& track) {
   std::vector<int> out(track.clips.size(), 0);
@@ -569,8 +570,13 @@ inline std::vector<int> sceneChannelAssignments(const TrackM& track) {
   for (const auto& c : track.clips) {
     if (c.triggerChannel) claim(*c.triggerChannel);
   }
+  std::vector<size_t> order(track.clips.size());
+  for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return track.clips[a].startBeat < track.clips[b].startBeat;
+  });
   int next = 1;
-  for (size_t i = 0; i < track.clips.size(); ++i) {
+  for (const size_t i : order) {
     const auto& c = track.clips[i];
     if (c.triggerChannel) {
       out[i] = *c.triggerChannel;

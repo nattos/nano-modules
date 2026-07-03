@@ -32,21 +32,59 @@ describe('scene tracks', () => {
     expect(idx).toBeLessThan(busIdx);
   });
 
-  it('createEmptyClip admits scene tracks and pins startBeat to 0', () => {
+  it('createEmptyClip places grid-positioned scenes with the FIXED one-bar width', () => {
     const id = store.addSceneTrack();
     expect(store.createEmptyClip(id, 12)).not.toBeNull();
     const t = store.trackById(id)!;
     expect(t.clips.length).toBe(1);
-    expect(t.clips[0].startBeat).toBe(0);
+    expect(t.clips[0].startBeat).toBe(12);          // grid-placed, not pinned
+    expect(t.clips[0].lengthBeat).toBe(store.barBeats); // rigid one-bar cell
   });
 
-  it('addVideoClip appends a scene without carving siblings', () => {
+  it('scenes are RIGID: an overlapping drop pushes siblings right, never carves', () => {
     const id = store.addSceneTrack();
-    addSceneWith(id);
-    store.addVideoClip(id, 4, { sourceKey: 'k', url: 'blob:x', frameCount: 30, fps: 30, label: 'v' }, 8);
+    const a = addSceneWith(id);                     // [0, 4)
+    store.addVideoClip(id, 2, { sourceKey: 'k', url: 'blob:x', frameCount: 30, fps: 30, label: 'v' }, 8);
     const t = store.trackById(id)!;
-    expect(t.clips.length).toBe(2); // no carve — scenes co-exist at beat 0
-    expect(t.clips[1].startBeat).toBe(0);
+    expect(t.clips.length).toBe(2);                 // nothing deleted
+    const video = t.clips.find((c) => c.kind === 'video')!;
+    const scene = t.clips.find((c) => c.id === a)!;
+    expect(video.startBeat).toBe(2);                // the dropped cell keeps its spot
+    expect(video.lengthBeat).toBe(store.barBeats);  // forced to the fixed width
+    expect(scene.startBeat).toBe(6);                // pushed past the new cell
+  });
+
+  it('moveClip on a scene track chain-pushes overlapped cells', () => {
+    const id = store.addSceneTrack();
+    const a = addSceneWith(id);                     // [0,4)
+    store.moveClip(id, addSceneWith(id), 4);        // b → [4,8)
+    const c = addSceneWith(id);
+    store.moveClip(id, c, 8);                       // c → [8,12)
+    // Move A onto B: B pushes past A's new span, chaining into C.
+    store.moveClip(id, a, 4);
+    const t = store.trackById(id)!;
+    const by = (cid: string) => t.clips.find((x) => x.id === cid)!.startBeat;
+    expect(by(a)).toBe(4);
+    expect(by(t.clips[1].id)).toBe(8);              // b pushed
+    expect(by(c)).toBe(12);                         // c chained
+  });
+
+  it('clips drag to/from scene tracks (fixed width on the way in)', () => {
+    const id = store.addSceneTrack();
+    const trk = store.addTrack();
+    const path = store.createEmptyClip(trk, 0, 16)!; // a long normal clip
+    const clipId = path.split('/')[2];
+    store.moveClipToTrack(trk, clipId, id, 8);
+    let t = store.trackById(id)!;
+    expect(t.clips.length).toBe(1);
+    expect(t.clips[0].startBeat).toBe(8);
+    expect(t.clips[0].lengthBeat).toBe(store.barBeats); // snapped to the cell width
+    // Break the move:<id> coalescing (two DISTINCT gestures, not one drag).
+    store.setTrackLevel(id, 0.9);
+    // ...and back out to a plain track (keeps the bar length; resizable there).
+    store.moveClipToTrack(id, clipId, trk, 2);
+    expect(store.trackById(id)!.clips.length).toBe(0);
+    expect(store.trackById(trk)!.clips[0].startBeat).toBe(2);
   });
 
   it('clip creation still rejects groups and rails', () => {
@@ -56,12 +94,11 @@ describe('scene tracks', () => {
     expect(store.createEmptyClip(grp, 0)).toBeNull();
   });
 
-  it('scene extents do not inflate the composition length', () => {
+  it('grid-placed scenes count toward the composition length (they are ON the timeline)', () => {
     const id = store.addSceneTrack();
-    const sceneId = addSceneWith(id);
-    store.trackById(id)!.clips[0].lengthBeat = 500; // fake extent
-    void sceneId;
-    expect(compositionLengthBeats(store.composition)).toBe(64);
+    addSceneWith(id);
+    store.moveClip(id, store.trackById(id)!.clips[0].id, 100);
+    expect(compositionLengthBeats(store.composition)).toBe(100 + store.barBeats);
   });
 
   describe('channel auto-assignment (lock-step: comp_model.h)', () => {
@@ -85,6 +122,14 @@ describe('scene tracks', () => {
       [[], []],
     ] as Array<[Array<number | undefined>, number[]]>)('%j → %j', (channels, expected) => {
       expect(sceneChannelAssignments(mkTrack(channels))).toEqual(expected);
+    });
+
+    it('auto channels follow GRID order (startBeat), not array order', () => {
+      const t = mkTrack([undefined, undefined, undefined]);
+      t.clips[0].startBeat = 8;   // array-first but grid-last
+      t.clips[1].startBeat = 0;
+      t.clips[2].startBeat = 4;
+      expect(sceneChannelAssignments(t)).toEqual([3, 1, 2]);
     });
   });
 

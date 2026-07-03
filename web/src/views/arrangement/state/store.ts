@@ -208,6 +208,32 @@ function splitClipsAt(track: Track, beat: number) {
  * clip is mutually exclusive with the rest of its lane (the overlapped section is
  * deleted). Operates on a draft `Track` inside a history recipe.
  */
+/**
+ * Settle a SCENE track after placing/moving `priorityId`: scenes are RIGID
+ * fixed-width cells — instead of carving, overlapped siblings shift RIGHT
+ * (chained) to make space. The priority scene keeps its position; the others
+ * keep their relative order and never move left. Runs inside a history recipe;
+ * per-frame drag coalescing replays from the gesture base, so transient pushes
+ * relax when the drag moves away (real rigid-body feel).
+ */
+function settleSceneTrack(track: Track, priorityId: string) {
+  const p = track.clips.find((c) => c.id === priorityId);
+  if (!p) return;
+  const ps = p.startBeat;
+  const pe = ps + p.lengthBeat;
+  const others = track.clips
+    .filter((c) => c.id !== priorityId)
+    .sort((a, b) => a.startBeat - b.startBeat);
+  let cursor = 0;
+  for (const c of others) {
+    let s = Math.max(c.startBeat, cursor);
+    // Jump past the pinned scene when the cell would overlap it.
+    if (s < pe - 1e-6 && s + c.lengthBeat > ps + 1e-6) s = pe;
+    c.startBeat = s;
+    cursor = s + c.lengthBeat;
+  }
+}
+
 function carveTrackSpan(track: Track, exceptId: string, start: number, end: number) {
   if (end <= start + 1e-6) return;
   const next: Clip[] = [];
@@ -1766,7 +1792,8 @@ export class ArrangementStore {
    * through the group hierarchy. Empty clips (no devices, no media) are skipped.
    */
   compositeLayersAtBeat(beat: number, ignoreSolo = false): CompositeLayer[] {
-    const tracks = this.composition.tracks.filter((t) => t.kind === 'track');
+    const tracks = this.composition.tracks.filter(
+      (t) => t.kind === 'track' || t.kind === 'scene');
     // Solo on ANY track or group restricts the mix to soloed lineages — unless the
     // caller (e.g. the exporter's "ignore solo") asks for the full mix.
     const anySolo = !ignoreSolo && this.composition.tracks.some((t) => t.soloed);
@@ -1775,6 +1802,21 @@ export class ArrangementStore {
       const anc = this.ancestorsOf(t);
       if (this.effectiveBypassed(t, anc)) continue;
       if (anySolo && !(t.soloed || anc.some((a) => a.soloed))) continue;
+      // Scene tracks: the LAUNCHED scene is the active clip (grid position is
+      // layout-only). The bridge's readiness/desc scans read THIS list — a
+      // launched video scene missing here starved the Precise gate forever.
+      if (t.kind === 'scene') {
+        const scene = this.launchedScene(t);
+        if (!scene) continue;
+        layers.push({
+          track: t,
+          clip: scene,
+          kind: 'engine',
+          opacity: this.effectiveOpacity(t, anc),
+          blendMode: t.blendMode ?? scene.blendMode ?? 0,
+        });
+        continue;
+      }
       let pick: Clip | undefined;
       for (const c of t.clips) {
         if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
@@ -2609,13 +2651,20 @@ export class ArrangementStore {
    * the copy tracks the cursor (the original never moves — a true copy).
    */
   insertClipCopyAt(source: Clip, destTrackId: string, beat: number, coalesceKey?: string) {
+    const barBeats = this.barBeats;
     this.mutate('duplicate clip', (d) => {
       const t = d.tracks.find((x) => x.id === destTrackId);
-      if (!t || t.kind !== 'track') return;
+      if (!t || (t.kind !== 'track' && t.kind !== 'scene')) return;
       const clip: Clip = JSON.parse(JSON.stringify(source));
       clip.id = uid('clip');
       freshClipIds(clip);
       clip.startBeat = Math.max(0, beat);
+      if (t.kind === 'scene') {
+        clip.lengthBeat = barBeats;  // rigid fixed-width cell
+        t.clips.push(clip);
+        settleSceneTrack(t, clip.id);
+        return;
+      }
       carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
       t.clips.push(clip);
     }, coalesceKey);
@@ -2963,9 +3012,15 @@ export class ArrangementStore {
     return undefined;
   }
 
+  /** Beats per bar — the FIXED width of a scene cell on the grid. */
+  get barBeats(): number {
+    return this.composition.meta.timeSignature?.[0] ?? 4;
+  }
+
   /** Double-click on an empty lane → create an empty effect-only clip. On a
-   *  SCENE track this creates a scene (startBeat pins to 0; array order is the
-   *  display order). */
+   *  SCENE track this creates a scene: grid-placed like any clip but with the
+   *  FIXED one-bar width; overlapped siblings are pushed aside (rigid cells,
+   *  never carved). */
   createEmptyClip(trackId: string, startBeat: number, lengthBeat = 8): string | null {
     const track = this.trackById(trackId);
     if (!track || (track.kind !== 'track' && track.kind !== 'scene')) return null;
@@ -2973,8 +3028,8 @@ export class ArrangementStore {
     const clip: Clip = {
       id: uid('clip'),
       name: isScene ? 'Scene #' : '#',
-      startBeat: isScene ? 0 : Math.max(0, startBeat),
-      lengthBeat,
+      startBeat: Math.max(0, startBeat),
+      lengthBeat: isScene ? this.barBeats : lengthBeat,
       kind: 'effect',
       sketch: { devices: [] },
       loop: defaultClipLoop(),
@@ -2983,7 +3038,10 @@ export class ArrangementStore {
       warps: [],
     };
     this.mutate('create clip', (d) => {
-      d.tracks.find((t) => t.id === trackId)?.clips.push(clip);
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      t.clips.push(clip);
+      if (isScene) settleSceneTrack(t, clip.id);
     });
     const path = paths.clip(trackId, clip.id);
     this.select(path);
@@ -3004,8 +3062,8 @@ export class ArrangementStore {
     const clip: Clip = {
       id: uid('clip'),
       name: label,
-      startBeat: isScene ? 0 : Math.max(0, startBeat),
-      lengthBeat,
+      startBeat: Math.max(0, startBeat),
+      lengthBeat: isScene ? this.barBeats : lengthBeat,
       kind: 'video',
       sketch: {
         devices: [
@@ -3030,12 +3088,13 @@ export class ArrangementStore {
       const t = d.tracks.find((x) => x.id === trackId);
       if (!t) return;
       // Clips may not overlap: overwrite whatever sits under the dropped clip
-      // (same as a clip dragged in from another track). Scenes all sit at
-      // beat 0 by design — appending is the whole point, never carve.
+      // (same as a clip dragged in from another track). Scene cells are RIGID
+      // instead — push overlapped siblings aside, never carve.
       if (t.kind !== 'scene') {
         carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
       }
       t.clips.push(clip);
+      if (t.kind === 'scene') settleSceneTrack(t, clip.id);
     });
     const path = paths.clip(trackId, clip.id);
     this.select(path);
@@ -3857,7 +3916,8 @@ export class ArrangementStore {
         const c = t?.clips.find((x) => x.id === clipId);
         if (t && c) {
           c.startBeat = v;
-          carveTrackSpan(t, clipId, v, v + c.lengthBeat);
+          if (t.kind === 'scene') settleSceneTrack(t, clipId);  // rigid push, no carve
+          else carveTrackSpan(t, clipId, v, v + c.lengthBeat);
         }
       },
       `move:${trackId}:${clipId}`,
@@ -4415,18 +4475,30 @@ export class ArrangementStore {
   moveClipToTrack(fromTrackId: string, clipId: string, toTrackId: string, newStartBeat: number) {
     const v = Math.max(0, newStartBeat);
     const dest = this.trackById(toTrackId);
-    const realDest = dest && dest.kind === 'track' ? toTrackId : fromTrackId;
+    const realDest = dest && (dest.kind === 'track' || dest.kind === 'scene')
+      ? toTrackId : fromTrackId;
+    const barBeats = this.barBeats;
     this.mutate(
       'move clip',
       (d) => {
         const from = d.tracks.find((t) => t.id === fromTrackId);
         const to = d.tracks.find((t) => t.id === realDest);
         if (!from || !to) return;
+        // Scene tracks hold RIGID fixed-width cells: a clip landing on one
+        // snaps to the one-bar width and pushes siblings aside (never carves).
+        const settle = (c: Clip) => {
+          if (to.kind !== 'scene') {
+            carveTrackSpan(to, clipId, c.startBeat, c.startBeat + c.lengthBeat);
+            return;
+          }
+          c.lengthBeat = barBeats;
+          settleSceneTrack(to, clipId);
+        };
         if (from === to) {
           const c = from.clips.find((x) => x.id === clipId);
           if (c) {
             c.startBeat = v;
-            carveTrackSpan(to, clipId, v, v + c.lengthBeat);
+            settle(c);
           }
           return;
         }
@@ -4435,15 +4507,17 @@ export class ArrangementStore {
         const [clip] = from.clips.splice(i, 1);
         clip.startBeat = v;
         to.clips.push(clip);
-        carveTrackSpan(to, clipId, v, v + clip.lengthBeat);
+        settle(clip);
       },
       `move:${clipId}`,
     );
   }
 
-  /** True if clips may be dropped onto this track (plain playable tracks only). */
+  /** True if clips may be dropped onto this track (playable lanes: plain
+   *  tracks + scene tracks). */
   isClipEligibleTrack(trackId: string): boolean {
-    return this.trackById(trackId)?.kind === 'track';
+    const k = this.trackById(trackId)?.kind;
+    return k === 'track' || k === 'scene';
   }
 
   // ── Track / group / automation toggles ────────────────────────────────

@@ -687,11 +687,11 @@ export function clipProcessesTexture(clip: Clip): boolean {
   return clip.sketch.devices.some(deviceProcessesTexture);
 }
 
-/** Total beats spanned by the composition (for ruler extent), min 64. */
+/** Total beats spanned by the composition (for ruler extent), min 64. Scene
+ *  cells sit ON the grid, so they count toward the extent like any clip. */
 export function compositionLengthBeats(comp: Composition): number {
   let end = 64;
   for (const t of comp.tracks) {
-    if (t.kind === 'scene') continue; // scenes don't occupy timeline extent
     for (const c of t.clips) {
       end = Math.max(end, c.startBeat + c.lengthBeat);
     }
@@ -702,20 +702,29 @@ export function compositionLengthBeats(comp: Composition): number {
 /**
  * Effective trigger channel per scene on a scene track (LOCK-STEP:
  * comp_model.h sceneChannelAssignments). Pass 1: explicit triggerChannel
- * values claim their number. Pass 2: in array order, explicit scenes keep
- * their number; 'auto' scenes take the lowest positive integer not yet
- * claimed (then claim it). Index-aligned with track.clips.
+ * values claim their number. Pass 2: in GRID order (startBeat, then array
+ * index — scenes are grid-placed cells), explicit scenes keep their number;
+ * 'auto' scenes take the lowest positive integer not yet claimed (then claim
+ * it). Index-aligned with track.clips.
  */
 export function sceneChannelAssignments(track: Track): number[] {
   const claimed = new Set<number>();
   for (const c of track.clips) {
     if (c.triggerChannel != null) claimed.add(c.triggerChannel);
   }
+  const order = track.clips
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => a.c.startBeat - b.c.startBeat || a.i - b.i);
+  const out = new Array<number>(track.clips.length).fill(0);
   let next = 1;
-  return track.clips.map(c => {
-    if (c.triggerChannel != null) return c.triggerChannel;
+  for (const { c, i } of order) {
+    if (c.triggerChannel != null) {
+      out[i] = c.triggerChannel;
+      continue;
+    }
     while (claimed.has(next)) next++;
     claimed.add(next);
-    return next;
-  });
+    out[i] = next;
+  }
+  return out;
 }
