@@ -7,18 +7,20 @@
 // the field DIRECTLY here (the same sf_field_at the present pass uses), no
 // equalization LUT, no grade — a static field → identical values → zero motion.
 //
-// Motion is the change in the VISIBLE value: the field clamped to [lo,hi] and leveled
-// to [0,1]. Two subtleties make it correct:
-//   • Clamp to [lo,hi] — field below lo displays as black, above hi as peak, so those
-//     changes aren't on screen and mustn't count (an all-black region whose field
-//     wiggles below lo would otherwise register).
+// Motion is the change in the leveled value (F-lo)/range. Three subtleties make it
+// correct:
+//   • Floor clamp only (max(·,0), NOT saturate). Field below lo displays as black, so
+//     sub-black wiggle mustn't count — the floor clamp drops it. But do NOT clamp the
+//     top: when the range SHRINKS (a shape dimming, whose interior was last frame's
+//     max) the previous value re-levels above 1; a top clamp would pin it to 1 and
+//     silently drop the whole dimming (half of every fill pulse).
 //   • Level BOTH frames against the CURRENT lo/hi. prevField stores the RAW previous
 //     field and we re-level it here, so a drifting lo/hi cancels — a static pixel (or
-//     one pinned at the black floor) shows no phantom motion when the range shifts —
-//     while a real level/fill change within the visible range still registers. (The
-//     naïve (F-lo)/(hi-lo) diff, which levels each frame against ITS OWN lo/hi, gets
-//     both wrong: static pixels flash when the range drifts, and floor-pinned pixels
-//     move with the floor.)
+//     one below the black floor) shows no phantom motion when the range shifts — while
+//     a real level/fill change within the visible range still registers. (The naïve
+//     (F-lo)/(hi-lo) diff, which levels each frame against ITS OWN lo/hi, gets both
+//     wrong: static pixels flash when the range drifts, floor-pinned pixels move with
+//     the floor.)
 //
 // One thread per fixed-grid sample: evaluate the field over a 3×3 neighbourhood
 // (Sobel edge + local stats), diff the visible centre value (motion), and scatter
@@ -97,15 +99,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);     // contrast-squashed
   float V = (f11 - lo) * invR;   // visible leveled value ∈ [0,1], for the variance feature
 
-  // Motion = change in the VISIBLE (clamped, leveled ∈ [0,1]) value — but with BOTH
-  // frames leveled against the CURRENT lo/hi. prevField holds the RAW previous field,
-  // which we re-level here, so a drifting lo/hi cancels (a static OR a below-black
-  // pixel stays put — no phantom motion when the range shifts) while a real level /
-  // fill change within the visible range still registers. `dts` signed for the LK.
+  // Motion = change in the leveled value, both frames on the CURRENT lo/hi, clamped
+  // ONLY at the black floor (max, not saturate). prevField holds the RAW previous
+  // field, re-leveled here, so a drifting lo/hi cancels (static / below-black pixels
+  // stay put). Crucially we do NOT clamp the TOP: when the range SHRINKS (a shape
+  // dimming, whose bright interior was last frame's max) the previous value re-levels
+  // above 1 — saturate would pin it to 1 and match V, dropping the whole dimming. The
+  // floor clamp still ignores sub-black wiggle. `dts` signed for the LK flow sums.
   int sidx = (int)gid.y * kSampleGrid + (int)gid.x;
   float pf = prevField[sidx];
-  float lev_prev = (pf < -1e29) ? V : saturate((pf - lo) * invR);   // sentinel: first frame → 0
-  float dts = V - lev_prev;
+  float mot_now  = max((f11raw - lo) * invR, 0.0);
+  float mot_prev = (pf < -1e29) ? mot_now : max((pf - lo) * invR, 0.0);   // sentinel: first frame → 0
+  float dts = mot_now - mot_prev;
   float m = abs(dts);
   float me = pow(saturate((m - kMotionFloor) / kMotionSpan), kMotionGamma);
   prevField[sidx] = f11raw;                              // store RAW field (re-leveled next frame)
