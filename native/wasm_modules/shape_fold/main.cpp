@@ -146,7 +146,7 @@ struct State {
   float skip_thresh       = 0.5f;   // Sensitivity [0,1] → activity trigger (× kSkipTrigSpan)
   // Per-feature weights [0,1]. shape_fold is never flat and has no hard edges, so
   // variance/edge default OFF (they'd read "busy" every frame); MOTION drives it.
-  float skip_w_var        = 0.30f;
+  float skip_w_var        = 0.0f;
   float skip_w_edge       = 0.0f;
   float skip_w_motion     = 1.0f;
   int   skip_debug        = 0;      // 0=off 1=variance 2=edge 3=motion 4=combined (viz)
@@ -308,10 +308,13 @@ void module_init() {
                   "anything but a briskly-animating frame.").label("Sensitivity", "Sens")
       // Per-feature weights, combined by weighted MAX. Motion is the one that
       // matters here; variance/edge default off (shape_fold is never flat).
-      .floatField("skip_w_var", 0.30f, 0.0f, 1.0f, state::PrimaryInput,
+      .floatField("skip_w_var", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
-                  "Weight of local tonal VARIANCE in the stillness test (off by "
-                  "default — the auto-leveled field is busy on every frame).")
+                  "Weight of local tonal VARIANCE in the stillness test. Keep at 0: "
+                  "variance measures spatial DETAIL, which is high for a FROZEN "
+                  "detailed shape just as much as a live one — so any weight blocks "
+                  "the jog on exactly the detailed-but-still frames you want to skip. "
+                  "Only motion tells frozen from moving.")
                   .label("Variance Wt", "Var")
       .floatField("skip_w_edge", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.01f, /*units=*/nullptr,
