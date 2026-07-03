@@ -309,4 +309,40 @@ describe('Wire routing E2E', () => {
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
   });
+
+  it('a wire drives an engine-reserved key: lfo.output → invert.__opacity__', async () => {
+    // Reserved-key modulation (executor-level, not a plugin field): the wire's
+    // fold feeds the executor's OWN wet/dry decision. White solid → color.invert
+    // at wire-driven opacity: the resting SIGNED lfo (output 0) forced unsigned
+    // prescales to 0.5 → mix(white, inverted-black, 0.5) = gray(128). If the
+    // wire were dropped (the old silent no-op), authored opacity 1 → black.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
+        params: { color: [1.0, 1.0, 1.0] } },
+        { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0',
+        params: { rate: 0.0, amplitude: 1.0 } },
+        { type: 'module', module_type: 'color.invert', instance_key: 'inv@0', params: {} },
+      ],
+      wires: [
+        { id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
+          dest: { instanceKey: 'inv@0', field: '__opacity__' },
+          combine: 'replace', magnitude: 'unsigned' },
+      ],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['com.nano.core'],
+      commands: [{ type: 'createSketch', sketchId: 'wire_reserved', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'wire_reserved' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'wire_reserved',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+  });
 });

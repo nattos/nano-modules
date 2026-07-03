@@ -44,6 +44,7 @@
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -127,6 +128,16 @@ class SketchExecutor {
    * cached plan are untouched. Replaces the previous frame's set; empty clears.
    */
   void setAutomation(const nlohmann::json& entries);
+
+  /**
+   * Forget the per-instance applied-state cache so every instance's authored
+   * state re-fires on the next frame (as if freshly dirty). Hosts call this at
+   * EDIT rate (e.g. on a composition document reload) to fix the pinned-param
+   * lifecycle: removing a wire/lane can rebuild a byte-identical sketch, and
+   * the whole-state fast path would otherwise skip re-asserting the authored
+   * value the modulation had been overriding.
+   */
+  void forceStateReassert() { lastAppliedState_.clear(); }
 
   /**
    * Prefix applied to every effect instance_key before it reaches the shared
@@ -475,6 +486,33 @@ class SketchExecutor {
       // When non-null, records each modulated FLOAT field's final post-fold
       // value (the target the smoothing pass ramps toward). See applySmoothing.
       std::unordered_map<std::string, float>* outModulatedScalars = nullptr);
+
+  // Fold ONE float read-tap's rail value into its dest: polarity prescale →
+  // tap_mod remap/curve → magnitude/combine fold against [destMin,destMax] →
+  // wire delay; records the telemetry band. The ONLY float-wire fold — shared
+  // by applyReadTaps (plugin fields) and foldReservedOverrides (engine-reserved
+  // `__` keys) so the two paths can never drift.
+  float foldFloatReadTap(const nlohmann::json& tap, const std::string& instanceKey,
+                         const std::string& fieldPath, float railVal,
+                         bool hasCanon, float canon);
+
+  // Engine-reserved per-effect overrides (`__opacity__` / `__bypass__`)
+  // modulated by wires/automation THIS frame. Reserved keys are consumed by the
+  // executor itself (never the plugin): readOpacity/readBypass supply the
+  // authored canon; wires fold from it (and stack), automation folds from it
+  // only when no wire drove the same key (wire precedence, matching
+  // applyAutomation). Folded at the TOP of an entry's standalone processing —
+  // BEFORE the bypass gate — so a wire can un-bypass a dormant effect. Values
+  // re-fold every frame from scratch (no persistent overlay to go stale).
+  struct ReservedOverrides {
+    std::optional<float> opacity;
+    std::optional<float> bypass;  // thresholded >= 0.5 by the caller
+  };
+  ReservedOverrides foldReservedOverrides(
+      const nlohmann::json& entry, const nlohmann::json& sketchInstances,
+      const std::string& instanceKey,
+      const std::unordered_map<std::string, nlohmann::json>& railsById,
+      const std::unordered_map<std::string, float>& railFloats);
 
   // Fold this frame's automation entries (setAutomation) for `instanceKey` into
   // their target fields, via applyMagnitude against each field's schema range —

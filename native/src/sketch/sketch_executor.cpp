@@ -279,6 +279,13 @@ float readOpacity(const json& instances, const std::string& instKey) {
   return (float)it->get<double>();
 }
 
+// Engine-reserved field paths (`__opacity__`, `__bypass__`, ...): consumed by
+// the executor, stripped before the plugin (see applyState). Wires/automation
+// targeting them fold through foldReservedOverrides, never setParamFloat.
+bool isReservedField(const std::string& fieldPath) {
+  return fieldPath.size() > 2 && fieldPath[0] == '_' && fieldPath[1] == '_';
+}
+
 // Shared empty fallbacks + a no-copy subtree accessor. `value(key, default)`
 // deep-copies the matched subtree (and constructs the default container as a
 // temporary every call); refOr returns a reference instead.
@@ -993,7 +1000,13 @@ int32_t SketchExecutor::execute(
       std::vector<char> eligibleK(R.size(), 0);
       std::vector<char> isBarrier(R.size(), 0);
       for (size_t k = 0; k < R.size(); ++k) {
-        eligibleK[k] = R[k].eligible ? 1 : 0;
+        // Host automation (setAutomation) changes per frame WITHOUT dirtying
+        // the sketch, so it can't ride the plan's cached eligibility: a fused
+        // entry never runs applyAutomation/foldReservedOverrides, silently
+        // dropping its lanes. Force any automated instance onto the
+        // standalone path this frame.
+        eligibleK[k] = (R[k].eligible &&
+                        !automationByInstance_.count(R[k].instanceKey)) ? 1 : 0;
         isBarrier[k] = (barrierPredicate_
                         && barrierPredicate_((int)colIdx,
                                               (int)R[k].chainIdx)) ? 1 : 0;
@@ -1075,10 +1088,19 @@ int32_t SketchExecutor::execute(
         return src;
       };
 
+      // -- Engine-reserved modulation (`__opacity__`/`__bypass__`): wires +
+      // automation targeting the executor's own per-effect controls fold HERE,
+      // before the bypass gate, so a wire can un-bypass a dormant effect. Rail
+      // values from earlier-in-chain producers are current (same availability
+      // as applyReadTaps); the fold never touches the plugin. --
+      const ReservedOverrides resOv =
+          foldReservedOverrides(entry, instances, instKey, railsById, railFloats);
+
       // -- Device on/off ("bypass"): when off, fire the on_active transition
       // then go fully dormant — no state, no taps, no tick/render — and alias
       // the column input straight through as this stage's output. --
-      const bool bypass = readBypass(instances, instKey);
+      const bool bypass = resOv.bypass ? (*resOv.bypass >= 0.5f)
+                                       : readBypass(instances, instKey);
       inst.doSetActive(!bypass);
       if (bypass) {
         int32_t out = passthroughOutput(colInput);
@@ -1140,7 +1162,11 @@ int32_t SketchExecutor::execute(
       // 1   → normal full-strength render.
       // 0<o<1 → render into a scratch texture, then host-blend it with the
       //       column input: out = mix(colInput, fx, opacity).
-      const float opacity = readOpacity(instances, instKey);
+      // Modulated opacity is clamped to [0,1] at consumption; the static path
+      // stays unclamped/unchanged (its exact value feeds computeStructSig).
+      const float opacity = resOv.opacity
+          ? std::max(0.0f, std::min(1.0f, *resOv.opacity))
+          : readOpacity(instances, instKey);
       // A modulation source (no output texture, e.g. mod.source.lfo) never renders an
       // image — it ticks to publish its scalar/struct outputs and passes the
       // texture chain through untouched. Same path as opacity 0 below. Without
@@ -1567,6 +1593,120 @@ void SketchExecutor::applyState(
   }
 }
 
+float SketchExecutor::foldFloatReadTap(const json& tap, const std::string& instanceKey,
+                                       const std::string& fieldPath, float railVal,
+                                       bool hasCanon, float canon) {
+  // Wire magnitude mode (resolved during normalization). Present → range-aware
+  // fold into [destMin,destMax]; absent → legacy combineTap (the wire's
+  // `absolute` mode, or a plain rail tap). Mirrors web's resolveScalarWire:
+  // applyMagnitude seeds from min when no canonical. The fold from a raw rail
+  // value to the dest value — shared by the live value AND the band sweep so
+  // the two can never diverge.
+  const tap_mod::Mod mod = parseMod(tap);
+  const tap_mod::Combine combine = parseCombine(tap);
+  const float mixFactor = tap.value("mixFactor", 1.0f);
+  const bool hasMag = tap.contains("magnitude");
+  const bool isSigned = tap.value("magnitude", std::string()) == "signed";
+  const float dmin = (float)tap.value("destMin", 0.0);
+  const float dmax = (float)tap.value("destMax", 1.0);
+  // Polarity prescale (identity unless the wire forces signed/unsigned
+  // against an opposite EXPLICIT source decl — see normalization).
+  // Applied to the raw value BEFORE applyTapMod, so the conversion's
+  // affine bias is inside what `scale` multiplies — i.e. `scale` scales
+  // the converted swing around its neutral (0 for signed), not after it.
+  const float preScale = (float)tap.value("preScale", 1.0);
+  const float preBias  = (float)tap.value("preBias", 0.0);
+  auto fold = [&](float v) -> float {
+    const float shaped = tap_mod::applyTapMod(v * preScale + preBias, mod);
+    return hasMag
+        ? tap_mod::applyMagnitude(hasCanon ? canon : dmin, shaped, isSigned,
+                                  combine, mixFactor, dmin, dmax)
+        : tap_mod::combineTap(hasCanon, canon, shaped, combine, mixFactor);
+  };
+  float combined = fold(railVal);
+  // Wire DELAY stage — temporal, transitive. Applied AFTER the pure
+  // envelope/remap/scale + magnitude fold and BEFORE smoothing (so the
+  // smoothing target is the delayed value). `delay` (seconds) rides the tap's
+  // mod object, a sibling of the pure remap/scale/envelope; it's read here
+  // rather than in parseMod because it's stateful, not part of the
+  // band-sampled `fold`. The band thus reflects the value's range (unchanged
+  // by a pure time-shift), while the live marker tracks the delayed value —
+  // which always lies within that range.
+  const float delaySec = tap.contains("mod") && tap["mod"].is_object()
+      ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
+  combined = applyModDelay(instanceKey, fieldPath, combined, delaySec);
+  // Editor telemetry: the effective value + the swing band, sampled over the
+  // source output's declared range (default 0..1). Fill anchor = the base the
+  // fold modulates from (dmin seeds when no canonical).
+  recordModBand(modulationData_, instanceKey, fieldPath, combined,
+                modNeutral(combine, isSigned, hasCanon ? canon : dmin, dmin, dmax),
+                (float)tap.value("srcMin", 0.0),
+                (float)tap.value("srcMax", 1.0), fold);
+  return combined;
+}
+
+SketchExecutor::ReservedOverrides SketchExecutor::foldReservedOverrides(
+    const json& entry, const json& sketchInstances, const std::string& instanceKey,
+    const std::unordered_map<std::string, json>& railsById,
+    const std::unordered_map<std::string, float>& railFloats) {
+  ReservedOverrides ov;
+  bool wireDrove[2] = {false, false};  // [0]=opacity, [1]=bypass
+  auto slotOf = [&](const std::string& f) -> int {
+    if (f == "__opacity__") return 0;
+    if (f == "__bypass__") return 1;
+    return -1;
+  };
+  auto get = [&](int s) -> std::optional<float>& { return s == 0 ? ov.opacity : ov.bypass; };
+  // Authored canon: the executor's own readers supply the defaults (opacity 1,
+  // bypass off) — the value modulation folds from / returns to.
+  auto canonOf = [&](int s) -> float {
+    return s == 0 ? readOpacity(sketchInstances, instanceKey)
+                  : (readBypass(sketchInstances, instanceKey) ? 1.0f : 0.0f);
+  };
+
+  // Wires first (they stack, like applyReadTaps' running accumulator)...
+  if (entry.contains("taps") && entry["taps"].is_array()) {
+    for (const auto& tap : entry["taps"]) {
+      if (tap.value("direction", std::string()) != "read") continue;
+      const std::string fieldPath = tap.value("fieldPath", std::string());
+      const int s = slotOf(fieldPath);
+      if (s < 0) continue;
+      const std::string railId = tap.value("railId", std::string());
+      auto railIt = railsById.find(railId);
+      if (railIt == railsById.end()) continue;
+      const auto& dataType = railIt->second.value("dataType", json());
+      if (!dataType.is_string() || dataType.get<std::string>() != "float") continue;
+      const auto& srcFloats = tap.value("delayed", false) ? delayedRailFloats_ : railFloats;
+      auto fit = srcFloats.find(railId);
+      if (fit == srcFloats.end()) continue;
+      std::optional<float>& dst = get(s);
+      const float canon = dst.has_value() ? *dst : canonOf(s);
+      dst = foldFloatReadTap(tap, instanceKey, fieldPath, fit->second,
+                             /*hasCanon=*/true, canon);
+      wireDrove[s] = true;
+    }
+  }
+  // ...then automation: folds from canon; a wire on the same key wins this
+  // frame (matches applyAutomation's outModulatedScalars skip); among multiple
+  // automation entries the LAST wins (each folds from canon, like
+  // applyAutomation's last setParamFloat).
+  auto ait = automationByInstance_.find(instanceKey);
+  if (ait != automationByInstance_.end()) {
+    for (const auto& a : ait->second) {
+      if (!a.is_object()) continue;
+      const int s = slotOf(a.value("field", std::string()));
+      if (s < 0 || wireDrove[s]) continue;
+      const float value = (float)a.value("value", 0.0);
+      const tap_mod::Combine combine = parseCombine(a);
+      const bool isSigned = a.value("magnitude", std::string("unsigned")) == "signed";
+      // Reserved keys have no schema entry — the range contract is fixed [0,1].
+      get(s) = tap_mod::applyMagnitude(canonOf(s), value, isSigned, combine,
+                                       1.0f, 0.0f, 1.0f);
+    }
+  }
+  return ov;
+}
+
 void SketchExecutor::applyReadTaps(
     int32_t inst_handle,
     const json& entry,
@@ -1612,13 +1752,17 @@ void SketchExecutor::applyReadTaps(
     // reads from this frame's local rails. See delayedRailFloats_ doc.
     const bool delayed = tap.value("delayed", false);
 
+    // Engine-reserved dest (`__opacity__`/`__bypass__`): folded separately at
+    // the top of the entry's standalone processing (foldReservedOverrides) —
+    // never setParamFloat'd onto the plugin, which strips `__` keys anyway.
+    if (isReservedField(fieldPath)) continue;
+
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
       const auto& srcFloats = delayed ? delayedRailFloats_ : railFloats;
       auto fit = srcFloats.find(railId);
       if (fit != srcFloats.end()) {
-        // Apply the tap's range remapper (after read), then mix into the user's
-        // canonical value per the mix mode (replace ignores it; add/mul/mix
-        // modulate from it).
+        // Mix into the user's canonical value per the mix mode (replace ignores
+        // it; add/mul/mix modulate from it).
         bool hasCanon = false;
         float canon = 0.0f;
         if (canonState && canonState->contains(fieldPath)) {
@@ -1630,57 +1774,13 @@ void SketchExecutor::applyReadTaps(
         // it (not the authored canon), so multiple wires stack per their combines.
         auto runIt = runningFloat.find(fieldPath);
         if (runIt != runningFloat.end()) { canon = runIt->second; hasCanon = true; }
-        // Wire magnitude mode (resolved during normalization). Present →
-        // range-aware fold into [destMin,destMax]; absent → legacy combineTap
-        // (the wire's `absolute` mode, or a plain rail tap). Mirrors web's
-        // resolveScalarWire: applyMagnitude seeds from min when no canonical.
-        // The fold from a raw rail value to the dest value — shared by the live
-        // value AND the band sweep so the two can never diverge.
-        const tap_mod::Mod mod = parseMod(tap);
-        const tap_mod::Combine combine = parseCombine(tap);
-        const float mixFactor = tap.value("mixFactor", 1.0f);
-        const bool hasMag = tap.contains("magnitude");
-        const bool isSigned = tap.value("magnitude", std::string()) == "signed";
-        const float dmin = (float)tap.value("destMin", 0.0);
-        const float dmax = (float)tap.value("destMax", 1.0);
-        // Polarity prescale (identity unless the wire forces signed/unsigned
-        // against an opposite EXPLICIT source decl — see normalization).
-        // Applied to the raw value BEFORE applyTapMod, so the conversion's
-        // affine bias is inside what `scale` multiplies — i.e. `scale` scales
-        // the converted swing around its neutral (0 for signed), not after it.
-        const float preScale = (float)tap.value("preScale", 1.0);
-        const float preBias  = (float)tap.value("preBias", 0.0);
-        auto fold = [&](float railVal) -> float {
-          const float shaped = tap_mod::applyTapMod(railVal * preScale + preBias, mod);
-          return hasMag
-              ? tap_mod::applyMagnitude(hasCanon ? canon : dmin, shaped, isSigned,
-                                        combine, mixFactor, dmin, dmax)
-              : tap_mod::combineTap(hasCanon, canon, shaped, combine, mixFactor);
-        };
-        float combined = fold(fit->second);
-        // Wire DELAY stage — temporal, transitive. Applied AFTER the pure
-        // envelope/remap/scale + magnitude fold and BEFORE smoothing (so the
-        // smoothing target below is the delayed value). `delay` (seconds) rides
-        // the tap's mod object, a sibling of the pure remap/scale/envelope; it's
-        // read here rather than in parseMod because it's stateful, not part of
-        // the band-sampled `fold`. The band thus reflects the value's range
-        // (unchanged by a pure time-shift), while the live marker tracks the
-        // delayed value — which always lies within that range.
-        const float delaySec = tap.contains("mod") && tap["mod"].is_object()
-            ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
-        combined = applyModDelay(instanceKey, fieldPath, combined, delaySec);
+        const float combined =
+            foldFloatReadTap(tap, instanceKey, fieldPath, fit->second, hasCanon, canon);
         runningFloat[fieldPath] = combined; // next tap on this field folds from here
         inst.setParamFloat(fieldPath, combined);
         inst.setFieldConnected(fieldPath, true, false);
         // Hand the smoothing pass this field's post-modulation target.
         if (outModulatedScalars) (*outModulatedScalars)[fieldPath] = combined;
-        // Editor telemetry: the effective value + the swing band, sampled over
-        // the source output's declared range (default 0..1). Fill anchor =
-        // the base the fold modulates from (dmin seeds when no canonical).
-        recordModBand(modulationData_, instanceKey, fieldPath, combined,
-                      modNeutral(combine, isSigned, hasCanon ? canon : dmin, dmin, dmax),
-                      (float)tap.value("srcMin", 0.0),
-                      (float)tap.value("srcMax", 1.0), fold);
       }
       continue;
     }
@@ -1763,6 +1863,9 @@ void SketchExecutor::applyAutomation(
     if (!a.is_object()) continue;
     const std::string field = a.value("field", std::string());
     if (field.empty()) continue;
+    // Engine-reserved dest: folded by foldReservedOverrides pre-gate, never
+    // setParamFloat'd onto the plugin (which strips `__` keys anyway).
+    if (isReservedField(field)) continue;
     // A live read tap (wire) drove this field THIS frame — the wire already
     // folded from the authored baseline, and automation's job on a shared
     // field is only to re-assert that baseline when NO writer exists (the
