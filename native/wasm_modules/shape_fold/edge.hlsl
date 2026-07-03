@@ -77,22 +77,32 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float f01 = field_at(p + int2(-cell.x,  0), vp),      f11 = field_at(p,                    vp), f21 = field_at(p + int2(cell.x,  0), vp);
   float f02 = field_at(p + int2(-cell.x, cell.y), vp),  f12 = field_at(p + int2(0, cell.y), vp), f22 = field_at(p + int2(cell.x, cell.y), vp);
 
+  // Clamp to the VISIBLE range [lo,hi]: field below lo displays as black, above hi as
+  // peak, so their changes AREN'T on screen and must not count as motion (an "all
+  // black" region whose field is still wiggling below lo would otherwise register).
+  // Diffing the clamped value (not (F-lo)/range) still keeps level changes WITHIN the
+  // visible range while ignoring both the sub-black wiggle and the global re-level.
+  f00 = clamp(f00, lo, hi); f10 = clamp(f10, lo, hi); f20 = clamp(f20, lo, hi);
+  f01 = clamp(f01, lo, hi); f11 = clamp(f11, lo, hi); f21 = clamp(f21, lo, hi);
+  f02 = clamp(f02, lo, hi); f12 = clamp(f12, lo, hi); f22 = clamp(f22, lo, hi);
+
   // Range-normalized Sobel (the lo offset cancels in a difference), for edge + LK.
   float gx = ((f20 + 2.0 * f21 + f22) - (f00 + 2.0 * f01 + f02)) * invR;
   float gy = ((f02 + 2.0 * f12 + f22) - (f00 + 2.0 * f10 + f20)) * invR;
   float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);              // edge magnitude [0,1]
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);     // contrast-squashed
-  float V = saturate((f11 - lo) * invR);   // leveled value, for the variance feature
+  float V = (f11 - lo) * invR;   // visible leveled value ∈ [0,1], for the variance feature
 
-  // Motion = temporal diff of the RAW FIELD (level-preserving), normalized by range.
-  // prevField stores the raw field so the diff isn't re-leveled — any change (move,
-  // birth, level/fill pulse) counts. `me` squashed magnitude; `dts` signed for LK.
+  // Motion = temporal diff of the CLAMPED (visible-range) field, normalized by range.
+  // prevField stores the clamped value so the diff isn't re-leveled — a level/fill
+  // pulse within the visible range counts, but sub-black changes don't. `me` squashed
+  // magnitude; `dts` signed for the LK flow sums.
   int sidx = (int)gid.y * kSampleGrid + (int)gid.x;
   float pf = prevField[sidx];
-  float dts = (pf < -0.5) ? 0.0 : (f11 - pf) * invR;   // sentinel <0: first frame → 0
+  float dts = (pf < -1e29) ? 0.0 : (f11 - pf) * invR;   // sentinel: first frame → 0
   float m = abs(dts);
   float me = pow(saturate((m - kMotionFloor) / kMotionSpan), kMotionGamma);
-  prevField[sidx] = f11;                                 // store RAW field (F ≥ 0)
+  prevField[sidx] = f11;                                 // store CLAMPED visible-range value
 
   float nx = gx / kSobelNorm;   // normalized gradient (‖(nx,ny)‖ ≤ 1)
   float ny = gy / kSobelNorm;

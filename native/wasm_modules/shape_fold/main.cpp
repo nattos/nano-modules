@@ -451,8 +451,10 @@ void init(void* self) {
   // and the detector stays inert (content=1) until a real readback arrives.
   int32_t z[kEdgeStatsInts] = {};
   s->edge_stats_buf.write(z, kEdgeStatsInts);
-  // Sentinel <0 so the first frame's motion reads 0 (no spurious spike).
-  std::vector<float> negs(kSampleGrid * kSampleGrid, -1.0f);
+  // Large-negative sentinel so the first frame's motion reads 0 (no spurious spike).
+  // Must sit below any real clamped field value (the field can dip negative), which
+  // a plain -1 would not — the edge pass checks pf < -1e29.
+  std::vector<float> negs(kSampleGrid * kSampleGrid, -1e30f);
   s->prev_field_buf.write(negs.data(), (int)negs.size());
   s->skip_gpu_ready = false;
   s->initialized = true;
