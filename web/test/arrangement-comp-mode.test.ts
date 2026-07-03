@@ -112,6 +112,38 @@ describe('Arrangement composition executor (GPU)', () => {
     expect(Math.max(...px)).toBeGreaterThan(30);
   });
 
+  it('param drags ride cheap ops: pixels change with ZERO whole-doc ships mid-drag', async () => {
+    const before = await renderAndSample(URL);
+    // A 30-frame drag burst recoloring the TOP solid (blue → pure green),
+    // spread over real frames so the bridge drains ops per rAF.
+    const revs = await page.evaluate(async () => {
+      const store = (window as any).arrangementStore;
+      const track = store.composition.tracks.find(
+        (t: any) => t.kind === 'track' && t.clips[0]?.sketch.devices[0]?.moduleType === 'source.solid_color');
+      const clip = track.clips[0];
+      const dev = clip.sketch.devices[0];
+      const rev0 = store.docRev;
+      for (let i = 1; i <= 30; i++) {
+        store.setClipDeviceField(track.id, clip.id, dev.id, 'color', [0, i / 30, 0]);
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      const revDuring = store.docRev;
+      // Trailing reconcile ships the canonical doc exactly once.
+      await new Promise((r) => setTimeout(r, 500));
+      return { rev0, revDuring, revAfter: store.docRev };
+    });
+    expect(revs.revDuring).toBe(revs.rev0);       // no doc ships during the drag
+    expect(revs.revAfter).toBe(revs.rev0 + 1);    // one reconcile after it settles
+    // The cheap ops actually reached the engine: the composite shows the final
+    // color (inverted green mix — assert it settled AWAY from the original).
+    await new Promise((r) => setTimeout(r, 400));
+    const a = await sampleGrid();
+    await new Promise((r) => setTimeout(r, 200));
+    const b = await sampleGrid();
+    expect(b).toEqual(a);          // stable again post-reconcile
+    expect(a).not.toEqual(before); // ...and visibly different from the boot render
+  });
+
   it('worker-owned transport advances, mirrors back, loops at the brace, and pauses', async () => {
     await renderAndSample(URL); // boots + parks the playhead at 42
     await page.evaluate(() => {

@@ -152,6 +152,17 @@ void comp_set_rail_base(CompExecutor* c, const char* railTrackId, int32_t len,
   if (c) c->setRailBase(std::string(railTrackId, static_cast<size_t>(len)), xyBend, nPoints);
 }
 
+// Cheap op (xform-drag fast path): replace a video clip's source transform.
+EXEC_EXPORT("comp_set_source_transform")
+void comp_set_source_transform(CompExecutor* c, const char* clipId, int32_t clip_len,
+                               const char* transformJson, int32_t json_len) {
+  if (!c) return;
+  auto t = nlohmann::json::parse(std::string(transformJson, static_cast<size_t>(json_len)),
+                                 nullptr, false);
+  if (t.is_discarded()) return;
+  c->setSourceTransform(std::string(clipId, static_cast<size_t>(clip_len)), t);
+}
+
 // ── Transport ──
 
 EXEC_EXPORT("comp_play") void comp_play(CompExecutor* c) { if (c) c->play(); }

@@ -173,6 +173,21 @@ void CompExecutor::setTrackLevel(const std::string& trackId, double level) {
   }
 }
 
+void CompExecutor::setSourceTransform(const std::string& clipId,
+                                      const nlohmann::json& transform) {
+  // The transform rides the video DESC (videoDescFor reads sourceJson), so the
+  // eval must re-run for the pump to see it (kCompVideoSetChanged).
+  invalidateEval();
+  for (auto& t : doc_.tracks) {
+    for (auto& c : t.clips) {
+      if (c.id != clipId) continue;
+      if (!c.sourceJson.is_object()) return;  // no source → nothing to place
+      c.sourceJson["transform"] = transform;
+      return;
+    }
+  }
+}
+
 namespace {
 std::vector<EnvPointM> pointsFromTriples(const double* xyBend, int32_t nPoints) {
   std::vector<EnvPointM> pts;

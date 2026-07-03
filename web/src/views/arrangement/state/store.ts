@@ -55,6 +55,25 @@ import { buildMultiEditModel, multiSketchId } from './multi-edit';
  *  faders stay the same width regardless of nesting. */
 export const GROUP_INDENT = 20;
 
+/**
+ * A field-level engine patch queued by a cheap (drag) mutation — the payload
+ * the bridge forwards verbatim as a comp cheap op (engine-types compOp, minus
+ * `type`). Only edits EXACTLY expressible as one of these ops may skip the
+ * full-document ship.
+ */
+export interface CompCheapOp {
+  op: 'param' | 'trackLevel' | 'lanePoints' | 'railBase' | 'sourceTransform';
+  ownerId?: string;
+  deviceId?: string;
+  field?: string;
+  valueJson?: string;
+  trackId?: string;
+  level?: number;
+  laneId?: string;
+  /** Flattened (x, y, bend) triples. */
+  points?: number[];
+}
+
 export type SelectableKind =
   | 'track'
   | 'clip'
@@ -607,7 +626,7 @@ export class ArrangementStore {
       ArrangementStore,
       'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
       | 'layoutReady' | 'layoutSaveTimer' | 'clipClipboard' | 'autoClipboard'
-      | 'fieldVisPending'
+      | 'fieldVisPending' | 'cheapReconcileTimer' | 'cheapEditsSinceDocRev'
     >(
       this,
       {
@@ -615,6 +634,11 @@ export class ArrangementStore {
         saveTimer: false,
         persistenceEnabled: false,
         lastSavedJson: false,
+        // Cheap-edit (drag fast path) plumbing: the bridge POLLS pendingCompOps
+        // per rAF; nothing reacts to any of these.
+        pendingCompOps: false,
+        cheapReconcileTimer: false,
+        cheapEditsSinceDocRev: false,
         // Bitmaps aren't deep-observed; reactivity rides `traceGeneration`.
         tracedFrames: false,
         layoutReady: false,
@@ -644,6 +668,16 @@ export class ArrangementStore {
    *  per-editor) `buildBeatGrid` warp-curve cache so it rebuilds the expensive warp
    *  curve only after an EDIT, not on every scroll/zoom/playhead frame. */
   warpEpoch = 0;
+
+  /**
+   * Field-level engine patches queued by cheap (drag) mutations — drained by
+   * the engine bridge each sync as comp cheap ops, or dropped whenever a full
+   * document ships (the doc supersedes them). Plain array, NOT observable:
+   * the bridge polls it per rAF; nothing reacts to it.
+   */
+  pendingCompOps: CompCheapOp[] = [];
+  private cheapReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  private cheapEditsSinceDocRev = false;
   /** Bumps on EVERY document mutation (incl. param/xform drags) + undo/redo
    *  + document replacement — the comp-mode bridge re-pushes the document
    *  mirror when this changes. Distinct from warpEpoch (which deliberately
@@ -656,6 +690,8 @@ export class ArrangementStore {
     coalesceKey?: string,
   ) {
     this.history.record(description, recipe, coalesceKey);
+    // A full-doc ship supersedes any pending cheap-edit reconcile.
+    this.clearCheapReconcile();
     this.docRev++;
     // Bump the warp/structure epoch (warp-curve cache + the bridge's warp-clock
     // refresh key) — but NOT for continuously-dragged edits that can't change the
@@ -667,13 +703,65 @@ export class ArrangementStore {
     }
   }
 
+  /**
+   * CHEAP mutation (drag fast path): record the edit like `mutate` (same undo
+   * coalescing, same autosave hook) but do NOT bump `docRev` — instead push
+   * field-level patch ops the engine bridge forwards as comp cheap ops
+   * (comp_set_device_param & co patch the worker's document mirror in place).
+   * Shipping the WHOLE document per docRev made a 60fps slider drag
+   * re-stringify + re-parse + re-assert the entire composition every frame.
+   * A debounced reconcile bumps docRev once after the drag settles (and
+   * `endGesture` flushes it immediately), so the full-document channel remains
+   * the canonical belt-and-braces resync. Only edits whose recipe is EXACTLY
+   * expressible as ops may use this — the mirror must never drift mid-drag.
+   */
+  private mutateCheap(
+    description: string,
+    recipe: (d: Composition) => void,
+    coalesceKey: string | undefined,
+    ops: CompCheapOp[],
+  ) {
+    this.history.record(description, recipe, coalesceKey);
+    this.pendingCompOps.push(...ops);
+    this.cheapEditsSinceDocRev = true;
+    this.scheduleCheapReconcile();
+  }
+
+  /** Debounced full-document resync after a run of cheap edits. */
+  private scheduleCheapReconcile() {
+    if (this.cheapReconcileTimer) clearTimeout(this.cheapReconcileTimer);
+    this.cheapReconcileTimer = setTimeout(() => {
+      this.cheapReconcileTimer = null;
+      this.flushCheapReconcile();
+    }, 300);
+  }
+
+  /** Ship the canonical document now (pending ops are superseded by it). */
+  private flushCheapReconcile() {
+    if (!this.cheapEditsSinceDocRev) return;
+    this.clearCheapReconcile();
+    runInAction(() => { this.docRev++; });
+  }
+
+  /** Forget pending cheap-edit state (a full-doc ship covers it). */
+  private clearCheapReconcile() {
+    if (this.cheapReconcileTimer) {
+      clearTimeout(this.cheapReconcileTimer);
+      this.cheapReconcileTimer = null;
+    }
+    this.pendingCompOps.length = 0;
+    this.cheapEditsSinceDocRev = false;
+  }
+
   undo() {
     this.applyHistoryWithAutoSelect(() => this.history.undo());
+    this.clearCheapReconcile(); // the full-doc ship below supersedes pending ops
     this.warpEpoch++;
     this.docRev++;
   }
   redo() {
     this.applyHistoryWithAutoSelect(() => this.history.redo());
+    this.clearCheapReconcile();
     this.warpEpoch++;
     this.docRev++;
   }
@@ -719,6 +807,9 @@ export class ArrangementStore {
   }
   endGesture() {
     this.history.endGesture();
+    // A finished drag ships the canonical document immediately (cheap-edit
+    // drags otherwise reconcile on the trailing debounce).
+    this.flushCheapReconcile();
   }
   get canUndo(): boolean {
     return this.history.canUndo;
@@ -3212,14 +3303,22 @@ export class ArrangementStore {
   setClipSourceTransform(
     trackId: string, clipId: string, patch: Partial<SourceTransform>, coalesceKey?: string,
   ) {
-    this.mutate(
+    // Resolve the FINAL transform up front so the cheap op carries the same
+    // absolute value the recipe writes (patches must never be relative).
+    const cur = this.trackById(trackId)?.clips.find((x) => x.id === clipId);
+    const next = cur?.source
+      ? { ...resolveSourceTransform(cur.source.transform), ...patch }
+      : null;
+    if (!next) return; // no source → nothing to place (matches the old recipe guard)
+    this.mutateCheap(
       'adjust source placement',
       (d) => {
         const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
         if (!c?.source) return;
-        c.source.transform = { ...resolveSourceTransform(c.source.transform), ...patch };
+        c.source.transform = { ...next };
       },
       coalesceKey ?? `xform:${clipId}`,
+      [{ op: 'sourceTransform', ownerId: clipId, valueJson: JSON.stringify(next) }],
     );
   }
 
@@ -3370,10 +3469,11 @@ export class ArrangementStore {
 
   // ── Track device chain edits (track-level sketch; same shape as clip ones) ──
   setTrackDeviceField(trackId: string, deviceId: string, key: string, value: unknown) {
-    this.mutate('set param', (d) => {
+    this.mutateCheap('set param', (d) => {
       const dev = d.tracks.find((t) => t.id === trackId)?.sketch.devices.find((x) => x.id === deviceId);
       if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
-    }, `param:${deviceId}:${key}`);
+    }, `param:${deviceId}:${key}`,
+    [{ op: 'param', ownerId: trackId, deviceId, field: key, valueJson: JSON.stringify(value) ?? 'null' }]);
   }
 
   replaceTrackDevice(trackId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string) {
@@ -3677,9 +3777,10 @@ export class ArrangementStore {
     return [];
   }
 
-  /** Set one field on a clip device's param state (a real param edit). */
+  /** Set one field on a clip device's param state (a real param edit). Cheap
+   *  path: the engine mirror gets a field-level `param` op, not a doc reload. */
   setClipDeviceField(trackId: string, clipId: string, deviceId: string, key: string, value: unknown) {
-    this.mutate(
+    this.mutateCheap(
       'set param',
       (d) => {
         const dev = d.tracks
@@ -3689,6 +3790,7 @@ export class ArrangementStore {
         if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
       },
       `param:${deviceId}:${key}`,
+      [{ op: 'param', ownerId: clipId, deviceId, field: key, valueJson: JSON.stringify(value) ?? 'null' }],
     );
   }
 
@@ -3717,13 +3819,17 @@ export class ArrangementStore {
     key: string,
     value: unknown,
   ) {
-    this.mutate('set param', (d) => {
+    const valueJson = JSON.stringify(value) ?? 'null';
+    this.mutateCheap('set param', (d) => {
       for (const t of targets) {
         const dev = d.tracks.find((x) => x.id === t.trackId)?.clips.find((c) => c.id === t.clipId)
           ?.sketch.devices.find((x) => x.id === t.deviceId);
         if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
       }
-    }, `param:multi:${key}`);
+    }, `param:multi:${key}`,
+    targets.map((t) => ({
+      op: 'param' as const, ownerId: t.clipId, deviceId: t.deviceId, field: key, valueJson,
+    })));
   }
 
   /** Replace the matched device in each clip with a snapshot (one undo). */
@@ -4641,13 +4747,14 @@ export class ArrangementStore {
 
   setTrackLevel(trackId: string, level: number) {
     const v = Math.max(0, Math.min(1, level));
-    this.mutate(
+    this.mutateCheap(
       'set level',
       (d) => {
         const t = d.tracks.find((x) => x.id === trackId);
         if (t) t.level = v;
       },
       `level:${trackId}`,
+      [{ op: 'trackLevel', trackId, level: v }],
     );
   }
 
@@ -4727,19 +4834,39 @@ export class ArrangementStore {
     return ArrangementStore.laneIn(this.composition, laneId);
   }
 
+  /** The id of the track (track/group lane) or clip (clip lane) owning `laneId`
+   *  — the comp cheap-op addressing (comp_set_lane_points' ownerId). */
+  private laneOwnerId(laneId: string): string | null {
+    for (const t of this.composition.tracks) {
+      if (t.automation.some((l) => l.id === laneId)) return t.id;
+      for (const c of t.clips) {
+        if (c.automation.some((l) => l.id === laneId)) return c.id;
+      }
+    }
+    return null;
+  }
+
   /**
    * Replace a lane's points (normalizing to `{x,y,bend}`). Pass a stable
-   * `coalesceKey` for the duration of a drag so the whole gesture is ONE undo.
+   * `coalesceKey` for the duration of a drag so the whole gesture is ONE undo
+   * — coalesced (drag) edits ride the cheap-op fast path (a `lanePoints`
+   * field patch instead of a whole-document ship per frame).
    */
   setAutomationPoints(laneId: string, points: EnvelopePoint[], coalesceKey?: string) {
-    this.mutate(
-      'edit automation',
-      (d) => {
-        const lane = ArrangementStore.laneIn(d, laneId);
-        if (lane) lane.points = points.map((p) => ({ x: p.x, y: p.y, bend: p.bend ?? 0 }));
-      },
-      coalesceKey,
-    );
+    const norm = points.map((p) => ({ x: p.x, y: p.y, bend: p.bend ?? 0 }));
+    const recipe = (d: Composition) => {
+      const lane = ArrangementStore.laneIn(d, laneId);
+      if (lane) lane.points = norm.map((p) => ({ ...p }));
+    };
+    const ownerId = coalesceKey ? this.laneOwnerId(laneId) : null;
+    if (ownerId) {
+      this.mutateCheap('edit automation', recipe, coalesceKey, [{
+        op: 'lanePoints', ownerId, laneId,
+        points: norm.flatMap((p) => [p.x, p.y, p.bend]),
+      }]);
+      return;
+    }
+    this.mutate('edit automation', recipe, coalesceKey);
   }
 
   /** A flat mid-level curve — the seed for a freshly created lane. `span` is the

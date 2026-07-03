@@ -110,6 +110,10 @@ class CompExecutor {
   void setDeviceParam(const std::string& ownerId, const std::string& deviceId,
                       const std::string& field, const nlohmann::json& value);
   void setTrackLevel(const std::string& trackId, double level);
+  /** Cheap op: replace a video clip's source placement transform (anchor /
+   *  scale / rotation / flip) — the xform-drag fast path. Reaches the built
+   *  sketch AND the pump descs, so it invalidates the eval. */
+  void setSourceTransform(const std::string& clipId, const nlohmann::json& transform);
   /** Replace a lane's points ((x,y,bend) triples). Owner = clip or track id. */
   void setLanePoints(const std::string& ownerId, const std::string& laneId,
                      const double* xyBend, int32_t nPoints);

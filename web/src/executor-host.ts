@@ -86,6 +86,7 @@ interface ExecutorExports {
   comp_set_lane_points(c: number, owner: number, ownerLen: number, lane: number, laneLen: number,
                        xyBend: number, nPoints: number): void;
   comp_set_rail_base(c: number, track: number, trackLen: number, xyBend: number, nPoints: number): void;
+  comp_set_source_transform(c: number, clip: number, clipLen: number, json: number, jsonLen: number): void;
   comp_play(c: number): void;
   comp_pause(c: number): void;
   comp_seek_beat(c: number, beat: number): void;
@@ -775,6 +776,11 @@ export class WasmSketchExecutor {
         this.exports.free(ptr);
         break;
       }
+      case 'sourceTransform':
+        this.withBytes(msg.ownerId ?? '', (cp, cl) =>
+          this.withBytes(msg.valueJson ?? '{}', (jp, jl) =>
+            this.exports.comp_set_source_transform(c, cp, cl, jp, jl)));
+        break;
       case 'launchScene':
         this.withBytes(msg.trackId ?? '', (tp, tl) =>
           this.withBytes(msg.sceneId ?? '', (sp, sl) =>

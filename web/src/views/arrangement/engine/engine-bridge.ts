@@ -451,6 +451,13 @@ export class EngineBridge {
     if (store.docRev !== this.sentDocRev) {
       this.sentDocRev = store.docRev;
       e.compLoadDoc(JSON.stringify(store.composition));
+      // The full document supersedes any queued field patches (they're already
+      // reflected in the doc we just shipped).
+      store.pendingCompOps.length = 0;
+    } else if (store.pendingCompOps.length) {
+      // Cheap-edit (drag) fast path: field-level patches into the worker's
+      // document mirror — no per-frame whole-document stringify/parse/reassert.
+      for (const op of store.pendingCompOps.splice(0)) e.compOp(op);
     }
     const timing = store.clipAutoTiming === 'loop';
     if (timing !== this.sentClipTiming) {

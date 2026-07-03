@@ -1646,3 +1646,23 @@ TEST_CASE("scenes: a video-scene retrigger re-anchors the pump desc", "[comp_sce
   CHECK((flags & comp::kCompVideoSetChanged) != 0);
   CHECK(json::parse(h.cx.videoDescsJson())[0]["startBeat"].get<double>() == 6.0);
 }
+
+TEST_CASE("cheap op: comp_set_source_transform reaches the pump descs", "[comp_eval]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkVideoClip("v1", 0, 8)})),
+  })));
+  h.cx.setTransportMode(false);
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  CHECK(json::parse(h.cx.videoDescsJson())[0]["transform"]["scale"].get<double>() == 1.0);
+
+  // The xform-drag fast path: a field-level patch, not a document reload.
+  h.cx.setSourceTransform("v1", {{"scale", 0.5}, {"rotation", 0.25}});
+  const uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompVideoSetChanged) != 0);
+  const json d = json::parse(h.cx.videoDescsJson())[0];
+  CHECK(d["transform"]["scale"].get<double>() == 0.5);
+  CHECK(d["transform"]["rotation"].get<double>() == 0.25);
+  CHECK(d["transform"]["anchorX"].get<double>() == 0.5);  // defaults resolved
+}

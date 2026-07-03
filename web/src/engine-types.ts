@@ -225,7 +225,7 @@ export type WorkerCommand =
   // Cheap edit ops (drag fast paths — the document mirror patches in place;
   // launchScene/stopScene/stopAllScenes mutate the TRANSIENT launch state).
   | { type: 'compOp';
-      op: 'param' | 'trackLevel' | 'lanePoints' | 'railBase'
+      op: 'param' | 'trackLevel' | 'lanePoints' | 'railBase' | 'sourceTransform'
         | 'launchScene' | 'stopScene' | 'stopAllScenes';
       ownerId?: string; deviceId?: string; field?: string; valueJson?: string;
       trackId?: string; level?: number; laneId?: string; points?: number[];
