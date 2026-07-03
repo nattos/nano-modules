@@ -903,6 +903,7 @@ async function simulateTick(dt: number, execDt: number = dt) {
         ...(r.chainKeys ? { chainKeys: r.chainKeys } : {}),
         ...(r.videoDescs !== undefined ? { videoDescs: r.videoDescs } : {}),
         ...(r.layerTargets !== undefined ? { layerTargets: r.layerTargets } : {}),
+        ...(r.scenes !== undefined ? { scenes: r.scenes } : {}),
       };
     } catch (err) {
       console.error('[comp]', err);

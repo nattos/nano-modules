@@ -191,6 +191,13 @@ export class ArrRuler extends MobxLitElement {
           </button>
           <button
             class="addtrack"
+            title="Add a scene track (launchable clips — not timeline-placed)"
+            @click=${() => store.addSceneTrack()}
+          >
+            + Scenes
+          </button>
+          <button
+            class="addtrack"
             title="Add a track after the last selected track"
             @click=${() => store.addTrackAfterSelection()}
           >

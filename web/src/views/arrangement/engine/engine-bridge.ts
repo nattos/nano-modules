@@ -245,6 +245,8 @@ export class EngineBridge {
     // never execute) via the effect's `eval_visibility` evaluator. See store
     // `ensureFieldVisibility` + the adapter's static-hidden overlay.
     store.visibilityResolver = (moduleType, state) => e.evaluateVisibility(moduleType, state);
+    // Scene launch/stop commands (transient — never document mutations).
+    store.sceneOpSink = (msg) => e.compOp(msg);
     // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
     // all effects are reachable — not just those a clip already references.
     void e.warmBundles(EFFECT_BUNDLES);
@@ -272,6 +274,11 @@ export class EngineBridge {
       // The build's `__layer__` resolution — mixer strips resolve their
       // modulation bands through it (the blend key churns with the active clip).
       try { store.setLayerTargets(JSON.parse(info.layerTargets)); } catch { /* keep prev */ }
+    }
+    if (info.scenes !== undefined) {
+      // The executor owns launch state (triggers can launch engine-side); the
+      // store's copy is a mirror for the playing highlight.
+      try { store.setSceneLaunchState(JSON.parse(info.scenes)); } catch { /* keep prev */ }
     }
     if (info.videoDescs !== undefined) {
       try {

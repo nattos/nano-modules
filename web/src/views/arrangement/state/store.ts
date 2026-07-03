@@ -455,6 +455,43 @@ export class ArrangementStore {
   }
 
   /**
+   * Launched-scene state per scene track (trackId → {sceneId, launchBeat}).
+   * TRANSIENT runtime state like the playhead: not persisted, not undoable,
+   * never inside `mutate`. The ENGINE owns it (triggers can launch engine-side);
+   * this is the UI mirror (playing highlight), optimistically updated on a
+   * click-launch and overwritten by the per-frame comp report.
+   */
+  sceneLaunchState: Record<string, { sceneId: string; launchBeat: number }> = {};
+  setSceneLaunchState(s: Record<string, { sceneId: string; launchBeat: number }>) {
+    runInAction(() => { this.sceneLaunchState = s; });
+  }
+  /** Scene launch/stop command sink — wired to the engine bridge's compOp
+   *  (the visibilityResolver pattern). No-op until the engine boots. */
+  sceneOpSink: ((msg: { op: 'launchScene' | 'stopScene' | 'stopAllScenes';
+                        trackId?: string; sceneId?: string }) => void) | null = null;
+
+  /** Launch a scene (click or programmatic). Launching the active scene
+   *  RETRIGGERS it (re-anchors its local clock). */
+  launchScene(trackId: string, sceneId: string) {
+    runInAction(() => {
+      this.sceneLaunchState = {
+        ...this.sceneLaunchState,
+        [trackId]: { sceneId, launchBeat: this.positionBeat },
+      };
+    });
+    this.sceneOpSink?.({ op: 'launchScene', trackId, sceneId });
+  }
+
+  /** Stop the playing scene on a scene track (the track leaves the composite). */
+  stopScene(trackId: string) {
+    runInAction(() => {
+      const { [trackId]: _, ...rest } = this.sceneLaunchState;
+      this.sceneLaunchState = rest;
+    });
+    this.sceneOpSink?.({ op: 'stopScene', trackId });
+  }
+
+  /**
    * Per-frame published instance state (effect/source OUTPUTS + broadcasts) from
    * the live engine, keyed by engine instance key (`clip_<clipId>_<deviceId>`).
    * Output trace spark-charts read it (via the adapter) to animate. Mirrors
@@ -665,7 +702,11 @@ export class ArrangementStore {
       this.persistenceEnabled = true;
       this.lastSavedJson = JSON.stringify(toJS(this.composition));
       this.clearSelection();
+      // Launch state is transient: a fresh document opens with nothing playing
+      // (the engine heals launches across EDIT reloads, so the reset is ours).
+      this.sceneLaunchState = {};
     });
+    this.sceneOpSink?.({ op: 'stopAllScenes' });
     this.history.reset();
     this.requestLayoutSave(); // remember this as the last-opened file
     void this.relinkMedia();  // re-resolve video sources (blob URLs die on reload)
@@ -1755,6 +1796,17 @@ export class ArrangementStore {
     return layers;
   }
 
+  /** The launched scene on a scene track (or undefined) — the UI mirror of
+   *  comp_eval.h pickActiveScene. Skips bypassed/empty scenes + dangling ids. */
+  launchedScene(track: Track): Clip | undefined {
+    const l = this.sceneLaunchState[track.id];
+    if (!l) return undefined;
+    const c = track.clips.find((x) => x.id === l.sceneId);
+    if (!c || c.bypassed) return undefined;
+    if (!c.source?.url && c.sketch.devices.length === 0) return undefined; // empty
+    return c;
+  }
+
   /** Pick the single active clip on a track at `beat` (latest-started on overlap),
    *  or undefined. Skips empty + bypassed clips. */
   private pickActiveClip(track: Track, beat: number): Clip | undefined {
@@ -1803,9 +1855,13 @@ export class ArrangementStore {
           children,
         };
       }
-      if (track.kind !== 'track') return null; // rails aren't composite layers
+      if (track.kind !== 'track' && track.kind !== 'scene') return null; // rails aren't layers
       if (anySolo && !soloedHere) return null; // solo restricts to soloed lineages
-      const clip = this.pickActiveClip(track, beat);
+      // Scene tracks: the LAUNCHED scene is the active clip (comp_eval.h twin —
+      // the launch map replaces the beat overlap).
+      const clip = track.kind === 'scene'
+        ? this.launchedScene(track)
+        : this.pickActiveClip(track, beat);
       if (!clip) return null;
       return {
         type: 'clip',
@@ -2906,14 +2962,17 @@ export class ArrangementStore {
     return undefined;
   }
 
-  /** Double-click on an empty lane → create an empty effect-only clip. */
+  /** Double-click on an empty lane → create an empty effect-only clip. On a
+   *  SCENE track this creates a scene (startBeat pins to 0; array order is the
+   *  display order). */
   createEmptyClip(trackId: string, startBeat: number, lengthBeat = 8): string | null {
     const track = this.trackById(trackId);
-    if (!track || track.kind !== 'track') return null;
+    if (!track || (track.kind !== 'track' && track.kind !== 'scene')) return null;
+    const isScene = track.kind === 'scene';
     const clip: Clip = {
       id: uid('clip'),
-      name: '#',
-      startBeat: Math.max(0, startBeat),
+      name: isScene ? 'Scene #' : '#',
+      startBeat: isScene ? 0 : Math.max(0, startBeat),
       lengthBeat,
       kind: 'effect',
       sketch: { devices: [] },
@@ -2938,12 +2997,13 @@ export class ArrangementStore {
     lengthBeat = 8,
   ): string | null {
     const track = this.trackById(trackId);
-    if (!track || track.kind !== 'track') return null;
+    if (!track || (track.kind !== 'track' && track.kind !== 'scene')) return null;
+    const isScene = track.kind === 'scene';
     const label = media.label ?? 'Video';
     const clip: Clip = {
       id: uid('clip'),
       name: label,
-      startBeat: Math.max(0, startBeat),
+      startBeat: isScene ? 0 : Math.max(0, startBeat),
       lengthBeat,
       kind: 'video',
       sketch: {
@@ -2969,13 +3029,26 @@ export class ArrangementStore {
       const t = d.tracks.find((x) => x.id === trackId);
       if (!t) return;
       // Clips may not overlap: overwrite whatever sits under the dropped clip
-      // (same as a clip dragged in from another track).
-      carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+      // (same as a clip dragged in from another track). Scenes all sit at
+      // beat 0 by design — appending is the whole point, never carve.
+      if (t.kind !== 'scene') {
+        carveTrackSpan(t, clip.id, clip.startBeat, clip.startBeat + clip.lengthBeat);
+      }
       t.clips.push(clip);
     });
     const path = paths.clip(trackId, clip.id);
     this.select(path);
     return path;
+  }
+
+  /** Assign a scene's trigger channel (null ⇒ back to 'auto', position-assigned). */
+  setSceneChannel(trackId: string, sceneId: string, channel: number | null) {
+    this.mutate('set scene channel', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === sceneId);
+      if (!c) return;
+      if (channel == null) delete c.triggerChannel;
+      else c.triggerChannel = Math.max(1, Math.round(channel));
+    });
   }
 
   /** Set how a video/image clip's frame scales into the output canvas. */
@@ -3947,6 +4020,31 @@ export class ArrangementStore {
       baseCurve: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
     };
     this.mutate('add return', (d) => {
+      const busIdx = d.tracks.findIndex((t) => ArrangementStore.isMainBusTrack(t));
+      const idx = busIdx >= 0 ? busIdx : d.tracks.length;
+      d.tracks.splice(idx, 0, track);
+      d.tracks = ArrangementStore.canonicalTrackOrder(d.tracks);
+    });
+    this.select(paths.track(id));
+    return id;
+  }
+
+  /** "+ Scenes" affordance: a scene track — clips are launched, not
+   *  timeline-placed. Sums like a normal track; inserted before the main bus. */
+  addSceneTrack(): string {
+    const id = uid('trk');
+    const track: Track = {
+      id,
+      name: 'Scenes',
+      kind: 'scene',
+      parentId: null,
+      color: 'var(--app-cat-source)',
+      level: 1,
+      sketch: { devices: [] },
+      automation: [],
+      clips: [],
+    };
+    this.mutate('add scene track', (d) => {
       const busIdx = d.tracks.findIndex((t) => ArrangementStore.isMainBusTrack(t));
       const idx = busIdx >= 0 ? busIdx : d.tracks.length;
       d.tracks.splice(idx, 0, track);

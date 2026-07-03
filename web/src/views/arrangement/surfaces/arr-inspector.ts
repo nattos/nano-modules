@@ -12,7 +12,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, resolveSourceTransform, BLEND_MODE_NAMES, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
+import { clipProcessesTexture, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
@@ -920,18 +920,48 @@ export class ArrInspector extends MobxLitElement {
     `;
   }
 
+  /** Scene trigger channel: 'auto' assigns by position (first unassigned);
+   *  an explicit number pins it (arbitrary positive ids allowed). */
+  private renderSceneChannelRow(track: Track, clip: Clip): TemplateResult {
+    const idx = track.clips.indexOf(clip);
+    const effective = idx >= 0 ? sceneChannelAssignments(track)[idx] : 0;
+    const isAuto = clip.triggerChannel == null;
+    return html`<div class="row">
+      <label>Channel</label>
+      <span class="val seg">
+        <button
+          class="segbtn ${isAuto ? 'on' : ''}"
+          title="Auto-assign by position (first unassigned channel)"
+          @click=${() => store.setSceneChannel(track.id, clip.id, null)}
+        >auto${isAuto ? ` (${effective})` : ''}</button>
+        <input
+          type="number"
+          min="1"
+          step="1"
+          style="width:56px"
+          .value=${String(effective)}
+          @change=${(e: Event) => {
+            const v = Number((e.target as HTMLInputElement).value);
+            if (Number.isFinite(v) && v >= 1) store.setSceneChannel(track.id, clip.id, v);
+          }}
+        />
+      </span>
+    </div>`;
+  }
+
   private renderClipInspector(path: string): TemplateResult {
     const found = store.clipByPath(path);
     if (!found) return html`<div class="empty">Clip not found.</div>`;
     const { clip } = found;
     const processes = clipProcessesTexture(clip);
+    const isScene = found.track.kind === 'scene';
     return html`
       <div class="section-header">
-        Clip ·
+        ${isScene ? 'Scene' : 'Clip'} ·
         <editable-label
           .value=${clip.name}
           .displayValue=${store.clipDisplayName(clip)}
-          placeholder="Untitled clip"
+          placeholder=${isScene ? 'Untitled scene' : 'Untitled clip'}
           @commit=${(e: CustomEvent) => store.renameClip(found.track.id, clip.id, e.detail)}
         ></editable-label>
       </div>
@@ -945,6 +975,7 @@ export class ArrInspector extends MobxLitElement {
             >
           </span>
         </div>
+        ${isScene ? this.renderSceneChannelRow(found.track, clip) : ''}
         ${renderPlayModeControls(
           clip.loop,
           clip.source && clip.source.fps ? clip.source.durationFrames / clip.source.fps : 0,

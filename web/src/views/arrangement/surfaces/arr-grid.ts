@@ -27,6 +27,7 @@ import '../../../widgets/editable-label';
 import './arr-clip';
 import './arr-mixer-strip';
 import './arr-rail-lane';
+import './arr-scene-lane';
 import './arr-automation-editor';
 import '../../../widgets/ui-icon';
 
@@ -735,6 +736,7 @@ export class ArrGrid extends MobxLitElement {
     const isGroup = track.kind === 'group';
     const isBus = store.isMainBus(track);
     const isRail = track.kind === 'rail';
+    const isScene = track.kind === 'scene';
     const selected = store.isTrackShownSelected(track.id);
     const dragSrc = this.reorderActive && this.draggedTrackId === track.id;
     const accent = track.color ?? 'var(--app-cat-control)';
@@ -809,6 +811,10 @@ export class ArrGrid extends MobxLitElement {
         ${isRail
           ? html`<div class="lane rail">
               <arr-rail-lane .trackId=${track.id}></arr-rail-lane>
+            </div>`
+          : isScene
+          ? html`<div class="lane scene ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''}">
+              <arr-scene-lane .trackId=${track.id} .accent=${accent}></arr-scene-lane>
             </div>`
           : html`<div
               class="lane ${isGroup ? 'group' : ''} ${track.bypassed ? 'bypassed' : ''} ${track.soloed ? 'soloed' : ''} ${this.clipDropTrackId === track.id ? 'dropok' : ''}"
@@ -1275,6 +1281,13 @@ export class ArrGrid extends MobxLitElement {
     let best: string | null = null;
     let bestDist = Infinity;
     for (let i = 0; i < tracks.length; i++) {
+      // A direct hit on a SCENE lane is eligible (the drop appends a scene);
+      // nearest-fallback only ever lands on plain tracks.
+      if (tracks[i].kind === 'scene') {
+        const r = layout[i];
+        if (contentY >= r.top && contentY < r.bottom) return tracks[i].id;
+        continue;
+      }
       if (tracks[i].kind !== 'track') continue;
       const r = layout[i];
       if (contentY >= r.top && contentY < r.bottom) return tracks[i].id;

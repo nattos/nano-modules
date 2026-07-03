@@ -222,11 +222,14 @@ export type WorkerCommand =
       op: 'play' | 'pause' | 'seek' | 'loop' | 'mode' | 'clipTiming' | 'ignoreSolo' | 'videoReady';
       beat?: number; enabled?: boolean; startBeat?: number; endBeat?: number;
       precise?: boolean; loopMode?: boolean; on?: boolean; clipId?: string; ready?: boolean }
-  // Cheap edit ops (drag fast paths — the document mirror patches in place).
+  // Cheap edit ops (drag fast paths — the document mirror patches in place;
+  // launchScene/stopScene/stopAllScenes mutate the TRANSIENT launch state).
   | { type: 'compOp';
-      op: 'param' | 'trackLevel' | 'lanePoints' | 'railBase';
+      op: 'param' | 'trackLevel' | 'lanePoints' | 'railBase'
+        | 'launchScene' | 'stopScene' | 'stopAllScenes';
       ownerId?: string; deviceId?: string; field?: string; valueJson?: string;
-      trackId?: string; level?: number; laneId?: string; points?: number[] };
+      trackId?: string; level?: number; laneId?: string; points?: number[];
+      sceneId?: string };
 
 /** Per-frame composition-executor report riding the 'frame' event (comp mode). */
 export interface CompFrameInfo {
@@ -243,6 +246,9 @@ export interface CompFrameInfo {
    *  present when the structure changed; UI modulation bands resolve track/
    *  group opacity through it (the blend key churns with the active clip). */
   layerTargets?: string;
+  /** Launched scenes ({trackId: {sceneId, launchBeat}} JSON) — present when
+   *  the launch state changed (kCompScenesChanged). */
+  scenes?: string;
 }
 
 // --- Worker events (worker → main) ---

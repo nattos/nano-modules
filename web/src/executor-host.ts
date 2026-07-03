@@ -102,6 +102,10 @@ interface ExecutorExports {
   comp_chain_keys_json(c: number, out: number, cap: number): number;
   comp_video_descs_json(c: number, out: number, cap: number): number;
   comp_layer_targets_json(c: number, out: number, cap: number): number;
+  comp_launch_scene(c: number, track: number, trackLen: number, scene: number, sceneLen: number): void;
+  comp_stop_scene(c: number, track: number, len: number): void;
+  comp_stop_all_scenes(c: number): void;
+  comp_scene_states_json(c: number, out: number, cap: number): number;
   comp_reset_executor(c: number): void;
 }
 
@@ -737,7 +741,7 @@ export class WasmSketchExecutor {
 
   compOp(msg: { op: string; ownerId?: string; deviceId?: string; field?: string;
                 valueJson?: string; trackId?: string; level?: number; laneId?: string;
-                points?: number[] }): void {
+                points?: number[]; sceneId?: string }): void {
     const c = this.ensureComp();
     switch (msg.op) {
       case 'param':
@@ -770,6 +774,17 @@ export class WasmSketchExecutor {
         this.exports.free(ptr);
         break;
       }
+      case 'launchScene':
+        this.withBytes(msg.trackId ?? '', (tp, tl) =>
+          this.withBytes(msg.sceneId ?? '', (sp, sl) =>
+            this.exports.comp_launch_scene(c, tp, tl, sp, sl)));
+        break;
+      case 'stopScene':
+        this.withBytes(msg.trackId ?? '', (p, l) => this.exports.comp_stop_scene(c, p, l));
+        break;
+      case 'stopAllScenes':
+        this.exports.comp_stop_all_scenes(c);
+        break;
     }
   }
 
@@ -784,7 +799,8 @@ export class WasmSketchExecutor {
     onInstancesReady?: () => void,
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
-               chainKeys?: string[]; videoDescs?: string; layerTargets?: string }> {
+               chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
+               scenes?: string }> {
     const c = this.ensureComp();
     // The effect clock advances by the COMP transport's motion, not wall time:
     // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
@@ -797,6 +813,7 @@ export class WasmSketchExecutor {
     const hasContent = !!(flags & 2);
     const holding = !!(flags & 4);
     const videoSetChanged = !!(flags & 8);
+    const scenesChanged = !!(flags & 16);
 
     let chainKeys: string[] | undefined;
     let layerTargets: string | undefined;
@@ -875,7 +892,8 @@ export class WasmSketchExecutor {
 
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
-                 chainKeys?: string[]; videoDescs?: string; layerTargets?: string } = {
+                 chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
+                 scenes?: string } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
       positionSec: this.exports.comp_position_sec(c),
@@ -884,6 +902,10 @@ export class WasmSketchExecutor {
     if (layerTargets !== undefined) out.layerTargets = layerTargets;
     if (videoSetChanged) {
       out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
+    }
+    if (scenesChanged) {
+      out.scenes =
+          this.compRead((o, n) => this.exports.comp_scene_states_json(c, o, n)) || '{}';
     }
     return out;
   }
