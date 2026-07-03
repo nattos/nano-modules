@@ -1,21 +1,25 @@
-// source.shape_fold — motion/variance reduce over the LEVELED FIELD (pre-grade).
+// source.shape_fold — motion/variance reduce over the RAW FIELD (pre-grade).
 //
 // The skip-static detector measures frame-to-frame change. Reading it off the
 // composited tex_out was wrong: shape_fold histogram-equalizes every frame, so the
 // auto-levels LUT periodically reshapes and the whole image flashes even when the
-// field is barely moving — the detector read those flashes as motion. Instead we
-// evaluate the field DIRECTLY here (the same sf_field_at the present pass uses) and
-// apply only the STABLE linear lo/hi normalization (v = (F-lo)/(hi-lo) ∈ [0,1]) —
-// NOT the per-frame equalization LUT, NOT the cosmetic grade. A static field → an
-// identical v → exactly zero motion, no flash to suppress. v is also normalized, so
-// bold shapes (≈0 raw-field variance, riding a big DC offset) still read as high
-// variance — the leveled field is the right perceptual signal for every feature.
+// field is barely moving — the detector read those flashes as motion. So we evaluate
+// the field DIRECTLY here (the same sf_field_at the present pass uses), no
+// equalization LUT, no grade — a static field → identical values → zero motion.
 //
-// One thread per fixed-grid sample: evaluate v over a 3×3 neighbourhood (Sobel edge
-// + local stats), diff the centre vs the persistent previous-frame v (motion), and
-// scatter running sums into the per-tile int stats buffer. Slots 5-10 are the
-// SIGNED Lucas-Kanade flow sums for the uniform-drift penalty (normalized gradient
-// vs signed dv). The CPU reads these back.
+// Motion is the temporal diff of the RAW field, normalized only by dividing by the
+// linear range (hi-lo) for perceptual scale. It deliberately does NOT re-level each
+// frame the way v = (F-lo)/(hi-lo) would: subtracting the per-frame lo cancels a
+// pixel's LEVEL change (a shape brightening / fading / its fill pulsing) whenever
+// lo/hi move with it, and for shape_fold the birth/fade animation IS largely a level
+// change — so we keep it. Spatial features (Sobel edge, and the variance value V)
+// take the range-normalized field, where the lo offset cancels anyway.
+//
+// One thread per fixed-grid sample: evaluate the field over a 3×3 neighbourhood
+// (Sobel edge + local stats), diff the centre vs the persistent previous-frame RAW
+// field (motion), and scatter running sums into the per-tile int stats buffer. Slots
+// 5-10 are the SIGNED Lucas-Kanade flow sums for the uniform-drift penalty
+// (range-normalized gradient vs signed dv). The CPU reads these back.
 
 #include "common.hlsl"   // cbuffer U (terms, res, domain_scale) + sf_field_at + SF_NB
 
@@ -42,16 +46,13 @@ static const float kMotionFloor = 0.003;
 static const float kMotionSpan  = 0.05;
 static const float kMotionGamma = 0.5;
 
-// Linearly-leveled field at a pixel (matches present's cover-square mapping), [0,1].
-// Uses only the field + linear lo/hi — no equalization LUT, no grade → temporally
-// stable. hi-lo tiny (near-flat / blank frame) → 0 (no spurious motion).
-float leveled_at(int2 p_px, float2 vp, float lo, float hi) {
-  float rng = hi - lo;
-  if (rng < 1e-4) return 0.0;
+// Raw analytic field at a pixel (matches present's cover-square mapping). No lo/hi,
+// no equalization LUT, no grade.
+float field_at(int2 p_px, float2 vp) {
   float mx = max(vp.x, vp.y);
   float2 sq = (float2(p_px) + 0.5 - 0.5 * vp) / (0.5 * mx);
   float2 p = sq * domain_scale;
-  return saturate((sf_field_at(p) - lo) / rng);
+  return sf_field_at(p);
 }
 
 [numthreads(8, 8, 1)]
@@ -59,30 +60,39 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if ((int)gid.x >= kSampleGrid || (int)gid.y >= kSampleGrid) return;
   int2 res = int2((int)res_x, (int)res_y);
   float2 vp = float2(res);
-  float lo = lut[SF_NB + 0];
-  float hi = lut[SF_NB + 1];
+  float lo  = lut[SF_NB + 0];
+  float hi  = lut[SF_NB + 1];
+  float rng = hi - lo;
+  // Normalize by the linear range for perceptual scale (bold shapes ride a big DC
+  // offset). Near-flat / blank frame → 0 (no spurious motion). Crucially the range
+  // divides the DIFF, it does NOT re-level each frame — so a pixel whose LEVEL
+  // shifts (a shape brightening / fading / its fill pulsing) still reads as motion,
+  // unlike (F-lo)/(hi-lo) which cancels level changes when lo/hi move with them.
+  float invR = (rng < 1e-4) ? 0.0 : 1.0 / rng;
 
   int2 cell = max(res / kSampleGrid, int2(1, 1));
   int2 p = clamp(int2(gid.xy) * res / kSampleGrid + cell / 2, int2(0, 0), res - 1);
 
-  float v00 = leveled_at(p + int2(-cell.x, -cell.y), vp, lo, hi), v10 = leveled_at(p + int2(0, -cell.y), vp, lo, hi), v20 = leveled_at(p + int2(cell.x, -cell.y), vp, lo, hi);
-  float v01 = leveled_at(p + int2(-cell.x,  0), vp, lo, hi),      v11 = leveled_at(p,                    vp, lo, hi), v21 = leveled_at(p + int2(cell.x,  0), vp, lo, hi);
-  float v02 = leveled_at(p + int2(-cell.x, cell.y), vp, lo, hi),  v12 = leveled_at(p + int2(0, cell.y), vp, lo, hi), v22 = leveled_at(p + int2(cell.x, cell.y), vp, lo, hi);
+  float f00 = field_at(p + int2(-cell.x, -cell.y), vp), f10 = field_at(p + int2(0, -cell.y), vp), f20 = field_at(p + int2(cell.x, -cell.y), vp);
+  float f01 = field_at(p + int2(-cell.x,  0), vp),      f11 = field_at(p,                    vp), f21 = field_at(p + int2(cell.x,  0), vp);
+  float f02 = field_at(p + int2(-cell.x, cell.y), vp),  f12 = field_at(p + int2(0, cell.y), vp), f22 = field_at(p + int2(cell.x, cell.y), vp);
 
-  float gx = (v20 + 2.0 * v21 + v22) - (v00 + 2.0 * v01 + v02);
-  float gy = (v02 + 2.0 * v12 + v22) - (v00 + 2.0 * v10 + v20);
+  // Range-normalized Sobel (the lo offset cancels in a difference), for edge + LK.
+  float gx = ((f20 + 2.0 * f21 + f22) - (f00 + 2.0 * f01 + f02)) * invR;
+  float gy = ((f02 + 2.0 * f12 + f22) - (f00 + 2.0 * f10 + f20)) * invR;
   float g = saturate(sqrt(gx * gx + gy * gy) / kSobelNorm);              // edge magnitude [0,1]
   float e = pow(saturate((g - kEdgeFloor) / kEdgeSpan), kEdgeGamma);     // contrast-squashed
-  float V = v11;
+  float V = saturate((f11 - lo) * invR);   // leveled value, for the variance feature
 
-  // Motion = temporal diff of the LEVELED FIELD. `me` is the squashed magnitude;
-  // `dts` the raw signed diff for the flow (Lucas-Kanade) sums.
+  // Motion = temporal diff of the RAW FIELD (level-preserving), normalized by range.
+  // prevField stores the raw field so the diff isn't re-leveled — any change (move,
+  // birth, level/fill pulse) counts. `me` squashed magnitude; `dts` signed for LK.
   int sidx = (int)gid.y * kSampleGrid + (int)gid.x;
-  float pv = prevField[sidx];
-  float dts = (pv < 0.0) ? 0.0 : (V - pv);
+  float pf = prevField[sidx];
+  float dts = (pf < -0.5) ? 0.0 : (f11 - pf) * invR;   // sentinel <0: first frame → 0
   float m = abs(dts);
   float me = pow(saturate((m - kMotionFloor) / kMotionSpan), kMotionGamma);
-  prevField[sidx] = V;
+  prevField[sidx] = f11;                                 // store RAW field (F ≥ 0)
 
   float nx = gx / kSobelNorm;   // normalized gradient (‖(nx,ny)‖ ≤ 1)
   float ny = gy / kSobelNorm;
