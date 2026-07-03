@@ -204,6 +204,21 @@ class CompExecutor {
   bool ensureEvalAt(double beat, uint32_t& flags);
   bool videoReady(const nlohmann::json& descs) const;
   void foldPublishedOutputs(nlohmann::json& sketch);
+  /** An instance's live published state via effrt (grow-and-retry into
+   *  publishedScratch_); a discarded json on failure. */
+  nlohmann::json publishedStateFor(int32_t inst);
+  /** Rebuild the trigger routing map (instanceKey → {moduleType, railId}) from
+   *  the document: every device whose type declares `trigger_source`, routed to
+   *  its clip's matching triggerExport or the global trigger rail. Doc-shaped
+   *  → recomputed on loadDocument only. */
+  void rebuildTriggerRoutes();
+  /** Post-render: consume new trigger EVENTS from every routed live trigger
+   *  source's published "triggers" ring (seq > lastSeen; a seq regression =
+   *  instance reset → resync) and launch matching scenes: effective listen rail
+   *  (scene ?? track ?? global) + channel via sceneChannelAssignments; first
+   *  matching scene in order wins, a later same-frame event overwrites the
+   *  slot. 1-frame latency, like the rail-bypass readback. */
+  void readTriggerSignals();
   /** Post-render: read each structural-bypass rail's live `output` (published-
    *  state mirror), threshold >= 0.5, and store per-track decisions. Next
    *  update() compares against the vector used at eval → invalidateEval on a
@@ -267,6 +282,15 @@ class CompExecutor {
    *  by stopAllScenes (document open). Entries hold ids, not pointers. */
   std::map<std::string, SceneLaunch> sceneLaunch_;
   bool scenesDirty_ = true;  // ship sceneStatesJson on the next update
+  /** Trigger-source routing (instanceKey → target rail), doc-shaped. */
+  struct TriggerRoute {
+    std::string moduleType;
+    std::string railId;
+  };
+  std::map<std::string, TriggerRoute> triggerRoutes_;
+  /** Per trigger-source instance: the last consumed event seq. First sight
+   *  baselines at the ring's current max (history is never replayed). */
+  std::map<std::string, long long> triggerSeqSeen_;
   /** Recheck the pump target/displayed sets on the next non-holding frame even
    *  without a re-eval (set while holding: the pump ran a displayed∪warm union
    *  that must collapse back to warm-only after the hold releases). */

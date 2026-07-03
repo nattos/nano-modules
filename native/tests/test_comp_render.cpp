@@ -1381,3 +1381,162 @@ TEST_CASE("scenes: scene extents never perturb the timeline", "[comp_scene]") {
   REQUIRE(descs.size() == 1);
   CHECK(descs[0]["startBeat"].get<double>() == 5.0);
 }
+
+// ── Trigger transport: published "triggers" rings → scene launches ──────────
+
+namespace {
+
+/** A scene track with two solid scenes (auto channels 1 and 2) + a normal
+ *  track hosting the trigger SOURCE (an LFO caps-overridden as a
+ *  trigger_source; the ring is synthesized by the test provider). */
+json triggerScenario(json sceneOver1 = json::object(), json trackOver = json::object()) {
+  json s1 = mkScene("s1", 8);
+  s1.update(sceneOver1);
+  json st = mkSceneTrack("st", json::array({s1, mkScene("s2", 8)}));
+  st.update(trackOver);
+  json host = mkClip("c1", 0, 64,
+                     json::array({mkDevice("d1", "source.solid_color"),
+                                  mkDevice("trig", "mod.source.lfo", {{"rate", 0.0}})}));
+  return mkComposition(json::array({mkTrack("t1", json::array({host})), st}));
+}
+
+/** The test-scripted trigger ring, returned for the LFO instance only. */
+json g_triggerRing = json::array();
+
+void installTriggerProvider() {
+  sketch_executor::effrtSetPublishedStateProvider(
+      [](effect_runtime::EffectInstance* i) -> std::string {
+        if (i->id() != "mod.source.lfo") return std::string();
+        return json{{"output", 0.0}, {"triggers", g_triggerRing}}.dump();
+      });
+}
+
+/** One full frame: update (materializes any pending launch) + render (reads
+ *  the rings post-execute). Returns the launched-scene map after the frame. */
+json triggerFrame(comp::CompExecutor& cx, Harness& hx, int32_t inTex, int32_t outTex) {
+  cx.update(0.0);
+  cx.render(inTex, outTex, W, H, 1.0 / 60.0);
+  return json::parse(cx.sceneStatesJson());
+}
+
+}  // namespace
+
+TEST_CASE("triggers: ring events launch scenes by channel", "[comp_trigger]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // The LFO doubles as the test's trigger source (routes rebuild on load).
+  cx.registerCapabilities("mod.source.lfo",
+                          json::array({"modulation_source", "trigger_source"}));
+  g_triggerRing = json::array();
+  installTriggerProvider();
+  cx.loadDocument(triggerScenario());
+  cx.seekBeat(1.0);
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+
+  // First frames baseline the ring (no history replay) — nothing launches.
+  triggerFrame(cx, hx, inTex, outTex);
+  CHECK(triggerFrame(cx, hx, inTex, outTex).empty());
+
+  SECTION("channel 1 launches s1 (auto assignment); dedupe holds; channel 2 switches") {
+    g_triggerRing.push_back({{"seq", 1}, {"on", true}, {"channel", 1}, {"velocity", 1.0}});
+    triggerFrame(cx, hx, inTex, outTex);  // render consumes; launch lands next update
+    json s = triggerFrame(cx, hx, inTex, outTex);
+    REQUIRE(s.contains("st"));
+    CHECK(s["st"]["sceneId"] == "s1");
+
+    // The same ring re-read every frame must NOT relaunch (seq consumed).
+    cx.stopScene("st");
+    triggerFrame(cx, hx, inTex, outTex);
+    CHECK(triggerFrame(cx, hx, inTex, outTex).empty());
+
+    // A new event on channel 2 launches s2 (mutual exclusion via the slot).
+    g_triggerRing.push_back({{"seq", 2}, {"on", true}, {"channel", 2}});
+    triggerFrame(cx, hx, inTex, outTex);
+    s = triggerFrame(cx, hx, inTex, outTex);
+    REQUIRE(s.contains("st"));
+    CHECK(s["st"]["sceneId"] == "s2");
+  }
+
+  SECTION("off events and unmatched channels are ignored") {
+    g_triggerRing.push_back({{"seq", 1}, {"on", false}, {"channel", 1}});
+    g_triggerRing.push_back({{"seq", 2}, {"on", true}, {"channel", 9}});
+    triggerFrame(cx, hx, inTex, outTex);
+    CHECK(triggerFrame(cx, hx, inTex, outTex).empty());
+  }
+
+  SECTION("a seq regression means the instance reset - resync, then fire") {
+    g_triggerRing.push_back({{"seq", 5}, {"on", true, }, {"channel", 9}});  // consumed (no match)
+    triggerFrame(cx, hx, inTex, outTex);
+    g_triggerRing = json::array();  // instance reset: ring restarts at seq 1
+    g_triggerRing.push_back({{"seq", 1}, {"on", true}, {"channel", 1}});
+    triggerFrame(cx, hx, inTex, outTex);
+    json s = triggerFrame(cx, hx, inTex, outTex);
+    REQUIRE(s.contains("st"));
+    CHECK(s["st"]["sceneId"] == "s1");
+  }
+
+  sketch_executor::effrtSetPublishedStateProvider(nullptr);
+}
+
+TEST_CASE("triggers: rail routing overrides the global default", "[comp_trigger]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.registerCapabilities("mod.source.lfo",
+                          json::array({"modulation_source", "trigger_source"}));
+  g_triggerRing = json::array();
+  installTriggerProvider();
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+
+  SECTION("a scene listening on a private rail ignores global events") {
+    // s2 listens on rail r9; the source (no export) writes GLOBAL.
+    json doc = triggerScenario();
+    doc["tracks"][1]["clips"][1]["triggerRead"] = {{"id", "tr1"}, {"railId", "r9"}};
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    triggerFrame(cx, hx, inTex, outTex);  // baseline
+    g_triggerRing.push_back({{"seq", 1}, {"on", true}, {"channel", 2}});  // s2's channel
+    triggerFrame(cx, hx, inTex, outTex);
+    CHECK(triggerFrame(cx, hx, inTex, outTex).empty());  // global ≠ r9
+  }
+
+  SECTION("an exported source reaches the scene's private rail") {
+    json doc = triggerScenario();
+    doc["tracks"][1]["clips"][1]["triggerRead"] = {{"id", "tr1"}, {"railId", "r9"}};
+    doc["tracks"][0]["clips"][0]["triggerExports"] =
+        json::array({{{"id", "te1"}, {"railId", "r9"}, {"sourceDeviceId", "trig"}}});
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    triggerFrame(cx, hx, inTex, outTex);  // baseline
+    g_triggerRing.push_back({{"seq", 1}, {"on", true}, {"channel", 2}});
+    triggerFrame(cx, hx, inTex, outTex);
+    json s = triggerFrame(cx, hx, inTex, outTex);
+    REQUIRE(s.contains("st"));
+    CHECK(s["st"]["sceneId"] == "s2");
+    // ...and s1 (still on GLOBAL, channel 1) is NOT reachable via r9.
+    g_triggerRing.push_back({{"seq", 2}, {"on", true}, {"channel", 1}});
+    triggerFrame(cx, hx, inTex, outTex);
+    s = triggerFrame(cx, hx, inTex, outTex);
+    CHECK(s["st"]["sceneId"] == "s2");  // unchanged — r9 event, s1 listens global
+  }
+
+  SECTION("a TRACK-level listen sets the default for all scenes") {
+    json doc = triggerScenario(json::object(),
+                               {{"triggerRead", {{"id", "tr2"}, {"railId", "r9"}}}});
+    doc["tracks"][0]["clips"][0]["triggerExports"] =
+        json::array({{{"id", "te1"}, {"railId", "r9"}, {"sourceDeviceId", "trig"}}});
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    triggerFrame(cx, hx, inTex, outTex);  // baseline
+    g_triggerRing.push_back({{"seq", 1}, {"on", true}, {"channel", 1}});
+    triggerFrame(cx, hx, inTex, outTex);
+    json s = triggerFrame(cx, hx, inTex, outTex);
+    REQUIRE(s.contains("st"));
+    CHECK(s["st"]["sceneId"] == "s1");
+  }
+
+  sketch_executor::effrtSetPublishedStateProvider(nullptr);
+}

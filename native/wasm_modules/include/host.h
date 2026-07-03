@@ -380,6 +380,9 @@ enum class Capability {
   ModulationSourceMulti,   //   ...several channels; the user picks one
   ModulationShaper,        // transforms modulation value(s): N in -> M out
   ModulationShaperUnary,   //   ...1 in -> 1 out (e.g. the envelope remapper)
+  TriggerSource,           // emits structured trigger EVENTS ({on, channel, velocity})
+                           //   via a published "triggers" ring — launches scenes through
+                           //   rails (never the scalar wire fold)
   TimeIndependent,         // stateless w.r.t. time; a time jump yields the correct frame
   SeekablePrefill,         // stateful, but seekable to any time via seek() (may be slow)
   SeekableApproximate,     // stateful; seeking differs only at noise level (non-deterministic)
@@ -395,6 +398,7 @@ inline const char* capabilityName(Capability c) {
     case Capability::ModulationSourceMulti:  return "modulation_source_multi";
     case Capability::ModulationShaper:       return "modulation_shaper";
     case Capability::ModulationShaperUnary:  return "modulation_shaper_unary";
+    case Capability::TriggerSource:          return "trigger_source";
     case Capability::TimeIndependent:        return "time_independent";
     case Capability::SeekablePrefill:        return "seekable_prefill";
     case Capability::SeekableApproximate:    return "seekable_approximate";

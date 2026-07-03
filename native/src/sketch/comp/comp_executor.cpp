@@ -133,6 +133,7 @@ void CompExecutor::loadDocument(const nlohmann::json& doc) {
   // heal drops entries whose track/scene vanished — which IS how deleting a
   // playing scene stops it.
   healSceneLaunches();
+  rebuildTriggerRoutes();
 }
 
 void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string& deviceId,
@@ -558,6 +559,20 @@ nlohmann::json CompExecutor::pumpUnion(const nlohmann::json& target,
   return nlohmann::json(std::move(merged));
 }
 
+nlohmann::json CompExecutor::publishedStateFor(int32_t inst) {
+  if (publishedScratch_.size() < 256) publishedScratch_.resize(256);
+  int32_t len = effrt_published_state_json(inst, publishedScratch_.data(),
+                                           static_cast<int32_t>(publishedScratch_.size()));
+  if (len > static_cast<int32_t>(publishedScratch_.size())) {
+    publishedScratch_.resize(static_cast<size_t>(len));
+    len = effrt_published_state_json(inst, publishedScratch_.data(),
+                                     static_cast<int32_t>(publishedScratch_.size()));
+  }
+  if (len <= 0) return nlohmann::json(nlohmann::json::value_t::discarded);
+  return nlohmann::json::parse(publishedScratch_.data(), publishedScratch_.data() + len,
+                               nullptr, false);
+}
+
 void CompExecutor::foldPublishedOutputs(nlohmann::json& sketch) {
   // executor-host.ts step 3: mirror each instance's LIVE published PURE-OUTPUT
   // scalars into the sketch state the executor's write-taps read (1-frame
@@ -572,18 +587,7 @@ void CompExecutor::foldPublishedOutputs(nlohmann::json& sketch) {
     const int32_t inst = effrt_instance_for(mt.data(), static_cast<int32_t>(mt.size()),
                                             key.data(), static_cast<int32_t>(key.size()));
     if (inst < 0) continue;
-    if (publishedScratch_.size() < 256) publishedScratch_.resize(256);
-    int32_t len = effrt_published_state_json(inst, publishedScratch_.data(),
-                                             static_cast<int32_t>(publishedScratch_.size()));
-    if (len <= 0) continue;
-    if (len > static_cast<int32_t>(publishedScratch_.size())) {
-      publishedScratch_.resize(static_cast<size_t>(len));
-      len = effrt_published_state_json(inst, publishedScratch_.data(),
-                                       static_cast<int32_t>(publishedScratch_.size()));
-      if (len <= 0) continue;
-    }
-    const auto ps = nlohmann::json::parse(
-        publishedScratch_.data(), publishedScratch_.data() + len, nullptr, false);
+    const auto ps = publishedStateFor(inst);
     if (ps.is_discarded() || !ps.is_object()) continue;
     for (const auto& field : outFields) {
       auto it = ps.find(field);
@@ -618,7 +622,118 @@ int32_t CompExecutor::render(int32_t inTex, int32_t outTex, int32_t W, int32_t H
   // Rail-driven structural bypass: sample the rails AFTER the frame computed
   // them; the decisions feed the NEXT update()'s eval compare (1-frame loop).
   readRailBypassSignals();
+  // Trigger events: consume the sources' published rings and launch matching
+  // scenes — the launch lands next update() (the same 1-frame loop).
+  readTriggerSignals();
   return out;
+}
+
+void CompExecutor::rebuildTriggerRoutes() {
+  triggerRoutes_.clear();
+  auto routeSketch = [&](const SketchSpecM& sketch, const std::vector<TriggerExportM>* exports,
+                         const std::string& ownerId, bool isClip) {
+    for (const auto& d : sketch.devices) {
+      if (!catalog_.hasCapability(d.moduleType, "trigger_source")) continue;
+      std::string railId = kGlobalTriggerRailId;
+      if (exports) {
+        for (const auto& e : *exports) {
+          if (e.sourceDeviceId == d.id && !e.railId.empty()) {
+            railId = e.railId;
+            break;
+          }
+        }
+      }
+      const std::string key =
+          isClip ? clipInstanceKey(ownerId, d.id) : trackInstanceKey(ownerId, d.id);
+      triggerRoutes_[key] = {d.moduleType, std::move(railId)};
+    }
+  };
+  for (const auto& t : doc_.tracks) {
+    // Track-hosted sources always write global in v1 (exports are clip-level).
+    routeSketch(t.sketch, nullptr, t.id, /*isClip=*/false);
+    for (const auto& c : t.clips) {
+      routeSketch(c.sketch, &c.triggerExports, c.id, /*isClip=*/true);
+    }
+  }
+  // Drop stale seq baselines (deleted devices). Live keys keep theirs.
+  for (auto it = triggerSeqSeen_.begin(); it != triggerSeqSeen_.end();) {
+    if (!triggerRoutes_.count(it->first)) it = triggerSeqSeen_.erase(it);
+    else ++it;
+  }
+}
+
+void CompExecutor::readTriggerSignals() {
+  if (triggerRoutes_.empty()) return;
+  // 1. Consume new events from every routed live trigger source, in route order
+  //    (stable across frames — std::map). A source only ticks while its owning
+  //    chain is in the BUILT sketch (no live instance ⇒ nothing to read).
+  struct Ev {
+    std::string railId;
+    int channel = 0;
+  };
+  std::vector<Ev> fired;
+  for (const auto& [key, route] : triggerRoutes_) {
+    const int32_t inst =
+        effrt_instance_for(route.moduleType.data(), static_cast<int32_t>(route.moduleType.size()),
+                           key.data(), static_cast<int32_t>(key.size()));
+    if (inst < 0) continue;
+    const auto ps = publishedStateFor(inst);
+    if (!ps.is_object()) continue;
+    const auto trig = ps.find("triggers");
+    if (trig == ps.end() || !trig->is_array()) continue;
+    long long maxSeq = 0;
+    for (const auto& e : *trig) {
+      if (e.is_object() && e.contains("seq") && e["seq"].is_number()) {
+        maxSeq = std::max(maxSeq, e["seq"].get<long long>());
+      }
+    }
+    auto seen = triggerSeqSeen_.find(key);
+    if (seen == triggerSeqSeen_.end()) {
+      // First sight: baseline at the ring's max — never replay history (a clip
+      // re-entering the composite must not re-fire its old events).
+      triggerSeqSeen_[key] = maxSeq;
+      continue;
+    }
+    if (maxSeq < seen->second) seen->second = 0;  // instance reset → resync
+    long long last = seen->second;
+    for (const auto& e : *trig) {
+      if (!e.is_object()) continue;
+      const long long seq =
+          e.contains("seq") && e["seq"].is_number() ? e["seq"].get<long long>() : 0;
+      if (seq <= last) continue;
+      seen->second = std::max(seen->second, seq);
+      // `on` + `channel` required; `velocity` (+ any extra keys) ride along for
+      // future consumers — scenes ignore off events and velocity for now.
+      const bool on = e.contains("on") && (e["on"].is_boolean() ? e["on"].get<bool>()
+                                                                : e["on"].is_number() &&
+                                                                      e["on"].get<double>() != 0);
+      if (!on) continue;
+      if (!e.contains("channel") || !e["channel"].is_number()) continue;
+      fired.push_back({route.railId,
+                       static_cast<int>(std::lround(e["channel"].get<double>()))});
+    }
+  }
+  if (fired.empty()) return;
+  // 2. Match against scene tracks: effective listen rail = scene ?? track ??
+  //    global; channel via the lock-step auto-assignment; the FIRST matching
+  //    scene in array order wins one event; a LATER event overwrites the slot.
+  for (const auto& t : doc_.tracks) {
+    if (t.kind != TrackKind::Scene || t.bypassed) continue;
+    const std::vector<int> channels = sceneChannelAssignments(t);
+    for (const auto& ev : fired) {
+      for (size_t i = 0; i < t.clips.size(); ++i) {
+        const auto& scene = t.clips[i];
+        if (scene.bypassed) continue;
+        if (!scene.hasSourceUrl && scene.sketch.devices.empty()) continue;  // empty
+        const std::string& rail = !scene.triggerReadRailId.empty() ? scene.triggerReadRailId
+                                  : !t.triggerReadRailId.empty()   ? t.triggerReadRailId
+                                                                   : kGlobalTriggerRailId;
+        if (rail != ev.railId || channels[i] != ev.channel) continue;
+        launchScene(t.id, scene.id);
+        break;
+      }
+    }
+  }
 }
 
 void CompExecutor::readRailBypassSignals() {
@@ -636,20 +751,9 @@ void CompExecutor::readRailBypassSignals() {
       if (inst >= 0) {
         // The rail relay's live `output`, via the published-state mirror (the
         // same seam foldPublishedOutputs reads producers through).
-        if (publishedScratch_.size() < 256) publishedScratch_.resize(256);
-        int32_t len = effrt_published_state_json(inst, publishedScratch_.data(),
-                                                 static_cast<int32_t>(publishedScratch_.size()));
-        if (len > static_cast<int32_t>(publishedScratch_.size())) {
-          publishedScratch_.resize(static_cast<size_t>(len));
-          len = effrt_published_state_json(inst, publishedScratch_.data(),
-                                           static_cast<int32_t>(publishedScratch_.size()));
-        }
-        if (len > 0) {
-          const auto ps = nlohmann::json::parse(
-              publishedScratch_.data(), publishedScratch_.data() + len, nullptr, false);
-          if (ps.is_object() && ps.contains("output") && ps["output"].is_number()) {
-            on = ps["output"].get<double>() >= 0.5;
-          }
+        const auto ps = publishedStateFor(inst);
+        if (ps.is_object() && ps.contains("output") && ps["output"].is_number()) {
+          on = ps["output"].get<double>() >= 0.5;
         }
       }
       auto it = railBypassDecisions_.find(t.id);

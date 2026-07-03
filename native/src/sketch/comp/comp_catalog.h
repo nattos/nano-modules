@@ -49,10 +49,15 @@ class Catalog {
 
   /** role === 'generator' — straight from the `generator` capability tag. */
   bool isGenerator(const std::string& moduleType) const {
+    return hasCapability(moduleType, "generator");
+  }
+
+  /** Does this module declare `tag` in its capabilities? */
+  bool hasCapability(const std::string& moduleType, const char* tag) const {
     auto it = byType_.find(moduleType);
     if (it == byType_.end()) return false;
     for (const auto& c : it->second.caps) {
-      if (c == "generator") return true;
+      if (c == tag) return true;
     }
     return false;
   }
