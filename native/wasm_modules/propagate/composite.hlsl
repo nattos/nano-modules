@@ -1,17 +1,17 @@
-// filter.sim.propagate — Pass 2: threshold crests → clean lines over input.
+// filter.sim.propagate — Pass 2: threshold the field → clean lines over input.
 //
-// Reads the full-res input and the (upscaled) wave field, and turns the wave
-// crests into anti-aliased contour lines composited over the dimmable input.
-// A line is drawn where the wave amplitude |u| equals `level` — that isoline
-// expands OUTWARD as the ripple travels, so a growing change paints an
-// expanding ring. `line_count` stacks concentric contours at multiples of the
-// level. As a ripple damps, its amplitude drops below the contour and the line
+// Reads the full-res input and the (upscaled) propagation field, and turns the
+// field's fronts into anti-aliased contour lines composited over the dimmable
+// input. A line is drawn where the field F equals `level` — that isoline
+// expands OUTWARD as each front travels, so a growing echo paints an expanding
+// line that keeps the input's rough shape. `line_count` stacks concentric
+// contours at multiples of the level. As a front decays below the contour it
 // simply fades out — no explicit lifetime needed.
 //
 // AA is a fixed smoothstep band (house style — no fwidth anywhere in the tree).
 
 Texture2D<float4>   inputTex  : register(t0);
-Texture2D<float4>   fieldTex  : register(t1);   // .r = u (displacement)
+Texture2D<float4>   fieldTex  : register(t1);   // .r = F (intensity, ≥ 0)
 SamplerState        samp      : register(s2);   // Linear + ClampToEdge
 RWTexture2D<float4> outputTex : register(u3);   // rgba8 storage write
 
@@ -29,19 +29,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float2 uv  = (float2(gid.xy) + 0.5) / float2(W, H);
   float3 inp = inputTex.SampleLevel(samp, uv, 0).rgb;
-  float  u   = fieldTex.SampleLevel(samp, uv, 0).r;
+  float  F   = fieldTex.SampleLevel(samp, uv, 0).r;
+  // Tone-map the (unbounded, ≥0) field into [0,1) so the line `level` is
+  // scale-robust — the contour placement doesn't depend on how hard the field
+  // was seeded, only on its relative structure. `field_gain` sets the steepness.
+  float  a   = 1.0 - exp(-F * field_gain);
 
-  // Debug: raw signed wave field (red = crest, blue = trough).
+  // Debug: the tone-mapped propagation field as grayscale intensity.
   if (debug_show_field != 0u) {
-    float s = clamp(u * field_gain, -1.0, 1.0);
-    float3 col = (s >= 0.0)
-      ? lerp(float3(0,0,0), float3(1.0, 0.30, 0.10),  s)
-      : lerp(float3(0,0,0), float3(0.10, 0.40, 1.0), -s);
-    outputTex[gid.xy] = float4(col, 1.0);
+    outputTex[gid.xy] = float4(a, a, a, 1.0);
     return;
   }
-
-  float a = abs(u) * field_gain;
 
   // Concentric contour bands at n*level, half-width `thickness`, AA edges.
   float band = 0.0;

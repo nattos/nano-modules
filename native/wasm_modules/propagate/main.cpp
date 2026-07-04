@@ -1,32 +1,32 @@
 /*
- * filter.sim.propagate — "Propagate": a real wave-propagation engine.
+ * filter.sim.propagate — "Propagate": an outward-propagation engine.
  *
  * The spiritual successor to the old "Simulant" family. Simulant faked
  * propagation with a zoom-feedback hack (delay → zoom-out → blur → edge →
- * posterize → levels → composite): features DRIFTED toward one zoom centre, the
- * speed was welded to the zoom amount, and the result was mushy. We were never
- * happy with it. This builds the propagation as a REAL damped 2D wave field:
+ * posterize → levels → composite): features DRIFTED toward one zoom centre and
+ * the speed was welded to the zoom amount. We were never happy with it.
  *
- *   • CHANGE DETECTION — each frame we diff the input luma against last frame's
- *     (the previous luma is folded into the field's .b channel, so no separate
- *     history texture). Pixels that change kick the wave field with a velocity
- *     impulse — ripples are born wherever the image moves.
- *   • FLICKER INDUCEMENT — a built-in flicker (Poisson auto-rate + a manual,
- *     replay-safe `trigger`) injects a grainy global impulse so even a STATIC
- *     image radiates. (Simulant "flickered the image" to force change; same
- *     idea, folded straight into the seed.)
- *   • PROPAGATION — a genuine damped wave equation (velocity/displacement form)
- *     on a reduced-resolution ping-pong RGBA16F field. Ripples travel outward at
- *     a controlled speed, INTERFERE between sources, and decay. dt is baked into
- *     the timestep (style guide §2.1) and the wave speed is CFL-clamped on the
- *     CPU so the explicit scheme stays stable; u/v are NaN-sanitized + magnitude
- *     clamped per the persistent-sim gotcha.
- *   • LINES OVER INPUT — the composite pass thresholds the wave crests into
- *     clean anti-aliased contour bands (the |u| = level isoline, which expands
- *     outward as the ripple travels) and paints them over the dimmable input.
+ * This propagates the input's own structure OUTWARD as a real feedback field —
+ * NOT a physical wave equation (that is CFL-capped to ~1 cell/frame, far too
+ * slow, and keeps high-frequency detail that thresholds into mud). Instead:
  *
- * Two compute passes/frame over a persistent field (modelled on d_wave):
- *   simulate (sim-res)  → composite (viewport-res).
+ *   • SEED FROM STRUCTURE — the seed is the input's luma, not random noise. A
+ *     frame-difference seeds where the image changes (waves on changing pixels);
+ *     a built-in FLICKER (Poisson auto-rate + a manual, replay-safe `trigger`)
+ *     re-injects the whole input each pulse — "flickering the image" — so even a
+ *     STATIC image radiates.
+ *   • ADVECT OUTWARD — each frame the field is advected along its own smoothed
+ *     gradient so every bright feature spreads AWAY from itself (a ring dilates
+ *     into an expanding ring). The step is a free parameter (no CFL limit), so
+ *     at max speed a front crosses the screen in ~3 frames.
+ *   • DIFFUSE + DECAY — features blur out as they propagate (retaining the gross
+ *     structure), and trailing fronts fade; re-seeding keeps a train of echoes.
+ *   • LINES OVER INPUT — the composite pass thresholds the field into clean
+ *     anti-aliased contour bands (the F = level isoline, which expands outward as
+ *     each echo travels) over the dimmable input.
+ *
+ * Two compute passes/frame over a persistent ping-pong RGBA16F field:
+ *   simulate (sim-res) → composite (viewport-res).
  * Stateful feedback sim: NO is_identity, NO temporal capability tag.
  */
 
@@ -39,27 +39,25 @@
 
 namespace propagate {
 
-// --- Field / sim tuning constants (all dt-baked; see style guide §2.1) ---
-static constexpr int   SIM_MIN = 96;    // sim_scale=0 → chunky, big waves
-static constexpr int   SIM_MAX = 512;   // sim_scale=1 → fine
-static constexpr float C_MAX   = 45.0f; // speed=1 → wave phase speed (cells/sec)
-static constexpr float CFL     = 0.7f;  // explicit-scheme stability: c*dt ≤ CFL
-static constexpr float B_MIN   = 0.3f;  // damping floor (1/s) — waves still die
-static constexpr float B_MAX   = 8.0f;  // damping=1 (1/s)
-static constexpr float K_MAX   = 120.0f;// stiffness=1 → restoring rate (1/s²)
-static constexpr float FLICK_TAU  = 0.12f; // flicker pulse half-life (s)
-static constexpr float U_CLAMP = 4.0f;     // displacement magnitude clamp
-static constexpr float V_CLAMP = 300.0f;   // velocity magnitude clamp
+// --- Field / sim tuning constants ---
+static constexpr int   SIM_MIN = 96;    // sim_scale=0 → chunky (loses detail)
+static constexpr int   SIM_MAX = 640;   // sim_scale=1 → fine (retains detail)
+static constexpr float MAX_STEP_DIV = 3.0f; // speed=1 → cross the field in 3 frames
+static constexpr float RETAIN_HI = 0.985f;  // damping=0 → long trails
+static constexpr float RETAIN_LO = 0.55f;   // damping=1 → fast fade
+static constexpr float FEED_SCALE = 0.4f;   // continuous structure feed
+static constexpr float FLICK_TAU  = 0.08f;  // flicker pulse half-life (s)
+static constexpr float F_CLAMP    = 4.0f;   // field magnitude clamp
 
-// Pass 1 — diff / inject / wave integrate.
+// Pass 1 — seed / advect / diffuse / decay.
 struct SimUniforms {
-  float dt, c2, damp, stiffness;                                   // integrate
-  float change_threshold, change_soft, seed_gain, _s0;            // frame-diff seed
-  float flicker_pulse, flicker_detail, u_clamp, v_clamp;          // flicker + stability
-  uint32_t have_history, frame, _p0, _p1;
+  float dt, step, decay, diffuse;
+  float change_threshold, change_soft, change_gain, flicker_seed;
+  float feed, f_clamp, _p0, _p1;
+  uint32_t have_history, frame, _u0, _u1;
 };
 
-// Pass 2 — threshold crests → lines over input.
+// Pass 2 — threshold field → lines over input.
 struct CompUniforms {
   float level, thickness, aa, input_mix;
   float line_r, line_g, line_b, field_gain;
@@ -67,8 +65,8 @@ struct CompUniforms {
 };
 
 struct State {
-  // Persistent ping-pong wave field (RGBA16F): .r=u (displacement),
-  // .g=v (velocity), .b=luma (this frame's input luma → next frame's diff).
+  // Persistent ping-pong field (RGBA16F): .r=F (intensity), .b=luma (this
+  // frame's input luma → next frame's frame-diff).
   gpu::Texture field[2];
   int   cur = 0;                 // rd = cur, wr = cur ^ 1
   int   sim_w = 0, sim_h = 0;    // current field resolution (viewport-derived)
@@ -77,22 +75,22 @@ struct State {
 
   gpu::Buffer  sim_uniform;
   gpu::Buffer  comp_uniform;
-  gpu::Sampler samp_lin;         // Linear + ClampToEdge (input + field upscale)
+  gpu::Sampler samp_lin;         // Linear + ClampToEdge (input + field advect)
   bool initialized = false;
 
   // --- Params (mirror the schema field names) ---
-  float change_threshold = 0.08f;
-  float change_gain      = 0.6f;
+  float change_threshold = 0.06f;
+  float change_gain      = 0.8f;
   float flicker          = 0.15f;
-  float flicker_rate     = 0.35f;
-  float flicker_detail   = 0.5f;
-  float speed            = 0.4f;
-  float damping          = 0.35f;
-  float stiffness        = 0.06f;
-  float sim_scale        = 0.35f;
-  float level            = 0.16f;
-  float thickness        = 0.06f;
-  int   line_count       = 1;
+  float flicker_rate     = 0.4f;
+  float speed            = 0.5f;
+  float damping          = 0.3f;    // field decay / trail length
+  float diffuse          = 0.18f;   // softening as it propagates
+  float feed             = 0.0f;    // continuous structure re-injection
+  float sim_scale        = 0.5f;
+  float level            = 0.25f;
+  float thickness        = 0.04f;
+  int   line_count       = 3;
   float aa               = 0.02f;
   float sensitivity      = 0.5f;
   float line_r = 1.0f, line_g = 1.0f, line_b = 1.0f;
@@ -117,85 +115,88 @@ void module_init() {
     state::Schema()
       .helpField("intro",
         "## Propagate\n"
-        "A real **wave-propagation engine** — the successor to *Simulant*, done "
-        "properly. Instead of faking growth with zoom-feedback, it runs a genuine "
-        "damped wave field: wherever the image **changes**, a ripple is born and "
-        "travels **outward**, interfering with its neighbours, and the wave crests "
-        "are thresholded into **clean lines drawn over your input**.\n\n"
-        "**Try:** feed video and sweep *Speed* / *Damping* to tune how far ripples "
-        "run. On a **static** image, crank *Flicker* (or tap *Trigger*) to force it "
-        "to radiate. Dial *Level* / *Thickness* for the line look, and flip "
-        "*Show Field* to watch the raw waves while you tune.")
+        "An outward-**propagation engine** — the successor to *Simulant*, done "
+        "properly. It takes your input's **structure** and pushes it outward as a "
+        "feedback field: features spread away from themselves, **blurring** as they "
+        "travel (so the gross shape survives while detail softens), and the fronts "
+        "are thresholded into **clean lines over your input**.\n\n"
+        "**Try:** feed video and sweep *Speed* (a front can cross the screen in ~3 "
+        "frames) and *Damping* (trail length). On a **static** image, crank "
+        "*Flicker* (or tap *Trigger*) to re-inject the image and send out expanding "
+        "echoes. *Diffuse* controls how fast features blur out; *Level* / "
+        "*Thickness* shape the lines. Flip *Show Field* to watch the raw field.")
 
       // ---- Change: what seeds a wave ----
       .group("change", "Change")
         .groupHelp("Waves are born on **changing pixels** — the per-pixel "
-                   "difference from the previous frame. *Threshold* sets how much "
-                   "a pixel must change to fire; *Strength* sets how hard the "
-                   "change kicks the wave.")
-      .floatField("change_threshold", 0.08f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.005f, nullptr,
-                  "How much a pixel must change (vs last frame) to seed a ripple.")
+                   "difference from the previous frame — seeded from the input's "
+                   "own brightness. *Threshold* sets how much a pixel must change "
+                   "to fire; *Strength* sets how hard it seeds.")
+      .floatField("change_threshold", 0.06f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.005f, nullptr,
+                  "How much a pixel must change (vs last frame) to seed a front.")
         .label("Change Threshold", "Thresh")
-      .floatField("change_gain", 0.6f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "How strongly a detected change kicks the wave.")
+      .floatField("change_gain", 0.8f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How strongly a detected change seeds the field.")
         .label("Change Strength", "Gain")
 
-      // ---- Flicker: induce change on a static image ----
+      // ---- Flicker: induce propagation on a static image ----
       .group("flicker", "Flicker")
-        .groupHelp("Make even a **static** image ripple. A flicker fires a grainy "
-                   "global impulse — periodically (Poisson *Rate*) or on demand "
-                   "(*Trigger*). *Amount* 0 turns it off (waves then come only from "
-                   "real motion).")
+        .groupHelp("Make even a **static** image radiate. A flicker re-injects the "
+                   "whole input (flickering the image) — periodically (Poisson "
+                   "*Rate*) or on demand (*Trigger*) — sending out an expanding echo "
+                   "of the structure. *Amount* 0 turns it off.")
       .floatField("flicker", 0.15f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "Strength of the induced flicker impulse (0 = off).")
+                  "Strength of the induced flicker re-injection (0 = off).")
         .label("Flicker Amount", "Flick")
-      .floatField("flicker_rate", 0.35f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("flicker_rate", 0.4f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "How often flicker pulses fire (Poisson; exponential → Hz).")
         .label("Flicker Rate", "Rate")
       .eventField("trigger", state::PrimaryInput)
-      .floatField("flicker_detail", 0.5f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "How much the flicker keys off bright image regions vs a uniform grain.")
-        .label("Flicker Detail", "Detail")
 
       // ---- Propagation: the engine ----
       .group("propagation", "Propagation")
-        .groupHelp("The wave medium. *Speed* is how fast ripples travel (CFL-"
-                   "clamped so it stays stable); *Damping* is how quickly they die "
-                   "(short = tight rings, long = deep trails). *Stiffness* adds a "
-                   "restoring force (shorter wavelength / more shimmer). *Scale* is "
-                   "the sim grid — coarse = bigger, chunkier waves and cheaper.")
-      .floatField("speed", 0.4f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "How fast the ripples travel outward.")
+        .groupHelp("How the structure travels. *Speed* is how far a front moves per "
+                   "frame (at max it crosses the screen in ~3 frames — no wave "
+                   "limit). *Damping* fades trailing fronts (short = tight echoes, "
+                   "long = deep trails). *Diffuse* is how fast features blur out as "
+                   "they go. *Feed* continuously re-injects the input (a steady "
+                   "standing pattern). *Scale* is the sim grid — high retains "
+                   "detail, low is chunkier + cheaper.")
+      .floatField("speed", 0.5f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How far the fronts advance each frame (max ≈ screen / 3 frames).")
         .label("Speed", "Speed")
-      .floatField("damping", 0.35f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
-                  "How quickly ripples fade as they travel.")
+      .floatField("damping", 0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How quickly trailing fronts fade (0 = long trails).")
         .label("Damping", "Damp")
-      .floatField("stiffness", 0.06f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Restoring force — higher = shorter wavelength / more shimmer.")
-        .label("Stiffness", "Stiff")
-      .floatField("sim_scale", 0.35f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Sim grid resolution — low = chunky big waves (cheaper), high = fine.")
-        .label("Wave Scale", "Scale")
+      .floatField("diffuse", 0.18f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How fast features blur out as they propagate.")
+        .label("Diffuse", "Diff")
+      .floatField("feed", 0.0f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Continuously re-inject the input structure (steady standing pattern).")
+        .label("Feed", "Feed")
+      .floatField("sim_scale", 0.5f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Sim grid resolution — high retains detail, low is chunky + cheap.")
+        .label("Detail Scale", "Scale")
 
-      // ---- Line: threshold crests to clean lines ----
+      // ---- Line: threshold the field to clean lines ----
       .group("line", "Line")
-        .groupHelp("The wave crests become lines. A line is drawn where the wave "
-                   "amplitude equals *Level* — that contour expands outward as the "
-                   "ripple travels. *Thickness* is the line width; *Count* stacks "
-                   "concentric contours; *Sensitivity* scales the wave into range.")
-      .floatField("level", 0.16f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.005f, nullptr,
-                  "Wave amplitude that becomes a line (the moving contour).")
+        .groupHelp("The fronts become lines. A line is drawn where the field equals "
+                   "*Level* — that contour expands outward as the front travels. "
+                   "*Thickness* is the width; *Count* stacks concentric contours; "
+                   "*Sensitivity* scales the field into range.")
+      .floatField("level", 0.25f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.005f, nullptr,
+                  "Contour spacing — where the tone-mapped field crosses a line.")
         .label("Line Level", "Level")
-      .floatField("thickness", 0.06f, 0.f, 0.5f, state::PrimaryInput, nullptr, 0.005f, nullptr,
-                  "Line width (half-band around the level).")
+      .floatField("thickness", 0.04f, 0.f, 0.5f, state::PrimaryInput, nullptr, 0.005f, nullptr,
+                  "Line width (half-band around each contour).")
         .label("Line Thickness", "Thick")
-      .intField("line_count", 1, 1, 4, state::SecondaryInput)
+      .intField("line_count", 3, 1, 6, state::SecondaryInput)
         .label("Line Count", "Count")
       .floatField("aa", 0.02f, 0.001f, 0.2f, state::SecondaryInput, nullptr, 0.001f, nullptr,
                   "Edge softness of the line band (anti-alias).")
         .label("Line Softness", "AA")
       .floatField("sensitivity", 0.5f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Display gain on the wave field (brings faint ripples into range).")
+                  "Display gain on the field (brings faint fronts into range).")
         .label("Sensitivity", "Sens")
 
       // ---- Look: composite over input ----
@@ -209,7 +210,7 @@ void module_init() {
       // ---- Debug ----
       .group("debug", "Debug")
       .boolField("debug_show_field", false, state::SecondaryInput,
-                 "Show the raw wave field (red/blue) instead of the lines.")
+                 "Show the raw propagation field instead of the lines.")
         .label("Show Field", "Field")
 
       // ---- I/O ----
@@ -277,7 +278,7 @@ void tick(void* self, double dt) {
   s->frame++;
 
   // Flicker Poisson auto-fire (style guide §4.1). rate slider → Hz on an
-  // exponential curve; a fired event sets the pulse to the flicker amount.
+  // exponential curve; a fired event re-injects the input at the flicker amount.
   if (s->flicker > 0.0f && s->flicker_rate > 0.0f) {
     float rate_hz = std::pow(60.0f, s->flicker_rate) - 1.0f;
     float lambda  = rate_hz * (float)dt;
@@ -304,10 +305,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "change_gain"))      s->change_gain      = state::patchFloat(i);
     else if (state::pathIs(p, l, "flicker"))          s->flicker          = state::patchFloat(i);
     else if (state::pathIs(p, l, "flicker_rate"))     s->flicker_rate     = state::patchFloat(i);
-    else if (state::pathIs(p, l, "flicker_detail"))   s->flicker_detail   = state::patchFloat(i);
     else if (state::pathIs(p, l, "speed"))            s->speed            = state::patchFloat(i);
     else if (state::pathIs(p, l, "damping"))          s->damping          = state::patchFloat(i);
-    else if (state::pathIs(p, l, "stiffness"))        s->stiffness        = state::patchFloat(i);
+    else if (state::pathIs(p, l, "diffuse"))          s->diffuse          = state::patchFloat(i);
+    else if (state::pathIs(p, l, "feed"))             s->feed             = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_scale"))        s->sim_scale        = state::patchFloat(i);
     else if (state::pathIs(p, l, "level"))            s->level            = state::patchFloat(i);
     else if (state::pathIs(p, l, "thickness"))        s->thickness        = state::patchFloat(i);
@@ -371,33 +372,29 @@ void render(void* self, int vp_w, int vp_h) {
   if (dt <= 0.f) dt = 1.0f / 60.0f;
   int rd = s->cur, wr = s->cur ^ 1;
 
-  // --- Pass 1: diff → inject → wave integrate (sim-res) ---
-  // Wave speed → cells/sec, CFL-clamped so the explicit scheme stays stable.
-  float c = s->speed * C_MAX;
-  float c_max = CFL / dt;             // c*dt ≤ CFL
-  if (c > c_max) c = c_max;
-  float damp = B_MIN + (B_MAX - B_MIN) * s->damping;
-
+  // --- Pass 1: seed → advect outward → diffuse → decay (sim-res) ---
+  // Advection step in cells: at speed=1 a front crosses the field's longest side
+  // in MAX_STEP_DIV frames. No CFL limit — it's a lookup, not a wave stencil.
+  float longSide = (float)(s->sim_w > s->sim_h ? s->sim_w : s->sim_h);
   SimUniforms su = {};
   su.dt               = dt;
-  su.c2               = c * c;
-  su.damp             = damp;
-  su.stiffness        = s->stiffness * K_MAX;
+  su.step             = s->speed * (longSide / MAX_STEP_DIV);
+  su.decay            = RETAIN_HI + (RETAIN_LO - RETAIN_HI) * s->damping;
+  su.diffuse          = s->diffuse * 0.9f;            // keep some of the advected value
   su.change_threshold = s->change_threshold;
-  su.change_soft      = 0.05f;        // fixed soft knee on the diff threshold
-  su.seed_gain        = s->change_gain;   // shader applies CHANGE_INJECT
-  su.flicker_pulse    = s->flicker_env;
-  su.flicker_detail   = s->flicker_detail;
-  su.u_clamp          = U_CLAMP;
-  su.v_clamp          = V_CLAMP;
+  su.change_soft      = 0.05f;
+  su.change_gain      = s->change_gain;
+  su.flicker_seed     = s->flicker_env;
+  su.feed             = s->feed * FEED_SCALE;
+  su.f_clamp          = F_CLAMP;
   su.have_history     = s->have_history ? 1u : 0u;
   su.frame            = s->frame;
   s->sim_uniform.writeOne(su);
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_sim);
-    cp.setTexture(s->field[rd], 0, 0);   // prev field (Load for laplacian)
-    cp.setTexture(in, 1, 0);             // current input (sampled at sim-res)
+    cp.setTexture(s->field[rd], 0, 0);   // prev field (Load + Sample)
+    cp.setTexture(in, 1, 0);             // current input (structure seed)
     cp.setSampler(s->samp_lin, 2);
     cp.setTexture(s->field[wr], 3, 1);   // new field (storage write)
     cp.setBuffer(s->sim_uniform, 4);
@@ -405,8 +402,8 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // --- Pass 2: threshold crests → lines over input (viewport-res) ---
-  int lc = s->line_count; if (lc < 1) lc = 1; if (lc > 4) lc = 4;
+  // --- Pass 2: threshold field → lines over input (viewport-res) ---
+  int lc = s->line_count; if (lc < 1) lc = 1; if (lc > 6) lc = 6;
   CompUniforms cu = {};
   cu.level      = s->level;
   cu.thickness  = s->thickness;
@@ -415,7 +412,7 @@ void render(void* self, int vp_w, int vp_h) {
   cu.line_r     = s->line_r;
   cu.line_g     = s->line_g;
   cu.line_b     = s->line_b;
-  cu.field_gain = 0.5f + s->sensitivity * 5.5f;   // wave amp → display range
+  cu.field_gain = 1.5f + s->sensitivity * 10.5f;   // tone-map steepness (1 - e^-F*gain)
   cu.line_count = (uint32_t)lc;
   cu.debug_show_field = s->debug_show_field > 0.5f ? 1u : 0u;
   s->comp_uniform.writeOne(cu);
@@ -423,7 +420,7 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_comp);
     cp.setTexture(in, 0, 0);             // input (full res)
-    cp.setTexture(s->field[wr], 1, 0);   // wave field (sampled, upscaled)
+    cp.setTexture(s->field[wr], 1, 0);   // field (sampled, upscaled)
     cp.setSampler(s->samp_lin, 2);
     cp.setTexture(out, 3, 1);
     cp.setBuffer(s->comp_uniform, 4);

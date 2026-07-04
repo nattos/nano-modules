@@ -1,96 +1,89 @@
-// filter.sim.propagate — Pass 1: diff → inject → wave integrate.
+// filter.sim.propagate — Pass 1: seed → advect outward → diffuse → decay.
 //
-// The stateful heart of the effect. One compute pass per frame over a ping-pong
-// RGBA16F field packed as .r=u (displacement), .g=v (velocity), .b=luma (this
-// frame's input luma, read next frame to diff). We:
-//   1. Diff the current input luma against the field's stored luma → a seed
-//      wherever the image changed (guarded by have_history so frame 1 doesn't
-//      emit a giant global ghost ripple).
-//   2. Add a flicker impulse — a grainy, brightness-keyed global kick — so even
-//      a static image radiates (the induced-change mechanism).
-//   3. Integrate a damped 2D wave equation (velocity/displacement form): the
-//      seed kicks velocity, ripples travel outward via the Laplacian, interfere,
-//      and decay. dt is baked in (style guide §2.1) and the caller CFL-clamps the
-//      speed; we NaN-sanitize + magnitude-clamp for stability (persistent-sim
-//      gotcha).
+// NOT a physical wave equation (that is CFL-capped to ~1 cell/frame — far too
+// slow, and it keeps high-frequency detail that thresholds into mud). Instead
+// this is an OUTWARD-ADVECTION feedback field that retains the input's rough
+// structure while its features blur out as they travel:
 //
-// Boundary: neighbour Loads outside the grid return 0 → an absorbing edge (waves
-// die at the border instead of reflecting the whole screen full).
+//   1. SEED from the input's STRUCTURE (its luma), not random noise. A
+//      frame-difference seeds where the image changes; "flicker" re-injects the
+//      whole input each pulse (flickering the image) so a STATIC image radiates.
+//   2. ADVECT the field outward along its own smoothed gradient: every pixel
+//      samples the field from the toward-a-brighter-core side, so bright features
+//      spread AWAY from themselves — a ring dilates into an expanding ring. The
+//      step is a free parameter (no CFL limit), so max speed crosses the screen
+//      in a few frames.
+//   3. DIFFUSE (blend toward the local average) so features soften as they
+//      propagate — the "blurs out as it travels" look.
+//   4. DECAY so trailing fronts fade; re-seeding each frame keeps a train of
+//      expanding echoes alive.
+//
+// The field (RGBA16F) packs .r = F (intensity), .b = luma (this frame's input
+// luma → next frame's frame-diff). Boundary: out-of-range Loads read 0.
 
 #include "nano_color.hlsl"
-#include "nano_hash.hlsl"
 
-Texture2D<float4>   prevField : register(t0);   // read via Load (integer coords)
-Texture2D<float4>   inputTex  : register(t1);   // sampled at sim-res
+Texture2D<float4>   prevField : register(t0);   // Load (gradient) + Sample (advect)
+Texture2D<float4>   inputTex  : register(t1);   // input structure to seed from
 SamplerState        samp      : register(s2);   // Linear + ClampToEdge
 RWTexture2D<float4> curField  : register(u3);   // RGBA16F storage write
 
 cbuffer Uniforms : register(b4) {
-  float dt, c2, damp, stiffness;                 // integrate
-  float change_threshold, change_soft, seed_gain, _s0;   // frame-diff seed
-  float flicker_pulse, flicker_detail, u_clamp, v_clamp; // flicker + stability
-  uint  have_history, frame, _p0, _p1;
+  float dt, step, decay, diffuse;                        // propagate (step in cells)
+  float change_threshold, change_soft, change_gain, flicker_seed;  // seed
+  float feed, f_clamp, _p0, _p1;
+  uint  have_history, frame, _u0, _u1;
 };
 
-static const float FLICK_IMPULSE  = 6.0;   // flicker velocity forcing (zero-mean)
-static const float CHANGE_INJECT  = 0.7;   // frame-diff displacement bump
+static const int GRAD = 2;   // gradient tap radius (cells) — smooths the field
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
   uint W, H;
   curField.GetDimensions(W, H);
   if (gid.x >= W || gid.y >= H) return;
-  int2 p = int2(gid.xy);
+  int2  p  = int2(gid.xy);
+  float2 uv = (float2(gid.xy) + 0.5) / float2(W, H);
 
-  float4 cell    = prevField.Load(int3(p, 0));
-  float  u       = cell.r;
-  float  v       = cell.g;
-  float  lumaOld = cell.b;
+  float lumaOld = prevField.Load(int3(p, 0)).b;
 
-  // Laplacian (5-point). Out-of-range Loads return 0 → absorbing boundary.
-  float uL = prevField.Load(int3(p + int2(-1,  0), 0)).r;
-  float uR = prevField.Load(int3(p + int2( 1,  0), 0)).r;
-  float uU = prevField.Load(int3(p + int2( 0, -1), 0)).r;
-  float uD = prevField.Load(int3(p + int2( 0,  1), 0)).r;
-  float lap = uL + uR + uU + uD - 4.0 * u;
+  // Smoothed gradient (points toward a brighter core). An 8-tap Sobel keeps the
+  // advection direction isotropic (a 4-tap axis gradient makes octagonal rings);
+  // the wide taps low-pass the field so the direction follows the gross
+  // structure, not noise.
+  float fL  = prevField.Load(int3(p + int2(-GRAD,     0), 0)).r;
+  float fR  = prevField.Load(int3(p + int2( GRAD,     0), 0)).r;
+  float fU  = prevField.Load(int3(p + int2(    0, -GRAD), 0)).r;
+  float fD  = prevField.Load(int3(p + int2(    0,  GRAD), 0)).r;
+  float fTL = prevField.Load(int3(p + int2(-GRAD, -GRAD), 0)).r;
+  float fTR = prevField.Load(int3(p + int2( GRAD, -GRAD), 0)).r;
+  float fBL = prevField.Load(int3(p + int2(-GRAD,  GRAD), 0)).r;
+  float fBR = prevField.Load(int3(p + int2( GRAD,  GRAD), 0)).r;
+  float2 grad = float2((fR - fL) + 0.5 * ((fTR + fBR) - (fTL + fBL)),
+                       (fD - fU) + 0.5 * ((fBL + fBR) - (fTL + fTR)));
+  float  glen = length(grad);
+  float2 dir  = (glen > 1e-5) ? grad / glen : float2(0.0, 0.0);
 
-  // Current input luma at this cell.
-  float2 uv      = (float2(gid.xy) + 0.5) / float2(W, H);
-  float  lumaNow = nano_luminance(inputTex.SampleLevel(samp, uv, 0).rgb);
+  // Advect OUTWARD: sample the previous field from the toward-core side, so the
+  // core's brightness lands here (content moves away from the core). step is in
+  // cells → convert to uv. ClampToEdge handles off-texture reads.
+  float2 apos = uv + dir * (step / float2(W, H));
+  float  adv  = prevField.SampleLevel(samp, apos, 0).r;
 
-  // --- Seed ---
-  // Two seed channels, kept separate so neither drifts the medium to the rail:
-  //   seed_u — a POSITIVE displacement bump from a frame-difference. A change is
-  //            occasional and transient, so a one-signed bump is fine: the wave
-  //            equation splits it into outgoing rings that oscillate + decay.
-  //   seed_v — a ZERO-MEAN velocity forcing from flicker. Flicker can fire every
-  //            frame, so it MUST be zero-mean — a one-signed kick would DC-drift
-  //            the field to the clamp rail (uniform → no contour). Signed noise
-  //            drives a bounded, oscillating, spatially-varying field instead.
-  float seed_u = 0.0;
-  float seed_v = 0.0;
+  // Diffuse — soften as it propagates (blend toward the 8-neighbour average).
+  float avg  = (fL + fR + fU + fD + fTL + fTR + fBL + fBR) * 0.125;
+  float prop = lerp(adv, avg, diffuse) * decay;
 
-  // Frame-difference: waves are born on changing pixels.
-  if (have_history != 0u) {
-    float d   = abs(lumaNow - lumaOld);
-    float chg = smoothstep(change_threshold, change_threshold + change_soft, d);
-    seed_u += chg * seed_gain * CHANGE_INJECT;
+  // Seed from the input's STRUCTURE (its luma).
+  float lumaNow = nano_luminance(inputTex.SampleLevel(samp, uv, 0).rgb);
+  float seed = feed * lumaNow;                       // optional continuous feed
+  if (have_history != 0u) {                          // frame-difference
+    float d = abs(lumaNow - lumaOld);
+    seed += smoothstep(change_threshold, change_threshold + change_soft, d) * change_gain;
   }
+  seed += flicker_seed * lumaNow;                    // flicker re-injects structure
 
-  // Flicker inducement: a grainy zero-mean velocity forcing, keyed partly on
-  // brightness, so a static image re-radiates. flicker_pulse (0..1) scales it.
-  if (flicker_pulse > 0.0) {
-    float g      = nano_hash31i(int3(p, int(frame)));   // stable per-cell grain
-    float sg     = g * 2.0 - 1.0;                       // zero-mean (-1..1)
-    float bright = lerp(1.0, lumaNow, flicker_detail);
-    seed_v += sg * bright * flicker_pulse * FLICK_IMPULSE;
-  }
-
-  // --- Integrate: damped wave, dt baked, then sanitize + clamp ---
-  float vn = v + dt * (c2 * lap - stiffness * u - damp * v) + seed_v;
-  vn = (vn != vn) ? 0.0 : clamp(vn, -v_clamp, v_clamp);
-  float un = u + dt * vn + seed_u;
-  un = (un != un) ? 0.0 : clamp(un, -u_clamp, u_clamp);
-
-  curField[gid.xy] = float4(un, vn, lumaNow, 0.0);
+  float F = prop + seed;
+  F = (F != F) ? 0.0 : clamp(F, 0.0, f_clamp);
+  curField[gid.xy] = float4(F, 0.0, lumaNow, 0.0);
 }
