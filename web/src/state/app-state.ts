@@ -45,6 +45,8 @@ export class AppState {
     barrelMode: false,
     barrelInstances: [],
     selectedBarrelKey: null,
+    barrelConnection: 'connecting',
+    barrelDetected: false,
   };
 
   constructor() {

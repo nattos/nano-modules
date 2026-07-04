@@ -1423,6 +1423,18 @@ export class AppController {
     this.playgroundMode = on;
   }
 
+  /** Shared-server WebSocket health (wired from WsBridgeClient callbacks). */
+  setBarrelConnectionState(state: 'connecting' | 'open' | 'closed') {
+    if (appState.local.barrelConnection === state) return;
+    runInAction(() => { appState.local.barrelConnection = state; });
+  }
+
+  /** Playground probe found a live shared server on the barrel port. */
+  setBarrelDetected(on: boolean) {
+    if (appState.local.barrelDetected === on) return;
+    runInAction(() => { appState.local.barrelDetected = on; });
+  }
+
   // ========================================================================
   // Playground instances (fake barrel instances, local shared-server env)
   // ========================================================================

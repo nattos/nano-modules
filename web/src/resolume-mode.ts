@@ -29,3 +29,30 @@ export function switchMode(target: 'barrel' | 'playground') {
   url.search = target === 'playground' ? '?playground' : '';
   location.href = url.toString();
 }
+
+/** sessionStorage keys recording a dismissed mode-switch offer (per tab —
+ *  the offer returns on a fresh session, but never nags within one). */
+export const OFFER_PLAYGROUND_DISMISSED_KEY = 'nano.offerPlayground.dismissed';
+export const OFFER_LIVE_DISMISSED_KEY = 'nano.offerLive.dismissed';
+
+export type BannerOffer = 'offer-playground' | 'offer-live' | null;
+
+/**
+ * Which mode-switch offer (if any) the shell should show. Pure so the
+ * banner logic is unit-testable; the component supplies the time-derived
+ * `graceElapsed` (connection continuously not-open past the grace window)
+ * and the per-mode sessionStorage `dismissed` flag.
+ */
+export function bannerOffer(opts: {
+  barrelMode: boolean;
+  connection: 'connecting' | 'open' | 'closed';
+  graceElapsed: boolean;
+  barrelDetected: boolean;
+  dismissed: boolean;
+}): BannerOffer {
+  if (opts.dismissed) return null;
+  if (opts.barrelMode) {
+    return opts.connection !== 'open' && opts.graceElapsed ? 'offer-playground' : null;
+  }
+  return opts.barrelDetected ? 'offer-live' : null;
+}

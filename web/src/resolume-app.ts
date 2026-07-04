@@ -12,7 +12,7 @@
  */
 
 import { boot } from './boot';
-import { decideMode } from './resolume-mode';
+import { decideMode, OFFER_LIVE_DISMISSED_KEY } from './resolume-mode';
 import { loadAllPlaygroundInstances } from './state/playground-store';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
@@ -76,6 +76,9 @@ async function main() {
     // Persistence goes live only after the load, so loaded state isn't
     // immediately echoed back to the playground store.
     appController.enablePersistence();
+
+    // Quietly watch for Resolume coming up so the shell can offer Live mode.
+    startBarrelProbe(barrelUrl);
   }
 
   if (barrelMode) connectBarrel(barrelUrl);
@@ -295,10 +298,48 @@ function connectBarrel(url: string) {
     const sel = appController.getSelectedBarrelKey();
     if (sel) wireInstance(sel);
   };
-  if (barrel.isOpen) subscribe();
-  else barrel.onOpen = subscribe;
+  // Surface connection health for the shell's "switch to Playground?" offer.
+  barrel.onOpen = () => {
+    appController.setBarrelConnectionState('open');
+    subscribe();
+  };
+  barrel.onClose = () => appController.setBarrelConnectionState('closed');
+  if (barrel.isOpen) {
+    appController.setBarrelConnectionState('open');
+    subscribe();
+  }
 
   console.log(`[barrel] connecting ${url} (window.__barrel / __barrelInstances)`);
+}
+
+/**
+ * Playground-mode background probe: is a shared NanoBarrel server up on the
+ * barrel port? One lightweight WebSocket attempt every 10 s (NOT a
+ * WsBridgeClient — its infinite exponential backoff and logging are wrong
+ * for probing). Stops once detected, or once the user dismisses the offer
+ * (the shell records the dismissal in sessionStorage).
+ */
+function startBarrelProbe(url: string) {
+  const PROBE_INTERVAL_MS = 10000;
+  const attempt = () => {
+    if (appState.local.barrelDetected) return;
+    if (sessionStorage.getItem(OFFER_LIVE_DISMISSED_KEY)) return;
+    let ws: WebSocket;
+    try { ws = new WebSocket(url); }
+    catch { setTimeout(attempt, PROBE_INTERVAL_MS); return; }
+    let settled = false;
+    const settle = (up: boolean) => {
+      if (settled) return;
+      settled = true;
+      try { ws.close(); } catch { /* ignore */ }
+      if (up) appController.setBarrelDetected(true);
+      else setTimeout(attempt, PROBE_INTERVAL_MS);
+    };
+    ws.onopen = () => settle(true);
+    ws.onerror = () => settle(false);
+    ws.onclose = () => settle(false);
+  };
+  attempt();
 }
 
 /**

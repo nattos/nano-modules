@@ -236,12 +236,25 @@ export interface LocalState {
 
   /**
    * Live NanoBarrel instances enumerated from the shared server's
-   * `/global/plugins`. Empty outside barrel mode. The Organize tab lists
-   * these; `selectedBarrelKey` is the one open in the edit tab.
+   * `/global/plugins` (or the playground's fake instances). The Instances
+   * tab lists these; `selectedBarrelKey` is the one open in the edit tab.
    */
   barrelInstances: BarrelInstanceInfo[];
   /** Key (stable UUID) of the barrel instance currently being edited. */
   selectedBarrelKey: string | null;
+
+  /**
+   * Health of the shared-server WebSocket (barrel mode only; stays
+   * 'connecting' in the playground). Drives the "can't reach Resolume —
+   * switch to Playground?" offer.
+   */
+  barrelConnection: 'connecting' | 'open' | 'closed';
+  /**
+   * Playground-mode background probe result: a shared NanoBarrel server
+   * answered on the barrel port. Drives the "Resolume detected — switch to
+   * Live?" offer.
+   */
+  barrelDetected: boolean;
 }
 
 /**
