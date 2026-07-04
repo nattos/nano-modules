@@ -32,7 +32,8 @@ cbuffer Uniforms : register(b4) {
   uint  have_history, frame, _p0, _p1;
 };
 
-static const float FLICK_IMPULSE = 18.0;   // flicker kick (independent of change_gain)
+static const float FLICK_IMPULSE  = 6.0;   // flicker velocity forcing (zero-mean)
+static const float CHANGE_INJECT  = 0.7;   // frame-diff displacement bump
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -58,30 +59,37 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float  lumaNow = nano_luminance(inputTex.SampleLevel(samp, uv, 0).rgb);
 
   // --- Seed ---
-  float seed = 0.0;
+  // Two seed channels, kept separate so neither drifts the medium to the rail:
+  //   seed_u — a POSITIVE displacement bump from a frame-difference. A change is
+  //            occasional and transient, so a one-signed bump is fine: the wave
+  //            equation splits it into outgoing rings that oscillate + decay.
+  //   seed_v — a ZERO-MEAN velocity forcing from flicker. Flicker can fire every
+  //            frame, so it MUST be zero-mean — a one-signed kick would DC-drift
+  //            the field to the clamp rail (uniform → no contour). Signed noise
+  //            drives a bounded, oscillating, spatially-varying field instead.
+  float seed_u = 0.0;
+  float seed_v = 0.0;
 
   // Frame-difference: waves are born on changing pixels.
   if (have_history != 0u) {
     float d   = abs(lumaNow - lumaOld);
     float chg = smoothstep(change_threshold, change_threshold + change_soft, d);
-    seed += chg * seed_gain;
+    seed_u += chg * seed_gain * CHANGE_INJECT;
   }
 
-  // Flicker inducement: a sparse grainy global impulse, keyed partly on
-  // brightness, so a static image re-radiates. flicker_pulse (0..1) both scales
-  // and thresholds the grain (fewer cells fire as the pulse decays).
+  // Flicker inducement: a grainy zero-mean velocity forcing, keyed partly on
+  // brightness, so a static image re-radiates. flicker_pulse (0..1) scales it.
   if (flicker_pulse > 0.0) {
     float g      = nano_hash31i(int3(p, int(frame)));   // stable per-cell grain
-    float grain  = saturate(g - (1.0 - flicker_pulse)) / max(flicker_pulse, 1e-3);
+    float sg     = g * 2.0 - 1.0;                       // zero-mean (-1..1)
     float bright = lerp(1.0, lumaNow, flicker_detail);
-    seed += grain * bright * FLICK_IMPULSE;
+    seed_v += sg * bright * flicker_pulse * FLICK_IMPULSE;
   }
 
   // --- Integrate: damped wave, dt baked, then sanitize + clamp ---
-  float vn = v + dt * (c2 * lap - stiffness * u - damp * v);
-  vn += seed;                                        // impulse kicks velocity
+  float vn = v + dt * (c2 * lap - stiffness * u - damp * v) + seed_v;
   vn = (vn != vn) ? 0.0 : clamp(vn, -v_clamp, v_clamp);
-  float un = u + dt * vn;
+  float un = u + dt * vn + seed_u;
   un = (un != un) ? 0.0 : clamp(un, -u_clamp, u_clamp);
 
   curField[gid.xy] = float4(un, vn, lumaNow, 0.0);

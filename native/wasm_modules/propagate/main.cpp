@@ -47,10 +47,9 @@ static constexpr float CFL     = 0.7f;  // explicit-scheme stability: c*dt ≤ C
 static constexpr float B_MIN   = 0.3f;  // damping floor (1/s) — waves still die
 static constexpr float B_MAX   = 8.0f;  // damping=1 (1/s)
 static constexpr float K_MAX   = 120.0f;// stiffness=1 → restoring rate (1/s²)
-static constexpr float SEED_SCALE = 25.0f; // change*gain → velocity impulse
 static constexpr float FLICK_TAU  = 0.12f; // flicker pulse half-life (s)
-static constexpr float U_CLAMP = 8.0f;     // displacement magnitude clamp
-static constexpr float V_CLAMP = 600.0f;   // velocity magnitude clamp
+static constexpr float U_CLAMP = 4.0f;     // displacement magnitude clamp
+static constexpr float V_CLAMP = 300.0f;   // velocity magnitude clamp
 
 // Pass 1 — diff / inject / wave integrate.
 struct SimUniforms {
@@ -386,7 +385,7 @@ void render(void* self, int vp_w, int vp_h) {
   su.stiffness        = s->stiffness * K_MAX;
   su.change_threshold = s->change_threshold;
   su.change_soft      = 0.05f;        // fixed soft knee on the diff threshold
-  su.seed_gain        = s->change_gain * SEED_SCALE;
+  su.seed_gain        = s->change_gain;   // shader applies CHANGE_INJECT
   su.flicker_pulse    = s->flicker_env;
   su.flicker_detail   = s->flicker_detail;
   su.u_clamp          = U_CLAMP;
