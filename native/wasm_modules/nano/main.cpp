@@ -27,7 +27,7 @@ NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
-NANO_DECLARE_INSTANCE_EFFECT(propagate)
+NANO_DECLARE_INSTANCE_EFFECT(simulant)
 
 extern "C" {
 
@@ -209,13 +209,13 @@ void nano_module_main() {
 
     nano::registerEffect({
         2,
-        "filter.sim.propagate",
-        "Propagate",
-        "A real wave-propagation engine — the successor to Simulant, done properly (no zoom-feedback fake). Detects changing pixels (per-pixel difference from the previous frame) and kicks a genuine damped 2D wave field: ripples travel outward at a controlled, CFL-stable speed, interfere between sources, and decay. A built-in flicker (Poisson auto-rate + a manual trigger) injects a grainy global impulse so even a static image radiates. The wave crests are thresholded into clean anti-aliased contour lines (the |amplitude|=level isoline, which expands as each ripple travels) composited over the dimmable input. Speed / damping / stiffness shape the medium; level / thickness / count shape the lines; Show Field reveals the raw waves.",
+        "filter.sim.simulant",
+        "Simulant",
+        "A faithful re-creation of the original Resolume Wire 'Simulant' patch (quirks intact). NOT a wave equation and NOT a zoom-feedback drift — it is a DIFFERENCE-BLEND + BLUR-DIFFUSION feedback loop: each frame the image is differenced (abs(A-B), which never goes pure black — the load-bearing Simulant/Pixulant quirk) against a blurred copy of the previous frame, and that blur is the outward propagation. The churning accumulator is traced into Sobel lines (Levels → posterize → edge → crop). A Poisson flicker + manual trigger pulse an Attack/Release envelope into the injection. FAITHFUL QUIRK: with stock knobs the envelope is SUBTRACTED and Flicker Min/Max = 0, so a fresh drop just decays — bring it alive with Const Alpha, Flicker Max, or Flicker Invert. Wave Speed / Choke shape the medium; Levels / Line Strength / Line Width shape the lines.",
         "filter",
-        "simulant,wave,ripple,propagation,feedback,reaction-diffusion,lines,edge,change,flicker,contour",
+        "simulant,feedback,difference,blur,diffusion,reaction,lines,edge,sobel,flicker,contour,growth,resolume,wire",
         "la-water",
-        NANO_INSTANCE_LIFECYCLE(propagate),
+        NANO_INSTANCE_LIFECYCLE(simulant),
     });
 }
 

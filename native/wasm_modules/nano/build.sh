@@ -228,15 +228,16 @@ compile_shaders_compute_var_spv shape_burst motion
 _emit_spv_header_var shape_burst compute motion
 echo "  shape_burst shaders compiled (SPV: compute + motion)"
 
-# propagate — wave-propagation engine (the Simulant successor). Two compute
-# passes over a persistent ping-pong RGBA16F wave field:
-#   simulate  — frame-diff + flicker seed → damped 2D wave integrate (rgba16f).
-#   composite — threshold wave crests into contour lines over the input (rgba8).
-compile_shaders_compute_var_spv propagate blurseed
-compile_shaders_compute_var_spv propagate simulate
-compile_shaders_compute_var_spv propagate composite
-_emit_spv_header_var propagate blurseed simulate composite
-echo "  propagate shaders compiled (SPV: blurseed + simulate + composite)"
+# simulant — faithful port of the Resolume Wire "Simulant" patch: a
+# difference-blend + blur-diffusion feedback loop thresholded into Sobel lines.
+#   inject — abs(fadedPrev - input) difference-blend feedback (rgba16f).
+#   blur   — separable RGB Gaussian; wave-diffusion (+decay) and line smoothing.
+#   lines  — Levels → posterize → Sobel → crop line extraction (rgba8).
+compile_shaders_compute_var_spv simulant inject
+compile_shaders_compute_var_spv simulant blur
+compile_shaders_compute_var_spv simulant lines
+_emit_spv_header_var simulant inject blur lines
+echo "  simulant shaders compiled (SPV: inject + blur + lines)"
 
 echo "=== Building WASM (nano) ==="
 
@@ -269,6 +270,6 @@ wasm_build \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \
   ../shape_burst/main.cpp \
-  ../propagate/main.cpp
+  ../simulant/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
