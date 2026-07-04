@@ -166,6 +166,14 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       position: relative;
       flex: 1;
       min-width: 0;
+      /* min-height: 0 is load-bearing: .columns-wrap is a main-axis item of
+         the column-flex .left-panel, so the default min-height:auto would let
+         it grow to its content height. columns-view sizes its scroll content
+         to max(columns, clientHeight×1.5) (the scroll-past-end tail), so an
+         unpinned clientHeight feeds back and diverges to the browser height
+         clamp — leaving nothing to scroll. The Effect IDE's equivalent chain
+         is pinned the same way (ide-project-editor's :host min-height: 0). */
+      min-height: 0;
       display: flex;
     }
     .right-panel {
