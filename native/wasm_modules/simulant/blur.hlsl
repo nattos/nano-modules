@@ -24,15 +24,15 @@ RWTexture2D<float4> dstTex : register(u2);
 
 cbuffer Uniforms : register(b3) {
   float2 dir;        // (1,0) horizontal or (0,1) vertical
-  float  step_uv;    // tap spacing in uv
-  float  sigma_uv;   // Gaussian sigma / dilation reach in uv (<=0 → identity)
+  float  step_uv;    // tap spacing in uv (= reach / taps)
+  float  sigma_uv;   // Gaussian sigma in uv (<=0 → identity)
   float  contrast;   // Bright.Contrast about 0.5 (node 31 wave decay; 0 = none)
   float  mode;       // 0 = diffuse (Gaussian), 1 = dilate (parabolic morphology)
   float  parab;      // dilation parabola steepness (penalty per tap², in value)
   float  post_mult;  // final multiply (dilate per-frame decay; 1 = none)
+  float  taps;       // samples each side (Quality). reach = taps * step_uv.
+  float  _q0, _q1, _q2;
 };
-
-static const int N = 16;   // taps each side
 
 // Bright.Contrast (node 31): pivots about mid-grey.
 float3 apply_contrast(float3 c) {
@@ -51,6 +51,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
     dstTex[gid.xy] = float4(saturate(apply_contrast(c) * post_mult), 1.0);
     return;
   }
+
+  int N = clamp((int)taps, 1, 64);   // samples each side — the Quality control
 
   float3 outc;
   if (mode > 0.5) {

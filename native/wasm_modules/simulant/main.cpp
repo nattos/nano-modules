@@ -58,6 +58,7 @@ struct InjectUniforms {
 struct BlurUniforms {
   float dir_x, dir_y, step_uv, sigma_uv;
   float contrast, mode, parab, post_mult;
+  float taps, _q0, _q1, _q2;
 };
 
 // Pass D — line extractor.
@@ -87,6 +88,7 @@ struct State {
   float wave_speed        = 0.41f;  // Wave Speed
   int   spread_mode       = 0;      // 0 = diffuse (Gaussian), 1 = dilate (max)
   float spread_decay      = 0.3f;   // dilate per-frame fade
+  int   quality           = 16;     // samples each side per spread pass
   float choke             = 0.0f;   // Choke
   float input_scale       = 1.0f;   // A Scale (full-res injection, node 36)
   float pos_x             = 0.0f;   // A X
@@ -160,6 +162,8 @@ void module_init() {
       .floatField("spread_decay", 0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Dilate only: per-frame fade so fronts die instead of filling (0 = slow).")
         .label("Dilate Decay", "Decay")
+      .intField("quality", 16, 4, 48, state::SecondaryInput)
+        .label("Quality (Samples)", "Quality")
       .floatField("choke", 0.0f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Fades the retained feedback each frame (0 = full retention).")
         .label("Choke", "Choke")
@@ -367,6 +371,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if      (state::pathIs(p, l, "wave_speed"))         s->wave_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "spread_mode"))        s->spread_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "spread_decay"))       s->spread_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "quality"))            s->quality = state::patchInt(i);
     else if (state::pathIs(p, l, "choke"))              s->choke = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_scale"))          s->sim_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "const_alpha"))        s->const_alpha = state::patchFloat(i);
@@ -428,9 +433,12 @@ static bool ensure_field(State* s, int vp_w, int vp_h) {
 
 static void dispatch_blur(State* s, gpu::Texture src, gpu::Texture dst,
                           gpu::Buffer buf, float dx, float dy, float sigma,
-                          float contrast, float mode, float parab, float post_mult) {
-  float step = (sigma > 1e-6f) ? sigma * 0.25f : 0.0f;
-  BlurUniforms b = { dx, dy, step, sigma, contrast, mode, parab, post_mult };
+                          float contrast, float mode, float parab, float post_mult, int taps) {
+  // Fixed reach = 4·sigma; step = reach/taps so Quality changes tap DENSITY, not
+  // the blur's scale (taps=16 reproduces the old sigma*0.25 spacing).
+  float step = (sigma > 1e-6f) ? sigma * (4.0f / (float)taps) : 0.0f;
+  BlurUniforms b = { dx, dy, step, sigma, contrast, mode, parab, post_mult,
+                     (float)taps, 0.f, 0.f, 0.f };
   buf.writeOne(b);
   auto cp = gpu::ComputePass::begin();
   cp.setPSO(s_pso_blur);
@@ -502,20 +510,21 @@ void render(void* self, int vp_w, int vp_h) {
   float wave_reach = s->wave_speed * WAVE_MAX_SIGMA * longSide;   // sim px
   float wsig_h = wave_reach / (float)s->sim_w;
   float wsig_v = wave_reach / (float)s->sim_h;
+  int   N      = s->quality; if (N < 4) N = 4; if (N > 48) N = 48;
   bool  dilate = (s->spread_mode == 1);
   float mode   = dilate ? 1.0f : 0.0f;
-  float parab  = DILATE_SLOPE / (float)(16 * 16);        // N=16
+  float parab  = DILATE_SLOPE / (float)(N * N);          // edge (k=N) penalty = SLOPE
   float decay  = 1.0f - s->spread_decay * 0.2f;          // 1.0 → 0.8 per frame
   float wave_contrast = dilate ? 0.0f : s->wave_speed * WAVE_CONTRAST;
-  dispatch_blur(s, s->accum,   s->scratch,   s->blur_wh, 1.f, 0.f, wsig_h, 0.0f,          mode, parab, 1.0f);
-  dispatch_blur(s, s->scratch, s->delay[wr], s->blur_wv, 0.f, 1.f, wsig_v, wave_contrast, mode, parab, dilate ? decay : 1.0f);
+  dispatch_blur(s, s->accum,   s->scratch,   s->blur_wh, 1.f, 0.f, wsig_h, 0.0f,          mode, parab, 1.0f,                   N);
+  dispatch_blur(s, s->scratch, s->delay[wr], s->blur_wv, 0.f, 1.f, wsig_v, wave_contrast, mode, parab, dilate ? decay : 1.0f, N);
 
   // --- Smoothing blur (node 67): accumRaw → smoothed, H then V (always diffuse) ---
   float sm_reach = s->smoothing * SMOOTH_MAX_SIGMA * longSide;    // sim px
   float ssig_h = sm_reach / (float)s->sim_w;
   float ssig_v = sm_reach / (float)s->sim_h;
-  dispatch_blur(s, s->accum,   s->scratch,  s->blur_sh, 1.f, 0.f, ssig_h, 0.0f, 0.0f, 0.0f, 1.0f);
-  dispatch_blur(s, s->scratch, s->smoothed, s->blur_sv, 0.f, 1.f, ssig_v, 0.0f, 0.0f, 0.0f, 1.0f);
+  dispatch_blur(s, s->accum,   s->scratch,  s->blur_sh, 1.f, 0.f, ssig_h, 0.0f, 0.0f, 0.0f, 1.0f, N);
+  dispatch_blur(s, s->scratch, s->smoothed, s->blur_sv, 0.f, 1.f, ssig_v, 0.0f, 0.0f, 0.0f, 1.0f, N);
 
   // --- Pass D: line extraction (viewport res) ---
   LinesUniforms lu = {};
