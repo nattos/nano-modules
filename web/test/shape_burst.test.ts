@@ -80,6 +80,16 @@ describe('source.shape_burst E2E', () => {
     square.trace('out').expectDifferentFrom(triangle.trace('out'), 20);
   });
 
+  it('rotation spins squares/triangles but not circles', async () => {
+    const sq0 = await render('burst_sq_r0', { ...RING, shape: 1, rotation: 0.0, composite: 0 }, 'burst_sq_r0');
+    const sq1 = await render('burst_sq_r1', { ...RING, shape: 1, rotation: 0.25, composite: 0 }, 'burst_sq_r1');
+    sq0.trace('out').expectDifferentFrom(sq1.trace('out'), 20);   // 45° rotated square differs
+
+    const c0 = await render('burst_c_r0', { ...RING, shape: 0, rotation: 0.0, composite: 0 }, 'burst_c_r0');
+    const c1 = await render('burst_c_r1', { ...RING, shape: 0, rotation: 0.25, composite: 0 }, 'burst_c_r1');
+    c0.trace('out').expectSameAs(c1.trace('out'), 2);             // circle is rotation-invariant
+  });
+
   it('Input composite passes the input through around the ring', async () => {
     // Thin ring so most of the frame is the untouched input colour (0.2,0.4,0.8).
     const r = await render('burst_input',

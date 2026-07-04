@@ -21,9 +21,17 @@ cbuffer Uniforms : register(b2) {
   float  u_tilt;           // -1..+1: shift motion magnitude inner<->outer edge
   float  u_motion_strength;// overall motion-vector scale
   uint   _p0;
-  float4 u_scales[MAX_DRAW / 4];  // per-voice ring radius (cover-square units)
-  float4 u_speeds[MAX_DRAW / 4];  // per-voice radius change per frame (signed)
+  float4 u_scales[MAX_DRAW / 4];    // per-voice ring radius (cover-square units)
+  float4 u_speeds[MAX_DRAW / 4];    // per-voice radius change per frame (signed)
+  float4 u_rotations[MAX_DRAW / 4]; // per-voice shape rotation (radians)
 };
+
+// Rotate a sample point into the shape's local frame (rotate by -angle).
+// No-op on circles (length is invariant).
+float2 sb_unrotate(float2 p, float angle) {
+  float c = cos(angle), s = sin(angle);
+  return float2(c * p.x + s * p.y, -s * p.x + c * p.y);
+}
 
 // --- Signed-distance to each unit shape's boundary. All 1-homogeneous, so a
 //     ring at radius s is sdShape(p / s) * s. ---

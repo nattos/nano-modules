@@ -43,6 +43,7 @@ constexpr int kMaxVoices = 16;
 struct Voice {
   float t = 0.0f;        // burst progress [0,1]
   float speed = 0.0f;    // radius change this frame (cover-square units/frame)
+  float jitter = 0.0f;   // rotation offset (radians) captured at trigger
   bool active = false;
   uint64_t age = 0;      // trigger order (for poly steal + newest-first draw)
 };
@@ -61,8 +62,9 @@ struct Uniforms {
   float tilt;                 // u_tilt
   float motion_strength;      // u_motion_strength
   uint32_t _p0;
-  float scales[kMaxVoices];   // u_scales (== float4[4])
-  float speeds[kMaxVoices];   // u_speeds (== float4[4])
+  float scales[kMaxVoices];    // u_scales (== float4[4])
+  float speeds[kMaxVoices];    // u_speeds (== float4[4])
+  float rotations[kMaxVoices]; // u_rotations (== float4[4])
 };
 
 struct State {
@@ -72,6 +74,8 @@ struct State {
   float thickness = 0.03f;
   float center[2] = { 0.0f, 0.0f };
   float curve = 0.0f;
+  float rotation = 0.0f;         // base shape rotation (-1..1 → ±π)
+  float rotation_jitter = 0.0f;  // per-trigger random rotation spread (0..1)
   float color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
   // Timing.
   float duration = 0.30f;
@@ -90,8 +94,9 @@ struct State {
   float tilt = 0.0f;
   float motion_strength = 1.0f;
 
-  uint32_t rng = 0x5EED5EEDu;   // auto-trigger Poisson stream
-  uint64_t trig_counter = 0;    // monotonic, stamps Voice::age
+  uint32_t rng = 0x5EED5EEDu;         // auto-trigger Poisson stream
+  uint32_t jitter_rng = 0x1234ABCDu;  // per-trigger rotation-jitter stream (§8.9)
+  uint64_t trig_counter = 0;          // monotonic, stamps Voice::age
   Voice v[kMaxVoices];
 
   float manual_prev = 0.0f;     // last frame's manual, for its motion speed
@@ -129,7 +134,12 @@ static void startBurst(State* s, int vi) {
   Voice& v = s->v[vi];
   v.active = true;
   v.t = 0.0f;
+  v.speed = 0.0f;
   v.age = ++s->trig_counter;
+  // Capture a random rotation offset for this voice (§8.8 — per-trigger variety).
+  s->jitter_rng = s->jitter_rng * 1664525u + 1013904223u;
+  float u = (s->jitter_rng >> 8) * (1.0f / 16777216.0f);   // [0,1)
+  v.jitter = (u * 2.0f - 1.0f) * s->rotation_jitter * 3.14159265f;
 }
 
 // Pick a voice for a poly trigger: a free one if any, else steal the oldest.
@@ -160,7 +170,7 @@ static void triggerVoice(State* s) {
 }
 
 void module_init() {
-  state::init("source.shape_burst", {1, 0, 1},
+  state::init("source.shape_burst", {1, 0, 2},
     state::Schema()
       .helpField("intro",
         "## Shape Burst\n"
@@ -178,7 +188,9 @@ void module_init() {
           "*Max Scale* are the start/end radii in aspect-correct screen units "
           "(1 ≈ the viewport edge). *Thickness* is the stroke width and *Curve* "
           "bends the growth (positive = fast-out / snappier). *Center* moves the "
-          "origin all bursts emanate from.")
+          "origin all bursts emanate from. *Rotation* spins squares/triangles "
+          "(circles are symmetric); *Rotation Jitter* gives each triggered burst "
+          "a random spin captured when it fires.")
       .selectField("shape", ShapeCircle, state::PrimaryInput,
                    {{"Circle", ShapeCircle}, {"Square", ShapeSquare},
                     {"Triangle", ShapeTriangle}}).label("Shape", "Shape")
@@ -186,6 +198,8 @@ void module_init() {
       .floatField("max_scale", 1.20f, 0.f, 2.f, state::PrimaryInput).label("Max Scale", "Max")
       .floatField("thickness", 0.03f, 0.f, 0.5f, state::PrimaryInput).label("Thickness", "Thick")
       .floatField("curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Curve", "Curve")
+      .floatField("rotation", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Rotation", "Rot")
+      .floatField("rotation_jitter", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Rotation Jitter", "RotJit")
       .vec2Field("center", 0.0f, 0.0f, state::PrimaryInput, -1.f, 1.f).label("Center", "Center")
       .rgbaField("color", 1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Colour", "Col")
       // --- Timing: how long a burst lasts + a manual scrub ---
@@ -338,6 +352,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "max_scale"))  s->max_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "thickness"))  s->thickness = state::patchFloat(i);
     else if (state::pathIs(p, l, "curve"))      s->curve = state::patchFloat(i);
+    else if (state::pathIs(p, l, "rotation"))   s->rotation = state::patchFloat(i);
+    else if (state::pathIs(p, l, "rotation_jitter")) s->rotation_jitter = state::patchFloat(i);
     else if (state::pathIs(p, l, "center")) {
       auto v = state::patchVec2(i); s->center[0] = v.x; s->center[1] = v.y;
     }
@@ -385,13 +401,17 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.tilt = s->tilt;
   u.motion_strength = s->motion_strength;
   u._p0 = 0;
-  for (int i = 0; i < kMaxVoices; i++) { u.scales[i] = -1.0f; u.speeds[i] = 0.0f; }
+  for (int i = 0; i < kMaxVoices; i++) {
+    u.scales[i] = -1.0f; u.speeds[i] = 0.0f; u.rotations[i] = 0.0f;
+  }
+  const float base_rot = s->rotation * 3.14159265f;
 
   int cap = s->voices; if (cap < 1) cap = 1; if (cap > kMaxVoices) cap = kMaxVoices;
   int count = 0;
 
   if (s->manual > 0.0f && count < cap) {
     u.speeds[count] = s->manual_speed;
+    u.rotations[count] = base_rot;                 // manual voice: no captured jitter
     u.scales[count++] = scaleForT(s, s->manual);
   }
 
@@ -406,6 +426,7 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
     if (best < 0) break;
     taken[best] = true;
     u.speeds[count] = s->v[best].speed;
+    u.rotations[count] = base_rot + s->v[best].jitter;
     u.scales[count++] = scaleForT(s, s->v[best].t);
   }
   u.count = (uint32_t)count;
