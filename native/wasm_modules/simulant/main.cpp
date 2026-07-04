@@ -129,6 +129,18 @@ static gpu::ComputePSO s_pso_inject;
 static gpu::ComputePSO s_pso_blur;
 static gpu::ComputePSO s_pso_lines;
 
+// Dilate Decay only applies to the Dilate spread kernel — hide it otherwise.
+static void apply_visibility(int spread_mode) {
+  state::setFieldHidden("spread_decay", spread_mode != 1);
+}
+
+// Fires once after init + the initial state replay: set visibility from the
+// restored spread_mode so the inspector never flashes the wrong fields.
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) apply_visibility(s->spread_mode);
+}
+
 void module_init() {
   state::init("filter.sim.simulant", {1, 0, 0},
     state::Schema()
@@ -275,6 +287,7 @@ void module_init() {
   s_pso_lines = gpu::Device::createComputePSO(cs_lines, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
 
+  state::setOnStateReady(&on_state_ready);
   state::log("simulant: module initialized");
 }
 
@@ -364,12 +377,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_dirty = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
     int l = len[i];
     if      (state::pathIs(p, l, "wave_speed"))         s->wave_speed = state::patchFloat(i);
-    else if (state::pathIs(p, l, "spread_mode"))        s->spread_mode = state::patchInt(i);
+    else if (state::pathIs(p, l, "spread_mode"))      { s->spread_mode = state::patchInt(i); vis_dirty = true; }
     else if (state::pathIs(p, l, "spread_decay"))       s->spread_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "quality"))            s->quality = state::patchInt(i);
     else if (state::pathIs(p, l, "choke"))              s->choke = state::patchFloat(i);
@@ -404,6 +418,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->trigger_prev = t;
     }
   }
+  if (vis_dirty) apply_visibility(s->spread_mode);
 }
 
 static bool ensure_field(State* s, int vp_w, int vp_h) {
