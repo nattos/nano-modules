@@ -21,6 +21,7 @@
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
+#include "sketch/sidechannel_bus.h"
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
@@ -162,6 +163,12 @@ struct BarrelRuntime::Impl {
     double lastPreviewElapsed = -1e9;
   };
   std::unordered_map<std::string, PerExecutor> executors;
+
+  // Last-published sidechannel-bus metadata version. The bus bumps it only on
+  // channel-identity changes (new channel / writer / size), so the version
+  // compare below is a cheap per-render gate on the /global/sidechannels
+  // publish. -1 forces one publish once a client is connected.
+  int64_t lastBusVersion = -1;
 
   // Shared preview-broadcast worker. Takes the Metal completion handler off the
   // critical path: broadcast_binary (ixwebsocket queueing + per-message deflate
@@ -381,6 +388,9 @@ void BarrelRuntime::createExecutor(const std::string& key) {
   // barrels with colliding bare keys (e.g. "inv@0") stay isolated in the
   // shared instance pool.
   pe.executor->setKeyNamespace(key + "/");
+  // Sidechannel-bus writes carry the plugin key as their writer tag — the
+  // editor maps it to the instance label for channel names.
+  pe.executor->setBusTag(key);
   if (const char* f = getenv("NANO_BARREL_FUSION"); f && (*f == '0')) {
     pe.executor->setFusionEnabled(false);
   }
@@ -532,6 +542,26 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
       pe.lastRail = rail;
       pe.haveLastRail = true;
       server.set_at(base + "/sketch_state", rail.dump());
+    }
+  }
+
+  // Publish sidechannel-bus channel metadata (channel → writer/size) when it
+  // changes. The version bumps only on identity changes — never per write —
+  // so this is one integer compare per render. Same lock order as the
+  // macro_outputs publish above: render_mu held, set_at takes tick_mutex_
+  // internally; the WsServer is never touched directly from here.
+  if (server.has_clients()) {
+    const int64_t busVersion = (int64_t)sidechannel_bus::version();
+    if (busVersion != impl_->lastBusVersion) {
+      impl_->lastBusVersion = busVersion;
+      std::string info(1024, '\0');
+      int32_t n = sidechannel_bus::infoJson(info.data(), (int32_t)info.size());
+      if (n > (int32_t)info.size()) {
+        info.resize((size_t)n);
+        n = sidechannel_bus::infoJson(info.data(), (int32_t)info.size());
+      }
+      info.resize((size_t)(n < 0 ? 0 : n));
+      server.set_at("/global/sidechannels", info);
     }
   }
 

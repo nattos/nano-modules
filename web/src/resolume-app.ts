@@ -262,6 +262,16 @@ function connectBarrel(url: string) {
     appController.setBarrelInstances(parseInstances(arr));
   });
 
+  // Sidechannel-bus channel metadata (channel → writer plugin key + size),
+  // published by the native runtime only when it changes. Feeds the same
+  // observable the playground's worker push does, so the channel-labeling UI
+  // is mode-agnostic.
+  const ingestSidechannels = (data: any) => {
+    if (!data || typeof data !== 'object') return;
+    appController.setSidechannels(data);
+  };
+  barrel.onSnapshot('/global/sidechannels', ingestSidechannels);
+
   // Binary preview frames — the controller decodes (NBPV v2) and drops any
   // frame whose key isn't the selected instance.
   barrel.onBinaryFrame = (buf) => {
@@ -279,6 +289,8 @@ function connectBarrel(url: string) {
       const p = typeof op?.path === 'string' ? op.path : '';
       if (p === '/global/plugins' || p.startsWith('/global/plugins')) {
         globalTouched = true;          // instance added/removed
+      } else if (p === '/global/sidechannels') {
+        ingestSidechannels(op.value);  // whole-object replace per publish
       } else if (sketchPath && (p === sketchPath || p.startsWith(sketchPath + '/'))) {
         sketchTouched = true;
       } else if (p === sketchStatePath) {
@@ -294,6 +306,8 @@ function connectBarrel(url: string) {
   const subscribe = () => {
     barrel.get('/global/plugins');
     barrel.observe('/global/plugins');
+    barrel.get('/global/sidechannels');
+    barrel.observe('/global/sidechannels');
     // If a selection already exists (reconnect), rewire it.
     const sel = appController.getSelectedBarrelKey();
     if (sel) wireInstance(sel);
