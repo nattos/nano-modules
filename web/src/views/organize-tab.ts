@@ -26,11 +26,6 @@ import { sketchChain } from '../sketch-types';
 import { instanceThumbTraceId } from '../resolume-mode';
 import '../widgets/texture-monitor';
 
-/** Thumbnail capture resolution (16:9, upscaled by devicePixelRatio in the
- *  monitor). Display size is the card width; this is just the trace size. */
-const THUMB_W = 192;
-const THUMB_H = 108;
-
 @customElement('organize-tab')
 export class OrganizeTab extends MobxLitElement {
   static styles = css`
@@ -129,10 +124,9 @@ export class OrganizeTab extends MobxLitElement {
                   <div class="thumb">
                     <texture-monitor
                       fit
+                      thumbnail
                       .traceId=${instanceThumbTraceId(inst.key)}
                       .traceTarget=${{ type: 'sketch_output', sketchId: inst.key } as any}
-                      .width=${THUMB_W}
-                      .height=${THUMB_H}
                       resolution="low"
                     ></texture-monitor>
                   </div>

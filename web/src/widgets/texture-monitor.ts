@@ -52,6 +52,16 @@ export class TextureMonitor extends MobxLitElement {
    */
   @property() resolution: 'low' | 'high' = 'low';
 
+  /**
+   * Fixed low-res capture: register WITHOUT a size request so the trace
+   * controller's LOW_RES thumbnail default (128×72) applies, decoupling the
+   * transmitted bytes from display size × devicePixelRatio. For grids of
+   * always-live thumbnails (the Instances tab) where per-frame IPC/WS
+   * bandwidth matters more than crispness. Only meaningful with
+   * `resolution="low"` (the LOW_RES fallback is low-only).
+   */
+  @property({ type: Boolean }) thumbnail = false;
+
   private frameDisposer: IReactionDisposer | null = null;
   /** Viewport-visibility gate: we only register a trace while on-screen. */
   private io: IntersectionObserver | null = null;
@@ -161,7 +171,7 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource')) {
+    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail')) {
       // Re-register if target, ID, resolution, or the source changed.
       if (changed.has('traceId')) {
         const oldId = changed.get('traceId') as string;
@@ -177,6 +187,15 @@ export class TextureMonitor extends MobxLitElement {
     // the IntersectionObserver brings us back on-screen.
     if (!this.visible) return;
     if (!this.traceId || !this.traceTarget) return;
+    if (this.thumbnail) {
+      // Bandwidth-capped: no size request → the controller's LOW_RES default.
+      (this.traceSource ?? traceController).register({
+        id: this.traceId,
+        target: this.traceTarget,
+        resolution: this.resolution,
+      });
+      return;
+    }
     // Ask for exactly the pixel count we'll display. devicePixelRatio
     // can drift (multi-monitor moves, browser zoom) but a one-frame
     // mismatch on a thumbnail is harmless and the next register() call

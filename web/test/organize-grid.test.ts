@@ -51,18 +51,25 @@ describe('instances tab thumbnail grid', () => {
         const name = card.querySelector('.card-name')?.textContent?.trim() ?? '';
         const mon = card.querySelector('texture-monitor');
         const canvas = mon?.shadowRoot?.querySelector('canvas');
-        if (!canvas || !canvas.width) { out.push({ name, r: -1, g: -1, b: -1 }); continue; }
+        if (!canvas || !canvas.width) { out.push({ name, w: 0, h: 0, r: -1, g: -1, b: -1 }); continue; }
         const ctx = canvas.getContext('2d');
         const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
         let r = 0, g = 0, b = 0, n = 0;
         for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i+1]; b += data[i+2]; n++; }
-        out.push({ name, r: r / n, g: g / n, b: b / n });
+        out.push({ name, w: canvas.width, h: canvas.height, r: r / n, g: g / n, b: b / n });
       }
       return out;
-    })()`) as Array<{ name: string; r: number; g: number; b: number }> | null;
+    })()`) as Array<{ name: string; w: number; h: number; r: number; g: number; b: number }> | null;
 
     expect(cards).not.toBeNull();
     expect(cards!.length).toBe(2);
+    // Thumbnails register size-less → the trace controller's fixed LOW_RES
+    // capture (128×72), NOT display size × dpr — the per-frame IPC/WS byte
+    // cap. A regression to sized registrations shows up here as 192+.
+    for (const c of cards!) {
+      expect(c.w).toBe(128);
+      expect(c.h).toBe(72);
+    }
     const byName: Record<string, { r: number; g: number; b: number }> = {};
     for (const c of cards!) byName[c.name] = c;
 
