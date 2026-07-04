@@ -471,16 +471,28 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
+  // Per-axis sigma so the diffusion is ISOTROPIC in pixels. The sim aspect
+  // matches the viewport, so equal reach in sim-pixels = equal reach on screen;
+  // a single uv sigma would blur ~(longSide/shortSide)× wider along the long
+  // axis and — compounded every feedback frame — stretch the rings into
+  // ellipses. Convert a normalized reach (fraction of the long side) to a
+  // per-axis uv sigma: sigma_axis = reach_px / axis_dim.
+  float longSide = (float)(s->sim_w > s->sim_h ? s->sim_w : s->sim_h);
+
   // --- Wave blur (nodes 30 + 31): accumRaw → delay[wr], H then V(+decay) ---
-  float wave_sigma = s->wave_speed * WAVE_MAX_SIGMA;
+  float wave_reach = s->wave_speed * WAVE_MAX_SIGMA * longSide;   // sim px
+  float wsig_h = wave_reach / (float)s->sim_w;
+  float wsig_v = wave_reach / (float)s->sim_h;
   float wave_contrast = s->wave_speed * WAVE_CONTRAST;   // node 31 (about 0.5)
-  dispatch_blur(s, s->accum,   s->scratch,   s->blur_wh, 1.f, 0.f, wave_sigma, 0.0f);
-  dispatch_blur(s, s->scratch, s->delay[wr], s->blur_wv, 0.f, 1.f, wave_sigma, wave_contrast);
+  dispatch_blur(s, s->accum,   s->scratch,   s->blur_wh, 1.f, 0.f, wsig_h, 0.0f);
+  dispatch_blur(s, s->scratch, s->delay[wr], s->blur_wv, 0.f, 1.f, wsig_v, wave_contrast);
 
   // --- Smoothing blur (node 67): accumRaw → smoothed, H then V ---
-  float sm_sigma = s->smoothing * SMOOTH_MAX_SIGMA;
-  dispatch_blur(s, s->accum,   s->scratch,  s->blur_sh, 1.f, 0.f, sm_sigma, 0.0f);
-  dispatch_blur(s, s->scratch, s->smoothed, s->blur_sv, 0.f, 1.f, sm_sigma, 0.0f);
+  float sm_reach = s->smoothing * SMOOTH_MAX_SIGMA * longSide;    // sim px
+  float ssig_h = sm_reach / (float)s->sim_w;
+  float ssig_v = sm_reach / (float)s->sim_h;
+  dispatch_blur(s, s->accum,   s->scratch,  s->blur_sh, 1.f, 0.f, ssig_h, 0.0f);
+  dispatch_blur(s, s->scratch, s->smoothed, s->blur_sv, 0.f, 1.f, ssig_v, 0.0f);
 
   // --- Pass D: line extraction (viewport res) ---
   LinesUniforms lu = {};
