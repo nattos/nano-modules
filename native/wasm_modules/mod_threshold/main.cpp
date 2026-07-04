@@ -12,8 +12,9 @@
  *   Up Edge   — a one-frame pulse the frame input crosses UP past threshold.
  *   Down Edge — a one-frame pulse the frame input crosses DOWN past threshold.
  *   Any Edge  — a one-frame pulse on EITHER crossing.
- * The comparison is strict-greater, so a value exactly at (or below) the
- * threshold reads as "not above" (matches "0.0 if below or at threshold").
+ * `equals` picks which side an input exactly AT the threshold falls on: Below
+ * uses strict-greater (at-threshold is off — the default), Above uses
+ * greater-or-equal (at-threshold is on). It only changes the boundary sample.
  *
  * To avoid a ghost pulse the frame the node is dropped, the "was above" state is
  * seeded from the first sample (initialized flag) — the edge modes emit 0 on the
@@ -34,6 +35,7 @@ struct State {
   float input     = 0.0f;   // latest modulation value
   float threshold = 0.5f;   // comparison level
   int   mode      = 0;      // 0 Hold, 1 Up Edge, 2 Down Edge, 3 Any Edge
+  int   equals    = 0;      // at-threshold side: 0 Below (strict >), 1 Above (>=)
   bool  prev_above  = false;// was input above threshold last frame? (edge modes)
   bool  initialized = false;// seed prev_above from the first sample, no ghost edge
 };
@@ -50,7 +52,8 @@ void module_init() {
         "the instant the input crosses.\n\n"
         "**Try:** feed an LFO or envelope in and set *Mode* to *Up Edge* to fire a "
         "clean trigger each cycle — wire that into an ADSR or scene launcher. Use "
-        "*Hold* instead when you want a sustained on/off gate.")
+        "*Hold* instead when you want a sustained on/off gate. *At Threshold* picks "
+        "whether a value sitting exactly on the level counts as above or below.")
       .group("threshold", "Threshold")
       // The signal to threshold (wire target). The `magnitude` decl marks this as
       // THE modulation INPUT channel (so the executor's shaper auto-connect
@@ -63,6 +66,10 @@ void module_init() {
       .selectField("mode", 0, state::PrimaryInput,
                    {{"Hold", 0}, {"Up Edge", 1}, {"Down Edge", 2}, {"Any Edge", 3}},
                    /*wrap=*/true).label("Mode", "Mode")
+      // Which side an input exactly AT the threshold counts as. Below = strict
+      // greater (at-threshold is off, the default); Above = greater-or-equal.
+      .selectField("equals", 0, state::PrimaryInput,
+                   {{"Below", 0}, {"Above", 1}}, /*wrap=*/true).label("At Threshold", "Eq")
       // Gate / trigger value. Always unipolar [0,1] (1 = on/pulse, 0 = off)
       // regardless of the input's polarity — a threshold makes a boolean, so the
       // output is its own contract rather than inheriting the input's range.
@@ -94,8 +101,10 @@ void tick(void* self, double dt) {
   if (!s) return;
   (void)dt;
   // Input + params for this frame were delivered via state patches before doTick
-  // (applyReadTaps runs first). Strict-greater so exactly-at-threshold is "off".
-  const bool above = s->input > s->threshold;
+  // (applyReadTaps runs first). `equals` picks the boundary: Below → strict
+  // greater (at-threshold off), Above → greater-or-equal (at-threshold on).
+  const bool above = s->equals == 1 ? (s->input >= s->threshold)
+                                    : (s->input > s->threshold);
   // Seed the previous state from the first sample so the edge modes don't emit a
   // spurious pulse the frame the node is dropped.
   if (!s->initialized) {
@@ -128,6 +137,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if      (state::pathIs(p, l, "input"))     s->input     = state::patchFloat(i);
     else if (state::pathIs(p, l, "threshold")) s->threshold = state::patchFloat(i);
     else if (state::pathIs(p, l, "mode"))      s->mode      = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "equals"))    s->equals    = (int)state::patchFloat(i);
   }
 }
 

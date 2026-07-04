@@ -33,13 +33,13 @@ describe('mod.shaper.threshold shaper node E2E', () => {
   // solid(white) → threshold(mode, input) → bc(brightness 1, contrast -0.5),
   // threshold.output → bc.brightness. solid_color has no modulation output, so
   // the shaper's `input` param stands (no auto-connect steals it).
-  const makeSketch = (mode: number, input: number, threshold = 0.5): Sketch => ({
+  const makeSketch = (mode: number, input: number, threshold = 0.5, equals = 0): Sketch => ({
     anchor: null,
     chain: [
       { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [1.0, 1.0, 1.0] } },
       { type: 'module', module_type: 'mod.shaper.threshold', instance_key: 'th@0',
-        params: { input, threshold, mode } },
+        params: { input, threshold, mode, equals } },
       { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
         params: { brightness: 1.0, contrast: -0.5 } },
     ],
@@ -49,11 +49,11 @@ describe('mod.shaper.threshold shaper node E2E', () => {
     ],
   } as Sketch);
 
-  const runStatic = (id: string, mode: number, input: number) =>
+  const runStatic = (id: string, mode: number, input: number, threshold = 0.5, equals = 0) =>
     runEngineTest({
       width: 64, height: 64,
       modules: MODULES,
-      commands: [{ type: 'createSketch', sketchId: id, sketch: makeSketch(mode, input) }],
+      commands: [{ type: 'createSketch', sketchId: id, sketch: makeSketch(mode, input, threshold, equals) }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
       captureTraceIds: ['out'],
       waitFrames: 20,
@@ -67,6 +67,16 @@ describe('mod.shaper.threshold shaper node E2E', () => {
     // Above → output 1 → white; at/below → output 0 → black.
     expect(above.trace('out').averageColor().r).toBeGreaterThan(215);
     expect(below.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('At Threshold selects which side an exactly-equal input falls on', async () => {
+    // Input sits exactly on the threshold (0.5 == 0.5, both exact in float).
+    // Below → strict > → off → black; Above → >= → on → white.
+    const below = await runStatic('th_eq_below', 0, 0.5, 0.5, 0);
+    const above = await runStatic('th_eq_above', 0, 0.5, 0.5, 1);
+    expect(below.success && above.success).toBe(true);
+    expect(below.trace('out').averageColor().r).toBeLessThan(40);      // equals = below → off
+    expect(above.trace('out').averageColor().r).toBeGreaterThan(215);  // equals = above → on
   });
 
   it('edge modes are momentary: a static above-threshold input never latches (vs Hold)', async () => {
