@@ -29,6 +29,13 @@ class EffectHostSink {
   virtual void hostSetMetadata(std::string id, std::string version) = 0;
   virtual void hostSetSchema(std::string schemaJson) = 0;
 
+  // Live published values (state.set_val) — effects broadcast output fields
+  // during tick/render (e.g. shape_fold's autopilot_x). The instance
+  // accumulates them so the host can surface them to the editor
+  // (effrt_published_state_json / the barrel's plugin_states publish).
+  // Default: dropped (hosts that don't surface telemetry).
+  virtual void hostSetVal(std::string_view path, std::string_view valueJson) {}
+
   // SPV shader registration (resolved later by createShaderModuleByName).
   virtual void hostRegisterShaderSpv(std::string_view name,
                                      const unsigned char* spv, int spv_len,

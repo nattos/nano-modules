@@ -254,6 +254,35 @@ void EffectInstance::hostSetMetadata(std::string id, std::string version) {
 void EffectInstance::hostSetSchema(std::string schemaJson) {
   schema_json_ = std::move(schemaJson);
 }
+void EffectInstance::hostSetVal(std::string_view path, std::string_view valueJson) {
+  if (path.empty()) {
+    // Whole-state replace (state::setVal with no path).
+    published_.clear();
+    auto j = nlohmann::json::parse(valueJson, nullptr, false);
+    if (j.is_object())
+      for (auto& [k, v] : j.items()) published_[k] = v.dump();
+    return;
+  }
+  std::string key(path);
+  if (key.front() == '/') key.erase(0, 1);
+  published_[key] = std::string(valueJson);
+}
+std::string EffectInstance::publishedStateJson() const {
+  if (published_.empty()) return std::string();
+  // Values are already JSON serializations — assemble the object directly
+  // (per-tick hot path for broadcasting effects; no parse round-trip).
+  std::string out = "{";
+  bool first = true;
+  for (const auto& [k, v] : published_) {
+    if (!first) out += ',';
+    first = false;
+    out += nlohmann::json(k).dump();
+    out += ':';
+    out += v;
+  }
+  out += '}';
+  return out;
+}
 void EffectInstance::hostRegisterShaderSpv(std::string_view name,
                                             const unsigned char* spv,
                                             int spv_len,
@@ -482,6 +511,12 @@ EffectInstance* EffectRuntime::instanceFor(const std::string& type,
   instance_pool_.emplace(key, std::move(inst));
   ptr->doCreate();
   return ptr;
+}
+
+EffectInstance* EffectRuntime::findInstance(const std::string& type,
+                                            const std::string& instanceKey) {
+  auto it = instance_pool_.find(poolKey(type, instanceKey));
+  return it != instance_pool_.end() ? it->second.get() : nullptr;
 }
 
 void EffectRuntime::destroyInstance(const std::string& type,

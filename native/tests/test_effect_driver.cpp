@@ -113,6 +113,21 @@ TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect
   CHECK(state["output"].get<double>() ==
         Catch::Approx(std::sin(0.08 * 2.0 * kPi)).margin(1e-6));
 
+  // The same set_val ALSO accumulates on the EffectInstance — the barrel's
+  // /plugin_states publish and the comp executor's published-output fold read
+  // it from there (effects' output broadcasts, e.g. shape_fold's autopilot_x,
+  // never reach the editor without it).
+  const std::string pub = inst->publishedStateJson();
+  REQUIRE(!pub.empty());
+  auto pj = nlohmann::json::parse(pub);
+  REQUIRE(pj.contains("output"));
+  CHECK(pj["output"].get<double>() ==
+        Catch::Approx(std::sin(0.08 * 2.0 * kPi)).margin(1e-6));
+
+  // findInstance is the non-creating lookup the telemetry publisher uses.
+  CHECK(rt.findInstance("mod.source.lfo", "k0") == inst);
+  CHECK(rt.findInstance("mod.source.lfo", "absent") == nullptr);
+
   host.shutdown();
 }
 

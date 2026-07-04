@@ -678,13 +678,19 @@ static NativeSymbol state_symbols[] = {
     {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},
     {"set_val", reinterpret_cast<void*>(+[](wasm_exec_env_t env, int32_t path_ptr, int32_t path_len, int32_t val_h) {
       auto* ctx = get_ctx(env);
-      if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+      if (!ctx) return;
       auto* v = ctx->get_val(val_h);
       if (!v) return;
       wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
       if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
       char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
-      std::string json = v->dump();
+      // Barrel/executor path: accumulate on the live EffectInstance so the
+      // host can surface output broadcasts (autopilot_x etc.) to the editor.
+      if (ctx->effect_instance)
+        ctx->effect_instance->hostSetVal(
+            std::string_view(path ? path : "", path ? (size_t)path_len : 0), v->dump());
+      // bridge_server (standalone plugin) path: write into the state doc.
+      if (!ctx->state_doc || ctx->plugin_key.empty()) return;
       if (path_len == 0) {
         ctx->state_doc->set_plugin_state(ctx->plugin_key, *v);
       } else {

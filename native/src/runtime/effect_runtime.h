@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -212,6 +213,11 @@ class EffectInstance : public wasm::EffectHostSink {
   // extern-C symbols route here.
   void hostSetMetadata(std::string id, std::string version) override;
   void hostSetSchema(std::string schemaJson) override;
+  void hostSetVal(std::string_view path, std::string_view valueJson) override;
+  // The accumulated set_val outputs as a JSON object string ("" when the
+  // effect has published nothing). Backs effrt_published_state_json and the
+  // barrel's per-frame plugin_states publish.
+  std::string publishedStateJson() const;
   void hostRegisterShaderSpv(std::string_view name,
                              const unsigned char* spv, int spv_len,
                              std::string_view format,
@@ -274,6 +280,10 @@ class EffectInstance : public wasm::EffectHostSink {
   bool module_init_trapped_ = false;
   void (*on_state_ready_)(void* self) = nullptr;
 
+  // Live set_val outputs: field → JSON value serialization. Ordered so the
+  // serialized object is byte-stable across frames (dedup by comparison).
+  std::map<std::string, std::string> published_;
+
   std::unordered_map<std::string, int> texture_fields_;
   std::unordered_map<std::string, int> buffer_fields_;
   std::unordered_map<std::string, bool> connected_inputs_;
@@ -330,6 +340,12 @@ class EffectRuntime {
   // runtime and stays valid until destroyInstance / runtime teardown.
   EffectInstance* instanceFor(const std::string& type,
                               const std::string& instanceKey);
+
+  // Look up an existing pooled per-key instance WITHOUT creating one.
+  // Telemetry readers (the barrel's plugin_states publish) must never
+  // instantiate — the executor owns instance creation as it renders.
+  EffectInstance* findInstance(const std::string& type,
+                               const std::string& instanceKey);
 
   // Destroy a pooled per-key instance (calls desc.destroy on its
   // user_state). Caller must ensure the GPU is idle. No-op if absent.

@@ -167,24 +167,40 @@ function connectBarrel(url: string) {
     appController.setBarrelPlugins(remotePlugins);
   };
 
+  // Telemetry values arrive as real JSON objects: BridgeServer::set_at parses
+  // the native side's dump() before storing, so both the snapshot fields and
+  // the patch-op values are objects. Accept a string too (defensive — older
+  // paths double-encoded).
+  const coerceJsonObject = (data: any): Record<string, any> | null => {
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); } catch { return null; }
+    }
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  };
+
   // Per-frame float-rail telemetry (native mirror of the local executor's
-  // /sketch_state), a JSON string carried in one patch op.
-  const ingestRailState = (jsonStr: any) => {
-    if (typeof jsonStr !== 'string') return;
-    let railState: any;
-    try { railState = JSON.parse(jsonStr); } catch { return; }
-    if (!railState || typeof railState !== 'object') return;
+  // /sketch_state), carried in one patch op.
+  const ingestRailState = (data: any) => {
+    const railState = coerceJsonObject(data);
+    if (!railState) return;
     appController.applySketchStateDiff({
       changed: { [BARREL_SKETCH_ID]: railState }, removed: [],
     });
   };
 
   // Per-instance control.barrel_macros output values (live macro knobs).
-  const ingestMacroOutputs = (jsonStr: any) => {
-    if (typeof jsonStr !== 'string') return;
-    let states: any;
-    try { states = JSON.parse(jsonStr); } catch { return; }
-    if (!states || typeof states !== 'object') return;
+  const ingestMacroOutputs = (data: any) => {
+    const states = coerceJsonObject(data);
+    if (!states) return;
+    appController.applyPluginStatesDiff({ changed: states, removed: [] });
+  };
+
+  // Per-instance live set_val outputs (effect broadcasts — e.g. shape_fold's
+  // autopilot_x/_y), the native mirror of the worker's pluginStates channel.
+  // Keyed by bare instance_key.
+  const ingestPluginStates = (data: any) => {
+    const states = coerceJsonObject(data);
+    if (!states) return;
     appController.applyPluginStatesDiff({ changed: states, removed: [] });
   };
 
@@ -196,6 +212,7 @@ function connectBarrel(url: string) {
     applySketchFromSnapshot(state.sketch ?? {});
     ingestRailState(state.sketch_state);
     ingestMacroOutputs(state.macro_outputs);
+    ingestPluginStates(state.plugin_states);
   };
 
   // Parse /global/plugins (array of {key, metadata, schema, ...}) into the
@@ -237,6 +254,14 @@ function connectBarrel(url: string) {
       barrel.onSnapshot(sketchPath, (latest) => {
         if (key !== currentKey) return;
         applySketchFromSnapshot(latest);
+      });
+      // Telemetry-channel refetch targets (the onPatch fallback for ops too
+      // deep to merge in place).
+      barrel.onSnapshot(`${statePath}/sketch_state`, (data) => {
+        if (key === currentKey) ingestRailState(data);
+      });
+      barrel.onSnapshot(`${statePath}/plugin_states`, (data) => {
+        if (key === currentKey) ingestPluginStates(data);
       });
     }
 
@@ -325,13 +350,49 @@ function connectBarrel(url: string) {
     void appController.ingestBarrelPreviewFrame(buf);
   };
 
+  // Telemetry publishes go through the doc-diffing set_at, so AFTER the first
+  // publish the ops arrive FINE-GRAINED (e.g. .../plugin_states/sf@0/autopilot_x
+  // per frame under autopilot) — an exact-path match would only ever see the
+  // initial whole-object add. Merge instance-level and field-level ops into
+  // the live pluginStates map; anything deeper is refetched wholesale.
+  const applyInstanceStatesLeaf = (relPath: string, value: any): boolean => {
+    const parts = relPath.slice(1).split('/');   // '/<ik>' or '/<ik>/<field>'
+    const ik = parts[0];
+    if (!ik) return false;
+    if (parts.length === 1) {
+      const obj = coerceJsonObject(value);
+      if (obj) appController.applyPluginStatesDiff({ changed: { [ik]: obj }, removed: [] });
+      return !!obj;
+    }
+    if (parts.length !== 2) return false;        // nested value — refetch instead
+    const cur = (appState.local.engine.pluginStates as Record<string, any>)[ik];
+    appController.applyPluginStatesDiff({
+      changed: { [ik]: { ...(cur ?? {}), [parts[1]]: value } }, removed: [],
+    });
+    return true;
+  };
+  // Rail leaf update: /sketch_state/<railId>. Rails live under the barrel
+  // sketch's single entry in engine.sketchState.
+  const applyRailLeaf = (relPath: string, value: any): boolean => {
+    const parts = relPath.slice(1).split('/');
+    if (parts.length !== 1 || !parts[0]) return false;
+    const cur = (appState.local.engine.sketchState as Record<string, any>)[BARREL_SKETCH_ID];
+    appController.applySketchStateDiff({
+      changed: { [BARREL_SKETCH_ID]: { ...(cur ?? {}), [parts[0]]: value } }, removed: [],
+    });
+    return true;
+  };
+
   barrel.onPatch((ops) => {
     let globalTouched = false;
     const statePath = currentKey ? `/plugins/${currentKey}/state` : null;
     const sketchPath = statePath ? `${statePath}/sketch` : null;
     const sketchStatePath = statePath ? `${statePath}/sketch_state` : null;
     const macroOutputsPath = statePath ? `${statePath}/macro_outputs` : null;
+    const pluginStatesPath = statePath ? `${statePath}/plugin_states` : null;
     let sketchTouched = false;
+    let railRefetch = false;
+    let pluginStatesRefetch = false;
     for (const op of ops) {
       const p = typeof op?.path === 'string' ? op.path : '';
       if (p === '/global/plugins' || p.startsWith('/global/plugins')) {
@@ -342,12 +403,24 @@ function connectBarrel(url: string) {
         sketchTouched = true;
       } else if (p === sketchStatePath) {
         ingestRailState(op.value);
+      } else if (sketchStatePath && p.startsWith(sketchStatePath + '/')) {
+        if (!applyRailLeaf(p.slice(sketchStatePath.length), op.value)) railRefetch = true;
       } else if (p === macroOutputsPath) {
         ingestMacroOutputs(op.value);
+      } else if (macroOutputsPath && p.startsWith(macroOutputsPath + '/')) {
+        if (!applyInstanceStatesLeaf(p.slice(macroOutputsPath.length), op.value))
+          pluginStatesRefetch = true;
+      } else if (p === pluginStatesPath) {
+        ingestPluginStates(op.value);
+      } else if (pluginStatesPath && p.startsWith(pluginStatesPath + '/')) {
+        if (!applyInstanceStatesLeaf(p.slice(pluginStatesPath.length), op.value))
+          pluginStatesRefetch = true;
       }
     }
     if (globalTouched) barrel.get('/global/plugins');  // refresh the list
     if (sketchTouched && sketchPath) barrel.get(sketchPath);
+    if (railRefetch && sketchStatePath) barrel.get(sketchStatePath);
+    if (pluginStatesRefetch && pluginStatesPath) barrel.get(pluginStatesPath);
   });
 
   const subscribe = () => {

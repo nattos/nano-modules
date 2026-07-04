@@ -110,8 +110,11 @@ void effrt_set_will_render(int32_t inst, int32_t v) {
 }
 int32_t effrt_published_state_json(int32_t inst, char* out, int32_t cap) {
   auto* i = resolve(inst);
-  if (!i || !g_publishedStateFn) return 0;
-  const std::string s = g_publishedStateFn(i);
+  if (!i) return 0;
+  // Provider (tests) overrides; otherwise the instance's own accumulated
+  // set_val outputs — the production path (comp fold, barrel publish).
+  const std::string s = g_publishedStateFn ? g_publishedStateFn(i)
+                                           : i->publishedStateJson();
   const int32_t len = static_cast<int32_t>(s.size());
   if (out && cap > 0 && len > 0) {
     const int32_t copy = len < cap ? len : cap;

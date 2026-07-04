@@ -161,8 +161,10 @@ struct BarrelRuntime::Impl {
     // render thread, under tick_mutex_) even when the rails never changed.
     nlohmann::json lastRail;
     nlohmann::json lastMacroOut;
+    nlohmann::json lastPluginStates;
     bool haveLastRail = false;
     bool haveLastMacroOut = false;
+    bool haveLastPluginStates = false;
     // Host-elapsed time of the last preview-capture frame, for rate limiting.
     double lastPreviewElapsed = -1e9;
   };
@@ -610,6 +612,40 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
       pe.lastRail = rail;
       pe.haveLastRail = true;
       server.set_at(base + "/sketch_state", rail.dump());
+    }
+  }
+
+  // Publish each instance's LIVE set_val outputs (state::setValPath broadcasts
+  // — e.g. shape_fold's autopilot_x/_y) keyed by BARE instance_key. The web
+  // merges this into pluginStates, which output-reading widgets (the shape_fold
+  // XY-pad handle, output trace cards) poll — without it those broadcasts never
+  // leave the process and the pad snaps back to the schema default. Deduped
+  // like sketch_state: static outputs cost one JSON compare per frame.
+  if (watched && pe.sketch.contains("chain") && pe.sketch["chain"].is_array()) {
+    nlohmann::json ps = nlohmann::json::object();
+    for (const auto& e : pe.sketch["chain"]) {
+      if (!e.is_object() || e.value("type", std::string()) != "module") continue;
+      const std::string mt = e.value("module_type", std::string());
+      const std::string ik = e.value("instance_key", std::string());
+      if (mt.empty() || ik.empty()) continue;
+      // findInstance: never instantiate from the telemetry path — the
+      // executor owns instance creation as it renders.
+      auto* einst = impl_->rt->findInstance(mt, key + "/" + ik);
+      if (!einst) continue;
+      const std::string pj = einst->publishedStateJson();
+      if (pj.empty()) continue;
+      auto parsed = nlohmann::json::parse(pj, nullptr, false);
+      if (!parsed.is_discarded() && parsed.is_object() && !parsed.empty())
+        ps[ik] = std::move(parsed);
+    }
+    if (!pe.haveLastPluginStates || ps != pe.lastPluginStates) {
+      // Skip the very first publish when there is nothing to say (a sketch
+      // with no broadcasting effects never touches the doc).
+      const bool firstAndEmpty = !pe.haveLastPluginStates && ps.empty();
+      pe.lastPluginStates = std::move(ps);
+      pe.haveLastPluginStates = true;
+      if (!firstAndEmpty)
+        server.set_at(base + "/plugin_states", pe.lastPluginStates.dump());
     }
   }
 

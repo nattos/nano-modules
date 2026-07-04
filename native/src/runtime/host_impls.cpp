@@ -99,7 +99,13 @@ void state_console_log_structured(int /*level*/, const char* msg, int msg_len,
 
 void state_set(const char* /*path*/, int /*path_len*/,
                 const char* /*json*/, int /*json_len*/) { /* legacy no-op */ }
-void state_set_val(const char* /*path*/, int /*path_len*/, int /*val_h*/) {}
+void state_set_val(const char* path, int path_len, int val_h) {
+  // Accumulate live output broadcasts on the instance (mirrors the WASM
+  // path's host_functions.cpp set_val → EffectHostSink::hostSetVal).
+  auto* inst = active();
+  if (!inst) return;
+  inst->hostSetVal(std::string_view(path, path_len), inst->val_to_json(val_h));
+}
 
 void state_mark_gpu_dirty(const char* /*path*/, int /*path_len*/) {}
 void state_set_gpu_buffer(const char* path, int path_len, int buffer_handle) {
