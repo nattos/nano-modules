@@ -180,6 +180,12 @@ const MAX_FRAMES_IN_FLIGHT = 2;
 let inFlightFences: Array<Promise<unknown>> = [];
 let lastTime = 0;
 let elapsed = 0;
+// Cap on FREE-RUN (wall-clock-derived) frame steps. A stall — hidden tab,
+// long recompile, debugger pause — would otherwise hand effects one giant dt:
+// accumulators lurch and stateful simulations explode. Capped, time simply
+// runs at most this much per frame and `elapsed` stays continuous. Transport-
+// driven frames are host-explicit and are never capped.
+const MAX_WALL_DT = 0.1;
 // When non-null, the effect clock is driven by this external (transport) time
 // instead of the free-running wall clock: elapsed := transportSeconds each
 // frame, deltaTime := the change since last frame. Same value frame-to-frame
@@ -594,7 +600,7 @@ async function frame() {
     dt = Math.max(0, execDt);
     elapsed = transportSeconds;
   } else {
-    dt = execDt = now - lastTime;
+    dt = execDt = Math.min(now - lastTime, MAX_WALL_DT);
     elapsed += dt;
   }
   lastTime = now;

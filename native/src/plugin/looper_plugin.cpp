@@ -107,6 +107,9 @@ FFResult LooperPlugin::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
   auto now = std::chrono::steady_clock::now();
   double dt = first_frame_ ? 0.0 :
       std::chrono::duration<double>(now - last_tick_).count();
+  // Wall-clock-derived: cap so a host stall doesn't hand the module one giant
+  // step (elapsed_time_ stays continuous at the capped rate).
+  if (dt > 0.1) dt = 0.1;
   last_tick_ = now;
   first_frame_ = false;
   elapsed_time_ += dt;

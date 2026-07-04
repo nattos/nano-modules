@@ -293,7 +293,10 @@ export class SketchInputManager {
       if (session.stopped) return;
       session.rafId = requestAnimationFrame(tick);
       const wallNow = performance.now();
-      const wallDt = wallNow - this.lastWallMs;
+      // Cap the wall-clock step: a stall (hidden tab, long recompile) would
+      // otherwise leap the video playhead far ahead — a long mid-GOP seek on
+      // sparse-keyframe clips. Capped, the preview just resumes smoothly.
+      const wallDt = Math.min(wallNow - this.lastWallMs, 100);
       this.lastWallMs = wallNow;
       // Frozen while the engine is paused: keep the last frame and don't
       // advance. Stepping while paused goes through stepFrame() instead.

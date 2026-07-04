@@ -357,7 +357,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     blitGlInputToInterop(pGL, pInput);
 
-    // Frame-time bookkeeping for effects that care.
+    // Frame-time bookkeeping for effects that care. FFGL hands us an explicit
+    // ABSOLUTE time (SetTime), not a dt: `elapsed` follows it exactly (host
+    // transport stays authoritative), while the DERIVED per-frame dt is capped
+    // like every other derived-dt surface — a host stall or transport jump
+    // advances accumulators/simulations by at most 0.1 s instead of exploding
+    // them.
     double hostT = hostTime / 1000.0;
     if (!time_initialized_) {
       time_start_ = hostT;
