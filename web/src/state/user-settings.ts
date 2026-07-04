@@ -24,6 +24,7 @@ export function defaultUserSettings(): UserSettings {
     editingSketchId: null,
     targetFps: 60,
     editLeftPanelWidth: 320,
+    sidechannelNames: {},
   };
 }
 

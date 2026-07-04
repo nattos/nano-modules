@@ -45,6 +45,7 @@ export class AppState {
     barrelMode: false,
     barrelInstances: [],
     selectedBarrelKey: null,
+    selectedSidechannel: null,
     barrelConnection: 'connecting',
     barrelDetected: false,
   };

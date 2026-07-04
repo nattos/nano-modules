@@ -18,7 +18,17 @@ describe('instances tab thumbnail grid', () => {
     await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
-    // Clean playground, then two instances: A solid green, B solid red.
+    // The icon font must be registered at document level in this entry —
+    // <ui-icon> shadow CSS alone can't load @font-face, so a missing global
+    // import renders every glyph as a blank box.
+    // (The `las` glyph class uses weight 900; load() forces the lazy fetch —
+    // check() alone reads false until some on-screen glyph triggers it.)
+    const fontLoaded = await page.evaluate(
+      `document.fonts.load('900 16px "Line Awesome Free"').then(faces => faces.length > 0)`);
+    expect(fontLoaded).toBe(true);
+
+    // Clean playground, then two instances: A solid green (+ a sidechannel
+    // send on channel 2, for the sidechannel card grid below), B solid red.
     await page.evaluate(`(async () => {
       const ac = window.appController;
       for (const inst of [...window.appState.local.barrelInstances]) {
@@ -28,9 +38,12 @@ describe('instances tab thumbnail grid', () => {
       const b = ac.createPlaygroundInstance();
       ac.mutate('seed grid colors', d => {
         d.sketches[a].chain.push(
-          { type: 'module', module_type: 'source.solid_color', instance_key: 'green@1' });
+          { type: 'module', module_type: 'source.solid_color', instance_key: 'green@1' },
+          { type: 'module', module_type: 'util.sidechannel_out', instance_key: 'send@1' });
         d.sketches[a].instances['green@1'] =
           { module_type: 'source.solid_color', state: { color: [0.1, 0.9, 0.1, 1] } };
+        d.sketches[a].instances['send@1'] =
+          { module_type: 'util.sidechannel_out', state: { channel: 2 } };
         d.sketches[b].chain.push(
           { type: 'module', module_type: 'source.solid_color', instance_key: 'red@1' });
         d.sketches[b].instances['red@1'] =
@@ -84,9 +97,61 @@ describe('instances tab thumbnail grid', () => {
     expect(red.r - red.g).toBeGreaterThan(60);
     expect(red.r - red.b).toBeGreaterThan(60);
 
-    // Cleanup for reruns/other suites.
+    // -- Sidechannel cards: one per active channel, selectable, renamable. --
+    const scProbe = () => page.evaluate(`(() => {
+      function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      let tab = null;
+      for (const el of walk(document)) { if (el.tagName === 'ORGANIZE-TAB') { tab = el; break; } }
+      if (!tab?.shadowRoot) return null;
+      const cards = [...tab.shadowRoot.querySelectorAll('.sc-card')].map(c => ({
+        name: c.querySelector('.sc-card-name')?.textContent?.trim() ?? '',
+        info: c.querySelector('.sc-card-info')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
+        selected: c.hasAttribute('selected'),
+      }));
+      const input = tab.shadowRoot.querySelector('.name-row input');
+      return { cards, inputValue: input ? input.value : null };
+    })()`) as Promise<{ cards: Array<{ name: string; info: string; selected: boolean }>; inputValue: string | null } | null>;
+
+    const sc = await scProbe();
+    expect(sc).not.toBeNull();
+    expect(sc!.cards.length).toBe(1);
+    expect(sc!.cards[0].name).toBe('2 — Instance 1');   // default label
+    expect(sc!.cards[0].info).toContain('from Instance 1');
+    expect(sc!.inputValue).toBeNull();                   // nothing selected yet
+
+    // Click the card → selected + the rename inspector appears (default "#").
+    await page.evaluate(`(() => {
+      function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      for (const el of walk(document)) {
+        if (el.classList && el.classList.contains('sc-card')) { el.click(); return; }
+      }
+    })()`);
+    await new Promise(r => setTimeout(r, 600));
+    const scSel = await scProbe();
+    expect(scSel!.cards[0].selected).toBe(true);
+    expect(scSel!.inputValue).toBe('#');
+
+    // Rename with a "#" template → the card shows the expanded label.
+    await page.evaluate(`(() => {
+      function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      for (const el of walk(document)) {
+        if (el.tagName === 'INPUT' && el.id === 'sc-name') {
+          el.value = 'Drums #';
+          el.dispatchEvent(new Event('change'));
+          return;
+        }
+      }
+    })()`);
+    await new Promise(r => setTimeout(r, 600));
+    const scNamed = await scProbe();
+    expect(scNamed!.cards[0].name).toBe('Drums 2 — Instance 1');
+
+    // Cleanup for reruns/other suites (the name override persists in user
+    // settings — reset it or later suites see "Drums …" in dropdowns).
     await page.evaluate(`(async () => {
       const ac = window.appController;
+      ac.setSidechannelDisplayName('2', '#');
+      ac.selectSidechannel(null);
       for (const inst of [...window.appState.local.barrelInstances]) {
         ac.deletePlaygroundInstanceById(inst.key);
       }

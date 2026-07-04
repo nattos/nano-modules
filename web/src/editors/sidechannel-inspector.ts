@@ -32,17 +32,12 @@ import '../widgets/field-text';
 import '../widgets/field-placeholder';
 import '../widgets/help-slot';
 
-/**
- * Human label for a sidechannel writer tag: a `pg:` sketch id (playground) or
- * a plugin key (barrel) — both resolve through the shared instances list;
- * unknown tags fall back to the barrel label convention (first UUID segment).
- */
-export function sidechannelWriterLabel(writerTag: string): string {
-  if (!writerTag) return '';
-  const inst = appState.local.barrelInstances.find(i => i.key === writerTag);
-  if (inst) return inst.label;
-  return writerTag.split('-')[0] || writerTag;
-}
+// Shared with the Instances-tab sidechannel cards (state/sidechannel-labels);
+// re-exported so existing imports keep working.
+import {
+  sidechannelWriterLabel, sidechannelDisplayLabel,
+} from '../state/sidechannel-labels';
+export { sidechannelWriterLabel };
 
 @customElement('sidechannel-inspector')
 export class SidechannelInspector extends MobxLitElement {
@@ -62,12 +57,11 @@ export class SidechannelInspector extends MobxLitElement {
   `;
 
   private channelOptions(): FieldSelectOption[] {
-    const channels = appState.local.engine.sidechannels;
     const opts: FieldSelectOption[] = [];
     for (let n = 1; n <= 8; n++) {
-      const writer = channels[String(n)]?.writer;
-      const label = writer ? `${n} — ${sidechannelWriterLabel(writer)}` : String(n);
-      opts.push({ label, value: n });
+      // Display label = default ("3 — Instance 2" once written, "3" before)
+      // with any user override template applied — same as the Instances tab.
+      opts.push({ label: sidechannelDisplayLabel(String(n)), value: n });
     }
     opts.push({ label: 'Custom', value: 0 });
     return opts;

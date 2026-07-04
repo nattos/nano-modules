@@ -24,6 +24,9 @@ import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { sketchChain } from '../sketch-types';
 import { instanceThumbTraceId } from '../resolume-mode';
+import {
+  sidechannelDefaultLabel, sidechannelDisplayLabel, sidechannelWriterLabel,
+} from '../state/sidechannel-labels';
 import '../widgets/texture-monitor';
 
 @customElement('organize-tab')
@@ -92,6 +95,42 @@ export class OrganizeTab extends MobxLitElement {
     .btn + .btn { margin-top: var(--app-sp-2); }
     .new-instance { margin-bottom: var(--app-sp-4); width: auto; padding: var(--app-sp-3) 16px; }
     .empty-state { color: var(--app-text-color2); font-size: var(--app-fs-lg); text-align: center; padding: 32px 16px; }
+    .sc-section { margin-top: var(--app-sp-6); }
+    .sc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: var(--app-sp-3);
+    }
+    .sc-card {
+      padding: 10px 12px;
+      background: var(--app-tint-1);
+      border: 1px solid var(--app-tint-2);
+      border-radius: 1px;
+      cursor: pointer;
+    }
+    .sc-card:hover { border-color: var(--app-tint-5); }
+    .sc-card[selected] {
+      border-color: var(--app-hi-color2);
+      background: rgba(65,105,225,0.08);
+    }
+    .sc-card-name {
+      font-size: var(--app-fs-md); color: var(--app-text-color1);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sc-card-info { font-size: var(--app-fs-sm); color: var(--app-text-color2); margin-top: 2px; }
+    .name-row { display: flex; flex-direction: column; gap: var(--app-sp-2); margin-bottom: 12px; }
+    .name-row label { font-size: var(--app-fs-sm); color: var(--app-text-color2); }
+    .name-row input {
+      background: var(--app-bg-color1);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 1px;
+      color: var(--app-text-color1);
+      font-family: inherit;
+      font-size: var(--app-fs-md);
+      padding: var(--app-sp-3);
+    }
+    .name-row input:focus { outline: none; border-color: var(--app-hi-color2); }
+    .name-hint { font-size: var(--app-fs-sm); color: var(--app-text-color2); }
   `;
 
   render() {
@@ -99,10 +138,15 @@ export class OrganizeTab extends MobxLitElement {
     const instances = appState.local.barrelInstances;
     const selectedKey = appState.local.selectedBarrelKey;
     const selected = instances.find(i => i.key === selectedKey) ?? null;
+    const selectedChannel = appState.local.selectedSidechannel;
 
     const open = (key: string) => {
       appController.selectBarrelInstance(key);
       appController.setActiveTab('edit');
+    };
+    const pickInstance = (key: string) => {
+      appController.selectSidechannel(null);  // panel back to the instance
+      appController.selectBarrelInstance(key);
     };
 
     return html`
@@ -118,8 +162,8 @@ export class OrganizeTab extends MobxLitElement {
         : html`
             <div class="instance-grid">
               ${instances.map(inst => html`
-                <div class="instance-card" ?selected=${inst.key === selectedKey}
-                  @click=${() => appController.selectBarrelInstance(inst.key)}
+                <div class="instance-card" ?selected=${inst.key === selectedKey && !selectedChannel}
+                  @click=${() => pickInstance(inst.key)}
                   @dblclick=${() => open(inst.key)}>
                   <div class="thumb">
                     <texture-monitor
@@ -138,9 +182,12 @@ export class OrganizeTab extends MobxLitElement {
               `)}
             </div>
           `}
+        ${this.renderSidechannels(selectedChannel)}
       </div>
       <div class="right-panel">
-        ${selected
+        ${selectedChannel && appState.local.engine.sidechannels[selectedChannel]
+        ? this.renderSidechannelPanel(selectedChannel)
+        : selected
         ? html`
             <div class="section-header">Instance: ${selected.label}</div>
             <div class="summary">
@@ -155,6 +202,62 @@ export class OrganizeTab extends MobxLitElement {
             `}
           `
         : html`<div class="empty-state" style="padding:16px 0">Select an instance to edit</div>`}
+      </div>
+    `;
+  }
+
+  /**
+   * Grid of the environment's active sidechannels (one card per channel that
+   * has been written to — the bus metadata that also feeds the effect
+   * inspector's dropdown), sorted numerics-first. Clicking a card selects the
+   * channel; its inspector (rename etc.) shows in the right panel.
+   */
+  private renderSidechannels(selectedChannel: string | null) {
+    const channels = appState.local.engine.sidechannels;
+    const names = Object.keys(channels).sort((a, b) => {
+      const an = /^\d+$/.test(a), bn = /^\d+$/.test(b);
+      if (an && bn) return Number(a) - Number(b);
+      if (an !== bn) return an ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    if (names.length === 0) return '';
+    return html`
+      <div class="sc-section">
+        <div class="section-header">Sidechannels</div>
+        <div class="sc-grid">
+          ${names.map(name => html`
+            <div class="sc-card" ?selected=${name === selectedChannel}
+              @click=${() => appController.selectSidechannel(name)}>
+              <div class="sc-card-name">${sidechannelDisplayLabel(name)}</div>
+              <div class="sc-card-info">
+                from ${sidechannelWriterLabel(channels[name].writer) || '—'}
+                · ${channels[name].w}×${channels[name].h}
+              </div>
+            </div>
+          `)}
+        </div>
+      </div>
+    `;
+  }
+
+  /** Right-panel inspector for the selected sidechannel. */
+  private renderSidechannelPanel(channel: string) {
+    const info = appState.local.engine.sidechannels[channel];
+    const stored = appState.local.userSettings.sidechannelNames[channel] ?? '#';
+    return html`
+      <div class="section-header">Sidechannel: ${sidechannelDisplayLabel(channel)}</div>
+      <div class="summary">
+        <div>Channel: ${channel}</div>
+        <div>From: ${sidechannelWriterLabel(info.writer) || '—'}</div>
+        <div>Size: ${info.w}×${info.h}</div>
+      </div>
+      <div class="name-row">
+        <label for="sc-name">Display Name</label>
+        <input id="sc-name" .value=${stored} spellcheck="false"
+          @change=${(e: Event) => appController.setSidechannelDisplayName(
+            channel, (e.target as HTMLInputElement).value)}>
+        <div class="name-hint">"#" stands for the default label
+          (${sidechannelDefaultLabel(channel)})</div>
       </div>
     `;
   }

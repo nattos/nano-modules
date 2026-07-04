@@ -153,6 +153,14 @@ export interface UserSettings {
   targetFps: number;
   /** Width in pixels of the Resolume sketch-IDE edit tab's left panel. */
   editLeftPanelWidth: number;
+  /**
+   * Per-sidechannel display-name override templates, keyed by channel name
+   * ("1".."8" or a custom text name). Within a template every "#" expands to
+   * the channel's DEFAULT label ("3 — Instance 1"); an absent/empty entry
+   * behaves as "#" (pure default). Client-side naming metadata only — the bus
+   * itself knows nothing about it.
+   */
+  sidechannelNames: Record<string, string>;
 }
 
 // --- Local state (ephemeral, not in undo history) ---
@@ -249,6 +257,13 @@ export interface LocalState {
   barrelInstances: BarrelInstanceInfo[];
   /** Key (stable UUID) of the barrel instance currently being edited. */
   selectedBarrelKey: string | null;
+  /**
+   * Channel name of the sidechannel card selected on the Instances tab (its
+   * inspector shows in the right panel), or null. Independent of the instance
+   * selection — clicking an instance card clears it and vice-versa doesn't
+   * (the panel shows the sidechannel while one is picked).
+   */
+  selectedSidechannel: string | null;
 
   /**
    * Health of the shared-server WebSocket (barrel mode only; stays

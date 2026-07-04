@@ -1442,6 +1442,22 @@ export class AppController {
     runInAction(() => { appState.local.engine.sidechannels = channels ?? {}; });
   }
 
+  /** Select a sidechannel card on the Instances tab (its inspector shows in
+   *  the right panel), or clear with null. */
+  selectSidechannel(channel: string | null) {
+    runInAction(() => { appState.local.selectedSidechannel = channel; });
+  }
+
+  /** Set a sidechannel's display-name override template ("#" expands to the
+   *  default label; blank/"#" reverts to it). Persisted in user settings. */
+  setSidechannelDisplayName(channel: string, template: string) {
+    const names = { ...appState.local.userSettings.sidechannelNames };
+    const trimmed = template.trim();
+    if (!trimmed || trimmed === '#') delete names[channel];
+    else names[channel] = template;
+    this.setUserSetting('sidechannelNames', names);
+  }
+
   // ========================================================================
   // Playground instances (fake barrel instances, local shared-server env)
   // ========================================================================

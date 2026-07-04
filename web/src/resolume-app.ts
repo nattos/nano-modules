@@ -11,6 +11,11 @@
  *     multi-instance routings without Resolume.
  */
 
+// Global (document-level) Line Awesome load: <ui-icon> inlines the CSS into
+// its shadow root, but @font-face only registers at document level — without
+// this import every glyph in this entry renders as a blank box.
+import 'line-awesome/dist/line-awesome/css/line-awesome.css';
+
 import { boot } from './boot';
 import {
   decideMode, OFFER_LIVE_DISMISSED_KEY,
