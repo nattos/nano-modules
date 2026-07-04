@@ -30,6 +30,12 @@ import {
 } from './default-projects';
 import { saveUserSettings } from './user-settings';
 import { saveProject, deleteProject as idbDeleteProject } from './project-store';
+import {
+  savePlaygroundInstance,
+  deletePlaygroundInstance as idbDeletePlaygroundInstance,
+  type PlaygroundInstanceRecord,
+} from './playground-store';
+import { PLAYGROUND_ID_PREFIX } from './types';
 import { SketchInputManager } from './sketch-input-manager';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -106,6 +112,21 @@ export class AppController {
   /** Disabled during boot so loading from IDB doesn't immediately re-save. */
   private persistenceEnabled = false;
 
+  // -- Playground (local shared-server environment) --
+
+  /** True when this session is the `?playground` resolume surface. */
+  private playgroundMode = false;
+  private playgroundSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `flushPlaygroundSave` change/deletion detection (projects-flush twin). */
+  private playgroundLastSavedJson = new Map<string, string>();
+  /**
+   * User-facing labels of playground instances, keyed by `pg:` sketch id.
+   * Deliberately NOT pruned on delete: instance creation/deletion is
+   * undoable (the sketch lives in the database), so a label must survive
+   * for undo to bring the instance back whole.
+   */
+  private playgroundLabels = new Map<string, string>();
+
   /**
    * Owns the off-screen video element / image lifecycle that drives the
    * active sketch's `texture_input`. Survives UI re-mounts (tab switches),
@@ -141,7 +162,11 @@ export class AppController {
     this.history.postRecordHook = () => {
       this.syncSketchesToEngine();
       this.requestProjectsSave();
+      this.requestPlaygroundSave();
       this.maybePushBarrelSketch();
+      // Instance create/delete can also arrive via undo/redo, which
+      // bypasses the explicit CRUD methods — keep the list mirrored.
+      if (this.playgroundMode) this.refreshPlaygroundInstanceList();
     };
     // Long-edit preview hook: fires during slider drags (begin / update /
     // cancel-revert), separately from commit-time concerns. We push the
@@ -793,6 +818,7 @@ export class AppController {
     this.persistenceEnabled = true;
     this.requestUserSettingsSave();
     this.requestProjectsSave();
+    this.requestPlaygroundSave();
     void this.inputManager.setActiveSketch(appState.local.userSettings.selectedProjectId);
   }
 
@@ -886,6 +912,50 @@ export class AppController {
           this.projectsLastSavedJson.delete(id);
         } catch (err) {
           console.warn('[project-store] delete failed', id, err);
+        }
+      }
+    }
+  }
+
+  private requestPlaygroundSave(debounceMs = 300) {
+    if (!this.persistenceEnabled || !this.playgroundMode) return;
+    if (this.playgroundSaveTimer) clearTimeout(this.playgroundSaveTimer);
+    this.playgroundSaveTimer = setTimeout(() => {
+      this.playgroundSaveTimer = null;
+      this.flushPlaygroundSave().catch(err => {
+        console.warn('[playground-store] flush failed', err);
+      });
+    }, debounceMs);
+  }
+
+  /**
+   * Playground twin of `flushProjectsSave`, over the `pg:` id space and the
+   * separate `playgroundInstances` store: write changed instances, delete
+   * ones that vanished from the database (instance deletion, or undo of a
+   * create). The two flushes can never touch each other's records — the id
+   * spaces are disjoint by construction.
+   */
+  private async flushPlaygroundSave() {
+    const sketches = appState.database.sketches;
+    const liveIds = new Set(Object.keys(sketches).filter(
+      id => id.startsWith(PLAYGROUND_ID_PREFIX)));
+    for (const id of liveIds) {
+      const json = JSON.stringify(toJS(sketches[id]));
+      if (this.playgroundLastSavedJson.get(id) === json) continue;
+      try {
+        await savePlaygroundInstance(id, this.playgroundLabels.get(id) ?? id, sketches[id]);
+        this.playgroundLastSavedJson.set(id, json);
+      } catch (err) {
+        console.warn('[playground-store] save failed', id, err);
+      }
+    }
+    for (const id of Array.from(this.playgroundLastSavedJson.keys())) {
+      if (!liveIds.has(id)) {
+        try {
+          await idbDeletePlaygroundInstance(id);
+          this.playgroundLastSavedJson.delete(id);
+        } catch (err) {
+          console.warn('[playground-store] delete failed', id, err);
         }
       }
     }
@@ -1342,14 +1412,102 @@ export class AppController {
     this.syncSketchesToEngine();
   }
 
-  selectSketch(id: string | null) {
-    runInAction(() => { appState.local.selectedSketchId = id; });
-  }
-
   setBarrelMode(on: boolean) {
     // Both modes share the same Instances/Edit tab shell now, so the
     // persisted activeTab is honored as-is (no per-mode tab coercion).
     runInAction(() => { appState.local.barrelMode = on; });
+  }
+
+  /** Entered by resolume-app when booting the `?playground` surface. */
+  setPlaygroundMode(on: boolean) {
+    this.playgroundMode = on;
+  }
+
+  // ========================================================================
+  // Playground instances (fake barrel instances, local shared-server env)
+  // ========================================================================
+
+  /**
+   * Boot-time load of the playground's instances from their own IndexedDB
+   * store. Bypasses history (loading is not undoable), seeds the last-saved
+   * snapshots so the flush doesn't echo the load back to disk, then surfaces
+   * the instances through the shared barrel-instances list (whose select
+   * flow also repairs a stale persisted selection/editing id).
+   */
+  loadInitialPlaygroundInstances(records: PlaygroundInstanceRecord[]) {
+    runInAction(() => {
+      for (const r of records) {
+        appState.database.sketches[r.id] = normalizeSketchChains(r.sketch);
+        this.playgroundLabels.set(r.id, r.label || r.id);
+      }
+      // A persisted editingSketchId from another mode/session (or a deleted
+      // instance) must not linger — the select flow below re-points it at a
+      // live instance, but only if it changes the selection; clear first.
+      const editing = appState.local.editingSketchId;
+      if (editing && !appState.database.sketches[editing]) {
+        appState.local.editingSketchId = null;
+      }
+    });
+    for (const r of records) {
+      this.playgroundLastSavedJson.set(
+        r.id, JSON.stringify(toJS(appState.database.sketches[r.id])));
+    }
+    this.refreshPlaygroundInstanceList();
+    this.syncSketchesToEngine();
+  }
+
+  /**
+   * Create a fresh playground instance: an EMPTY sketch (the same shape a
+   * fresh NanoBarrel publishes) — the edit tab's insert palette populates
+   * it, exactly like barrel mode. Returns the new instance id.
+   */
+  createPlaygroundInstance(): string {
+    const id = PLAYGROUND_ID_PREFIX + crypto.randomUUID();
+    // Lowest "Instance N" label not used by a LIVE instance (a deleted
+    // instance frees its label; its map entry only serves undo-restore).
+    const used = new Set(Object.keys(appState.database.sketches)
+      .filter(k => k.startsWith(PLAYGROUND_ID_PREFIX))
+      .map(k => this.playgroundLabels.get(k)));
+    let n = 1;
+    while (used.has(`Instance ${n}`)) n++;
+    this.playgroundLabels.set(id, `Instance ${n}`);
+
+    this.mutate('Create playground instance', draft => {
+      draft.sketches[id] = { anchor: null, chain: [], wires: [], instances: {} };
+    });
+    this.refreshPlaygroundInstanceList();
+    // Open the new instance for editing. The list refresh may already have
+    // auto-selected it (first-ever instance) — don't fire the handler twice.
+    if (appState.local.selectedBarrelKey !== id) this.selectBarrelInstance(id);
+    return id;
+  }
+
+  /** Delete a playground instance (undo restores it, label included). */
+  deletePlaygroundInstanceById(id: string) {
+    if (!id.startsWith(PLAYGROUND_ID_PREFIX)) return;
+    this.mutate('Delete playground instance', draft => {
+      delete draft.sketches[id];
+    });
+    if (appState.local.editingSketchId === id) this.editSketch(null);
+    // postRecordHook already refreshed the list (which repairs the
+    // selection) and scheduled the persistence flush (which deletes the
+    // IDB record on the next debounce).
+  }
+
+  /**
+   * Mirror the `pg:` sketches into the shared barrel-instances list — the
+   * Instances tab and the selection flow are mode-agnostic on purpose (the
+   * playground IS a fake shared server).
+   */
+  private refreshPlaygroundInstanceList() {
+    const list: BarrelInstanceInfo[] = Object.keys(appState.database.sketches)
+      .filter(id => id.startsWith(PLAYGROUND_ID_PREFIX))
+      .map(id => ({
+        key: id,
+        id: 'playground',
+        label: this.playgroundLabels.get(id) ?? id,
+      }));
+    this.setBarrelInstances(list);
   }
 
   /**
@@ -1378,7 +1536,7 @@ export class AppController {
 
     let next: string | null = null;
     try {
-      const saved = localStorage.getItem('barrel.selectedKey');
+      const saved = localStorage.getItem(this.selectedKeyStorageKey());
       if (has(saved)) next = saved;
     } catch { /* ignore */ }
     if (!next && list.length > 0) next = list[0].key;
@@ -1390,8 +1548,14 @@ export class AppController {
   /** Pick the barrel instance to edit; persists + rewires the bridge. */
   selectBarrelInstance(key: string) {
     runInAction(() => { appState.local.selectedBarrelKey = key; });
-    try { localStorage.setItem('barrel.selectedKey', key); } catch { /* ignore */ }
+    try { localStorage.setItem(this.selectedKeyStorageKey(), key); } catch { /* ignore */ }
     this.barrelSelectHandler?.(key);
+  }
+
+  /** Last-selected-instance memory is scoped per mode — a playground
+   *  session must not clobber (or adopt) the live barrel selection. */
+  private selectedKeyStorageKey(): string {
+    return this.playgroundMode ? 'playground.selectedKey' : 'barrel.selectedKey';
   }
 
   /**

@@ -13,6 +13,7 @@
 
 import { boot } from './boot';
 import { decideMode } from './resolume-mode';
+import { loadAllPlaygroundInstances } from './state/playground-store';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
@@ -49,6 +50,8 @@ async function main() {
   appController.setBarrelMode(barrelMode);
 
   if (!barrelMode) {
+    appController.setPlaygroundMode(true);
+
     // Playground: every playground instance (`pg:` sketch) runs in the worker
     // simultaneously — that's the point (test multi-instance routings as if
     // Resolume were running). The `editingSketchId` disjunct additionally
@@ -60,6 +63,19 @@ async function main() {
     // skips this — the worker never instantiates anything; the plugin list
     // comes from the barrel's WS state subtree (see connectBarrel).
     for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+
+    // Selecting a playground instance just opens its sketch (the barrel-mode
+    // twin of this handler rewires the WS transport instead). Register BEFORE
+    // loading instances so the boot-time default pick opens something.
+    appController.setBarrelSelectHandler((key) => appController.editSketch(key));
+    try {
+      appController.loadInitialPlaygroundInstances(await loadAllPlaygroundInstances());
+    } catch (err) {
+      console.warn('[playground] failed to load instances', err);
+    }
+    // Persistence goes live only after the load, so loaded state isn't
+    // immediately echoed back to the playground store.
+    appController.enablePersistence();
   }
 
   if (barrelMode) connectBarrel(barrelUrl);

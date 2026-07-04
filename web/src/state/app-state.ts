@@ -34,7 +34,6 @@ export class AppState {
     activeTab: 'edit',
     plugins: [],
     availableEffects: [],
-    selectedSketchId: null,
     editingSketchId: null,
     engine: { fps: 0, gpuTimeMs: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {}, modulationData: {}, debugConsoleLog: [] },
     tappingMode: false,

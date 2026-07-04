@@ -58,10 +58,19 @@ export const STORE_LIBRARY = 'libraryPaths';
  * `{ key, text }`. Per-sketch (local) overrides live in the sketch instead.
  */
 export const STORE_FIELD_DOCS = 'fieldDocs';
+/**
+ * Playground instances — the local shared-server playground's fake barrel
+ * instances (`/resolume/?playground`). Keyed by `pg:<uuid>`, stores
+ * `{ id, label, sketch, updatedAt }`. Expressly separate from `projects`
+ * (the effect-IDE sketches): the playground is its own environment and must
+ * never read or write effect-IDE state.
+ */
+export const STORE_PLAYGROUND = 'playgroundInstances';
 
 /** Every store + its keyPath. `ensureStores` creates any that are missing. */
 const STORE_KEYPATHS: Record<string, string> = {
   [STORE_PROJECTS]: 'id',
+  [STORE_PLAYGROUND]: 'id',
   [STORE_SETTINGS]: 'id',
   [STORE_SKETCH_INPUTS]: 'id',
   [STORE_VIDEO_SOURCE_PROFILES]: 'sourceKey',

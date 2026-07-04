@@ -1,8 +1,13 @@
 /**
- * <organize-tab> — List sketches, select, view summary, launch editor.
+ * <organize-tab> — the "Instances" tab: list instances, select, open in Edit.
+ *
+ * One code path for both modes: barrel mode lists the live NanoBarrel plugin
+ * instances from the shared server; the playground lists its fake local
+ * instances (each one sketch, all running in the worker) and adds create /
+ * delete affordances.
  */
 
-import { html, css, nothing } from 'lit';
+import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
@@ -61,59 +66,15 @@ export class OrganizeTab extends MobxLitElement {
       font-family: inherit; width: 100%; text-align: center;
     }
     .btn:hover { background: var(--app-tint-5); }
+    .btn.danger { color: var(--app-error); border-color: var(--app-error); background: transparent; }
+    .btn.danger:hover { background: rgba(255,80,80,0.10); }
+    .btn + .btn { margin-top: var(--app-sp-2); }
+    .new-instance { margin-bottom: var(--app-sp-4); width: auto; padding: var(--app-sp-3) 16px; }
     .empty-state { color: var(--app-text-color2); font-size: var(--app-fs-lg); text-align: center; padding: 32px 16px; }
   `;
 
   render() {
-    if (appState.local.barrelMode) return this.renderBarrelInstances();
-
-    const sketches = appState.database.sketches;
-    const ids = Object.keys(sketches);
-    const selectedId = appState.local.selectedSketchId;
-    const selected = selectedId ? sketches[selectedId] : null;
-
-    return html`
-      <div class="main-area">
-        ${ids.length === 0
-        ? html`<div class="empty-state">No sketches yet.</div>`
-        : html`
-            <div class="sketch-list">
-              ${ids.map(id => {
-          const s = sketches[id];
-          return html`
-                  <div class="sketch-card" ?selected=${id === selectedId}
-                    @click=${() => appController.selectSketch(id)}>
-                    <div class="sketch-card-name">${id}</div>
-                    <div class="sketch-card-info">
-                      Anchor: ${s.anchor ?? 'none'}
-                      · ${sketchChain(s).length} entr${sketchChain(s).length !== 1 ? 'ies' : 'y'}
-                    </div>
-                  </div>
-                `;
-        })}
-            </div>
-          `}
-      </div>
-      <div class="right-panel">
-        ${selected && selectedId
-        ? html`
-            <div class="section-header">Sketch: ${selectedId}</div>
-            <div class="summary">
-              <div>Anchor: ${selected.anchor ?? 'none'}</div>
-              <div>Chain entries: ${sketchChain(selected).length}</div>
-            </div>
-            <button class="btn" @click=${() => {
-            appController.editSketch(selectedId);
-            appController.setActiveTab('edit');
-          }}>Edit</button>
-          `
-        : html`<div class="empty-state" style="padding:16px 0">Select a sketch to see details</div>`}
-      </div>
-    `;
-  }
-
-  /** Barrel mode: list the live NanoBarrel instances on the shared server. */
-  private renderBarrelInstances() {
+    const barrelMode = appState.local.barrelMode;
     const instances = appState.local.barrelInstances;
     const selectedKey = appState.local.selectedBarrelKey;
     const selected = instances.find(i => i.key === selectedKey) ?? null;
@@ -125,8 +86,14 @@ export class OrganizeTab extends MobxLitElement {
 
     return html`
       <div class="main-area">
+        ${barrelMode ? '' : html`
+          <button class="btn new-instance"
+            @click=${() => appController.createPlaygroundInstance()}>+ New instance</button>
+        `}
         ${instances.length === 0
-        ? html`<div class="empty-state">No NanoBarrel instances connected.<br>Add a NanoBarrel effect in Resolume.</div>`
+        ? (barrelMode
+          ? html`<div class="empty-state">No NanoBarrel instances connected.<br>Add a NanoBarrel effect in Resolume.</div>`
+          : html`<div class="empty-state">No playground instances yet.<br>Each instance stands in for one NanoBarrel effect in Resolume.</div>`)
         : html`
             <div class="sketch-list">
               ${instances.map(inst => html`
@@ -134,7 +101,7 @@ export class OrganizeTab extends MobxLitElement {
                   @click=${() => appController.selectBarrelInstance(inst.key)}
                   @dblclick=${() => open(inst.key)}>
                   <div class="sketch-card-name">${inst.label}</div>
-                  <div class="sketch-card-info">${inst.key}</div>
+                  <div class="sketch-card-info">${this.instanceInfo(inst.key, barrelMode)}</div>
                 </div>
               `)}
             </div>
@@ -146,12 +113,31 @@ export class OrganizeTab extends MobxLitElement {
             <div class="section-header">Instance: ${selected.label}</div>
             <div class="summary">
               <div>Key: ${selected.key}</div>
-              <div>Plugin: ${selected.id}</div>
+              ${barrelMode
+                ? html`<div>Plugin: ${selected.id}</div>`
+                : html`<div>${this.instanceInfo(selected.key, false)}</div>`}
             </div>
             <button class="btn" @click=${() => open(selected.key)}>Edit</button>
+            ${barrelMode ? '' : html`
+              <button class="btn danger" @click=${() => this.deleteInstance(selected.key, selected.label)}>Delete</button>
+            `}
           `
         : html`<div class="empty-state" style="padding:16px 0">Select an instance to edit</div>`}
       </div>
     `;
+  }
+
+  /** Card info line: playground cards summarize their sketch; barrel cards
+   *  show the instance key (the sketch lives on the server). */
+  private instanceInfo(key: string, barrelMode: boolean) {
+    if (barrelMode) return key;
+    const sketch = appState.database.sketches[key];
+    const n = sketch ? sketchChain(sketch).length : 0;
+    return `${n} effect${n !== 1 ? 's' : ''}`;
+  }
+
+  private deleteInstance(key: string, label: string) {
+    if (!confirm(`Delete playground instance "${label}"? (Undo restores it.)`)) return;
+    appController.deletePlaygroundInstanceById(key);
   }
 }

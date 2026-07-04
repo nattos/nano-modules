@@ -200,7 +200,6 @@ export interface LocalState {
   activeTab: 'organize' | 'edit';
   plugins: PluginInfo[];
   availableEffects: AvailableEffect[];
-  selectedSketchId: string | null;
   editingSketchId: string | null;
   engine: EngineStatus;
   /** Whether tap configuration mode is active. */
