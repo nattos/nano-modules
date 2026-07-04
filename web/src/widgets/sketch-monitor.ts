@@ -32,11 +32,11 @@ import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../views/gpu-head
 import './texture-monitor';
 import './ui-button';
 
-/** Fixed internal capture resolution of the monitor (the canvas/trace size).
- *  Independent of the on-screen display size, which scales to fit. */
-const CAPTURE_W = 640;
-const CAPTURE_H = 360;
-const ASPECT = CAPTURE_W / CAPTURE_H;
+/** Stage aspect ratio. The capture itself is source-resolution (the monitor
+ *  registers its trace with `sourceRes` — no size request, so both the engine
+ *  worker and the native barrel deliver the output's own pixels); this only
+ *  shapes the on-screen stage box the bitmap scales into. */
+const ASPECT = 16 / 9;
 /** Magnification when the zoom toggle is active. */
 const ZOOM_FACTOR = 4;
 
@@ -202,10 +202,9 @@ export class SketchMonitor extends MobxLitElement {
           ? html`<div class="stage" style="width:${w}px;height:${h}px">
               <texture-monitor
                 fit
+                sourceRes
                 .traceId=${this.traceId}
                 .traceTarget=${target as any}
-                .width=${CAPTURE_W}
-                .height=${CAPTURE_H}
                 resolution="high"
               ></texture-monitor>
             </div>`

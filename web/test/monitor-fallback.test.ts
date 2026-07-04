@@ -44,18 +44,24 @@ describe('main sketch monitor fallback', () => {
     await new Promise(r => setTimeout(r, 2500));
 
     const probe = async () => page.evaluate(`(async () => {
-      const { traceController } = await import('/src/state/trace-controller.ts');
-      const reg = traceController.registrations.get('edit_preview');
       function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
       // The raw #preview-canvas is gone — the monitor is now the shared
       // <sketch-monitor> widget, which nests a <texture-monitor>'s own
-      // (unlabeled) canvas inside its shadow tree.
+      // (unlabeled) canvas inside its shadow tree. Read the target off that
+      // element rather than importing trace-controller: after dev-server HMR
+      // the app's module graph carries ?t= stamps, so a bare dynamic import
+      // here would get a SECOND (empty) controller instance.
       let monitor = null;
       for (const el of walk(document)) { if (el.tagName === 'SKETCH-MONITOR') { monitor = el; break; } }
-      let canvas = null;
+      let canvas = null, texmon = null;
       if (monitor?.shadowRoot) {
-        for (const el of walk(monitor.shadowRoot)) { if (el.tagName === 'CANVAS') { canvas = el; break; } }
+        for (const el of walk(monitor.shadowRoot)) {
+          if (el.tagName === 'CANVAS' && !canvas) canvas = el;
+          if (el.tagName === 'TEXTURE-MONITOR' && !texmon) texmon = el;
+        }
       }
+      const reg = texmon?.traceId === 'edit_preview' && texmon.traceTarget
+        ? { target: texmon.traceTarget } : null;
       let nonBlank = false;
       if (canvas) {
         const ctx = canvas.getContext('2d');

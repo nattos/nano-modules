@@ -106,8 +106,12 @@ nlohmann::json parseOrObject(const std::string& s) {
 // dominate the watched-frame cost — each one's GPU scale/copy serializes on the
 // render queue ahead of the next frame's blocking submit, so cost scales with
 // readback pixels × rate. Decouple the preview rate from the render rate
-// (default 30 Hz) and bound the readback long-edge (default 512) so a native-res
-// main preview can't read back a full frame every frame. Both env-tunable.
+// (default 30 Hz) and bound the readback long-edge. The main edit-preview
+// deliberately requests 0×0 (source size) so the editor monitor shows the
+// output at native resolution; the default cap (4096) only guards absurd
+// comp sizes (and the NBPV u16 dimension fields), not that path. Drop
+// NANO_BARREL_PREVIEW_MAXDIM back down (e.g. 512) if full-res readback +
+// WS shipping proves too heavy on a given machine. Both env-tunable.
 double previewIntervalSec() {
   static double v = [] {
     const char* e = getenv("NANO_BARREL_PREVIEW_HZ");
@@ -119,8 +123,8 @@ double previewIntervalSec() {
 uint32_t previewMaxDim() {
   static uint32_t v = [] {
     const char* e = getenv("NANO_BARREL_PREVIEW_MAXDIM");
-    int d = e ? atoi(e) : 512;
-    return d > 0 ? (uint32_t)d : 512u;
+    int d = e ? atoi(e) : 4096;
+    return d > 0 ? (uint32_t)d : 4096u;
   }();
   return v;
 }
@@ -283,9 +287,10 @@ struct BarrelRuntime::Impl {
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
       uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
       uint32_t outH = req.height ? req.height : (uint32_t)slot.height;
-      // Cap the long edge: a native-res main preview ('so' requests 0×0 → source
-      // size) otherwise reads back a full frame, whose GPU scale/copy serializes
-      // ahead of the next render's blocking submit (the dominant watched cost).
+      // Cap the long edge. The main preview ('so', 0×0 → source size) passes
+      // through untouched at real comp sizes — the default cap only bounds
+      // absurd dimensions (see previewMaxDim; env-tune it down to trade the
+      // monitor's resolution for render-thread readback time).
       if (outW > maxDim || outH > maxDim) {
         double s = (double)maxDim / (double)std::max(outW, outH);
         outW = std::max(1u, (uint32_t)(outW * s));

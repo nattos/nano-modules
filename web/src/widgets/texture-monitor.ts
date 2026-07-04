@@ -62,6 +62,16 @@ export class TextureMonitor extends MobxLitElement {
    */
   @property({ type: Boolean }) thumbnail = false;
 
+  /**
+   * Source-resolution capture: register WITHOUT a size request so the capture
+   * resolves to the traced texture's own size (both the engine worker and the
+   * native barrel fall back to source resolution when no size is requested).
+   * For the main monitor, where the actual output pixels matter more than
+   * bandwidth. Only meaningful with `resolution="high"` (with 'low' the
+   * controller's LOW_RES default applies instead — that's `thumbnail`).
+   */
+  @property({ type: Boolean }) sourceRes = false;
+
   private frameDisposer: IReactionDisposer | null = null;
   /** Viewport-visibility gate: we only register a trace while on-screen. */
   private io: IntersectionObserver | null = null;
@@ -171,7 +181,7 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail')) {
+    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail') || changed.has('sourceRes')) {
       // Re-register if target, ID, resolution, or the source changed.
       if (changed.has('traceId')) {
         const oldId = changed.get('traceId') as string;
@@ -187,8 +197,9 @@ export class TextureMonitor extends MobxLitElement {
     // the IntersectionObserver brings us back on-screen.
     if (!this.visible) return;
     if (!this.traceId || !this.traceTarget) return;
-    if (this.thumbnail) {
-      // Bandwidth-capped: no size request → the controller's LOW_RES default.
+    if (this.thumbnail || this.sourceRes) {
+      // No size request → the tier default: LOW_RES for 'low' (thumbnail),
+      // the source texture's own resolution for 'high' (sourceRes).
       (this.traceSource ?? traceController).register({
         id: this.traceId,
         target: this.traceTarget,
