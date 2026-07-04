@@ -1,5 +1,5 @@
 /**
- * Wire magnitude UI E2E (resolume shell, local mode).
+ * Wire magnitude UI E2E (resolume shell, playground mode).
  *
  * Selecting a scalar wire shows the dest field's inspector, including the wire
  * mod controls. This guards: a Magnitude control renders and reflects/patches
@@ -13,7 +13,7 @@ describe('wire magnitude UI', () => {
 
   it('shows a Magnitude control; Scale + Remap are always available', async () => {
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {

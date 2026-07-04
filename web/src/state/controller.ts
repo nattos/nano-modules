@@ -11,21 +11,19 @@ import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, StagingInstance, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard, BarrelInstanceInfo } from './types';
+import type { DatabaseState, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard, BarrelInstanceInfo } from './types';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
-import type { Sketch, ChainEntry, Wire, UiOnlyState, InstanceState, FieldConnectInfo } from '../sketch-types';
+import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
 export type { FieldConnectInfo } from '../sketch-types';
-import { ENGINE_VERSION, parseVersion } from '../version';
+import { parseVersion } from '../version';
 import {
   isDefaultProjectId,
   isUserProjectId,
   isPersistableProjectId,
-  isResolumeSketchId,
-  RESOLUME_SKETCH_PREFIX,
   effectIdFromDefaultProjectId,
   defaultProjectIdForEffect,
   synthesizeDefaultProject,
@@ -50,7 +48,6 @@ export const SKETCH_OUTPUT_TRACE_COUNT = 8;
 export class AppController {
   public readonly history: HistoryManager;
   private engine: EngineProxy | null = null;
-  private nextSketchId = 0;
 
   /**
    * Set of sketch IDs the engine currently knows about. Used to detect
@@ -186,46 +183,6 @@ export class AppController {
    */
   mutate(description: string, recipe: (draft: DatabaseState) => void) {
     this.history.record(description, recipe);
-  }
-
-  createSketch(staging: StagingInstance[]): string {
-    const sketchId = `sketch_${this.nextSketchId++}`;
-    const outInstances = staging.filter(s => s.textureOut);
-    const inInstances = staging.filter(s => s.textureIn);
-
-    const instances: Record<string, import('../sketch-types').InstanceState> = {};
-
-    // Texture I/O are implicit (always wrapped around the chain by the executor
-    // + the column-group widget); only the modules in between go into `chain`.
-    // The single linear stack holds an optional input module followed by every
-    // output module.
-    const chain: ChainEntry[] = [];
-    if (inInstances.length > 0) {
-      const inKey = inInstances[0].pluginKey;
-      chain.push({
-        type: 'module',
-        module_type: inInstances[0].moduleType,
-        instance_key: inKey,
-      });
-      instances[inKey] = { module_type: inInstances[0].moduleType, state: {}, version: this.versionForModule(inInstances[0].moduleType) };
-    }
-    for (const out of outInstances) {
-      chain.push({
-        type: 'module',
-        module_type: out.moduleType,
-        instance_key: out.pluginKey,
-      });
-      instances[out.pluginKey] = { module_type: out.moduleType, state: {}, version: this.versionForModule(out.moduleType) };
-    }
-
-    const anchor = outInstances[0]?.pluginKey ?? inInstances[0]?.pluginKey ?? null;
-    const sketch: Sketch = { anchor, chain, instances, engineVersion: ENGINE_VERSION };
-
-    this.mutate(`Create sketch ${sketchId}`, draft => {
-      draft.sketches[sketchId] = sketch;
-    });
-
-    return sketchId;
   }
 
   /**
@@ -750,7 +707,7 @@ export class AppController {
   // Local state changes (ephemeral, no undo)
   // ========================================================================
 
-  setActiveTab(tab: 'create' | 'organize' | 'edit') {
+  setActiveTab(tab: 'organize' | 'edit') {
     runInAction(() => { appState.local.activeTab = tab; });
     this.setUserSetting('activeTab', tab);   // remember across reloads
   }
@@ -788,7 +745,10 @@ export class AppController {
       appState.local.userSettings = settings;
       // Mirror the persisted resolume session into the live ephemeral state
       // the sketch-app reads (active tab + the sketch open in the edit tab).
-      appState.local.activeTab = settings.activeTab ?? 'create';
+      // The Create tab is gone; coerce a legacy persisted 'create' to the
+      // Instances tab (its closest successor — where sketches now begin).
+      appState.local.activeTab =
+        settings.activeTab === 'create' ? 'organize' : (settings.activeTab ?? 'edit');
       appState.local.editingSketchId = settings.editingSketchId ?? null;
     });
     // No save here — this IS the load. Persistence stays disabled until
@@ -813,12 +773,6 @@ export class AppController {
         appState.database.sketches[id] = normalized;
         if (isPersistableProjectId(id) && !normalized.isTemplate) {
           this.projectsLastSavedJson.set(id, JSON.stringify(normalized));
-        }
-        // Seed the resolume `sketch_N` counter past any restored sketch so a
-        // freshly-created sketch can't collide with (and overwrite) a saved one.
-        if (isResolumeSketchId(id)) {
-          const n = parseInt(id.slice(RESOLUME_SKETCH_PREFIX.length), 10);
-          if (Number.isFinite(n) && n >= this.nextSketchId) this.nextSketchId = n + 1;
         }
       }
     });
@@ -1133,39 +1087,6 @@ export class AppController {
     });
   }
 
-  addToStaging(plugin: PluginInfo) {
-    runInAction(() => {
-      if (appState.local.staging.some(s => s.pluginKey === plugin.key)) return;
-      appState.local.staging.push({
-        pluginKey: plugin.key,
-        moduleType: plugin.id,
-        name: shortName(plugin.id),
-        textureIn: false,
-        textureOut: true,
-      });
-    });
-  }
-
-  removeFromStaging(idx: number) {
-    runInAction(() => { appState.local.staging.splice(idx, 1); });
-  }
-
-  toggleStagingIn(idx: number) {
-    runInAction(() => {
-      appState.local.staging[idx].textureIn = !appState.local.staging[idx].textureIn;
-    });
-  }
-
-  toggleStagingOut(idx: number) {
-    runInAction(() => {
-      appState.local.staging[idx].textureOut = !appState.local.staging[idx].textureOut;
-    });
-  }
-
-  clearStaging() {
-    runInAction(() => { appState.local.staging = []; });
-  }
-
   // --- Tapping mode & field selection ---
 
   setTappingMode(on: boolean) {
@@ -1426,10 +1347,9 @@ export class AppController {
   }
 
   setBarrelMode(on: boolean) {
-    runInAction(() => {
-      appState.local.barrelMode = on;
-      if (on) appState.local.activeTab = 'edit';
-    });
+    // Both modes share the same Instances/Edit tab shell now, so the
+    // persisted activeTab is honored as-is (no per-mode tab coercion).
+    runInAction(() => { appState.local.barrelMode = on; });
   }
 
   /**
@@ -1486,8 +1406,8 @@ export class AppController {
    * locally), so callers don't have to think about that shape.
    *
    * Also surfaces the same list as `availableEffects` so the column
-   * picker has something to show — the create-tab is hidden in barrel
-   * mode but the per-column "Drop effect" UI still queries it.
+   * picker has something to show — the per-column "Drop effect" UI
+   * queries it.
    */
   setBarrelPlugins(remotePlugins: Array<{ id: string; key?: string; version?: string; schema?: Record<string, any> }>) {
     const plugins: PluginInfo[] = remotePlugins.map(rp => {

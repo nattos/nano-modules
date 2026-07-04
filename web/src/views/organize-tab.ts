@@ -75,7 +75,7 @@ export class OrganizeTab extends MobxLitElement {
     return html`
       <div class="main-area">
         ${ids.length === 0
-        ? html`<div class="empty-state">No sketches yet.<br>Go to Create to make one.</div>`
+        ? html`<div class="empty-state">No sketches yet.</div>`
         : html`
             <div class="sketch-list">
               ${ids.map(id => {

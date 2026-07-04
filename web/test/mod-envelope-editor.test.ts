@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for mod.shaper.envelope (resolume shell, local mode).
+ * Custom-inspector E2E for mod.shaper.envelope (resolume shell, playground mode).
  *
  * Verifies the registered envelope inspector mounts on the effect card, the
  * graph draws the curve, and the headline interactions actually edit the `curve`
@@ -14,7 +14,7 @@ describe('mod.shaper.envelope custom inspector', () => {
   jest.setTimeout(60000);
 
   const openEnvelope = async (sketchId: string) => {
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
     await page.evaluate(`(async () => {
       const ac = window.appController;

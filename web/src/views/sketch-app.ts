@@ -10,9 +10,9 @@ import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from './gpu-headroom';
 
-import './create-tab';
 import './organize-tab';
 import './edit-tab';
+import { switchMode } from '../resolume-mode';
 
 @customElement('sketch-app')
 export class SketchApp extends MobxLitElement {
@@ -83,6 +83,26 @@ export class SketchApp extends MobxLitElement {
       padding: 1px 2px;
       cursor: pointer;
     }
+    .mode-badge {
+      font-size: var(--app-fs-sm);
+      letter-spacing: 0.08em;
+      padding: 1px 6px;
+      border-radius: 2px;
+      border: 1px solid var(--app-tint-5);
+    }
+    .mode-badge.live { color: var(--app-ok); border-color: var(--app-ok); }
+    .mode-badge.playground { color: var(--app-warn); border-color: var(--app-warn); }
+    .mode-switch {
+      background: transparent;
+      border: 1px solid var(--app-tint-5);
+      border-radius: 2px;
+      color: var(--app-text-color2);
+      font-family: inherit;
+      font-size: var(--app-fs-sm);
+      padding: 1px 6px;
+      cursor: pointer;
+    }
+    .mode-switch:hover { color: var(--app-text-color1); border-color: var(--app-text-color2); }
     .app-content {
       display: flex;
       flex: 1;
@@ -91,33 +111,46 @@ export class SketchApp extends MobxLitElement {
   `;
 
   render() {
-    // Barrel mode: the editor is bound to the shared NanoBarrel server.
-    // Hide Create (no IndexedDB sketches here) but keep Organize — it now
-    // lists the live plugin instances so the operator can pick which one to
-    // edit. Outside barrel mode it's the usual Create/Organize/Edit IDE.
+    // Both modes share the same two-tab shell: Instances (live NanoBarrel
+    // plugin instances in barrel mode; fake local instances in the
+    // playground) + Edit for the selected one.
     const barrelMode = appState.local.barrelMode;
-    const tab = appState.local.activeTab === 'create' && barrelMode
-      ? 'edit'
-      : appState.local.activeTab;
+    const tab = appState.local.activeTab;
     return html`
       <div class="tab-bar">
-        ${barrelMode ? '' : html`
-          <button class="tab-btn" ?active=${tab === 'create'}
-            @click=${() => appController.setActiveTab('create')}>Create</button>
-        `}
         <button class="tab-btn" ?active=${tab === 'organize'}
-          @click=${() => appController.setActiveTab('organize')}>${barrelMode ? 'Instances' : 'Organize'}</button>
+          @click=${() => appController.setActiveTab('organize')}>Instances</button>
         <button class="tab-btn" ?active=${tab === 'edit'}
           @click=${() => appController.setActiveTab('edit')}>Edit</button>
         <div class="tab-status">
           ${this.renderStatus(barrelMode)}
+          ${this.renderModeSwitch(barrelMode)}
         </div>
       </div>
       <div class="app-content">
-        ${!barrelMode && tab === 'create' ? html`<create-tab></create-tab>` : ''}
         ${tab === 'organize' ? html`<organize-tab></organize-tab>` : ''}
         ${tab === 'edit' ? html`<edit-tab></edit-tab>` : ''}
       </div>
+    `;
+  }
+
+  /**
+   * Which environment this session is bound to (LIVE = the shared NanoBarrel
+   * server; PLAYGROUND = the local simulation), plus the switch into the
+   * other one. Switching is reload-based — the two modes boot differently
+   * (stores, engine wiring), so we navigate rather than re-wire in place.
+   */
+  private renderModeSwitch(barrelMode: boolean) {
+    return html`
+      <span class="mode-badge ${barrelMode ? 'live' : 'playground'}"
+        title=${barrelMode
+          ? 'Connected surface: the shared NanoBarrel server (Resolume)'
+          : 'Local playground environment — nothing here touches Resolume'}
+        >${barrelMode ? 'LIVE' : 'PLAYGROUND'}</span>
+      <button class="mode-switch"
+        title=${barrelMode ? 'Switch to the local playground (reloads)' : 'Switch to live Resolume mode (reloads)'}
+        @click=${() => switchMode(barrelMode ? 'playground' : 'barrel')}
+        >→ ${barrelMode ? 'Playground' : 'Live'}</button>
     `;
   }
 

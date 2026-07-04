@@ -20,7 +20,7 @@ export function defaultUserSettings(): UserSettings {
     selectedProjectId: null,
     scrollPositions: {},
     paused: false,
-    activeTab: 'create',
+    activeTab: 'edit',
     editingSketchId: null,
     targetFps: 60,
     editLeftPanelWidth: 320,

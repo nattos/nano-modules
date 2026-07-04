@@ -157,14 +157,6 @@ export interface UserSettings {
 
 // --- Local state (ephemeral, not in undo history) ---
 
-export interface StagingInstance {
-  pluginKey: string;
-  moduleType: string;
-  name: string;
-  textureIn: boolean;
-  textureOut: boolean;
-}
-
 export interface EngineStatus {
   fps: number;
   /**
@@ -205,10 +197,9 @@ export interface EngineStatus {
 }
 
 export interface LocalState {
-  activeTab: 'create' | 'organize' | 'edit';
+  activeTab: 'organize' | 'edit';
   plugins: PluginInfo[];
   availableEffects: AvailableEffect[];
-  staging: StagingInstance[];
   selectedSketchId: string | null;
   editingSketchId: string | null;
   engine: EngineStatus;
@@ -253,6 +244,14 @@ export interface LocalState {
   /** Key (stable UUID) of the barrel instance currently being edited. */
   selectedBarrelKey: string | null;
 }
+
+/**
+ * Sketch-id prefix for playground instances (`pg:<uuid>`). The prefix keeps
+ * them disjoint from effect-IDE project ids (`user:`/`default:`) and resolume
+ * `sketch_N` ids, so the projects persistence path can never touch them and
+ * the playground engine filter can admit them wholesale.
+ */
+export const PLAYGROUND_ID_PREFIX = 'pg:';
 
 /** One NanoBarrel plugin instance live on the shared server. */
 export interface BarrelInstanceInfo {

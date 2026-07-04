@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for mod.shaper.spectral (resolume shell, local mode).
+ * Custom-inspector E2E for mod.shaper.spectral (resolume shell, playground mode).
  *
  * Verifies the registered inspector mounts: the reused spectral morph XY pad +
  * curve preview, plus the `input` slider. The preview parks its playhead at the
@@ -12,7 +12,7 @@ describe('mod.shaper.spectral custom inspector', () => {
   jest.setTimeout(60000);
 
   it('mounts the morph pad + curve preview + input slider', async () => {
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3500));   // boot + nano bundle discovery
 
     await page.evaluate(`(async () => {

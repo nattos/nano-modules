@@ -1,15 +1,22 @@
 /**
  * Resolume sketch editor entry point. Mounted at /resolume/.
  *
- * Boots the shared engine, layers in resolume-specific defaults (auto-instantiate
- * a few effects + a debug particles sketch), and mounts the <sketch-app> shell.
+ * Boots the shared engine and mounts the <sketch-app> shell in one of two modes:
+ *
+ *   - BARREL (the default): bound to the shared NanoBarrel server over WS; the
+ *     remote bridge is the source of truth, nothing simulates locally.
+ *   - PLAYGROUND (`?playground`): a local simulation of the shared server —
+ *     fake "instances" (one sketch each, all running simultaneously in the
+ *     worker) persisted in their own IndexedDB store, for testing
+ *     multi-instance routings without Resolume.
  */
 
 import { boot } from './boot';
+import { decideMode } from './resolume-mode';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
-import type { BarrelInstanceInfo } from './state/types';
+import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo } from './state/types';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
 import { EFFECT_BUNDLES } from './effect-bundles';
@@ -29,52 +36,29 @@ import './wasm-hmr-client';
 const BARREL_SKETCH_ID = 'barrel';
 
 async function main() {
-  // Decide barrel mode up front, BEFORE booting — boot needs the flag
-  // so it can skip the IndexedDB project load (otherwise stale local
-  // sketches would feed into syncSketchesToEngine the moment effects
-  // are discovered, and any of them with malformed shape would crash
-  // augmentSketchWithImplicitConnections).
-  // Barrel mode is entered with `?barrel` present. The shared server lives
-  // on a single fixed port (8081) now, so the value is optional and only an
-  // override (`?barrel=ws://host:port`); bare `?barrel` connects to the
-  // default. Plain `/resolume/` stays the local-simulation IDE (the effect
-  // dev surface + the e2e harness target).
-  const params = new URLSearchParams(location.search);
-  const barrelMode = params.has('barrel');
-  const barrelUrl = params.get('barrel') || 'ws://localhost:8081';
+  // Decide the mode from the URL, BEFORE booting — boot needs it so it can
+  // skip the IndexedDB project load in both modes (stale effect-IDE sketches
+  // must never feed the engine sync here).
+  const { mode, barrelUrl } = decideMode(location.search);
+  const barrelMode = mode === 'barrel';
 
-  // Local mode simulates the sketch in-worker — render at full 1920×1080 (the
-  // boot default is a tiny 320×180). Barrel mode never simulates (the plugin
-  // renders), so the size is irrelevant there.
-  const { engine } = await boot({ width: 1920, height: 1080, barrelMode });
+  // The playground simulates sketches in-worker — render at full 1920×1080
+  // (the boot default is a tiny 320×180). Barrel mode never simulates (the
+  // plugin renders), so the size is irrelevant there.
+  await boot({ width: 1920, height: 1080, mode });
   appController.setBarrelMode(barrelMode);
 
-  // Local simulator: run ONLY the sketch open in the edit tab — not every
-  // sketch in the database (loaded effect-IDE projects, the debug demo, etc.).
-  // The filter reads `editingSketchId` fresh on each sync; `editSketch` re-syncs.
   if (!barrelMode) {
-    appController.setEngineSketchFilter((id) => id === appState.local.editingSketchId);
-  }
+    // Playground: every playground instance (`pg:` sketch) runs in the worker
+    // simultaneously — that's the point (test multi-instance routings as if
+    // Resolume were running). The `editingSketchId` disjunct additionally
+    // admits ad-hoc sketches created directly by tests/devtools.
+    appController.setEngineSketchFilter(
+      (id) => id.startsWith(PLAYGROUND_ID_PREFIX) || id === appState.local.editingSketchId);
 
-  let debugSketchCreated = false;
-  const baseHandler = engine.onEffectsDiscovered;
-  engine.onEffectsDiscovered = (effects) => {
-    baseHandler?.(effects);
-    if (barrelMode) return;
-    appController.instantiateEffect('debug.spinningtris');
-    appController.instantiateEffect('source.solid_color');
-    appController.instantiateEffect('debug.gpu_test');
-
-    if (!debugSketchCreated) {
-      debugSketchCreated = true;
-      createDebugParticleSketch();
-    }
-  };
-
-  // Local-mode IDE: load every effect bundle so all effects are reachable.
-  // Barrel mode skips this — the worker never instantiates anything; the
-  // plugin list comes from the barrel's WS state subtree (see connectBarrel).
-  if (!barrelMode) {
+    // Load every effect bundle so all effects are reachable. Barrel mode
+    // skips this — the worker never instantiates anything; the plugin list
+    // comes from the barrel's WS state subtree (see connectBarrel).
     for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
   }
 
@@ -329,62 +313,6 @@ function coerceSketch(remote: any): Sketch {
   // Strip any legacy explicit I/O chain entries — texture input/output
   // are implicit in the current model — and flatten to the single `chain`.
   return normalizeSketchChains(draft);
-}
-
-/**
- * Build a debug sketch wiring particles_emitter → particles_renderer
- * via a struct rail carrying GPU-resident positions/velocities.
- * Exists to exercise the structured-port + GPU-array data path end-to-end.
- */
-function createDebugParticleSketch() {
-  const PARTICLES_SCHEMA = {
-    type: 'object',
-    fields: {
-      count: { type: 'int' },
-      positions:  { type: 'array', gpu: true, elementType: { type: 'float' } },
-      velocities: { type: 'array', gpu: true, elementType: { type: 'float' } },
-    },
-  };
-
-  const emitterKey = 'debug_particles_emit@0';
-  const rendererKey = 'debug_particles_render@0';
-
-  const sketch: Sketch = {
-    anchor: null,
-    chain: [
-      {
-        type: 'module',
-        module_type: 'debug.particles_emitter',
-        instance_key: emitterKey,
-      },
-      {
-        type: 'module',
-        module_type: 'debug.particles_renderer',
-        instance_key: rendererKey,
-      },
-    ],
-    wires: [
-      {
-        id: 'particles_wire',
-        src: { instanceKey: emitterKey, field: 'particles_out' },
-        dest: { instanceKey: rendererKey, field: 'particles_in' },
-      },
-    ],
-    instances: {
-      [emitterKey]: {
-        module_type: 'debug.particles_emitter',
-        state: { spawn_speed: 0.6, gravity: [0.0, -0.4] },
-      },
-      [rendererKey]: {
-        module_type: 'debug.particles_renderer',
-        state: { particle_size: 0.03, tint: [1.0, 0.7, 0.2, 1.0] },
-      },
-    },
-  };
-
-  appController.mutate('Create debug particles sketch', draft => {
-    draft.sketches['debug_particles'] = sketch;
-  });
 }
 
 main();

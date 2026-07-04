@@ -1,5 +1,5 @@
 /**
- * util.dashboard E2E (resolume shell, local mode).
+ * util.dashboard E2E (resolume shell, playground mode).
  *
  * The dashboard is a real schema-backed core effect whose knob_i fields (in
  * `state.knob_i`) are each a wire source/sink. The UI still gives it a distinct
@@ -21,7 +21,7 @@ describe('util.dashboard knob bank', () => {
   it('registers as a dashboard kind, seeds 8 knobs, and edits them', async () => {
     page.removeAllListeners('console');
 
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     const setup = await page.evaluate(`(async () => {
@@ -121,7 +121,7 @@ describe('util.dashboard knob bank', () => {
 
   it('grays a knob with no outgoing wire, or one overridden by a replace input', async () => {
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     const setWires = (wires: string) => page.evaluate(`(() => {
@@ -192,7 +192,7 @@ describe('util.dashboard knob bank', () => {
     // directly via its <scalar-knob> (the sole field endpoint for both the
     // input and output wire), like the old virtual dashboard.
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {

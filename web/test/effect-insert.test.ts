@@ -17,7 +17,7 @@ const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 const WALK = `function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}`;
 
 async function setupSketch(sketchId: string) {
-  await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+  await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
   await new Promise(r => setTimeout(r, 3000));
   await page.evaluate(`(async () => {
     const ac = window.appController;

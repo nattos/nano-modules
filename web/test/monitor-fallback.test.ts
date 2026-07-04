@@ -1,5 +1,5 @@
 /**
- * Main sketch monitor E2E (resolume shell, local mode).
+ * Main sketch monitor E2E (resolume shell, playground mode).
  *
  * The monitor's `edit_preview` trace is owned by edit-tab and registered for the
  * tab's whole lifetime, re-targeted reactively: it shows the selected
@@ -16,7 +16,7 @@ describe('main sketch monitor fallback', () => {
   it('follows the selected target and falls back to final output on deselect', async () => {
     page.removeAllListeners('console');
 
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     // Build a 2-module sketch and open it in the edit tab (local mode → worker renders).

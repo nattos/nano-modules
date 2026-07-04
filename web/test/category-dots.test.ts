@@ -12,7 +12,7 @@ describe('effect-card category dots', () => {
   it('colours each header dot by the effect domain', async () => {
     page.removeAllListeners('console');
 
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {

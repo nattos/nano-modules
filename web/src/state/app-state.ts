@@ -3,7 +3,7 @@
  *
  * Split into:
  * - `database`: Persisted, undo/redo-able (sketches, module configs)
- * - `local`: Ephemeral UI state (selection, active tab, staging)
+ * - `local`: Ephemeral UI state (selection, active tab, engine status)
  */
 
 import { observable, configure, makeObservable } from 'mobx';
@@ -31,10 +31,9 @@ export class AppState {
   };
   @observable
   public local: LocalState = {
-    activeTab: 'create',
+    activeTab: 'edit',
     plugins: [],
     availableEffects: [],
-    staging: [],
     selectedSketchId: null,
     editingSketchId: null,
     engine: { fps: 0, gpuTimeMs: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {}, modulationData: {}, debugConsoleLog: [] },

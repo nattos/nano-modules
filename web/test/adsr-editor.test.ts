@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for mod.source.adsr (resolume shell, local mode).
+ * Custom-inspector E2E for mod.source.adsr (resolume shell, playground mode).
  *
  * Verifies the registered inspector mounts: the <adsr-graph> envelope editor
  * (which must DRAW the ADSR shape) plus the mode tab-bar, the phase/slope
@@ -12,7 +12,7 @@ describe('mod.source.adsr custom inspector', () => {
   jest.setTimeout(60000);
 
   it('mounts the envelope graph + controls and draws the curve', async () => {
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3500));   // boot + nano bundle discovery
 
     await page.evaluate(`(async () => {

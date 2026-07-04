@@ -1,5 +1,5 @@
 /**
- * Delayed-wire rendering E2E (resolume shell, local mode).
+ * Delayed-wire rendering E2E (resolume shell, playground mode).
  *
  * A 1-frame-delayed (feedback) wire — source at/below its dest in the stack — is
  * drawn differently: output-pip red, split into two bezier halves that animate
@@ -15,7 +15,7 @@ describe('delayed wire rendering', () => {
   it('renders a delayed wire as two alternating halves with a midpoint dot', async () => {
     page.removeAllListeners('console');
 
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     // bc ABOVE lfo, wire lfo.output -> bc.brightness: source is below dest -> delayed.

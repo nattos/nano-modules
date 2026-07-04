@@ -26,15 +26,23 @@ export interface BootOptions {
   width?: number;
   height?: number;
   /**
-   * When true, skip loading projects from IndexedDB and skip enabling
-   * IndexedDB persistence. The caller is responsible for supplying the
-   * sketch from another source (eg the remote NanoBarrel bridge in
-   * `resolume-app.ts`). Without this, stale local projects would be
-   * fed into the engine sync the moment effects are discovered — and
-   * mutations to the barrel-mirrored sketch would silently get
-   * persisted on top of unrelated local state.
+   * Which app surface is booting. Default `'ide'` (the effect IDE): load
+   * effect-IDE projects from IndexedDB and enable persistence.
+   *
+   * `'barrel'`: skip the project load AND persistence AND the engine
+   * callbacks — the remote NanoBarrel bridge is the source of truth
+   * (`resolume-app.ts` supplies the sketch). Stale local projects would
+   * otherwise feed the engine sync the moment effects are discovered, and
+   * mutations to the barrel-mirrored sketch would silently persist on top
+   * of unrelated local state.
+   *
+   * `'playground'`: the local shared-server playground. Keeps the engine
+   * callbacks (the worker simulates), but skips the effect-IDE project
+   * load — the playground expressly has its OWN IndexedDB store
+   * (`playgroundInstances`) and must not read effect-IDE sketches. The
+   * caller loads those instances and calls `enablePersistence()` itself.
    */
-  barrelMode?: boolean;
+  mode?: 'ide' | 'barrel' | 'playground';
 }
 
 export interface BootResult {
@@ -44,7 +52,8 @@ export interface BootResult {
 export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   const width = opts.width ?? 320;
   const height = opts.height ?? 180;
-  const barrelMode = !!opts.barrelMode;
+  const mode = opts.mode ?? 'ide';
+  const barrelMode = mode === 'barrel';
   const engine = new EngineProxy(width, height, barrelMode);
   appController.setEngine(engine);
 
@@ -124,7 +133,9 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
   }
-  if (!barrelMode) {
+  // Effect-IDE projects load ONLY in ide mode: barrel gets its sketch from
+  // the bridge; the playground has its own store (loaded by resolume-app).
+  if (mode === 'ide') {
     try {
       const projects = await loadAllProjects();
       if (Object.keys(projects).length > 0) {
@@ -137,7 +148,9 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
 
   // Subsequent mutations from this point on persist explicitly.
   // Barrel-mode editors don't persist — the remote bridge holds the truth.
-  if (!barrelMode) appController.enablePersistence();
+  // Playground persistence is enabled by the caller AFTER it loads its
+  // instances (so loaded values aren't echoed straight back to disk).
+  if (mode === 'ide') appController.enablePersistence();
 
   return { engine };
 }

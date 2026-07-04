@@ -1,5 +1,5 @@
 /**
- * Custom-inspector E2E for mod.source.spectral_lfo (resolume shell, local mode).
+ * Custom-inspector E2E for mod.source.spectral_lfo (resolume shell, playground mode).
  *
  * Verifies the registered inspector mounts on the effect card, the XY-pad
  * renders its t-SNE scatter canvas + handle, and dragging the pad writes
@@ -12,7 +12,7 @@ describe('spectral_lfo custom inspector', () => {
 
   it('mounts the XY-pad with a scatter backdrop and drag writes morph_x/y', async () => {
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {
@@ -121,7 +121,7 @@ describe('spectral_lfo custom inspector', () => {
     // then popped to defaults a frame after the engine ticked. The binding must
     // prefer the authored (loaded) value over the seeded default.
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {
@@ -164,7 +164,7 @@ describe('spectral_lfo custom inspector', () => {
 
   it('draws the satellite envelopes in the preview when satellites are on', async () => {
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {
@@ -223,7 +223,7 @@ describe('spectral_lfo custom inspector', () => {
 
   it('hides Spread/Rotation until satellites are enabled, then reveals them', async () => {
     page.removeAllListeners('console');
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {

@@ -1,5 +1,5 @@
 /**
- * Wire interaction E2E (resolume shell, local mode).
+ * Wire interaction E2E (resolume shell, playground mode).
  *
  * Wires are easy to delete by accident, so a single click SELECTS a wire
  * (highlights it) and a double click BREAKS it. Delete/Backspace also breaks a
@@ -13,7 +13,7 @@ describe('wire select / break', () => {
   it('single click selects a wire; double click breaks it', async () => {
     page.removeAllListeners('console');
 
-    await page.goto(`${BASE}/resolume/index.html`, { waitUntil: 'networkidle0' });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
     await new Promise(r => setTimeout(r, 3000));
 
     await page.evaluate(`(async () => {
