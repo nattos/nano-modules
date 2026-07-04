@@ -31,6 +31,8 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
+#include <effect_twitch_mask.h>
 #include "simulant_shaders.h"
 
 #include <cmath>
@@ -46,11 +48,14 @@ static constexpr float WAVE_CONTRAST  = -0.016f; // node 31: contrast = ws * thi
 static constexpr float SMOOTH_MAX_SIGMA = 0.03f; // smoothing=1 → soft pre-edge blur
 static constexpr float DILATE_SLOPE   = 0.7f;  // dilate front dims to 1-SLOPE at reach
 
-// Pass A — difference-blend injection.
+// Pass A — difference-blend injection. inject split into steady (const) +
+// time-dependent (flicker); the flicker is gated by an optional roaming mask.
 struct InjectUniforms {
-  float choke, inject_amount, scale, pos_x;
-  float pos_y, color_alpha, color_contrast, _p0;
-  float color_r, color_g, color_b, _p1;
+  float choke, inject_const, inject_flicker, scale;
+  float pos_x, pos_y, color_alpha, color_contrast;
+  float color_r, color_g, color_b, _p0;
+  float mask_amount, mask_anchor_x, mask_anchor_y, mask_radius;
+  float mask_softness, mask_shape, aspect_x, aspect_y;
 };
 
 // Spread (H/V) — the wave spread (Gaussian diffuse OR parabolic dilate) and the
@@ -109,6 +114,12 @@ struct State {
   float flicker_env_amount= 1.0f;   // A Flicker Env Amount
   float flicker_invert    = 0.0f;   // A Flicker Invert (false → env SUBTRACTED)
   float const_alpha       = 0.86f;  // A Const Alpha (steady injection → alive)
+  // Flicker spatial mask (roaming nano_twitch shape gating the flicker part)
+  float mask_amount       = 0.0f;   // 0 = global flicker (off), 1 = fully shaped
+  float mask_shape        = -0.5f;  // bipolar (see nano_twitch)
+  float mask_radius       = 0.3f;
+  float mask_softness     = 0.3f;
+  float mask_position     = 0.0f;   // -1 outer ring → +1 centre
   float color_r = 1.0f, color_g = 1.0f, color_b = 1.0f;  // Color Filter
   float color_alpha       = 1.0f;   // Color Filter Alpha
   float color_contrast    = 0.2f;   // Colorize contrast (node 159)
@@ -119,8 +130,13 @@ struct State {
   bool     trigger_prev  = false;
   float    flicker_env   = 0.0f;   // linear-release Attack/Release env
   float    flicker_base  = 0.0f;   // rerolled base level on each fire
-  float    inject_amount = 0.0f;   // resolved per tick, consumed in render
+  float    inject_const  = 0.0f;   // steady (const_alpha), resolved per tick
+  float    inject_flicker= 0.0f;   // time-dependent (base + env), resolved per tick
   uint32_t rng           = 0x1234567u;
+
+  // Roaming flicker-mask anchor, re-picked on each pulse (own PRNG).
+  fx::TwitchMask mask_twitch;
+  float mask_anchor_x = 0.0f, mask_anchor_y = 0.0f;
 
   float dt = 1.0f / 60.0f;
 };
@@ -129,16 +145,22 @@ static gpu::ComputePSO s_pso_inject;
 static gpu::ComputePSO s_pso_blur;
 static gpu::ComputePSO s_pso_lines;
 
-// Dilate Decay only applies to the Dilate spread kernel — hide it otherwise.
-static void apply_visibility(int spread_mode) {
-  state::setFieldHidden("spread_decay", spread_mode != 1);
+// Context-dependent fields: Dilate Decay only in Dilate mode; the flicker-mask
+// shape controls only when the mask is engaged.
+static void apply_visibility(const State* s) {
+  state::setFieldHidden("spread_decay", s->spread_mode != 1);
+  bool mask_off = s->mask_amount <= 0.0f;
+  state::setFieldHidden("mask_shape",    mask_off);
+  state::setFieldHidden("mask_radius",   mask_off);
+  state::setFieldHidden("mask_softness", mask_off);
+  state::setFieldHidden("mask_position", mask_off);
 }
 
 // Fires once after init + the initial state replay: set visibility from the
-// restored spread_mode so the inspector never flashes the wrong fields.
+// restored state so the inspector never flashes the wrong fields.
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
-  if (s) apply_visibility(s->spread_mode);
+  if (s) apply_visibility(s);
 }
 
 void module_init() {
@@ -234,6 +256,30 @@ void module_init() {
         .label("Flicker Invert", "FInv")
       .eventField("trigger", state::PrimaryInput)
 
+      // ---- Flicker Mask: confine the flicker to a roaming shape ----
+      .group("flicker_mask", "Flicker Mask")
+        .groupHelp("Spatially confine the flicker (only the time-dependent part — "
+                   "the steady *Const Alpha* stays global) to a roaming shape that "
+                   "jumps to a new spot on each pulse. *Amount* 0 = the whole frame "
+                   "flickers as before; 1 = pulses land only inside the shape. "
+                   "*Shape* is bipolar (radial ↔ linear ↔ solid, sign flips inside/"
+                   "outside); *Size* / *Softness* / *Position* place it.")
+      .floatField("mask_amount", 0.0f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "How much the flicker is confined to the shape (0 = global).")
+        .label("Mask Amount", "Mask")
+      .floatField("mask_shape", -0.5f, -1.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Bipolar shape: |1| radial, |0.5| linear, |0| solid; sign flips in/out.")
+        .label("Mask Shape", "MShape")
+      .floatField("mask_radius", 0.3f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Size of the flicker region.")
+        .label("Mask Size", "MSize")
+      .floatField("mask_softness", 0.3f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Feather of the region's edge.")
+        .label("Mask Softness", "MSoft")
+      .floatField("mask_position", 0.0f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+                  "Spawn bias: -1 outer ring → +1 centre.")
+        .label("Mask Position", "MPos")
+
       // ---- Line: threshold the accumulator ----
       .group("line", "Line")
         .groupHelp("Trace the accumulator into lines. *Smoothing* softens before the "
@@ -291,8 +337,12 @@ void module_init() {
   state::log("simulant: module initialized");
 }
 
+static uint32_t s_seed_counter = 0x9E3779B9u;   // distinct mask PRNG per instance
+
 void* create() {
   auto* s = new State();
+  s_seed_counter = s_seed_counter * 1664525u + 1013904223u;
+  s->mask_twitch.seed(s_seed_counter ^ 0x51EDCA7u);
   s->inject_uniform = gpu::Device::createBuffer(sizeof(InjectUniforms), gpu::BufferUsage::Uniform);
   s->blur_wh        = gpu::Device::createBuffer(sizeof(BlurUniforms),   gpu::BufferUsage::Uniform);
   s->blur_wv        = gpu::Device::createBuffer(sizeof(BlurUniforms),   gpu::BufferUsage::Uniform);
@@ -331,7 +381,8 @@ void init(void* self) {
   s->trigger_prev = false;
   s->flicker_env = 0.0f;
   s->flicker_base = 0.0f;
-  s->inject_amount = 0.0f;
+  s->inject_const = 0.0f;
+  s->inject_flicker = 0.0f;
   s->rng = 0x1234567u;
   s->initialized = true;
 }
@@ -339,6 +390,14 @@ void init(void* self) {
 static inline float rng_next(uint32_t& r) {
   r = r * 1664525u + 1013904223u;
   return (r >> 8) * (1.0f / 16777216.0f);
+}
+
+// Re-pick the roaming flicker-mask anchor (called on each flicker pulse).
+static void advance_mask_anchor(State* s) {
+  auto f = s->mask_twitch.update({ 1.0f, s->mask_shape, s->mask_radius,
+                                   s->mask_softness, s->mask_position });
+  s->mask_anchor_x = f.anchor_x;
+  s->mask_anchor_y = f.anchor_y;
 }
 
 void tick(void* self, double dt) {
@@ -357,6 +416,7 @@ void tick(void* self, double dt) {
     float r = rng_next(s->rng);
     s->flicker_base = s->flicker_min + (s->flicker_max - s->flicker_min) * r;
     s->flicker_env = 1.0f;
+    advance_mask_anchor(s);   // each pulse lights a new shaped region
   }
   s->fire_prev = fire;
 
@@ -364,11 +424,12 @@ void tick(void* self, double dt) {
   s->flicker_env -= (float)dt / (s->flicker_release > 1e-3f ? s->flicker_release : 1e-3f);
   if (s->flicker_env < 0.0f) s->flicker_env = 0.0f;
 
-  // Resolve injectAmount (node 110 Add → Hub → mixer 20 opacity2). The env is
-  // SUBTRACTED unless Invert is on — the stock quirk that makes defaults decay.
+  // Resolve the injection (node 110 Add → Hub → mixer 20 opacity2), split so the
+  // spatial mask can gate only the FLICKER part. The env is SUBTRACTED unless
+  // Invert is on — the stock quirk that makes defaults decay.
   float sign = (s->flicker_invert > 0.5f) ? 1.0f : -1.0f;
-  float amt = s->flicker_base + s->flicker_env * s->flicker_env_amount * sign + s->const_alpha;
-  s->inject_amount = amt < 0.0f ? 0.0f : (amt > 1.0f ? 1.0f : amt);
+  s->inject_const   = s->const_alpha;
+  s->inject_flicker = s->flicker_base + s->flicker_env * s->flicker_env_amount * sign;
 }
 
 void on_resolume_param(void*, long long, double) {}
@@ -399,6 +460,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "flicker_release"))    s->flicker_release = state::patchFloat(i);
     else if (state::pathIs(p, l, "flicker_env_amount")) s->flicker_env_amount = state::patchFloat(i);
     else if (state::pathIs(p, l, "flicker_invert"))     s->flicker_invert = state::patchBool(i) ? 1.0f : 0.0f;
+    else if (state::pathIs(p, l, "mask_amount"))      { s->mask_amount = state::patchFloat(i); vis_dirty = true; }
+    else if (state::pathIs(p, l, "mask_shape"))         s->mask_shape = state::patchFloat(i);
+    else if (state::pathIs(p, l, "mask_radius"))        s->mask_radius = state::patchFloat(i);
+    else if (state::pathIs(p, l, "mask_softness"))      s->mask_softness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "mask_position"))      s->mask_position = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_strength"))      s->line_strength = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_width"))         s->line_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "levels"))             s->levels = state::patchFloat(i);
@@ -414,11 +480,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     }
     else if (state::pathIs(p, l, "trigger")) {
       bool t = state::patchFloat(i) != 0.0f;
-      if (t && !s->trigger_prev) s->flicker_env = 1.0f;  // rising edge → full pulse
+      if (t && !s->trigger_prev) { s->flicker_env = 1.0f; advance_mask_anchor(s); }  // rising edge
       s->trigger_prev = t;
     }
   }
-  if (vis_dirty) apply_visibility(s->spread_mode);
+  if (vis_dirty) apply_visibility(s);
 }
 
 static bool ensure_field(State* s, int vp_w, int vp_h) {
@@ -483,9 +549,11 @@ void render(void* self, int vp_w, int vp_h) {
   int rd = s->cur, wr = s->cur ^ 1;
 
   // --- Pass A: difference-blend injection → accumRaw (node 20 output) ---
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
   InjectUniforms iu = {};
   iu.choke          = s->choke;
-  iu.inject_amount  = s->inject_amount;
+  iu.inject_const   = s->inject_const;    // steady Const Alpha (global)
+  iu.inject_flicker = s->inject_flicker;  // time-dependent flicker (maskable)
   iu.scale          = s->input_scale;   // full-res injection — Wire used A Scale
                                         // × 0.5 (node 148); our pipeline is more
                                         // capable, so we inject at 1:1.
@@ -496,6 +564,14 @@ void render(void* self, int vp_w, int vp_h) {
   iu.color_r        = s->color_r;
   iu.color_g        = s->color_g;
   iu.color_b        = s->color_b;
+  iu.mask_amount    = s->mask_amount;
+  iu.mask_anchor_x  = s->mask_anchor_x;
+  iu.mask_anchor_y  = s->mask_anchor_y;
+  iu.mask_radius    = s->mask_radius;
+  iu.mask_softness  = s->mask_softness;
+  iu.mask_shape     = s->mask_shape;
+  iu.aspect_x       = ax;
+  iu.aspect_y       = ay;
   s->inject_uniform.writeOne(iu);
   {
     auto cp = gpu::ComputePass::begin();

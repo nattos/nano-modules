@@ -9,12 +9,16 @@
 //   inject    = colorize(transform(input))               # nodes 36,159,167
 //   accumRaw  = lerp(fadedPrev, abs(fadedPrev-inject), injectAmount)   # node 20
 //
-// accumRaw (node 20's output) feeds BOTH the blur→delay feedback AND the line
-// extractor. injectAmount is the flicker-envelope opacity resolved on the CPU
-// (see main.cpp) — with the patch's stock knobs it is <=0 (the env is SUBTRACTED
-// by default), which clamps to 0, so a fresh drop just decays: a faithful quirk.
+// injectAmount is split into a STEADY part (Const Alpha) and the time-dependent
+// FLICKER part (base + envelope). Only the flicker is gated by an optional
+// roaming spatial MASK (a nano_twitch shape: size / softness / position, re-
+// anchored on each flicker pulse), so pulses can light a shaped region instead
+// of the whole frame. mask_amount blends global(1) → shaped selector; 0 = off,
+// which reproduces the original global flicker exactly.
 
 #include "nano_color.hlsl"
+#include "nano_coords.hlsl"
+#include "nano_twitch.hlsl"
 
 Texture2D<float4>   delayPrev : register(t0);   // feedback buffer (blurred+decayed)
 Texture2D<float4>   inputTex  : register(t1);   // incoming video
@@ -22,9 +26,11 @@ SamplerState        samp      : register(s2);   // Linear + ClampToEdge
 RWTexture2D<float4> accumRaw  : register(u3);
 
 cbuffer Uniforms : register(b4) {
-  float choke, inject_amount, scale, pos_x;   // feedback + placement
-  float pos_y, color_alpha, color_contrast, _p0;
-  float color_r, color_g, color_b, _p1;
+  float choke, inject_const, inject_flicker, scale;
+  float pos_x, pos_y, color_alpha, color_contrast;
+  float color_r, color_g, color_b, _p0;
+  float mask_amount, mask_anchor_x, mask_anchor_y, mask_radius;
+  float mask_softness, mask_shape, aspect_x, aspect_y;
 };
 
 [numthreads(8, 8, 1)]
@@ -52,8 +58,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
     inj = lerp(inj, colorized, color_alpha);
   }
 
-  // DIFFERENCE blend feedback — node 20. lerp extrapolates for injectAmount<0
-  // (the stock env-subtract case); clamp to Resolume's [0,1] display range.
+  // Spatial flicker mask: gate the time-dependent flicker part by a roaming
+  // twitch shape; the steady Const Alpha stays global. mask_amount blends the
+  // global weight (1) toward the shaped selector (1 inside the shape).
+  float w = 1.0;
+  if (mask_amount > 1e-4) {
+    float2 sq = nano_uv_to_cover_square(uv, float2(aspect_x, aspect_y));
+    float sel = 1.0 - nano_twitch_mask(sq, float2(mask_anchor_x, mask_anchor_y),
+                                       mask_radius, mask_softness, mask_shape, 1.0);
+    w = lerp(1.0, sel, mask_amount);
+  }
+  float inject_amount = clamp(inject_const + inject_flicker * w, 0.0, 1.0);
+
+  // DIFFERENCE blend feedback — node 20.
   float3 diff  = abs(fadedPrev - inj);
   float3 accum = lerp(fadedPrev, diff, inject_amount);
   accum = clamp(accum, 0.0, 1.0);
