@@ -2791,6 +2791,65 @@ TEST_CASE("arena repro: pasted legacy filter chain survives viewport thrash",
   CHECK(px.size() == (size_t)W1 * H1 * 4);
 }
 
+// Backend-level golden for buffer versioning (write-after-bind): inside a
+// submit batch, a CPU write to a buffer that already has dispatched readers
+// must NOT be observed by them — the backend swaps in a fresh backing buffer
+// so each dispatch reads the latest write that PRECEDED its encode. This is
+// what papers over the native/web submit asymmetry (effect-called submit() is
+// a no-op in-batch natively but a real flush on web); without it the second
+// write would win for BOTH dispatches (the lut_collection all-cubes-identical
+// bug class).
+TEST_CASE("write-after-bind versions the buffer inside a submit batch",
+          "[effect_render][gpu_backend]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  const char* kCopyMSL = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+kernel void copy_word(const device uint* src [[buffer(0)]],
+                      device uint* dst       [[buffer(1)]],
+                      uint3 gid [[thread_position_in_grid]]) {
+  if (gid.x == 0 && gid.y == 0) dst[0] = src[0];
+}
+)MSL";
+  int32_t shader = backend->createShaderModule(kCopyMSL);
+  REQUIRE(shader > 0);
+  int32_t pso = backend->createComputePSO(shader, "copy_word");
+  REQUIRE(pso > 0);
+
+  int32_t src  = backend->createBuffer(4, 0);
+  int32_t dstA = backend->createBuffer(4, 0);
+  int32_t dstB = backend->createBuffer(4, 0);
+  REQUIRE(src > 0); REQUIRE(dstA > 0); REQUIRE(dstB > 0);
+
+  auto writeU32 = [&](int32_t buf, uint32_t v) {
+    backend->writeBuffer(buf, 0, (const uint8_t*)&v, 4);
+  };
+  auto copyPass = [&](int32_t from, int32_t to) {
+    int32_t pass = backend->beginComputePass();
+    backend->computeSetPSO(pass, pso);
+    backend->computeSetBuffer(pass, from, 0, 0);
+    backend->computeSetBuffer(pass, to, 0, 1);
+    backend->computeDispatch(pass, 1, 1, 1);
+    backend->endComputePass(pass);
+  };
+
+  backend->beginSubmitBatch();
+  writeU32(src, 111);          // legit: set→write→dispatch order (no version)
+  copyPass(src, dstA);         // reads 111
+  writeU32(src, 222);          // hazard: src has a dispatched reader → version
+  copyPass(src, dstB);         // reads 222
+  backend->endSubmitBatch();
+
+  uint32_t a = 0, b = 0;
+  REQUIRE(backend->readBuffer(dstA, 0, &a, 4) == 4);
+  REQUIRE(backend->readBuffer(dstB, 0, &b, 4) == 4);
+  INFO("dstA=" << a << " dstB=" << b);
+  CHECK(a == 111);   // without versioning: 222 (last write won)
+  CHECK(b == 222);
+}
+
 // REGRESSION: lut_collection bakes its 13 preset cubes on the first render —
 // inside the executor's whole-frame command batch, where effect-called
 // gpu::Device::submit() is a no-op and gpu_write_buffer is an immediate CPU

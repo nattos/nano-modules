@@ -17,6 +17,10 @@ enum class ResourceType { Buffer, Texture, Library, ComputePSO, RenderPSO,
 struct Resource {
   ResourceType type;
   id obj = nil;
+  // Encode-generation of the last time this resource was bound into GPU work
+  // (see encodeGen_). Lets writeBuffer/writeTexture detect a CPU write racing
+  // encoded-but-uncommitted work that references the resource.
+  uint64_t lastBoundGen = 0;
 };
 
 class MetalBackend : public GPUBackend {
@@ -352,6 +356,8 @@ public:
                    toTexture:d destinationSlice:0 destinationLevel:0
             destinationOrigin:MTLOriginMake(0, 0, 0)];
     [blit endEncoding];
+    markBound(src);
+    markBound(dst);
   }
 
   int32_t createRenderPSO(int32_t vsHandle, const std::string& vsEntry,
@@ -503,8 +509,36 @@ public:
 
   void writeBuffer(int32_t bufHandle, uint32_t offset,
                    const uint8_t* data, uint32_t len) override {
-    id<MTLBuffer> buf = getAs<id<MTLBuffer>>(bufHandle);
+    auto it = resources_.find(bufHandle);
+    if (it == resources_.end()) return;
+    id<MTLBuffer> buf = (id<MTLBuffer>)it->second.obj;
     if (!buf) return;
+    // Version-on-write-after-bind: a CPU write is immediate, but encoded work
+    // in the open command buffer executes later — a write to a buffer that
+    // already has encoded readers this generation would be seen by ALL of them
+    // (last-write-wins; effect-called submit() is a no-op inside the frame
+    // batch on native, unlike web where it really flushes). Paper over the
+    // platform difference by swapping in a fresh backing buffer: the encoded
+    // work keeps the old MTLBuffer (the command buffer retains it), future
+    // encodes and this write see the new one. Semantics on both platforms
+    // become "each dispatch reads the latest write that preceded its encode".
+    if (cmdBuffer_ && it->second.lastBoundGen == encodeGen_) {
+      id<MTLBuffer> nb = [device_ newBufferWithLength:[buf length]
+                                              options:MTLResourceStorageModeShared];
+      if (nb) {
+        memcpy([nb contents], [buf contents], [buf length]);
+        it->second.obj = nb;
+        it->second.lastBoundGen = 0;
+        if (versionLogCount_ < 16) {
+          NSLog(@"[metal_backend] buffer %d written after being bound to encoded "
+                @"GPU work this frame — versioned the backing buffer (%u bytes). "
+                @"Prefer one buffer per dispatch.%s",
+                bufHandle, (uint32_t)[buf length],
+                ++versionLogCount_ == 16 ? " (further notes suppressed)" : "");
+        }
+        buf = nb;
+      }
+    }
     memcpy((uint8_t*)[buf contents] + offset, data, len);
   }
 
@@ -538,6 +572,7 @@ public:
     // which silently drops earlier passes' writes.
     if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
     computeEncoder_ = [cmdBuffer_ computeCommandEncoder];
+    passBinds_.clear();
     if (debugLog_) NSLog(@"[metal_backend] beginComputePass enc=%p cmd=%p",
                           computeEncoder_, cmdBuffer_);
     return 1;
@@ -560,7 +595,10 @@ public:
     id<MTLBuffer> b = getAs<id<MTLBuffer>>(buf);
     if (debugLog_) NSLog(@"[metal_backend] setBuffer handle=%d slot=%d buf=%p",
                           buf, slot, b);
-    if (b && computeEncoder_) [computeEncoder_ setBuffer:b offset:offset atIndex:slot];
+    if (b && computeEncoder_) {
+      [computeEncoder_ setBuffer:b offset:offset atIndex:slot];
+      passBinds_.push_back(buf);
+    }
   }
 
   void computeSetTexture(int32_t pass, int32_t textureHandle, int32_t slot, int32_t access) override {
@@ -571,7 +609,10 @@ public:
                           tex ? (unsigned long)[tex width] : 0,
                           tex ? (unsigned long)[tex height] : 0,
                           tex ? (unsigned long)[tex pixelFormat] : 0);
-    if (tex && computeEncoder_) [computeEncoder_ setTexture:tex atIndex:slot];
+    if (tex && computeEncoder_) {
+      [computeEncoder_ setTexture:tex atIndex:slot];
+      passBinds_.push_back(textureHandle);
+    }
   }
 
   void computeDispatch(int32_t pass, uint32_t x, uint32_t y, uint32_t z) override {
@@ -590,6 +631,9 @@ public:
     MTLSize threadsPerGroup = currentComputeThreadgroup_;
     MTLSize threadgroups = MTLSizeMake(x, y, z);
     [computeEncoder_ dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerGroup];
+    // Only NOW are the pass's bindings actually read by encoded work — marking
+    // at bind time would falsely version the legit set→write→dispatch order.
+    for (int32_t h : passBinds_) markBound(h);
   }
 
   void endComputePass(int32_t pass) override {
@@ -598,6 +642,7 @@ public:
       [computeEncoder_ endEncoding];
       computeEncoder_ = nil;
       currentComputePSO_ = nil;
+      passBinds_.clear();
     }
   }
 
@@ -617,6 +662,8 @@ public:
     desc.colorAttachments[0].clearColor = MTLClearColorMake(cr, cg, cb, ca);
 
     renderEncoder_ = [cmdBuffer_ renderCommandEncoderWithDescriptor:desc];
+    passBinds_.clear();
+    markBound(textureHandle);   // the clear/store writes it even with no draws
     return 1;
   }
 
@@ -631,6 +678,8 @@ public:
     desc.colorAttachments[0].storeAction = MTLStoreActionStore;
 
     renderEncoder_ = [cmdBuffer_ renderCommandEncoderWithDescriptor:desc];
+    passBinds_.clear();
+    markBound(textureHandle);
     return 1;
   }
 
@@ -663,7 +712,10 @@ public:
                              uint32_t offset, int32_t slot) override {
     (void)pass;
     id<MTLBuffer> b = getAs<id<MTLBuffer>>(buf);
-    if (b && renderEncoder_) [renderEncoder_ setVertexBuffer:b offset:offset atIndex:slot];
+    if (b && renderEncoder_) {
+      [renderEncoder_ setVertexBuffer:b offset:offset atIndex:slot];
+      passBinds_.push_back(buf);
+    }
   }
 
   void renderSetBuffer(int32_t pass, int32_t buf, int32_t slot) override {
@@ -675,13 +727,17 @@ public:
     // reads it. Unused bindings on a stage are harmless.
     [renderEncoder_ setVertexBuffer:b offset:0 atIndex:slot];
     [renderEncoder_ setFragmentBuffer:b offset:0 atIndex:slot];
+    passBinds_.push_back(buf);
   }
 
   void renderSetTexture(int32_t pass, int32_t textureHandle, int32_t slot,
                         int32_t access) override {
     (void)pass; (void)access;
     id<MTLTexture> t = getAs<id<MTLTexture>>(textureHandle);
-    if (t && renderEncoder_) [renderEncoder_ setFragmentTexture:t atIndex:slot];
+    if (t && renderEncoder_) {
+      [renderEncoder_ setFragmentTexture:t atIndex:slot];
+      passBinds_.push_back(textureHandle);
+    }
   }
 
   void renderSetSampler(int32_t pass, int32_t samplerHandle, int32_t slot) override {
@@ -697,6 +753,7 @@ public:
                        vertexStart:0
                        vertexCount:vertexCount
                      instanceCount:instanceCount];
+    for (int32_t h : passBinds_) markBound(h);   // see computeDispatch
   }
 
   void endRenderPass(int32_t pass) override {
@@ -704,6 +761,7 @@ public:
     if (renderEncoder_) {
       [renderEncoder_ endEncoding];
       renderEncoder_ = nil;
+      passBinds_.clear();
     }
   }
 
@@ -737,6 +795,7 @@ public:
       lastCommitted_ = cmdBuffer_;
     }
     cmdBuffer_ = nil;
+    ++encodeGen_;   // binds recorded against the committed buffer are no longer hazards
   }
 
   void submit() override {
@@ -754,6 +813,7 @@ public:
       logCmdBufferError(cmdBuffer_);
       lastCommitted_ = nil;
       cmdBuffer_ = nil;
+      ++encodeGen_;
     }
   }
 
@@ -1049,9 +1109,20 @@ public:
   void writeTexture(int32_t textureHandle,
                     uint32_t w, uint32_t h,
                     const uint8_t* bytes, uint32_t byteCount) override {
-    id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
+    auto rit = resources_.find(textureHandle);
+    id<MTLTexture> tex = rit != resources_.end() ? (id<MTLTexture>)rit->second.obj : nil;
     if (!tex || !bytes) return;
     if (byteCount < w * h * 4) return;
+    // Same hazard writeBuffer versions away, but shadowing a texture is too
+    // expensive to do silently — warn instead (last-write-wins: every encoded
+    // reader this frame sees THIS upload, not the one preceding its encode).
+    if (cmdBuffer_ && rit->second.lastBoundGen == encodeGen_ && versionLogCount_ < 16) {
+      NSLog(@"[metal_backend] WARNING: texture %d rewritten after being bound to "
+            @"encoded GPU work this frame — earlier encodes will read the NEW "
+            @"pixels (last-write-wins). Upload to a fresh texture instead.%s",
+            textureHandle,
+            ++versionLogCount_ == 16 ? " (further notes suppressed)" : "");
+    }
     [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
            mipmapLevel:0
              withBytes:bytes
@@ -1089,10 +1160,25 @@ private:
     return (T)it->second.obj;
   }
 
+  // Record that `handle` was bound into the currently-open command buffer
+  // (encode generation). writeBuffer versions on a write after this;
+  // writeTexture warns.
+  void markBound(int32_t handle) {
+    auto it = resources_.find(handle);
+    if (it != resources_.end()) it->second.lastBoundGen = encodeGen_;
+  }
+
   id<MTLDevice> device_;
   id<MTLCommandQueue> queue_;
   std::map<int32_t, Resource> resources_;
   int32_t nextHandle_ = 1;
+  // Bumped whenever the open command buffer is committed; a resource whose
+  // lastBoundGen equals the current gen has encoded-but-uncommitted readers.
+  uint64_t encodeGen_ = 1;
+  int versionLogCount_ = 0;
+  // Handles bound in the currently-open pass; marked as hazards only at
+  // dispatch/draw (when encoded work actually reads them).
+  std::vector<int32_t> passBinds_;
 
   MTLPixelFormat surfaceFormat_ = MTLPixelFormatRGBA8Unorm;
   int32_t surfaceHandle_ = -1;

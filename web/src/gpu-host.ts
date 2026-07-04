@@ -29,6 +29,11 @@ type HandleType = 'buffer' | 'texture' | 'sampler' | 'shader' | 'compute_pipelin
 interface HandleEntry {
   type: HandleType;
   resource: any;
+  // Encode-sequence of the last time this resource was bound into GPU work
+  // this submit cycle (see encodeSeq_). Lets writeBuffer version the backing
+  // buffer instead of letting encoded-but-unsubmitted readers observe the new
+  // contents (queue.writeBuffer executes before the frame's submit).
+  lastBoundSeq?: number;
 }
 
 // --- Explicit bind group layouts ---
@@ -202,6 +207,23 @@ export class GPUHost {
   private get(handle: number): any {
     return this.handles.get(handle)?.resource;
   }
+
+  // Bumped when the shared frame encoder is submitted (flush). A resource
+  // whose lastBoundSeq equals the current seq has encoded-but-unsubmitted
+  // readers in this.encoder.
+  private encodeSeq_ = 1;
+  private versionLogCount_ = 0;
+
+  /** Record that `handle` was bound into work encoded this submit cycle. */
+  private markBound(handle: number) {
+    const entry = this.handles.get(handle);
+    if (entry) entry.lastBoundSeq = this.encodeSeq_;
+  }
+
+  // Buffer handles bound in the currently-open pass; marked as hazards only at
+  // dispatch/draw (when encoded work actually reads them) — marking at bind
+  // time would falsely version the legit set→write→dispatch order.
+  private passBinds_ = new Set<number>();
 
   /** Get the underlying GPUTexture for a handle (for external blit operations). */
   getTextureByHandle(handle: number): GPUTexture | null {
@@ -627,8 +649,40 @@ export class GPUHost {
   // --- Buffer operations ---
 
   writeBuffer(bufHandle: number, offset: number, data: Uint8Array) {
-    const buffer = this.get(bufHandle) as GPUBuffer;
+    const entry = this.handles.get(bufHandle);
+    let buffer = entry?.resource as GPUBuffer | undefined;
     if (!buffer) return;
+    // Version-on-write-after-bind — mirrors the native metal backend. All of
+    // this frame's queue.writeBuffer calls execute BEFORE the frame encoder's
+    // submit, so a write to a buffer that already has encoded readers this
+    // cycle would be seen by ALL of them (last-write-wins). Swap in a fresh
+    // backing buffer: encoded work keeps the old GPUBuffer (its bind groups
+    // hold it), this write and future encodes see the new one — "each dispatch
+    // reads the latest write that preceded its encode", same as native.
+    if (this.encoder && entry!.lastBoundSeq === this.encodeSeq_) {
+      const nb = this.device.createBuffer({ size: buffer.size, usage: buffer.usage });
+      const end = offset + data.length;
+      const partial = offset > 0 || end < buffer.size;
+      if (partial
+          && (buffer.usage & GPUBufferUsage.COPY_SRC)
+          && !this.computePassEncoder && !this.renderPassEncoder
+          && offset % 4 === 0 && end % 4 === 0 && buffer.size % 4 === 0) {
+        // Preserve the unwritten ranges. The copies are encoded now (ordered
+        // before any later dispatch) but execute at submit — after the
+        // queue.writeBuffer below — which is fine: the ranges are disjoint.
+        if (offset > 0) this.encoder.copyBufferToBuffer(buffer, 0, nb, 0, offset);
+        if (end < buffer.size) this.encoder.copyBufferToBuffer(buffer, end, nb, end, buffer.size - end);
+      } else if (partial) {
+        console.warn(`[gpu] buffer ${bufHandle} partially rewritten after being bound this frame; unwritten bytes are zero in the new backing`);
+      }
+      entry!.resource = nb;
+      entry!.lastBoundSeq = 0;
+      if (this.versionLogCount_ < 16) {
+        this.versionLogCount_++;
+        console.debug(`[gpu] buffer ${bufHandle} written after being bound to encoded GPU work this frame — versioned the backing buffer (${buffer.size} bytes). Prefer one buffer per dispatch.${this.versionLogCount_ === 16 ? ' (further notes suppressed)' : ''}`);
+      }
+      buffer = nb;
+    }
     this.device.queue.writeBuffer(buffer, offset, data as Uint8Array<ArrayBuffer>);
   }
 
@@ -655,6 +709,7 @@ export class GPUHost {
     this.computePassBuffers.clear();
     this.computePassTextures.clear();
     this.computePassSamplers.clear();
+    this.passBinds_.clear();
     return 1; // pass handle (only one at a time)
   }
 
@@ -669,6 +724,7 @@ export class GPUHost {
     const buffer = this.get(bufHandle) as GPUBuffer;
     if (!buffer) return;
     this.computePassBuffers.set(slot, buffer);
+    this.passBinds_.add(bufHandle);
   }
 
   computeSetTexture(_pass: number, texHandle: number, slot: number, access: number) {
@@ -722,6 +778,7 @@ export class GPUHost {
       });
       this.computePassEncoder.setBindGroup(0, bindGroup);
       this.computePassEncoder.dispatchWorkgroups(x, y, z);
+      for (const h of this.passBinds_) this.markBound(h);
       return;
     }
     const entries = this.buildBindGroupEntries(this.computePassEntry, /*forCompute=*/true);
@@ -733,6 +790,7 @@ export class GPUHost {
       this.computePassEncoder.setBindGroup(0, bindGroup);
     }
     this.computePassEncoder.dispatchWorkgroups(x, y, z);
+    for (const h of this.passBinds_) this.markBound(h);
   }
 
   endComputePass(_pass: number) {
@@ -743,6 +801,7 @@ export class GPUHost {
       this.computePassBuffers.clear();
       this.computePassTextures.clear();
       this.computePassSamplers.clear();
+      this.passBinds_.clear();
     }
   }
 
@@ -832,6 +891,7 @@ export class GPUHost {
     });
     this.renderPassEntry = null;
     this.renderPassBuffers.clear();
+    this.passBinds_.clear();
     return 1;
   }
 
@@ -855,6 +915,7 @@ export class GPUHost {
     });
     this.renderPassEntry = null;
     this.renderPassBuffers.clear();
+    this.passBinds_.clear();
     return 1;
   }
 
@@ -886,6 +947,7 @@ export class GPUHost {
     this.renderPassEncoder = encoder.beginRenderPass({ colorAttachments: attachments });
     this.renderPassEntry = null;
     this.renderPassBuffers.clear();
+    this.passBinds_.clear();
     return 1;
   }
 
@@ -900,6 +962,7 @@ export class GPUHost {
     const buffer = this.get(bufHandle) as GPUBuffer;
     if (!buffer || !this.renderPassEncoder) return;
     this.renderPassEncoder.setVertexBuffer(slot, buffer, offset);
+    this.passBinds_.add(bufHandle);
   }
 
   /** Bind a storage/uniform buffer to the active render pipeline. */
@@ -907,6 +970,7 @@ export class GPUHost {
     const buffer = this.get(bufHandle) as GPUBuffer;
     if (!buffer) return;
     this.renderPassBuffers.set(slot, buffer);
+    this.passBinds_.add(bufHandle);
   }
 
   renderDraw(_pass: number, vertexCount: number, instanceCount: number) {
@@ -922,6 +986,7 @@ export class GPUHost {
       }
     }
     this.renderPassEncoder.draw(vertexCount, instanceCount);
+    for (const h of this.passBinds_) this.markBound(h);
   }
 
   endRenderPass(_pass: number) {
@@ -930,6 +995,7 @@ export class GPUHost {
       this.renderPassEncoder = null;
       this.renderPassEntry = null;
       this.renderPassBuffers.clear();
+      this.passBinds_.clear();
     }
   }
 
@@ -1001,6 +1067,9 @@ export class GPUHost {
     if (this.encoder) {
       this.device.queue.submit([this.encoder.finish()]);
       this.encoder = null;
+      // Binds recorded against the submitted encoder are no longer
+      // write-after-bind hazards.
+      this.encodeSeq_++;
       // Map any readbacks whose copy just rode this submit.
       this.mapPendingReadbacks();
     }

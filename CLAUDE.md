@@ -159,3 +159,4 @@ Nodes are defined with `defineNode`/`definePrimitiveNode` from `src/structor/typ
 - Feedback loops use `cycleBreakingPorts` + two-phase execution (`execute` then `consolidate`)
 - Native auto-connect (`sketch_augment`) **skips** chain entries lacking `"type":"module"` — a test sketch missing it silently generates no struct/texture rails (effect reads nothing). Web sketches already include it
 - After editing effect logic or shaders, rebuild the bundle before testing — both native and web load the built `.wasm`
+- Rewriting a GPU **buffer** a dispatch already read this frame is safe on both platforms (the backend versions the backing buffer; each dispatch sees the latest write preceding its encode) — but rewriting a **texture** in that position is last-write-wins and only logs a warning: upload to a fresh texture instead. Never rely on effect-called `gpu::Device::submit()` for ordering — it's a no-op inside the native frame batch (a real flush on web)
