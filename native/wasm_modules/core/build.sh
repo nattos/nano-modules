@@ -113,6 +113,7 @@ wasm_build \
   ../mod_smooth/main.cpp \
   ../mod_delay/main.cpp \
   ../mod_envelope/main.cpp \
+  ../mod_threshold/main.cpp \
   ../env_lfo/main.cpp \
   ../env_adsr/main.cpp \
   ../trigger_beat/main.cpp

@@ -108,6 +108,8 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_envelope)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_threshold)
+
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
@@ -579,6 +581,17 @@ void nano_module_main() {
         "modulation,envelope,remap,curve,shaper,draw,easing",
         "la-drafting-compass",
         NANO_INSTANCE_LIFECYCLE(mod_envelope),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.threshold",
+        "Threshold",
+        "Unary modulation shaper: compares a modulation value against a threshold and emits a gate (Hold) or a one-frame edge trigger (Up / Down / Any Edge)",
+        "mod",
+        "modulation,threshold,gate,comparator,edge,trigger,schmitt,shaper",
+        "la-toggle-on",
+        NANO_INSTANCE_LIFECYCLE(mod_threshold),
     });
 
     nano::registerEffect({
