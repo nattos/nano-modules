@@ -1,18 +1,19 @@
-// filter.sim.propagate — Pass 0: blur the seed (low-pass the input).
+// filter.sim.propagate — separable Gaussian blur, used TWICE in the pipeline:
 //
-// Clean contours require a SMOOTH field. The dominant source of high-frequency
-// detail is re-seeding the raw, full-detail input every frame — its texture /
-// noise turns into thousands of tiny closed-loop contours (the "fragmented"
-// look). So before the input ever enters the sim we low-pass its luma with a
-// separable Gaussian (this is the Blur / Resize stage the original Simulant
-// leaned on). Run twice: horizontal then vertical.
+//  (A) Blur the SEED (low-pass the input). Clean contours require a smooth field,
+//      and re-seeding the raw, full-detail input every frame turns its texture /
+//      noise into thousands of tiny closed-loop contours (the "fragmented" look).
+//      is_input=1 reads rgb→luma on the first (horizontal) pass.
 //
-//   pass 1 (is_input=1): read the raw input rgb → luma, blur along X → scratch.
-//   pass 2 (is_input=0): read the scratch .r, blur along Y → seed texture.
+//  (B) Blur the FIELD each frame. The big advection step samples far away, so any
+//      per-cell noise in near-flat regions becomes random directions → a blocky
+//      dither. Keeping the field smooth (is_input=0, reads .r) removes it at the
+//      root while keeping the propagating fronts.
 //
-// Output is RGBA16F with the smoothed luma in .r. Tap spacing scales with sigma
-// so a wide blur stays cheap; the field is dynamic so the mild tap-slide shimmer
-// is invisible.
+// Runs twice per use: horizontal then vertical. Output is RGBA16F with the
+// blurred value in .r; .b is carried through from the CENTER tap unblurred (so
+// the field's stored luma survives the field blur). Tap spacing scales with
+// sigma so a wide blur stays cheap; the field is dynamic so tap-slide is invisible.
 
 #include "nano_color.hlsl"
 
@@ -37,11 +38,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= W || gid.y >= H) return;
   float2 uv = (float2(gid.xy) + 0.5) / float2(W, H);
 
-  // Sample-and-luma helper inlined below (HLSL has no closures).
+  // Center tap — its .b (stored luma) is carried through unblurred.
+  float4 center = srcTex.SampleLevel(samp, uv, 0);
+
   if (sigma_uv <= 1e-6) {
-    float4 c = srcTex.SampleLevel(samp, uv, 0);
-    float v = (is_input > 0.5) ? nano_luminance(c.rgb) : c.r;
-    dstTex[gid.xy] = float4(v, 0.0, 0.0, 0.0);
+    float v = (is_input > 0.5) ? nano_luminance(center.rgb) : center.r;
+    dstTex[gid.xy] = float4(v, 0.0, center.b, 0.0);
     return;
   }
 
@@ -55,5 +57,5 @@ void main(uint3 gid : SV_DispatchThreadID) {
     acc += v * w;
     wsum += w;
   }
-  dstTex[gid.xy] = float4(acc / max(wsum, 1e-5), 0.0, 0.0, 0.0);
+  dstTex[gid.xy] = float4(acc / max(wsum, 1e-5), 0.0, center.b, 0.0);
 }

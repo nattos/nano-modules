@@ -48,7 +48,9 @@ static constexpr float RETAIN_LO = 0.55f;   // damping=1 → fast fade
 static constexpr float FEED_SCALE = 0.4f;   // continuous structure feed
 static constexpr float FLICK_TAU  = 0.08f;  // flicker pulse half-life (s)
 static constexpr float F_CLAMP    = 4.0f;   // field magnitude clamp
-static constexpr float MAX_SIGMA  = 0.10f;  // smooth=1 → seed blur sigma (uv)
+static constexpr float MAX_SIGMA   = 0.10f;  // smooth=1 → seed blur sigma (uv)
+static constexpr float FIELD_SIGMA = 0.005f; // per-frame field blur (kills the
+                                             // big-step advection dither)
 
 // Pass 0 — separable blur of the seed (low-pass the input for clean contours).
 struct BlurSeedUniforms {
@@ -87,6 +89,8 @@ struct State {
   gpu::Buffer  comp_uniform;
   gpu::Buffer  blur_uniform_h;
   gpu::Buffer  blur_uniform_v;
+  gpu::Buffer  blur_uniform_fh;
+  gpu::Buffer  blur_uniform_fv;
   gpu::Sampler samp_lin;         // Linear + ClampToEdge (input + field advect)
   bool initialized = false;
 
@@ -263,9 +267,11 @@ void* create() {
   auto* s = new State();
   s->sim_uniform    = gpu::Device::createBuffer(sizeof(SimUniforms),  gpu::BufferUsage::Uniform);
   s->comp_uniform   = gpu::Device::createBuffer(sizeof(CompUniforms), gpu::BufferUsage::Uniform);
-  s->blur_uniform_h = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
-  s->blur_uniform_v = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
-  s->samp_lin       = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  s->blur_uniform_h  = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
+  s->blur_uniform_v  = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
+  s->blur_uniform_fh = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
+  s->blur_uniform_fv = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
+  s->samp_lin        = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   return s;
 }
 
@@ -280,6 +286,8 @@ void destroy(void* self) {
   s->comp_uniform.release();
   s->blur_uniform_h.release();
   s->blur_uniform_v.release();
+  s->blur_uniform_fh.release();
+  s->blur_uniform_fv.release();
   s->samp_lin.release();
   delete s;
 }
@@ -464,7 +472,38 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // --- Pass 2: threshold field → lines over input (viewport-res) ---
+  // --- Pass 2: blur the field (kill the big-step advection dither) ---
+  // Keeps the propagating field smooth so flat regions have no per-cell noise to
+  // turn into random advection directions. Preserves .b (stored luma). Reuses
+  // seed_scratch (the seed is already consumed).
+  {
+    float fstep = FIELD_SIGMA * 0.25f;
+    BlurSeedUniforms fh = { 1.0f, 0.0f, fstep, FIELD_SIGMA, 0.0f, 0.f, 0.f, 0.f };
+    s->blur_uniform_fh.writeOne(fh);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_blur);
+    cp.setTexture(s->field[wr], 0, 0);
+    cp.setSampler(s->samp_lin, 1);
+    cp.setTexture(s->seed_scratch, 2, 1);
+    cp.setBuffer(s->blur_uniform_fh, 3);
+    cp.dispatch((s->sim_w + 7) / 8, (s->sim_h + 7) / 8);
+    cp.end();
+  }
+  {
+    float fstep = FIELD_SIGMA * 0.25f;
+    BlurSeedUniforms fv = { 0.0f, 1.0f, fstep, FIELD_SIGMA, 0.0f, 0.f, 0.f, 0.f };
+    s->blur_uniform_fv.writeOne(fv);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_blur);
+    cp.setTexture(s->seed_scratch, 0, 0);
+    cp.setSampler(s->samp_lin, 1);
+    cp.setTexture(s->field[wr], 2, 1);
+    cp.setBuffer(s->blur_uniform_fv, 3);
+    cp.dispatch((s->sim_w + 7) / 8, (s->sim_h + 7) / 8);
+    cp.end();
+  }
+
+  // --- Pass 3: threshold field → lines over input (viewport-res) ---
   int lc = s->line_count; if (lc < 1) lc = 1; if (lc > 6) lc = 6;
   CompUniforms cu = {};
   cu.level      = s->level;
