@@ -82,6 +82,8 @@ wasm_build \
   ../barrel_macros/main.cpp \
   ../dashboard/main.cpp \
   ../sketch_output/main.cpp \
+  ../sidechannel_out/main.cpp \
+  ../sidechannel_in/main.cpp \
   ../bake_alpha/main.cpp \
   ../curve/main.cpp \
   ../exposure/main.cpp \

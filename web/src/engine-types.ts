@@ -276,6 +276,10 @@ export type WorkerEvent =
   | { type: 'state'; state: EngineState }
   | { type: 'effectsDiscovered'; effects: EffectInfo[] }
   | { type: 'frame'; fps: number; gpuTimeMs?: number; tracedFrames: Record<string, ImageBitmap>; sketchStateDiff: StateDiff; pluginStatesDiff: StateDiff; modulationDataDiff: StateDiff; debugStats?: DebugStats; debugConsoleLog?: DebugConsoleEntry[]; comp?: CompFrameInfo }
+  // Sidechannel-bus channel metadata (channel name → last writer + size).
+  // Sent only when it CHANGES (new channel / writer identity / size), never
+  // per frame — the UI uses it to label channel selectors.
+  | { type: 'sidechannels'; channels: Record<string, SidechannelInfo> }
   | { type: 'error'; message: string }
   // Worker → main: a text spec named a styled face the engine doesn't have;
   // asks the main thread to resolve it via Local Font Access and register it
@@ -290,3 +294,7 @@ export type WorkerEvent =
  *  (faceKey(family, weight, italic)) the resolved bytes must be registered under;
  *  family/weight/italic describe which OS face to pick. */
 export interface FontRequest { key: string; family: string; weight: number; italic: boolean; }
+
+/** One sidechannel-bus channel's metadata: who wrote it last (an executor bus
+ *  tag — sketch id on web, plugin key on the barrel) and its texture size. */
+export interface SidechannelInfo { writer: string; w: number; h: number; }

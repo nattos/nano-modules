@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "sketch/sketch_executor.h"
+#include "sketch/sidechannel_bus.h"
 #include "sketch/exec_trace.h"
 
 #ifdef __wasm__
@@ -121,6 +122,32 @@ int32_t executor_execute(SketchExecutor* ex, const char* sketch, int32_t sketch_
   auto j = nlohmann::json::parse(std::string(sketch, sketch_len), nullptr, false);
   if (j.is_discarded()) return inTex;
   return ex->execute(j, inTex, outTex, W, H, dt, dirty != 0);
+}
+
+// Tag this executor's sidechannel-bus WRITES with an identity string (the web
+// host's sketch id; the barrel sets its plugin key natively). Informational —
+// see SketchExecutor::setBusTag.
+EXEC_EXPORT("executor_set_bus_tag")
+void executor_set_bus_tag(SketchExecutor* ex, const char* tag, int32_t len) {
+  if (ex && tag) ex->setBusTag(std::string(tag, len));
+}
+
+// Sidechannel-bus METADATA version — module-level (the bus is process-global,
+// shared by every executor in this module). Bumps only when channel identity
+// metadata changes (new channel / writer / size), NOT per write, so a host can
+// poll it per frame and fetch executor_sidechannels_json only on change.
+// f64 because wasm32 JS hosts can't read i64 returns.
+EXEC_EXPORT("executor_sidechannels_version")
+double executor_sidechannels_version() {
+  return (double)sidechannel_bus::version();
+}
+
+// Serialize the sidechannel-bus channel metadata as JSON into `out`
+// (host-allocated, capacity `cap`): {"<channel>": {"writer", "w", "h"}}.
+// Returns the FULL byte length; if it exceeds `cap` the host grows and retries.
+EXEC_EXPORT("executor_sidechannels_json")
+int32_t executor_sidechannels_json(char* out, int32_t cap) {
+  return sidechannel_bus::infoJson(out, cap);
 }
 
 // Write the LAST execute()'s 7 debug counters into `out` (host-allocated, ≥7

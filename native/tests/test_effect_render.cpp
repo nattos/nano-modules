@@ -2097,3 +2097,194 @@ TEST_CASE("WASM GPU effect renders topology triangulation (triangulate)", "[effe
   host.shutdown();
 }
 #endif  // NANO_WASM_PATH
+
+// ---------------------------------------------------------------------------
+// Sidechannel bus — cross-executor texture channels (sidechannel_bus.h).
+//
+// Two SketchExecutors sharing ONE runtime + backend is exactly the barrel
+// topology (one dylib, one Metal device, N per-instance executors). Executor A
+// runs util.sidechannel_out; executor B runs util.sidechannel_in on the same
+// channel. Covers: unwritten → transparent; A-then-B same-frame crossover;
+// B-before-A one-frame latency; writer bypassed/stopped → black after at most
+// one held frame; custom TEXT channel + size-mismatched reader (scaled blit);
+// same-executor writer-below-reader feedback staying fresh (the >= rule).
+#include "sketch/sidechannel_bus.h"
+
+TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][sidechannel]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sidechannel_bus::resetForTest();  // process-global — scrub prior state
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor A(&rt, &registry, backend.get());
+  A.setKeyNamespace("A/");
+  A.setBusTag("writerA");
+  sketch_executor::SketchExecutor B(&rt, &registry, backend.get());
+  B.setKeyNamespace("B/");
+  B.setBusTag("readerB");
+
+  const uint32_t W = 32, H = 32;
+  const int RGBA8 = 1;
+  int inA = backend->createTexture(W, H, RGBA8);
+  int outA = backend->createTexture(W, H, RGBA8);
+  int inB = backend->createTexture(W, H, RGBA8);
+  int outB = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inA >= 0); REQUIRE(outA >= 0); REQUIRE(inB >= 0); REQUIRE(outB >= 0);
+
+  // A's content is a solid mid-red; B's own chain input is solid white — any
+  // white in B's output would mean the reader failed to REPLACE its input.
+  auto writeSolid = [&](int tex, uint8_t r, uint8_t g, uint8_t b) {
+    std::vector<uint8_t> px(W * H * 4);
+    for (size_t i = 0; i < px.size(); i += 4) {
+      px[i] = r; px[i + 1] = g; px[i + 2] = b; px[i + 3] = 255;
+    }
+    backend->writeTexture(tex, W, H, px.data(), (uint32_t)px.size());
+  };
+  writeSolid(inA, 200, 40, 40);
+  writeSolid(inB, 255, 255, 255);
+
+  auto meanCh = [&](int tex, uint32_t w, uint32_t h, int c) {
+    auto px = backend->readbackTexture(tex, w, h);
+    REQUIRE(px.size() == (size_t)w * h * 4);
+    long sum = 0; long n = 0;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) { sum += px[i + (size_t)c]; ++n; }
+    return n ? (double)sum / n : 0.0;
+  };
+
+  auto sketchA = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "util.sidechannel_out", "instance_key": "so" } ],
+    "instances": {
+      "so": { "module_type": "util.sidechannel_out", "state": { "channel": 3 } }
+    }
+  })JSON");
+  auto sketchB = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "util.sidechannel_in", "instance_key": "si" } ],
+    "instances": {
+      "si": { "module_type": "util.sidechannel_in", "state": { "channel": 3 } }
+    }
+  })JSON");
+
+  auto runA = [&](bool dirty) {
+    int32_t out = A.execute(sketchA, inA, outA, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+    return out;
+  };
+  auto runB = [&](bool dirty) {
+    int32_t out = B.execute(sketchB, inB, outB, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+    return out;
+  };
+
+  // 1) Reader before ANY write: transparent black (unplugged cable).
+  int32_t bOut = runB(true);
+  CHECK(meanCh(bOut, W, H, 0) < 4.0);
+  CHECK(meanCh(bOut, W, H, 3) < 4.0);  // alpha too — transparent, not opaque black
+
+  // 2) A then B: same-frame crossover; B's output IS A's input (REPLACE — no
+  //    white from B's own chain input). A's own chain passes through untouched.
+  int32_t aOut = runA(true);
+  bOut = runB(false);
+  CHECK(std::abs(meanCh(aOut, W, H, 0) - 200.0) < 6.0);   // A passthrough intact
+  CHECK(std::abs(meanCh(bOut, W, H, 0) - 200.0) < 6.0);   // red arrived
+  CHECK(std::abs(meanCh(bOut, W, H, 1) - 40.0) < 6.0);
+  CHECK(meanCh(bOut, W, H, 3) > 250.0);                   // opaque
+
+  // 3) Steady B-BEFORE-A alternation: each B frame sees the previous frame's
+  //    A write (1-frame latency), never black. The very first B after the
+  //    order flip is legitimately stale (nothing was written since its own
+  //    last render — a stopped writer and a not-yet-run writer look alike),
+  //    so assertions start at the second alternation.
+  for (int f = 0; f < 3; ++f) {
+    bOut = runB(false);
+    runA(false);
+    if (f >= 1) CHECK(std::abs(meanCh(bOut, W, H, 0) - 200.0) < 6.0);
+  }
+
+  // 4) Writer BYPASSED: no publish. B holds at most one more frame (its
+  //    prevSeq still predates A's last live write), then goes black.
+  sketchA["instances"]["so"]["state"]["__bypass__"] = 1;
+  runA(true);
+  runB(false);                       // ≤1 held frame allowed here
+  runA(false);
+  bOut = runB(false);                // by now the channel must read stale
+  CHECK(meanCh(bOut, W, H, 0) < 4.0);
+  CHECK(meanCh(bOut, W, H, 3) < 4.0);
+  sketchA["instances"]["so"]["state"].erase("__bypass__");
+
+  // 5) Writer STOPPED entirely (A no longer executes): same decay to black.
+  runA(true);
+  bOut = runB(false);
+  CHECK(std::abs(meanCh(bOut, W, H, 0) - 200.0) < 6.0);   // alive again first
+  bOut = runB(false);
+  bOut = runB(false);
+  CHECK(meanCh(bOut, W, H, 0) < 4.0);
+
+  // 6) Custom TEXT channel + size-mismatched reader (scaled blit path): B
+  //    re-reads channel "aux" on a half-size canvas.
+  sketchA["instances"]["so"]["state"] = {{"channel", 0}, {"channel_name", "aux"}};
+  sketchB["instances"]["si"]["state"] = {{"channel", 0}, {"channel_name", " aux "}};
+  const uint32_t W2 = 16, H2 = 16;
+  int outB2 = backend->createTexture(W2, H2, RGBA8);
+  REQUIRE(outB2 >= 0);
+  runA(true);
+  int32_t b2 = B.execute(sketchB, inB, outB2, (int)W2, (int)H2, 1.0 / 60.0, true);
+  backend->submit();
+  CHECK(std::abs(meanCh(b2, W2, H2, 0) - 200.0) < 8.0);   // scaled red arrived
+
+  // 7) Same-executor writer-BELOW-reader feedback loop stays fresh (the >=
+  //    freshness rule): si(ch 5) -> brightness(+0.3) -> so(ch 5). Each frame
+  //    the reader picks up the previous frame's brightened output, so the
+  //    image climbs from black toward white instead of flickering black.
+  auto sketchLoop = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "util.sidechannel_in",  "instance_key": "si" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc" },
+      { "module_type": "util.sidechannel_out", "instance_key": "so" }
+    ],
+    "instances": {
+      "si": { "module_type": "util.sidechannel_in",  "state": { "channel": 5 } },
+      "bc": { "module_type": "color.tone.brightness_contrast",
+              "state": { "brightness": 0.3, "contrast": 0.0 } },
+      "so": { "module_type": "util.sidechannel_out", "state": { "channel": 5 } }
+    }
+  })JSON");
+  double prevMean = -1.0;
+  int32_t loopOut = 0;
+  for (int f = 0; f < 4; ++f) {
+    loopOut = A.execute(sketchLoop, inA, outA, (int)W, (int)H, 1.0 / 60.0, f == 0);
+    backend->submit();
+    const double m = meanCh(loopOut, W, H, 0);
+    if (f >= 2) {
+      CHECK(m > 40.0);         // fresh — a `>` rule would read stale → black
+      CHECK(m >= prevMean - 2.0);
+    }
+    prevMean = m;
+  }
+
+  // 8) Channel metadata: version stable across plain re-writes, writer tag
+  //    surfaced in infoJson.
+  const uint64_t v0 = sidechannel_bus::version();
+  runA(true);   // dirty: A last executed sketchLoop — switching sketches
+  runA(false);
+  CHECK(sidechannel_bus::version() == v0);   // no metadata change per write
+  std::vector<char> buf(4096);
+  const int32_t n = sidechannel_bus::infoJson(buf.data(), (int32_t)buf.size());
+  REQUIRE(n > 0);
+  REQUIRE(n <= (int32_t)buf.size());
+  auto info = nlohmann::json::parse(std::string(buf.data(), (size_t)n));
+  REQUIRE(info.contains("aux"));
+  CHECK(info["aux"]["writer"] == "writerA");
+  CHECK(info["aux"]["w"] == (int)W);
+  REQUIRE(info.contains("3"));
+  CHECK(info["3"]["writer"] == "writerA");
+
+  sidechannel_bus::resetForTest();  // release bus textures while backend lives
+}

@@ -72,6 +72,10 @@ interface ExecutorExports {
   executor_set_automation(ex: number, json: number, len: number): void;
   executor_debug_stats(ex: number, out: number): void;
   executor_modulation_json(ex: number, out: number, cap: number): number;
+  executor_set_bus_tag(ex: number, tag: number, len: number): void;
+  /** Module-level (the sidechannel bus is process-global across slots). */
+  executor_sidechannels_version(): number;
+  executor_sidechannels_json(out: number, cap: number): number;
   // ── Composition executor (comp_api.cpp) ──
   comp_create(): number;
   comp_destroy(c: number): void;
@@ -413,12 +417,45 @@ export class WasmSketchExecutor {
       const exPtr = this.exports.executor_create();
       // Apply the current fusion toggle to the fresh executor (default is on).
       if (!this.fusionEnabled) this.exports.executor_set_fusion_enabled(exPtr, 0);
+      // Tag the executor's sidechannel-bus writes with its sketch id (the UI
+      // maps it to the playground instance label for channel names).
+      const tagBytes = encoder.encode(sketchId);
+      const tagPtr = this.exports.malloc(tagBytes.length);
+      new Uint8Array(this.memory.buffer, tagPtr, tagBytes.length).set(tagBytes);
+      this.exports.executor_set_bus_tag(exPtr, tagPtr, tagBytes.length);
+      this.exports.free(tagPtr);
       slot = { exPtr, lastJson: '',
                registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0,
                appliedKeys: new Set() };
       this.slots.set(sketchId, slot);
     }
     return slot;
+  }
+
+  /**
+   * Sidechannel-bus channel metadata, for the worker's `sidechannels` push:
+   * `version` bumps only on metadata change (new channel / writer / size —
+   * NOT per write), so poll it per frame and parse the JSON only on change.
+   */
+  getSidechannelInfo(): { version: number; channels: Record<string, { writer: string; w: number; h: number }> } | null {
+    if (!this.exports.executor_sidechannels_version) return null;
+    const version = this.exports.executor_sidechannels_version();
+    let cap = 4096;
+    let ptr = this.exports.malloc(cap);
+    let n = this.exports.executor_sidechannels_json(ptr, cap);
+    if (n > cap) {
+      this.exports.free(ptr);
+      cap = n;
+      ptr = this.exports.malloc(cap);
+      n = this.exports.executor_sidechannels_json(ptr, cap);
+    }
+    const json = decoder.decode(new Uint8Array(this.memory.buffer, ptr, n));
+    this.exports.free(ptr);
+    try {
+      return { version, channels: JSON.parse(json) };
+    } catch {
+      return { version, channels: {} };
+    }
   }
 
   /** Debug fusion toggle (mirrors SketchExecutor.setFusionMode). force-off

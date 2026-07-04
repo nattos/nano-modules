@@ -39,6 +39,7 @@ WASM_EXPORTS=(
 SOURCES=(
   "$SRC_DIR/sketch/sketch_executor.cpp"
   "$SRC_DIR/sketch/sketch_augment.cpp"
+  "$SRC_DIR/sketch/sidechannel_bus.cpp"
   "$SRC_DIR/sketch/executor_api.cpp"
   "$SRC_DIR/sketch/comp/comp_executor.cpp"
   "$SRC_DIR/sketch/comp/comp_api.cpp"

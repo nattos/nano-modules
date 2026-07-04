@@ -36,6 +36,8 @@ export class EngineProxy {
   /// The worker's text engine saw a spec naming a styled face it doesn't have.
   /// The main thread resolves it via Local Font Access and calls registerFont().
   onFontRequest: ((req: FontRequest) => void) | null = null;
+  /// Sidechannel-bus channel metadata (fires only on change, not per frame).
+  onSidechannels: ((channels: Record<string, import('./engine-types').SidechannelInfo>) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
   private fieldVisReqId = 0;
   private fieldVisResolvers = new Map<number, (hidden: string[] | null) => void>();
@@ -71,6 +73,9 @@ export class EngineProxy {
           if (event.debugConsoleLog && event.debugConsoleLog.length > 0) {
             this.onDebugConsoleLog?.(event.debugConsoleLog);
           }
+          break;
+        case 'sidechannels':
+          this.onSidechannels?.(event.channels);
           break;
         case 'error':
           this.onError?.(event.message);

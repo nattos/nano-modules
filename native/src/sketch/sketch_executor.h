@@ -60,7 +60,8 @@ class EffectInstance;
 namespace sketch_executor {
 
 class ModuleRegistry;  // native registry (full def in module_registry.h)
-class WetDryBlend;  // host-side opacity wet/dry blend (host_blend.h)
+class WetDryBlend;      // host-side opacity wet/dry blend (host_blend.h)
+class SidechannelBlit;  // host-side sidechannel scaled blit (host_sidechannel_blit.h)
 
 class SketchExecutor {
  public:
@@ -150,6 +151,15 @@ class SketchExecutor {
    * stay bare (they're already per-executor objects).
    */
   void setKeyNamespace(std::string ns) { keyNamespace_ = std::move(ns); }
+
+  /**
+   * Identity tag this executor writes onto sidechannel-bus channels it
+   * publishes (see sidechannel_bus.h): the barrel sets its plugin key, the
+   * web host its sketch id. Purely informational (UI channel labels) — bus
+   * routing is by channel name, and reader identity is derived from the
+   * executor address + instance key, not this tag.
+   */
+  void setBusTag(std::string tag) { busTag_ = std::move(tag); }
 
   /** Set (or clear with empty) the per-chain-entry capture hook. */
   void setChainEntryHook(ChainEntryHook hook) { chainEntryHook_ = std::move(hook); }
@@ -399,6 +409,7 @@ class SketchExecutor {
   int planBuildCount_ = 0;
   bool fusionEnabled_ = true;   // force-off disables GPU fusion (test hook)
   std::string keyNamespace_;    // prefix into the SHARED instance pool (per-barrel)
+  std::string busTag_;          // sidechannel writer identity (see setBusTag)
 
   // Per-frame debug counters, reset at the top of each execute() and surfaced
   // via fillDebugStats() (see above). `fusedRuns` doubles as the fusion-test
@@ -429,6 +440,10 @@ class SketchExecutor {
 
   // Lazily-created host-side wet/dry blend pass for per-effect opacity.
   std::unique_ptr<WetDryBlend> blend_;
+
+  // Lazily-created scaled blit servicing util.sidechannel_in stages
+  // (host_sidechannel_blit.h).
+  std::unique_ptr<SidechannelBlit> sidechannelBlit_;
 
   // Format-correct copy of src → dst (a render-pass copy via the wet/dry blend
   // at full opacity). Unlike gpu_copy_texture (a raw byte blit, correct only

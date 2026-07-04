@@ -118,6 +118,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     engine.onDebugStats = (stats) => appController.setDebugStats(stats);
     engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
     engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
+    engine.onSidechannels = (channels) => appController.setSidechannels(channels);
   }
 
   // Restore from IndexedDB before mounting UI so the first paint is correct.

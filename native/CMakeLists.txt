@@ -715,6 +715,7 @@ if(APPLE)
   add_library(sketch_executor STATIC
     src/sketch/module_registry.cpp
     src/sketch/sketch_executor.cpp
+    src/sketch/sidechannel_bus.cpp
     src/sketch/effrt_impls.cpp
     src/sketch/executor_host.cpp
     src/sketch/wasm_executor_driver.cpp

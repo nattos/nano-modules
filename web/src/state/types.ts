@@ -194,6 +194,13 @@ export interface EngineStatus {
    * top so an off-tab session can't grow unbounded.
    */
   debugConsoleLog: import('../engine-types').DebugConsoleEntry[];
+  /**
+   * Sidechannel-bus channel metadata: channel name → last writer + texture
+   * size. Updated only when it changes (never per frame). Labels the
+   * sidechannel effects' channel selectors ("3 — Instance 2"). Writer is a
+   * bus tag: a `pg:` sketch id (playground) or a plugin key (barrel).
+   */
+  sidechannels: Record<string, import('../engine-types').SidechannelInfo>;
 }
 
 export interface LocalState {

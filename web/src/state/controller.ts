@@ -1435,6 +1435,12 @@ export class AppController {
     runInAction(() => { appState.local.barrelDetected = on; });
   }
 
+  /** Adopt sidechannel-bus channel metadata (worker push in playground/ide,
+   *  /global/sidechannels observation in barrel mode). Change-gated upstream. */
+  setSidechannels(channels: Record<string, import('../engine-types').SidechannelInfo>) {
+    runInAction(() => { appState.local.engine.sidechannels = channels ?? {}; });
+  }
+
   // ========================================================================
   // Playground instances (fake barrel instances, local shared-server env)
   // ========================================================================

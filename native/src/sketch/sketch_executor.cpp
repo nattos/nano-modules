@@ -4,6 +4,8 @@
 #include "sketch/tap_mod.h"
 #include "sketch/param_smoothing.h"
 #include "sketch/host_blend.h"
+#include "sketch/host_sidechannel_blit.h"
+#include "sketch/sidechannel_bus.h"
 #include "sketch/exec_gpu.h"
 #include "sketch/effrt.h"
 #include "sketch/schema_util.h"
@@ -18,6 +20,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <utility>
@@ -286,6 +289,35 @@ bool isReservedField(const std::string& fieldPath) {
   return fieldPath.size() > 2 && fieldPath[0] == '_' && fieldPath[1] == '_';
 }
 
+// Resolve a sidechannel effect's channel NAME from its persisted state:
+// `channel` 1..8 → "1".."8"; 0 ("Custom") → the `channel_name` text field
+// (empty text → unbound). Missing state defaults to channel 1 — the schema
+// default — so a freshly-dropped effect is live immediately.
+std::string sidechannelName(const json& instances, const std::string& instKey) {
+  const json* st = findState(instances, instKey);
+  int ch = 1;
+  if (st) {
+    auto it = st->find("channel");
+    if (it != st->end() && it->is_number()) {
+      ch = (int)std::lround(it->get<double>());
+    }
+  }
+  if (ch > 0) return std::to_string(ch);
+  if (st) {
+    auto it = st->find("channel_name");
+    if (it != st->end() && it->is_string()) {
+      std::string name = it->get<std::string>();
+      // Trim ASCII whitespace — the UI is a free text field.
+      const char* ws = " \t\r\n";
+      const auto b = name.find_first_not_of(ws);
+      if (b == std::string::npos) return std::string();
+      const auto e = name.find_last_not_of(ws);
+      return name.substr(b, e - b + 1);
+    }
+  }
+  return std::string();
+}
+
 // Shared empty fallbacks + a no-copy subtree accessor. `value(key, default)`
 // deep-copies the matched subtree (and constructs the default container as a
 // temporary every call); refOr returns a reference instead.
@@ -533,6 +565,11 @@ int32_t SketchExecutor::execute(
   // delay lines (delayState_) push/read against (style guide §2.1: accumulate dt,
   // never time*rate). Done before any tap processing this frame.
   modClock_ += tickDt;
+
+  // Advance the process-global sidechannel render sequence — the freshness
+  // clock for cross-executor texture channels (see sidechannel_bus.h). Once
+  // per execute(), whether or not this sketch touches the bus.
+  const uint64_t sidechannelSeq = sidechannel_bus::beginRender();
 
 #ifndef __wasm__
   // Native: point the effrt_* instance ABI at this runtime and reset the frame's
@@ -1124,6 +1161,46 @@ int32_t SketchExecutor::execute(
       // -- Apply persisted instance state from the sketch (no-copy lookup) --
       if (const json* st = findState(instances, instKey)) {
         maybeApplyState(inst, instKey, *st);
+      }
+
+      // -- Sidechannel bus (host-serviced; see sidechannel_bus.h). --
+      // WRITE: publish this stage's input onto the channel, then fall through
+      // — the effect is an identity passthrough, so the identity skip below
+      // aliases input→output with no further GPU work beyond the bus copy.
+      if (mt == sidechannel_bus::kOutModuleType) {
+        const std::string ch = sidechannelName(instances, instKey);
+        if (!ch.empty() && colInput > 0) {
+          sidechannel_bus::publish(ch.c_str(), colInput, W, H, busTag_.c_str());
+        }
+      }
+      // READ: REPLACE semantics — the stage output IS the channel texture
+      // (scaled to this chain's size) when fresh, transparent black when the
+      // channel is stale/unbound/unwritten. The chain input is discarded; the
+      // effect's own render never runs (fully host-serviced).
+      if (mt == sidechannel_bus::kInModuleType) {
+        const std::string ch = sidechannelName(instances, instKey);
+        const std::string readerId =
+            std::to_string((uintptr_t)this) + "/" + instKey;
+        const sidechannel_bus::Read r = ch.empty()
+            ? sidechannel_bus::Read{}
+            : sidechannel_bus::acquire(ch.c_str(), readerId.c_str(),
+                                       sidechannelSeq);
+        int32_t out = isFinalStage ? outputHandle : nextIntermediate(W, H);
+        bool blitted = false;
+        if (r.fresh && r.tex > 0) {
+          if (!sidechannelBlit_) {
+            sidechannelBlit_ = std::make_unique<SidechannelBlit>();
+          }
+          blitted = sidechannelBlit_->encode(r.tex, r.w, r.h, out, W, H);
+        }
+        if (!blitted) gpu_clear_texture(out, 0.0f, 0.0f, 0.0f, 0.0f);
+        if (chainEntryHook_) {
+          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+        }
+        anyDispatched = true;
+        finalHandle = out;
+        colInput = out;
+        return;
       }
 
       // -- Identity skip: stateless passthrough → alias input as this

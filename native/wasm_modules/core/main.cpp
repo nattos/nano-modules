@@ -33,6 +33,17 @@ namespace dashboard { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(sketch_output)
 namespace sketch_output { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(sidechannel_out)
+namespace sidechannel_out {
+int32_t is_identity(void* self);
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+NANO_DECLARE_INSTANCE_EFFECT(sidechannel_in)
+namespace sidechannel_in {
+int32_t is_identity(void* self);
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+
 NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
 NANO_DECLARE_INSTANCE_EFFECT(curve)
@@ -208,6 +219,36 @@ void nano_module_main() {
         "la-sign-out-alt",
         NANO_INSTANCE_LIFECYCLE(sketch_output),
         &sketch_output::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "util.sidechannel_out",
+        "Sidechannel Send",
+        "Publish this chain's image onto a named cross-instance texture channel",
+        "control",
+        "sidechannel,send,route,bus,channel,share,util",
+        "la-share-square",
+        NANO_INSTANCE_LIFECYCLE(sidechannel_out),
+        &sidechannel_out::is_identity,
+        nullptr,  // on_active
+        nullptr,  // seek
+        &sidechannel_out::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "util.sidechannel_in",
+        "Sidechannel Receive",
+        "Replace this chain's image with a named cross-instance texture channel (transparent when idle)",
+        "control",
+        "sidechannel,receive,route,bus,channel,share,util",
+        "la-sign-in-alt",
+        NANO_INSTANCE_LIFECYCLE(sidechannel_in),
+        &sidechannel_in::is_identity,
+        nullptr,  // on_active
+        nullptr,  // seek
+        &sidechannel_in::eval_visibility,
     });
 
     nano::registerEffect({

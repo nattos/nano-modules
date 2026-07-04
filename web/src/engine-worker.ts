@@ -210,6 +210,7 @@ let paused = false;
 // thread churn mobx + re-render lit ~60×/s for nothing. Reset on resume.
 let pausedFramePosted = false;
 let debugStatsTick = 0; // throttles Debug Info panel updates to ~10 Hz
+let lastSidechannelVersion = -1; // sidechannel-bus metadata push gate
 // When on, the next frame event carries DebugStats + recent
 // console-log entries (for the Debug Info sidebar). Off by default —
 // the toggle flips with `setDebugMode`.
@@ -1108,6 +1109,15 @@ function captureAndSendFrame() {
   const stats = activeExecutor()?.consumeDebugStats();
   const sendDebug = debugMode && (++debugStatsTick % 6 === 0);
   const debugStats = sendDebug ? stats : undefined;
+
+  // Sidechannel-bus channel metadata (channel → writer/size). The version
+  // bumps only when channel identity changes — never per write — so this is
+  // a cheap number compare per frame and a message only on real change.
+  const scInfo = activeExecutor()?.getSidechannelInfo();
+  if (scInfo && scInfo.version !== lastSidechannelVersion) {
+    lastSidechannelVersion = scInfo.version;
+    post({ type: 'sidechannels', channels: scInfo.channels });
+  }
   // Same for the console buffer — drain unconditionally (so the cap
   // bounds memory) but only ship when debug mode is on.
   let debugConsoleLog: import('./engine-types').DebugConsoleEntry[] | undefined;
