@@ -282,6 +282,19 @@ float readOpacity(const json& instances, const std::string& instKey) {
   return (float)it->get<double>();
 }
 
+// Per-effect blend mode (`__blend__`): the composite.blend BlendMode enum
+// value. 0 (Normal) = the classic wet/dry crossfade; 1..15 route the stage
+// through the host blend's mode math + source-over composite even at full
+// opacity. Missing/invalid → 0.
+int readBlendMode(const json& instances, const std::string& instKey) {
+  const json* st = findState(instances, instKey);
+  if (!st) return 0;
+  auto it = st->find("__blend__");
+  if (it == st->end() || !it->is_number()) return 0;
+  const int m = (int)std::lround(it->get<double>());
+  return (m > 0 && m <= 15) ? m : 0;
+}
+
 // Engine-reserved field paths (`__opacity__`, `__bypass__`, ...): consumed by
 // the executor, stripped before the plugin (see applyState). Wires/automation
 // targeting them fold through foldReservedOverrides, never setParamFloat.
@@ -389,6 +402,10 @@ std::string computeStructSig(const json& columns, const json& instances,
       sig.push_back(readBypass(instances, key) ? 'B' : 'b');
       sig.push_back('|');
       sig += std::to_string(readOpacity(instances, key));
+      sig.push_back('|');
+      // Blend mode toggles fusion eligibility (mode != 0 forces the standalone
+      // wet/dry path), so it's structural like opacity.
+      sig += std::to_string(readBlendMode(instances, key));
       sig.push_back('\n');
     }
   }
@@ -521,7 +538,8 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
           e = false;
         }
         if (e && (readBypass(instances, instKey) ||
-                  readOpacity(instances, instKey) != 1.0f)) {
+                  readOpacity(instances, instKey) != 1.0f ||
+                  readBlendMode(instances, instKey) != 0)) {
           e = false;
         }
       }
@@ -1241,7 +1259,12 @@ int32_t SketchExecutor::execute(
       // state stays seeded/advanced — even while the (smoothed) value is momentarily
       // identity. Skipping here would leave the SmoothState unseeded, so the first
       // non-identity frame would snap to the new target instead of ramping.
-      if (!hasTaps && !hasAuto && !entryHasSmoothing(entry) && inst.isIdentity()) {
+      // A non-Normal blend mode makes even an IDENTITY stage meaningful (e.g.
+      // an identity effect at Multiply squares the image — the classic
+      // duplicate-layer trick), so it disables the alias skip like a tap does.
+      const int blendMode = readBlendMode(instances, instKey);
+      if (!hasTaps && !hasAuto && blendMode == 0 && !entryHasSmoothing(entry) &&
+          inst.isIdentity()) {
         ++stats_.identitySkipped;
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
@@ -1252,12 +1275,17 @@ int32_t SketchExecutor::execute(
         return;
       }
 
-      // -- Opacity (Resolume-style wet/dry) --
+      // -- Opacity (Resolume-style wet/dry) + blend mode --
       // 0   → skip render (alias input through), but tick() still runs so the
-      //       sim advances; the effect sees state::willRender()==false.
-      // 1   → normal full-strength render.
+      //       sim advances; the effect sees state::willRender()==false. (Any
+      //       blend mode reduces to the dry image at opacity 0, so the
+      //       passthrough is exact for all modes.)
+      // 1   → normal full-strength render — UNLESS a non-Normal blend mode is
+      //       set, which still routes through the host blend (mode math +
+      //       source-over at full coverage).
       // 0<o<1 → render into a scratch texture, then host-blend it with the
-      //       column input: out = mix(colInput, fx, opacity).
+      //       column input: Normal = mix(colInput, fx, opacity); other modes =
+      //       composite.blend's math (see host_blend.h).
       // Modulated opacity is clamped to [0,1] at consumption; the static path
       // stays unclamped/unchanged (its exact value feeds computeStructSig).
       const float opacity = resOv.opacity
@@ -1301,8 +1329,9 @@ int32_t SketchExecutor::execute(
       }
 
       int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
-      // Partial opacity renders to a scratch texture first, then blends.
-      const bool partial = opacity < 1.0f;
+      // Partial opacity (or any non-Normal blend mode) renders to a scratch
+      // texture first, then blends.
+      const bool partial = opacity < 1.0f || blendMode != 0;
       int32_t fxHandle = partial ? nextIntermediate(W, H) : outHandle;
 
       // -- Wire primary channels --
@@ -1361,7 +1390,8 @@ int32_t SketchExecutor::execute(
 
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
-        if (!blend_->encode(colInput, fxHandle, outHandle, opacity, W, H)) {
+        if (!blend_->encode(colInput, fxHandle, outHandle, opacity, W, H,
+                            blendMode)) {
           // Couldn't build the blend pass — show the effect at full strength
           // rather than nothing.
           gpu_copy_texture(fxHandle, outHandle);

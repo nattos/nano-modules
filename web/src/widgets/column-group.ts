@@ -14,7 +14,7 @@ import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo } from '../sketch-types';
-import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS } from '../sketch-types';
+import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES } from '../sketch-types';
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -43,6 +43,10 @@ import './ui-icon';
 
 import type { Selectable } from '../state/types';
 import { categoryColor, effectDomain, CATEGORY_DOMAINS } from './category-color';
+
+/** Options for the per-effect `__blend__` selector (gear options row). Index =
+ *  the composite.blend enum value the executor consumes. */
+const BLEND_MODE_OPTIONS = BLEND_MODE_NAMES.map((label, value) => ({ label, value }));
 import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
 
 /** Line-awesome icon per effect category, for the insert-header chips. */
@@ -206,6 +210,10 @@ export class ColumnGroup extends MobxLitElement {
 
   /** Each column-group owns its own layout manager for field position tracking. */
   public readonly layoutManager = new FieldLayoutManager();
+
+  /** Effect cards (by instance key) with their options row open — the gear
+   *  toggle right of the opacity slider. Session-local UI state, not persisted. */
+  private effectOptionsOpen = new Set<string>();
 
   /** Gutter width — holds the field-option pip + wire ports. Fixed now that
    *  rails are gone (it used to grow per rail). */
@@ -486,6 +494,37 @@ export class ColumnGroup extends MobxLitElement {
       align-self: stretch;
     }
     .effect-card-name-wrapper > smart-input {
+      flex: 1;
+      min-width: 0;
+    }
+    /* Gear toggle (right of the opacity slider): reveals the per-effect
+     * options row below the header. Lit up while the row is open OR while a
+     * non-default option (blend mode) is active, so a hidden non-Normal blend
+     * is never invisible. */
+    .device-gear-btn {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0 2px;
+      margin-left: 4px;
+      font-size: 13px;
+      line-height: 1;
+      color: var(--app-text-color2);
+      display: inline-flex;
+      align-items: center;
+    }
+    .device-gear-btn:hover { color: var(--app-text-color1); }
+    .device-gear-btn[data-active] { color: var(--app-text-color1); }
+    /* Per-effect options row (engine-reserved keys beyond bypass/opacity),
+     * slotted between the header and the body divider. */
+    .effect-card-options {
+      display: flex;
+      align-items: center;
+      gap: var(--app-sp-3);
+      padding: 2px 10px 6px;
+    }
+    .effect-card-options field-select {
       flex: 1;
       min-width: 0;
     }
@@ -1048,6 +1087,9 @@ export class ColumnGroup extends MobxLitElement {
     const bypass = reservedState?.__bypass__ === true || reservedState?.__bypass__ === 1;
     const opacity = typeof reservedState?.__opacity__ === 'number'
       ? reservedState!.__opacity__ as number : 1;
+    const blendMode = typeof reservedState?.__blend__ === 'number'
+      ? reservedState!.__blend__ as number : 0;
+    const optionsOpen = this.effectOptionsOpen.has(entry.instance_key);
 
     // Register as selectable with inspector content
     this.registerEffectSelectable(effectPath, chainIdx, entry);
@@ -1134,7 +1176,32 @@ export class ColumnGroup extends MobxLitElement {
               @pointerdown=${(e: Event) => e.stopPropagation()}
               @click=${(e: Event) => e.stopPropagation()}
             ></scalar-slider>
+            <button
+              class="device-gear-btn"
+              title=${blendMode !== 0
+                ? `Effect options — blend: ${BLEND_MODE_NAMES[blendMode] ?? blendMode}`
+                : 'Effect options'}
+              ?data-active=${optionsOpen || blendMode !== 0}
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+              @click=${(e: Event) => {
+                e.stopPropagation();
+                const k = entry.instance_key;
+                if (this.effectOptionsOpen.has(k)) this.effectOptionsOpen.delete(k);
+                else this.effectOptionsOpen.add(k);
+                this.requestUpdate();
+              }}><ui-icon icon="la-cog"></ui-icon></button>
           </div>
+          ${optionsOpen ? html`
+            <div class="effect-card-options">
+              <field-select
+                .fieldPath=${'__blend__'}
+                .label=${'Blend'}
+                .options=${BLEND_MODE_OPTIONS}
+                .defaultValue=${0}
+                .binding=${this.deviceBinding(chainIdx, entry)}
+              ></field-select>
+            </div>
+          ` : nothing}
           ${isCollapsed ? nothing : html`
             <div class="effect-card-divider"></div>
             <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"

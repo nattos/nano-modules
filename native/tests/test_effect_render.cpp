@@ -2036,6 +2036,75 @@ TEST_CASE("per-effect opacity endpoints follow mix(prev, fx, opacity)",
     CHECK(rgba[2] < 5.0);
   }
 
+  // -- Per-effect blend modes (__blend__, the composite.blend enum) --
+  // red base, blue top: Add@1.0 → magenta; Multiply@1.0 → black;
+  // Add@0.5 → source-over at half coverage = (255,0,128).
+  {
+    auto blendFrame = [&](int mode, double op, double rgba[4]) {
+      char buf[720];
+      std::snprintf(buf, sizeof(buf), R"JSON({
+        "chain": [
+          { "module_type": "source.solid_color", "instance_key": "g1" },
+          { "module_type": "source.solid_color", "instance_key": "g2" }
+        ],
+        "instances": {
+          "g1": { "module_type": "source.solid_color", "state": { "color": [1.0, 0.0, 0.0] } },
+          "g2": { "module_type": "source.solid_color", "state": { "color": [0.0, 0.0, 1.0], "__opacity__": %.3f, "__blend__": %d } }
+        }
+      })JSON", op, mode);
+      auto sk = nlohmann::json::parse(buf);
+      int32_t out = executor.execute(sk, -1, outTex, (int)W, (int)H, 1.0/60.0, true);
+      backend->submit();
+      auto o = backend->readbackTexture(out, W, H);
+      for (int c = 0; c < 4; ++c) {
+        long s = 0, n = 0;
+        for (size_t i = c; i < o.size(); i += 4) { s += o[i]; ++n; }
+        rgba[c] = n ? (double)s / n : 0.0;
+      }
+    };
+    double add1[4], mul1[4], addHalf[4];
+    blendFrame(/*Add*/ 1, 1.0, add1);
+    blendFrame(/*Multiply*/ 2, 1.0, mul1);
+    blendFrame(/*Add*/ 1, 0.5, addHalf);
+    INFO("Add@1.0 rgba " << add1[0] << "," << add1[1] << "," << add1[2] << "," << add1[3]);
+    INFO("Mul@1.0 rgba " << mul1[0] << "," << mul1[1] << "," << mul1[2] << "," << mul1[3]);
+    INFO("Add@0.5 rgba " << addHalf[0] << "," << addHalf[1] << "," << addHalf[2] << "," << addHalf[3]);
+    // Add at full opacity: red + blue = magenta (mode runs even at opacity 1).
+    CHECK(add1[0] > 250.0); CHECK(add1[2] > 250.0); CHECK(add1[1] < 5.0);
+    CHECK(add1[3] > 250.0);
+    // Multiply at full opacity: red × blue = black.
+    CHECK(mul1[0] < 5.0); CHECK(mul1[2] < 5.0); CHECK(mul1[3] > 250.0);
+    // Add at half opacity: source-over half coverage of the blended magenta
+    // over the red base → (255, 0, 128).
+    CHECK(addHalf[0] > 250.0);
+    CHECK(std::abs(addHalf[2] - 127.5) < 6.0);
+  }
+
+  // Blend mode must defeat the identity skip: an identity effect at Multiply
+  // squares the image (duplicate-layer trick) instead of aliasing through.
+  {
+    std::vector<uint8_t> px(W * H * 4);
+    for (size_t i = 0; i < px.size(); i += 4) {
+      px[i] = 128; px[i+1] = 128; px[i+2] = 128; px[i+3] = 255;
+    }
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+    auto sk = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "e" }
+      ],
+      "instances": {
+        "e": { "module_type": "color.tone.brightness_contrast",
+               "state": { "brightness": 0.0, "contrast": 0.0, "__blend__": 2 } }
+      }
+    })JSON");
+    int32_t out = executor.execute(sk, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    double m = mean_rgb(o);
+    INFO("identity + Multiply: mean rgb " << m << " (0.5^2 = 0.25 -> ~64; alias bug -> 128)");
+    CHECK(std::abs(m - 64.0) < 6.0);
+  }
+
   // Single-effect chain over a REAL input at opacity 0: the sketch must pass
   // its input through (out == input), not lose it.
   {

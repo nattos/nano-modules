@@ -347,6 +347,20 @@ export const RESERVED_FIELD_DEFS: Record<string, { type: string; io: number; min
   __bypass__: { type: 'float', io: 1, min: 0, max: 1, default: 0 },
 };
 
+/**
+ * Composite blend mode names, indexed to match the native `composite.blend`
+ * (video_blend) enum exactly — the index IS the mode value. Used both by the
+ * arrangement's layer blend and the per-effect `__blend__` reserved key (the
+ * executor's wet/dry pass routes non-Normal modes through the same math as
+ * composite.blend — see native host_blend.h). Keep in lock-step with
+ * native/wasm_modules/video_blend/main.cpp.
+ */
+export const BLEND_MODE_NAMES = [
+  'Normal', 'Add', 'Multiply', 'Screen', 'Overlay', 'Darken', 'Lighten',
+  'Dodge', 'Burn', 'Hard Light', 'Soft Light', 'Difference', 'Exclusion',
+  'Subtract', 'Divide', 'Linear Burn',
+] as const;
+
 /** Identifies one end of a drag-to-connect operation. */
 export interface FieldConnectInfo {
   sketchId: string;

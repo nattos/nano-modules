@@ -49,15 +49,11 @@ export type TransportMode = 'precise' | 'live';
 export type ScaleMode = 'fit' | 'cover' | 'stretch' | 'none';
 
 /**
- * Composite blend mode names, indexed to match the native `composite.blend`
- * (video_blend) enum exactly — the index IS the mode value sent to the executor.
- * Keep in lock-step with native/wasm_modules/video_blend/main.cpp.
+ * Composite blend mode names — canonical copy lives in sketch-types.ts (shared
+ * with the effect IDE's per-effect `__blend__` selector); re-exported here for
+ * the arrangement's existing importers.
  */
-export const BLEND_MODE_NAMES = [
-  'Normal', 'Add', 'Multiply', 'Screen', 'Overlay', 'Darken', 'Lighten',
-  'Dodge', 'Burn', 'Hard Light', 'Soft Light', 'Difference', 'Exclusion',
-  'Subtract', 'Divide', 'Linear Burn',
-] as const;
+export { BLEND_MODE_NAMES } from '../../../sketch-types';
 
 /** Quarter-turn rotations applied to a clip's source frame, clockwise degrees. */
 export type SourceRotation = 0 | 90 | 180 | 270;
