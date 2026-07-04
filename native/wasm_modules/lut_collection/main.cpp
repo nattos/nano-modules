@@ -167,22 +167,31 @@ int32_t is_identity(void* self) {
   return (s && s->amount <= 0.0f) ? 1 : 0;
 }
 
-// One-time bake: upload each preset's bytes through a reused staging storage
-// buffer and fill its 3D cube. Type-shared; runs on the first render only.
+// One-time bake: upload each preset's bytes and fill its 3D cube. Type-shared;
+// runs on the first render only.
+//
+// One staging buffer PER preset — never reuse one buffer across dispatches in
+// a frame. `writeBytes` is an immediate CPU write while the native executor
+// defers every effect-called submit() into one whole-frame command buffer, so
+// a write→dispatch→write loop on a shared buffer has every dispatch read the
+// LAST write (all 13 cubes ended up holding "Hue Rotate 270").
 static void bake() {
-  auto stage = gpu::Device::createBuffer(LUT_BYTES, gpu::BufferUsage::Storage);
+  gpu::Buffer stages[LUT_COUNT];
   for (int i = 0; i < LUT_COUNT; i++) {
     s_luts[i] = gpu::Device::createTexture3D(LUT_DIM, LUT_DIM, LUT_DIM, gpu::TextureFormat::RGBA8);
-    stage.writeBytes(&LUT_DATA[i * LUT_BYTES], LUT_BYTES);
+    stages[i] = gpu::Device::createBuffer(LUT_BYTES, gpu::BufferUsage::Storage);
+    stages[i].writeBytes(&LUT_DATA[i * LUT_BYTES], LUT_BYTES);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_fill);
     cp.setTexture(s_luts[i], 0, 1);   // storage write (3D)
-    cp.setBuffer(stage, 1);
+    cp.setBuffer(stages[i], 1);
     cp.dispatch((LUT_DIM + 3) / 4, (LUT_DIM + 3) / 4, (LUT_DIM + 3) / 4);
     cp.end();
-    gpu::Device::submit();            // serialize: the next iteration overwrites `stage`
   }
-  stage.release();
+  // Flush the fills before releasing the staging (web: a real queue submit;
+  // native: no-op — the frame batch retains encoded resources past release).
+  gpu::Device::submit();
+  for (int i = 0; i < LUT_COUNT; i++) stages[i].release();
   s_baked = true;
 }
 

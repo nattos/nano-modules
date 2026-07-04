@@ -2790,4 +2790,88 @@ TEST_CASE("arena repro: pasted legacy filter chain survives viewport thrash",
   auto px = backend->readbackTexture(out1, W1, H1);
   CHECK(px.size() == (size_t)W1 * H1 * 4);
 }
+
+// REGRESSION: lut_collection bakes its 13 preset cubes on the first render —
+// inside the executor's whole-frame command batch, where effect-called
+// gpu::Device::submit() is a no-op and gpu_write_buffer is an immediate CPU
+// write. The original bake reused ONE staging buffer with a submit() between
+// presets, so every fill dispatch read the LAST preset's bytes: all 13 cubes
+// held "Hue Rotate 270" and every preset rendered identically (web was fine —
+// its submit really flushes). Fixed with one staging buffer per preset.
+// Asserted semantically: "Mono" must be grayscale (Hue270 is wildly colored),
+// and distinct presets must render distinct pixels.
+TEST_CASE("lut_collection presets bake distinct cubes in one batched frame",
+          "[effect_render][lut]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(LEGACY_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 64, H = 64; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // Gradient input (r=x, g=y, b=0) — sweeps a plane of the LUT cube.
+  std::vector<uint8_t> px((size_t)W * H * 4);
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x) {
+      size_t i = ((size_t)y * W + x) * 4;
+      px[i] = (uint8_t)(255 * x / (W - 1));
+      px[i + 1] = (uint8_t)(255 * y / (H - 1));
+      px[i + 2] = 0;
+      px[i + 3] = 255;
+    }
+  backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+
+  auto renderPreset = [&](int lut) {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), R"JSON({
+      "chain": [ { "module_type": "color.legacy.lut_collection", "instance_key": "lut" } ],
+      "instances": {
+        "lut": { "module_type": "color.legacy.lut_collection",
+                 "state": { "lut": %d, "amount": 1.0, "pregain": 0.0 } }
+      }
+    })JSON", lut);
+    auto sk = nlohmann::json::parse(buf);
+    int32_t out = executor.execute(sk, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    REQUIRE(out > 0);
+    return backend->readbackTexture(out, W, H);
+  };
+
+  // Frame 1 selects "Mono" (preset 6) so the bake AND a bake-dependent apply
+  // ride the same batched command buffer.
+  auto mono = renderPreset(6);
+  REQUIRE(mono.size() == px.size());
+  int maxChanDelta = 0;
+  for (size_t i = 0; i < mono.size(); i += 4) {
+    int r = mono[i], g = mono[i + 1], b = mono[i + 2];
+    maxChanDelta = std::max({maxChanDelta, std::abs(r - g), std::abs(r - b)});
+  }
+  INFO("Mono max |r-g| / |r-b| over all pixels: " << maxChanDelta);
+  CHECK(maxChanDelta <= 8);   // bug rendered Hue Rotate 270 here (delta ~230)
+
+  auto process = renderPreset(0);
+  auto hue270  = renderPreset(12);
+  auto meanAbsDiff = [](const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    long s = 0, n = 0;
+    for (size_t i = 0; i < a.size(); i += 4) {   // rgb only
+      s += std::abs((int)a[i] - (int)b[i]) + std::abs((int)a[i+1] - (int)b[i+1])
+         + std::abs((int)a[i+2] - (int)b[i+2]);
+      n += 3;
+    }
+    return n ? (double)s / n : 0.0;
+  };
+  INFO("meanAbsDiff mono/process " << meanAbsDiff(mono, process)
+       << " mono/hue270 " << meanAbsDiff(mono, hue270)
+       << " process/hue270 " << meanAbsDiff(process, hue270));
+  CHECK(meanAbsDiff(mono, process) > 15.0);    // bug: all three identical (0)
+  CHECK(meanAbsDiff(mono, hue270) > 15.0);
+  CHECK(meanAbsDiff(process, hue270) > 15.0);
+}
 #endif  // LEGACY_WASM_PATH
