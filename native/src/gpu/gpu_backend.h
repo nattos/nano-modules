@@ -293,6 +293,10 @@ public:
   // call commits.
   virtual void beginPreviewBatch() {}
   virtual void commitPreviewBatch() {}
+  // Block until every readback callback issued so far has run. Call before
+  // destroying objects the callbacks capture (host teardown). No-op on
+  // backends that run callbacks synchronously.
+  virtual void drainPreviewReadbacks() {}
 
   // Upload pixel bytes into a texture (for tests / FFGL input handoff
   // without going through a full render path). RGBA8 / BGRA8 in row-

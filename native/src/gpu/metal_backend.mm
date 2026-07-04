@@ -970,22 +970,27 @@ public:
                        sourceTexture:src
                   destinationTexture:dst];
 
-      // The block runs on a Metal-owned thread once the GPU work
-      // completes. `dst` is retained by the block (ARC); the scratch
-      // pool keeps it valid across frames anyway. dstW/dstH/callback
-      // are captured by value. getBytes is a tight memcpy on UMA, so
-      // the window in which dst could be reused for the next frame's
-      // encode is small — and we have a pool of `kAsyncScratchPoolSize`
-      // scratches to widen it further.
+      // The completed handler runs on Metal's per-queue SERIAL completion
+      // dispatch queue — the same queue that retires every command buffer
+      // on queue_. Doing the getBytes + consumer callback there stalled
+      // command-buffer retirement behind megabytes of memcpy, which blocked
+      // the render thread's next waitUntilScheduled for >100ms per preview
+      // tick (the "editor open tanks Resolume FPS" bug). The handler now
+      // only hops to our own serial readback queue; Metal's completion
+      // queue is released in microseconds. `dst` stays valid: the block
+      // retains it (ARC) and the scratch ring won't re-encode it for
+      // kAsyncPoolRing batches.
       __block auto cb_callback = std::move(callback);
       [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
         if ([finished status] == MTLCommandBufferStatusError) return;
-        std::vector<uint8_t> pixels((size_t)dstW * dstH * 4);
-        [dst getBytes:pixels.data()
-          bytesPerRow:dstW * 4
-           fromRegion:MTLRegionMake2D(0, 0, dstW, dstH)
-          mipmapLevel:0];
-        cb_callback(std::move(pixels));
+        dispatch_async(previewReadbackQueue(), ^{
+          std::vector<uint8_t> pixels((size_t)dstW * dstH * 4);
+          [dst getBytes:pixels.data()
+            bytesPerRow:dstW * 4
+             fromRegion:MTLRegionMake2D(0, 0, dstW, dstH)
+            mipmapLevel:0];
+          cb_callback(std::move(pixels));
+        });
       }];
       [cb commit];
     }
@@ -997,14 +1002,20 @@ public:
     // outlives any autoreleasepool drain between begin and commit. Cleared
     // (released) in commitPreviewBatch.
     async_batch_cb_ = [queue_ commandBuffer];
-    // Ping-pong: this frame uses one pool, next frame the other. Within
-    // this batch, the cursor walks 0..N as readbacks are added; the
-    // pool grows on demand. The OTHER pool was used in the previous
-    // frame and its completion handler may still be running getBytes,
-    // so we don't touch it.
-    async_batch_pool_index_ ^= 1;
+    // Ring: this batch uses the next pool. Within the batch, the cursor
+    // walks 0..N as readbacks are added; the pool grows on demand. The
+    // other ring slots were used by the previous batches and their
+    // readbacks may still be pending on previewReadbackQueue(), so we
+    // don't touch them.
+    async_batch_pool_index_ = (async_batch_pool_index_ + 1) % kAsyncPoolRing;
     for (auto& [_, set] : asyncScaleScratchPools_) {
       set.pools[async_batch_pool_index_].cursor = 0;
+    }
+  }
+
+  void drainPreviewReadbacks() override {
+    if (preview_readback_queue_) {
+      dispatch_sync(preview_readback_queue_, ^{});
     }
   }
 
@@ -1024,16 +1035,26 @@ public:
       async_batch_pending_.clear();
       id<MTLCommandBuffer> cb = async_batch_cb_;
       async_batch_cb_ = nil;
+      // Completed handlers run on Metal's per-queue SERIAL completion
+      // dispatch queue — the same one that retires EVERY command buffer on
+      // queue_. Keep it free: hop the readbacks (getBytes memcpy + consumer
+      // callbacks, megabytes for a large edit preview) onto our own serial
+      // queue. Doing them inline here backed up command-buffer retirement
+      // and stalled the render thread's next waitUntilScheduled >100ms per
+      // preview tick. Our queue is serial → batches drain in commit order,
+      // so the send-side latest-wins logic never sees stale-after-fresh.
       [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
         if ([finished status] == MTLCommandBufferStatusError) return;
-        for (auto& p : *pending) {
-          std::vector<uint8_t> pixels((size_t)p.dstW * p.dstH * 4);
-          [p.dst getBytes:pixels.data()
-              bytesPerRow:p.dstW * 4
-               fromRegion:MTLRegionMake2D(0, 0, p.dstW, p.dstH)
-              mipmapLevel:0];
-          p.callback(std::move(pixels));
-        }
+        dispatch_async(previewReadbackQueue(), ^{
+          for (auto& p : *pending) {
+            std::vector<uint8_t> pixels((size_t)p.dstW * p.dstH * 4);
+            [p.dst getBytes:pixels.data()
+                bytesPerRow:p.dstW * 4
+                 fromRegion:MTLRegionMake2D(0, 0, p.dstW, p.dstH)
+                mipmapLevel:0];
+            p.callback(std::move(pixels));
+          }
+        });
       }];
       [cb commit];
       // ARC: `cb` (local strong) and the Metal queue both held refs; the
@@ -1071,19 +1092,33 @@ private:
   //       PREVIOUS frame's completion handler is still calling
   //       getBytes on them.
   //
-  // We use a two-pool ping-pong per (w,h): each frame's batch picks one
-  // pool (alternates), grows it on demand within the batch (so case
-  // (a) is impossible), and resets its cursor for the next time that
-  // pool is picked. By then ~2 frames have elapsed, well past the
-  // microseconds the handler needs.
+  // We use a ring of pools per (w,h): each batch picks the next pool,
+  // grows it on demand within the batch (so case (a) is impossible), and
+  // resets its cursor for the next time that pool comes around. The
+  // consumption (getBytes) now runs on previewReadbackQueue() a hop after
+  // the completion handler, so it can lag the encode by a batch or two —
+  // the ring is sized so a pool isn't re-encoded until kAsyncPoolRing
+  // preview ticks later (~100ms at 30 Hz).
   struct AsyncScratchPool {
     std::vector<id<MTLTexture>> textures;
     size_t cursor = 0;
   };
+  static constexpr size_t kAsyncPoolRing = 4;
   struct AsyncScratchPoolSet {
-    AsyncScratchPool pools[2];
+    AsyncScratchPool pools[kAsyncPoolRing];
   };
   size_t async_batch_pool_index_ = 0;
+  // Serial worker for preview readbacks — keeps heavyweight memcpys off
+  // Metal's completion queue (see commitPreviewBatch). Lazy: most backend
+  // instances (tests, web parity) never read back previews.
+  dispatch_queue_t preview_readback_queue_ = nullptr;
+  dispatch_queue_t previewReadbackQueue() {
+    if (!preview_readback_queue_) {
+      preview_readback_queue_ = dispatch_queue_create(
+          "nano.preview.readback", DISPATCH_QUEUE_SERIAL);
+    }
+    return preview_readback_queue_;
+  }
   id<MTLTexture> nextAsyncScratchScaleTarget(uint32_t w, uint32_t h) {
     uint64_t key = ((uint64_t)w << 32) | (uint64_t)h;
     auto& pool = asyncScaleScratchPools_[key]

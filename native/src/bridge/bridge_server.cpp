@@ -70,9 +70,13 @@ void BridgeServer::init_subsystems() {
     ws_server_->send_to(client_id, msg);
   });
 
-  if (!ws_server_->start(8081)) {
+  // NANO_BRIDGE_PORT overrides the editor WS port (default 8081) — used by
+  // benchmarks/tests so they never collide with a live Arena/Resolume barrel.
+  int port = 8081;
+  if (const char* p = getenv("NANO_BRIDGE_PORT"); p && atoi(p) > 0) port = atoi(p);
+  if (!ws_server_->start(port)) {
     std::fprintf(stderr,
-        "[bridge] WsServer failed to bind port 8081 (already in use?)\n");
+        "[bridge] WsServer failed to bind port %d (already in use?)\n", port);
   }
 
   pump_stop_.store(false, std::memory_order_release);

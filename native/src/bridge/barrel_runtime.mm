@@ -199,6 +199,11 @@ struct BarrelRuntime::Impl {
   bool                    send_started = false;
 
   ~Impl() {
+    // Preview readback callbacks (hopped off Metal's completion queue onto
+    // the backend's serial readback queue) capture `this` and touch
+    // send_mu/send_queue — drain them BEFORE any member is destroyed, or a
+    // late callback locks a destroyed mutex at process exit.
+    if (gpu) gpu->drainPreviewReadbacks();
     {
       std::lock_guard<std::mutex> lk(send_mu);
       send_stop.store(true, std::memory_order_release);

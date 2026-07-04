@@ -909,6 +909,23 @@ if(APPLE)
   )
   target_compile_options(ffgl_runner PRIVATE -Wno-attributes -Wno-deprecated-declarations)
 
+  # --- preview_bench: simulated-editor benchmark for the barrel preview path ---
+  # Drives bridge_executor_render (the exact FFGL entry: rail publish, capture
+  # hooks, fusion barriers, preview readback+broadcast) while an in-process
+  # ixwebsocket client plays the editor (observe + preview_requests + drain).
+  # Binds the WS server on NANO_BRIDGE_PORT so it never collides with a live
+  # Arena. See tools/preview_bench.mm for the scenario matrix.
+  add_executable(preview_bench tools/preview_bench.mm)
+  target_include_directories(preview_bench PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(preview_bench PRIVATE
+    bridge_server
+    ixwebsocket
+    nlohmann_json::nlohmann_json
+    "-framework Metal"
+    "-framework Foundation"
+  )
+  target_compile_options(preview_bench PRIVATE -fobjc-arc)
+
   # --- NanoBarrel FFGL bundle ---
   # The full-fat barrel: one FFGL bundle that hosts a sketch AND executes it
   # each frame via the Metal-backed effect runtime. The editor bridge is NOT
