@@ -75,10 +75,21 @@ export class FieldLayoutManager {
 
   private recalculate() {
     runInAction(() => {
+      // Only bump `generation` when a rect actually moved/resized (or a new
+      // entry got its first rect). Consumers re-render off `generation`, so an
+      // unconditional bump turns any stray per-update recalculate into a
+      // perpetual full-surface re-render loop.
+      let changed = false;
       for (const entry of this.entries.values()) {
-        entry.viewportRect = entry.element.getBoundingClientRect();
+        const r = entry.element.getBoundingClientRect();
+        const p = entry.viewportRect;
+        if (!p || p.top !== r.top || p.left !== r.left ||
+            p.width !== r.width || p.height !== r.height) {
+          changed = true;
+        }
+        entry.viewportRect = r;
       }
-      this.generation++;
+      if (changed) this.generation++;
     });
   }
 
@@ -139,13 +150,24 @@ export class FieldLayoutManager {
     return r;
   }
 
-  /** Attach a ResizeObserver to auto-recalculate on layout shifts. */
+  private observedContainer: HTMLElement | null = null;
+
+  /** Attach a ResizeObserver to auto-recalculate on layout shifts.
+   *
+   *  Idempotent per container: callers invoke this from Lit `updated()` on
+   *  every render, and a fresh `observe()` ALWAYS fires an initial callback on
+   *  the next frame. Re-observing the same element on each update therefore
+   *  scheduled a recalculate every frame — which bumped `generation`, which
+   *  re-rendered the caller, which re-observed... a perpetual re-render loop
+   *  that kept the whole editor surface updating at display rate while idle. */
   observeContainer(container: HTMLElement) {
+    if (this.observedContainer === container && this.resizeObserver) return;
     this.unobserveContainer();
     this.resizeObserver = new ResizeObserver(() => {
       this.scheduleRecalculate();
     });
     this.resizeObserver.observe(container);
+    this.observedContainer = container;
   }
 
   unobserveContainer() {
@@ -153,6 +175,7 @@ export class FieldLayoutManager {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
     }
+    this.observedContainer = null;
   }
 
   dispose() {
