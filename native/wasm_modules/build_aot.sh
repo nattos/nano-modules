@@ -40,7 +40,17 @@ for b in "${BUNDLES[@]}"; do
   fi
   for arch in $ARCHES; do
     aot="$OUT_DIR/$b-$arch.aot"
-    "$WAMRC" --target="$arch" --opt-level=3 --size-level=3 -o "$aot" "$wasm" \
+    # aarch64 MUST reserve x18: it's the platform register on darwin (and
+    # windows/android) — the kernel may clobber it at ANY preemption/signal.
+    # wamrc's generic aarch64 target lets LLVM allocate it, which shipped AOT
+    # code that kept a wasm memory base in x18 → a zeroed x18 mid-function →
+    # SIGSEGV at `0 + wasm_offset` (the 2026-07-04 Arena "paste subtle_blur"
+    # crash: stable si_addr ~0xd432c0; WAMR's trap handler rightly declined it
+    # and aborted). Load/timing dependent, so solo/headless runs missed it.
+    # (--cpu is required by wamrc whenever --cpu-features is given.)
+    EXTRA_FLAGS=""
+    [ "$arch" = "aarch64" ] && EXTRA_FLAGS="--cpu=generic --cpu-features=+reserve-x18"
+    "$WAMRC" --target="$arch" $EXTRA_FLAGS --opt-level=3 --size-level=3 -o "$aot" "$wasm" \
       >/dev/null 2>&1 && echo "  $b.wasm -> $b-$arch.aot ($(wc -c < "$aot") bytes)" \
       || echo "  FAILED: $b -> $arch"
   done

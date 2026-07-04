@@ -2326,3 +2326,200 @@ TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][s
 
   sidechannel_bus::resetForTest();  // release bus textures while backend lives
 }
+
+// ---------------------------------------------------------------------------
+// Arena crash repro (2026-07-04): three relaunches, three identical SIGSEGVs on
+// the Render Thread at a STABLE low address (~0xd432c0) that WAMR's trap
+// handler refused as a wasm OOB — the signature of a wasm offset dereferenced
+// off a dead/NULL memory base. Live topology at crash time (recovered from the
+// composition's nanobarrel://config blobs): two active barrel instances in one
+// process — [brutal_fold → auto_level → edges] and [barrel_macros → shape_burst
+// + a macro_0→manual wire] — at 1920×1080, with the web client editing (the
+// crash always followed a `regenerate`, i.e. a dirty rebuild that destroys and
+// re-creates the wasm effect instances). This case replays exactly that:
+// alternating executors, per-frame param churn, trigger events, and periodic
+// dirty rebuilds.
+#ifdef NANO_WASM_PATH
+TEST_CASE("arena repro: brutal_fold + shape_burst chains survive regenerate churn",
+          "[effect_render][arena_repro]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor A(&rt, &registry, backend.get());
+  A.setKeyNamespace("A/");
+  sketch_executor::SketchExecutor B(&rt, &registry, backend.get());
+  B.setKeyNamespace("B/");
+
+  const uint32_t W = 1920, H = 1080;
+  const int RGBA8 = 1;
+  int inA = backend->createTexture(W, H, RGBA8);
+  int outA = backend->createTexture(W, H, RGBA8);
+  int inB = backend->createTexture(W, H, RGBA8);
+  int outB = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inA >= 0); REQUIRE(outA >= 0); REQUIRE(inB >= 0); REQUIRE(outB >= 0);
+
+  // Instance states lifted from the crashing composition (help text dropped).
+  auto sketchA = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "source.brutal_fold",     "instance_key": "bf" },
+      { "type": "module", "module_type": "color.tone.auto_level",  "instance_key": "al" },
+      { "type": "module", "module_type": "filter.edges",           "instance_key": "ed" }
+    ],
+    "instances": {
+      "bf": { "module_type": "source.brutal_fold", "state": {
+        "anim_amount": 1, "complexity": 0.2924, "order": 0.2062, "liveliness": 1,
+        "time_speed": 0.12, "scale": 0.7, "extrude": 1, "fog": 5,
+        "interp_cells": true, "second_structure": true, "vol_amount": 1,
+        "vol_depth": 0.12, "vol_radius": 0.5, "vol_shape": 1, "vol_z": 0.55,
+        "diff_hue_hi": 0.586, "diff_hue_lo": 0.283, "diff_hue_mid": 0.815
+      } },
+      "al": { "module_type": "color.tone.auto_level", "state": {
+        "equalize": 0.87, "median_pull": 0.57, "median_target": 0.41 } },
+      "ed": { "module_type": "filter.edges", "state": {
+        "bg": [0,0,0], "keep_input": 0, "line": [1,1,1],
+        "radius": 0.14, "threshold": 0.17 } }
+    }
+  })JSON");
+
+  auto sketchB = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "control.barrel_macros", "instance_key": "mac" },
+      { "type": "module", "module_type": "source.shape_burst",    "instance_key": "burst" }
+    ],
+    "instances": {
+      "mac": { "module_type": "control.barrel_macros", "state": { "macro_0": 0.0 } },
+      "burst": { "module_type": "source.shape_burst", "state": {
+        "auto_rate": 0, "composite": 0, "distort": 0.15, "distort_freq": 0.4,
+        "duration": 0.3, "manual": 0, "voices": 1, "shape": 0,
+        "thickness": 0.03, "min_scale": 0.05, "max_scale": 1.2,
+        "motion_strength": 1, "tilt": 0, "trigger": 0 } }
+    },
+    "wires": [
+      { "id": "w0", "combine": "add",
+        "src":  { "instanceKey": "mac",   "field": "macro_0" },
+        "dest": { "instanceKey": "burst", "field": "manual" } }
+    ]
+  })JSON");
+
+  for (int f = 0; f < 900; ++f) {
+    // The web client editing → periodic full regenerates (plan rebuild:
+    // destroy + re-create every wasm effect instance).
+    const bool dirty = (f % 60) == 0;
+    // Live param churn (macro knob riding, brutal_fold pad drag).
+    sketchB["instances"]["mac"]["state"]["macro_0"] = 0.5 + 0.5 * std::sin(f * 0.11);
+    sketchA["instances"]["bf"]["state"]["complexity"] = 0.29 + 0.2 * std::sin(f * 0.05);
+    // Occasional trigger events firing shape_burst voices.
+    if (f % 90 == 30) sketchB["instances"]["burst"]["state"]["trigger"] = f;
+
+    int32_t oA = A.execute(sketchA, inA, outA, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+    int32_t oB = B.execute(sketchB, inB, outB, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+    REQUIRE(oA > 0);
+    REQUIRE(oB > 0);
+  }
+
+  // Surviving 900 frames (15 dirty rebuilds) without a signal IS the assertion.
+  auto pxA = backend->readbackTexture(outA, W, H);
+  auto pxB = backend->readbackTexture(outB, W, H);
+  CHECK(pxA.size() == (size_t)W * H * 4);
+  CHECK(pxB.size() == (size_t)W * H * 4);
+}
+#endif  // NANO_WASM_PATH
+
+// Second Arena repro axis: the user isolated a MULTI-CARD PASTE that crashed
+// seconds later — a 5-filter chain including two LEGACY-bundle effects
+// (color.legacy.bicolor_grad, filter.legacy.subtle_blur). legacy.wasm is the
+// ~14MB module, which is exactly where a NULL-membase dereference at the
+// crash's stable in-bounds offset (~0xd432c0, 13.9MB) would land. Resolume
+// additionally renders one instance at ALTERNATING sizes (composition output
+// vs preview panel) — so this case drives the pasted chain over a non-black
+// input with per-frame 1920×1080 ↔ 1754×987 viewport thrash and periodic
+// dirty rebuilds (the paste itself is a regenerate).
+#ifdef LEGACY_WASM_PATH
+TEST_CASE("arena repro: pasted legacy filter chain survives viewport thrash",
+          "[effect_render][arena_repro]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(LEGACY_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor ex(&rt, &registry, backend.get());
+
+  const uint32_t W1 = 1920, H1 = 1080, W2 = 1754, H2 = 987;
+  const int RGBA8 = 1;
+  int in1 = backend->createTexture(W1, H1, RGBA8);
+  int out1 = backend->createTexture(W1, H1, RGBA8);
+  int in2 = backend->createTexture(W2, H2, RGBA8);
+  int out2 = backend->createTexture(W2, H2, RGBA8);
+  REQUIRE(in1 >= 0); REQUIRE(out1 >= 0); REQUIRE(in2 >= 0); REQUIRE(out2 >= 0);
+
+  // Non-black, non-uniform input (the filters analyze content — bicolor_grad
+  // isolates a mid-band, subtle_blur displaces by hue).
+  auto fillGradient = [&](int tex, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> px((size_t)w * h * 4);
+    for (uint32_t y = 0; y < h; ++y)
+      for (uint32_t x = 0; x < w; ++x) {
+        size_t i = ((size_t)y * w + x) * 4;
+        px[i] = (uint8_t)(255 * x / w);
+        px[i + 1] = (uint8_t)(255 * y / h);
+        px[i + 2] = (uint8_t)(255 - (255 * x / w));
+        px[i + 3] = 255;
+      }
+    backend->writeTexture(tex, w, h, px.data(), (uint32_t)px.size());
+  };
+  fillGradient(in1, W1, H1);
+  fillGradient(in2, W2, H2);
+
+  // The exact pasted payload (help text dropped; __opacity__ kept — a partial-
+  // opacity FIRST stage rides the executor's reserved-key path).
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "color.legacy.bicolor_grad",  "instance_key": "bg"  },
+      { "type": "module", "module_type": "color.temperature",          "instance_key": "ct"  },
+      { "type": "module", "module_type": "color.hsl",                  "instance_key": "hsl" },
+      { "type": "module", "module_type": "filter.vignette",            "instance_key": "vig" },
+      { "type": "module", "module_type": "filter.legacy.subtle_blur",  "instance_key": "sb"  }
+    ],
+    "instances": {
+      "bg":  { "module_type": "color.legacy.bicolor_grad", "state": {
+        "__opacity__": 0.49, "blend": 1, "color_sat": 0.05, "isolation": 0.3,
+        "midband": 0.2, "mode": 0, "neutral": [0.05, 0.05, 0.06],
+        "neutral_mix": 0.25, "reverse": false, "scale": 1, "smoothing": 0.85 } },
+      "ct":  { "module_type": "color.temperature", "state": { "temperature": 1 } },
+      "hsl": { "module_type": "color.hsl", "state": {
+        "hue_shift": -0.18, "lightness": -0.35, "saturation": 1 } },
+      "vig": { "module_type": "filter.vignette", "state": {
+        "amount": -0.52, "center": [0, 0], "radius": 0.6, "shape": 0,
+        "softness": 0.4, "squash": 0 } },
+      "sb":  { "module_type": "filter.legacy.subtle_blur", "state": {
+        "amount": 0.15, "blur": 0.09, "hue": 0.22, "movement": 1, "quality": 0.3 } }
+    }
+  })JSON");
+
+  for (int f = 0; f < 1200; ++f) {
+    const bool dirty = (f % 120) == 0;   // periodic re-paste / plan rebuild
+    const bool small = (f % 2) == 1;     // per-frame Resolume preview-size thrash
+    int32_t out = small
+      ? ex.execute(sketch, in2, out2, (int)W2, (int)H2, 1.0 / 60.0, dirty)
+      : ex.execute(sketch, in1, out1, (int)W1, (int)H1, 1.0 / 60.0, dirty);
+    backend->submit();
+    REQUIRE(out > 0);
+  }
+
+  auto px = backend->readbackTexture(out1, W1, H1);
+  CHECK(px.size() == (size_t)W1 * H1 * 4);
+}
+#endif  // LEGACY_WASM_PATH
