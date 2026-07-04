@@ -26,6 +26,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <effect_utils.h>
+#include <effect_twitch_mask.h>   // fx::TwitchMask — roaming distortion mask
 #include "sketch/envelope.h"   // envelope::applyEase — shared with mod.source.adsr
 #include "shape_burst_shaders.h"
 
@@ -44,6 +45,7 @@ struct Voice {
   float t = 0.0f;        // burst progress [0,1]
   float speed = 0.0f;    // radius change this frame (cover-square units/frame)
   float jitter = 0.0f;   // rotation offset (radians) captured at trigger
+  float dist_seed = 0.0f;// distortion noise seed captured at trigger
   bool active = false;
   uint64_t age = 0;      // trigger order (for poly steal + newest-first draw)
 };
@@ -62,9 +64,17 @@ struct Uniforms {
   float tilt;                 // u_tilt
   float motion_strength;      // u_motion_strength
   uint32_t _p0;
+  float dist_amount;          // u_dist_amount
+  float dist_freq;            // u_dist_freq
+  float dist_radius;          // u_dist_radius
+  float dist_soft;            // u_dist_soft
+  float anchor_x, anchor_y;   // u_anchor
+  float twitch_strength;      // u_twitch_strength
+  float _p1;
   float scales[kMaxVoices];    // u_scales (== float4[4])
   float speeds[kMaxVoices];    // u_speeds (== float4[4])
   float rotations[kMaxVoices]; // u_rotations (== float4[4])
+  float dist_seeds[kMaxVoices];// u_dist_seeds (== float4[4])
 };
 
 struct State {
@@ -93,6 +103,14 @@ struct State {
   // Motion vectors.
   float tilt = 0.0f;
   float motion_strength = 1.0f;
+  // Distortion (twitch-mask-gated perimeter push/pull).
+  float distort = 0.0f;
+  float distort_freq = 0.4f;
+  float distort_radius = 0.6f;
+  float distort_softness = 0.5f;
+  fx::TwitchMask twitch;              // roaming anchor + per-frame strength
+  float anchor[2] = { 0.0f, 0.0f };   // this frame's twitch anchor
+  float twitch_strength = 0.0f;       // this frame's twitch intensity
 
   uint32_t rng = 0x5EED5EEDu;         // auto-trigger Poisson stream
   uint32_t jitter_rng = 0x1234ABCDu;  // per-trigger rotation-jitter stream (§8.9)
@@ -136,10 +154,13 @@ static void startBurst(State* s, int vi) {
   v.t = 0.0f;
   v.speed = 0.0f;
   v.age = ++s->trig_counter;
-  // Capture a random rotation offset for this voice (§8.8 — per-trigger variety).
+  // Capture per-trigger randomness (§8.8 — per-trigger variety): a rotation
+  // offset and a distortion-noise seed, from the shared jitter stream.
   s->jitter_rng = s->jitter_rng * 1664525u + 1013904223u;
   float u = (s->jitter_rng >> 8) * (1.0f / 16777216.0f);   // [0,1)
   v.jitter = (u * 2.0f - 1.0f) * s->rotation_jitter * 3.14159265f;
+  s->jitter_rng = s->jitter_rng * 1664525u + 1013904223u;
+  v.dist_seed = (s->jitter_rng >> 8) * (1.0f / 16777216.0f) * 128.0f;  // domain offset
 }
 
 // Pick a voice for a poly trigger: a free one if any, else steal the oldest.
@@ -170,7 +191,7 @@ static void triggerVoice(State* s) {
 }
 
 void module_init() {
-  state::init("source.shape_burst", {1, 0, 2},
+  state::init("source.shape_burst", {1, 0, 3},
     state::Schema()
       .helpField("intro",
         "## Shape Burst\n"
@@ -242,6 +263,22 @@ void module_init() {
                    {{"Black", CompBlack}, {"Transparent", CompTransparent},
                     {"Custom", CompCustom}, {"Input", CompInput}}).label("Composite", "Comp")
       .rgbaField("bg_color", 0.0f, 0.0f, 0.0f, 1.0f, state::SecondaryInput).label("Background", "BG")
+      // --- Distort: twitch-mask-gated random push/pull of the outline ---
+      .group("distort", "Distort")
+        .groupHelp(
+          "Warps the outline by pushing and pulling it in and out along its "
+          "perimeter. A roaming *twitch* mask (à la filter.glitch.twitch_mask) "
+          "picks WHERE the wobble bites each frame; a per-position noise picks "
+          "the random in/out amount — together a mask-weighted random deform. "
+          "*Distort* is the master depth (0 = clean); *Frequency* sets how many "
+          "lumps; *Radius* / *Softness* size the roaming region. Each triggered "
+          "burst captures its own noise seed, so no two deform alike. **Try** low "
+          "frequency + small radius for a lurching blob, or high frequency for a "
+          "crackling rim.")
+      .floatField("distort", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Distort", "Dist")
+      .floatField("distort_freq", 0.4f, 0.f, 1.f, state::PrimaryInput).label("Frequency", "Freq")
+      .floatField("distort_radius", 0.6f, 0.f, 1.f, state::SecondaryInput).label("Region Radius", "DRad")
+      .floatField("distort_softness", 0.5f, 0.f, 1.f, state::SecondaryInput).label("Region Softness", "DSoft")
       // --- Motion vectors: a render_outputs/motion rail for downstream blur ---
       .group("motion", "Motion")
         .groupHelp(
@@ -304,6 +341,8 @@ void init(void* self) {
   *s = State();
   s->uniform_buf = buf;
   s->initialized = buf.valid();
+  static uint32_t s_seed_ctr = 0;     // distinct twitch stream per instance (§8.9)
+  s->twitch.seed(0x9E3779B1u * (++s_seed_ctr));
 }
 
 void tick(void* self, double dt) {
@@ -337,6 +376,13 @@ void tick(void* self, double dt) {
   // (0 when held). Sampled per frame so a static manual ring writes no motion.
   s->manual_speed = scaleForT(s, s->manual) - scaleForT(s, s->manual_prev);
   s->manual_prev = s->manual;
+
+  // Roam the distortion mask (fx::TwitchMask). amount<=0 → zero frame, no draw.
+  auto f = s->twitch.update({ s->distort, /*shape=*/1.0f, s->distort_radius,
+                              s->distort_softness, /*position=*/0.0f });
+  s->anchor[0] = f.anchor_x;
+  s->anchor[1] = f.anchor_y;
+  s->twitch_strength = f.strength;
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -369,6 +415,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "composite"))  s->composite = state::patchInt(i);
     else if (state::pathIs(p, l, "tilt"))       s->tilt = state::patchFloat(i);
     else if (state::pathIs(p, l, "motion_strength")) s->motion_strength = state::patchFloat(i);
+    else if (state::pathIs(p, l, "distort"))    s->distort = state::patchFloat(i);
+    else if (state::pathIs(p, l, "distort_freq")) s->distort_freq = state::patchFloat(i);
+    else if (state::pathIs(p, l, "distort_radius")) s->distort_radius = state::patchFloat(i);
+    else if (state::pathIs(p, l, "distort_softness")) s->distort_softness = state::patchFloat(i);
     else if (state::pathIs(p, l, "bg_color")) {
       auto v = state::patchVec4(i);
       s->bg_color[0] = v.x; s->bg_color[1] = v.y; s->bg_color[2] = v.z; s->bg_color[3] = v.w;
@@ -401,8 +451,15 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.tilt = s->tilt;
   u.motion_strength = s->motion_strength;
   u._p0 = 0;
+  u.dist_amount = s->distort * 0.4f;   // map [0,1] → up to 0.4 cover-square push
+  u.dist_freq = s->distort_freq;
+  u.dist_radius = s->distort_radius;
+  u.dist_soft = s->distort_softness;
+  u.anchor_x = s->anchor[0]; u.anchor_y = s->anchor[1];
+  u.twitch_strength = s->twitch_strength;
+  u._p1 = 0.0f;
   for (int i = 0; i < kMaxVoices; i++) {
-    u.scales[i] = -1.0f; u.speeds[i] = 0.0f; u.rotations[i] = 0.0f;
+    u.scales[i] = -1.0f; u.speeds[i] = 0.0f; u.rotations[i] = 0.0f; u.dist_seeds[i] = 0.0f;
   }
   const float base_rot = s->rotation * 3.14159265f;
 
@@ -412,6 +469,7 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   if (s->manual > 0.0f && count < cap) {
     u.speeds[count] = s->manual_speed;
     u.rotations[count] = base_rot;                 // manual voice: no captured jitter
+    u.dist_seeds[count] = 0.0f;                     // manual voice: fixed noise seed
     u.scales[count++] = scaleForT(s, s->manual);
   }
 
@@ -427,6 +485,7 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
     taken[best] = true;
     u.speeds[count] = s->v[best].speed;
     u.rotations[count] = base_rot + s->v[best].jitter;
+    u.dist_seeds[count] = s->v[best].dist_seed;
     u.scales[count++] = scaleForT(s, s->v[best].t);
   }
   u.count = (uint32_t)count;

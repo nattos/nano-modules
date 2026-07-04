@@ -37,8 +37,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float s = u_scales[i / 4u][i % 4u];
     if (s <= 0.0) continue;
     float spd = u_speeds[i / 4u][i % 4u];
+    // Match the color pass's distorted boundary so motion rides the same shape.
+    float2 dir = (dot(p, p) > 1e-12) ? normalize(p) : float2(1.0, 0.0);
+    float disp = sb_distort(dir * s, u_dist_seeds[i / 4u][i % 4u]);
     float2 pr = sb_unrotate(p, u_rotations[i / 4u][i % 4u]);
-    float d   = sd_shape(pr / s, u_shape_kind) * s;
+    float d   = sd_shape(pr / s, u_shape_kind) * s - disp;
     float cov = smoothstep(half_t + aa, half_t - aa, abs(d));
     if (cov <= best_cov) continue;                 // keep the nearest/strongest ring
 

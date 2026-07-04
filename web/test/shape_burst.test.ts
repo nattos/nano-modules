@@ -90,6 +90,17 @@ describe('source.shape_burst E2E', () => {
     c0.trace('out').expectSameAs(c1.trace('out'), 2);             // circle is rotation-invariant
   });
 
+  it('distort warps the outline via the twitch-masked noise', async () => {
+    const clean = await render('burst_clean',
+      { ...RING, shape: 0, distort: 0.0, composite: 0 }, 'burst_clean');
+    const warped = await render('burst_warp',
+      { ...RING, shape: 0, distort: 1.0, distort_radius: 1.0, distort_freq: 0.5, composite: 0 },
+      'burst_warp');
+    warped.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    // A pushed/pulled outline differs from the clean circle.
+    warped.trace('out').expectDifferentFrom(clean.trace('out'), 20);
+  });
+
   it('Input composite passes the input through around the ring', async () => {
     // Thin ring so most of the frame is the untouched input colour (0.2,0.4,0.8).
     const r = await render('burst_input',

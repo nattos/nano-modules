@@ -1,10 +1,11 @@
-// shape_burst/common.hlsl — shared uniforms + shape SDFs for the color pass
-// (compute.hlsl) and the motion-vector pass (motion.hlsl).
+// shape_burst/common.hlsl — shared uniforms + shape SDFs + perimeter distortion
+// for the color pass (compute.hlsl) and the motion-vector pass (motion.hlsl).
 
 #ifndef SHAPE_BURST_COMMON_HLSL
 #define SHAPE_BURST_COMMON_HLSL
 
 #include "nano_coords.hlsl"
+#include "nano_hash.hlsl"
 
 #define MAX_DRAW 16
 
@@ -21,9 +22,17 @@ cbuffer Uniforms : register(b2) {
   float  u_tilt;           // -1..+1: shift motion magnitude inner<->outer edge
   float  u_motion_strength;// overall motion-vector scale
   uint   _p0;
+  float  u_dist_amount;    // distortion displacement scale (0 = off)
+  float  u_dist_freq;      // perimeter noise frequency
+  float  u_dist_radius;    // twitch-mask region radius (cover-square)
+  float  u_dist_soft;      // twitch-mask falloff
+  float2 u_anchor;         // per-frame roaming twitch anchor (cover-square)
+  float  u_twitch_strength;// this frame's twitch intensity [0,1]
+  float  _p1;
   float4 u_scales[MAX_DRAW / 4];    // per-voice ring radius (cover-square units)
   float4 u_speeds[MAX_DRAW / 4];    // per-voice radius change per frame (signed)
   float4 u_rotations[MAX_DRAW / 4]; // per-voice shape rotation (radians)
+  float4 u_dist_seeds[MAX_DRAW / 4];// per-voice noise seed offset
 };
 
 // Rotate a sample point into the shape's local frame (rotate by -angle).
@@ -56,6 +65,20 @@ float sd_shape(float2 p, uint kind) {
   if (kind == 1u) return sd_box(p);
   if (kind == 2u) return sd_triangle(p);
   return sd_circle(p);
+}
+
+// Signed radial displacement (cover-square units) of the boundary at the
+// "canonical" position `bp` = angle-direction × radius (so every pixel across
+// the stroke width at one angle shares it → the whole stroke pushes/pulls as a
+// unit). A roaming twitch mask (strong near the per-frame anchor) weights a
+// bipolar fbm noise, giving a mask-gated random push/pull along the perimeter.
+float sb_distort(float2 bp, float seed) {
+  if (u_dist_amount <= 0.0 || u_twitch_strength <= 0.0) return 0.0;
+  float t = smoothstep(u_dist_radius, u_dist_radius + max(u_dist_soft, 1e-4),
+                       length(bp - u_anchor));
+  float mask = u_twitch_strength * (1.0 - t);        // 1 near anchor → 0 far
+  float n = nano_fbm2(bp * (1.0 + u_dist_freq * 11.0) + seed, 4);
+  return u_dist_amount * mask * (n * 2.0 - 1.0);      // bipolar in/out
 }
 
 #endif
