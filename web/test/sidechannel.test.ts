@@ -73,6 +73,29 @@ describe('sidechannel textures across playground instances', () => {
     expect(fresh!.g - fresh!.r).toBeGreaterThan(60);
     expect(fresh!.g - fresh!.b).toBeGreaterThan(60);
 
+    // The custom inspector decorates channel 2 with the SENDER's instance
+    // label ("2 — Instance 1") — select the receive effect and read the
+    // dropdown options.
+    await page.evaluate(`window.appController.select('effect/${ids.b}/0/0')`);
+    await new Promise(r => setTimeout(r, 1200));
+    const options = await page.evaluate(`(() => {
+      function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      for (const el of walk(document)) {
+        if (el.tagName === 'SIDECHANNEL-INSPECTOR') {
+          const texts = [];
+          for (const opt of walk(el.shadowRoot)) {
+            if (opt.tagName === 'OPTION') texts.push(opt.textContent.trim());
+          }
+          return texts;
+        }
+      }
+      return null;
+    })()`) as string[] | null;
+    expect(options).not.toBeNull();
+    expect(options!.some(t => /2 — Instance 1/.test(t))).toBe(true);
+    expect(options).toContain('Custom');
+    await page.evaluate(`window.appController.select(null)`);
+
     // Remove the sender stage from A → the channel goes stale → B transparent
     // (checkerboard: no green dominance).
     await page.evaluate(`(() => {

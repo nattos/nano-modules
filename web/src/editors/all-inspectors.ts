@@ -18,3 +18,4 @@ import './mod-spectral-inspector';
 import './envelope-inspector';
 import './adsr-inspector';
 import './paramlinker-editor';
+import './sidechannel-inspector';
