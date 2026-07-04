@@ -571,6 +571,13 @@ int32_t SketchExecutor::execute(
   // per execute(), whether or not this sketch touches the bus.
   const uint64_t sidechannelSeq = sidechannel_bus::beginRender();
 
+  // Rewind the host-pass uniform pools: every wet/dry blend and sidechannel
+  // blit encoded this frame takes its own uniform buffer (the frame is one
+  // command buffer, so a shared buffer would be read at the LAST-written
+  // value by every dispatch — see WetDryBlend::beginFrame).
+  if (blend_) blend_->beginFrame();
+  if (sidechannelBlit_) sidechannelBlit_->beginFrame();
+
 #ifndef __wasm__
   // Native: point the effrt_* instance ABI at this runtime and reset the frame's
   // handle table (effrt_impls.cpp). The wasm build's host owns the runtime, so

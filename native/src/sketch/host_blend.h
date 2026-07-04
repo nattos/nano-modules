@@ -24,6 +24,7 @@
 #include "sketch/exec_gpu.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace sketch_executor {
 
@@ -69,6 +70,16 @@ class WetDryBlend {
  public:
   ~WetDryBlend() { releaseAll(); }
 
+  // Rewind the per-encode uniform cursor. Call once per frame (top of
+  // execute()) BEFORE any encode(). The whole frame is encoded into ONE
+  // command buffer and gpu_write_buffer is an immediate CPU write into the
+  // buffer's contents — so every encode this frame needs its OWN uniform
+  // buffer. Reusing one buffer made all of a frame's blend dispatches read
+  // whatever opacity was written LAST (e.g. a chain with an effect at 0.49
+  // followed by one at 0.99 blended BOTH at 0.99; a trailing copyToOutput
+  // forced everything to 1.0).
+  void beginFrame() { uniCursor_ = 0; }
+
   // Encode the blend into the current command buffer (NOT submitted — the
   // executor submits once per frame), via the gpu ABI. `dryTex` is the
   // pre-effect image; pass <0 to fade against transparent black. Returns false
@@ -77,14 +88,16 @@ class WetDryBlend {
               int32_t outTex, float opacity, int W, int H) {
     if (outTex < 0 || fxTex < 0 || W <= 0 || H <= 0) return false;
     if (!ensure()) return false;
+    const int32_t uni = nextUniform();
+    if (uni < 0) return false;
     const int32_t dry = dryTex >= 0 ? dryTex : blackTex(W, H);
     if (dry < 0) return false;
     struct U { uint32_t w, h; float opacity, pad; } u{
         (uint32_t)W, (uint32_t)H, opacity, 0.0f};
-    gpu_write_buffer(uni_, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
+    gpu_write_buffer(uni, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
     int32_t pass = gpu_begin_compute_pass();
     gpu_compute_set_pso(pass, pso_);
-    gpu_compute_set_buffer(pass, uni_, 0, /*slot*/ 3);
+    gpu_compute_set_buffer(pass, uni, 0, /*slot*/ 3);
     gpu_compute_set_texture(pass, dry,    0, /*read*/ 0);
     gpu_compute_set_texture(pass, fxTex,  1, /*read*/ 0);
     gpu_compute_set_texture(pass, outTex, 2, /*write*/ 1);
@@ -106,10 +119,20 @@ class WetDryBlend {
                                     (int32_t)__builtin_strlen("wet_dry_blend"));
       if (pso_ < 0) return false;
     }
-    // usage 2 = gpu::BufferUsage::Uniform — required for the WebGPU
-    // var<uniform> binding (Metal ignores buffer usage flags).
-    if (uni_ < 0) uni_ = gpu_create_buffer(16, /*Uniform*/ 2);
-    return pso_ >= 0 && uni_ >= 0;
+    return pso_ >= 0;
+  }
+
+  // One uniform buffer PER ENCODE within a frame (see beginFrame). The pool
+  // grows to the frame's peak blend count and is reused across frames.
+  // usage 2 = gpu::BufferUsage::Uniform — required for the WebGPU
+  // var<uniform> binding (Metal ignores buffer usage flags).
+  int32_t nextUniform() {
+    if (uniCursor_ >= (int)uniforms_.size()) {
+      int32_t b = gpu_create_buffer(16, /*Uniform*/ 2);
+      if (b < 0) return -1;
+      uniforms_.push_back(b);
+    }
+    return uniforms_[uniCursor_++];
   }
 
   // A persistent W×H transparent-black texture used as the "dry" side when no
@@ -127,13 +150,17 @@ class WetDryBlend {
   void releaseAll() {
     if (pso_ >= 0)    gpu_release(pso_);
     if (shader_ >= 0) gpu_release(shader_);
-    if (uni_ >= 0)    gpu_release(uni_);
+    for (int32_t b : uniforms_) { if (b >= 0) gpu_release(b); }
+    uniforms_.clear();
+    uniCursor_ = 0;
     if (black_ >= 0)  gpu_release(black_);
-    pso_ = shader_ = uni_ = black_ = -1;
+    pso_ = shader_ = black_ = -1;
     blackW_ = blackH_ = 0;
   }
 
-  int32_t shader_ = -1, pso_ = -1, uni_ = -1, black_ = -1;
+  int32_t shader_ = -1, pso_ = -1, black_ = -1;
+  std::vector<int32_t> uniforms_;
+  int uniCursor_ = 0;
   int blackW_ = 0, blackH_ = 0;
 };
 

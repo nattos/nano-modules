@@ -1972,6 +1972,70 @@ TEST_CASE("per-effect opacity endpoints follow mix(prev, fx, opacity)",
   // 0.0 → exactly the previous stage (red), chain intact.
   CHECK(zero[0] > 250.0); CHECK(zero[2] < 5.0); CHECK(zero[3] > 250.0);
 
+  // REGRESSION (the actual user bug): TWO wet/dry blends in ONE frame. The
+  // frame is a single command buffer and gpu_write_buffer writes immediately,
+  // so a shared uniform buffer makes EVERY blend dispatch read the LAST
+  // opacity written. Chain: red @0.5 then blue @0.25 (no input).
+  //   correct: stage1 = mix(black, red, 0.5) = (128,0,0)
+  //            stage2 = mix(stage1, blue, 0.25) = (96,0,64)
+  //   bug:     both blends read 0.25 → (48,0,64)
+  {
+    auto sk = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "source.solid_color", "instance_key": "g1" },
+        { "module_type": "source.solid_color", "instance_key": "g2" }
+      ],
+      "instances": {
+        "g1": { "module_type": "source.solid_color", "state": { "color": [1.0, 0.0, 0.0], "__opacity__": 0.5 } },
+        "g2": { "module_type": "source.solid_color", "state": { "color": [0.0, 0.0, 1.0], "__opacity__": 0.25 } }
+      }
+    })JSON");
+    double rgba[4];
+    int32_t out = executor.execute(sk, -1, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    for (int c = 0; c < 4; ++c) {
+      long s = 0, n = 0;
+      for (size_t i = c; i < o.size(); i += 4) { s += o[i]; ++n; }
+      rgba[c] = n ? (double)s / n : 0.0;
+    }
+    INFO("two-blend frame (0.5 then 0.25): rgba "
+         << rgba[0] << "," << rgba[1] << "," << rgba[2] << "," << rgba[3]);
+    CHECK(std::abs(rgba[0] - 95.6) < 6.0);   // 0.75 * 127.5
+    CHECK(std::abs(rgba[2] - 63.75) < 6.0);  // 0.25 * 255
+  }
+
+  // REGRESSION companion: partial stage followed by an opacity-0 passthrough
+  // FINAL stage. The passthrough's copyToOutput is itself a blend encode at
+  // opacity 1.0 — with the shared-uniform bug it forced the earlier partial
+  // stage to full strength ("opacity 0 changes the sketch").
+  {
+    auto sk = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "source.solid_color", "instance_key": "g1" },
+        { "module_type": "source.solid_color", "instance_key": "g2" }
+      ],
+      "instances": {
+        "g1": { "module_type": "source.solid_color", "state": { "color": [1.0, 0.0, 0.0], "__opacity__": 0.5 } },
+        "g2": { "module_type": "source.solid_color", "state": { "color": [0.0, 0.0, 1.0], "__opacity__": 0.0 } }
+      }
+    })JSON");
+    double rgba[4];
+    int32_t out = executor.execute(sk, -1, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    for (int c = 0; c < 4; ++c) {
+      long s = 0, n = 0;
+      for (size_t i = c; i < o.size(); i += 4) { s += o[i]; ++n; }
+      rgba[c] = n ? (double)s / n : 0.0;
+    }
+    INFO("partial then passthrough-final (0.5 then 0.0): rgba "
+         << rgba[0] << "," << rgba[1] << "," << rgba[2] << "," << rgba[3]);
+    // Expected: half-red (128,0,0) — g1's 0.5 blend must NOT become 1.0.
+    CHECK(std::abs(rgba[0] - 127.5) < 6.0);
+    CHECK(rgba[2] < 5.0);
+  }
+
   // Single-effect chain over a REAL input at opacity 0: the sketch must pass
   // its input through (out == input), not lose it.
   {

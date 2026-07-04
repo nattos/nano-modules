@@ -22,6 +22,7 @@
 #include "sketch/exec_gpu.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace sketch_executor {
 
@@ -59,6 +60,13 @@ class SidechannelBlit {
  public:
   ~SidechannelBlit() { releaseAll(); }
 
+  // Rewind the per-encode uniform cursor — call once per frame, before any
+  // encode(). Same hazard as WetDryBlend::beginFrame: the frame is ONE
+  // command buffer and gpu_write_buffer writes immediately, so two
+  // sidechannel_in stages in one frame sharing a uniform buffer would both
+  // blit with the second stage's dimensions.
+  void beginFrame() { uniCursor_ = 0; }
+
   // Encode src (sw×sh) → out (W×H) into the current command batch. Returns
   // false if resources couldn't be created (caller clears `out` instead).
   bool encode(int32_t srcTex, int sw, int sh, int32_t outTex, int W, int H) {
@@ -74,12 +82,14 @@ class SidechannelBlit {
       return true;
     }
     if (!ensure()) return false;
+    const int32_t uni = nextUniform();
+    if (uni < 0) return false;
     struct U { uint32_t dw, dh, sw, sh; } u{
         (uint32_t)W, (uint32_t)H, (uint32_t)sw, (uint32_t)sh};
-    gpu_write_buffer(uni_, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
+    gpu_write_buffer(uni, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
     int32_t pass = gpu_begin_compute_pass();
     gpu_compute_set_pso(pass, pso_);
-    gpu_compute_set_buffer(pass, uni_, 0, /*slot*/ 2);
+    gpu_compute_set_buffer(pass, uni, 0, /*slot*/ 2);
     gpu_compute_set_texture(pass, srcTex, 0, /*read*/ 0);
     gpu_compute_set_texture(pass, outTex, 1, /*write*/ 1);
     gpu_compute_dispatch(pass, (W + 7) / 8, (H + 7) / 8, 1);
@@ -99,19 +109,33 @@ class SidechannelBlit {
                                     (int32_t)__builtin_strlen("sidechannel_blit"));
       if (pso_ < 0) return false;
     }
-    // usage 2 = gpu::BufferUsage::Uniform (WebGPU var<uniform>; Metal ignores).
-    if (uni_ < 0) uni_ = gpu_create_buffer(16, /*Uniform*/ 2);
-    return pso_ >= 0 && uni_ >= 0;
+    return pso_ >= 0;
+  }
+
+  // One uniform buffer PER ENCODE within a frame (see beginFrame); pool reused
+  // across frames. usage 2 = gpu::BufferUsage::Uniform (WebGPU var<uniform>;
+  // Metal ignores buffer usage flags).
+  int32_t nextUniform() {
+    if (uniCursor_ >= (int)uniforms_.size()) {
+      int32_t b = gpu_create_buffer(16, /*Uniform*/ 2);
+      if (b < 0) return -1;
+      uniforms_.push_back(b);
+    }
+    return uniforms_[uniCursor_++];
   }
 
   void releaseAll() {
     if (pso_ >= 0)    gpu_release(pso_);
     if (shader_ >= 0) gpu_release(shader_);
-    if (uni_ >= 0)    gpu_release(uni_);
-    pso_ = shader_ = uni_ = -1;
+    for (int32_t b : uniforms_) { if (b >= 0) gpu_release(b); }
+    uniforms_.clear();
+    uniCursor_ = 0;
+    pso_ = shader_ = -1;
   }
 
-  int32_t shader_ = -1, pso_ = -1, uni_ = -1;
+  int32_t shader_ = -1, pso_ = -1;
+  std::vector<int32_t> uniforms_;
+  int uniCursor_ = 0;
 };
 
 }  // namespace sketch_executor
