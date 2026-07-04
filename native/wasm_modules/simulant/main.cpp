@@ -81,28 +81,28 @@ struct State {
   gpu::Sampler samp_lin;
   bool initialized = false;
 
-  // --- Params (faithful to the original node names) ---
-  float wave_speed        = 0.5f;   // Wave Speed
+  // --- Params (faithful node names; defaults tuned to a lively preset) ---
+  float wave_speed        = 0.41f;  // Wave Speed
   float choke             = 0.0f;   // Choke
-  float input_scale       = 1.0f;   // A Scale (× 0.5 internally, node 148)
+  float input_scale       = 1.0f;   // A Scale (full-res injection, node 36)
   float pos_x             = 0.0f;   // A X
   float pos_y             = 0.0f;   // A Y
-  float zoom              = 1.0f;   // Zoom
-  float smoothing         = 0.5f;   // Smoothing (pre-edge blur)
-  float sim_scale         = 0.5f;
-  float levels            = 0.8f;   // Levels → posterize fineness
-  float level_bias        = 0.0f;   // Level Bias
-  float level_contrast    = 0.0f;   // Level Contrast
-  float line_strength     = 0.75f;  // Line Strength
+  float zoom              = 1.0f;   // Zoom (full-res injection → no compensation)
+  float smoothing         = 0.19f;  // Smoothing (pre-edge blur)
+  float sim_scale         = 0.76f;
+  float levels            = 0.31f;  // Levels → posterize fineness
+  float level_bias        = 0.01f;  // Level Bias
+  float level_contrast    = -0.49f; // Level Contrast
+  float line_strength     = 0.42f;  // Line Strength
   float line_width        = 0.0f;   // Line Width (px offset)
   // Flicker
-  float flicker_rate      = 0.25f;  // A Flicker Rate (0.25 → 15, the original)
-  float flicker_min       = 0.0f;   // A Flicker Min
-  float flicker_max       = 0.0f;   // A Flicker Max
-  float flicker_release   = 0.3f;   // A Flicker Release
+  float flicker_rate      = 0.58f;  // A Flicker Rate
+  float flicker_min       = 1.0f;   // A Flicker Min
+  float flicker_max       = 0.32f;  // A Flicker Max
+  float flicker_release   = 0.41f;  // A Flicker Release
   float flicker_env_amount= 1.0f;   // A Flicker Env Amount
   float flicker_invert    = 0.0f;   // A Flicker Invert (false → env SUBTRACTED)
-  float const_alpha       = 0.0f;   // A Const Alpha
+  float const_alpha       = 0.86f;  // A Const Alpha (steady injection → alive)
   float color_r = 1.0f, color_g = 1.0f, color_b = 1.0f;  // Color Filter
   float color_alpha       = 1.0f;   // Color Filter Alpha
   float color_contrast    = 0.2f;   // Colorize contrast (node 159)
@@ -128,30 +128,30 @@ void module_init() {
     state::Schema()
       .helpField("intro",
         "## Simulant\n"
-        "A faithful re-creation of the original *Simulant* Wire patch. It is a "
-        "**difference-blend feedback** loop: each frame the image is *differenced* "
-        "against a blurred copy of the previous frame and the result diffuses "
-        "outward — that blur **is** the propagation. The churning accumulator is "
-        "then traced into **Sobel lines**.\n\n"
-        "**Heads-up (faithful quirk):** with the stock knobs the flicker envelope "
-        "is *subtracted*, so a fresh drop just fades to nothing. Bring it alive "
-        "with **Const Alpha** (a steady injection), **Flicker Max** (random "
-        "pulses), or **Flicker Invert**. Then sweep *Wave Speed* (blur diffusion) "
-        "and *Choke* (feedback retention); shape the lines with *Levels* / *Line "
-        "Strength* / *Line Width*.")
+        "A re-creation of the original *Simulant* Wire patch, tuned to a lively "
+        "preset. It is a **difference-blend feedback** loop: each frame the image "
+        "is *differenced* against a blurred copy of the previous frame and the "
+        "result diffuses outward — that blur **is** the propagation. The churning "
+        "accumulator is then traced into **Sobel lines**.\n\n"
+        "**Try:** sweep *Wave Speed* (blur diffusion) and *Choke* (feedback "
+        "retention); shape the lines with *Levels* / *Line Strength* / *Line "
+        "Width*. On a static image the **Flicker** pulses keep it moving; **Const "
+        "Alpha** is a steady injection. (Faithful quirk still in the engine: turn "
+        "*Const Alpha*, *Flicker Min/Max* and the added base all to 0 with *Flicker "
+        "Invert* off and it decays to nothing — the original's dead default.)")
 
       // ---- Feedback: the accumulator ----
       .group("feedback", "Feedback")
         .groupHelp("The core difference-blend loop. *Wave Speed* is the per-frame "
                    "blur — bigger spreads the structure outward faster (this is the "
                    "propagation). *Choke* fades the retained feedback each frame.")
-      .floatField("wave_speed", 0.5f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("wave_speed", 0.41f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Per-frame feedback blur — the outward diffusion 'wave' speed.")
         .label("Wave Speed", "Speed")
       .floatField("choke", 0.0f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Fades the retained feedback each frame (0 = full retention).")
         .label("Choke", "Choke")
-      .floatField("sim_scale", 0.5f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+      .floatField("sim_scale", 0.76f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Sim grid resolution — high retains detail, low is chunky + cheap.")
         .label("Detail Scale", "Scale")
 
@@ -161,11 +161,11 @@ void module_init() {
                    "a steady injection amount — the simplest way to bring the stock "
                    "patch to life. *Scale* / *Pos X* / *Pos Y* place the (halved) "
                    "input; *Colour* / *Colour Mix* tint it (grey by default).")
-      .floatField("const_alpha", 0.0f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("const_alpha", 0.86f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Steady injection opacity added to the flicker (bring it alive).")
         .label("Const Alpha", "Const")
       .floatField("input_scale", 1.0f, 0.f, 2.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
-                  "Scale of the injected input (× 0.5 internally, as the original).")
+                  "Scale of the injected input (1 = full-res; Wire injected at 0.5).")
         .label("Input Scale", "InScale")
       .floatField("pos_x", 0.0f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Horizontal placement of the injected input.")
@@ -186,16 +186,16 @@ void module_init() {
                    "rerolls a base between *Min* and *Max*. NOTE: with *Invert* off "
                    "the env is SUBTRACTED (the original's default) — flip it, or "
                    "raise *Max* / *Const Alpha*, to see anything.")
-      .floatField("flicker_rate", 0.25f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("flicker_rate", 0.58f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "How often flicker pulses fire (Poisson; 0.25 ≈ the original 15).")
         .label("Flicker Rate", "Rate")
-      .floatField("flicker_max", 0.0f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("flicker_max", 0.32f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Upper bound of the random per-pulse injection base.")
         .label("Flicker Max", "FMax")
-      .floatField("flicker_min", 0.0f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+      .floatField("flicker_min", 1.0f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Lower bound of the random per-pulse injection base.")
         .label("Flicker Min", "FMin")
-      .floatField("flicker_release", 0.3f, 0.01f, 2.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+      .floatField("flicker_release", 0.41f, 0.01f, 2.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Release time of the flicker envelope (seconds).")
         .label("Flicker Release", "FRel")
       .floatField("flicker_env_amount", 1.0f, 0.f, 2.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
@@ -212,22 +212,22 @@ void module_init() {
                    "edge detector; *Levels* sets posterize fineness; *Bias* / "
                    "*Contrast* pre-adjust; *Line Strength* is the edge gain and "
                    "*Line Width* the sampling offset; *Zoom* scales the field.")
-      .floatField("line_strength", 0.75f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("line_strength", 0.42f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Edge (Sobel) gain — how strongly contours are drawn.")
         .label("Line Strength", "LineStr")
       .floatField("line_width", 0.0f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Edge sampling offset — thicker lines.")
         .label("Line Width", "LineW")
-      .floatField("levels", 0.8f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("levels", 0.31f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "Posterize fineness (low = hard bands, high = smooth).")
         .label("Levels", "Levels")
-      .floatField("smoothing", 0.5f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+      .floatField("smoothing", 0.19f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Pre-edge blur so the contours come out clean.")
         .label("Smoothing", "Smooth")
-      .floatField("level_bias", 0.0f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+      .floatField("level_bias", 0.01f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Brightness bias before posterize.")
         .label("Level Bias", "Bias")
-      .floatField("level_contrast", 0.0f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
+      .floatField("level_contrast", -0.49f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Contrast before posterize.")
         .label("Level Contrast", "LvlCon")
       .floatField("zoom", 1.0f, 0.25f, 4.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
@@ -448,7 +448,9 @@ void render(void* self, int vp_w, int vp_h) {
   InjectUniforms iu = {};
   iu.choke          = s->choke;
   iu.inject_amount  = s->inject_amount;
-  iu.scale          = s->input_scale * 0.5f;   // node 148: A Scale × 0.5
+  iu.scale          = s->input_scale;   // full-res injection — Wire used A Scale
+                                        // × 0.5 (node 148); our pipeline is more
+                                        // capable, so we inject at 1:1.
   iu.pos_x          = s->pos_x * 0.5f;          // node 115 × 0.5
   iu.pos_y          = s->pos_y * 0.5f;
   iu.color_alpha    = s->color_alpha;

@@ -50,7 +50,7 @@ describe('filter.sim.simulant E2E', () => {
     // Flicker env subtracted + Min/Max 0 + Const Alpha 0 → injection clamps to 0
     // → the accumulator creeps to a uniform field → Sobel finds no edges → black.
     const off = await run('sm_default', rectSketch({
-      const_alpha: 0.0, flicker_max: 0.0, flicker_invert: false,
+      const_alpha: 0.0, flicker_min: 0.0, flicker_max: 0.0, flicker_invert: false,
     }));
     expect(off.success).toBe(true);
     // Essentially no bright line pixels.
@@ -66,7 +66,7 @@ describe('filter.sim.simulant E2E', () => {
       wave_speed: 0.5, choke: 0.0, line_strength: 0.8, levels: 0.3,
     }));
     const dead = await run('sm_flick_off', rectSketch({
-      const_alpha: 0.0, flicker_max: 0.0, flicker_invert: false, flicker_rate: 0.5,
+      const_alpha: 0.0, flicker_min: 0.0, flicker_max: 0.0, flicker_invert: false, flicker_rate: 0.5,
     }));
     expect(on.success && dead.success).toBe(true);
     on.trace('out').expectDifferentFrom(dead.trace('out'), 100);
@@ -77,9 +77,11 @@ describe('filter.sim.simulant E2E', () => {
     // Steady Const Alpha reaches a smooth equilibrium on a static image (no
     // edges), but a MOVING input supplies per-frame change the difference-
     // feedback reacts to → contours appear.
-    const still = await run('sm_move_still', rectSketch({ const_alpha: 0.6, wave_speed: 0.5 }, 0.0));
+    // Flicker disabled to isolate the const_alpha + motion mechanism.
+    const noFlick = { flicker_min: 0.0, flicker_max: 0.0 };
+    const still = await run('sm_move_still', rectSketch({ ...noFlick, const_alpha: 0.6, wave_speed: 0.5 }, 0.0));
     const moving = await run('sm_move_on', rectSketch({
-      const_alpha: 0.6, wave_speed: 0.5, choke: 0.0, line_strength: 0.8, levels: 0.3,
+      ...noFlick, const_alpha: 0.6, wave_speed: 0.5, choke: 0.0, line_strength: 0.8, levels: 0.3,
     }, 0.4));
     expect(still.success && moving.success).toBe(true);
     moving.trace('out').expectDifferentFrom(still.trace('out'), 50);
