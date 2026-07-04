@@ -1,13 +1,16 @@
 /**
- * Edit-tab column scroll regression (resolume shell, playground mode).
+ * Edit-tab column layout regressions (resolume shell, playground mode).
  *
- * The columns-view scroll container must stay pinned to the viewport height.
- * Its scroll-past-end tail sizes the content to ~clientHeight×1.5, so if any
- * ancestor in the left panel's flex chain loses its min-height:0 pin, the
- * container's height feeds back on itself and diverges to the browser's
+ * Scroll: the columns-view scroll container must stay pinned to the viewport
+ * height. Its scroll-past-end tail sizes the content to ~clientHeight×1.5, so
+ * if any ancestor in the left panel's flex chain loses its min-height:0 pin,
+ * the container's height feeds back on itself and diverges to the browser's
  * ~16.7M px element-height clamp — visually "scroll stops working" (the
  * container IS its content; nothing overflows). Guards edit-tab's
  * `.columns-wrap { min-height: 0 }`.
+ *
+ * Width: the single column must track the resizable left panel (columns-view
+ * `fitWidth`), not sit at the fixed 300px default.
  */
 const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 
@@ -61,6 +64,24 @@ describe('edit tab column scrolling', () => {
     // Overflowing content, and scrollTop actually moves.
     expect(scroll!.scrollHeight).toBeGreaterThan(scroll!.clientHeight + 200);
     expect(scroll!.after).toBe(300);
+
+    // Column tracks the resizable panel (fitWidth): measure the column-group
+    // width at two panel widths — it must follow, not hold the 300px default.
+    const colWidthAt = async (panelW: number) => {
+      await page.evaluate(
+        `window.appController.setUserSetting('editLeftPanelWidth', ${panelW})`);
+      await new Promise(r => setTimeout(r, 600));
+      return page.evaluate(`(() => {
+        function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+        for (const el of walk(document)) {
+          if (el.tagName === 'COLUMN-GROUP') return el.getBoundingClientRect().width;
+        }
+        return -1;
+      })()`) as Promise<number>;
+    };
+    const narrow = await colWidthAt(320);
+    const wide = await colWidthAt(560);
+    expect(wide - narrow).toBeGreaterThan(200);  // tracked the 240px change
 
     // Cleanup for reruns/other suites.
     await page.evaluate(`(async () => {

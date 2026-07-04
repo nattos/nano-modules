@@ -29,7 +29,7 @@ import { PointerDragOp } from '../utils/pointer-drag-op';
 import type { FieldBinding } from '../widgets/field-editor';
 import type { ColumnHost } from '../widgets/columns-view';
 import type { ColumnGroupCallbacks } from '../widgets/column-group';
-import type { ColumnGroup } from '../widgets/column-group';
+import { ColumnGroup } from '../widgets/column-group';
 import '../widgets/columns-view';
 import '../widgets/column-group';
 import { ideColumnAdapter } from '../state/ide-column-adapter';
@@ -207,6 +207,8 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       <div class="left-panel" style="width: ${leftWidth}px">
         <div class="columns-wrap">
           <columns-view .host=${this as ColumnHost}
+            fitWidth
+            .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}
             @click=${(e: Event) => {
               // Deselect when clicking on empty space (not handled by a child)
               if (e.target === e.currentTarget) appController.select(null);
