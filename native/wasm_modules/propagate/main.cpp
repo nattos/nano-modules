@@ -48,6 +48,13 @@ static constexpr float RETAIN_LO = 0.55f;   // damping=1 → fast fade
 static constexpr float FEED_SCALE = 0.4f;   // continuous structure feed
 static constexpr float FLICK_TAU  = 0.08f;  // flicker pulse half-life (s)
 static constexpr float F_CLAMP    = 4.0f;   // field magnitude clamp
+static constexpr float MAX_SIGMA  = 0.10f;  // smooth=1 → seed blur sigma (uv)
+
+// Pass 0 — separable blur of the seed (low-pass the input for clean contours).
+struct BlurSeedUniforms {
+  float dir_x, dir_y, step_uv, sigma_uv;
+  float is_input, _p0, _p1, _p2;
+};
 
 // Pass 1 — seed / advect / diffuse / decay.
 struct SimUniforms {
@@ -66,8 +73,11 @@ struct CompUniforms {
 
 struct State {
   // Persistent ping-pong field (RGBA16F): .r=F (intensity), .b=luma (this
-  // frame's input luma → next frame's frame-diff).
+  // frame's blurred input luma → next frame's frame-diff).
   gpu::Texture field[2];
+  // Pre-blurred seed (smoothed input luma in .r) + its separable-blur scratch.
+  gpu::Texture seed_tex;
+  gpu::Texture seed_scratch;
   int   cur = 0;                 // rd = cur, wr = cur ^ 1
   int   sim_w = 0, sim_h = 0;    // current field resolution (viewport-derived)
   bool  cleared = false;
@@ -75,6 +85,8 @@ struct State {
 
   gpu::Buffer  sim_uniform;
   gpu::Buffer  comp_uniform;
+  gpu::Buffer  blur_uniform_h;
+  gpu::Buffer  blur_uniform_v;
   gpu::Sampler samp_lin;         // Linear + ClampToEdge (input + field advect)
   bool initialized = false;
 
@@ -85,8 +97,9 @@ struct State {
   float flicker_rate     = 0.4f;
   float speed            = 0.5f;
   float damping          = 0.3f;    // field decay / trail length
-  float diffuse          = 0.18f;   // softening as it propagates
+  float diffuse          = 0.3f;    // softening as it propagates
   float feed             = 0.0f;    // continuous structure re-injection
+  float smoothing        = 0.5f;    // seed pre-blur (clean contours)
   float sim_scale        = 0.5f;
   float level            = 0.25f;
   float thickness        = 0.04f;
@@ -107,6 +120,7 @@ struct State {
   uint32_t frame = 0;
 };
 
+static gpu::ComputePSO s_pso_blur;
 static gpu::ComputePSO s_pso_sim;
 static gpu::ComputePSO s_pso_comp;
 
@@ -168,9 +182,12 @@ void module_init() {
       .floatField("damping", 0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "How quickly trailing fronts fade (0 = long trails).")
         .label("Damping", "Damp")
-      .floatField("diffuse", 0.18f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+      .floatField("diffuse", 0.3f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
                   "How fast features blur out as they propagate.")
         .label("Diffuse", "Diff")
+      .floatField("smoothing", 0.5f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f, nullptr,
+                  "Pre-blur the input so contours stay clean (low = fine + fragmented, high = smooth).")
+        .label("Smooth", "Smooth")
       .floatField("feed", 0.0f, 0.f, 1.f, state::SecondaryInput, nullptr, 0.01f, nullptr,
                   "Continuously re-inject the input structure (steady standing pattern).")
         .label("Feed", "Feed")
@@ -221,15 +238,19 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  // The simulate pass writes an RGBA16F storage field → override naga's default
-  // rgba32float. The composite pass writes the default rgba8unorm tex_out.
+  // The blurseed + simulate passes write RGBA16F storage → override naga's
+  // default rgba32float. The composite pass writes the default rgba8unorm tex_out.
+  state::registerShaderSPV("propagate_blurseed",  BLURSEED_SPV,  BLURSEED_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("propagate_simulate",  SIMULATE_SPV,  SIMULATE_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("propagate_composite", COMPOSITE_SPV, COMPOSITE_SPV_SIZE);
 
+  auto cs_blur = gpu::Device::createShaderModuleByName("propagate_blurseed");
   auto cs_sim  = gpu::Device::createShaderModuleByName("propagate_simulate");
   auto cs_comp = gpu::Device::createShaderModuleByName("propagate_composite");
-  if (!cs_sim || !cs_comp) return;
+  if (!cs_blur || !cs_sim || !cs_comp) return;
 
+  s_pso_blur = gpu::Device::createComputePSO(cs_blur, "main", gpu::Bindings()
+      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA16F).uniform(3));
   s_pso_sim = gpu::Device::createComputePSO(cs_sim, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).sampler(2).storageTex2d(3, gpu::TextureFormat::RGBA16F).uniform(4));
   s_pso_comp = gpu::Device::createComputePSO(cs_comp, "main", gpu::Bindings()
@@ -240,9 +261,11 @@ void module_init() {
 
 void* create() {
   auto* s = new State();
-  s->sim_uniform  = gpu::Device::createBuffer(sizeof(SimUniforms),  gpu::BufferUsage::Uniform);
-  s->comp_uniform = gpu::Device::createBuffer(sizeof(CompUniforms), gpu::BufferUsage::Uniform);
-  s->samp_lin     = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  s->sim_uniform    = gpu::Device::createBuffer(sizeof(SimUniforms),  gpu::BufferUsage::Uniform);
+  s->comp_uniform   = gpu::Device::createBuffer(sizeof(CompUniforms), gpu::BufferUsage::Uniform);
+  s->blur_uniform_h = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
+  s->blur_uniform_v = gpu::Device::createBuffer(sizeof(BlurSeedUniforms), gpu::BufferUsage::Uniform);
+  s->samp_lin       = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   return s;
 }
 
@@ -251,8 +274,12 @@ void destroy(void* self) {
   if (!s) return;
   s->field[0].release();
   s->field[1].release();
+  s->seed_tex.release();
+  s->seed_scratch.release();
   s->sim_uniform.release();
   s->comp_uniform.release();
+  s->blur_uniform_h.release();
+  s->blur_uniform_v.release();
   s->samp_lin.release();
   delete s;
 }
@@ -309,6 +336,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "damping"))          s->damping          = state::patchFloat(i);
     else if (state::pathIs(p, l, "diffuse"))          s->diffuse          = state::patchFloat(i);
     else if (state::pathIs(p, l, "feed"))             s->feed             = state::patchFloat(i);
+    else if (state::pathIs(p, l, "smoothing"))        s->smoothing        = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_scale"))        s->sim_scale        = state::patchFloat(i);
     else if (state::pathIs(p, l, "level"))            s->level            = state::patchFloat(i);
     else if (state::pathIs(p, l, "thickness"))        s->thickness        = state::patchFloat(i);
@@ -344,8 +372,12 @@ static bool ensure_field(State* s, int vp_w, int vp_h) {
 
   s->field[0].release();
   s->field[1].release();
-  s->field[0] = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
-  s->field[1] = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
+  s->seed_tex.release();
+  s->seed_scratch.release();
+  s->field[0]     = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
+  s->field[1]     = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
+  s->seed_tex     = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
+  s->seed_scratch = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
   s->sim_w = sw; s->sim_h = sh;
   s->cur = 0;
   s->cleared = false;         // re-clear on first render at the new size
@@ -372,6 +404,36 @@ void render(void* self, int vp_w, int vp_h) {
   if (dt <= 0.f) dt = 1.0f / 60.0f;
   int rd = s->cur, wr = s->cur ^ 1;
 
+  // --- Pass 0: blur the seed (low-pass the input → clean contours) ---
+  // Separable Gaussian on the input luma into seed_tex. sigma scales with the
+  // sim's longest side so the blur reads the same at any resolution.
+  float sigma_uv = s->smoothing * MAX_SIGMA;
+  float step_uv  = (sigma_uv > 1e-6f) ? sigma_uv * 0.25f : 0.0f;
+  {
+    BlurSeedUniforms bh = { 1.0f, 0.0f, step_uv, sigma_uv, 1.0f, 0.f, 0.f, 0.f };
+    s->blur_uniform_h.writeOne(bh);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_blur);
+    cp.setTexture(in, 0, 0);                 // raw input (rgb → luma)
+    cp.setSampler(s->samp_lin, 1);
+    cp.setTexture(s->seed_scratch, 2, 1);    // horizontal → scratch
+    cp.setBuffer(s->blur_uniform_h, 3);
+    cp.dispatch((s->sim_w + 7) / 8, (s->sim_h + 7) / 8);
+    cp.end();
+  }
+  {
+    BlurSeedUniforms bv = { 0.0f, 1.0f, step_uv, sigma_uv, 0.0f, 0.f, 0.f, 0.f };
+    s->blur_uniform_v.writeOne(bv);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_blur);
+    cp.setTexture(s->seed_scratch, 0, 0);    // scratch (.r)
+    cp.setSampler(s->samp_lin, 1);
+    cp.setTexture(s->seed_tex, 2, 1);        // vertical → seed
+    cp.setBuffer(s->blur_uniform_v, 3);
+    cp.dispatch((s->sim_w + 7) / 8, (s->sim_h + 7) / 8);
+    cp.end();
+  }
+
   // --- Pass 1: seed → advect outward → diffuse → decay (sim-res) ---
   // Advection step in cells: at speed=1 a front crosses the field's longest side
   // in MAX_STEP_DIV frames. No CFL limit — it's a lookup, not a wave stencil.
@@ -394,7 +456,7 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_sim);
     cp.setTexture(s->field[rd], 0, 0);   // prev field (Load + Sample)
-    cp.setTexture(in, 1, 0);             // current input (structure seed)
+    cp.setTexture(s->seed_tex, 1, 0);    // pre-blurred seed (smoothed luma)
     cp.setSampler(s->samp_lin, 2);
     cp.setTexture(s->field[wr], 3, 1);   // new field (storage write)
     cp.setBuffer(s->sim_uniform, 4);

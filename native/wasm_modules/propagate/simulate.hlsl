@@ -21,10 +21,8 @@
 // The field (RGBA16F) packs .r = F (intensity), .b = luma (this frame's input
 // luma → next frame's frame-diff). Boundary: out-of-range Loads read 0.
 
-#include "nano_color.hlsl"
-
 Texture2D<float4>   prevField : register(t0);   // Load (gradient) + Sample (advect)
-Texture2D<float4>   inputTex  : register(t1);   // input structure to seed from
+Texture2D<float4>   seedTex   : register(t1);   // pre-blurred input luma in .r
 SamplerState        samp      : register(s2);   // Linear + ClampToEdge
 RWTexture2D<float4> curField  : register(u3);   // RGBA16F storage write
 
@@ -74,8 +72,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float avg  = (fL + fR + fU + fD + fTL + fTR + fBL + fBR) * 0.125;
   float prop = lerp(adv, avg, diffuse) * decay;
 
-  // Seed from the input's STRUCTURE (its luma).
-  float lumaNow = nano_luminance(inputTex.SampleLevel(samp, uv, 0).rgb);
+  // Seed from the input's STRUCTURE — a pre-blurred luma (blurseed pass), so the
+  // field stays smooth and the contours stay clean instead of fragmenting.
+  float lumaNow = seedTex.SampleLevel(samp, uv, 0).r;
   float seed = feed * lumaNow;                       // optional continuous feed
   if (have_history != 0u) {                          // frame-difference
     float d = abs(lumaNow - lumaOld);

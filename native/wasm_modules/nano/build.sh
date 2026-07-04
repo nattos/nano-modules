@@ -232,10 +232,11 @@ echo "  shape_burst shaders compiled (SPV: compute + motion)"
 # passes over a persistent ping-pong RGBA16F wave field:
 #   simulate  — frame-diff + flicker seed → damped 2D wave integrate (rgba16f).
 #   composite — threshold wave crests into contour lines over the input (rgba8).
+compile_shaders_compute_var_spv propagate blurseed
 compile_shaders_compute_var_spv propagate simulate
 compile_shaders_compute_var_spv propagate composite
-_emit_spv_header_var propagate simulate composite
-echo "  propagate shaders compiled (SPV: simulate + composite)"
+_emit_spv_header_var propagate blurseed simulate composite
+echo "  propagate shaders compiled (SPV: blurseed + simulate + composite)"
 
 echo "=== Building WASM (nano) ==="
 
