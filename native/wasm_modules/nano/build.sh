@@ -228,6 +228,15 @@ compile_shaders_compute_var_spv shape_burst motion
 _emit_spv_header_var shape_burst compute motion
 echo "  shape_burst shaders compiled (SPV: compute + motion)"
 
+# propagate — wave-propagation engine (the Simulant successor). Two compute
+# passes over a persistent ping-pong RGBA16F wave field:
+#   simulate  — frame-diff + flicker seed → damped 2D wave integrate (rgba16f).
+#   composite — threshold wave crests into contour lines over the input (rgba8).
+compile_shaders_compute_var_spv propagate simulate
+compile_shaders_compute_var_spv propagate composite
+_emit_spv_header_var propagate simulate composite
+echo "  propagate shaders compiled (SPV: simulate + composite)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -258,6 +267,7 @@ wasm_build \
   ../triangulate/main.cpp \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \
-  ../shape_burst/main.cpp
+  ../shape_burst/main.cpp \
+  ../propagate/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

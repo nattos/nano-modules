@@ -27,6 +27,7 @@ NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
+NANO_DECLARE_INSTANCE_EFFECT(propagate)
 
 extern "C" {
 
@@ -204,6 +205,17 @@ void nano_module_main() {
         "generator,shape,burst,ring,circle,square,triangle,trigger,adsr,decay,shockwave,ripple,pulse",
         "la-bullseye",
         NANO_INSTANCE_LIFECYCLE(shape_burst),
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.sim.propagate",
+        "Propagate",
+        "A real wave-propagation engine — the successor to Simulant, done properly (no zoom-feedback fake). Detects changing pixels (per-pixel difference from the previous frame) and kicks a genuine damped 2D wave field: ripples travel outward at a controlled, CFL-stable speed, interfere between sources, and decay. A built-in flicker (Poisson auto-rate + a manual trigger) injects a grainy global impulse so even a static image radiates. The wave crests are thresholded into clean anti-aliased contour lines (the |amplitude|=level isoline, which expands as each ripple travels) composited over the dimmable input. Speed / damping / stiffness shape the medium; level / thickness / count shape the lines; Show Field reveals the raw waves.",
+        "filter",
+        "simulant,wave,ripple,propagation,feedback,reaction-diffusion,lines,edge,change,flicker,contour",
+        "la-water",
+        NANO_INSTANCE_LIFECYCLE(propagate),
     });
 }
 
