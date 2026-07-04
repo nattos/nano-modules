@@ -32,11 +32,21 @@ import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../views/gpu-head
 import './texture-monitor';
 import './ui-button';
 
-/** Stage aspect ratio. The capture itself is source-resolution (the monitor
- *  registers its trace with `sourceRes` — no size request, so both the engine
- *  worker and the native barrel deliver the output's own pixels); this only
- *  shapes the on-screen stage box the bitmap scales into. */
+/** Stage aspect ratio — shapes the on-screen box the bitmap scales into. */
 const ASPECT = 16 / 9;
+/**
+ * Capture-request sizing: ask for exactly the stage's on-screen size (the
+ * <texture-monitor> multiplies by devicePixelRatio), so the preview is as
+ * sharp as the screen can show without shipping pixels nobody sees.
+ * Quantized (round up to CAPTURE_STEP) so splitter drags re-register the
+ * trace at step boundaries instead of every pixel, and capped in DEVICE
+ * pixels so the zoom toggle can't request absurd captures. The transport
+ * self-regulates from there: the barrel keeps at most 2 preview frames in
+ * flight per monitor (latest-wins), so a channel that can't sustain this
+ * size degrades preview rate, never queue depth.
+ */
+const CAPTURE_STEP = 160; // css px; ×9/16 stays integral (160×90)
+const CAPTURE_MAX_DEVICE_W = 1920;
 /** Magnification when the zoom toggle is active. */
 const ZOOM_FACTOR = 4;
 
@@ -196,15 +206,25 @@ export class SketchMonitor extends MobxLitElement {
       ? (JSON.parse(JSON.stringify(toJS(this.traceTarget))) as TracePoint['target'])
       : (sketchId ? ({ type: 'sketch_output', sketchId } as TracePoint['target']) : null);
     const { w, h } = this.stageSize();
+    // Displayed-size capture request (see CAPTURE_STEP). Before the first
+    // ResizeObserver sample lands, fall back to a sane mid size.
+    const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
+    const cssW = this.availW ? w : 960;
+    const capW = Math.min(
+      Math.ceil(cssW / CAPTURE_STEP) * CAPTURE_STEP,
+      Math.max(CAPTURE_STEP, Math.floor(CAPTURE_MAX_DEVICE_W / dpr)),
+    );
+    const capH = Math.round(capW * 9 / 16);
     return html`
       <div class="preview ${this.zoomed ? 'zoomed' : ''}">
         ${sketchId && target
           ? html`<div class="stage" style="width:${w}px;height:${h}px">
               <texture-monitor
                 fit
-                sourceRes
                 .traceId=${this.traceId}
                 .traceTarget=${target as any}
+                .width=${capW}
+                .height=${capH}
                 resolution="high"
               ></texture-monitor>
             </div>`

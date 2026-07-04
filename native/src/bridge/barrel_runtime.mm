@@ -107,11 +107,11 @@ nlohmann::json parseOrObject(const std::string& s) {
 // render queue ahead of the next frame's blocking submit, so cost scales with
 // readback pixels × rate. Decouple the preview rate from the render rate
 // (default 30 Hz) and bound the readback long-edge. The main edit-preview
-// deliberately requests 0×0 (source size) so the editor monitor shows the
-// output at native resolution; the default cap (4096) only guards absurd
-// comp sizes (and the NBPV u16 dimension fields), not that path. Drop
-// NANO_BARREL_PREVIEW_MAXDIM back down (e.g. 512) if full-res readback +
-// WS shipping proves too heavy on a given machine. Both env-tunable.
+// requests its DISPLAYED size (device pixels, clamped to source), so the cap's
+// default (4096) is only a guard against absurd requests/comp sizes (and the
+// NBPV u16 dimension fields); the per-monitor latest-wins send queue is what
+// keeps a slow channel from backing up. Drop NANO_BARREL_PREVIEW_MAXDIM
+// (e.g. 512) to trade monitor sharpness for readback time. Both env-tunable.
 double previewIntervalSec() {
   static double v = [] {
     const char* e = getenv("NANO_BARREL_PREVIEW_HZ");
@@ -175,16 +175,27 @@ struct BarrelRuntime::Impl {
   int64_t lastBusVersion = -1;
 
   // Shared preview-broadcast worker. Takes the Metal completion handler off the
-  // critical path: broadcast_binary (ixwebsocket queueing + per-message deflate
-  // on high-entropy pixels) would otherwise run on Metal's serial completion
-  // queue and back-pressure the render thread's commits. Each frame blob already
-  // carries its key in the NBPV header, so one worker serves all instances.
+  // critical path: broadcast_binary (ixwebsocket queueing) would otherwise run
+  // on Metal's serial completion queue and back-pressure the render thread's
+  // commits. Each frame blob already carries its key in the NBPV header, so one
+  // worker serves all instances.
+  //
+  // The queue is LATEST-WINS per monitor (route = instance key + trace id):
+  // a monitor never holds more than ONE queued frame — a newer frame replaces
+  // the queued one, and publishPreviewFrames skips capturing for a route whose
+  // previous frame is still waiting to send. Previews are disposable state, not
+  // a stream: when the channel (or the GPU readback) can't keep up, the preview
+  // RATE degrades gracefully while the WS channel stays shallow — interactive
+  // state patches must never sit behind a backlog of pixel frames.
+  struct PreviewBlob {
+    std::string route;
+    std::vector<uint8_t> bytes;
+  };
   std::thread             send_thread;
   std::mutex              send_mu;
   std::condition_variable send_cv;
-  std::deque<std::vector<uint8_t>> send_queue;
+  std::deque<PreviewBlob> send_queue;
   std::atomic<bool>       send_stop{false};
-  std::atomic<int>        in_flight{0};
   bool                    send_started = false;
 
   ~Impl() {
@@ -204,7 +215,7 @@ struct BarrelRuntime::Impl {
 
   void runSendWorker() {
     while (true) {
-      std::vector<uint8_t> bytes;
+      PreviewBlob blob;
       {
         std::unique_lock<std::mutex> lock(send_mu);
         send_cv.wait(lock, [this] {
@@ -214,11 +225,10 @@ struct BarrelRuntime::Impl {
           if (send_stop.load(std::memory_order_acquire)) return;
           continue;
         }
-        bytes = std::move(send_queue.front());
+        blob = std::move(send_queue.front());
         send_queue.pop_front();
       }
-      BridgeServer::instance().broadcast_binary(bytes.data(), bytes.size());
-      in_flight.fetch_sub(1, std::memory_order_acq_rel);
+      BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
     }
   }
 
@@ -285,34 +295,65 @@ struct BarrelRuntime::Impl {
         slot = it->second;
       }
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
+      // Back-pressure gate: if this monitor's previous frame is still queued
+      // (WS slower than the preview rate), skip the capture entirely — no GPU
+      // scale/readback for pixels that would only replace an unsent frame.
+      std::string route = key;
+      route += '\n';
+      route += req.traceId;
+      {
+        std::lock_guard<std::mutex> lock(send_mu);
+        bool queued = false;
+        for (const auto& blob : send_queue) {
+          if (blob.route == route) { queued = true; break; }
+        }
+        if (queued) continue;
+      }
       uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
       uint32_t outH = req.height ? req.height : (uint32_t)slot.height;
-      // Cap the long edge. The main preview ('so', 0×0 → source size) passes
-      // through untouched at real comp sizes — the default cap only bounds
-      // absurd dimensions (see previewMaxDim; env-tune it down to trade the
-      // monitor's resolution for render-thread readback time).
+      // Never read back more pixels than the source has — a request larger
+      // than the comp (retina display box, zoom) would upscale on the GPU and
+      // ship invented pixels.
+      if (outW > (uint32_t)slot.width || outH > (uint32_t)slot.height) {
+        double s = std::min((double)slot.width / (double)outW,
+                            (double)slot.height / (double)outH);
+        outW = std::max(1u, (uint32_t)(outW * s));
+        outH = std::max(1u, (uint32_t)(outH * s));
+      }
+      // Cap the long edge — bounds absurd requests/comp sizes (and the NBPV
+      // u16 dimension fields). See previewMaxDim.
       if (outW > maxDim || outH > maxDim) {
         double s = (double)maxDim / (double)std::max(outW, outH);
         outW = std::max(1u, (uint32_t)(outW * s));
         outH = std::max(1u, (uint32_t)(outH * s));
       }
-      in_flight.fetch_add(1, std::memory_order_acq_rel);
       std::string traceId = req.traceId;
       std::string keyCopy = key;
       gpu->readbackTextureScaledAsync(
           slot.handle, (uint32_t)slot.width, (uint32_t)slot.height, outW, outH,
           [this, keyCopy = std::move(keyCopy), traceId = std::move(traceId),
-           outW, outH](std::vector<uint8_t> pixels) {
+           route = std::move(route), outW, outH](std::vector<uint8_t> pixels) {
             auto bytes = buildPreviewFrameBytes(
                 keyCopy, traceId, (uint16_t)outW, (uint16_t)outH, pixels);
             {
               std::lock_guard<std::mutex> lock(send_mu);
-              constexpr size_t kMaxQueue = 64;  // shared across instances
-              while (send_queue.size() >= kMaxQueue) {
-                send_queue.pop_front();
-                in_flight.fetch_sub(1, std::memory_order_acq_rel);
+              // Latest-wins: a frame for a route that (re-)queued while ours
+              // was on the GPU is stale now — take its slot instead of
+              // deepening the queue.
+              bool replaced = false;
+              for (auto& blob : send_queue) {
+                if (blob.route == route) {
+                  blob.bytes = std::move(bytes);
+                  replaced = true;
+                  break;
+                }
               }
-              send_queue.push_back(std::move(bytes));
+              if (!replaced) {
+                constexpr size_t kMaxQueue = 64;  // safety net; normally ≤ one
+                                                  // entry per live monitor
+                while (send_queue.size() >= kMaxQueue) send_queue.pop_front();
+                send_queue.push_back({route, std::move(bytes)});
+              }
             }
             send_cv.notify_one();
           });
