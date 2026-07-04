@@ -39,6 +39,7 @@ export class AppState {
     tappingMode: false,
     helpMode: false,
     selection: null,
+    multiSelection: [],
     queuedSelectionPath: null,
     clipboard: null,
     userSettings: defaultUserSettings(),

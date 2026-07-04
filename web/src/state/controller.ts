@@ -11,7 +11,11 @@ import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
-import type { DatabaseState, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard, BarrelInstanceInfo } from './types';
+import type { DatabaseState, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard, EffectsClipboard, BarrelInstanceInfo } from './types';
+import {
+  effectPath, parseEffectPath, buildEffectsPayload, remapEffectsPayload, isEffectsClipboard,
+  type EffectPathParts,
+} from './effects-payload';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo } from '../sketch-types';
@@ -423,6 +427,63 @@ export class AppController {
     });
   }
 
+  /**
+   * Remove several chain entries as ONE undo point (multi-select delete / cut).
+   * Same per-entry cleanup as `removeEffectFromChain` — instance state and any
+   * wire touching a removed instance go too (a wire INTERNAL to the removed
+   * group matches both filters harmlessly).
+   */
+  removeEffectsFromChain(sketchId: string, chainIdxs: number[]) {
+    if (chainIdxs.length === 0) return;
+    // Descending so earlier splices don't shift the later indices.
+    const idxs = [...new Set(chainIdxs)].sort((a, b) => b - a);
+    this.mutate(`Remove ${idxs.length} effects`, draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      const removedKeys = new Set<string>();
+      for (const chainIdx of idxs) {
+        const entry = chain[chainIdx];
+        if (entry?.type !== 'module') continue;
+        removedKeys.add(entry.instance_key);
+        chain.splice(chainIdx, 1);
+        if (sk.instances) delete sk.instances[entry.instance_key];
+      }
+      if (sk.wires && removedKeys.size > 0) {
+        sk.wires = sk.wires.filter(
+          w => !removedKeys.has(w.src.instanceKey) && !removedKeys.has(w.dest.instanceKey));
+      }
+    });
+  }
+
+  /**
+   * Delete the whole multi-selection (2+ cards) as one undo point. Returns
+   * false when there's no group to act on — callers fall through to their
+   * single-card delete path.
+   */
+  removeMultiSelectedEffects(): boolean {
+    const group = this.multiSelectedEffectParts();
+    if (!group) return false;
+    this.select(null);
+    this.removeEffectsFromChain(group.sketchId, group.parts.map(p => p.chainIdx));
+    return true;
+  }
+
+  /**
+   * The multi-selection resolved to parsed paths, when it's an actionable
+   * GROUP: 2+ effect paths, all in one sketch. Null otherwise (empty or
+   * single-card selections use the ordinary single paths).
+   */
+  private multiSelectedEffectParts(): { sketchId: string; parts: EffectPathParts[] } | null {
+    const paths = appState.local.multiSelection;
+    if (paths.length < 2) return null;
+    const parts = paths.map(parseEffectPath).filter((p): p is EffectPathParts => !!p);
+    if (parts.length < 2) return null;
+    const sketchId = parts[0].sketchId;
+    if (!parts.every(p => p.sketchId === sketchId)) return null;
+    return { sketchId, parts };
+  }
+
   // ============================== Copy / Paste =============================
   // Tied to the Selectable system: a selectable may expose `copy`/`paste`
   // handlers (see types.ts). The toolbar buttons and Cmd/Ctrl+C/V call the two
@@ -447,6 +508,14 @@ export class AppController {
       state,
       fieldOptions: entry.fieldOptions ? (toJS(entry.fieldOptions) as any) : undefined,
     };
+  }
+
+  /** Multi-card counterpart of `snapshotEffect`: capture a group of instances
+   *  (chain-ordered) plus the wires internal to the group. */
+  snapshotEffects(sketchId: string, instanceKeys: string[]): EffectsClipboard | null {
+    const sk = appState.database.sketches[sketchId];
+    if (!sk) return null;
+    return buildEffectsPayload(toJS(sk), instanceKeys);
   }
 
   /** Insert a clipboard effect as a NEW instance at `insertIdx`, then select it.
@@ -475,6 +544,56 @@ export class AppController {
   }
 
   /**
+   * Insert a multi-card clipboard group as a contiguous block at `insertIdx`
+   * (one undo point), then select the block. Every card gets a fresh
+   * instance_key and the group's internal wires are remapped onto those keys
+   * with fresh wire ids — the pasted block modulates itself exactly like the
+   * original did, while staying fully independent of it (and of any prior
+   * paste of the same payload).
+   */
+  insertEffectsFromClipboard(sketchId: string, colIdx: number, insertIdx: number, payload: EffectsClipboard) {
+    const { items, wires } = remapEffectsPayload(
+      payload,
+      // Same collision guard as the single paste: rapid inserts share a
+      // millisecond, so Date.now() alone isn't unique — add a random suffix.
+      (moduleType) =>
+        `virtual_${shortName(moduleType)}@${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      () => `wire_${Date.now().toString(36)}_${this.nextWireId++}`,
+    );
+    if (items.length === 0) return;
+    this.mutate(`Paste ${items.length} effects`, draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      sk.instances = sk.instances ?? {};
+      items.forEach((item, i) => {
+        chain.splice(insertIdx + i, 0, {
+          type: 'module',
+          module_type: item.moduleType,
+          instance_key: item.newKey,
+          ...(item.fieldOptions ? { fieldOptions: item.fieldOptions } : {}),
+        });
+        sk.instances![item.newKey] = {
+          module_type: item.moduleType,
+          state: item.state,
+          version: this.versionForModule(item.moduleType),
+        };
+      });
+      if (wires.length > 0) {
+        sk.wires = sk.wires ?? [];
+        sk.wires.push(...wires);
+      }
+    });
+    // Select the pasted block: first card primary (queues until rendered),
+    // whole block in the multi-selection.
+    this.select(effectPath(sketchId, colIdx, insertIdx));
+    runInAction(() => {
+      appState.local.multiSelection =
+        items.map((_, i) => effectPath(sketchId, colIdx, insertIdx + i));
+    });
+  }
+
+  /**
    * Copy the current selection to the clipboard, if it's copyable. Re-resolves
    * the live selectable by path so re-registered (fresh-closure) cards win.
    * Also mirrors the payload to the OS clipboard as pretty-printed JSON, so it
@@ -484,6 +603,22 @@ export class AppController {
    * in-app copy, which always succeeds independent of the OS clipboard.
    */
   copySelection() {
+    // A 2+ card multi-selection copies as a GROUP (with its internal wires) —
+    // straight off the resolved paths, no per-card Selectable involved.
+    const group = this.multiSelectedEffectParts();
+    if (group) {
+      const sk = appState.database.sketches[group.sketchId];
+      const chain = sk ? sketchChain(sk) : [];
+      const keys = group.parts
+        .map(p => chain[p.chainIdx])
+        .filter(e => e?.type === 'module')
+        .map(e => (e as { instance_key: string }).instance_key);
+      const payload = this.snapshotEffects(group.sketchId, keys);
+      if (!payload) return;
+      runInAction(() => { appState.local.clipboard = payload; });
+      void navigator.clipboard?.writeText?.(JSON.stringify(payload, null, 2)).catch(() => {});
+      return;
+    }
     const path = appState.local.selection?.path;
     const sel = path ? (this.selectableRegistry.get(path) ?? appState.local.selection) : null;
     const payload = sel?.copy?.();
@@ -498,18 +633,25 @@ export class AppController {
    * no-op when nothing copyable is selected.
    */
   cutSelection() {
+    // Multi-selection: copy the group, then remove it as one undo point.
+    const group = this.multiSelectedEffectParts();
+    if (group) {
+      // Clear first so a stale payload from an earlier copy can't make the
+      // "was it copyable?" check pass and delete cards that never got copied.
+      runInAction(() => { appState.local.clipboard = null; });
+      this.copySelection();
+      if (!appState.local.clipboard) return; // nothing was actually copyable
+      this.removeMultiSelectedEffects();
+      return;
+    }
     const path = appState.local.selection?.path;
     if (!path) return;
     this.copySelection();
     if (!appState.local.clipboard) return; // nothing was actually copyable
-    const parts = path.split('/');
-    if (parts[0] !== 'effect' || parts.length < 4) return;
-    const sketchId = parts[1];
-    const colIdx = parseInt(parts[2], 10);
-    const chainIdx = parseInt(parts[3], 10);
-    if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
+    const parts = parseEffectPath(path);
+    if (!parts) return;
     this.select(null);
-    this.removeEffectFromChain(sketchId, colIdx, chainIdx);
+    this.removeEffectFromChain(parts.sketchId, parts.colIdx, parts.chainIdx);
   }
 
   /**
@@ -528,6 +670,7 @@ export class AppController {
           && parsed.state && typeof parsed.state === 'object') {
           return parsed as EffectClipboard;
         }
+        if (isEffectsClipboard(parsed)) return parsed;
       }
     } catch {
       // Not JSON, no clipboard-read permission, or no OS clipboard access —
@@ -545,15 +688,20 @@ export class AppController {
     const path = appState.local.selection?.path;
     const sel = path ? this.selectableRegistry.get(path) : undefined;
     if (sel?.paste) { sel.paste(payload); return; }
-    const sketchId = appState.local.userSettings.selectedProjectId;
+    const sketchId = this.activeEditSketchId();
     const sk = sketchId ? appState.database.sketches[sketchId] : undefined;
     if (!sketchId || !sk) return;
+    if (payload.kind === 'effects') {
+      this.insertEffectsFromClipboard(sketchId, 0, sketchChain(sk).length, payload);
+      return;
+    }
     this.insertEffectFromClipboard(sketchId, 0, sketchChain(sk).length, payload);
   }
 
   /** True when the current selection can be copied (drives the Copy button). */
   get canCopy(): boolean {
-    return !!appState.local.selection?.copy;
+    return appState.local.multiSelection.length >= 2
+      || !!appState.local.selection?.copy;
   }
 
   /** True when the current selection can be cut — same requirement as copy,
@@ -726,8 +874,18 @@ export class AppController {
     this.pushSketchLive(sketchId);
   }
 
-  undo() { this.history.undo(); }
-  redo() { this.history.redo(); }
+  // Undo/redo restructure the chain under the multi-selection's index-based
+  // paths; a stale group would make the next group-delete remove whatever
+  // NOW sits at those indices. Dissolve it (primary selection re-resolves by
+  // path on its own and is a lone card at worst).
+  undo() {
+    runInAction(() => { appState.local.multiSelection = []; });
+    this.history.undo();
+  }
+  redo() {
+    runInAction(() => { appState.local.multiSelection = []; });
+    this.history.redo();
+  }
 
   // ========================================================================
   // Local state changes (ephemeral, no undo)
@@ -1219,9 +1377,12 @@ export class AppController {
     this.selectableRegistry.delete(path);
   }
 
-  /** Select a path. If the selectable is registered, activates immediately. Otherwise queues. */
+  /** Select a path. If the selectable is registered, activates immediately. Otherwise queues.
+   *  Plain (non-modified) selection: the multi-selection collapses to just this
+   *  path (when it's an effect card — the group anchor) or clears entirely. */
   select(path: string | null) {
     runInAction(() => {
+      appState.local.multiSelection = path && parseEffectPath(path) ? [path] : [];
       if (path === null) {
         appState.local.selection = null;
         appState.local.queuedSelectionPath = null;
@@ -1236,6 +1397,125 @@ export class AppController {
         appState.local.selection = null;
       }
     });
+  }
+
+  /** Set the primary selection WITHOUT collapsing the multi-selection (the
+   *  group-selection gestures below re-point the inspector as they grow). */
+  private selectPrimaryKeepGroup(path: string) {
+    runInAction(() => {
+      const selectable = this.selectableRegistry.get(path);
+      if (selectable) {
+        appState.local.selection = selectable;
+        appState.local.queuedSelectionPath = null;
+      } else {
+        appState.local.queuedSelectionPath = path;
+        appState.local.selection = null;
+      }
+    });
+  }
+
+  /** Chain-order (ascending chainIdx) for multi-selection paths — keeps copy
+   *  order deterministic and range math simple. */
+  private static byChainIdx(a: string, b: string): number {
+    return (parseEffectPath(a)?.chainIdx ?? 0) - (parseEffectPath(b)?.chainIdx ?? 0);
+  }
+
+  /**
+   * Cmd/ctrl-click an effect card: toggle its membership in the
+   * multi-selection. Adding makes it the primary (the inspector follows the
+   * last-touched card); removing the primary hands primary to another member.
+   * A card from a DIFFERENT sketch than the current group falls back to a
+   * plain select — groups never span sketches.
+   */
+  toggleSelectEffect(path: string) {
+    const parts = parseEffectPath(path);
+    if (!parts) { this.select(path); return; }
+    const current = appState.local.multiSelection;
+    const currentSketch = current[0] ? parseEffectPath(current[0])?.sketchId : undefined;
+    if (currentSketch !== undefined && currentSketch !== parts.sketchId) {
+      this.select(path);
+      return;
+    }
+    if (current.includes(path)) {
+      const remaining = current.filter(p => p !== path);
+      runInAction(() => { appState.local.multiSelection = remaining; });
+      if (appState.local.selection?.path === path
+        || appState.local.queuedSelectionPath === path) {
+        if (remaining.length > 0) this.selectPrimaryKeepGroup(remaining[remaining.length - 1]);
+        else this.select(null);
+      }
+    } else {
+      runInAction(() => {
+        appState.local.multiSelection =
+          [...current, path].sort(AppController.byChainIdx);
+      });
+      this.selectPrimaryKeepGroup(path);
+    }
+  }
+
+  /**
+   * Shift-click an effect card: select the contiguous chain range between the
+   * current primary selection (the anchor, which stays primary) and this card.
+   * Without an effect-card anchor in the same sketch it degrades to a plain
+   * select.
+   */
+  rangeSelectEffect(path: string) {
+    const parts = parseEffectPath(path);
+    const anchorPath = appState.local.selection?.path ?? appState.local.queuedSelectionPath;
+    const anchor = anchorPath ? parseEffectPath(anchorPath) : null;
+    if (!parts || !anchor || anchor.sketchId !== parts.sketchId
+      || anchor.colIdx !== parts.colIdx) {
+      this.select(path);
+      return;
+    }
+    const lo = Math.min(anchor.chainIdx, parts.chainIdx);
+    const hi = Math.max(anchor.chainIdx, parts.chainIdx);
+    const sk = appState.database.sketches[parts.sketchId];
+    const chain = sk ? sketchChain(sk) : [];
+    const paths: string[] = [];
+    for (let i = lo; i <= hi; i++) {
+      if (chain[i]?.type === 'module') paths.push(effectPath(parts.sketchId, parts.colIdx, i));
+    }
+    runInAction(() => { appState.local.multiSelection = paths; });
+  }
+
+  /**
+   * Cmd+A: multi-select every effect card in the sketch being edited. Primary
+   * lands on the first card (so the inspector shows something sensible).
+   * Returns false when there's no active sketch or it has no cards — callers
+   * then leave the event to the browser.
+   */
+  selectAllEffects(): boolean {
+    const sketchId = this.activeEditSketchId();
+    const sk = sketchId ? appState.database.sketches[sketchId] : undefined;
+    if (!sketchId || !sk) return false;
+    const paths: string[] = [];
+    sketchChain(sk).forEach((entry, i) => {
+      if (entry.type === 'module') paths.push(effectPath(sketchId, 0, i));
+    });
+    if (paths.length === 0) return false;
+    runInAction(() => { appState.local.multiSelection = paths; });
+    this.selectPrimaryKeepGroup(paths[0]);
+    return true;
+  }
+
+  /** True when `path` is part of the multi-selection (card highlight). */
+  isMultiSelected(path: string): boolean {
+    return appState.local.multiSelection.includes(path);
+  }
+
+  /**
+   * The sketch the edit surface is showing: the resolume shell's edited sketch
+   * when it resolves, else the effect IDE's selected project. Checked against
+   * the loaded sketches because the two shells share the persisted user
+   * settings — each sees the OTHER's (unloadable) id in the foreign slot.
+   */
+  private activeEditSketchId(): string | null {
+    for (const id of [appState.local.editingSketchId,
+                      appState.local.userSettings.selectedProjectId]) {
+      if (id && appState.database.sketches[id]) return id;
+    }
+    return null;
   }
 
   /** Look up a selectable by path (for reading fresh renderInspectorContent). */

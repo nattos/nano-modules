@@ -20,7 +20,7 @@ import type {
   FieldModulation,
 } from '../widgets/column-adapter';
 import type { LongEdit } from './history';
-import type { PluginInfo, AvailableEffect, Selectable, EffectClipboard } from './types';
+import type { PluginInfo, AvailableEffect, Selectable, EffectClipboard, EffectsClipboard } from './types';
 import type { Sketch, Wire, ParamSmoothing, FieldConnectInfo } from '../sketch-types';
 import type { ParamValue } from '../engine-types';
 
@@ -58,6 +58,9 @@ const controller: ColumnController = {
   selectField: (key) => appController.selectField(key),
   selectedFieldKey: () => appController.selectedFieldKey(),
   defineSelectable: (s: Selectable) => appController.defineSelectable(s),
+  toggleSelectEffect: (path) => appController.toggleSelectEffect(path),
+  rangeSelectEffect: (path) => appController.rangeSelectEffect(path),
+  isMultiSelected: (path) => appController.isMultiSelected(path),
 
   setEffectParam: (s, c, ch, k, v: ParamValue) => appController.setEffectParam(s, c, ch, k, v),
   beginSetEffectParam: (s, c, ch, k, v: ParamValue) => appController.beginSetEffectParam(s, c, ch, k, v),
@@ -82,6 +85,8 @@ const controller: ColumnController = {
   snapshotEffect: (s, k): EffectClipboard | null => appController.snapshotEffect(s, k),
   insertEffectFromClipboard: (s, c, idx, payload: EffectClipboard) =>
     appController.insertEffectFromClipboard(s, c, idx, payload),
+  insertEffectsFromClipboard: (s, c, idx, payload: EffectsClipboard) =>
+    appController.insertEffectsFromClipboard(s, c, idx, payload),
 
   setInstanceHelp: (s, instanceKey, slotPath, patch) =>
     appController.setInstanceHelp(s, instanceKey, slotPath, patch),

@@ -16,7 +16,7 @@
  * capability gates).
  */
 
-import type { PluginInfo, AvailableEffect, Selectable, EffectClipboard } from '../state/types';
+import type { PluginInfo, AvailableEffect, Selectable, EffectClipboard, EffectsClipboard } from '../state/types';
 import type { Sketch, Wire, ParamSmoothing, FieldConnectInfo } from '../sketch-types';
 import type { ParamValue } from '../engine-types';
 import type { TraceSource } from '../state/trace-controller';
@@ -116,6 +116,14 @@ export interface ColumnController {
   selectField(key: string | null): void;
   selectedFieldKey(): string | null;
   defineSelectable(selectable: Selectable): void;
+  // multi-selection (optional — surfaces without it get plain single-select
+  // on modified clicks; column-group falls back to select())
+  /** Cmd/ctrl-click: toggle the card's multi-selection membership. */
+  toggleSelectEffect?(path: string): void;
+  /** Shift-click: select the contiguous range from the primary selection. */
+  rangeSelectEffect?(path: string): void;
+  /** Card highlight: part of the multi-selected group. */
+  isMultiSelected?(path: string): boolean;
 
   // params / device controls
   setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): void;
@@ -140,6 +148,10 @@ export interface ColumnController {
   // clipboard (caps.clipboard)
   snapshotEffect(sketchId: string, instanceKey: string): EffectClipboard | null;
   insertEffectFromClipboard(sketchId: string, colIdx: number, insertIdx: number, payload: EffectClipboard): void;
+  /** Multi-card paste (optional): insert a copied GROUP (with its internal
+   *  wires, remapped onto fresh keys) as a contiguous block at insertIdx.
+   *  Surfaces without it silently ignore multi-card payloads. */
+  insertEffectsFromClipboard?(sketchId: string, colIdx: number, insertIdx: number, payload: EffectsClipboard): void;
 
   // help text ("?" mode) — merge a partial help override (scope and/or local
   // markdown text) for a slot path on an instance. One undo point per call.

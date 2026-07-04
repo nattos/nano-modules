@@ -2,7 +2,7 @@
  * App state types for the sketch editor.
  */
 
-import type { Sketch, FieldOptions } from '../sketch-types';
+import type { Sketch, FieldOptions, Wire } from '../sketch-types';
 
 // --- Plugin info (from engine worker) ---
 
@@ -119,8 +119,33 @@ export interface EffectClipboard {
   fieldOptions?: Record<string, FieldOptions>;
 }
 
-/** What the app clipboard can hold. Effect cards only, for now. */
-export type ClipboardPayload = EffectClipboard;
+/** One card inside a multi-card clipboard payload. */
+export interface EffectClipboardItem {
+  moduleType: string;
+  /** Deep-copied instance state, minus UI-only view state (see EffectClipboard). */
+  state: Record<string, any>;
+  fieldOptions?: Record<string, FieldOptions>;
+  /**
+   * The SOURCE instance_key. Never inserted as-is — paste always mints fresh
+   * keys — it exists only so `wires` endpoints can be remapped onto the fresh
+   * keys. Also what makes the payload meaningful across surfaces (the OS
+   * clipboard carries this JSON between the effect IDE / playground / live
+   * Resolume tabs, where the source keys mean nothing).
+   */
+  key: string;
+}
+
+/** A multi-selected group of effect cards, in chain order, WITH the wires
+ *  internal to the group (both endpoints inside it). External wires are not
+ *  captured — their far endpoint wouldn't exist at the paste site. */
+export interface EffectsClipboard {
+  kind: 'effects';
+  items: EffectClipboardItem[];
+  wires: Wire[];
+}
+
+/** What the app clipboard can hold. */
+export type ClipboardPayload = EffectClipboard | EffectsClipboard;
 
 // --- Database state (persisted, undo/redo-able) ---
 
@@ -225,6 +250,16 @@ export interface LocalState {
   // --- Selection / Inspector ---
   /** Currently selected item (drives the inspector panel). */
   selection: Selectable | null;
+  /**
+   * Multi-selected effect-card paths (`effect/<sketchId>/<colIdx>/<chainIdx>`),
+   * all within ONE sketch, kept in chain order. A superset of the primary
+   * `selection` when that is an effect card (plain click → `[path]`); grown by
+   * cmd/ctrl-click, shift-click ranges, and Cmd+A. Group operations (copy /
+   * cut / delete) act on this when it holds 2+ cards; the inspector keeps
+   * following the primary. Transient UI state — chain mutations may stale the
+   * embedded indices, so operations re-resolve entries and skip gaps.
+   */
+  multiSelection: string[];
   /**
    * Path queued for selection before the component has registered its Selectable.
    * When a component calls defineSelectable() with this path, the selection activates.

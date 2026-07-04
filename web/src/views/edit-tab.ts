@@ -128,6 +128,13 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       return;
     }
     if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
+    // A multi-selected GROUP (2+ cards) deletes as one undo point; falls
+    // through when the multi-selection isn't an actionable group.
+    if ((e.key === 'Delete' || e.key === 'Backspace')
+      && appController.removeMultiSelectedEffects()) {
+      e.preventDefault();
+      return;
+    }
     const selection = appState.local.selection;
     if (!selection) return;
     // A selected wire (`wire/<sketchId>/<wireId>`) breaks on Delete/Backspace —

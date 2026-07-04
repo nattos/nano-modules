@@ -28,12 +28,11 @@ Fixed in the same pass (for context): the engine/gpu test-runner readiness check
 ## Future Work
 
 ### Shared-server / event push (queued 2026-07)
-- **Multi-select effect cards**: cmd+A select-all, multi-card copy/paste — especially BETWEEN surfaces (effect IDE ↔ playground ↔ live Resolume).
 - **Naming barrel instances**: user-editable names; auto-assign unnamed instances from their Resolume context by enumerating effects via the Resolume webserver and locating the barrel instance. (Playground labels + the sidechannel writerTag→label mapping are ready consumers.)
 - **Resolume crash recovery**: cache a copy of each barrel sketch in IndexedDB web-side, detect unclean shutdown, offer restore.
-- **Sidechannel texture previews**: preview the texture bus like output traces (bus textures are host-visible handles; a `sidechannel:<name>` trace target slots into the barrel's `refreshPreviewRequests` / NBPV path naturally).
 - **Playground per-instance render-rate/priority controls** if many simultaneous full-res instances prove heavy.
-- **Sidechannel bus pruning**: channel entries (one texture each) are never released when a writer disappears — bounded by channel count in practice; revisit with the preview work.
+- **Sidechannel bus pruning**: channel entries (one texture each) are never released when a writer disappears — bounded by channel count in practice; revisit alongside the (now-shipped) sidechannel previews.
+- **Multi-select follow-ups**: group drag-reorder (drag moves only the grabbed card today; a plain drag first collapses the group) and group param editing (the arrangement's `isMixed`/"many" widgets are the model). Cmd+A / group copy/cut/paste/delete themselves are done — see Recently Completed.
 
 - **Instance cloning for multi-sketch** (see above)
 - **Remove `on_param_change` export from `wasm_build_env.sh`**: All modules have empty stubs now. The export can be removed once we're confident nothing else calls it.
@@ -44,6 +43,8 @@ Fixed in the same pass (for context): the engine/gpu test-runner readiness check
 
 ## Recently Completed
 
+- **Multi-select effect cards** (2026-07): `appState.local.multiSelection` (effect paths, one sketch) beside the primary selection. Cmd/ctrl-click toggles, shift-click range-selects from the primary anchor, Cmd+A selects the whole edited sketch (all via `handleCommonEditShortcut` / `column-group`'s pointerdown, so both sketch surfaces get it). Group copy captures a `kind:'effects'` payload — chain-ordered cards PLUS the wires internal to the group — mirrored to the OS clipboard as JSON, which is what carries groups BETWEEN surfaces (effect IDE ↔ playground ↔ live Resolume tabs). Paste mints fresh instance keys, remaps the wires onto them (fresh wire ids), inserts a contiguous block, selects it; one undo point. Group delete/cut are one undo point. Pure capture/remap helpers in `state/effects-payload.ts` (vitest); gestures e2e'd in `test/multi-select.test.ts`. Multi-select-only surfaces stay opt-in via optional `ColumnController` methods (the arrangement keeps its own system).
+- **Sidechannel texture previews** (2026-07): shipped as the Instances-tab sidechannel cards — `{type:'sidechannel', channel}` trace target, `sidechannel_bus::peek` → `executor_sidechannel_texture` (playground) / preview requests routed to the channel's writer instance (barrel).
 - **`util.dashboard` knob `{}` "reset" was a test artifact, not a real bug**: the previously-reported "authored knob state resets to `{}` in the resolume shell" did NOT exist. `dashboard-knobs.test.ts` test 1 returned the raw MobX-observable `inst.state` to Puppeteer, whose structured clone walks the Proxy and yields `{}` (a false "wiped"). In-page snapshots (`Object.keys(instances)`) showed the authored knobs intact through the entire drag. Fix: serialize in-page (`JSON.parse(JSON.stringify(inst.state))`) before returning; test re-enabled (no longer `it.skip`). The engine never stomps the state — the local path was always correct (the distinct, real output-mirror bug — `{knob_i: 0}` — was fixed separately).
 - **`util.sketch_output` — sketch's 8 scalar OUTPUTS** (inverse of the dashboard): 8 relay output-trace fields wires write INTO; `sketch_output_source` capability. See the effect + memory.
 - **`util.dashboard` is a real wasm effect**: replaced the virtual knob bank + the executor's `runDashboard` handler with a real core-bundle effect — `knob_0..7` as relay fields (`io = in|out`), `is_identity` passthrough, `sketch_input_source` capability. Added relay-field write capture to the shared tap path (a field that's both read- and write-tapped publishes its modulated value). Knobs wire directly (input + output) through their `<scalar-knob>`; the dashboard's output-trace row is hidden.

@@ -1038,7 +1038,8 @@ export class ColumnGroup extends MobxLitElement {
     const isEditingType = this.editingTypeChainIdx === chainIdx;
     const session = this.editSession;
     const effectPath = `effect/${this.sketchId}/${this.colIdx}/${chainIdx}`;
-    const isSelected = this.ctl.isSelected(effectPath);
+    const isSelected = this.ctl.isSelected(effectPath)
+      || (this.ctl.isMultiSelected?.(effectPath) ?? false);
     const isCollapsed = isEffectCollapsed(this.ds.getSketch(this.sketchId), entry.instance_key);
 
     // Per-effect device controls (reserved engine keys in instance state).
@@ -1053,9 +1054,19 @@ export class ColumnGroup extends MobxLitElement {
 
     // Select on pointerdown — happens before drag threshold is reached, so
     // the card is selected whether the user intended to click or drag.
+    // Cmd/ctrl-click toggles multi-selection membership; shift-click extends a
+    // range from the primary selection (surfaces without multi-select fall
+    // back to plain select). Plain click collapses any group to this card.
+    const isGroupGesture = (e: PointerEvent) => e.metaKey || e.ctrlKey || e.shiftKey;
     const selectOnPointerDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).closest('smart-input')) return;
-      this.ctl.select(effectPath);
+      if ((e.metaKey || e.ctrlKey) && this.ctl.toggleSelectEffect) {
+        this.ctl.toggleSelectEffect(effectPath);
+      } else if (e.shiftKey && this.ctl.rangeSelectEffect) {
+        this.ctl.rangeSelectEffect(effectPath);
+      } else {
+        this.ctl.select(effectPath);
+      }
     };
 
     return html`
@@ -1077,6 +1088,9 @@ export class ColumnGroup extends MobxLitElement {
             @pointerdown=${(e: PointerEvent) => {
               selectOnPointerDown(e);
               if (isEditingType) return;
+              // Group-selection gestures never start a drag — a cmd-click that
+              // wiggles a few pixels must not reorder the card it just toggled.
+              if (isGroupGesture(e)) return;
               // Self-contained reorder (arrangement) vs. host-driven drag (IDE).
               if (this.ds.caps.reorder) this.beginCardDrag(e, chainIdx);
               else this.callbacks?.onCardPointerDown(e, this.sketchId, this.colIdx, chainIdx);
@@ -2413,6 +2427,11 @@ export class ColumnGroup extends MobxLitElement {
         : undefined,
       paste: this.ds.caps.clipboard
         ? (payload) => {
+            if (payload.kind === 'effects') {
+              this.ctl.insertEffectsFromClipboard?.(
+                this.sketchId, this.colIdx, chainIdx + 1, payload);
+              return;
+            }
             if (payload.kind !== 'effect') return;
             this.ctl.insertEffectFromClipboard(this.sketchId, this.colIdx, chainIdx + 1, payload);
           }
