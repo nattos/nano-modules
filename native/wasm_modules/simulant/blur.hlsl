@@ -1,15 +1,22 @@
-// filter.sim.simulant — separable RGB Gaussian blur (Pixel Blur, nodes 30 + 67).
+// filter.sim.simulant — separable RGB spread kernel (Pixel Blur, nodes 30 + 67).
 //
-// Used TWICE per frame, each as an H then V pass:
-//   (1) WAVE blur: the big feedback blur (distance = 200px * WaveSpeed). Repeated
-//       every frame, this diffusion IS the outward propagation of the original —
-//       there is no wave equation and no zoom-feedback; the "wave" is a blur loop.
-//       The V pass also applies the WaveSpeed-tied contrast darkening (node 31)
-//       via `gain` (= 1 + contrast) so trailing frames fade.
-//   (2) SMOOTHING blur: a small pre-edge blur (node 67, Smoothing) that softens
-//       accumRaw before the line extractor so the Sobel traces clean contours.
+// Used for two jobs, each an H then V pass:
+//   (1) WAVE spread: the big feedback pass. Repeated every frame, this outward
+//       spread IS the propagation of the original — there is no wave equation.
+//       Two techniques (mode):
+//         DIFFUSE — separable Gaussian blur (the faithful soft rings).
+//         DILATE  — separable PARABOLIC grayscale morphology (max of the window
+//                   minus a quadratic distance penalty). Parabolic morphology is
+//                   exactly Euclidean and separable, so fronts stay ROUND (a flat
+//                   max window would give square/diamond fronts). This spreads
+//                   bright regions as sharp EXPANDING FRONTS instead of soft
+//                   diffusion; `post_mult` (< 1) is the per-frame decay so the
+//                   fronts fade rather than fill the frame.
+//       The V pass also folds in the WaveSpeed-tied contrast darkening (node 31).
+//   (2) SMOOTHING: a small pre-edge Gaussian (node 67) so the Sobel traces clean
+//       contours. Always DIFFUSE.
 //
-// sigma/step are in uv; taps scale with sigma so a wide blur stays cheap.
+// sigma/step are per-axis uv (isotropic in pixels); taps scale with reach.
 
 Texture2D<float4>   srcTex : register(t0);
 SamplerState        samp   : register(s1);   // Linear + ClampToEdge
@@ -18,16 +25,16 @@ RWTexture2D<float4> dstTex : register(u2);
 cbuffer Uniforms : register(b3) {
   float2 dir;        // (1,0) horizontal or (0,1) vertical
   float  step_uv;    // tap spacing in uv
-  float  sigma_uv;   // Gaussian sigma in uv (<=0 → identity)
+  float  sigma_uv;   // Gaussian sigma / dilation reach in uv (<=0 → identity)
   float  contrast;   // Bright.Contrast about 0.5 (node 31 wave decay; 0 = none)
-  float  _p0, _p1, _p2;
+  float  mode;       // 0 = diffuse (Gaussian), 1 = dilate (parabolic morphology)
+  float  parab;      // dilation parabola steepness (penalty per tap², in value)
+  float  post_mult;  // final multiply (dilate per-frame decay; 1 = none)
 };
 
 static const int N = 16;   // taps each side
 
-// Bright.Contrast (node 31): pivots about mid-grey. The stock WaveSpeed-tied
-// contrast is tiny + negative → each feedback pass creeps toward 0.5, which the
-// difference blend then churns (it does NOT fade to black — a faithful quirk).
+// Bright.Contrast (node 31): pivots about mid-grey.
 float3 apply_contrast(float3 c) {
   return saturate((c - 0.5) * (1.0 + contrast) + 0.5);
 }
@@ -40,18 +47,34 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 uv = (float2(gid.xy) + 0.5) / float2(W, H);
 
   if (sigma_uv <= 1e-6) {
-    dstTex[gid.xy] = float4(apply_contrast(srcTex.SampleLevel(samp, uv, 0).rgb), 1.0);
+    float3 c = srcTex.SampleLevel(samp, uv, 0).rgb;
+    dstTex[gid.xy] = float4(saturate(apply_contrast(c) * post_mult), 1.0);
     return;
   }
 
-  float3 acc = float3(0.0, 0.0, 0.0);
-  float  wsum = 0.0;
-  float  inv2s2 = 1.0 / (2.0 * sigma_uv * sigma_uv);
-  [loop] for (int k = -N; k <= N; k++) {
-    float d = float(k) * step_uv;
-    float w = exp(-d * d * inv2s2);
-    acc  += srcTex.SampleLevel(samp, uv + dir * d, 0).rgb * w;
-    wsum += w;
+  float3 outc;
+  if (mode > 0.5) {
+    // DILATE — parabolic max: out = max_k( sample_k - parab*k² ). The k² penalty
+    // adds across the H+V passes → total penalty parab*(kx²+ky²) = Euclidean.
+    float3 acc = float3(-1e9, -1e9, -1e9);
+    [loop] for (int k = -N; k <= N; k++) {
+      float pen = parab * float(k * k);
+      float3 s = srcTex.SampleLevel(samp, uv + dir * (float(k) * step_uv), 0).rgb;
+      acc = max(acc, s - pen);
+    }
+    outc = saturate(apply_contrast(saturate(acc)) * post_mult);
+  } else {
+    // DIFFUSE — separable Gaussian.
+    float3 acc = float3(0.0, 0.0, 0.0);
+    float  wsum = 0.0;
+    float  inv2s2 = 1.0 / (2.0 * sigma_uv * sigma_uv);
+    [loop] for (int k = -N; k <= N; k++) {
+      float d = float(k) * step_uv;
+      float w = exp(-d * d * inv2s2);
+      acc  += srcTex.SampleLevel(samp, uv + dir * d, 0).rgb * w;
+      wsum += w;
+    }
+    outc = saturate(apply_contrast(acc / max(wsum, 1e-5)) * post_mult);
   }
-  dstTex[gid.xy] = float4(apply_contrast(acc / max(wsum, 1e-5)), 1.0);
+  dstTex[gid.xy] = float4(outc, 1.0);
 }
