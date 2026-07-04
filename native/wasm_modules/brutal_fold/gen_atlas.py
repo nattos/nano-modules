@@ -103,6 +103,25 @@ def main():
         # Structure 2 screen shear.
         emit_array(fh, "BF_B_TILT", atlas["b_tilt"])
 
+        # Key-moment windows (per cell x z, indexed (gi*G+gj)*Z + z — matches
+        # field.nearestCell). Only t1 (center peak) + score + covmax are needed
+        # at runtime: score>0 && covmax<=kKmMaxCov marks a usable key moment, and
+        # the played span is a FIXED fraction anchored on t1. t0 (onset) is
+        # informational and skipped. Absent → key-moment mode has no windows and
+        # every cell falls back to the full loop.
+        km = atlas.get("keymoments")
+        if km:
+            fh.write(f"static const int   BF_KM_NFRAMES = {int(km['n_frames'])};\n\n")
+            emit_array(fh, "BF_KM_T1", km["t1"])
+            emit_array(fh, "BF_KM_SCORE", km["score"])
+            emit_array(fh, "BF_KM_COVMAX", km["covmax"])
+        else:
+            # Degenerate tables so the effect compiles + always falls back to the
+            # full loop (score 0 everywhere → no cell has a usable key moment).
+            fh.write("static const int   BF_KM_NFRAMES = 0;\n\n")
+            for nm in ("BF_KM_T1", "BF_KM_SCORE", "BF_KM_COVMAX"):
+                emit_array(fh, nm, [0.0] * (G * G * Z))
+
         fh.write("} // namespace brutal_fold\n\n")
         fh.write("#endif // BRUTAL_FOLD_ATLAS_H\n")
 

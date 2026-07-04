@@ -208,4 +208,84 @@ describe('source.brutal_fold E2E', () => {
     expect(still.success).toBe(true);
     still.phases[1].trace('out').expectSameAs(still.phases[0].trace('out'), 2); // frozen → identical
   });
+
+  // A cell with a scored, non-poppy key moment (peak ≈ 0.69) at the liveliest z
+  // layer, so the analyzed window animates strongly across its span. The params
+  // snap to grid cell (order=gi3, complexity=gj0, liveliness=z3).
+  const KM_CELL = { complexity: 0.0, order: 0.5, liveliness: 1.0, anim_amount: 1.5 };
+
+  it('key moment mode scrubs the analyzed window (Time mode)', async () => {
+    // Time mode maps km_time directly onto the window playhead (0 = window start,
+    // 1 = settled on the centre peak) — deterministic, no dt. The two ends of the
+    // window render different frames.
+    const start = await render('bf_km_t0',
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 0.0, time_speed: 0.0 }, 'bf_km_t0');
+    const peak = await render('bf_km_t1',
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 1.0, time_speed: 0.0 }, 'bf_km_t1');
+    start.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    peak.trace('out').expectDifferentFrom(start.trace('out'), 20);
+
+    // The live playhead is broadcast for the editor readout.
+    const bf = peak.state.plugins.find((p: any) => p.id === 'source.brutal_fold');
+    expect(bf.io.find((io: any) => io.name === 'km_phase' && io.kind === 2)).toBeTruthy();
+  });
+
+  it('key moment Loop mode advances the playhead over time', async () => {
+    // Loop replays the window continuously at the base loop rate, so across a span
+    // of frames (real dt, like the autopilot test) the output moves.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.testonly', 'com.nano.nano'],
+      dumpName: 'bf_km_loop',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'bf_km_loop',
+              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 2, time_speed: 1.0 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'bf_km_loop' } },
+            ]},
+          ],
+          waitFrames: 2, captureTraceIds: ['out'],
+        },
+        { waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 20);
+  });
+
+  it('key moment Trigger mode holds until triggered, then plays the window', async () => {
+    // Trigger is a one-shot: parked at the window start until a rising edge on
+    // km_trigger fires it; it then plays out to the settled peak and holds.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.testonly', 'com.nano.nano'],
+      dumpName: 'bf_km_trig',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'bf_km_trig',
+              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 0, time_speed: 1.0 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'bf_km_trig' } },
+            ]},
+          ],
+          waitFrames: 3, captureTraceIds: ['out'],
+        },
+        // No trigger yet: the one-shot stays parked at the window start.
+        { waitFrames: 30, captureTraceIds: ['out'] },
+        // Fire the trigger: the window plays out toward the peak.
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'bf_km_trig', chainIdx: 0, paramKey: 'km_trigger', value: 1 },
+          ],
+          waitFrames: 40, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectSameAs(r.phases[0].trace('out'), 2);        // parked → no auto-advance
+    r.phases[2].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 20); // triggered → played
+  });
 });

@@ -212,6 +212,16 @@ export class BrutalFoldInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'anim_amount'} .label=${'Anim Amount'}
         .min=${0} .max=${2.5} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
 
+      ${this.section('Key Moment', '@group/keymoment')}
+      <field-toggle .fieldPath=${'key_moment'} .label=${'Key Moment'}
+        .defaultValue=${0} .binding=${b}></field-toggle>
+      <field-select .fieldPath=${'km_time_mode'} .label=${'Time Mode'}
+        .options=${[{ label: 'Trigger', value: 0 }, { label: 'Time', value: 1 }, { label: 'Loop', value: 2 }]}
+        .defaultValue=${2} .binding=${b}></field-select>
+      <scalar-slider style="width: 100%;" .fieldPath=${'km_time'} .label=${'Time'}
+        .min=${0} .max=${1} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>
+      <field-trigger .fieldPath=${'km_trigger'} .label=${'Trigger'} .binding=${b}></field-trigger>
+
       ${this.section('Color Grade', '@group/color')}
       <brutal-fold-diffuse-preview .binding=${b}></brutal-fold-diffuse-preview>
       <scalar-slider style="width: 100%;" .fieldPath=${'diff_sat'} .label=${'Strength'}
