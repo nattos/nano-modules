@@ -219,11 +219,14 @@ compile_shaders_compute_var_spv tri_shear render
 _emit_spv_header_var tri_shear accumulate solve render
 echo "  tri_shear shaders compiled (SPV: accumulate + solve + render)"
 
-# shape_burst — triggered expanding-ring generator. Single compute pass loops
-# over active voices, rasterizing concentric circle/square/triangle rings over
-# a background (black / transparent / custom / input).
-compile_shaders_compute_spv shape_burst
-echo "  shape_burst shaders compiled (SPV: compute)"
+# shape_burst — triggered expanding-ring generator. Two compute passes sharing
+# common.hlsl: `compute` rasterizes concentric circle/square/triangle rings over
+# a background (black / transparent / custom / input); `motion` writes the
+# radial per-ring velocity to the render_outputs/motion rail (gated on connect).
+compile_shaders_compute_var_spv shape_burst compute
+compile_shaders_compute_var_spv shape_burst motion
+_emit_spv_header_var shape_burst compute motion
+echo "  shape_burst shaders compiled (SPV: compute + motion)"
 
 echo "=== Building WASM (nano) ==="
 

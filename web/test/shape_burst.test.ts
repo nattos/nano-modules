@@ -100,4 +100,69 @@ describe('source.shape_burst E2E', () => {
       'burst_auto', /*withInput=*/false, /*waitFrames=*/16);
     r.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
   });
+
+  // shape_burst -> motion.blur: the expanding rings write a radial motion rail
+  // that the blur consumes. RNG is seeded identically per instance, so with the
+  // same params the ring (color) frames are identical between runs — only
+  // motion_strength changes the motion rail, so any output difference is proof
+  // the motion vectors are produced AND consumed downstream.
+  function motionSketch(motion_strength: number, tilt = 0, thickness = 0.08): any {
+    return {
+      anchor: null,
+      wires: [],   // opt into wire mode → motion.blur auto-connects the rail above it
+      chain: [
+        {
+          type: 'module',
+          module_type: 'source.shape_burst',
+          instance_key: 'burst@0',
+          params: {
+            thickness, min_scale: 0.1, max_scale: 1.3, color: [1, 1, 1, 1],
+            manual: 0, auto_rate: 1.0, duration: 0.2, composite: 0, motion_strength, tilt,
+          },
+        },
+        {
+          type: 'module',
+          module_type: 'motion.blur',
+          instance_key: 'blur@0',
+          params: { strength: 32.0, samples: 16, quality: 1 },
+        },
+      ],
+    };
+  }
+
+  async function renderMotion(sketchId: string, motion_strength: number,
+                              tilt = 0, thickness = 0.08) {
+    const r = await runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nano.testonly', 'com.nano.nano'],
+      commands: [
+        { type: 'createSketch', sketchId, sketch: motionSketch(motion_strength, tilt, thickness) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId } },
+        ]},
+      ],
+      waitFrames: 22,
+      captureTraceIds: ['out'],
+      dumpName: sketchId,
+    });
+    expect(r.success).toBe(true);
+    return r;
+  }
+
+  it('emits a motion rail that drives a downstream motion blur', async () => {
+    const withMotion = await renderMotion('burst_mot_on', 4.0);
+    const noMotion = await renderMotion('burst_mot_off', 0.0);
+    withMotion.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    // Same rings, different motion rail → the blur output must diverge.
+    withMotion.trace('out').expectDifferentFrom(noMotion.trace('out'), 20);
+  });
+
+  it('tilt redistributes motion magnitude across the ring band', async () => {
+    // Thick stroke so the inner/outer magnitude split is resolvable. Same rings
+    // both runs; only the tilt sign flips the inner<->outer weighting, so the
+    // resulting blur differs.
+    const inner = await renderMotion('burst_tilt_in', 4.0, 1.0, 0.16);
+    const outer = await renderMotion('burst_tilt_out', 4.0, -1.0, 0.16);
+    inner.trace('out').expectDifferentFrom(outer.trace('out'), 20);
+  });
 });

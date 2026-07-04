@@ -42,6 +42,7 @@ constexpr int kMaxVoices = 16;
 
 struct Voice {
   float t = 0.0f;        // burst progress [0,1]
+  float speed = 0.0f;    // radius change this frame (cover-square units/frame)
   bool active = false;
   uint64_t age = 0;      // trigger order (for poly steal + newest-first draw)
 };
@@ -57,8 +58,11 @@ struct Uniforms {
   float thickness;            // u_thickness
   float px;                   // u_px
   uint32_t count;             // u_count
-  uint32_t _p0, _p1, _p2;
+  float tilt;                 // u_tilt
+  float motion_strength;      // u_motion_strength
+  uint32_t _p0;
   float scales[kMaxVoices];   // u_scales (== float4[4])
+  float speeds[kMaxVoices];   // u_speeds (== float4[4])
 };
 
 struct State {
@@ -82,18 +86,31 @@ struct State {
   // Composite.
   int composite = CompBlack;
   float bg_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+  // Motion vectors.
+  float tilt = 0.0f;
+  float motion_strength = 1.0f;
 
   uint32_t rng = 0x5EED5EEDu;   // auto-trigger Poisson stream
   uint64_t trig_counter = 0;    // monotonic, stamps Voice::age
   Voice v[kMaxVoices];
 
+  float manual_prev = 0.0f;     // last frame's manual, for its motion speed
+  float manual_speed = 0.0f;    // manual ring's radius change this frame
+
+  // Per-instance motion-vector target (published to render_outputs/motion),
+  // reallocated on resize; a 1x1 zero for the upstream fallback.
+  gpu::Texture motion_tex;
+  gpu::Texture zero_motion_tex;
+  int motion_w = 0, motion_h = 0;
+
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
 
-static gpu::ComputePSO s_pso;   // type-shared
-static gpu::Texture s_black;    // type-shared 1x1 fallback for the "input" slot
-                                // when nothing is wired upstream (chain-start).
+static gpu::ComputePSO s_pso;         // type-shared (color)
+static gpu::ComputePSO s_pso_motion;  // type-shared (motion vectors)
+static gpu::Texture s_black;          // type-shared 1x1 fallback for the "input" slot
+                                      // when nothing is wired upstream (chain-start).
 
 // Param 0..1 → seconds. Quadratic: fine control at the short end, ~4s ceiling.
 static inline double seconds(float p) {
@@ -143,7 +160,7 @@ static void triggerVoice(State* s) {
 }
 
 void module_init() {
-  state::init("source.shape_burst", {1, 0, 0},
+  state::init("source.shape_burst", {1, 0, 1},
     state::Schema()
       .helpField("intro",
         "## Shape Burst\n"
@@ -211,18 +228,36 @@ void module_init() {
                    {{"Black", CompBlack}, {"Transparent", CompTransparent},
                     {"Custom", CompCustom}, {"Input", CompInput}}).label("Composite", "Comp")
       .rgbaField("bg_color", 0.0f, 0.0f, 0.0f, 1.0f, state::SecondaryInput).label("Background", "BG")
+      // --- Motion vectors: a render_outputs/motion rail for downstream blur ---
+      .group("motion", "Motion")
+        .groupHelp(
+          "Emits a **motion-vector** rail (only when something downstream — a "
+          "motion blur or optical-flow effect — consumes it). Each ring writes a "
+          "radial velocity as it expands. *Motion Strength* scales the whole field; "
+          "*Tilt* redistributes it across the stroke — positive pushes the "
+          "magnitude toward the inner edge (weaker outside), negative the reverse. "
+          "**Try** it feeding motion.blur for a radial smear that follows the burst.")
+      .floatField("motion_strength", 1.0f, 0.f, 4.f, state::SecondaryInput).label("Motion Strength", "MotStr")
+      .floatField("tilt", 0.0f, -1.f, 1.f, state::SecondaryInput).label("Tilt", "Tilt")
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      .renderOutputs(state::PrimaryOutput)
+      .renderOutputs(state::PrimaryInput, "render_outputs_in")
       .capability(state::Capability::Generator)
   );
   state::log("shape_burst: init");
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
-  state::registerShaderSPV("compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
-  auto cs = gpu::Device::createShaderModuleByName("compute");
-  if (!cs) return;
+  state::registerShaderSPV("shape_burst_compute", COMPUTE_SPV, COMPUTE_SPV_SIZE);
+  state::registerShaderSPV("shape_burst_motion", MOTION_SPV, MOTION_SPV_SIZE,
+                           "rgba16float", "write");
+  auto cs = gpu::Device::createShaderModuleByName("shape_burst_compute");
+  auto cs_motion = gpu::Device::createShaderModuleByName("shape_burst_motion");
+  if (!cs || !cs_motion) return;
   s_pso = gpu::Device::createComputePSO(cs, "main",
     gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main",
+    gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
 
   // 1x1 black bound at the input slot when this generator starts a chain
   // (no upstream tex_in). Out-of-bounds Loads read 0, so "Input" composite
@@ -241,6 +276,8 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->uniform_buf.release();
+  if (s->motion_tex.valid()) s->motion_tex.release();
+  if (s->zero_motion_tex.valid()) s->zero_motion_tex.release();
   delete s;
 }
 
@@ -248,6 +285,8 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   gpu::Buffer buf = s->uniform_buf;   // preserve the allocated buffer across reset
+  if (s->motion_tex.valid()) s->motion_tex.release();
+  if (s->zero_motion_tex.valid()) s->zero_motion_tex.release();
   *s = State();
   s->uniform_buf = buf;
   s->initialized = buf.valid();
@@ -268,14 +307,22 @@ void tick(void* self, double dt) {
     }
   }
 
-  // Advance every active burst; hard-cut when it completes.
+  // Advance every active burst; hard-cut when it completes. Record each
+  // voice's per-frame radius change (for the motion-vector pass).
   const double dur = seconds(s->duration);
   for (int i = 0; i < kMaxVoices; i++) {
     Voice& v = s->v[i];
-    if (!v.active) continue;
+    if (!v.active) { v.speed = 0.0f; continue; }
+    float t_old = v.t;
     v.t += (float)(dt / dur);
-    if (v.t >= 1.0f) { v.active = false; v.t = 0.0f; }
+    if (v.t >= 1.0f) { v.active = false; v.t = 0.0f; v.speed = 0.0f; continue; }
+    v.speed = scaleForT(s, v.t) - scaleForT(s, t_old);
   }
+
+  // Manual ring: its motion is however fast the user/wire scrubs `manual`
+  // (0 when held). Sampled per frame so a static manual ring writes no motion.
+  s->manual_speed = scaleForT(s, s->manual) - scaleForT(s, s->manual_prev);
+  s->manual_prev = s->manual;
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -304,6 +351,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "retrigger"))  s->retrigger = state::patchInt(i);
     else if (state::pathIs(p, l, "auto_rate"))  s->auto_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "composite"))  s->composite = state::patchInt(i);
+    else if (state::pathIs(p, l, "tilt"))       s->tilt = state::patchFloat(i);
+    else if (state::pathIs(p, l, "motion_strength")) s->motion_strength = state::patchFloat(i);
     else if (state::pathIs(p, l, "bg_color")) {
       auto v = state::patchVec4(i);
       s->bg_color[0] = v.x; s->bg_color[1] = v.y; s->bg_color[2] = v.z; s->bg_color[3] = v.w;
@@ -333,14 +382,18 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.thickness = s->thickness;
   int maxDim = vp_w > vp_h ? vp_w : vp_h;
   u.px = maxDim > 0 ? 2.0f / (float)maxDim : 0.002f;   // one pixel in cover-square units
-  u._p0 = u._p1 = u._p2 = 0;
-  for (int i = 0; i < kMaxVoices; i++) u.scales[i] = -1.0f;
+  u.tilt = s->tilt;
+  u.motion_strength = s->motion_strength;
+  u._p0 = 0;
+  for (int i = 0; i < kMaxVoices; i++) { u.scales[i] = -1.0f; u.speeds[i] = 0.0f; }
 
   int cap = s->voices; if (cap < 1) cap = 1; if (cap > kMaxVoices) cap = kMaxVoices;
   int count = 0;
 
-  if (s->manual > 0.0f && count < cap)
+  if (s->manual > 0.0f && count < cap) {
+    u.speeds[count] = s->manual_speed;
     u.scales[count++] = scaleForT(s, s->manual);
+  }
 
   // Newest-first: repeatedly pick the highest-age active voice not yet taken.
   bool taken[kMaxVoices] = { false };
@@ -352,6 +405,7 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
     }
     if (best < 0) break;
     taken[best] = true;
+    u.speeds[count] = s->v[best].speed;
     u.scales[count++] = scaleForT(s, s->v[best].t);
   }
   u.count = (uint32_t)count;
@@ -371,13 +425,46 @@ void render(void* self, int vp_w, int vp_h) {
   fillUniforms(s, vp_w, vp_h, u);
   s->uniform_buf.writeOne(u);
 
-  auto cp = gpu::ComputePass::begin();
-  cp.setPSO(s_pso);
-  cp.setTexture(in,  0, 0);
-  cp.setTexture(out, 1, 1);
-  cp.setBuffer(s->uniform_buf, 2);
-  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-  cp.end();
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso);
+    cp.setTexture(in,  0, 0);
+    cp.setTexture(out, 1, 1);
+    cp.setBuffer(s->uniform_buf, 2);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
+
+  // Motion-vector rail — only when something downstream consumes it.
+  if (state::isOutputConnected("render_outputs")) {
+    if (!s->motion_tex.valid() || s->motion_w != vp_w || s->motion_h != vp_h) {
+      if (s->motion_tex.valid()) s->motion_tex.release();
+      s->motion_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA16F);
+      s->motion_w = vp_w; s->motion_h = vp_h;
+      if (s->motion_tex.valid())
+        state::setGpuTexture("render_outputs/motion", s->motion_tex.id);
+    }
+    if (s->motion_tex.valid()) {
+      auto upstream = gpu::Device::textureForField("render_outputs_in/motion");
+      if (!upstream.valid()) {
+        if (!s->zero_motion_tex.valid()) {
+          s->zero_motion_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+          if (s->zero_motion_tex.valid())
+            gpu::Device::clear(s->zero_motion_tex, 0.f, 0.f, 0.f, 0.f);
+        }
+        upstream = s->zero_motion_tex;
+      }
+      if (upstream.valid()) {
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_motion);
+        cp.setTexture(upstream, 0, 0);
+        cp.setTexture(s->motion_tex, 1, 1);
+        cp.setBuffer(s->uniform_buf, 2);
+        cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+        cp.end();
+      }
+    }
+  }
 
   gpu::Device::submit();
 }
