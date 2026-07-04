@@ -27,6 +27,14 @@ Fixed in the same pass (for context): the engine/gpu test-runner readiness check
 
 ## Future Work
 
+### Shared-server / event push (queued 2026-07)
+- **Multi-select effect cards**: cmd+A select-all, multi-card copy/paste — especially BETWEEN surfaces (effect IDE ↔ playground ↔ live Resolume).
+- **Naming barrel instances**: user-editable names; auto-assign unnamed instances from their Resolume context by enumerating effects via the Resolume webserver and locating the barrel instance. (Playground labels + the sidechannel writerTag→label mapping are ready consumers.)
+- **Resolume crash recovery**: cache a copy of each barrel sketch in IndexedDB web-side, detect unclean shutdown, offer restore.
+- **Sidechannel texture previews**: preview the texture bus like output traces (bus textures are host-visible handles; a `sidechannel:<name>` trace target slots into the barrel's `refreshPreviewRequests` / NBPV path naturally).
+- **Playground per-instance render-rate/priority controls** if many simultaneous full-res instances prove heavy.
+- **Sidechannel bus pruning**: channel entries (one texture each) are never released when a writer disappears — bounded by channel count in practice; revisit with the preview work.
+
 - **Instance cloning for multi-sketch** (see above)
 - **Remove `on_param_change` export from `wasm_build_env.sh`**: All modules have empty stubs now. The export can be removed once we're confident nothing else calls it.
 - **Remove `state.set` / `state.declare_param` / `io.*` C imports from `host.h`**: These are dead imports kept only so old WASM binaries don't fail to link. Can be removed once all modules are rebuilt.
