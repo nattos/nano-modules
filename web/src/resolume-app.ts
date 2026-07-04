@@ -12,7 +12,11 @@
  */
 
 import { boot } from './boot';
-import { decideMode, OFFER_LIVE_DISMISSED_KEY } from './resolume-mode';
+import {
+  decideMode, OFFER_LIVE_DISMISSED_KEY,
+  groupPreviewRequests, instanceKeyFromThumbTraceId,
+} from './resolume-mode';
+import { traceController } from './state/trace-controller';
 import { loadAllPlaygroundInstances } from './state/playground-store';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
@@ -96,9 +100,10 @@ async function main() {
  *     wire the editor→bridge push + preview-request relay at that key.
  *   - Switching instances (Organize tab) re-points all of the above.
  *
- * We deliberately observe only `/global/plugins` + the selected state path
- * (not the doc root) so the native `key_observed` gate does real work:
- * only the instance being edited produces per-frame telemetry/preview data.
+ * We deliberately observe only `/global/plugins` + the state paths that are
+ * actually in use — the selected instance, plus any instance with a live
+ * Instances-tab thumbnail — so the native `key_observed` gate does real work:
+ * unwatched instances produce no per-frame telemetry/preview data.
  *
  * Exposed on `window.__barrel` for ad-hoc devtools patching.
  */
@@ -106,13 +111,39 @@ function connectBarrel(url: string) {
   const barrel = new WsBridgeClient(url);
   (window as any).__barrel = barrel;
 
-  // The instance currently wired for editing, and the state path we have an
-  // active `observe` on (so we can unobserve when switching).
+  // The instance currently wired for editing.
   let currentKey: string | null = null;
-  let observedStatePath: string | null = null;
   // Snapshot handlers are keyed by exact path; register each instance's
   // handlers once and have them bail if they're no longer the selected key.
   const handlersWired = new Set<string>();
+
+  // -- Instance-state observations (single ownership) -------------------
+  // The native `key_observed` gate only lets an instance do preview/telemetry
+  // work while some client observes its `/plugins/<key>/state`. Two things
+  // want that: the instance wired for editing, and every instance with a live
+  // Instances-tab thumbnail. The client's subscription set is not refcounted,
+  // so one reconciler owns ALL instance-state observations — computing the
+  // desired set from (currentKey ∪ thumbKeys) and diffing against what's
+  // actually observed. Never observe/unobserve these paths elsewhere.
+  const observedInstancePaths = new Set<string>();
+  let thumbKeys = new Set<string>();
+  const reconcileObservations = () => {
+    const desired = new Set<string>();
+    if (currentKey) desired.add(`/plugins/${currentKey}/state`);
+    for (const k of thumbKeys) desired.add(`/plugins/${k}/state`);
+    for (const p of desired) {
+      if (!observedInstancePaths.has(p)) {
+        barrel.observe(p);
+        observedInstancePaths.add(p);
+      }
+    }
+    for (const p of [...observedInstancePaths]) {
+      if (!desired.has(p)) {
+        barrel.unobserve(p);
+        observedInstancePaths.delete(p);
+      }
+    }
+  };
 
   const applySketchFromSnapshot = (sketch: any) => {
     appController.setBarrelSketch(BARREL_SKETCH_ID, coerceSketch(sketch));
@@ -179,21 +210,17 @@ function connectBarrel(url: string) {
   // (Re)wire the bridge for the selected instance key. Registered as the
   // controller's barrel select handler, and also called for the initial pick.
   const wireInstance = (key: string) => {
-    if (currentKey === key && observedStatePath) {
+    const statePath = `/plugins/${key}/state`;
+    if (currentKey === key && observedInstancePaths.has(statePath)) {
       // Already wired — just refetch so the editor reflects latest.
-      barrel.get(`/plugins/${key}/state`);
+      barrel.get(statePath);
       return;
     }
     currentKey = key;
-    const statePath = `/plugins/${key}/state`;
     const sketchPath = `${statePath}/sketch`;
 
     // Move the active observation to this instance (precise gating).
-    if (observedStatePath && observedStatePath !== statePath) {
-      barrel.unobserve(observedStatePath);
-    }
-    barrel.observe(statePath);
-    observedStatePath = statePath;
+    reconcileObservations();
 
     // Register snapshot handlers once per key; they no-op once superseded.
     if (!handlersWired.has(key)) {
@@ -214,43 +241,46 @@ function connectBarrel(url: string) {
       barrel.patch(statePath, [{ op: 'replace', path: '/sketch', value: snapshot }]);
     });
 
-    // Trace controller → bridge preview-request relay for this instance.
-    let lastPushedRequestsJson: string | null = null;
-    appController.setBarrelPreviewPusher((tracePoints) => {
-      if (currentKey !== key) return;
-      const requests: Record<string, any> = {};
-      for (const tp of tracePoints) {
-        const target = tp.target;
-        let serialized: any = null;
-        if (target.type === 'sketch_output') {
-          serialized = { type: 'sketch_output', sketchId: target.sketchId };
-        } else if (target.type === 'chain_entry') {
-          serialized = {
-            type: 'chain_entry',
-            sketchId: target.sketchId,
-            colIdx: target.colIdx,
-            chainIdx: target.chainIdx,
-            side: target.side,
-          };
-        } else {
-          continue;  // plugin_output not yet supported in barrel mode
-        }
-        requests[tp.id] = {
-          target: serialized,
-          width:  tp.size?.width  ?? 0,
-          height: tp.size?.height ?? 0,
-        };
-      }
-      const json = JSON.stringify(requests);
-      if (json === lastPushedRequestsJson) return;
-      lastPushedRequestsJson = json;
-      barrel.patch(statePath, [{ op: 'add', path: '/preview_requests', value: requests }]);
-    });
-
-    // Fetch the newly selected instance's full state.
+    // Fetch the newly selected instance's full state, and re-flush the trace
+    // registrations — they haven't changed, but their preview requests now
+    // route to this instance (the pusher below keys them by currentKey).
     barrel.get(statePath);
+    traceController.requestFlush();
     console.log(`[barrel] editing instance ${key}`);
   };
+
+  // Trace controller → bridge preview-request relay. One global pusher for
+  // ALL instances: thumbnail registrations (id embeds the instance key) go to
+  // their own instance's /preview_requests; everything else (edit preview,
+  // chain-entry monitors) to the instance wired for editing. Instances whose
+  // requests all went away get one explicit `{}` push so the native side
+  // stops capturing.
+  const lastPushedRequests = new Map<string, string>();
+  appController.setBarrelPreviewPusher((tracePoints) => {
+    const groups = groupPreviewRequests(tracePoints, currentKey);
+
+    // Thumbnailed instances must be observed for the native watched-gate.
+    thumbKeys = new Set(
+      tracePoints.map((tp) => instanceKeyFromThumbTraceId(tp.id))
+        .filter((k): k is string => !!k));
+    reconcileObservations();
+
+    for (const key of [...lastPushedRequests.keys()]) {
+      if (!groups.has(key)) groups.set(key, {});
+    }
+    for (const [key, requests] of groups) {
+      const json = JSON.stringify(requests);
+      if (lastPushedRequests.get(key) === json) continue;
+      lastPushedRequests.set(key, json);
+      barrel.patch(`/plugins/${key}/state`,
+        [{ op: 'add', path: '/preview_requests', value: requests }]);
+    }
+    // A cleared instance needs no further pushes — forget it (its `{}` just
+    // went out; were it kept, the sweep above would re-add it every flush).
+    for (const [key, json] of [...lastPushedRequests]) {
+      if (json === '{}') lastPushedRequests.delete(key);
+    }
+  });
 
   // The controller drives instance selection (Organize tab + default pick);
   // it calls back here to rewire the transport.
@@ -273,7 +303,7 @@ function connectBarrel(url: string) {
   barrel.onSnapshot('/global/sidechannels', ingestSidechannels);
 
   // Binary preview frames — the controller decodes (NBPV v2) and drops any
-  // frame whose key isn't the selected instance.
+  // frame that is neither the selected instance's nor an instance thumbnail's.
   barrel.onBinaryFrame = (buf) => {
     void appController.ingestBarrelPreviewFrame(buf);
   };

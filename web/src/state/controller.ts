@@ -36,6 +36,7 @@ import {
   type PlaygroundInstanceRecord,
 } from './playground-store';
 import { PLAYGROUND_ID_PREFIX } from './types';
+import { instanceKeyFromThumbTraceId } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -1758,8 +1759,9 @@ export class AppController {
    *   bytes 12-13: u16 height
    *   bytes 14 ..: key (UTF-8), then traceId (UTF-8), then RGBA8 pixels
    *
-   * Frames whose key isn't the selected instance are dropped (another
-   * instance's preview). On success the decoded ImageBitmap lands at
+   * Frames whose key is neither the selected instance's nor an instance
+   * thumbnail's are dropped (another client's preview traffic). On success
+   * the decoded ImageBitmap lands at
    * `appState.local.engine.tracedFrames[traceId]`, which existing
    * texture-monitor autoruns already redraw from. Malformed frames are
    * dropped silently.
@@ -1782,9 +1784,12 @@ export class AppController {
     const pixelBytes = width * height * 4;
     if (buf.byteLength < headerEnd + pixelBytes) return;
     const key = new TextDecoder().decode(new Uint8Array(buf, 14, keyLen));
-    // Route: ignore frames for any instance other than the one being edited.
-    if (key !== appState.local.selectedBarrelKey) return;
     const traceId = new TextDecoder().decode(new Uint8Array(buf, keyEnd, idLen));
+    // Route: accept the edited instance's frames (edit preview, chain-entry
+    // monitors) and any instance's own Instances-tab thumbnail (its trace id
+    // embeds the key). Everything else is another client's preview traffic.
+    if (key !== appState.local.selectedBarrelKey &&
+        instanceKeyFromThumbTraceId(traceId) !== key) return;
     // ImageData requires its backing Uint8ClampedArray to span its own
     // buffer (byteOffset 0, full length). A subview over the incoming
     // ArrayBuffer would be cheaper but breaks the spec — so we copy
