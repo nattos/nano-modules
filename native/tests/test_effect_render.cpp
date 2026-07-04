@@ -2286,5 +2286,43 @@ TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][s
   REQUIRE(info.contains("3"));
   CHECK(info["3"]["writer"] == "writerA");
 
+  // 9) `send_in` override wire: a texture wired into the send's secondary
+  //    input is what gets PUBLISHED, while the send's own output stays the
+  //    chain passthrough. Chain: blue(solid) -> green(solid) -> send(ch 6,
+  //    wire blue.tex_out -> send_in). A's output = green (chain), the
+  //    channel = blue (override). Dropping the wire reverts to the chain.
+  auto sketchSend = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "source.solid_color", "instance_key": "ovr" },
+      { "module_type": "source.solid_color", "instance_key": "main" },
+      { "module_type": "util.sidechannel_out", "instance_key": "so2" }
+    ],
+    "instances": {
+      "ovr":  { "module_type": "source.solid_color", "state": { "color": [0.0, 0.0, 1.0, 1.0] } },
+      "main": { "module_type": "source.solid_color", "state": { "color": [0.0, 1.0, 0.0, 1.0] } },
+      "so2":  { "module_type": "util.sidechannel_out", "state": { "channel": 6 } }
+    },
+    "wires": [
+      { "id": "wovr", "src": { "instanceKey": "ovr", "field": "tex_out" },
+                      "dest": { "instanceKey": "so2", "field": "send_in" } }
+    ]
+  })JSON");
+  sketchB["instances"]["si"]["state"] = {{"channel", 6}};
+  int32_t sendOut = A.execute(sketchSend, inA, outA, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  bOut = runB(true);
+  CHECK(meanCh(sendOut, W, H, 1) > 250.0);  // A's own output: chain green…
+  CHECK(meanCh(sendOut, W, H, 2) < 4.0);    // …not the wired blue
+  CHECK(meanCh(bOut, W, H, 2) > 250.0);     // channel carries the wired blue…
+  CHECK(meanCh(bOut, W, H, 1) < 4.0);       // …not the chain green
+
+  // Wire removed → the publish reverts to the chain input (green).
+  sketchSend.erase("wires");
+  A.execute(sketchSend, inA, outA, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  bOut = runB(false);
+  CHECK(meanCh(bOut, W, H, 1) > 250.0);
+  CHECK(meanCh(bOut, W, H, 2) < 4.0);
+
   sidechannel_bus::resetForTest();  // release bus textures while backend lives
 }

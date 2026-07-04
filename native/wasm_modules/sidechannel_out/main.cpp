@@ -13,6 +13,12 @@
  * into the process-global sidechannel_bus keyed by the channel name resolved
  * from this instance's state). The fallback render below only matters on
  * hosts that don't service the bus — the image still passes through.
+ *
+ * The secondary `send_in` texture input overrides WHAT is sent: with a wire
+ * connected, the wired texture is published instead of the chain input. The
+ * main output stays the untouched chain passthrough either way, so a send can
+ * tap any producer's output without interrupting the image underneath it.
+ * (Also executor-resolved — see wireTextureForField in sketch_executor.cpp.)
  */
 
 #include <gpu.h>
@@ -61,7 +67,10 @@ void module_init() {
     "**Try:** send a deck's output to channel 1 and receive it in another "
     "instance to composite decks across Resolume layers. It's up to you to "
     "remember what each channel carries — name a custom channel if numbers "
-    "get confusing.");
+    "get confusing.\n\n"
+    "Wire a texture into the **Send** input to override what is sent: the "
+    "wired image is published instead of the chain input, while the chain "
+    "image still passes through untouched underneath.");
   schema.selectField("channel", 1, state::PrimaryInput, {
         {"1", 1}, {"2", 2}, {"3", 3}, {"4", 4},
         {"5", 5}, {"6", 6}, {"7", 7}, {"8", 8},
@@ -71,6 +80,10 @@ void module_init() {
       .textField("channel_name", "", state::PrimaryInput)
       .label("Custom Name", "Name")
       .textureField("tex_in",  state::PrimaryInput)
+      // Optional override: a wire here replaces the chain input as the
+      // published texture (executor-resolved; the effect never reads it).
+      .textureField("send_in", state::SecondaryInput)
+      .label("Send Override", "Send")
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::TimeIndependent);
   state::init("util.sidechannel_out", {1, 0, 1}, schema);

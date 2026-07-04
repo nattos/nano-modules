@@ -1167,10 +1167,22 @@ int32_t SketchExecutor::execute(
       // WRITE: publish this stage's input onto the channel, then fall through
       // — the effect is an identity passthrough, so the identity skip below
       // aliases input→output with no further GPU work beyond the bus copy.
+      // (A wired entry has taps, so it takes the full render path instead of
+      // the alias — the effect's render is still just the in→out copy.)
       if (mt == sidechannel_bus::kOutModuleType) {
         const std::string ch = sidechannelName(instances, instKey);
-        if (!ch.empty() && colInput > 0) {
-          sidechannel_bus::publish(ch.c_str(), colInput, W, H, busTag_.c_str());
+        if (!ch.empty()) {
+          // A texture wired into the secondary `send_in` input overrides WHAT
+          // is published; the stage output stays the chain passthrough either
+          // way. Resolved straight from the rails here — the stage's own tap
+          // application runs later, on the render path, and same-frame rails
+          // from earlier stages are already captured.
+          int32_t src = wireTextureForField(entry, "send_in",
+                                            railsById, railTextures);
+          if (src <= 0) src = colInput;
+          if (src > 0) {
+            sidechannel_bus::publish(ch.c_str(), src, W, H, busTag_.c_str());
+          }
         }
       }
       // READ: REPLACE semantics — the stage output IS the channel texture
@@ -1905,6 +1917,38 @@ void SketchExecutor::applyReadTaps(
     }
     inst.setFieldConnected(fieldPath, true, false);
   }
+}
+
+int32_t SketchExecutor::wireTextureForField(
+    const json& entry,
+    const char* fieldPath,
+    const std::unordered_map<std::string, json>& railsById,
+    const std::unordered_map<std::string,
+      std::unordered_map<std::string, int32_t>>& railTextures) {
+  if (!entry.contains("taps") || !entry["taps"].is_array()) return -1;
+  for (const auto& tap : entry["taps"]) {
+    if (tap.value("direction", std::string()) != "read") continue;
+    if (tap.value("fieldPath", std::string()) != fieldPath) continue;
+    const std::string railId = tap.value("railId", std::string());
+    auto railIt = railsById.find(railId);
+    if (railIt == railsById.end()) continue;
+    // Delayed (back-edge) wires read last frame's retained copy — same
+    // source selection as applyReadTaps.
+    const bool delayed = tap.value("delayed", false);
+    const auto& src = delayed ? delayedRailTextures_ : railTextures;
+    auto texIt = src.find(railId);
+    if (texIt == src.end()) continue;
+    // First texture leaf wins (a plain texture rail has one, the "" leaf).
+    int32_t found = -1;
+    forEachRailLeafTexture(railIt->second.value("dataType", json()),
+        [&](const std::string& leaf) {
+          if (found > 0) return;
+          auto lit = texIt->second.find(leaf);
+          if (lit != texIt->second.end() && lit->second > 0) found = lit->second;
+        });
+    if (found > 0) return found;
+  }
+  return -1;
 }
 
 void SketchExecutor::setAutomation(const json& entries) {

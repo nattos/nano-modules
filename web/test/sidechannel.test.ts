@@ -96,6 +96,42 @@ describe('sidechannel textures across playground instances', () => {
     expect(options).toContain('Custom');
     await page.evaluate(`window.appController.select(null)`);
 
+    // Wire a texture into the send's secondary `send_in` input: a blue solid
+    // prepended to A's chain (the green solid after it still owns the chain
+    // image) wired into the send. The OVERRIDE is what gets published — B
+    // turns blue — while A's chain output stays green (passthrough).
+    await page.evaluate(`(() => {
+      const ac = window.appController;
+      ac.mutate('wire send override', d => {
+        const sk = d.sketches['${ids.a}'];
+        sk.chain.unshift(
+          { type: 'module', module_type: 'source.solid_color', instance_key: 'blue@1' });
+        sk.instances['blue@1'] =
+          { module_type: 'source.solid_color', state: { color: [0.1, 0.1, 0.9, 1] } };
+        sk.wires.push({ id: 'wovr',
+          src:  { instanceKey: 'blue@1', field: 'tex_out' },
+          dest: { instanceKey: 'send@1', field: 'send_in' } });
+      });
+    })()`);
+    await new Promise(r => setTimeout(r, 2000));
+    const overridden = await probe();
+    expect(overridden).not.toBeNull();
+    expect(overridden!.b - overridden!.g).toBeGreaterThan(60);   // wired blue arrived
+    expect(overridden!.b - overridden!.r).toBeGreaterThan(60);
+
+    // Drop the wire → the publish reverts to the chain input (green).
+    await page.evaluate(`(() => {
+      const ac = window.appController;
+      ac.mutate('unwire send override', d => {
+        const sk = d.sketches['${ids.a}'];
+        sk.wires = sk.wires.filter(w => w.id !== 'wovr');
+      });
+    })()`);
+    await new Promise(r => setTimeout(r, 2000));
+    const reverted = await probe();
+    expect(reverted).not.toBeNull();
+    expect(reverted!.g - reverted!.b).toBeGreaterThan(60);
+
     // Remove the sender stage from A → the channel goes stale → B transparent
     // (checkerboard: no green dominance).
     await page.evaluate(`(() => {

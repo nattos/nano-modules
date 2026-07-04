@@ -487,6 +487,20 @@ class SketchExecutor {
                   const nlohmann::json& prevState,
                   const nlohmann::json& state);
 
+  // Resolve the texture a read-tap wire delivers onto `fieldPath` of this
+  // entry: the first texture leaf of the first matching tap's rail, or -1
+  // when nothing is wired / the rail carries no texture this frame. Delayed
+  // (back-edge) taps read the 1-frame retained copies. Mirrors applyReadTaps'
+  // texture-leaf resolution for callers that need a wired texture OUTSIDE the
+  // stage's own tap application — the sidechannel send servicing, which
+  // publishes before the render path runs.
+  int32_t wireTextureForField(
+      const nlohmann::json& entry,
+      const char* fieldPath,
+      const std::unordered_map<std::string, nlohmann::json>& railsById,
+      const std::unordered_map<std::string,
+        std::unordered_map<std::string, int32_t>>& railTextures);
+
   void applyReadTaps(
       int32_t inst,
       const nlohmann::json& entry,
