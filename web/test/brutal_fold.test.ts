@@ -209,19 +209,19 @@ describe('source.brutal_fold E2E', () => {
     still.phases[1].trace('out').expectSameAs(still.phases[0].trace('out'), 2); // frozen → identical
   });
 
-  // A cell with a scored, non-poppy key moment (peak ≈ 0.69) at the liveliest z
-  // layer, so the analyzed window animates strongly across its span. The params
-  // snap to grid cell (order=gi3, complexity=gj0, liveliness=z3).
-  const KM_CELL = { complexity: 0.0, order: 0.5, liveliness: 1.0, anim_amount: 1.5 };
+  // Key-moment mode renders from the SEPARATE 32×32 KM atlas (its own scenes +
+  // curated windows). This XY snaps to a scored, non-poppy cell (peak ≈ 0.33)
+  // that animates across its window. liveliness is ignored in KM mode.
+  const KM_CELL = { complexity: 0.548, order: 0.129, anim_amount: 1.5 };
 
-  it('key moment mode scrubs the analyzed window (Time mode)', async () => {
+  it('key moment mode scrubs the curated window (Time mode)', async () => {
     // Time mode maps km_time directly onto the window playhead (0 = window start,
     // 1 = settled on the centre peak) — deterministic, no dt. The two ends of the
     // window render different frames.
     const start = await render('bf_km_t0',
-      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 0.0, time_speed: 0.0 }, 'bf_km_t0');
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 0.0 }, 'bf_km_t0');
     const peak = await render('bf_km_t1',
-      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 1.0, time_speed: 0.0 }, 'bf_km_t1');
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 1.0 }, 'bf_km_t1');
     start.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
     peak.trace('out').expectDifferentFrom(start.trace('out'), 20);
 
@@ -230,9 +230,28 @@ describe('source.brutal_fold E2E', () => {
     expect(bf.io.find((io: any) => io.name === 'km_phase' && io.kind === 2)).toBeTruthy();
   });
 
+  it('key moment mode renders a different scene than continuous mode', async () => {
+    // Same XY, KM off vs on → the KM atlas has different scenes, so the frame
+    // changes (proves the atlas swap, not just a time shift).
+    const cont = await render('bf_km_off', { ...KM_CELL, key_moment: false, time_speed: 0 }, 'bf_km_off');
+    const kmf = await render('bf_km_on',
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 0.8 }, 'bf_km_on');
+    kmf.trace('out').expectDifferentFrom(cont.trace('out'), 30);
+  });
+
+  it('sky threshold snaps away from an unreachable (low-sky) cell', async () => {
+    // This XY lands on a low-sky cell; raising the threshold drops it and snaps to
+    // the nearest reachable cell, changing the rendered scene.
+    const base = { complexity: 0.548, order: 0.839, key_moment: true, km_time_mode: 1, km_time: 0.8 };
+    const keep = await render('bf_sky0', { ...base, sky_threshold: 0.0 }, 'bf_sky0');
+    const snap = await render('bf_sky1', { ...base, sky_threshold: 0.5 }, 'bf_sky1');
+    snap.trace('out').expectDifferentFrom(keep.trace('out'), 20);
+  });
+
   it('key moment Loop mode advances the playhead over time', async () => {
-    // Loop replays the window continuously at the base loop rate, so across a span
-    // of frames (real dt, like the autopilot test) the output moves.
+    // Loop replays the window over km_duration seconds, so across a span of frames
+    // (real dt, like the autopilot test) the output moves. Short duration → the
+    // window advances clearly within the captured frames.
     const r = await runEngineMultiPhaseTest({
       width: 96, height: 96,
       modules: ['com.nano.testonly', 'com.nano.nano'],
@@ -241,7 +260,7 @@ describe('source.brutal_fold E2E', () => {
         {
           commands: [
             { type: 'createSketch', sketchId: 'bf_km_loop',
-              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 2, time_speed: 1.0 }) },
+              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 2, km_duration: 0.4 }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'bf_km_loop' } },
             ]},
@@ -266,7 +285,7 @@ describe('source.brutal_fold E2E', () => {
         {
           commands: [
             { type: 'createSketch', sketchId: 'bf_km_trig',
-              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 0, time_speed: 1.0 }) },
+              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 0, km_duration: 0.4 }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'bf_km_trig' } },
             ]},

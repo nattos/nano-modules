@@ -73,6 +73,49 @@ static const float* const B_SCENE_A[SCN] = {
 // Animation script channels (structure 1 only): h_amp, h_om, h_psi, phase_drift.
 static const float* const SCRIPT_A[4] = { BF_H_AMP, BF_H_OM, BF_H_PSI, BF_PHASE_DRIFT };
 
+// Key-moment atlas (BFKM_*) — its own scenes, XY only (NZ=1), curated windows + sky.
+static const float* const KM_TERM_A[8] = {
+  BFKM_THETA, BFKM_MTHETA, BFKM_SHEAR, BFKM_FREQ, BFKM_PHASE, BFKM_H, BFKM_AMP, BFKM_MIX };
+static const float* const KM_B_TERM_A[8] = {
+  BFKM_B_THETA, BFKM_B_MTHETA, BFKM_B_SHEAR, BFKM_B_FREQ, BFKM_B_PHASE, BFKM_B_H, BFKM_B_AMP, BFKM_B_MIX };
+static const float* const KM_SCENE_A[SCN] = {
+  BFKM_SEV, BFKM_GX, BFKM_GY, BFKM_FORM_SCALE, BFKM_THRESH, BFKM_BACK_LEN, BFKM_BACK_ANG, BFKM_EXTRUDE,
+  BFKM_LAYERS, BFKM_SEP, BFKM_FRONT_DETAIL, BFKM_WIN_DARK, BFKM_FOG, BFKM_FACE, BFKM_SKY_VAL, BFKM_DC,
+  BFKM_BOLD_GAIN, BFKM_ROT, BFKM_SLEW };
+static const float* const KM_B_SCENE_A[SCN] = {
+  BFKM_B_SEV, BFKM_B_GX, BFKM_B_GY, BFKM_B_FORM_SCALE, BFKM_B_THRESH, BFKM_B_BACK_LEN, BFKM_B_BACK_ANG, BFKM_B_EXTRUDE,
+  BFKM_B_LAYERS, BFKM_B_SEP, BFKM_B_FRONT_DETAIL, BFKM_B_WIN_DARK, BFKM_B_FOG, BFKM_B_FACE, BFKM_B_SKY_VAL, BFKM_B_DC,
+  BFKM_B_BOLD_GAIN, BFKM_B_ROT, BFKM_B_SLEW };
+static const float* const KM_SCRIPT_A[4] = { BFKM_H_AMP, BFKM_H_OM, BFKM_H_PSI, BFKM_PHASE_DRIFT };
+
+// One resolvable control surface. build_params/build_struct read through this so
+// the same resolve code drives either the explore atlas (continuous loop) or the
+// key-moment atlas (curated inflow→peak windows + sky reachability). km_* is null
+// on the explore atlas (no windows).
+struct AtlasRef {
+  int grid, nz, n_terms, co_fold;
+  float h_act;
+  const float* const* term;
+  const float* const* b_term;
+  const float* const* scene;
+  const float* const* b_scene;
+  const float* const* script;
+  const float* b_tilt;
+  const float* km_t1;
+  const float* km_score;
+  const float* km_covmax;
+  const float* km_sky;
+};
+
+static const AtlasRef kAtlasExplore = {
+  BF_GRID, BF_NZ, BF_NTERMS, BF_CO_FOLD, BF_H_ACT,
+  TERM_A, B_TERM_A, SCENE_A, B_SCENE_A, SCRIPT_A, BF_B_TILT,
+  nullptr, nullptr, nullptr, nullptr };
+static const AtlasRef kAtlasKm = {
+  BFKM_GRID, BFKM_NZ, BFKM_NTERMS, BFKM_CO_FOLD, BFKM_H_ACT,
+  KM_TERM_A, KM_B_TERM_A, KM_SCENE_A, KM_B_SCENE_A, KM_SCRIPT_A, BFKM_B_TILT,
+  BFKM_T1, BFKM_SCORE, BFKM_COVMAX, BFKM_SKY };
+
 // Speed mapping: [0,1] squared onto a low actual max (the effect reads best slow).
 static constexpr float kTimeMax = 1.0f;    // loops/sec at time_speed=1 (~1 s min loop)
 static constexpr float kApMin = 0.05f;     // orbit rad/sec floor
@@ -272,10 +315,13 @@ struct State {
   float skip_rate         = 0.5f;   // jog strength (time + orbit advance)
   bool  skip_autopilot    = true;   // also accelerate/snap the orbit (autopilot only)
 
-  // --- Key moment: play the analyzed inflow→peak window instead of the full loop ---
-  bool  key_moment        = false;  // master enable
+  // --- Key moment: play a curated inflow→peak window from the KM atlas ---
+  bool  key_moment        = false;  // master enable (swaps to the KM atlas)
   int   km_time_mode      = 2;      // 0 = Trigger (one-shot) 1 = Time (manual) 2 = Loop
   float km_time           = 0.0f;   // Time-mode manual playhead [0,1] over the window
+  float km_duration       = 2.0f;   // seconds to play the window (Trigger/Loop)
+  float km_ease           = 1.5f;   // ease-out toward the settled peak (0 = linear)
+  float sky_threshold     = 0.0f;   // reachability filter: drop cells emptier than this
   float km_trigger_prev   = 0.0f;   // rising-edge state for the km_trigger event
 
   // --- Internal clocks (advanced in tick) ---
@@ -311,25 +357,38 @@ struct State {
 
 static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty,
                              bool key_moment, int km_time_mode) {
-  // Key moment: the time-mode picker + its mode-specific control (a manual Time
-  // scrub for Time mode, a Trigger button for Trigger/Loop).
-  state::setFieldHidden("km_time_mode", !key_moment);
-  state::setFieldHidden("km_time",      !(key_moment && km_time_mode == 1));   // Time
-  state::setFieldHidden("km_trigger",   !(key_moment && km_time_mode != 1));   // Trigger/Loop
+  // Key moment: mode picker + its mode-specific control (a manual Time scrub for
+  // Time mode, a Duration + Trigger for Trigger/Loop). Ease + Sky Threshold apply
+  // whenever it's on. All KM controls hide in continuous mode.
+  state::setFieldHidden("km_time_mode",  !key_moment);
+  state::setFieldHidden("km_time",       !(key_moment && km_time_mode == 1));   // Time
+  state::setFieldHidden("km_duration",   !(key_moment && km_time_mode != 1));   // Trigger/Loop
+  state::setFieldHidden("km_trigger",    !(key_moment && km_time_mode != 1));   // Trigger/Loop
+  state::setFieldHidden("km_ease",       !key_moment);
+  state::setFieldHidden("sky_threshold", !key_moment);
+  // Continuous-only controls that don't apply to the KM atlas (its own scenes,
+  // XY-only, curated window, single cell). Hidden while key-moment mode is on.
+  state::setFieldHidden("liveliness",   key_moment);   // KM atlas has no z axis
+  state::setFieldHidden("time_speed",   key_moment);   // superseded by km_duration
+  state::setFieldHidden("ease",         key_moment);   // superseded by km_ease
+  state::setFieldHidden("interp_cells", key_moment);   // KM mode snaps to one cell
+  // Skip-empty jogs the continuous loop clock — inert (and hidden) in KM mode.
+  state::setFieldHidden("skip_empty",   key_moment);
+  bool skip = skip_empty && !key_moment;
+  state::setFieldHidden("skip_thresh",     !skip);
+  state::setFieldHidden("skip_w_var",      !skip);
+  state::setFieldHidden("skip_w_edge",     !skip);
+  state::setFieldHidden("skip_w_motion",   !skip);
+  state::setFieldHidden("skip_debug",      !skip);
+  state::setFieldHidden("skip_recover",    !skip);
+  state::setFieldHidden("skip_rate",       !skip);
   state::setFieldHidden("ap_speed",       !autopilot);
   state::setFieldHidden("ap_snap",        !autopilot);
   state::setFieldHidden("ap_hold_period", !(autopilot && ap_snap));
   state::setFieldHidden("ap_hold_jitter", !(autopilot && ap_snap));
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
-  state::setFieldHidden("skip_thresh",     !skip_empty);
-  state::setFieldHidden("skip_w_var",      !skip_empty);
-  state::setFieldHidden("skip_w_edge",     !skip_empty);
-  state::setFieldHidden("skip_w_motion",   !skip_empty);
-  state::setFieldHidden("skip_debug",      !skip_empty);
-  state::setFieldHidden("skip_recover",    !skip_empty);
-  state::setFieldHidden("skip_rate",       !skip_empty);
   // Jogging the orbit only means anything under autopilot.
-  state::setFieldHidden("skip_autopilot",  !(skip_empty && autopilot));
+  state::setFieldHidden("skip_autopilot",  !(skip && autopilot));
 }
 
 // Static (self-less) visibility evaluator — pure over a candidate state.
@@ -409,11 +468,24 @@ void module_init() {
       .boolField("key_moment", false, state::PrimaryInput).label("Key Moment", "KM")
       .selectField("km_time_mode", 2, state::PrimaryInput,
                    {{"Trigger", 0}, {"Time", 1}, {"Loop", 2}}).label("Time Mode", "Mode")
+      .floatField("km_duration", 2.0f, 0.1f, 10.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.05f, /*units=*/"s",
+                  "How long the window takes to play (Trigger/Loop), in seconds.")
+                  .label("Duration", "Dur")
+      .floatField("km_ease", 1.5f, 0.0f, 4.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.05f, /*units=*/nullptr,
+                  "Ease-out toward the settled peak: 0 = linear, higher = lingers longer "
+                  "on the framed moment at the end of the window.").label("Ease", "Ease")
       .floatField("km_time", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
                   nullptr, /*step=*/0.005f, /*units=*/nullptr,
                   "Manual playhead over the key-moment window (Time mode): 0 = window "
                   "start, 1 = settled on the centre peak.").label("Time", "Time")
       .eventField("km_trigger", state::PrimaryInput)
+      .floatField("sky_threshold", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  "Reachability filter: drop cells whose settled frame shows less than this "
+                  "fraction of empty sky (less 'framed'), snapping to the nearest that passes. "
+                  "0 keeps every cell.").label("Sky Threshold", "Sky")
       // Broadcast: the live playhead [0,1] within the window, for the editor readout.
       .floatField("km_phase", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- Atmosphere / colour grade ---
@@ -674,18 +746,27 @@ static inline void orbit_xy(float orbit, float& ox, float& oy) {
   oy = clampf(0.5f + kApA * std::sin(a1) + kApB * std::sin(a2), 0.03f, 0.97f);
 }
 
-// Nearest-cell key-moment window for the snapped (eff_x, eff_y, liveliness) cell.
-// Returns the center-peak phase t1; sets *valid when the cell has a usable window
-// (scored, and its played span isn't too poppy). Mirrors field.nearestCell + the
-// score/covmax gate in the web testbed (main.ts).
-static float km_peak_for(const State* s, bool* valid) {
-  const int G = BF_GRID, Z = BF_NZ;
+// Resolve the KM atlas cell for the current XY: snap to the nearest grid cell,
+// then (if a sky threshold is set) hop to the nearest cell whose settled frame is
+// "framed" enough — sky fraction >= threshold. Mirrors field.nearestCell +
+// nearestAboveSky in the web testbed. Writes the snapped (gi, gj).
+static void km_resolve(const AtlasRef& A, const State* s, int* gi_out, int* gj_out) {
+  const int G = A.grid;
   int gj = clampi((int)std::lround(clampf(s->eff_x, 0.0f, 1.0f) * (G - 1)), 0, G - 1);   // col = complexity
   int gi = clampi((int)std::lround(clampf(s->eff_y, 0.0f, 1.0f) * (G - 1)), 0, G - 1);   // row = order
-  int z  = clampi((int)std::lround(clampf(s->liveliness, 0.0f, 1.0f) * (Z - 1)), 0, Z - 1);
-  int k = (gi * G + gj) * Z + z;
-  *valid = (BF_KM_SCORE[k] > 0.0f) && (BF_KM_COVMAX[k] <= kKmMaxCov);
-  return BF_KM_T1[k];
+  float thr = s->sky_threshold;
+  if (thr > 0.0f && A.km_sky && A.km_sky[gi * G + gj] < thr) {
+    int best = gi * G + gj; float bestD = 1e30f;
+    for (int i = 0; i < G; i++) for (int j = 0; j < G; j++) {
+      int c = i * G + j;
+      if (A.km_sky[c] >= thr) {
+        float d = (float)((i - gi) * (i - gi) + (j - gj) * (j - gj));
+        if (d < bestD) { bestD = d; best = c; }
+      }
+    }
+    gi = best / G; gj = best % G;
+  }
+  *gi_out = gi; *gj_out = gj;
 }
 
 // easeOut on the window playhead: slow toward the settled peak. Mirrors main.ts —
@@ -716,7 +797,7 @@ void tick(void* self, double dt) {
   // mode, fires a one-shot hop). `content` lags a frame — that's fine (the ramp
   // is smooth and hysteretic, and it reuses render()'s field scan for free).
   float skip_e = 0.0f;
-  if (s->skip_empty) {
+  if (s->skip_empty && !s->key_moment) {   // KM windows are curated — no jog
     // Prefer the GPU flatness metric (Sobel/variance over the REAL rendered
     // frame, computed by last frame's edge pass) once a readback has arrived.
     // Until then s->content holds the CPU proxy from bf_build_params. Poll before
@@ -811,14 +892,11 @@ void tick(void* self, double dt) {
     s->ap_jump_pending = false;
   }
 
-  // --- Key-moment playhead. Loop/Trigger accumulate km_u at the same real-time
-  //     rate as the underlying loop (so the window plays at natural speed); Time
-  //     reads the manual km_time. The window length is kKmSpan of the loop for a
-  //     scored cell, else the full loop (fallback), which sets the playhead rate. ---
+  // --- Key-moment playhead. Loop/Trigger advance km_u 0→1 over km_duration
+  //     seconds; Time reads the manual km_time. (The scene cell + window are
+  //     resolved in render from the KM atlas.) ---
   if (s->key_moment) {
-    bool kmv; km_peak_for(s, &kmv);
-    float span_len = kmv ? kKmSpan : 1.0f;
-    float rate = span_len > 1e-6f ? time_actual / span_len : 0.0f;   // playhead units/sec
+    float rate = 1.0f / std::max(s->km_duration, 0.05f);   // playhead units/sec
     if (s->km_time_mode == 1) {                       // Time — manual scrub
       s->km_u = clampf(s->km_time, 0.0f, 1.0f);
     } else if (s->km_time_mode == 2) {                // Loop — continuous replay
@@ -957,6 +1035,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "key_moment")) { bool v = state::patchFloat(i) != 0.0f; if (v != s->key_moment) { s->key_moment = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "km_time_mode")) { int v = state::patchInt(i); if (v != s->km_time_mode) { s->km_time_mode = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "km_time")) s->km_time = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "km_duration")) s->km_duration = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "km_ease")) s->km_ease = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "sky_threshold")) s->sky_threshold = state::patchFloat(i);
     else if (state::pathIs(path, plen, "km_trigger")) {
       float v = state::patchFloat(i);
       if (v != 0.0f && s->km_trigger_prev == 0.0f) { s->km_u = 0.0f; s->km_playing = true; }  // rising edge → (re)start
@@ -970,8 +1051,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
 struct Corners { int idx[4]; float w[4]; };
 
-static Corners bf_corners(float sx, float sy, bool interp) {
-  const int G = BF_GRID;
+static Corners bf_corners(const AtlasRef& A, float sx, float sy, bool interp) {
+  const int G = A.grid;
   sx = clampf(sx, 0.0f, 1.0f); sy = clampf(sy, 0.0f, 1.0f);
   float fx = sx * (G - 1), fy = sy * (G - 1);
   int x0, x1, y0, y1; float tx, ty;
@@ -1121,12 +1202,12 @@ static float bf_content(const float* P, bool on2, float edge_bias) {
   return lerpf(sd, edge, clampf(edge_bias, 0.0f, 1.0f));
 }
 
-static void bf_build_struct(State* s, float* P, int base, bool useB, bool animate,
-                            float z, float scaleMul, float extrudeMul, float tau,
+static void bf_build_struct(const AtlasRef& A, State* s, float* P, int base, bool useB,
+                            bool animate, float z, float scaleMul, float extrudeMul, float tau,
                             const Corners& c) {
-  const int B = BF_NTERMS, Z = BF_NZ;
-  const float* const* TA = useB ? B_TERM_A : TERM_A;
-  const float* const* SA = useB ? B_SCENE_A : SCENE_A;
+  const int B = A.n_terms, Z = A.nz;
+  const float* const* TA = useB ? A.b_term : A.term;
+  const float* const* SA = useB ? A.b_scene : A.scene;
 
   // interpolate term params
   for (int i = 0; i < B; i++) {
@@ -1165,7 +1246,7 @@ static void bf_build_struct(State* s, float* P, int base, bool useB, bool animat
       // sc: 0=h_amp, 1=h_om, 2=h_psi, 3=phase_drift (trilinear over x,y,z)
       float sc[4];
       for (int ch = 0; ch < 4; ch++) {
-        const float* src = SCRIPT_A[ch];
+        const float* src = A.script[ch];
         float v0 = 0, v1 = 0;
         for (int cc = 0; cc < 4; cc++) {
           v0 += c.w[cc] * src[(c.idx[cc] * Z + z0) * B + i];
@@ -1187,18 +1268,23 @@ static void bf_build_struct(State* s, float* P, int base, bool useB, bool animat
 
 // Fill the uniform buffer's P + header for the current frame.
 static void bf_build_params(State* s, float sx, float sy, float t, Uniforms& u) {
+  const AtlasRef& A = s->key_moment ? kAtlasKm : kAtlasExplore;
   float* P = u.P;
   bool interp = s->interp_cells;
+  float z = s->liveliness;
   float tau;
   if (s->key_moment) {
-    // Key-moment playback: snap to the nearest cell (interp off, so the played
-    // window matches the rendered cell) and map the eased playhead into the
-    // window's fixed span anchored on the center peak. Cells with no usable
-    // window fall back to the full loop (linear playhead → still seamless).
-    interp = false;
-    bool kmv; float t1 = km_peak_for(s, &kmv);
+    // Key-moment mode: resolve the KM atlas cell (snap + sky-threshold reachability),
+    // render that single cell (interp off) at z=0 (the KM atlas is XY-only), and map
+    // the eased playhead into the window's fixed span anchored on the centre peak.
+    // Cells with no usable window fall back to the full loop (linear → seamless).
+    interp = false; z = 0.0f;
+    int gi, gj; km_resolve(A, s, &gi, &gj);
+    sx = (float)gj / (A.grid - 1); sy = (float)gi / (A.grid - 1);
+    int k = (gi * A.grid + gj) * A.nz;   // nz = 1 → z index 0
+    bool kmv = A.km_score && A.km_score[k] > 0.0f && A.km_covmax[k] <= kKmMaxCov;
     if (kmv) {
-      float tp = (t1 - kKmPre) + km_ease_out(s->km_u, s->ease) * kKmSpan;
+      float tp = (A.km_t1[k] - kKmPre) + km_ease_out(s->km_u, s->km_ease) * kKmSpan;
       tau = tp - std::floor(tp);
     } else {
       tau = s->km_u;
@@ -1208,7 +1294,7 @@ static void bf_build_params(State* s, float sx, float sy, float t, Uniforms& u) 
     // (τ(0)=0, τ(1)=1) so integer omega/drift keep the loop closed.
     tau = t - (s->ease / kTau) * std::sin(kTau * t);
   }
-  Corners c = bf_corners(sx, sy, interp);
+  Corners c = bf_corners(A, sx, sy, interp);
 
   // Inverted: higher `scale` → smaller form_scale → fewer cells per screen →
   // bigger features → "zoom IN". (scale=1 is unchanged; balance is the relative
@@ -1216,22 +1302,22 @@ static void bf_build_params(State* s, float sx, float sy, float t, Uniforms& u) 
   float inv = 1.0f / std::max(s->scale, 1e-3f);
   float scaleA = inv * std::pow(2.0f, s->balance);
   float scaleB = inv * std::pow(2.0f, -s->balance);
-  bf_build_struct(s, P, 0, /*useB=*/false, /*animate=*/true, s->liveliness, scaleA, s->extrude, tau, c);
+  bf_build_struct(A, s, P, 0, /*useB=*/false, /*animate=*/true, z, scaleA, s->extrude, tau, c);
 
   float tilt = 0;
-  bool on2 = s->second_structure && BF_CO_FOLD;
+  bool on2 = s->second_structure && A.co_fold;
   if (on2) {
-    bf_build_struct(s, P, STR, /*useB=*/true, /*animate=*/false, 0.0f, scaleB, s->extrude, tau, c);
-    const float* bt = BF_B_TILT;
+    bf_build_struct(A, s, P, STR, /*useB=*/true, /*animate=*/false, 0.0f, scaleB, s->extrude, tau, c);
+    const float* bt = A.b_tilt;
     for (int cc = 0; cc < 4; cc++) tilt += c.w[cc] * bt[c.idx[cc]];
   }
 
-  u.n_terms = (float)BF_NTERMS;
+  u.n_terms = (float)A.n_terms;
   u.sb = (float)SB1;
   u.str = (float)STR;
   u.tilt = tilt;
   u.enable2 = on2 ? 1.0f : 0.0f;
-  u.h_act = BF_H_ACT;
+  u.h_act = A.h_act;
 
   u.diff_hue_lo = s->diff_hue_lo; u.diff_hue_mid = s->diff_hue_mid;
   u.diff_hue_hi = s->diff_hue_hi; u.diff_sat = s->diff_sat;
@@ -1260,7 +1346,7 @@ static void bf_build_params(State* s, float sx, float sy, float t, Uniforms& u) 
   // CPU flatness proxy — used only as the WARMUP fallback until the GPU edge
   // readback arrives (then tick() drives s->content from the real rendered
   // frame). Off → a high "clearly not flat" so the detector never engages.
-  if (!s->skip_empty) {
+  if (!s->skip_empty || s->key_moment) {
     s->content = 1.0f;
   } else if (!s->skip_gpu_ready) {
     s->content = bf_content(P, on2, s->skip_w_edge);
@@ -1291,7 +1377,7 @@ void render(void* self, int vp_w, int vp_h) {
   // stats_buf, then request an async readback. Only when the detector is on.
   // Reset runs BEFORE the pass; the tick() poll reads last frame's stats before
   // this reset each frame, so the CPU zero-write is race-free (plan Risk #2).
-  if (s->skip_empty) {
+  if (s->skip_empty && !s->key_moment) {
     int32_t zeros[kStatsInts] = {};
     s->stats_buf.write(zeros, kStatsInts);
     auto ep = gpu::ComputePass::begin();

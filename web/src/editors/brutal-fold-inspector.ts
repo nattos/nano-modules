@@ -26,6 +26,7 @@ import '../widgets/scalar-slider';
 import '../widgets/field-toggle';
 import '../widgets/field-trigger';
 import '../widgets/field-select';
+import '../widgets/field-tab-bar';
 import '../widgets/help-slot';
 import './brutal-fold-previews';
 
@@ -53,6 +54,9 @@ export class BrutalFoldXyPad extends MobxLitElement implements FieldEditorElemen
   private dragging = false;
   private dragX = 0;
   private dragY = 0;
+  // KM atlas reachability data (grid + per-cell sky) for the grayed-cell overlay.
+  private kmSky: { grid: number; sky: Float32Array } | null = null;
+  private lastGridKey = '';
   // complexity + order must ride in ONE long edit — two separate continuous
   // edits cancel each other (the history has a single active long edit), which
   // is why a naïve two-edit pad snaps one axis back on release.
@@ -71,6 +75,10 @@ export class BrutalFoldXyPad extends MobxLitElement implements FieldEditorElemen
       background-color: #15131a;
       cursor: crosshair; touch-action: none; user-select: none;
     }
+    .grid {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      pointer-events: none; image-rendering: pixelated; border-radius: 1px;
+    }
     .handle {
       position: absolute; width: 14px; height: 14px; border-radius: 50%;
       border: 2px solid #fff; box-shadow: 0 0 0 1px #000, 0 0 6px #000;
@@ -86,6 +94,12 @@ export class BrutalFoldXyPad extends MobxLitElement implements FieldEditorElemen
     super.connectedCallback();
     const tick = () => { this.rafId = requestAnimationFrame(tick); this.syncHandle(); };
     this.rafId = requestAnimationFrame(tick);
+    // KM atlas sky data (for the reachability overlay). Loaded once, best-effort.
+    if (!this.kmSky) {
+      fetch('/brutal-fold-km.json').then((r) => r.ok ? r.json() : null).then((d) => {
+        if (d && Array.isArray(d.sky)) this.kmSky = { grid: d.grid, sky: Float32Array.from(d.sky) };
+      }).catch(() => {});
+    }
   }
   disconnectedCallback() {
     super.disconnectedCallback();
@@ -93,22 +107,51 @@ export class BrutalFoldXyPad extends MobxLitElement implements FieldEditorElemen
     this.rafId = 0;
   }
 
-  // Park the handle at the live autopilot position (or, mid-drag, at the cursor).
+  // Per-frame: park the handle, swap the backdrop to the KM montage in key-moment
+  // mode, and gray out cells the sky-threshold filter makes unreachable.
   private syncHandle() {
+    if (!this.binding) return;
+    const b = this.binding;
     const handle = this.renderRoot?.querySelector('.handle') as HTMLElement | null;
-    if (!handle || !this.binding) return;
-    let x: number, y: number;
-    if (this.dragging) {
-      x = this.dragX; y = this.dragY;
-    } else {
-      const b = this.binding;
-      const ax = b.getValue('autopilot_x');
-      const ay = b.getValue('autopilot_y');
-      x = clamp01(typeof ax === 'number' ? ax : (b.getValue('complexity') ?? 0.6));
-      y = clamp01(typeof ay === 'number' ? ay : (b.getValue('order') ?? 0.6));
+    if (handle) {
+      let x: number, y: number;
+      if (this.dragging) {
+        x = this.dragX; y = this.dragY;
+      } else {
+        const ax = b.getValue('autopilot_x');
+        const ay = b.getValue('autopilot_y');
+        x = clamp01(typeof ax === 'number' ? ax : (b.getValue('complexity') ?? 0.6));
+        y = clamp01(typeof ay === 'number' ? ay : (b.getValue('order') ?? 0.6));
+      }
+      handle.style.left = x * 100 + '%';
+      handle.style.top = (1 - y) * 100 + '%';
     }
-    handle.style.left = x * 100 + '%';
-    handle.style.top = (1 - y) * 100 + '%';
+    const km = !!b.getValue('key_moment');
+    const pad = this.renderRoot?.querySelector('.pad') as HTMLElement | null;
+    if (pad) pad.style.backgroundImage =
+      `url(/images/brutal-fold-${km ? 'km-' : ''}backdrop.png)`;
+    this.drawGrid(km, km ? (b.getValue('sky_threshold') ?? 0) : 0);
+  }
+
+  // Dim cells below the sky threshold (montage: order increases upward), matching
+  // the web testbed's pad overlay. Only redraws when the inputs change.
+  private drawGrid(km: boolean, thr: number) {
+    const cv = this.renderRoot?.querySelector('.grid') as HTMLCanvasElement | null;
+    if (!cv) return;
+    const G = this.kmSky?.grid ?? 0;
+    const key = `${km}|${G}|${thr.toFixed(3)}`;
+    if (key === this.lastGridKey) return;
+    this.lastGridKey = key;
+    if (cv.width !== G) { cv.width = G || 1; cv.height = G || 1; }
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (!km || !this.kmSky || thr <= 0) return;
+    const sky = this.kmSky.sky;
+    ctx.fillStyle = 'rgba(9,9,11,0.78)';
+    for (let gi = 0; gi < G; gi++) for (let gj = 0; gj < G; gj++) {
+      if (sky[gi * G + gj] < thr) ctx.fillRect(gj, G - 1 - gi, 1, 1);
+    }
   }
 
   private xyFromEvent(e: PointerEvent, pad: HTMLElement): [number, number] {
@@ -156,6 +199,7 @@ export class BrutalFoldXyPad extends MobxLitElement implements FieldEditorElemen
         @pointermove=${(e: PointerEvent) => this.onPointerMove(e)}
         @pointerup=${() => this.onPointerUp()}
         @pointercancel=${() => this.onPointerUp()}>
+        <canvas class="grid"></canvas>
         <div class="handle"></div>
       </div>
       <div class="pad-labels"><span>← simpler</span><span>more complex →</span></div>
@@ -187,12 +231,17 @@ export class BrutalFoldInspector extends MobxLitElement {
   render() {
     if (!this.binding) return html``;
     const b = this.binding;
+    // Key-moment mode swaps to the KM atlas (XY-only, curated windows). Several
+    // continuous-mode controls no longer apply, and its own time controls appear —
+    // mirror the effect's field visibility so the panel only shows live knobs.
+    const km = !!b.getValue('key_moment');
+    const mode = b.getValue('km_time_mode') ?? 2;   // 0=Trigger 1=Time 2=Loop
     return html`
       <help-slot .binding=${b} .path=${'intro'}></help-slot>
       ${this.section('Form', '@group/shape')}
       <brutal-fold-xy-pad .label=${''} .binding=${b}></brutal-fold-xy-pad>
-      <scalar-slider style="width: 100%;" .fieldPath=${'liveliness'} .label=${'Liveliness'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+      ${km ? '' : html`<scalar-slider style="width: 100%;" .fieldPath=${'liveliness'} .label=${'Liveliness'}
+        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>`}
       <scalar-slider style="width: 100%;" .fieldPath=${'scale'} .label=${'Scale'}
         .min=${0.3} .max=${10} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
       <scalar-slider style="width: 100%;" .fieldPath=${'balance'} .label=${'Balance'}
@@ -201,26 +250,36 @@ export class BrutalFoldInspector extends MobxLitElement {
         .min=${0} .max=${6} .step=${0.05} .defaultValue=${1} .binding=${b}></scalar-slider>
       <field-toggle .fieldPath=${'second_structure'} .label=${'2nd Structure'}
         .defaultValue=${1} .binding=${b}></field-toggle>
-      <field-toggle .fieldPath=${'interp_cells'} .label=${'Interpolate'}
-        .defaultValue=${1} .binding=${b}></field-toggle>
+      ${km ? '' : html`<field-toggle .fieldPath=${'interp_cells'} .label=${'Interpolate'}
+        .defaultValue=${1} .binding=${b}></field-toggle>`}
 
       ${this.section('Animation', '@group/animation')}
-      <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
-        .min=${0} .max=${1} .step=${0.005} .defaultValue=${0.5} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
-        .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      ${km ? '' : html`
+        <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
+          .min=${0} .max=${1} .step=${0.005} .defaultValue=${0.5} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
+          .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>`}
       <scalar-slider style="width: 100%;" .fieldPath=${'anim_amount'} .label=${'Anim Amount'}
         .min=${0} .max=${2.5} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
 
       ${this.section('Key Moment', '@group/keymoment')}
       <field-toggle .fieldPath=${'key_moment'} .label=${'Key Moment'}
         .defaultValue=${0} .binding=${b}></field-toggle>
-      <field-select .fieldPath=${'km_time_mode'} .label=${'Time Mode'}
-        .options=${[{ label: 'Trigger', value: 0 }, { label: 'Time', value: 1 }, { label: 'Loop', value: 2 }]}
-        .defaultValue=${2} .binding=${b}></field-select>
-      <scalar-slider style="width: 100%;" .fieldPath=${'km_time'} .label=${'Time'}
-        .min=${0} .max=${1} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>
-      <field-trigger .fieldPath=${'km_trigger'} .label=${'Trigger'} .binding=${b}></field-trigger>
+      ${!km ? '' : html`
+        <field-tab-bar .fieldPath=${'km_time_mode'} .label=${'Time Mode'} ?wrap=${true}
+          .options=${[{ label: 'Trigger', value: 0 }, { label: 'Time', value: 1 }, { label: 'Loop', value: 2 }]}
+          .defaultValue=${2} .binding=${b}></field-tab-bar>
+        ${mode === 1 ? html`
+          <scalar-slider style="width: 100%;" .fieldPath=${'km_time'} .label=${'Time'}
+            .min=${0} .max=${1} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>`
+        : html`
+          <scalar-slider style="width: 100%;" .fieldPath=${'km_duration'} .label=${'Duration (s)'}
+            .min=${0.1} .max=${10} .step=${0.05} .defaultValue=${2} .binding=${b}></scalar-slider>
+          <field-trigger .fieldPath=${'km_trigger'} .label=${'Trigger'} .binding=${b}></field-trigger>`}
+        <scalar-slider style="width: 100%;" .fieldPath=${'km_ease'} .label=${'Ease'}
+          .min=${0} .max=${4} .step=${0.05} .defaultValue=${1.5} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'sky_threshold'} .label=${'Sky Threshold'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>`}
 
       ${this.section('Color Grade', '@group/color')}
       <brutal-fold-diffuse-preview .binding=${b}></brutal-fold-diffuse-preview>
@@ -325,26 +384,27 @@ export class BrutalFoldInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
       <field-trigger .fieldPath=${'ap_jump'} .label=${'Jump'} .binding=${b}></field-trigger>
 
-      ${this.section('Skip Empty', '@group/skip')}
-      <field-toggle .fieldPath=${'skip_empty'} .label=${'Skip Empty'}
-        .defaultValue=${0} .binding=${b}></field-toggle>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_var'} .label=${'Variance Wt'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_edge'} .label=${'Edge Wt'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.07} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_motion'} .label=${'Motion Wt'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
-      <field-select .fieldPath=${'skip_debug'} .label=${'Debug View'}
-        .options=${[{ label: 'Off', value: 0 }, { label: 'Variance', value: 1 }, { label: 'Edge', value: 2 }, { label: 'Motion', value: 3 }, { label: 'Combined', value: 4 }]}
-        .defaultValue=${0} .binding=${b}></field-select>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
-      <field-toggle .fieldPath=${'skip_autopilot'} .label=${'Jog Autopilot'}
-        .defaultValue=${1} .binding=${b}></field-toggle>
+      ${km ? '' : html`
+        ${this.section('Skip Empty', '@group/skip')}
+        <field-toggle .fieldPath=${'skip_empty'} .label=${'Skip Empty'}
+          .defaultValue=${0} .binding=${b}></field-toggle>
+        <scalar-slider style="width: 100%;" .fieldPath=${'skip_thresh'} .label=${'Sensitivity'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.7} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_var'} .label=${'Variance Wt'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_edge'} .label=${'Edge Wt'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.07} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'skip_w_motion'} .label=${'Motion Wt'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+        <field-select .fieldPath=${'skip_debug'} .label=${'Debug View'}
+          .options=${[{ label: 'Off', value: 0 }, { label: 'Variance', value: 1 }, { label: 'Edge', value: 2 }, { label: 'Motion', value: 3 }, { label: 'Combined', value: 4 }]}
+          .defaultValue=${0} .binding=${b}></field-select>
+        <scalar-slider style="width: 100%;" .fieldPath=${'skip_recover'} .label=${'Recover'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${1.0} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'skip_rate'} .label=${'Jog Rate'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
+        <field-toggle .fieldPath=${'skip_autopilot'} .label=${'Jog Autopilot'}
+          .defaultValue=${1} .binding=${b}></field-toggle>`}
     `;
   }
 }
