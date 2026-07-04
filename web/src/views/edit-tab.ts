@@ -20,6 +20,7 @@
 
 import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
+import { keyed } from 'lit/directives/keyed.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
@@ -53,6 +54,15 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   // Cached inspector elements by instance key
   private inspectorCache = new Map<string, HTMLElement>();
 
+  // The sketch the caches above were built for. Both caches hold per-sketch
+  // elements (column-groups carry their sketchId; inspectors bind instance
+  // keys), so switching the edited instance while the tab stays mounted must
+  // reset them — paired with the keyed() remount of columns-view in render(),
+  // which drops the stale DOM. Without this, changing instances kept showing
+  // the previous instance's chain (the cache is index-keyed, so index 0
+  // returned the old sketch's column-group forever).
+  private cachedSketchId: string | null = null;
+
   // Drag state
   private dragSketchId: string | null = null;
   private dragSourceCol = -1;
@@ -80,6 +90,10 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('keydown', this.handleGlobalKeyDown);
+    this.clearSketchCaches();
+  }
+
+  private clearSketchCaches() {
     for (const [, el] of this.inspectorCache) {
       const factory = editorRegistry.getInspectorFactory(
         (el as any).moduleType ?? '');
@@ -203,9 +217,15 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     const traceTarget = appState.local.selection?.traceTarget
       ?? ({ type: 'sketch_output', sketchId } as any);
 
+    // Per-sketch cache reset — see cachedSketchId.
+    if (sketchId !== this.cachedSketchId) {
+      this.cachedSketchId = sketchId;
+      this.clearSketchCaches();
+    }
+
     return html`
       <div class="left-panel" style="width: ${leftWidth}px">
-        <div class="columns-wrap">
+        ${keyed(sketchId, html`<div class="columns-wrap">
           <columns-view .host=${this as ColumnHost}
             fitWidth
             .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}
@@ -215,7 +235,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
             }}
           ></columns-view>
           <taps-overlay .sketchId=${sketchId}></taps-overlay>
-        </div>
+        </div>`)}
       </div>
       <ide-splitter
         .width=${leftWidth}

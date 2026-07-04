@@ -119,6 +119,29 @@ describe('sidechannel textures across playground instances', () => {
     expect(overridden!.b - overridden!.g).toBeGreaterThan(60);   // wired blue arrived
     expect(overridden!.b - overridden!.r).toBeGreaterThan(60);
 
+    // The send card's custom inspector must re-render the texture ports the
+    // generic body would have shown — send_in is the wire's attach point.
+    await page.evaluate(`window.appController.selectBarrelInstance('${ids.a}')`);
+    await new Promise(r => setTimeout(r, 1200));
+    const ports = await page.evaluate(`(() => {
+      function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      for (const el of walk(document)) {
+        if (el.tagName === 'SIDECHANNEL-INSPECTOR') {
+          const out = [];
+          for (const p of el.shadowRoot.querySelectorAll('field-placeholder')) {
+            out.push(p.fieldPath);
+          }
+          return out;
+        }
+      }
+      return null;
+    })()`) as string[] | null;
+    expect(ports).not.toBeNull();
+    expect(ports).toContain('tex_in');
+    expect(ports).toContain('send_in');
+    await page.evaluate(`window.appController.selectBarrelInstance('${ids.b}')`);
+    await new Promise(r => setTimeout(r, 1200));
+
     // Drop the wire → the publish reverts to the chain input (green).
     await page.evaluate(`(() => {
       const ac = window.appController;

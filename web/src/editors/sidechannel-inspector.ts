@@ -10,6 +10,14 @@
  * /global/sidechannels in barrel mode). It also handles the Custom-name
  * conditional client-side, so barrel mode doesn't depend on the remote
  * schema's visibility refresh.
+ *
+ * A custom inspector REPLACES the generic card body — including the texture
+ * port placeholder rows the generic path renders — so the send's texture
+ * inputs must be re-rendered here or wires have nothing to attach to (no
+ * click-to-connect target, no tap anchor). The send shows `tex_in` (the chain
+ * passthrough) and `send_in` (the wireable publish override); the receive
+ * shows neither (REPLACE semantics — its chain input is discarded, so a port
+ * would invite wires that do nothing).
  */
 
 import { html, css } from 'lit';
@@ -21,6 +29,7 @@ import type { FieldBinding } from '../widgets/field-editor';
 import type { FieldSelectOption } from '../widgets/field-select';
 import '../widgets/field-select';
 import '../widgets/field-text';
+import '../widgets/field-placeholder';
 import '../widgets/help-slot';
 
 /**
@@ -38,6 +47,10 @@ export function sidechannelWriterLabel(writerTag: string): string {
 @customElement('sidechannel-inspector')
 export class SidechannelInspector extends MobxLitElement {
   @property({ attribute: false }) binding: FieldBinding | null = null;
+
+  /** True for util.sidechannel_out: render the texture input ports (chain
+   *  passthrough + the wireable send override). Set by the factory. */
+  @property({ type: Boolean }) sendPorts = false;
 
   static styles = css`
     :host { display: flex; flex-direction: column; gap: var(--app-sp-2); }
@@ -71,6 +84,12 @@ export class SidechannelInspector extends MobxLitElement {
     const info = name ? appState.local.engine.sidechannels[name] : undefined;
     return html`
       <help-slot .binding=${b} .path=${'intro'}></help-slot>
+      ${this.sendPorts ? html`
+        <field-placeholder .fieldPath=${'tex_in'} label="tex_in"
+          kind="texture" direction="input" .binding=${b}></field-placeholder>
+        <field-placeholder .fieldPath=${'send_in'} label="Send Override"
+          kind="texture" direction="input" .binding=${b}></field-placeholder>
+      ` : ''}
       <field-select .fieldPath=${'channel'} .label=${'Channel'}
         .options=${this.channelOptions()} .defaultValue=${1} .binding=${b}></field-select>
       ${custom ? html`
@@ -86,13 +105,14 @@ export class SidechannelInspector extends MobxLitElement {
   }
 }
 
-const inspector = {
+const makeInspector = (sendPorts: boolean) => ({
   create(_pluginKey: string, binding: FieldBinding): HTMLElement {
     const el = document.createElement('sidechannel-inspector') as SidechannelInspector;
     el.binding = binding;
+    el.sendPorts = sendPorts;
     return el;
   },
   destroy(_element: HTMLElement) {},
-};
-editorRegistry.register('util.sidechannel_out', { inspector });
-editorRegistry.register('util.sidechannel_in', { inspector });
+});
+editorRegistry.register('util.sidechannel_out', { inspector: makeInspector(true) });
+editorRegistry.register('util.sidechannel_in', { inspector: makeInspector(false) });
