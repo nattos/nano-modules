@@ -262,12 +262,20 @@ function connectBarrel(url: string) {
   // stops capturing.
   const lastPushedRequests = new Map<string, string>();
   appController.setBarrelPreviewPusher((tracePoints) => {
-    const groups = groupPreviewRequests(tracePoints, currentKey);
+    // Sidechannel thumbnails route to each channel's writer instance.
+    const writers: Record<string, string> = {};
+    for (const [ch, info] of Object.entries(appState.local.engine.sidechannels)) {
+      if (info?.writer) writers[ch] = info.writer;
+    }
+    const groups = groupPreviewRequests(tracePoints, currentKey, writers);
 
-    // Thumbnailed instances must be observed for the native watched-gate.
-    thumbKeys = new Set(
-      tracePoints.map((tp) => instanceKeyFromThumbTraceId(tp.id))
-        .filter((k): k is string => !!k));
+    // Every instance we push requests AT must be observed for the native
+    // watched-gate — thumbnailed instances plus sidechannel writers.
+    thumbKeys = new Set([
+      ...tracePoints.map((tp) => instanceKeyFromThumbTraceId(tp.id))
+        .filter((k): k is string => !!k),
+      ...[...groups.keys()].filter((k) => k !== currentKey),
+    ]);
     reconcileObservations();
 
     for (const key of [...lastPushedRequests.keys()]) {
@@ -304,6 +312,10 @@ function connectBarrel(url: string) {
   const ingestSidechannels = (data: any) => {
     if (!data || typeof data !== 'object') return;
     appController.setSidechannels(data);
+    // Channel metadata (esp. WRITER identity) steers sidechannel preview
+    // routing — re-flush so open thumbnails follow a writer change. Metadata
+    // pushes are change-gated upstream, so this is not per-frame traffic.
+    traceController.requestFlush();
   };
   barrel.onSnapshot('/global/sidechannels', ingestSidechannels);
 

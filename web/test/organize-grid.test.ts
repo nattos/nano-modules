@@ -97,20 +97,51 @@ describe('instances tab thumbnail grid', () => {
     expect(red.r - red.g).toBeGreaterThan(60);
     expect(red.r - red.b).toBeGreaterThan(60);
 
-    // -- Sidechannel cards: one per active channel, selectable, renamable. --
+    // -- Sidechannel cards: one per active channel, live thumbnail,
+    //    selectable, renamable. --
+
+    // The section sits below the instance grid — off-screen in the test
+    // viewport, where the visibility gate correctly keeps its trace
+    // unregistered. Scroll it into view and give the trace a beat to arrive.
+    await page.evaluate(`(() => {
+      function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
+      for (const el of walk(document)) {
+        if (el.classList && el.classList.contains('sc-section')) {
+          el.scrollIntoView();
+          return;
+        }
+      }
+    })()`);
+    await new Promise(r => setTimeout(r, 1500));
+
     const scProbe = () => page.evaluate(`(() => {
       function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
       let tab = null;
       for (const el of walk(document)) { if (el.tagName === 'ORGANIZE-TAB') { tab = el; break; } }
       if (!tab?.shadowRoot) return null;
-      const cards = [...tab.shadowRoot.querySelectorAll('.sc-card')].map(c => ({
-        name: c.querySelector('.sc-card-name')?.textContent?.trim() ?? '',
-        info: c.querySelector('.sc-card-info')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
-        selected: c.hasAttribute('selected'),
-      }));
-      const input = tab.shadowRoot.querySelector('.name-row input');
-      return { cards, inputValue: input ? input.value : null };
-    })()`) as Promise<{ cards: Array<{ name: string; info: string; selected: boolean }>; inputValue: string | null } | null>;
+      const cards = [...tab.shadowRoot.querySelectorAll('.sc-card')].map(c => {
+        let thumb = null;
+        const canvas = c.querySelector('texture-monitor')?.shadowRoot?.querySelector('canvas');
+        if (canvas && canvas.width) {
+          const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+          let r = 0, g = 0, b = 0, n = 0;
+          for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i+1]; b += data[i+2]; n++; }
+          thumb = { w: canvas.width, h: canvas.height, r: r / n, g: g / n, b: b / n };
+        }
+        return {
+          name: c.querySelector('.sc-card-name')?.textContent?.trim() ?? '',
+          info: c.querySelector('.sc-card-info')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
+          selected: c.hasAttribute('selected'),
+          thumb,
+        };
+      });
+      const et = tab.shadowRoot.querySelector('.name-row editable-text');
+      return { cards, inputValue: et ? et.value : null };
+    })()`) as Promise<{
+      cards: Array<{ name: string; info: string; selected: boolean;
+                     thumb: { w: number; h: number; r: number; g: number; b: number } | null }>;
+      inputValue: string | null;
+    } | null>;
 
     const sc = await scProbe();
     expect(sc).not.toBeNull();
@@ -118,6 +149,12 @@ describe('instances tab thumbnail grid', () => {
     expect(sc!.cards[0].name).toBe('2 — Instance 1');   // default label
     expect(sc!.cards[0].info).toContain('from Instance 1');
     expect(sc!.inputValue).toBeNull();                   // nothing selected yet
+    // Live low-res thumbnail carrying the channel content (A's green).
+    expect(sc!.cards[0].thumb).not.toBeNull();
+    expect(sc!.cards[0].thumb!.w).toBe(128);
+    expect(sc!.cards[0].thumb!.h).toBe(72);
+    expect(sc!.cards[0].thumb!.g - sc!.cards[0].thumb!.r).toBeGreaterThan(60);
+    expect(sc!.cards[0].thumb!.g - sc!.cards[0].thumb!.b).toBeGreaterThan(60);
 
     // Click the card → selected + the rename inspector appears (default "#").
     await page.evaluate(`(() => {
@@ -132,12 +169,15 @@ describe('instances tab thumbnail grid', () => {
     expect(scSel!.inputValue).toBe('#');
 
     // Rename with a "#" template → the card shows the expanded label.
+    // (editable-text commits on Enter/blur of its inner control.)
     await page.evaluate(`(() => {
       function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
       for (const el of walk(document)) {
-        if (el.tagName === 'INPUT' && el.id === 'sc-name') {
-          el.value = 'Drums #';
-          el.dispatchEvent(new Event('change'));
+        if (el.tagName === 'EDITABLE-TEXT' && el.id === 'sc-name') {
+          const control = el.shadowRoot.querySelector('.control');
+          control.focus();
+          control.value = 'Drums #';
+          control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
           return;
         }
       }

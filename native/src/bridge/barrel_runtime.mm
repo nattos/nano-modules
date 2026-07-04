@@ -234,6 +234,14 @@ struct BarrelRuntime::Impl {
       const std::string ttype = target.value("type", std::string());
       if (ttype == "sketch_output") {
         req.targetKey = "so";
+      } else if (ttype == "sidechannel") {
+        // Bus channel thumbnail — serviced at publish time straight from the
+        // process-global sidechannel bus (no frame_captures hook involved);
+        // the web routes these requests at the channel's WRITER instance so
+        // the readback lands right after the frame that refreshed the bus.
+        const std::string ch = target.value("channel", std::string());
+        if (ch.empty()) continue;
+        req.targetKey = "sc:" + ch;
       } else if (ttype == "chain_entry") {
         const int col   = target.value("colIdx",   -1);
         const int chain = target.value("chainIdx", -1);
@@ -260,9 +268,18 @@ struct BarrelRuntime::Impl {
     const uint32_t maxDim = previewMaxDim();
     gpu->beginPreviewBatch();
     for (const auto& [_, req] : pe.preview_requests) {
-      auto it = pe.frame_captures.find(req.targetKey);
-      if (it == pe.frame_captures.end()) continue;
-      const auto& slot = it->second;
+      CaptureSlot slot;
+      if (req.targetKey.rfind("sc:", 0) == 0) {
+        // Sidechannel thumbnail: resolve the bus-owned channel texture at
+        // publish time (we run right after submit() under render_mu, so the
+        // handle is stable and this frame's bus copy has been encoded).
+        const auto r = sidechannel_bus::peek(req.targetKey.c_str() + 3);
+        slot = {r.tex, r.w, r.h};
+      } else {
+        auto it = pe.frame_captures.find(req.targetKey);
+        if (it == pe.frame_captures.end()) continue;
+        slot = it->second;
+      }
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
       uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
       uint32_t outH = req.height ? req.height : (uint32_t)slot.height;

@@ -150,6 +150,17 @@ int32_t executor_sidechannels_json(char* out, int32_t cap) {
   return sidechannel_bus::infoJson(out, cap);
 }
 
+// The bus-owned texture handle currently carrying `channel` (last-written
+// content, no reader/freshness semantics — see sidechannel_bus::peek), or -1.
+// For the host's thumbnail trace capture; handles resolve in the same shared
+// GPUHost table the worker's trace capture reads from.
+EXEC_EXPORT("executor_sidechannel_texture")
+int32_t executor_sidechannel_texture(const char* name, int32_t len) {
+  if (!name || len <= 0) return -1;
+  const std::string ch(name, (size_t)len);
+  return sidechannel_bus::peek(ch.c_str()).tex;
+}
+
 // Write the LAST execute()'s 7 debug counters into `out` (host-allocated, ≥7
 // int32s): [effectsExecuted, standaloneDispatches, fusedRuns, fusedStages,
 // dispatchesSaved, gpuDispatches, identitySkipped]. The web host reads these

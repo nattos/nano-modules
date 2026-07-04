@@ -36,7 +36,7 @@ import {
   type PlaygroundInstanceRecord,
 } from './playground-store';
 import { PLAYGROUND_ID_PREFIX } from './types';
-import { instanceKeyFromThumbTraceId } from '../resolume-mode';
+import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -1802,10 +1802,13 @@ export class AppController {
     const key = new TextDecoder().decode(new Uint8Array(buf, 14, keyLen));
     const traceId = new TextDecoder().decode(new Uint8Array(buf, keyEnd, idLen));
     // Route: accept the edited instance's frames (edit preview, chain-entry
-    // monitors) and any instance's own Instances-tab thumbnail (its trace id
-    // embeds the key). Everything else is another client's preview traffic.
+    // monitors), any instance's own Instances-tab thumbnail (its trace id
+    // embeds the key), and sidechannel thumbnails (keyed by whichever
+    // instance WRITES the channel). Everything else is another client's
+    // preview traffic.
     if (key !== appState.local.selectedBarrelKey &&
-        instanceKeyFromThumbTraceId(traceId) !== key) return;
+        instanceKeyFromThumbTraceId(traceId) !== key &&
+        !isSidechannelThumbTraceId(traceId)) return;
     // ImageData requires its backing Uint8ClampedArray to span its own
     // buffer (byteOffset 0, full length). A subview over the incoming
     // ArrayBuffer would be cheaper but breaks the spec — so we copy

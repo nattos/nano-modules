@@ -137,7 +137,10 @@ export interface TracePoint {
   target:
     | { type: 'sketch_output'; sketchId: string }
     | { type: 'plugin_output'; pluginKey: string }
-    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: 'input' | 'output' };
+    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: 'input' | 'output' }
+    // A sidechannel bus channel's texture (last-written content, no freshness
+    // semantics) — the Instances tab's sidechannel card thumbnails.
+    | { type: 'sidechannel'; channel: string };
   /** Optional capture size override. If omitted, captures at source texture resolution. */
   size?: { width: number; height: number };
 }

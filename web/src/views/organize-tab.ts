@@ -23,11 +23,12 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { sketchChain } from '../sketch-types';
-import { instanceThumbTraceId } from '../resolume-mode';
+import { instanceThumbTraceId, sidechannelThumbTraceId } from '../resolume-mode';
 import {
   sidechannelDefaultLabel, sidechannelDisplayLabel, sidechannelWriterLabel,
 } from '../state/sidechannel-labels';
 import '../widgets/texture-monitor';
+import '../widgets/editable-text';
 
 @customElement('organize-tab')
 export class OrganizeTab extends MobxLitElement {
@@ -102,17 +103,18 @@ export class OrganizeTab extends MobxLitElement {
       gap: var(--app-sp-3);
     }
     .sc-card {
-      padding: 10px 12px;
       background: var(--app-tint-1);
       border: 1px solid var(--app-tint-2);
       border-radius: 1px;
       cursor: pointer;
+      overflow: hidden;
     }
     .sc-card:hover { border-color: var(--app-tint-5); }
     .sc-card[selected] {
       border-color: var(--app-hi-color2);
       background: rgba(65,105,225,0.08);
     }
+    .sc-card .card-meta { padding: 8px 12px 10px; }
     .sc-card-name {
       font-size: var(--app-fs-md); color: var(--app-text-color1);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -120,16 +122,7 @@ export class OrganizeTab extends MobxLitElement {
     .sc-card-info { font-size: var(--app-fs-sm); color: var(--app-text-color2); margin-top: 2px; }
     .name-row { display: flex; flex-direction: column; gap: var(--app-sp-2); margin-bottom: 12px; }
     .name-row label { font-size: var(--app-fs-sm); color: var(--app-text-color2); }
-    .name-row input {
-      background: var(--app-bg-color1);
-      border: 1px solid var(--app-tint-4);
-      border-radius: 1px;
-      color: var(--app-text-color1);
-      font-family: inherit;
-      font-size: var(--app-fs-md);
-      padding: var(--app-sp-3);
-    }
-    .name-row input:focus { outline: none; border-color: var(--app-hi-color2); }
+    .name-row editable-text { font-size: var(--app-fs-md); }
     .name-hint { font-size: var(--app-fs-sm); color: var(--app-text-color2); }
   `;
 
@@ -228,10 +221,21 @@ export class OrganizeTab extends MobxLitElement {
           ${names.map(name => html`
             <div class="sc-card" ?selected=${name === selectedChannel}
               @click=${() => appController.selectSidechannel(name)}>
-              <div class="sc-card-name">${sidechannelDisplayLabel(name)}</div>
-              <div class="sc-card-info">
-                from ${sidechannelWriterLabel(channels[name].writer) || '—'}
-                · ${channels[name].w}×${channels[name].h}
+              <div class="thumb">
+                <texture-monitor
+                  fit
+                  thumbnail
+                  .traceId=${sidechannelThumbTraceId(name)}
+                  .traceTarget=${{ type: 'sidechannel', channel: name } as any}
+                  resolution="low"
+                ></texture-monitor>
+              </div>
+              <div class="card-meta">
+                <div class="sc-card-name">${sidechannelDisplayLabel(name)}</div>
+                <div class="sc-card-info">
+                  from ${sidechannelWriterLabel(channels[name].writer) || '—'}
+                  · ${channels[name].w}×${channels[name].h}
+                </div>
               </div>
             </div>
           `)}
@@ -252,10 +256,11 @@ export class OrganizeTab extends MobxLitElement {
         <div>Size: ${info.w}×${info.h}</div>
       </div>
       <div class="name-row">
-        <label for="sc-name">Display Name</label>
-        <input id="sc-name" .value=${stored} spellcheck="false"
-          @change=${(e: Event) => appController.setSidechannelDisplayName(
-            channel, (e.target as HTMLInputElement).value)}>
+        <label>Display Name</label>
+        <editable-text id="sc-name" .value=${stored} selectOnFocus
+          @commit=${(e: CustomEvent<string>) =>
+            appController.setSidechannelDisplayName(channel, e.detail)}
+        ></editable-text>
         <div class="name-hint">"#" stands for the default label
           (${sidechannelDefaultLabel(channel)})</div>
       </div>

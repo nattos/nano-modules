@@ -48,6 +48,7 @@ function targetKey(target: TracePoint['target']): string {
     case 'sketch_output': return `so:${target.sketchId}`;
     case 'plugin_output': return `po:${target.pluginKey}`;
     case 'chain_entry': return `ce:${target.sketchId}/${target.colIdx}/${target.chainIdx}/${target.side}`;
+    case 'sidechannel': return `sc:${target.channel}`;
   }
 }
 

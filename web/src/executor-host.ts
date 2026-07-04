@@ -76,6 +76,7 @@ interface ExecutorExports {
   /** Module-level (the sidechannel bus is process-global across slots). */
   executor_sidechannels_version(): number;
   executor_sidechannels_json(out: number, cap: number): number;
+  executor_sidechannel_texture(name: number, len: number): number;
   // ── Composition executor (comp_api.cpp) ──
   comp_create(): number;
   comp_destroy(c: number): void;
@@ -456,6 +457,22 @@ export class WasmSketchExecutor {
     } catch {
       return { version, channels: {} };
     }
+  }
+
+  /**
+   * The bus-owned texture handle currently carrying `channel` (last-written
+   * content, no freshness semantics), or -1. For the worker's sidechannel
+   * thumbnail traces — the handle resolves in the shared GPUHost table.
+   */
+  getSidechannelTexture(channel: string): number {
+    if (!this.exports.executor_sidechannel_texture) return -1;
+    const bytes = encoder.encode(channel);
+    if (bytes.length === 0) return -1;
+    const ptr = this.exports.malloc(bytes.length);
+    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+    const handle = this.exports.executor_sidechannel_texture(ptr, bytes.length);
+    this.exports.free(ptr);
+    return handle;
   }
 
   /** Debug fusion toggle (mirrors SketchExecutor.setFusionMode). force-off

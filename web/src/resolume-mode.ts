@@ -85,30 +85,50 @@ export function instanceKeyFromThumbTraceId(traceId: string): string | null {
     : null;
 }
 
+export const SIDECHANNEL_THUMB_PREFIX = 'sc_thumb:';
+
+/** Trace-registration id for a sidechannel card's live thumbnail. */
+export function sidechannelThumbTraceId(channel: string): string {
+  return SIDECHANNEL_THUMB_PREFIX + channel;
+}
+
+/** True for sidechannel-thumbnail trace ids. In barrel mode their NBPV frames
+ *  arrive keyed by the channel's WRITER instance (whichever that is), so the
+ *  ingest filter admits them by id rather than by key. */
+export function isSidechannelThumbTraceId(traceId: string): boolean {
+  return traceId.startsWith(SIDECHANNEL_THUMB_PREFIX);
+}
+
 /** One /preview_requests entry, as the native barrel parses it. */
 export interface BarrelPreviewRequest {
   target:
     | { type: 'sketch_output'; sketchId: string }
-    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: string };
+    | { type: 'chain_entry'; sketchId: string; colIdx: number; chainIdx: number; side: string }
+    | { type: 'sidechannel'; channel: string };
   width: number;
   height: number;
 }
 
 /**
  * Split one trace-controller flush into per-instance /preview_requests maps.
- * Thumbnail registrations go to the instance their id embeds; everything else
- * (the edit preview, chain-entry monitors) belongs to the instance currently
+ * Thumbnail registrations go to the instance their id embeds; sidechannel
+ * targets to the channel's WRITER instance (`sidechannelWriters` — the bus is
+ * process-global native-side, but only the writer is guaranteed alive and
+ * rendering, and its frame publishes right after the bus copy); everything
+ * else (the edit preview, chain-entry monitors) to the instance currently
  * wired for editing (`currentKey` — dropped when no instance is wired).
  * `plugin_output` targets are skipped (not supported in barrel mode).
  */
 export function groupPreviewRequests(
   tracePoints: TracePoint[],
   currentKey: string | null,
+  sidechannelWriters: Record<string, string> = {},
 ): Map<string, Record<string, BarrelPreviewRequest>> {
   const groups = new Map<string, Record<string, BarrelPreviewRequest>>();
   for (const tp of tracePoints) {
     const target = tp.target;
     let serialized: BarrelPreviewRequest['target'] | null = null;
+    let destKey: string | null = null;
     if (target.type === 'sketch_output') {
       serialized = { type: 'sketch_output', sketchId: target.sketchId };
     } else if (target.type === 'chain_entry') {
@@ -119,10 +139,14 @@ export function groupPreviewRequests(
         chainIdx: target.chainIdx,
         side: target.side,
       };
+    } else if (target.type === 'sidechannel') {
+      serialized = { type: 'sidechannel', channel: target.channel };
+      destKey = sidechannelWriters[target.channel] ?? null;
+      if (!destKey) continue;  // unwritten channel — nothing to capture yet
     } else {
       continue;  // plugin_output not yet supported in barrel mode
     }
-    const destKey = instanceKeyFromThumbTraceId(tp.id) ?? currentKey;
+    if (!destKey) destKey = instanceKeyFromThumbTraceId(tp.id) ?? currentKey;
     if (!destKey) continue;
     let requests = groups.get(destKey);
     if (!requests) {

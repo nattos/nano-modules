@@ -98,6 +98,19 @@ Read acquire(const char* channel, const char* readerId, uint64_t currentSeq) {
   return r;
 }
 
+Read peek(const char* channel) {
+  Read r;
+  if (!channel || !*channel) return r;
+  BUS_LOCK();
+  auto it = channels().find(channel);
+  if (it == channels().end() || it->second.tex < 0) return r;
+  r.tex = it->second.tex;
+  r.w = it->second.w;
+  r.h = it->second.h;
+  r.fresh = it->second.writeSeq > 0;  // "ever written" — no reader semantics
+  return r;
+}
+
 uint64_t version() {
   BUS_LOCK();
   return g_version;

@@ -985,6 +985,10 @@ async function simulateTick(dt: number, execDt: number = dt) {
       handle = sketchOutputs.get(tp.target.sketchId) ?? -1;
     } else if (tp.target.type === 'plugin_output') {
       handle = realOutputs.get(tp.target.pluginKey) ?? -1;
+    } else if (tp.target.type === 'sidechannel') {
+      // Bus-owned channel texture, written during this frame's renders above
+      // (or holding the last-written content when the writer idles).
+      handle = executor?.getSidechannelTexture(tp.target.channel) ?? -1;
     } else if (tp.target.type === 'chain_entry') {
       const key = `${tp.target.sketchId}/${tp.target.colIdx}/${tp.target.chainIdx}`;
       const entry = exec.chainEntryHandles.get(key);

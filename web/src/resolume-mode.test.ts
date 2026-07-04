@@ -125,6 +125,17 @@ describe('groupPreviewRequests', () => {
     });
   });
 
+  it('routes sidechannel targets to the channel writer, drops unwritten ones', () => {
+    const points: TracePoint[] = [
+      { id: 'sc_thumb:2', target: { type: 'sidechannel', channel: '2' } },
+      { id: 'sc_thumb:9', target: { type: 'sidechannel', channel: '9' } },
+    ];
+    const groups = groupPreviewRequests(points, KEY_A, { '2': KEY_B });
+    expect([...groups.keys()]).toEqual([KEY_B]);
+    expect(groups.get(KEY_B)!['sc_thumb:2'].target).toEqual(
+      { type: 'sidechannel', channel: '2' });
+  });
+
   it('defaults missing sizes to 0 (native falls back to source size)', () => {
     const groups = groupPreviewRequests(
       [{ id: 'edit_preview', target: { type: 'sketch_output', sketchId: 'barrel' } }], KEY_A);

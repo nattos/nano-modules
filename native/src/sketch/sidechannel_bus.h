@@ -78,6 +78,15 @@ struct Read {
  */
 Read acquire(const char* channel, const char* readerId, uint64_t currentSeq);
 
+/**
+ * Look at `channel`'s current texture WITHOUT reader semantics: no freshness
+ * check, no prevSeq update — the last-written content, or tex=-1 when the
+ * channel has never been written. For host-side preview/thumbnail capture
+ * (the Instances tab's sidechannel cards), never for effect routing — effects
+ * must go through acquire() so staleness keeps meaning something.
+ */
+Read peek(const char* channel);
+
 /** Bumped when channel METADATA changes (new channel, writer identity, size/
  *  format) — deliberately NOT per write, so hosts can gate metadata pushes on
  *  it without per-frame traffic. */
