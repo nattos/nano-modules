@@ -26,6 +26,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_spectral)
 NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
+NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 
 extern "C" {
 
@@ -192,6 +193,17 @@ void nano_module_main() {
         "shear,rift,triangle,tri,three,plane,split,slice,warp,glitch,hough,seam",
         "la-play",
         NANO_INSTANCE_LIFECYCLE(tri_shear),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.shape_burst",
+        "Shape Burst",
+        "Triggered expanding-shape generator — an ADSR 'decay only' you can see. Each trigger fires a ring (circle / square / triangle) that grows from a min to a max scale over a duration, shaped by an easing curve, drawn hard-cut solid then gone; all bursts are concentric about a center pivot. Shares mod.source.adsr's trigger surface (auto_rate Poisson self-fire, a gate rising edge, a momentary trigger, plus voices + Reset/Legato/Poly retrigger for overlapping shockwaves). A manual 0..1 knob directly drives one highest-priority ring for a hands-free pulse (wire a modulation source into it). Composites over black, transparent, a custom colour, or the input.",
+        "source",
+        "generator,shape,burst,ring,circle,square,triangle,trigger,adsr,decay,shockwave,ripple,pulse",
+        "la-bullseye",
+        NANO_INSTANCE_LIFECYCLE(shape_burst),
     });
 }
 

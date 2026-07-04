@@ -219,6 +219,12 @@ compile_shaders_compute_var_spv tri_shear render
 _emit_spv_header_var tri_shear accumulate solve render
 echo "  tri_shear shaders compiled (SPV: accumulate + solve + render)"
 
+# shape_burst — triggered expanding-ring generator. Single compute pass loops
+# over active voices, rasterizing concentric circle/square/triangle rings over
+# a background (black / transparent / custom / input).
+compile_shaders_compute_spv shape_burst
+echo "  shape_burst shaders compiled (SPV: compute)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -248,6 +254,7 @@ wasm_build \
   ../mod_spectral/main.cpp \
   ../triangulate/main.cpp \
   ../plane_shear/main.cpp \
-  ../tri_shear/main.cpp
+  ../tri_shear/main.cpp \
+  ../shape_burst/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
