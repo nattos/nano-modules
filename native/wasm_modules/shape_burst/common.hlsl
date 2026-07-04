@@ -77,7 +77,7 @@ float sb_distort(float2 bp, float seed) {
   float t = smoothstep(u_dist_radius, u_dist_radius + max(u_dist_soft, 1e-4),
                        length(bp - u_anchor));
   float mask = u_twitch_strength * (1.0 - t);        // 1 near anchor → 0 far
-  float n = nano_fbm2(bp * (1.0 + u_dist_freq * 11.0) + seed, 4);
+  float n = nano_fbm2(bp * (1.0 + u_dist_freq * 110.0) + seed, 4);
   return u_dist_amount * mask * (n * 2.0 - 1.0);      // bipolar in/out
 }
 
