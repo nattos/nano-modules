@@ -12,17 +12,17 @@
  */
 
 import { appState } from './app-state';
+import { instanceDisplayLabel } from './instance-labels';
 
 /**
  * Human label for a sidechannel writer tag: a `pg:` sketch id (playground) or
- * a plugin key (barrel) — both resolve through the shared instances list;
- * unknown tags fall back to the barrel label convention (first UUID segment).
+ * a plugin key (barrel) — both resolve through the shared instance labels
+ * (honoring any per-instance rename), with unknown tags falling back to the
+ * barrel label convention (first UUID segment).
  */
 export function sidechannelWriterLabel(writerTag: string): string {
   if (!writerTag) return '';
-  const inst = appState.local.barrelInstances.find(i => i.key === writerTag);
-  if (inst) return inst.label;
-  return writerTag.split('-')[0] || writerTag;
+  return instanceDisplayLabel(writerTag);
 }
 
 /** The channel's default label — what the UI shows with no override. */

@@ -27,6 +27,7 @@ import { instanceThumbTraceId, sidechannelThumbTraceId } from '../resolume-mode'
 import {
   sidechannelDefaultLabel, sidechannelDisplayLabel, sidechannelWriterLabel,
 } from '../state/sidechannel-labels';
+import { instanceDefaultLabel, instanceDisplayLabel } from '../state/instance-labels';
 import '../widgets/texture-monitor';
 import '../widgets/editable-text';
 
@@ -168,7 +169,7 @@ export class OrganizeTab extends MobxLitElement {
                     ></texture-monitor>
                   </div>
                   <div class="card-meta">
-                    <div class="card-name">${inst.label}</div>
+                    <div class="card-name">${instanceDisplayLabel(inst.key)}</div>
                     <div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>
                   </div>
                 </div>
@@ -182,16 +183,26 @@ export class OrganizeTab extends MobxLitElement {
         ? this.renderSidechannelPanel(selectedChannel)
         : selected
         ? html`
-            <div class="section-header">Instance: ${selected.label}</div>
+            <div class="section-header">Instance: ${instanceDisplayLabel(selected.key)}</div>
             <div class="summary">
               <div>Key: ${selected.key}</div>
               ${barrelMode
                 ? html`<div>Plugin: ${selected.id}</div>`
                 : html`<div>${this.instanceInfo(selected.key, false)}</div>`}
             </div>
+            <div class="name-row">
+              <label>Display Name</label>
+              <editable-text id="inst-name" selectOnFocus
+                .value=${appState.local.userSettings.instanceNames[selected.key] ?? '#'}
+                @commit=${(e: CustomEvent<string>) =>
+                  appController.setInstanceDisplayName(selected.key, e.detail)}
+              ></editable-text>
+              <div class="name-hint">"#" stands for the auto-name
+                (${instanceDefaultLabel(selected.key)})</div>
+            </div>
             <button class="btn" @click=${() => open(selected.key)}>Edit</button>
             ${barrelMode ? '' : html`
-              <button class="btn danger" @click=${() => this.deleteInstance(selected.key, selected.label)}>Delete</button>
+              <button class="btn danger" @click=${() => this.deleteInstance(selected.key, instanceDisplayLabel(selected.key))}>Delete</button>
             `}
           `
         : html`<div class="empty-state" style="padding:16px 0">Select an instance to edit</div>`}

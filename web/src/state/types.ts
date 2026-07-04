@@ -186,6 +186,14 @@ export interface UserSettings {
    * itself knows nothing about it.
    */
   sidechannelNames: Record<string, string>;
+  /**
+   * Per-instance display-name override templates, keyed by instance key (a
+   * barrel plugin key or a `pg:` sketch id). Within a template every "#"
+   * expands to the instance's AUTO-name (the shared-server label); an
+   * absent/empty entry behaves as "#" (pure default). Client-side naming
+   * metadata only.
+   */
+  instanceNames: Record<string, string>;
 }
 
 // --- Local state (ephemeral, not in undo history) ---

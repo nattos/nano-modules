@@ -25,6 +25,7 @@ export function defaultUserSettings(): UserSettings {
     targetFps: 60,
     editLeftPanelWidth: 320,
     sidechannelNames: {},
+    instanceNames: {},
   };
 }
 

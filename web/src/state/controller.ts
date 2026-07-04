@@ -1738,6 +1738,16 @@ export class AppController {
     this.setUserSetting('sidechannelNames', names);
   }
 
+  /** Set an instance's display-name override template ("#" expands to the
+   *  auto-name; blank/"#" reverts to it). Persisted in user settings. */
+  setInstanceDisplayName(key: string, template: string) {
+    const names = { ...appState.local.userSettings.instanceNames };
+    const trimmed = template.trim();
+    if (!trimmed || trimmed === '#') delete names[key];
+    else names[key] = template;
+    this.setUserSetting('instanceNames', names);
+  }
+
   // ========================================================================
   // Playground instances (fake barrel instances, local shared-server env)
   // ========================================================================

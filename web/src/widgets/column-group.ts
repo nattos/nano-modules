@@ -30,6 +30,7 @@ import './field-toggle';
 import './field-trigger';
 import './field-text';
 import './field-select';
+import './field-tab-bar';
 import './field-placeholder';
 import './texture-monitor';
 import './spark-chart';
@@ -524,7 +525,9 @@ export class ColumnGroup extends MobxLitElement {
       gap: var(--app-sp-3);
       padding: 2px 10px 6px;
     }
-    .effect-card-options field-select {
+    /* The blend segmented bar (same widget video.blend's mode field uses —
+     * every mode one click away, wrapping onto extra rows as needed). */
+    .effect-card-options field-tab-bar {
       flex: 1;
       min-width: 0;
     }
@@ -1193,13 +1196,14 @@ export class ColumnGroup extends MobxLitElement {
           </div>
           ${optionsOpen ? html`
             <div class="effect-card-options">
-              <field-select
+              <field-tab-bar
                 .fieldPath=${'__blend__'}
                 .label=${'Blend'}
                 .options=${BLEND_MODE_OPTIONS}
                 .defaultValue=${0}
+                ?wrap=${true}
                 .binding=${this.deviceBinding(chainIdx, entry)}
-              ></field-select>
+              ></field-tab-bar>
             </div>
           ` : nothing}
           ${isCollapsed ? nothing : html`
