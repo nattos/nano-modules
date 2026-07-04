@@ -1900,6 +1900,108 @@ TEST_CASE("partial-opacity first stage does not freeze downstream output", "[eff
   CHECK(hi - lo > 100.0);
 }
 
+// REPRO: per-effect __opacity__ endpoints blend wrong in native mode.
+// User report: 1.0 correct; 0.99 shows a DARKENED current output; 0.01 mostly
+// previous; 0.0 breaks the chain input. The blend contract is
+// out = mix(prev, fx, opacity) per channel, so 0.99 must be ~identical to 1.0
+// and 0.0 must be exactly the previous stage's output.
+TEST_CASE("per-effect opacity endpoints follow mix(prev, fx, opacity)",
+          "[effect_render][alpha]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  // Two generators: g1 solid RED, g2 solid BLUE at swept opacity.
+  // Expected out = mix(red, blue, op).
+  auto frame = [&](double op, double rgba[4]) {
+    char buf[640];
+    std::snprintf(buf, sizeof(buf), R"JSON({
+      "chain": [
+        { "module_type": "source.solid_color", "instance_key": "g1" },
+        { "module_type": "source.solid_color", "instance_key": "g2" }
+      ],
+      "instances": {
+        "g1": { "module_type": "source.solid_color", "state": { "color": [1.0, 0.0, 0.0] } },
+        "g2": { "module_type": "source.solid_color", "state": { "color": [0.0, 0.0, 1.0], "__opacity__": %.4f } }
+      }
+    })JSON", op);
+    auto sk = nlohmann::json::parse(buf);
+    int32_t out = executor.execute(sk, -1, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    for (int c = 0; c < 4; ++c) {
+      long s = 0, n = 0;
+      for (size_t i = c; i < o.size(); i += 4) { s += o[i]; ++n; }
+      rgba[c] = n ? (double)s / n : 0.0;
+    }
+    return out;
+  };
+
+  double full[4], near1[4], half[4], near0[4], zero[4];
+  frame(1.0,  full);
+  frame(0.99, near1);
+  frame(0.5,  half);
+  frame(0.01, near0);
+  frame(0.0,  zero);
+  INFO("op=1.0  rgba " << full[0]  << "," << full[1]  << "," << full[2]  << "," << full[3]);
+  INFO("op=0.99 rgba " << near1[0] << "," << near1[1] << "," << near1[2] << "," << near1[3]);
+  INFO("op=0.5  rgba " << half[0]  << "," << half[1]  << "," << half[2]  << "," << half[3]);
+  INFO("op=0.01 rgba " << near0[0] << "," << near0[1] << "," << near0[2] << "," << near0[3]);
+  INFO("op=0.0  rgba " << zero[0]  << "," << zero[1]  << "," << zero[2]  << "," << zero[3]);
+
+  // 1.0 → pure blue.
+  CHECK(full[2] > 250.0); CHECK(full[0] < 5.0); CHECK(full[3] > 250.0);
+  // 0.99 → indistinguishable from 1.0 (the reported bug: it darkens).
+  CHECK(std::abs(near1[2] - full[2]) < 8.0);
+  CHECK(near1[3] > 250.0);
+  // 0.5 → true midpoint of red/blue, alpha stays opaque.
+  CHECK(std::abs(half[0] - 127.5) < 8.0);
+  CHECK(std::abs(half[2] - 127.5) < 8.0);
+  CHECK(half[3] > 250.0);
+  // 0.01 → almost pure red.
+  CHECK(near0[0] > 245.0); CHECK(near0[2] < 10.0);
+  // 0.0 → exactly the previous stage (red), chain intact.
+  CHECK(zero[0] > 250.0); CHECK(zero[2] < 5.0); CHECK(zero[3] > 250.0);
+
+  // Single-effect chain over a REAL input at opacity 0: the sketch must pass
+  // its input through (out == input), not lose it.
+  {
+    std::vector<uint8_t> px(W * H * 4);
+    for (size_t i = 0; i < px.size(); i += 4) {
+      px[i] = 10; px[i+1] = 200; px[i+2] = 30; px[i+3] = 255;  // green-ish
+    }
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+    auto sk = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "module_type": "color.tone.brightness_contrast", "instance_key": "e" }
+      ],
+      "instances": {
+        "e": { "module_type": "color.tone.brightness_contrast",
+               "state": { "brightness": 0.9, "contrast": 0.0, "__opacity__": 0.0 } }
+      }
+    })JSON");
+    int32_t out = executor.execute(sk, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+    backend->submit();
+    auto o = backend->readbackTexture(out, W, H);
+    double g = 0; long n = 0;
+    for (size_t i = 1; i < o.size(); i += 4) { g += o[i]; ++n; }
+    g /= (double)n;
+    INFO("single-effect op=0: out handle " << out << " (in " << inTex
+         << ", outTex " << outTex << "), mean green " << g);
+    // Whatever handle comes back, its contents must be the untouched input.
+    CHECK(std::abs(g - 200.0) < 3.0);
+  }
+}
+
 #ifdef TEXT_WASM_PATH
 // Text-effect migration (step #4): source.text.plain loads from text.wasm — the same
 // bundle path as every other effect — instead of being statically linked. Its
