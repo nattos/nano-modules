@@ -1732,6 +1732,39 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
   CHECK(s[1] == 0);  // standaloneDispatches
   CHECK(s[5] == 0);  // gpuDispatches — nothing hit the GPU
   CHECK(s[6] == 1);  // identitySkipped
+
+  // A non-Normal __blend__ splits an otherwise-fusable pair: the moded stage
+  // goes standalone and wet/dry-blends against the MATERIALIZED upstream
+  // output. Golden: both stages brighten, second at Darken → min(stage1,
+  // brighter(stage1)) = stage1, so the pair must render exactly like stage 1
+  // alone.
+  auto refOne = nlohmann::json::parse(R"JSON({
+    "chain": [ { "module_type": "color.tone.brightness_contrast", "instance_key": "a" } ],
+    "instances": { "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.3, "contrast": 0.0 } } }
+  })JSON");
+  run(refOne, s);
+  auto refPx = backend->readbackTexture(outTex, W, H);
+  const double refMean = mean_rgb(refPx);
+
+  auto darkenPair = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "a" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "b" }
+    ],
+    "instances": {
+      "a": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.3, "contrast": 0.0 } },
+      "b": { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.3, "contrast": 0.0, "__blend__": 5 } }
+    }
+  })JSON");
+  run(darkenPair, s);
+  auto pairPx = backend->readbackTexture(outTex, W, H);
+  INFO("darken-pair stats: eff=" << s[0] << " std=" << s[1] << " fr=" << s[2]
+       << " gpu=" << s[5] << "  ref mean " << refMean
+       << " pair mean " << mean_rgb(pairPx));
+  CHECK(s[2] == 0);  // fusedRuns — the mode split the group
+  CHECK(s[1] == 2);  // both stages standalone
+  // Pixel golden: Darken against the materialized dry == stage-1-only output.
+  CHECK(std::abs(mean_rgb(pairPx) - refMean) < 2.0);
 }
 
 // REPRO (#alpha): "when the first generator has alpha in (0,1), effects after
