@@ -288,27 +288,35 @@ struct BarrelRuntime::Impl {
   // Recycled frame buffers (guarded by send_mu). resize() within retained
   // capacity is a cheap memset instead of a fresh mmap + page-fault storm —
   // allocating 7MB per preview frame measured ~14ms, dwarfing the actual
-  // pixel copy (~0.1ms).
+  // pixel copy (~0.1ms). Bounded by BYTES, not entry count: a count cap let
+  // the per-tick churn of tiny monitor buffers evict the multi-MB frames the
+  // pool exists for (every other full-res frame paid the alloc again).
+  static constexpr size_t kMaxBlobPoolBytes = 128 * 1024 * 1024;
   std::vector<std::vector<uint8_t>> blob_pool;
+  size_t blob_pool_bytes = 0;
 
   std::vector<uint8_t> acquireBlobBuf(size_t sizeHint) {
     std::lock_guard<std::mutex> lk(send_mu);
-    // Prefer a buffer whose retained capacity already fits — grabbing a
-    // small monitor buffer for a 7MB edit-preview frame would realloc and
-    // pay the page-fault cost the pool exists to avoid. Leave undersized
-    // buffers for the small routes.
+    // BEST fit, not first fit: a tiny monitor frame must not walk off with a
+    // multi-MB buffer (any capacity satisfies it) — that strands the big
+    // route on a fresh allocation (page-fault storm) every frame while its
+    // buffer circulates through a 9KB thumbnail's pipeline.
+    auto best = blob_pool.end();
     for (auto it = blob_pool.begin(); it != blob_pool.end(); ++it) {
-      if (it->capacity() >= sizeHint) {
-        auto b = std::move(*it);
-        blob_pool.erase(it);
-        return b;
-      }
+      if (it->capacity() < sizeHint) continue;
+      if (best == blob_pool.end() || it->capacity() < best->capacity()) best = it;
     }
-    return {};
+    if (best == blob_pool.end()) return {};
+    auto b = std::move(*best);
+    blob_pool.erase(best);
+    blob_pool_bytes -= b.capacity();
+    return b;
   }
   void releaseBlobBuf(std::vector<uint8_t>&& b) {
     std::lock_guard<std::mutex> lk(send_mu);
-    if (blob_pool.size() < 16) blob_pool.push_back(std::move(b));
+    if (blob_pool_bytes + b.capacity() > kMaxBlobPoolBytes) return;  // drop
+    blob_pool_bytes += b.capacity();
+    blob_pool.push_back(std::move(b));
   }
 
   bool routeInFlight(const std::string& route) {
@@ -687,7 +695,10 @@ struct BarrelRuntime::Impl {
               for (auto& blob : send_queue) {
                 if (blob.route == route) {
                   std::swap(blob.bytes, bytes);
-                  if (blob_pool.size() < 16) blob_pool.push_back(std::move(bytes));
+                  if (blob_pool_bytes + bytes.capacity() <= kMaxBlobPoolBytes) {
+                    blob_pool_bytes += bytes.capacity();
+                    blob_pool.push_back(std::move(bytes));
+                  }
                   replaced = true;
                   break;
                 }
