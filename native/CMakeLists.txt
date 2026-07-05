@@ -869,6 +869,20 @@ if(APPLE)
     catch_discover_tests(test_barrel_isolation)
   endif()
 
+  # Per-sketch output format: internal resolution/bit-depth override through
+  # the shared executor (identity guard, scaled intermediates, 16F precision).
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    add_executable(test_sketch_output_format tests/test_sketch_output_format.cpp)
+    target_link_libraries(test_sketch_output_format PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_sketch_output_format PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_sketch_output_format PRIVATE -Wno-attributes)
+    catch_discover_tests(test_sketch_output_format)
+  endif()
+
   # B3 end-to-end: drive executor.wasm through WAMR vs the native executor.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
      AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
