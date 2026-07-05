@@ -239,6 +239,14 @@ compile_shaders_compute_var_spv simulant lines
 _emit_spv_header_var simulant inject blur lines
 echo "  simulant shaders compiled (SPV: inject + blur + lines)"
 
+# smear — directional Pixulant. Two compute shaders over the same tilted footprint:
+#   blur    — one separable directional axis pass (run 2×: major then minor).
+#   scatter — Pixulant-style salted scatter + dive/difference/exposure cascade.
+compile_shaders_compute_var_spv smear blur
+compile_shaders_compute_var_spv smear scatter
+_emit_spv_header_var smear blur scatter
+echo "  smear shaders compiled (SPV: blur + scatter)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -270,6 +278,7 @@ wasm_build \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \
   ../shape_burst/main.cpp \
-  ../simulant/main.cpp
+  ../simulant/main.cpp \
+  ../smear/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

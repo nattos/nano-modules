@@ -28,6 +28,7 @@ NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 NANO_DECLARE_INSTANCE_EFFECT(simulant)
+NANO_DECLARE_INSTANCE_EFFECT(smear)
 
 extern "C" {
 
@@ -216,6 +217,18 @@ void nano_module_main() {
         "simulant,feedback,difference,blur,diffusion,reaction,lines,edge,sobel,flicker,contour,growth,resolume,wire",
         "la-water",
         NANO_INSTANCE_LIFECYCLE(simulant),
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.blur.smear",
+        "Smear",
+        "A directional Pixulant. A separable blur along a user-defined axis (angle) then its perpendicular minor axis, with a tilted/asymmetric kernel: the `tail` knob shrinks the forward (head) reach so a bright point trails a streak behind it instead of a symmetric blob, while `perspective` (tilt) ramps the minor-blur width across the whole frame along the major axis — narrow on the head side, wide on the rear (tilt-shift, not a per-streak comet). Two modes: Blur (two separable compute passes) and Scatter, which reuses the SAME tilted footprint but samples Pixulant-style — salted random displacement + the dive / abs-difference / exposure 'strange colours' cascade animated by `motion`.",
+        "filter",
+        "smear,blur,directional,motion,angle,tail,perspective,scatter,pixulant,dive,streak",
+        "la-wind",
+        NANO_INSTANCE_LIFECYCLE(smear),
+        nullptr, nullptr, nullptr, &smear::eval_visibility,
     });
 }
 
