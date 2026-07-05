@@ -25,9 +25,10 @@ cbuffer Uniforms : register(b3) {
   float major_x, major_y;         // screen-unit major dir (perspective proj)
   float tilt;                     // perspective gradient amount
   float dive;                     // mix(rhs, abs(lhs-rhs), dive)
-  float exposure_gain;            // photographic lift on the differenced image
+  float exposure_gain;            // grain-contrast lift on the differenced image
   float edge_artifacts;           // bottom-edge grain flair (0 = clean)
-  float _pad0, _pad1;
+  float exposure;                 // global output gain (shared with Blur mode)
+  float _pad1;
 };
 
 static const float LIGHT_STR = 0.35;  // rhs (light) copy displacement fraction
@@ -80,7 +81,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float4 lhs = sample_in(foot_scatter(uv, salt_base + 0.7,  HEAVY_STR));
 
   float3 diff = abs(lhs.rgb - rhs.rgb);
-  float3 rgb  = lerp(rhs.rgb, diff, dive) * exposure_gain;
+  float3 rgb  = lerp(rhs.rgb, diff, dive) * exposure_gain * exposure;
   float  a    = lerp(lhs.a, rhs.a, dive * 0.5);
 
   outputTex[gid.xy] = float4(saturate(rgb), a);

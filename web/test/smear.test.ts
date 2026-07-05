@@ -89,6 +89,39 @@ describe('Smear (filter.blur.smear) E2E', () => {
     r.trace('out').expectDifferentFrom(r.trace('in'), 100);
   });
 
+  it('exposure scales the smeared output up (brighter)', async () => {
+    // A blurred uniform gray stays that gray, so exposure scales it cleanly (no
+    // clamping ambiguity): 0.15 → ~0.6 at exposure 4.
+    const solid = (id: string, exposure: number, dump: string) => runEngineTest({
+      width: W, height: H, modules: MODULES,
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: {
+          anchor: null, wires: [],
+          chain: [
+            { type: 'module', module_type: 'source.solid_color', instance_key: 'sc@0', params: { color: [0.15, 0.15, 0.15] } },
+            { type: 'module', module_type: 'filter.blur.smear', instance_key: 'sm@0', params: { length: 0.5, width: 0.3, exposure, samples: 16 } },
+          ],
+        }},
+        { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+      ],
+      waitFrames: 8, captureTraceIds: ['out'], dumpName: dump,
+    });
+    const dim    = await solid('sm_e1', 1.0, 'smear_exp_1');
+    const bright = await solid('sm_e4', 4.0, 'smear_exp_4');
+    expect(dim.success).toBe(true);
+    expect(bright.success).toBe(true);
+    dim.trace('out').expectUniformColor({ r: 38, g: 38, b: 38 }, 12);     // 0.15·255
+    bright.trace('out').expectUniformColor({ r: 153, g: 153, b: 153 }, 16); // 0.6·255
+  });
+
+  it('softness reshapes the tail falloff', async () => {
+    const boxy = await runChain('sm_sf0', { angle: 0.0, length: 0.7, width: 0.04, tail: 1.0, softness: 0.0, samples: 24 }, 'smear_soft_0');
+    const soft = await runChain('sm_sf1', { angle: 0.0, length: 0.7, width: 0.04, tail: 1.0, softness: 1.0, samples: 24 }, 'smear_soft_1');
+    expect(boxy.success).toBe(true);
+    expect(soft.success).toBe(true);
+    soft.trace('out').expectDifferentFrom(boxy.trace('out'), 100);
+  });
+
   it('scatter motion animates the field over time', async () => {
     const early = await runChain('sm_m0', { mode: 1, length: 0.5, width: 0.2, dive: 1.0, motion: 1.0 }, 'smear_motion_early', 4);
     const late  = await runChain('sm_m1', { mode: 1, length: 0.5, width: 0.2, dive: 1.0, motion: 1.0 }, 'smear_motion_late', 60);

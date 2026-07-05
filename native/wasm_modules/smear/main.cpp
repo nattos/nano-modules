@@ -34,7 +34,7 @@
 namespace smear {
 
 static constexpr float PI          = 3.14159265358979323846f;
-static constexpr float MAJOR_MAX   = 0.22f;  // length=1 → 22% of the short axis (streak reach)
+static constexpr float MAJOR_MAX   = 1.10f;  // length=1 → 110% of the short axis (long streak reach)
 static constexpr float MINOR_MAX   = 0.15f;  // width=1  → 15% of the short axis (cross reach)
 static constexpr float MOTION_RATE = 0.8f;   // motion=1 → 0.8 salt-cycles/sec (scatter churn)
 
@@ -45,9 +45,12 @@ struct BlurUniforms {
   float reach_fwd, reach_back;  // asymmetric reach, short-axis fractions
   float major_x, major_y;       // screen-unit major dir (perspective proj)
   float tilt;                   // perspective amount (0 on the major pass)
+  float falloff_k;              // gaussian tail sharpness (from softness)
+  float exposure;               // output gain (final pass only)
   int   samples;
+  float _pad0, _pad1;
 };
-static_assert(sizeof(BlurUniforms) == 32, "BlurUniforms layout mismatch");
+static_assert(sizeof(BlurUniforms) == 48, "BlurUniforms layout mismatch");
 
 struct ScatterUniforms {
   float axis_maj_x, axis_maj_y;
@@ -60,7 +63,8 @@ struct ScatterUniforms {
   float dive;
   float exposure_gain;
   float edge_artifacts;
-  float _pad0, _pad1;
+  float exposure;
+  float _pad1;
 };
 static_assert(sizeof(ScatterUniforms) == 64, "ScatterUniforms layout mismatch");
 
@@ -80,6 +84,8 @@ struct State {
   float width   = 0.12f;
   float tail    = 0.5f;
   float tilt    = 0.0f;   // [-1,1]
+  float softness = 0.6f;  // gaussian tail sharpness
+  float exposure = 1.0f;  // global output gain
   int   samples = 12;
   float dive               = 0.7f;
   float motion             = 0.7f;
@@ -109,6 +115,7 @@ static inline float hash01(uint32_t v) {
 // the type-shared schema, so it takes the mode value (not per-instance state).
 static void apply_visibility(int mode) {
   bool scatter = (mode == MODE_SCATTER);
+  state::setFieldHidden("softness",           scatter);  // blur-only (kernel weights)
   state::setFieldHidden("samples",            scatter);
   state::setFieldHidden("dive",               !scatter);
   state::setFieldHidden("motion",             !scatter);
@@ -133,7 +140,7 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("filter.blur.smear", {1, 0, 0},
+  state::init("filter.blur.smear", {1, 0, 1},
     state::Schema()
       .helpField("intro",
         "## Smear\n"
@@ -166,8 +173,19 @@ void module_init() {
       .floatField("tilt", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Perspective: pinches the minor width on the head side, "
                   "expands it on the rear (flips sign).").label("Perspective", "Persp")
+      .group("look", "Look")
+        .groupHelp("*Exposure* scales the output up — a long/thin smear averages a "
+                   "bright line down toward black, so lift it back here.")
+      .floatField("exposure", 1.0f, 0.25f, 8.0f, state::PrimaryInput, nullptr, 0.05f,
+                  nullptr, "Output gain — brightens the (often dark) smeared result.")
+                  .label("Exposure", "Exp")
       .group("blur", "Blur")
-        .groupHelp("*Samples* trades speed for smoothness along the streak.")
+        .groupHelp("*Softness* is the gaussian sharpness of the streak's fade — low "
+                   "is boxy with a hard tail edge, high fades smoothly to nothing. "
+                   "*Samples* trades speed for smoothness along the streak.")
+      .floatField("softness", 0.6f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Gaussian tail fade: 0 = boxy/hard edge, 1 = soft fade-out.")
+                  .label("Softness", "Soft")
       .intField("samples", 12, 4, 32, state::PrimaryInput, 0, nullptr,
                 "Taps per separable pass (quality).").label("Samples", "Smpl")
       .group("scatter", "Scatter")
@@ -181,8 +199,8 @@ void module_init() {
                   nullptr, "Churn rate — how fast the scatter animates (0 = frozen).")
                   .label("Motion", "Mot")
       .floatField("dive_contrast_bias", 1.0f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Exposure/contrast ceiling of the grain at full dive.")
-                  .label("Exposure", "Exp")
+                  nullptr, "Contrast/brightness ceiling of the grain at full dive.")
+                  .label("Grain Contrast", "Grain")
       .floatField("dive_cap", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Upper clamp on Dive.").label("Dive Cap", "Cap")
       .floatField("edge_artifacts", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -268,6 +286,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "width"))             s->width              = state::patchFloat(i);
     else if (state::pathIs(p, l, "tail"))              s->tail               = state::patchFloat(i);
     else if (state::pathIs(p, l, "tilt"))              s->tilt               = state::patchFloat(i);
+    else if (state::pathIs(p, l, "softness"))          s->softness           = state::patchFloat(i);
+    else if (state::pathIs(p, l, "exposure"))          s->exposure           = state::patchFloat(i);
     else if (state::pathIs(p, l, "samples"))           s->samples            = state::patchInt(i);
     else if (state::pathIs(p, l, "dive"))              s->dive               = state::patchFloat(i);
     else if (state::pathIs(p, l, "motion"))            s->motion             = state::patchFloat(i);
@@ -314,6 +334,7 @@ void render(void* self, int vp_w, int vp_h) {
   float reach_fwd  = reach_len * (1.0f - clamp01(s->tail));  // head shrinks with tail
   float reach_back = reach_len;
   float reach_wid  = s->width * MINOR_MAX;
+  float falloff_k  = 1.0f + clamp01(s->softness) * 7.0f;     // boxy → soft gaussian fade
 
   if (s->mode == MODE_SCATTER) {
     float dive_c = clamp01(s->dive);
@@ -330,6 +351,7 @@ void render(void* self, int vp_w, int vp_h) {
     u.dive = dive_c;
     u.exposure_gain = std::exp2(expo);
     u.edge_artifacts = s->edge_artifacts;
+    u.exposure = s->exposure;
     s->uniform_scatter.writeOne(u);
 
     auto cp = gpu::ComputePass::begin();
@@ -354,6 +376,7 @@ void render(void* self, int vp_w, int vp_h) {
   um.axis_x = maj_x; um.axis_y = maj_y;
   um.reach_fwd = reach_fwd; um.reach_back = reach_back;
   um.major_x = ct; um.major_y = stt; um.tilt = 0.0f;
+  um.falloff_k = falloff_k; um.exposure = 1.0f;  // exposure applied on the final pass only
   um.samples = s->samples;
   s->uniform_major.writeOne(um);
 
@@ -361,6 +384,7 @@ void render(void* self, int vp_w, int vp_h) {
   un.axis_x = min_x; un.axis_y = min_y;
   un.reach_fwd = reach_wid; un.reach_back = reach_wid;
   un.major_x = ct; un.major_y = stt; un.tilt = s->tilt;
+  un.falloff_k = falloff_k; un.exposure = s->exposure;
   un.samples = s->samples;
   s->uniform_minor.writeOne(un);
 

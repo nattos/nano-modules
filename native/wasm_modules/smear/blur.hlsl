@@ -23,7 +23,10 @@ cbuffer Uniforms : register(b3) {
   float reach_fwd, reach_back; // asymmetric reach, in short-axis fractions
   float major_x, major_y;     // screen-unit major direction (for perspective proj)
   float tilt;                 // perspective gradient amount (0 on the major pass)
+  float falloff_k;            // gaussian tail sharpness: exp(-k·norm²). low = boxy, high = soft
+  float exposure;             // output gain (final pass only; 1.0 on the major pass)
   int   samples;              // taps across the span
+  float _pad0, _pad1;
 };
 
 // Interleaved-gradient noise — a cheap, stable (per-pixel, frame-independent)
@@ -60,11 +63,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // (back) side stretches the falloff → the tail.
     float norm = off >= 0.0 ? (fwd  > 1e-6 ? off / fwd  : 0.0)
                             : (back > 1e-6 ? off / back : 0.0);
-    float w = exp(-2.5 * norm * norm);
+    float w = exp(-falloff_k * norm * norm);
     float2 duv = off * float2(axis_x, axis_y);
     acc  += w * inputTex.SampleLevel(linearSampler, uv + duv, 0.0);
     wsum += w;
   }
 
-  outputTex[gid.xy] = wsum > 1e-6 ? acc / wsum : inputTex.SampleLevel(linearSampler, uv, 0.0);
+  float4 col = wsum > 1e-6 ? acc / wsum : inputTex.SampleLevel(linearSampler, uv, 0.0);
+  col.rgb *= exposure;                 // recover thin bright lines diluted by the blur
+  outputTex[gid.xy] = col;
 }
