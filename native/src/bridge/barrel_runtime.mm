@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include "bridge/bridge_server.h"
+#include "bridge/ws_server.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
@@ -173,6 +174,27 @@ size_t previewChunkBytes() {
   }();
   return v;
 }
+
+// Fan-out experiment (NANO_PREVIEW_FANOUT=N): N extra WS servers on
+// NANO_BRIDGE_PORT+1..+N, each with its own send thread. Preview frames are
+// sliced into NBPC chunks striped round-robin across the lanes, so each
+// connection's blocking flush loop (the ~109MB/s per-socket ceiling) runs in
+// parallel. The client opens all N sockets and reassembles by NBPC seq/idx.
+// Opt-in only: with the env set but no fanout clients connected, preview
+// frames go nowhere (fine for the experiment harness).
+int previewFanoutLanes() {
+  static int v = [] {
+    const char* e = getenv("NANO_PREVIEW_FANOUT");
+    int n = e ? atoi(e) : 0;
+    return n > 0 ? (n > 16 ? 16 : n) : 0;
+  }();
+  return v;
+}
+int bridgePortFromEnv() {
+  const char* p = getenv("NANO_BRIDGE_PORT");
+  const int port = p ? atoi(p) : 0;
+  return port > 0 ? port : 8081;
+}
 }  // namespace
 
 struct BarrelRuntime::Impl {
@@ -245,6 +267,112 @@ struct BarrelRuntime::Impl {
   std::atomic<bool>       send_stop{false};
   bool                    send_started = false;
 
+  // Per-route pipeline-depth gate (guarded by send_mu). The old back-pressure
+  // check only looked at send_queue — frames still in the READBACK stage
+  // (batch committed, getBytes pending on the serial readback queue) were
+  // invisible, so whenever the WS channel was faster than the readback stage,
+  // captures over-fired and the readback queue built a standing backlog
+  // (~1s at 30Hz with a 7MB edit preview). Track a route from capture-encode
+  // until its bytes leave the send worker; at most ONE frame per route may be
+  // in flight. The timestamp self-heals a leaked entry (a readback whose
+  // command buffer errored never calls back) after 1s.
+  std::unordered_map<std::string, double> inflight_routes;
+
+  bool routeInFlight(const std::string& route) {
+    std::lock_guard<std::mutex> lk(send_mu);
+    auto it = inflight_routes.find(route);
+    if (it == inflight_routes.end()) return false;
+    if (epochMsNow() - it->second > 1000.0) {  // self-heal leaked entries
+      inflight_routes.erase(it);
+      return false;
+    }
+    return true;
+  }
+  void markRouteInFlight(const std::string& route) {
+    std::lock_guard<std::mutex> lk(send_mu);
+    inflight_routes[route] = epochMsNow();
+  }
+  void clearRouteInFlight(const std::string& route) {
+    std::lock_guard<std::mutex> lk(send_mu);
+    inflight_routes.erase(route);
+  }
+
+  // Fan-out lanes (see previewFanoutLanes). Each lane owns a WsServer on its
+  // own port and a worker thread draining its own chunk queue, so N blocking
+  // flushes proceed in parallel.
+  // Chunk descriptor: lanes slice the shared frame buffer themselves, so the
+  // dispatch loop does no per-chunk memcpy (that 14-15ms serial copy was the
+  // scaling floor at 8 lanes).
+  struct FanoutChunk {
+    std::shared_ptr<std::vector<uint8_t>> frame;
+    size_t off = 0, len = 0;
+    uint32_t seq = 0;
+    uint16_t idx = 0, cnt = 0;
+  };
+  struct FanoutLane {
+    std::unique_ptr<WsServer> server;
+    std::thread worker;
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<FanoutChunk> queue;
+    bool stop = false;
+  };
+  std::vector<std::unique_ptr<FanoutLane>> fanout_lanes;
+
+  void startFanoutLanes() {
+    const int n = previewFanoutLanes();
+    if (n <= 0 || !fanout_lanes.empty()) return;
+    const int base = bridgePortFromEnv();
+    for (int i = 0; i < n; ++i) {
+      auto lane = std::make_unique<FanoutLane>();
+      lane->server = std::make_unique<WsServer>();
+      const int port = base + 1 + i;
+      if (!lane->server->start(port)) {
+        BRT_LOG("fanout lane %d: failed to bind port %d", i, port);
+        continue;
+      }
+      FanoutLane* lp = lane.get();
+      lane->worker = std::thread([lp] {
+        std::vector<uint8_t> bytes;
+        while (true) {
+          FanoutChunk c;
+          {
+            std::unique_lock<std::mutex> lock(lp->mu);
+            lp->cv.wait(lock, [lp] { return lp->stop || !lp->queue.empty(); });
+            if (lp->queue.empty()) {
+              if (lp->stop) return;
+              continue;
+            }
+            c = std::move(lp->queue.front());
+            lp->queue.pop_front();
+          }
+          bytes.resize(12 + c.len);
+          bytes[0] = 'N'; bytes[1] = 'B'; bytes[2] = 'P'; bytes[3] = 'C';
+          memcpy(bytes.data() + 4, &c.seq, 4);
+          memcpy(bytes.data() + 8, &c.idx, 2);
+          memcpy(bytes.data() + 10, &c.cnt, 2);
+          memcpy(bytes.data() + 12, c.frame->data() + c.off, c.len);
+          lp->server->broadcast_binary(bytes.data(), bytes.size());
+        }
+      });
+      BRT_LOG("fanout lane %d on port %d", i, port);
+      fanout_lanes.push_back(std::move(lane));
+    }
+  }
+
+  void stopFanoutLanes() {
+    for (auto& lane : fanout_lanes) {
+      {
+        std::lock_guard<std::mutex> lk(lane->mu);
+        lane->stop = true;
+      }
+      lane->cv.notify_one();
+      if (lane->worker.joinable()) lane->worker.join();
+      lane->server->stop();
+    }
+    fanout_lanes.clear();
+  }
+
   ~Impl() {
     // Preview readback callbacks (hopped off Metal's completion queue onto
     // the backend's serial readback queue) capture `this` and touch
@@ -257,11 +385,13 @@ struct BarrelRuntime::Impl {
     }
     send_cv.notify_one();
     if (send_thread.joinable()) send_thread.join();
+    stopFanoutLanes();
   }
 
   void startSendWorker() {
     if (send_started) return;
     send_started = true;
+    startFanoutLanes();
     send_thread = std::thread([this] { runSendWorker(); });
   }
 
@@ -281,8 +411,53 @@ struct BarrelRuntime::Impl {
         send_queue.pop_front();
       }
       if (previewTsEnabled()) stampPreviewTs(blob.bytes, 2, epochMsNow());
-      const size_t chunkBytes = previewChunkBytes();
+      size_t chunkBytes = previewChunkBytes();
       const double bcastT0 = previewTsEnabled() ? epochMsNow() : 0.0;
+      if (!fanout_lanes.empty()) {
+        if (chunkBytes == 0) chunkBytes = 512 * 1024;
+        // Frame-level latest-wins across the lanes: if the lanes still hold
+        // chunks (all connections saturated), drop this whole frame rather
+        // than growing the lane queues — never ship a partial frame.
+        size_t backlog = 0;
+        for (auto& lane : fanout_lanes) {
+          std::lock_guard<std::mutex> lk(lane->mu);
+          backlog += lane->queue.size();
+        }
+        if (backlog > fanout_lanes.size()) {
+          if (previewTsEnabled())
+            std::fprintf(stderr, "[preview_ts] fanout DROP frame (%zu bytes, backlog %zu chunks)\n",
+                         blob.bytes.size(), backlog);
+          clearRouteInFlight(blob.route);
+          continue;
+        }
+        static uint32_t fanSeq = 0;
+        const uint32_t seq = ++fanSeq;
+        const size_t n = (blob.bytes.size() + chunkBytes - 1) / chunkBytes;
+        auto frame = std::make_shared<std::vector<uint8_t>>(std::move(blob.bytes));
+        for (size_t i = 0; i < n; ++i) {
+          FanoutChunk c;
+          c.frame = frame;
+          c.off = i * chunkBytes;
+          c.len = std::min(chunkBytes, frame->size() - c.off);
+          c.seq = seq;
+          c.idx = (uint16_t)i;
+          c.cnt = (uint16_t)n;
+          auto& lane = fanout_lanes[i % fanout_lanes.size()];
+          {
+            std::lock_guard<std::mutex> lk(lane->mu);
+            lane->queue.push_back(std::move(c));
+          }
+          lane->cv.notify_one();
+        }
+        if (previewTsEnabled()) {
+          std::fprintf(stderr,
+              "[preview_ts] fanout dispatched %zu bytes x%zu(%zuKB) across %zu lanes in %.2f ms\n",
+              frame->size(), n, chunkBytes / 1024, fanout_lanes.size(),
+              epochMsNow() - bcastT0);
+        }
+        clearRouteInFlight(blob.route);
+        continue;
+      }
       if (chunkBytes > 0 && blob.bytes.size() > chunkBytes) {
         static uint32_t chunkSeq = 0;
         const uint32_t seq = ++chunkSeq;
@@ -305,6 +480,7 @@ struct BarrelRuntime::Impl {
               "[preview_ts] bcast-chunked %zu bytes x%zu(%zuKB) in %.2f ms\n",
               blob.bytes.size(), n, chunkBytes / 1024, epochMsNow() - bcastT0);
         }
+        clearRouteInFlight(blob.route);
         continue;
       }
       BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
@@ -315,6 +491,7 @@ struct BarrelRuntime::Impl {
                        return send_queue.size();
                      }());
       }
+      clearRouteInFlight(blob.route);
     }
   }
 
@@ -381,20 +558,14 @@ struct BarrelRuntime::Impl {
         slot = it->second;
       }
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
-      // Back-pressure gate: if this monitor's previous frame is still queued
-      // (WS slower than the preview rate), skip the capture entirely — no GPU
-      // scale/readback for pixels that would only replace an unsent frame.
+      // Back-pressure gate: if this monitor's previous frame is anywhere in
+      // the pipeline — readback stage OR send queue — skip the capture
+      // entirely. No GPU scale/readback for pixels that would only pile up
+      // behind an unfinished frame (see inflight_routes).
       std::string route = key;
       route += '\n';
       route += req.traceId;
-      {
-        std::lock_guard<std::mutex> lock(send_mu);
-        bool queued = false;
-        for (const auto& blob : send_queue) {
-          if (blob.route == route) { queued = true; break; }
-        }
-        if (queued) continue;
-      }
+      if (routeInFlight(route)) continue;
       uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
       uint32_t outH = req.height ? req.height : (uint32_t)slot.height;
       // Never read back more pixels than the source has — a request larger
@@ -415,6 +586,7 @@ struct BarrelRuntime::Impl {
       }
       std::string traceId = req.traceId;
       std::string keyCopy = key;
+      markRouteInFlight(route);
       const double tEncode = previewTsEnabled() ? epochMsNow() : 0.0;
       gpu->readbackTextureScaledAsync(
           slot.handle, (uint32_t)slot.width, (uint32_t)slot.height, outW, outH,
