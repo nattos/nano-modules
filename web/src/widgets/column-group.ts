@@ -37,6 +37,7 @@ import './spark-chart';
 import './dashboard-editor';
 import './smart-input';
 import './scalar-slider';
+import './editable-number';
 import './output-trace-card';
 import './texture-drop-zone';
 import '../editors/envelope-field';   // <envelope-field> for the wire Envelope stage
@@ -493,13 +494,11 @@ export class ColumnGroup extends MobxLitElement {
       background: var(--device-sel-bg);
     }
     .ofo-num {
-      width: 56px;
-      background: var(--app-bg-color2, transparent);
-      border: 1px solid var(--device-border);
-      border-radius: 2px;
-      color: var(--app-text-color1);
+      width: 52px;
+      flex: 0 0 auto;
       font-size: var(--app-fs-sm);
-      padding: 2px 4px;
+      --editable-text-pad: 2px 4px;
+      --editable-text-radius: 2px;
     }
     .ofo-note {
       font-size: var(--app-fs-sm);
@@ -1080,10 +1079,6 @@ export class ColumnGroup extends MobxLitElement {
       this.ofoCustom = null;
       this.patchOutputFormat({ resolution: { mode: 'fixed', width: w, height: h } });
     };
-    const numCommit = (e: Event, apply: (v: number) => void) => {
-      const v = Number((e.target as HTMLInputElement).value);
-      if (Number.isFinite(v) && v > 0) apply(v);
-    };
     return html`
       <div class="output-format-options" @click=${(e: Event) => e.stopPropagation()}>
         <div class="ofo-row">
@@ -1095,11 +1090,11 @@ export class ColumnGroup extends MobxLitElement {
             title="Custom multiplier"
             @click=${() => { this.ofoCustom = this.ofoCustom === 'scale' ? null : 'scale'; this.requestUpdate(); }}>…</button>
           ${showScaleCustom ? html`
-            <input class="ofo-num" type="number" min="0.1" max="8" step="0.05"
-              .value=${String(scale ?? 1)}
-              @change=${(e: Event) => numCommit(e, v => this.patchOutputFormat({
-                resolution: v === 1 ? null : { mode: 'multiplier', scale: v } }))}
-              @pointerdown=${(e: Event) => e.stopPropagation()} />` : nothing}
+            <editable-number class="ofo-num" label="Custom scale"
+              .value=${scale ?? 1} .min=${0.1} .max=${8} .step=${0.05}
+              @input=${(e: CustomEvent<number>) => this.patchOutputFormat({
+                resolution: e.detail === 1 ? null : { mode: 'multiplier', scale: e.detail } })}
+              @pointerdown=${(e: Event) => e.stopPropagation()}></editable-number>` : nothing}
         </div>
         <div class="ofo-row">
           <span class="ofo-row-label" title="Fixed internal resolution (stretched to fill the output)">Fixed</span>
@@ -1110,16 +1105,17 @@ export class ColumnGroup extends MobxLitElement {
             title="Custom fixed size"
             @click=${() => { this.ofoCustom = this.ofoCustom === 'fixed' ? null : 'fixed'; this.requestUpdate(); }}>…</button>
           ${showFixedCustom ? html`
-            <input class="ofo-num" type="number" min="8" max="8192" step="1" placeholder="W"
-              .value=${String(fixed?.width ?? 1920)}
-              @change=${(e: Event) => numCommit(e, v => this.patchOutputFormat({
-                resolution: { mode: 'fixed', width: Math.round(v), height: fixed?.height ?? 1080 } }))}
-              @pointerdown=${(e: Event) => e.stopPropagation()} />
-            <input class="ofo-num" type="number" min="8" max="8192" step="1" placeholder="H"
-              .value=${String(fixed?.height ?? 1080)}
-              @change=${(e: Event) => numCommit(e, v => this.patchOutputFormat({
-                resolution: { mode: 'fixed', width: fixed?.width ?? 1920, height: Math.round(v) } }))}
-              @pointerdown=${(e: Event) => e.stopPropagation()} />` : nothing}
+            <editable-number class="ofo-num" label="Custom width"
+              .value=${fixed?.width ?? 1920} .min=${8} .max=${8192} .step=${1}
+              @input=${(e: CustomEvent<number>) => this.patchOutputFormat({
+                resolution: { mode: 'fixed', width: Math.round(e.detail), height: fixed?.height ?? 1080 } })}
+              @pointerdown=${(e: Event) => e.stopPropagation()}></editable-number>
+            <span class="ofo-note">×</span>
+            <editable-number class="ofo-num" label="Custom height"
+              .value=${fixed?.height ?? 1080} .min=${8} .max=${8192} .step=${1}
+              @input=${(e: CustomEvent<number>) => this.patchOutputFormat({
+                resolution: { mode: 'fixed', width: fixed?.width ?? 1920, height: Math.round(e.detail) } })}
+              @pointerdown=${(e: Event) => e.stopPropagation()}></editable-number>` : nothing}
         </div>
         <div class="ofo-row">
           <span class="ofo-row-label" title="Working bit depth for the whole chain">Depth</span>
