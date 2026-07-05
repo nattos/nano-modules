@@ -10,16 +10,24 @@
  *
  * Pipeline (per frame, full viewport res — line widths are pixel-exact):
  *   stats + cstar (CAS contrast normalizer)
- *   → pyramid (4 Gaussian levels, fx::GaussianBlur)
- *   → structure tensor (Scharr + eigen)
+ *   → pyramid (4 incremental Gaussian levels, Blur16 — precision/sign-preserving)
+ *   → structure tensor (Scharr products → blur → eigen coherence/junction)
  *   → features (per-scale ridge/blob, softmax scale blend, width, offsets → M0..M3)
  *   → smooth (polarity/orientation coherence, confidence-weighted smoothing,
- *             fp16-safe shared centerline → S0..S2)
+ *             fp16-safe shared centerline → S0/S1/Sd)
  *   → reconstruct (bilinear flank/center taps, energy-gain repaint, box-AA
- *                  band/disc, deband, gates + hierarchical composite → tex_out)
+ *                  band/disc, solidify, deband, gates + hierarchical composite)
  *
- * STAGE 1 (this revision): skeleton — registration, full schema, passthrough
- * reconstruct, is_identity(strength<=0). Analysis passes land incrementally.
+ * `strength` enters ONLY at the composite → is_identity(strength<=0) lets the
+ * executor skip the whole thing. TimeIndependent (the deband dither is screen-
+ * anchored). See the re-edger README + reedger/{pipeline,reconstruct}.py for the
+ * per-pass math this ports 1:1; the study montages are the golden reference.
+ *
+ * Cost note: runs at full viewport res and holds ~26 RGBA16F intermediates
+ * (~430 MB at 1080p) across ~20 dispatches — the honest price of a per-pixel
+ * morphological classifier. A future pass could recycle textures freed mid-frame
+ * and/or cap to a proc resolution; line widths being pixel-exact is why it isn't
+ * downscaled today.
  *
  * Per-instance instance ABI (class-like): module_init() compiles the shared PSOs
  * + publishes the schema once per type; each chain entry gets its own State.

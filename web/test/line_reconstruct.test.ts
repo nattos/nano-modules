@@ -1,4 +1,5 @@
 import { runEngineTest } from './engine-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
@@ -157,3 +158,24 @@ describe('Line Reconstruct (filter.reconstruct.line) E2E', () => {
     ctr.trace('out').expectDifferentFrom(coh.trace('out'), 100);
   });
 });
+
+// Cross-backend parity: the whole multi-pass pipeline (≈20 dispatches, RGBA16F
+// intermediates, samplers, a big neighbour-gather centerline) must register and
+// dispatch on WebGPU AND native Metal (via the AOT sidecar — regenerate with
+// `native/wasm_modules/build_aot.sh nano` after any bundle rebuild). Single
+// effect on a solid input — enough to exercise every pass without depending on a
+// cross-bundle generator.
+forEachBackend((backend) => describe(`Line Reconstruct backend parity (${backend})`, () => {
+  jest.setTimeout(60000);
+  it('registers and dispatches every pass', async () => {
+    const f = await runGpuEffectTest({
+      module: 'filter.reconstruct.line', bundle: 'nano',
+      inputColor: [0.6, 0.3, 0.2, 1.0],
+      params: [['strength', 1.0], ['deband', 0.6], ['solidify', 0.6]],
+      dumpName: `line_reconstruct_parity_${backend}`,
+    });
+    expect(f.success).toBe(true);
+    expect(f.metadata?.id).toBe('filter.reconstruct.line');
+    expect(f.gpuErrors).toEqual([]);
+  });
+}));
