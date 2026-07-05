@@ -102,6 +102,34 @@ export function sketchBitDepth(sketch: Sketch): 8 | 16 {
   return sketch.outputFormat?.bitDepth === 16 ? 16 : 8;
 }
 
+/**
+ * Coerce a possibly-malformed output format into safe, persistable values.
+ * Non-finite numbers (NaN/±Infinity) serialize to JSON `null`, which the native
+ * parser reads back as a non-number and — pre-hardening — aborted on. Drop any
+ * resolution whose numbers aren't finite and positive, and collapse to
+ * `undefined` when only defaults survive (so untouched sketches stay
+ * byte-identical). Called on every write and on ingest.
+ */
+export function sanitizeOutputFormat(fmt?: SketchOutputFormat): SketchOutputFormat | undefined {
+  if (!fmt || typeof fmt !== 'object') return undefined;
+  const out: SketchOutputFormat = {};
+  if (fmt.bitDepth === 16) out.bitDepth = 16;
+  const res = fmt.resolution;
+  if (res && typeof res === 'object') {
+    if (res.mode === 'multiplier') {
+      const s = res.scale;
+      // scale === 1 is the identity default — dropped, not persisted.
+      if (Number.isFinite(s) && s > 0 && s !== 1) out.resolution = { mode: 'multiplier', scale: s };
+    } else if (res.mode === 'fixed') {
+      const { width: w, height: h } = res;
+      if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+        out.resolution = { mode: 'fixed', width: w, height: h };
+      }
+    }
+  }
+  return out.resolution || out.bitDepth ? out : undefined;
+}
+
 /** True when `fmt` encodes only defaults (1× multiplier, 8-bit) — the UI
  *  deletes the key in that case so untouched sketches stay byte-identical. */
 export function isDefaultOutputFormat(fmt?: SketchOutputFormat): boolean {
@@ -215,6 +243,13 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
   const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
   const { columns, ...rest } = sketch as any;   // drop any legacy columns blob
   const result = { ...rest, chain } as Sketch;
+  // Scrub any malformed output-format numbers a prior session may have persisted
+  // (e.g. a NaN scale round-tripped through JSON.stringify → null) so they can't
+  // reach the executor. Delete the key entirely when nothing non-default remains.
+  if ('outputFormat' in result) {
+    const clean = sanitizeOutputFormat(result.outputFormat);
+    if (clean) result.outputFormat = clean; else delete result.outputFormat;
+  }
   if (Array.isArray(result.wires)) {
     const keys = new Set(chain.map(e => e.instance_key));
     const seen = new Set<string>();

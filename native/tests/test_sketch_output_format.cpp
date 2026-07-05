@@ -187,6 +187,31 @@ TEST_CASE("resolution override renders internally scaled, output at host size",
     CHECK(hookW == 8192);
     CHECK(hookH == 16);
   }
+
+  // A present-but-non-number value must NOT abort the executor: JSON.stringify
+  // serializes a NaN/Infinity scale to `null`, and nlohmann's value<double>()
+  // throws on that (→ WASM `unreachable`). parseOutputFormat now reads defensively
+  // and falls back to the host size, exactly like the TS resolveInternalResolution.
+  SECTION("malformed numbers fall back to host size instead of aborting") {
+    const nlohmann::json badCases[] = {
+      {{"resolution", {{"mode", "multiplier"}, {"scale", nullptr}}}},
+      {{"resolution", {{"mode", "multiplier"}, {"scale", "0.5"}}}},
+      {{"resolution", {{"mode", "fixed"}, {"width", nullptr}, {"height", 24}}}},
+      {{"resolution", {{"mode", nullptr}}}},
+      {{"bitDepth", nullptr}},
+    };
+    for (const auto& of : badCases) {
+      hookW = hookH = 0;
+      auto sk = bcChainSketch({{0.4, 0.0}}, of);
+      int32_t h = ex.execute(sk, inTex, outTex, (int)W, (int)H, 1.0/60.0, true);
+      hx.backend->submit();
+      // Survived (no abort) and rendered at the host size with no resample pass.
+      CHECK(h == outTex);
+      CHECK(hookW == (int)W);
+      CHECK(hookH == (int)H);
+      CHECK(ex.outputBlitCount() == 0);
+    }
+  }
 }
 
 TEST_CASE("16F bit depth: format-3 intermediates, 8-bit output, no banding",

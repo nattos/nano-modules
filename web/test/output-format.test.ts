@@ -108,6 +108,34 @@ describe('Per-sketch output format E2E', () => {
     out.expectUniformColor({ r: 255, g: 0, b: 0 }, 10);
   });
 
+  it('malformed outputFormat (null scale) renders instead of aborting the worker', async () => {
+    // Regression: a NaN scale serializes to JSON null, which the native
+    // value<double>() rejected → WASM `unreachable` aborted the whole engine
+    // ([sketch default:source.shape_fold] RuntimeError: unreachable). This
+    // bypasses the web sanitizer to drive the malformed JSON straight into
+    // executor.wasm, which must now fall back to host size and keep rendering.
+    const sketch = {
+      anchor: null,
+      chain: [solid('red@0', [1, 0, 0])],
+      wires: [],
+      outputFormat: { resolution: { mode: 'multiplier', scale: null } },
+    } as unknown as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['source.solid_color'],
+      commands: [{ type: 'createSketch', sketchId: 'of_badscale', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'of_badscale' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 25,
+      dumpName: 'output_format_badscale',
+    });
+    expect(result.success).toBe(true);
+    const out = result.trace('out');
+    expect(out.width).toBe(64);          // fell back to host size, no crash
+    out.expectUniformColor({ r: 255, g: 0, b: 0 }, 10);
+  });
+
   it('live bit-depth toggle rebuilds instances and keeps rendering', async () => {
     // 8-bit → 16F on the SAME sketch id: the executor mints fresh instances
     // under the format-suffixed namespace and the web slot rebuild retranslates

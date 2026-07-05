@@ -19,7 +19,7 @@ import {
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
-import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, isDefaultOutputFormat } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat } from '../sketch-types';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
 export type { FieldConnectInfo } from '../sketch-types';
@@ -871,11 +871,15 @@ export class AppController {
    * triggers the executor-side instance rebuild).
    */
   setSketchOutputFormat(sketchId: string, fmt: SketchOutputFormat | undefined) {
+    // sanitizeOutputFormat both scrubs non-finite numbers (which would serialize
+    // to JSON null and be rejected by the executor) and collapses all-defaults to
+    // undefined — so the key is deleted exactly when nothing non-default remains.
+    const clean = sanitizeOutputFormat(fmt);
     this.mutate('Set output format', (draft: DatabaseState) => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
-      if (!fmt || isDefaultOutputFormat(fmt)) delete sk.outputFormat;
-      else sk.outputFormat = fmt;
+      if (!clean) delete sk.outputFormat;
+      else sk.outputFormat = clean;
     });
   }
 

@@ -115,7 +115,17 @@ OutputFormatOverride parseOutputFormat(const json& sketch, int hostW, int hostH)
   const auto it = sketch.find("outputFormat");
   if (it == sketch.end() || !it->is_object()) return ov;
   const json& of = *it;
-  if (of.value("bitDepth", 8) == 16) ov.fmtCode = 3;
+  // Read defensively: a present-but-non-number value (e.g. JSON.stringify(NaN)
+  // serializes to `null`) makes nlohmann's value<double>() throw, which aborts
+  // in the no-exceptions WASM build. Treat any non-number as absent, mirroring
+  // the TS twin resolveInternalResolution (Number.isFinite guards).
+  auto numOr = [](const json& obj, const char* key, double def) -> double {
+    const auto f = obj.find(key);
+    if (f == obj.end() || !f->is_number()) return def;
+    const double v = f->get<double>();
+    return std::isfinite(v) ? v : def;
+  };
+  if (numOr(of, "bitDepth", 8.0) == 16.0) ov.fmtCode = 3;
   const auto rit = of.find("resolution");
   if (rit != of.end() && rit->is_object()) {
     auto clampDim = [](double v) -> int {
@@ -125,9 +135,11 @@ OutputFormatOverride parseOutputFormat(const json& sketch, int hostW, int hostH)
       if (r > 8192) r = 8192;   // WebGPU core maxTextureDimension2D — parity cap
       return (int)r;
     };
-    const std::string mode = rit->value("mode", std::string());
+    const auto mit = rit->find("mode");
+    const std::string mode =
+        (mit != rit->end() && mit->is_string()) ? mit->get<std::string>() : std::string();
     if (mode == "multiplier") {
-      double s = rit->value("scale", 1.0);
+      double s = numOr(*rit, "scale", 1.0);
       if (!(s > 0.0)) s = 1.0;
       if (s < 0.1) s = 0.1;
       if (s > 8.0) s = 8.0;
@@ -135,8 +147,8 @@ OutputFormatOverride parseOutputFormat(const json& sketch, int hostW, int hostH)
       const int h = clampDim(hostH * s);
       if (w > 0 && h > 0) { ov.internalW = w; ov.internalH = h; }
     } else if (mode == "fixed") {
-      const int w = clampDim(rit->value("width", 0.0));
-      const int h = clampDim(rit->value("height", 0.0));
+      const int w = clampDim(numOr(*rit, "width", 0.0));
+      const int h = clampDim(numOr(*rit, "height", 0.0));
       if (w > 0 && h > 0) { ov.internalW = w; ov.internalH = h; }
     }
   }
