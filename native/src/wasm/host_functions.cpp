@@ -1102,6 +1102,14 @@ static void gpu_set_surface(wasm_exec_env_t env, int32_t tex, int32_t w, int32_t
 static int32_t gpu_get_texture_format(wasm_exec_env_t env, int32_t handle) {
   auto* g = get_gpu(env); return g ? g->getTextureFormat(handle) : -1;
 }
+// Sketch working format — what TextureFormat::SketchDefault (6) resolves to.
+// set_ is executor-only (once per execute()); get_ is part of the effect ABI.
+static void gpu_set_default_texture_format(wasm_exec_env_t env, int32_t format) {
+  auto* g = get_gpu(env); if (g) g->setDefaultTextureFormat(format);
+}
+static int32_t gpu_get_default_texture_format(wasm_exec_env_t env) {
+  auto* g = get_gpu(env); return g ? g->getDefaultTextureFormat() : 1;
+}
 static void gpu_begin_submit_batch(wasm_exec_env_t env) {
   auto* g = get_gpu(env); if (g) g->beginSubmitBatch();
 }
@@ -1386,6 +1394,8 @@ static NativeSymbol gpu_symbols[] = {
     // Executor-only ops (executor.wasm).
     {"set_surface", reinterpret_cast<void*>(gpu_set_surface), "(iii)", nullptr},
     {"get_texture_format", reinterpret_cast<void*>(gpu_get_texture_format), "(i)i", nullptr},
+    {"set_default_texture_format", reinterpret_cast<void*>(gpu_set_default_texture_format), "(i)", nullptr},
+    {"get_default_texture_format", reinterpret_cast<void*>(gpu_get_default_texture_format), "()i", nullptr},
     {"begin_submit_batch", reinterpret_cast<void*>(gpu_begin_submit_batch), "()", nullptr},
     {"end_submit_batch", reinterpret_cast<void*>(gpu_end_submit_batch), "()", nullptr},
 };

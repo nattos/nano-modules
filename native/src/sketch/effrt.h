@@ -100,10 +100,12 @@ int32_t effrt_fusion_fragment_name(int32_t inst, char* out, int32_t cap);
 // fusion that is platform-specific — the host resolves each stage's registered
 // fragment and runs the MSL (native) / WGSL (web) fused codegen. The executor
 // keeps the PSO cache + lifetime and builds the PSO from this source via the
-// gpu ABI.
+// gpu ABI. `out_fmt` is the TextureFormat code of the group's output texture
+// (the sketch's working format): the web WGSL codegen bakes it into the
+// generated storage declaration; the native MSL codegen ignores it.
 EFFRT_IMPORT("build_fused_source")
 int32_t effrt_build_fused_source(const int32_t* insts, int32_t count,
-                                 char* out, int32_t cap);
+                                 char* out, int32_t cap, int32_t out_fmt);
 
 }  // extern "C"
 

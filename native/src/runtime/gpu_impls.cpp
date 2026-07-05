@@ -304,6 +304,14 @@ int gpu_get_texture_format(int handle) {
   auto* b = backend();
   return b ? b->getTextureFormat(handle) : -1;
 }
+void gpu_set_default_texture_format(int format) {
+  auto* b = backend();
+  if (b) b->setDefaultTextureFormat(format);
+}
+int gpu_get_default_texture_format(void) {
+  auto* b = backend();
+  return b ? b->getDefaultTextureFormat() : 1;
+}
 void gpu_begin_submit_batch(void) {
   auto* b = backend();
   if (b) b->beginSubmitBatch();

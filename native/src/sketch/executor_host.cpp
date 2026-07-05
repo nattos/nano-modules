@@ -78,12 +78,12 @@ int32_t w_fusion_fragment_name(wasm_exec_env_t env, int32_t h, int32_t out, int3
   return effrt_fusion_fragment_name(h, o, o ? cap : 0);
 }
 int32_t w_build_fused_source(wasm_exec_env_t env, int32_t insts, int32_t count,
-                             int32_t out, int32_t cap) {
+                             int32_t out, int32_t cap, int32_t out_fmt) {
   char* ins = appBuf(env, insts, count * (int32_t)sizeof(int32_t));
   char* o = appBuf(env, out, cap);
   if (!ins) return 0;
   return effrt_build_fused_source(reinterpret_cast<const int32_t*>(ins), count,
-                                  o, o ? cap : 0);
+                                  o, o ? cap : 0, out_fmt);
 }
 
 // --- non-pointer wrappers (just drop env, forward the ints/double) ---
@@ -135,7 +135,7 @@ NativeSymbol g_effrt_symbols[] = {
     {"fusion_has_prepare", reinterpret_cast<void*>(w_fusion_has_prepare), "(i)i", nullptr},
     {"fusion_uniform_buffer", reinterpret_cast<void*>(w_fusion_uniform_buffer), "(i)i", nullptr},
     {"fusion_fragment_name", reinterpret_cast<void*>(w_fusion_fragment_name), "(iii)i", nullptr},
-    {"build_fused_source", reinterpret_cast<void*>(w_build_fused_source), "(iiii)i", nullptr},
+    {"build_fused_source", reinterpret_cast<void*>(w_build_fused_source), "(iiiii)i", nullptr},
 };
 
 }  // namespace

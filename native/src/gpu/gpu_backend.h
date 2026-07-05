@@ -237,6 +237,13 @@ public:
   virtual int32_t getSurfaceWidth() = 0;
   virtual int32_t getSurfaceHeight() = 0;
 
+  // Sketch working format: the TextureFormat code that SketchDefault (6)
+  // resolves to at texture/PSO creation time. 1 = RGBA8 (default), 3 =
+  // RGBA16F. Set by the executor once per execute() from the sketch's
+  // outputFormat.bitDepth.
+  virtual void setDefaultTextureFormat(int32_t code) { defaultTextureFormatCode_ = code; }
+  virtual int32_t getDefaultTextureFormat() const { return defaultTextureFormatCode_; }
+
   // Readback for testing
   virtual std::vector<uint8_t> readbackTexture(int32_t textureHandle,
                                                 uint32_t w, uint32_t h) = 0;
@@ -326,6 +333,10 @@ public:
 
   // Cleanup
   virtual void release(int32_t handle) = 0;
+
+ protected:
+  // See setDefaultTextureFormat. TextureFormat code, 1 = RGBA8.
+  int32_t defaultTextureFormatCode_ = 1;
 };
 
 // Factory

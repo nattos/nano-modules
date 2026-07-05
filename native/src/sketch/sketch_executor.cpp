@@ -5,6 +5,7 @@
 #include "sketch/param_smoothing.h"
 #include "sketch/host_blend.h"
 #include "sketch/host_sidechannel_blit.h"
+#include "sketch/host_output_blit.h"
 #include "sketch/sidechannel_bus.h"
 #include "sketch/exec_gpu.h"
 #include "sketch/effrt.h"
@@ -93,6 +94,54 @@ struct EffectRef {
 EffectRef instanceRef(const std::string& mt, const std::string& key) {
   return EffectRef{effrt_instance_for(mt.data(), (int32_t)mt.size(),
                                       key.data(), (int32_t)key.size())};
+}
+
+// --- Per-sketch output-format override (top-level `outputFormat`) ----------
+// { resolution?: {mode:'multiplier', scale} | {mode:'fixed', width, height},
+//   bitDepth?: 8 | 16 }. Absent/malformed → inactive (today's exact behavior).
+// The TS twin is resolveInternalResolution in web/src/sketch-types.ts — keep
+// the rounding/clamping rules identical so the UI's preview matches.
+struct OutputFormatOverride {
+  int internalW = 0;
+  int internalH = 0;
+  int fmtCode = 1;      // TextureFormat code: 1 = RGBA8, 3 = RGBA16F
+  bool active = false;
+};
+
+OutputFormatOverride parseOutputFormat(const json& sketch, int hostW, int hostH) {
+  OutputFormatOverride ov;
+  ov.internalW = hostW;
+  ov.internalH = hostH;
+  const auto it = sketch.find("outputFormat");
+  if (it == sketch.end() || !it->is_object()) return ov;
+  const json& of = *it;
+  if (of.value("bitDepth", 8) == 16) ov.fmtCode = 3;
+  const auto rit = of.find("resolution");
+  if (rit != of.end() && rit->is_object()) {
+    auto clampDim = [](double v) -> int {
+      if (!(v > 0.0)) return 0;
+      long r = std::lround(v);
+      if (r < 8) r = 8;
+      if (r > 8192) r = 8192;   // WebGPU core maxTextureDimension2D — parity cap
+      return (int)r;
+    };
+    const std::string mode = rit->value("mode", std::string());
+    if (mode == "multiplier") {
+      double s = rit->value("scale", 1.0);
+      if (!(s > 0.0)) s = 1.0;
+      if (s < 0.1) s = 0.1;
+      if (s > 8.0) s = 8.0;
+      const int w = clampDim(hostW * s);
+      const int h = clampDim(hostH * s);
+      if (w > 0 && h > 0) { ov.internalW = w; ov.internalH = h; }
+    } else if (mode == "fixed") {
+      const int w = clampDim(rit->value("width", 0.0));
+      const int h = clampDim(rit->value("height", 0.0));
+      if (w > 0 && h > 0) { ov.internalW = w; ov.internalH = h; }
+    }
+  }
+  ov.active = ov.internalW != hostW || ov.internalH != hostH || ov.fmtCode != 1;
+  return ov;
 }
 
 /**
@@ -521,7 +570,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
       // Fusion eligibility — structural (fusion kind/fragment/prepare, tap-free)
       // plus bypass/opacity, which are sketch state and thus only change on a
       // dirty frame. instanceFor materialises the per-key instance here.
-      EffectRef inst = instanceRef(mt, keyNamespace_ + instKey);
+      EffectRef inst = instanceRef(mt, nsPrefix_ + instKey);
       bool e = false;
       if (inst.valid()) {
         // A modulation source (no output texture) is a passthrough, never fused.
@@ -554,6 +603,34 @@ int32_t SketchExecutor::execute(
     int32_t inputHandle, int32_t outputHandle,
     int W, int H, double dt, bool sketchDirty) {
   if (!rawSketch.is_object()) return inputHandle;
+
+  // --- Per-sketch output format override -----------------------------------
+  // Derives the chain's INTERNAL render size + working format from the
+  // sketch's top-level `outputFormat`; the caller's W/H stay the OUTPUT size.
+  // When active, the whole chain runs at internal size/format and a final
+  // bilinear blit stretches (aspect-ignoring by design — the override is a
+  // quality/perf knob, output always fills the host surface) + converts into
+  // `outputHandle`. Inactive → every path below is byte-identical to before.
+  const OutputFormatOverride outputOv = parseOutputFormat(rawSketch, W, H);
+  const int outW = W, outH = H;
+  if (outputOv.active) { W = outputOv.internalW; H = outputOv.internalH; }
+  if (internalFmt_ != outputOv.fmtCode) {
+    // Working-format change: instances re-acquired under the format-suffixed
+    // namespace below are FRESH (new PSOs/textures under the new default), so
+    // the executor's per-instance caches keyed on bare instKey must reset —
+    // otherwise state application + seek would treat the new instances as
+    // already-driven.
+    internalFmt_ = outputOv.fmtCode;
+    lastAppliedState_.clear();
+    knownKeys_.clear();
+  }
+  nsPrefix_ = keyNamespace_ + (internalFmt_ == 3 ? "f16!" : "");
+  // Resolve TextureFormat::SketchDefault (6) to the working format for every
+  // texture/PSO the effects create during this execute(). Also seeds the
+  // backend's surface format so init-time Surface-format render PSOs match
+  // the intermediates. Per-execute because the backend is shared across
+  // executors (multiple barrel instances with different bit depths).
+  gpu_set_default_texture_format(internalFmt_);
 
   // Deterministic effect seeks (see setFrameTime). Two triggers land an effect on the
   // exact phase it should have at this frame's time rather than wherever a clamped tick
@@ -1003,6 +1080,17 @@ int32_t SketchExecutor::execute(
   intermediate_cursor_ = 0;
   int32_t finalHandle = inputHandle;
   bool anyDispatched = false;
+
+  // Where the walk lands the FINAL stage. Inactive override → the caller's
+  // outputHandle, exactly as before. Active → an internal-size/format
+  // intermediate; the output blit after the walk stretches/converts it into
+  // outputHandle.
+  int32_t chainTarget = outputHandle;
+  if (outputOv.active) {
+    if (!outputBlit_) outputBlit_ = std::make_unique<OutputBlit>();
+    outputBlit_->beginFrame();
+    chainTarget = nextIntermediate(W, H);
+  }
   stats_ = DebugStats{};        // per-frame debug counters (fillDebugStats / tests)
   railState_ = json::object();  // rebuilt per frame; published by the host
   modulationData_ = json::object();  // rebuilt per frame (modulated input bands)
@@ -1017,6 +1105,19 @@ int32_t SketchExecutor::execute(
   // chain-entry capture hooks only RECORD texture handles (readback is deferred
   // to after execute()), so monitored intermediates stay correct.
   gpu_begin_submit_batch();
+
+  // Resolution override: pre-resample the host input to the internal size
+  // ONCE, so per-pixel effects read it over the internal grid (texture reads
+  // are format-agnostic — only size matters, so a pure bit-depth override
+  // skips this). The scaled copy is a pool texture past the cursor, stable
+  // for the whole frame.
+  int32_t execInput = inputHandle;
+  if (outputOv.active && inputHandle >= 0 && (W != outW || H != outH)) {
+    const int32_t scaled = nextIntermediate(W, H);
+    if (outputBlit_->encode(inputHandle, outW, outH, scaled, W, H)) {
+      execInput = scaled;
+    }
+  }
 
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
     // Cached structural plan for this column (resolvable entries + rail index).
@@ -1037,7 +1138,7 @@ int32_t SketchExecutor::execute(
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railBuffers;
 
-    int32_t colInput = inputHandle;
+    int32_t colInput = execInput;
     const bool isLastCol = (colIdx == columns.size() - 1);
 
     // ----- Plan groups ---------------------------------------------
@@ -1127,7 +1228,7 @@ int32_t SketchExecutor::execute(
       const std::string& instKey = pe.instanceKey;
 
       const RegisteredModule* reg = pe.reg;
-      EffectRef inst = instanceRef(mt, keyNamespace_ + instKey);
+      EffectRef inst = instanceRef(mt, nsPrefix_ + instKey);
       if (!inst.valid()) return;
 
       // For a passthrough stage that is the column's FINAL output, the result
@@ -1143,9 +1244,9 @@ int32_t SketchExecutor::execute(
           src = nextIntermediate(W, H);
           gpu_clear_texture(src, 0.0f, 0.0f, 0.0f, 0.0f);
         }
-        if (isFinalStage && src != outputHandle) {
-          copyToOutput(src, outputHandle, W, H);
-          return outputHandle;
+        if (isFinalStage && src != chainTarget) {
+          copyToOutput(src, chainTarget, W, H);
+          return chainTarget;
         }
         return src;
       };
@@ -1222,7 +1323,7 @@ int32_t SketchExecutor::execute(
             ? sidechannel_bus::Read{}
             : sidechannel_bus::acquire(ch.c_str(), readerId.c_str(),
                                        sidechannelSeq);
-        int32_t out = isFinalStage ? outputHandle : nextIntermediate(W, H);
+        int32_t out = isFinalStage ? chainTarget : nextIntermediate(W, H);
         bool blitted = false;
         if (r.fresh && r.tex > 0) {
           if (!sidechannelBlit_) {
@@ -1328,7 +1429,7 @@ int32_t SketchExecutor::execute(
         return;
       }
 
-      int32_t outHandle = isFinalStage ? outputHandle : nextIntermediate(W, H);
+      int32_t outHandle = isFinalStage ? chainTarget : nextIntermediate(W, H);
       // Partial opacity (or any non-Normal blend mode) renders to a scratch
       // texture first, then blends.
       const bool partial = opacity < 1.0f || blendMode != 0;
@@ -1415,7 +1516,7 @@ int32_t SketchExecutor::execute(
       bool stagesOK = true;
       for (size_t k = g.firstK; k <= g.lastK; ++k) {
         const std::string& instKey = R[k].instanceKey;
-        EffectRef inst = instanceRef(R[k].moduleType, keyNamespace_ + instKey);
+        EffectRef inst = instanceRef(R[k].moduleType, nsPrefix_ + instKey);
         if (!inst.valid()) { stagesOK = false; break; }
         if (const json* st = findState(instances, instKey)) {
           maybeApplyState(inst, instKey, *st);
@@ -1448,6 +1549,13 @@ int32_t SketchExecutor::execute(
         cacheKey += R[g.firstK + idx].moduleType;
         stages.push_back(inst);
       }
+      // The web fused WGSL bakes the output storage format into the generated
+      // source, so 8-bit and 16F sketches must not share a PSO. Harmless
+      // natively (MSL is format-agnostic).
+      if (internalFmt_ != 1) {
+        cacheKey += "#f";
+        cacheKey += std::to_string(internalFmt_);
+      }
 
       const bool isFinalStage = isLastCol && isLastGroupInCol;
       const int32_t groupInput = colInput;
@@ -1471,9 +1579,9 @@ int32_t SketchExecutor::execute(
         // presents the INPUT instead of the processed image. When the barrier
         // is present only on some frames (rate-limited previews), that alternates
         // → flicker. Mid-chain identity groups keep aliasing (no copy).
-        if (isFinalStage && groupInput != outputHandle) {
-          copyToOutput(groupInput, outputHandle, W, H);
-          finalHandle = outputHandle;
+        if (isFinalStage && groupInput != chainTarget) {
+          copyToOutput(groupInput, chainTarget, W, H);
+          finalHandle = chainTarget;
         } else {
           finalHandle = groupInput;   // alias; colInput unchanged
         }
@@ -1494,11 +1602,13 @@ int32_t SketchExecutor::execute(
           for (auto s : stages) sh.push_back(s.h);
           std::string src(8192, '\0');
           int32_t len = effrt_build_fused_source(sh.data(), (int32_t)sh.size(),
-                                                 src.data(), (int32_t)src.size());
+                                                 src.data(), (int32_t)src.size(),
+                                                 internalFmt_);
           if (len > (int32_t)src.size()) {  // grew past the buffer — resize + retry
             src.assign((size_t)len, '\0');
             len = effrt_build_fused_source(sh.data(), (int32_t)sh.size(),
-                                           src.data(), (int32_t)src.size());
+                                           src.data(), (int32_t)src.size(),
+                                           internalFmt_);
           }
           if (len > 0) {
             int32_t sm = gpu_create_shader_module(src.data(), len);
@@ -1533,7 +1643,7 @@ int32_t SketchExecutor::execute(
       for (auto inst : stages) inst.doPrepare(W, H);
 
       const int32_t groupOutput = isFinalStage
-                                  ? outputHandle
+                                  ? chainTarget
                                   : nextIntermediate(W, H);
 
       int32_t pass = gpu_begin_compute_pass();
@@ -1613,6 +1723,22 @@ int32_t SketchExecutor::execute(
   // this command buffer and the copy is finished by the time next frame reads it.
   flushDelayedTextureRetains(W, H);
 
+  // Output-format override: stretch/convert the internal result into the
+  // caller's outputHandle. Runs whenever the walk landed the final stage in
+  // chainTarget — including all-passthrough frames, whose copyToOutput used
+  // to hit outputHandle directly (so the host still presents the image even
+  // when execute() returns inputHandle). Encoded inside the batch.
+  int hookW = W, hookH = H;
+  if (outputOv.active && finalHandle == chainTarget &&
+      chainTarget != outputHandle) {
+    if (outputBlit_->encode(chainTarget, W, H, outputHandle, outW, outH)) {
+      ++stats_.outputBlits;
+      finalHandle = outputHandle;
+      hookW = outW;
+      hookH = outH;
+    }
+  }
+
   // Flush the batched frame: commit + wait once. All GPU work (including any
   // monitored intermediate textures) is complete when this returns, so the
   // host's downstream consumers — the output-hook readback below and the FFGL
@@ -1620,7 +1746,7 @@ int32_t SketchExecutor::execute(
   gpu_end_submit_batch();
 
   if (anyDispatched && sketchOutputHook_) {
-    sketchOutputHook_(finalHandle, W, H);
+    sketchOutputHook_(finalHandle, hookW, hookH);
   }
   // Remember which instances ticked this frame so the NEXT frame can tell which keys
   // are newly activated (and seek them to clip-relative time). A key that dropped out
@@ -1640,15 +1766,17 @@ void SketchExecutor::copyToOutput(int32_t src, int32_t dst, int W, int H) {
 }
 
 int32_t SketchExecutor::nextIntermediate(int W, int H) {
-  if (W != intermediates_w_ || H != intermediates_h_) {
+  if (W != intermediates_w_ || H != intermediates_h_ ||
+      internalFmt_ != intermediates_fmt_) {
     for (int32_t h : intermediates_) { if (h > 0) gpu_release(h); }
     intermediates_.clear();
     intermediates_w_ = W; intermediates_h_ = H;
+    intermediates_fmt_ = internalFmt_;
   }
   if (intermediate_cursor_ >= (int)intermediates_.size()) {
-    // RGBA8 (format code 1) matches what every effect's compute
-    // dispatch is writing today.
-    int32_t h = gpu_create_texture((uint32_t)W, (uint32_t)H, 1);
+    // The sketch's working format: RGBA8 by default, RGBA16F when the
+    // sketch's outputFormat.bitDepth opts into 16F.
+    int32_t h = gpu_create_texture((uint32_t)W, (uint32_t)H, internalFmt_);
     intermediates_.push_back(h);
   }
   return intermediates_[intermediate_cursor_++];

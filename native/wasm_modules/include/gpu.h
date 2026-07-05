@@ -124,6 +124,12 @@ extern "C" {
   int gpu_get_input_texture(int index);
   __attribute__((import_module("gpu"), import_name("get_input_texture_count")))
   int gpu_get_input_texture_count(void);
+  // Concrete TextureFormat code of a live texture (never Surface/SketchDefault).
+  __attribute__((import_module("gpu"), import_name("get_texture_format")))
+  int gpu_get_texture_format(int handle);
+  // The sketch's working format (what SketchDefault resolves to): RGBA8 or RGBA16F.
+  __attribute__((import_module("gpu"), import_name("get_default_texture_format")))
+  int gpu_get_default_texture_format(void);
   __attribute__((import_module("gpu"), import_name("texture_for_field")))
   int gpu_texture_for_field(const char* path, int path_len);
   __attribute__((import_module("gpu"), import_name("buffer_for_field")))
@@ -175,6 +181,13 @@ enum class TextureFormat : int {
   RGBA16F = 3,  ///< 16-bit half-float per channel — recommended HDR format
   R32F    = 4,  ///< 32-bit float, single channel — high-precision data
   RGBA32F = 5,  ///< 32-bit float per channel — only when R16F isn't enough
+  /// The sketch's configured working format (RGBA8 today; RGBA16F when the
+  /// sketch opts into 16F output). Resolved host-side at creation/layout
+  /// time. This is the DEFAULT for createTexture / storageTex2d so effect
+  /// intermediates follow the sketch's precision automatically — pin an
+  /// explicit format only where the effect genuinely requires it (R32F sim
+  /// state, LUTs, byte-exact atlases).
+  SketchDefault = 6,
 };
 
 enum class FilterMode : int { Nearest = 0, Linear = 1 };
@@ -243,7 +256,10 @@ public:
   Bindings& tex2dArray(int slot) { return push({slot, BindingKind::Texture2DArray, 0, 0}); }
 
   /// Storage texture, write-only (the common case — output target).
-  Bindings& storageTex2d(int slot, TextureFormat fmt = TextureFormat::RGBA8) {
+  /// Defaults to the sketch's working format so bindings for tex_out /
+  /// default-format internals track the sketch's precision; pin a format
+  /// only when the bound texture's creation format is itself pinned.
+  Bindings& storageTex2d(int slot, TextureFormat fmt = TextureFormat::SketchDefault) {
     return push({slot, BindingKind::StorageTexture2D, static_cast<int>(fmt), 1});
   }
   /// Storage texture, read-write (in-place RMW). Format must support
@@ -569,7 +585,10 @@ struct Device {
     return Buffer(gpu_create_buffer(size, static_cast<int>(usage)));
   }
 
-  static Texture createTexture(int w, int h, TextureFormat format = TextureFormat::RGBA8) {
+  /// Default format is the sketch's working format (8-bit today, 16F when
+  /// the sketch opts in) — intermediates inherit the sketch's precision
+  /// unless the effect pins one explicitly.
+  static Texture createTexture(int w, int h, TextureFormat format = TextureFormat::SketchDefault) {
     return Texture(gpu_create_texture(w, h, static_cast<int>(format)));
   }
 
@@ -582,7 +601,7 @@ struct Device {
   /// storage write target) and read at any LOD via WGSL
   /// `textureSampleLevel(tex, samp, uv, lod)`.
   static Texture createTextureWithMips(int w, int h, int mip_count,
-                                        TextureFormat format = TextureFormat::RGBA8) {
+                                        TextureFormat format = TextureFormat::SketchDefault) {
     return Texture(gpu_create_texture_mips(w, h, static_cast<int>(format), mip_count));
   }
 
@@ -734,6 +753,27 @@ struct Device {
   static Texture renderTarget() { return Texture(gpu_get_render_target()); }
   static int renderTargetWidth() { return gpu_get_render_target_width(); }
   static int renderTargetHeight() { return gpu_get_render_target_height(); }
+
+  // --- Format queries ---
+  // Effects that allocate internals matching their input/output (or that
+  // branch on precision) read these instead of assuming RGBA8.
+
+  /// Concrete format of a live texture (never Surface/SketchDefault).
+  static TextureFormat textureFormat(Texture t) {
+    return static_cast<TextureFormat>(gpu_get_texture_format(t.id));
+  }
+  /// What SketchDefault resolves to for this sketch: RGBA8 or RGBA16F.
+  static TextureFormat defaultTextureFormat() {
+    return static_cast<TextureFormat>(gpu_get_default_texture_format());
+  }
+  /// Format of input texture `index` (invalid input → RGBA8).
+  static TextureFormat inputTextureFormat(int index) {
+    return static_cast<TextureFormat>(gpu_get_texture_format(gpu_get_input_texture(index)));
+  }
+  /// Format of the currently bound render target (tex_out).
+  static TextureFormat renderTargetFormat() {
+    return static_cast<TextureFormat>(gpu_get_texture_format(gpu_get_render_target()));
+  }
 
   static void submit() { gpu_submit(); }
 

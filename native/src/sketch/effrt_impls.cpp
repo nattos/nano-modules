@@ -165,7 +165,8 @@ int32_t effrt_fusion_fragment_name(int32_t inst, char* out, int32_t cap) {
 }
 
 int32_t effrt_build_fused_source(const int32_t* insts, int32_t count,
-                                 char* out, int32_t cap) {
+                                 char* out, int32_t cap, int32_t out_fmt) {
+  (void)out_fmt;  // MSL never bakes the storage format; web's WGSL twin does.
   if (!g_rt || count <= 0) return 0;
   // Resolve each stage's registered fragment MSL. Prefer the STABLE per-effect
   // key "<module_type>::<name>" (the bare "pixel" name is shared and overwritten

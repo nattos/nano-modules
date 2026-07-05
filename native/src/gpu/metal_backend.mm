@@ -67,17 +67,35 @@ public:
     return alloc(ResourceType::Buffer, buf);
   }
 
-  int32_t createTexture(uint32_t w, uint32_t h, int32_t format) override {
-    // TextureFormat enum (from wasm_modules/include/gpu.h):
-    //   0=BGRA8, 1=RGBA8, 3=RGBA16F, 4=R32F.
-    MTLPixelFormat pf;
+  // Decode a wire TextureFormat code (wasm_modules/include/gpu.h) to MTL.
+  // 2 (Surface) → the currently bound surface's format; 6 (SketchDefault) →
+  // the sketch working format set via setDefaultTextureFormat (1 or 3).
+  MTLPixelFormat pixelFormatFromCode(int32_t format) const {
     switch (format) {
-      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
-      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
-      case 3:  pf = MTLPixelFormatRGBA16Float; break;
-      case 4:  pf = MTLPixelFormatR32Float;    break;
-      default: pf = MTLPixelFormatRGBA8Unorm;  break;
+      case 0:  return MTLPixelFormatBGRA8Unorm;
+      case 1:  return MTLPixelFormatRGBA8Unorm;
+      case 2:  return surfaceFormat_;
+      case 3:  return MTLPixelFormatRGBA16Float;
+      case 4:  return MTLPixelFormatR32Float;
+      case 5:  return MTLPixelFormatRGBA32Float;
+      case 6: {
+        int32_t c = defaultTextureFormatCode_;
+        if (c == 2 || c == 6) c = 1;  // never self/surface-referential
+        return pixelFormatFromCode(c);
+      }
+      default: return MTLPixelFormatRGBA8Unorm;
     }
+  }
+
+  void setDefaultTextureFormat(int32_t code) override {
+    defaultTextureFormatCode_ = (code == 2 || code == 6) ? 1 : code;
+    // Seed the surface format so Surface-format PSOs created at effect init
+    // (before any set_surface this frame) match the sketch's intermediates.
+    surfaceFormat_ = pixelFormatFromCode(defaultTextureFormatCode_);
+  }
+
+  int32_t createTexture(uint32_t w, uint32_t h, int32_t format) override {
+    MTLPixelFormat pf = pixelFormatFromCode(format);
     MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
     desc.width = w;
     desc.height = h;
@@ -95,16 +113,8 @@ public:
 
   int32_t createTexture3D(uint32_t w, uint32_t h, uint32_t d,
                           int32_t format) override {
-    // Same TextureFormat enum as createTexture (0=BGRA8,1=RGBA8,3=RGBA16F,
-    // 4=R32F). 3D LUTs are typically rgba8unorm.
-    MTLPixelFormat pf;
-    switch (format) {
-      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
-      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
-      case 3:  pf = MTLPixelFormatRGBA16Float; break;
-      case 4:  pf = MTLPixelFormatR32Float;    break;
-      default: pf = MTLPixelFormatRGBA8Unorm;  break;
-    }
+    // 3D LUTs are typically rgba8unorm.
+    MTLPixelFormat pf = pixelFormatFromCode(format);
     MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
     desc.textureType = MTLTextureType3D;
     desc.width  = w;
@@ -123,14 +133,7 @@ public:
 
   int32_t createTextureArray(uint32_t w, uint32_t h,
                              int32_t format, int32_t layers) override {
-    MTLPixelFormat pf;
-    switch (format) {
-      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
-      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
-      case 3:  pf = MTLPixelFormatRGBA16Float; break;
-      case 4:  pf = MTLPixelFormatR32Float;    break;
-      default: pf = MTLPixelFormatRGBA8Unorm;  break;
-    }
+    MTLPixelFormat pf = pixelFormatFromCode(format);
     MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
     desc.textureType = MTLTextureType2DArray;
     desc.width = w;
@@ -261,14 +264,7 @@ public:
 
   int32_t createTextureWithMips(uint32_t w, uint32_t h,
                                  int32_t format, int32_t mipCount) override {
-    MTLPixelFormat pf;
-    switch (format) {
-      case 0:  pf = MTLPixelFormatBGRA8Unorm;  break;
-      case 1:  pf = MTLPixelFormatRGBA8Unorm;  break;
-      case 3:  pf = MTLPixelFormatRGBA16Float; break;
-      case 4:  pf = MTLPixelFormatR32Float;    break;
-      default: pf = MTLPixelFormatRGBA8Unorm;  break;
-    }
+    MTLPixelFormat pf = pixelFormatFromCode(format);
     MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
     desc.width = w;
     desc.height = h;
@@ -378,8 +374,7 @@ public:
       desc.vertexFunction = vsFunc;
       desc.fragmentFunction = fsFunc;
 
-      MTLPixelFormat fmt = (format == 0) ? MTLPixelFormatBGRA8Unorm :
-                           (format == 1) ? MTLPixelFormatRGBA8Unorm : surfaceFormat_;
+      MTLPixelFormat fmt = pixelFormatFromCode(format);
       desc.colorAttachments[0].pixelFormat = fmt;
       desc.colorAttachments[0].blendingEnabled = YES;
       desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -423,15 +418,7 @@ public:
           [NSString stringWithUTF8String:fsEntry.c_str()]];
       if (!vsFunc || !fsFunc) return -1;
 
-      // TextureFormat enum: 0=BGRA8, 1=RGBA8, 2=Surface, 3=RGBA16F, 4=R32F.
-      MTLPixelFormat fmt;
-      switch (format) {
-        case 0:  fmt = MTLPixelFormatBGRA8Unorm;  break;
-        case 1:  fmt = MTLPixelFormatRGBA8Unorm;  break;
-        case 3:  fmt = MTLPixelFormatRGBA16Float; break;
-        case 4:  fmt = MTLPixelFormatR32Float;    break;
-        case 2:  default: fmt = surfaceFormat_;   break;  // Surface
-      }
+      MTLPixelFormat fmt = pixelFormatFromCode(format);
 
       MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
       desc.vertexFunction = vsFunc;
@@ -479,14 +466,7 @@ public:
       desc.fragmentFunction = fsFunc;
       // One color attachment per target; fragment @location(i) → target i.
       for (int i = 0; i < targetCount && i < 8; ++i) {
-        MTLPixelFormat fmt;
-        switch (targetFormats[i]) {
-          case 0:  fmt = MTLPixelFormatBGRA8Unorm;  break;
-          case 1:  fmt = MTLPixelFormatRGBA8Unorm;  break;
-          case 3:  fmt = MTLPixelFormatRGBA16Float; break;
-          case 4:  fmt = MTLPixelFormatR32Float;    break;
-          case 2:  default: fmt = surfaceFormat_;   break;  // Surface
-        }
+        MTLPixelFormat fmt = pixelFormatFromCode(targetFormats[i]);
         desc.colorAttachments[i].pixelFormat = fmt;
         desc.colorAttachments[i].blendingEnabled = YES;
         desc.colorAttachments[i].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -871,6 +851,7 @@ public:
       case MTLPixelFormatRGBA8Unorm:  return 1;
       case MTLPixelFormatRGBA16Float: return 3;
       case MTLPixelFormatR32Float:    return 4;
+      case MTLPixelFormatRGBA32Float: return 5;
       default:                        return 1;
     }
   }

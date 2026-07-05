@@ -11,17 +11,20 @@
  * backends), a lazily-built PSO, one dispatch encoded into the executor's
  * per-frame command batch (never submitted here).
  *
- * The WGSL storage output is declared rgba8unorm — the same assumption
- * WetDryBlend bakes in, valid because web stage outputs (intermediates + the
- * canvas-facing output) are rgba8. The float read/write path also absorbs a
- * BGRA↔RGBA channel-order difference between the bus texture and the output
- * (native interop textures are BGRA), which a raw byte copy would swap — the
- * copy fast path is therefore gated on format EQUALITY.
+ * The WGSL storage output declaration is a TEMPLATE (host_wgsl_fmt.h): the
+ * rgba8unorm literal is rewritten to the concrete output format at PSO build
+ * time, one PSO per format (16F sketches write rgba16float intermediates).
+ * The float read/write path also absorbs a BGRA↔RGBA channel-order
+ * difference between the bus texture and the output (native interop textures
+ * are BGRA), which a raw byte copy would swap — the copy fast path is
+ * therefore gated on format EQUALITY.
  */
 
 #include "sketch/exec_gpu.h"
+#include "sketch/host_wgsl_fmt.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace sketch_executor {
@@ -81,14 +84,15 @@ class SidechannelBlit {
       gpu_copy_texture(srcTex, outTex);
       return true;
     }
-    if (!ensure()) return false;
+    const int32_t pso = ensurePso(outTex);
+    if (pso < 0) return false;
     const int32_t uni = nextUniform();
     if (uni < 0) return false;
     struct U { uint32_t dw, dh, sw, sh; } u{
         (uint32_t)W, (uint32_t)H, (uint32_t)sw, (uint32_t)sh};
     gpu_write_buffer(uni, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
     int32_t pass = gpu_begin_compute_pass();
-    gpu_compute_set_pso(pass, pso_);
+    gpu_compute_set_pso(pass, pso);
     gpu_compute_set_buffer(pass, uni, 0, /*slot*/ 2);
     gpu_compute_set_texture(pass, srcTex, 0, /*read*/ 0);
     gpu_compute_set_texture(pass, outTex, 1, /*write*/ 1);
@@ -98,18 +102,30 @@ class SidechannelBlit {
   }
 
  private:
-  bool ensure() {
-    if (pso_ < 0) {
-      // 1 = gpu::Backend::WebGPU → WGSL; anything else (Metal) → MSL.
-      const char* src = (gpu_get_backend() == 1) ? kSidechannelBlitWGSL
-                                                 : kSidechannelBlitMSL;
-      shader_ = gpu_create_shader_module(src, (int32_t)__builtin_strlen(src));
-      if (shader_ < 0) return false;
-      pso_ = gpu_create_compute_pso(shader_, "sidechannel_blit",
-                                    (int32_t)__builtin_strlen("sidechannel_blit"));
-      if (pso_ < 0) return false;
+  struct PsoEntry { int32_t fmtKey; int32_t shader; int32_t pso; };
+
+  // One PSO per WGSL storage output format on WebGPU; a single
+  // format-agnostic MSL PSO (key 0) on Metal.
+  int32_t ensurePso(int32_t outTex) {
+    // 1 = gpu::Backend::WebGPU → WGSL; anything else (Metal) → MSL.
+    const bool web = (gpu_get_backend() == 1);
+    int32_t key = 0;
+    if (web) {
+      key = gpu_get_texture_format(outTex);
+      if (key < 0) key = 1;
     }
-    return pso_ >= 0;
+    for (const auto& e : psos_) {
+      if (e.fmtKey == key) return e.pso;
+    }
+    const std::string src = web ? wgslWithStorageFormat(kSidechannelBlitWGSL, key)
+                                : std::string(kSidechannelBlitMSL);
+    int32_t shader = gpu_create_shader_module(src.c_str(), (int32_t)src.size());
+    if (shader < 0) return -1;
+    int32_t pso = gpu_create_compute_pso(shader, "sidechannel_blit",
+                                         (int32_t)__builtin_strlen("sidechannel_blit"));
+    if (pso < 0) { gpu_release(shader); return -1; }
+    psos_.push_back({key, shader, pso});
+    return pso;
   }
 
   // One uniform buffer PER ENCODE within a frame (see beginFrame); pool reused
@@ -125,15 +141,17 @@ class SidechannelBlit {
   }
 
   void releaseAll() {
-    if (pso_ >= 0)    gpu_release(pso_);
-    if (shader_ >= 0) gpu_release(shader_);
+    for (const auto& e : psos_) {
+      if (e.pso >= 0)    gpu_release(e.pso);
+      if (e.shader >= 0) gpu_release(e.shader);
+    }
+    psos_.clear();
     for (int32_t b : uniforms_) { if (b >= 0) gpu_release(b); }
     uniforms_.clear();
     uniCursor_ = 0;
-    pso_ = shader_ = -1;
   }
 
-  int32_t shader_ = -1, pso_ = -1;
+  std::vector<PsoEntry> psos_;
   std::vector<int32_t> uniforms_;
   int uniCursor_ = 0;
 };

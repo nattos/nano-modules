@@ -33,6 +33,10 @@ EXEC_GPU_IMPORT("clear_texture")   void    gpu_clear_texture(int32_t tex, float 
 // Executor-only host ops (see gpu_impls.cpp "Executor-only GPU ops").
 EXEC_GPU_IMPORT("set_surface")        void    gpu_set_surface(int32_t tex, int32_t w, int32_t h);
 EXEC_GPU_IMPORT("get_texture_format") int32_t gpu_get_texture_format(int32_t handle);
+// Set the sketch working format (what TextureFormat::SketchDefault resolves
+// to): 1 = RGBA8, 3 = RGBA16F. Called once per execute() from the sketch's
+// outputFormat.bitDepth; effect texture/PSO creation resolves against it.
+EXEC_GPU_IMPORT("set_default_texture_format") void gpu_set_default_texture_format(int32_t format);
 // Live backend: 0 = Metal, 1 = WebGPU, -1 = none (gpu::Backend). Executor-side
 // shader sources (the wet/dry blend) pick MSL vs WGSL from this — the executor
 // runs as executor.wasm on BOTH backends, and create_shader_module compiles the

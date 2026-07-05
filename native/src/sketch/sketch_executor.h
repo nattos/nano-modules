@@ -62,6 +62,7 @@ namespace sketch_executor {
 class ModuleRegistry;  // native registry (full def in module_registry.h)
 class WetDryBlend;      // host-side opacity wet/dry blend (host_blend.h)
 class SidechannelBlit;  // host-side sidechannel scaled blit (host_sidechannel_blit.h)
+class OutputBlit;       // host-side output resample/convert (host_output_blit.h)
 
 class SketchExecutor {
  public:
@@ -207,6 +208,14 @@ class SketchExecutor {
   int fusedRunCount() const { return stats_.fusedRuns; }
 
   /**
+   * Number of final output-format blits (resample/convert into the caller's
+   * outputHandle) the LAST execute() issued. 0 whenever the sketch has no
+   * active `outputFormat` override — the identity-path guard tests assert on
+   * this to prove the default path gained no extra GPU passes.
+   */
+  int outputBlitCount() const { return stats_.outputBlits; }
+
+  /**
    * Per-frame debug counters for the LAST execute(). Drives the editor's "Debug
    * Info" panel — the host reads these after each frame (web: via the
    * `executor_debug_stats` export). Writes 7 int32s in this fixed order:
@@ -290,11 +299,25 @@ class SketchExecutor {
 
   // Intermediate Metal textures, walked from cursor 0 each frame.
   // Grown lazily up to (sketch's module count − 1); released on
-  // destruction or viewport change.
+  // destruction or viewport/format change.
   std::vector<int32_t> intermediates_;
   int intermediates_w_ = 0;
   int intermediates_h_ = 0;
+  int intermediates_fmt_ = 1;   // TextureFormat code of the pooled textures
   int intermediate_cursor_ = 0;
+
+  // The sketch's working texture format (TextureFormat code: 1 = RGBA8,
+  // 3 = RGBA16F), parsed from the sketch's top-level `outputFormat.bitDepth`
+  // each execute(). Drives the intermediate pool, the SketchDefault (6)
+  // resolution in the backend (gpu_set_default_texture_format), the fused-PSO
+  // cache key, and the format-suffixed instance key namespace (a bit-depth
+  // change mints FRESH effect instances whose PSOs/textures were created
+  // under the new default — old-format instances stay pooled, so toggling
+  // back is instant and growth is bounded at 2x).
+  int internalFmt_ = 1;
+  // Effective instance-key prefix for this frame: keyNamespace_ plus a
+  // format suffix when internalFmt_ != RGBA8. Recomputed each execute().
+  std::string nsPrefix_;
 
   // Per-frame float-rail values for editor telemetry (see lastRailState()).
   nlohmann::json railState_;
@@ -420,6 +443,7 @@ class SketchExecutor {
     int fusedRuns = 0;           // fused-kernel dispatches actually issued
     int fusedStages = 0;         // surviving (non-identity) stages folded into fused runs
     int identitySkipped = 0;     // stages skipped via the identity predicate
+    int outputBlits = 0;         // final output-format resample/convert passes
   };
   DebugStats stats_;
 
@@ -444,6 +468,11 @@ class SketchExecutor {
   // Lazily-created scaled blit servicing util.sidechannel_in stages
   // (host_sidechannel_blit.h).
   std::unique_ptr<SidechannelBlit> sidechannelBlit_;
+
+  // Lazily-created output resample/convert pass for the per-sketch
+  // output-format override (host_output_blit.h). Only touched when the
+  // override is active.
+  std::unique_ptr<OutputBlit> outputBlit_;
 
   // Format-correct copy of src → dst (a render-pass copy via the wet/dry blend
   // at full opacity). Unlike gpu_copy_texture (a raw byte blit, correct only
