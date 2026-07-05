@@ -412,6 +412,11 @@ export class ColumnGroup extends MobxLitElement {
       align-items: stretch;
       padding: 0;
       cursor: default;
+      /* Drop the shared z-index:0 stacking context so the header row / options
+       * (z-index:11) can lift above the texture-drop-zone overlay (z-index:10),
+       * while the marker's non-interactive body stays below it as the drop
+       * target. The drop-zone is still contained by .chain-marker's isolation. */
+      z-index: auto;
     }
     .chain-marker-label {
       font-size: var(--app-fs-sm);
@@ -422,15 +427,32 @@ export class ColumnGroup extends MobxLitElement {
       text-align: center;
       cursor: pointer;
     }
-    /* Input marker: keep the label centered while the gear floats right. */
+    /* Input marker header — mirror the effect-card header: glyph, then name
+     * aligned left, gear pinned right. Lifted above the texture-drop-zone
+     * overlay (z-index:10) so the gear and its options stay clickable. */
     .chain-marker-label-row {
+      display: flex;
+      align-items: center;
+      padding: 6px 10px;
       position: relative;
+      z-index: 11;
+    }
+    .chain-marker-glyph {
+      flex: 0 0 auto;
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      --icon-size: 14px;
+      color: var(--app-text-color2);
+    }
+    .chain-marker-label-row > .chain-marker-label {
+      flex: 1;
+      min-width: 0;
+      padding: 0;
+      text-align: left;
     }
     .chain-marker-label-row > .device-gear-btn {
-      position: absolute;
-      right: 8px;
-      top: 50%;
-      transform: translateY(-50%);
+      margin-left: auto;
     }
     /* Per-sketch output-format options (Input card gear section). */
     .output-format-options {
@@ -438,6 +460,9 @@ export class ColumnGroup extends MobxLitElement {
       flex-direction: column;
       gap: 4px;
       padding: 0 10px 8px;
+      /* Above the drop-zone overlay so its buttons/inputs are clickable. */
+      position: relative;
+      z-index: 11;
     }
     .ofo-row {
       display: flex;
@@ -984,12 +1009,14 @@ export class ColumnGroup extends MobxLitElement {
       <div class="chain-marker" ?selected=${isSelected}>
         <div class="chain-marker-inner">
           <div class="chain-marker-label-row">
+            <ui-icon class="chain-marker-glyph" icon="la-image"></ui-icon>
             <div class="chain-marker-label" @click=${selectMarker}>Input</div>
             ${canFormat ? html`
               <button
                 class="device-gear-btn"
                 title=${nonDefault ? 'Sketch output format (overridden)' : 'Sketch output format'}
                 ?data-active=${this.inputOptionsOpen || nonDefault}
+                @pointerdown=${(e: Event) => e.stopPropagation()}
                 @click=${(e: Event) => {
                   e.stopPropagation();
                   this.inputOptionsOpen = !this.inputOptionsOpen;
