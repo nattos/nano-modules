@@ -247,6 +247,17 @@ compile_shaders_compute_var_spv smear scatter
 _emit_spv_header_var smear blur scatter
 echo "  smear shaders compiled (SPV: blur + scatter)"
 
+# line_reconstruct — SMAA-like morphological line/point reconstructor + deband.
+# Multi-pass classify-then-resolve (all sharing common.hlsl); uses the shared
+# fx::GaussianBlur (blur_shaders.h, compiled above for triangulate) for the
+# fixed-sigma scale-space pyramid, structure-tensor smoothing, and colour blurs.
+#   reconstruct — pass 6: bilinear flank/center taps → crisp box-AA repaint +
+#                 deband, gated + hierarchically composited → tex_out (rgba8).
+#   (stats/cstar/tensor/features/smooth/centerline passes land incrementally.)
+compile_shaders_compute_var_spv line_reconstruct reconstruct
+_emit_spv_header_var line_reconstruct reconstruct
+echo "  line_reconstruct shaders compiled (SPV: reconstruct)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -279,6 +290,7 @@ wasm_build \
   ../tri_shear/main.cpp \
   ../shape_burst/main.cpp \
   ../simulant/main.cpp \
-  ../smear/main.cpp
+  ../smear/main.cpp \
+  ../line_reconstruct/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

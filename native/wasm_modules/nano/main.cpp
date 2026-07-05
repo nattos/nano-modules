@@ -29,6 +29,10 @@ NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 NANO_DECLARE_INSTANCE_EFFECT(simulant)
 NANO_DECLARE_INSTANCE_EFFECT(smear)
+NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
+// is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
+// registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
+namespace line_reconstruct { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -229,6 +233,18 @@ void nano_module_main() {
         "la-wind",
         NANO_INSTANCE_LIFECYCLE(smear),
         nullptr, nullptr, nullptr, &smear::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.reconstruct.line",
+        "Line Reconstruct",
+        "SMAA-like morphological line reconstructor. Classifies every pixel as line / point / step-edge / junction / smooth-gradient (with subpixel center, width and orientation) in small fixed-footprint passes, then re-renders lines and points as crisp, uniform-width, box-AA strokes (the clean '4K-downsampled' look) and de-bands smooth gradients. Classify-then-resolve (SMAA), contrast-normalized (CAS). Great for de-crunching aliased or lightly-blurred line art and graphics; Uniformity trades honest per-line width against forcing every stroke to a target Line Width, Solidify rescues aliased/dashed stroke colour, and Deband collapses staircased gradients. Debug View exposes the classifier stages. Strength 0 is a pass-through.",
+        "filter",
+        "reconstruct,line,edge,smaa,antialias,deband,detail,morphology,ridge,width,clarity,points",
+        "la-bezier-curve",
+        NANO_INSTANCE_LIFECYCLE(line_reconstruct),
+        &line_reconstruct::is_identity,
     });
 }
 
