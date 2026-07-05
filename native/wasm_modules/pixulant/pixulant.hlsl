@@ -59,6 +59,19 @@ float2 rss_scatter(float2 uv, float salt, float strength) {
   return outUV;
 }
 
+// Soft in-frame weight for a SAMPLING uv: 1 when the tap lands comfortably inside
+// [0,1]^2, ramping to 0 as it overshoots an edge by FRAME_MARGIN. Off-frame taps
+// return a CLAMPED edge/corner texel (ClampToEdge), and a corner texel is the
+// attractor for an entire off-screen quadrant — so a lone bright corner pixel gets
+// outsized weight and its abs-difference blooms into flashing grain. We fade the
+// dive by this weight so off-frame taps contribute no manufactured difference.
+static const float FRAME_MARGIN = 0.03;
+float in_frame(float2 uv) {
+  float2 d = min(uv, 1.0 - uv);                 // signed dist to nearest edge (>0 inside)
+  float2 m = saturate(d / FRAME_MARGIN + 1.0);  // 1 at/inside the edge, 0 by MARGIN outside
+  return m.x * m.y;
+}
+
 // Sample the input, optionally reproducing Resolume's bottom-edge bug: sampling
 // past the bottom (here uv.y > 1, since HLSL row 0 is the TOP — the screen
 // bottom is large uv.y) returned a constant edge value that survives the
@@ -92,9 +105,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 uvT = rss_scatter(uvA, salt_rhs, str_rhs); // inner (1st) pass = RSS191
   float4 lhs = sample_in(uvT);
 
+  // Off-frame taps clamp to a replicated edge/corner texel, whose abs-difference
+  // is manufactured (and, near corners, hugely over-weighted) grain. The dive is
+  // trustworthy only where BOTH taps stay on-frame — fade it out otherwise so the
+  // pixel falls back to the light copy (rhs) instead of a boosted corner halo.
+  // edge_artifacts (opt-in) restores full off-frame weight = the reproduced bug.
+  float valid = in_frame(uvT) * in_frame(uvR);
+  valid = lerp(valid, 1.0, saturate(edge_artifacts));
+
   // ISF "Difference": mix(rhs, abs(lhs-rhs), Alpha*2). diff_t = Alpha*2 = Dive.
   float3 diff = abs(lhs.rgb - rhs.rgb);
-  float3 rgb  = lerp(rhs.rgb, diff, diff_t);
+  float3 rgb  = lerp(rhs.rgb, diff, diff_t * valid);
 
   // Exposure node: photographic gain that lifts the (mostly dark) difference —
   // this is what makes the edge halo bloom into "strange colours".

@@ -144,6 +144,25 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
     expect(topDiff).toBeLessThan(bottomDiff); // localized there (top unreached)
   });
 
+  it('masks off-frame taps so edges do not bloom (the corner-flash fix)', async () => {
+    // The reported glitch: at high scatter the heavy tap lands far off-frame, and
+    // ClampToEdge replicates the edge/corner texel (a corner is the attractor for a
+    // whole off-screen quadrant), so its abs-difference bloomed into flashing grain.
+    // The fix fades the dive where a tap leaves the frame; edge_artifacts=1 restores
+    // that off-frame weight (the old behaviour). The bottom-edge white injection only
+    // fires past uv.y>1, so the TOP band isolates exactly the off-frame mask: the
+    // masked (clean) top band must be less lit than the un-masked one.
+    const clean = await runChain('px_mask_c', { dive: 1.0, scatter: 0.6, motion: 0.0, edge_artifacts: 0.0 }, 'pixulant_mask_clean');
+    const bloom = await runChain('px_mask_b', { dive: 1.0, scatter: 0.6, motion: 0.0, edge_artifacts: 1.0 }, 'pixulant_mask_bloom');
+    expect(clean.success).toBe(true);
+    expect(bloom.success).toBe(true);
+    const a = clean.trace('out'), b = bloom.trace('out');
+    let sumClean = 0, sumBloom = 0;
+    a.forEachPixel((c, x, y) => { if (y < 12) sumClean += c.r + c.g + c.b; });
+    b.forEachPixel((c, x, y) => { if (y < 12) sumBloom += c.r + c.g + c.b; });
+    expect(sumClean).toBeLessThan(sumBloom);   // masking off-frame taps darkens the top band
+  });
+
   it('motion animates the scatter field over time', async () => {
     // Same params, but the chain is stepped further — the churn must move.
     const sketch = (id: string): Sketch => ({
