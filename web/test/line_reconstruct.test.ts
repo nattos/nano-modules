@@ -71,4 +71,21 @@ describe('Line Reconstruct (filter.reconstruct.line) E2E', () => {
     expect(r.success).toBe(true);
     r.trace('out').expectSameAs(r.trace('in'), 2);
   });
+
+  // Detection sanity: on a structured grid the classifier fires — the Class /
+  // Width / Orientation debug views are non-solid and differ from passthrough
+  // and from each other. (Validates stats→pyramid→tensor→features end-to-end.)
+  it('debug views expose a non-trivial classification of the grid', async () => {
+    const grid = { cell_size: 0.2, line_width: 0.15 };
+    const off  = await runChain('lr_dbg_off',  { strength: 1.0, debug_view: 0 }, 'line_reconstruct_dbg_off', grid);
+    const cls  = await runChain('lr_dbg_cls',  { strength: 1.0, debug_view: 1 }, 'line_reconstruct_dbg_class', grid);
+    const wid  = await runChain('lr_dbg_wid',  { strength: 1.0, debug_view: 2 }, 'line_reconstruct_dbg_width', grid);
+    const ori  = await runChain('lr_dbg_ori',  { strength: 1.0, debug_view: 3 }, 'line_reconstruct_dbg_orient', grid);
+    for (const r of [off, cls, wid, ori]) expect(r.success).toBe(true);
+    // The classifier lit up (not a black frame) and reads differently from input.
+    cls.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    cls.trace('out').expectDifferentFrom(off.trace('out'), 100);
+    wid.trace('out').expectDifferentFrom(cls.trace('out'), 100);
+    ori.trace('out').expectDifferentFrom(cls.trace('out'), 100);
+  });
 });

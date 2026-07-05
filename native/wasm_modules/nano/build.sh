@@ -251,12 +251,23 @@ echo "  smear shaders compiled (SPV: blur + scatter)"
 # Multi-pass classify-then-resolve (all sharing common.hlsl); uses the shared
 # fx::GaussianBlur (blur_shaders.h, compiled above for triangulate) for the
 # fixed-sigma scale-space pyramid, structure-tensor smoothing, and colour blurs.
-#   reconstruct — pass 6: bilinear flank/center taps → crisp box-AA repaint +
-#                 deband, gated + hierarchically composited → tex_out (rgba8).
-#   (stats/cstar/tensor/features/smooth/centerline passes land incrementally.)
+#   stats/cstar  — Rec.709 luma, 3x3 min/max/contrast, 9x9-max CAS normalizer.
+#   blur16       — RGBA16F separable Gaussian (precision/sign-preserving; used for
+#                  the scale-space pyramid, tensor smoothing, and colour blurs).
+#   tensor_grad/tensor — Scharr products → structure-tensor coherence + junction.
+#   features     — per-scale ridge/blob, softmax scale-blend, width, offsets → M0..M3.
+#   reconstruct  — pass 6: bilinear flank/center taps → crisp box-AA repaint +
+#                  deband, gated + hierarchically composited → tex_out (rgba8).
+#   (smooth/centerline passes land incrementally.)
+compile_shaders_compute_var_spv line_reconstruct stats
+compile_shaders_compute_var_spv line_reconstruct cstar
+compile_shaders_compute_var_spv line_reconstruct blur16
+compile_shaders_compute_var_spv line_reconstruct tensor_grad
+compile_shaders_compute_var_spv line_reconstruct tensor
+compile_shaders_compute_var_spv line_reconstruct features
 compile_shaders_compute_var_spv line_reconstruct reconstruct
-_emit_spv_header_var line_reconstruct reconstruct
-echo "  line_reconstruct shaders compiled (SPV: reconstruct)"
+_emit_spv_header_var line_reconstruct stats cstar blur16 tensor_grad tensor features reconstruct
+echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+features+reconstruct)"
 
 echo "=== Building WASM (nano) ==="
 

@@ -27,8 +27,8 @@
 
 #include <gpu.h>
 #include <host.h>
-#include <effect_blur.h>
 #include "line_reconstruct_shaders.h"
+#include "blur16.h"
 
 #include <cmath>
 #include <cstdint>
@@ -52,10 +52,26 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 64, "Uniforms layout mismatch");
 
+// Incremental pyramid sigmas: each blur takes the previous level to the next
+// (sqrt of the sigma² difference), keeping every 1-D kernel small.
+static const float PYR_INC1 = 1.212436f;   // 0.7 → 1.4
+static const float PYR_INC2 = 2.424871f;   // 1.4 → 2.8
+static const float PYR_INC3 = 4.849742f;   // 2.8 → 5.6
+static const float TENSOR_SIGMA = 1.5f;    // structure-tensor smoothing
+
 // --- per-instance state -------------------------------------------------------
 struct State {
   gpu::Buffer  uniform_buf;
   gpu::Sampler sampler;
+
+  // Analysis intermediates (all vp-res RGBA16F).
+  gpu::Texture stats;                       // (Y, min3, max3, c)
+  gpu::Texture cstar;                       // (c*, -, -, -)
+  gpu::Texture y0, y1, y2, y3;              // scale-space luma levels (.r)
+  gpu::Texture jraw, jblur;                 // structure-tensor products (Jxx,Jxy,Jyy)
+  gpu::Texture tensor;                      // (kappa, junction, 0, 0)
+  gpu::Texture m0, m1, m2, m3;             // packed features (see features.hlsl)
+
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
 
@@ -73,8 +89,9 @@ struct State {
 };
 
 // --- type-shared PSOs ---------------------------------------------------------
-static gpu::ComputePSO s_pso_reconstruct;
-static fx::GaussianBlur s_blur;
+static gpu::ComputePSO s_pso_stats, s_pso_cstar, s_pso_tensor_grad, s_pso_tensor,
+                       s_pso_features, s_pso_reconstruct;
+static Blur16 s_blur;
 
 void module_init() {
   state::init("filter.reconstruct.line", {1, 0, 0},
@@ -146,15 +163,57 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("line_reconstruct_reconstruct", RECONSTRUCT_SPV, RECONSTRUCT_SPV_SIZE,
-                           "rgba8unorm", "write");
-  auto cs = gpu::Device::createShaderModuleByName("line_reconstruct_reconstruct");
-  if (!cs) return;
-  s_pso_reconstruct = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  state::registerShaderSPV("line_reconstruct_stats",       STATS_SPV,       STATS_SPV_SIZE,       "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_cstar",       CSTAR_SPV,       CSTAR_SPV_SIZE,       "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_tensor_grad", TENSOR_GRAD_SPV, TENSOR_GRAD_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_tensor",      TENSOR_SPV,      TENSOR_SPV_SIZE,      "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_features",    FEATURES_SPV,    FEATURES_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_reconstruct", RECONSTRUCT_SPV, RECONSTRUCT_SPV_SIZE, "rgba8unorm", "write");
+
+  auto cs_st = gpu::Device::createShaderModuleByName("line_reconstruct_stats");
+  auto cs_cs = gpu::Device::createShaderModuleByName("line_reconstruct_cstar");
+  auto cs_tg = gpu::Device::createShaderModuleByName("line_reconstruct_tensor_grad");
+  auto cs_tn = gpu::Device::createShaderModuleByName("line_reconstruct_tensor");
+  auto cs_ft = gpu::Device::createShaderModuleByName("line_reconstruct_features");
+  auto cs_rc = gpu::Device::createShaderModuleByName("line_reconstruct_reconstruct");
+  if (!cs_st || !cs_cs || !cs_tg || !cs_tn || !cs_ft || !cs_rc) {
+    state::log("line_reconstruct: shader module compile FAILED "
+               "(st,cs,tg,tn,ft,rc valid flags follow)");
+    state::log(cs_st ? "  stats ok" : "  stats FAIL");
+    state::log(cs_cs ? "  cstar ok" : "  cstar FAIL");
+    state::log(cs_tg ? "  tensor_grad ok" : "  tensor_grad FAIL");
+    state::log(cs_tn ? "  tensor ok" : "  tensor FAIL");
+    state::log(cs_ft ? "  features ok" : "  features FAIL");
+    state::log(cs_rc ? "  reconstruct ok" : "  reconstruct FAIL");
+    return;
+  }
+
+  s_pso_stats = gpu::Device::createComputePSO(cs_st, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
+  s_pso_cstar = gpu::Device::createComputePSO(cs_cs, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
+  s_pso_tensor_grad = gpu::Device::createComputePSO(cs_tg, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
+  s_pso_tensor = gpu::Device::createComputePSO(cs_tn, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA16F));
+  s_pso_features = gpu::Device::createComputePSO(cs_ft, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4).tex2d(5).tex2d(6)
+      .storageTex2d(7, gpu::TextureFormat::RGBA16F)
+      .storageTex2d(8, gpu::TextureFormat::RGBA16F)
+      .storageTex2d(9, gpu::TextureFormat::RGBA16F)
+      .storageTex2d(10, gpu::TextureFormat::RGBA16F).uniform(11));
+  s_pso_reconstruct = gpu::Device::createComputePSO(cs_rc, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).tex2d(2).storageTex2d(3, gpu::TextureFormat::RGBA8).uniform(4));
   s_blur.init();
 
-  state::log("line_reconstruct: module initialized");
+  if (!s_pso_stats.valid())       state::log("line_reconstruct: PSO stats INVALID");
+  if (!s_pso_cstar.valid())       state::log("line_reconstruct: PSO cstar INVALID");
+  if (!s_pso_tensor_grad.valid()) state::log("line_reconstruct: PSO tensor_grad INVALID");
+  if (!s_pso_tensor.valid())      state::log("line_reconstruct: PSO tensor INVALID");
+  if (!s_pso_features.valid())    state::log("line_reconstruct: PSO features INVALID");
+  if (!s_pso_reconstruct.valid()) state::log("line_reconstruct: PSO reconstruct INVALID");
+  if (!s_blur.valid())            state::log("line_reconstruct: Blur16 INVALID");
+  state::log("line_reconstruct: module_init done");
 }
 
 void* create() {
@@ -164,11 +223,18 @@ void* create() {
   return s;
 }
 
+static void releaseTextures(State* s) {
+  gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
+                           &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3 };
+  for (auto* t : texs) if (t->valid()) t->release();
+}
+
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->uniform_buf.release();
   s->sampler.release();
+  releaseTextures(s);
   delete s;
 }
 
@@ -179,7 +245,9 @@ void init(void* self) {
   s->point_radius = 0.42f; s->solidify = 0.6f; s->deband = 0.0f;
   s->sensitivity = 0.5f; s->recover = 0.7f; s->max_width = 0.6f;
   s->debug_view = 0;
-  s->initialized = (s_pso_reconstruct.valid() && s->uniform_buf.valid());
+  s->initialized = (s_pso_stats.valid() && s_pso_features.valid() &&
+                    s_pso_reconstruct.valid() && s_blur.valid() &&
+                    s->uniform_buf.valid());
 }
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
@@ -231,30 +299,77 @@ static void writeUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u._p0 = u._p1 = u._p2 = 0.0f;
 }
 
+static bool ensureTextures(State* s, int w, int h) {
+  if (s->tex_w == w && s->tex_h == h && s->stats.valid()) return true;
+  releaseTextures(s);
+  gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
+                           &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3 };
+  for (auto* t : texs) {
+    *t = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
+    if (!t->valid()) return false;
+  }
+  s->tex_w = w; s->tex_h = h;
+  return true;
+}
+
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
-
-  s->tex_w = vp_w; s->tex_h = vp_h;
+  if (!ensureTextures(s, vp_w, vp_h)) return;
 
   Uniforms u = {};
   writeUniforms(s, vp_w, vp_h, u);
   s->uniform_buf.writeOne(u);
 
-  // STAGE 1: passthrough. (Analysis passes are inserted before this dispatch as
-  // they land; this final pass composites their results into tex_out.)
-  {
-    auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_reconstruct);
-    cp.setTexture(in,  0, 0);
-    cp.setTexture(out, 1, 1);
+  const int gx = (vp_w + 7) / 8, gy = (vp_h + 7) / 8;
+  auto pass = [&](gpu::ComputePSO& pso) { auto cp = gpu::ComputePass::begin(); cp.setPSO(pso); return cp; };
+
+  // 1. stats (Y, min3, max3, c).
+  { auto cp = pass(s_pso_stats);
+    cp.setTexture(in, 0, 0); cp.setTexture(s->stats, 1, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+
+  // 1b. c* = 9x9 max of the contrast (CAS normalizer).
+  { auto cp = pass(s_pso_cstar);
+    cp.setTexture(s->stats, 0, 0); cp.setTexture(s->cstar, 1, 1);
     cp.setBuffer(s->uniform_buf, 2);
-    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-    cp.end();
-  }
+    cp.dispatch(gx, gy); cp.end(); }
+
+  // 2. scale-space pyramid (incremental Gaussian levels; .r carries the luma).
+  s_blur.apply(s->stats, s->y0, vp_w, vp_h, 0.7f);
+  s_blur.apply(s->y0,    s->y1, vp_w, vp_h, PYR_INC1);
+  s_blur.apply(s->y1,    s->y2, vp_w, vp_h, PYR_INC2);
+  s_blur.apply(s->y2,    s->y3, vp_w, vp_h, PYR_INC3);
+
+  // 3. structure tensor (Scharr products → blur → eigen).
+  { auto cp = pass(s_pso_tensor_grad);
+    cp.setTexture(s->y1, 0, 0); cp.setTexture(s->jraw, 1, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+  s_blur.apply(s->jraw, s->jblur, vp_w, vp_h, TENSOR_SIGMA);
+  { auto cp = pass(s_pso_tensor);
+    cp.setTexture(s->jblur, 0, 0); cp.setTexture(s->cstar, 1, 0);
+    cp.setTexture(s->tensor, 2, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+
+  // 4. features → M0..M3.
+  { auto cp = pass(s_pso_features);
+    cp.setTexture(s->y0, 0, 0); cp.setTexture(s->y1, 1, 0);
+    cp.setTexture(s->y2, 2, 0); cp.setTexture(s->y3, 3, 0);
+    cp.setTexture(s->cstar, 4, 0); cp.setTexture(s->tensor, 5, 0);
+    cp.setTexture(s->stats, 6, 0);
+    cp.setTexture(s->m0, 7, 1); cp.setTexture(s->m1, 8, 1);
+    cp.setTexture(s->m2, 9, 1); cp.setTexture(s->m3, 10, 1);
+    cp.setBuffer(s->uniform_buf, 11);
+    cp.dispatch(gx, gy); cp.end(); }
+
+  // 6. reconstruct / debug composite → tex_out.
+  { auto cp = pass(s_pso_reconstruct);
+    cp.setTexture(in, 0, 0); cp.setTexture(s->m0, 1, 0); cp.setTexture(s->m1, 2, 0);
+    cp.setTexture(out, 3, 1); cp.setBuffer(s->uniform_buf, 4);
+    cp.dispatch(gx, gy); cp.end(); }
 
   gpu::Device::submit();
 }
