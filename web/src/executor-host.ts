@@ -129,6 +129,10 @@ interface SketchSlot {
    *  `lastAppliedState_`). If a key here is recreated as a FRESH web instance
    *  (after a prune), the native state cache is stale → rebuild the slot. */
   appliedKeys: Set<string>;
+  /** The sketch's working format code (1 = RGBA8, 3 = RGBA16F) this slot's
+   *  instances were built under. A bitDepth change rebuilds the slot AND its
+   *  chain's WasmHosts so per-format WGSL (storage decls) retranslates. */
+  fmtCode: number;
 }
 
 const decoder = new TextDecoder();
@@ -427,7 +431,7 @@ export class WasmSketchExecutor {
       this.exports.free(tagPtr);
       slot = { exPtr, lastJson: '',
                registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0,
-               appliedKeys: new Set() };
+               appliedKeys: new Set(), fmtCode: 1 };
       this.slots.set(sketchId, slot);
     }
     return slot;
@@ -534,6 +538,24 @@ export class WasmSketchExecutor {
     this.currentSketchId = sketchId;
     let slot = this.slotFor(sketchId);
     const chain = sketchChain(sketch);
+
+    // Per-sketch working format (outputFormat.bitDepth). Set on the GPU host
+    // BEFORE instance pre-creation so init-time texture/PSO/WGSL creation
+    // resolves TextureFormat::SketchDefault correctly. A change rebuilds the
+    // slot and the chain's WasmHosts — their translated WGSL storage decls
+    // and pipelines baked the previous format.
+    const fmtCode = (sketch as { outputFormat?: { bitDepth?: number } })
+        .outputFormat?.bitDepth === 16 ? 3 : 1;
+    if (slot.fmtCode !== fmtCode) {
+      this.destroySlot(slot);
+      this.slots.delete(sketchId);
+      for (const e of chain) {
+        if (e.type === 'module') this.instances.delete(e.instance_key);
+      }
+      slot = this.slotFor(sketchId);
+      slot.fmtCode = fmtCode;
+    }
+    this.gpuHost.setDefaultFormatCode(fmtCode);
 
     // Stale-state guard: a chain entry whose web instance is GONE (pruned while
     // it was out of the chain) will be recreated fresh below with DEFAULT params.
@@ -990,14 +1012,20 @@ export class WasmSketchExecutor {
   private buildEffrtImports(): WebAssembly.ModuleImports {
     return {
       instance_for: (mtPtr: number, mtLen: number, keyPtr: number, keyLen: number): number => {
-        const key = this.readString(keyPtr, keyLen);
+        const raw = this.readString(keyPtr, keyLen);
+        // The executor prefixes instance keys with "f16!" when the sketch's
+        // working format is 16F (its per-format instance-namespace mechanism —
+        // see nsPrefix_ in sketch_executor.cpp). On web, format freshness is
+        // handled by the slot/WasmHost rebuild in executeAllColumns, and
+        // this.instances is keyed by bare instance_key — strip the prefix.
+        const key = raw.startsWith('f16!') ? raw.slice(4) : raw;
         const inst = this.instances.get(key);
         if (!inst) return -1;
-        const cached = this.handleByKey.get(key);
+        const cached = this.handleByKey.get(raw);
         if (cached !== undefined) return cached;
         const h = this.byHandle.length;
         this.byHandle.push(inst);
-        this.handleByKey.set(key, h);
+        this.handleByKey.set(raw, h);
         return h;
       },
       set_param_float: (h: number, pathPtr: number, pathLen: number, v: number) => {
@@ -1089,7 +1117,8 @@ export class WasmSketchExecutor {
         const i = this.resolve(h); if (!i) return 0;
         return this.writeStringInto(out, cap, i.host.fusionFragmentName);
       },
-      build_fused_source: (instsPtr: number, count: number, out: number, cap: number): number => {
+      build_fused_source: (instsPtr: number, count: number, out: number, cap: number,
+                           outFmt: number): number => {
         const handles = new Int32Array(this.memory.buffer, instsPtr, count);
         const stages: FusionStage[] = [];
         for (let k = 0; k < count; k++) {
@@ -1104,9 +1133,14 @@ export class WasmSketchExecutor {
             uniformBufferHandle: i.host.fusionUniformBufferHandle,
           });
         }
+        // The executor passes the group output's TextureFormat code (the
+        // sketch's working format) — bake the matching WGSL storage format
+        // into the generated kernel (16F sketches write rgba16float
+        // intermediates).
+        const outputFormat = outFmt === 3 ? 'rgba16float' : 'rgba8unorm';
         // composeWgsl emits `fn main`; the executor builds the PSO with entry
         // "fused_main" (gpu_create_compute_pso) — rename to match.
-        const src = composeWgsl(stages, []).replace(
+        const src = composeWgsl(stages, [], outputFormat).replace(
           /@compute([\s\S]*?)fn main\(/, '@compute$1fn fused_main(');
         return this.writeStringInto(out, cap, src);
       },
@@ -1140,6 +1174,10 @@ export class WasmSketchExecutor {
         if (t) g.setSurface(t, w, h);
       },
       get_texture_format: (h: number): number => g.getTextureFormatCode(h),
+      // The sketch working format (what TextureFormat::SketchDefault resolves
+      // to). The executor sets it once per execute() from outputFormat.bitDepth;
+      // executeAllColumns pre-seeds the same value before instance creation.
+      set_default_texture_format: (code: number) => g.setDefaultFormatCode(code),
       // Live backend code (1 = WebGPU here). The executor's wet/dry blend picks
       // WGSL vs MSL from this — without it the blend would feed MSL to WebGPU.
       get_backend: (): number => g.getBackend(),

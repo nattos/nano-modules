@@ -13,6 +13,9 @@ const USAGE_UNIFORM = 2;
 // Keep in sync with `enum class TextureFormat` in native/wasm_modules/include/gpu.h.
 //   0 BGRA8 / 1 RGBA8 / 2 Surface (alias for the configured surface format)
 //   3 RGBA16F / 4 R32F / 5 RGBA32F (HDR / extended-precision)
+//   6 SketchDefault (the sketch's working format — resolved by the host)
+// Codes 2 and 6 are host-state-relative; use GPUHost.resolveFormat for those
+// (this free function maps them to rgba8unorm as a last resort).
 function textureFormatFromCode(code: number): GPUTextureFormat {
   switch (code) {
     case 0: return 'bgra8unorm';
@@ -129,7 +132,9 @@ function readBindingDecls(bytes: Uint8Array, count: number): BindingDecl[] {
   return out;
 }
 
-function bindingDeclToLayoutEntry(b: BindingDecl, visibility: number): GPUBindGroupLayoutEntry {
+function bindingDeclToLayoutEntry(
+    b: BindingDecl, visibility: number,
+    resolveFormat: (code: number) => GPUTextureFormat): GPUBindGroupLayoutEntry {
   const e: GPUBindGroupLayoutEntry = { binding: b.slot, visibility };
   switch (b.kind) {
     case BIND_UNIFORM:
@@ -155,14 +160,14 @@ function bindingDeclToLayoutEntry(b: BindingDecl, visibility: number): GPUBindGr
       break;
     case BIND_STORAGE_TEXTURE_2D:
       e.storageTexture = {
-        format: textureFormatFromCode(b.format),
+        format: resolveFormat(b.format),
         access: b.access === 2 ? 'read-write' : b.access === 0 ? 'read-only' : 'write-only',
         viewDimension: '2d',
       };
       break;
     case BIND_STORAGE_TEXTURE_3D:
       e.storageTexture = {
-        format: textureFormatFromCode(b.format),
+        format: resolveFormat(b.format),
         access: b.access === 2 ? 'read-write' : b.access === 0 ? 'read-only' : 'write-only',
         viewDimension: '3d',
       };
@@ -275,12 +280,79 @@ export class GPUHost {
     this.surfaceTexture = texture;
     this.surfaceWidth = width;
     this.surfaceHeight = height;
+    // Track the bound surface's ACTUAL format (parity with the native Metal
+    // backend's surfaceFormat_): Surface-format (code 2) pipelines created
+    // after this bind adapt to it — required when the executor points the
+    // surface at a 16F intermediate.
+    this.surfaceFormat = texture.format;
     // Update or create surface handle
     if (this.surfaceHandle > 0) {
       this.handles.set(this.surfaceHandle, { type: 'texture', resource: texture });
     } else {
       this.surfaceHandle = this.alloc('texture', texture);
     }
+  }
+
+  // --- Sketch working format (TextureFormat::SketchDefault resolution) ---
+
+  // What format code 6 (SketchDefault) resolves to: 1 = rgba8unorm (default),
+  // 3 = rgba16float when the sketch opts into 16F.
+  private defaultFormatCode = 1;
+
+  /**
+   * Set the sketch working format for subsequent texture/pipeline creation
+   * (called by the executor once per execute(), and by executor-host before
+   * instance pre-creation). Also seeds the surface format so Surface-format
+   * PSOs created at effect init — before any setSurface this frame — match
+   * the sketch's intermediates.
+   */
+  setDefaultFormatCode(code: number) {
+    this.defaultFormatCode = (code === 2 || code === 6) ? 1 : code;
+    this.surfaceFormat = textureFormatFromCode(this.defaultFormatCode);
+  }
+
+  getDefaultFormatCode(): number {
+    return this.defaultFormatCode;
+  }
+
+  /** Resolve a wire format code to a concrete GPUTextureFormat, honoring the
+   *  host-relative codes: 2 (Surface) → the bound surface's format,
+   *  6 (SketchDefault) → the sketch working format. */
+  resolveFormat(code: number): GPUTextureFormat {
+    if (code === 2) return this.surfaceFormat;
+    if (code === 6) return textureFormatFromCode(this.defaultFormatCode);
+    return textureFormatFromCode(code);
+  }
+
+  /** resolveFormat, but staying in wire-code space (for cache keys). */
+  private resolveFormatCode(code: number): number {
+    if (code === 6) return this.defaultFormatCode;
+    if (code === 2) {
+      switch (this.surfaceFormat) {
+        case 'bgra8unorm': return 0;
+        case 'rgba16float': return 3;
+        case 'r32float': return 4;
+        case 'rgba32float': return 5;
+        default: return 1;
+      }
+    }
+    return code;
+  }
+
+  /** Resolve host-relative storage-texture format codes in binding decls to
+   *  concrete codes — so pipeline cache keys and layouts never alias across
+   *  sketches with different working formats. */
+  private resolveBindingFormats(bindings: BindingDecl[]): BindingDecl[] {
+    let needs = false;
+    for (const b of bindings) {
+      if ((b.kind === BIND_STORAGE_TEXTURE_2D || b.kind === BIND_STORAGE_TEXTURE_3D) &&
+          (b.format === 2 || b.format === 6)) { needs = true; break; }
+    }
+    if (!needs) return bindings;
+    return bindings.map(b =>
+      (b.kind === BIND_STORAGE_TEXTURE_2D || b.kind === BIND_STORAGE_TEXTURE_3D)
+        ? { ...b, format: this.resolveFormatCode(b.format) }
+        : b);
   }
 
   // --- Resource creation ---
@@ -331,7 +403,7 @@ export class GPUHost {
    * sampling (where the format/feature pair allows).
    */
   createTexture3D(width: number, height: number, depth: number, format: number): number {
-    const fmt = format === 2 ? this.surfaceFormat : textureFormatFromCode(format);
+    const fmt = this.resolveFormat(format);
     const texture = this.device.createTexture({
       size: [width, height, depth],
       dimension: '3d',
@@ -357,7 +429,7 @@ export class GPUHost {
    * sample at any LOD via WGSL `textureSampleLevel`.
    */
   createTextureWithMips(width: number, height: number, format: number, mipCount: number): number {
-    const fmt = format === 2 ? this.surfaceFormat : textureFormatFromCode(format);
+    const fmt = this.resolveFormat(format);
     const renderable = (fmt === 'bgra8unorm' || fmt === 'rgba8unorm' || fmt === 'rgba16float');
     const usage =
       GPUTextureUsage.TEXTURE_BINDING
@@ -394,6 +466,10 @@ export class GPUHost {
       constants?: Record<string, number>): number {
     const shaderModule = this.get(shaderHandle) as GPUShaderModule;
     if (!shaderModule) return -1;
+    // Resolve host-relative storage formats (Surface/SketchDefault) BEFORE
+    // keying the cache -- an 8-bit and a 16F sketch must never share a
+    // pipeline whose layout baked the other's storage format.
+    bindings = this.resolveBindingFormats(bindings);
     // Reuse the COMPILED pipeline for the same (shader, entry, bindings, constants) across
     // effect instances. createComputePipeline is the heavy GPU compile (hundreds of ms per
     // shader on a fresh instance), and a pipeline is immutable + never destroyed by release(),
@@ -469,6 +545,7 @@ export class GPUHost {
       case 'rgba8unorm': return 1;
       case 'rgba16float': return 3;
       case 'r32float': return 4;
+      case 'rgba32float': return 5;
       default: return 1;
     }
   }
@@ -522,7 +599,7 @@ export class GPUHost {
         bindGroupLayout: null,
       };
     }
-    const entries = bindings.map(b => bindingDeclToLayoutEntry(b, visibility));
+    const entries = bindings.map(b => bindingDeclToLayoutEntry(b, visibility, c => this.resolveFormat(c)));
     const bindGroupLayout = this.device.createBindGroupLayout({ entries });
     const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
     return { pipelineLayout, bindGroupLayout };
@@ -543,8 +620,7 @@ export class GPUHost {
 
     const targets: GPUColorTargetState[] = [];
     for (let i = 0; i < count; i++) {
-      const fmt = formats[i] === 2 ? this.surfaceFormat : textureFormatFromCode(formats[i]);
-      targets.push({ format: fmt });
+      targets.push({ format: this.resolveFormat(formats[i]) });
     }
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
@@ -575,8 +651,7 @@ export class GPUHost {
     const vsModule = this.get(vsShaderHandle) as GPUShaderModule;
     const fsModule = this.get(fsShaderHandle) as GPUShaderModule;
     if (!vsModule || !fsModule) return -1;
-    const fmt: GPUTextureFormat = format === 2 ? this.surfaceFormat
-                                                : textureFormatFromCode(format);
+    const fmt: GPUTextureFormat = this.resolveFormat(format);
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
     const pipeline = this.device.createRenderPipeline({
@@ -620,8 +695,7 @@ export class GPUHost {
     const vsModule = this.get(vsShaderHandle) as GPUShaderModule;
     const fsModule = this.get(fsShaderHandle) as GPUShaderModule;
     if (!vsModule || !fsModule) return -1;
-    const fmt: GPUTextureFormat = format === 2 ? this.surfaceFormat
-                                                : textureFormatFromCode(format);
+    const fmt: GPUTextureFormat = this.resolveFormat(format);
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
     const blend: GPUBlendState = blendMode === 1
@@ -1287,6 +1361,10 @@ export class GPUHost {
       get_render_target: () => this.getSurfaceTexture(),
       get_render_target_width: () => this.getSurfaceWidth(),
       get_render_target_height: () => this.getSurfaceHeight(),
+      // Format queries (effect ABI): concrete format of a live texture, and
+      // what TextureFormat::SketchDefault resolves to for this sketch.
+      get_texture_format: (handle: number) => this.getTextureFormatCode(handle),
+      get_default_texture_format: () => this.getDefaultFormatCode(),
       release: (handle: number) => this.release(handle),
       clear_texture: (tex: number, r: number, g: number, b: number, a: number) =>
         this.clearTexture(tex, r, g, b, a),

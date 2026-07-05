@@ -73,9 +73,10 @@ export class FusionDispatcher {
    * entry; HMR invalidation lives one level up —
    * `invalidate(effectId)` evicts every entry that mentions the id.)
    */
-  private cacheKey(stages: FusionStage[], traceMask: number): string {
+  private cacheKey(stages: FusionStage[], traceMask: number, outFmtCode: number): string {
     const seq = stages.map(s => `${s.effectId}@${s.fusionKind}`).join('|');
-    return seq + (traceMask !== 0 ? `|trace=0b${traceMask.toString(2)}` : '');
+    return seq + (traceMask !== 0 ? `|trace=0b${traceMask.toString(2)}` : '')
+      + (outFmtCode !== FORMAT_RGBA8 ? `|fmt=${outFmtCode}` : '');
   }
 
   /** Drop every cached pipeline whose run mentions `effectId`. Called
@@ -110,7 +111,7 @@ export class FusionDispatcher {
   ): void {
     if (stages.length === 0 || vpW <= 0 || vpH <= 0) return;
     const traceMask = computeTraceMask(stages.length, traceTextureHandles);
-    const cached = this.ensurePipeline(stages, traceMask);
+    const cached = this.ensurePipeline(stages, traceMask, outputTexHandle);
     if (!cached || cached.pipelineHandle <= 0) return;
     const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
 
@@ -149,8 +150,14 @@ export class FusionDispatcher {
     this.gpuHost.flush();
   }
 
-  private ensurePipeline(stages: FusionStage[], traceMask: number): CachedPipeline | null {
-    const key = this.cacheKey(stages, traceMask);
+  private ensurePipeline(stages: FusionStage[], traceMask: number,
+                         outputTexHandle: number): CachedPipeline | null {
+    // The generated WGSL bakes the output storage format — derive it from the
+    // texture actually bound (16F sketches route fused output into
+    // rgba16float intermediates) and key the cache on it.
+    let outFmtCode = this.gpuHost.getTextureFormatCode(outputTexHandle);
+    if (outFmtCode !== 3) outFmtCode = FORMAT_RGBA8;
+    const key = this.cacheKey(stages, traceMask, outFmtCode);
     const hit = this.cache.get(key);
     if (hit) return hit;
 
@@ -162,7 +169,9 @@ export class FusionDispatcher {
       if (traceMask & (1 << i)) tracedStageIndices.push(i);
     }
 
-    const composedWgsl = composeWgsl(stages, tracedStageIndices);
+    const composedWgsl = composeWgsl(
+      stages, tracedStageIndices,
+      outFmtCode === 3 ? 'rgba16float' : 'rgba8unorm');
     const shader = this.gpuHost.createShaderModule(composedWgsl);
     if (shader <= 0) {
       console.error('[fusion-dispatcher] shader compile failed for', key,
@@ -181,7 +190,7 @@ export class FusionDispatcher {
     if (!topStrictOut) {
       bindings.push({ slot: 0, kind: KIND_TEXTURE_2D, format: 0, access: 0 });
     }
-    bindings.push({ slot: 1, kind: KIND_STORAGE_TEXTURE_2D, format: FORMAT_RGBA8, access: ACCESS_WRITE });
+    bindings.push({ slot: 1, kind: KIND_STORAGE_TEXTURE_2D, format: outFmtCode, access: ACCESS_WRITE });
     for (let i = 0; i < stages.length; i++) {
       bindings.push({ slot: 2 + i, kind: KIND_UNIFORM, format: 0, access: 0 });
     }
@@ -237,6 +246,10 @@ function computeTraceMask(
 export function composeWgsl(
   stages: FusionStage[],
   tracedStageIndices: number[] = [],
+  /** WGSL storage format of the run's OUTPUT texture (the sketch's working
+   *  format — rgba16float for 16F sketches). Trace textures stay rgba8unorm:
+   *  they bind executor preview textures, which are always 8-bit. */
+  outputFormat: string = 'rgba8unorm',
 ): string {
   const parts: string[] = [];
   const topStrictOut = stages[0].fusionKind === FUSION_KIND_STRICT_OUTPUT;
@@ -251,7 +264,7 @@ export function composeWgsl(
   if (!topStrictOut) {
     parts.push('@group(0) @binding(0) var inputTex: texture_2d<f32>;');
   }
-  parts.push('@group(0) @binding(1) var outputTex: texture_storage_2d<rgba8unorm, write>;');
+  parts.push(`@group(0) @binding(1) var outputTex: texture_storage_2d<${outputFormat}, write>;`);
   // Trace-texture declarations — one per non-final stage we need to
   // capture mid-run pixels for. Bound at slots 2 + stages.length + j,
   // matching the dispatcher's bind order.

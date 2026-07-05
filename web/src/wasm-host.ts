@@ -863,7 +863,11 @@ export class WasmHost {
           // outlive the call. Slice copies into a fresh buffer.
           const name = this.readString(namePtr, nameLen);
           const src = new Uint8Array(this.memory.buffer, spvPtr, spvLen);
-          const storageFormat = fmtLen > 0 ? this.readString(fmtPtr, fmtLen) : 'rgba8unorm';
+          // Empty format = "sketch default": resolved at translation time
+          // (fetchShaderWgsl) against the GPU host's working format, so a 16F
+          // sketch gets rgba16float storage decls. Effects that need a pinned
+          // format pass it explicitly (or via [[vk::image_format]]).
+          const storageFormat = fmtLen > 0 ? this.readString(fmtPtr, fmtLen) : '';
           const storageAccess = accLen > 0 ? this.readString(accPtr, accLen) : 'write';
           this.shaderSPV.set(name, {
             bytes: new Uint8Array(src), // copy
@@ -1498,12 +1502,17 @@ export class WasmHost {
     // effect (e.g. a shape_fold clip the playhead re-enters) re-blocked the worker on
     // several round-trips (~½s+). Same SPV ⇒ same WGSL, so a content hash is a safe key
     // shared across all host instances; the first translation pays, every later one is free.
-    const key = `${entry.bytes.length}:${fnv1a32(entry.bytes)}:${entry.storageFormat}:${entry.storageAccess}:${mode}`;
+    // Resolve the sketch-default sentinel ('' — see register_shader_spv) to a
+    // concrete format NOW, so the cache key + bridge request carry it and 8-bit
+    // vs 16F variants of the same SPV coexist in the global cache.
+    const storageFormat = entry.storageFormat
+      || (this.gpuHost?.getDefaultFormatCode() === 3 ? 'rgba16float' : 'rgba8unorm');
+    const key = `${entry.bytes.length}:${fnv1a32(entry.bytes)}:${storageFormat}:${entry.storageAccess}:${mode}`;
     const cached = WasmHost.spvWgslCache.get(key);
     if (cached !== undefined) return cached;
     try {
       const xhr = new XMLHttpRequest();
-      const url = `/__naga/wgsl?storageFormat=${encodeURIComponent(entry.storageFormat)}&storageAccess=${encodeURIComponent(entry.storageAccess)}`;
+      const url = `/__naga/wgsl?storageFormat=${encodeURIComponent(storageFormat)}&storageAccess=${encodeURIComponent(entry.storageAccess)}`;
       xhr.open('POST', url, /*async=*/false);
       // Note: synchronous XHR forbids setting responseType from a
       // document context (Workers tolerate it, but we run in tests
