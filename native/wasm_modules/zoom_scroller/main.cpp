@@ -218,12 +218,11 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("zoom_scroller_apply", APPLY_SPV, APPLY_SPV_SIZE,
-                           "rgba8unorm", "write");
+  state::registerShaderSPV("zoom_scroller_apply", APPLY_SPV, APPLY_SPV_SIZE);
   auto cs = gpu::Device::createShaderModuleByName("zoom_scroller_apply");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).sampler(2).uniform(3));
+      .tex2d(0).storageTex2d(1).sampler(2).uniform(3));
 
   state::log("zoom_scroller: module initialized");
 }

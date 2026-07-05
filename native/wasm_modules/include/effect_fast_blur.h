@@ -87,7 +87,7 @@ public:
 
     auto bindings = gpu::Bindings()
         .tex2d(0)
-        .storageTex2d(1, gpu::TextureFormat::RGBA8)
+        .storageTex2d(1)   // sketch default — writes scratch mips AND tex_out
         .sampler(2)
         .uniform(3);
     m_pso_down = gpu::Device::createComputePSO(cs_d, "main", bindings);
@@ -130,8 +130,7 @@ public:
       m_scratch_w = half_w;
       m_scratch_h = half_h;
       m_scratch_mips = max_mips;
-      m_scratch = gpu::Device::createTextureWithMips(
-          half_w, half_h, max_mips, gpu::TextureFormat::RGBA8);
+      m_scratch = gpu::Device::createTextureWithMips(half_w, half_h, max_mips);
     }
     if (!m_scratch.valid()) return;
 

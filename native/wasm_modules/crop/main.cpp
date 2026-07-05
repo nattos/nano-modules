@@ -148,7 +148,7 @@ void module_init() {
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .uniform(2));
 }
 

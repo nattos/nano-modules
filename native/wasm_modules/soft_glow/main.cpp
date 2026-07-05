@@ -348,7 +348,7 @@ void module_init() {
   s_pso_color = gpu::Device::createComputePSO(cs_color, "main", gpu::Bindings()
       .storage(0)
       .tex2d(1)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8)
+      .storageTex2d(2)
       .uniform(3));
 
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()

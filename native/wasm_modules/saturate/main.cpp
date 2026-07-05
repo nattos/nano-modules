@@ -101,7 +101,7 @@ void module_init() {
   // backends if we ever wire that path.
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .uniform(2));
 }
 

@@ -331,7 +331,7 @@ void module_init() {
   s_pso_blur = gpu::Device::createComputePSO(cs_blur, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA16F).uniform(3));
   s_pso_lines = gpu::Device::createComputePSO(cs_lines, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+      .tex2d(0).sampler(1).storageTex2d(2).uniform(3));
 
   state::setOnStateReady(&on_state_ready);
   state::log("simulant: module initialized");

@@ -102,7 +102,7 @@ void module_init() {
 
   auto cs = gpu::Device::createShaderModuleByName("compute");
   if (!cs) return;
-  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().storageTex2d(1).uniform(2));
 }
 
 // Per-instance construction: allocate State + its own uniform buffer.

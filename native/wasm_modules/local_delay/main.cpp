@@ -277,7 +277,8 @@ void module_init() {
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   // Storage-format hints: everything writes RGBA16F (luma lives in the R
-  // channel — R32F can't be sampled as Float on WebGPU); color writes RGBA8.
+  // channel — R32F can't be sampled as Float on WebGPU); color writes tex_out
+  // and follows the sketch-default working format.
   state::registerShaderSPV("local_delay_luma",     LUMA_SPV,     LUMA_SPV_SIZE,     "rgba16float", "write");
   state::registerShaderSPV("local_delay_down",     DOWN_SPV,     DOWN_SPV_SIZE,     "rgba16float", "write");
   state::registerShaderSPV("local_delay_lk",       LK_SPV,       LK_SPV_SIZE,       "rgba16float", "write");
@@ -324,7 +325,7 @@ void module_init() {
   s_pso_color = gpu::Device::createComputePSO(cs_color, "main", gpu::Bindings()
       .tex2d(0)                                        // original input (advected sample)
       .tex2d(1)                                        // flow (RG flow, B index, A mask)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8)      // tex_out
+      .storageTex2d(2)                                 // tex_out
       .uniform(3));
 
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()

@@ -67,7 +67,7 @@ void module_init() {
   // Fusion-aware strict-output: bind at slots 1+2 (sparse — slot 0
   // unused) so the fragment's register(b2) maps cleanly when the
   // runtime fuser splices fuse_transform in.
-  s_pso = gpu::Device::createComputePSO(mod, "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso = gpu::Device::createComputePSO(mod, "main", gpu::Bindings().storageTex2d(1).uniform(2));
 }
 
 // Per-instance construction: allocate State + its own uniform buffer.

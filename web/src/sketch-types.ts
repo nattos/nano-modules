@@ -44,6 +44,72 @@ export interface Sketch {
    * the first real edit.
    */
   isTemplate?: boolean;
+  /**
+   * Per-sketch output format override: internal render resolution (multiplier
+   * of the host output size, or fixed) and working bit depth. Absent = 1× at
+   * 8-bit (today's exact behavior — the UI DELETES the key when everything is
+   * back at defaults). Honored inside the shared C++ executor
+   * (sketch_executor.cpp parseOutputFormat — keep the derivation rules in
+   * `resolveInternalResolution` below in lock-step), so it applies identically
+   * in barrel, playground, effect-IDE and arrangement clips.
+   */
+  outputFormat?: SketchOutputFormat;
+}
+
+/** Internal-resolution override — multiplier of the host size, or fixed. */
+export type SketchResolutionOverride =
+  | { mode: 'multiplier'; scale: number }            // presets 0.25/0.5/1/2/4, or custom
+  | { mode: 'fixed'; width: number; height: number };
+
+/** See Sketch.outputFormat. */
+export interface SketchOutputFormat {
+  resolution?: SketchResolutionOverride;   // absent = 1x (host size)
+  bitDepth?: 8 | 16;                       // absent = 8
+}
+
+/**
+ * The internal render size the engine will use for `fmt` at host size
+ * (hostW × hostH). TS twin of parseOutputFormat in
+ * native/src/sketch/sketch_executor.cpp — keep byte-identical rules:
+ * multiplier scale clamped to [0.1, 8], dimensions rounded (lround) then
+ * clamped to [8, 8192] (WebGPU core maxTextureDimension2D), malformed input
+ * falls back to the host size.
+ */
+export function resolveInternalResolution(
+    fmt: SketchOutputFormat | undefined,
+    hostW: number, hostH: number): { width: number; height: number } {
+  const out = { width: hostW, height: hostH };
+  const res = fmt?.resolution;
+  if (!res || typeof res !== 'object') return out;
+  const clampDim = (v: number): number => {
+    if (!(v > 0)) return 0;
+    return Math.min(8192, Math.max(8, Math.round(v)));
+  };
+  if (res.mode === 'multiplier') {
+    let s = typeof res.scale === 'number' && res.scale > 0 ? res.scale : 1;
+    s = Math.min(8, Math.max(0.1, s));
+    const w = clampDim(hostW * s), h = clampDim(hostH * s);
+    if (w > 0 && h > 0) { out.width = w; out.height = h; }
+  } else if (res.mode === 'fixed') {
+    const w = clampDim(res.width), h = clampDim(res.height);
+    if (w > 0 && h > 0) { out.width = w; out.height = h; }
+  }
+  return out;
+}
+
+/** The sketch's working bit depth (8 unless outputFormat opts into 16F). */
+export function sketchBitDepth(sketch: Sketch): 8 | 16 {
+  return sketch.outputFormat?.bitDepth === 16 ? 16 : 8;
+}
+
+/** True when `fmt` encodes only defaults (1× multiplier, 8-bit) — the UI
+ *  deletes the key in that case so untouched sketches stay byte-identical. */
+export function isDefaultOutputFormat(fmt?: SketchOutputFormat): boolean {
+  if (!fmt) return true;
+  if (fmt.bitDepth === 16) return false;
+  const res = fmt.resolution;
+  if (!res) return true;
+  return res.mode === 'multiplier' && (!(res.scale > 0) || res.scale === 1);
 }
 
 /** Serialized state for a single module instance within a sketch. */

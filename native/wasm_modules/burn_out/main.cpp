@@ -113,12 +113,11 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("burn_out_grade", BURN_SPV, BURN_SPV_SIZE,
-                           "rgba8unorm", "write");
+  state::registerShaderSPV("burn_out_grade", BURN_SPV, BURN_SPV_SIZE);
   auto cs = gpu::Device::createShaderModuleByName("burn_out_grade");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+      .tex2d(0).storageTex2d(1).uniform(2));
 
   state::log("burn_out: module initialized");
 }

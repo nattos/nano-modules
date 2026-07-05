@@ -205,7 +205,7 @@ void module_init() {
   s_pso_update = gpu::Device::createComputePSO(cs_update, "main", gpu::Bindings()
       .storageRW(0).tex2d(1).sampler(2).uniform(3));
   s_pso_render = gpu::Device::createComputePSO(cs_render, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3).storage(4));
+      .tex2d(0).sampler(1).storageTex2d(2).uniform(3).storage(4));
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
 

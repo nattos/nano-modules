@@ -114,7 +114,7 @@ void module_init() {
   s_pso_analyze = gpu::Device::createComputePSO(cs_analyze, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storage(2).storageRW(3).uniform(4));
   s_pso_render = gpu::Device::createComputePSO(cs_render, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storage(2).storageTex2d(3, gpu::TextureFormat::RGBA8).uniform(4));
+      .tex2d(0).sampler(1).storage(2).storageTex2d(3).uniform(4));
 
   state::log("bicolor_grad: module initialized");
 }

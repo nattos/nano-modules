@@ -98,12 +98,11 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("subtle_blur_chroma", CHROMA_SPV, CHROMA_SPV_SIZE,
-                           "rgba8unorm", "write");
+  state::registerShaderSPV("subtle_blur_chroma", CHROMA_SPV, CHROMA_SPV_SIZE);
   auto cs = gpu::Device::createShaderModuleByName("subtle_blur_chroma");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+      .tex2d(0).sampler(1).storageTex2d(2).uniform(3));
   s_blur.init();
 
   state::log("subtle_blur: module initialized");

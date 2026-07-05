@@ -189,7 +189,7 @@ void module_init() {
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   // The wave field pass writes an RGBA16F storage texture → override naga's
-  // default rgba32float (warp writes the default rgba8unorm tex_out).
+  // default (warp writes the sketch-default tex_out).
   state::registerShaderSPV("dw_field",      FIELD_SPV,     FIELD_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("dw_particles",  PARTICLES_SPV, PARTICLES_SPV_SIZE);
   state::registerShaderSPV("dw_blob_vs",    BLOB_VS_SPV,   BLOB_VS_SPV_SIZE);
@@ -215,7 +215,7 @@ void module_init() {
       gpu::Bindings().storage(0).uniform(1),
       gpu::Device::BlendMode::Additive);
   s_pso_warp = gpu::Device::createComputePSO(cs_warp, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).tex2d(2).sampler(3).sampler(4).storageTex2d(5, gpu::TextureFormat::RGBA8).uniform(6));
+      .tex2d(0).tex2d(1).tex2d(2).sampler(3).sampler(4).storageTex2d(5).uniform(6));
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4).sampler(5).sampler(6)
       .storageTex2d(7, gpu::TextureFormat::RGBA16F).uniform(8));

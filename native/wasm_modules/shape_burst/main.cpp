@@ -306,7 +306,7 @@ void module_init() {
   auto cs_motion = gpu::Device::createShaderModuleByName("shape_burst_motion");
   if (!cs || !cs_motion) return;
   s_pso = gpu::Device::createComputePSO(cs, "main",
-    gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+    gpu::Bindings().tex2d(0).storageTex2d(1).uniform(2));
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main",
     gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
 

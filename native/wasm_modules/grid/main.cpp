@@ -109,7 +109,7 @@ void module_init() {
   if (!cs) return;
   // Strict-output: bind at slots 1+2 (slot 0 unused) so the
   // fragment's register(b2) maps cleanly when fused.
-  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings().storageTex2d(1).uniform(2));
 }
 
 // Per-instance construction: allocate State + its own uniform buffer.

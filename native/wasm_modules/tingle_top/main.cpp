@@ -300,7 +300,7 @@ void module_init() {
 
   s_pso_update  = gpu::Device::createComputePSO(cs_u,  "main", gpu::Bindings().storageRW(0).uniform(1));
   s_pso_prefill = gpu::Device::createComputePSO(cs_pf, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+      .tex2d(0).storageTex2d(1).uniform(2));
   // Instanced sparkle quads, additive over the pre-filled input.
   s_pso_render_add = gpu::Device::createInstancedRenderPSO(
       vs, "main", fs, "main", gpu::TextureFormat::Surface,

@@ -13,8 +13,8 @@
 import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
-import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo } from '../sketch-types';
-import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES } from '../sketch-types';
+import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo, SketchOutputFormat, SketchResolutionOverride } from '../sketch-types';
+import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat } from '../sketch-types';
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -421,6 +421,64 @@ export class ColumnGroup extends MobxLitElement {
       padding: 8px 10px;
       text-align: center;
       cursor: pointer;
+    }
+    /* Input marker: keep the label centered while the gear floats right. */
+    .chain-marker-label-row {
+      position: relative;
+    }
+    .chain-marker-label-row > .device-gear-btn {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    /* Per-sketch output-format options (Input card gear section). */
+    .output-format-options {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 0 10px 8px;
+    }
+    .ofo-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .ofo-row-label {
+      flex: 0 0 38px;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+    }
+    .ofo-btn {
+      flex: 0 0 auto;
+      background: none;
+      border: 1px solid var(--device-border);
+      border-radius: 2px;
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-sm);
+      padding: 2px 6px;
+      line-height: 1.2;
+      cursor: pointer;
+    }
+    .ofo-btn:hover { color: var(--app-text-color1); }
+    .ofo-btn[data-active] {
+      color: var(--app-text-color1);
+      border-color: var(--device-sel-border);
+      background: var(--device-sel-bg);
+    }
+    .ofo-num {
+      width: 56px;
+      background: var(--app-bg-color2, transparent);
+      border: 1px solid var(--device-border);
+      border-radius: 2px;
+      color: var(--app-text-color1);
+      font-size: var(--app-fs-sm);
+      padding: 2px 4px;
+    }
+    .ofo-note {
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
     }
     .effect-card[selected] .effect-card-inner,
     .chain-marker[selected] .chain-marker-inner {
@@ -917,13 +975,136 @@ export class ColumnGroup extends MobxLitElement {
     const isSelected = this.ctl.isSelected(path);
     this.registerChainMarkerSelectable(path, 'Texture Input', 'input');
     const selectMarker = (e: Event) => { e.stopPropagation(); this.ctl.select(path); };
+    // Per-sketch output format lives behind the Input card's gear (mirrors the
+    // effect-card gear). Only when the surface's controller supports it.
+    const canFormat = !!this.ctl.setSketchOutputFormat;
+    const fmt = this.ds.getSketch(this.sketchId)?.outputFormat;
+    const nonDefault = !isDefaultOutputFormat(fmt);
     return html`
       <div class="chain-marker" ?selected=${isSelected}>
         <div class="chain-marker-inner">
-          <div class="chain-marker-label" @click=${selectMarker}>Input</div>
+          <div class="chain-marker-label-row">
+            <div class="chain-marker-label" @click=${selectMarker}>Input</div>
+            ${canFormat ? html`
+              <button
+                class="device-gear-btn"
+                title=${nonDefault ? 'Sketch output format (overridden)' : 'Sketch output format'}
+                ?data-active=${this.inputOptionsOpen || nonDefault}
+                @click=${(e: Event) => {
+                  e.stopPropagation();
+                  this.inputOptionsOpen = !this.inputOptionsOpen;
+                  this.requestUpdate();
+                }}><ui-icon icon="la-cog"></ui-icon></button>
+            ` : nothing}
+          </div>
+          ${canFormat && this.inputOptionsOpen ? this.renderOutputFormatOptions(fmt) : nothing}
           ${this.renderInputTraceCardRow(column)}
         </div>
         <texture-drop-zone .sketchId=${this.sketchId}></texture-drop-zone>
+      </div>
+    `;
+  }
+
+  /** Open state of the Input card's output-format section (session-local,
+   *  like effectOptionsOpen). */
+  private inputOptionsOpen = false;
+  /** Which custom editor is expanded ('scale' | 'fixed' | null). Preset picks
+   *  clear it; opening one reveals its number input(s). */
+  private ofoCustom: 'scale' | 'fixed' | null = null;
+
+  /** Merge a partial change into the sketch's outputFormat (undoable via the
+   *  controller; all-defaults deletes the key). `resolution: null` clears the
+   *  resolution override, `undefined` leaves it as is. */
+  private patchOutputFormat(patch: { resolution?: SketchResolutionOverride | null; bitDepth?: 8 | 16 }) {
+    const cur = this.ds.getSketch(this.sketchId)?.outputFormat;
+    const res = patch.resolution === undefined ? cur?.resolution
+              : patch.resolution === null ? undefined : patch.resolution;
+    const bd = patch.bitDepth ?? (cur?.bitDepth === 16 ? 16 : 8);
+    const next: SketchOutputFormat = {};
+    if (res) next.resolution = res;
+    if (bd === 16) next.bitDepth = 16;
+    this.ctl.setSketchOutputFormat?.(
+      this.sketchId, (next.resolution || next.bitDepth) ? next : undefined);
+  }
+
+  private renderOutputFormatOptions(fmt: SketchOutputFormat | undefined) {
+    const res = fmt?.resolution;
+    const scale = res?.mode === 'multiplier' ? res.scale : (res ? null : 1);
+    const fixed = res?.mode === 'fixed' ? res : null;
+    const depth = fmt?.bitDepth === 16 ? 16 : 8;
+    const SCALES: { label: string; value: number }[] = [
+      { label: '1/4', value: 0.25 }, { label: '1/2', value: 0.5 },
+      { label: '1x', value: 1 }, { label: '2x', value: 2 }, { label: '4x', value: 4 },
+    ];
+    const FIXED: { label: string; w: number; h: number }[] = [
+      { label: '720p', w: 1280, h: 720 },
+      { label: '1080p', w: 1920, h: 1080 },
+      { label: '4k', w: 3840, h: 2160 },
+    ];
+    const scaleIsPreset = scale !== null && SCALES.some(s => s.value === scale);
+    const fixedIsPreset = !!fixed && FIXED.some(f => f.w === fixed.width && f.h === fixed.height);
+    const showScaleCustom = this.ofoCustom === 'scale' || (scale !== null && !scaleIsPreset);
+    const showFixedCustom = this.ofoCustom === 'fixed' || (!!fixed && !fixedIsPreset);
+    const pickScale = (v: number) => {
+      this.ofoCustom = null;
+      this.patchOutputFormat({ resolution: v === 1 ? null : { mode: 'multiplier', scale: v } });
+    };
+    const pickFixed = (w: number, h: number) => {
+      this.ofoCustom = null;
+      this.patchOutputFormat({ resolution: { mode: 'fixed', width: w, height: h } });
+    };
+    const numCommit = (e: Event, apply: (v: number) => void) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      if (Number.isFinite(v) && v > 0) apply(v);
+    };
+    return html`
+      <div class="output-format-options" @click=${(e: Event) => e.stopPropagation()}>
+        <div class="ofo-row">
+          <span class="ofo-row-label" title="Internal resolution as a multiplier of the output size">Scale</span>
+          ${SCALES.map(s => html`
+            <button class="ofo-btn" ?data-active=${scale === s.value && !showScaleCustom}
+              @click=${() => pickScale(s.value)}>${s.label}</button>`)}
+          <button class="ofo-btn" ?data-active=${showScaleCustom && scale !== null}
+            title="Custom multiplier"
+            @click=${() => { this.ofoCustom = this.ofoCustom === 'scale' ? null : 'scale'; this.requestUpdate(); }}>…</button>
+          ${showScaleCustom ? html`
+            <input class="ofo-num" type="number" min="0.1" max="8" step="0.05"
+              .value=${String(scale ?? 1)}
+              @change=${(e: Event) => numCommit(e, v => this.patchOutputFormat({
+                resolution: v === 1 ? null : { mode: 'multiplier', scale: v } }))}
+              @pointerdown=${(e: Event) => e.stopPropagation()} />` : nothing}
+        </div>
+        <div class="ofo-row">
+          <span class="ofo-row-label" title="Fixed internal resolution (stretched to fill the output)">Fixed</span>
+          ${FIXED.map(f => html`
+            <button class="ofo-btn" ?data-active=${!!fixed && fixed.width === f.w && fixed.height === f.h && !showFixedCustom}
+              @click=${() => pickFixed(f.w, f.h)}>${f.label}</button>`)}
+          <button class="ofo-btn" ?data-active=${showFixedCustom && !!fixed}
+            title="Custom fixed size"
+            @click=${() => { this.ofoCustom = this.ofoCustom === 'fixed' ? null : 'fixed'; this.requestUpdate(); }}>…</button>
+          ${showFixedCustom ? html`
+            <input class="ofo-num" type="number" min="8" max="8192" step="1" placeholder="W"
+              .value=${String(fixed?.width ?? 1920)}
+              @change=${(e: Event) => numCommit(e, v => this.patchOutputFormat({
+                resolution: { mode: 'fixed', width: Math.round(v), height: fixed?.height ?? 1080 } }))}
+              @pointerdown=${(e: Event) => e.stopPropagation()} />
+            <input class="ofo-num" type="number" min="8" max="8192" step="1" placeholder="H"
+              .value=${String(fixed?.height ?? 1080)}
+              @change=${(e: Event) => numCommit(e, v => this.patchOutputFormat({
+                resolution: { mode: 'fixed', width: fixed?.width ?? 1920, height: Math.round(v) } }))}
+              @pointerdown=${(e: Event) => e.stopPropagation()} />` : nothing}
+        </div>
+        <div class="ofo-row">
+          <span class="ofo-row-label" title="Working bit depth for the whole chain">Depth</span>
+          <button class="ofo-btn" ?data-active=${depth === 8}
+            @click=${() => this.patchOutputFormat({ bitDepth: 8 })}>8-bit</button>
+          <button class="ofo-btn" ?data-active=${depth === 16}
+            title="16-bit float working precision (~2x memory/bandwidth); values are no longer clamped to [0,1] between effects"
+            @click=${() => this.patchOutputFormat({ bitDepth: 16 })}>16F</button>
+          <span class="ofo-note">
+            ${fixed ? `${fixed.width}×${fixed.height}` : scale === 1 || scale === null && !fixed ? 'output size' : `×${scale}`}${depth === 16 ? ' @ 16F' : ''}
+          </span>
+        </div>
       </div>
     `;
   }

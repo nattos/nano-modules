@@ -359,7 +359,7 @@ void module_init() {
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   // minmax/hist/buildlut write storage BUFFERS (no format hint); present writes
-  // an rgba8 storage texture (default).
+  // a sketch-default storage texture.
   state::registerShaderSPV("shape_fold_minmax",   MINMAX_SPV,   MINMAX_SPV_SIZE);
   state::registerShaderSPV("shape_fold_hist",     HIST_SPV,     HIST_SPV_SIZE);
   state::registerShaderSPV("shape_fold_buildlut", BUILDLUT_SPV, BUILDLUT_SPV_SIZE);
@@ -389,7 +389,7 @@ void module_init() {
   s_pso_present = gpu::Device::createComputePSO(cs_present, "main", gpu::Bindings()
       .uniform(0)
       .storage(1)                                   // lut (read)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8)); // tex_out
+      .storageTex2d(2)); // tex_out
 
   auto cs_edge = gpu::Device::createShaderModuleByName("shape_fold_edge");
   if (!cs_edge) return;
@@ -404,7 +404,7 @@ void module_init() {
   s_pso_debug = gpu::Device::createComputePSO(cs_debug, "main", gpu::Bindings()
       .uniform(0)      // debug uniform
       .storage(1)      // edge stats (read)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8)); // tex_out (write viz)
+      .storageTex2d(2)); // tex_out (write viz)
 
   state::log("shape_fold: module initialized");
 }

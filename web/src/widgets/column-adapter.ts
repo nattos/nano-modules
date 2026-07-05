@@ -17,7 +17,7 @@
  */
 
 import type { PluginInfo, AvailableEffect, Selectable, EffectClipboard, EffectsClipboard } from '../state/types';
-import type { Sketch, Wire, ParamSmoothing, FieldConnectInfo } from '../sketch-types';
+import type { Sketch, Wire, ParamSmoothing, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
 import type { ParamValue } from '../engine-types';
 import type { TraceSource } from '../state/trace-controller';
 
@@ -157,6 +157,10 @@ export interface ColumnController {
   // markdown text) for a slot path on an instance. One undo point per call.
   setInstanceHelp(sketchId: string, instanceKey: string, slotPath: string,
                   patch: { scope?: 'global' | 'local'; text?: string }): void;
+
+  // per-sketch output format (optional — surfaces without it hide the Input
+  // card's gear). `undefined` deletes the key (back to 1x / 8-bit defaults).
+  setSketchOutputFormat?(sketchId: string, fmt: SketchOutputFormat | undefined): void;
 
   // smoothing (caps.smoothing)
   setFieldSmoothing(sketchId: string, colIdx: number, chainIdx: number, fieldPath: string, patch: Partial<ParamSmoothing>): void;

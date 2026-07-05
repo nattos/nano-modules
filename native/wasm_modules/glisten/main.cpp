@@ -130,7 +130,7 @@ void module_init() {
   s_pso_find = gpu::Device::createComputePSO(cs_find, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageRW(2).uniform(3));
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+      .tex2d(0).storageTex2d(1).uniform(2));
   s_pso_render = gpu::Device::createInstancedRenderPSO(
       vs, "main", fs, "main",
       gpu::TextureFormat::Surface,

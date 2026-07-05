@@ -91,6 +91,8 @@ const controller: ColumnController = {
   setInstanceHelp: (s, instanceKey, slotPath, patch) =>
     appController.setInstanceHelp(s, instanceKey, slotPath, patch),
 
+  setSketchOutputFormat: (s, fmt) => appController.setSketchOutputFormat(s, fmt),
+
   setFieldSmoothing: (s, c, ch, fp, patch: Partial<ParamSmoothing>) =>
     appController.setFieldSmoothing(s, c, ch, fp, patch),
   beginSetFieldSmoothing: (s, c, ch, fp, patch: Partial<ParamSmoothing>) =>

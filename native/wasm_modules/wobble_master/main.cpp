@@ -110,12 +110,11 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("wobble_master_wobble", WOBBLE_SPV, WOBBLE_SPV_SIZE,
-                           "rgba8unorm", "write");
+  state::registerShaderSPV("wobble_master_wobble", WOBBLE_SPV, WOBBLE_SPV_SIZE);
   auto cs = gpu::Device::createShaderModuleByName("wobble_master_wobble");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+      .tex2d(0).sampler(1).storageTex2d(2).uniform(3));
 
   state::log("wobble_master: module initialized");
 }

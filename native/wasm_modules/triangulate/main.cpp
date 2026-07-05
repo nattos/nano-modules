@@ -237,7 +237,7 @@ void module_init() {
   state::registerShaderSPV("triangulate_score",      SCORE_SPV,      SCORE_SPV_SIZE);
   state::registerShaderSPV("triangulate_seed_prep",  SEED_PREP_SPV,  SEED_PREP_SPV_SIZE);
   state::registerShaderSPV("triangulate_takeover",   TAKEOVER_SPV,   TAKEOVER_SPV_SIZE);
-  state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE, "rgba8unorm", "write");
+  state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE);
   state::registerShaderSPV("triangulate_edge_clear", EDGE_CLEAR_SPV, EDGE_CLEAR_SPV_SIZE);
   state::registerShaderSPV("triangulate_edges",      EDGES_SPV,      EDGES_SPV_SIZE);
   state::registerShaderSPV("triangulate_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
@@ -290,7 +290,7 @@ void module_init() {
       .storage(0).tex2d(1).storageRW(2).uniform(3));
   s_pso_present = gpu::Device::createComputePSO(cs_pr, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).storageTex2dRW(2, gpu::TextureFormat::R32F).storage(3)
-      .storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
+      .storageTex2d(4).uniform(5));
   s_pso_edge_clear = gpu::Device::createComputePSO(cs_ec, "main", gpu::Bindings()
       .storageRW(0).storageRW(1).storageRW(2).uniform(3));
   s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()

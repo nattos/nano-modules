@@ -135,17 +135,15 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("freeze_pulse_capture", CAPTURE_SPV, CAPTURE_SPV_SIZE,
-                           "rgba8unorm", "write");
-  state::registerShaderSPV("freeze_pulse_pulse", PULSE_SPV, PULSE_SPV_SIZE,
-                           "rgba8unorm", "write");
+  state::registerShaderSPV("freeze_pulse_capture", CAPTURE_SPV, CAPTURE_SPV_SIZE);
+  state::registerShaderSPV("freeze_pulse_pulse", PULSE_SPV, PULSE_SPV_SIZE);
   auto ccap = gpu::Device::createShaderModuleByName("freeze_pulse_capture");
   auto cpul = gpu::Device::createShaderModuleByName("freeze_pulse_pulse");
   if (!ccap || !cpul) return;
   s_pso_capture = gpu::Device::createComputePSO(ccap, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8));
+      .tex2d(0).storageTex2d(1));
   s_pso_pulse = gpu::Device::createComputePSO(cpul, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).sampler(2).storageTex2d(3, gpu::TextureFormat::RGBA8).uniform(4));
+      .tex2d(0).tex2d(1).sampler(2).storageTex2d(3).uniform(4));
 
   state::log("freeze_pulse: module initialized");
 }

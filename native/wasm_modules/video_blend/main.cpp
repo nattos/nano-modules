@@ -99,7 +99,7 @@ void module_init() {
   auto mod = gpu::Device::createShaderModuleByName("compute");
   if (!mod) return;
 
-  s_pso = gpu::Device::createComputePSO(mod, "main", gpu::Bindings().tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+  s_pso = gpu::Device::createComputePSO(mod, "main", gpu::Bindings().tex2d(0).tex2d(1).storageTex2d(2).uniform(3));
   state::log("blend: module initialized");
 }
 

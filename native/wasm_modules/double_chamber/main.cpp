@@ -382,7 +382,7 @@ void module_init() {
   s_pso_p_update = gpu::Device::createComputePSO(cs_p, "main", gpu::Bindings()
       .storageRW(0).storage(1).tex2d(2).sampler(3).uniform(4).storage(5));
   s_pso_prefill = gpu::Device::createComputePSO(cs_pre, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+      .tex2d(0).storageTex2d(1).uniform(2));
   s_pso_trace = gpu::Device::createComputePSO(cs_tr, "main", gpu::Bindings()
       .storageRW(0).storageRW(1).tex2d(2).sampler(3).uniform(4));
   s_pso_bridger = gpu::Device::createComputePSO(cs_br, "main", gpu::Bindings()
@@ -609,7 +609,7 @@ void render(void* self, int vp_w, int vp_h) {
   if (has_in && image_coupled && s->image_smoothing > 0.001f && s_blur.valid()) {
     if (!s->field_tex.valid() || s->field_w != vp_w || s->field_h != vp_h) {
       s->field_tex.release();
-      s->field_tex = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA8);
+      s->field_tex = gpu::Device::createTexture(vp_w, vp_h);
       s->field_w = vp_w; s->field_h = vp_h;
     }
     if (s->field_tex.valid()) {

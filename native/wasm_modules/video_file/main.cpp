@@ -43,7 +43,7 @@ void module_init() {
   auto mod = gpu::Device::createShaderModuleByName("compute");
   if (!mod) return;
   s_pso = gpu::Device::createComputePSO(
-      mod, "main", gpu::Bindings().tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8));
+      mod, "main", gpu::Bindings().tex2d(0).storageTex2d(1));
 }
 
 void* create() { return new State(); }

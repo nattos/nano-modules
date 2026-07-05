@@ -98,10 +98,10 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  // rgba8unorm storage format for the naga bridge (fill writes the 3D cube,
-  // apply writes the 2D output — each shader's single storage texture).
+  // Fill writes the semantic-8-bit 3D cube: pinned rgba8unorm for the naga
+  // bridge. Apply writes tex_out and follows the sketch-default format.
   state::registerShaderSPV("lut_collection_fill",  FILL_SPV,  FILL_SPV_SIZE,  "rgba8unorm", "write");
-  state::registerShaderSPV("lut_collection_apply", APPLY_SPV, APPLY_SPV_SIZE, "rgba8unorm", "write");
+  state::registerShaderSPV("lut_collection_apply", APPLY_SPV, APPLY_SPV_SIZE);
 
   auto cs_fill  = gpu::Device::createShaderModuleByName("lut_collection_fill");
   auto cs_apply = gpu::Device::createShaderModuleByName("lut_collection_apply");
@@ -114,7 +114,7 @@ void module_init() {
       .tex2d(0)
       .tex3d(1)
       .sampler(2)
-      .storageTex2d(3, gpu::TextureFormat::RGBA8)
+      .storageTex2d(3)
       .uniform(4));
 
   s_samp = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);

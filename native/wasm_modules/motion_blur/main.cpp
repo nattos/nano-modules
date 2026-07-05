@@ -166,7 +166,7 @@ static void rebuild_psos(State& st) {
           .tex2d(0)   // input color
           .tex2d(1)   // per-pixel motion
           .tex2d(2)   // pyramid (multi-mip)
-          .storageTex2d(3, gpu::TextureFormat::RGBA8)
+          .storageTex2d(3)
           .uniform(4)
           .sampler(5),  // linear-clamp for pyramid bilinear
       recon_consts);

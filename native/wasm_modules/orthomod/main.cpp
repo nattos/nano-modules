@@ -565,7 +565,7 @@ void module_init() {
 
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .uniform(2)
       .storage(3));
   state::log("orthomod: module initialized");

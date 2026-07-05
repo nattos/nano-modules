@@ -182,7 +182,7 @@ void module_init() {
 
   s_pso_color = gpu::Device::createComputePSO(cs_color, "main", gpu::Bindings()
       .tex2d(0)                                       // inputTex
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)     // outputTex
+      .storageTex2d(1)     // outputTex
       .storage(2)                                     // rects (read-only storage)
       .uniform(3));                                   // Uniforms
 

@@ -363,7 +363,7 @@ void module_init() {
       .tex2d(1)                                       // gradient (debug)
       .tex2d(2)                                       // input (mix)
       .tex2d(3)                                       // 1x1 (min,max)
-      .storageTex2d(4, gpu::TextureFormat::RGBA8)     // tex_out
+      .storageTex2d(4)                                // tex_out
       .uniform(5));
 
   state::log("height_from_gradient: module initialized");

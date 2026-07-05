@@ -63,7 +63,7 @@ void module_init() {
   s_pso_combine = gpu::Device::createComputePSO(cs_mod, "main", gpu::Bindings()
       .tex2d(0)
       .tex2d(1)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8));
+      .storageTex2d(2));
 
   state::log("mrt_test: initialized");
 }

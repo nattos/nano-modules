@@ -71,7 +71,7 @@ public:
     if (!cs) return false;
     m_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
         .tex2d(0)
-        .storageTex2d(1, gpu::TextureFormat::RGBA8)
+        .storageTex2d(1)   // sketch default — writes scratch AND tex_out
         .uniform(2)
         .storage(3));  // weights[0..MAX_HALF_COUNT]
     m_uniform_h = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);

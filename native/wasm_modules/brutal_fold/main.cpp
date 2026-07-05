@@ -639,7 +639,7 @@ void module_init() {
 
   s_pso_present = gpu::Device::createComputePSO(cs_present, "main", gpu::Bindings()
       .uniform(0)
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)); // tex_out
+      .storageTex2d(1));                            // tex_out
 
   auto cs_edge = gpu::Device::createShaderModuleByName("brutal_fold_edge");
   if (!cs_edge) return;
@@ -654,7 +654,7 @@ void module_init() {
   s_pso_debug = gpu::Device::createComputePSO(cs_debug, "main", gpu::Bindings()
       .uniform(0)      // debug uniform
       .storage(1)      // stats (read)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8)); // tex_out (write viz)
+      .storageTex2d(2));                            // tex_out (write viz)
 
   state::log("brutal_fold: module initialized");
 }

@@ -53,9 +53,9 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  // count writes a storage buffer (no storage texture) — default
-  // rgba8unorm,write override is irrelevant. visualize writes
-  // rgba8unorm output, default works.
+  // count writes a storage buffer (no storage texture) — the storage-texture
+  // format override is irrelevant. visualize writes the sketch-default
+  // tex_out, default works.
   state::registerShaderSPV("count",     COUNT_SPV,     COUNT_SPV_SIZE);
   state::registerShaderSPV("visualize", VISUALIZE_SPV, VISUALIZE_SPV_SIZE);
   auto cs_count = gpu::Device::createShaderModuleByName("count");
@@ -71,7 +71,7 @@ void module_init() {
       .storageRW(1));
   s_pso_vis = gpu::Device::createComputePSO(cs_vis, "main", gpu::Bindings()
       .tex2d(0)                                         // unused by shader, OK
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .storage(2)
       .uniform(3));
 

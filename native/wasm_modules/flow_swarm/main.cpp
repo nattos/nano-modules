@@ -462,7 +462,7 @@ void module_init() {
 
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .uniform(2));
 
   s_pso_render_alpha = gpu::Device::createInstancedRenderPSO(
@@ -484,7 +484,7 @@ void module_init() {
   s_pso_density_debug = gpu::Device::createComputePSO(cs_dbg, "main", gpu::Bindings()
       .tex2d(0)
       .sampler(1)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8));
+      .storageTex2d(2));
 
   state::log("flow_swarm: module initialized");
 }

@@ -233,7 +233,7 @@ void module_init() {
   s_pso_solve = gpu::Device::createComputePSO(cs_solve, "main", gpu::Bindings()
       .storage(0).storageRW(1).uniform(2));
   s_pso_render = gpu::Device::createComputePSO(cs_render, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storage(2).storageTex2d(3, gpu::TextureFormat::RGBA8).uniform(4));
+      .tex2d(0).sampler(1).storage(2).storageTex2d(3).uniform(4));
 
   state::log("plane_shear: module initialized");
 }

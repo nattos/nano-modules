@@ -141,7 +141,7 @@ void module_init() {
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
       .sampler(1)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8)
+      .storageTex2d(2)
       .uniform(3));
 
   state::log("dispersion: module initialized");

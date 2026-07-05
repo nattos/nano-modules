@@ -59,7 +59,7 @@ void module_init() {
   // Standalone PSO: only output texture + uniform. No tex_in (this
   // effect doesn't sample anything).
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .uniform(2));
 }
 

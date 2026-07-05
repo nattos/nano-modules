@@ -120,7 +120,7 @@ void module_init() {
       .uniform(0)
       .storage(1)                                   // lut (read)
       .tex2d(2)                                     // tex_in
-      .storageTex2d(3, gpu::TextureFormat::RGBA8)); // tex_out
+      .storageTex2d(3));                            // tex_out
 }
 
 void* create() {

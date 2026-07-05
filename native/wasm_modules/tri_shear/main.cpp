@@ -216,7 +216,7 @@ void module_init() {
   s_pso_solve = gpu::Device::createComputePSO(cs_solve, "main", gpu::Bindings()
       .storage(0).storageRW(1).uniform(2));
   s_pso_render = gpu::Device::createComputePSO(cs_render, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storage(2).storageTex2d(3, gpu::TextureFormat::RGBA8).uniform(4));
+      .tex2d(0).sampler(1).storage(2).storageTex2d(3).uniform(4));
 
   state::log("tri_shear: module initialized");
 }
@@ -372,8 +372,8 @@ void render(void* self, int vp_w, int vp_h) {
   if (s->tmp_w != vp_w || s->tmp_h != vp_h) {
     if (s->tmpA.valid()) s->tmpA.release();
     if (s->tmpB.valid()) s->tmpB.release();
-    s->tmpA = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA8);
-    s->tmpB = gpu::Device::createTexture(vp_w, vp_h, gpu::TextureFormat::RGBA8);
+    s->tmpA = gpu::Device::createTexture(vp_w, vp_h);
+    s->tmpB = gpu::Device::createTexture(vp_w, vp_h);
     s->tmp_w = vp_w; s->tmp_h = vp_h;
   }
   if (!s->tmpA.valid() || !s->tmpB.valid()) return;

@@ -422,7 +422,7 @@ void module_init() {
   // tex format substitution differs.
   s_pso_prefill_color = gpu::Device::createComputePSO(cs_prefill_color, "main", gpu::Bindings()
       .tex2d(0)
-      .storageTex2d(1, gpu::TextureFormat::RGBA8)
+      .storageTex2d(1)
       .uniform(2));
   s_pso_prefill_motion = gpu::Device::createComputePSO(cs_prefill_motion, "main", gpu::Bindings()
       .tex2d(0)

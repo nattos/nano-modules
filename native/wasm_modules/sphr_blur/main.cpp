@@ -73,12 +73,11 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("sphr_blur_expand", EXPAND_SPV, EXPAND_SPV_SIZE,
-                           "rgba8unorm", "write");
+  state::registerShaderSPV("sphr_blur_expand", EXPAND_SPV, EXPAND_SPV_SIZE);
   auto cs = gpu::Device::createShaderModuleByName("sphr_blur_expand");
   if (!cs) return;
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
+      .tex2d(0).sampler(1).storageTex2d(2).uniform(3));
   s_blur.init();
 
   state::log("sphr_blur: module initialized");

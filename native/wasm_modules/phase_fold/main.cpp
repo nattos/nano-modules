@@ -464,7 +464,7 @@ void module_init() {
   s_pso_backdrop = gpu::Device::createComputePSO(cs_backdrop, "main", gpu::Bindings()
       .uniform(0)
       .storage(1)                                    // cells (read)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8));  // tex_out
+      .storageTex2d(2));  // tex_out
 
   s_pso_stream = gpu::Device::createComputePSO(cs_stream, "main", gpu::Bindings()
       .uniform(0)

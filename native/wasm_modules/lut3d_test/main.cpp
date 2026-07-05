@@ -15,10 +15,11 @@
  * underlying texture cover the platform's basic 3D texture support.
  *
  * Authored as HLSL (init.hlsl + apply.hlsl) → SPV → {MSL native, WGSL web},
- * the same cross-platform pipeline every other effect uses. The storage
- * format (rgba8unorm) is supplied at registerShaderSPV time so the naga
- * bridge emits the right `texture_storage_3d<...>` on web; native takes the
- * format from the bound LUT texture.
+ * the same cross-platform pipeline every other effect uses. The LUT cube is
+ * semantic 8-bit, so its storage format (rgba8unorm) is supplied at
+ * registerShaderSPV time for the init pass; the apply pass writes tex_out and
+ * follows the sketch-default working format. Native takes formats from the
+ * bound textures.
  *
  * Class-like instance model: module_init() compiles the two shared
  * compute PSOs + publishes the schema once per type; each chain entry
@@ -57,12 +58,12 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  // Storage format supplied so the web naga bridge emits
-  // texture_storage_3d<rgba8unorm,write> (the init pass) /
-  // texture_storage_2d<rgba8unorm,write> (apply's output); native binds the
-  // format from the LUT/output textures.
+  // Init writes the semantic-8-bit LUT cube: pin rgba8unorm so the web naga
+  // bridge emits texture_storage_3d<rgba8unorm,write>. Apply writes tex_out
+  // and follows the sketch-default working format (no format args); native
+  // binds formats from the bound textures either way.
   state::registerShaderSPV("lut3d_test_init",  INIT_SPV,  INIT_SPV_SIZE,  "rgba8unorm", "write");
-  state::registerShaderSPV("lut3d_test_apply", APPLY_SPV, APPLY_SPV_SIZE, "rgba8unorm", "write");
+  state::registerShaderSPV("lut3d_test_apply", APPLY_SPV, APPLY_SPV_SIZE);
 
   auto cs_init  = gpu::Device::createShaderModuleByName("lut3d_test_init");
   auto cs_apply = gpu::Device::createShaderModuleByName("lut3d_test_apply");
@@ -73,7 +74,7 @@ void module_init() {
   s_pso_apply = gpu::Device::createComputePSO(cs_apply, "main", gpu::Bindings()
       .tex2d(0)
       .tex3d(1)
-      .storageTex2d(2, gpu::TextureFormat::RGBA8));
+      .storageTex2d(2));
 
   state::log("lut3d_test: module initialized");
 }
