@@ -31,6 +31,7 @@ compile_shaders_compute_var_spv fast_blur up
 _emit_spv_header_var fast_blur down up
 echo "  fast_blur shaders compiled (down + up, SPV)"
 compile_shaders_compute_spv sharpen
+compile_shaders_compute_spv local_contrast combine
 compile_shaders_compute_spv edges
 compile_shaders_compute_spv crop
 compile_shaders_compute_spv transform
@@ -100,6 +101,7 @@ wasm_build \
   ../blur/main.cpp \
   ../fast_blur/main.cpp \
   ../sharpen/main.cpp \
+  ../local_contrast/main.cpp \
   ../edges/main.cpp \
   ../crop/main.cpp \
   ../transform/main.cpp \

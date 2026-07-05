@@ -79,6 +79,9 @@ NANO_DECLARE_INSTANCE_EFFECT(fast_blur)
 NANO_DECLARE_INSTANCE_EFFECT(sharpen)
 namespace sharpen { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(local_contrast)
+namespace local_contrast { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(edges)
 
 NANO_DECLARE_INSTANCE_EFFECT(crop)
@@ -430,6 +433,18 @@ void nano_module_main() {
         "la-crosshairs",
         NANO_INSTANCE_LIFECYCLE(sharpen),
         &sharpen::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.local_contrast",
+        "Local Contrast",
+        "Large-radius unsharp mask (Clarity). Boosts mid-scale structure, not fine edges.",
+        "filter",
+        "contrast,clarity,unsharp,local,detail,punch,dehaze",
+        "la-adjust",
+        NANO_INSTANCE_LIFECYCLE(local_contrast),
+        &local_contrast::is_identity,
     });
 
     nano::registerEffect({
