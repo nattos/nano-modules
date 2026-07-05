@@ -149,6 +149,25 @@ describe(`Local Contrast E2E (${backend}, ${mode})`, () => {
     expect(linear.success && juicy.success).toBe(true);
     juicy.expectDifferentFrom(linear, 25);
   });
+
+  it('exposure boost drives recovered peaks hot through the shoulder', async () => {
+    // Red→white gradient, full recover. exposure 0 keeps the recovered colour at
+    // the pixel's own luma; exposure 1 over-exposes it and rolls it through the
+    // soft shoulder — a hotter, still-saturated peak. The two must diverge.
+    const grad = (exposure: number, dump: string) => runGpuChainTest({
+      chain: [
+        { module: 'source.gradient', params: [
+          ['softness', 1.0], ['color_a', [1.0, 0.15, 0.1]], ['color_b', [1.0, 1.0, 1.0]],
+        ] },
+        { module: LC, params: [['amount', 0.0], ['recover', 1.0], ['exposure', exposure]] },
+      ],
+      bundle: 'core', width: 64, height: 64, dumpName: dump,
+    });
+    const cool = await grad(0.0, 'local_contrast_exposure_off');
+    const hot  = await grad(1.0, 'local_contrast_exposure_on');
+    expect(cool.success && hot.success).toBe(true);
+    hot.expectDifferentFrom(cool, 25);
+  });
 });
 }));
 
@@ -156,13 +175,13 @@ describe(`Local Contrast E2E (${backend}, ${mode})`, () => {
 // reports metadata.id but not the param list.
 describe('Local Contrast schema', () => {
   jest.setTimeout(30000);
-  it('declares amount, mode, protect, radius, recover, rolloff', async () => {
+  it('declares amount, exposure, mode, protect, radius, recover, rolloff', async () => {
     const f = await runGpuEffectTest({
       module: LC, bundle: 'core', inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'local_contrast_params',
     });
     expect(f.success).toBe(true);
     expect(f.params.map((p) => p.name).sort())
-      .toEqual(['amount', 'mode', 'protect', 'radius', 'recover', 'rolloff']);
+      .toEqual(['amount', 'exposure', 'mode', 'protect', 'radius', 'recover', 'rolloff']);
   });
 });

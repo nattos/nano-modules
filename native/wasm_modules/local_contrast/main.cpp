@@ -39,7 +39,8 @@ struct Uniforms {
   int   mode;
   float recover;
   float rolloff;              // starts the 2nd 16-byte cbuffer register
-  float _pad0, _pad1, _pad2;
+  float exposure;
+  float _pad1, _pad2;
 };
 static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
 
@@ -57,13 +58,14 @@ struct State {
   int   mode    = 0;    // 0 = Luma, 1 = RGB
   float recover = 0.0f; // highlight colour recovery (0 = off)
   float rolloff = 0.5f; // non-linear squash of the recovered chroma (0 = linear)
+  float exposure = 0.0f;// exposure boost into the shoulder (0 = off)
 };
 
 // Type-shared, compiled once.
 static gpu::ComputePSO s_pso_combine;
 
 void module_init() {
-  state::init("filter.local_contrast", {1, 0, 2},
+  state::init("filter.local_contrast", {1, 0, 3},
     state::Schema()
       .helpField("intro",
         "## Local Contrast\n"
@@ -95,12 +97,16 @@ void module_init() {
           "back into bright lights that clipped toward white. *Colour Roll-off* "
           "sets how hard that recovered chroma squashes: 0 is a plain linear tint, "
           "higher rolls the off-colours off non-linearly for richer, juicier "
-          "\"film shoulder\" peaks.")
+          "\"film shoulder\" peaks. *Exposure Boost* pushes those recovered "
+          "highlights HOT — it over-exposes the recovered colour and rolls it "
+          "through a soft filmic shoulder, so peaks bloom bright while keeping "
+          "(not losing) their saturation.")
       .floatField("protect", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Protect", "Prot")
       .selectField("mode", 0, state::PrimaryInput, {{"Luma", 0}, {"RGB", 1}})
         .label("Color Mode", "Color")
       .floatField("recover", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Highlight Colour", "HiCol")
       .floatField("rolloff", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Colour Roll-off", "Roll")
+      .floatField("exposure", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Exposure Boost", "Exp")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
@@ -137,6 +143,7 @@ void init(void* self) {
   s->mode = 0;
   s->recover = 0.0f;
   s->rolloff = 0.5f;
+  s->exposure = 0.0f;
   s->initialized = false;
   if (!s_pso_combine.valid() || !s->uniform_buf.valid()) return;
   if (!s->blur.init()) return;
@@ -162,6 +169,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "mode"))    s->mode    = state::patchInt(i);
     else if (state::pathIs(path, plen, "recover")) s->recover = state::patchFloat(i);
     else if (state::pathIs(path, plen, "rolloff")) s->rolloff = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "exposure")) s->exposure = state::patchFloat(i);
   }
 }
 
@@ -215,6 +223,7 @@ void render(void* self, int vp_w, int vp_h) {
   u.mode        = s->mode;
   u.recover     = s->recover;
   u.rolloff     = s->rolloff;
+  u.exposure    = s->exposure;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
