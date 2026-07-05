@@ -122,6 +122,14 @@ describe('Smear (filter.blur.smear) E2E', () => {
     soft.trace('out').expectDifferentFrom(boxy.trace('out'), 100);
   });
 
+  it('scatter softness reshapes the sampling distribution (smooths the hard edges)', async () => {
+    const boxy = await runChain('sm_scb', { mode: 1, angle: 0.0, length: 0.6, width: 0.1, tail: 1.0, dive: 1.0, motion: 0.0, softness: 0.0 }, 'smear_scatter_boxy');
+    const soft = await runChain('sm_scs', { mode: 1, angle: 0.0, length: 0.6, width: 0.1, tail: 1.0, dive: 1.0, motion: 0.0, softness: 1.0 }, 'smear_scatter_soft');
+    expect(boxy.success).toBe(true);
+    expect(soft.success).toBe(true);
+    soft.trace('out').expectDifferentFrom(boxy.trace('out'), 100);
+  });
+
   it('scatter motion animates the field over time', async () => {
     const early = await runChain('sm_m0', { mode: 1, length: 0.5, width: 0.2, dive: 1.0, motion: 1.0 }, 'smear_motion_early', 4);
     const late  = await runChain('sm_m1', { mode: 1, length: 0.5, width: 0.2, dive: 1.0, motion: 1.0 }, 'smear_motion_late', 60);

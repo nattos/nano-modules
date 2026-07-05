@@ -64,7 +64,7 @@ struct ScatterUniforms {
   float exposure_gain;
   float edge_artifacts;
   float exposure;
-  float _pad1;
+  float softness;
 };
 static_assert(sizeof(ScatterUniforms) == 64, "ScatterUniforms layout mismatch");
 
@@ -115,8 +115,7 @@ static inline float hash01(uint32_t v) {
 // the type-shared schema, so it takes the mode value (not per-instance state).
 static void apply_visibility(int mode) {
   bool scatter = (mode == MODE_SCATTER);
-  state::setFieldHidden("softness",           scatter);  // blur-only (kernel weights)
-  state::setFieldHidden("samples",            scatter);
+  state::setFieldHidden("samples",            scatter);  // blur-only (tap count)
   state::setFieldHidden("dive",               !scatter);
   state::setFieldHidden("motion",             !scatter);
   state::setFieldHidden("dive_contrast_bias", !scatter);
@@ -140,7 +139,7 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("filter.blur.smear", {1, 0, 1},
+  state::init("filter.blur.smear", {1, 0, 2},
     state::Schema()
       .helpField("intro",
         "## Smear\n"
@@ -173,6 +172,10 @@ void module_init() {
       .floatField("tilt", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Perspective: pinches the minor width on the head side, "
                   "expands it on the rear (flips sign).").label("Perspective", "Persp")
+      .floatField("softness", 0.6f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Distribution falloff: 0 = boxy with hard edges, 1 = smooth "
+                  "gaussian. Softens the Blur tail and the Scatter grain (removes the "
+                  "hard edges at high Tail).").label("Softness", "Soft")
       .group("look", "Look")
         .groupHelp("*Exposure* scales the output up — a long/thin smear averages a "
                    "bright line down toward black, so lift it back here.")
@@ -180,12 +183,7 @@ void module_init() {
                   nullptr, "Output gain — brightens the (often dark) smeared result.")
                   .label("Exposure", "Exp")
       .group("blur", "Blur")
-        .groupHelp("*Softness* is the gaussian sharpness of the streak's fade — low "
-                   "is boxy with a hard tail edge, high fades smoothly to nothing. "
-                   "*Samples* trades speed for smoothness along the streak.")
-      .floatField("softness", 0.6f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Gaussian tail fade: 0 = boxy/hard edge, 1 = soft fade-out.")
-                  .label("Softness", "Soft")
+        .groupHelp("*Samples* trades speed for smoothness along the streak.")
       .intField("samples", 12, 4, 32, state::PrimaryInput, 0, nullptr,
                 "Taps per separable pass (quality).").label("Samples", "Smpl")
       .group("scatter", "Scatter")
@@ -352,6 +350,7 @@ void render(void* self, int vp_w, int vp_h) {
     u.exposure_gain = std::exp2(expo);
     u.edge_artifacts = s->edge_artifacts;
     u.exposure = s->exposure;
+    u.softness = clamp01(s->softness);
     s->uniform_scatter.writeOne(u);
 
     auto cp = gpu::ComputePass::begin();

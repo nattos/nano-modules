@@ -28,7 +28,7 @@ cbuffer Uniforms : register(b3) {
   float exposure_gain;            // grain-contrast lift on the differenced image
   float edge_artifacts;           // bottom-edge grain flair (0 = clean)
   float exposure;                 // global output gain (shared with Blur mode)
-  float _pad1;
+  float softness;                 // uniform (boxy) → gaussian sampling blend
 };
 
 static const float LIGHT_STR = 0.35;  // rhs (light) copy displacement fraction
@@ -55,8 +55,21 @@ float2 foot_scatter(float2 uv, float salt, float strength) {
   float fwd  = max(reach_fwd,  floor_r);
   float wid  = max(width,      floor_r) * persp;
 
-  float m = lerp(-back, fwd, a) * strength;    // major, reach units
-  float n = (b - 0.5) * 2.0 * wid * strength;  // minor, reach units
+  // Signed unit samples: a uniform draw (boxy — hard boundaries at both ends of
+  // the span, which read as the two edges at high tail) blended toward a
+  // Box–Muller gaussian (peaked, no hard boundary) by `softness`. The major side
+  // is scaled asymmetrically (fwd vs back) so the tail keeps its one-sided shape.
+  float uM = 2.0 * a - 1.0;
+  float uN = 2.0 * b - 1.0;
+  float rad = sqrt(-2.0 * log(max(a, 1e-6)));
+  float ang = 6.28318530718 * b;
+  float gM = clamp(rad * cos(ang) * 0.5, -1.3, 1.3);
+  float gN = clamp(rad * sin(ang) * 0.5, -1.3, 1.3);
+  float rM = lerp(uM, gM, softness);
+  float rN = lerp(uN, gN, softness);
+
+  float m = (rM >= 0.0 ? rM * fwd : rM * back) * strength;  // asymmetric major
+  float n = rN * wid * strength;                            // symmetric minor
   float2 duv = m * float2(axis_maj_x, axis_maj_y) + n * float2(axis_min_x, axis_min_y);
   return uv + duv;
 }
