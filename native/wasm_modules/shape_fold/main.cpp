@@ -48,6 +48,16 @@ static constexpr int SF_SN        = 160;   // auto-levels downsample grid
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr float kLoopSecs = 6.0f;   // time_speed=1 → ~6 s loop (testbed dt/6)
 
+// Key-moment playback: play a short window anchored on the analyzed center peak
+// (SF_KM_PEAK — a frame index where new structure has streamed in and frames the
+// centre) instead of the whole loop. The played span is a FIXED fraction of the
+// full loop: kKmPre before the peak through +0.08 after (matching the web testbed,
+// app.js). A cell whose baked SF_KM_SCORE is 0 has no usable window and falls back
+// to the full [0,1] loop. This atlas carries the km sidecar directly (no separate
+// key-moment atlas, no sky/reachability channel — unlike brutal_fold).
+static constexpr float kKmPre  = 0.32f;
+static constexpr float kKmSpan = 0.40f;   // kKmPre + 0.08
+
 // Autopilot epicycle constants (verbatim from app.js). Two summed circular
 // motions, 90° out of phase, incommensurate rates → sweeps the annulus without
 // stalling at the centre.
@@ -141,6 +151,14 @@ struct State {
   float exposure            = 1.0f;    // pre-grade value drive (boost / reduce)
   int   output_mode         = 1;       // 0 = Grayscale, 1 = Magma (default)
 
+  // --- Key moment: play a curated inflow→peak window from the atlas sidecar ---
+  bool  key_moment        = false;  // master enable
+  int   km_time_mode      = 2;      // 0 = Trigger (one-shot) 1 = Time (manual) 2 = Loop
+  float km_time           = 0.0f;   // Time-mode manual playhead [0,1] over the window
+  float km_duration       = 2.0f;   // seconds to play the window (Trigger/Loop)
+  float km_ease           = 1.5f;   // ease-out toward the settled peak (0 = linear)
+  float km_trigger_prev   = 0.0f;   // rising-edge state for the km_trigger event
+
   // --- Skip static: detect a near-still construct and jog past it ---
   bool  skip_empty        = false;  // master enable for detector + jog
   float skip_thresh       = 0.5f;   // Sensitivity [0,1] → activity trigger (× kSkipTrigSpan)
@@ -160,6 +178,11 @@ struct State {
   // --- Internal clocks (advanced in tick) ---
   float clock_t   = 0.0f;              // loop phase 0..1
   float orbit     = 0.0f;              // autopilot epicycle phase
+  // Key-moment playhead: km_u ∈ [0,1] sweeps the window (Loop/Trigger accumulate it
+  // in tick; Time reads km_time). km_playing gates the Trigger one-shot.
+  float km_u       = 0.0f;
+  bool  km_playing = false;
+  float km_phase   = 0.0f;             // last resolved playhead (broadcast for the editor)
   fx::SkipJog jog;                     // skip-static C2 engagement ramp
   float content   = 1.0f;              // last frame's activity metric [0,1] (1 = moving/rich)
   float coherence = 0.0f;              // last frame's uniform-drift fraction [0,1] (for tuning)
@@ -173,35 +196,52 @@ struct State {
   bool  ap_jump_pending = false;       // a trigger fired since the last tick
 };
 
-static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty) {
+static void apply_visibility(bool autopilot, bool ap_snap, bool skip_empty,
+                             bool key_moment, int km_time_mode) {
+  // Key moment: mode picker + its mode-specific control (a manual Time scrub for
+  // Time mode, a Duration + Trigger for Trigger/Loop). Ease applies whenever it's on.
+  state::setFieldHidden("km_time_mode",  !key_moment);
+  state::setFieldHidden("km_time",       !(key_moment && km_time_mode == 1));   // Time
+  state::setFieldHidden("km_duration",   !(key_moment && km_time_mode != 1));   // Trigger/Loop
+  state::setFieldHidden("km_trigger",    !(key_moment && km_time_mode != 1));   // Trigger/Loop
+  state::setFieldHidden("km_ease",       !key_moment);
+  // Continuous-clock controls superseded by the key-moment playhead. Hidden in KM.
+  state::setFieldHidden("time_speed",    key_moment);   // superseded by km_duration
+  state::setFieldHidden("ease",          key_moment);   // superseded by km_ease
+  // Skip-static jogs the continuous loop clock — inert (and hidden) in KM mode.
+  state::setFieldHidden("skip_empty",    key_moment);
   state::setFieldHidden("ap_speed",       !autopilot);
   state::setFieldHidden("ap_snap",        !autopilot);
   state::setFieldHidden("ap_hold_period", !(autopilot && ap_snap));
   state::setFieldHidden("ap_hold_jitter", !(autopilot && ap_snap));
   state::setFieldHidden("ap_jump",        !(autopilot && ap_snap));
-  state::setFieldHidden("skip_thresh",     !skip_empty);
-  state::setFieldHidden("skip_w_var",      !skip_empty);
-  state::setFieldHidden("skip_w_edge",     !skip_empty);
-  state::setFieldHidden("skip_w_motion",   !skip_empty);
-  state::setFieldHidden("skip_debug",      !skip_empty);
-  state::setFieldHidden("skip_drift_penalty", !skip_empty);
-  state::setFieldHidden("skip_recover",    !skip_empty);
-  state::setFieldHidden("skip_rate",       !skip_empty);
+  bool skip = skip_empty && !key_moment;
+  state::setFieldHidden("skip_thresh",     !skip);
+  state::setFieldHidden("skip_w_var",      !skip);
+  state::setFieldHidden("skip_w_edge",     !skip);
+  state::setFieldHidden("skip_w_motion",   !skip);
+  state::setFieldHidden("skip_debug",      !skip);
+  state::setFieldHidden("skip_drift_penalty", !skip);
+  state::setFieldHidden("skip_recover",    !skip);
+  state::setFieldHidden("skip_rate",       !skip);
   // Jogging the orbit only means anything under autopilot.
-  state::setFieldHidden("skip_autopilot",  !(skip_empty && autopilot));
+  state::setFieldHidden("skip_autopilot",  !(skip && autopilot));
 }
 
 // Static (self-less) visibility evaluator — pure over state (see crop).
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
-  bool autopilot = false, ap_snap = false, skip_empty = false;
+  bool autopilot = false, ap_snap = false, skip_empty = false, key_moment = false;
+  int km_time_mode = 2;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i]; int l = len[i];
-    if      (state::pathIs(p, l, "autopilot"))  autopilot  = state::patchFloat(i) != 0.0f;
-    else if (state::pathIs(p, l, "ap_snap"))    ap_snap    = state::patchFloat(i) != 0.0f;
-    else if (state::pathIs(p, l, "skip_empty")) skip_empty = state::patchFloat(i) != 0.0f;
+    if      (state::pathIs(p, l, "autopilot"))    autopilot    = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "ap_snap"))      ap_snap      = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "skip_empty"))   skip_empty   = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "key_moment"))   key_moment   = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(p, l, "km_time_mode")) km_time_mode = state::patchInt(i);
   }
-  apply_visibility(autopilot, ap_snap, skip_empty);
+  apply_visibility(autopilot, ap_snap, skip_empty, key_moment, km_time_mode);
 }
 
 static void on_state_ready(void* self);
@@ -252,6 +292,36 @@ void module_init() {
       .floatField("ease", 0.0f, -1.0f, 1.0f, state::PrimaryInput).label("Ease", "Ease")
       // How gradually AND-edges fade in/out (the soft birth gate width).
       .floatField("birth_softness", 0.45f, 0.02f, 1.0f, state::PrimaryInput).label("Birth Softness", "Birth")
+      // --- Key moment: play the analyzed inflow→peak window instead of the loop ---
+      .group("keymoment", "Key Moment")
+        .groupHelp(
+          "Each atlas cell (and temporal layer) was scored offline for its **key "
+          "moment** — the short window where new structure streams in and comes to "
+          "frame the centre. Turn this on to play just that window (anchored on the "
+          "settled peak) instead of the whole loop; it also snaps to the exact cell "
+          "so what plays is precisely what was scored. **Time Mode** picks how it "
+          "plays: *Trigger* fires it once per **Trigger** and holds on the peak; "
+          "*Time* lets you scrub the window by hand; *Loop* replays it continuously "
+          "(and **Trigger** restarts it). *Duration* sets the playback length for "
+          "Trigger/Loop. Cells with no clean key moment fall back to the full loop.")
+      .boolField("key_moment", false, state::PrimaryInput).label("Key Moment", "KM")
+      .selectField("km_time_mode", 2, state::PrimaryInput,
+                   {{"Trigger", 0}, {"Time", 1}, {"Loop", 2}}).label("Time Mode", "Mode")
+      .floatField("km_duration", 2.0f, 0.1f, 10.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.05f, /*units=*/"s",
+                  "How long the window takes to play (Trigger/Loop), in seconds.")
+                  .label("Duration", "Dur")
+      .floatField("km_ease", 1.5f, 0.0f, 4.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.05f, /*units=*/nullptr,
+                  "Ease-out toward the settled peak: 0 = linear, higher = lingers longer "
+                  "on the framed moment at the end of the window.").label("Ease", "Ease")
+      .floatField("km_time", 0.0f, 0.0f, 1.0f, state::PrimaryInput,
+                  nullptr, /*step=*/0.005f, /*units=*/nullptr,
+                  "Manual playhead over the key-moment window (Time mode): 0 = window "
+                  "start, 1 = settled on the centre peak.").label("Time", "Time")
+      .eventField("km_trigger", state::PrimaryInput).label("Trigger", "Trig")
+      // Broadcast: the live playhead [0,1] within the window, for the editor readout.
+      .floatField("km_phase", 0.0f, 0.0f, 1.0f, state::SecondaryOutput)
       // --- Autopilot (non-destructive XY override + broadcast) ---
       .group("autopilot", "Autopilot")
         .groupHelp(
@@ -464,7 +534,7 @@ void init(void* self) {
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  apply_visibility(s->autopilot, s->ap_snap, s->skip_empty);
+  apply_visibility(s->autopilot, s->ap_snap, s->skip_empty, s->key_moment, s->km_time_mode);
 }
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -638,6 +708,28 @@ void tick(void* self, double dt) {
     s->ap_jump_pending = false;     // ignore triggers while autopilot is off
   }
 
+  // --- Key-moment playhead. Loop/Trigger advance km_u 0→1 over km_duration
+  //     seconds; Time reads the manual km_time. (The scene cell + window are
+  //     resolved in render from the atlas sidecar.) ---
+  if (s->key_moment) {
+    float rate = 1.0f / std::max(s->km_duration, 0.05f);   // playhead units/sec
+    if (s->km_time_mode == 1) {                       // Time — manual scrub
+      s->km_u = clampf(s->km_time, 0.0f, 1.0f);
+    } else if (s->km_time_mode == 2) {                // Loop — continuous replay
+      s->km_u += fdt * rate;
+      s->km_u -= std::floor(s->km_u);
+    } else {                                          // Trigger — one-shot, hold on peak
+      if (s->km_playing) {
+        s->km_u += fdt * rate;
+        if (s->km_u >= 1.0f) { s->km_u = 1.0f; s->km_playing = false; }
+      }
+    }
+    s->km_phase = s->km_u;
+  }
+  auto vkm = val::number(s->km_phase);   // live key-moment playhead (for the editor)
+  state::setValPath("km_phase", vkm);
+  val::release(vkm);
+
   // Broadcast the effective XY so the editor can show the live position.
   auto vx = val::number(s->eff_x);
   state::setValPath("autopilot_x", vx);
@@ -686,6 +778,16 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "level_ease"))          s->level_ease = state::patchFloat(i);
     else if (state::pathIs(path, plen, "exposure"))            s->exposure = state::patchFloat(i);
     else if (state::pathIs(path, plen, "output_mode"))         s->output_mode = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "key_moment"))          { bool v = state::patchFloat(i) != 0.0f; if (v != s->key_moment) { s->key_moment = v; mode_changed = true; } }
+    else if (state::pathIs(path, plen, "km_time_mode"))        { int v = state::patchInt(i); if (v != s->km_time_mode) { s->km_time_mode = v; mode_changed = true; } }
+    else if (state::pathIs(path, plen, "km_time"))             s->km_time = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "km_duration"))         s->km_duration = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "km_ease"))             s->km_ease = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "km_trigger")) {
+      float v = state::patchFloat(i);
+      if (v != 0.0f && s->km_trigger_prev == 0.0f) { s->km_u = 0.0f; s->km_playing = true; }  // rising edge → (re)start
+      s->km_trigger_prev = v;
+    }
     else if (state::pathIs(path, plen, "skip_empty"))          { bool v = state::patchFloat(i) != 0.0f; if (v != s->skip_empty) { s->skip_empty = v; mode_changed = true; } }
     else if (state::pathIs(path, plen, "skip_thresh"))         s->skip_thresh = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_w_var"))          s->skip_w_var = state::patchFloat(i);
@@ -697,23 +799,53 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "skip_rate"))           s->skip_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "skip_autopilot"))      s->skip_autopilot = state::patchFloat(i) != 0.0f;
   }
-  if (mode_changed) apply_visibility(s->autopilot, s->ap_snap, s->skip_empty);
+  if (mode_changed) apply_visibility(s->autopilot, s->ap_snap, s->skip_empty, s->key_moment, s->km_time_mode);
+}
+
+// easeOut on the window playhead: slow toward the settled peak. Mirrors app.js —
+// e>0 eases out, e<=0 stays linear (reuses brutal_fold's shared km_ease formula).
+static inline float km_ease_out(float u, float e) {
+  u = clampf(u, 0.0f, 1.0f);
+  return e <= 0.0f ? u : 1.0f - std::pow(1.0f - u, 1.0f + e);
+}
+
+// Resolve the flat key-moment sidecar index for the current effective XY + layer:
+// row = simplicity (y), col = frequency (x), z = temporal_complexity — snapped to
+// the nearest grid cell (mirrors app.js kmWindow). idx = (row*G + col)*Z + z, the
+// same layout as SF_KM_* and the script fields.
+static inline int km_cell_index(const State* s) {
+  const int G = SF_GRID, Z = SF_NZ;
+  int col = clampi((int)std::lround(clampf(s->eff_x, 0.0f, 1.0f) * (G - 1)), 0, G - 1);
+  int row = clampi((int)std::lround(clampf(s->eff_y, 0.0f, 1.0f) * (G - 1)), 0, G - 1);
+  int z   = clampi((int)std::lround(clampf(s->temporal_complexity, 0.0f, 1.0f) * (Z - 1)), 0, Z - 1);
+  return (row * G + col) * Z + z;
 }
 
 // CPU atlas resolve: bilinear over (x,y) for base/cell fields, trilinear over
 // (x,y,z) for the temporal trajectory, then the periodic time model. Port of
-// sampleTerms in app.js. Fills u.terms / u.n_terms / u.dc / u.bold_gain.
-static void sample_terms(const State* s, float sx, float sy, float t, Uniforms& u) {
+// sampleTerms in app.js. Fills u.terms / u.n_terms / u.dc / u.bold_gain. When
+// `snap`, picks the exact nearest cell + temporal layer (no blend) — key-moment
+// mode plays precisely the trajectory that was scored.
+static void sample_terms(const State* s, float sx, float sy, float t, Uniforms& u, bool snap) {
   const int G = SF_GRID, B = SF_NTERMS, Z = SF_NZ;
   float fx = clampf(sx, 0.0f, 1.0f) * (G - 1);
   float fy = clampf(sy, 0.0f, 1.0f) * (G - 1);
-  int x0 = clampi((int)std::floor(fx), 0, G - 1), y0 = clampi((int)std::floor(fy), 0, G - 1);
-  int x1 = std::min(x0 + 1, G - 1), y1 = std::min(y0 + 1, G - 1);
-  float tx = fx - x0, ty = fy - y0;
+  int x0, y0, x1, y1, z0, z1;
+  float tx, ty, tz;
+  if (snap) {
+    x0 = x1 = clampi((int)std::lround(fx), 0, G - 1);
+    y0 = y1 = clampi((int)std::lround(fy), 0, G - 1);
+    z0 = z1 = clampi((int)std::lround(clampf(s->temporal_complexity, 0.0f, 1.0f) * (Z - 1)), 0, Z - 1);
+    tx = ty = tz = 0.0f;
+  } else {
+    x0 = clampi((int)std::floor(fx), 0, G - 1); y0 = clampi((int)std::floor(fy), 0, G - 1);
+    x1 = std::min(x0 + 1, G - 1); y1 = std::min(y0 + 1, G - 1);
+    tx = fx - x0; ty = fy - y0;
+    float fz = clampf(s->temporal_complexity, 0.0f, 1.0f) * (Z - 1);
+    z0 = clampi((int)std::floor(fz), 0, Z - 1); z1 = std::min(z0 + 1, Z - 1);
+    tz = fz - z0;
+  }
   int c00 = y0 * G + x0, c01 = y0 * G + x1, c10 = y1 * G + x0, c11 = y1 * G + x1;
-  float fz = clampf(s->temporal_complexity, 0.0f, 1.0f) * (Z - 1);
-  int z0 = clampi((int)std::floor(fz), 0, Z - 1), z1 = std::min(z0 + 1, Z - 1);
-  float tz = fz - z0;
 
   auto baseBi = [&](const float* arr, int i) {
     return lerpf(lerpf(arr[c00 * B + i], arr[c01 * B + i], tx),
@@ -797,7 +929,22 @@ void render(void* self, int vp_w, int vp_h) {
   u.level_ease = s->level_ease;
   u.exposure = s->exposure;
   u.output_mode = (float)s->output_mode;
-  sample_terms(s, s->eff_x, s->eff_y, s->clock_t, u);
+  // Key moment: if the snapped cell has a scored window, play [peak-kKmPre,
+  // peak+0.08] of the loop with the eased playhead (snapping to the exact scored
+  // cell); else — and in continuous mode — run the normal continuous loop clock.
+  if (s->key_moment) {
+    int idx = km_cell_index(s);
+    if (SF_KM_NFRAMES > 0 && SF_KM_SCORE[idx] > 0.0f) {
+      float peak = SF_KM_PEAK[idx] / (float)SF_KM_NFRAMES;   // normalized loop phase
+      float t = peak - kKmPre + km_ease_out(s->km_u, s->km_ease) * kKmSpan;
+      t -= std::floor(t);                                    // wrap into [0,1)
+      sample_terms(s, s->eff_x, s->eff_y, t, u, /*snap=*/true);
+    } else {
+      sample_terms(s, s->eff_x, s->eff_y, s->clock_t, u, /*snap=*/false);
+    }
+  } else {
+    sample_terms(s, s->eff_x, s->eff_y, s->clock_t, u, /*snap=*/false);
+  }
   s->uniform_buf.writeOne(u);
 
   // Reset stats: lo = +INF-ish (max i32), hi = 0 (F ≥ 0), hist = 0.

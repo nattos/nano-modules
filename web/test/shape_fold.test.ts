@@ -219,4 +219,82 @@ describe('source.shape_fold E2E', () => {
     r.phases[1].trace('out').expectSameAs(r.phases[0].trace('out'), 2);        // held
     r.phases[2].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 30); // jumped
   });
+
+  // A cell with a scored key-moment window (row3/col14/z2: score>0, peak=36,
+  // len=10). Key-moment mode snaps to exactly this cell and plays its window.
+  const KM_CELL = { frequency: 0.70, simplicity: 0.15, temporal_complexity: 0.667 };
+
+  it('key moment (Time mode) scrubs the window — start vs peak differ', async () => {
+    // Time mode reads km_time as the manual playhead: 0 = window start
+    // (peak−0.32), 1 = settled on the centre peak. The played frame differs
+    // across the window, so the two ends produce different fields.
+    const start = await render('sf_km_t0',
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 0.0 }, 'sf_km_t0');
+    const peak  = await render('sf_km_t1',
+      { ...KM_CELL, key_moment: true, km_time_mode: 1, km_time: 1.0 }, 'sf_km_t1');
+    peak.trace('out').expectDifferentFrom(start.trace('out'), 30);
+  });
+
+  it('key moment (Loop mode) advances the playhead over frames', async () => {
+    // Loop replays the window continuously; with a short Duration the playhead
+    // moves visibly, so a later span differs from the opening frames.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.testonly', 'com.nano.nano'],
+      dumpName: 'sf_km_loop',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sf_km_loop',
+              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 2,
+                                    km_duration: 1.0 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_km_loop' } },
+            ]},
+          ],
+          waitFrames: 2, captureTraceIds: ['out'],
+        },
+        { waitFrames: 24, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 25);
+  });
+
+  it('key moment (Trigger mode) holds until fired, then plays', async () => {
+    // Trigger is a one-shot: the playhead sits at the window start until the
+    // km_trigger rising edge, then advances over Duration. Nothing time-varying
+    // drives the frame otherwise, so pre-trigger frames are identical.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.testonly', 'com.nano.nano'],
+      dumpName: 'sf_km_trig',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sf_km_trig',
+              sketch: buildSketch({ ...KM_CELL, key_moment: true, km_time_mode: 0,
+                                    km_duration: 0.5 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'sf_km_trig' } },
+            ]},
+          ],
+          waitFrames: 4, captureTraceIds: ['out'],
+        },
+        // No trigger: the one-shot playhead holds at the window start.
+        { waitFrames: 25, captureTraceIds: ['out'] },
+        // Fire the trigger → the window plays.
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'sf_km_trig', colIdx: 0, chainIdx: 0,
+              paramKey: 'km_trigger', value: 1.0 },
+          ],
+          waitFrames: 15, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    r.phases[1].trace('out').expectSameAs(r.phases[0].trace('out'), 2);         // held
+    r.phases[2].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 25); // played
+  });
 });

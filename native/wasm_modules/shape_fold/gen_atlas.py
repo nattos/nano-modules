@@ -22,9 +22,16 @@ import os
 BASE_TERM_FIELDS = ["theta", "mtheta", "curv", "freq", "phase", "h", "k", "amp", "mix", "spc"]
 CELL_FIELDS = ["dc", "bold_gain"]
 SCRIPT_FIELDS = ["amp_h", "omega_h", "psi_h", "drift"]
+# Key-moment sidecar (per (cell,z), row-major (gi*G+gj)*Z+z; FRAME INDICES into a
+# km_nframes loop). Baked by the prototype's web/build_data.py via km.scan_atlas.
+# The runtime uses only km_peak (playback anchor) + km_score (>0 ⇒ has a window);
+# km_onset/km_len are the analyzed inflow span, kept for completeness/debug.
+KM_FIELDS = ["km_onset", "km_len", "km_peak", "km_score"]
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The shape-fold research prototype (nano-fx-prototypes) is the atlas source; its
+# web/atlas.json carries the baked km_* sidecar arrays alongside the shape params.
 DEFAULT_ATLAS = os.path.join(
-    HERE, "..", "..", "..", "..", "shapes", "research", "shape-fold", "web", "atlas.json")
+    HERE, "..", "..", "..", "..", "nano-fx-prototypes", "shape-fold", "web", "atlas.json")
 
 
 def fmt(v):
@@ -76,10 +83,19 @@ def main():
         fh.write(f"static const float SF_TC_CENTERS[{Z}] = {{ {', '.join(fmt(v) + 'f' for v in tc)} }};\n\n")
         for name in BASE_TERM_FIELDS + CELL_FIELDS + SCRIPT_FIELDS:
             emit_array(fh, "SF_" + name.upper(), atlas[name])
+        # Key-moment sidecar. Degenerate to all-zero windows (km_score 0 ⇒ every
+        # cell falls back to the full loop) when the atlas predates the km bake.
+        n = G * G * Z
+        km_nframes = int(atlas.get("km_nframes", 0))
+        nvalid = sum(1 for v in atlas.get("km_score", []) if v > 0)
+        fh.write(f"static const int   SF_KM_NFRAMES = {km_nframes};\n\n")
+        for name in KM_FIELDS:
+            emit_array(fh, "SF_" + name.upper(), atlas.get(name, [0.0] * n))
         fh.write("} // namespace shape_fold\n\n")
         fh.write("#endif // SHAPE_FOLD_ATLAS_H\n")
 
-    print(f"wrote {out_path} ({G}x{G}x{Z}, {B} terms, tc_centers={tc})")
+    print(f"wrote {out_path} ({G}x{G}x{Z}, {B} terms, tc_centers={tc}; "
+          f"key moments {nvalid}/{n} cells over {km_nframes} frames)")
 
 
 if __name__ == "__main__":

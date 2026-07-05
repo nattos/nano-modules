@@ -177,6 +177,11 @@ export class ShapeFoldInspector extends MobxLitElement {
   render() {
     if (!this.binding) return html``;
     const b = this.binding;
+    // Key-moment mode plays a curated inflow→peak window (snapped to the scored
+    // cell) instead of the continuous loop, so Speed/Ease no longer apply and its
+    // own time controls appear — mirror the effect's field visibility.
+    const km = !!b.getValue('key_moment');
+    const mode = b.getValue('km_time_mode') ?? 2;   // 0=Trigger 1=Time 2=Loop
     return html`
       <help-slot .binding=${b} .path=${'intro'}></help-slot>
       <div class="section">Shape</div>
@@ -190,12 +195,31 @@ export class ShapeFoldInspector extends MobxLitElement {
 
       <div class="section">Animation</div>
       <help-slot .binding=${b} .path=${'@group/animation'}></help-slot>
-      <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
-        .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.58} .binding=${b}></scalar-slider>
-      <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
-        .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>
+      ${km ? '' : html`
+        <scalar-slider style="width: 100%;" .fieldPath=${'time_speed'} .label=${'Speed'}
+          .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.58} .binding=${b}></scalar-slider>
+        <scalar-slider style="width: 100%;" .fieldPath=${'ease'} .label=${'Ease'}
+          .min=${-1} .max=${1} .step=${0.01} .defaultValue=${0} .binding=${b}></scalar-slider>`}
       <scalar-slider style="width: 100%;" .fieldPath=${'birth_softness'} .label=${'Birth Soft'}
         .min=${0.02} .max=${1} .step=${0.01} .defaultValue=${0.45} .binding=${b}></scalar-slider>
+
+      <div class="section">Key Moment</div>
+      <help-slot .binding=${b} .path=${'@group/keymoment'}></help-slot>
+      <field-toggle .fieldPath=${'key_moment'} .label=${'Key Moment'}
+        .defaultValue=${0} .binding=${b}></field-toggle>
+      ${!km ? '' : html`
+        <field-tab-bar .fieldPath=${'km_time_mode'} .label=${'Time Mode'} ?wrap=${true}
+          .options=${[{ label: 'Trigger', value: 0 }, { label: 'Time', value: 1 }, { label: 'Loop', value: 2 }]}
+          .defaultValue=${2} .binding=${b}></field-tab-bar>
+        ${mode === 1 ? html`
+          <scalar-slider style="width: 100%;" .fieldPath=${'km_time'} .label=${'Time'}
+            .min=${0} .max=${1} .step=${0.005} .defaultValue=${0} .binding=${b}></scalar-slider>`
+        : html`
+          <scalar-slider style="width: 100%;" .fieldPath=${'km_duration'} .label=${'Duration (s)'}
+            .min=${0.1} .max=${10} .step=${0.05} .defaultValue=${2} .binding=${b}></scalar-slider>
+          <field-trigger .fieldPath=${'km_trigger'} .label=${'Trigger'} .binding=${b}></field-trigger>`}
+        <scalar-slider style="width: 100%;" .fieldPath=${'km_ease'} .label=${'Ease'}
+          .min=${0} .max=${4} .step=${0.05} .defaultValue=${1.5} .binding=${b}></scalar-slider>`}
 
       <div class="section">Autopilot</div>
       <help-slot .binding=${b} .path=${'@group/autopilot'}></help-slot>
