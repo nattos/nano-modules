@@ -25,7 +25,7 @@ describe('Local Contrast Effect E2E', () => {
     expect(frame.success).toBe(true);
     expect(frame.metadata?.id).toBe('filter.local_contrast');
     const names = frame.params.map((p) => p.name).sort();
-    expect(names).toEqual(['amount', 'mode', 'protect', 'radius']);
+    expect(names).toEqual(['amount', 'mode', 'protect', 'radius', 'recover']);
   });
 
   it('enhances a structured grid (output differs from the plain grid)', async () => {
@@ -116,5 +116,27 @@ describe('Local Contrast Effect E2E', () => {
     const rgb  = await grad(1, 'local_contrast_mode_rgb');
     expect(luma.success && rgb.success).toBe(true);
     rgb.expectDifferentFrom(luma, 50);
+  });
+
+  it('highlight recovery re-tints blown peaks (independent of contrast amount)', async () => {
+    // A saturated-red → white gradient: the white end is bright + desaturated,
+    // and the low-pass there carries the red halo. recover pushes that hue back
+    // in. Driven at amount=0 so this isolates recovery from the contrast boost.
+    // Params: 0=amount, 4=recover.
+    const grad = (recover: number, dump: string) => runGpuChainTest({
+      chain: [
+        { module: 'gradient.wasm', params: [
+          [2, 1.0],
+          ['color_a', [1.0, 0.15, 0.1]],
+          ['color_b', [1.0, 1.0, 1.0]],
+        ] },
+        { module: 'local_contrast.wasm', params: [[0, 0.0], [4, recover]] },
+      ],
+      bundle: 'core', width: 64, height: 64, dumpName: dump,
+    });
+    const off = await grad(0.0, 'local_contrast_recover_off');
+    const on  = await grad(1.0, 'local_contrast_recover_on');
+    expect(off.success && on.success).toBe(true);
+    on.expectDifferentFrom(off, 50);
   });
 });

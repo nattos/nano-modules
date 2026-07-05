@@ -37,7 +37,7 @@ struct Uniforms {
   float amount_gain;
   float protect_k;
   int   mode;
-  float _pad;
+  float recover;
 };
 static_assert(sizeof(Uniforms) == 16, "Uniforms layout mismatch");
 
@@ -53,13 +53,14 @@ struct State {
   float radius  = 0.5f;
   float protect = 0.5f;
   int   mode    = 0;    // 0 = Luma, 1 = RGB
+  float recover = 0.0f; // highlight colour recovery (0 = off)
 };
 
 // Type-shared, compiled once.
 static gpu::ComputePSO s_pso_combine;
 
 void module_init() {
-  state::init("filter.local_contrast", {1, 0, 0},
+  state::init("filter.local_contrast", {1, 0, 1},
     state::Schema()
       .helpField("intro",
         "## Local Contrast\n"
@@ -69,7 +70,9 @@ void module_init() {
         "depth without a hard, over-sharpened bite.\n\n"
         "**Try:** push *Amount* for pop, then set *Radius* to choose the scale of "
         "\"local\" (small = texture, large = broad shapes). Keep *Protect* up to "
-        "hold highlights and shadows clean. At *Amount* 0 it's a pass-through.")
+        "hold highlights and shadows clean. Raise *Highlight Colour* to bleed the "
+        "surrounding hue back into blown-out peaks (recovering rolled-off saturated "
+        "colour). At *Amount* 0 with *Highlight Colour* 0 it's a pass-through.")
       .group("contrast", "Local Contrast")
         .groupHelp(
           "*Amount* is the strength of the boost; *Radius* sets how wide the "
@@ -83,10 +86,14 @@ void module_init() {
           "*Protect* biases the boost toward the midtones so highlights don't "
           "blow out and shadows don't crush (0 = boost everything, 1 = strong "
           "midtone bias). *Color Mode* — *Luma* preserves hue/saturation; *RGB* "
-          "boosts each channel independently for a grittier, punchier feel.")
+          "boosts each channel independently for a grittier, punchier feel. "
+          "*Highlight Colour* re-tints blown, greyed-out peaks with the hue of the "
+          "region around them (0 = off) — great for putting the saturated colour "
+          "back into bright lights that clipped toward white.")
       .floatField("protect", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Protect", "Prot")
       .selectField("mode", 0, state::PrimaryInput, {{"Luma", 0}, {"RGB", 1}})
         .label("Color Mode", "Color")
+      .floatField("recover", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Highlight Colour", "HiCol")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
@@ -121,6 +128,7 @@ void init(void* self) {
   s->radius = 0.5f;
   s->protect = 0.5f;
   s->mode = 0;
+  s->recover = 0.0f;
   s->initialized = false;
   if (!s_pso_combine.valid() || !s->uniform_buf.valid()) return;
   if (!s->blur.init()) return;
@@ -144,17 +152,18 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "radius"))  s->radius  = state::patchFloat(i);
     else if (state::pathIs(path, plen, "protect")) s->protect = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mode"))    s->mode    = state::patchInt(i);
+    else if (state::pathIs(path, plen, "recover")) s->recover = state::patchFloat(i);
   }
 }
 
 void on_resolume_param(void* self, long long, double) { (void)self; }
 
-// Pure passthrough when there's no boost. Stateless (no tick accumulator), so a
-// skipped frame can't desync anything.
+// Pure passthrough when there's neither a contrast boost nor highlight recovery.
+// Stateless (no tick accumulator), so a skipped frame can't desync anything.
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  return (s->amount <= 0.0f) ? 1 : 0;
+  return (s->amount <= 0.0f && s->recover <= 0.0f) ? 1 : 0;
 }
 
 static void ensureLowpass(State* s, int w, int h) {
@@ -174,13 +183,13 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  const bool do_boost = s->amount > 0.0f;
-
-  // The combine reads the low-pass at slot 1. When there's no boost, bind the
-  // original there too so detail == 0 and we skip the expensive blur dispatch
-  // entirely (still writes a valid tex_out for tapped entries).
+  // The wide low-pass drives both the contrast detail AND (when enabled) the
+  // halo hue for highlight recovery, so compute it if either is active. When
+  // neither is, bind the original at slot 1 so detail == 0 and we skip the blur
+  // dispatch entirely (still writes a valid tex_out for tapped entries).
+  const bool need_low = s->amount > 0.0f || s->recover > 0.0f;
   gpu::Texture low = in;
-  if (do_boost) {
+  if (need_low) {
     ensureLowpass(s, vp_w, vp_h);
     if (!s->lowpass.valid()) return;
     // radius 0..1 → 1..MAX_ITERATIONS wide-blur steps (quantized — see header).
@@ -195,6 +204,7 @@ void render(void* self, int vp_w, int vp_h) {
   // midtone bell, strong highlight/shadow protection).
   u.protect_k   = 6.0f + (0.4f - 6.0f) * s->protect;
   u.mode        = s->mode;
+  u.recover     = s->recover;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

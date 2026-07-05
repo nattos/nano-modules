@@ -12,6 +12,12 @@
 //     coloured fringe. mode 1 does a plain per-channel boost (grittier).
 //   - Midtone protection: `protect_k` attenuates the boost near black/white so
 //     highlights don't blow out and shadows don't crush.
+//   - Highlight colour recovery (`recover` > 0): bright regions that rolled off
+//     toward white have lost their chroma. The wide low-pass around such a peak
+//     still carries the surrounding hue (the halo), so we push that hue back
+//     into the blown, desaturated highlights — recovering the "rolled-off
+//     saturated colour" look local contrast otherwise greys out. Costs only a
+//     handful of ALU in this same pass (the low-pass is already in hand).
 
 Texture2D<float4>   inputTex  : register(t0);   // original, full-res
 Texture2D<float4>   lowTex    : register(t1);   // wide low-pass of the original
@@ -21,7 +27,7 @@ cbuffer Uniforms : register(b3) {
   float amount_gain;   // perceptual gain (amount -> gain)
   float protect_k;     // midtone-protection exponent (high = boost everywhere)
   int   mode;          // 0 = luma-preserving clarity, 1 = per-channel RGB
-  float _pad;
+  float recover;       // highlight colour recovery strength (0 = off)
 };
 
 #include "nano_color.hlsl"   // nano_luminance
@@ -52,6 +58,22 @@ void main(uint3 gid : SV_DispatchThreadID) {
   } else {
     // Per-channel unsharp.
     outrgb = c.rgb + amount_gain * (c.rgb - lp) * protect;
+  }
+
+  // Highlight colour recovery: re-tint blown, desaturated peaks with the halo
+  // hue carried by the low-pass. `recol` is this pixel's luminance wearing the
+  // low-pass's hue; lerping toward it pulls the off-channels down (creating
+  // saturation) only where the pixel is both bright and grey.
+  if (recover > 0.0) {
+    float  Lo   = nano_luminance(outrgb);
+    float  Lp   = nano_luminance(lp);
+    float3 hue  = lp / max(Lp, 1e-4);          // halo hue at unit luma
+    float3 recol = Lo * hue;
+    float  bright = smoothstep(0.6, 1.0, Lo);  // only peaks
+    float  maxc = max(max(outrgb.r, outrgb.g), outrgb.b);
+    float  minc = min(min(outrgb.r, outrgb.g), outrgb.b);
+    float  grey = 1.0 - (maxc - minc) / max(maxc, 1e-4);   // only desaturated
+    outrgb = lerp(outrgb, recol, saturate(recover * bright * grey));
   }
 
   outputTex[gid.xy] = float4(saturate(outrgb), c.a);
