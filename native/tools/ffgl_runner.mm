@@ -319,6 +319,13 @@ int main(int argc, const char* argv[]) {
     //   report ms/frame both WITHOUT and WITH the watcher to isolate its cost.
     int genChain = 0;
     bool benchWatch = false;
+    // --serve HZ SECONDS: instead of the benchmark phases, run a wall-clock
+    // paced ProcessOpenGL loop (a stand-in for Resolume's render cadence) so a
+    // live browser editor can connect to the plugin's bridge (NANO_BRIDGE_PORT)
+    // and exercise the whole preview/telemetry path against a process we
+    // control. SECONDS <= 0 means run until killed.
+    double serveHz = 0;
+    double serveSeconds = 0;
     int positional = 0;
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
@@ -328,6 +335,10 @@ int main(int argc, const char* argv[]) {
         i += 1;
       } else if (arg == "--bench-watch") {
         benchWatch = true;
+      } else if (arg == "--serve" && i + 2 < argc) {
+        serveHz = std::stod(argv[i + 1]);
+        serveSeconds = std::stod(argv[i + 2]);
+        i += 2;
       } else if (arg == "--param" && i + 2 < argc) {
         int idx = std::stoi(argv[i + 1]);
         float val = std::stof(argv[i + 2]);
@@ -572,12 +583,50 @@ int main(int argc, const char* argv[]) {
           cpuMs / numFrames);
     };
 
+    WsWatcher watcher;
+    if (serveHz > 0) {
+      // Serve mode: pace ProcessOpenGL on the wall clock like a real host and
+      // let external clients (the web editor, a puppeteer harness) drive the
+      // bridge. FF_SET_TIME wants milliseconds.
+      std::fprintf(stderr, "[ffgl_runner] serving at %.1f Hz for %s\n",
+                   serveHz, serveSeconds > 0 ? std::to_string(serveSeconds).c_str()
+                                             : "ever");
+      const auto step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(1.0 / serveHz));
+      const auto start = std::chrono::steady_clock::now();
+      auto next = start;
+      long served = 0;
+      long lastReport = 0;
+      double lastReportSec = 0, busyMs = 0;
+      for (;;) {
+        const double elapsedSec =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        if (serveSeconds > 0 && elapsedSec >= serveSeconds) break;
+        double tMs = elapsedSec * 1000.0;
+        const auto f0 = std::chrono::steady_clock::now();
+        plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &tMs}, instanceID);
+        plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
+        glFlush();
+        busyMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - f0).count();
+        ++served;
+        if (elapsedSec - lastReportSec >= 5.0) {
+          std::fprintf(stderr,
+              "[ffgl_runner] serve: %.1f fps, ProcessOpenGL avg %.2f ms\n",
+              (served - lastReport) / (elapsedSec - lastReportSec),
+              busyMs / (served - lastReport));
+          lastReport = served; lastReportSec = elapsedSec; busyMs = 0;
+        }
+        next += step;
+        std::this_thread::sleep_until(next);
+      }
+      std::fprintf(stderr, "[ffgl_runner] served %ld frames\n", served);
+    } else {
     bench("unwatched");
 
     // Watched phase: connect a persistent observing client + preview requests
     // (a simulated web editor) and re-measure. The delta is the cost the barrel
     // pays per frame while a client is connected.
-    WsWatcher watcher;
     if (benchWatch) {
       constexpr int kPort = 8081;
       std::string key;
@@ -621,6 +670,7 @@ int main(int argc, const char* argv[]) {
             "[ffgl_runner] bench-watch: connect/observe FAILED (key='%s')\n", key.c_str());
       }
     }
+    }  // serve / bench
 
     // 7. Readback host FBO → RGBA.
     std::vector<uint8_t> pixels((size_t)width * height * 4);

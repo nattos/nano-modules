@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -128,6 +129,35 @@ uint32_t previewMaxDim() {
   }();
   return v;
 }
+
+// Latency-diagnosis mode (NANO_PREVIEW_TS=1): stamp wall-clock times into the
+// first 6 pixels of every NBPV payload so an instrumented client can break the
+// end-to-end preview latency into stages. Three little-endian float64s at
+// pixel offsets 0/8/16 (epoch milliseconds — comparable to JS Date.now()):
+//   [0]  capture encode time (publishPreviewFrames, right after submit)
+//   [8]  GPU readback completion (pixels landed on CPU)
+//   [16] send-worker dequeue (just before the WS broadcast)
+// Bench-only: corrupts the frame's top-left corner, so it is never on by
+// default.
+bool previewTsEnabled() {
+  static bool v = [] {
+    const char* e = getenv("NANO_PREVIEW_TS");
+    return e && *e && strcmp(e, "0") != 0;
+  }();
+  return v;
+}
+double epochMsNow() {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+void stampPreviewTs(std::vector<uint8_t>& frameBytes, size_t slot, double ms) {
+  const size_t keyLen = frameBytes[6] | ((size_t)frameBytes[7] << 8);
+  const size_t idLen  = frameBytes[8] | ((size_t)frameBytes[9] << 8);
+  const size_t off = 14 + keyLen + idLen + slot * 8;
+  if (off + 8 > frameBytes.size()) return;
+  memcpy(frameBytes.data() + off, &ms, 8);
+}
 }  // namespace
 
 struct BarrelRuntime::Impl {
@@ -235,6 +265,18 @@ struct BarrelRuntime::Impl {
         blob = std::move(send_queue.front());
         send_queue.pop_front();
       }
+      if (previewTsEnabled()) {
+        stampPreviewTs(blob.bytes, 2, epochMsNow());
+        const double bcastT0 = epochMsNow();
+        BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
+        const double bcastMs = epochMsNow() - bcastT0;
+        std::fprintf(stderr, "[preview_ts] bcast %zu bytes in %.2f ms (queue depth %zu)\n",
+                     blob.bytes.size(), bcastMs, [this] {
+                       std::lock_guard<std::mutex> lk(send_mu);
+                       return send_queue.size();
+                     }());
+        continue;
+      }
       BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
     }
   }
@@ -336,12 +378,17 @@ struct BarrelRuntime::Impl {
       }
       std::string traceId = req.traceId;
       std::string keyCopy = key;
+      const double tEncode = previewTsEnabled() ? epochMsNow() : 0.0;
       gpu->readbackTextureScaledAsync(
           slot.handle, (uint32_t)slot.width, (uint32_t)slot.height, outW, outH,
           [this, keyCopy = std::move(keyCopy), traceId = std::move(traceId),
-           route = std::move(route), outW, outH](std::vector<uint8_t> pixels) {
+           route = std::move(route), outW, outH, tEncode](std::vector<uint8_t> pixels) {
             auto bytes = buildPreviewFrameBytes(
                 keyCopy, traceId, (uint16_t)outW, (uint16_t)outH, pixels);
+            if (previewTsEnabled()) {
+              stampPreviewTs(bytes, 0, tEncode);
+              stampPreviewTs(bytes, 1, epochMsNow());
+            }
             {
               std::lock_guard<std::mutex> lock(send_mu);
               // Latest-wins: a frame for a route that (re-)queued while ours

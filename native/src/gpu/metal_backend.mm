@@ -1043,9 +1043,28 @@ public:
       // and stalled the render thread's next waitUntilScheduled >100ms per
       // preview tick. Our queue is serial → batches drain in commit order,
       // so the send-side latest-wins logic never sees stale-after-fresh.
+      // NANO_PREVIEW_TS: latency-diagnosis logging (see barrel_runtime.mm).
+      // Splits the encode→pixels-on-CPU span into GPU/scheduling vs memcpy.
+      static const bool kPreviewTsLog = [] {
+        const char* e = getenv("NANO_PREVIEW_TS");
+        return e && *e && strcmp(e, "0") != 0;
+      }();
+      const double tCommit = kPreviewTsLog
+          ? std::chrono::duration<double, std::milli>(
+                std::chrono::system_clock::now().time_since_epoch()).count()
+          : 0.0;
       [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
         if ([finished status] == MTLCommandBufferStatusError) return;
+        const double tDone = kPreviewTsLog
+            ? std::chrono::duration<double, std::milli>(
+                  std::chrono::system_clock::now().time_since_epoch()).count()
+            : 0.0;
         dispatch_async(previewReadbackQueue(), ^{
+          const auto nowMs = [] {
+            return std::chrono::duration<double, std::milli>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+          };
+          const double tHop = kPreviewTsLog ? nowMs() : 0.0;
           for (auto& p : *pending) {
             std::vector<uint8_t> pixels((size_t)p.dstW * p.dstH * 4);
             [p.dst getBytes:pixels.data()
@@ -1053,6 +1072,12 @@ public:
                  fromRegion:MTLRegionMake2D(0, 0, p.dstW, p.dstH)
                 mipmapLevel:0];
             p.callback(std::move(pixels));
+          }
+          if (kPreviewTsLog) {
+            fprintf(stderr,
+                "[preview_ts] batch n=%zu gpu+sched %.2f ms, queue-hop %.2f ms, "
+                "getBytes+cb %.2f ms\n",
+                pending->size(), tDone - tCommit, tHop - tDone, nowMs() - tHop);
           }
         });
       }];
