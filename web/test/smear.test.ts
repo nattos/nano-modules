@@ -101,6 +101,33 @@ describe('Smear (filter.blur.smear) E2E', () => {
     r.trace('out').expectDifferentFrom(r.trace('in'), 100);
   });
 
+  it('scatter masks off-frame taps so edges do not bloom (the corner-flash fix)', async () => {
+    // Same class as Pixulant: a directional throw lands the heavy tap off-frame,
+    // where ClampToEdge replicates the edge/corner texel and its abs-difference
+    // blooms. The fix fades the dive ONLY where a tap leaves the frame; edge_artifacts
+    // =1 restores that off-frame weight (the old behaviour). So the mask must act
+    // exactly at the frame edge and nowhere else. With a MODERATE throw and a VERTICAL
+    // axis, the top band's taps go off the top (mask active) while the interior stays
+    // on-frame (mask inactive → clean ≡ bloom). The bottom-only white injection can't
+    // reach the top, so the top-vs-center split cleanly isolates the mask.
+    const clean = await runChain('sm_mask_c', { mode: 1, angle: 0.5, length: 0.35, width: 0.1, dive: 1.0, motion: 0.0, edge_artifacts: 0.0 }, 'smear_mask_clean');
+    const bloom = await runChain('sm_mask_b', { mode: 1, angle: 0.5, length: 0.35, width: 0.1, dive: 1.0, motion: 0.0, edge_artifacts: 1.0 }, 'smear_mask_bloom');
+    expect(clean.success).toBe(true);
+    expect(bloom.success).toBe(true);
+    const a = clean.trace('out'), b = bloom.trace('out');
+    let topDiff = 0, centerDiff = 0;
+    a.forEachPixel((c, x, y) => {
+      const o = b.pixelAt(x, y);
+      const d = Math.abs(c.r - o.r) + Math.abs(c.g - o.g) + Math.abs(c.b - o.b);
+      if (d > 30) {
+        if (y < H * 0.12) topDiff++;                       // off-frame taps → mask active
+        else if (y >= H * 0.4 && y < H * 0.6) centerDiff++; // on-frame taps → mask inert
+      }
+    });
+    expect(topDiff).toBeGreaterThan(20);        // the mask reshapes the off-frame edge
+    expect(centerDiff).toBeLessThan(topDiff);   // and leaves the on-frame interior alone
+  });
+
   it('exposure scales the smeared output up (brighter)', async () => {
     // A blurred uniform gray stays that gray, so exposure scales it cleanly (no
     // clamping ambiguity): 0.15 → ~0.6 at exposure 4.

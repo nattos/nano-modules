@@ -355,7 +355,8 @@ void render(void* self, int vp_w, int vp_h) {
     u.major_x = ct; u.major_y = stt; u.tilt = s->tilt;
     u.dive = dive_c;
     u.exposure_gain = std::exp2(expo);
-    u.edge_artifacts = s->edge_artifacts * 0.1f;   // 10x less sensitive (was overpowering)
+    u.edge_artifacts = s->edge_artifacts;   // raw [0,1]; shader bakes the 0.1 sensitivity
+                                            // AND uses it to unmask off-frame taps
     u.exposure = s->exposure;
     u.softness = clamp01(s->softness);
     s->uniform_scatter.writeOne(u);
