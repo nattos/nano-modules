@@ -942,7 +942,7 @@ public:
       int32_t textureHandle,
       uint32_t srcW, uint32_t srcH,
       uint32_t dstW, uint32_t dstH,
-      std::function<void(std::vector<uint8_t>)> callback) override {
+      std::function<void(const uint8_t*, size_t)> callback) override {
     id<MTLTexture> src = getAs<id<MTLTexture>>(textureHandle);
     if (!src || dstW == 0 || dstH == 0 || !callback) return;
 
@@ -961,7 +961,8 @@ public:
         [scaler_ encodeToCommandBuffer:async_batch_cb_
                          sourceTexture:src
                     destinationTexture:dst];
-        async_batch_pending_.push_back({dst, dstW, dstH, std::move(callback)});
+        id<MTLBuffer> buf = encodeReadbackBlit(async_batch_cb_, dst, dstW, dstH);
+        async_batch_pending_.push_back({dst, buf, dstW, dstH, std::move(callback)});
         return;
       }
 
@@ -969,27 +970,33 @@ public:
       [scaler_ encodeToCommandBuffer:cb
                        sourceTexture:src
                   destinationTexture:dst];
+      id<MTLBuffer> buf = encodeReadbackBlit(cb, dst, dstW, dstH);
 
       // The completed handler runs on Metal's per-queue SERIAL completion
       // dispatch queue — the same queue that retires every command buffer
-      // on queue_. Doing the getBytes + consumer callback there stalled
+      // on queue_. Doing the pixel copy + consumer callback there stalled
       // command-buffer retirement behind megabytes of memcpy, which blocked
       // the render thread's next waitUntilScheduled for >100ms per preview
       // tick (the "editor open tanks Resolume FPS" bug). The handler now
       // only hops to our own serial readback queue; Metal's completion
-      // queue is released in microseconds. `dst` stays valid: the block
-      // retains it (ARC) and the scratch ring won't re-encode it for
-      // kAsyncPoolRing batches.
+      // queue is released in microseconds. `dst`/`buf` stay valid: the
+      // block retains them (ARC) and the scratch ring won't re-encode them
+      // for kAsyncPoolRing batches.
       __block auto cb_callback = std::move(callback);
       [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
         if ([finished status] == MTLCommandBufferStatusError) return;
         dispatch_async(previewReadbackQueue(), ^{
-          std::vector<uint8_t> pixels((size_t)dstW * dstH * 4);
-          [dst getBytes:pixels.data()
-            bytesPerRow:dstW * 4
-             fromRegion:MTLRegionMake2D(0, 0, dstW, dstH)
-            mipmapLevel:0];
-          cb_callback(std::move(pixels));
+          const size_t byteCount = (size_t)dstW * dstH * 4;
+          if (buf) {
+            cb_callback((const uint8_t*)[buf contents], byteCount);
+          } else {
+            std::vector<uint8_t> pixels(byteCount);
+            [dst getBytes:pixels.data()
+              bytesPerRow:dstW * 4
+               fromRegion:MTLRegionMake2D(0, 0, dstW, dstH)
+              mipmapLevel:0];
+            cb_callback(pixels.data(), byteCount);
+          }
         });
       }];
       [cb commit];
@@ -1009,6 +1016,9 @@ public:
     // don't touch them.
     async_batch_pool_index_ = (async_batch_pool_index_ + 1) % kAsyncPoolRing;
     for (auto& [_, set] : asyncScaleScratchPools_) {
+      set.pools[async_batch_pool_index_].cursor = 0;
+    }
+    for (auto& [_, set] : asyncReadbackBufferPools_) {
       set.pools[async_batch_pool_index_].cursor = 0;
     }
   }
@@ -1065,18 +1075,30 @@ public:
                 std::chrono::system_clock::now().time_since_epoch()).count();
           };
           const double tHop = kPreviewTsLog ? nowMs() : 0.0;
+          std::vector<uint8_t> staging;  // only for the no-buffer fallback
           for (auto& p : *pending) {
-            std::vector<uint8_t> pixels((size_t)p.dstW * p.dstH * 4);
-            [p.dst getBytes:pixels.data()
-                bytesPerRow:p.dstW * 4
-                 fromRegion:MTLRegionMake2D(0, 0, p.dstW, p.dstH)
-                mipmapLevel:0];
-            p.callback(std::move(pixels));
+            const size_t byteCount = (size_t)p.dstW * p.dstH * 4;
+            const double ti0 = kPreviewTsLog ? nowMs() : 0.0;
+            if (p.buf) {
+              p.callback((const uint8_t*)[p.buf contents], byteCount);
+            } else {
+              staging.resize(byteCount);
+              [p.dst getBytes:staging.data()
+                  bytesPerRow:p.dstW * 4
+                   fromRegion:MTLRegionMake2D(0, 0, p.dstW, p.dstH)
+                  mipmapLevel:0];
+              p.callback(staging.data(), byteCount);
+            }
+            if (kPreviewTsLog && byteCount > 1000000) {
+              fprintf(stderr,
+                  "[preview_ts] item %ux%u buf=%d cb %.2f ms\n",
+                  p.dstW, p.dstH, p.buf ? 1 : 0, nowMs() - ti0);
+            }
           }
           if (kPreviewTsLog) {
             fprintf(stderr,
                 "[preview_ts] batch n=%zu gpu+sched %.2f ms, queue-hop %.2f ms, "
-                "getBytes+cb %.2f ms\n",
+                "copy+cb %.2f ms\n",
                 pending->size(), tDone - tCommit, tHop - tDone, nowMs() - tHop);
           }
         });
@@ -1132,6 +1154,18 @@ private:
   struct AsyncScratchPoolSet {
     AsyncScratchPool pools[kAsyncPoolRing];
   };
+  // Linear readback buffers, same ring discipline as the scratch textures
+  // (keyed by byte size). The scale result is blitted into one of these on
+  // the GPU, so the CPU side is a plain memcpy from shared memory instead of
+  // [MTLTexture getBytes] — which detiles the texture at ~140MB/s and was the
+  // single largest stage of preview latency (~38-50ms for a 7MB frame).
+  struct AsyncBufferPool {
+    std::vector<id<MTLBuffer>> buffers;
+    size_t cursor = 0;
+  };
+  struct AsyncBufferPoolSet {
+    AsyncBufferPool pools[kAsyncPoolRing];
+  };
   size_t async_batch_pool_index_ = 0;
   // Serial worker for preview readbacks — keeps heavyweight memcpys off
   // Metal's completion queue (see commitPreviewBatch). Lazy: most backend
@@ -1160,6 +1194,40 @@ private:
       pool.textures.push_back(t);
     }
     return pool.textures[pool.cursor++];
+  }
+
+  id<MTLBuffer> nextAsyncReadbackBuffer(size_t bytes) {
+    auto& pool = asyncReadbackBufferPools_[(uint64_t)bytes]
+                    .pools[async_batch_pool_index_];
+    if (pool.cursor >= pool.buffers.size()) {
+      id<MTLBuffer> b = [device_ newBufferWithLength:bytes
+                                             options:MTLResourceStorageModeShared];
+      if (!b) return nil;
+      pool.buffers.push_back(b);
+    }
+    return pool.buffers[pool.cursor++];
+  }
+
+  // Encode a GPU blit of `tex` into a pooled linear buffer on `cb`. The GPU
+  // handles detiling; the completion side memcpys from buffer contents.
+  // Returns nil if the buffer allocation failed (caller falls back to
+  // getBytes on the texture).
+  id<MTLBuffer> encodeReadbackBlit(id<MTLCommandBuffer> cb, id<MTLTexture> tex,
+                                   uint32_t w, uint32_t h) {
+    id<MTLBuffer> buf = nextAsyncReadbackBuffer((size_t)w * h * 4);
+    if (!buf) return nil;
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit copyFromTexture:tex
+              sourceSlice:0
+              sourceLevel:0
+             sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake(w, h, 1)
+                 toBuffer:buf
+        destinationOffset:0
+   destinationBytesPerRow:(NSUInteger)w * 4
+ destinationBytesPerImage:(NSUInteger)w * 4 * h];
+    [blit endEncoding];
+    return buf;
   }
 
 public:
@@ -1275,6 +1343,7 @@ private:
   // handler doesn't race the next frame's encode.
   std::unordered_map<uint64_t, id<MTLTexture>> scaleScratchTextures_;
   std::unordered_map<uint64_t, AsyncScratchPoolSet> asyncScaleScratchPools_;
+  std::unordered_map<uint64_t, AsyncBufferPoolSet> asyncReadbackBufferPools_;
 
   // Preview-batch state. When beginPreviewBatch opens a cmd buffer all
   // subsequent readbackTextureScaledAsync calls encode into it; the
@@ -1282,8 +1351,9 @@ private:
   // single completion handler. Strictly render-thread only.
   struct BatchPendingReadback {
     id<MTLTexture> dst;
+    id<MTLBuffer> buf;   // linear GPU-blitted copy; nil → getBytes fallback
     uint32_t dstW, dstH;
-    std::function<void(std::vector<uint8_t>)> callback;
+    std::function<void(const uint8_t*, size_t)> callback;
   };
   id<MTLCommandBuffer> async_batch_cb_ = nil;
   std::vector<BatchPendingReadback> async_batch_pending_;

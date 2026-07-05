@@ -72,16 +72,24 @@ struct CaptureSlot {
 //   [10..11] u16 width
 //   [12..13] u16 height
 //   [14 ..] key bytes, then traceId bytes, then RGBA8 pixels
-std::vector<uint8_t> buildPreviewFrameBytes(
+// Builds into a caller-provided (typically pooled) vector: fresh multi-MB
+// allocations per preview frame cost more than the GPU readback itself, so
+// the frame buffers are recycled through Impl::blob_pool.
+double gBuildResizeMs = 0, gBuildCopyMs = 0;  // preview_ts scratch metrics
+double epochMsNow();
+
+void buildPreviewFrameBytesInto(
+    std::vector<uint8_t>& out,
     const std::string& key, const std::string& traceId,
     uint16_t width, uint16_t height,
-    const std::vector<uint8_t>& pixels) {
+    const uint8_t* pixels, size_t pixelBytes) {
   const uint16_t keyLen = (uint16_t)key.size();
   const uint16_t idLen  = (uint16_t)traceId.size();
   const size_t headerSize = 14 + keyLen + idLen;
-  std::vector<uint8_t> out;
-  out.reserve(headerSize + pixels.size());
-  out.resize(headerSize);
+  const double tR0 = epochMsNow();
+  out.resize(headerSize + pixelBytes);
+  gBuildResizeMs = epochMsNow() - tR0;
+  const double tC0 = epochMsNow();
   out[0] = 'N'; out[1] = 'B'; out[2] = 'P'; out[3] = 'V';
   out[4] = 2;             // version
   out[5] = 1;             // format: RGBA8
@@ -95,8 +103,8 @@ std::vector<uint8_t> buildPreviewFrameBytes(
   out[13] = (uint8_t)(height >> 8);
   memcpy(out.data() + 14, key.data(), keyLen);
   memcpy(out.data() + 14 + keyLen, traceId.data(), idLen);
-  out.insert(out.end(), pixels.begin(), pixels.end());
-  return out;
+  memcpy(out.data() + headerSize, pixels, pixelBytes);
+  gBuildCopyMs = epochMsNow() - tC0;
 }
 
 nlohmann::json parseOrObject(const std::string& s) {
@@ -278,6 +286,32 @@ struct BarrelRuntime::Impl {
   // command buffer errored never calls back) after 1s.
   std::unordered_map<std::string, double> inflight_routes;
 
+  // Recycled frame buffers (guarded by send_mu). resize() within retained
+  // capacity is a cheap memset instead of a fresh mmap + page-fault storm —
+  // allocating 7MB per preview frame measured ~14ms, dwarfing the actual
+  // pixel copy (~0.1ms).
+  std::vector<std::vector<uint8_t>> blob_pool;
+
+  std::vector<uint8_t> acquireBlobBuf(size_t sizeHint) {
+    std::lock_guard<std::mutex> lk(send_mu);
+    // Prefer a buffer whose retained capacity already fits — grabbing a
+    // small monitor buffer for a 7MB edit-preview frame would realloc and
+    // pay the page-fault cost the pool exists to avoid. Leave undersized
+    // buffers for the small routes.
+    for (auto it = blob_pool.begin(); it != blob_pool.end(); ++it) {
+      if (it->capacity() >= sizeHint) {
+        auto b = std::move(*it);
+        blob_pool.erase(it);
+        return b;
+      }
+    }
+    return {};
+  }
+  void releaseBlobBuf(std::vector<uint8_t>&& b) {
+    std::lock_guard<std::mutex> lk(send_mu);
+    if (blob_pool.size() < 16) blob_pool.push_back(std::move(b));
+  }
+
   bool routeInFlight(const std::string& route) {
     std::lock_guard<std::mutex> lk(send_mu);
     auto it = inflight_routes.find(route);
@@ -415,25 +449,41 @@ struct BarrelRuntime::Impl {
       const double bcastT0 = previewTsEnabled() ? epochMsNow() : 0.0;
       if (!fanout_lanes.empty()) {
         if (chunkBytes == 0) chunkBytes = 512 * 1024;
-        // Frame-level latest-wins across the lanes: if the lanes still hold
-        // chunks (all connections saturated), drop this whole frame rather
-        // than growing the lane queues — never ship a partial frame.
+        // Memory safety net only: the per-route in-flight gate already bounds
+        // steady-state lane depth to ~one frame per live monitor, and two big
+        // frames dispatching back-to-back legitimately overlap (the second
+        // rides ~a frame's worth of chunks behind the first). Only drop when
+        // the lanes hold several frames' worth — a dead-slow client.
         size_t backlog = 0;
         for (auto& lane : fanout_lanes) {
           std::lock_guard<std::mutex> lk(lane->mu);
           backlog += lane->queue.size();
         }
-        if (backlog > fanout_lanes.size()) {
+        if (backlog > fanout_lanes.size() * 16) {
           if (previewTsEnabled())
             std::fprintf(stderr, "[preview_ts] fanout DROP frame (%zu bytes, backlog %zu chunks)\n",
                          blob.bytes.size(), backlog);
+          releaseBlobBuf(std::move(blob.bytes));
           clearRouteInFlight(blob.route);
           continue;
         }
         static uint32_t fanSeq = 0;
         const uint32_t seq = ++fanSeq;
         const size_t n = (blob.bytes.size() + chunkBytes - 1) / chunkBytes;
-        auto frame = std::make_shared<std::vector<uint8_t>>(std::move(blob.bytes));
+        // Custom deleter runs when the LAST lane chunk has been sent: recycle
+        // the frame's allocation AND only then clear the route's in-flight
+        // mark — clearing at dispatch time let captures re-fire while the
+        // lanes were still draining, and the lane queues built a standing
+        // multi-frame backlog (~500ms) with two big monitors. Lanes are
+        // joined before Impl members die (stopFanoutLanes in ~Impl), so
+        // `this` outlives every deleter run.
+        auto frame = std::shared_ptr<std::vector<uint8_t>>(
+            new std::vector<uint8_t>(std::move(blob.bytes)),
+            [this, route = blob.route](std::vector<uint8_t>* v) {
+              releaseBlobBuf(std::move(*v));
+              clearRouteInFlight(route);
+              delete v;
+            });
         for (size_t i = 0; i < n; ++i) {
           FanoutChunk c;
           c.frame = frame;
@@ -455,7 +505,7 @@ struct BarrelRuntime::Impl {
               frame->size(), n, chunkBytes / 1024, fanout_lanes.size(),
               epochMsNow() - bcastT0);
         }
-        clearRouteInFlight(blob.route);
+        // Route clears in the frame deleter (last chunk sent), not here.
         continue;
       }
       if (chunkBytes > 0 && blob.bytes.size() > chunkBytes) {
@@ -480,6 +530,7 @@ struct BarrelRuntime::Impl {
               "[preview_ts] bcast-chunked %zu bytes x%zu(%zuKB) in %.2f ms\n",
               blob.bytes.size(), n, chunkBytes / 1024, epochMsNow() - bcastT0);
         }
+        releaseBlobBuf(std::move(blob.bytes));
         clearRouteInFlight(blob.route);
         continue;
       }
@@ -491,6 +542,7 @@ struct BarrelRuntime::Impl {
                        return send_queue.size();
                      }());
       }
+      releaseBlobBuf(std::move(blob.bytes));
       clearRouteInFlight(blob.route);
     }
   }
@@ -591,9 +643,22 @@ struct BarrelRuntime::Impl {
       gpu->readbackTextureScaledAsync(
           slot.handle, (uint32_t)slot.width, (uint32_t)slot.height, outW, outH,
           [this, keyCopy = std::move(keyCopy), traceId = std::move(traceId),
-           route = std::move(route), outW, outH, tEncode](std::vector<uint8_t> pixels) {
-            auto bytes = buildPreviewFrameBytes(
-                keyCopy, traceId, (uint16_t)outW, (uint16_t)outH, pixels);
+           route = std::move(route), outW, outH, tEncode](
+              const uint8_t* pixels, size_t pixelBytes) {
+            const bool big = previewTsEnabled() && pixelBytes > 1000000;
+            const double ta = big ? epochMsNow() : 0.0;
+            auto bytes = acquireBlobBuf(14 + keyCopy.size() + traceId.size() + pixelBytes);
+            const double tb = big ? epochMsNow() : 0.0;
+            buildPreviewFrameBytesInto(bytes, keyCopy, traceId,
+                                       (uint16_t)outW, (uint16_t)outH,
+                                       pixels, pixelBytes);
+            if (big) {
+              std::fprintf(stderr,
+                  "[preview_ts] blob acquire %.2f build %.2f ms "
+                  "(resize %.2f copy %.2f cap-hit %d)\n",
+                  tb - ta, epochMsNow() - tb, gBuildResizeMs, gBuildCopyMs,
+                  bytes.capacity() >= pixelBytes ? 1 : 0);
+            }
             if (previewTsEnabled()) {
               stampPreviewTs(bytes, 0, tEncode);
               stampPreviewTs(bytes, 1, epochMsNow());
@@ -602,11 +667,13 @@ struct BarrelRuntime::Impl {
               std::lock_guard<std::mutex> lock(send_mu);
               // Latest-wins: a frame for a route that (re-)queued while ours
               // was on the GPU is stale now — take its slot instead of
-              // deepening the queue.
+              // deepening the queue. (With the inflight_routes gate this path
+              // is normally unreachable; kept as a safety net.)
               bool replaced = false;
               for (auto& blob : send_queue) {
                 if (blob.route == route) {
-                  blob.bytes = std::move(bytes);
+                  std::swap(blob.bytes, bytes);
+                  if (blob_pool.size() < 16) blob_pool.push_back(std::move(bytes));
                   replaced = true;
                   break;
                 }

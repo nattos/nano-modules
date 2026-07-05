@@ -263,11 +263,17 @@ public:
   }
 
   // Async variant — the GPU work is committed but NOT waited on. The
-  // backend invokes `callback(pixels)` from a backend-owned thread
-  // (Metal's completion-handler queue) once the readback finishes.
+  // backend invokes `callback(pixels, byteCount)` from a backend-owned
+  // thread (a serial readback queue on Metal) once the readback finishes.
   // Critical for hosts that want to keep their render thread free —
   // the FFGL barrel uses this so it can publish previews without
   // blocking Resolume on a per-frame waitUntilCompleted.
+  //
+  // The pixel pointer is only valid for the duration of the callback —
+  // consumers copy what they need (typically straight into their own
+  // pooled wire-format buffer). A span instead of a std::vector because
+  // allocating a fresh multi-MB vector per preview frame cost more than
+  // the GPU readback itself (page faults + zero-fill ~14ms for 7MB).
   //
   // When wrapped between `beginPreviewBatch()` and `commitPreviewBatch()`,
   // multiple async readbacks coalesce into a single Metal command
@@ -281,10 +287,10 @@ public:
       int32_t textureHandle,
       uint32_t srcW, uint32_t srcH,
       uint32_t dstW, uint32_t dstH,
-      std::function<void(std::vector<uint8_t>)> callback) {
+      std::function<void(const uint8_t* pixels, size_t byteCount)> callback) {
     auto pixels = readbackTextureScaled(textureHandle, srcW, srcH,
                                          dstW, dstH);
-    if (!pixels.empty() && callback) callback(std::move(pixels));
+    if (!pixels.empty() && callback) callback(pixels.data(), pixels.size());
   }
 
   // Batch helpers — wrap a sequence of `readbackTextureScaledAsync`
