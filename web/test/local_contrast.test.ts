@@ -129,6 +129,26 @@ describe(`Local Contrast E2E (${backend}, ${mode})`, () => {
     expect(off.success && on.success).toBe(true);
     on.expectDifferentFrom(off, 50);
   });
+
+  it('roll-off squashes the recovered chroma non-linearly (juicier peaks)', async () => {
+    // Same red→white gradient as recovery, full recover, but sweep the roll-off
+    // exponent: 0 is a plain linear tint, 1 rolls the off-channels off harder.
+    // The two diverge only in the recovered region, so a difference proves the
+    // non-linear squash actually reshapes the recovered colour.
+    const grad = (rolloff: number, dump: string) => runGpuChainTest({
+      chain: [
+        { module: 'source.gradient', params: [
+          ['softness', 1.0], ['color_a', [1.0, 0.15, 0.1]], ['color_b', [1.0, 1.0, 1.0]],
+        ] },
+        { module: LC, params: [['amount', 0.0], ['recover', 1.0], ['rolloff', rolloff]] },
+      ],
+      bundle: 'core', width: 64, height: 64, dumpName: dump,
+    });
+    const linear = await grad(0.0, 'local_contrast_rolloff_linear');
+    const juicy  = await grad(1.0, 'local_contrast_rolloff_juicy');
+    expect(linear.success && juicy.success).toBe(true);
+    juicy.expectDifferentFrom(linear, 25);
+  });
 });
 }));
 
@@ -136,13 +156,13 @@ describe(`Local Contrast E2E (${backend}, ${mode})`, () => {
 // reports metadata.id but not the param list.
 describe('Local Contrast schema', () => {
   jest.setTimeout(30000);
-  it('declares amount, mode, protect, radius, recover', async () => {
+  it('declares amount, mode, protect, radius, recover, rolloff', async () => {
     const f = await runGpuEffectTest({
       module: LC, bundle: 'core', inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'local_contrast_params',
     });
     expect(f.success).toBe(true);
     expect(f.params.map((p) => p.name).sort())
-      .toEqual(['amount', 'mode', 'protect', 'radius', 'recover']);
+      .toEqual(['amount', 'mode', 'protect', 'radius', 'recover', 'rolloff']);
   });
 });

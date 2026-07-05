@@ -28,6 +28,7 @@ cbuffer Uniforms : register(b3) {
   float protect_k;     // midtone-protection exponent (high = boost everywhere)
   int   mode;          // 0 = luma-preserving clarity, 1 = per-channel RGB
   float recover;       // highlight colour recovery strength (0 = off)
+  float rolloff;       // non-linear squash of the recovered chroma (0 = linear)
 };
 
 #include "nano_color.hlsl"   // nano_luminance
@@ -68,7 +69,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float  Lo   = nano_luminance(outrgb);
     float  Lp   = nano_luminance(lp);
     float3 hue  = lp / max(Lp, 1e-4);          // halo hue at unit luma
-    float3 recol = Lo * hue;
+
+    // Non-linear squash: raise the hue to a power (rolloff -> exponent k) so the
+    // OFF-channels roll off HARDER than linear before we renormalise luma. A
+    // film shoulder compresses the off-colours as a highlight saturates — the
+    // deeper the squash, the juicier / more saturated the recovered peak.
+    // rolloff 0 -> k 1 -> the old linear `Lo * hue` behaviour exactly.
+    float  k      = 1.0 + rolloff * 3.0;
+    float3 shaped = pow(max(hue, 1e-4), k);
+    shaped /= max(nano_luminance(shaped), 1e-4);   // renorm to unit luma (hold Lo)
+    float3 recol  = Lo * shaped;
+
     float  bright = smoothstep(0.6, 1.0, Lo);  // only peaks
     float  maxc = max(max(outrgb.r, outrgb.g), outrgb.b);
     float  minc = min(min(outrgb.r, outrgb.g), outrgb.b);
