@@ -78,6 +78,8 @@ struct State {
   // reconstruct inputs.
   gpu::Texture cmn, cmx;                     // rgb 3x3 min/max (repaint colour clamp)
   gpu::Texture color_flank;                 // sep_gauss(img, 0.7) (bg flank taps)
+  gpu::Texture color_wide;                  // sep_gauss(img, 5.6) (deband + wide bg)
+  gpu::Texture arms;                         // blur(w_line_s, 2) (crossing suppress)
 
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
@@ -226,8 +228,8 @@ void module_init() {
       .tex2d(0).storageTex2d(1, F16).storageTex2d(2, F16));
   s_pso_reconstruct = gpu::Device::createComputePSO(cs_rc, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4).tex2d(5).tex2d(6).tex2d(7)
-      .tex2d(8).tex2d(9).sampler(10)
-      .storageTex2d(11, gpu::TextureFormat::RGBA8).uniform(12));
+      .tex2d(8).tex2d(9).tex2d(10).tex2d(11).sampler(12)
+      .storageTex2d(13, gpu::TextureFormat::RGBA8).uniform(14));
   s_blur.init();
 
   gpu::ComputePSO* psos[] = { &s_pso_stats, &s_pso_cstar, &s_pso_tensor_grad,
@@ -249,7 +251,7 @@ static void forEachTexture(State* s, void (*fn)(gpu::Texture*)) {
   gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
                            &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3,
                            &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd,
-                           &s->cmn, &s->cmx, &s->color_flank };
+                           &s->cmn, &s->cmx, &s->color_flank, &s->color_wide, &s->arms };
   for (auto* t : texs) fn(t);
 }
 
@@ -334,7 +336,7 @@ static bool ensureTextures(State* s, int w, int h) {
   gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
                            &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3,
                            &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd,
-                           &s->cmn, &s->cmx, &s->color_flank };
+                           &s->cmn, &s->cmx, &s->color_flank, &s->color_wide, &s->arms };
   for (auto* t : texs) {
     if (t->valid()) t->release();
     *t = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
@@ -428,20 +430,25 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(s->sd, 3, 1);
     cp.dispatch(gx, gy); cp.end(); }
 
-  // 6a. reconstruct inputs: rgb 3x3 min/max + a sigma-0.7 colour flank blur.
+  // 6a. reconstruct inputs: rgb 3x3 min/max, colour blurs (sigma 0.7 flank + 5.6
+  // wide/deband), and a sigma-2 blur of the smoothed line weight (point suppress).
   { auto cp = pass(s_pso_rgbminmax);
     cp.setTexture(in, 0, 0); cp.setTexture(s->cmn, 1, 1); cp.setTexture(s->cmx, 2, 1);
     cp.dispatch(gx, gy); cp.end(); }
-  s_blur.apply(in, s->color_flank, vp_w, vp_h, 0.7f);
+  s_blur.apply(in,     s->color_flank, vp_w, vp_h, 0.7f);
+  s_blur.apply(in,     s->color_wide,  vp_w, vp_h, 5.6f);   // == LR_SIGMA3 (common.hlsl)
+  s_blur.apply(s->s1,  s->arms,        vp_w, vp_h, 2.0f);
 
-  // 6. reconstruct: line repaint + gates + composite (or a debug view) → tex_out.
+  // 6. reconstruct: line + point + deband repaint, gated + hierarchically
+  // composited (or a debug view) → tex_out.
   { auto cp = pass(s_pso_reconstruct);
     cp.setTexture(in, 0, 0); cp.setTexture(s->color_flank, 1, 0);
     cp.setTexture(s->cmn, 2, 0); cp.setTexture(s->cmx, 3, 0); cp.setTexture(s->cstar, 4, 0);
-    cp.setTexture(s->y3, 5, 0); cp.setTexture(s->s0, 6, 0); cp.setTexture(s->s1, 7, 0);
-    cp.setTexture(s->sd, 8, 0); cp.setTexture(s->m2, 9, 0);
-    cp.setSampler(s->sampler, 10);
-    cp.setTexture(out, 11, 1); cp.setBuffer(s->uniform_buf, 12);
+    cp.setTexture(s->s0, 5, 0); cp.setTexture(s->s1, 6, 0); cp.setTexture(s->sd, 7, 0);
+    cp.setTexture(s->m2, 8, 0); cp.setTexture(s->m1, 9, 0);
+    cp.setTexture(s->arms, 10, 0); cp.setTexture(s->color_wide, 11, 0);
+    cp.setSampler(s->sampler, 12);
+    cp.setTexture(out, 13, 1); cp.setBuffer(s->uniform_buf, 14);
     cp.dispatch(gx, gy); cp.end(); }
 
   gpu::Device::submit();

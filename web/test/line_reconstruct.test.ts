@@ -108,6 +108,33 @@ describe('Line Reconstruct (filter.reconstruct.line) E2E', () => {
     r.trace('out').expectSameAs(r.trace('in'), 2);
   });
 
+  it('deband reshapes a smooth gradient (the deband branch engages)', async () => {
+    // A near-flat gradient is the deband branch's target: fine contrast is small
+    // but wide-scale drift is present, so deband's clamp-bounded correction +
+    // dither engages. deband 1 must differ from deband 0 on the same gradient.
+    const grad = (id: string, deband: number, dump: string) => {
+      const sketch: Sketch = {
+        anchor: null, wires: [],
+        chain: [
+          { type: 'module', module_type: 'source.gradient', instance_key: 'grad@0', params: { softness: 1.0 } },
+          { type: 'module', module_type: LR, instance_key: 'lr@0', params: { strength: 1.0, deband } },
+        ],
+      };
+      return runEngineTest({
+        width: 96, height: 96, modules: MODULES,
+        commands: [
+          { type: 'createSketch', sketchId: id, sketch },
+          { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+        ],
+        waitFrames: 8, captureTraceIds: ['out'], dumpName: dump,
+      });
+    };
+    const off = await grad('lr_db_off', 0.0, 'line_reconstruct_deband_off');
+    const on  = await grad('lr_db_on',  1.0, 'line_reconstruct_deband_on');
+    expect(off.success && on.success).toBe(true);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 20);
+  });
+
   // Detection sanity: on a structured grid the classifier fires — the Class /
   // Width / Orientation debug views are non-solid and differ from passthrough
   // and from each other. (Validates stats→pyramid→tensor→features end-to-end.)
