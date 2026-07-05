@@ -74,6 +74,18 @@ describe('Smear (filter.blur.smear) E2E', () => {
     tilt.trace('out').expectDifferentFrom(flat.trace('out'), 100);
   });
 
+  it('master strength scales the smear (0 ≈ passthrough, 1 = full)', async () => {
+    const off  = await runChain('sm_x0', { length: 0.8, width: 0.4, strength: 0.0, samples: 16 }, 'smear_strength_0');
+    const full = await runChain('sm_x1', { length: 0.8, width: 0.4, strength: 1.0, samples: 16 }, 'smear_strength_1');
+    expect(off.success).toBe(true);
+    expect(full.success).toBe(true);
+    // strength 0 collapses both reaches → passthrough of the input.
+    expect(off.trace('out').diffCount(off.trace('in'), 6)).toBeLessThan(W * H * 0.02);
+    // strength 1 actually smears (differs from input), and from the strength-0 case.
+    full.trace('out').expectDifferentFrom(full.trace('in'), 100);
+    full.trace('out').expectDifferentFrom(off.trace('out'), 100);
+  });
+
   it('zero reach is a passthrough (≈ the input)', async () => {
     const r = await runChain('sm_p', { length: 0.0, width: 0.0, samples: 16 }, 'smear_passthrough');
     expect(r.success).toBe(true);

@@ -78,10 +78,11 @@ struct State {
   bool         initialized = false;
 
   // Schema-mirrored params.
-  int   mode    = MODE_BLUR;
-  float angle   = 0.0f;   // [-1,1] → [-π,π]
-  float length  = 0.35f;
-  float width   = 0.12f;
+  int   mode     = MODE_BLUR;
+  float angle    = 0.0f;   // [-1,1] → [-π,π]
+  float strength = 1.0f;   // master scale on length + width
+  float length   = 0.35f;
+  float width    = 0.12f;
   float tail    = 0.5f;
   float tilt    = 0.0f;   // [-1,1]
   float softness = 0.6f;  // gaussian tail sharpness
@@ -139,7 +140,7 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("filter.blur.smear", {1, 0, 2},
+  state::init("filter.blur.smear", {1, 0, 3},
     state::Schema()
       .helpField("intro",
         "## Smear\n"
@@ -158,10 +159,14 @@ void module_init() {
       .floatField("angle", 0.0f, -1.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Major-axis direction (−1..+1 = a full turn).").label("Angle", "Ang")
       .group("shape", "Shape")
-        .groupHelp("*Length* is the streak reach along the axis; *Width* the "
+        .groupHelp("*Strength* is the master amount — scales both Length and Width "
+                   "(0 = off). *Length* is the streak reach along the axis; *Width* the "
                    "perpendicular spread. *Tail* biases the reach behind the head "
                    "(0 = symmetric blob, 1 = one-sided streak). *Perspective* ramps "
                    "the minor width across the frame (tilt-shift; flips sign).")
+      .floatField("strength", 1.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Master amount — scales Length and Width together (0 = off).")
+                  .label("Strength", "Str")
       .floatField("length", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Streak reach along the major axis.").label("Length", "Len")
       .floatField("width", 0.12f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -280,6 +285,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       if (m != s->mode) { s->mode = m; mode_changed = true; }
     }
     else if (state::pathIs(p, l, "angle"))              s->angle              = state::patchFloat(i);
+    else if (state::pathIs(p, l, "strength"))          s->strength           = state::patchFloat(i);
     else if (state::pathIs(p, l, "length"))            s->length             = state::patchFloat(i);
     else if (state::pathIs(p, l, "width"))             s->width              = state::patchFloat(i);
     else if (state::pathIs(p, l, "tail"))              s->tail               = state::patchFloat(i);
@@ -328,10 +334,11 @@ void render(void* self, int vp_w, int vp_h) {
   float maj_x =  ct * sx, maj_y =  stt * sy;   // major axis UV step
   float min_x = -stt * sx, min_y =  ct * sy;   // minor axis UV step
 
-  float reach_len  = s->length * MAJOR_MAX;
+  float amt        = clamp01(s->strength);                   // master scale on both axes
+  float reach_len  = s->length * amt * MAJOR_MAX;
   float reach_fwd  = reach_len * (1.0f - clamp01(s->tail));  // head shrinks with tail
   float reach_back = reach_len;
-  float reach_wid  = s->width * MINOR_MAX;
+  float reach_wid  = s->width * amt * MINOR_MAX;
   float falloff_k  = 1.0f + clamp01(s->softness) * 7.0f;     // boxy → soft gaussian fade
 
   if (s->mode == MODE_SCATTER) {
@@ -348,7 +355,7 @@ void render(void* self, int vp_w, int vp_h) {
     u.major_x = ct; u.major_y = stt; u.tilt = s->tilt;
     u.dive = dive_c;
     u.exposure_gain = std::exp2(expo);
-    u.edge_artifacts = s->edge_artifacts;
+    u.edge_artifacts = s->edge_artifacts * 0.1f;   // 10x less sensitive (was overpowering)
     u.exposure = s->exposure;
     u.softness = clamp01(s->softness);
     s->uniform_scatter.writeOne(u);
