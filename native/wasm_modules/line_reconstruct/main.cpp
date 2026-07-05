@@ -71,6 +71,10 @@ struct State {
   gpu::Texture jraw, jblur;                 // structure-tensor products (Jxx,Jxy,Jyy)
   gpu::Texture tensor;                      // (kappa, junction, 0, 0)
   gpu::Texture m0, m1, m2, m3;             // packed features (see features.hlsl)
+  // smooth pass: blur-product groups (blurred in place), outputs, centerline.
+  gpu::Texture g1, g1p, g2, g2b;           // product groups (see smooth_prep.hlsl)
+  gpu::Texture s0, s1;                      // smoothed feature fields
+  gpu::Texture wc, sd;                      // centerline vote weights + shared delta
 
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
@@ -90,7 +94,8 @@ struct State {
 
 // --- type-shared PSOs ---------------------------------------------------------
 static gpu::ComputePSO s_pso_stats, s_pso_cstar, s_pso_tensor_grad, s_pso_tensor,
-                       s_pso_features, s_pso_reconstruct;
+                       s_pso_features, s_pso_smooth_prep, s_pso_smooth,
+                       s_pso_ctr_prep, s_pso_centerline, s_pso_reconstruct;
 static Blur16 s_blur;
 
 void module_init() {
@@ -168,6 +173,10 @@ void module_init() {
   state::registerShaderSPV("line_reconstruct_tensor_grad", TENSOR_GRAD_SPV, TENSOR_GRAD_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("line_reconstruct_tensor",      TENSOR_SPV,      TENSOR_SPV_SIZE,      "rgba16float", "write");
   state::registerShaderSPV("line_reconstruct_features",    FEATURES_SPV,    FEATURES_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_smooth_prep", SMOOTH_PREP_SPV, SMOOTH_PREP_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_smooth",      SMOOTH_SPV,      SMOOTH_SPV_SIZE,      "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_ctr_prep",    CTR_PREP_SPV,    CTR_PREP_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_centerline",  CENTERLINE_SPV,  CENTERLINE_SPV_SIZE,  "rgba16float", "write");
   state::registerShaderSPV("line_reconstruct_reconstruct", RECONSTRUCT_SPV, RECONSTRUCT_SPV_SIZE, "rgba8unorm", "write");
 
   auto cs_st = gpu::Device::createShaderModuleByName("line_reconstruct_stats");
@@ -175,44 +184,48 @@ void module_init() {
   auto cs_tg = gpu::Device::createShaderModuleByName("line_reconstruct_tensor_grad");
   auto cs_tn = gpu::Device::createShaderModuleByName("line_reconstruct_tensor");
   auto cs_ft = gpu::Device::createShaderModuleByName("line_reconstruct_features");
+  auto cs_sp = gpu::Device::createShaderModuleByName("line_reconstruct_smooth_prep");
+  auto cs_sm = gpu::Device::createShaderModuleByName("line_reconstruct_smooth");
+  auto cs_cp = gpu::Device::createShaderModuleByName("line_reconstruct_ctr_prep");
+  auto cs_cl = gpu::Device::createShaderModuleByName("line_reconstruct_centerline");
   auto cs_rc = gpu::Device::createShaderModuleByName("line_reconstruct_reconstruct");
-  if (!cs_st || !cs_cs || !cs_tg || !cs_tn || !cs_ft || !cs_rc) {
-    state::log("line_reconstruct: shader module compile FAILED "
-               "(st,cs,tg,tn,ft,rc valid flags follow)");
-    state::log(cs_st ? "  stats ok" : "  stats FAIL");
-    state::log(cs_cs ? "  cstar ok" : "  cstar FAIL");
-    state::log(cs_tg ? "  tensor_grad ok" : "  tensor_grad FAIL");
-    state::log(cs_tn ? "  tensor ok" : "  tensor FAIL");
-    state::log(cs_ft ? "  features ok" : "  features FAIL");
-    state::log(cs_rc ? "  reconstruct ok" : "  reconstruct FAIL");
+  if (!cs_st || !cs_cs || !cs_tg || !cs_tn || !cs_ft || !cs_sp || !cs_sm || !cs_cp || !cs_cl || !cs_rc) {
+    state::log("line_reconstruct: a shader module failed to compile");
     return;
   }
 
+  const auto F16 = gpu::TextureFormat::RGBA16F;
   s_pso_stats = gpu::Device::createComputePSO(cs_st, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
+      .tex2d(0).storageTex2d(1, F16));
   s_pso_cstar = gpu::Device::createComputePSO(cs_cs, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F).uniform(2));
+      .tex2d(0).storageTex2d(1, F16).uniform(2));
   s_pso_tensor_grad = gpu::Device::createComputePSO(cs_tg, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA16F));
+      .tex2d(0).storageTex2d(1, F16));
   s_pso_tensor = gpu::Device::createComputePSO(cs_tn, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA16F));
+      .tex2d(0).tex2d(1).storageTex2d(2, F16));
   s_pso_features = gpu::Device::createComputePSO(cs_ft, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4).tex2d(5).tex2d(6)
-      .storageTex2d(7, gpu::TextureFormat::RGBA16F)
-      .storageTex2d(8, gpu::TextureFormat::RGBA16F)
-      .storageTex2d(9, gpu::TextureFormat::RGBA16F)
-      .storageTex2d(10, gpu::TextureFormat::RGBA16F).uniform(11));
+      .storageTex2d(7, F16).storageTex2d(8, F16).storageTex2d(9, F16)
+      .storageTex2d(10, F16).uniform(11));
+  s_pso_smooth_prep = gpu::Device::createComputePSO(cs_sp, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).storageTex2d(2, F16).storageTex2d(3, F16)
+      .storageTex2d(4, F16).storageTex2d(5, F16));
+  s_pso_smooth = gpu::Device::createComputePSO(cs_sm, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4)
+      .storageTex2d(5, F16).storageTex2d(6, F16));
+  s_pso_ctr_prep = gpu::Device::createComputePSO(cs_cp, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).tex2d(2).tex2d(3).storageTex2d(4, F16));
+  s_pso_centerline = gpu::Device::createComputePSO(cs_cl, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).tex2d(2).storageTex2d(3, F16));
   s_pso_reconstruct = gpu::Device::createComputePSO(cs_rc, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).tex2d(2).storageTex2d(3, gpu::TextureFormat::RGBA8).uniform(4));
+      .tex2d(0).tex2d(1).tex2d(2).tex2d(3).storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
   s_blur.init();
 
-  if (!s_pso_stats.valid())       state::log("line_reconstruct: PSO stats INVALID");
-  if (!s_pso_cstar.valid())       state::log("line_reconstruct: PSO cstar INVALID");
-  if (!s_pso_tensor_grad.valid()) state::log("line_reconstruct: PSO tensor_grad INVALID");
-  if (!s_pso_tensor.valid())      state::log("line_reconstruct: PSO tensor INVALID");
-  if (!s_pso_features.valid())    state::log("line_reconstruct: PSO features INVALID");
-  if (!s_pso_reconstruct.valid()) state::log("line_reconstruct: PSO reconstruct INVALID");
-  if (!s_blur.valid())            state::log("line_reconstruct: Blur16 INVALID");
+  gpu::ComputePSO* psos[] = { &s_pso_stats, &s_pso_cstar, &s_pso_tensor_grad,
+    &s_pso_tensor, &s_pso_features, &s_pso_smooth_prep, &s_pso_smooth,
+    &s_pso_ctr_prep, &s_pso_centerline, &s_pso_reconstruct };
+  for (auto* p : psos) if (!p->valid()) state::log("line_reconstruct: a PSO is INVALID");
+  if (!s_blur.valid()) state::log("line_reconstruct: Blur16 INVALID");
   state::log("line_reconstruct: module_init done");
 }
 
@@ -223,10 +236,15 @@ void* create() {
   return s;
 }
 
-static void releaseTextures(State* s) {
+static void forEachTexture(State* s, void (*fn)(gpu::Texture*)) {
   gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
-                           &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3 };
-  for (auto* t : texs) if (t->valid()) t->release();
+                           &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3,
+                           &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd };
+  for (auto* t : texs) fn(t);
+}
+
+static void releaseTextures(State* s) {
+  forEachTexture(s, [](gpu::Texture* t) { if (t->valid()) t->release(); });
 }
 
 void destroy(void* self) {
@@ -302,12 +320,16 @@ static void writeUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
 static bool ensureTextures(State* s, int w, int h) {
   if (s->tex_w == w && s->tex_h == h && s->stats.valid()) return true;
   releaseTextures(s);
+  bool ok = true;
   gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
-                           &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3 };
+                           &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3,
+                           &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd };
   for (auto* t : texs) {
+    if (t->valid()) t->release();
     *t = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
-    if (!t->valid()) return false;
+    if (!t->valid()) ok = false;
   }
+  if (!ok) return false;
   s->tex_w = w; s->tex_h = h;
   return true;
 }
@@ -365,10 +387,40 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->uniform_buf, 11);
     cp.dispatch(gx, gy); cp.end(); }
 
+  // 5a. smooth prep: pack blur-input products (by sigma) into G1/G1p/G2/G2b.
+  { auto cp = pass(s_pso_smooth_prep);
+    cp.setTexture(s->m0, 0, 0); cp.setTexture(s->m1, 1, 0);
+    cp.setTexture(s->g1, 2, 1); cp.setTexture(s->g1p, 3, 1);
+    cp.setTexture(s->g2, 4, 1); cp.setTexture(s->g2b, 5, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+
+  // 5b. blur the product groups in place (G1/G1p at sigma 1, G2/G2b at sigma 2).
+  s_blur.apply(s->g1,  s->g1,  vp_w, vp_h, 1.0f);
+  s_blur.apply(s->g1p, s->g1p, vp_w, vp_h, 1.0f);
+  s_blur.apply(s->g2,  s->g2,  vp_w, vp_h, 2.0f);
+  s_blur.apply(s->g2b, s->g2b, vp_w, vp_h, 2.0f);
+
+  // 5d. smooth combine → S0 (orientation/width), S1 (weights + ori_coh).
+  { auto cp = pass(s_pso_smooth);
+    cp.setTexture(s->g1, 0, 0); cp.setTexture(s->g1p, 1, 0);
+    cp.setTexture(s->g2, 2, 0); cp.setTexture(s->g2b, 3, 0); cp.setTexture(s->m0, 4, 0);
+    cp.setTexture(s->s0, 5, 1); cp.setTexture(s->s1, 6, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+
+  // 5c. shared centerline (fp16-safe): vote weights → relative-coord centroid.
+  { auto cp = pass(s_pso_ctr_prep);
+    cp.setTexture(s->m0, 0, 0); cp.setTexture(s->m1, 1, 0); cp.setTexture(s->m3, 2, 0);
+    cp.setTexture(s->g2, 3, 0); cp.setTexture(s->wc, 4, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+  { auto cp = pass(s_pso_centerline);
+    cp.setTexture(s->wc, 0, 0); cp.setTexture(s->s0, 1, 0); cp.setTexture(s->m0, 2, 0);
+    cp.setTexture(s->sd, 3, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+
   // 6. reconstruct / debug composite → tex_out.
   { auto cp = pass(s_pso_reconstruct);
-    cp.setTexture(in, 0, 0); cp.setTexture(s->m0, 1, 0); cp.setTexture(s->m1, 2, 0);
-    cp.setTexture(out, 3, 1); cp.setBuffer(s->uniform_buf, 4);
+    cp.setTexture(in, 0, 0); cp.setTexture(s->s0, 1, 0); cp.setTexture(s->s1, 2, 0);
+    cp.setTexture(s->sd, 3, 0); cp.setTexture(out, 4, 1); cp.setBuffer(s->uniform_buf, 5);
     cp.dispatch(gx, gy); cp.end(); }
 
   gpu::Device::submit();

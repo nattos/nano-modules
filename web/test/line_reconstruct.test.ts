@@ -81,11 +81,16 @@ describe('Line Reconstruct (filter.reconstruct.line) E2E', () => {
     const cls  = await runChain('lr_dbg_cls',  { strength: 1.0, debug_view: 1 }, 'line_reconstruct_dbg_class', grid);
     const wid  = await runChain('lr_dbg_wid',  { strength: 1.0, debug_view: 2 }, 'line_reconstruct_dbg_width', grid);
     const ori  = await runChain('lr_dbg_ori',  { strength: 1.0, debug_view: 3 }, 'line_reconstruct_dbg_orient', grid);
-    for (const r of [off, cls, wid, ori]) expect(r.success).toBe(true);
+    const ctr  = await runChain('lr_dbg_ctr',  { strength: 1.0, debug_view: 4 }, 'line_reconstruct_dbg_centerline', grid);
+    const coh  = await runChain('lr_dbg_coh',  { strength: 1.0, debug_view: 5 }, 'line_reconstruct_dbg_coherence', grid);
+    for (const r of [off, cls, wid, ori, ctr, coh]) expect(r.success).toBe(true);
     // The classifier lit up (not a black frame) and reads differently from input.
     cls.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
     cls.trace('out').expectDifferentFrom(off.trace('out'), 100);
     wid.trace('out').expectDifferentFrom(cls.trace('out'), 100);
     ori.trace('out').expectDifferentFrom(cls.trace('out'), 100);
+    // The smooth + centerline passes produce a non-trivial coherence / centerline.
+    coh.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    ctr.trace('out').expectDifferentFrom(coh.trace('out'), 100);
   });
 });

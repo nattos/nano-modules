@@ -256,18 +256,24 @@ echo "  smear shaders compiled (SPV: blur + scatter)"
 #                  the scale-space pyramid, tensor smoothing, and colour blurs).
 #   tensor_grad/tensor — Scharr products → structure-tensor coherence + junction.
 #   features     — per-scale ridge/blob, softmax scale-blend, width, offsets → M0..M3.
+#   smooth_prep/smooth — polarity/orientation coherence + confidence-weighted
+#                  smoothing of the feature fields (blur products grouped by sigma).
+#   ctr_prep/centerline — the fp16-safe shared centerline (relative-coord centroid).
 #   reconstruct  — pass 6: bilinear flank/center taps → crisp box-AA repaint +
 #                  deband, gated + hierarchically composited → tex_out (rgba8).
-#   (smooth/centerline passes land incrementally.)
 compile_shaders_compute_var_spv line_reconstruct stats
 compile_shaders_compute_var_spv line_reconstruct cstar
 compile_shaders_compute_var_spv line_reconstruct blur16
 compile_shaders_compute_var_spv line_reconstruct tensor_grad
 compile_shaders_compute_var_spv line_reconstruct tensor
 compile_shaders_compute_var_spv line_reconstruct features
+compile_shaders_compute_var_spv line_reconstruct smooth_prep
+compile_shaders_compute_var_spv line_reconstruct smooth
+compile_shaders_compute_var_spv line_reconstruct ctr_prep
+compile_shaders_compute_var_spv line_reconstruct centerline
 compile_shaders_compute_var_spv line_reconstruct reconstruct
-_emit_spv_header_var line_reconstruct stats cstar blur16 tensor_grad tensor features reconstruct
-echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+features+reconstruct)"
+_emit_spv_header_var line_reconstruct stats cstar blur16 tensor_grad tensor features smooth_prep smooth ctr_prep centerline reconstruct
+echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+features+smooth+centerline+reconstruct)"
 
 echo "=== Building WASM (nano) ==="
 
