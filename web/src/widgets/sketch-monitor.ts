@@ -21,7 +21,7 @@
 
 import { html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { toJS } from 'mobx';
+import { reaction, toJS, type IReactionDisposer } from 'mobx';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
@@ -32,21 +32,9 @@ import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../views/gpu-head
 import './texture-monitor';
 import './ui-button';
 
-/** Stage aspect ratio — shapes the on-screen box the bitmap scales into. */
+/** Stage aspect fallback until the first frame arrives (then the stage
+ *  follows the received bitmap's true aspect — see `bitmapAspect`). */
 const ASPECT = 16 / 9;
-/**
- * Capture-request sizing: ask for exactly the stage's on-screen size (the
- * <texture-monitor> multiplies by devicePixelRatio), so the preview is as
- * sharp as the screen can show without shipping pixels nobody sees.
- * Quantized (round up to CAPTURE_STEP) so splitter drags re-register the
- * trace at step boundaries instead of every pixel, and capped in DEVICE
- * pixels so the zoom toggle can't request absurd captures. The transport
- * self-regulates from there: the barrel keeps at most 2 preview frames in
- * flight per monitor (latest-wins), so a channel that can't sustain this
- * size degrades preview rate, never queue depth.
- */
-const CAPTURE_STEP = 160; // css px; ×9/16 stays integral (160×90)
-const CAPTURE_MAX_DEVICE_W = 1920;
 /** Magnification when the zoom toggle is active. */
 const ZOOM_FACTOR = 4;
 
@@ -71,6 +59,18 @@ export class SketchMonitor extends MobxLitElement {
 
   /** When active, the monitor pops in at ZOOM_FACTOR and the preview scrolls. */
   @state() private zoomed = false;
+
+  /**
+   * Aspect ratio of the most recent received frame (0 = none yet → ASPECT
+   * fallback). The capture is full source resolution, so the stage box must
+   * follow the TRUE frame aspect — texture-monitor's fit mode stretches the
+   * bitmap to the stage (`object-fit: fill`). Tracked via a MobX reaction
+   * whose value is the RATIO: frames arrive at display rate, but the ratio
+   * only changes when the comp size does, so this re-renders on real changes
+   * only (never per frame).
+   */
+  @state() private bitmapAspect = 0;
+  private aspectDisposer: IReactionDisposer | null = null;
 
   private resizeObserver: ResizeObserver | null = null;
 
@@ -161,6 +161,19 @@ export class SketchMonitor extends MobxLitElement {
     }
   `;
 
+  connectedCallback() {
+    super.connectedCallback();
+    this.aspectDisposer = reaction(
+      () => {
+        const bm = (appState.local.engine.frameGeneration,
+                    appState.local.engine.tracedFrames[this.traceId]);
+        return bm && bm.height > 0 ? bm.width / bm.height : 0;
+      },
+      (ratio) => { this.bitmapAspect = ratio; },
+      { fireImmediately: true },
+    );
+  }
+
   firstUpdated() {
     const preview = this.renderRoot.querySelector('.preview') as HTMLElement | null;
     if (!preview) return;
@@ -177,16 +190,19 @@ export class SketchMonitor extends MobxLitElement {
     super.disconnectedCallback();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    this.aspectDisposer?.();
+    this.aspectDisposer = null;
   }
 
-  /** Largest box of the monitor's aspect ratio that fits the available area,
+  /** Largest box of the frame's aspect ratio that fits the available area,
    *  scaled by the active zoom factor. */
   private stageSize(): { w: number; h: number } {
+    const aspect = this.bitmapAspect || ASPECT;
     let w = this.availW;
-    let h = w / ASPECT;
+    let h = w / aspect;
     if (h > this.availH) {
       h = this.availH;
-      w = h * ASPECT;
+      w = h * aspect;
     }
     const z = this.zoomed ? ZOOM_FACTOR : 1;
     return { w: Math.max(1, Math.floor(w * z)), h: Math.max(1, Math.floor(h * z)) };
@@ -206,25 +222,15 @@ export class SketchMonitor extends MobxLitElement {
       ? (JSON.parse(JSON.stringify(toJS(this.traceTarget))) as TracePoint['target'])
       : (sketchId ? ({ type: 'sketch_output', sketchId } as TracePoint['target']) : null);
     const { w, h } = this.stageSize();
-    // Displayed-size capture request (see CAPTURE_STEP). Before the first
-    // ResizeObserver sample lands, fall back to a sane mid size.
-    const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
-    const cssW = this.availW ? w : 960;
-    const capW = Math.min(
-      Math.ceil(cssW / CAPTURE_STEP) * CAPTURE_STEP,
-      Math.max(CAPTURE_STEP, Math.floor(CAPTURE_MAX_DEVICE_W / dpr)),
-    );
-    const capH = Math.round(capW * 9 / 16);
     return html`
       <div class="preview ${this.zoomed ? 'zoomed' : ''}">
         ${sketchId && target
           ? html`<div class="stage" style="width:${w}px;height:${h}px">
               <texture-monitor
                 fit
+                fullRes
                 .traceId=${this.traceId}
                 .traceTarget=${target as any}
-                .width=${capW}
-                .height=${capH}
                 resolution="high"
               ></texture-monitor>
             </div>`

@@ -112,16 +112,13 @@ nlohmann::json parseOrObject(const std::string& s) {
   return j.is_discarded() ? nlohmann::json::object() : j;
 }
 
-// Preview cadence + size caps (read once). The editor's preview readbacks
-// dominate the watched-frame cost — each one's GPU scale/copy serializes on the
-// render queue ahead of the next frame's blocking submit, so cost scales with
-// readback pixels × rate. Decouple the preview rate from the render rate
-// (default 30 Hz) and bound the readback long-edge. The main edit-preview
-// requests its DISPLAYED size (device pixels, clamped to source), so the cap's
-// default (4096) is only a guard against absurd requests/comp sizes (and the
-// NBPV u16 dimension fields); the per-monitor latest-wins send queue is what
-// keeps a slow channel from backing up. Drop NANO_BARREL_PREVIEW_MAXDIM
-// (e.g. 512) to trade monitor sharpness for readback time. Both env-tunable.
+// Preview cadence + size caps (read once). Decouple the preview rate from the
+// render rate (default 30 Hz) and bound the readback long-edge. The main
+// edit-preview requests FULL SOURCE resolution (width/height 0 → the comp
+// size), so the cap's default (4096) is only a guard against absurd comp
+// sizes (and the NBPV u16 dimension fields); the per-route in-flight gate is
+// what keeps a slow pipeline from backing up. Drop NANO_BARREL_PREVIEW_MAXDIM
+// (e.g. 512) to trade preview sharpness for pipeline bytes. Both env-tunable.
 double previewIntervalSec() {
   static double v = [] {
     const char* e = getenv("NANO_BARREL_PREVIEW_HZ");
@@ -168,33 +165,35 @@ void stampPreviewTs(std::vector<uint8_t>& frameBytes, size_t slot, double ms) {
   memcpy(frameBytes.data() + off, &ms, 8);
 }
 
-// Chunked-broadcast experiment (NANO_PREVIEW_CHUNK_KB=N): instead of one WS
-// message per preview frame (whose blocking flush stalls the send worker for
-// the whole payload), slice the NBPV bytes into N-KB pieces wrapped in a tiny
-// "NBPC" envelope: [0..3]"NBPC" [4..7]u32 seq [8..9]u16 idx [10..11]u16 count,
-// then the byte slice. The receiver reassembles by seq and feeds the whole
-// NBPV frame to the normal decoder. 0/unset = off (production path).
+// Preview frames leave the process as "NBPC" chunks striped across the
+// fan-out lanes (see below): [0..3]"NBPC" [4..7]u32 seq [8..9]u16 idx
+// [10..11]u16 count, then the byte slice. The receiver collects a seq's
+// chunks (they arrive across different sockets, unordered) and feeds the
+// reassembled NBPV frame to the normal decoder. NANO_PREVIEW_CHUNK_KB
+// overrides the slice size (default 256KB).
 size_t previewChunkBytes() {
   static size_t v = [] {
     const char* e = getenv("NANO_PREVIEW_CHUNK_KB");
-    long kb = e ? atol(e) : 0;
-    return kb > 0 ? (size_t)kb * 1024 : (size_t)0;
+    long kb = e ? atol(e) : 256;
+    return kb > 0 ? (size_t)kb * 1024 : (size_t)(256 * 1024);
   }();
   return v;
 }
 
-// Fan-out experiment (NANO_PREVIEW_FANOUT=N): N extra WS servers on
-// NANO_BRIDGE_PORT+1..+N, each with its own send thread. Preview frames are
-// sliced into NBPC chunks striped round-robin across the lanes, so each
-// connection's blocking flush loop (the ~109MB/s per-socket ceiling) runs in
-// parallel. The client opens all N sockets and reassembles by NBPC seq/idx.
-// Opt-in only: with the env set but no fanout clients connected, preview
-// frames go nowhere (fine for the experiment harness).
+// Preview fan-out lanes: N extra WS servers (ports scanned upward from
+// NANO_BRIDGE_PORT+1 and advertised in /global/preview_transport), each with
+// its own send thread. One WS connection's blocking flush loop tops out
+// around ~109MB/s — far below what a full-res RGBA stream needs — so frames
+// are sliced into NBPC chunks striped round-robin and the lanes' flush loops
+// run in parallel. The main bridge socket NEVER carries binary frames; the
+// editor connects to every advertised lane and reassembles.
+// NANO_PREVIEW_FANOUT overrides the lane count (default 8, clamp 1..16).
 int previewFanoutLanes() {
   static int v = [] {
     const char* e = getenv("NANO_PREVIEW_FANOUT");
-    int n = e ? atoi(e) : 0;
-    return n > 0 ? (n > 16 ? 16 : n) : 0;
+    int n = e ? atoi(e) : 8;
+    if (n < 1) n = 1;
+    return n > 16 ? 16 : n;
   }();
   return v;
 }
@@ -352,18 +351,31 @@ struct BarrelRuntime::Impl {
     bool stop = false;
   };
   std::vector<std::unique_ptr<FanoutLane>> fanout_lanes;
+  std::vector<int> fanout_ports;  // actual bound ports, advertisement order
 
   void startFanoutLanes() {
     const int n = previewFanoutLanes();
     if (n <= 0 || !fanout_lanes.empty()) return;
     const int base = bridgePortFromEnv();
-    for (int i = 0; i < n; ++i) {
+    // Scan upward from base+1, skipping ports something else holds
+    // (ixwebsocket can't report an OS-assigned port for a port-0 bind, so
+    // scan-and-advertise is the mechanism). The ACTUAL bound ports go into
+    // /global/preview_transport for the client to discover.
+    int nextPort = base + 1;
+    const int lastPort = base + 32;
+    for (int i = 0; i < n && nextPort <= lastPort; ++i) {
       auto lane = std::make_unique<FanoutLane>();
       lane->server = std::make_unique<WsServer>();
-      const int port = base + 1 + i;
-      if (!lane->server->start(port)) {
-        BRT_LOG("fanout lane %d: failed to bind port %d", i, port);
-        continue;
+      int port = 0;
+      while (nextPort <= lastPort) {
+        const int tryPort = nextPort++;
+        if (lane->server->start(tryPort)) { port = tryPort; break; }
+        BRT_LOG("fanout lane %d: port %d unavailable, trying next", i, tryPort);
+        lane->server = std::make_unique<WsServer>();  // fresh after failed start
+      }
+      if (port == 0) {
+        BRT_LOG("fanout lane %d: no free port in %d..%d", i, base + 1, lastPort);
+        break;
       }
       FanoutLane* lp = lane.get();
       lane->worker = std::thread([lp] {
@@ -391,7 +403,34 @@ struct BarrelRuntime::Impl {
       });
       BRT_LOG("fanout lane %d on port %d", i, port);
       fanout_lanes.push_back(std::move(lane));
+      fanout_ports.push_back(port);
     }
+    if (fanout_lanes.empty()) {
+      BRT_LOG("ERROR: no preview fanout lanes bound (ports %d..%d) — previews "
+              "will NOT flow (binary frames never ride the main bridge socket)",
+              base + 1, lastPort);
+    }
+  }
+
+  // Advertise the lane ports so the editor can connect to them. Runs with no
+  // Impl locks held; set_at takes the bridge tick_mutex_ internally.
+  void publishPreviewTransport() {
+    nlohmann::json doc = {
+      {"version", 1},
+      {"ports", fanout_ports},
+      {"chunk_bytes", previewChunkBytes()},
+    };
+    BridgeServer::instance().set_at("/global/preview_transport", doc.dump());
+  }
+
+  // True while any lane has an open client — the capture gate: producing
+  // readbacks is pointless when nobody is connected to the pixel plane, even
+  // if a JSON client is on the main socket.
+  bool lanesHaveClients() {
+    for (auto& lane : fanout_lanes) {
+      if (lane->server->has_open_clients()) return true;
+    }
+    return false;
   }
 
   void stopFanoutLanes() {
@@ -405,6 +444,7 @@ struct BarrelRuntime::Impl {
       lane->server->stop();
     }
     fanout_lanes.clear();
+    fanout_ports.clear();
   }
 
   ~Impl() {
@@ -426,6 +466,7 @@ struct BarrelRuntime::Impl {
     if (send_started) return;
     send_started = true;
     startFanoutLanes();
+    publishPreviewTransport();
     send_thread = std::thread([this] { runSendWorker(); });
   }
 
@@ -445,10 +486,17 @@ struct BarrelRuntime::Impl {
         send_queue.pop_front();
       }
       if (previewTsEnabled()) stampPreviewTs(blob.bytes, 2, epochMsNow());
-      size_t chunkBytes = previewChunkBytes();
+      const size_t chunkBytes = previewChunkBytes();
       const double bcastT0 = previewTsEnabled() ? epochMsNow() : 0.0;
-      if (!fanout_lanes.empty()) {
-        if (chunkBytes == 0) chunkBytes = 512 * 1024;
+      // Binary frames leave ONLY via the fan-out lanes — the main bridge
+      // socket is the JSON control plane and never carries pixels. With no
+      // lanes bound (startup port exhaustion), frames are dropped.
+      if (fanout_lanes.empty()) {
+        releaseBlobBuf(std::move(blob.bytes));
+        clearRouteInFlight(blob.route);
+        continue;
+      }
+      {
         // Memory safety net only: the per-route in-flight gate already bounds
         // steady-state lane depth to ~one frame per live monitor, and two big
         // frames dispatching back-to-back legitimately overlap (the second
@@ -506,44 +554,7 @@ struct BarrelRuntime::Impl {
               epochMsNow() - bcastT0);
         }
         // Route clears in the frame deleter (last chunk sent), not here.
-        continue;
       }
-      if (chunkBytes > 0 && blob.bytes.size() > chunkBytes) {
-        static uint32_t chunkSeq = 0;
-        const uint32_t seq = ++chunkSeq;
-        const size_t n = (blob.bytes.size() + chunkBytes - 1) / chunkBytes;
-        std::vector<uint8_t> chunk;
-        for (size_t i = 0; i < n; ++i) {
-          const size_t off = i * chunkBytes;
-          const size_t len = std::min(chunkBytes, blob.bytes.size() - off);
-          chunk.resize(12 + len);
-          chunk[0] = 'N'; chunk[1] = 'B'; chunk[2] = 'P'; chunk[3] = 'C';
-          memcpy(chunk.data() + 4, &seq, 4);
-          const uint16_t idx = (uint16_t)i, cnt = (uint16_t)n;
-          memcpy(chunk.data() + 8, &idx, 2);
-          memcpy(chunk.data() + 10, &cnt, 2);
-          memcpy(chunk.data() + 12, blob.bytes.data() + off, len);
-          BridgeServer::instance().broadcast_binary(chunk.data(), chunk.size());
-        }
-        if (previewTsEnabled()) {
-          std::fprintf(stderr,
-              "[preview_ts] bcast-chunked %zu bytes x%zu(%zuKB) in %.2f ms\n",
-              blob.bytes.size(), n, chunkBytes / 1024, epochMsNow() - bcastT0);
-        }
-        releaseBlobBuf(std::move(blob.bytes));
-        clearRouteInFlight(blob.route);
-        continue;
-      }
-      BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
-      if (previewTsEnabled()) {
-        std::fprintf(stderr, "[preview_ts] bcast %zu bytes in %.2f ms (queue depth %zu)\n",
-                     blob.bytes.size(), epochMsNow() - bcastT0, [this] {
-                       std::lock_guard<std::mutex> lk(send_mu);
-                       return send_queue.size();
-                     }());
-      }
-      releaseBlobBuf(std::move(blob.bytes));
-      clearRouteInFlight(blob.route);
     }
   }
 
@@ -593,7 +604,10 @@ struct BarrelRuntime::Impl {
   void publishPreviewFrames(const std::string& key, PerExecutor& pe) {
     if (!gpu) return;
     if (pe.preview_requests.empty()) return;
+    // Pixels flow only over the lanes; capturing is pointless unless a JSON
+    // client is on the main socket AND someone is connected to the lanes.
     if (!BridgeServer::instance().has_clients()) return;
+    if (!lanesHaveClients()) return;
     const uint32_t maxDim = previewMaxDim();
     gpu->beginPreviewBatch();
     for (const auto& [_, req] : pe.preview_requests) {
@@ -903,9 +917,15 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // captures_enabled is false, so the executor's capture hooks + fusion-barrier
   // predicate are inert — GPU fusion stays on and no readback is encoded, so
   // those frames run at full render speed.
+  //
+  // Accept a capture up to half a render tick EARLY: elapsed advances on the
+  // host's tick grid, so a strict >= interval test rejects the tick that
+  // lands exactly at the interval and waits a whole extra tick (a 30Hz cap
+  // on a 60Hz host effectively ran ~20Hz).
   const double pvInterval = previewIntervalSec();
   pe.captures_enabled = watched && !pe.preview_requests.empty() &&
-      (pvInterval <= 0.0 || (elapsed - pe.lastPreviewElapsed) >= pvInterval);
+      (pvInterval <= 0.0 ||
+       (elapsed - pe.lastPreviewElapsed) >= pvInterval - dt * 0.5);
   if (pe.captures_enabled) {
     pe.frame_captures.clear();
     pe.lastPreviewElapsed = elapsed;

@@ -61,6 +61,90 @@ export function bannerOffer(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// Preview fan-out transport (binary plane)
+//
+// The barrel never sends pixel frames on the main bridge socket. It advertises
+// N auxiliary WebSocket ports in /global/preview_transport; the client opens
+// them all and reassembles the NBPC-chunked NBPV frames that arrive striped
+// across the lanes.
+// ---------------------------------------------------------------------------
+
+/** Shape of the /global/preview_transport doc the native barrel publishes. */
+export interface PreviewTransportDoc {
+  version: number;
+  ports: number[];
+  chunk_bytes?: number;
+}
+
+/** Extract the advertised lane ports (defensively) from the transport doc. */
+export function previewTransportPorts(doc: unknown): number[] {
+  if (!doc || typeof doc !== 'object') return [];
+  const ports = (doc as PreviewTransportDoc).ports;
+  if (!Array.isArray(ports)) return [];
+  return ports.filter((p): p is number => typeof p === 'number' && p > 0 && p < 65536);
+}
+
+/** URL for a lane socket: same scheme + host as the main bridge URL, new port. */
+export function laneUrl(mainUrl: string, port: number): string {
+  const u = new URL(mainUrl);
+  u.port = String(port);
+  return u.toString();
+}
+
+/**
+ * Reassembles NBPC chunk envelopes back into whole NBPV frames. Chunks of one
+ * frame arrive across DIFFERENT lane sockets, unordered; they share a u32
+ * sequence id. Envelope layout (little-endian, mirrors barrel_runtime.mm):
+ *   [0..3] "NBPC"  [4..7] u32 seq  [8..9] u16 idx  [10..11] u16 count
+ *   [12..] payload slice
+ * Non-NBPC buffers pass through unchanged (a whole NBPV frame is valid input).
+ */
+export class NbpcReassembler {
+  private partials = new Map<number, { chunks: (Uint8Array | undefined)[]; got: number }>();
+
+  /** Feed one binary WS message; returns a complete frame or null. */
+  ingest(buf: ArrayBuffer): ArrayBuffer | null {
+    if (buf.byteLength < 12) return buf;
+    const dv = new DataView(buf);
+    if (dv.getUint8(0) !== 0x4e || dv.getUint8(1) !== 0x42 ||  // 'N' 'B'
+        dv.getUint8(2) !== 0x50 || dv.getUint8(3) !== 0x43) {  // 'P' 'C'
+      return buf;
+    }
+    const seq = dv.getUint32(4, true);
+    const idx = dv.getUint16(8, true);
+    const cnt = dv.getUint16(10, true);
+    if (cnt === 0 || idx >= cnt) return null;  // malformed — drop
+    let p = this.partials.get(seq);
+    if (!p) {
+      p = { chunks: new Array(cnt), got: 0 };
+      this.partials.set(seq, p);
+      // A lost chunk (lane drop/reconnect) would otherwise leak its partial
+      // forever. Newer seqs supersede: evict oldest beyond a small window.
+      if (this.partials.size > 32) {
+        const oldest = this.partials.keys().next().value;
+        if (oldest !== undefined) this.partials.delete(oldest);
+      }
+    }
+    if (p.chunks.length !== cnt) { this.partials.delete(seq); return null; }
+    if (!p.chunks[idx]) {
+      p.chunks[idx] = new Uint8Array(buf, 12);
+      p.got++;
+    }
+    if (p.got < cnt) return null;
+    this.partials.delete(seq);
+    const total = p.chunks.reduce((a, c) => a + (c ? c.byteLength : 0), 0);
+    const full = new Uint8Array(total);
+    let off = 0;
+    for (const c of p.chunks) {
+      if (!c) return null;  // unreachable given got === cnt; defensive
+      full.set(c, off);
+      off += c.byteLength;
+    }
+    return full.buffer;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Instances-tab live thumbnails
 //
 // Each instance card on the Instances tab registers a `sketch_output` trace

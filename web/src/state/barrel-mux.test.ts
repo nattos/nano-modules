@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { appController } from './controller';
 import { appState } from './app-state';
+import { NbpcReassembler } from '../resolume-mode';
 import type { BarrelInstanceInfo } from './types';
 
 const inst = (key: string): BarrelInstanceInfo => ({ key, id: 'com.nano.nanobarrel', label: key.split('-')[0] });
@@ -90,5 +91,44 @@ describe('NBPV v2 preview decode + routing', () => {
   it('drops a v1 (legacy) frame — clean break', async () => {
     await appController.ingestBarrelPreviewFrame(nbpv2('SEL', 'trace1', 2, 2, /*version=*/1));
     expect(appState.local.engine.tracedFrames['trace1']).toBeUndefined();
+  });
+});
+
+describe('NBPC chunked transport -> NBPV ingest (lane path)', () => {
+  beforeEach(() => {
+    (globalThis as any).ImageData = class { constructor(public data: any, public width: number, public height: number) {} };
+    (globalThis as any).createImageBitmap = vi.fn(async () => ({ close() {} } as any));
+    appState.local.engine.tracedFrames = {};
+    appController.setBarrelInstances([inst('SEL')]);
+    appController.selectBarrelInstance('SEL');
+  });
+
+  it('a frame chunked like the native fanout dispatcher decodes after reassembly', async () => {
+    const frame = new Uint8Array(nbpv2('SEL', 'edit_preview', 4, 4));
+    // Slice as the native side does (fixed chunk size, last chunk ragged),
+    // deliver out of order as if striped across lanes.
+    const chunkBytes = 20;
+    const cnt = Math.ceil(frame.length / chunkBytes);
+    const chunks: ArrayBuffer[] = [];
+    for (let i = 0; i < cnt; i++) {
+      const slice = frame.subarray(i * chunkBytes, Math.min((i + 1) * chunkBytes, frame.length));
+      const env = new Uint8Array(12 + slice.length);
+      env.set([0x4e, 0x42, 0x50, 0x43]); // NBPC
+      new DataView(env.buffer).setUint32(4, 7, true);
+      new DataView(env.buffer).setUint16(8, i, true);
+      new DataView(env.buffer).setUint16(10, cnt, true);
+      env.set(slice, 12);
+      chunks.push(env.buffer);
+    }
+    const r = new NbpcReassembler();
+    const order = [...chunks.keys()].reverse(); // fully out of order
+    let full: ArrayBuffer | null = null;
+    for (const i of order) {
+      const got = r.ingest(chunks[i]);
+      if (got) full = got;
+    }
+    expect(full).not.toBeNull();
+    await appController.ingestBarrelPreviewFrame(full!);
+    expect(appState.local.engine.tracedFrames['edit_preview']).toBeDefined();
   });
 });

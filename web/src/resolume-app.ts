@@ -20,6 +20,7 @@ import { boot } from './boot';
 import {
   decideMode, OFFER_LIVE_DISMISSED_KEY,
   groupPreviewRequests, instanceKeyFromThumbTraceId,
+  laneUrl, NbpcReassembler, previewTransportPorts,
 } from './resolume-mode';
 import { traceController } from './state/trace-controller';
 import { loadAllPlaygroundInstances } from './state/playground-store';
@@ -344,8 +345,41 @@ function connectBarrel(url: string) {
   };
   barrel.onSnapshot('/global/sidechannels', ingestSidechannels);
 
-  // Binary preview frames — the controller decodes (NBPV v2) and drops any
-  // frame that is neither the selected instance's nor an instance thumbnail's.
+  // -- Preview lanes (binary plane) --------------------------------------
+  // Pixel frames never ride the main bridge socket: the barrel advertises N
+  // auxiliary WS ports in /global/preview_transport and stripes each NBPV
+  // frame across them as NBPC chunks. Reconcile a lane client per advertised
+  // port (WsBridgeClient reused purely for its reconnect/backoff + arraybuffer
+  // binary delivery — lanes carry no JSON protocol), reassemble, and feed the
+  // controller's existing NBPV ingest.
+  const laneClients = new Map<number, WsBridgeClient>();
+  const reassembler = new NbpcReassembler();
+  const onLaneFrame = (buf: ArrayBuffer) => {
+    const full = reassembler.ingest(buf);
+    if (full) void appController.ingestBarrelPreviewFrame(full);
+  };
+  const reconcileLanes = (doc: any) => {
+    const desired = new Set(previewTransportPorts(doc));
+    for (const port of desired) {
+      if (laneClients.has(port)) continue;
+      const lane = new WsBridgeClient(laneUrl(url, port));
+      lane.onBinaryFrame = onLaneFrame;
+      laneClients.set(port, lane);
+    }
+    for (const [port, lane] of [...laneClients]) {
+      if (!desired.has(port)) {
+        lane.dispose();
+        laneClients.delete(port);
+      }
+    }
+    if (desired.size > 0) {
+      console.log(`[barrel] preview lanes: ${[...desired].join(', ')}`);
+    }
+  };
+  barrel.onSnapshot('/global/preview_transport', reconcileLanes);
+
+  // Binary frames on the MAIN socket only occur with an old server (pre-lane
+  // protocol, whole NBPV frames) — keep decoding them for back-compat.
   barrel.onBinaryFrame = (buf) => {
     void appController.ingestBarrelPreviewFrame(buf);
   };
@@ -399,6 +433,10 @@ function connectBarrel(url: string) {
         globalTouched = true;          // instance added/removed
       } else if (p === '/global/sidechannels') {
         ingestSidechannels(op.value);  // whole-object replace per publish
+      } else if (p === '/global/preview_transport') {
+        reconcileLanes(op.value);      // published whole on (re)start
+      } else if (p.startsWith('/global/preview_transport/')) {
+        barrel.get('/global/preview_transport');  // partial patch — refetch
       } else if (sketchPath && (p === sketchPath || p.startsWith(sketchPath + '/'))) {
         sketchTouched = true;
       } else if (p === sketchStatePath) {
@@ -428,6 +466,8 @@ function connectBarrel(url: string) {
     barrel.observe('/global/plugins');
     barrel.get('/global/sidechannels');
     barrel.observe('/global/sidechannels');
+    barrel.get('/global/preview_transport');
+    barrel.observe('/global/preview_transport');
     // If a selection already exists (reconnect), rewire it.
     const sel = appController.getSelectedBarrelKey();
     if (sel) wireInstance(sel);

@@ -62,6 +62,16 @@ export class TextureMonitor extends MobxLitElement {
    */
   @property({ type: Boolean }) thumbnail = false;
 
+  /**
+   * Full-source capture: register WITHOUT a size request so a `'high'`
+   * registration falls through to source resolution (the trace controller
+   * emits no size; barrel mode serializes width/height 0 and the native side
+   * reads back the comp at its own size). The canvas's internal resolution
+   * follows the received bitmap, so save-as and browser zoom see the true
+   * pixels. Only meaningful with `resolution="high"`.
+   */
+  @property({ type: Boolean }) fullRes = false;
+
   private frameDisposer: IReactionDisposer | null = null;
   /** Viewport-visibility gate: we only register a trace while on-screen. */
   private io: IntersectionObserver | null = null;
@@ -171,7 +181,7 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail') || changed.has('width') || changed.has('height')) {
+    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail') || changed.has('fullRes') || changed.has('width') || changed.has('height')) {
       // Re-register if target, ID, resolution, requested size, or the source
       // changed (the main monitor resizes its capture request with its panel).
       if (changed.has('traceId')) {
@@ -188,8 +198,9 @@ export class TextureMonitor extends MobxLitElement {
     // the IntersectionObserver brings us back on-screen.
     if (!this.visible) return;
     if (!this.traceId || !this.traceTarget) return;
-    if (this.thumbnail) {
-      // Bandwidth-capped: no size request → the controller's LOW_RES default.
+    if (this.thumbnail || this.fullRes) {
+      // No size request: thumbnails get the controller's LOW_RES default;
+      // fullRes 'high' registrations fall through to source resolution.
       (this.traceSource ?? traceController).register({
         id: this.traceId,
         target: this.traceTarget,
