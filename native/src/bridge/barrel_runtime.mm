@@ -158,6 +158,21 @@ void stampPreviewTs(std::vector<uint8_t>& frameBytes, size_t slot, double ms) {
   if (off + 8 > frameBytes.size()) return;
   memcpy(frameBytes.data() + off, &ms, 8);
 }
+
+// Chunked-broadcast experiment (NANO_PREVIEW_CHUNK_KB=N): instead of one WS
+// message per preview frame (whose blocking flush stalls the send worker for
+// the whole payload), slice the NBPV bytes into N-KB pieces wrapped in a tiny
+// "NBPC" envelope: [0..3]"NBPC" [4..7]u32 seq [8..9]u16 idx [10..11]u16 count,
+// then the byte slice. The receiver reassembles by seq and feeds the whole
+// NBPV frame to the normal decoder. 0/unset = off (production path).
+size_t previewChunkBytes() {
+  static size_t v = [] {
+    const char* e = getenv("NANO_PREVIEW_CHUNK_KB");
+    long kb = e ? atol(e) : 0;
+    return kb > 0 ? (size_t)kb * 1024 : (size_t)0;
+  }();
+  return v;
+}
 }  // namespace
 
 struct BarrelRuntime::Impl {
@@ -265,19 +280,41 @@ struct BarrelRuntime::Impl {
         blob = std::move(send_queue.front());
         send_queue.pop_front();
       }
-      if (previewTsEnabled()) {
-        stampPreviewTs(blob.bytes, 2, epochMsNow());
-        const double bcastT0 = epochMsNow();
-        BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
-        const double bcastMs = epochMsNow() - bcastT0;
-        std::fprintf(stderr, "[preview_ts] bcast %zu bytes in %.2f ms (queue depth %zu)\n",
-                     blob.bytes.size(), bcastMs, [this] {
-                       std::lock_guard<std::mutex> lk(send_mu);
-                       return send_queue.size();
-                     }());
+      if (previewTsEnabled()) stampPreviewTs(blob.bytes, 2, epochMsNow());
+      const size_t chunkBytes = previewChunkBytes();
+      const double bcastT0 = previewTsEnabled() ? epochMsNow() : 0.0;
+      if (chunkBytes > 0 && blob.bytes.size() > chunkBytes) {
+        static uint32_t chunkSeq = 0;
+        const uint32_t seq = ++chunkSeq;
+        const size_t n = (blob.bytes.size() + chunkBytes - 1) / chunkBytes;
+        std::vector<uint8_t> chunk;
+        for (size_t i = 0; i < n; ++i) {
+          const size_t off = i * chunkBytes;
+          const size_t len = std::min(chunkBytes, blob.bytes.size() - off);
+          chunk.resize(12 + len);
+          chunk[0] = 'N'; chunk[1] = 'B'; chunk[2] = 'P'; chunk[3] = 'C';
+          memcpy(chunk.data() + 4, &seq, 4);
+          const uint16_t idx = (uint16_t)i, cnt = (uint16_t)n;
+          memcpy(chunk.data() + 8, &idx, 2);
+          memcpy(chunk.data() + 10, &cnt, 2);
+          memcpy(chunk.data() + 12, blob.bytes.data() + off, len);
+          BridgeServer::instance().broadcast_binary(chunk.data(), chunk.size());
+        }
+        if (previewTsEnabled()) {
+          std::fprintf(stderr,
+              "[preview_ts] bcast-chunked %zu bytes x%zu(%zuKB) in %.2f ms\n",
+              blob.bytes.size(), n, chunkBytes / 1024, epochMsNow() - bcastT0);
+        }
         continue;
       }
       BridgeServer::instance().broadcast_binary(blob.bytes.data(), blob.bytes.size());
+      if (previewTsEnabled()) {
+        std::fprintf(stderr, "[preview_ts] bcast %zu bytes in %.2f ms (queue depth %zu)\n",
+                     blob.bytes.size(), epochMsNow() - bcastT0, [this] {
+                       std::lock_guard<std::mutex> lk(send_mu);
+                       return send_queue.size();
+                     }());
+      }
     }
   }
 
