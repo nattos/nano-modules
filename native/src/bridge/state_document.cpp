@@ -326,6 +326,24 @@ void StateDocument::unregister_plugin(const std::string& key) {
   plugin_schemas_.erase(key);
 }
 
+bool StateDocument::set_plugin_resolume_info(const std::string& key, const json& info) {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+
+  auto& plugins = doc_["global"]["plugins"];
+  for (size_t i = 0; i < plugins.size(); i++) {
+    if (plugins[i].value("key", std::string()) != key) continue;
+    // No-op if unchanged (avoids per-frame patch spam — the pump calls this
+    // every composition update).
+    if (plugins[i].contains("resolume") && plugins[i]["resolume"] == info) return true;
+    plugins[i]["resolume"] = info;
+    // JSON Patch "add" on an object member adds-or-replaces, so it works
+    // whether or not the field already existed.
+    emit("add", "/global/plugins/" + std::to_string(i) + "/resolume", info);
+    return true;
+  }
+  return false;  // not registered yet
+}
+
 void StateDocument::log(const std::string& plugin_key, const ConsoleEntry& entry) {
   platform::LockGuard<platform::Mutex> lock(mutex_);
 

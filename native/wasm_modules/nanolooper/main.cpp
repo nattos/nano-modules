@@ -28,6 +28,17 @@ namespace nanolooper {
 /* Channel → clip mapping */
 #define MAX_CHANNEL_CLIPS 8
 
+/* Trigger-rail event ring (mirrors mod.trigger.beat). The executor drains the
+ * published "triggers" ring onto the process-global trigger rail, which the
+ * shared server launches Resolume clips from. */
+#define TRIG_RING_CAP 16
+struct LoopEv {
+  long long seq = 0;
+  bool on = false;
+  int channel = 1;   /* 1-based rail channel */
+  float velocity = 1.0f;
+};
+
 /* Channel colors (matching original) */
 static const float CH_R[4] = {1.0f, 0.33f, 1.0f, 0.33f};
 static const float CH_G[4] = {0.33f, 1.0f, 1.0f, 1.0f};
@@ -50,6 +61,7 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_SHOW_OVERLAY 9
 #define PID_SYNTH        10
 #define PID_SYNTH_GAIN   11
+#define PID_SEND_TO_RAIL 12
 
 /* ======================================================================
  * State
@@ -79,6 +91,15 @@ struct State {
 
   /* Connection state */
   int ws_connected = 0;
+
+  /* Trigger-rail output. `send_to_rail` gates emission; the ring carries on/off
+   * events (channel = ch+1); ch_out[] is a per-channel 1→0 decay pulse exposed
+   * as the out_N modulation outputs (visible trace + wireable gate). */
+  int send_to_rail = 1;
+  LoopEv trig_ring[TRIG_RING_CAP] = {};
+  int trig_ring_len = 0;
+  long long trig_seq = 0;
+  float ch_out[NUM_CHANNELS] = {0};
 
   /* Channel → clip mapping */
   long long channel_clip_ids[NUM_CHANNELS][MAX_CHANNEL_CLIPS] = {{0}};
@@ -159,14 +180,53 @@ static void publish_state(State& s) {
   }
   val::set(state, "grid", grid);
 
+  /* Per-channel modulation outputs (out_1..out_4): the decaying gate pulse. */
+  val::set(state, "out_1", val::number(s.ch_out[0]));
+  val::set(state, "out_2", val::number(s.ch_out[1]));
+  val::set(state, "out_3", val::number(s.ch_out[2]));
+  val::set(state, "out_4", val::number(s.ch_out[3]));
+
+  /* Trigger-rail event ring — {seq,on,channel,velocity}. The executor drains it
+   * onto the global rail (drainTriggerRing). Empty unless send_to_rail is on. */
+  auto triggers = val::array();
+  for (int i = 0; i < s.trig_ring_len; i++) {
+    auto e = val::object();
+    val::set(e, "seq", val::number((double)s.trig_ring[i].seq));
+    val::set(e, "on", val::boolean(s.trig_ring[i].on));
+    val::set(e, "channel", val::number(s.trig_ring[i].channel));
+    val::set(e, "velocity", val::number(s.trig_ring[i].velocity));
+    val::push(triggers, e);
+  }
+  val::set(state, "triggers", triggers);
+
   state::setVal(state);
   val::release(state);
+}
+
+/* Push an on/off trigger event onto the ring (channel is 1-based). Only when
+ * send_to_rail is enabled — otherwise the ring stays empty and the executor has
+ * nothing to drain. */
+static void push_trigger(State& s, bool on, int ch /*0-based*/) {
+  if (!s.send_to_rail) return;
+  LoopEv e;
+  e.seq = ++s.trig_seq;
+  e.on = on;
+  e.channel = ch + 1;
+  e.velocity = 1.0f;
+  if (s.trig_ring_len == TRIG_RING_CAP) {
+    for (int i = 1; i < TRIG_RING_CAP; i++) s.trig_ring[i - 1] = s.trig_ring[i];
+    s.trig_ring_len--;
+  }
+  s.trig_ring[s.trig_ring_len++] = e;
 }
 
 static void gate_on(State& s, int ch) {
   s.gate_down[ch] = 1;
   s.gate_timer[ch] = 0.25f;
   s.flash[ch] = 0.25f;
+  s.ch_out[ch] = 1.0f;             /* per-channel modulation-output pulse */
+  push_trigger(s, /*on=*/true, ch); /* → global trigger rail */
+  // Legacy direct-launch imports are no-op stubs; the rail is the live path.
   for (int i = 0; i < s.channel_clip_count[ch]; i++)
     resolume_trigger_clip(s.channel_clip_ids[ch][i], 1);
   host_trigger_audio(ch);
@@ -175,6 +235,7 @@ static void gate_on(State& s, int ch) {
 static void gate_off(State& s, int ch) {
   if (!s.gate_down[ch]) return;
   s.gate_down[ch] = 0;
+  push_trigger(s, /*on=*/false, ch);
   for (int i = 0; i < s.channel_clip_count[ch]; i++)
     resolume_trigger_clip(s.channel_clip_ids[ch][i], 0);
 }
@@ -279,6 +340,8 @@ static void on_param_change(State& s, int index, double value) {
     s.record_held = pressed;
   } else if (index == PID_SHOW_OVERLAY) {
     s.show_overlay = pressed;
+  } else if (index == PID_SEND_TO_RAIL) {
+    s.send_to_rail = pressed;
   }
 }
 
@@ -363,6 +426,7 @@ static int field_to_pid(const char* path, int pathLen) {
     {"delete", PID_DELETE}, {"mute", PID_MUTE},
     {"undo", PID_UNDO}, {"redo", PID_REDO},
     {"record", PID_RECORD}, {"show_overlay", PID_SHOW_OVERLAY},
+    {"send_to_rail", PID_SEND_TO_RAIL},
   };
   for (auto& m : map) {
     int mlen = std::strlen(m.name);
@@ -379,8 +443,13 @@ static int field_to_pid(const char* path, int pathLen) {
 void module_init() {
   /* Register plugin with schema */
   static const char id[] = "control.nanolooper";
+  // io 5 = PrimaryInput, 6 = PrimaryOutput. The 4 per-channel `out_N` fields are
+  // modulation outputs (0/1 with a short decay), and the module declares
+  // trigger_source so the executor drains its "triggers" ring onto the global
+  // trigger rail (see sketch_executor drainTriggerRing).
   static const char schema[] =
-    "{\"fields\":{"
+    "{\"capabilities\":[\"trigger_source\",\"modulation_source\",\"modulation_source_multi\"],"
+    "\"fields\":{"
     "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"
     "\"trigger_2\":{\"type\":\"event\",\"io\":5,\"order\":1},"
     "\"trigger_3\":{\"type\":\"event\",\"io\":5,\"order\":2},"
@@ -392,7 +461,12 @@ void module_init() {
     "\"record\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":8},"
     "\"show_overlay\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":9},"
     "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
-    "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11}"
+    "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11},"
+    "\"send_to_rail\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":12},"
+    "\"out_1\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":13},"
+    "\"out_2\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":14},"
+    "\"out_3\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":15},"
+    "\"out_4\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":16}"
     "}}";
   state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 }
@@ -432,7 +506,12 @@ void init(void* self) {
     s->channel_names[i][0] = 0;
     s->channel_thumb_tex[i] = -1;
     s->channel_connected[i] = 0;
+    s->ch_out[i] = 0;
   }
+  /* send_to_rail keeps its schema default (on) via on_state_patched; reset the
+   * ring so a re-init never replays stale events. */
+  s->trig_ring_len = 0;
+  s->trig_seq = 0;
   s->delete_held = 0;
   s->delete_acted = 0;
   s->last_action_was_clear = 0;
@@ -489,6 +568,12 @@ void tick(void* self, double dt) {
     }
     if (s->flash[ch] > 0)
       s->flash[ch] -= (float)dt;
+    /* Per-channel modulation-output pulse: 1 → 0 with a ~120ms tail (visible at
+     * any frame rate), matching mod.trigger.beat's output feel. */
+    if (s->ch_out[ch] > 0.0f) {
+      s->ch_out[ch] *= (float)std::exp(-dt / 0.12);
+      if (s->ch_out[ch] < 0.001f) s->ch_out[ch] = 0.0f;
+    }
   }
 
   publish_state(*s);

@@ -98,6 +98,13 @@ public:
   /// Unregister a plugin by key.
   void unregister_plugin(const std::string& key);
 
+  /// Attach Resolume-composition info (e.g. `{default_name, location}`) to a
+  /// registered plugin's `/global/plugins[i]` entry, keyed by `key`. Emits a
+  /// patch at `/global/plugins/<i>/resolume` only when the value changes.
+  /// Returns false if no plugin with `key` is currently registered (the
+  /// InstanceLocator re-publishes on a later composition update).
+  bool set_plugin_resolume_info(const std::string& key, const nlohmann::json& info);
+
   /// Append a console log entry (capped at MAX_CONSOLE_ENTRIES).
   void log(const std::string& plugin_key, const ConsoleEntry& entry);
 

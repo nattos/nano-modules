@@ -27,7 +27,8 @@ import { loadAllPlaygroundInstances } from './state/playground-store';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
-import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo } from './state/types';
+import { PLAYGROUND_ID_PREFIX } from './state/types';
+import { parseBarrelInstances } from './state/barrel-instances';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
 import { EFFECT_BUNDLES } from './effect-bundles';
@@ -216,19 +217,9 @@ function connectBarrel(url: string) {
     ingestPluginStates(state.plugin_states);
   };
 
-  // Parse /global/plugins (array of {key, metadata, schema, ...}) into the
-  // NanoBarrel instance list for the Organize tab.
-  const parseInstances = (arr: any): BarrelInstanceInfo[] => {
-    if (!Array.isArray(arr)) return [];
-    const out: BarrelInstanceInfo[] = [];
-    for (const p of arr) {
-      const key = p?.key;
-      const id = p?.metadata?.id;
-      if (typeof key !== 'string' || id !== 'com.nano.nanobarrel') continue;
-      out.push({ key, id, label: key.split('-')[0] || key });
-    }
-    return out;
-  };
+  // Parse /global/plugins into the NanoBarrel instance list for the Organize
+  // tab (hoisted to a testable module function).
+  const parseInstances = parseBarrelInstances;
 
   // (Re)wire the bridge for the selected instance key. Registered as the
   // controller's barrel select handler, and also called for the initial pick.

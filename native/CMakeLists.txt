@@ -215,6 +215,8 @@ add_library(bridge_server SHARED
   src/bridge/bridge_server.cpp
   src/bridge/bridge_api.cpp
   src/bridge/composition_cache.cpp
+  src/bridge/clip_launcher.cpp
+  src/bridge/instance_locator.cpp
 )
 target_include_directories(bridge_server PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(bridge_server PRIVATE
@@ -268,6 +270,34 @@ add_executable(test_composition_cache tests/test_composition_cache.cpp
 target_include_directories(test_composition_cache PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_composition_cache PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_composition_cache)
+
+# NanoLooper Ch scene-marker: nanoch:// config codec + CompositionCache decode.
+add_executable(test_channel_marker tests/test_channel_marker.cpp
+  src/bridge/composition_cache.cpp src/resolume/composition.cpp)
+target_include_directories(test_channel_marker PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_channel_marker PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_channel_marker)
+
+add_executable(test_instance_locator tests/test_instance_locator.cpp
+  src/bridge/instance_locator.cpp)
+target_include_directories(test_instance_locator PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_instance_locator PRIVATE state_system nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_instance_locator)
+
+# Process-global trigger rail bus (emit/drain seq-gating, metadata version).
+# Compiles the bus source directly — it depends only on nlohmann_json.
+add_executable(test_trigger_bus tests/test_trigger_bus.cpp
+  src/sketch/trigger_bus.cpp)
+target_include_directories(test_trigger_bus PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_trigger_bus PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_trigger_bus)
+
+# Clip launcher reconcile/debounce logic (the piano-trigger stuck-on fix).
+add_executable(test_clip_launcher tests/test_clip_launcher.cpp
+  src/bridge/clip_launcher.cpp src/sketch/trigger_bus.cpp)
+target_include_directories(test_clip_launcher PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_clip_launcher PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_clip_launcher)
 
 # Tap-mod range remapper + summation math (header-only; lock-step with web).
 add_executable(test_tap_mod tests/test_tap_mod.cpp)
@@ -410,6 +440,30 @@ add_executable(test_ws_server tests/test_ws_server.cpp)
 target_link_libraries(test_ws_server PRIVATE bridge_ws_server ixwebsocket Catch2::Catch2WithMain)
 catch_discover_tests(test_ws_server PROPERTIES LABELS "integration")
 
+# End-to-end: real dylib (BridgeServer) ↔ fake Resolume server over a real WS.
+add_executable(test_instance_locator_e2e
+  tests/test_instance_locator_e2e.cpp
+  tests/fake_resolume_server.cpp)
+target_include_directories(test_instance_locator_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_instance_locator_e2e PRIVATE bridge_server ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_instance_locator_e2e PROPERTIES LABELS "integration")
+
+# End-to-end: rail trigger → BridgeServer pump → fake Resolume clip connect.
+add_executable(test_clip_launcher_e2e
+  tests/test_clip_launcher_e2e.cpp
+  tests/fake_resolume_server.cpp)
+target_include_directories(test_clip_launcher_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_clip_launcher_e2e PRIVATE bridge_server ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_clip_launcher_e2e PROPERTIES LABELS "integration")
+
+# Runnable fake Resolume WS server (headless dev/e2e — point the dylib at it via
+# NANO_RESOLUME_URL).
+add_executable(fake_resolume
+  tools/fake_resolume.cpp
+  tests/fake_resolume_server.cpp)
+target_include_directories(fake_resolume PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(fake_resolume PRIVATE ixwebsocket nlohmann_json::nlohmann_json)
+
 # --- FFGL Plugin Bundle (macOS) ---
 if(APPLE)
   set(FFGL_BUNDLE_LINK_FLAGS "-undefined dynamic_lookup")
@@ -453,6 +507,38 @@ if(APPLE)
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
     LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
   )
+
+  # NanoLooper Ch (NLCH) — scene-marker FFGL plugin. Dropped on a Resolume clip
+  # to mark it launchable on a trigger channel; registers with the shared server
+  # and persists {uuid, channel} inline in a nanoch://config? FILE param. Pure
+  # passthrough marker (no WASM, no GL work). The shared dylib does the launching.
+  add_library(NanoLooperCh MODULE
+    src/plugin/channel_marker_plugin.cpp
+    src/plugin/bridge_loader.cpp
+  )
+  target_include_directories(NanoLooperCh PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(NanoLooperCh PRIVATE
+    ffgl::sdk
+    "-framework OpenGL"
+    nlohmann_json::nlohmann_json
+  )
+  set_target_properties(NanoLooperCh PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "bundle"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
+    LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
+  )
+  # Codesign so Resolume/Gatekeeper will load it (it dlopens the sibling
+  # libbridge_server.dylib deployed by NanoBarrelDeploy). No wasm payload of its
+  # own → a plain relink-time sign is sufficient.
+  if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
+    set(NANOBARREL_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoLooperCh POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOBARREL_CODESIGN_IDENTITY}" $<TARGET_BUNDLE_DIR:NanoLooperCh>
+    COMMENT "Codesigning NanoLooperCh.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
+    VERBATIM)
 
   # NanoProbe — FFGL probe plugin: dynamic param registration + plugin-
   # set value experiment. Pure OpenGL passthrough + corner badge, no
@@ -716,6 +802,7 @@ if(APPLE)
     src/sketch/module_registry.cpp
     src/sketch/sketch_executor.cpp
     src/sketch/sidechannel_bus.cpp
+    src/sketch/trigger_bus.cpp
     src/sketch/effrt_impls.cpp
     src/sketch/executor_host.cpp
     src/sketch/wasm_executor_driver.cpp
@@ -989,81 +1076,90 @@ if(APPLE)
   if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
     set(NANOBARREL_CODESIGN_IDENTITY "-")
   endif()
-  # Bundle the Latin primary font (default.ttf) into Resources/fonts/ for the
-  # text.* service — the parity-exact primary; CJK falls back to system faces
-  # via Core Text (host_impls_font.mm). Best-effort: the file is gitignored, so
-  # skip quietly if it isn't present in the web public dir.
+  # --- Keep NanoBarrel.bundle's payload fresh INDEPENDENTLY of relinking it ---
+  # The barrel loads its effect WASM from Contents/Resources/wasm/ (a COPY) and
+  # dlopens the SIBLING libbridge_server.dylib. Both inputs are built OUTSIDE
+  # this target — the .wasm/.aot by wasm_modules/build_all.sh + build_aot.sh, the
+  # dylib by the bridge_server target — so a plain POST_BUILD (which fires ONLY
+  # when NanoBarrel itself relinks) leaves a STALE bundle whenever you rebuild
+  # just the wasm or just the dylib. Instead we drive the whole deploy from a
+  # STAMP that DEPENDS on every input, wrapped in an `ALL` custom target: a bare
+  # `cmake --build build` re-copies + re-signs whatever is newer, with no
+  # NanoBarrel relink required.
+  #
+  # ORDER MATTERS: every step that writes into the bundle must run BEFORE the
+  # final codesign, which re-seals the modified Resources. An ad-hoc signature
+  # goes invalid the instant a sealed file changes, and Resolume/Gatekeeper then
+  # refuse the load — so the stamp appends copy steps in call order and
+  # codesigns (dylib, then bundle) LAST.
+  set(_nb_stamp "${CMAKE_CURRENT_BINARY_DIR}/nanobarrel_deploy.stamp")
+  set(_nb_bundle "$<TARGET_BUNDLE_DIR:NanoBarrel>")
+
+  # Base step: ensure the wasm dir exists. DEPENDS the NanoBarrel bundle + the
+  # dylib so the stamp re-runs whenever either is rebuilt.
+  add_custom_command(OUTPUT "${_nb_stamp}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_nb_bundle}/Contents/Resources/wasm"
+    DEPENDS NanoBarrel "$<TARGET_FILE:bridge_server>"
+    COMMENT "Deploying NanoBarrel.bundle payload (wasm + dylib) + resigning"
+    VERBATIM)
+
+  # Latin primary font (default.ttf) for the text.* service — parity-exact
+  # primary; CJK falls back to system faces via Core Text. Best-effort: the file
+  # is gitignored, so skip quietly if absent. Folded into the stamp so a font
+  # swap also re-seals the bundle.
   set(NANOBARREL_FONT_SRC "${CMAKE_SOURCE_DIR}/../web/public/fonts/default.ttf")
   if(EXISTS "${NANOBARREL_FONT_SRC}")
-    add_custom_command(TARGET NanoBarrel POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory
-              "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/fonts"
+    add_custom_command(OUTPUT "${_nb_stamp}" APPEND
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${_nb_bundle}/Contents/Resources/fonts"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              "${NANOBARREL_FONT_SRC}"
-              "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/fonts/default.ttf"
-      COMMENT "Bundling default.ttf into NanoBarrel.bundle/Resources/fonts"
-      VERBATIM
-    )
+              "${NANOBARREL_FONT_SRC}" "${_nb_bundle}/Contents/Resources/fonts/default.ttf"
+      DEPENDS "${NANOBARREL_FONT_SRC}")
   else()
     message(STATUS "NanoBarrel: default.ttf not found — text effects will use the system UI font as primary")
   endif()
 
-  # Bundle the effect .wasm bundles into Resources/wasm/ (the barrel loads
-  # effects as WASM). For each, also bundle any per-arch `<bundle>-<arch>.aot`
-  # sidecars produced by wasm_modules/build_aot.sh — an OPTIONAL speed bonus the
-  # loader prefers; the portable `.wasm` is always the fallback. The `.aot` files
-  # must exist at CONFIGURE time (run build_aot.sh, then reconfigure) to be
-  # picked up. (executor.wasm is NOT bundled — the barrel runs the executor
-  # natively; executor.wasm is a web-only artifact.)
+  # Effect .wasm bundles (+ optional per-arch `<bundle>-<arch>.aot` sidecars the
+  # loader prefers; the portable `.wasm` is the fallback). Guarded by EXISTS at
+  # CONFIGURE time — the files are produced by external shell scripts, so they
+  # can only be a CMake DEPENDS when already present; reconfigure after a fresh
+  # bundle first appears. (executor.wasm is NOT bundled — the barrel runs the
+  # executor natively; executor.wasm is a web-only artifact.)
   foreach(_b core lights nano text richtext legacy)
     set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
     if(EXISTS "${_wsrc}")
-      add_custom_command(TARGET NanoBarrel POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/wasm"
+      add_custom_command(OUTPUT "${_nb_stamp}" APPEND
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_wsrc}"
-                "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/wasm/${_b}.wasm"
-        COMMENT "Bundling ${_b}.wasm into NanoBarrel.bundle/Resources/wasm"
-        VERBATIM)
+                "${_wsrc}" "${_nb_bundle}/Contents/Resources/wasm/${_b}.wasm"
+        DEPENDS "${_wsrc}")
     endif()
     foreach(_arch aarch64 x86_64)
       set(_aot "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}-${_arch}.aot")
       if(EXISTS "${_aot}")
-        add_custom_command(TARGET NanoBarrel POST_BUILD
+        add_custom_command(OUTPUT "${_nb_stamp}" APPEND
           COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                  "${_aot}"
-                  "$<TARGET_BUNDLE_DIR:NanoBarrel>/Contents/Resources/wasm/${_b}-${_arch}.aot"
-          COMMENT "Bundling ${_b}-${_arch}.aot (AOT sidecar)"
-          VERBATIM)
+                  "${_aot}" "${_nb_bundle}/Contents/Resources/wasm/${_b}-${_arch}.aot"
+          DEPENDS "${_aot}")
       endif()
     endforeach()
   endforeach()
 
-  # Deploy libbridge_server.dylib as a SIBLING of the bundle. dlopen shares one
-  # image only for the same path, so shipping the dylib next to the bundle(s)
-  # is what lets a SINGLE shared singleton back every NanoBarrel (and the
-  # looper) in the process — embedding a private copy per bundle would create
-  # multiple singletons and the second WsServer::start(8081) would fail. The
-  # dylib must be codesigned too or Gatekeeper rejects the dlopen. Resolume
-  # install: ship libbridge_server.dylib alongside the .bundle(s).
-  add_custom_command(TARGET NanoBarrel POST_BUILD
+  # Deploy + sign the shared dylib as a SIBLING of the bundle. dlopen shares one
+  # image only for the same path, so a single sibling copy backs every NanoBarrel
+  # (and the looper marker) with ONE shared singleton — a private per-bundle copy
+  # would spin up a second WsServer on :8081 and fail. Then re-seal the bundle
+  # LAST (after all Resources writes above) and touch the stamp.
+  add_custom_command(OUTPUT "${_nb_stamp}" APPEND
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:bridge_server>"
-            "$<TARGET_BUNDLE_DIR:NanoBarrel>/../libbridge_server.dylib"
+            "$<TARGET_FILE:bridge_server>" "${_nb_bundle}/../libbridge_server.dylib"
     COMMAND codesign --force --sign "${NANOBARREL_CODESIGN_IDENTITY}"
-            "$<TARGET_BUNDLE_DIR:NanoBarrel>/../libbridge_server.dylib"
-    COMMENT "Deploying + signing libbridge_server.dylib next to NanoBarrel.bundle"
-    VERBATIM
-  )
-
-  add_custom_command(TARGET NanoBarrel POST_BUILD
+            "${_nb_bundle}/../libbridge_server.dylib"
     COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
-            "${NANOBARREL_CODESIGN_IDENTITY}"
-            $<TARGET_BUNDLE_DIR:NanoBarrel>
-    COMMENT "Codesigning NanoBarrel.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
-    VERBATIM
-  )
+            "${NANOBARREL_CODESIGN_IDENTITY}" "${_nb_bundle}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_nb_stamp}")
+
+  # ALL target → a bare `cmake --build build` always runs the deploy; the stamp's
+  # DEPENDS make it a no-op when nothing changed.
+  add_custom_target(NanoBarrelDeploy ALL DEPENDS "${_nb_stamp}")
 
   # --- benchmark_barrel CLI ---
   # Standalone driver that exercises the same render path as

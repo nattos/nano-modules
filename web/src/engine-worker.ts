@@ -217,6 +217,7 @@ let paused = false;
 let pausedFramePosted = false;
 let debugStatsTick = 0; // throttles Debug Info panel updates to ~10 Hz
 let lastSidechannelVersion = -1; // sidechannel-bus metadata push gate
+let lastTriggerRailVersion = -1; // trigger-bus metadata push gate
 // When on, the next frame event carries DebugStats + recent
 // console-log entries (for the Debug Info sidebar). Off by default —
 // the toggle flips with `setDebugMode`.
@@ -1127,6 +1128,13 @@ function captureAndSendFrame() {
   if (scInfo && scInfo.version !== lastSidechannelVersion) {
     lastSidechannelVersion = scInfo.version;
     post({ type: 'sidechannels', channels: scInfo.channels });
+  }
+  // Trigger-bus rail/channel activity (rail → channel → last {on/velocity/
+  // writer}). Same version-gated cheap poll as the sidechannels above.
+  const trInfo = activeExecutor()?.getTriggerRailInfo?.();
+  if (trInfo && trInfo.version !== lastTriggerRailVersion) {
+    lastTriggerRailVersion = trInfo.version;
+    post({ type: 'triggerRails', rails: trInfo.rails });
   }
   // Same for the console buffer — drain unconditionally (so the cap
   // bounds memory) but only ship when debug mode is on.

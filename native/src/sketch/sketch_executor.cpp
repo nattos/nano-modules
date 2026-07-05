@@ -7,6 +7,7 @@
 #include "sketch/host_sidechannel_blit.h"
 #include "sketch/host_output_blit.h"
 #include "sketch/sidechannel_bus.h"
+#include "sketch/trigger_bus.h"
 #include "sketch/exec_gpu.h"
 #include "sketch/effrt.h"
 #include "sketch/schema_util.h"
@@ -1424,6 +1425,7 @@ int32_t SketchExecutor::execute(
         markWriteTapOutputsConnected(inst.h, entry);
         maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
         inst.doTick(tickDt);
+        drainTriggerRing(reg, inst.h, instKey);  // TriggerSource → trigger_bus
         // A buffer-producing modulation source (e.g. debug.particles_emitter) has
         // no texture output, but its render() UPLOADS its GPU buffers — run it so
         // downstream readers see fresh data. It doesn't touch the chain texture,
@@ -1494,6 +1496,7 @@ int32_t SketchExecutor::execute(
 
       maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
       inst.doTick(tickDt);
+      drainTriggerRing(reg, inst.h, instKey);  // TriggerSource → trigger_bus
       inst.doRender(W, H);
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
@@ -2093,6 +2096,67 @@ void SketchExecutor::applyReadTaps(
       });
     }
     inst.setFieldConnected(fieldPath, true, false);
+  }
+}
+
+void SketchExecutor::drainTriggerRing(const RegisteredModule* reg,
+                                      int32_t instHandle,
+                                      const std::string& instKey) {
+  if (!reg) return;
+  bool isTrigger = false;
+  for (const auto& c : reg->capabilities) {
+    if (c == "trigger_source") { isTrigger = true; break; }
+  }
+  if (!isTrigger || instHandle < 0) return;
+
+  // Read the instance's published state (its accumulated set_val outputs).
+  if (triggerScratch_.size() < 256) triggerScratch_.resize(256);
+  int32_t len = effrt_published_state_json(instHandle, triggerScratch_.data(),
+                                           (int32_t)triggerScratch_.size());
+  if (len > (int32_t)triggerScratch_.size()) {
+    triggerScratch_.resize((size_t)len);
+    len = effrt_published_state_json(instHandle, triggerScratch_.data(),
+                                     (int32_t)triggerScratch_.size());
+  }
+  if (len <= 0) return;
+  json ps = json::parse(triggerScratch_.data(), triggerScratch_.data() + len,
+                        nullptr, /*allow_exceptions=*/false);
+  if (!ps.is_object()) return;
+  auto trig = ps.find("triggers");
+  if (trig == ps.end() || !trig->is_array()) return;
+
+  // seq-dedup, mirroring CompExecutor::readTriggerSignals: baseline at the
+  // ring max on first sight (never replay history), resync on instance reset.
+  long long maxSeq = 0;
+  for (const auto& e : *trig) {
+    if (e.is_object() && e.contains("seq") && e["seq"].is_number())
+      maxSeq = std::max(maxSeq, e["seq"].get<long long>());
+  }
+  auto seen = triggerSeqSeen_.find(instKey);
+  if (seen == triggerSeqSeen_.end()) {
+    triggerSeqSeen_[instKey] = maxSeq;
+    return;
+  }
+  if (maxSeq < seen->second) seen->second = 0;  // instance reset → resync
+  long long last = seen->second;
+  for (const auto& e : *trig) {
+    if (!e.is_object()) continue;
+    const long long seq =
+        e.contains("seq") && e["seq"].is_number() ? e["seq"].get<long long>() : 0;
+    if (seq <= last) continue;
+    seen->second = std::max(seen->second, seq);
+    if (!e.contains("channel") || !e["channel"].is_number()) continue;
+    const int channel = (int)std::lround(e["channel"].get<double>());
+    const bool on = e.contains("on") &&
+        (e["on"].is_boolean() ? e["on"].get<bool>()
+                              : e["on"].is_number() && e["on"].get<double>() != 0);
+    const float velocity = e.contains("velocity") && e["velocity"].is_number()
+        ? (float)e["velocity"].get<double>() : 1.0f;
+    // v1: every sketch trigger source writes the default global rail (there is
+    // no per-node rail-wiring UI in the barrel sketch yet — unwired sources go
+    // global, matching the compositor's default).
+    trigger_bus::emit(trigger_bus::kGlobalRail, channel, on, velocity,
+                      instKey.c_str());
   }
 }
 

@@ -242,6 +242,14 @@ export interface EngineStatus {
    * bus tag: a `pg:` sketch id (playground) or a plugin key (barrel).
    */
   sidechannels: Record<string, import('../engine-types').SidechannelInfo>;
+
+  /**
+   * Trigger-bus activity: rail id → channel id → last event ({on, velocity,
+   * writer, seq}). Updated only when metadata changes (never per event).
+   * Feeds the Instances-tab "Trigger Rails" cards. Writer is a bus tag: a
+   * `pg:` sketch id (playground) or a plugin key (barrel).
+   */
+  triggerRails: Record<string, Record<string, import('../engine-types').TriggerChannelInfo>>;
 }
 
 export interface LocalState {
@@ -336,6 +344,12 @@ export interface BarrelInstanceInfo {
   key: string;
   /** Plugin id, e.g. "com.nano.nanobarrel". */
   id: string;
-  /** Short human label derived from the key (first UUID segment). */
+  /**
+   * Short human label — the shared server's Resolume-derived default name
+   * (clip/layer/group/composition the effect sits on) when available, else the
+   * first UUID segment of the key.
+   */
   label: string;
+  /** The Resolume composition path the instance was located at, if known. */
+  resolumeLocation?: string;
 }

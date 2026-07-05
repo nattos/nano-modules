@@ -77,6 +77,9 @@ interface ExecutorExports {
   executor_sidechannels_version(): number;
   executor_sidechannels_json(out: number, cap: number): number;
   executor_sidechannel_texture(name: number, len: number): number;
+  /** Module-level (the trigger bus is process-global across slots). */
+  executor_triggers_version?(): number;
+  executor_triggers_json?(out: number, cap: number): number;
   // ── Composition executor (comp_api.cpp) ──
   comp_create(): number;
   comp_destroy(c: number): void;
@@ -460,6 +463,33 @@ export class WasmSketchExecutor {
       return { version, channels: JSON.parse(json) };
     } catch {
       return { version, channels: {} };
+    }
+  }
+
+  /**
+   * Trigger-bus rail/channel activity, for the worker's `triggerRails` push:
+   * `version` bumps only on metadata change (a rail/channel/writer first seen —
+   * NOT per event), so poll it per frame and parse the JSON only on change.
+   * Shape: `{ "<rail>": { "<channel>": {on, velocity, writer, seq} } }`.
+   */
+  getTriggerRailInfo(): { version: number; rails: Record<string, Record<string, { on: boolean; velocity: number; writer: string; seq: number }>> } | null {
+    if (!this.exports.executor_triggers_version || !this.exports.executor_triggers_json) return null;
+    const version = this.exports.executor_triggers_version();
+    let cap = 4096;
+    let ptr = this.exports.malloc(cap);
+    let n = this.exports.executor_triggers_json(ptr, cap);
+    if (n > cap) {
+      this.exports.free(ptr);
+      cap = n;
+      ptr = this.exports.malloc(cap);
+      n = this.exports.executor_triggers_json(ptr, cap);
+    }
+    const json = decoder.decode(new Uint8Array(this.memory.buffer, ptr, n));
+    this.exports.free(ptr);
+    try {
+      return { version, rails: JSON.parse(json) };
+    } catch {
+      return { version, rails: {} };
     }
   }
 

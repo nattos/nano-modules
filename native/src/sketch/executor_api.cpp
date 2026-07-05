@@ -17,6 +17,7 @@
 
 #include "sketch/sketch_executor.h"
 #include "sketch/sidechannel_bus.h"
+#include "sketch/trigger_bus.h"
 #include "sketch/exec_trace.h"
 
 #ifdef __wasm__
@@ -159,6 +160,24 @@ int32_t executor_sidechannel_texture(const char* name, int32_t len) {
   if (!name || len <= 0) return -1;
   const std::string ch(name, (size_t)len);
   return sidechannel_bus::peek(ch.c_str()).tex;
+}
+
+// Trigger-bus METADATA version — module-level (the bus is process-global,
+// shared by every executor in this module). Bumps only when a rail/channel/
+// writer first appears, NOT per event, so a host can poll it per frame and
+// fetch executor_triggers_json only on change. f64 for wasm32 JS hosts.
+EXEC_EXPORT("executor_triggers_version")
+double executor_triggers_version() {
+  return (double)trigger_bus::version();
+}
+
+// Serialize the trigger-bus rail/channel activity as JSON into `out`
+// (host-allocated, capacity `cap`): {"<rail>": {"<channel>": {"on","velocity",
+// "writer","seq"}}}. Returns the FULL byte length; the host grows + retries if
+// it exceeds `cap`. Feeds the editor's Instances-tab Trigger Rails cards.
+EXEC_EXPORT("executor_triggers_json")
+int32_t executor_triggers_json(char* out, int32_t cap) {
+  return trigger_bus::infoJson(out, cap);
 }
 
 // Write the LAST execute()'s 7 debug counters into `out` (host-allocated, ≥7

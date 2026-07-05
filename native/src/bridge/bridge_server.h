@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "bridge/bridge_core.h"
+#include "bridge/clip_launcher.h"
+#include "bridge/instance_locator.h"
 #include "canvas/draw_list.h"
 #include "wasm/wasm_context.h"
 
@@ -91,6 +93,8 @@ private:
   void shutdown_subsystems();
   void process_resolume_messages();
   void flush_outbox();
+  // Drain the trigger rail + reconcile Resolume clip launches (pump thread).
+  void drive_clip_launches();
   void pump_loop();
 
   BridgeCore core_;
@@ -112,6 +116,13 @@ private:
   std::atomic<bool> pump_stop_{false};
 
   std::unique_ptr<resolume::WsClient> resolume_client_;
+  // Correlates NanoBarrel instances with their Resolume composition location
+  // (drives per-instance default display names). Only touched from the pump
+  // thread under tick_mutex_.
+  InstanceLocator instance_locator_;
+  // Turns trigger-rail events into Resolume clip launches with a reconcile loop
+  // (the piano-trigger stuck-on fix). Only touched from the pump thread.
+  ClipLauncher clip_launcher_;
   // shared_ptr (not unique): broadcast_binary copies the pointer under a brief
   // tick_mutex_ hold, then runs the (CPU-heavy) permessage-deflate + send on the
   // copy OUTSIDE the lock — so a preview frame's compression never stalls the

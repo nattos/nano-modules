@@ -120,6 +120,8 @@ NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
 
 NANO_DECLARE_INSTANCE_EFFECT(trigger_beat)
 
+NANO_DECLARE_INSTANCE_EFFECT(trigger_out)
+
 extern "C" {
 
 NANO_EXPORT_ABI_VERSION()
@@ -644,6 +646,17 @@ void nano_module_main() {
         "trigger,scene,launch,beat,clock,modulation,event",
         "la-bolt",
         NANO_INSTANCE_LIFECYCLE(trigger_beat),
+    });
+
+    nano::registerEffect({
+        2,
+        "util.trigger_out",
+        "Trigger Send",
+        "Trigger source gated by a wired scalar: fires structured trigger events {on, channel, velocity} onto the global trigger rail when the Trigger input crosses a threshold, published as a seq-numbered ring the executor drains to the shared server (which launches matching Resolume clips). The image chain passes through untouched.",
+        "control",
+        "trigger,scene,launch,rail,send,event,route,util",
+        "la-bolt",
+        NANO_INSTANCE_LIFECYCLE(trigger_out),
     });
 }
 

@@ -502,6 +502,21 @@ class SketchExecutor {
 
   int32_t nextIntermediate(int W, int H);
 
+  // Per-TriggerSource-instance seq watermark for the trigger-ring drain (see
+  // drainTriggerRing). Baselined at the ring's max on first sight so a
+  // re-entering instance never replays history; mirrors the compositor's
+  // triggerSeqSeen_.
+  std::unordered_map<std::string, long long> triggerSeqSeen_;
+  std::vector<char> triggerScratch_;  // reused buffer for effrt_published_state_json
+
+  // Drain a TriggerSource stage's published "triggers" ring (post-tick) onto
+  // the process-global trigger_bus: parse {seq,on,channel,velocity}, seq-dedup
+  // against triggerSeqSeen_, emit new events. No-op for non-TriggerSource
+  // stages. The shared server (native) drains the bus to launch clips; the
+  // editor mirrors it into the Trigger Rails cards.
+  void drainTriggerRing(const RegisteredModule* reg, int32_t instHandle,
+                        const std::string& instKey);
+
   // Copy each delayed texture wire's producer output (gathered this frame in
   // pendingDelayRetain_) into a persistent retained texture matching its format,
   // so next frame's consumer reads a stable 1-frame-old copy. Releases + reallocs

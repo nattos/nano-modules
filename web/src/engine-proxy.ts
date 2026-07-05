@@ -38,6 +38,7 @@ export class EngineProxy {
   onFontRequest: ((req: FontRequest) => void) | null = null;
   /// Sidechannel-bus channel metadata (fires only on change, not per frame).
   onSidechannels: ((channels: Record<string, import('./engine-types').SidechannelInfo>) => void) | null = null;
+  onTriggerRails: ((rails: Record<string, Record<string, import('./engine-types').TriggerChannelInfo>>) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
   private fieldVisReqId = 0;
   private fieldVisResolvers = new Map<number, (hidden: string[] | null) => void>();
@@ -76,6 +77,9 @@ export class EngineProxy {
           break;
         case 'sidechannels':
           this.onSidechannels?.(event.channels);
+          break;
+        case 'triggerRails':
+          this.onTriggerRails?.(event.rails);
           break;
         case 'error':
           this.onError?.(event.message);

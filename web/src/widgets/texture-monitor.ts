@@ -72,6 +72,18 @@ export class TextureMonitor extends MobxLitElement {
    */
   @property({ type: Boolean }) fullRes = false;
 
+  /**
+   * Register the trace as soon as the element first renders, instead of waiting
+   * for the async IntersectionObserver callback to confirm visibility. Set this
+   * for monitors that are known to be on-screen the moment they mount — e.g.
+   * Instances-tab cards, where a newly-appeared instance is appended last and
+   * gets a freshly-created DOM node; without `eager` its thumbnail's trace
+   * registration (→ observe → preview request → first frame) waits a visible
+   * beat for the IO to fire. The IntersectionObserver still runs and will
+   * unregister the trace if the element turns out to be scrolled off-screen.
+   */
+  @property({ type: Boolean }) eager = false;
+
   private frameDisposer: IReactionDisposer | null = null;
   /** Viewport-visibility gate: we only register a trace while on-screen. */
   private io: IntersectionObserver | null = null;
@@ -178,6 +190,19 @@ export class TextureMonitor extends MobxLitElement {
     this.frameDisposer?.();
     this.frameDisposer = null;
     (this.traceSource ?? traceController).unregister(this.traceId);
+  }
+
+  firstUpdated() {
+    // Eager monitors register on first render rather than waiting for the async
+    // IntersectionObserver. `traceId`/`traceTarget` are set by now (firstUpdated
+    // runs after properties are committed), so registerTrace() won't no-op on
+    // missing target the way a connectedCallback call could. The IO still owns
+    // subsequent enter/exit — if this element is actually off-screen its first
+    // callback will unregister.
+    if (this.eager && !this.visible) {
+      this.visible = true;
+      this.registerTrace();
+    }
   }
 
   updated(changed: Map<string, unknown>) {

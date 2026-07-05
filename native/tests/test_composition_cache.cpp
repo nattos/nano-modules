@@ -25,7 +25,7 @@ static const char* TEST_COMPOSITION = R"({
                 "name": "NLCH",
                 "display_name": "NanoLooper Ch",
                 "params": {
-                  "Channel": {"id": 301, "valuetype": "ParamChoice", "value": "Channel 1"}
+                  "Channel": {"id": 301, "valuetype": "ParamFloat", "value": 0.0}
                 }
               }
             ]
@@ -42,7 +42,7 @@ static const char* TEST_COMPOSITION = R"({
                 "name": "NLCH",
                 "display_name": "NanoLooper Ch",
                 "params": {
-                  "Channel": {"id": 302, "valuetype": "ParamChoice", "value": "Channel 3"}
+                  "Channel": {"id": 302, "valuetype": "ParamFloat", "value": 0.6667}
                 }
               }
             ]
@@ -70,7 +70,7 @@ static const char* TEST_COMPOSITION = R"({
                 "name": "NLCH",
                 "display_name": "NanoLooper Ch",
                 "params": {
-                  "Channel": {"id": 303, "valuetype": "ParamChoice", "value": "Off"}
+                  "Channel": {"id": 303, "valuetype": "ParamFloat", "value": 1.0}
                 }
               }
             ]
@@ -96,7 +96,11 @@ TEST_CASE("CompositionCache rebuild populates clips", "[composition_cache]") {
   REQUIRE(cache.clip_count() == 4);  // 3 from layer 1, 1 from layer 2
 }
 
-TEST_CASE("CompositionCache channel assignment from string values", "[composition_cache]") {
+TEST_CASE("CompositionCache channel assignment from the marker Channel param", "[composition_cache]") {
+  // The NanoLooper Ch marker exposes "Channel" as an FF_TYPE_STANDARD 0..1
+  // slider; the server reads that broadcast value back via the shared
+  // norm_to_channel encoding (0.0 -> ch1, 1.0 -> ch4). There is no "Off" — a
+  // marker always names a channel; a clip with no marker is unassigned (-1).
   auto j = nlohmann::json::parse(TEST_COMPOSITION);
   auto comp = resolume::parse_composition(j);
 
@@ -106,38 +110,38 @@ TEST_CASE("CompositionCache channel assignment from string values", "[compositio
   auto clip_a = cache.get_clip(0);
   REQUIRE(clip_a.clip_id == 101);
   REQUIRE(clip_a.name == "Clip A");
-  REQUIRE(clip_a.channel == 0);  // "Channel 1" -> 0
+  REQUIRE(clip_a.channel == 0);  // 0.0 -> Channel 1 -> 0-based 0
   REQUIRE(clip_a.connected == true);
   REQUIRE(clip_a.connected_param_id == 9001);
 
   auto clip_b = cache.get_clip(1);
   REQUIRE(clip_b.clip_id == 102);
-  REQUIRE(clip_b.channel == 2);  // "Channel 3" -> 2
+  REQUIRE(clip_b.channel == 2);  // 0.667 -> Channel 3 -> 0-based 2
   REQUIRE(clip_b.connected == false);
 
   auto clip_c = cache.get_clip(2);
   REQUIRE(clip_c.clip_id == 103);
-  REQUIRE(clip_c.channel == -1);  // no tag effect
+  REQUIRE(clip_c.channel == -1);  // no marker effect
 
   auto clip_d = cache.get_clip(3);
   REQUIRE(clip_d.clip_id == 104);
-  REQUIRE(clip_d.channel == -1);  // "Off" -> -1
+  REQUIRE(clip_d.channel == 3);  // 1.0 -> Channel 4 -> 0-based 3
 }
 
-TEST_CASE("CompositionCache channel assignment from numeric values", "[composition_cache]") {
+TEST_CASE("CompositionCache channel assignment across the slider range", "[composition_cache]") {
   auto j = nlohmann::json::parse(R"({
     "layers": [{
       "id": 1, "name": {"value": "L"},
       "clips": [
         {"id": 1, "name": {"value": "C1"}, "connected": {"value": "Connected", "id": 1},
          "video": {"effects": [{"id": 1, "name": "NLCH", "display_name": "NanoLooper Ch",
-           "params": {"Channel": {"id": 1, "valuetype": "ParamChoice", "value": 0.2}}}]}},
+           "params": {"Channel": {"id": 1, "valuetype": "ParamFloat", "value": 0.0}}}]}},
         {"id": 2, "name": {"value": "C2"}, "connected": {"value": "Connected", "id": 2},
          "video": {"effects": [{"id": 2, "name": "NLCH", "display_name": "NanoLooper Ch",
-           "params": {"Channel": {"id": 2, "valuetype": "ParamChoice", "value": 0.8}}}]}},
+           "params": {"Channel": {"id": 2, "valuetype": "ParamFloat", "value": 1.0}}}]}},
         {"id": 3, "name": {"value": "C3"}, "connected": {"value": "Connected", "id": 3},
          "video": {"effects": [{"id": 3, "name": "NLCH", "display_name": "NanoLooper Ch",
-           "params": {"Channel": {"id": 3, "valuetype": "ParamChoice", "value": 0.0}}}]}}
+           "params": {"Channel": {"id": 3, "valuetype": "ParamFloat", "value": 0.3333}}}]}}
       ]
     }]
   })");
@@ -146,9 +150,9 @@ TEST_CASE("CompositionCache channel assignment from numeric values", "[compositi
   CompositionCache cache;
   cache.rebuild(comp);
 
-  REQUIRE(cache.get_clip(0).channel == 0);   // 0.2 -> Channel 1
-  REQUIRE(cache.get_clip(1).channel == 3);   // 0.8 -> Channel 4
-  REQUIRE(cache.get_clip(2).channel == -1);  // 0.0 -> Off
+  REQUIRE(cache.get_clip(0).channel == 0);   // 0.0    -> Channel 1
+  REQUIRE(cache.get_clip(1).channel == 3);   // 1.0    -> Channel 4
+  REQUIRE(cache.get_clip(2).channel == 1);   // 0.333  -> Channel 2
 }
 
 TEST_CASE("CompositionCache out-of-bounds returns empty clip", "[composition_cache]") {

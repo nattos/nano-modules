@@ -17,6 +17,12 @@ struct CachedClip {
   bool connected = false;
   int64_t connected_param_id = 0;
   int32_t thumbnail_tex_id = -1;
+  int layer_index = -1;       // 0-based position in the composition
+  int clip_index = -1;        // 0-based position in the layer
+  // Resolume WS "connect" (launch) action path, e.g.
+  // "/composition/layers/0/clips/2/connect" — the target the ClipLauncher
+  // triggers. Precomputed from the indices during rebuild.
+  std::string connect_path;
 };
 
 /// Maintains a flat, indexed view of the Resolume composition

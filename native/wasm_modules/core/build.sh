@@ -118,6 +118,7 @@ wasm_build \
   ../mod_threshold/main.cpp \
   ../env_lfo/main.cpp \
   ../env_adsr/main.cpp \
-  ../trigger_beat/main.cpp
+  ../trigger_beat/main.cpp \
+  ../trigger_out/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

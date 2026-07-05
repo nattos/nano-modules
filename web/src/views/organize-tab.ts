@@ -125,6 +125,12 @@ export class OrganizeTab extends MobxLitElement {
     .name-row label { font-size: var(--app-fs-sm); color: var(--app-text-color2); }
     .name-row editable-text { font-size: var(--app-fs-md); }
     .name-hint { font-size: var(--app-fs-sm); color: var(--app-text-color2); }
+    .trig-card .card-meta { padding: 10px 12px; }
+    .trig-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--app-tint-4); margin-right: 6px; vertical-align: middle;
+    }
+    .trig-dot.on { background: var(--app-hi-color2); box-shadow: 0 0 6px var(--app-hi-color2); }
   `;
 
   render() {
@@ -163,6 +169,7 @@ export class OrganizeTab extends MobxLitElement {
                     <texture-monitor
                       fit
                       thumbnail
+                      eager
                       .traceId=${instanceThumbTraceId(inst.key)}
                       .traceTarget=${{ type: 'sketch_output', sketchId: inst.key } as any}
                       resolution="low"
@@ -177,6 +184,7 @@ export class OrganizeTab extends MobxLitElement {
             </div>
           `}
         ${this.renderSidechannels(selectedChannel)}
+        ${this.renderTriggerRails()}
       </div>
       <div class="right-panel">
         ${selectedChannel && appState.local.engine.sidechannels[selectedChannel]
@@ -236,6 +244,7 @@ export class OrganizeTab extends MobxLitElement {
                 <texture-monitor
                   fit
                   thumbnail
+                  eager
                   .traceId=${sidechannelThumbTraceId(name)}
                   .traceTarget=${{ type: 'sidechannel', channel: name } as any}
                   resolution="low"
@@ -246,6 +255,45 @@ export class OrganizeTab extends MobxLitElement {
                 <div class="sc-card-info">
                   from ${sidechannelWriterLabel(channels[name].writer) || '—'}
                   · ${channels[name].w}×${channels[name].h}
+                </div>
+              </div>
+            </div>
+          `)}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Grid of active trigger rails: one card per (rail, channel) that has fired,
+   * showing its channel id, live on/off state, velocity, and last emitter. The
+   * shared server (barrel) launches Resolume clips matching these channels;
+   * here it's a read-only monitor of what the sketches are emitting.
+   */
+  private renderTriggerRails() {
+    const rails = appState.local.engine.triggerRails;
+    const entries: { rail: string; channel: string; info: import('../engine-types').TriggerChannelInfo }[] = [];
+    for (const rail of Object.keys(rails)) {
+      const channels = rails[rail];
+      for (const ch of Object.keys(channels)) {
+        entries.push({ rail, channel: ch, info: channels[ch] });
+      }
+    }
+    if (entries.length === 0) return '';
+    entries.sort((a, b) => Number(a.channel) - Number(b.channel));
+    return html`
+      <div class="sc-section">
+        <div class="section-header">Trigger Rails</div>
+        <div class="sc-grid">
+          ${entries.map(({ channel, info }) => html`
+            <div class="sc-card trig-card">
+              <div class="card-meta">
+                <div class="sc-card-name">
+                  <span class="trig-dot ${info.on ? 'on' : ''}"></span>
+                  Channel ${channel}
+                </div>
+                <div class="sc-card-info">
+                  vel ${info.velocity.toFixed(2)} · from ${info.writer || '—'}
                 </div>
               </div>
             </div>

@@ -1,7 +1,10 @@
 #include "bridge/bridge_server.h"
 
 #include "bridge/ws_server.h"
+#include "bridge/composition_cache.h"
+#include "bridge/trig_log.h"
 #include "resolume/ws_client.h"
+#include "sketch/trigger_bus.h"
 #include "wasm/wasm_host.h"
 
 #include <chrono>
@@ -49,7 +52,44 @@ void BridgeServer::init_subsystems() {
   // until it's actually needed — the barrel never triggers a second runtime.
 
   resolume_client_ = std::make_unique<resolume::WsClient>();
-  resolume_client_->connect();
+  // NANO_RESOLUME_URL overrides the upstream Resolume WS endpoint (default
+  // ws://127.0.0.1:8080/api/v1) — used to point the dylib at a fake Resolume
+  // server for headless dev/test (see native/tools/fake_resolume.cpp).
+  std::string resolume_url = "ws://127.0.0.1:8080/api/v1";
+  if (const char* u = getenv("NANO_RESOLUME_URL"); u && *u) resolume_url = u;
+  resolume_client_->connect(resolume_url);
+
+  // Phase 2: when the locator detects a dormant copy-paste duplicate, fork it by
+  // writing a fresh-uuid config blob to that barrel's `config` param over WS.
+  // The config param carries no learned WS path (we never subscribe to it — its
+  // value rides inline in the composition), so address it by id.
+  instance_locator_.set_fork_writer(
+      [this](int64_t config_param_id, const std::string& blob) {
+        if (resolume_client_) {
+          resolume_client_->set(
+              "/parameter/by-id/" + std::to_string(config_param_id),
+              config_param_id, blob);
+        }
+      });
+  // NANO_FORK_DWELL_MS overrides the collision dwell (default 1500ms) — used by
+  // e2e so a headless fork resolves quickly.
+  if (const char* d = getenv("NANO_FORK_DWELL_MS"); d && atoi(d) > 0)
+    instance_locator_.set_dwell_ms((uint64_t)atoi(d));
+
+  // Clip launcher: trigger-rail events → Resolume clip connects, with a
+  // reconcile loop (see clip_launcher.h). The writer connects/disconnects a
+  // clip via the WS "connect" action; reconcile keeps driving toward the
+  // desired state, which is the fix for the piano-trigger stuck-on bug.
+  clip_launcher_.set_writer(
+      [this](const LaunchTarget& target, bool on) {
+        if (resolume_client_ && !target.connect_path.empty()) {
+          trig_log("LAUNCH %s -> %s", on ? "connect" : "disconnect",
+                   target.connect_path.c_str());
+          resolume_client_->trigger(target.connect_path, on);
+        }
+      });
+  if (const char* d = getenv("NANO_LAUNCH_DEBOUNCE_MS"); d && atoi(d) >= 0)
+    clip_launcher_.set_debounce_ms((uint64_t)atoi(d));
 
   ws_server_ = std::make_shared<WsServer>();
   // The ix callbacks ONLY enqueue — never touch tick_mutex_ or core_ (see
@@ -135,6 +175,15 @@ void BridgeServer::pump_loop() {
       }
       process_resolume_messages();
       flush_outbox();
+      // Drain the process-global trigger rail and launch matching Resolume
+      // clips (reconcile loop; see clip_launcher.h). Runs AFTER
+      // process_resolume_messages so observed connected states are fresh.
+      drive_clip_launches();
+      // Re-run Phase 2 fork detection every tick (not just on composition
+      // messages) so the collision dwell fires even when Resolume's composition
+      // is static — it only rebroadcasts on change.
+      instance_locator_.tick((uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
       core_.broadcast_state_patches();
     }
     std::this_thread::sleep_for(5ms);
@@ -232,6 +281,13 @@ void BridgeServer::process_resolume_messages() {
     if (auto* cs = std::get_if<resolume::CompositionState>(&msg)) {
       auto comp = resolume::parse_composition(cs->data);
       core_.composition_cache().rebuild(comp);
+      // Correlate NanoBarrel instances with their composition location and
+      // publish default display names. Walks the raw composition JSON (the
+      // config UUID rides inline in each barrel's `config` FILE param). The
+      // monotonic timestamp drives Phase 2 dwell-based fork detection.
+      uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      instance_locator_.update(cs->data, core_.state_document(), now_ms);
       if (cs->data.contains("tempocontroller") &&
           cs->data["tempocontroller"].contains("tempo")) {
         auto& tempo = cs->data["tempocontroller"]["tempo"];
@@ -257,6 +313,55 @@ void BridgeServer::flush_outbox() {
       resolume_client_->set(path, param_id, value);
     }
   }
+}
+
+void BridgeServer::drive_clip_launches() {
+  if (!resolume_client_) return;
+  // Snapshot new trigger-rail events (own leaf mutex — safe under tick_mutex_).
+  auto events = trigger_bus::drain("bridge_server");
+
+  // Build channel → launchable clips from the current composition cache. Keyed
+  // by 1-based trigger channel (CompositionCache.channel is 0-based; the
+  // NanoLooper Ch marker's "Channel 1..4" → cache 0..3 → event channel 1..4).
+  // Phase C will source this map from the registered scene-marker instances
+  // instead of the composition string-scan, leaving the launcher unchanged.
+  std::map<int, std::vector<LaunchTarget>> channel_clips;
+  CompositionCache& cache = core_.composition_cache();
+  const int n = cache.clip_count();
+  for (int i = 0; i < n; ++i) {
+    CachedClip cc = cache.get_clip(i);
+    if (cc.channel < 0 || cc.connect_path.empty()) continue;
+    LaunchTarget t;
+    t.clip_id = cc.clip_id;
+    t.connect_path = cc.connect_path;
+    t.connected_param_id = cc.connected_param_id;
+    t.observed_connected = cc.connected;
+    channel_clips[cc.channel + 1].push_back(std::move(t));
+  }
+  if (events.empty() && channel_clips.empty()) return;
+
+  // Diagnostics: log drained events + the current channel→clips map when
+  // anything fires, so a live repro shows exactly where the pipeline breaks
+  // (no events = looper not emitting; events but empty/mismatched map = marker
+  // channel unresolved; launch issued but clip doesn't move = WS launch).
+  if (!events.empty()) {
+    for (const auto& e : events)
+      trig_log("event ch=%d on=%d vel=%.2f writer=%s", e.channel, (int)e.on,
+               e.velocity, e.writerTag.c_str());
+    std::string map = "channel_clips {";
+    for (const auto& [ch, targets] : channel_clips) {
+      map += " " + std::to_string(ch) + ":[";
+      for (const auto& t : targets)
+        map += t.connect_path + "(conn=" + (t.observed_connected ? "1" : "0") + ") ";
+      map += "]";
+    }
+    map += " }";
+    trig_log("%s", map.c_str());
+  }
+
+  const uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  clip_launcher_.tick(events, channel_clips, now_ms);
 }
 
 // --- WASM module management ---

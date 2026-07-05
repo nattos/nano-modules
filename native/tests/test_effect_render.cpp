@@ -20,6 +20,7 @@
 #include "runtime/text_host.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
+#include "sketch/trigger_bus.h"
 #include "sketch/wasm_bundles.h"
 #include "wasm/wasm_host.h"
 
@@ -2699,6 +2700,65 @@ TEST_CASE("arena repro: brutal_fold + shape_burst chains survive regenerate chur
   auto pxB = backend->readbackTexture(outB, W, H);
   CHECK(pxA.size() == (size_t)W * H * 4);
   CHECK(pxB.size() == (size_t)W * H * 4);
+}
+
+// The full Phase A+D native emit path: triggering control.nanolooper's
+// trigger_1 (rising edge) must push an on-event onto its "triggers" ring, which
+// the executor drains onto the process-global trigger_bus (channel 1). This is
+// exactly the barrel path — if this passes, a live "nothing happens" is a setup
+// or deployment issue, not the emit code.
+TEST_CASE("control.nanolooper emits a trigger onto the rail when fired",
+          "[effect_render][nanolooper][trigger_rail]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+  const uint32_t W = 64, H = 64;
+  int inTex = backend->createTexture(W, H, 1);
+  int outTex = backend->createTexture(W, H, 1);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // A one-effect sketch: control.nanolooper with send_to_rail on and no trigger
+  // pressed yet.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "control.nanolooper", "instance_key": "lp" }
+    ],
+    "instances": {
+      "lp": { "module_type": "control.nanolooper",
+              "state": { "send_to_rail": true, "trigger_1": 0 } }
+    }
+  })JSON");
+
+  trigger_bus::resetForTest();
+
+  // Frame 0: establish the looper (trigger_1 low) — arms the rising-edge
+  // detector and baselines the executor's per-instance trigger seq watermark.
+  REQUIRE(executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true) >= 0);
+  backend->submit();
+  trigger_bus::drain("test");  // consume any baseline
+
+  // Frame 1: press trigger_1 → rising edge → gate_on → ring → executor drain.
+  // A trigger via a state edit is a dirty frame (that's how the editor delivers
+  // it — maybeApplyState only re-applies persisted params on dirty frames).
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 1;
+  REQUIRE(executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true) >= 0);
+  backend->submit();
+
+  auto events = trigger_bus::drain("test");
+  bool saw_ch1_on = false;
+  for (const auto& e : events) {
+    INFO("event ch=" << e.channel << " on=" << e.on);
+    if (e.channel == 1 && e.on) saw_ch1_on = true;
+  }
+  CHECK(saw_ch1_on);
 }
 #endif  // NANO_WASM_PATH
 
