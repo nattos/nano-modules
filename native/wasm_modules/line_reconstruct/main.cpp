@@ -75,6 +75,9 @@ struct State {
   gpu::Texture g1, g1p, g2, g2b;           // product groups (see smooth_prep.hlsl)
   gpu::Texture s0, s1;                      // smoothed feature fields
   gpu::Texture wc, sd;                      // centerline vote weights + shared delta
+  // reconstruct inputs.
+  gpu::Texture cmn, cmx;                     // rgb 3x3 min/max (repaint colour clamp)
+  gpu::Texture color_flank;                 // sep_gauss(img, 0.7) (bg flank taps)
 
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
@@ -95,7 +98,7 @@ struct State {
 // --- type-shared PSOs ---------------------------------------------------------
 static gpu::ComputePSO s_pso_stats, s_pso_cstar, s_pso_tensor_grad, s_pso_tensor,
                        s_pso_features, s_pso_smooth_prep, s_pso_smooth,
-                       s_pso_ctr_prep, s_pso_centerline, s_pso_reconstruct;
+                       s_pso_ctr_prep, s_pso_centerline, s_pso_rgbminmax, s_pso_reconstruct;
 static Blur16 s_blur;
 
 void module_init() {
@@ -177,6 +180,7 @@ void module_init() {
   state::registerShaderSPV("line_reconstruct_smooth",      SMOOTH_SPV,      SMOOTH_SPV_SIZE,      "rgba16float", "write");
   state::registerShaderSPV("line_reconstruct_ctr_prep",    CTR_PREP_SPV,    CTR_PREP_SPV_SIZE,    "rgba16float", "write");
   state::registerShaderSPV("line_reconstruct_centerline",  CENTERLINE_SPV,  CENTERLINE_SPV_SIZE,  "rgba16float", "write");
+  state::registerShaderSPV("line_reconstruct_rgbminmax",   RGBMINMAX_SPV,   RGBMINMAX_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("line_reconstruct_reconstruct", RECONSTRUCT_SPV, RECONSTRUCT_SPV_SIZE, "rgba8unorm", "write");
 
   auto cs_st = gpu::Device::createShaderModuleByName("line_reconstruct_stats");
@@ -188,8 +192,9 @@ void module_init() {
   auto cs_sm = gpu::Device::createShaderModuleByName("line_reconstruct_smooth");
   auto cs_cp = gpu::Device::createShaderModuleByName("line_reconstruct_ctr_prep");
   auto cs_cl = gpu::Device::createShaderModuleByName("line_reconstruct_centerline");
+  auto cs_mm = gpu::Device::createShaderModuleByName("line_reconstruct_rgbminmax");
   auto cs_rc = gpu::Device::createShaderModuleByName("line_reconstruct_reconstruct");
-  if (!cs_st || !cs_cs || !cs_tg || !cs_tn || !cs_ft || !cs_sp || !cs_sm || !cs_cp || !cs_cl || !cs_rc) {
+  if (!cs_st || !cs_cs || !cs_tg || !cs_tn || !cs_ft || !cs_sp || !cs_sm || !cs_cp || !cs_cl || !cs_mm || !cs_rc) {
     state::log("line_reconstruct: a shader module failed to compile");
     return;
   }
@@ -217,13 +222,17 @@ void module_init() {
       .tex2d(0).tex2d(1).tex2d(2).tex2d(3).storageTex2d(4, F16));
   s_pso_centerline = gpu::Device::createComputePSO(cs_cl, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).tex2d(2).storageTex2d(3, F16));
+  s_pso_rgbminmax = gpu::Device::createComputePSO(cs_mm, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, F16).storageTex2d(2, F16));
   s_pso_reconstruct = gpu::Device::createComputePSO(cs_rc, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).tex2d(2).tex2d(3).storageTex2d(4, gpu::TextureFormat::RGBA8).uniform(5));
+      .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4).tex2d(5).tex2d(6).tex2d(7)
+      .tex2d(8).tex2d(9).sampler(10)
+      .storageTex2d(11, gpu::TextureFormat::RGBA8).uniform(12));
   s_blur.init();
 
   gpu::ComputePSO* psos[] = { &s_pso_stats, &s_pso_cstar, &s_pso_tensor_grad,
     &s_pso_tensor, &s_pso_features, &s_pso_smooth_prep, &s_pso_smooth,
-    &s_pso_ctr_prep, &s_pso_centerline, &s_pso_reconstruct };
+    &s_pso_ctr_prep, &s_pso_centerline, &s_pso_rgbminmax, &s_pso_reconstruct };
   for (auto* p : psos) if (!p->valid()) state::log("line_reconstruct: a PSO is INVALID");
   if (!s_blur.valid()) state::log("line_reconstruct: Blur16 INVALID");
   state::log("line_reconstruct: module_init done");
@@ -239,7 +248,8 @@ void* create() {
 static void forEachTexture(State* s, void (*fn)(gpu::Texture*)) {
   gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
                            &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3,
-                           &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd };
+                           &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd,
+                           &s->cmn, &s->cmx, &s->color_flank };
   for (auto* t : texs) fn(t);
 }
 
@@ -323,7 +333,8 @@ static bool ensureTextures(State* s, int w, int h) {
   bool ok = true;
   gpu::Texture* texs[] = { &s->stats, &s->cstar, &s->y0, &s->y1, &s->y2, &s->y3,
                            &s->jraw, &s->jblur, &s->tensor, &s->m0, &s->m1, &s->m2, &s->m3,
-                           &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd };
+                           &s->g1, &s->g1p, &s->g2, &s->g2b, &s->s0, &s->s1, &s->wc, &s->sd,
+                           &s->cmn, &s->cmx, &s->color_flank };
   for (auto* t : texs) {
     if (t->valid()) t->release();
     *t = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
@@ -417,10 +428,20 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(s->sd, 3, 1);
     cp.dispatch(gx, gy); cp.end(); }
 
-  // 6. reconstruct / debug composite → tex_out.
+  // 6a. reconstruct inputs: rgb 3x3 min/max + a sigma-0.7 colour flank blur.
+  { auto cp = pass(s_pso_rgbminmax);
+    cp.setTexture(in, 0, 0); cp.setTexture(s->cmn, 1, 1); cp.setTexture(s->cmx, 2, 1);
+    cp.dispatch(gx, gy); cp.end(); }
+  s_blur.apply(in, s->color_flank, vp_w, vp_h, 0.7f);
+
+  // 6. reconstruct: line repaint + gates + composite (or a debug view) → tex_out.
   { auto cp = pass(s_pso_reconstruct);
-    cp.setTexture(in, 0, 0); cp.setTexture(s->s0, 1, 0); cp.setTexture(s->s1, 2, 0);
-    cp.setTexture(s->sd, 3, 0); cp.setTexture(out, 4, 1); cp.setBuffer(s->uniform_buf, 5);
+    cp.setTexture(in, 0, 0); cp.setTexture(s->color_flank, 1, 0);
+    cp.setTexture(s->cmn, 2, 0); cp.setTexture(s->cmx, 3, 0); cp.setTexture(s->cstar, 4, 0);
+    cp.setTexture(s->y3, 5, 0); cp.setTexture(s->s0, 6, 0); cp.setTexture(s->s1, 7, 0);
+    cp.setTexture(s->sd, 8, 0); cp.setTexture(s->m2, 9, 0);
+    cp.setSampler(s->sampler, 10);
+    cp.setTexture(out, 11, 1); cp.setBuffer(s->uniform_buf, 12);
     cp.dispatch(gx, gy); cp.end(); }
 
   gpu::Device::submit();

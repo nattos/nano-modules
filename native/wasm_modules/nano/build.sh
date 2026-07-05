@@ -271,8 +271,9 @@ compile_shaders_compute_var_spv line_reconstruct smooth_prep
 compile_shaders_compute_var_spv line_reconstruct smooth
 compile_shaders_compute_var_spv line_reconstruct ctr_prep
 compile_shaders_compute_var_spv line_reconstruct centerline
+compile_shaders_compute_var_spv line_reconstruct rgbminmax
 compile_shaders_compute_var_spv line_reconstruct reconstruct
-_emit_spv_header_var line_reconstruct stats cstar blur16 tensor_grad tensor features smooth_prep smooth ctr_prep centerline reconstruct
+_emit_spv_header_var line_reconstruct stats cstar blur16 tensor_grad tensor features smooth_prep smooth ctr_prep centerline rgbminmax reconstruct
 echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+features+smooth+centerline+reconstruct)"
 
 echo "=== Building WASM (nano) ==="

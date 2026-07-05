@@ -66,6 +66,42 @@ describe('Line Reconstruct (filter.reconstruct.line) E2E', () => {
     r.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
   });
 
+  // The line branch re-renders soft/degraded strokes into crisp uniform lines
+  // (the effect's actual use case — clean sharp lines are already optimal and
+  // correctly pass through, and dense parallel lines fall back per the flank
+  // gate). So exercise it on a DEGRADED grid: source.grid → a soft blur → the
+  // reconstructor, traced against its own (blurred) input.
+  const runDegraded = (id: string, params: Record<string, number>, dump: string) => {
+    const sketch: Sketch = {
+      anchor: null, wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.grid', instance_key: 'grid@0', params: { cell_size: 0.22, line_width: 0.12 } },
+        { type: 'module', module_type: 'filter.blur.gaussian', instance_key: 'blur@0', params: { radius: 0.09 } },
+        { type: 'module', module_type: LR, instance_key: 'lr@0', params },
+      ],
+    };
+    return runEngineTest({
+      width: 160, height: 160, modules: MODULES,
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'in',  target: { type: 'chain_entry', sketchId: id, colIdx: 0, chainIdx: 2, side: 'input' } },
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 8, captureTraceIds: ['in', 'out'], dumpName: dump,
+    });
+  };
+
+  it('reconstructs degraded lines: strength>0 crisps them, strength 0 = identity', async () => {
+    const on  = await runDegraded('lr_recon_on',  { strength: 1.0, retarget: 1.0, target_width: 0.25, sensitivity: 0.7 }, 'line_reconstruct_recon_on');
+    const off = await runDegraded('lr_recon_off', { strength: 0.0 }, 'line_reconstruct_recon_off');
+    expect(on.success && off.success).toBe(true);
+    on.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    on.trace('out').expectDifferentFrom(on.trace('in'), 100);   // it actually reshaped the soft lines
+    off.trace('out').expectSameAs(off.trace('in'), 2);          // strength 0 is untouched
+  });
+
   it('strength 0 is a pass-through (output == input)', async () => {
     const r = await runChain('lr_identity', { strength: 0.0 }, 'line_reconstruct_identity');
     expect(r.success).toBe(true);
