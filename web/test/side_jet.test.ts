@@ -15,7 +15,7 @@ describe('Side Jet Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'side_jet.wasm', bundle: 'lights',
+      module: 'source.light.side_jet', bundle: 'lights',
       inputColor: [0, 0, 0, 1], dumpName: 'side_jet_metadata',
     });
     expect(frame.success).toBe(true);
@@ -24,7 +24,7 @@ describe('Side Jet Effect E2E', () => {
 
   it('ignited engine renders a visible plume', async () => {
     const frame = await runGpuEffectTest({
-      module: 'side_jet.wasm', bundle: 'lights',
+      module: 'source.light.side_jet', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1],
       ticks: 60, renderEachTick: true,
       params: [['ignition', 1.0], ['throttle', 0.85], ['mixture', 0.2]],
@@ -36,7 +36,7 @@ describe('Side Jet Effect E2E', () => {
 
   it('engine off (ignition=0) stays dark', async () => {
     const frame = await runGpuEffectTest({
-      module: 'side_jet.wasm', bundle: 'lights',
+      module: 'source.light.side_jet', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1],
       ticks: 60, renderEachTick: true,
       params: [['ignition', 0.0], ['throttle', 0.85]],
@@ -49,7 +49,7 @@ describe('Side Jet Effect E2E', () => {
 
   it('higher throttle produces a longer/brighter plume', async () => {
     const lit = (throttle: number) => runGpuEffectTest({
-      module: 'side_jet.wasm', bundle: 'lights',
+      module: 'source.light.side_jet', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1],
       ticks: 60, renderEachTick: true,
       params: [['ignition', 1.0], ['throttle', throttle], ['mixture', 0.2]],

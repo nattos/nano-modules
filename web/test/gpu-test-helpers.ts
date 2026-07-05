@@ -5,12 +5,12 @@
  * dump PNGs, and assert on pixel data using high-level helpers.
  *
  * Usage:
- *   const frame = await runGpuTest({ module: 'gpu_test.wasm', ticks: 5 });
+ *   const frame = await runGpuTest({ module: 'debug.gpu_test', ticks: 5 });
  *   frame.expectPixelAt(32, 32, { r: 0, g: 128, b: 255 });
  *   frame.expectUniformColor({ r: 0, g: 128, b: 255 });
  *   frame.expectCoverage(color => color.r > 100, { min: 0.1 });
  *
- *   const frame2 = await runGpuTest({ module: 'my.wasm', ticks: 60 });
+ *   const frame2 = await runGpuTest({ module: 'my.effect.id', ticks: 60 });
  *   frame2.expectDifferentFrom(frame);
  */
 

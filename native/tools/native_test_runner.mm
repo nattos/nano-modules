@@ -59,14 +59,10 @@ void setHostViewport(int w, int h);
 
 namespace {
 
-// "module" filenames map to registered effect ids. Mirrors the
-// EFFECT_ID_BY_FILENAME table in web/public/gpu-test-runner.html so
-// the JS side can pass the same config to both backends.
+// Tests reference effects by their real `module_type` id (the string the
+// effect declares in state::init) — the same on both backends. No legacy
+// `x.wasm` alias map; the id passes straight through.
 std::string resolveEffectId(const std::string& moduleName) {
-  if (moduleName == "soft_glow.wasm" || moduleName == "soft_glow")
-    return "source.light.soft_glow";
-  if (moduleName == "motion_blur.wasm" || moduleName == "motion_blur")
-    return "motion.blur";
   return moduleName;
 }
 

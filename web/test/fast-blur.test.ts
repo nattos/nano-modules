@@ -10,7 +10,7 @@ describe('Fast Blur Effect E2E', () => {
 
   it('declares metadata and a single iterations input', async () => {
     const frame = await runGpuEffectTest({
-      module: 'fast_blur.wasm',
+      module: 'filter.blur.fast',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'fast_blur_metadata',
@@ -27,7 +27,7 @@ describe('Fast Blur Effect E2E', () => {
     // constant. This catches gross errors in pass routing or
     // upsample/downsample weighting.
     const frame = await runGpuEffectTest({
-      module: 'fast_blur.wasm',
+      module: 'filter.blur.fast',
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [0.4, 0.6, 0.2, 1.0],
@@ -43,15 +43,15 @@ describe('Fast Blur Effect E2E', () => {
     // significantly fewer "bright line" pixels and significantly more
     // "midtone" pixels than the unblurred grid.
     const before = await runGpuChainTest({
-      chain: [{ module: 'grid.wasm', params: [[0, 0.1], [1, 0.3]] }],
+      chain: [{ module: 'source.grid', params: [[0, 0.1], [1, 0.3]] }],
       bundle: 'core',
       width: 128, height: 128,
       dumpName: 'fast_blur_grid_before',
     });
     const after = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm',      params: [[0, 0.1], [1, 0.3]] },
-        { module: 'fast_blur.wasm', params: [['iterations', 4]] },
+        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'filter.blur.fast', params: [['iterations', 4]] },
       ],
       bundle: 'core',
       width: 128, height: 128,
@@ -78,8 +78,8 @@ describe('Fast Blur Effect E2E', () => {
     };
     const fewer = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm',      params: [[0, 0.1], [1, 0.3]] },
-        { module: 'fast_blur.wasm', params: [['iterations', 1]] },
+        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'filter.blur.fast', params: [['iterations', 1]] },
       ],
       bundle: 'core',
       width: 128, height: 128,
@@ -87,8 +87,8 @@ describe('Fast Blur Effect E2E', () => {
     });
     const more = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm',      params: [[0, 0.1], [1, 0.3]] },
-        { module: 'fast_blur.wasm', params: [['iterations', 5]] },
+        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'filter.blur.fast', params: [['iterations', 5]] },
       ],
       bundle: 'core',
       width: 128, height: 128,
@@ -103,15 +103,15 @@ describe('Fast Blur Effect E2E', () => {
     // bright pixel should bleed into its neighbours via the bilinear
     // 13-tap downsample.
     const before = await runGpuChainTest({
-      chain: [{ module: 'grid.wasm', params: [[0, 0.1], [1, 0.3]] }],
+      chain: [{ module: 'source.grid', params: [[0, 0.1], [1, 0.3]] }],
       bundle: 'core',
       width: 128, height: 128,
       dumpName: 'fast_blur_iter1_before',
     });
     const after = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm',      params: [[0, 0.1], [1, 0.3]] },
-        { module: 'fast_blur.wasm', params: [['iterations', 1]] },
+        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'filter.blur.fast', params: [['iterations', 1]] },
       ],
       bundle: 'core',
       width: 128, height: 128,

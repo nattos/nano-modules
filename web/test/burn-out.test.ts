@@ -15,7 +15,7 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'burn_out.wasm', bundle: 'legacy',
+      module: 'color.legacy.burn_out', bundle: 'legacy',
       inputColor: MID,
       dumpName: 'burn_metadata',
     });
@@ -31,7 +31,7 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
 
   it('manual amount fades the image out to black', async () => {
     const burned = await runGpuEffectTest({
-      module: 'burn_out.wasm', bundle: 'legacy',
+      module: 'color.legacy.burn_out', bundle: 'legacy',
       inputColor: MID,
       params: [['amount', 1.0]],
       ticks: 2, renderEachTick: true,
@@ -47,7 +47,7 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
 
   it('is a passthrough at rest (is_identity)', async () => {
     const rest = await runGpuEffectTest({
-      module: 'burn_out.wasm', bundle: 'legacy',
+      module: 'color.legacy.burn_out', bundle: 'legacy',
       inputColor: MID,
       params: [['amount', 0.0]],
       dumpName: 'burn_rest',
@@ -60,7 +60,7 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
     // trigger rising edge → one-shot attack; a fast attack reaches the burn
     // within a handful of 16 ms ticks.
     const fired = await runGpuEffectTest({
-      module: 'burn_out.wasm', bundle: 'legacy',
+      module: 'color.legacy.burn_out', bundle: 'legacy',
       inputColor: MID,
       params: [['trigger', 1], ['amount', 0.0], ['attack', 0.05], ['release', 2.0]],
       ticks: 16, renderEachTick: true,
@@ -73,7 +73,7 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
 
   it('modulate_alpha drops alpha with the burn', async () => {
     const faded = await runGpuEffectTest({
-      module: 'burn_out.wasm', bundle: 'legacy',
+      module: 'color.legacy.burn_out', bundle: 'legacy',
       inputColor: MID,
       params: [['amount', 1.0], ['modulate_alpha', 1]],
       ticks: 2, renderEachTick: true,

@@ -19,7 +19,7 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'lut_collection.wasm', bundle: 'legacy',
+      module: 'color.legacy.lut_collection', bundle: 'legacy',
       inputColor: COLOR,
       dumpName: 'lut_metadata',
     });
@@ -40,7 +40,7 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
     // have r == g == b. This is also the strongest correctness signal that the
     // baked cube addressing is faithful (the generator validated Mono spread=0).
     const frame = await runGpuEffectTest({
-      module: 'lut_collection.wasm', bundle: 'legacy',
+      module: 'color.legacy.lut_collection', bundle: 'legacy',
       inputColor: COLOR,
       params: [['lut', 6], ['amount', 1.0], ['pregain', 0.0]],
       dumpName: 'lut_mono',
@@ -55,7 +55,7 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
 
   it('amount = 0 is a pure passthrough', async () => {
     const frame = await runGpuEffectTest({
-      module: 'lut_collection.wasm', bundle: 'legacy',
+      module: 'color.legacy.lut_collection', bundle: 'legacy',
       inputColor: COLOR,
       params: [['lut', 0], ['amount', 0.0]],
       dumpName: 'lut_passthrough',
@@ -67,7 +67,7 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
 
   it('different presets produce different grades', async () => {
     const run = (lut: number, dump: string) => runGpuEffectTest({
-      module: 'lut_collection.wasm', bundle: 'legacy',
+      module: 'color.legacy.lut_collection', bundle: 'legacy',
       inputColor: COLOR,
       params: [['lut', lut], ['amount', 1.0]],
       dumpName: dump,
@@ -86,7 +86,7 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
     // samples). Nearest-neighbour would snap them to the same node -> identical
     // output. Hardware trilinear varies the output smoothly across the cell.
     const grade = (v: number) => runGpuEffectTest({
-      module: 'lut_collection.wasm', bundle: 'legacy',
+      module: 'color.legacy.lut_collection', bundle: 'legacy',
       inputColor: [v, v, v, 1.0],
       params: [['lut', 0], ['amount', 1.0]],
     }).then(f => { expect(f.success).toBe(true); return f.averageColor(); });
@@ -99,7 +99,7 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
 
   it('pregain reshapes the grade', async () => {
     const run = (pregain: number, dump: string) => runGpuEffectTest({
-      module: 'lut_collection.wasm', bundle: 'legacy',
+      module: 'color.legacy.lut_collection', bundle: 'legacy',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [['lut', 0], ['amount', 1.0], ['pregain', pregain]],
       dumpName: dump,

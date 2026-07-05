@@ -12,7 +12,7 @@ describe('Vignette Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'vignette.wasm',
+      module: 'filter.vignette',
       bundle: 'core',
       inputColor: [0.6, 0.6, 0.6, 1.0],
       dumpName: 'vignette_metadata',
@@ -28,7 +28,7 @@ describe('Vignette Effect E2E', () => {
 
   it('amount=0 leaves the image unchanged everywhere', async () => {
     const frame = await runGpuEffectTest({
-      module: 'vignette.wasm',
+      module: 'filter.vignette',
       bundle: 'core',
       inputColor: [0.6, 0.6, 0.6, 1.0],
       params: [[0, 0.0]],
@@ -45,7 +45,7 @@ describe('Vignette Effect E2E', () => {
     // pixel (sq=0) is inside radius. The corners (|sq|≈√2) are well past
     // radius+softness=1.0, so the gain there approaches 0 → black.
     const frame = await runGpuEffectTest({
-      module: 'vignette.wasm',
+      module: 'filter.vignette',
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],
@@ -68,7 +68,7 @@ describe('Vignette Effect E2E', () => {
 
   it('amount=+1 brightens corners (saturates white)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'vignette.wasm',
+      module: 'filter.vignette',
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [0.4, 0.4, 0.4, 1.0],
@@ -88,7 +88,7 @@ describe('Vignette Effect E2E', () => {
     // Push the centre to (-1, 0) — the left edge in cover-square units.
     // The left-side pixels should now be the unaffected ones.
     const frame = await runGpuEffectTest({
-      module: 'vignette.wasm',
+      module: 'filter.vignette',
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],

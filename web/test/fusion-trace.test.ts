@@ -24,9 +24,9 @@ forEachFusionMode((mode) => describe(`Fusion trace variants (${mode})`, () => {
     // Trace step 0: (128, 0, 0)
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.5, 0.0, 0.0, 0.0]]] },
-        { module: 'fuse_add.wasm', params: [['offset', [0.0, 0.5, 0.0, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [2.0, 1.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.5, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.0, 0.5, 0.0, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [2.0, 1.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -46,9 +46,9 @@ forEachFusionMode((mode) => describe(`Fusion trace variants (${mode})`, () => {
     // 0.25 → ~64; 0.5 → 128; 1.0 → 255.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.25, 0.0, 0.0, 0.0]]] },
-        { module: 'fuse_add.wasm', params: [['offset', [0.25, 0.5, 0.0, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [2.0, 1.0, 2.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.25, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.25, 0.5, 0.0, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [2.0, 1.0, 2.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -68,8 +68,8 @@ forEachFusionMode((mode) => describe(`Fusion trace variants (${mode})`, () => {
     // binding in the dispatcher).
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.5, 0.0, 0.0, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [1.0, 0.0, 2.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.5, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [1.0, 0.0, 2.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.0, 0.0, 0.5, 1.0],
@@ -88,8 +88,8 @@ forEachFusionMode((mode) => describe(`Fusion trace variants (${mode})`, () => {
     // mapper tails run. Trace value === u_fuse.color.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_solid.wasm', params: [['color',  [0.4, 0.6, 0.8, 1.0]]] },
-        { module: 'fuse_add.wasm',   params: [['offset', [0.2, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_solid', params: [['color',  [0.4, 0.6, 0.8, 1.0]]] },
+        { module: 'debug.fuse_add',   params: [['offset', [0.2, 0.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       traceSteps: [0],

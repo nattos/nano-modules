@@ -23,7 +23,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'soft_glow.wasm',
+      module: 'source.light.soft_glow',
       bundle: 'lights',
       dumpName: 'soft_glow_metadata',
     });
@@ -33,7 +33,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
   it('intensity=0 passes input through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'soft_glow.wasm',
+      module: 'source.light.soft_glow',
       bundle: 'lights',
       inputColor: [0.3, 0.6, 0.9, 1.0],
       params: [['intensity', 0.0]],
@@ -47,7 +47,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
   it('blob_count=1 with intensity=0 also passes through', async () => {
     const frame = await runGpuEffectTest({
-      module: 'soft_glow.wasm',
+      module: 'source.light.soft_glow',
       bundle: 'lights',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [
@@ -62,7 +62,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
   it('produces glow over a black background at default-ish params', async () => {
     const frame = await runGpuEffectTest({
-      module: 'soft_glow.wasm',
+      module: 'source.light.soft_glow',
       bundle: 'lights',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -90,7 +90,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
 
   it('warm hue range produces warm pixels (red/orange dominant)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'soft_glow.wasm',
+      module: 'source.light.soft_glow',
       bundle: 'lights',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -292,7 +292,7 @@ describe(`Soft Glow Effect E2E (${backend})`, () => {
   it('hue_shift=0 pins the glow to a single hue band', async () => {
     // Lock hue around 0.33 (green). Expect green-dominant lit pixels.
     const frame = await runGpuEffectTest({
-      module: 'soft_glow.wasm',
+      module: 'source.light.soft_glow',
       bundle: 'lights',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],

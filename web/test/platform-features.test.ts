@@ -25,7 +25,7 @@ describe('Platform features', () => {
       // round trip crushes to 0.25 → 64. The two outcomes are 64 LSBs
       // apart, so a comfortable tolerance still distinguishes them.
       const frame = await runGpuEffectTest({
-        module: 'hdr_test.wasm',
+        module: 'debug.hdr_test',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         dumpName: 'hdr_test_roundtrip',
       });
@@ -39,7 +39,7 @@ describe('Platform features', () => {
 
     it('handles fully saturated input (no over-bright clipping below 1.0)', async () => {
       const frame = await runGpuEffectTest({
-        module: 'hdr_test.wasm',
+        module: 'debug.hdr_test',
         inputColor: [1.0, 1.0, 1.0, 1.0],
         dumpName: 'hdr_test_saturated',
       });
@@ -50,7 +50,7 @@ describe('Platform features', () => {
 
     it('handles a dark input', async () => {
       const frame = await runGpuEffectTest({
-        module: 'hdr_test.wasm',
+        module: 'debug.hdr_test',
         inputColor: [0.1, 0.2, 0.3, 1.0],
         dumpName: 'hdr_test_dark',
       });
@@ -71,7 +71,7 @@ describe('Platform features', () => {
 
     it('uniform mid-bright input fills bin 2 (luma in [0.5,0.75))', async () => {
       const frame = await runGpuEffectTest({
-        module: 'atomic_test.wasm',
+        module: 'debug.atomic_test',
         inputColor: [0.6, 0.6, 0.6, 1.0],  // luma == 0.6 → bin 2
         dumpName: 'atomic_test_mid',
       });
@@ -82,7 +82,7 @@ describe('Platform features', () => {
 
     it('uniform dark input fills bin 0 (luma in [0,0.25))', async () => {
       const frame = await runGpuEffectTest({
-        module: 'atomic_test.wasm',
+        module: 'debug.atomic_test',
         inputColor: [0.1, 0.1, 0.1, 1.0],  // luma == 0.1 → bin 0
         dumpName: 'atomic_test_dark',
       });
@@ -92,7 +92,7 @@ describe('Platform features', () => {
 
     it('uniform bright input fills bin 3 (luma in [0.75,1])', async () => {
       const frame = await runGpuEffectTest({
-        module: 'atomic_test.wasm',
+        module: 'debug.atomic_test',
         inputColor: [0.9, 0.9, 0.9, 1.0],  // luma == 0.9 → bin 3
         dumpName: 'atomic_test_bright',
       });
@@ -113,7 +113,7 @@ describe('Platform features', () => {
     // 128/255 — clearly distinguishable from 191.
     it('returns 0.75 after init+RMW round trip', async () => {
       const frame = await runGpuEffectTest({
-        module: 'rw_storage_test.wasm',
+        module: 'debug.rw_storage_test',
         inputColor: [0, 0, 0, 1],  // input is unused
         dumpName: 'rw_storage_roundtrip',
       });
@@ -132,7 +132,7 @@ describe('Platform features', () => {
     // these tests, all-zeros), or smear a different color through.
     it('clears scratch then copies to output', async () => {
       const frame = await runGpuEffectTest({
-        module: 'clear_copy_test.wasm',
+        module: 'debug.clear_copy_test',
         // Input red would otherwise leak through if the copy or clear
         // failed silently.
         inputColor: [1, 0, 0, 1],
@@ -197,7 +197,7 @@ describe('Platform features', () => {
     // (black) and the output would lose green → red.
     it('writes both attachments in one render pass (yellow round-trip)', async () => {
       const frame = await runGpuEffectTest({
-        module: 'mrt_test.wasm',
+        module: 'debug.mrt_test',
         inputColor: [0, 0, 0, 1],
         dumpName: 'mrt_test_yellow',
       });
@@ -220,7 +220,7 @@ describe('Platform features', () => {
       // ≈ (0.4, 0.6, 0.8). Round-trip should match within ~1 LSB after
       // the rounding to the nearest 8-bit value.
       const frame = await runGpuEffectTest({
-        module: 'lut3d_test.wasm',
+        module: 'debug.lut3d_test',
         inputColor: [0.4, 0.6, 0.8, 1.0],
         dumpName: 'lut3d_identity',
       });
@@ -235,7 +235,7 @@ describe('Platform features', () => {
 
     it('endpoints are exact (0 → 0 and 1 → 1)', async () => {
       const black = await runGpuEffectTest({
-        module: 'lut3d_test.wasm',
+        module: 'debug.lut3d_test',
         inputColor: [0, 0, 0, 1],
         dumpName: 'lut3d_black',
       });
@@ -243,7 +243,7 @@ describe('Platform features', () => {
       black.expectUniformColor({ r: 0, g: 0, b: 0, a: 255 }, 2);
 
       const white = await runGpuEffectTest({
-        module: 'lut3d_test.wasm',
+        module: 'debug.lut3d_test',
         inputColor: [1, 1, 1, 1],
         dumpName: 'lut3d_white',
       });
@@ -264,7 +264,7 @@ describe('Platform features', () => {
     // round-trip drifts.
     it('fast_blur exercises the mip chain end-to-end', async () => {
       const frame = await runGpuEffectTest({
-        module: 'fast_blur.wasm',
+        module: 'filter.blur.fast',
         bundle: 'core',
         inputColor: [0.4, 0.6, 0.2, 1.0],
         params: [['iterations', 4]],

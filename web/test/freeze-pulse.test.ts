@@ -18,7 +18,7 @@ describe('Freeze Pulse (warp.legacy.freeze_pulse) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'freeze_pulse.wasm', bundle: 'legacy',
+      module: 'warp.legacy.freeze_pulse', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'fp_metadata',
     });

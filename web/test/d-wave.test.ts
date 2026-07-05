@@ -16,7 +16,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'd_wave.wasm',
+      module: 'warp.legacy.d_wave',
       bundle: 'legacy',
       inputColor: [0.2, 0.4, 0.6, 1.0],
       dumpName: 'd_wave_metadata',
@@ -40,7 +40,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     // isolating the stateful inject+advect field. damp=0 removes the flash layer
     // so this is the pure wave. Expect a structured (non-uniform) grainy field.
     const frame = await runGpuEffectTest({
-      module: 'd_wave.wasm',
+      module: 'warp.legacy.d_wave',
       bundle: 'legacy',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -75,7 +75,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     // axis (e.g. only left/right fire, top/bottom black). The rotation sweeps
     // them, so over a handful of frames every cardinal direction sees waves.
     const frame = await runGpuEffectTest({
-      module: 'd_wave.wasm', bundle: 'legacy', width: 128, height: 128,
+      module: 'warp.legacy.d_wave', bundle: 'legacy', width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
       params: [
         ['distortion', 0.0], ['rate', 0.6], ['density', 0.02],
@@ -106,7 +106,7 @@ describe('D Wave (warp.legacy.d_wave) E2E', () => {
     // so the field's mean brightness drops vs damp=0.
     const meanRed = async (damp: number, dampCount: number) => {
       const f = await runGpuEffectTest({
-        module: 'd_wave.wasm', bundle: 'legacy', width: 128, height: 128,
+        module: 'warp.legacy.d_wave', bundle: 'legacy', width: 128, height: 128,
         inputColor: [0.0, 0.0, 0.0, 1.0],
         params: [
           ['distortion', 0.0], ['rate', 1.0], ['density', 0.4], ['wave_speed', 0.25],

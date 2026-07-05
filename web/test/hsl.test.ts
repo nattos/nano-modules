@@ -8,7 +8,7 @@ describe('HSL Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hsl.wasm',
+      module: 'color.hsl',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'hsl_metadata',
@@ -22,7 +22,7 @@ describe('HSL Effect E2E', () => {
 
   it('all-zero passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hsl.wasm',
+      module: 'color.hsl',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       dumpName: 'hsl_identity',
@@ -35,7 +35,7 @@ describe('HSL Effect E2E', () => {
   it('saturation=-1 collapses to greyscale', async () => {
     // Pure red → luminance ~0.5 → mid grey ~ (128, 128, 128)
     const frame = await runGpuEffectTest({
-      module: 'hsl.wasm',
+      module: 'color.hsl',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
       params: [[1, -1.0]],
@@ -49,7 +49,7 @@ describe('HSL Effect E2E', () => {
   it('hue_shift=+1 (180°) rotates red to cyan', async () => {
     // Red (1,0,0) → cyan (0,1,1)
     const frame = await runGpuEffectTest({
-      module: 'hsl.wasm',
+      module: 'color.hsl',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
       params: [[0, 1.0]],
@@ -62,7 +62,7 @@ describe('HSL Effect E2E', () => {
 
   it('lightness=+1 lifts to white', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hsl.wasm',
+      module: 'color.hsl',
       bundle: 'core',
       inputColor: [0.5, 0.0, 0.0, 1.0],
       params: [[2, 1.0]],
@@ -75,7 +75,7 @@ describe('HSL Effect E2E', () => {
 
   it('lightness=-1 crushes to black', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hsl.wasm',
+      module: 'color.hsl',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[2, -1.0]],

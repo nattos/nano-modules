@@ -11,7 +11,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('declares metadata and a single color input', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       dumpName: 'sc_metadata',
     });
@@ -25,7 +25,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('default params produce mid-grey', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       dumpName: 'sc_default_grey',
     });
@@ -36,7 +36,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('renders pure red', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       params: [['color', [1.0, 0.0, 0.0]]],
       dumpName: 'sc_red',
@@ -48,7 +48,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('renders pure green', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       params: [['color', [0.0, 1.0, 0.0]]],
       dumpName: 'sc_green',
@@ -60,7 +60,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('renders pure blue', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       params: [['color', [0.0, 0.0, 1.0]]],
       dumpName: 'sc_blue',
@@ -72,7 +72,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('renders black at all-zero', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       params: [['color', [0.0, 0.0, 0.0]]],
       dumpName: 'sc_black',
@@ -84,7 +84,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('renders white at all-one', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       params: [['color', [1.0, 1.0, 1.0]]],
       dumpName: 'sc_white',
@@ -96,7 +96,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('mixes channels independently', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       params: [['color', [1.0, 1.0, 0.0]]],
       dumpName: 'sc_yellow',
@@ -108,7 +108,7 @@ describe('Solid Color Effect E2E', () => {
 
   it('output is uniform across the entire frame', async () => {
     const frame = await runGpuTest({
-      module: 'solid_color.wasm',
+      module: 'source.solid_color',
       bundle: 'core',
       width: 96, height: 96,
       params: [['color', [0.3, 0.6, 0.9]]],

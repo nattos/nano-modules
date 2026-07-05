@@ -19,7 +19,7 @@ describe('Lights Sim Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'lights_sim.wasm', bundle: 'lights',
+      module: 'filter.lights_sim', bundle: 'lights',
       inputColor: [0, 0, 0, 1], dumpName: 'lights_sim_metadata',
     });
     expect(frame.success).toBe(true);
@@ -30,7 +30,7 @@ describe('Lights Sim Effect E2E', () => {
     // White input, opacity 0 → background black, bars white. inset_h 0.3 means
     // the bar spans the middle 70% of each quarter, leaving dark side gaps.
     const frame = await runGpuEffectTest({
-      module: 'lights_sim.wasm', bundle: 'lights',
+      module: 'filter.lights_sim', bundle: 'lights',
       width: W, height: H, inputColor: [1, 1, 1, 1], ticks: 1,
       params: [['segments', 8], ['inset_h', 0.3], ['inset_v', 0.05], ['input_opacity', 0.0]],
       dumpName: 'lights_sim_render',
@@ -46,7 +46,7 @@ describe('Lights Sim Effect E2E', () => {
 
   it('input_opacity fades the background behind the bars', async () => {
     const at = (input_opacity: number) => runGpuEffectTest({
-      module: 'lights_sim.wasm', bundle: 'lights',
+      module: 'filter.lights_sim', bundle: 'lights',
       width: W, height: H, inputColor: [0.5, 0.5, 0.5, 1], ticks: 1,
       params: [['segments', 8], ['inset_h', 0.3], ['input_opacity', input_opacity]],
       dumpName: `lights_sim_opacity_${Math.round(input_opacity * 100)}`,
@@ -60,7 +60,7 @@ describe('Lights Sim Effect E2E', () => {
 
   it('inset_h controls how far the bar is inset (narrower bar at higher inset)', async () => {
     const at = (inset_h: number) => runGpuEffectTest({
-      module: 'lights_sim.wasm', bundle: 'lights',
+      module: 'filter.lights_sim', bundle: 'lights',
       width: W, height: H, inputColor: [1, 1, 1, 1], ticks: 1,
       params: [['segments', 8], ['inset_h', inset_h], ['input_opacity', 0.0]],
       dumpName: `lights_sim_inset_${Math.round(inset_h * 100)}`,

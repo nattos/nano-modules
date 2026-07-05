@@ -11,7 +11,7 @@ describe('Brightness & Contrast Effect E2E', () => {
   describe('standalone (solid color input)', () => {
     it('declares metadata and I/O', async () => {
       const frame = await runGpuEffectTest({
-        module: 'brightness_contrast.wasm',
+        module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         dumpName: 'bc_metadata',
@@ -27,7 +27,7 @@ describe('Brightness & Contrast Effect E2E', () => {
     it('neutral settings pass through color unchanged', async () => {
       // brightness=0 (neutral), contrast=0 (1x) should pass through
       const frame = await runGpuEffectTest({
-        module: 'brightness_contrast.wasm',
+        module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.25, 0.75, 1.0],
         params: [[0, 0.0], [1, 0.0]],
@@ -42,7 +42,7 @@ describe('Brightness & Contrast Effect E2E', () => {
     it('contrast=-1 produces black', async () => {
       // contrast=-1 means multiply by (c+1)=0 → all black
       const frame = await runGpuEffectTest({
-        module: 'brightness_contrast.wasm',
+        module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         params: [[0, 0.0], [1, -1.0]],
@@ -57,7 +57,7 @@ describe('Brightness & Contrast Effect E2E', () => {
       // contrast=1.0 means multiply by (c+1)=2.0
       // Input: 0.25 → 0.25 * 2.0 = 0.5 → 128 (brightness=0 neutral)
       const frame = await runGpuEffectTest({
-        module: 'brightness_contrast.wasm',
+        module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.25, 0.25, 0.25, 1.0],
         params: [[0, 0.0], [1, 1.0]],
@@ -72,7 +72,7 @@ describe('Brightness & Contrast Effect E2E', () => {
       // brightness=1.0 adds +1.0 to RGB, then contrast=0 (1x)
       // Input 0.0 + 1.0 = 1.0 → saturated white
       const frame = await runGpuEffectTest({
-        module: 'brightness_contrast.wasm',
+        module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.0, 0.0, 0.0, 1.0],
         params: [[0, 1.0], [1, 0.0]],
@@ -87,7 +87,7 @@ describe('Brightness & Contrast Effect E2E', () => {
       // brightness=-1 adds -1.0 to RGB, then contrast=0 (1x)
       // Input 0.5 + (-1.0) = -0.5 → saturated to 0
       const frame = await runGpuEffectTest({
-        module: 'brightness_contrast.wasm',
+        module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         params: [[0, -1.0], [1, 0.0]],
@@ -106,7 +106,7 @@ describe('Brightness & Contrast Effect E2E', () => {
     it('reduces contrast when applied after spinningtris', async () => {
       // Render spinningtris alone
       const before = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         width: 64, height: 64,
         params: [[0, 0.5]], // ~500 triangles
         ticks: 5,
@@ -117,8 +117,8 @@ describe('Brightness & Contrast Effect E2E', () => {
       // Render spinningtris → brightness_contrast with half contrast
       const after = await runGpuChainTest({
         chain: [
-          { module: 'spinningtris.wasm', params: [[0, 0.5]], ticks: 5 },
-          { module: 'brightness_contrast.wasm', params: [[0, 0.0], [1, -0.5]] },
+          { module: 'debug.spinningtris', params: [[0, 0.5]], ticks: 5 },
+          { module: 'color.tone.brightness_contrast', params: [[0, 0.0], [1, -0.5]] },
         ],
         width: 64, height: 64,
         dumpName: 'chain_half_contrast',
@@ -140,8 +140,8 @@ describe('Brightness & Contrast Effect E2E', () => {
     it('contrast=-1 in chain produces black', async () => {
       const frame = await runGpuChainTest({
         chain: [
-          { module: 'spinningtris.wasm', params: [[0, 0.5]], ticks: 5 },
-          { module: 'brightness_contrast.wasm', params: [[0, 0.0], [1, -1.0]] },
+          { module: 'debug.spinningtris', params: [[0, 0.5]], ticks: 5 },
+          { module: 'color.tone.brightness_contrast', params: [[0, 0.0], [1, -1.0]] },
         ],
         width: 64, height: 64,
         dumpName: 'chain_black',

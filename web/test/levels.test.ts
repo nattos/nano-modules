@@ -8,7 +8,7 @@ describe('Levels Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'levels_metadata',
@@ -23,7 +23,7 @@ describe('Levels Effect E2E', () => {
   it('default settings pass through unchanged', async () => {
     // in_low=0, in_high=1, gamma=0, out_low=0, out_high=1 → identity
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       dumpName: 'levels_identity',
@@ -35,7 +35,7 @@ describe('Levels Effect E2E', () => {
 
   it('in_low=0.5 clips below-mid to black', async () => {
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.3, 0.3, 0.3, 1.0],
       params: [[0, 0.5]],
@@ -48,7 +48,7 @@ describe('Levels Effect E2E', () => {
 
   it('in_high=0.5 clips above-mid to white', async () => {
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.6, 0.6, 0.6, 1.0],
       params: [[1, 0.5]],
@@ -62,7 +62,7 @@ describe('Levels Effect E2E', () => {
   it('gamma=+1 lifts mid-grey toward white (exp 1/8)', async () => {
     // pow(0.5, 1/8) ≈ 0.917 → 234
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[2, 1.0]],
@@ -75,7 +75,7 @@ describe('Levels Effect E2E', () => {
 
   it('gamma=-1 crushes mid-grey toward black (exp 8)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[2, -1.0]],
@@ -91,7 +91,7 @@ describe('Levels Effect E2E', () => {
     // Input 0.5 → x=0.5 → out = 0.5 * 0.5 + 0.25 = 0.5 → 128 (no change for mid)
     // Input 1.0 → x=1.0 → out = 0.75 → 191
     const frame = await runGpuEffectTest({
-      module: 'levels.wasm',
+      module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [[3, 0.25], [4, 0.75]],

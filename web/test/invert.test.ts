@@ -9,7 +9,7 @@ describe('Invert Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'invert.wasm',
+      module: 'color.invert',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'invert_metadata',
@@ -24,7 +24,7 @@ describe('Invert Effect E2E', () => {
   it('fully inverts RGB', async () => {
     // (0.2, 0.4, 0.6) → (0.8, 0.6, 0.4) → (204, 153, 102)
     const frame = await runGpuEffectTest({
-      module: 'invert.wasm',
+      module: 'color.invert',
       bundle: 'core',
       inputColor: [0.2, 0.4, 0.6, 1.0],
       dumpName: 'invert_full',
@@ -36,7 +36,7 @@ describe('Invert Effect E2E', () => {
 
   it('alpha is preserved by default', async () => {
     const frame = await runGpuEffectTest({
-      module: 'invert.wasm',
+      module: 'color.invert',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.4],
       params: [[0, 0.0]],
@@ -50,7 +50,7 @@ describe('Invert Effect E2E', () => {
   it('invert_alpha=1 also flips the alpha channel', async () => {
     // alpha 0.4 inverted to 0.6 → 153
     const frame = await runGpuEffectTest({
-      module: 'invert.wasm',
+      module: 'color.invert',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.4],
       params: [[0, 1.0]],

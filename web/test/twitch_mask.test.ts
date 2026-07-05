@@ -10,7 +10,7 @@ describe('Twitch Mask Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'twitch_mask_metadata',
@@ -23,7 +23,7 @@ describe('Twitch Mask Effect E2E', () => {
 
   it('amount=0 passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       params: [[0, 0.0]],
@@ -38,7 +38,7 @@ describe('Twitch Mask Effect E2E', () => {
     // position=+1 spawns near the centre; shape=-1 blacks the inside of the
     // oval → an on-screen region is suppressed. ticks>0 so the anchor is drawn.
     const frame = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [[0, 1.0], [1, -1.0], [4, 1.0]],
@@ -54,7 +54,7 @@ describe('Twitch Mask Effect E2E', () => {
     // The old mask faded to nothing at shape≈0. Now |shape|=0 lerps to a solid
     // (uniform) suppression, so a white frame darkens almost everywhere.
     const frame = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [[0, 1.0], [1, 0.0]],   // amount=1, shape=0
@@ -71,7 +71,7 @@ describe('Twitch Mask Effect E2E', () => {
     // radius=0.5 the 0.5 crossing sits out on the far side, so the centre is
     // transparent and only one side darkens. position=-1 → a clear axis.
     const frame = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [[0, 1.0], [1, 0.5], [2, 0.5], [4, -1.0]],  // amount, shape, radius, position
@@ -87,7 +87,7 @@ describe('Twitch Mask Effect E2E', () => {
 
   it('the mask roams between frames', async () => {
     const a = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [[0, 1.0], [1, -1.0], [4, 1.0]],
@@ -95,7 +95,7 @@ describe('Twitch Mask Effect E2E', () => {
       dumpName: 'twitch_mask_frame_a',
     });
     const b = await runGpuEffectTest({
-      module: 'twitch_mask.wasm',
+      module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [[0, 1.0], [1, -1.0], [4, 1.0]],

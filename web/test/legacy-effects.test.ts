@@ -8,7 +8,7 @@ describe('Bicolor Gradient (color.legacy.bicolor_grad) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'bicolor_grad.wasm',
+      module: 'color.legacy.bicolor_grad',
       bundle: 'legacy',
       inputColor: [0.6, 0.2, 0.1, 1.0],
       dumpName: 'bicolor_grad_metadata',
@@ -26,7 +26,7 @@ describe('Bicolor Gradient (color.legacy.bicolor_grad) E2E', () => {
 
   it('blend=0 is a passthrough (output equals input)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'bicolor_grad.wasm',
+      module: 'color.legacy.bicolor_grad',
       bundle: 'legacy',
       width: 64, height: 64,
       inputColor: [0.6, 0.2, 0.1, 1.0],
@@ -46,7 +46,7 @@ describe('Bicolor Gradient (color.legacy.bicolor_grad) E2E', () => {
     // the gradient fall back to the neutral colour, so the whole frame paints
     // neutral at blend=1.
     const frame = await runGpuEffectTest({
-      module: 'bicolor_grad.wasm',
+      module: 'color.legacy.bicolor_grad',
       bundle: 'legacy',
       width: 64, height: 64,
       inputColor: [0.5, 0.5, 0.5, 1.0],
@@ -68,7 +68,7 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'glisten.wasm',
+      module: 'filter.legacy.glisten',
       bundle: 'legacy',
       inputColor: [0.3, 0.3, 0.3, 1.0],
       dumpName: 'glisten_metadata',
@@ -87,7 +87,7 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
     // (top-left). The additive sparkle brightens around it; the opposite
     // corner stays at the input value.
     const frame = await runGpuEffectTest({
-      module: 'glisten.wasm',
+      module: 'filter.legacy.glisten',
       bundle: 'legacy',
       width: 64, height: 64,
       inputColor: [0.3, 0.3, 0.3, 1.0],
@@ -110,7 +110,7 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'double_chamber.wasm',
+      module: 'source.legacy.double_chamber',
       bundle: 'legacy',
       inputColor: [0.0, 0.0, 0.0, 1.0],
       dumpName: 'double_chamber_metadata',
@@ -128,7 +128,7 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     // Particles seed as white points, blend additively over the black input.
     // After a few ticks the cloud has clearly brightened the frame.
     const frame = await runGpuEffectTest({
-      module: 'double_chamber.wasm',
+      module: 'source.legacy.double_chamber',
       bundle: 'legacy',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -155,7 +155,7 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     // Particles off, tracers on: the field streamlines should draw bright
     // lines over the black input.
     const frame = await runGpuEffectTest({
-      module: 'double_chamber.wasm',
+      module: 'source.legacy.double_chamber',
       bundle: 'legacy',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -184,7 +184,7 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     // chord between two particles, so the only light in the frame comes from
     // the connector lines.
     const frame = await runGpuEffectTest({
-      module: 'double_chamber.wasm',
+      module: 'source.legacy.double_chamber',
       bundle: 'legacy',
       width: 128, height: 128,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -242,14 +242,14 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     };
 
     const off = await runGpuEffectTest({
-      module: 'double_chamber.wasm', bundle: 'legacy', width: W, height: H,
+      module: 'source.legacy.double_chamber', bundle: 'legacy', width: W, height: H,
       inputColor: [0, 0, 0, 1],
       params: [...common, ['boundary_death', 0.0]],
       ticks: 24, renderEachTick: true,
       dumpName: 'double_chamber_bdeath_off',
     });
     const on = await runGpuEffectTest({
-      module: 'double_chamber.wasm', bundle: 'legacy', width: W, height: H,
+      module: 'source.legacy.double_chamber', bundle: 'legacy', width: W, height: H,
       inputColor: [0, 0, 0, 1],
       params: [...common, ['boundary_death', 1.0]],
       ticks: 24, renderEachTick: true,

@@ -13,7 +13,7 @@ describe('Bake Alpha Effect E2E', () => {
 
   it('declares metadata and a single color input', async () => {
     const frame = await runGpuEffectTest({
-      module: 'bake_alpha.wasm',
+      module: 'composite.bake_alpha',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'bake_alpha_metadata',
@@ -30,7 +30,7 @@ describe('Bake Alpha Effect E2E', () => {
     // src=(0.4, 0.6, 0.8, 1.0), bg defaults to (0, 0, 0, 1).
     // src.a=1 → result = src exactly.
     const frame = await runGpuEffectTest({
-      module: 'bake_alpha.wasm',
+      module: 'composite.bake_alpha',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       dumpName: 'bake_alpha_opaque_passthrough',
@@ -44,7 +44,7 @@ describe('Bake Alpha Effect E2E', () => {
     // src=(1, 1, 1, 0.5) over bg=(0, 0, 0, 1).
     // rgb = 1*0.5 + 0*0.5 = 0.5 → 128. out.a = 0.5 + 1*0.5 = 1 → 255.
     const frame = await runGpuEffectTest({
-      module: 'bake_alpha.wasm',
+      module: 'composite.bake_alpha',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 0.5],
       dumpName: 'bake_alpha_half_over_black',
@@ -58,7 +58,7 @@ describe('Bake Alpha Effect E2E', () => {
     // src=(0, 0, 1, 0.5) over bg=(1, 0, 0, 1).
     // rgb = (0,0,1)*0.5 + (1,0,0)*0.5 = (0.5, 0, 0.5). out.a = 0.5 + 0.5 = 1.
     const frame = await runGpuEffectTest({
-      module: 'bake_alpha.wasm',
+      module: 'composite.bake_alpha',
       bundle: 'core',
       inputColor: [0.0, 0.0, 1.0, 0.5],
       params: [['color', [1.0, 0.0, 0.0, 1.0]]],
@@ -72,7 +72,7 @@ describe('Bake Alpha Effect E2E', () => {
   it('zero-alpha input becomes the background colour', async () => {
     // src=(*, *, *, 0) over bg=(0.4, 0.6, 0.2, 1) → exactly bg.
     const frame = await runGpuEffectTest({
-      module: 'bake_alpha.wasm',
+      module: 'composite.bake_alpha',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 0.0],
       params: [['color', [0.4, 0.6, 0.2, 1.0]]],
@@ -88,7 +88,7 @@ describe('Bake Alpha Effect E2E', () => {
     // rgb = (1, 0.5, 0)*0.5 + (0,0,0)*0.5 = (0.5, 0.25, 0).
     // out.a = 0.5 + 0 = 0.5 → 128.
     const frame = await runGpuEffectTest({
-      module: 'bake_alpha.wasm',
+      module: 'composite.bake_alpha',
       bundle: 'core',
       inputColor: [1.0, 0.5, 0.0, 0.5],
       params: [['color', [0.0, 0.0, 0.0, 0.0]]],

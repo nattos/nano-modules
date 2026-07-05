@@ -14,7 +14,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       dumpName: 'plasma_beam_cannon_metadata',
     });
@@ -24,7 +24,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
 
   it('idle with auto_rate=0 passes input through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       inputColor: [0.4, 0.4, 0.4, 1.0],
       // Mute the Poisson auto-trigger so we can verify pristine
@@ -43,7 +43,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // not on any patch arrival, or the cycle re-arms forever. With trigger at
     // 0 and auto_rate 0, the beam must never light: pristine passthrough.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.4, 0.4, 0.4, 1.0],
@@ -62,7 +62,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // phase. This verifies the path that makes the IDE preview "feel
     // alive" when the effect is dropped in without any gate wiring.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -87,7 +87,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // gate (~16 frames @ dt=0.016) we should be in Sustain → full
     // bar height, every pixel lit with beam color.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -110,7 +110,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
 
   it('gate=true with bar_target_all=false lights only the targeted bar', async () => {
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -142,7 +142,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // using the current values of attack/decay/sustain_s — and the
     // runner applies params in array order.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -188,7 +188,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // Even with a high target_end the visible break coverage stays
     // bounded by `count * min_break_size`.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -232,7 +232,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // the SECOND cycle. With cycle_seed=true the two patterns SHOULD
     // differ — frames won't be identical.
     const common: any = {
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights' as const,
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0] as [number, number, number, number],
@@ -274,7 +274,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // should be fully lit (zero breaks visible) even though attractor
     // breaks were configured.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -307,7 +307,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // All "breaks" are spacers (invisible). Beam should be fully lit
     // throughout release, no break-induced dark pixels.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -340,7 +340,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // → pow(0.016, 1/8) ≈ 0.524 → half_height ≈ 0.052 → beam covers
     // uv.y ∈ [~0.448, ~0.552], visible.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -371,7 +371,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     // → half_height ≈ 0.1 * 0.016 = 0.0016 → essentially zero. The
     // beam shouldn't be visible yet, input passes through.
     const frame = await runGpuEffectTest({
-      module: 'plasma_beam_cannon.wasm',
+      module: 'source.light.plasma_beam_cannon',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.4, 0.4, 0.4, 1.0],

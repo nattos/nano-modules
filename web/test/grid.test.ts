@@ -5,7 +5,7 @@ describe('Grid Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'grid.wasm',
+      module: 'source.grid',
       bundle: 'core',
       dumpName: 'grid_metadata',
     });
@@ -15,7 +15,7 @@ describe('Grid Effect E2E', () => {
 
   it('default settings produce both line and background pixels', async () => {
     const frame = await runGpuTest({
-      module: 'grid.wasm',
+      module: 'source.grid',
       bundle: 'core',
       width: 96, height: 96,
       dumpName: 'grid_default',
@@ -30,7 +30,7 @@ describe('Grid Effect E2E', () => {
 
   it('cell_size=0 (clamped to 0.02) produces a fine grid', async () => {
     const fine = await runGpuTest({
-      module: 'grid.wasm',
+      module: 'source.grid',
       bundle: 'core',
       width: 64, height: 64,
       // Set fields by NAME — grid reads params via named patches (instance
@@ -42,7 +42,7 @@ describe('Grid Effect E2E', () => {
       dumpName: 'grid_fine',
     });
     const coarse = await runGpuTest({
-      module: 'grid.wasm',
+      module: 'source.grid',
       bundle: 'core',
       width: 64, height: 64,
       params: [['cell_size', 1.0], ['line_width', 0.5], ['softness', 0.1]],
@@ -67,7 +67,7 @@ describe('Grid Effect E2E', () => {
   it('custom line and bg colours apply', async () => {
     // line=red opaque, bg=blue opaque.
     const frame = await runGpuTest({
-      module: 'grid.wasm',
+      module: 'source.grid',
       bundle: 'core',
       width: 64, height: 64,
       params: [

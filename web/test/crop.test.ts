@@ -5,7 +5,7 @@ describe('Crop Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'crop.wasm',
+      module: 'warp.crop',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'crop_metadata',
@@ -16,7 +16,7 @@ describe('Crop Effect E2E', () => {
 
   it('default 1x1 crop covers the whole frame (passthrough)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'crop.wasm',
+      module: 'warp.crop',
       bundle: 'core',
       inputColor: [0.5, 0.7, 0.2, 1.0],
       // Defaults: center 0,0; width 1; height 1; feather 0.02 → covers full square + a bit.
@@ -30,7 +30,7 @@ describe('Crop Effect E2E', () => {
     // center=0, width=0.2, height=1, feather small. The centre pixel should
     // remain inside the rect; far-left/right pixels should be in fill (alpha 0).
     const frame = await runGpuEffectTest({
-      module: 'crop.wasm',
+      module: 'warp.crop',
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],
@@ -48,7 +48,7 @@ describe('Crop Effect E2E', () => {
   it('fill colour fills the masked-out region', async () => {
     // width=0, height=0 → nothing inside the rect → entire frame is fill.
     const frame = await runGpuEffectTest({
-      module: 'crop.wasm',
+      module: 'warp.crop',
       bundle: 'core',
       width: 32, height: 32,
       inputColor: [1.0, 1.0, 1.0, 1.0],
@@ -65,7 +65,7 @@ describe('Crop Effect E2E', () => {
   describe('schema-edit lifecycle (mode=Span vs Inset visibility)', () => {
     it('default Span mode hides inset fields, shows width/height/center', async () => {
       const frame = await runGpuEffectTest({
-        module: 'crop.wasm',
+        module: 'warp.crop',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
         dumpName: 'crop_visibility_span',
@@ -89,7 +89,7 @@ describe('Crop Effect E2E', () => {
       // mode=Inset, inset_left=0.25 → leftmost 25% of viewport masked
       // out (transparent). Sample left vs centre pixels.
       const frame = await runGpuEffectTest({
-        module: 'crop.wasm',
+        module: 'warp.crop',
         bundle: 'core',
         width: 64, height: 64,
         inputColor: [1.0, 1.0, 1.0, 1.0],
@@ -112,7 +112,7 @@ describe('Crop Effect E2E', () => {
 
     it('inset mode with all four insets carves an interior rectangle', async () => {
       const frame = await runGpuEffectTest({
-        module: 'crop.wasm',
+        module: 'warp.crop',
         bundle: 'core',
         width: 64, height: 64,
         inputColor: [1.0, 1.0, 1.0, 1.0],

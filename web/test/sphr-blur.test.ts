@@ -17,7 +17,7 @@ describe('SPHR Blur (filter.legacy.sphr_blur) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'sphr_blur.wasm', bundle: 'legacy',
+      module: 'filter.legacy.sphr_blur', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'sphr_metadata',
     });

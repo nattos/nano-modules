@@ -14,7 +14,7 @@ describe('Dispersion Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'dispersion.wasm',
+      module: 'warp.dispersion',
       bundle: 'lights',
       dumpName: 'dispersion_metadata',
     });
@@ -24,7 +24,7 @@ describe('Dispersion Effect E2E', () => {
 
   it('intensity=0 passes input through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'dispersion.wasm',
+      module: 'warp.dispersion',
       bundle: 'lights',
       inputColor: [0.4, 0.5, 0.6, 1.0],
       params: [['intensity', 0.0]],
@@ -39,7 +39,7 @@ describe('Dispersion Effect E2E', () => {
     // so the output must equal the input exactly (modulo lerp(intensity)
     // which is also a no-op on identical values).
     const frame = await runGpuEffectTest({
-      module: 'dispersion.wasm',
+      module: 'warp.dispersion',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.7, 0.3, 0.1, 1.0],
@@ -57,7 +57,7 @@ describe('Dispersion Effect E2E', () => {
 
   it('offset_max=0 with full intensity also passes through (no jitter)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'dispersion.wasm',
+      module: 'warp.dispersion',
       bundle: 'lights',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [
@@ -74,7 +74,7 @@ describe('Dispersion Effect E2E', () => {
 
   it('output is uniform across the frame with uniform input', async () => {
     const frame = await runGpuEffectTest({
-      module: 'dispersion.wasm',
+      module: 'warp.dispersion',
       bundle: 'lights',
       width: 96, height: 96,
       inputColor: [0.2, 0.4, 0.8, 1.0],

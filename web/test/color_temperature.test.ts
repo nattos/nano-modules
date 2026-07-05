@@ -14,7 +14,7 @@ describe('Color Temperature Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'color_temperature.wasm',
+      module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'color_temperature_metadata',
@@ -28,7 +28,7 @@ describe('Color Temperature Effect E2E', () => {
 
   it('temperature=0 passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'color_temperature.wasm',
+      module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[0, 0.0]],
@@ -42,7 +42,7 @@ describe('Color Temperature Effect E2E', () => {
   it('temperature=+1 pushes red over blue (warm)', async () => {
     // grey 0.5 → R * 1.5 = 192, G unchanged = 128, B * 0.5 = 64
     const frame = await runGpuEffectTest({
-      module: 'color_temperature.wasm',
+      module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[0, 1.0]],
@@ -56,7 +56,7 @@ describe('Color Temperature Effect E2E', () => {
   it('temperature=-1 pushes blue over red (cool)', async () => {
     // grey 0.5 → R * 0.5 = 64, G unchanged = 128, B * 1.5 = 192
     const frame = await runGpuEffectTest({
-      module: 'color_temperature.wasm',
+      module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[0, -1.0]],

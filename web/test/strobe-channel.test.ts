@@ -19,7 +19,7 @@ describe('Strobe Channel Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'strobe_channel.wasm',
+      module: 'source.light.strobe_channel',
       bundle: 'lights',
       dumpName: 'strobe_channel_metadata',
     });
@@ -29,7 +29,7 @@ describe('Strobe Channel Effect E2E', () => {
 
   it('intensity=0 passes input through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'strobe_channel.wasm',
+      module: 'source.light.strobe_channel',
       bundle: 'lights',
       inputColor: [0.4, 0.2, 0.6, 1.0],
       params: [['intensity', 0.0]],
@@ -45,7 +45,7 @@ describe('Strobe Channel Effect E2E', () => {
     // Force solid input to make the additive math easy: black input →
     // bar 0 region shows the flash color, others stay black.
     const frame = await runGpuEffectTest({
-      module: 'strobe_channel.wasm',
+      module: 'source.light.strobe_channel',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -73,7 +73,7 @@ describe('Strobe Channel Effect E2E', () => {
     // of width 16px lit and the other three dark. Don't pin which one
     // — the chaotic dynamics depend on elapsed time.
     const frame = await runGpuEffectTest({
-      module: 'strobe_channel.wasm',
+      module: 'source.light.strobe_channel',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -95,7 +95,7 @@ describe('Strobe Channel Effect E2E', () => {
 
   it('respects custom flash_color and intensity', async () => {
     const frame = await runGpuEffectTest({
-      module: 'strobe_channel.wasm',
+      module: 'source.light.strobe_channel',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],
@@ -116,7 +116,7 @@ describe('Strobe Channel Effect E2E', () => {
 
   it('bar_count=8 splits the canvas into 8 regions', async () => {
     const frame = await runGpuEffectTest({
-      module: 'strobe_channel.wasm',
+      module: 'source.light.strobe_channel',
       bundle: 'lights',
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0],

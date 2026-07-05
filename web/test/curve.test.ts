@@ -10,7 +10,7 @@ describe('Curve Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'curve.wasm',
+      module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'curve_metadata',
@@ -24,7 +24,7 @@ describe('Curve Effect E2E', () => {
 
   it('rgb=0 / alpha=0 passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'curve.wasm',
+      module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.25, 0.75, 0.6],
       params: [[0, 0.0], [1, 0.0]],
@@ -38,7 +38,7 @@ describe('Curve Effect E2E', () => {
   it('rgb=+1 lifts mid-grey toward white (exp 1/8)', async () => {
     // pow(0.5, 1/8) ≈ 0.917 → 234
     const frame = await runGpuEffectTest({
-      module: 'curve.wasm',
+      module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[0, 1.0]],
@@ -52,7 +52,7 @@ describe('Curve Effect E2E', () => {
   it('rgb=-1 crushes mid-grey toward black (exp 8)', async () => {
     // pow(0.5, 8) ≈ 0.0039 → 1
     const frame = await runGpuEffectTest({
-      module: 'curve.wasm',
+      module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       params: [[0, -1.0]],
@@ -66,7 +66,7 @@ describe('Curve Effect E2E', () => {
   it('alpha curve shapes alpha independently of RGB', async () => {
     // alpha=+1 lifts mid alpha (0.5 → ~0.917 → 234), RGB stays at default 0.
     const frame = await runGpuEffectTest({
-      module: 'curve.wasm',
+      module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.0, 0.0, 0.0, 0.5],
       params: [[0, 0.0], [1, 1.0]],

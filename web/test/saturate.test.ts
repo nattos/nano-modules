@@ -17,7 +17,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
 
   it('declares metadata and three scalar inputs', async () => {
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'saturate_metadata',
@@ -39,7 +39,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
       [['prescale', 0], ['asymm', -1.0], ['linear_deadzone', 0.5]],
     ] as any) {
       const frame = await runGpuEffectTest({
-        module: 'saturate.wasm',
+        module: 'color.saturate',
         bundle: 'core',
         inputColor: [0.4, 0.6, 0.8, 1.0],
         params,
@@ -59,7 +59,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
       [['linear_deadzone', 0.4]],
     ] as any) {
       const frame = await runGpuEffectTest({
-        module: 'saturate.wasm',
+        module: 'color.saturate',
         bundle: 'core',
         inputColor: [0, 0, 0, 1.0],
         params,
@@ -73,7 +73,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
   it('default prescale=1 softens whites (~tanh(1) ≈ 0.762 → 194)', async () => {
     // Default deadzone=0, asymm=0 → out = tanh(x). White → 194.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       dumpName: 'saturate_default_white',
@@ -85,7 +85,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
   it('higher prescale crushes whites harder (drive)', async () => {
     // prescale=4: y=4 → tanh(4) ≈ 0.9993 → ~255.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [['prescale', 4.0]],
@@ -99,7 +99,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
     // Whole [0, 1] window inside the deadzone — never reaches the
     // tanh branch.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       params: [['linear_deadzone', 1.0]],
@@ -113,7 +113,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
     // deadzone = 0.5: y in [0, 0.5] passes through. x = 0.4 → y = 0.4
     // → in deadzone → out = 0.4 → 102.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [0.4, 0.4, 0.4, 1.0],
       params: [['linear_deadzone', 0.5]],
@@ -127,7 +127,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
     // deadzone = 0.5, x = 1.0 → y = 1.0, excess = 0.5,
     // rolloff_range = 0.5. z = 0.5 + 0.5 * tanh(1) ≈ 0.881 → 225.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [['linear_deadzone', 0.5]],
@@ -140,7 +140,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
   it('asymm > 0 sharpens the rolloff (limit pulled closer to 1)', async () => {
     // asymm=1: steepness=2. x=1 → tanh(2) ≈ 0.964 → 246.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [['asymm', 1.0]],
@@ -153,7 +153,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
   it('asymm < 0 softens the rolloff (output below tanh)', async () => {
     // asymm=-1: steepness=0.5. x=1 → tanh(0.5) ≈ 0.462 → 118.
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [['asymm', -1.0]],
@@ -165,7 +165,7 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
 
   it('alpha passes through untouched', async () => {
     const frame = await runGpuEffectTest({
-      module: 'saturate.wasm',
+      module: 'color.saturate',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.5],
       params: [['prescale', 2.0]],

@@ -5,7 +5,7 @@ describe('Transform Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'transform.wasm',
+      module: 'warp.transform',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'transform_metadata',
@@ -16,7 +16,7 @@ describe('Transform Effect E2E', () => {
 
   it('default identity transform passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'transform.wasm',
+      module: 'warp.transform',
       bundle: 'core',
       inputColor: [0.4, 0.7, 0.2, 1.0],
       dumpName: 'transform_identity',
@@ -31,8 +31,8 @@ describe('Transform Effect E2E', () => {
     // column smeared across).
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm', params: [[0, 0.3], [1, 0.2]] },
-        { module: 'transform.wasm', params: [['translate', [1.0, 0.0]]] },
+        { module: 'source.grid', params: [[0, 0.3], [1, 0.2]] },
+        { module: 'warp.transform', params: [['translate', [1.0, 0.0]]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -46,7 +46,7 @@ describe('Transform Effect E2E', () => {
     // should now hold the colour that was previously near the right edge.
     const before = await runGpuChainTest({
       chain: [
-        { module: 'gradient.wasm', params: [[0, 0.0], [1, 0.0], [2, 1.0]] },  // angle=0 (left→right), full ramp
+        { module: 'source.gradient', params: [[0, 0.0], [1, 0.0], [2, 1.0]] },  // angle=0 (left→right), full ramp
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -54,8 +54,8 @@ describe('Transform Effect E2E', () => {
     });
     const after = await runGpuChainTest({
       chain: [
-        { module: 'gradient.wasm', params: [[0, 0.0], [1, 0.0], [2, 1.0]] },
-        { module: 'transform.wasm', params: [[1, 1.0]] },  // rotation=+1 → +180°
+        { module: 'source.gradient', params: [[0, 0.0], [1, 0.0], [2, 1.0]] },
+        { module: 'warp.transform', params: [[1, 1.0]] },  // rotation=+1 → +180°
       ],
       bundle: 'core',
       width: 64, height: 64,

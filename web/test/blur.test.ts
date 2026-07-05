@@ -12,7 +12,7 @@ describe('Blur Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'blur.wasm',
+      module: 'filter.blur.gaussian',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'blur_metadata',
@@ -31,7 +31,7 @@ describe('Blur Effect E2E', () => {
     ];
     for (let i = 0; i < cases.length; i++) {
       const frame = await runGpuEffectTest({
-        module: 'blur.wasm',
+        module: 'filter.blur.gaussian',
         bundle: 'core',
         inputColor: [0.4, 0.6, 0.2, 1.0],
         params: cases[i],
@@ -44,7 +44,7 @@ describe('Blur Effect E2E', () => {
 
   it('radius=0 passes through unchanged at any quality', async () => {
     const frame = await runGpuEffectTest({
-      module: 'blur.wasm',
+      module: 'filter.blur.gaussian',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.2, 1.0],
       params: [[0, 0.0], [1, 0.5]],
@@ -56,15 +56,15 @@ describe('Blur Effect E2E', () => {
 
   it('high-radius blur softens a grid (variance drops)', async () => {
     const sharp = await runGpuChainTest({
-      chain: [{ module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] }],
+      chain: [{ module: 'source.grid', params: [[0, 0.2], [1, 0.2]] }],
       bundle: 'core',
       width: 64, height: 64,
       dumpName: 'blur_chain_sharp',
     });
     const blurred = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'blur.wasm', params: [[0, 1.0], [1, 1.0]] },
+        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
+        { module: 'filter.blur.gaussian', params: [[0, 1.0], [1, 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -89,14 +89,14 @@ describe('Blur Effect E2E', () => {
     // jitter across the frame.
     const grid = (extra: any[]) => runGpuChainTest({
       chain: [
-        { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },
+        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
         ...extra,
       ],
       bundle: 'core',
       width: 64, height: 64,
     });
-    const a = await grid([{ module: 'blur.wasm', params: [[0, 0.50], [1, 1.0]] }]);
-    const b = await grid([{ module: 'blur.wasm', params: [[0, 0.51], [1, 1.0]] }]);
+    const a = await grid([{ module: 'filter.blur.gaussian', params: [[0, 0.50], [1, 1.0]] }]);
+    const b = await grid([{ module: 'filter.blur.gaussian', params: [[0, 0.51], [1, 1.0]] }]);
     expect(a.success && b.success).toBe(true);
 
     const ap = a.region(0, 0, a.width, a.height);

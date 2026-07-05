@@ -15,7 +15,7 @@ describe('Chroma Wobble (warp.legacy.chroma_wobble) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'chroma_wobble.wasm', bundle: 'legacy',
+      module: 'warp.legacy.chroma_wobble', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'cw_metadata',
     });

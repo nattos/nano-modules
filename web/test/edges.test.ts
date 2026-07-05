@@ -5,7 +5,7 @@ describe('Edges Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'edges.wasm',
+      module: 'filter.edges',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'edges_metadata',
@@ -17,7 +17,7 @@ describe('Edges Effect E2E', () => {
   it('uniform input produces no edges (all background)', async () => {
     // Uniform → gradient magnitude = 0 → all pixels become bg colour (default black).
     const frame = await runGpuEffectTest({
-      module: 'edges.wasm',
+      module: 'filter.edges',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'edges_uniform',
@@ -29,8 +29,8 @@ describe('Edges Effect E2E', () => {
   it('grid produces visible edges', async () => {
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm', params: [[0, 0.3], [1, 0.2]] },
-        { module: 'edges.wasm', params: [[0, 0.05]] },  // threshold=0.05
+        { module: 'source.grid', params: [[0, 0.3], [1, 0.2]] },
+        { module: 'filter.edges', params: [[0, 0.05]] },  // threshold=0.05
       ],
       bundle: 'core',
       width: 64, height: 64,

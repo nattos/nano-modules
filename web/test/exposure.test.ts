@@ -12,7 +12,7 @@ describe('Exposure Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'exposure.wasm',
+      module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'exposure_metadata',
@@ -26,7 +26,7 @@ describe('Exposure Effect E2E', () => {
 
   it('amount=0 passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'exposure.wasm',
+      module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.4, 0.4, 0.4, 1.0],
       params: [[0, 0.0]],
@@ -40,7 +40,7 @@ describe('Exposure Effect E2E', () => {
   it('amount=+1 multiplies by 8 (saturates white)', async () => {
     // 0.1 * 8 = 0.8 → 204
     const frame = await runGpuEffectTest({
-      module: 'exposure.wasm',
+      module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.1, 0.1, 0.1, 1.0],
       params: [[0, 1.0]],
@@ -54,7 +54,7 @@ describe('Exposure Effect E2E', () => {
   it('amount=-1 multiplies by 1/8', async () => {
     // 0.8 / 8 = 0.1 → 26
     const frame = await runGpuEffectTest({
-      module: 'exposure.wasm',
+      module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.8, 0.8, 0.8, 1.0],
       params: [[0, -1.0]],

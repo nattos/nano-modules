@@ -19,7 +19,7 @@ forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () =>
     // (0.4, 0.6, 0.8) → (102, 153, 204).
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_solid.wasm', params: [['color', [0.4, 0.6, 0.8, 1.0]]] },
+        { module: 'debug.fuse_solid', params: [['color', [0.4, 0.6, 0.8, 1.0]]] },
       ],
       bundle: 'testonly',
       // No inputColor — the strict-output stage generates pixels itself.
@@ -34,8 +34,8 @@ forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () =>
     // add(0.3, 0.0, 0.0)   → (0.5, 0.2, 0.2)  → (128, 51, 51)
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_solid.wasm', params: [['color',  [0.2, 0.2, 0.2, 1.0]]] },
-        { module: 'fuse_add.wasm',   params: [['offset', [0.3, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_solid', params: [['color',  [0.2, 0.2, 0.2, 1.0]]] },
+        { module: 'debug.fuse_add',   params: [['offset', [0.3, 0.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       dumpName: 'fusion_so_solid_add',
@@ -50,9 +50,9 @@ forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () =>
     // mul  (1.0, 0.5, 0.0) = (0.5, 0.5, 0.0) → (128, 128, 0)
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_solid.wasm', params: [['color',  [0.5, 0.5, 0.5, 1.0]]] },
-        { module: 'fuse_add.wasm',   params: [['offset', [0.0, 0.5, 0.5, 0.0]]] },
-        { module: 'fuse_mul.wasm',   params: [['scale',  [1.0, 0.5, 0.0, 0.0]]] },
+        { module: 'debug.fuse_solid', params: [['color',  [0.5, 0.5, 0.5, 1.0]]] },
+        { module: 'debug.fuse_add',   params: [['offset', [0.0, 0.5, 0.5, 0.0]]] },
+        { module: 'debug.fuse_mul',   params: [['scale',  [1.0, 0.5, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       dumpName: 'fusion_so_three_stage',
@@ -65,8 +65,8 @@ forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () =>
     // solid sets alpha = 0.25 → 64. add/mul leave it untouched.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_solid.wasm', params: [['color',  [0.0, 0.0, 0.0, 0.25]]] },
-        { module: 'fuse_add.wasm',   params: [['offset', [0.5, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_solid', params: [['color',  [0.0, 0.0, 0.0, 0.25]]] },
+        { module: 'debug.fuse_add',   params: [['offset', [0.5, 0.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       dumpName: 'fusion_so_alpha',
@@ -88,9 +88,9 @@ forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () =>
     // → mul (2.0, 0.0, 1.0) → (1.0, 0.0, 0.5) → (255, 0, 128)
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm',   params: [['offset', [0.0, 0.0, 0.0, 0.0]]] },
-        { module: 'fuse_solid.wasm', params: [['color',  [0.5, 0.5, 0.5, 1.0]]] },
-        { module: 'fuse_mul.wasm',   params: [['scale',  [2.0, 0.0, 1.0, 0.0]]] },
+        { module: 'debug.fuse_add',   params: [['offset', [0.0, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_solid', params: [['color',  [0.5, 0.5, 0.5, 1.0]]] },
+        { module: 'debug.fuse_mul',   params: [['scale',  [2.0, 0.0, 1.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.4, 0.4, 0.4, 1.0],

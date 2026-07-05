@@ -16,7 +16,7 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
     // 0.6 → 153, 0.5 → 128, 0.0 → 0.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.1, 0.0, -0.5, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.1, 0.0, -0.5, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.5, 0.5, 0.5, 1.0],
@@ -32,8 +32,8 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
     // 1.0 → 255, 0.5 → 128, 0.0 → 0.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.5, 0.0, 0.5, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [2.0, 1.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.5, 0.0, 0.5, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [2.0, 1.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.0, 0.5, 0.0, 1.0],
@@ -50,9 +50,9 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
     // 0.7 → 178, 0.15 → 38, 0.3 → 76.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.1, 0.1, 0.1, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [2.0, 0.5, 1.0, 0.0]]] },
-        { module: 'fuse_add.wasm', params: [['offset', [0.1, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.1, 0.1, 0.1, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [2.0, 0.5, 1.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.1, 0.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.2, 0.2, 0.2, 1.0],
@@ -70,8 +70,8 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
     // Force-off and force-on must agree the answer is 128.
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.5, 0.5, 0.5, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [0.5, 0.5, 0.5, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.5, 0.5, 0.5, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [0.5, 0.5, 0.5, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.8, 0.8, 0.8, 1.0],
@@ -84,9 +84,9 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
   it('alpha passes through unchanged across a 3-stage chain', async () => {
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm', params: [['offset', [0.1, 0.1, 0.1, 0.0]]] },
-        { module: 'fuse_mul.wasm', params: [['scale',  [1.0, 1.0, 1.0, 0.0]]] },
-        { module: 'fuse_add.wasm', params: [['offset', [0.0, 0.0, 0.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.1, 0.1, 0.1, 0.0]]] },
+        { module: 'debug.fuse_mul', params: [['scale',  [1.0, 1.0, 1.0, 0.0]]] },
+        { module: 'debug.fuse_add', params: [['offset', [0.0, 0.0, 0.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.0, 0.0, 0.0, 0.5],
@@ -111,9 +111,9 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
     //   (0.5, 0.5, 0.5) * (1.0, 0.0, 2.0) = (0.5, 0.0, 1.0) → (128, 0, 255).
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'fuse_add.wasm',            params: [['offset', [0.1, 0.1, 0.1, 0.0]]] },
-        { module: 'brightness_contrast.wasm', params: [] },
-        { module: 'fuse_mul.wasm',            params: [['scale',  [1.0, 0.0, 2.0, 0.0]]] },
+        { module: 'debug.fuse_add',            params: [['offset', [0.1, 0.1, 0.1, 0.0]]] },
+        { module: 'color.tone.brightness_contrast', params: [] },
+        { module: 'debug.fuse_mul',            params: [['scale',  [1.0, 0.0, 2.0, 0.0]]] },
       ],
       bundle: 'testonly',
       inputColor: [0.4, 0.4, 0.4, 1.0],

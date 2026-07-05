@@ -17,7 +17,7 @@ describe('Hue Basis Effect E2E', () => {
 
   it('declares metadata and four scalar inputs', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'hue_basis_metadata',
@@ -32,7 +32,7 @@ describe('Hue Basis Effect E2E', () => {
     // Hues 0, 1/3, 2/3 → b = (R, G, B) → M = identity → both
     // directions are pass-through.
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       dumpName: 'hue_basis_default_passthrough',
@@ -43,7 +43,7 @@ describe('Hue Basis Effect E2E', () => {
 
   it('default basis Reverse is also pass-through', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       params: [['direction', 1]],
@@ -59,7 +59,7 @@ describe('Hue Basis Effect E2E', () => {
     // normalization each has components summing to 1. White stays
     // white in the forward direction by construction.
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [
@@ -76,7 +76,7 @@ describe('Hue Basis Effect E2E', () => {
 
   it('forward(0,0,0) = (0,0,0) for any basis (linearity)', async () => {
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [0.0, 0.0, 0.0, 1.0],
       params: [
@@ -93,7 +93,7 @@ describe('Hue Basis Effect E2E', () => {
     // Same basis as the white-preserve test (CMY). A non-white
     // input should NOT match itself — the transform is non-trivial.
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
       params: [
@@ -119,7 +119,7 @@ describe('Hue Basis Effect E2E', () => {
     // With identity basis, reverse(forward(x)) = x. Trivially since
     // both directions are pass-through, but worth pinning.
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [0.7, 0.3, 0.5, 1.0],
       params: [['direction', 1]],
@@ -135,7 +135,7 @@ describe('Hue Basis Effect E2E', () => {
     // all three basis vectors collapsed to red, white survives the
     // forward pass.
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
       params: [
@@ -158,7 +158,7 @@ describe('Hue Basis Effect E2E', () => {
     // (all-red) basis maps each output channel to the input's red.
     // For grey (0.4, 0.4, 0.4) → (0.4, 0.4, 0.4) → (102, 102, 102).
     const frame = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: [0.4, 0.4, 0.4, 1.0],
       params: [
@@ -195,7 +195,7 @@ describe('Hue Basis Effect E2E', () => {
     // original quantized to 8 bits.
     const fwdQuant: [number, number, number, number] = [64 / 255, 128 / 255, 191 / 255, 1.0];
     const reversed = await runGpuEffectTest({
-      module: 'hue_basis.wasm',
+      module: 'color.hue_basis',
       bundle: 'core',
       inputColor: fwdQuant,
       params: [

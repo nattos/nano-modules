@@ -18,7 +18,7 @@ describe('Pixulant (warp.legacy.pixulant) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'pixulant.wasm', bundle: 'legacy',
+      module: 'warp.legacy.pixulant', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'pixulant_metadata',
     });

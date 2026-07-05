@@ -6,7 +6,7 @@ describe('GPU Pipeline E2E', () => {
   describe('gpu_test module (solid color fill)', () => {
     it('fills entire frame with compute-generated color', async () => {
       const frame = await runGpuTest({
-        module: 'gpu_test.wasm',
+        module: 'debug.gpu_test',
         dumpName: 'gpu_test_solid',
       });
 
@@ -20,7 +20,7 @@ describe('GPU Pipeline E2E', () => {
 
     it('corners match center', async () => {
       const frame = await runGpuTest({
-        module: 'gpu_test.wasm',
+        module: 'debug.gpu_test',
         dumpName: 'gpu_test_corners',
       });
 
@@ -35,7 +35,7 @@ describe('GPU Pipeline E2E', () => {
   describe('spinningtris module', () => {
     it('renders colored triangles', async () => {
       const frame = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         width: 128,
         height: 128,
         params: [[0, 0.5]], // ~500 triangles
@@ -59,7 +59,7 @@ describe('GPU Pipeline E2E', () => {
 
     it('more triangles = more coverage', async () => {
       const few = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         width: 128, height: 128,
         params: [[0, 0.01]], // ~10 triangles
         ticks: 5,
@@ -67,7 +67,7 @@ describe('GPU Pipeline E2E', () => {
       });
 
       const many = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         width: 128, height: 128,
         params: [[0, 1.0]], // 1000 triangles
         ticks: 5,
@@ -80,7 +80,7 @@ describe('GPU Pipeline E2E', () => {
 
     it('animation changes frame over time', async () => {
       const t0 = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         width: 64, height: 64,
         params: [[0, 0.5]],
         ticks: 1,
@@ -88,7 +88,7 @@ describe('GPU Pipeline E2E', () => {
       });
 
       const t60 = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         width: 64, height: 64,
         params: [[0, 0.5]],
         ticks: 60,
@@ -101,7 +101,7 @@ describe('GPU Pipeline E2E', () => {
 
     it('declares expected parameters', async () => {
       const frame = await runGpuTest({
-        module: 'spinningtris.wasm',
+        module: 'debug.spinningtris',
         dumpName: 'spinningtris_params',
       });
 

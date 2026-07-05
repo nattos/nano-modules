@@ -5,7 +5,7 @@ describe('Gradient Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'gradient.wasm',
+      module: 'source.gradient',
       bundle: 'core',
       dumpName: 'gradient_metadata',
     });
@@ -16,7 +16,7 @@ describe('Gradient Effect E2E', () => {
   it('default white→black goes from white on left to black on right', async () => {
     // Defaults: angle=0 (horizontal), softness=1, color_a=white, color_b=black.
     const frame = await runGpuTest({
-      module: 'gradient.wasm',
+      module: 'source.gradient',
       bundle: 'core',
       width: 64, height: 64,
       samplePoints: [[2, 32], [61, 32]],
@@ -30,7 +30,7 @@ describe('Gradient Effect E2E', () => {
 
   it('softness=0 makes a sharp band at the centre', async () => {
     const frame = await runGpuTest({
-      module: 'gradient.wasm',
+      module: 'source.gradient',
       bundle: 'core',
       width: 64, height: 64,
       params: [[0, 0.0], [1, 0.0], [2, 0.001]],  // angle 0, offset 0, softness ~0
@@ -48,7 +48,7 @@ describe('Gradient Effect E2E', () => {
   it('color_a override changes the start colour', async () => {
     // color_a = (1, 0, 0) red, color_b stays black, sharp band so we can sample.
     const frame = await runGpuTest({
-      module: 'gradient.wasm',
+      module: 'source.gradient',
       bundle: 'core',
       width: 64, height: 64,
       params: [

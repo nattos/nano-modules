@@ -53,7 +53,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       inputColor: [0, 0, 0, 1], dumpName: 'bounce_resonator_metadata',
     });
     expect(frame.success).toBe(true);
@@ -62,7 +62,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
 
   it('a kick lights the network', async () => {
     const frame = await runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 5, params: kickBar0([['feedback', 1.0], ['spread', 0.3]]),
       dumpName: 'bounce_resonator_kick',
@@ -75,7 +75,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // spread 0, feedback 1.0 → energy parks on one bar; that bar's entire
     // vertical strip should be lit top-to-bottom, equally.
     const frame = await runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 8, params: kickBar0([['feedback', 1.0], ['spread', 0.0]]),
       dumpName: 'bounce_resonator_fill',
@@ -106,7 +106,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
   it('a kick paints its bar with band_color’s hue', async () => {
     // Pure green band_color → the freshly kicked (undiffused) bar is green.
     const frame = await runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 3,
       params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0]]),
@@ -124,7 +124,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // Kick green; with hue_spread the carried hue twists each hop, so the
     // lit bar drifts off pure green (gains red/blue).
     const lit = (hue_spread: number) => runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 40,
       params: [...kickBar0([['feedback', 1.0], ['spread', 0.2], ['hue_spread', hue_spread]]),
@@ -145,7 +145,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // (red); in all_bars mode the bars use band_color (green). So the green
     // added by the bars is high in all_bars mode and ~0 in tex_in mode.
     const run = (mode: number, extra: [string, number][]) => runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0.8, 0, 0, 1], renderEachTick: true,
       ticks: 3,
       params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0]]),
@@ -162,7 +162,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
   it('input_opacity fades the passed-through input', async () => {
     // Grey input, no bars lit (engine off) → output tracks input_opacity.
     const run = (input_opacity: number) => runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0.5, 0.5, 0.5, 1], renderEachTick: true,
       ticks: 2,
       params: [['auto_rate', 0.0], ['cycle_rate', 0.0], ['intensity', 0.0],
@@ -181,7 +181,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
 
   it('feedback conserves vs decays total energy', async () => {
     const after = (feedback: number) => runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 40, params: kickBar0([['feedback', feedback], ['spread', 0.5]]),
       dumpName: `bounce_resonator_fb_${Math.round(feedback * 100)}`,
@@ -194,7 +194,7 @@ describe('Bounce Resonator (diffusion) E2E', () => {
 
   it('spread fans energy out across bars (concentration drops)', async () => {
     const at = (spread: number) => runGpuEffectTest({
-      module: 'bounce_resonator.wasm', bundle: 'lights',
+      module: 'source.light.bounce_resonator', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 30, params: kickBar0([['feedback', 1.0], ['spread', spread]]),
       dumpName: `bounce_resonator_spread_${Math.round(spread * 100)}`,

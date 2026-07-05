@@ -15,7 +15,7 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'wobble_master.wasm', bundle: 'legacy',
+      module: 'warp.legacy.wobble_master', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'wm_metadata',
     });

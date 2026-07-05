@@ -15,7 +15,7 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'stutter_scale.wasm', bundle: 'legacy',
+      module: 'warp.legacy.stutter_scale', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'ss_metadata',
     });

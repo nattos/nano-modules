@@ -5,7 +5,7 @@ describe('Noise Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       dumpName: 'noise_metadata',
     });
@@ -15,7 +15,7 @@ describe('Noise Effect E2E', () => {
 
   it('white noise (algo=0) produces high-variance output', async () => {
     const frame = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 64, height: 64,
       params: [[0, 0], [1, 0.5], [2, 0.0], [3, 0.0]],  // algo=0, scale=0.5, contrast=0, seed=0
@@ -31,7 +31,7 @@ describe('Noise Effect E2E', () => {
 
   it('value noise (algo=1) is greyscale by default', async () => {
     const frame = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0]],
@@ -49,7 +49,7 @@ describe('Noise Effect E2E', () => {
 
   it('color=1 produces independent RGB channels', async () => {
     const frame = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 0], [1, 0.5], [2, 0.0], [3, 0.0], [4, 4], [5, 1.0]],
@@ -69,7 +69,7 @@ describe('Noise Effect E2E', () => {
     // Previously only "static" moved; smooth modes now evolve through time.
     // param 6 = speed. Render at frame 0 vs after 30 ticks (0.48s of motion).
     const t0 = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 1.0]],
@@ -77,7 +77,7 @@ describe('Noise Effect E2E', () => {
       dumpName: 'noise_motion_t0',
     });
     const t30 = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 1.0]],
@@ -91,7 +91,7 @@ describe('Noise Effect E2E', () => {
   it('speed = 0 freezes all modes', async () => {
     // value noise, speed=0 → identical regardless of how many ticks elapse.
     const t0 = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 0.0]],
@@ -99,7 +99,7 @@ describe('Noise Effect E2E', () => {
       dumpName: 'noise_frozen_t0',
     });
     const t30 = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.0], [6, 0.0]],
@@ -113,14 +113,14 @@ describe('Noise Effect E2E', () => {
 
   it('seed change produces a different pattern', async () => {
     const a = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 0], [1, 0.5], [2, 0.0], [3, 0.1]],
       dumpName: 'noise_seed_a',
     });
     const b = await runGpuTest({
-      module: 'noise.wasm',
+      module: 'source.noise',
       bundle: 'core',
       width: 32, height: 32,
       params: [[0, 0], [1, 0.5], [2, 0.0], [3, 0.7]],

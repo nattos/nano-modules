@@ -29,7 +29,7 @@ describe('Tingle Top Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       inputColor: [0, 0, 0, 1], dumpName: 'tingle_top_metadata',
     });
     expect(frame.success).toBe(true);
@@ -39,7 +39,7 @@ describe('Tingle Top Effect E2E', () => {
   it('gated: sparkles stay bundled at the top band', async () => {
     // default_gate_state locks the region at top_band_height.
     const frame = await runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 20, params: params([['default_gate_state', 1]]),
       dumpName: 'tingle_top_gated',
@@ -55,7 +55,7 @@ describe('Tingle Top Effect E2E', () => {
     // so the bar is already populated top-to-bottom on frame 1 — impossible
     // without the velocity-based prewarm (fresh spawns would all be at the top).
     const run = (velY: number) => runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 1,
       params: params([['default_gate_state', 1], ['top_band_height', 0.05],
@@ -74,7 +74,7 @@ describe('Tingle Top Effect E2E', () => {
 
   it('bar_target_mode one_bar spawns only in the chosen bar', async () => {
     const frame = await runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 12,
       params: params([['default_gate_state', 1], ['bar_target_mode', 0], ['one_bar_target', 2]]),
@@ -98,7 +98,7 @@ describe('Tingle Top Effect E2E', () => {
     // One sustaining voice in random mode → all its sparkles land in ONE
     // random bar, unlike all_bars which fills every bar.
     const frame = await runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 12,
       params: params([['default_gate_state', 1], ['bar_target_mode', 1]]),
@@ -121,7 +121,7 @@ describe('Tingle Top Effect E2E', () => {
     // No gate / trigger / level / auto_rate and default_gate_state false → no
     // voice → no spawns. (The trigger model now drives everything.)
     const frame = await runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 10, params: params([]),
       dumpName: 'tingle_top_idle',
@@ -134,7 +134,7 @@ describe('Tingle Top Effect E2E', () => {
     // A trigger holds for min_sustain (sparkles at the top), then releases —
     // the spawn distribution becomes a wave that bursts/accelerates downward.
     const at = (ticks: number) => runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks,
       params: [...params([['top_band_height', 0.1], ['min_sustain_s', 0.1],
@@ -154,7 +154,7 @@ describe('Tingle Top Effect E2E', () => {
     // Each Poisson event is a discrete note held for min_sustain then released,
     // so the effect self-animates with no gate wired.
     const frame = await runGpuEffectTest({
-      module: 'tingle_top.wasm', bundle: 'lights',
+      module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 30, params: params([['auto_rate', 0.6], ['min_sustain_s', 0.2]]),
       dumpName: 'tingle_top_auto',

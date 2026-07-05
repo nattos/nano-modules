@@ -9,8 +9,8 @@ const W = 64, H = 64;
 function noiseAutoLevel(equalize: number, target: number, pull: number) {
   return runGpuChainTest({
     chain: [
-      { module: 'noise.wasm', params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.2]] }, // value noise, fixed seed
-      { module: 'auto_level.wasm', params: [[0, equalize], [1, target], [2, pull]] },
+      { module: 'source.noise', params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.2]] }, // value noise, fixed seed
+      { module: 'color.tone.auto_level', params: [[0, equalize], [1, target], [2, pull]] },
     ],
     bundle: 'core',
     width: W, height: H,
@@ -36,7 +36,7 @@ describe('Auto Level Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'auto_level.wasm',
+      module: 'color.tone.auto_level',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'auto_level_metadata',
@@ -51,7 +51,7 @@ describe('Auto Level Effect E2E', () => {
     // Even with equalize cranked: a flat histogram has nothing to reshape, so
     // the buildlut blank-flag makes apply a pure pass-through.
     const frame = await runGpuEffectTest({
-      module: 'auto_level.wasm',
+      module: 'color.tone.auto_level',
       bundle: 'core',
       inputColor: [0.3, 0.5, 0.7, 1.0],
       params: [[0, 1.0]],
@@ -63,7 +63,7 @@ describe('Auto Level Effect E2E', () => {
 
   it('neutral params (equalize=0, median_pull=0) reproduce the input', async () => {
     const raw = await runGpuChainTest({
-      chain: [{ module: 'noise.wasm', params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.2]] }],
+      chain: [{ module: 'source.noise', params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.2]] }],
       bundle: 'core', width: W, height: H, dumpName: 'auto_level_raw',
     });
     const neutral = await noiseAutoLevel(0.0, 0.5, 0.0);

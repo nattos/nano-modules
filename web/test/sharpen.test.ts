@@ -7,7 +7,7 @@ describe('Sharpen Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'sharpen.wasm',
+      module: 'filter.sharpen',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'sharpen_metadata',
@@ -21,7 +21,7 @@ describe('Sharpen Effect E2E', () => {
   it('uniform input is unaffected by sharpen', async () => {
     // High-pass on uniform = 0 → output equals input.
     const frame = await runGpuEffectTest({
-      module: 'sharpen.wasm',
+      module: 'filter.sharpen',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.2, 1.0],
       params: [[0, 1.0]],
@@ -34,8 +34,8 @@ describe('Sharpen Effect E2E', () => {
   it('sharpening a blurred grid restores edge contrast', async () => {
     const blurred = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'blur.wasm', params: [[0, 1.0]] },
+        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
+        { module: 'filter.blur.gaussian', params: [[0, 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -43,9 +43,9 @@ describe('Sharpen Effect E2E', () => {
     });
     const sharpened = await runGpuChainTest({
       chain: [
-        { module: 'grid.wasm', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'blur.wasm', params: [[0, 1.0]] },
-        { module: 'sharpen.wasm', params: [[0, 1.0]] },
+        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
+        { module: 'filter.blur.gaussian', params: [[0, 1.0]] },
+        { module: 'filter.sharpen', params: [[0, 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,

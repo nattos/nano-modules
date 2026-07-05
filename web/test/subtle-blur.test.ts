@@ -19,7 +19,7 @@ describe('Subtle Blur (filter.legacy.subtle_blur) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'subtle_blur.wasm', bundle: 'legacy',
+      module: 'filter.legacy.subtle_blur', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'subtle_metadata',
     });

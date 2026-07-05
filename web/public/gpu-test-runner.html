@@ -33,92 +33,11 @@ import { TextEngine } from '/src/text-engine.ts';
  * }
  */
 
-// This GPU test runner loads the `testonly.wasm` bundle, which contains
-// every effect the integration tests rely on. Tests still name modules by
-// the old standalone .wasm filename (e.g. "gpu_test.wasm") for back-compat;
-// translate those to the corresponding registered effect ID inside the
-// bundle.
-const EFFECT_ID_BY_FILENAME = {
-  'gpu_test.wasm': 'debug.gpu_test',
-  'spinningtris.wasm': 'debug.spinningtris',
-  'brightness_contrast.wasm': 'color.tone.brightness_contrast',
-  'solid_color.wasm': 'source.solid_color',
-  'video_blend.wasm': 'composite.blend',
-  'env_lfo.wasm': 'mod.source.lfo',
-  // Wave-1 + Wave-2 core effects.
-  'bake_alpha.wasm': 'composite.bake_alpha',
-  'curve.wasm': 'color.tone.curve',
-  'exposure.wasm': 'color.tone.exposure',
-  'color_temperature.wasm': 'color.temperature',
-  'invert.wasm': 'color.invert',
-  'posterize.wasm': 'color.posterize',
-  'levels.wasm': 'color.tone.levels',
-  'hsl.wasm': 'color.hsl',
-  'color_space.wasm': 'color.color_space',
-  'hue_basis.wasm': 'color.hue_basis',
-  'saturate.wasm': 'color.saturate',
-  'vibrance.wasm': 'color.vibrance',
-  'vignette.wasm': 'filter.vignette',
-  'blur.wasm': 'filter.blur.gaussian',
-  'fast_blur.wasm': 'filter.blur.fast',
-  'sharpen.wasm': 'filter.sharpen',
-  'edges.wasm': 'filter.edges',
-  'crop.wasm': 'warp.crop',
-  'transform.wasm': 'warp.transform',
-  'gradient.wasm': 'source.gradient',
-  'grid.wasm': 'source.grid',
-  'noise.wasm': 'source.noise',
-  'auto_level.wasm': 'color.tone.auto_level',
-  'twitch_mask.wasm': 'filter.glitch.twitch_mask',
-  // Test-only fusion-aware mappers + generator (testonly bundle only).
-  'fuse_add.wasm':   'debug.fuse_add',
-  'fuse_mul.wasm':   'debug.fuse_mul',
-  'fuse_solid.wasm': 'debug.fuse_solid',
-  // Platform-feature smoke effects (testonly bundle only).
-  'hdr_test.wasm': 'debug.hdr_test',
-  'atomic_test.wasm': 'debug.atomic_test',
-  'rw_storage_test.wasm': 'debug.rw_storage_test',
-  'clear_copy_test.wasm': 'debug.clear_copy_test',
-  'mrt_test.wasm': 'debug.mrt_test',
-  'lut3d_test.wasm': 'debug.lut3d_test',
-  // Lights bundle (com.nano.lights) — show effects.
-  'strobe_channel.wasm': 'source.light.strobe_channel',
-  'soft_glow.wasm': 'source.light.soft_glow',
-  'dispersion.wasm': 'warp.dispersion',
-  'plasma_beam_cannon.wasm': 'source.light.plasma_beam_cannon',
-  'orthomod.wasm': 'source.light.orthomod',
-  'bounce_resonator.wasm': 'source.light.bounce_resonator',
-  'side_jet.wasm': 'source.light.side_jet',
-  'motion_blobs.wasm': 'source.light.motion_blobs',
-  'lights_sim.wasm': 'filter.lights_sim',
-  'block_dehance.wasm': 'filter.glitch.block_dehance',
-  'tingle_top.wasm': 'source.light.tingle_top',
-  'chroma_wave.wasm': 'source.light.chroma_wave',
-
-  // Legacy bundle (com.nano.legacy) — NanoGraph ports.
-  'bicolor_grad.wasm': 'color.legacy.bicolor_grad',
-  'glisten.wasm': 'filter.legacy.glisten',
-  'double_chamber.wasm': 'source.legacy.double_chamber',
-  'd_wave.wasm': 'warp.legacy.d_wave',
-  'lut_collection.wasm': 'color.legacy.lut_collection',
-  'zoom_scroller.wasm': 'warp.legacy.zoom_scroller',
-  'subtle_blur.wasm': 'filter.legacy.subtle_blur',
-  'sphr_blur.wasm': 'filter.legacy.sphr_blur',
-  'burn_out.wasm': 'color.legacy.burn_out',
-  'chroma_wobble.wasm': 'warp.legacy.chroma_wobble',
-  'wobble_master.wasm': 'warp.legacy.wobble_master',
-  'stutter_scale.wasm': 'warp.legacy.stutter_scale',
-  'freeze_pulse.wasm': 'warp.legacy.freeze_pulse',
-  'pixulant.wasm': 'warp.legacy.pixulant',
-};
-
+// Tests reference effects by their real `module_type` id (e.g.
+// "filter.blur.gaussian") — the same string the effect declares in
+// state::init(). The runner loads the effect's bundle (config.bundle) and
+// activates the id directly; there is no legacy `x.wasm` alias map.
 function resolveEffectId(moduleName) {
-  // Accept either an effect ID (e.g. "debug.gpu_test") or a legacy filename.
-  if (EFFECT_ID_BY_FILENAME[moduleName]) return EFFECT_ID_BY_FILENAME[moduleName];
-  if (moduleName.endsWith('.wasm')) {
-    const bare = moduleName.replace(/\.wasm$/, '');
-    return EFFECT_ID_BY_FILENAME[bare + '.wasm'] ?? bare;
-  }
   return moduleName;
 }
 

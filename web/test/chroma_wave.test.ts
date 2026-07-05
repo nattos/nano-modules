@@ -86,7 +86,7 @@ describe('Chroma Wave Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       inputColor: [0, 0, 0, 1], dumpName: 'chroma_wave_metadata',
     });
     expect(frame.success).toBe(true);
@@ -99,7 +99,7 @@ describe('Chroma Wave Effect E2E', () => {
     // leaves params empty (the inspector shows NOTHING). metadata.id is set
     // before the parse, so it can't catch this — assert the derived params.
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       inputColor: [0, 0, 0, 1], dumpName: 'chroma_wave_schema',
     });
     expect(frame.success).toBe(true);
@@ -111,7 +111,7 @@ describe('Chroma Wave Effect E2E', () => {
 
   it('idle (no gate / trigger / auto) renders pure passthrough', async () => {
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 8, params: params([]),
       dumpName: 'chroma_wave_idle',
@@ -123,7 +123,7 @@ describe('Chroma Wave Effect E2E', () => {
   it('charge: held gate blooms near the top, bottom stays dark', async () => {
     // default_gate_state locks the charge; the blob sits at the top band.
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 30, params: params([['default_gate_state', 1], ['charge_s', 0.3]]),
       dumpName: 'chroma_wave_charge',
@@ -137,7 +137,7 @@ describe('Chroma Wave Effect E2E', () => {
     // Trigger holds for min_sustain_s (bloom at top), then bursts — the radius
     // expands rapidly so coverage spreads down the canvas.
     const at = (ticks: number) => runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks,
       params: [...params([['min_sustain_s', 0.1], ['release_s', 0.7],
@@ -156,7 +156,7 @@ describe('Chroma Wave Effect E2E', () => {
   it('burst goes prismatic: the bloom is more colourful during the burst', async () => {
     // Hold has few bands (gentle); burst ramps grade_freq high → rainbow.
     const charge = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 16, params: params([['default_gate_state', 1], ['charge_s', 0.2],
                                   ['hue_span', 0.25], ['grade_freq_hold', 0.5],
@@ -164,7 +164,7 @@ describe('Chroma Wave Effect E2E', () => {
       dumpName: 'chroma_wave_prismatic_hold',
     });
     const burst = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 18,
       params: [...params([['min_sustain_s', 0.05], ['release_s', 1.0],
@@ -181,7 +181,7 @@ describe('Chroma Wave Effect E2E', () => {
     // position_y = -1.6 puts the center above the top edge; a large base_radius
     // (charge onset, slow charge_s so it stays big) reaches well into frame.
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 3, params: params([['default_gate_state', 1], ['charge_s', 2.0],
                                  ['position_y', -1.6], ['base_radius', 2.0],
@@ -198,7 +198,7 @@ describe('Chroma Wave Effect E2E', () => {
     // shift the blob's mean hue in opposite directions — a deterministic,
     // measurable asymmetry along the (vertical) wavefront axis.
     const run = (tilt: number) => runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 14, params: params([['default_gate_state', 1], ['charge_s', 0.15],
                                   ['hue_span', 0.3], ['grade_freq_hold', 3],
@@ -213,7 +213,7 @@ describe('Chroma Wave Effect E2E', () => {
 
   it('intensity crank brightens the bloom (soft rolloff)', async () => {
     const run = (gain: number) => runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 14, params: params([['default_gate_state', 1], ['charge_s', 0.15],
                                   ['intensity', gain]]),
@@ -229,7 +229,7 @@ describe('Chroma Wave Effect E2E', () => {
     // auto_rate > 0 self-animates with no gate wired; each Poisson event is a
     // one-shot that fully charges then bursts. At 0 it stays dark.
     const on = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 40, params: params([['auto_rate', 0.6], ['charge_s', 0.15],
                                   ['min_sustain_s', 0.1], ['release_s', 0.5]]),
@@ -245,7 +245,7 @@ describe('Chroma Wave Effect E2E', () => {
     // edge, not on any patch arrival, or the cycle re-arms forever at idle.
     // Here trigger sits at 0 with auto_rate 0: nothing should ever light up.
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 12, params: [...params([]), ['trigger', 0]],
       dumpName: 'chroma_wave_trigger0',
@@ -259,7 +259,7 @@ describe('Chroma Wave Effect E2E', () => {
     // lets up to 8 overlap; limit 1 keeps only one alive at a time → markedly
     // less total bright coverage. Spread them so they don't all stack.
     const run = (limit: number) => runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 45, params: params([['auto_rate', 0.9], ['charge_s', 0.1],
                                   ['min_sustain_s', 0.05], ['release_s', 0.6],
@@ -279,7 +279,7 @@ describe('Chroma Wave Effect E2E', () => {
     // cranked up they SUM → the combined phase rotates further round the wheel
     // → more distinct hues. (A lone voice is unaffected: avg == sum.)
     const run = (hi: number) => runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 16,
       params: [...params([['default_gate_state', 1], ['charge_s', 0.1],
@@ -347,7 +347,7 @@ describe('Chroma Wave Effect E2E', () => {
     // hue_shift_r twists the wheel at the red point, so the bloom's mean hue
     // moves away from red. (g/b shifts are 0, so off-red hues stay put.)
     const run = (shiftR: number) => runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 14, params: params([['default_gate_state', 1], ['charge_s', 0.2],
                                   ['base_hue', 0.0], ['hue_span', 0.02],
@@ -363,7 +363,7 @@ describe('Chroma Wave Effect E2E', () => {
 
   it('intensity 0 renders passthrough even while charging', async () => {
     const frame = await runGpuEffectTest({
-      module: 'chroma_wave.wasm', bundle: 'lights',
+      module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
       ticks: 10, params: params([['default_gate_state', 1], ['intensity', 0]]),
       dumpName: 'chroma_wave_intensity0',

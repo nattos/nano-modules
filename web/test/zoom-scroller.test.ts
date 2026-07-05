@@ -23,7 +23,7 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
-      module: 'zoom_scroller.wasm', bundle: 'legacy',
+      module: 'warp.legacy.zoom_scroller', bundle: 'legacy',
       inputColor: SOLID,
       dumpName: 'zoom_metadata',
     });
@@ -50,7 +50,7 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
     // 16 render-ticks ≈ 0.256 s × 15 Hz ≈ 3.8 metronome ticks → frame_counter≈3,
     // still inside the first pan (total = 6×4 = 24) → gizmo visible.
     const on = await runGpuEffectTest({
-      module: 'zoom_scroller.wasm', bundle: 'legacy', width: 128, height: 128,
+      module: 'warp.legacy.zoom_scroller', bundle: 'legacy', width: 128, height: 128,
       inputColor: SOLID,
       params: [['show_gizmo', 1], ['gizmo_alpha', 1.0], ['gizmo_width', 1.0]],
       ticks: 16, renderEachTick: true,
@@ -60,7 +60,7 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
 
     // Without the gizmo, a solid input pans/zooms to the same solid colour.
     const off = await runGpuEffectTest({
-      module: 'zoom_scroller.wasm', bundle: 'legacy', width: 128, height: 128,
+      module: 'warp.legacy.zoom_scroller', bundle: 'legacy', width: 128, height: 128,
       inputColor: SOLID,
       params: [['show_gizmo', 0]],
       ticks: 16, renderEachTick: true,
@@ -82,7 +82,7 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
     // "playability"), with a bolder line at the top — no fixed minimum width.
     const litCount = async (gw: number, dump: string) => {
       const f = await runGpuEffectTest({
-        module: 'zoom_scroller.wasm', bundle: 'legacy', width: 128, height: 128,
+        module: 'warp.legacy.zoom_scroller', bundle: 'legacy', width: 128, height: 128,
         inputColor: SOLID,
         params: [['show_gizmo', 1], ['gizmo_alpha', 1.0], ['gizmo_width', gw]],
         ticks: 16, renderEachTick: true, dumpName: dump,

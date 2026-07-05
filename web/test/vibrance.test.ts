@@ -8,7 +8,7 @@ describe('Vibrance Effect E2E', () => {
 
   it('declares metadata and I/O', async () => {
     const frame = await runGpuEffectTest({
-      module: 'vibrance.wasm',
+      module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
       dumpName: 'vibrance_metadata',
@@ -22,7 +22,7 @@ describe('Vibrance Effect E2E', () => {
 
   it('amount=0 passes through unchanged', async () => {
     const frame = await runGpuEffectTest({
-      module: 'vibrance.wasm',
+      module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
       params: [[0, 0.0]],
@@ -36,7 +36,7 @@ describe('Vibrance Effect E2E', () => {
   it('amount=-1 fully desaturates a saturated pixel', async () => {
     // Pure red → luminance ~0.299 → ~76 grey
     const frame = await runGpuEffectTest({
-      module: 'vibrance.wasm',
+      module: 'color.vibrance',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
       params: [[0, -1.0]],
@@ -50,7 +50,7 @@ describe('Vibrance Effect E2E', () => {
   it('amount=+1 has no effect on a fully-saturated pixel (weight = 0)', async () => {
     // Pure red is already saturated; vibrance's bias means amount=+1 leaves it alone.
     const frame = await runGpuEffectTest({
-      module: 'vibrance.wasm',
+      module: 'color.vibrance',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
       params: [[0, 1.0]],
@@ -65,14 +65,14 @@ describe('Vibrance Effect E2E', () => {
     // Input (0.5, 0.4, 0.4): low saturation → larger weight → more boost.
     // The result should have more pronounced separation between R and G/B.
     const before = await runGpuEffectTest({
-      module: 'vibrance.wasm',
+      module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.5, 0.4, 0.4, 1.0],
       params: [[0, 0.0]],
       dumpName: 'vibrance_low_sat_before',
     });
     const after = await runGpuEffectTest({
-      module: 'vibrance.wasm',
+      module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.5, 0.4, 0.4, 1.0],
       params: [[0, 1.0]],
