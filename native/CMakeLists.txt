@@ -181,6 +181,7 @@ endif()
 add_library(wasm_host STATIC
   src/wasm/wasm_host.cpp
   src/wasm/host_functions.cpp
+  src/wasm/audio_bus.cpp
 )
 target_include_directories(wasm_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(wasm_host PUBLIC param_cache vmlib state_system)
@@ -257,6 +258,13 @@ catch_discover_tests(test_protocol)
 add_executable(test_bridge_api tests/test_bridge_api.cpp)
 target_link_libraries(test_bridge_api PRIVATE bridge_server Catch2::Catch2WithMain)
 catch_discover_tests(test_bridge_api)
+
+# audio_bus is dependency-free (just <mutex>/<vector>), so compile it straight
+# into the test rather than dragging in wasm_host + WAMR.
+add_executable(test_audio_bus tests/test_audio_bus.cpp src/wasm/audio_bus.cpp)
+target_include_directories(test_audio_bus PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_audio_bus PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_audio_bus)
 
 # Bridge loader library (for tests and harness — not linked to FFGL)
 add_library(bridge_loader STATIC
@@ -520,29 +528,57 @@ if(APPLE)
     LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
   )
 
-  # NanoLooper FFGL plugin bundle (WASM-based looper)
+  # NanoLooper (NLPR) — dedicated looper FFGL plugin. A thin shell over the
+  # shared effect runtime (SAME architecture as NanoBarrel): it dlopens the
+  # sibling libbridge_server.dylib and drives ONE fixed effect
+  # (control.nanolooper) through the shared executor, reading the effect WASM
+  # from the colocated NanoBarrel bundle's Resources/wasm (ships none of its
+  # own). Links NO engine — only the FFGL shell, the GL↔Metal InteropTexture
+  # pair, the bridge loader, and a native Synth plucked by the shared runtime's
+  # audio_bus fan-out. Live-only (nothing persisted).
   add_library(NanoLooper MODULE
-    src/plugin/looper_plugin.cpp
+    src/plugin/looper_plugin.mm
+    src/plugin/nano_barrel/InteropTexture.m
     src/plugin/bridge_loader.cpp
     src/plugin/synth.mm
-    src/canvas/canvas_renderer.cpp
-    src/canvas/image_loader.mm
   )
-  target_include_directories(NanoLooper PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  # The dylib is dlopen'd at runtime, not linked — but build it first so the
+  # sibling copy (staged by NanoBarrelDeploy) exists for a from-scratch build.
+  add_dependencies(NanoLooper bridge_server)
+  target_include_directories(NanoLooper PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
+  )
   target_link_libraries(NanoLooper PRIVATE
+    nlohmann_json::nlohmann_json
     ffgl::sdk
     "-framework OpenGL"
-    "-framework CoreGraphics"
+    "-framework Metal"
+    "-framework MetalKit"
+    "-framework CoreVideo"
+    "-framework AppKit"
     "-framework Foundation"
     "-framework AVFoundation"
     "-framework AudioToolbox"
   )
+  target_compile_options(NanoLooper PRIVATE -Wno-attributes -Wno-deprecated-declarations)
   set_target_properties(NanoLooper PROPERTIES
     BUNDLE TRUE
     BUNDLE_EXTENSION "bundle"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/src/plugin/Info.plist.in"
     LINK_FLAGS "${FFGL_BUNDLE_LINK_FLAGS}"
   )
+  # Codesign so Resolume/Gatekeeper loads it (it dlopens the sibling
+  # libbridge_server.dylib deployed by NanoBarrelDeploy). No wasm/dylib payload
+  # of its own → a plain relink-time sign suffices, like NanoLooperCh.
+  if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
+    set(NANOBARREL_CODESIGN_IDENTITY "-")
+  endif()
+  add_custom_command(TARGET NanoLooper POST_BUILD
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/codesign_bundle.sh
+            "${NANOBARREL_CODESIGN_IDENTITY}" $<TARGET_BUNDLE_DIR:NanoLooper>
+    COMMENT "Codesigning NanoLooper.bundle (identity=${NANOBARREL_CODESIGN_IDENTITY})"
+    VERBATIM)
 
   # NanoLooper Ch (NLCH) — scene-marker FFGL plugin. Dropped on a Resolume clip
   # to mark it launchable on a trigger channel; registers with the shared server

@@ -1,6 +1,7 @@
 #include "bridge/bridge_api.h"
 #include "bridge/bridge_server.h"
 #include "bridge/barrel_runtime.h"
+#include "wasm/audio_bus.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -96,6 +97,19 @@ void bridge_set_audio_callback(BridgeHandle h, int32_t module_id,
     AudioTriggerCallback fn, void* userdata) {
   if (!h) return;
   static_cast<BridgeServer*>(h)->set_audio_callback(module_id, fn, userdata);
+}
+
+// Effect audio-trigger fan-out — process-global registry (audio_bus). The
+// handle is unused (registry isn't tied to a server instance); accepted for ABI
+// symmetry. AudioListenerFn and audio_bus::Listener are the same signature.
+uint64_t bridge_add_audio_listener(BridgeHandle h, AudioListenerFn fn, void* userdata) {
+  (void)h;
+  return audio_bus::add(fn, userdata);
+}
+
+void bridge_remove_audio_listener(BridgeHandle h, uint64_t token) {
+  (void)h;
+  audio_bus::remove(token);
 }
 
 // --- Multiplexed plugin instances ---

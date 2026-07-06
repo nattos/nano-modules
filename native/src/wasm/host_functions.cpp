@@ -1,6 +1,8 @@
 #include "wasm/host_functions.h"
 #include "wasm/wasm_host.h"
 #include "wasm/wasm_context.h"
+#include "wasm/audio_bus.h"
+#include "wasm/effect_host_sink.h"
 #include "bridge/param_cache.h"
 #include "bridge/state_document.h"
 #include "canvas/draw_list.h"
@@ -9,6 +11,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace wasm {
 
@@ -188,6 +191,15 @@ static void host_log_fn(wasm_exec_env_t env, int32_t msg_ptr, int32_t msg_len) {
 
 static void host_trigger_audio(wasm_exec_env_t env, int32_t channel) {
   auto* ctx = get_ctx(env);
+  // Fan out to native listeners (audio_bus) tagged with the firing instance's
+  // namespaced key, so a NanoLooper FFGL shell driving its Synth hears only its
+  // own triggers even with several loopers in one process. The executor sets
+  // ctx->effect_instance for the duration of each effect call.
+  std::string key;
+  if (ctx && ctx->effect_instance) key = ctx->effect_instance->instanceKey();
+  audio_bus::fire(key.c_str(), channel);
+  // Legacy per-module callback (old bridge_load_wasm/WasmHost path). Unused by
+  // the shared-executor barrel path; kept for back-compat.
   if (ctx && ctx->audio_callback) {
     ctx->audio_callback(channel, ctx->audio_userdata);
   }

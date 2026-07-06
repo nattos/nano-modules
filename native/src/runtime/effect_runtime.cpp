@@ -508,6 +508,7 @@ EffectInstance* EffectRuntime::instanceFor(const std::string& type,
   // its per-instance fusion info.
   auto inst = std::make_unique<EffectInstance>(this, proto->desc_);
   auto* ptr = inst.get();
+  ptr->instance_key_ = instanceKey;  // for host.trigger_audio → audio_bus routing
   instance_pool_.emplace(key, std::move(inst));
   ptr->doCreate();
   return ptr;

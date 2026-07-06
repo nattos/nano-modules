@@ -71,6 +71,13 @@ class EffectHostSink {
   virtual bool isInputConnected(const std::string& path) const = 0;
   virtual bool isOutputConnected(const std::string& path) const = 0;
   virtual bool willRender() const = 0;
+
+  // Namespaced instance key ("<executorKey>/<instance_key>") of this effect
+  // instance, or "" for the type prototype / hosts that don't track it. Used by
+  // host.trigger_audio's fan-out (audio_bus) to route an audio event to the
+  // native listener that owns this instance. Default empty keeps other sinks
+  // unaffected.
+  virtual std::string instanceKey() const { return {}; }
 };
 
 }  // namespace wasm

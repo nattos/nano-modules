@@ -198,6 +198,10 @@ class EffectInstance : public wasm::EffectHostSink {
   void setFieldConnected(const std::string& path, bool input, bool output);
   bool isInputConnected(const std::string& path) const override;
   bool isOutputConnected(const std::string& path) const override;
+  // Namespaced key this per-key instance was pooled under (set by
+  // EffectRuntime::instanceFor). Empty on the type prototype. Lets the WAMR
+  // host route host.trigger_audio events back to the owning FFGL shell.
+  std::string instanceKey() const override { return instance_key_; }
   // Positional input slot lookup (native static path reads this via the
   // active() instance; the WASM path reads its WasmContext copy). Returns -1
   // when the slot is unset, matching the gpu.get_input_texture contract.
@@ -277,6 +281,9 @@ class EffectInstance : public wasm::EffectHostSink {
   std::string metadata_id_;
   std::string metadata_version_;
   std::string schema_json_;
+  // Namespaced pool key ("<type>|"-stripped: just the "<executorKey>/<instkey>"
+  // part) set by EffectRuntime::instanceFor. Empty on the prototype.
+  std::string instance_key_;
   bool module_init_trapped_ = false;
   void (*on_state_ready_)(void* self) = nullptr;
 

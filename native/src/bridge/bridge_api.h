@@ -44,6 +44,19 @@ typedef void (*AudioTriggerCallback)(int channel, void* userdata);
 void bridge_set_audio_callback(BridgeHandle h, int32_t module_id,
     AudioTriggerCallback fn, void* userdata);
 
+// --- Effect audio-trigger fan-out (shared-executor path) ---
+// Effects call host.trigger_audio(channel) on a gate-on (e.g.
+// control.nanolooper). Register a listener to receive those events tagged with
+// the firing effect INSTANCE's namespaced key ("<executorKey>/<instance_key>")
+// and drive native audio. Multi-listener + thread-safe; each listener filters
+// to the instance key it owns. The BridgeHandle is accepted for ABI symmetry
+// but the registry is process-global (audio_bus). Returns a nonzero token; pass
+// it to bridge_remove_audio_listener on teardown. Additive over the legacy,
+// per-module bridge_set_audio_callback above.
+typedef void (*AudioListenerFn)(void* userdata, const char* instance_key, int channel);
+uint64_t bridge_add_audio_listener(BridgeHandle h, AudioListenerFn fn, void* userdata);
+void bridge_remove_audio_listener(BridgeHandle h, uint64_t token);
+
 // --- Multiplexed plugin instances (FFGL barrel) ---
 // JSON crosses as UTF-8 strings. Strings returned by bridge_get_* are heap
 // allocated by the dylib and MUST be freed with bridge_free_string.
@@ -121,6 +134,8 @@ typedef void* (*BridgeRenderFn)(BridgeHandle, int32_t, int, int);
 typedef int32_t (*BridgeCallTickFn)(BridgeHandle, int32_t, double);
 typedef int32_t (*BridgeCallOnParamFn)(BridgeHandle, int32_t, int, double);
 typedef void (*BridgeSetAudioCallbackFn)(BridgeHandle, int32_t, AudioTriggerCallback, void*);
+typedef uint64_t (*BridgeAddAudioListenerFn)(BridgeHandle, AudioListenerFn, void*);
+typedef void (*BridgeRemoveAudioListenerFn)(BridgeHandle, uint64_t);
 
 typedef int32_t (*BridgeRegisterPluginFn)(BridgeHandle, const char*, int, int, int, const char*, const char*, char*, int32_t);
 typedef void (*BridgeUnregisterPluginFn)(BridgeHandle, const char*);

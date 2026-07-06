@@ -30,6 +30,9 @@ public:
   BridgeCallTickFn bridge_call_tick = nullptr;
   BridgeCallOnParamFn bridge_call_on_param = nullptr;
   BridgeSetAudioCallbackFn bridge_set_audio_callback = nullptr;
+  // Effect audio-trigger fan-out (optional; null on older dylibs → no audio).
+  BridgeAddAudioListenerFn bridge_add_audio_listener = nullptr;
+  BridgeRemoveAudioListenerFn bridge_remove_audio_listener = nullptr;
 
   // Multiplexed-instance function pointers (FFGL barrel)
   BridgeRegisterPluginFn bridge_register_plugin = nullptr;

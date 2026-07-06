@@ -31,6 +31,8 @@ bool BridgeLoader::load(const char* dylib_path) {
   bridge_call_tick = reinterpret_cast<BridgeCallTickFn>(dlsym(handle_, "bridge_call_tick"));
   bridge_call_on_param = reinterpret_cast<BridgeCallOnParamFn>(dlsym(handle_, "bridge_call_on_param"));
   bridge_set_audio_callback = reinterpret_cast<BridgeSetAudioCallbackFn>(dlsym(handle_, "bridge_set_audio_callback"));
+  bridge_add_audio_listener = reinterpret_cast<BridgeAddAudioListenerFn>(dlsym(handle_, "bridge_add_audio_listener"));
+  bridge_remove_audio_listener = reinterpret_cast<BridgeRemoveAudioListenerFn>(dlsym(handle_, "bridge_remove_audio_listener"));
 
   // Multiplexed-instance functions (FFGL barrel). Not in the required-symbol
   // check below so older dylibs still load for the looper/repatch path; the
@@ -88,6 +90,8 @@ void BridgeLoader::unload() {
   bridge_call_tick = nullptr;
   bridge_call_on_param = nullptr;
   bridge_set_audio_callback = nullptr;
+  bridge_add_audio_listener = nullptr;
+  bridge_remove_audio_listener = nullptr;
   bridge_register_plugin = nullptr;
   bridge_unregister_plugin = nullptr;
   bridge_register_patch_listener = nullptr;
