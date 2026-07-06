@@ -16,6 +16,7 @@
 // this import every glyph in this entry renders as a blank box.
 import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 
+import { autorun } from 'mobx';
 import { boot } from './boot';
 import {
   decideMode, OFFER_LIVE_DISMISSED_KEY,
@@ -344,6 +345,36 @@ function connectBarrel(url: string) {
   };
   barrel.onSnapshot('/global/channels', ingestTriggerChannels);
 
+  // Keep the shared server's key_observed(marker) true for exactly the markers
+  // shown on the Instances tab, so each NanoLooper Ch marker captures its clip
+  // thumbnail on-demand and idles otherwise. Capture is also gated server-side
+  // on a non-empty preview_requests (written by the mounted texture-monitors),
+  // so this observe just opens the cheap gate. Reconnect-safe: subscribe()
+  // clears the set and re-runs this so observations re-establish.
+  const observedMarkers = new Set<string>();
+  const reconcileMarkerObservations = () => {
+    const onTab = appState.local.activeTab === 'organize';
+    const want = new Set<string>();
+    if (onTab) {
+      for (const col of Object.values(appState.local.engine.triggerChannels)) {
+        for (const clip of col.clips ?? []) if (clip.key) want.add(clip.key);
+      }
+    }
+    for (const key of want) {
+      if (!observedMarkers.has(key)) {
+        barrel.observe(`/plugins/${key}/state`);
+        observedMarkers.add(key);
+      }
+    }
+    for (const key of [...observedMarkers]) {
+      if (!want.has(key)) {
+        barrel.unobserve(`/plugins/${key}/state`);
+        observedMarkers.delete(key);
+      }
+    }
+  };
+  autorun(reconcileMarkerObservations);
+
   // -- Preview lanes (binary plane) --------------------------------------
   // Pixel frames never ride the main bridge socket: the barrel advertises N
   // auxiliary WS ports in /global/preview_transport and stripes each NBPV
@@ -469,6 +500,10 @@ function connectBarrel(url: string) {
     barrel.observe('/global/sidechannels');
     barrel.get('/global/channels');
     barrel.observe('/global/channels');
+    // Re-establish per-marker observations after a reconnect (the server's
+    // observer registry reset, but our local set did not).
+    observedMarkers.clear();
+    reconcileMarkerObservations();
     barrel.get('/global/preview_transport');
     barrel.observe('/global/preview_transport');
     // If a selection already exists (reconnect), rewire it.

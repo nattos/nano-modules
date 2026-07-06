@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include "bridge/bridge_server.h"
+#include "bridge/preview_codec.h"
 #include "bridge/ws_server.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
@@ -83,28 +84,13 @@ void buildPreviewFrameBytesInto(
     const std::string& key, const std::string& traceId,
     uint16_t width, uint16_t height,
     const uint8_t* pixels, size_t pixelBytes) {
-  const uint16_t keyLen = (uint16_t)key.size();
-  const uint16_t idLen  = (uint16_t)traceId.size();
-  const size_t headerSize = 14 + keyLen + idLen;
-  const double tR0 = epochMsNow();
-  out.resize(headerSize + pixelBytes);
-  gBuildResizeMs = epochMsNow() - tR0;
-  const double tC0 = epochMsNow();
-  out[0] = 'N'; out[1] = 'B'; out[2] = 'P'; out[3] = 'V';
-  out[4] = 2;             // version
-  out[5] = 1;             // format: RGBA8
-  out[6] = (uint8_t)(keyLen & 0xFF);
-  out[7] = (uint8_t)(keyLen >> 8);
-  out[8] = (uint8_t)(idLen  & 0xFF);
-  out[9] = (uint8_t)(idLen  >> 8);
-  out[10] = (uint8_t)(width  & 0xFF);
-  out[11] = (uint8_t)(width  >> 8);
-  out[12] = (uint8_t)(height & 0xFF);
-  out[13] = (uint8_t)(height >> 8);
-  memcpy(out.data() + 14, key.data(), keyLen);
-  memcpy(out.data() + 14 + keyLen, traceId.data(), idLen);
-  memcpy(out.data() + headerSize, pixels, pixelBytes);
-  gBuildCopyMs = epochMsNow() - tC0;
+  // Canonical NBPV layout lives in preview_codec.h (shared with the NanoLooper
+  // Ch marker). The resize/copy split is only a debug [preview_ts] scratch.
+  const double t0 = epochMsNow();
+  preview_codec::build_nbpv_frame(out, key, traceId, width, height, pixels,
+                                  pixelBytes);
+  gBuildResizeMs = 0;
+  gBuildCopyMs = epochMsNow() - t0;
 }
 
 nlohmann::json parseOrObject(const std::string& s) {
