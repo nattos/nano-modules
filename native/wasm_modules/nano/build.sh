@@ -9,6 +9,22 @@ MODULE_NAME=nano
 echo "=== Compiling shaders (nano) ==="
 source ../wasm_build_env.sh
 
+# overlay — shared in-effect debug-overlay toolbox (wasm_modules/include/overlay.h).
+# A single instanced solid-quad vertex+fragment pair (rects/borders); text is
+# handled by the host text engine, not here. Emitted as overlay_shaders.h so any
+# effect that includes overlay.h (currently control.nanolooper) can register it.
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../overlay/vs.hlsl -Fo "$TMP_DIR/overlay_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../overlay/fs.hlsl -Fo "$TMP_DIR/overlay_fs.spv"
+# Emit with prefixed symbol names (OVERLAY_VS_SPV / OVERLAY_FS_SPV) so the shared
+# overlay.h references don't collide with per-effect VS_SPV/FS_SPV symbols.
+python3 ../_emit_spv_header.py "$TMP_DIR/overlay_shaders.h" \
+  "overlay_vs=$TMP_DIR/overlay_vs.spv" "overlay_fs=$TMP_DIR/overlay_fs.spv"
+echo "  overlay shaders compiled (SPV: vs + fs)"
+
 # motion_field — image-driven motion vector generator. Two compute
 # shaders sharing common.hlsl (DXC handles #include automatically).
 compile_shaders_compute_var_spv motion_field color
