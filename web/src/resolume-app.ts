@@ -152,6 +152,7 @@ function connectBarrel(url: string) {
     }
   };
 
+
   const applySketchFromSnapshot = (sketch: any) => {
     appController.setBarrelSketch(BARREL_SKETCH_ID, coerceSketch(sketch));
     appController.editSketch(BARREL_SKETCH_ID);
