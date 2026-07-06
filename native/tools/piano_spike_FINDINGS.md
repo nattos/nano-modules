@@ -56,6 +56,51 @@ Replace "reconcile desired vs ~1 s-stale rebroadcast state, 250 ms debounce" wit
 Net: crisp staccato down to ~11 ms notes with 0% stuck, an order of magnitude
 below the current 250 ms floor.
 
+## Normal-trigger clips (Red) — quirks + reconciler implications
+
+Tested "Red" (Normal / "Composition Determined") for the same class of issues:
+
+- **`connect:false` is a NO-OP on a Normal clip** (0/12 disconnected) — a Normal
+  clip stays on by design. It disconnects only by **eviction** (connecting
+  another clip on the same layer) or a layer clear. So a reconciler that turns
+  clips off with `connect:false` will loop forever on a Normal clip
+  (desired=off, observed=on, never converges).
+- **Eviction is consistent**: connecting Blue while Red is on drops Red in
+  ~0.5 ms (0/12 inconsistent); firing Red+Blue simultaneously always leaves
+  exactly one connected (0/10 both-or-neither). Resolume's own mutual-exclusion
+  is reliable — the divergence risk is entirely the dropped-edge latches below.
+- **Symmetric latch (stuck-OFF)**: after an eviction/clear, a plain
+  `connect:true` on Red can be **dropped** — the clip won't connect. Clearing it
+  requires **re-arming with the opposite edge first** (`connect:false`, then
+  `connect:true`). This is the mirror image of the piano stuck-**on** bug, which
+  needs a connect (re-arm) before the disconnect takes.
+- **`/composition/layers/N/clear` triggered over WS is HARMFUL** — it wedged
+  Red's connectability specifically (Red couldn't connect for many seconds;
+  Blue was unaffected). Do **not** use it as the disconnect verb. The safe,
+  style-independent "turn the track off" is **eviction: connect a designated
+  empty clip on the layer** (a plain `connect` action, which is reliable).
+
+### Unifying model (drives the reconciler design)
+
+Resolume drops a trigger edge whose target matches its (possibly stale) internal
+latched state, leaving the observed connected-state diverged from our desired
+state — and **re-sending the same edge does not fix it**. This is one bug with
+two faces: stuck-**on** (dropped disconnect) and stuck-**off** (dropped connect).
+The universal remedy is **re-arm**: send the opposite edge, then the desired
+edge, each gated on the subscription-confirmed state.
+
+Reconciler rules:
+1. Subscribe every managed clip's `connected` param (push feedback).
+2. **Connect**: send connect; if not confirmed Connected within a short window,
+   re-arm (`false` then `true`) and retry.
+3. **Disconnect a Piano clip**: send disconnect, but only once Connected is
+   confirmed (defer if the OFF beat the connect); if it doesn't clear, re-arm
+   with a connect then disconnect.
+4. **Disconnect a Normal clip**: `connect:false` won't work — **evict** by
+   connecting the layer's empty clip.
+5. Treat the subscription as truth; on any observed≠desired that a same-edge
+   retry doesn't fix, re-arm. Never `/clear` a track.
+
 ## Caveats
 
 - The bug may be partly mitigated in newer Resolume, but is NOT gone (repro is
