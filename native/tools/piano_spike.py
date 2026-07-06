@@ -657,6 +657,66 @@ async def mode_sweep(res, bridge, args):
     _summarize(groups)
 
 
+async def mode_staccato(res, bridge, args):
+    """Back-to-back on/off cycles with NO settle between them — the actual
+    'rapid on/off' the reconcile workaround guards against. Isolated pulses
+    (pulse/sweep) don't reproduce the race; a fast machine-gun of triggers is
+    the real repro. Fire connect, hold `gate`, release via strategy, wait a
+    SHORT window for the disconnect, gap `gap`, repeat. Counts sticks + late
+    releases and reports the per-cycle release-latency distribution."""
+    clip = res.get(args.clip_blue)
+    log("MODE", f'staccato clip="{clip.name}" strategy={args.strategy} '
+                f'gate={args.gate}ms gap={args.gap}ms cycles={args.cycles} '
+                f'confirm_window={args.confirm}ms')
+    # start clean
+    if _is_connected(clip.connected_value):
+        await res.trigger(clip, False)
+        await res.wait_state(clip, False, 1000.0)
+    await asyncio.sleep(0.3)
+
+    stuck = 0
+    connected_seen = 0
+    rel: List[float] = []
+    fn = STRATEGIES[args.strategy]
+    for i in range(args.cycles):
+        # ON — fire and continue (a real staccato doesn't wait for confirmation)
+        await res.trigger(clip, True)
+        # note whether the connect even registered within the gate
+        if await res.wait_state(clip, True, args.gate) is not None:
+            connected_seen += 1
+        # remaining hold (wait_state above already consumed part of the gate)
+        # (kept simple: the gate is the confirmation window for ON)
+        t_off = now_ms()
+        await fn(res, clip, args.confirm)
+        st = await res.wait_state(clip, False, args.confirm)
+        if st is None:
+            stuck += 1
+            log("staccato", f"cycle {i}: STUCK-ON after release "
+                            f"(state={clip.connected_value})")
+            # recover so the run continues
+            for _ in range(20):
+                await res.trigger(clip, False)
+                if await res.wait_state(clip, False, 150.0) is not None:
+                    break
+        else:
+            rel.append(st - t_off)
+        if args.gap > 0:
+            await asyncio.sleep(args.gap / 1000.0)
+
+    rel_sorted = sorted(rel)
+    med = _median(rel)
+    p95 = rel_sorted[int(len(rel_sorted) * 0.95)] if rel_sorted else None
+    mx = rel_sorted[-1] if rel_sorted else None
+    print("\n=== STACCATO " + "=" * 60)
+    print(f"strategy={args.strategy} gate={args.gate}ms gap={args.gap}ms "
+          f"cycles={args.cycles}")
+    print(f"connect registered: {connected_seen}/{args.cycles}")
+    print(f"STUCK-ON:           {stuck}/{args.cycles}")
+    print(f"release latency ms: median={_fmt(med)} p95={_fmt(p95)} max={_fmt(mx)} "
+          f"(n={len(rel)})")
+    print("=" * 73 + "\n")
+
+
 def _fmt(v: Optional[float]) -> str:
     return "  --  " if v is None else f"{v:6.1f}"
 
@@ -756,6 +816,8 @@ async def async_main(args):
             await mode_pulse(res, bridge, args)
         elif args.mode == "sweep":
             await mode_sweep(res, bridge, args)
+        elif args.mode == "staccato":
+            await mode_staccato(res, bridge, args)
     finally:
         if bridge is not None:
             try:
@@ -766,7 +828,7 @@ async def async_main(args):
 
 def main():
     ap = argparse.ArgumentParser(description="Resolume sticky-piano-trigger latency spike")
-    ap.add_argument("mode", choices=["monitor", "pulse", "sweep", "selftest"])
+    ap.add_argument("mode", choices=["monitor", "pulse", "sweep", "staccato", "selftest"])
     ap.add_argument("--resolume", default=os.environ.get(
         "NANO_RESOLUME_URL", "ws://127.0.0.1:8080/api/v1"))
     ap.add_argument("--bridge", default="ws://localhost:" +
@@ -786,6 +848,12 @@ def main():
     # sweep
     ap.add_argument("--strategies", default="single,reconcile_sub,reconcile_poll")
     ap.add_argument("--durs", default="500,300,200,120,80,50,30")
+    # staccato (rapid back-to-back on/off — the real race repro)
+    ap.add_argument("--gate", type=float, default=40.0, help="on-time ms per cycle")
+    ap.add_argument("--gap", type=float, default=40.0, help="off-time ms between cycles")
+    ap.add_argument("--cycles", type=int, default=60)
+    ap.add_argument("--confirm", type=float, default=250.0,
+                    help="ms to wait for the disconnect before calling it stuck")
     args = ap.parse_args()
 
     if args.mode == "selftest":
