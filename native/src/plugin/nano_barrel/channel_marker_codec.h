@@ -43,9 +43,12 @@ inline int norm_to_channel(float v) {
   return 1 + static_cast<int>(v * (kMaxChannel - 1) + 0.5f);
 }
 
-// Wrap {uuid, channel} into the nanoch:// FILE-param value.
-inline std::string wrap_config(const std::string& uuid, int channel) {
-  nlohmann::json j = {{"uuid", uuid}, {"channel", channel}};
+// Wrap {uuid, channel, name} into the nanoch:// FILE-param value. `name` is an
+// optional cosmetic label for the channel (empty = unnamed); the numeric channel
+// remains the matching key.
+inline std::string wrap_config(const std::string& uuid, int channel,
+                               const std::string& name = "") {
+  nlohmann::json j = {{"uuid", uuid}, {"channel", channel}, {"name", name}};
   return std::string(kConfigPrefix) + barrel_codec::base64_encode(j.dump());
 }
 
@@ -77,6 +80,16 @@ inline std::string uuid_of(const std::string& value) {
   auto j = nlohmann::json::parse(js, nullptr, /*allow_exceptions=*/false);
   if (!j.is_object() || !j.contains("uuid") || !j["uuid"].is_string()) return "";
   return j["uuid"].get<std::string>();
+}
+
+// The cosmetic channel name carried in a marker config value, or "" if
+// absent/invalid (older blobs predate the field).
+inline std::string name_of(const std::string& value) {
+  const std::string js = unwrap_config(value);
+  if (js.empty()) return "";
+  auto j = nlohmann::json::parse(js, nullptr, /*allow_exceptions=*/false);
+  if (!j.is_object() || !j.contains("name") || !j["name"].is_string()) return "";
+  return j["name"].get<std::string>();
 }
 
 }  // namespace channel_marker

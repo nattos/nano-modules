@@ -13,16 +13,23 @@
 
 using json = nlohmann::json;
 
-TEST_CASE("channel_marker codec round-trips uuid + channel", "[channel_marker]") {
-  const std::string blob = channel_marker::wrap_config("ABC-123", 3);
+TEST_CASE("channel_marker codec round-trips uuid + channel + name", "[channel_marker]") {
+  const std::string blob = channel_marker::wrap_config("ABC-123", 3, "Bass Hits");
   CHECK(channel_marker::is_marker_config(blob));
   CHECK(channel_marker::channel_of(blob) == 3);
   CHECK(channel_marker::uuid_of(blob) == "ABC-123");
+  CHECK(channel_marker::name_of(blob) == "Bass Hits");
+
+  // Name is optional — a nameless blob round-trips with an empty name.
+  const std::string nameless = channel_marker::wrap_config("U-2", 1);
+  CHECK(channel_marker::channel_of(nameless) == 1);
+  CHECK(channel_marker::name_of(nameless) == "");
 
   // A barrel blob (or anything else) is not a marker.
   CHECK_FALSE(channel_marker::is_marker_config("nanobarrel://config?xyz"));
   CHECK(channel_marker::channel_of("nanobarrel://config?xyz") == -1);
   CHECK(channel_marker::channel_of("") == -1);
+  CHECK(channel_marker::name_of("nanobarrel://config?xyz") == "");
 }
 
 TEST_CASE("CompositionCache resolves channel from a marker config blob",

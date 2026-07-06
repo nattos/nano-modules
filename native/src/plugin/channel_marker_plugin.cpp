@@ -35,7 +35,8 @@
 namespace {
 constexpr unsigned int P_CONFIG = 0;   // FF_TYPE_FILE: nanoch://config?<...>
 constexpr unsigned int P_CHANNEL = 1;  // FF_TYPE_STANDARD: 1..4 via 0..1
-constexpr unsigned int N_PARAMS = 2;
+constexpr unsigned int P_NAME = 2;     // FF_TYPE_TEXT: cosmetic channel label
+constexpr unsigned int N_PARAMS = 3;
 // Normalized slider (0..1) <-> 1-based channel — shared with the server's
 // CompositionCache via channel_marker_codec.h so both agree.
 using channel_marker::channel_to_norm;
@@ -49,19 +50,30 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
     SetMaxInputs(1);
     SetFileParamInfo(P_CONFIG, "config", std::vector<std::string>{}, "");
     SetParamInfo(P_CHANNEL, "Channel", FF_TYPE_STANDARD, channel_to_norm(1));
+    // Cosmetic label for the channel (numeric Channel stays the matching key).
+    SetParamInfo(P_NAME, "Name", FF_TYPE_TEXT, name_.c_str());
   }
 
   // -- Config persistence (durable across host restarts) ----------------
   FFResult SetTextParameter(unsigned int idx, const char* value) override {
-    if (idx != P_CONFIG) return FF_SUCCESS;
     const char* v = value ? value : "";
+    if (idx == P_NAME) {
+      if (name_ != v) {
+        name_ = v;
+        regenerate_config();
+      }
+      return FF_SUCCESS;
+    }
+    if (idx != P_CONFIG) return FF_SUCCESS;
     config_blob_ = std::string(v);
-    // Restore uuid + channel from the persisted blob (cold start: the host
-    // restores this before InitGL).
+    // Restore uuid + channel + name from the persisted blob (cold start: the
+    // host restores this before InitGL).
     const std::string u = channel_marker::uuid_of(config_blob_);
     if (!u.empty()) instance_uuid_ = u;
     const int ch = channel_marker::channel_of(config_blob_);
     if (ch >= 1) channel_ = ch;
+    const std::string nm = channel_marker::name_of(config_blob_);
+    if (!nm.empty()) name_ = nm;
     return FF_SUCCESS;
   }
 
@@ -73,6 +85,14 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
         std::memcpy(config_return_buf_.data(), config_blob_.data(), config_blob_.size());
       config_return_buf_[config_blob_.size()] = '\0';
       return config_return_buf_.data();
+    }
+    if (idx == P_NAME) {
+      if (name_return_buf_.size() <= name_.size())
+        name_return_buf_.resize(name_.size() + 1);
+      if (!name_.empty())
+        std::memcpy(name_return_buf_.data(), name_.data(), name_.size());
+      name_return_buf_[name_.size()] = '\0';
+      return name_return_buf_.data();
     }
     small_return_buf_[0] = '\0';
     return small_return_buf_;
@@ -149,7 +169,7 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
  private:
   void regenerate_config() {
     if (!instance_uuid_.empty())
-      config_blob_ = channel_marker::wrap_config(instance_uuid_, channel_);
+      config_blob_ = channel_marker::wrap_config(instance_uuid_, channel_, name_);
   }
 
   static std::string generate_uuid() {
@@ -171,8 +191,10 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
   std::string instance_uuid_;
   std::string key_;
   std::string config_blob_;
+  std::string name_;
   int channel_ = 1;
   std::vector<char> config_return_buf_;
+  std::vector<char> name_return_buf_;
   char small_return_buf_[1] = {0};
 };
 
