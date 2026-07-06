@@ -16,8 +16,11 @@
  * stages"). See lenssim/{pipeline,optics,coatings}.py for the per-pass math this
  * ports 1:1; the out*\/ study montages are the eyeball golden.
  *
- * STAGE 1 (skeleton): full schema + registration + passthrough copy render.
- * Later stages flesh out the real passes.
+ * STAGE 2 (current): prepare (sRGB→linear + highlight boost) → bokeh gather
+ * (full-res Vogel-disc shaped-aperture gather with cats-eye/swirl/anamorphic/
+ * field-curvature/LoCA) → finish (exposure/vignette/hl-desat/tonemap/grain). The
+ * downsample tier, the `fill` anti-stipple blur, coating/flare/glow/geo, and the
+ * spec-constant quality tiers land in later stages.
  *
  * Per-instance instance ABI (class-like): module_init() compiles the shared PSOs
  * + publishes the schema once per type; each chain entry gets its own State.
@@ -32,12 +35,90 @@
 #include <cmath>
 #include <cstdint>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace lens {
+
+// --- baked coating table (coatings.py:41-55) ----------------------------------
+// tint, transmission, contrast, loca, rim, onion, flare, flare_tint, coat
+// designs (≤3 wavelengths nm) + count, coat_r0. Indexed by the `coating` select.
+struct Coating {
+  float tint[3];
+  float transmission, contrast;
+  float loca, rim, onion, flare;
+  float flare_tint[3];
+  float designs[3]; int ndesigns;
+  float r0;
+};
+static const Coating COATINGS[4] = {
+  // SMC
+  {{0.99f,1.00f,1.01f}, 1.00f,1.06f, 0.30f,0.20f,0.10f,0.18f, {0.55f,0.75f,1.00f}, {455.f,545.f,630.f},3, 0.11f},
+  // Single
+  {{1.05f,1.00f,0.92f}, 0.92f,0.96f, 0.70f,0.60f,0.40f,0.60f, {1.00f,0.80f,0.50f}, {535.f,0.f,0.f},1, 0.24f},
+  // Uncoated
+  {{1.10f,1.00f,0.84f}, 0.82f,0.86f, 1.00f,1.00f,0.70f,1.00f, {1.00f,0.86f,0.60f}, {0.f,0.f,0.f},0, 0.42f},
+  // Custom
+  {{1.00f,1.00f,1.00f}, 1.00f,1.00f, 1.00f,1.00f,1.00f,1.00f, {1.00f,1.00f,1.00f}, {500.f,0.f,0.f},1, 0.16f},
+};
+static inline const Coating& coatingOf(int i) { return COATINGS[(i < 0 || i > 3) ? 3 : i]; }
+
+// --- shader-portable helpers (mirror optics.py) -------------------------------
+static inline float ss(float e0, float e1, float x) {
+  float t = (x - e0) / (e1 - e0);
+  t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+  return t * t * (3.f - 2.f * t);
+}
+static inline float ss_down(float edge, float x, float soft) {
+  float w = edge * soft; if (w < 1e-4f) w = 1e-4f;
+  float t = (x - (edge - w)) / (2.f * w);
+  t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+  return 1.f - t * t * (3.f - 2.f * t);
+}
+// optics.poly_boundary_radius (blades polygon, circumradius 1).
+static inline float polyBoundaryR(float theta, int blades, float rot, float curv) {
+  int n = blades < 3 ? 3 : blades;
+  float sector = 2.f * (float)M_PI / n;
+  float a = theta - rot;
+  float rem = a - std::floor(a / sector) * sector;   // torch.remainder
+  float phi = rem - sector * 0.5f;
+  float apo = std::cos((float)M_PI / n);
+  float cp = std::cos(phi); if (cp < 1e-4f) cp = 1e-4f;
+  float poly_r = apo / cp;
+  return poly_r + (1.f - poly_r) * curv;             // lerp(poly_r, 1, curv)
+}
+
+// --- per-pass uniform layouts (16-byte rows) ----------------------------------
+struct PrepareU { float hl_threshold, hl_boost, _p0, _p1; };
+static_assert(sizeof(PrepareU) == 16, "PrepareU layout");
+
+struct BokehU {
+  float half, dimw, dimh, coc_px;
+  float field_curv, focus_cx, focus_cy, cats_eye;
+  float swirl, anamorphic, loca_scale; uint32_t taps;
+};
+static_assert(sizeof(BokehU) == 48, "BokehU layout");
+
+struct FinishU {
+  float half, dimw, dimh, exposure;
+  float vignette, hl_desat, tone, tone_black;
+  float grain, _p0, _p1, _p2;
+};
+static_assert(sizeof(FinishU) == 48, "FinishU layout");
+
+static constexpr int MAX_TAPS = 192;
 
 // --- per-instance state -------------------------------------------------------
 struct State {
   int  tex_w = 0, tex_h = 0;
   bool initialized = false;
+
+  // GPU resources (per-instance).
+  gpu::Texture bufA, bufB;       // full-res linear-HDR ping/pong
+  gpu::Sampler sampler;          // Linear/ClampToEdge (bokeh taps)
+  gpu::Buffer  tap_buf;          // Vogel tap set (float4/tap: ox,oy,base_w,_)
+  gpu::Buffer  prepare_buf, bokeh_buf, finish_buf;
 
   // Schema-mirrored params (normalized unless noted). Defaults mirror the schema.
   int   preset = 0;             // inert (UI-only); serialized
@@ -104,7 +185,11 @@ struct State {
 };
 
 // --- type-shared PSOs ---------------------------------------------------------
-static gpu::ComputePSO s_pso_finish;   // STAGE 1: passthrough copy
+// NOTE: fx::GaussianBlur is NOT usable on RGBA16F intermediates (its scratch is
+// RGBA8, which clamps HDR — see line_reconstruct's Blur16). The `fill` anti-
+// stipple micro-blur is deferred until an RGBA16F-safe blur is wired for the
+// flare/glow passes.
+static gpu::ComputePSO s_pso_prepare, s_pso_bokeh, s_pso_finish;
 
 void module_init() {
   state::init("filter.blur.lens", {1, 0, 0},
@@ -318,33 +403,58 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("lens_finish", FINISH_SPV, FINISH_SPV_SIZE, "rgba8unorm", "write");
-  auto cs_finish = gpu::Device::createShaderModuleByName("lens_finish");
-  if (!cs_finish) {
-    state::log("lens: finish shader failed to compile");
+  const auto F16 = gpu::TextureFormat::RGBA16F;
+  state::registerShaderSPV("lens_prepare", PREPARE_SPV, PREPARE_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("lens_bokeh",   BOKEH_SPV,   BOKEH_SPV_SIZE,   "rgba16float", "write");
+  state::registerShaderSPV("lens_finish",  FINISH_SPV,  FINISH_SPV_SIZE,  "rgba8unorm",  "write");
+  auto cs_prepare = gpu::Device::createShaderModuleByName("lens_prepare");
+  auto cs_bokeh   = gpu::Device::createShaderModuleByName("lens_bokeh");
+  auto cs_finish  = gpu::Device::createShaderModuleByName("lens_finish");
+  if (!cs_prepare || !cs_bokeh || !cs_finish) {
+    state::log("lens: a shader failed to compile");
     return;
   }
+  s_pso_prepare = gpu::Device::createComputePSO(cs_prepare, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, F16).uniform(2));
+  s_pso_bokeh = gpu::Device::createComputePSO(cs_bokeh, "main", gpu::Bindings()
+      .tex2d(0).storage(1).sampler(2).storageTex2d(3, F16).uniform(4));
   s_pso_finish = gpu::Device::createComputePSO(cs_finish, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8));
-  if (!s_pso_finish.valid()) state::log("lens: finish PSO INVALID");
+      .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+
+  gpu::ComputePSO* psos[] = { &s_pso_prepare, &s_pso_bokeh, &s_pso_finish };
+  for (auto* p : psos) if (!p->valid()) state::log("lens: a PSO is INVALID");
   state::log("lens: module_init done");
 }
 
 void* create() {
   auto* s = new State();
+  s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
+  s->tap_buf = gpu::Device::createBuffer(sizeof(float) * 4 * MAX_TAPS, gpu::BufferUsage::Storage);
+  s->prepare_buf = gpu::Device::createBuffer(sizeof(PrepareU), gpu::BufferUsage::Uniform);
+  s->bokeh_buf   = gpu::Device::createBuffer(sizeof(BokehU),   gpu::BufferUsage::Uniform);
+  s->finish_buf  = gpu::Device::createBuffer(sizeof(FinishU),  gpu::BufferUsage::Uniform);
   return s;
 }
 
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  if (s->bufA.valid()) s->bufA.release();
+  if (s->bufB.valid()) s->bufB.release();
+  s->sampler.release();
+  s->tap_buf.release();
+  s->prepare_buf.release();
+  s->bokeh_buf.release();
+  s->finish_buf.release();
   delete s;
 }
 
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->initialized = s_pso_finish.valid();
+  s->initialized = s_pso_prepare.valid() && s_pso_bokeh.valid() &&
+                   s_pso_finish.valid() &&
+                   s->tap_buf.valid() && s->finish_buf.valid();
 }
 
 void tick(void* self, double dt) { (void)self; (void)dt; }
@@ -430,19 +540,106 @@ int32_t is_identity(void* self) {
   return (optics_off && color_off && finish_off) ? 1 : 0;
 }
 
+static bool ensureTextures(State* s, int w, int h) {
+  if (s->tex_w == w && s->tex_h == h && s->bufA.valid() && s->bufB.valid()) return true;
+  if (s->bufA.valid()) s->bufA.release();
+  if (s->bufB.valid()) s->bufB.release();
+  s->bufA = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
+  s->bufB = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
+  if (!s->bufA.valid() || !s->bufB.valid()) return false;
+  s->tex_w = w; s->tex_h = h;
+  return true;
+}
+
+// Rebuild the Vogel tap set + its pixel-independent weight (aperture · rim ·
+// apodization) into the tap storage buffer (pipeline.pass_bokeh :183-190;
+// optics.py). Recomputed per frame — K≤192 cheap trig on the CPU.
+static void writeTaps(State* s) {
+  const Coating& coat = coatingOf(s->coating);
+  int K = s->taps; if (K < 1) K = 1; if (K > MAX_TAPS) K = MAX_TAPS;
+  const float ga = (float)M_PI * (3.f - std::sqrt(5.f));   // golden angle
+  const float rot = s->aperture_rotation * (float)(2.0 * M_PI);
+  const float rimv   = s->rim * coat.rim;
+  const float onionv = s->onion_ring * coat.onion;
+  float buf[4 * MAX_TAPS];
+  for (int k = 0; k < K; k++) {
+    float r = std::sqrt((k + 0.5f) / K);
+    float t = k * ga;
+    float ox = r * std::cos(t), oy = r * std::sin(t);
+    float theta = std::atan2(oy, ox);
+    float bnd = polyBoundaryR(theta, s->blades, rot, s->blade_curvature);
+    float aw = ss_down(bnd, r, 0.05f);
+    float u = r < 0.f ? 0.f : (r > 1.f ? 1.f : r);
+    float edge = ss(0.55f, 1.0f, u);
+    float rw = 1.f + rimv * edge;
+    if (onionv != 0.f)
+      rw += onionv * 0.5f * (0.5f - 0.5f * std::cos(u * 5.f * (float)M_PI)) * u;
+    float apod = (1.f - s->apodize) + s->apodize * (0.5f + 0.5f * std::cos((float)M_PI * u));
+    buf[4 * k + 0] = ox;
+    buf[4 * k + 1] = oy;
+    buf[4 * k + 2] = aw * rw * apod;
+    buf[4 * k + 3] = 0.f;
+  }
+  s->tap_buf.writeBytes(buf, sizeof(float) * 4 * K, 0);
+}
+
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
+  if (!ensureTextures(s, vp_w, vp_h)) return;
 
   const int gx = (vp_w + 7) / 8, gy = (vp_h + 7) / 8;
+  const float md0  = (float)(vp_w < vp_h ? vp_w : vp_h);
+  const float coc_px0 = s->blur_amount * md0 * 0.25f;
+  const float half = (float)(vp_w > vp_h ? vp_w : vp_h) * 0.5f;
 
-  // STAGE 1: passthrough copy.
-  { auto cp = gpu::ComputePass::begin();
+  // 1. prepare: sRGB→linear + highlight boost → bufA (linear HDR).
+  { PrepareU u = { s->hl_threshold, s->hl_boost * 8.f, 0.f, 0.f };
+    s->prepare_buf.writeOne(u);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_prepare);
+    cp.setTexture(in, 0, 0); cp.setTexture(s->bufA, 1, 1);
+    cp.setBuffer(s->prepare_buf, 2);
+    cp.dispatch(gx, gy); cp.end(); }
+
+  gpu::Texture cur = s->bufA;
+
+  // 2. bokeh gather (full-res for now) → bufB. Skip at ~zero blur.
+  if (coc_px0 > 0.5f) {
+    writeTaps(s);
+    BokehU u = {};
+    u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h;
+    u.coc_px = coc_px0;
+    u.field_curv = s->field_curvature;
+    u.focus_cx = s->focus_cx; u.focus_cy = s->focus_cy;
+    u.cats_eye = s->cats_eye; u.swirl = s->swirl; u.anamorphic = s->anamorphic;
+    u.loca_scale = s->loca * coatingOf(s->coating).loca;
+    u.taps = (uint32_t)(s->taps < 1 ? 1 : (s->taps > MAX_TAPS ? MAX_TAPS : s->taps));
+    s->bokeh_buf.writeOne(u);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_bokeh);
+    cp.setTexture(s->bufA, 0, 0); cp.setBuffer(s->tap_buf, 1);
+    cp.setSampler(s->sampler, 2);
+    cp.setTexture(s->bufB, 3, 1); cp.setBuffer(s->bokeh_buf, 4);
+    cp.dispatch(gx, gy); cp.end();
+    // (fill anti-stipple blur deferred — needs an RGBA16F-safe blur.)
+    cur = s->bufB;
+  }
+
+  // 8. finish: exposure → vignette → hl_desat → tonemap → sRGB → grain → tex_out.
+  { FinishU u = {};
+    u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h;
+    u.exposure = std::pow(2.f, 3.f * s->exposure);
+    u.vignette = s->mech_vignette; u.hl_desat = s->hl_desat;
+    u.tone = s->tone; u.tone_black = s->tone_black; u.grain = s->grain;
+    s->finish_buf.writeOne(u);
+    auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_finish);
-    cp.setTexture(in, 0, 0); cp.setTexture(out, 1, 1);
+    cp.setTexture(cur, 0, 0); cp.setTexture(out, 1, 1);
+    cp.setBuffer(s->finish_buf, 2);
     cp.dispatch(gx, gy); cp.end(); }
 
   gpu::Device::submit();

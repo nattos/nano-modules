@@ -303,10 +303,11 @@ echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+featur
 #   glow           — halation + bloom.
 #   geo            — distortion + transverse chromatic aberration (per-channel resample).
 #   finish         — exposure/vignette/hl-desat/filmic tonemap/grain → tex_out (rgba8).
-# STAGE 1: only `finish` (passthrough copy) exists; more stages added incrementally.
+compile_shaders_compute_var_spv lens prepare
+compile_shaders_compute_var_spv lens bokeh
 compile_shaders_compute_var_spv lens finish
-_emit_spv_header_var lens finish
-echo "  lens shaders compiled (SPV: finish)"
+_emit_spv_header_var lens prepare bokeh finish
+echo "  lens shaders compiled (SPV: prepare+bokeh+finish)"
 
 echo "=== Building WASM (nano) ==="
 

@@ -66,13 +66,38 @@ describe('Lens (filter.blur.lens) E2E', () => {
     expect(p.capabilities).toContain('time_independent');
   });
 
-  // STAGE 1: render is a straight passthrough copy, so out ≈ in regardless of
-  // params. (Replaced by real behavioural checks as passes land.)
-  it('skeleton renders a passthrough copy of its input', async () => {
-    const r = await runChain('lens_pass', { blur_amount: 0.5, grain: 1.0 },
-                             'lens_passthrough', { cell_size: 0.22, line_width: 0.12 });
+  const GRID = { cell_size: 0.22, line_width: 0.12 };
+
+  it('renders a non-solid frame (the pipeline dispatches cleanly)', async () => {
+    const r = await runChain('lens_render', {}, 'lens_render', GRID);
     expect(r.success).toBe(true);
-    const diff = r.trace('out').diffCount(r.trace('in'), 6);
-    expect(diff).toBeLessThan(W * H * 0.02);
+    r.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+  });
+
+  it('bokeh softens the image (blur amount changes the look)', async () => {
+    const sharp = await runChain('lens_b0', { blur_amount: 0.0 }, 'lens_blur_0', GRID);
+    const soft  = await runChain('lens_b1', { blur_amount: 0.6 }, 'lens_blur_1', GRID);
+    expect(sharp.success).toBe(true);
+    expect(soft.success).toBe(true);
+    soft.trace('out').expectDifferentFrom(sharp.trace('out'), 100);
+  });
+
+  it('grain bites (deterministic film grain differs from clean)', async () => {
+    const clean = await runChain('lens_g0', { blur_amount: 0.3, grain: 0.0 }, 'lens_grain_0', GRID);
+    const noisy = await runChain('lens_g1', { blur_amount: 0.3, grain: 1.0 }, 'lens_grain_1', GRID);
+    expect(clean.success).toBe(true);
+    expect(noisy.success).toBe(true);
+    noisy.trace('out').expectDifferentFrom(clean.trace('out'), 50);
+  });
+
+  it('exposure changes the output brightness', async () => {
+    const dim    = await runChain('lens_e0', { exposure: -0.5 }, 'lens_exp_0', GRID);
+    const bright = await runChain('lens_e1', { exposure: 0.5 },  'lens_exp_1', GRID);
+    expect(dim.success).toBe(true);
+    expect(bright.success).toBe(true);
+    let sumDim = 0, sumBright = 0;
+    dim.trace('out').forEachPixel((c) => { sumDim += c.r + c.g + c.b; });
+    bright.trace('out').forEachPixel((c) => { sumBright += c.r + c.g + c.b; });
+    expect(sumBright).toBeGreaterThan(sumDim);
   });
 });
