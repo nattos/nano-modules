@@ -319,7 +319,7 @@ void module_init() {
       .floatField("rim", 0.12f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Bright-rim (nervous) bokeh.").label("Rim", "Rim")
       .floatField("onion_ring", 0.06f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Aspheric concentric-ring texture inside defocused bokeh discs (most visible on defocused highlights).").label("Onion Ring", "Onion")
+                  nullptr, "Aspheric concentric-ring texture inside defocused bokeh discs. Low = subtle/physical, high = exaggerated vintage ring-stack (quadratic). Most visible on defocused highlights.").label("Onion Ring", "Onion")
       .floatField("apodize", 0.55f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Creamy centre-weighted disc falloff (raised-cosine apodization).").label("Apodize", "Apod")
 
@@ -775,10 +775,12 @@ static void writeTaps(State* s) {
   const float rimv   = s->rim * coat.rim;
   // Onion-ring magnitude. The prototype gates it hard by coating quality
   // (coat.onion=0.10 for SMC), which made it invisible on the default lens. Keep
-  // the coating as a modifier but floor it (0.5 + 0.5·coat.onion) and boost so the
-  // slider is a usable control across all coatings — most visible in the bokeh
-  // discs of defocused highlights.
-  const float onionv = s->onion_ring * (0.5f + 0.5f * coat.onion) * 1.5f;
+  // the coating as a modifier but floor it (0.5 + 0.5·coat.onion). The slider maps
+  // through a QUADRATIC curve (1.5·o + 3·o²): a gentle, near-physical low end with
+  // fine control, extending to an exaggerated 'nostalgic' ring stack at the top.
+  // Most visible in the bokeh discs of defocused highlights.
+  const float o = s->onion_ring;
+  const float onionv = (0.5f + 0.5f * coat.onion) * (1.5f * o + 3.0f * o * o);
   float buf[4 * MAX_TAPS];
   for (int k = 0; k < K; k++) {
     float r = std::sqrt((k + 0.5f) / K);
