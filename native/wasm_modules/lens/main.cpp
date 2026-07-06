@@ -319,7 +319,7 @@ void module_init() {
       .floatField("rim", 0.12f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Bright-rim (nervous) bokeh.").label("Rim", "Rim")
       .floatField("onion_ring", 0.06f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Aspheric onion-ring texture inside the discs.").label("Onion Ring", "Onion")
+                  nullptr, "Aspheric concentric-ring texture inside defocused bokeh discs (most visible on defocused highlights).").label("Onion Ring", "Onion")
       .floatField("apodize", 0.55f, 0.f, 1.f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Creamy centre-weighted disc falloff (raised-cosine apodization).").label("Apodize", "Apod")
 
@@ -434,13 +434,14 @@ void module_init() {
 
       .group("quality", "Quality")
         .groupHelp(
-          "Cost/quality. *Quality* picks a preset tier (tap count, downsample, "
-          "spectral bands). The advanced overrides tune the gather directly: "
-          "*Taps* trades quality for speed, *Work Radius* caps the working-res "
-          "blur before it downsamples, *Fill* is a tiny anti-stipple smooth.")
+          "Cost/quality. *Quality* scales the gather: **Cheap** thins the tap "
+          "count and downsamples more; **Max** adds taps and downsamples less "
+          "(sharper discs, slower). It scales the advanced overrides below, which "
+          "set the base: *Taps* (base tap count), *Work Radius* (working-res blur "
+          "cap before downsampling), *Fill* (anti-stipple micro-blur).")
       .selectField("quality", 1, state::SecondaryInput,
                    {{"Cheap", 0}, {"Standard", 1}, {"Max", 2}},
-                   false, "Quality tier: tap count, gather downsample, spectral band count.").label("Quality", "Qual")
+                   false, "Quality tier — scales tap count and gather downsample (×⅓ / ×1 / ×5⁄3 taps).").label("Quality", "Qual")
       .intField("taps", 96, 16, 192, state::SecondaryInput, 1, nullptr,
                 "Bokeh gather tap count (higher = smoother discs, slower).").label("Taps", "Taps")
       .floatField("work_radius", 11.0f, 4.f, 24.f, state::SecondaryInput, nullptr, 0.5f, "px",
@@ -724,6 +725,23 @@ static bool ensureProcTextures(State* s, int pw, int ph) {
   return true;
 }
 
+// The Quality tier (Cheap/Standard/Max) scales the gather cost. It's the friendly
+// knob; the advanced Taps / Work Radius sliders are the base values it scales, so
+// both stay live. Cheap ×⅓ taps + smaller work-radius (more downsample); Max ×5⁄3
+// taps + larger work-radius (less downsample, sharper discs).
+static int effectiveTaps(const State* s) {
+  int base = s->taps < 1 ? 1 : (s->taps > MAX_TAPS ? MAX_TAPS : s->taps);
+  float mul = s->quality == 0 ? (1.f / 3.f) : (s->quality == 2 ? (5.f / 3.f) : 1.f);
+  int k = (int)std::lround((float)base * mul);
+  if (k < 1) k = 1; if (k > MAX_TAPS) k = MAX_TAPS;
+  return k;
+}
+static float effectiveWorkRadius(const State* s) {
+  float base = s->work_radius < 1.f ? 1.f : s->work_radius;
+  float mul = s->quality == 0 ? 0.65f : (s->quality == 2 ? 1.6f : 1.f);
+  return base * mul;
+}
+
 // Downsample factor for the bokeh gather (pipeline.pass_bokeh :168-175): size it
 // off the LARGEST circle-of-confusion in frame so the working-res disc stays
 // ≤ work_radius px — a FIXED tap count then covers it densely.
@@ -740,7 +758,7 @@ static int bokehDownsample(State* s, int vp_w, int vp_h, float coc_px0) {
     }
   float fc = s->field_curvature < 0.f ? 0.f : s->field_curvature;
   float coc_px_max = coc_px0 * (1.f + fc * r_max * r_max);
-  float wr = s->work_radius < 1.f ? 1.f : s->work_radius;
+  float wr = effectiveWorkRadius(s);
   int ds = 1;
   while (coc_px_max / ds > wr && ds < 8) ds *= 2;
   return ds;
@@ -751,11 +769,16 @@ static int bokehDownsample(State* s, int vp_w, int vp_h, float coc_px0) {
 // optics.py). Recomputed per frame — K≤192 cheap trig on the CPU.
 static void writeTaps(State* s) {
   const Coating& coat = coatingOf(s->coating);
-  int K = s->taps; if (K < 1) K = 1; if (K > MAX_TAPS) K = MAX_TAPS;
+  int K = effectiveTaps(s);
   const float ga = (float)M_PI * (3.f - std::sqrt(5.f));   // golden angle
   const float rot = s->aperture_rotation * (float)(2.0 * M_PI);
   const float rimv   = s->rim * coat.rim;
-  const float onionv = s->onion_ring * coat.onion;
+  // Onion-ring magnitude. The prototype gates it hard by coating quality
+  // (coat.onion=0.10 for SMC), which made it invisible on the default lens. Keep
+  // the coating as a modifier but floor it (0.5 + 0.5·coat.onion) and boost so the
+  // slider is a usable control across all coatings — most visible in the bokeh
+  // discs of defocused highlights.
+  const float onionv = s->onion_ring * (0.5f + 0.5f * coat.onion) * 1.5f;
   float buf[4 * MAX_TAPS];
   for (int k = 0; k < K; k++) {
     float r = std::sqrt((k + 0.5f) / K);
@@ -817,7 +840,7 @@ void render(void* self, int vp_w, int vp_h) {
   if (coc_px0 > 0.5f) {
     writeTaps(s);
     int ds = bokehDownsample(s, vp_w, vp_h, coc_px0);
-    uint32_t K = (uint32_t)(s->taps < 1 ? 1 : (s->taps > MAX_TAPS ? MAX_TAPS : s->taps));
+    uint32_t K = (uint32_t)effectiveTaps(s);
     float loca_scale = s->loca * coatingOf(s->coating).loca;
 
     if (ds <= 1) {

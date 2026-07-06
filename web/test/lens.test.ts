@@ -102,6 +102,28 @@ describe('Lens (filter.blur.lens) E2E', () => {
     soft.trace('out').expectDifferentFrom(sharp.trace('out'), 100);
   });
 
+  it('quality tier changes the gather (Cheap vs Max differ)', async () => {
+    // Cheap thins taps + downsamples more; Max adds taps + downsamples less. With a
+    // big blur and no anti-stipple fill, the two tiers produce visibly different
+    // discs. (quality: 0 = Cheap, 2 = Max.)
+    const cheap = await runChain('lens_q0', { blur_amount: 0.6, fill: 0.0, quality: 0 }, 'lens_qual_cheap', GRID);
+    const max   = await runChain('lens_q2', { blur_amount: 0.6, fill: 0.0, quality: 2 }, 'lens_qual_max', GRID);
+    expect(cheap.success).toBe(true);
+    expect(max.success).toBe(true);
+    max.trace('out').expectDifferentFrom(cheap.trace('out'), 50);
+  });
+
+  it('onion ring textures the bokeh (0 vs 1 differ on the default coating)', async () => {
+    // Onion modulates the gather tap weights radially → concentric rings in
+    // defocused discs. Coating-gated but floored, so it bites even on SMC (coating
+    // 0, the default). Needs real defocus (a large blur) to manifest.
+    const none = await runChain('lens_o0', { blur_amount: 0.6, onion_ring: 0.0, apodize: 0.0 }, 'lens_onion_0', GRID);
+    const full = await runChain('lens_o1', { blur_amount: 0.6, onion_ring: 1.0, apodize: 0.0 }, 'lens_onion_1', GRID);
+    expect(none.success).toBe(true);
+    expect(full.success).toBe(true);
+    full.trace('out').expectDifferentFrom(none.trace('out'), 50);
+  });
+
   it('grain bites (deterministic film grain differs from clean)', async () => {
     const clean = await runChain('lens_g0', { blur_amount: 0.3, grain: 0.0 }, 'lens_grain_0', GRID);
     const noisy = await runChain('lens_g1', { blur_amount: 0.3, grain: 1.0 }, 'lens_grain_1', GRID);
