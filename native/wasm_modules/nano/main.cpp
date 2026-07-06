@@ -30,9 +30,11 @@ NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 NANO_DECLARE_INSTANCE_EFFECT(simulant)
 NANO_DECLARE_INSTANCE_EFFECT(smear)
 NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
+NANO_DECLARE_INSTANCE_EFFECT(lens)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
+namespace lens { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -245,6 +247,18 @@ void nano_module_main() {
         "la-bezier-curve",
         NANO_INSTANCE_LIFECYCLE(line_reconstruct),
         &line_reconstruct::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.blur.lens",
+        "Lens",
+        "A full photographic-lens model: shaped-aperture depth-of-field bokeh (Vogel-disc gather with cat's-eye/swirl/anamorphic/LoCA), lens flare & glare (in-frame veiling glare plus an off-frame spectral sun with veil, directional glow, aperture-blade diffraction streaks and a ghost chain), halation & bloom, geometric distortion + transverse chromatic aberration, and a filmic finish (mechanical vignette, highlight desaturation, Reinhard→ACES tonemap, film grain). Everything composites in linear HDR before the film curve. Presets (SMC prime, vintage swirl, anamorphic, dreamy, clinical) set a whole look at once from the UI.",
+        "filter",
+        "lens,bokeh,dof,depth,blur,flare,glare,halation,bloom,chromatic,vignette,tonemap,film,anamorphic,swirl,vintage,grain",
+        "la-camera",
+        NANO_INSTANCE_LIFECYCLE(lens),
+        &lens::is_identity,
     });
 }
 

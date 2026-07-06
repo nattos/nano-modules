@@ -292,6 +292,22 @@ compile_shaders_compute_var_spv line_reconstruct reconstruct
 _emit_spv_header_var line_reconstruct stats cstar blur16 tensor_grad tensor features smooth_prep smooth ctr_prep centerline rgbminmax reconstruct
 echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+features+smooth+centerline+reconstruct)"
 
+# lens — full photographic-lens sim (bokeh gather + flare stack + filmic finish).
+# Multi-pass linear-HDR pipeline (all sharing common.hlsl); reuses the shared
+# fx::GaussianBlur/fx::FastBlur (blur_shaders.h, compiled above for triangulate)
+# for the fill micro-blur and the wide flare/glow blurs.
+#   prepare/downsample/bokeh/upsample — highlight boost + downsampled Vogel-disc
+#                  shaped-aperture gather (the DOF cost centre) + bilinear upsample.
+#   color          — coating tint / warmth / transmission / micro-contrast.
+#   hood/sun       — in-frame veiling glare + off-frame spectral sun/stray-light.
+#   glow           — halation + bloom.
+#   geo            — distortion + transverse chromatic aberration (per-channel resample).
+#   finish         — exposure/vignette/hl-desat/filmic tonemap/grain → tex_out (rgba8).
+# STAGE 1: only `finish` (passthrough copy) exists; more stages added incrementally.
+compile_shaders_compute_var_spv lens finish
+_emit_spv_header_var lens finish
+echo "  lens shaders compiled (SPV: finish)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -325,6 +341,7 @@ wasm_build \
   ../shape_burst/main.cpp \
   ../simulant/main.cpp \
   ../smear/main.cpp \
-  ../line_reconstruct/main.cpp
+  ../line_reconstruct/main.cpp \
+  ../lens/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
