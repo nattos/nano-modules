@@ -183,6 +183,32 @@ describe('Lens (filter.blur.lens) E2E', () => {
     expect(sumWet).toBeGreaterThan(sumDry);
   });
 
+  it('debug views each render a distinct internal stage', async () => {
+    // A rich setup so every stage has content: bokeh (blur), a CoC gradient
+    // (field curvature), boosted highlights (mask), and active glow (flare).
+    const P = { blur_amount: 0.3, field_curvature: 0.6, hl_threshold: 0.3,
+                hl_boost: 1.0, halation: 1.0, bloom: 1.0 };
+    const off   = await runChain('lens_dv0', { ...P, debug_view: 0 }, 'lens_dbg_off', GRID);
+    const mask  = await runChain('lens_dv1', { ...P, debug_view: 1 }, 'lens_dbg_mask', GRID);
+    const coc   = await runChain('lens_dv2', { ...P, debug_view: 2 }, 'lens_dbg_coc', GRID);
+    const bokeh = await runChain('lens_dv3', { ...P, debug_view: 3 }, 'lens_dbg_bokeh', GRID);
+    const flare = await runChain('lens_dv4', { ...P, debug_view: 4 }, 'lens_dbg_flare', GRID);
+    for (const r of [off, mask, coc, bokeh, flare]) expect(r.success).toBe(true);
+    // Each debug view must differ from the normal composited output...
+    mask.trace('out').expectDifferentFrom(off.trace('out'), 100);
+    coc.trace('out').expectDifferentFrom(off.trace('out'), 100);
+    bokeh.trace('out').expectDifferentFrom(off.trace('out'), 100);
+    flare.trace('out').expectDifferentFrom(off.trace('out'), 100);
+    // ...and from each OTHER (proves they're distinct plumbed stages, not one
+    // fallback path). Mask (grayscale) vs CoC (grayscale gradient) vs bokeh.
+    mask.trace('out').expectDifferentFrom(coc.trace('out'), 100);
+    mask.trace('out').expectDifferentFrom(bokeh.trace('out'), 100);
+    coc.trace('out').expectDifferentFrom(bokeh.trace('out'), 100);
+    // Non-solid where the content guarantees variation (mask edges, CoC bowl).
+    mask.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+    coc.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+  });
+
   it('exposure changes the output brightness', async () => {
     const dim    = await runChain('lens_e0', { exposure: -0.5 }, 'lens_exp_0', GRID);
     const bright = await runChain('lens_e1', { exposure: 0.5 },  'lens_exp_1', GRID);

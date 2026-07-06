@@ -116,6 +116,13 @@ static_assert(sizeof(FinishU) == 48, "FinishU layout");
 struct ColorU { float mr, mg, mb, contrast; };
 static_assert(sizeof(ColorU) == 16, "ColorU layout");
 
+struct DebugU {
+  float mode, hl_threshold, half, dimw;
+  float dimh, coc_px, field_curv, focus_cx;
+  float focus_cy, _p0, _p1, _p2;
+};
+static_assert(sizeof(DebugU) == 48, "DebugU layout");
+
 struct GeoU {
   float half, dimw, dimh, distortion;
   float wave, tca, _p0, _p1;
@@ -164,10 +171,11 @@ struct State {
   gpu::Texture bufA, bufB;       // full-res linear-HDR ping/pong
   gpu::Texture small, bokeh_s;   // proc-res bokeh working buffers (downsampled)
   gpu::Texture flo, hi, hi_a, hi_b;  // flare-res: downsampled image + highlight + 2 blurs
+  gpu::Texture dbg;              // full-res snapshot for the flare-only debug view (lazy)
   gpu::Sampler sampler;          // Linear/ClampToEdge (bokeh taps, flare upsample)
   gpu::Buffer  tap_buf;          // Vogel tap set (float4/tap: ox,oy,base_w,_)
   gpu::Buffer  prepare_buf, bokeh_buf, color_buf, geo_buf, finish_buf;
-  gpu::Buffer  extract_buf, hood_buf, glow_buf, sun_buf, downsample_buf;
+  gpu::Buffer  extract_buf, hood_buf, glow_buf, sun_buf, downsample_buf, debug_buf;
   int proc_w = 0, proc_h = 0;    // current bokeh working resolution
   int flare_w = 0, flare_h = 0;  // reduced flare/glow working resolution
 
@@ -242,7 +250,7 @@ struct State {
 // flare/glow passes.
 static gpu::ComputePSO s_pso_prepare, s_pso_bokeh, s_pso_color, s_pso_geo, s_pso_finish;
 static gpu::ComputePSO s_pso_extract, s_pso_hood, s_pso_glow, s_pso_sun;
-static gpu::ComputePSO s_pso_downsample, s_pso_upsample;
+static gpu::ComputePSO s_pso_downsample, s_pso_upsample, s_pso_debug;
 static Blur16 s_blur16;   // RGBA16F wide blur (veiling glare, halation, bloom)
 
 void module_init() {
@@ -469,6 +477,7 @@ void module_init() {
   state::registerShaderSPV("lens_glow",    GLOW_SPV,    GLOW_SPV_SIZE,    "rgba16float", "write");
   state::registerShaderSPV("lens_sun",     SUN_SPV,     SUN_SPV_SIZE,     "rgba16float", "write");
   state::registerShaderSPV("lens_finish",  FINISH_SPV,  FINISH_SPV_SIZE,  "rgba8unorm",  "write");
+  state::registerShaderSPV("lens_debug",   DEBUG_SPV,   DEBUG_SPV_SIZE,   "rgba8unorm",  "write");
   auto cs_prepare = gpu::Device::createShaderModuleByName("lens_prepare");
   auto cs_bokeh   = gpu::Device::createShaderModuleByName("lens_bokeh");
   auto cs_color   = gpu::Device::createShaderModuleByName("lens_color");
@@ -480,8 +489,10 @@ void module_init() {
   auto cs_glow    = gpu::Device::createShaderModuleByName("lens_glow");
   auto cs_sun     = gpu::Device::createShaderModuleByName("lens_sun");
   auto cs_finish  = gpu::Device::createShaderModuleByName("lens_finish");
+  auto cs_debug   = gpu::Device::createShaderModuleByName("lens_debug");
   if (!cs_prepare || !cs_bokeh || !cs_color || !cs_geo || !cs_downsample ||
-      !cs_upsample || !cs_extract || !cs_hood || !cs_glow || !cs_sun || !cs_finish) {
+      !cs_upsample || !cs_extract || !cs_hood || !cs_glow || !cs_sun || !cs_finish ||
+      !cs_debug) {
     state::log("lens: a shader failed to compile");
     return;
   }
@@ -507,10 +518,12 @@ void module_init() {
       .storageTex2d(1, F16).uniform(2));   // no input — writes contribution only
   s_pso_finish = gpu::Device::createComputePSO(cs_finish, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_pso_debug = gpu::Device::createComputePSO(cs_debug, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
   s_blur16.init();
 
   gpu::ComputePSO* psos[] = { &s_pso_prepare, &s_pso_bokeh, &s_pso_color, &s_pso_geo,
-    &s_pso_extract, &s_pso_hood, &s_pso_glow, &s_pso_sun, &s_pso_finish };
+    &s_pso_extract, &s_pso_hood, &s_pso_glow, &s_pso_sun, &s_pso_finish, &s_pso_debug };
   for (auto* p : psos) if (!p->valid()) state::log("lens: a PSO is INVALID");
   if (!s_blur16.valid()) state::log("lens: Blur16 INVALID");
   state::log("lens: module_init done");
@@ -530,6 +543,7 @@ void* create() {
   s->glow_buf    = gpu::Device::createBuffer(sizeof(GlowU),    gpu::BufferUsage::Uniform);
   s->sun_buf     = gpu::Device::createBuffer(sizeof(SunU),     gpu::BufferUsage::Uniform);
   s->downsample_buf = gpu::Device::createBuffer(sizeof(DownsampleU), gpu::BufferUsage::Uniform);
+  s->debug_buf   = gpu::Device::createBuffer(sizeof(DebugU),    gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -641,6 +655,7 @@ static inline bool near0(float x) { return x > -1e-4f && x < 1e-4f; }
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
+  if (s->debug_view != 0) return 0;   // a debug view always transforms the frame
   bool optics_off = near0(s->blur_amount) && near0(s->hl_boost) &&
                     near0(s->sun_intensity) && near0(s->flare_strength) &&
                     near0(s->halation) && near0(s->bloom) &&
@@ -665,6 +680,15 @@ static bool ensureTextures(State* s, int w, int h) {
   if (!ok) return false;
   s->tex_w = w; s->tex_h = h;
   return true;
+}
+
+// Full-res snapshot buffer for the flare-only debug view — allocated lazily (the
+// common non-debug path never pays for it).
+static bool ensureDbg(State* s, int w, int h) {
+  if (s->dbg.valid() && s->tex_w == w && s->tex_h == h) return true;
+  if (s->dbg.valid()) s->dbg.release();
+  s->dbg = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
+  return s->dbg.valid();
 }
 
 // Reduced-resolution flare/glow working buffers (downsampled image + highlight +
@@ -767,6 +791,14 @@ void render(void* self, int vp_w, int vp_h) {
   const float coc_px0 = s->blur_amount * md0 * 0.25f;
   const float half = (float)(vp_w > vp_h ? vp_w : vp_h) * 0.5f;
 
+  // Debug views (0 = off, normal output). Bokeh-only (3) short-circuits the mid
+  // passes so `src` reaches finish as the isolated gather; flare-only (4) snapshots
+  // the pre-flare image so the debug pass can subtract it. Falls back to the normal
+  // path if the debug PSO failed to build.
+  const int debug = s_pso_debug.valid() ? s->debug_view : 0;
+  const bool dbg_bokeh = debug == 3;   // skip coating/flare/glow/geo
+  const bool dbg_flare = debug == 4;   // snapshot pre-flare, skip geo
+
   // 1. prepare: sRGB→linear + highlight boost → bufA (linear HDR).
   { PrepareU u = { s->hl_threshold, s->hl_boost * 8.f, 0.f, 0.f };
     s->prepare_buf.writeOne(u);
@@ -844,7 +876,7 @@ void render(void* self, int vp_w, int vp_h) {
     cu.contrast = coat.contrast;
     bool neutral = std::fabs(cu.mr - 1.f) < 1e-3f && std::fabs(cu.mg - 1.f) < 1e-3f &&
                    std::fabs(cu.mb - 1.f) < 1e-3f && std::fabs(cu.contrast - 1.f) < 1e-3f;
-    if (!neutral) {
+    if (!neutral && !dbg_bokeh) {
       s->color_buf.writeOne(cu);
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_color);
@@ -880,8 +912,18 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->extract_buf, 2); cp.dispatch(fgx, fgy); cp.end();
   };
 
+  // Flare-only debug: snapshot the pre-flare image (identity upsample copy) so the
+  // debug pass can subtract it from the post-flare result. Only the flare passes
+  // (4/5/6) and NOT geo run after this, so src−snapshot is exactly the flare add.
+  const bool run_flare = !dbg_bokeh;
+  if (dbg_flare && ensureDbg(s, vp_w, vp_h)) {
+    auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_upsample);
+    cp.setTexture(src, 0, 0); cp.setSampler(s->sampler, 1); cp.setTexture(s->dbg, 2, 1);
+    cp.dispatch(gx, gy); cp.end();
+  }
+
   // 4. in-frame veiling glare (hood). Skip when the hood fully shades the frame.
-  { const Coating& coat = coatingOf(s->coating);
+  if (run_flare) { const Coating& coat = coatingOf(s->coating);
     float strength = s->flare_strength * coat.flare * (1.f - s->hood_extension);
     if (strength > 1e-4f && blur_ok && s_pso_hood.valid() && ensureFlareTextures(s, flare_w, flare_h)) {
       toFlare(src);
@@ -899,7 +941,7 @@ void render(void* self, int vp_w, int vp_h) {
 
   // 5. off-frame sun / stray light. Off by default (sun_intensity 0 → skipped).
   // Analytic + low-frequency → computed at flare res, then upsample-added.
-  if (s->sun_intensity > 1e-4f && s_pso_sun.valid() && s_pso_hood.valid() &&
+  if (run_flare && s->sun_intensity > 1e-4f && s_pso_sun.valid() && s_pso_hood.valid() &&
       ensureFlareTextures(s, flare_w, flare_h)) {
     const Coating& coat = coatingOf(s->coating);
     float az = s->sun_azimuth * (float)(2.0 * M_PI);
@@ -940,7 +982,7 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   // 6. halation + bloom. Skip when both off.
-  if ((s->halation > 1e-4f || s->bloom > 1e-4f) && blur_ok && s_pso_glow.valid() &&
+  if (run_flare && (s->halation > 1e-4f || s->bloom > 1e-4f) && blur_ok && s_pso_glow.valid() &&
       ensureFlareTextures(s, flare_w, flare_h)) {
     toFlare(src);
     extractFlare(0.75f);
@@ -962,7 +1004,7 @@ void render(void* self, int vp_w, int vp_h) {
     float wave = s->distortion_wave * DIST_SCALE;
     float tca  = s->tca * TCA_SCALE;
     bool active = std::fabs(dist) > 1e-5f || std::fabs(wave) > 1e-5f || std::fabs(tca) > 1e-5f;
-    if (active) {
+    if (active && !dbg_bokeh && !dbg_flare) {
       GeoU u = { half, (float)vp_w, (float)vp_h, dist, wave, tca, 0.f, 0.f };
       s->geo_buf.writeOne(u);
       auto cp = gpu::ComputePass::begin();
@@ -974,8 +1016,9 @@ void render(void* self, int vp_w, int vp_h) {
     }
   }
 
-  // 8. finish: exposure → vignette → hl_desat → tonemap → sRGB → grain → tex_out.
-  { FinishU u = {};
+  if (debug == 0) {
+    // 8. finish: exposure → vignette → hl_desat → tonemap → sRGB → grain → tex_out.
+    FinishU u = {};
     u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h;
     u.exposure = std::pow(2.f, 3.f * s->exposure);
     u.vignette = s->mech_vignette; u.hl_desat = s->hl_desat;
@@ -985,7 +1028,23 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_finish);
     cp.setTexture(src, 0, 0); cp.setTexture(out, 1, 1);
     cp.setBuffer(s->finish_buf, 2);
-    cp.dispatch(gx, gy); cp.end(); }
+    cp.dispatch(gx, gy); cp.end();
+  } else {
+    // debug view: render an internal stage instead. aux = tex_in for the highlight
+    // mask, the pre-flare snapshot for flare-only, else an (ignored) valid bind.
+    DebugU u = {};
+    u.mode = (float)debug; u.hl_threshold = s->hl_threshold;
+    u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h;
+    u.coc_px = coc_px0; u.field_curv = s->field_curvature;
+    u.focus_cx = s->focus_cx; u.focus_cy = s->focus_cy;
+    s->debug_buf.writeOne(u);
+    gpu::Texture aux = (debug == 4 && s->dbg.valid()) ? s->dbg : in;
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_debug);
+    cp.setTexture(src, 0, 0); cp.setTexture(aux, 1, 0);
+    cp.setTexture(out, 2, 1); cp.setBuffer(s->debug_buf, 3);
+    cp.dispatch(gx, gy); cp.end();
+  }
 
   gpu::Device::submit();
 }
