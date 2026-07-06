@@ -35,7 +35,7 @@ export class AppState {
     plugins: [],
     availableEffects: [],
     editingSketchId: null,
-    engine: { fps: 0, gpuTimeMs: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {}, modulationData: {}, debugConsoleLog: [], sidechannels: {}, triggerRails: {} },
+    engine: { fps: 0, gpuTimeMs: 0, error: null, tracedFrames: {}, frameGeneration: 0, sketchState: {}, pluginStates: {}, modulationData: {}, debugConsoleLog: [], sidechannels: {}, triggerRails: {}, triggerChannels: {} },
     tappingMode: false,
     helpMode: false,
     selection: null,

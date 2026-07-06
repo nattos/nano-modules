@@ -131,6 +131,23 @@ export class OrganizeTab extends MobxLitElement {
       background: var(--app-tint-4); margin-right: 6px; vertical-align: middle;
     }
     .trig-dot.on { background: var(--app-hi-color2); box-shadow: 0 0 6px var(--app-hi-color2); }
+    /* Trigger Channels grid: 8 channel columns that wrap to the next row; each
+       column is a vertical stack of its registered clips. */
+    .chan-grid {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: var(--app-sp-3);
+    }
+    .chan-col { display: flex; flex-direction: column; gap: var(--app-sp-2); min-width: 0; }
+    .chan-col-head {
+      font-size: var(--app-fs-md); color: var(--app-text-color1);
+      padding: 2px 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .chan-clip { cursor: default; }
+    .chan-clip .thumb { aspect-ratio: 16 / 9; background: #000; }
+    .chan-clip.disconnected { opacity: 0.55; }
+    @media (max-width: 1100px) { .chan-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .chan-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   `;
 
   render() {
@@ -184,7 +201,7 @@ export class OrganizeTab extends MobxLitElement {
             </div>
           `}
         ${this.renderSidechannels(selectedChannel)}
-        ${this.renderTriggerRails()}
+        ${this.renderTriggerChannels()}
       </div>
       <div class="right-panel">
         ${selectedChannel && appState.local.engine.sidechannels[selectedChannel]
@@ -265,39 +282,54 @@ export class OrganizeTab extends MobxLitElement {
   }
 
   /**
-   * Grid of active trigger rails: one card per (rail, channel) that has fired,
-   * showing its channel id, live on/off state, velocity, and last emitter. The
-   * shared server (barrel) launches Resolume clips matching these channels;
-   * here it's a read-only monitor of what the sketches are emitting.
+   * Grid of trigger channels: one column per channel that has registered clips
+   * (from the shared server's /global/channels), wrapping after 8 columns. Each
+   * column stacks its clips vertically, each showing a live thumbnail (captured
+   * on-demand by its NanoLooper Ch marker) + name + connected state. The column
+   * header shows the channel's cosmetic name and its live trigger-rail activity
+   * dot (from /global/triggerRails), so this doubles as the rail monitor.
    */
-  private renderTriggerRails() {
+  private renderTriggerChannels() {
+    const channels = appState.local.engine.triggerChannels;
     const rails = appState.local.engine.triggerRails;
-    const entries: { rail: string; channel: string; info: import('../engine-types').TriggerChannelInfo }[] = [];
-    for (const rail of Object.keys(rails)) {
-      const channels = rails[rail];
-      for (const ch of Object.keys(channels)) {
-        entries.push({ rail, channel: ch, info: channels[ch] });
-      }
-    }
-    if (entries.length === 0) return '';
-    entries.sort((a, b) => Number(a.channel) - Number(b.channel));
+    const nums = Object.keys(channels).sort((a, b) => Number(a) - Number(b));
+    if (nums.length === 0) return '';
+    // A channel is "live" if any rail currently reports it on (numeric match).
+    const railOn = (ch: string) =>
+      Object.values(rails).some(r => r[ch]?.on);
     return html`
       <div class="sc-section">
-        <div class="section-header">Trigger Rails</div>
-        <div class="sc-grid">
-          ${entries.map(({ channel, info }) => html`
-            <div class="sc-card trig-card">
-              <div class="card-meta">
-                <div class="sc-card-name">
-                  <span class="trig-dot ${info.on ? 'on' : ''}"></span>
-                  Channel ${channel}
+        <div class="section-header">Trigger Channels</div>
+        <div class="chan-grid">
+          ${nums.map(ch => {
+            const col = channels[ch];
+            const label = col.name?.trim() ? col.name : `Channel ${ch}`;
+            return html`
+              <div class="chan-col">
+                <div class="chan-col-head" title=${label}>
+                  <span class="trig-dot ${railOn(ch) ? 'on' : ''}"></span>${label}
                 </div>
-                <div class="sc-card-info">
-                  vel ${info.velocity.toFixed(2)} · from ${info.writer || '—'}
-                </div>
+                ${(col.clips ?? []).map(clip => html`
+                  <div class="sc-card chan-clip ${clip.connected ? '' : 'disconnected'}">
+                    <div class="thumb">
+                      <texture-monitor
+                        fit
+                        thumbnail
+                        eager
+                        .traceId=${instanceThumbTraceId(clip.key)}
+                        .traceTarget=${{ type: 'sketch_output', sketchId: clip.key } as any}
+                        resolution="low"
+                      ></texture-monitor>
+                    </div>
+                    <div class="card-meta">
+                      <div class="sc-card-name">${clip.clip || '(clip)'}</div>
+                      <div class="sc-card-info">${clip.connected ? 'connected' : 'idle'}</div>
+                    </div>
+                  </div>
+                `)}
               </div>
-            </div>
-          `)}
+            `;
+          })}
         </div>
       </div>
     `;

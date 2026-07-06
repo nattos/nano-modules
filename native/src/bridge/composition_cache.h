@@ -23,6 +23,13 @@ struct CachedClip {
   // "/composition/layers/0/clips/2/connect" — the target the ClipLauncher
   // triggers. Precomputed from the indices during rebuild.
   std::string connect_path;
+  // The NanoLooper Ch marker's registered instance key (== its uuid, decoded
+  // from the nanoch:// config blob), or "" if the clip has no marker. The web
+  // renders this clip's live thumbnail under `inst_thumb:<marker_uuid>` and
+  // requests it via `/plugins/<marker_uuid>/state`.
+  std::string marker_uuid;
+  // Cosmetic channel label from the marker's "Name" param (or blob), or "".
+  std::string channel_name;
 };
 
 /// Maintains a flat, indexed view of the Resolume composition
@@ -45,7 +52,12 @@ private:
   std::vector<CachedClip> clips_;
   double bpm_ = 120.0;
 
-  static int channel_from_clip(const resolume::Clip& clip);
+  // Resolve a clip's trigger channel (0-based) from a NanoLooper Ch marker, and
+  // (optionally) the marker's registered uuid + cosmetic name. Returns -1 with
+  // empty out-params if the clip carries no marker.
+  static int channel_from_clip(const resolume::Clip& clip,
+                               std::string* out_uuid = nullptr,
+                               std::string* out_name = nullptr);
 };
 
 } // namespace bridge

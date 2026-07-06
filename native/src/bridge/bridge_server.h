@@ -95,6 +95,10 @@ private:
   void flush_outbox();
   // Drain the trigger rail + reconcile Resolume clip launches (pump thread).
   void drive_clip_launches();
+  // Publish channel → registered marker clips to /global/channels for the web
+  // Instances tab (change-gated). Pump thread; after process_resolume_messages
+  // so the composition cache is fresh.
+  void publish_trigger_channels();
   void pump_loop();
 
   BridgeCore core_;
@@ -123,6 +127,9 @@ private:
   // Turns trigger-rail events into Resolume clip launches with a reconcile loop
   // (the piano-trigger stuck-on fix). Only touched from the pump thread.
   ClipLauncher clip_launcher_;
+  // FNV hash of the last /global/channels doc we published — skip the set_at
+  // (and its patch broadcast) when the channel→clips map is unchanged.
+  uint64_t trigger_channels_hash_ = 0;
   // shared_ptr (not unique): broadcast_binary copies the pointer under a brief
   // tick_mutex_ hold, then runs the (CPU-heavy) permessage-deflate + send on the
   // copy OUTSIDE the lock — so a preview frame's compression never stalls the

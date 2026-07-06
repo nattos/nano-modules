@@ -250,6 +250,14 @@ export interface EngineStatus {
    * `pg:` sketch id (playground) or a plugin key (barrel).
    */
   triggerRails: Record<string, Record<string, import('../engine-types').TriggerChannelInfo>>;
+
+  /**
+   * Trigger channels → registered Resolume clips, published by the shared server
+   * at /global/channels (barrel only; keyed by 1-based channel number). Feeds
+   * the Instances-tab "Trigger Channels" grid: one column per channel, one card
+   * per clip with a live thumbnail. Change-gated upstream (never per frame).
+   */
+  triggerChannels: Record<string, import('../engine-types').TriggerChannelClips>;
 }
 
 export interface LocalState {

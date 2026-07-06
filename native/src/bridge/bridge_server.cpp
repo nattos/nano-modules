@@ -15,6 +15,17 @@
 
 namespace bridge {
 
+namespace {
+// FNV-1a over a byte string — a cheap change-detector for the published
+// /global/channels doc so we skip the set_at (and its patch broadcast) when the
+// channel→clips map hasn't changed.
+uint64_t fnv1a64(const std::string& s) {
+  uint64_t h = 1469598103934665603ull;
+  for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; }
+  return h;
+}
+}  // namespace
+
 BridgeServer::BridgeServer() = default;
 BridgeServer::~BridgeServer() {
   shutdown_subsystems();
@@ -179,6 +190,8 @@ void BridgeServer::pump_loop() {
       // clips (reconcile loop; see clip_launcher.h). Runs AFTER
       // process_resolume_messages so observed connected states are fresh.
       drive_clip_launches();
+      // Surface channel → marker-clip assignments to the web (change-gated).
+      publish_trigger_channels();
       // Re-run Phase 2 fork detection every tick (not just on composition
       // messages) so the collision dwell fires even when Resolume's composition
       // is static — it only rebroadcasts on change.
@@ -362,6 +375,36 @@ void BridgeServer::drive_clip_launches() {
   const uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
   clip_launcher_.tick(events, channel_clips, now_ms);
+}
+
+void BridgeServer::publish_trigger_channels() {
+  // Group every marker-tagged clip by its 1-based trigger channel (matching the
+  // event/rail vocabulary) into a compact doc the web Instances tab renders as
+  // channel columns. Only markers with a resolved uuid are launchable/previewable.
+  CompositionCache& cache = core_.composition_cache();
+  const int n = cache.clip_count();
+  nlohmann::json channels = nlohmann::json::object();
+  for (int i = 0; i < n; ++i) {
+    CachedClip cc = cache.get_clip(i);
+    if (cc.channel < 0) continue;
+    const std::string ch = std::to_string(cc.channel + 1);
+    if (!channels.contains(ch))
+      channels[ch] = {{"name", ""}, {"clips", nlohmann::json::array()}};
+    // First non-empty marker name on the channel labels the whole column.
+    if (channels[ch]["name"].get<std::string>().empty() && !cc.channel_name.empty())
+      channels[ch]["name"] = cc.channel_name;
+    channels[ch]["clips"].push_back({
+        {"key", cc.marker_uuid},
+        {"clip", cc.name},
+        {"connected", cc.connected},
+    });
+  }
+
+  const std::string dump = channels.dump();
+  const uint64_t h = fnv1a64(dump);
+  if (h == trigger_channels_hash_) return;  // unchanged — skip the patch
+  trigger_channels_hash_ = h;
+  core_.state_document().set_at("/global/channels", channels);
 }
 
 // --- WASM module management ---

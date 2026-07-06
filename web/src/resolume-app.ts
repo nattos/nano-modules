@@ -336,6 +336,14 @@ function connectBarrel(url: string) {
   };
   barrel.onSnapshot('/global/sidechannels', ingestSidechannels);
 
+  // Channel → registered marker clips (from CompositionCache), published only
+  // when the map changes. Feeds the Instances-tab "Trigger Channels" grid.
+  const ingestTriggerChannels = (data: any) => {
+    if (!data || typeof data !== 'object') return;
+    appController.setTriggerChannels(data);
+  };
+  barrel.onSnapshot('/global/channels', ingestTriggerChannels);
+
   // -- Preview lanes (binary plane) --------------------------------------
   // Pixel frames never ride the main bridge socket: the barrel advertises N
   // auxiliary WS ports in /global/preview_transport and stripes each NBPV
@@ -424,6 +432,8 @@ function connectBarrel(url: string) {
         globalTouched = true;          // instance added/removed
       } else if (p === '/global/sidechannels') {
         ingestSidechannels(op.value);  // whole-object replace per publish
+      } else if (p === '/global/channels') {
+        ingestTriggerChannels(op.value);  // whole-object replace per publish
       } else if (p === '/global/preview_transport') {
         reconcileLanes(op.value);      // published whole on (re)start
       } else if (p.startsWith('/global/preview_transport/')) {
@@ -457,6 +467,8 @@ function connectBarrel(url: string) {
     barrel.observe('/global/plugins');
     barrel.get('/global/sidechannels');
     barrel.observe('/global/sidechannels');
+    barrel.get('/global/channels');
+    barrel.observe('/global/channels');
     barrel.get('/global/preview_transport');
     barrel.observe('/global/preview_transport');
     // If a selection already exists (reconnect), rewire it.

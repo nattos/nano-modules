@@ -308,3 +308,12 @@ export interface SidechannelInfo { writer: string; w: number; h: number; }
 /** One trigger-rail channel's latest activity: the last event's on/off state,
  *  its velocity, the emitting instance (writer), and the bus seq. */
 export interface TriggerChannelInfo { on: boolean; velocity: number; writer: string; seq: number; }
+
+/** One Resolume clip registered on a trigger channel via a NanoLooper Ch marker.
+ *  `key` is the marker's registered instance key (== uuid) — used to render the
+ *  clip's live thumbnail (`inst_thumb:<key>`) and request it. */
+export interface TriggerChannelClip { key: string; clip: string; connected: boolean; }
+
+/** A trigger channel's registered clips + cosmetic label, published by the
+ *  shared server at /global/channels (keyed by 1-based channel number). */
+export interface TriggerChannelClips { name: string; clips: TriggerChannelClip[]; }

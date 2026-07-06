@@ -35,14 +35,36 @@ static bool has_marker_config(const resolume::Effect& eff) {
 // tracks the slider live (unlike the config FILE blob, which the plugin can't
 // push back to the host on a slider move). The config blob is a SECONDARY
 // source (carries the channel too, but may be stale/absent in the broadcast).
-int CompositionCache::channel_from_clip(const resolume::Clip& clip) {
+int CompositionCache::channel_from_clip(const resolume::Clip& clip,
+                                        std::string* out_uuid,
+                                        std::string* out_name) {
+  if (out_uuid) out_uuid->clear();
+  if (out_name) out_name->clear();
   for (const auto& eff : clip.effects) {
     const bool is_marker = is_channel_tag_effect(eff.name) ||
                            is_channel_tag_effect(eff.display_name) ||
                            has_marker_config(eff);
     if (!is_marker) continue;
 
-    // PRIMARY: the "Channel" float param value (norm 0..1 → 1..N, shared
+    // Marker identity + cosmetic name ride the config blob (uuid, always set at
+    // registration) and the "Name" text param (broadcast inline). Read both up
+    // front so the web can key the clip's thumbnail by uuid and label it.
+    for (const auto& [name, param] : eff.params) {
+      if (!param.value.is_string()) continue;
+      const std::string s = param.value.get<std::string>();
+      if (!channel_marker::is_marker_config(s)) continue;
+      if (out_uuid) *out_uuid = channel_marker::uuid_of(s);
+      if (out_name && out_name->empty()) *out_name = channel_marker::name_of(s);
+      break;
+    }
+    if (out_name) {
+      auto nit = eff.params.find("Name");  // live text param value wins over blob
+      if (nit != eff.params.end() && nit->second.value.is_string() &&
+          !nit->second.value.get<std::string>().empty())
+        *out_name = nit->second.value.get<std::string>();
+    }
+
+    // PRIMARY channel: the "Channel" float param value (norm 0..1 → 1..N, shared
     // encoding with the plugin). Reliable — always broadcast.
     auto it = eff.params.find(kChannelParamName);
     if (it != eff.params.end() && it->second.value.is_number()) {
@@ -82,7 +104,7 @@ void CompositionCache::rebuild(const resolume::Composition& comp) {
       CachedClip cc;
       cc.clip_id = clip.id;
       cc.name = clip.name;
-      cc.channel = channel_from_clip(clip);
+      cc.channel = channel_from_clip(clip, &cc.marker_uuid, &cc.channel_name);
       cc.connected = (clip.connected_state == "Connected");
       cc.connected_param_id = clip.connected_id;
       cc.thumbnail_tex_id = -1;
