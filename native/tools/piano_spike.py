@@ -79,6 +79,20 @@ def log(tag: str, msg: str = "") -> None:
     print(f"[{now_ms():9.1f}ms] {tag:<10} {msg}", flush=True)
 
 
+def _resolve(waiters: List[asyncio.Future]) -> None:
+    """Resolve and drop every pending waiter future. Called from the recv loop
+    on a state/colour change. Edge-safe: waiters register their future before
+    awaiting (no await between the state check and the append), so a change can
+    never be signalled into the gap and lost — unlike Event.set()+clear()."""
+    if not waiters:
+        return
+    pending = waiters[:]
+    waiters.clear()
+    for f in pending:
+        if not f.done():
+            f.set_result(None)
+
+
 # --------------------------------------------------------------------------- #
 # Resolume side
 # --------------------------------------------------------------------------- #
@@ -112,7 +126,7 @@ class ResolumeClient:
         self.clips: Dict[str, ClipRef] = {}     # name(lower) -> ClipRef
         self.by_id: Dict[int, ClipRef] = {}     # connected_id -> ClipRef
         self._subscribed: set = set()
-        self._state_evt = asyncio.Event()       # pulsed on any connected change
+        self._waiters: List[asyncio.Future] = []  # resolved on any connected change
         self.ready = asyncio.Event()            # set once composition parsed
         self.verbose = True
 
@@ -193,8 +207,7 @@ class ResolumeClient:
         if val != ref.connected_value:
             ref.connected_value = val
             ref.connected_ms = t
-            self._state_evt.set()
-            self._state_evt.clear()
+            _resolve(self._waiters)
             if self.verbose:
                 log("RES-STATE", f'"{ref.name}" -> {val}')
 
@@ -215,7 +228,9 @@ class ResolumeClient:
     async def wait_state(self, ref: ClipRef, want_connected: bool,
                          timeout_ms: float) -> Optional[float]:
         """Wait until ref's connected state matches want_connected. Returns the
-        timestamp (ms) of the matching change, or None on timeout."""
+        timestamp (ms) of the matching change, or None on timeout. Race-free:
+        the check and the waiter-registration run without an await between them
+        (single-threaded loop), so no state change can slip through unseen."""
         deadline = now_ms() + timeout_ms
         while True:
             if _is_connected(ref.connected_value) == want_connected:
@@ -223,8 +238,10 @@ class ResolumeClient:
             remain = (deadline - now_ms()) / 1000.0
             if remain <= 0:
                 return None
+            fut = asyncio.get_event_loop().create_future()
+            self._waiters.append(fut)
             try:
-                await asyncio.wait_for(self._state_evt.wait(), remain)
+                await asyncio.wait_for(fut, remain)
             except asyncio.TimeoutError:
                 return None
 
@@ -312,7 +329,7 @@ class BridgeClient:
         self.lane_ports: List[int] = []
         self.reasm = NbpcReassembler()
         self.thumb = Thumb()
-        self._color_evt = asyncio.Event()
+        self._waiters: List[asyncio.Future] = []
         self.ready = asyncio.Event()
         self.verbose = True
         self._snap_futs: Dict[str, asyncio.Future] = {}
@@ -440,8 +457,7 @@ class BridgeClient:
             self.thumb.label = label
             self.thumb.rgb = rgb
             self.thumb.ms = now_ms()
-            self._color_evt.set()
-            self._color_evt.clear()
+            _resolve(self._waiters)
             if self.verbose:
                 log("THUMB", f"{label:<6} rgb=({rgb[0]:.0f},{rgb[1]:.0f},{rgb[2]:.0f})")
 
@@ -454,8 +470,10 @@ class BridgeClient:
             remain = (deadline - now_ms()) / 1000.0
             if remain <= 0:
                 return None
+            fut = asyncio.get_event_loop().create_future()
+            self._waiters.append(fut)
             try:
-                await asyncio.wait_for(self._color_evt.wait(), remain)
+                await asyncio.wait_for(fut, remain)
             except asyncio.TimeoutError:
                 return None
 
