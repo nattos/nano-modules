@@ -11,6 +11,30 @@ static double wrap(double time, double len) {
   return t;
 }
 
+/* Forward (circular) distance from `from` to `to` in [0, loop): how far you
+ * advance from `from` before reaching `to`, wrapping the loop seam. */
+static double fwd(double from, double to, double loop) {
+  double d = fmod(to - from, loop);
+  if (d < 0) d += loop;
+  return d;
+}
+
+/* Compact the event array, dropping every index i where del[i] != 0, and remap
+ * all pending indices through the move so in-flight recordings stay valid. */
+static void remove_marked(LooperCore* c, const char* del) {
+  int newidx[MAX_EVENTS];
+  int j = 0;
+  for (int i = 0; i < c->event_count; i++) {
+    if (del[i]) { newidx[i] = -1; }
+    else { newidx[i] = j; c->events[j++] = c->events[i]; }
+  }
+  c->event_count = j;
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    if (c->pending_index[ch] >= 0)
+      c->pending_index[ch] = newidx[c->pending_index[ch]];
+  }
+}
+
 /* Snap an onset to the step grid (floor into the current step). */
 static double quantize_start_val(double time, double len) {
   double t = wrap(time, len);
@@ -54,6 +78,7 @@ void looper_init(LooperCore* c, double loop_length) {
   c->loop_length = loop_length;
   c->quantize_start = 0;
   c->quantize_length = 0;
+  c->grace = loop_length / 64.0;   /* a 1/64 note (1 bar / 64) */
   c->event_count = 0;
   c->undo_count = 0;
   c->redo_count = 0;
@@ -68,6 +93,25 @@ void looper_init(LooperCore* c, double loop_length) {
 void looper_set_quantize(LooperCore* c, int q_start, int q_length) {
   c->quantize_start = q_start ? 1 : 0;
   c->quantize_length = q_length ? 1 : 0;
+}
+
+void looper_set_grace(LooperCore* c, double grace_units) {
+  c->grace = grace_units > 0 ? grace_units : 0;
+}
+
+void looper_tick_pending(LooperCore* c, double current_time) {
+  double now = wrap(current_time, c->loop_length);
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    int idx = c->pending_index[ch];
+    if (idx < 0) continue;
+    /* Grow the held note from its (unsnapped) press to now — display length,
+     * unsnapped; end_note applies quantize_length + overwrite on release. */
+    double len = now - c->pending_raw_start[ch];
+    if (len < 0) len += c->loop_length;
+    if (len < EPSILON) len = EPSILON;
+    if (len > c->loop_length) len = c->loop_length;
+    c->events[idx].length = len;
+  }
 }
 
 /* Find a finalized (non-pending) event on `channel` whose onset matches `start`
@@ -89,6 +133,25 @@ static int find_event_at(const LooperCore* c, int channel, double start) {
   return -1;
 }
 
+/* Truncate finalized notes on `channel` whose BODY strictly contains `at` back
+ * to end at `at`; delete any left shorter than the grace period. Onsets exactly
+ * at `at` (fwd == 0, an overdub target) are left alone. */
+static void truncate_overlapping_start(LooperCore* c, int channel, double at) {
+  char del[MAX_EVENTS];
+  for (int i = 0; i < c->event_count; i++) del[i] = 0;
+  int any = 0;
+  for (int i = 0; i < c->event_count; i++) {
+    Event* e = &c->events[i];
+    if (e->channel != channel) continue;
+    double d = fwd(e->start, at, c->loop_length);
+    if (d > EPSILON && d < e->length - EPSILON) {   /* `at` strictly inside body */
+      e->length = d;
+      if (e->length < c->grace) { del[i] = 1; any = 1; }
+    }
+  }
+  if (any) remove_marked(c, del);
+}
+
 int looper_begin_note(LooperCore* c, int channel, double current_time) {
   if (channel < 0 || channel >= NUM_CHANNELS) return -1;
 
@@ -99,17 +162,22 @@ int looper_begin_note(LooperCore* c, int channel, double current_time) {
   double raw = wrap(current_time, c->loop_length);
   double start = c->quantize_start ? quantize_start_val(raw, c->loop_length) : raw;
 
+  /* One undo checkpoint for the whole press action — the start-overwrite here,
+   * the new note, and any release-time body-overwrite all share it. */
+  if (!c->destructive_recording) push_undo(c);
+
+  /* A new onset inside an existing note's body cuts that note short (deleting
+   * it outright if only a grace-sized sliver would remain). */
+  truncate_overlapping_start(c, channel, start);
+
   /* Overdub onto an existing onset at this position rather than piling up. */
   int idx = find_event_at(c, channel, start);
   if (idx < 0) {
     if (c->event_count >= MAX_EVENTS) return -1;
-    if (!c->destructive_recording) push_undo(c);
     idx = c->event_count++;
     c->events[idx].channel = channel;
     c->events[idx].start = start;
     c->events[idx].length = 0.0;  /* provisional until release */
-  } else if (!c->destructive_recording) {
-    push_undo(c);
   }
 
   c->pending_index[channel] = idx;
@@ -129,9 +197,40 @@ void looper_end_note(LooperCore* c, int channel, double current_time) {
   if (length < EPSILON) length = EPSILON;         /* a tap still has a tiny gate */
   if (c->quantize_length) length = quantize_length_val(length);
   if (length > c->loop_length) length = c->loop_length;
-
   c->events[idx].length = length;
-  c->pending_index[channel] = -1;
+
+  /* Overwrite the far side: any note whose ONSET this note's body grew over is
+   * swallowed (deleted) — UNLESS the release landed within `grace` of the body
+   * reaching the LAST such onset, in which case butt the new note right up to
+   * that onset and spare it. Notes reached earlier (held past grace) still go. */
+  double n_start = c->events[idx].start;
+  int gi = -1;                   /* last-reached covered onset (largest fwd) */
+  double gd = -1.0;
+  for (int i = 0; i < c->event_count; i++) {
+    if (i == idx || c->events[i].channel != channel) continue;
+    double d = fwd(n_start, c->events[i].start, c->loop_length);
+    if (d > EPSILON && d < c->events[idx].length - EPSILON) {   /* onset in body */
+      if (d > gd) { gd = d; gi = i; }
+    }
+  }
+
+  if (gi >= 0) {
+    int spare = (c->events[idx].length - gd < c->grace) ? gi : -1;
+    if (spare >= 0) c->events[idx].length = gd;   /* butt up to the spared onset */
+
+    char del[MAX_EVENTS];
+    for (int i = 0; i < c->event_count; i++) del[i] = 0;
+    double body = c->events[idx].length;          /* possibly truncated */
+    for (int i = 0; i < c->event_count; i++) {
+      if (i == idx || i == spare || c->events[i].channel != channel) continue;
+      double d = fwd(n_start, c->events[i].start, c->loop_length);
+      if (d > EPSILON && d < body - EPSILON) del[i] = 1;
+    }
+    c->pending_index[channel] = -1;               /* clear before compaction */
+    remove_marked(c, del);
+  } else {
+    c->pending_index[channel] = -1;
+  }
 }
 
 void looper_active_channels(const LooperCore* c, double phase, int* active) {

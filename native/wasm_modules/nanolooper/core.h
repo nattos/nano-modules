@@ -32,6 +32,15 @@ typedef struct {
   int quantize_start;
   int quantize_length;
 
+  /* Overwrite "grace period", in LOOP UNITS (steps). When a new note truncates
+   * an existing one (its onset lands inside the old note's body), the old note
+   * is deleted outright if the truncation leaves it shorter than this. And when
+   * a new note's body grows over an existing note's onset, the old note is
+   * swallowed (deleted) UNLESS the release lands within `grace` of the body
+   * reaching that onset — then the new note is truncated to butt against it and
+   * the old note survives. Default = a 1/64 note (loop_length / 64). */
+  double grace;
+
   Event events[MAX_EVENTS];
   int event_count;
 
@@ -52,6 +61,8 @@ typedef struct {
 
 void looper_init(LooperCore* c, double loop_length);
 void looper_set_quantize(LooperCore* c, int q_start, int q_length);
+/* Set the overwrite grace period, in loop units (steps). Clamped to >= 0. */
+void looper_set_grace(LooperCore* c, double grace_units);
 
 /* Recording a note is two-phase: begin_note on the press (adds/re-opens the
  * event and marks it pending), end_note on the release (finalizes its length
@@ -59,6 +70,13 @@ void looper_set_quantize(LooperCore* c, int q_start, int q_length);
  * torn down, its length keeps the provisional value from the last end_note or 0. */
 int  looper_begin_note(LooperCore* c, int channel, double current_time);
 void looper_end_note(LooperCore* c, int channel, double current_time);
+
+/* Grow the in-flight (held) note(s) to the current time so the overlay shows a
+ * note extending from its onset to `current_time` while the trigger is down.
+ * Call once per frame. No-op for channels with nothing pending. Playback
+ * (looper_active_channels) still ignores pending notes — this is display state
+ * that end_note finalizes (and quantizes) on release. */
+void looper_tick_pending(LooperCore* c, double current_time);
 
 /* Playback gate: fills active[NUM_CHANNELS] with 1 where some recorded note's
  * [start, start+length) window (wrapping) covers `phase`. The module diffs this

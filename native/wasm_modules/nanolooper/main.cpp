@@ -73,6 +73,7 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_SEND_TO_RAIL 12
 #define PID_QUANTIZE_START  13
 #define PID_QUANTIZE_LENGTH 14
+#define PID_GRACE           15
 
 /* ======================================================================
  * State
@@ -103,6 +104,7 @@ struct State {
   int show_overlay = 0;
   int quantize_start = 0;
   int quantize_length = 0;
+  float grace_beats = 0.0625f;   /* overwrite grace, in beats (1/64 note) */
 
   /* Connection state */
   int ws_connected = 0;
@@ -371,6 +373,11 @@ static void on_param_change(State& s, int index, double value) {
   } else if (index == PID_QUANTIZE_LENGTH) {
     s.quantize_length = pressed;
     looper_set_quantize(&s.looper, s.quantize_start, s.quantize_length);
+  } else if (index == PID_GRACE) {
+    /* Param is in fractions of a beat; core wants loop units. 4 beats / bar
+     * (NUM_STEPS steps), so 1 beat == NUM_STEPS/4 units. */
+    s.grace_beats = (float)value;
+    looper_set_grace(&s.looper, (double)s.grace_beats * (NUM_STEPS / 4.0));
   }
 
   /* One authority for gate emission — reflect the new input state immediately. */
@@ -466,6 +473,7 @@ static int field_to_pid(const char* path, int pathLen) {
     {"send_to_rail", PID_SEND_TO_RAIL},
     {"quantize_start", PID_QUANTIZE_START},
     {"quantize_length", PID_QUANTIZE_LENGTH},
+    {"grace", PID_GRACE},
   };
   for (auto& m : map) {
     int mlen = std::strlen(m.name);
@@ -514,7 +522,11 @@ void module_init() {
     // passthrough (which skips render() entirely). It still drains triggers and
     // publishes out_N in the render branch, so those are unaffected.
     "\"tex_in\":{\"type\":\"texture\",\"io\":5,\"order\":19},"
-    "\"tex_out\":{\"type\":\"texture\",\"io\":6,\"order\":20}"
+    "\"tex_out\":{\"type\":\"texture\",\"io\":6,\"order\":20},"
+    // Overwrite grace period, in fractions of a beat (default 0.0625 = a 1/64
+    // note). See core.h: it deletes a note truncated below this, and decides
+    // swallow-vs-truncate when a new note grows over an old onset.
+    "\"grace\":{\"type\":\"float\",\"default\":0.0625,\"min\":0,\"max\":1,\"io\":5,\"order\":21}"
     "}}";
   state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 
@@ -563,6 +575,8 @@ void init(void* self) {
   s->quantize_start = 0;
   s->quantize_length = 0;
   looper_set_quantize(&s->looper, 0, 0);
+  s->grace_beats = 0.0625f;
+  looper_set_grace(&s->looper, (double)s->grace_beats * (NUM_STEPS / 4.0));
   /* send_to_rail keeps its schema default (on) via on_state_patched; reset the
    * ring so a re-init never replays stale events. */
   s->trig_ring_len = 0;
@@ -607,6 +621,11 @@ void tick(void* self, double dt) {
    * the onset and off exactly when the recorded gate length elapses. Wrap-safe
    * and frame-rate independent — no per-frame edge scan or fixed timer. */
   recompute_gates(*s);
+
+  /* Grow any held (pending) note to the current time so the overlay shows it
+   * extending from its onset while the trigger is down. Playback still ignores
+   * pending notes; end_note finalizes + overwrites on release. */
+  looper_tick_pending(&s->looper, s->phase);
 
   /* Decay overlay flash + the modulation-output pulse. While a gate is held the
    * output pins at 1; on release it decays with a ~120ms tail (matches

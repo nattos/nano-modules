@@ -131,6 +131,116 @@ TEST_CASE("onset and coverage overlay queries", "[looper_core]") {
   CHECK_FALSE(looper_step_covered(&c, 0, 1));
 }
 
+TEST_CASE("a new onset inside an old note's body truncates the old note",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);
+
+  looper_begin_note(&c, 0, 2.0);
+  looper_end_note(&c, 0, 6.0);     // old = [2, 6)
+
+  looper_begin_note(&c, 0, 4.0);   // press inside [2,6) → cut old to [2, 4)
+  looper_end_note(&c, 0, 8.0);     // new = [4, 8)
+
+  REQUIRE(c.event_count == 2);
+  // Old note truncated to end at the new onset; new note recorded after it.
+  CHECK(c.events[0].start == 2.0);
+  CHECK(c.events[0].length == Catch::Approx(2.0));
+  CHECK(c.events[1].start == 4.0);
+  CHECK(c.events[1].length == Catch::Approx(4.0));
+  // No double coverage at the boundary.
+  CHECK(active_ch(c, 3.5, 0));
+  CHECK(active_ch(c, 4.5, 0));
+  CHECK_FALSE(active_ch(c, 8.5, 0));
+}
+
+TEST_CASE("truncating an old note below the grace period deletes it",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);        // default grace = LOOP/64 = 0.25
+
+  looper_begin_note(&c, 0, 2.0);
+  looper_end_note(&c, 0, 6.0);  // old = [2, 6)
+
+  // Press a hair past the old onset: the sliver [2, 2.1) is below grace → gone.
+  looper_begin_note(&c, 0, 2.1);
+  looper_end_note(&c, 0, 5.0);
+
+  REQUIRE(c.event_count == 1);
+  CHECK(c.events[0].start == Catch::Approx(2.1));
+  CHECK(c.events[0].length == Catch::Approx(2.9));
+}
+
+TEST_CASE("a new note's body swallows an old onset it grows well past",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);
+
+  looper_begin_note(&c, 0, 8.0);
+  looper_end_note(&c, 0, 10.0);   // old = [8, 10)
+
+  looper_begin_note(&c, 0, 5.0);
+  looper_end_note(&c, 0, 12.0);   // new = [5, 12) grows well past onset 8 → swallow
+
+  REQUIRE(c.event_count == 1);
+  CHECK(c.events[0].start == 5.0);
+  CHECK(c.events[0].length == Catch::Approx(7.0));
+}
+
+TEST_CASE("releasing within grace of an old onset truncates the new note instead",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);          // grace = 0.25
+
+  looper_begin_note(&c, 0, 8.0);
+  looper_end_note(&c, 0, 10.0);   // old = [8, 10)
+
+  looper_begin_note(&c, 0, 5.0);
+  looper_end_note(&c, 0, 8.1);    // released 0.1 past onset 8 (< grace) → butt up
+
+  REQUIRE(c.event_count == 2);
+  // New note truncated right up to the old onset; old note untouched.
+  CHECK(c.events[0].start == 8.0);
+  CHECK(c.events[0].length == Catch::Approx(2.0));
+  CHECK(c.events[1].start == 5.0);
+  CHECK(c.events[1].length == Catch::Approx(3.0));   // [5, 8), not [5, 8.1)
+}
+
+TEST_CASE("a wider grace makes the swallow window looser", "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);
+  looper_set_grace(&c, 1.0);      // a full step of grace
+
+  looper_begin_note(&c, 0, 8.0);
+  looper_end_note(&c, 0, 10.0);   // old = [8, 10)
+
+  looper_begin_note(&c, 0, 5.0);
+  looper_end_note(&c, 0, 8.5);    // 0.5 past onset 8, now within the wider grace
+
+  REQUIRE(c.event_count == 2);
+  CHECK(c.events[1].length == Catch::Approx(3.0));   // new truncated to [5, 8)
+}
+
+TEST_CASE("a held note grows to the current time for the overlay",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);
+
+  looper_begin_note(&c, 0, 2.0);
+  CHECK(c.events[0].length == Catch::Approx(0.0));   // provisional at press
+
+  looper_tick_pending(&c, 5.0);
+  CHECK(c.events[0].length == Catch::Approx(3.0));    // extends to now
+  CHECK_FALSE(active_ch(c, 4.0, 0));                  // still pending → no playback
+
+  looper_tick_pending(&c, 7.0);
+  CHECK(c.events[0].length == Catch::Approx(5.0));    // keeps growing
+
+  looper_end_note(&c, 0, 8.0);                        // release finalizes from raw
+  CHECK(c.events[0].length == Catch::Approx(6.0));    // [2, 8)
+  CHECK(active_ch(c, 4.0, 0));                        // now it plays
+}
+
 TEST_CASE("clear and undo restore the pattern", "[looper_core]") {
   LooperCore c;
   looper_init(&c, LOOP);
