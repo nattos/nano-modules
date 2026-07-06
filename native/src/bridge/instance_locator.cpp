@@ -223,13 +223,9 @@ std::string InstanceLocator::resolve_uuid(const std::string& config_value) {
   // Marker blobs use the sibling nanoch:// codec (uuid alongside channel/name).
   if (channel_marker::is_marker_config(config_value))
     return channel_marker::uuid_of(config_value);
-  std::string decoded = barrel_codec::unwrap_config(config_value);
-  if (decoded.empty()) return "";
-  json env = json::parse(decoded, nullptr, false);
-  if (env.is_discarded() || !env.is_object()) return "";
-  auto it = env.find("uuid");
-  if (it == env.end() || !it->is_string()) return "";
-  return it->get<std::string>();
+  // Reads the uuid WITHOUT inflating the (compressed) sketch — this runs on the
+  // per-rebroadcast de-dup path, so it must never decompress.
+  return barrel_codec::config_uuid(config_value);
 }
 
 std::string InstanceLocator::resolve_sketch(const std::string& config_value) {

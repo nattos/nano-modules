@@ -210,6 +210,17 @@ add_library(bridge_core STATIC
 target_include_directories(bridge_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(bridge_core PUBLIC state_system param_cache resolume_protocol nlohmann_json::nlohmann_json)
 
+# --- miniz (vendored, public-domain zlib-subset) -------------------------
+# Compresses the barrel's sketch config blob (barrel_codec.h). Native-only —
+# the codec has no WASM target — so a compressor is fair game. Linked into
+# every target that compiles a barrel_codec / channel_marker_codec user.
+add_library(miniz STATIC third_party/miniz/miniz.c)
+target_include_directories(miniz PUBLIC ${CMAKE_SOURCE_DIR}/third_party/miniz)
+# We use only the mz_-prefixed API. Suppress miniz's zlib-compatible aliases
+# (z_stream, crc32, …) so it can coexist in a TU that also includes the system
+# <zlib.h> (e.g. ffgl_runner links system z). No stdio/archive features needed.
+target_compile_definitions(miniz PUBLIC MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+
 # --- Bridge Server shared library (dylib) ---
 add_library(bridge_server SHARED
   src/bridge/bridge_server.cpp
@@ -226,6 +237,10 @@ target_link_libraries(bridge_server PRIVATE
   wasm_host
   nlohmann_json::nlohmann_json
 )
+# PUBLIC: consumers include barrel_codec.h (via src/) which needs miniz.h, so the
+# include dir + symbols must propagate to anything linking bridge_server (the
+# e2e tests that compile fake_resolume_server.cpp).
+target_link_libraries(bridge_server PUBLIC miniz)
 
 # --- Tests ---
 include(CTest)
@@ -268,20 +283,26 @@ catch_discover_tests(test_wasm_host)
 add_executable(test_composition_cache tests/test_composition_cache.cpp
   src/bridge/composition_cache.cpp src/resolume/composition.cpp)
 target_include_directories(test_composition_cache PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_composition_cache PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+target_link_libraries(test_composition_cache PRIVATE miniz nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_composition_cache)
 
 # NanoLooper Ch scene-marker: nanoch:// config codec + CompositionCache decode.
 add_executable(test_channel_marker tests/test_channel_marker.cpp
   src/bridge/composition_cache.cpp src/resolume/composition.cpp)
 target_include_directories(test_channel_marker PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_channel_marker PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+target_link_libraries(test_channel_marker PRIVATE miniz nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_channel_marker)
+
+# Barrel config codec: uuid-plaintext + zlib(sketch) form, legacy compat.
+add_executable(test_barrel_codec tests/test_barrel_codec.cpp)
+target_include_directories(test_barrel_codec PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_barrel_codec PRIVATE miniz nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_barrel_codec)
 
 add_executable(test_instance_locator tests/test_instance_locator.cpp
   src/bridge/instance_locator.cpp)
 target_include_directories(test_instance_locator PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test_instance_locator PRIVATE state_system nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+target_link_libraries(test_instance_locator PRIVATE state_system miniz nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_instance_locator)
 
 # Process-global trigger rail bus (emit/drain seq-gating, metadata version).
@@ -477,7 +498,7 @@ add_executable(fake_resolume
   tools/fake_resolume.cpp
   tests/fake_resolume_server.cpp)
 target_include_directories(fake_resolume PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
-target_link_libraries(fake_resolume PRIVATE ixwebsocket nlohmann_json::nlohmann_json)
+target_link_libraries(fake_resolume PRIVATE ixwebsocket miniz nlohmann_json::nlohmann_json)
 
 # --- FFGL Plugin Bundle (macOS) ---
 if(APPLE)
@@ -535,6 +556,7 @@ if(APPLE)
   target_link_libraries(NanoLooperCh PRIVATE
     ffgl::sdk
     "-framework OpenGL"
+    miniz
     nlohmann_json::nlohmann_json
   )
   set_target_properties(NanoLooperCh PROPERTIES
@@ -1014,6 +1036,7 @@ if(APPLE)
   )
   target_link_libraries(ffgl_runner PRIVATE
     ffgl::sdk
+    miniz
     nlohmann_json::nlohmann_json
     "-framework OpenGL"
     "-framework Metal"
@@ -1072,6 +1095,7 @@ if(APPLE)
   # loader (compiled in this target), nlohmann_json (header-only), and the
   # Metal/GL frameworks its InteropTexture pair needs.
   target_link_libraries(NanoBarrel PRIVATE
+    miniz
     nlohmann_json::nlohmann_json
     ffgl::sdk
     "-framework OpenGL"
