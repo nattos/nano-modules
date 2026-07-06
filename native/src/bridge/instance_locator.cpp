@@ -6,6 +6,7 @@
 
 #include "bridge/state_document.h"
 #include "plugin/nano_barrel/barrel_codec.h"
+#include "plugin/nano_barrel/channel_marker_codec.h"
 
 namespace bridge {
 namespace {
@@ -50,13 +51,15 @@ std::string read_name(const json& node) {
 struct ConfigRef {
   int64_t id = 0;
   std::string value;
+  ConfigKind kind = ConfigKind::Barrel;
 };
 
-// If `effect` is a NanoBarrel — identified by a `config` param whose value is a
-// `nanobarrel://config?...` blob — return its config param id + value. This is
-// the robust identifier (survives the effect's display name / FFGL-code
+// If `effect` is a registering plugin — identified by a `config` param whose
+// value is a `nanobarrel://config?...` (barrel) or `nanoch://config?...`
+// (marker) blob — return its config param id + value + which codec owns it.
+// This is the robust identifier (survives the effect's display name / FFGL-code
 // differences across Resolume versions).
-std::optional<ConfigRef> barrel_config(const json& effect) {
+std::optional<ConfigRef> effect_config(const json& effect) {
   if (!effect.is_object()) return std::nullopt;
   auto params = effect.find("params");
   if (params == effect.end() || !params->is_object()) return std::nullopt;
@@ -65,8 +68,12 @@ std::optional<ConfigRef> barrel_config(const json& effect) {
   auto v = cfg->find("value");
   if (v == cfg->end() || !v->is_string()) return std::nullopt;
   std::string val = v->get<std::string>();
-  if (val.rfind(barrel_codec::kConfigPrefix, 0) != 0) return std::nullopt;
-  return ConfigRef{cfg->value("id", (int64_t)0), std::move(val)};
+  const int64_t id = cfg->value("id", (int64_t)0);
+  if (val.rfind(barrel_codec::kConfigPrefix, 0) == 0)
+    return ConfigRef{id, std::move(val), ConfigKind::Barrel};
+  if (val.rfind(channel_marker::kConfigPrefix, 0) == 0)
+    return ConfigRef{id, std::move(val), ConfigKind::Marker};
+  return std::nullopt;
 }
 
 // FNV-1a over a byte string — a cheap change-detector for config blobs so we
@@ -95,7 +102,7 @@ void scan_effects(const json& effects, const std::string& path_prefix,
                   const BarrelPlacement& base, std::vector<BarrelPlacement>& out) {
   for (size_t k = 0; k < effects.size(); k++) {
     const json& eff = effects[k];
-    auto cfg = barrel_config(eff);
+    auto cfg = effect_config(eff);
     if (!cfg) continue;
     BarrelPlacement p = base;
     p.chain_index = (int)k;
@@ -103,6 +110,7 @@ void scan_effects(const json& effects, const std::string& path_prefix,
     p.effect_id = eff.value("id", (int64_t)0);
     p.config_param_id = cfg->id;
     p.config_value = cfg->value;
+    p.config_kind = cfg->kind;
     // uuid left empty — update() resolves it through a change-gated cache so a
     // large, unchanged config blob is never re-decoded.
     out.push_back(std::move(p));
@@ -212,6 +220,9 @@ bool BarrelPlacement::is_dormant() const {
 }
 
 std::string InstanceLocator::resolve_uuid(const std::string& config_value) {
+  // Marker blobs use the sibling nanoch:// codec (uuid alongside channel/name).
+  if (channel_marker::is_marker_config(config_value))
+    return channel_marker::uuid_of(config_value);
   std::string decoded = barrel_codec::unwrap_config(config_value);
   if (decoded.empty()) return "";
   json env = json::parse(decoded, nullptr, false);
@@ -377,13 +388,22 @@ void InstanceLocator::detect_and_fork(uint64_t now_ms) {
       auto seen = forked_configs_.find(p.config_param_id);
       if (seen != forked_configs_.end() && seen->second == h) continue;
 
-      // Re-wrap the SAME sketch under a fresh uuid and write it over WS.
-      std::string sketch = resolve_sketch(p.config_value);
+      // Re-wrap the SAME payload under a fresh uuid and write it over WS. A
+      // barrel carries a `sketch`; a marker carries {channel,name} — preserve
+      // each so only the identity changes.
       std::string new_uuid = mint ? mint() : random_uuid();
       if (new_uuid.empty()) continue;
-      json env = {{"sketch", json::parse(sketch, nullptr, false)}, {"uuid", new_uuid}};
-      if (env["sketch"].is_discarded()) env["sketch"] = json::object();
-      std::string blob = barrel_codec::wrap_config(env.dump());
+      std::string blob;
+      if (p.config_kind == ConfigKind::Marker) {
+        int ch = channel_marker::channel_of(p.config_value);
+        std::string nm = channel_marker::name_of(p.config_value);
+        blob = channel_marker::wrap_config(new_uuid, ch >= 1 ? ch : 1, nm);
+      } else {
+        std::string sketch = resolve_sketch(p.config_value);
+        json env = {{"sketch", json::parse(sketch, nullptr, false)}, {"uuid", new_uuid}};
+        if (env["sketch"].is_discarded()) env["sketch"] = json::object();
+        blob = barrel_codec::wrap_config(env.dump());
+      }
 
       fork_writer_(p.config_param_id, blob);
       forked_configs_[p.config_param_id] = h;

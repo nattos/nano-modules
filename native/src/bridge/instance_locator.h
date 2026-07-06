@@ -36,6 +36,11 @@ class StateDocument;
 // Where in the composition a NanoBarrel effect sits.
 enum class PlacementScope { Clip, Layer, Group, Composition };
 
+// Which registering plugin owns the config blob — they share the copy-paste
+// collision/fork machinery but re-wrap their blob differently (a barrel carries
+// a `sketch`; a NanoLooper Ch marker carries `{channel,name}`).
+enum class ConfigKind { Barrel, Marker };
+
 // One NanoBarrel effect found in the composition, with enough context to build
 // a stable path key and a human default name.
 struct BarrelPlacement {
@@ -64,7 +69,8 @@ struct BarrelPlacement {
 
   int64_t effect_id = 0;
   int64_t config_param_id = 0;
-  std::string config_value;  // raw "nanobarrel://config?<base64>" string
+  std::string config_value;  // raw "nanobarrel://" or "nanoch://" config?<b64>
+  ConfigKind config_kind = ConfigKind::Barrel;  // which codec owns config_value
   std::string uuid;          // resolved from config_value ("" if unresolvable)
 
   // A clip-mounted barrel whose clip is not Connected/Previewing — i.e. no live
@@ -120,9 +126,11 @@ public:
 
   // --- Pure helpers (unit-tested directly, no state) ---
 
-  /// Enumerate every NanoBarrel effect in a full composition-state JSON. A
-  /// NanoBarrel is identified by having a `config` param whose value starts with
-  /// `nanobarrel://config?`. This is a cheap STRUCTURAL walk: it fills in each
+  /// Enumerate every registering plugin (NanoBarrel or NanoLooper Ch marker) in
+  /// a full composition-state JSON, identified by a `config` param whose value
+  /// starts with `nanobarrel://config?` (barrel) or `nanoch://config?` (marker);
+  /// each placement's `config_kind` records which. This is a cheap STRUCTURAL
+  /// walk: it fills in each
   /// placement's `config_value` but leaves `uuid` empty — resolving the UUID
   /// means base64-decoding + JSON-parsing the config blob (up to 16 MB for a
   /// large sketch), which `update()` does through a change-gated cache so an

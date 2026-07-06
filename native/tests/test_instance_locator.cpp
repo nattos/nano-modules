@@ -9,6 +9,7 @@
 #include "bridge/instance_locator.h"
 #include "bridge/state_document.h"
 #include "plugin/nano_barrel/barrel_codec.h"
+#include "plugin/nano_barrel/channel_marker_codec.h"
 
 using json = nlohmann::json;
 using namespace bridge;
@@ -33,6 +34,21 @@ json make_barrel(const std::string& uuid, int64_t config_id) {
 
 json name_field(const std::string& v) {
   return {{"valuetype", "ParamString"}, {"value", v}};
+}
+
+// Build a NanoLooper Ch marker effect whose `config` FILE param carries
+// {uuid, channel, name} in the nanoch:// scheme.
+json make_marker(const std::string& uuid, int64_t config_id, int channel,
+                 const std::string& name) {
+  std::string blob = channel_marker::wrap_config(uuid, channel, name);
+  return {
+    {"id", config_id + 1000},
+    {"name", "NanoLooper Ch"},
+    {"display_name", "NanoLooper Ch"},
+    {"params", {
+      {"config", {{"id", config_id}, {"valuetype", "ParamFile"}, {"value", blob}}},
+    }},
+  };
 }
 
 // A composition with: a clip-mounted barrel, a layer-mounted barrel, and a
@@ -266,6 +282,40 @@ TEST_CASE("dormant copy-paste duplicate is forked after the dwell", "[instance_l
   // still in flight; the blob hasn't changed).
   h.loc.update(comp, h.doc, /*now_ms=*/1300);
   CHECK(h.writes.size() == 1);
+}
+
+TEST_CASE("dormant duplicated marker is forked, preserving channel + name",
+          "[instance_locator]") {
+  ForkHarness h;
+  // Two clips each carrying the SAME marker (uuid DUP, channel 3, "Bass"),
+  // both dormant — the common "duplicate a clip to make a variation" case.
+  auto mkclip = [](const std::string& nm, const std::string& uuid, int64_t cfg) {
+    json clip;
+    clip["name"] = name_field(nm);
+    clip["connected"] = {{"valuetype", "ParamState"}, {"value", "Disconnected"}};
+    clip["video"]["effects"] = json::array({make_marker(uuid, cfg, 3, "Bass")});
+    return clip;
+  };
+  json layer;
+  layer["name"] = name_field("Layer #");
+  layer["clips"] = json::array({mkclip("A", "DUP", 100), mkclip("B", "DUP", 200)});
+  json comp;
+  comp["name"] = name_field("C");
+  comp["layers"] = json::array({layer});
+
+  h.loc.update(comp, h.doc, /*now_ms=*/1000);
+  CHECK(h.writes.empty());                 // dwell not elapsed
+  h.loc.update(comp, h.doc, /*now_ms=*/1200);
+
+  // The non-canonical dormant duplicate (cfg 200) is forked with a fresh uuid,
+  // and it stays a valid marker blob carrying the SAME channel + name.
+  REQUIRE(h.writes.size() == 1);
+  CHECK(h.writes[0].first == 200);
+  const std::string& blob = h.writes[0].second;
+  CHECK(channel_marker::is_marker_config(blob));
+  CHECK(channel_marker::uuid_of(blob) == "NEW-1");
+  CHECK(channel_marker::channel_of(blob) == 3);
+  CHECK(channel_marker::name_of(blob) == "Bass");
 }
 
 TEST_CASE("a live copy is kept; the dormant one is forked regardless of path order",
