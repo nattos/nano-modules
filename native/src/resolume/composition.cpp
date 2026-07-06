@@ -44,6 +44,11 @@ static Clip parse_clip(const nlohmann::json& j) {
     if (conn.contains("value")) clip.connected_state = conn["value"].get<std::string>();
     if (conn.contains("id")) clip.connected_id = conn["id"].get<int64_t>();
   }
+  if (j.contains("triggerstyle") && j["triggerstyle"].is_object()) {
+    auto& ts = j["triggerstyle"];
+    if (ts.contains("value") && ts["value"].is_string())
+      clip.trigger_style = ts["value"].get<std::string>();
+  }
   // Effects can be in video.effects or directly in clip.effects (depends on Resolume version)
   auto parse_effects_from = [&](const nlohmann::json& container) {
     if (container.contains("effects") && container["effects"].is_array()) {

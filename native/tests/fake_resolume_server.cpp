@@ -53,6 +53,88 @@ void FakeResolumeServer::set_composition(const json& composition) {
   for (auto& [id, tup] : collected) {
     params_by_id_[id] = ParamInfo{std::get<0>(tup), std::get<1>(tup), std::get<2>(tup)};
   }
+  build_clip_runtime();
+}
+
+void FakeResolumeServer::build_clip_runtime() {
+  // Called under mu_. Walk layers[].clips[] and index per-clip runtime state by
+  // the clip's 1-based connect action path (the trigger target).
+  clip_rt_.clear();
+  if (!composition_.contains("layers") || !composition_["layers"].is_array()) return;
+  const auto& layers = composition_["layers"];
+  for (size_t li = 0; li < layers.size(); ++li) {
+    if (!layers[li].contains("clips") || !layers[li]["clips"].is_array()) continue;
+    const auto& clips = layers[li]["clips"];
+    for (size_t ci = 0; ci < clips.size(); ++ci) {
+      const auto& clip = clips[ci];
+      ClipRuntime rt;
+      rt.layer = static_cast<int>(li);
+      if (clip.contains("connected") && clip["connected"].is_object()) {
+        const auto& conn = clip["connected"];
+        rt.connected = conn.value("value", std::string("Disconnected"));
+        rt.connected_id = conn.value("id", (int64_t)0);
+      }
+      rt.has_content = (rt.connected != "Empty");
+      if (clip.contains("triggerstyle") && clip["triggerstyle"].is_object())
+        rt.style = clip["triggerstyle"].value("value", std::string());
+      std::string path = "/composition/layers/" + std::to_string(li + 1) +
+                         "/clips/" + std::to_string(ci + 1) + "/connect";
+      clip_rt_[path] = rt;
+    }
+  }
+}
+
+void FakeResolumeServer::set_connected(
+    ClipRuntime& c, const std::string& value,
+    std::vector<std::pair<int64_t, std::string>>& out_changes) {
+  // Under mu_. Update the modelled state + the by-id param value (so a later
+  // subscribe reply is correct) and queue the parameter_update to broadcast.
+  if (c.connected == value) return;
+  c.connected = value;
+  auto it = params_by_id_.find(c.connected_id);
+  if (it != params_by_id_.end()) {
+    it->second.value = value;
+    if (!it->second.path.empty()) {
+      json::json_pointer ptr(it->second.path);
+      if (composition_.contains(ptr) && composition_[ptr].is_object())
+        composition_[ptr]["value"] = value;
+    }
+  }
+  out_changes.push_back({c.connected_id, value});
+}
+
+void FakeResolumeServer::broadcast_param_update(int64_t id, const std::string& value) {
+  if (!server_) return;
+  json upd = {
+    {"type", "parameter_update"},
+    {"id", id},
+    {"valuetype", "ParamState"},
+    {"value", value},
+    {"path", "/parameter/by-id/" + std::to_string(id)},
+  };
+  const std::string s = upd.dump();
+  for (auto& client : server_->getClients()) client->send(s);
+}
+
+void FakeResolumeServer::seed_stuck(const std::string& connect_path,
+                                    bool stuck_on, bool stuck_off) {
+  std::vector<std::pair<int64_t, std::string>> changes;
+  {
+    std::lock_guard lock(mu_);
+    auto it = clip_rt_.find(connect_path);
+    if (it == clip_rt_.end()) return;
+    ClipRuntime& c = it->second;
+    c.stuck_on = stuck_on;
+    c.stuck_off = stuck_off;
+    if (stuck_on) set_connected(c, "Connected", changes);  // stuck-on ⇒ on-screen
+  }
+  for (auto& [id, val] : changes) broadcast_param_update(id, val);
+}
+
+std::string FakeResolumeServer::clip_connected(const std::string& connect_path) const {
+  std::lock_guard lock(mu_);
+  auto it = clip_rt_.find(connect_path);
+  return it == clip_rt_.end() ? std::string() : it->second.connected;
 }
 
 bool FakeResolumeServer::start(int port) {
@@ -166,8 +248,51 @@ void FakeResolumeServer::handle_message(ix::WebSocket& ws, const std::string& ms
   }
 
   if (action == "trigger") {
-    std::lock_guard lock(mu_);
-    triggers_.push_back(parameter);
+    std::vector<std::pair<int64_t, std::string>> changes;
+    {
+      std::lock_guard lock(mu_);
+      triggers_.push_back(parameter);
+      auto it = clip_rt_.find(parameter);
+      if (it != clip_rt_.end()) {
+        ClipRuntime& c = it->second;
+        const bool value = j.value("value", true);
+        if (value) {
+          // CONNECT. Resolume's layer holds one active clip: connecting evicts
+          // whatever else is playing on the layer. An evicted Normal clip drops
+          // into stuck_off (a later plain connect is ignored until re-armed).
+          for (auto& [p, o] : clip_rt_) {
+            if (&o == &c) continue;
+            if (o.layer == c.layer && o.connected == "Connected") {
+              set_connected(o, "Disconnected", changes);
+              if (!o.is_piano() && o.has_content) o.stuck_off = true;
+            }
+          }
+          if (!c.has_content) {
+            // An empty clip is a pure evictor — it doesn't become "Connected".
+          } else if (!c.is_piano() && c.stuck_off) {
+            // Normal stuck-off: this connect is DROPPED (ignored) until re-armed.
+          } else {
+            c.stuck_on = false;   // a connect re-arms the disconnect path
+            c.stuck_off = false;  // ...and clears its own stuck-off
+            set_connected(c, "Connected", changes);
+          }
+        } else {
+          // DISCONNECT (connect:false).
+          if (!c.is_piano()) {
+            // Normal clips ignore connect:false on their connected state — but it
+            // RE-ARMS them (clears a stuck-off latch), matching the live
+            // "false then true" recovery.
+            c.stuck_off = false;
+          } else if (c.stuck_on) {
+            // Stuck-on piano clip ignores bare disconnects.
+          } else if (c.connected == "Connected") {
+            set_connected(c, "Disconnected", changes);
+          }
+        }
+        composition_str_ = composition_.dump();
+      }
+    }
+    for (auto& [id, val] : changes) broadcast_param_update(id, val);
     return;
   }
 }
@@ -253,6 +378,49 @@ json FakeResolumeServer::make_thumbnail(int64_t& next_id, bool is_default) {
     {"path", is_default ? std::string("/api/v1/composition/thumbnail/dummy")
                         : ("/api/v1/composition/thumbnail/" + std::to_string(id))},
   };
+}
+
+json FakeResolumeServer::make_trigger_test_composition() {
+  int64_t next_id = 300000;
+  auto make_clip = [&](const std::string& name, const std::string& style,
+                       const std::string& connected, int channel,
+                       bool empty) -> json {
+    json clip;
+    clip["id"] = next_id++;
+    clip["name"] = make_name(name);
+    clip["connected"] = {{"valuetype", "ParamState"}, {"value", connected},
+                         {"id", next_id++}};
+    clip["triggerstyle"] = {
+      {"valuetype", "ParamChoice"},
+      {"options", json::array({"Composition Determined", "Normal", "Piano",
+                               "Toggle"})},
+      {"value", style}};
+    if (!empty) {
+      MarkerSpec m;
+      m.uuid = "U-" + name;
+      m.channel = channel;
+      m.name = name;
+      clip["video"] = {{"effects", json::array({make_marker_effect(m, next_id)})}};
+    }
+    return clip;
+  };
+  auto make_layer = [&](json content_clip) -> json {
+    json layer;
+    layer["id"] = next_id++;
+    layer["name"] = make_name("Layer #");
+    // content clip at index 0, an EMPTY clip at index 1 (the eviction target).
+    json empty_clip = make_clip("", "Normal", "Empty", 0, /*empty=*/true);
+    layer["clips"] = json::array({std::move(content_clip), std::move(empty_clip)});
+    return layer;
+  };
+  json comp;
+  comp["name"] = make_name("Trigger Test Comp");
+  comp["video"] = {{"width", 1920}, {"height", 1080}, {"effects", json::array()}};
+  comp["layers"] = json::array({
+    make_layer(make_clip("Red", "Normal", "Disconnected", 1, /*empty=*/false)),
+    make_layer(make_clip("Blue", "Piano", "Disconnected", 2, /*empty=*/false)),
+  });
+  return comp;
 }
 
 json FakeResolumeServer::make_marker_composition(const std::vector<MarkerSpec>& markers) {

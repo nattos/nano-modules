@@ -31,6 +31,10 @@ struct Clip {
   std::string name;
   std::string connected_state; // "Empty", "Disconnected", "Connected", etc.
   int64_t connected_id = 0;   // ID of the connected ParamState
+  // Resolume clip "triggerstyle" ParamChoice value: "Composition Determined",
+  // "Normal", "Piano", "Toggle". Drives HOW we turn the clip off: a Piano clip
+  // releases on connect:false, a Normal clip ignores it (must be evicted).
+  std::string trigger_style;
   Parameter video_opacity;
   std::string thumbnail_path;
   bool thumbnail_is_default = true;

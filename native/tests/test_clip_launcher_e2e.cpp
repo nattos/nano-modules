@@ -85,3 +85,95 @@ TEST_CASE("BridgeServer launches a channel-marked clip from a rail trigger",
 
   CHECK(saw_connect);
 }
+
+// --- Reconciler-vs-quirks: drive the real BridgeServer + ClipLauncher against
+// the fake's MODELLED Resolume trigger latches (piano stuck-on, Normal-clip
+// connect:false no-op + stuck-off) and assert it converges. The fake broadcasts
+// connected-param updates, which the server subscribes to; the reconciler drives
+// each clip to its desired state with the re-arm state machine. ---
+
+namespace {
+
+const std::string kRed = "/composition/layers/1/clips/1/connect";   // Normal, ch1
+const std::string kBlue = "/composition/layers/2/clips/1/connect";  // Piano,  ch2
+
+// Emit on channel `ch` (value `on`) each iteration until the fake reports clip
+// `path` at the wanted connected state (the reconciler runs on the pump thread).
+bool drive_until(bridge::FakeResolumeServer& fake, int ch, bool on,
+                 const std::string& path, bool want_connected, int iters = 300) {
+  for (int i = 0; i < iters; i++) {
+    trigger_bus::emit(trigger_bus::kGlobalRail, ch, on, 1.0f, "test");
+    std::this_thread::sleep_for(20ms);
+    if ((fake.clip_connected(path) == "Connected") == want_connected) return true;
+  }
+  return false;
+}
+
+// RAII: fake Resolume with the two-clip test comp + an acquired BridgeServer
+// pointed at it, small debounce/dwell for fast convergence.
+struct Rig {
+  bridge::FakeResolumeServer fake;
+  Rig(int fake_port, int bridge_port) {
+    fake.set_composition(bridge::FakeResolumeServer::make_trigger_test_composition());
+    REQUIRE(fake.start(fake_port));
+    std::string url = "ws://127.0.0.1:" + std::to_string(fake_port) + "/api/v1";
+    setenv("NANO_RESOLUME_URL", url.c_str(), 1);
+    setenv("NANO_BRIDGE_PORT", std::to_string(bridge_port).c_str(), 1);
+    setenv("NANO_LAUNCH_DEBOUNCE_MS", "30", 1);
+    setenv("NANO_LAUNCH_REARM_DWELL_MS", "30", 1);
+    bridge::BridgeServer::instance().acquire();
+    trigger_bus::resetForTest();
+    // Let the pump connect to the fake, cache the composition, and subscribe to
+    // the clips' connected params — so a seed_stuck() broadcast afterwards is
+    // actually observed (mirrors reality: the server has long been subscribed
+    // when a user click latches a clip).
+    std::this_thread::sleep_for(200ms);
+  }
+  ~Rig() {
+    bridge::BridgeServer::instance().release();
+    fake.stop();
+    unsetenv("NANO_LAUNCH_DEBOUNCE_MS");
+    unsetenv("NANO_LAUNCH_REARM_DWELL_MS");
+  }
+};
+
+}  // namespace
+
+TEST_CASE("reconciler: piano clip connects then cleanly disconnects",
+          "[clip_launcher][e2e]") {
+  Rig r(19100, 19101);
+  CHECK(drive_until(r.fake, 2, /*on=*/true, kBlue, /*want_connected=*/true));
+  CHECK(drive_until(r.fake, 2, /*on=*/false, kBlue, /*want_connected=*/false));
+}
+
+TEST_CASE("reconciler: recovers a stuck-ON piano clip via re-arm",
+          "[clip_launcher][e2e]") {
+  Rig r(19102, 19103);
+  // As if a user click latched Blue on. Desired OFF; a bare disconnect is
+  // dropped by the (modelled) stuck clip — only the re-arm toggle releases it.
+  r.fake.seed_stuck(kBlue, /*stuck_on=*/true, /*stuck_off=*/false);
+  CHECK(drive_until(r.fake, 2, /*on=*/false, kBlue, /*want_connected=*/false));
+}
+
+TEST_CASE("reconciler: normal clip connects", "[clip_launcher][e2e]") {
+  Rig r(19104, 19105);
+  CHECK(drive_until(r.fake, 1, /*on=*/true, kRed, /*want_connected=*/true));
+}
+
+TEST_CASE("reconciler: normal clip disconnects by eviction (not connect:false)",
+          "[clip_launcher][e2e]") {
+  Rig r(19106, 19107);
+  CHECK(drive_until(r.fake, 1, /*on=*/true, kRed, /*want_connected=*/true));
+  // Off via eviction (connecting the empty clip on the layer) — connect:false
+  // is a no-op on a Normal clip in the fake, so only eviction turns it off.
+  CHECK(drive_until(r.fake, 1, /*on=*/false, kRed, /*want_connected=*/false));
+}
+
+TEST_CASE("reconciler: recovers a stuck-OFF normal clip via re-arm",
+          "[clip_launcher][e2e]") {
+  Rig r(19108, 19109);
+  // As if a prior eviction latched Red stuck-off. Desired ON; a plain connect is
+  // dropped — the re-arm (connect:false then connect:true) clears it and connects.
+  r.fake.seed_stuck(kRed, /*stuck_on=*/false, /*stuck_off=*/true);
+  CHECK(drive_until(r.fake, 1, /*on=*/true, kRed, /*want_connected=*/true));
+}

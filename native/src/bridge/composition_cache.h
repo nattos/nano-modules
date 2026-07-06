@@ -30,6 +30,14 @@ struct CachedClip {
   std::string marker_uuid;
   // Cosmetic channel label from the marker's "Name" param (or blob), or "".
   std::string channel_name;
+  // Resolume trigger style ("Piano"/"Normal"/... ; "" if unknown). A Piano clip
+  // releases on connect:false; anything else is treated as Normal (ignores
+  // connect:false — must be turned off by eviction). See ClipLauncher.
+  std::string trigger_style;
+  // A connect path to an EMPTY clip on the SAME layer, used to turn this clip
+  // OFF by eviction (connecting another clip on a layer disconnects the current
+  // one). "" if the layer has no empty clip. The style-independent "off" verb.
+  std::string evict_path;
 };
 
 /// Maintains a flat, indexed view of the Resolume composition

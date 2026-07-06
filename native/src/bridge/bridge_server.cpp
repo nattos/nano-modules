@@ -87,20 +87,22 @@ void BridgeServer::init_subsystems() {
   if (const char* d = getenv("NANO_FORK_DWELL_MS"); d && atoi(d) > 0)
     instance_locator_.set_dwell_ms((uint64_t)atoi(d));
 
-  // Clip launcher: trigger-rail events → Resolume clip connects, with a
-  // reconcile loop (see clip_launcher.h). The writer connects/disconnects a
-  // clip via the WS "connect" action; reconcile keeps driving toward the
-  // desired state, which is the fix for the piano-trigger stuck-on bug.
+  // Clip launcher: trigger-rail events → Resolume clip launches, driven by a
+  // per-clip re-arm state machine (see clip_launcher.h) that is robust to
+  // Resolume's stuck-on / stuck-off / Normal-clip trigger latches. The writer
+  // is a raw (path,value) WS trigger; the state machine composes connect /
+  // disconnect / evict / re-arm sequences from it.
   clip_launcher_.set_writer(
-      [this](const LaunchTarget& target, bool on) {
-        if (resolume_client_ && !target.connect_path.empty()) {
-          trig_log("LAUNCH %s -> %s", on ? "connect" : "disconnect",
-                   target.connect_path.c_str());
-          resolume_client_->trigger(target.connect_path, on);
+      [this](const std::string& path, bool value) {
+        if (resolume_client_ && !path.empty()) {
+          trig_log("LAUNCH %s -> %s", value ? "on" : "off", path.c_str());
+          resolume_client_->trigger(path, value);
         }
       });
   if (const char* d = getenv("NANO_LAUNCH_DEBOUNCE_MS"); d && atoi(d) >= 0)
     clip_launcher_.set_debounce_ms((uint64_t)atoi(d));
+  if (const char* d = getenv("NANO_LAUNCH_REARM_DWELL_MS"); d && atoi(d) >= 0)
+    clip_launcher_.set_rearm_dwell_ms((uint64_t)atoi(d));
 
   ws_server_ = std::make_shared<WsServer>();
   // The ix callbacks ONLY enqueue — never touch tick_mutex_ or core_ (see
@@ -162,6 +164,10 @@ void BridgeServer::shutdown_subsystems() {
   }
   draw_lists_.clear();
   frame_states_.clear();
+  clip_launcher_.reset();
+  subscribed_connected_.clear();
+  connected_observed_.clear();
+  trigger_channels_hash_ = 0;
 }
 
 void BridgeServer::pump_loop() {
@@ -311,8 +317,10 @@ void BridgeServer::process_resolume_messages() {
     } else if (auto* ps = std::get_if<resolume::ParameterSubscribed>(&msg)) {
       if (ps->value.is_number()) core_.param_cache().set(ps->id, ps->value.get<double>());
       core_.set_param_path(ps->id, ps->path);
+      observe_connected_param(ps->id, ps->value);
     } else if (auto* pu = std::get_if<resolume::ParameterUpdate>(&msg)) {
       if (pu->value.is_number()) core_.param_cache().set(pu->id, pu->value.get<double>());
+      observe_connected_param(pu->id, pu->value);
     }
   }
 }
@@ -328,6 +336,15 @@ void BridgeServer::flush_outbox() {
   }
 }
 
+void BridgeServer::observe_connected_param(int64_t id, const nlohmann::json& value) {
+  // Only clip `connected` ParamStates we've subscribed to carry a string value
+  // we care about; "Connected" (and "Connected & previewing") mean on-screen.
+  if (!value.is_string() || subscribed_connected_.find(id) == subscribed_connected_.end())
+    return;
+  connected_observed_[id] =
+      value.get<std::string>().find("Connected") != std::string::npos;
+}
+
 void BridgeServer::drive_clip_launches() {
   if (!resolume_client_) return;
   // Snapshot new trigger-rail events (own leaf mutex — safe under tick_mutex_).
@@ -336,19 +353,30 @@ void BridgeServer::drive_clip_launches() {
   // Build channel → launchable clips from the current composition cache. Keyed
   // by 1-based trigger channel (CompositionCache.channel is 0-based; the
   // NanoLooper Ch marker's "Channel 1..4" → cache 0..3 → event channel 1..4).
-  // Phase C will source this map from the registered scene-marker instances
-  // instead of the composition string-scan, leaving the launcher unchanged.
   std::map<int, std::vector<LaunchTarget>> channel_clips;
   CompositionCache& cache = core_.composition_cache();
   const int n = cache.clip_count();
   for (int i = 0; i < n; ++i) {
     CachedClip cc = cache.get_clip(i);
     if (cc.channel < 0 || cc.connect_path.empty()) continue;
+    // Subscribe to this clip's connected ParamState by id for push feedback
+    // (~ms) instead of the ~1s composition rebroadcast — the lever that makes
+    // the reconciler's gated disconnect + re-arm timing work. Subscribe once.
+    if (cc.connected_param_id > 0 &&
+        subscribed_connected_.insert(cc.connected_param_id).second) {
+      resolume_client_->subscribe_by_id(cc.connected_param_id);
+    }
     LaunchTarget t;
     t.clip_id = cc.clip_id;
     t.connect_path = cc.connect_path;
     t.connected_param_id = cc.connected_param_id;
-    t.observed_connected = cc.connected;
+    // Prefer the fast subscription value; fall back to the composition cache
+    // (from the last rebroadcast) until the first push arrives.
+    auto oit = connected_observed_.find(cc.connected_param_id);
+    t.observed_connected = (oit != connected_observed_.end()) ? oit->second
+                                                              : cc.connected;
+    t.is_piano = (cc.trigger_style == "Piano");
+    t.evict_path = cc.evict_path;
     channel_clips[cc.channel + 1].push_back(std::move(t));
   }
   if (events.empty() && channel_clips.empty()) return;

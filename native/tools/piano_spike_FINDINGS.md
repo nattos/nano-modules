@@ -37,9 +37,17 @@ disconnect (~5.5 ms release). Measured **0/30 stuck**, connect ~4.9 ms, release
 ~5.5 ms, **total minimum reliable note ~11 ms** — vs the 250 ms-debounce
 workaround.
 
-### Recommended change to `native/src/bridge/clip_launcher.*`
+### Implemented in `native/src/bridge/clip_launcher.*` (+ bridge_server, cache)
 
-Replace "reconcile desired vs ~1 s-stale rebroadcast state, 250 ms debounce" with:
+**Done.** The launcher is now a per-clip re-arm state machine driven by
+subscription-fed observed state. `bridge_server` subscribes to each launchable
+clip's `connected` param by id (`connected_observed_`); `composition_cache`
+carries `trigger_style` + an `evict_path` (an empty clip on the layer). The fake
+Resolume server (`tests/fake_resolume_server`) MODELS the quirks (piano stuck-on,
+Normal connect:false no-op + eviction stuck-off, re-arm recovery), and
+`test_clip_launcher{,_e2e}.cpp` assert the reconciler converges for: piano
+connect/disconnect, piano stuck-on recovery, normal connect, normal off via
+eviction, and normal stuck-off recovery. The design below is what shipped:
 
 1. Subscribe each launchable clip's `connected` param by id (push feedback;
    `bridge_server.cpp` already has the plumbing to `subscribe`/route

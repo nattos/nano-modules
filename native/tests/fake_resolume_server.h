@@ -85,6 +85,23 @@ public:
   /// marker setup, for exercising channel resolution + `/global/channels`.
   static nlohmann::json make_marker_composition(const std::vector<MarkerSpec>& markers);
 
+  /// Two layers, each with a content clip + an EMPTY clip (the eviction target):
+  ///   layer 1: "Red" (Normal, marker Channel 1) at clips[0], empty at clips[1]
+  ///   layer 2: "Blue" (Piano, marker Channel 2) at clips[0], empty at clips[1]
+  /// The headless twin of the live piano-spike rig, for exercising the
+  /// ClipLauncher reconciler against the modelled trigger latches (below).
+  static nlohmann::json make_trigger_test_composition();
+
+  /// Seed a clip's latched trigger state (test hook), so recovery from a
+  /// PRE-EXISTING stuck clip — e.g. a user click in Resolume — is deterministic
+  /// without relying on timing. `connect_path` is the clip's connect action.
+  /// stuck_on also forces the clip Connected; the reconciler must re-arm.
+  void seed_stuck(const std::string& connect_path, bool stuck_on, bool stuck_off);
+
+  /// Current modelled connected state of a clip ("Empty"/"Disconnected"/
+  /// "Connected"), by its connect action path. "" if the path is unknown.
+  std::string clip_connected(const std::string& connect_path) const;
+
 private:
   void handle_message(ix::WebSocket& ws, const std::string& msg);
 
@@ -94,6 +111,31 @@ private:
     std::string path;
   };
 
+  // Per-clip runtime state used to MODEL Resolume's trigger latches (see
+  // piano_spike_FINDINGS.md), keyed by the clip's connect action path:
+  //  - a Normal clip ignores connect:false (turns off only by eviction) and,
+  //    after an eviction, drops a plain connect (stuck_off) until re-armed;
+  //  - a Piano clip stuck_on ignores disconnects until re-armed.
+  struct ClipRuntime {
+    int layer = -1;
+    int64_t connected_id = 0;
+    std::string style;          // "Piano" → piano; anything else → normal
+    bool has_content = false;   // false for an empty clip (eviction target)
+    std::string connected = "Disconnected";
+    bool stuck_on = false;      // piano: disconnect ignored
+    bool stuck_off = false;     // normal: connect dropped (post-eviction latch)
+    bool is_piano() const { return style == "Piano"; }
+  };
+
+  // Rebuild clip_rt_ from composition_ (called under mu_ from set_composition).
+  void build_clip_runtime();
+  // Apply a modelled connected-state change to composition_/params index and
+  // queue a parameter_update to broadcast (collected, sent outside the lock).
+  void set_connected(ClipRuntime& c, const std::string& value,
+                     std::vector<std::pair<int64_t, std::string>>& out_changes);
+  // Broadcast a parameter_update frame to every connected client.
+  void broadcast_param_update(int64_t id, const std::string& value);
+
   std::unique_ptr<ix::WebSocketServer> server_;
   int port_ = 0;
   bool running_ = false;
@@ -102,6 +144,7 @@ private:
   nlohmann::json composition_;
   std::string composition_str_;
   std::map<int64_t, ParamInfo> params_by_id_;
+  std::map<std::string, ClipRuntime> clip_rt_;  // keyed by connect action path
   std::vector<SetRecord> sets_;
   std::vector<std::string> triggers_;
 };

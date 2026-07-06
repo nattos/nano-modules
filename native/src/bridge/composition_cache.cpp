@@ -99,6 +99,17 @@ void CompositionCache::rebuild(const resolume::Composition& comp) {
 
   for (size_t li = 0; li < comp.layers.size(); ++li) {
     const auto& layer = comp.layers[li];
+    // Find an EMPTY clip on this layer (connected_state "Empty" == no content).
+    // Connecting it evicts whatever is playing — the style-independent way to
+    // turn a clip OFF (a Normal clip ignores connect:false). 1-based path.
+    std::string layer_evict_path;
+    for (size_t ci = 0; ci < layer.clips.size(); ++ci) {
+      if (layer.clips[ci].connected_state == "Empty") {
+        layer_evict_path = "/composition/layers/" + std::to_string(li + 1) +
+                           "/clips/" + std::to_string(ci + 1) + "/connect";
+        break;
+      }
+    }
     for (size_t ci = 0; ci < layer.clips.size(); ++ci) {
       const auto& clip = layer.clips[ci];
       CachedClip cc;
@@ -110,6 +121,8 @@ void CompositionCache::rebuild(const resolume::Composition& comp) {
       cc.thumbnail_tex_id = -1;
       cc.layer_index = static_cast<int>(li);
       cc.clip_index = static_cast<int>(ci);
+      cc.trigger_style = clip.trigger_style;
+      cc.evict_path = layer_evict_path;
       // Resolume's WS API addresses layers/clips 1-BASED (its own example is
       // "/composition/layers/1/clips/1/connect"), while comp.layers/clips are
       // 0-based arrays — so the action path is (index + 1). Getting this wrong
