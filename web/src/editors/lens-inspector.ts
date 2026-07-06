@@ -170,6 +170,10 @@ export class LensInspector extends MobxLitElement {
         </div>
       </div>
 
+      ${this.section('Input Levels', 'input')}
+      ${this.s('in_brightness', 'Input Brightness', -1, 1, 0.01, 0.15)}
+      ${this.s('in_contrast', 'Input Contrast', -1, 1, 0.01, -0.13)}
+
       ${this.section('Depth of Field', 'focus')}
       ${this.s('blur_amount', 'Blur Amount', 0, 1, 0.01, 0.16)}
       ${this.s('field_curvature', 'Field Curvature', 0, 1, 0.01, 0)}

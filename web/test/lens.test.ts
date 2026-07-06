@@ -52,9 +52,9 @@ describe('Lens (filter.blur.lens) E2E', () => {
     expect(p.io.find((io: any) => io.name === 'tex_out')).toBeTruthy();
     // Scalar/int/select fields surface in the flat params array.
     const names = p.params.map((x: any) => x.name);
-    for (const n of ['preset', 'blur_amount', 'blades', 'cats_eye', 'coating',
-                     'sun_intensity', 'halation', 'distortion', 'tca', 'exposure',
-                     'tone', 'grain', 'quality', 'debug_view']) {
+    for (const n of ['preset', 'in_brightness', 'in_contrast', 'blur_amount', 'blades',
+                     'cats_eye', 'coating', 'sun_intensity', 'halation', 'distortion',
+                     'tca', 'exposure', 'tone', 'grain', 'quality', 'debug_view']) {
       expect(names).toContain(n);
     }
     // vec2/vec3(color) fields surface in the schema (the inspector binds via it).
@@ -229,6 +229,20 @@ describe('Lens (filter.blur.lens) E2E', () => {
     // Non-solid where the content guarantees variation (mask edges, CoC bowl).
     mask.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
     coc.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
+  });
+
+  it('input levels condition the image before the pipeline (default lift vs raw)', async () => {
+    // The default lifts blacks (in_brightness 0.15, in_contrast -0.13) so the
+    // filmic finish doesn't crush already-processed footage. Zeroing both is a
+    // rawer, darker response — so the default renders brighter overall.
+    const raw    = await runChain('lens_lv0', { in_brightness: 0.0, in_contrast: 0.0, grain: 0.0 }, 'lens_lvl_raw', GRID);
+    const lifted = await runChain('lens_lv1', { in_brightness: 0.15, in_contrast: -0.13, grain: 0.0 }, 'lens_lvl_lift', GRID);
+    expect(raw.success).toBe(true);
+    expect(lifted.success).toBe(true);
+    let sumRaw = 0, sumLift = 0;
+    raw.trace('out').forEachPixel((c) => { sumRaw += c.r + c.g + c.b; });
+    lifted.trace('out').forEachPixel((c) => { sumLift += c.r + c.g + c.b; });
+    expect(sumLift).toBeGreaterThan(sumRaw);
   });
 
   it('exposure changes the output brightness', async () => {

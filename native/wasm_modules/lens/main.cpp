@@ -96,7 +96,7 @@ static inline float polyBoundaryR(float theta, int blades, float rot, float curv
 }
 
 // --- per-pass uniform layouts (16-byte rows) ----------------------------------
-struct PrepareU { float hl_threshold, hl_boost, _p0, _p1; };
+struct PrepareU { float hl_threshold, hl_boost, in_brightness, in_contrast; };
 static_assert(sizeof(PrepareU) == 16, "PrepareU layout");
 
 struct BokehU {
@@ -182,6 +182,10 @@ struct State {
   // Schema-mirrored params (normalized unless noted). Defaults mirror the schema.
   int   preset = 0;             // inert (UI-only); serialized
 
+  // input levels (Resolume-style, pivot black) — small default lift so the filmic
+  // pipeline doesn't crush blacks on already-processed footage.
+  float in_brightness = 0.15f;
+  float in_contrast = -0.13f;
   // focus
   float blur_amount = 0.16f;
   float field_curvature = 0.0f;
@@ -254,7 +258,7 @@ static gpu::ComputePSO s_pso_downsample, s_pso_upsample, s_pso_debug;
 static Blur16 s_blur16;   // RGBA16F wide blur (veiling glare, halation, bloom)
 
 void module_init() {
-  state::init("filter.blur.lens", {1, 0, 0},
+  state::init("filter.blur.lens", {1, 1, 0},
     state::Schema()
       .helpField("intro",
         "## Lens\n"
@@ -279,6 +283,18 @@ void module_init() {
                    false, "A named lens look. Applied from the UI (sets the "
                    "character params below); the effect itself only stores it.")
         .label("Preset", "Preset")
+
+      .group("input", "Input Levels")
+        .groupHelp(
+          "Conditions the incoming image *before* the lens processes it. The filmic "
+          "finish (toe + tonemap) tends to crush blacks, so a small default lift "
+          "keeps already-graded footage from clipping. **Brightness** lifts, "
+          "**Contrast** is Resolume-style — it scales to/from black (0.0), not gray. "
+          "Zero both for a raw, punchier response.")
+      .floatField("in_brightness", 0.15f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
+                  nullptr, "Additive lift on the input (display space). Raises the floor so blacks aren't crushed.").label("Input Brightness", "In Bri")
+      .floatField("in_contrast", -0.13f, -1.f, 1.f, state::SecondaryInput, nullptr, 0.01f,
+                  nullptr, "Resolume-style input contrast — scales to/from black (0.0), not gray. Negative softens.").label("Input Contrast", "In Con")
 
       .group("focus", "Depth of Field")
         .groupHelp(
@@ -595,6 +611,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const char* p = pb + off[i];
     int l = len[i];
     if      (state::pathIs(p, l, "preset"))            s->preset = state::patchInt(i);
+    else if (state::pathIs(p, l, "in_brightness"))     s->in_brightness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "in_contrast"))       s->in_contrast = state::patchFloat(i);
     else if (state::pathIs(p, l, "blur_amount"))       s->blur_amount = state::patchFloat(i);
     else if (state::pathIs(p, l, "field_curvature"))   s->field_curvature = state::patchFloat(i);
     else if (state::pathIs(p, l, "focus_center"))    { auto v = state::patchVec2(i); s->focus_cx = v.x; s->focus_cy = v.y; }
@@ -665,7 +683,8 @@ int32_t is_identity(void* self) {
                     (s->transmission > 1.f - 1e-4f && s->transmission < 1.f + 1e-4f);
   bool finish_off = near0(s->exposure) && near0(s->mech_vignette) &&
                     near0(s->hl_desat) && near0(s->grain) && near0(s->tone);
-  return (optics_off && color_off && finish_off) ? 1 : 0;
+  bool input_off  = near0(s->in_brightness) && near0(s->in_contrast);
+  return (input_off && optics_off && color_off && finish_off) ? 1 : 0;
 }
 
 static bool ensureTextures(State* s, int w, int h) {
@@ -825,7 +844,7 @@ void render(void* self, int vp_w, int vp_h) {
   const bool dbg_flare = debug == 4;   // snapshot pre-flare, skip geo
 
   // 1. prepare: sRGB→linear + highlight boost → bufA (linear HDR).
-  { PrepareU u = { s->hl_threshold, s->hl_boost * 8.f, 0.f, 0.f };
+  { PrepareU u = { s->hl_threshold, s->hl_boost * 8.f, s->in_brightness, s->in_contrast };
     s->prepare_buf.writeOne(u);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_prepare);
