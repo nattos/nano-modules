@@ -31,6 +31,7 @@ const LFO_PLUGIN: PluginInfo = {
 } as any;
 
 afterEach(() => {
+  appController.clearBarrelPusher();
   runInAction(() => {
     appState.database.sketches = {} as any;
     appState.local.plugins = [];
@@ -116,5 +117,40 @@ describe('help-slot fields stay out of persisted state', () => {
     const state = appState.database.sketches.sk.instances!['fx.demo@1'].state;
     expect('intro' in state).toBe(false); // dead weight dropped
     expect(state.amount).toBe(0.5);       // real value untouched
+  });
+
+  it('strips help fields from the sketch pushed to the barrel, without mutating the DB', () => {
+    // The barrel bakes whatever it receives into its re-broadcast config blob,
+    // and the barrel can mirror a fat sketch back in AFTER the one-shot DB
+    // prune — so the push path must strip help fields regardless of DB state.
+    runInAction(() => {
+      appState.local.plugins = [HELP_PLUGIN];
+      appState.database.sketches = {
+        sk: {
+          anchor: null, chain: [], wires: [],
+          instances: {
+            'fx.demo@1': {
+              module_type: 'fx.demo',
+              state: { amount: 0.5, intro: '## Demo\nFat help still in the DB.' },
+            },
+          },
+        },
+      } as any;
+    });
+
+    let pushed: any = null;
+    appController.setBarrelPusher('sk', (s) => { pushed = s; });
+    // Any committed mutation on the barrel-tracked sketch fires the push.
+    appController.addEffectToChain('sk', 0, 0, 'fx.demo');
+
+    expect(pushed).toBeTruthy();
+    const pushedState = pushed.instances['fx.demo@1'].state;
+    expect('intro' in pushedState).toBe(false); // stripped from what the barrel sees
+    expect(pushedState.amount).toBe(0.5);
+
+    // The push path is copy-only — the DB copy is untouched (the DB prune,
+    // tested above, is what cleans persistence).
+    const dbState = appState.database.sketches.sk.instances!['fx.demo@1'].state;
+    expect('intro' in dbState).toBe(true);
   });
 });

@@ -1358,6 +1358,47 @@ export class AppController {
     return out;
   }
 
+  /** moduleType → its help-slot field names, for every plugin that has any.
+   *  Empty until schemas arrive; callers no-op until then. */
+  private helpFieldsByType(): Map<string, Set<string>> {
+    const out = new Map<string, Set<string>>();
+    for (const p of appState.local.plugins) {
+      const names = this.helpFieldNames(p);
+      if (names.size > 0) out.set(p.id, names);
+    }
+    return out;
+  }
+
+  /**
+   * A copy of `sketch` with UI-only help-slot fields stripped from every
+   * instance's `state`. The barrel bakes whatever sketch it receives into its
+   * nanobarrel://config blob, which Resolume re-broadcasts on every clip
+   * connect/disconnect — and the help markdown is never read back. Stripping in
+   * the push path (not just the DB) guarantees the barrel can't bake it even if
+   * a fat sketch was mirrored in from the barrel AFTER the one-shot DB prune.
+   * Returns the input unchanged (no clone) when there's nothing to strip.
+   */
+  private slimSketchForBarrel(sketch: Sketch): Sketch {
+    const instances = (sketch as any).instances as Record<string, any> | undefined;
+    if (!instances) return sketch;
+    const helpByType = this.helpFieldsByType();
+    if (helpByType.size === 0) return sketch;
+    let out: any = null;
+    for (const [key, inst] of Object.entries(instances)) {
+      const state = inst?.state;
+      const names = typeof inst?.module_type === 'string'
+        ? helpByType.get(inst.module_type) : undefined;
+      if (!state || typeof state !== 'object' || !names) continue;
+      const drop = Object.keys(state).filter(k => names.has(k));
+      if (drop.length === 0) continue;
+      if (!out) out = { ...sketch, instances: { ...instances } };
+      const slimState = { ...state };
+      for (const k of drop) delete slimState[k];
+      out.instances[key] = { ...inst, state: slimState };
+    }
+    return out ?? sketch;
+  }
+
   /**
    * Strip help-slot fields (schema `type: 'help'`) from every instance's
    * persisted `state`. Historically `defaultStateForPlugin` seeded them, so the
@@ -1371,11 +1412,7 @@ export class AppController {
    * Idempotent — a second run finds nothing to drop and no-ops (no undo entry).
    */
   private pruneHelpFieldState() {
-    const helpByType = new Map<string, Set<string>>();
-    for (const p of appState.local.plugins) {
-      const names = this.helpFieldNames(p);
-      if (names.size > 0) helpByType.set(p.id, names);
-    }
+    const helpByType = this.helpFieldsByType();
     if (helpByType.size === 0) return;
 
     type Job = { sketchId: string; instanceKey: string; drop: string[] };
@@ -2124,7 +2161,9 @@ export class AppController {
     // so we don't immediately push a snapshot the bridge just sent us.
     const sketch = appState.database.sketches[sketchId];
     if (sketch) {
-      try { this.lastPushedBarrelJson = JSON.stringify(toJS(sketch)); }
+      // Seed with the SLIMMED form so the high-water mark matches what
+      // maybePushBarrelSketch actually pushes (help-stripped).
+      try { this.lastPushedBarrelJson = JSON.stringify(this.slimSketchForBarrel(toJS(sketch))); }
       catch { this.lastPushedBarrelJson = null; }
     } else {
       this.lastPushedBarrelJson = null;
@@ -2235,7 +2274,10 @@ export class AppController {
     if (!id || !pusher) return;
     const sketch = appState.database.sketches[id];
     if (!sketch) return;
-    const plain = toJS(sketch);
+    // Strip UI-only help markdown before it reaches the barrel — it would ride
+    // the config blob that Resolume re-broadcasts on every clip trigger, and is
+    // never read back. Dedup + push on the slimmed form so the two stay in sync.
+    const plain = this.slimSketchForBarrel(toJS(sketch));
     let json: string;
     try { json = JSON.stringify(plain); }
     catch { return; }
