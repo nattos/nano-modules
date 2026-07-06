@@ -20,6 +20,21 @@ std::string spvToMsl(const uint8_t* spv, size_t byteCount) {
     opts.set_msl_version(2, 0, 0);
     opts.enable_decoration_binding = true;
     compiler.set_msl_options(opts);
+
+    // Y-orientation parity with the web path. DXC's `-spirv` emits Vulkan NDC
+    // (y-down); naga negates gl_Position.y when translating SPV → WGSL for the
+    // web (WebGPU NDC is y-up), so effects author `clip = uv*2-1` with NO
+    // explicit flip and land row 0 at the top. SPIRV-Cross does NOT flip by
+    // default, so the same SPV rendered on native came out vertically mirrored
+    // vs. web — a latent inconsistency that only bit effects with an absolute
+    // vertical reference (e.g. an overlay composited over a straight texel copy
+    // of its input). Flip here too so ONE authoring convention holds on both
+    // platforms. Vertex-stage only; compute (texel gid) writes are untouched.
+    {
+      spirv_cross::CompilerGLSL::Options common = compiler.get_common_options();
+      common.vertex.flip_vert_y = true;
+      compiler.set_common_options(common);
+    }
     std::string msl = compiler.compile();
 
     // MSL doesn't encode the compute workgroup size (HLSL [numthreads] /
