@@ -62,6 +62,8 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_SYNTH        10
 #define PID_SYNTH_GAIN   11
 #define PID_SEND_TO_RAIL 12
+#define PID_QUANTIZE_START  13
+#define PID_QUANTIZE_LENGTH 14
 
 /* ======================================================================
  * State
@@ -75,10 +77,12 @@ struct State {
   double prev_phase = 0.0;
   double elapsed = 0.0;
 
-  /* Per-channel state */
+  /* Per-channel state. trigger_held = physical press; gate_state = the combined
+   * (live press OR played-back window) on/off we've actually emitted, diffed each
+   * frame so on/off fire exactly on transitions. No fixed gate timer any more —
+   * a played note's gate lasts exactly as long as it was recorded. */
   int trigger_held[NUM_CHANNELS] = {0};
-  int gate_down[NUM_CHANNELS] = {0};
-  float gate_timer[NUM_CHANNELS] = {0};
+  int gate_state[NUM_CHANNELS] = {0};
   float flash[NUM_CHANNELS] = {0};
 
   /* Modifier keys */
@@ -88,6 +92,8 @@ struct State {
   int mute_held = 0;
   int record_held = 0;
   int show_overlay = 0;
+  int quantize_start = 0;
+  int quantize_length = 0;
 
   /* Connection state */
   int ws_connected = 0;
@@ -220,24 +226,39 @@ static void push_trigger(State& s, bool on, int ch /*0-based*/) {
   s.trig_ring[s.trig_ring_len++] = e;
 }
 
-static void gate_on(State& s, int ch) {
-  s.gate_down[ch] = 1;
-  s.gate_timer[ch] = 0.25f;
-  s.flash[ch] = 0.25f;
-  s.ch_out[ch] = 1.0f;             /* per-channel modulation-output pulse */
-  push_trigger(s, /*on=*/true, ch); /* → global trigger rail */
-  // Legacy direct-launch imports are no-op stubs; the rail is the live path.
-  for (int i = 0; i < s.channel_clip_count[ch]; i++)
-    resolume_trigger_clip(s.channel_clip_ids[ch][i], 1);
-  host_trigger_audio(ch);
+/* Emit a gate transition for one channel (idempotent — no-op if already in the
+ * requested state). ON fires the flash + modulation pulse + audio + rail event;
+ * OFF fires the rail off event. */
+static void set_gate(State& s, int ch, bool on) {
+  if (on && !s.gate_state[ch]) {
+    s.gate_state[ch] = 1;
+    s.flash[ch] = 0.25f;
+    s.ch_out[ch] = 1.0f;              /* per-channel modulation-output pulse */
+    push_trigger(s, /*on=*/true, ch); /* → global trigger rail */
+    // Legacy direct-launch imports are no-op stubs; the rail is the live path.
+    for (int i = 0; i < s.channel_clip_count[ch]; i++)
+      resolume_trigger_clip(s.channel_clip_ids[ch][i], 1);
+    host_trigger_audio(ch);
+  } else if (!on && s.gate_state[ch]) {
+    s.gate_state[ch] = 0;
+    push_trigger(s, /*on=*/false, ch);
+    for (int i = 0; i < s.channel_clip_count[ch]; i++)
+      resolume_trigger_clip(s.channel_clip_ids[ch][i], 0);
+  }
 }
 
-static void gate_off(State& s, int ch) {
-  if (!s.gate_down[ch]) return;
-  s.gate_down[ch] = 0;
-  push_trigger(s, /*on=*/false, ch);
-  for (int i = 0; i < s.channel_clip_count[ch]; i++)
-    resolume_trigger_clip(s.channel_clip_ids[ch][i], 0);
+/* Single source of truth for every channel's gate: the live press OR a
+ * played-back note window covering the current phase. Called after any input
+ * edge and every tick (as the phase moves through recorded windows). Mute
+ * silences a channel you're actively holding (mute + that trigger). */
+static void recompute_gates(State& s) {
+  int active[NUM_CHANNELS];
+  looper_active_channels(&s.looper, s.phase, active);
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    bool live = s.trigger_held[ch] && !s.mute_held && !s.delete_held;
+    bool played = active[ch] && !(s.mute_held && s.trigger_held[ch]);
+    set_gate(s, ch, live || played);
+  }
 }
 
 static void refresh_channels(State& s) {
@@ -271,25 +292,23 @@ static void on_param_change(State& s, int index, double value) {
     s.trigger_held[ch] = pressed;
 
     if (pressed && !was) {
-      /* Rising edge */
+      /* Rising edge — open a note (records onset + starts measuring the hold) */
       if (s.delete_held) {
         looper_clear_channel(&s.looper, ch);
         s.delete_acted = 1;
         s.last_action_was_clear = 0;
-        gate_off(s, ch);
         log_structured(LOG_INFO, "Clear channel", json_ch_step(ch + 1, -1));
       } else if (s.mute_held) {
-        gate_off(s, ch);
+        /* Muted press: silence only, no recording. */
       } else {
         int step = (int)s.phase % NUM_STEPS;
         s.last_action_was_clear = 0;
-        looper_trigger(&s.looper, ch, s.phase);
-        gate_on(s, ch);
-        log_structured(LOG_INFO, "Trigger", json_ch_step(ch + 1, step));
+        looper_begin_note(&s.looper, ch, s.phase);
+        log_structured(LOG_INFO, "Note on", json_ch_step(ch + 1, step));
       }
     } else if (!pressed && was) {
-      /* Falling edge */
-      gate_off(s, ch);
+      /* Falling edge — finalize the note's gate length from the hold duration */
+      looper_end_note(&s.looper, ch, s.phase);
     }
   } else if (index == PID_DELETE) {
     if (pressed) {
@@ -308,7 +327,6 @@ static void on_param_change(State& s, int index, double value) {
           s.last_action_was_clear = 1;
           log_msg(LOG_INFO, "Clear all");
         }
-        for (int c = 0; c < NUM_CHANNELS; c++) gate_off(s, c);
       }
       s.delete_held = 0;
     }
@@ -318,14 +336,12 @@ static void on_param_change(State& s, int index, double value) {
     if (pressed) {
       looper_undo(&s.looper);
       s.last_action_was_clear = 0;
-      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(s, c);
       log_msg(LOG_INFO, "Undo");
     }
   } else if (index == PID_REDO) {
     if (pressed) {
       looper_redo(&s.looper);
       s.last_action_was_clear = 0;
-      for (int c = 0; c < NUM_CHANNELS; c++) gate_off(s, c);
       log_msg(LOG_INFO, "Redo");
     }
   } else if (index == PID_RECORD) {
@@ -342,7 +358,16 @@ static void on_param_change(State& s, int index, double value) {
     s.show_overlay = pressed;
   } else if (index == PID_SEND_TO_RAIL) {
     s.send_to_rail = pressed;
+  } else if (index == PID_QUANTIZE_START) {
+    s.quantize_start = pressed;
+    looper_set_quantize(&s.looper, s.quantize_start, s.quantize_length);
+  } else if (index == PID_QUANTIZE_LENGTH) {
+    s.quantize_length = pressed;
+    looper_set_quantize(&s.looper, s.quantize_start, s.quantize_length);
   }
+
+  /* One authority for gate emission — reflect the new input state immediately. */
+  recompute_gates(s);
 }
 
 /* --- State change handler (called by host when canonical state is modified) --- */
@@ -409,13 +434,18 @@ static void load_grid_from_state(State& s) {
     for (int j = 0; j < count; j++) {
       int step = channel_data[ch][j];
       if (step >= 0 && step < NUM_STEPS && s.looper.event_count < MAX_EVENTS) {
-        s.looper.events[s.looper.event_count].time = (double)step;
+        /* The persisted grid only carries onsets; restore each as a one-step
+         * gate. Live-recorded gate lengths have full fidelity — this is the
+         * lossy reload path (host save/restore of the onset grid only). */
+        s.looper.events[s.looper.event_count].start = (double)step;
+        s.looper.events[s.looper.event_count].length = 1.0;
         s.looper.events[s.looper.event_count].channel = ch;
         s.looper.event_count++;
       }
     }
   }
 
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) s.looper.pending_index[ch] = -1;
   log_msg(LOG_INFO, "Grid loaded from state");
 }
 
@@ -427,6 +457,8 @@ static int field_to_pid(const char* path, int pathLen) {
     {"undo", PID_UNDO}, {"redo", PID_REDO},
     {"record", PID_RECORD}, {"show_overlay", PID_SHOW_OVERLAY},
     {"send_to_rail", PID_SEND_TO_RAIL},
+    {"quantize_start", PID_QUANTIZE_START},
+    {"quantize_length", PID_QUANTIZE_LENGTH},
   };
   for (auto& m : map) {
     int mlen = std::strlen(m.name);
@@ -463,10 +495,12 @@ void module_init() {
     "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
     "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11},"
     "\"send_to_rail\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":12},"
-    "\"out_1\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":13},"
-    "\"out_2\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":14},"
-    "\"out_3\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":15},"
-    "\"out_4\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":16}"
+    "\"quantize_start\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":13},"
+    "\"quantize_length\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":14},"
+    "\"out_1\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":15},"
+    "\"out_2\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":16},"
+    "\"out_3\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":17},"
+    "\"out_4\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":18}"
     "}}";
   state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 }
@@ -499,8 +533,7 @@ void init(void* self) {
 
   for (int i = 0; i < NUM_CHANNELS; i++) {
     s->trigger_held[i] = 0;
-    s->gate_down[i] = 0;
-    s->gate_timer[i] = 0;
+    s->gate_state[i] = 0;
     s->flash[i] = 0;
     s->channel_clip_count[i] = 0;
     s->channel_names[i][0] = 0;
@@ -508,6 +541,9 @@ void init(void* self) {
     s->channel_connected[i] = 0;
     s->ch_out[i] = 0;
   }
+  s->quantize_start = 0;
+  s->quantize_length = 0;
+  looper_set_quantize(&s->looper, 0, 0);
   /* send_to_rail keeps its schema default (on) via on_state_patched; reset the
    * ring so a re-init never replays stale events. */
   s->trig_ring_len = 0;
@@ -547,30 +583,21 @@ void tick(void* self, double dt) {
   s->prev_phase = s->phase;
   s->phase = bar * NUM_STEPS;
 
-  /* Advance looper — fire events */
-  int fired[NUM_CHANNELS];
-  int fired_count = 0;
-  looper_advance(&s->looper, s->prev_phase, s->phase, fired, &fired_count);
-  for (int i = 0; i < fired_count; i++) {
-    int ch = fired[i];
-    if (!s->mute_held || !s->trigger_held[ch]) {
-      gate_on(*s, ch);
-    }
-  }
+  /* Gate emission is fully driven by recompute_gates: as the phase sweeps
+   * through each recorded note's [start, start+length) window, gates turn on at
+   * the onset and off exactly when the recorded gate length elapses. Wrap-safe
+   * and frame-rate independent — no per-frame edge scan or fixed timer. */
+  recompute_gates(*s);
 
-  /* Decay gate timers */
+  /* Decay overlay flash + the modulation-output pulse. While a gate is held the
+   * output pins at 1; on release it decays with a ~120ms tail (matches
+   * mod.trigger.beat's feel). */
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    if (s->gate_down[ch]) {
-      s->gate_timer[ch] -= (float)dt;
-      if (s->gate_timer[ch] <= 0) {
-        gate_off(*s, ch);
-      }
-    }
     if (s->flash[ch] > 0)
       s->flash[ch] -= (float)dt;
-    /* Per-channel modulation-output pulse: 1 → 0 with a ~120ms tail (visible at
-     * any frame rate), matching mod.trigger.beat's output feel. */
-    if (s->ch_out[ch] > 0.0f) {
+    if (s->gate_state[ch]) {
+      s->ch_out[ch] = 1.0f;
+    } else if (s->ch_out[ch] > 0.0f) {
       s->ch_out[ch] *= (float)std::exp(-dt / 0.12);
       if (s->ch_out[ch] < 0.001f) s->ch_out[ch] = 0.0f;
     }
@@ -644,7 +671,7 @@ void render(void* self, int vp_w, int vp_h) {
     for (int i = 0; i < NUM_CHANNELS; i++) {
       float cx = margin + i * (card_w + card_gap);
       int has_content = (s->channel_clip_count[i] > 0);
-      int ch_active = (s->gate_down[i]);
+      int ch_active = (s->gate_state[i]);
 
       float br, bg, bb, ba;
       if (ch_active) {
@@ -720,11 +747,12 @@ void render(void* self, int vp_w, int vp_h) {
     text(label, margin, y, font_size,
          is_muted ? cr*0.3f : cr, is_muted ? cg*0.3f : cg, is_muted ? cb*0.3f : cb, 1.0f);
 
-    int act_step = s->gate_down[ch] ? current_step : -1;
+    int act_step = s->gate_state[ch] ? current_step : -1;
 
     for (int st = 0; st < NUM_STEPS; st++) {
       float cx = cells_x + st * cell;
       int has_event = looper_has_event(&s->looper, ch, st);
+      int covered = looper_step_covered(&s->looper, ch, st);
       int cur = (st == current_step);
       int playing = (st == act_step);
 
@@ -732,6 +760,7 @@ void render(void* self, int vp_w, int vp_h) {
         canvas_fill_rect(cx - scale, y - scale, cell, cell, 0.5f, 0.5f, 0.5f, 0.25f);
 
       if (has_event) {
+        /* Onset cell: bright leading bar (the trigger point) + fill. */
         float bar_w = 3.0f * scale;
         if (is_muted) {
           canvas_fill_rect(cx, y, bar_w, lh, cr, cg, cb, 0.4f);
@@ -744,6 +773,11 @@ void render(void* self, int vp_w, int vp_h) {
           canvas_fill_rect(cx + bar_w, y, cell - 2*scale - bar_w, lh,
                            cr*0.5f, cg*0.5f, cb*0.5f, 0.7f);
         }
+      } else if (covered) {
+        /* Sustained cell: the recorded gate is still held through this step —
+         * a dimmer continuation bar so long notes read as bars, not dots. */
+        float a = is_muted ? 0.18f : (playing ? 0.6f : 0.4f);
+        canvas_fill_rect(cx, y, cell - 2*scale, lh, cr*0.6f, cg*0.6f, cb*0.6f, a);
       } else {
         canvas_fill_rect(cx, y, cell - 2*scale, lh, 0.5f, 0.5f, 0.5f, cur ? 0.15f : 0.06f);
       }

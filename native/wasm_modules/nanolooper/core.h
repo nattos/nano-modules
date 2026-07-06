@@ -6,8 +6,14 @@
 #define NUM_CHANNELS 4
 #define NUM_STEPS 16
 
+/* A recorded note: an onset plus the GATE DURATION the user held it for. Both
+ * are in loop units (steps), where the loop spans [0, loop_length) == one bar of
+ * NUM_STEPS. length > 0; a note may wrap past loop_length (start+length capped at
+ * one full loop). This is the core of the rework: the looper repeats not just
+ * WHEN a channel fired but HOW LONG it stayed on. */
 typedef struct {
-  double time;    /* position in loop [0, loop_length) */
+  double start;   /* onset within loop [0, loop_length) */
+  double length;  /* gate duration in loop units (0, loop_length] */
   int channel;    /* 0-3 */
 } Event;
 
@@ -18,10 +24,22 @@ typedef struct {
 
 typedef struct {
   double loop_length;
-  double quantize_step;  /* 0 = no quantize */
+
+  /* Quantization is per-axis and independently optional (both default OFF — a
+   * free looper that repeats exactly what you played). quantize_start snaps the
+   * onset to the step grid; quantize_length snaps the gate duration to a whole
+   * number of steps (min 1). Grid spacing is one step (1.0). */
+  int quantize_start;
+  int quantize_length;
 
   Event events[MAX_EVENTS];
   int event_count;
+
+  /* Recording: the note currently held open per channel (index into events, or
+   * -1). pending_raw_start is the UNSNAPPED press time, so the finalized gate
+   * length reflects the real hold duration even when the onset is quantized. */
+  int pending_index[NUM_CHANNELS];
+  double pending_raw_start[NUM_CHANNELS];
 
   EventSnapshot undo_stack[MAX_UNDO];
   int undo_count;
@@ -33,9 +51,21 @@ typedef struct {
 } LooperCore;
 
 void looper_init(LooperCore* c, double loop_length);
-int  looper_trigger(LooperCore* c, int channel, double current_time);
-void looper_advance(const LooperCore* c, double prev_time, double new_time,
-                    int* fired, int* fired_count);
+void looper_set_quantize(LooperCore* c, int q_start, int q_length);
+
+/* Recording a note is two-phase: begin_note on the press (adds/re-opens the
+ * event and marks it pending), end_note on the release (finalizes its length
+ * from the real hold duration). If a channel is still pending when the loop is
+ * torn down, its length keeps the provisional value from the last end_note or 0. */
+int  looper_begin_note(LooperCore* c, int channel, double current_time);
+void looper_end_note(LooperCore* c, int channel, double current_time);
+
+/* Playback gate: fills active[NUM_CHANNELS] with 1 where some recorded note's
+ * [start, start+length) window (wrapping) covers `phase`. The module diffs this
+ * against the previous frame to emit gate on/off — frame-rate independent and
+ * wrap-safe. Pending (still-held) notes do not play back; the live press does. */
+void looper_active_channels(const LooperCore* c, double phase, int* active);
+
 void looper_clear_channel(LooperCore* c, int channel);
 void looper_clear_all(LooperCore* c);
 void looper_clear_at(LooperCore* c, int channel, int step);
@@ -43,6 +73,11 @@ void looper_begin_destructive_record(LooperCore* c);
 void looper_end_destructive_record(LooperCore* c);
 void looper_undo(LooperCore* c);
 void looper_redo(LooperCore* c);
+
+/* Overlay queries. has_event: some note's ONSET floors to `step` (the bright
+ * leading edge). step_covered: `step` lies within some note's gate window (the
+ * sustained bar showing how long it was held). */
 int  looper_has_event(const LooperCore* c, int channel, int step);
+int  looper_step_covered(const LooperCore* c, int channel, int step);
 
 #endif

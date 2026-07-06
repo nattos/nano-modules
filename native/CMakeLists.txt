@@ -378,6 +378,14 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
   catch_discover_tests(test_effect_abi)
 endif()
 
+# NanoLooper sequencer core — pure logic (records gate duration + optional
+# quantize), compiled natively straight from the wasm module source.
+add_executable(test_looper_core
+  tests/test_looper_core.cpp
+  wasm_modules/nanolooper/core.cpp)
+target_link_libraries(test_looper_core PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_looper_core)
+
 # NanoLooper WASM module integration test (requires nanolooper.wasm to be built)
 if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
   add_executable(test_nanolooper_wasm tests/test_nanolooper_wasm.cpp)
