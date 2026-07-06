@@ -132,6 +132,12 @@ class Mock:
         await self.broadcast({"type": "parameter_update", "id": cid,
                               "valuetype": "ParamState", "value": new,
                               "path": f"/parameter/by-id/{cid}"})
+        # Real Resolume rebroadcasts the WHOLE composition on any change. Mirror
+        # that here — it's what orphans a naive client's held ClipRefs, so the
+        # mock must do it to exercise that path. (We send current state, not the
+        # ~1s-stale value a real server would; the ref-replacement hazard is the
+        # same either way.)
+        await self.broadcast(self.composition())
 
     async def broadcast(self, obj):
         msg = json.dumps(obj)

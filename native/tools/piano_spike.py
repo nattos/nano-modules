@@ -151,8 +151,15 @@ class ResolumeClient:
                 self._on_param(j, t)
 
     def _on_composition(self, comp: dict):
+        # Resolume rebroadcasts the FULL composition on every trigger, and its
+        # inline `connected.value` LAGS (up to ~1s). So we must NOT rebuild the
+        # ClipRef objects here: callers (run_pulse) hold a ref for the whole
+        # sweep, and the live subscription (_on_param) is the authority for
+        # connected_value. Update stable refs IN PLACE — structural fields only;
+        # never touch connected_value/connected_ms from the (stale) composition
+        # except when first creating a ref. Replacing refs would orphan the
+        # caller's handle AND clobber live state with stale rebroadcast values.
         clips: Dict[str, ClipRef] = {}
-        by_id: Dict[int, ClipRef] = {}
         layers = comp.get("layers", []) or []
         for li, layer in enumerate(layers):
             for ci, clip in enumerate(layer.get("clips", []) or []):
@@ -162,19 +169,21 @@ class ResolumeClient:
                 if cid is None:
                     continue
                 style = (clip.get("triggerstyle") or {}).get("value", "")
-                # Preserve last-known live state across rebroadcasts.
-                prev = self.by_id.get(cid)
-                ref = ClipRef(
-                    name=name, layer_idx=li, clip_idx=ci,
-                    connect_path=f"/composition/layers/{li+1}/clips/{ci+1}/connect",
-                    connected_id=cid, trigger_style=style,
-                    connected_value=conn.get("value", "Empty"),
-                    connected_ms=prev.connected_ms if prev else 0.0)
+                path = f"/composition/layers/{li+1}/clips/{ci+1}/connect"
+                ref = self.by_id.get(cid)
+                if ref is None:
+                    ref = ClipRef(name=name, layer_idx=li, clip_idx=ci,
+                                  connect_path=path, connected_id=cid,
+                                  trigger_style=style,
+                                  connected_value=conn.get("value", "Empty"))
+                    self.by_id[cid] = ref
+                else:
+                    ref.name, ref.layer_idx, ref.clip_idx = name, li, ci
+                    ref.connect_path, ref.trigger_style = path, style
                 if name:
                     clips[name.lower()] = ref
-                by_id[cid] = ref
         self.clips = clips
-        self.by_id = by_id
+        by_id = self.by_id
         first = not self.ready.is_set()
         self.ready.set()
         if first and self.verbose:
