@@ -56,3 +56,65 @@ describe('fresh instance output-field seeding', () => {
     expect('output' in state).toBe(false);
   });
 });
+
+// A UI-only help slot (schema `type: 'help'`) whose default is a large markdown
+// string. Its value is never read from `state` (default = schema, overrides =
+// the instance `help` map), yet it used to be seeded into every instance and
+// then rode every barrel config blob — which Resolume re-broadcasts on each
+// clip connect/disconnect. It must be kept out of `state` entirely.
+const HELP_PLUGIN: PluginInfo = {
+  id: 'fx.demo',
+  key: 'fx.demo',
+  version: '1',
+  params: [{ index: 0, name: 'amount', type: 10, defaultValue: 0.5, min: 0, max: 1 }],
+  io: [],
+  schema: {
+    amount: { type: 'float', default: 0.5, min: 0, max: 1, io: 5 /* PrimaryInput */ },
+    intro: { type: 'help', default: '## Demo\nA long help paragraph baked into the schema.' },
+  },
+} as any;
+
+describe('help-slot fields stay out of persisted state', () => {
+  it('does not seed a help field into a new instance state', () => {
+    runInAction(() => {
+      appState.local.plugins = [HELP_PLUGIN];
+      appState.database.sketches = {
+        sk: { anchor: null, chain: [], instances: {} },
+      } as any;
+    });
+
+    appController.addEffectToChain('sk', 0, 0, 'fx.demo');
+
+    const entry = sketchChain(appState.database.sketches.sk)[0] as any;
+    const state = appState.database.sketches.sk.instances![entry.instance_key].state;
+
+    expect(state.amount).toBe(0.5);       // real input still seeded
+    expect('intro' in state).toBe(false); // help markdown never baked in
+  });
+
+  it('prunes help fields already baked into existing instance state once schemas arrive', () => {
+    // A legacy instance that carried the help markdown in its state (as older
+    // seeding produced). Plugins start empty so the sync counts as a change.
+    runInAction(() => {
+      appState.local.plugins = [];
+      appState.database.sketches = {
+        sk: {
+          anchor: null, chain: [], wires: [],
+          instances: {
+            'fx.demo@1': {
+              module_type: 'fx.demo',
+              state: { amount: 0.5, intro: '## Demo\nStale copy of the help text.' },
+            },
+          },
+        },
+      } as any;
+    });
+
+    // Schemas arrive → the pluginsChanged seam runs the prune.
+    appController.syncFromRemoteState({ plugins: [HELP_PLUGIN], sketches: {} } as any);
+
+    const state = appState.database.sketches.sk.instances!['fx.demo@1'].state;
+    expect('intro' in state).toBe(false); // dead weight dropped
+    expect(state.amount).toBe(0.5);       // real value untouched
+  });
+});

@@ -242,6 +242,7 @@ export class AppController {
     }
     for (const [name, field] of Object.entries(schema)) {
       if (field?.type === 'texture') continue;            // wiring, not state
+      if (field?.type === 'help') continue;               // UI-only doc (see helpFieldNames)
       if (outputs.has(name)) continue;                    // live output, not state
       if (field?.default !== undefined) state[name] = field.default;
     }
@@ -1292,6 +1293,10 @@ export class AppController {
       // used (and the user's first drop is the first use). The
       // resulting mutation pushes proper defaults back to the barrel.
       this.backfillEmptyInstanceStates();
+      // Slim any instance whose state was seeded with help-slot markdown before
+      // this prune existed — that text rides every barrel config blob, which
+      // Resolume re-broadcasts on each clip connect/disconnect.
+      this.pruneHelpFieldState();
     }
   }
 
@@ -1334,6 +1339,68 @@ export class AppController {
         const sk = draft.sketches[job.sketchId];
         if (!sk?.instances?.[job.instanceKey]) continue;
         sk.instances[job.instanceKey].state = job.defaults;
+      }
+    });
+  }
+
+  /**
+   * Schema field names that are UI-only help slots (`type: 'help'`). Their
+   * markdown default is single-sourced in the schema (read via the binding's
+   * `helpDefault`) and any user override lives in the instance `help` map — so a
+   * copy of the value in `state` is never read and is pure dead weight.
+   */
+  private helpFieldNames(plugin: PluginInfo): Set<string> {
+    const out = new Set<string>();
+    const schema = (plugin.schema ?? {}) as Record<string, any>;
+    for (const [name, field] of Object.entries(schema)) {
+      if (field?.type === 'help') out.add(name);
+    }
+    return out;
+  }
+
+  /**
+   * Strip help-slot fields (schema `type: 'help'`) from every instance's
+   * persisted `state`. Historically `defaultStateForPlugin` seeded them, so the
+   * effect's whole intro markdown (~0.5 KB each) landed in every instance —
+   * ~28% of a barrel config blob, which Resolume RE-BROADCASTS on every clip
+   * connect/disconnect, so it inflated the launch hot path. Nothing reads the
+   * value out of `state` (default = schema, overrides = the `help` map), so
+   * dropping it is lossless. Runs on the `pluginsChanged` seam (alongside
+   * `backfillEmptyInstanceStates`) once schemas are known; the follow-on
+   * `syncSketchesToEngine` re-push flushes the slimmed sketch to the barrel.
+   * Idempotent — a second run finds nothing to drop and no-ops (no undo entry).
+   */
+  private pruneHelpFieldState() {
+    const helpByType = new Map<string, Set<string>>();
+    for (const p of appState.local.plugins) {
+      const names = this.helpFieldNames(p);
+      if (names.size > 0) helpByType.set(p.id, names);
+    }
+    if (helpByType.size === 0) return;
+
+    type Job = { sketchId: string; instanceKey: string; drop: string[] };
+    const jobs: Job[] = [];
+    for (const [sketchId, sketch] of Object.entries(appState.database.sketches)) {
+      const instances = sketch?.instances;
+      if (!instances) continue;
+      for (const [instKey, inst] of Object.entries(instances)) {
+        const state = (inst as any)?.state;
+        if (!state || typeof state !== 'object') continue;
+        const moduleType = (inst as any).module_type;
+        const names = typeof moduleType === 'string' ? helpByType.get(moduleType) : undefined;
+        if (!names) continue;
+        const drop = Object.keys(state).filter(k => names.has(k));
+        if (drop.length > 0) jobs.push({ sketchId, instanceKey: instKey, drop });
+      }
+    }
+    if (jobs.length === 0) return;
+
+    this.mutate('Prune help text from state', draft => {
+      for (const job of jobs) {
+        const st = draft.sketches[job.sketchId]?.instances?.[job.instanceKey]?.state as
+          Record<string, any> | undefined;
+        if (!st) continue;
+        for (const k of job.drop) delete st[k];
       }
     });
   }
