@@ -2142,6 +2142,13 @@ export class AppController {
     // does have work, the resulting mutation push upgrades the persisted
     // bridge blob in place.
     this.backfillEmptyInstanceStates();
+    // Slim help-slot markdown out of the just-mirrored sketch (schemas were
+    // applied first). Runs here — not only on the `pluginsChanged` seam — so
+    // that VIEWING a barrel instance in the editor is enough to clear the
+    // legacy fat from its re-broadcast config blob: the prune's mutation pushes
+    // the slimmed sketch back through the normal path. Idempotent: an
+    // already-slim instance finds nothing to drop and produces no push.
+    this.pruneHelpFieldState();
   }
 
   /**

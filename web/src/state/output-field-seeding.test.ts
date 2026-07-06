@@ -153,4 +153,27 @@ describe('help-slot fields stay out of persisted state', () => {
     const dbState = appState.database.sketches.sk.instances!['fx.demo@1'].state;
     expect('intro' in dbState).toBe(true);
   });
+
+  it('slims a barrel instance the moment it is viewed (setBarrelSketch) and pushes slim', () => {
+    // Viewing an instance mirrors the barrel's (fat) sketch into the DB via
+    // setBarrelSketch; with schemas known, the prune must fire there so the
+    // instance clears its re-broadcast fat without needing an explicit edit.
+    runInAction(() => { appState.local.plugins = [HELP_PLUGIN]; });
+
+    let pushed: any = null;
+    appController.setBarrelPusher('barrel', (s) => { pushed = s; });
+    appController.setBarrelSketch('barrel', {
+      anchor: null, chain: [], wires: [],
+      instances: {
+        'fx.demo@1': { module_type: 'fx.demo', state: { amount: 0.5, intro: '## Demo\nFat.' } },
+      },
+    });
+
+    // Mirror-in triggered the prune: DB slimmed AND the slim sketch was pushed.
+    const dbState = appState.database.sketches['barrel'].instances!['fx.demo@1'].state;
+    expect('intro' in dbState).toBe(false);
+    expect(pushed).toBeTruthy();
+    expect('intro' in pushed.instances['fx.demo@1'].state).toBe(false);
+    expect(pushed.instances['fx.demo@1'].state.amount).toBe(0.5);
+  });
 });
