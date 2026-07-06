@@ -5,6 +5,7 @@
 #include <ixwebsocket/IXWebSocketServer.h>
 
 #include "plugin/nano_barrel/barrel_codec.h"
+#include "plugin/nano_barrel/channel_marker_codec.h"
 
 namespace bridge {
 
@@ -208,6 +209,67 @@ json FakeResolumeServer::make_default_composition(const std::vector<std::string>
     clip["name"] = make_name("NanoBarrel");
     clip["connected"] = {{"valuetype", "ParamState"}, {"value", "Disconnected"}, {"id", next_id++}};
     clip["video"] = {{"effects", json::array({barrel})}};
+    json layer;
+    layer["id"] = next_id++;
+    layer["name"] = make_name("Layer #");
+    layer["clips"] = json::array({clip});
+    comp["layers"].push_back(layer);
+  }
+  return comp;
+}
+
+json FakeResolumeServer::make_marker_effect(const MarkerSpec& spec, int64_t& next_id) {
+  // The FF_TYPE_TEXT fix bakes the identity into the config param's value so
+  // Resolume broadcasts it inline; empty_config models the pre-fix empty blob.
+  const std::string blob =
+      spec.empty_config ? std::string()
+                        : channel_marker::wrap_config(spec.uuid, spec.channel,
+                                                      spec.name);
+  json eff = {
+    {"id", next_id++},
+    {"name", "NanoLooper Ch"},
+    {"display_name", "NanoLooper Ch"},
+    {"bypassed", {{"valuetype", "ParamBoolean"}, {"id", next_id++}, {"value", false}}},
+  };
+  json params;
+  params["Opacity"] = {{"id", next_id++}, {"valuetype", "ParamRange"},
+                       {"min", 0.0}, {"max", 1.0}, {"value", 1.0}};
+  params["config"] = {{"id", next_id++}, {"valuetype", "ParamString"}, {"value", blob}};
+  params["Channel"] = {{"id", next_id++}, {"valuetype", "ParamRange"},
+                       {"min", 0.0}, {"max", 1.0},
+                       {"value", channel_marker::channel_to_norm(spec.channel)}};
+  params["Name"] = {{"id", next_id++}, {"valuetype", "ParamString"}, {"value", spec.name}};
+  eff["params"] = std::move(params);
+  return eff;
+}
+
+json FakeResolumeServer::make_thumbnail(int64_t& next_id, bool is_default) {
+  const int64_t id = next_id++;
+  return {
+    {"id", id},
+    {"size", 394},
+    {"last_update", "0"},
+    {"is_default", is_default},
+    {"path", is_default ? std::string("/api/v1/composition/thumbnail/dummy")
+                        : ("/api/v1/composition/thumbnail/" + std::to_string(id))},
+  };
+}
+
+json FakeResolumeServer::make_marker_composition(const std::vector<MarkerSpec>& markers) {
+  json comp;
+  comp["name"] = make_name("Fake Marker Comp");
+  comp["video"] = {{"width", 1920}, {"height", 1080}, {"effects", json::array()}};
+  comp["layers"] = json::array();
+
+  int64_t next_id = 200000;
+  for (const auto& m : markers) {
+    json clip;
+    clip["id"] = next_id++;
+    clip["name"] = make_name("Solid Color");
+    clip["connected"] = {{"valuetype", "ParamState"}, {"value", m.connected},
+                         {"id", next_id++}};
+    clip["thumbnail"] = make_thumbnail(next_id, /*is_default=*/true);
+    clip["video"] = {{"effects", json::array({make_marker_effect(m, next_id)})}};
     json layer;
     layer["id"] = next_id++;
     layer["name"] = make_name("Layer #");

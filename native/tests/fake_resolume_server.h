@@ -55,6 +55,36 @@ public:
   /// blob carrying the corresponding UUID.
   static nlohmann::json make_default_composition(const std::vector<std::string>& uuids);
 
+  // --- NanoLooper Ch scene markers (headless twins of the live setup) ---
+
+  /// One marker-tagged clip's parameters. Mirrors what we observed live:
+  /// `channel` rides a normalized `Channel` ParamRange; `uuid`+`channel`+`name`
+  /// ride the inline `config` blob. `empty_config` reproduces the pre-fix bug
+  /// where Resolume broadcast `config: ""` (a value the plugin set internally is
+  /// not re-broadcast) — so the server/web could not key the clip's thumbnail.
+  struct MarkerSpec {
+    std::string uuid;
+    int channel = 1;               // 1-based, as the user picks it
+    std::string name;              // cosmetic label (may be empty)
+    std::string connected = "Disconnected";  // ParamState value
+    bool empty_config = false;     // model the broken (empty-blob) broadcast
+  };
+
+  /// Build a single NanoLooper Ch effect node with the real broadcast shape
+  /// (inline `config` ParamString — the FF_TYPE_TEXT fix — plus Channel/Name/
+  /// Opacity). `next_id` allocates unique param ids.
+  static nlohmann::json make_marker_effect(const MarkerSpec& spec, int64_t& next_id);
+
+  /// A clip `thumbnail` object mirroring Resolume's shape. Solid-color/generator
+  /// clips report `is_default:true` with the `/thumbnail/dummy` path (as seen
+  /// live) — the reason Resolume's own thumbnails aren't a usable source.
+  static nlohmann::json make_thumbnail(int64_t& next_id, bool is_default = true);
+
+  /// A composition placing one marker-tagged clip per spec (one clip per layer),
+  /// each with a thumbnail + connected state — the headless twin of the live
+  /// marker setup, for exercising channel resolution + `/global/channels`.
+  static nlohmann::json make_marker_composition(const std::vector<MarkerSpec>& markers);
+
 private:
   void handle_message(ix::WebSocket& ws, const std::string& msg);
 

@@ -456,6 +456,13 @@ target_include_directories(test_clip_launcher_e2e PRIVATE ${CMAKE_SOURCE_DIR}/sr
 target_link_libraries(test_clip_launcher_e2e PRIVATE bridge_server ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_clip_launcher_e2e PROPERTIES LABELS "integration")
 
+add_executable(test_trigger_channels_e2e
+  tests/test_trigger_channels_e2e.cpp
+  tests/fake_resolume_server.cpp)
+target_include_directories(test_trigger_channels_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_trigger_channels_e2e PRIVATE bridge_server ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_trigger_channels_e2e PROPERTIES LABELS "integration")
+
 # Runnable fake Resolume WS server (headless dev/e2e — point the dylib at it via
 # NANO_RESOLUME_URL).
 add_executable(fake_resolume
