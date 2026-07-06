@@ -34,8 +34,6 @@ namespace effect_runtime {
 void setHostTime(double t);
 void setHostDeltaTime(double dt);
 void setHostViewport(int w, int h);
-void setHostBarPhase(double p);
-void setHostBpm(double bpm);
 void textInstallDefaultFonts(const char* primaryTtfPath);
 }  // namespace effect_runtime
 
@@ -934,12 +932,14 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   effect_runtime::setHostTime(elapsed);
   effect_runtime::setHostDeltaTime(dt);
   effect_runtime::setHostViewport(w, h);
-  // Host musical clock (FFGL SetBeatInfo, threaded through from the plugin) — the
-  // beat-synced looper advances off host::barPhase. Only the comp executor set
-  // this before, so the barrel-hosted looper never advanced (it "stopped
-  // looping"); now the barrel supplies it too.
-  effect_runtime::setHostBarPhase(bar_phase);
-  effect_runtime::setHostBpm(bpm);
+  // Host musical clock (FFGL SetBeatInfo, threaded through from the plugin) → the
+  // wasm effects' host.* imports (FrameState), which is what the beat-synced
+  // looper actually reads via host::barPhase(). The effect_runtime globals above
+  // feed the separate statically-linked host path; the wasm executor path reads
+  // the bundle FrameState set here. Without this the looper's phase stayed 0
+  // (it "stopped looping").
+  if (impl_->bundles)
+    impl_->bundles->setHostClock(elapsed, dt, bar_phase, bpm, w, h);
 
   int32_t inputHandle = impl_->gpu->adoptExternalTexture(in_tex);
   int32_t outputHandle = impl_->gpu->adoptExternalTexture(out_tex);

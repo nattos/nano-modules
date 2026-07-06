@@ -74,11 +74,27 @@ int WasmEffectBundles::loadBundle(const uint8_t* bytecode, uint32_t len,
   // (0 = legacy bundle without the export).
   host_.query_abi_version(id);
 
+  // Point this module's host.* timing imports at our shared frame clock. The
+  // address is stable (a member); setHostClock mutates the struct in place, so
+  // this one registration keeps working every frame.
+  host_.set_frame_state(id, &frame_state_);
+
   // Bundles register their effects from nano_module_main. A non-effect module
   // (no such export) fails here and contributes nothing.
   if (host_.call_function(id, "nano_module_main") != 0) return 0;
 
   return registry.registerWasmBundle(host_, id);
+}
+
+void WasmEffectBundles::setHostClock(double elapsedTime, double deltaTime,
+                                     double barPhase, double bpm,
+                                     int viewportW, int viewportH) {
+  frame_state_.elapsed_time = elapsedTime;
+  frame_state_.delta_time = deltaTime;
+  frame_state_.bar_phase = barPhase;
+  frame_state_.bpm = bpm;
+  frame_state_.viewport_w = viewportW;
+  frame_state_.viewport_h = viewportH;
 }
 
 int WasmEffectBundles::loadBundleFile(const std::string& path,

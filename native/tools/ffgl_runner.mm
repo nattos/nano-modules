@@ -326,6 +326,12 @@ int main(int argc, const char* argv[]) {
     // control. SECONDS <= 0 means run until killed.
     double serveHz = 0;
     double serveSeconds = 0;
+    // --bpm BPM: drive a fake host transport (FFGL SetBeatInfo) at BPM, so
+    // beat-synced effects — the NanoLooper — actually advance headlessly. barPhase
+    // is derived from the same monotonic time fed to FF_SET_TIME (4 beats/bar, so
+    // one bar == the looper's 16 steps). 0 (default) = no transport, exactly like
+    // a host that never reports beat info.
+    double fakeBpm = 0;
     int positional = 0;
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
@@ -339,6 +345,9 @@ int main(int argc, const char* argv[]) {
         serveHz = std::stod(argv[i + 1]);
         serveSeconds = std::stod(argv[i + 2]);
         i += 2;
+      } else if (arg == "--bpm" && i + 1 < argc) {
+        fakeBpm = std::stod(argv[i + 1]);
+        i += 1;
       } else if (arg == "--param" && i + 2 < argc) {
         int idx = std::stoi(argv[i + 1]);
         float val = std::stof(argv[i + 2]);
@@ -559,6 +568,19 @@ int main(int argc, const char* argv[]) {
     double dt_ms = 1000.0 / 60.0;
     int timebase = 0;  // advance FF_SET_TIME monotonically across phases
 
+    // Fake host transport: mirror FFGL SetBeatInfo the way Resolume does, so the
+    // barrel's this->barPhase moves and the looper advances. Derived from the same
+    // time (ms) handed to FF_SET_TIME → the beat clock stays consistent with the
+    // wall/virtual clock. No-op when --bpm was not given.
+    auto setBeat = [&](double tMs) {
+      if (fakeBpm <= 0) return;
+      double beats = (tMs / 1000.0) * fakeBpm / 60.0;
+      double barPhase = beats / 4.0;            // 4 beats per bar
+      barPhase -= std::floor(barPhase);         // wrap to [0,1)
+      SetBeatinfoStruct bi{ (float)fakeBpm, (float)barPhase };
+      plugMain(FF_SET_BEATINFO, (FFMixed){.PointerValue = &bi}, instanceID);
+    };
+
     // Run numFrames and report BOTH wall-clock (captures the render-thread stalls
     // the FPS drop is made of — lock waits, GPU waits) and thread-CPU. Wall is
     // the metric that matters here; thread-CPU misses time blocked on tick_mutex_.
@@ -569,6 +591,7 @@ int main(int argc, const char* argv[]) {
       for (int f = 0; f < numFrames; ++f) {
         double t = (timebase + f) * dt_ms;
         plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
+        setBeat(t);
         plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
         glFlush();
       }
@@ -605,6 +628,7 @@ int main(int argc, const char* argv[]) {
         double tMs = elapsedSec * 1000.0;
         const auto f0 = std::chrono::steady_clock::now();
         plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &tMs}, instanceID);
+        setBeat(tMs);
         plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
         glFlush();
         busyMs += std::chrono::duration<double, std::milli>(
@@ -658,6 +682,7 @@ int main(int argc, const char* argv[]) {
         for (int f = 0; f < 30; ++f) {
           double t = (timebase + f) * dt_ms;
           plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
+          setBeat(t);
           plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
           glFlush();
         }

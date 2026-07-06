@@ -2760,6 +2760,79 @@ TEST_CASE("control.nanolooper emits a trigger onto the rail when fired",
   }
   CHECK(saw_ch1_on);
 }
+
+// The host musical clock (WasmEffectBundles::setHostClock → the bundle FrameState
+// the barrel now feeds from FFGL SetBeatInfo, and a headless ffgl_runner --bpm
+// supplies) is what drives the looper. This test manually steps that transport to
+// PROVE the looper loops: record a note (press → release), then advance the beat
+// clock around the bar back onto the recorded window with NO key held and assert
+// the gate re-fires on its own — the exact behavior that was dead when nothing
+// fed the wasm effects' host.barPhase.
+TEST_CASE("control.nanolooper replays a recorded note as the beat clock loops",
+          "[effect_render][nanolooper][trigger_rail]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+  const uint32_t W = 64, H = 64;
+  int inTex = backend->createTexture(W, H, 1);
+  int outTex = backend->createTexture(W, H, 1);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "control.nanolooper", "instance_key": "lp" }
+    ],
+    "instances": {
+      "lp": { "module_type": "control.nanolooper",
+              "state": { "send_to_rail": true, "trigger_1": 0 } }
+    }
+  })JSON");
+
+  trigger_bus::resetForTest();
+
+  // Step the transport + one executor tick, then report whether a channel-1 ON
+  // reached the rail this frame. dirty=true only when we edit trigger state.
+  // NOTE: applyState (which delivers a trigger edit → on_param_change) runs
+  // BEFORE the module's tick, so a press applied this frame sees the PREVIOUS
+  // frame's phase. The sequence below sets the clock on a settle frame first,
+  // then edits on the next — exactly how a live host feeds a continuous barPhase.
+  auto step = [&](double barPhase, bool dirty) -> bool {
+    bundles.setHostClock(0.0, 1.0 / 60.0, barPhase, 120.0, (int)W, (int)H);
+    REQUIRE(executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty) >= 0);
+    backend->submit();
+    bool on = false;
+    for (const auto& e : trigger_bus::drain("test"))
+      if (e.channel == 1 && e.on) on = true;
+    return on;
+  };
+
+  // Baseline (clock at 0, nothing held) — arm edge detection + seq watermark.
+  step(0.0, true);
+
+  // Record a note across [2, 3): the press lands at phase 2, the release at 3.
+  step(0.125, false);                        // settle clock at phase 2
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 1;
+  CHECK(step(0.125, true));                  // press (sees phase 2) → live ON
+  step(0.1875, false);                       // hold; advance clock to phase 3
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 0;
+  step(0.25, true);                          // release (sees phase 3) → gate [2,3)
+
+  // Advance the beat clock elsewhere in the bar with nothing held — silence.
+  CHECK_FALSE(step(0.50, false));            // phase 8, outside [2,3)
+  CHECK_FALSE(step(0.90, false));            // phase 14.4, outside
+
+  // Loop back onto the recorded window (still nothing held): the sequencer must
+  // replay the gate on its own. THIS is "it loops".
+  CHECK(step(0.15625, false));               // phase 2.5, inside [2,3) → ON re-fires
+}
 #endif  // NANO_WASM_PATH
 
 // Second Arena repro axis: the user isolated a MULTI-CARD PASTE that crashed

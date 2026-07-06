@@ -42,9 +42,20 @@ class WasmEffectBundles {
 
   wasm::WasmHost& host() { return host_; }
 
+  // Publish the host frame clock (elapsed/dt/beat/viewport) to every loaded
+  // bundle's `host.*` imports — host::barPhase()/bpm()/time() etc. Effects that
+  // beat-sync (control.nanolooper) read barPhase from here; without this call it
+  // stays 0 (the loaded modules have no per-frame FrameState otherwise). Call
+  // once per frame before SketchExecutor::execute; the render lock serializes it.
+  void setHostClock(double elapsedTime, double deltaTime, double barPhase,
+                    double bpm, int viewportW, int viewportH);
+
  private:
   bridge::ParamCache cache_;  // declared before host_ (host_ binds to it)
   wasm::WasmHost host_;
+  // One frame clock shared by all bundles. Its address is registered with each
+  // module at load; setHostClock mutates it in place (no re-registration).
+  wasm::FrameState frame_state_{};
   bool initialized_ = false;
 };
 
