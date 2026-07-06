@@ -6,11 +6,12 @@
 // aperture-shaped internal reflections along the source→centre axis.
 //
 // All analytic ALU (no gathers), low-frequency — off by default (sun_intensity=0,
-// whole pass skipped host-side). The hood_admit·sun_intensity gate is precomputed.
+// whole pass skipped host-side). Runs at the reduced flare resolution and writes
+// the additive CONTRIBUTION only (gate·add); the host upsample-adds it onto the
+// full-res image. The hood_admit·sun_intensity gate is precomputed.
 
 #include "common.hlsl"
 
-Texture2D<float4>   srcTex    : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 cbuffer Uniforms : register(b2) {
   float u_half, u_dimw, u_dimh, u_gate;
@@ -106,7 +107,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
   outputTex.GetDimensions(w, h);
   if (gid.x >= w || gid.y >= h) return;
   float2 pf = float2(gid.xy);
-  float4 src = srcTex[gid.xy];
 
   float gx = (pf.x + 0.5 - u_dimw * 0.5) / u_half;
   float gy = (pf.y + 0.5 - u_dimh * 0.5) / u_half;
@@ -133,5 +133,5 @@ void main(uint3 gid : SV_DispatchThreadID) {
              + u_w_streak * streak_rgb
              + u_w_ghost * u_coat_flare * 1.6 * ghost_rgb;
 
-  outputTex[gid.xy] = float4(src.rgb + u_gate * add, src.a);
+  outputTex[gid.xy] = float4(u_gate * add, 1.0);   // additive contribution only
 }

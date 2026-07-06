@@ -68,6 +68,26 @@ describe('Lens (filter.blur.lens) E2E', () => {
 
   const GRID = { cell_size: 0.22, line_width: 0.12 };
 
+  // Larger frame so the reduced-resolution tiers actually engage (bokeh ds>1 when
+  // the CoC exceeds work_radius; flare fds>1 when the long edge >~540px).
+  const runBig = (id: string, params: Record<string, number>, dump: string) => {
+    const sketch: Sketch = {
+      anchor: null, wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.grid', instance_key: 'grid@0', params: GRID },
+        { type: 'module', module_type: LENS, instance_key: 'lens@0', params },
+      ],
+    };
+    return runEngineTest({
+      width: 640, height: 640, modules: MODULES,
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch },
+        { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+      ],
+      waitFrames: 8, captureTraceIds: ['out'], dumpName: dump,
+    });
+  };
+
   it('renders a non-solid frame (the pipeline dispatches cleanly)', async () => {
     const r = await runChain('lens_render', {}, 'lens_render', GRID);
     expect(r.success).toBe(true);
@@ -140,6 +160,23 @@ describe('Lens (filter.blur.lens) E2E', () => {
     const wet = await runChain('lens_gl1', { halation: 1.0, bloom: 1.0, blur_amount: 0.0 }, 'lens_glow_on', GRID);
     expect(dry.success).toBe(true);
     expect(wet.success).toBe(true);
+    let sumDry = 0, sumWet = 0;
+    dry.trace('out').forEachPixel((c) => { sumDry += c.r + c.g + c.b; });
+    wet.trace('out').forEachPixel((c) => { sumWet += c.r + c.g + c.b; });
+    expect(sumWet).toBeGreaterThan(sumDry);
+  });
+
+  it('reduced-res tiers render correctly at a large frame (bokeh ds + flare fds)', async () => {
+    // Big CoC → bokeh downsamples; large frame → flare downsamples. Still must
+    // produce a sensible, non-solid image and glow must still add energy.
+    // Boost highlights (low threshold + gain) so the grid lines survive the flare
+    // downsample as bright sources for the glow to bleed.
+    const hl = { hl_threshold: 0.3, hl_boost: 1.0 };
+    const dry = await runBig('lens_big0', { ...hl, blur_amount: 0.1, halation: 0.0, bloom: 0.0 }, 'lens_big_dry');
+    const wet = await runBig('lens_big1', { ...hl, blur_amount: 0.1, halation: 1.0, bloom: 1.0 }, 'lens_big_wet');
+    expect(dry.success).toBe(true);
+    expect(wet.success).toBe(true);
+    dry.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
     let sumDry = 0, sumWet = 0;
     dry.trace('out').forEachPixel((c) => { sumDry += c.r + c.g + c.b; });
     wet.trace('out').forEachPixel((c) => { sumWet += c.r + c.g + c.b; });

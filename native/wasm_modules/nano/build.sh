@@ -307,14 +307,16 @@ compile_shaders_compute_var_spv lens prepare
 compile_shaders_compute_var_spv lens bokeh
 compile_shaders_compute_var_spv lens color
 compile_shaders_compute_var_spv lens geo
+compile_shaders_compute_var_spv lens downsample
+compile_shaders_compute_var_spv lens upsample
 compile_shaders_compute_var_spv lens blur16
 compile_shaders_compute_var_spv lens extract
 compile_shaders_compute_var_spv lens hood
 compile_shaders_compute_var_spv lens sun
 compile_shaders_compute_var_spv lens glow
 compile_shaders_compute_var_spv lens finish
-_emit_spv_header_var lens prepare bokeh color geo blur16 extract hood sun glow finish
-echo "  lens shaders compiled (SPV: prepare+bokeh+color+geo+blur16+extract+hood+sun+glow+finish)"
+_emit_spv_header_var lens prepare bokeh color geo downsample upsample blur16 extract hood sun glow finish
+echo "  lens shaders compiled (SPV: prepare+bokeh+color+geo+downsample+upsample+blur16+extract+hood+sun+glow+finish)"
 
 echo "=== Building WASM (nano) ==="
 

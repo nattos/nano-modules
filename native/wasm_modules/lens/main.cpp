@@ -22,8 +22,10 @@
  * grade → veiling glare (hood) → off-frame spectral sun (veil/glow/streak/ghost
  * chain + thin-film coating) → halation+bloom → distortion + transverse CA →
  * finish (exposure/vignette/hl-desat/tonemap/grain). Wide blurs use the RGBA16F-
- * safe Blur16. Still to optimize (Stage 5): the downsample tier, the reduced-res
- * flare tier, the `fill` anti-stipple blur, and the spec-constant quality tiers.
+ * safe Blur16. Performance: the bokeh gather runs at a downsampled proc
+ * resolution (a FIXED tap count covers the CoC densely, then bilinear upsample);
+ * the flare/glow/sun stack runs at a reduced flare resolution and upsample-adds
+ * (a wide blur at full 1080p would clamp to a 128-tap kernel and wall the frame).
  *
  * Per-instance instance ABI (class-like): module_init() compiles the shared PSOs
  * + publishes the schema once per type; each chain entry gets its own State.
@@ -120,6 +122,9 @@ struct GeoU {
 };
 static_assert(sizeof(GeoU) == 32, "GeoU layout");
 
+struct DownsampleU { uint32_t ds, _p0, _p1, _p2; };
+static_assert(sizeof(DownsampleU) == 16, "DownsampleU layout");
+
 struct ExtractU { float threshold, _p0, _p1, _p2; };
 static_assert(sizeof(ExtractU) == 16, "ExtractU layout");
 
@@ -157,11 +162,14 @@ struct State {
 
   // GPU resources (per-instance).
   gpu::Texture bufA, bufB;       // full-res linear-HDR ping/pong
-  gpu::Texture hi, hi_a, hi_b;   // highlight map + two blurred copies (flare/glow)
-  gpu::Sampler sampler;          // Linear/ClampToEdge (bokeh taps)
+  gpu::Texture small, bokeh_s;   // proc-res bokeh working buffers (downsampled)
+  gpu::Texture flo, hi, hi_a, hi_b;  // flare-res: downsampled image + highlight + 2 blurs
+  gpu::Sampler sampler;          // Linear/ClampToEdge (bokeh taps, flare upsample)
   gpu::Buffer  tap_buf;          // Vogel tap set (float4/tap: ox,oy,base_w,_)
   gpu::Buffer  prepare_buf, bokeh_buf, color_buf, geo_buf, finish_buf;
-  gpu::Buffer  extract_buf, hood_buf, glow_buf, sun_buf;
+  gpu::Buffer  extract_buf, hood_buf, glow_buf, sun_buf, downsample_buf;
+  int proc_w = 0, proc_h = 0;    // current bokeh working resolution
+  int flare_w = 0, flare_h = 0;  // reduced flare/glow working resolution
 
   // Schema-mirrored params (normalized unless noted). Defaults mirror the schema.
   int   preset = 0;             // inert (UI-only); serialized
@@ -234,6 +242,7 @@ struct State {
 // flare/glow passes.
 static gpu::ComputePSO s_pso_prepare, s_pso_bokeh, s_pso_color, s_pso_geo, s_pso_finish;
 static gpu::ComputePSO s_pso_extract, s_pso_hood, s_pso_glow, s_pso_sun;
+static gpu::ComputePSO s_pso_downsample, s_pso_upsample;
 static Blur16 s_blur16;   // RGBA16F wide blur (veiling glare, halation, bloom)
 
 void module_init() {
@@ -453,6 +462,8 @@ void module_init() {
   state::registerShaderSPV("lens_bokeh",   BOKEH_SPV,   BOKEH_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("lens_color",   COLOR_SPV,   COLOR_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("lens_geo",     GEO_SPV,     GEO_SPV_SIZE,     "rgba16float", "write");
+  state::registerShaderSPV("lens_downsample", DOWNSAMPLE_SPV, DOWNSAMPLE_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("lens_upsample",   UPSAMPLE_SPV,   UPSAMPLE_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("lens_extract", EXTRACT_SPV, EXTRACT_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("lens_hood",    HOOD_SPV,    HOOD_SPV_SIZE,    "rgba16float", "write");
   state::registerShaderSPV("lens_glow",    GLOW_SPV,    GLOW_SPV_SIZE,    "rgba16float", "write");
@@ -462,13 +473,15 @@ void module_init() {
   auto cs_bokeh   = gpu::Device::createShaderModuleByName("lens_bokeh");
   auto cs_color   = gpu::Device::createShaderModuleByName("lens_color");
   auto cs_geo     = gpu::Device::createShaderModuleByName("lens_geo");
+  auto cs_downsample = gpu::Device::createShaderModuleByName("lens_downsample");
+  auto cs_upsample   = gpu::Device::createShaderModuleByName("lens_upsample");
   auto cs_extract = gpu::Device::createShaderModuleByName("lens_extract");
   auto cs_hood    = gpu::Device::createShaderModuleByName("lens_hood");
   auto cs_glow    = gpu::Device::createShaderModuleByName("lens_glow");
   auto cs_sun     = gpu::Device::createShaderModuleByName("lens_sun");
   auto cs_finish  = gpu::Device::createShaderModuleByName("lens_finish");
-  if (!cs_prepare || !cs_bokeh || !cs_color || !cs_geo || !cs_extract ||
-      !cs_hood || !cs_glow || !cs_sun || !cs_finish) {
+  if (!cs_prepare || !cs_bokeh || !cs_color || !cs_geo || !cs_downsample ||
+      !cs_upsample || !cs_extract || !cs_hood || !cs_glow || !cs_sun || !cs_finish) {
     state::log("lens: a shader failed to compile");
     return;
   }
@@ -480,14 +493,18 @@ void module_init() {
       .tex2d(0).storageTex2d(1, F16).uniform(2));
   s_pso_geo = gpu::Device::createComputePSO(cs_geo, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, F16).uniform(3));
+  s_pso_downsample = gpu::Device::createComputePSO(cs_downsample, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, F16).uniform(2));
+  s_pso_upsample = gpu::Device::createComputePSO(cs_upsample, "main", gpu::Bindings()
+      .tex2d(0).sampler(1).storageTex2d(2, F16));
   s_pso_extract = gpu::Device::createComputePSO(cs_extract, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, F16).uniform(2));
   s_pso_hood = gpu::Device::createComputePSO(cs_hood, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).storageTex2d(2, F16).uniform(3));
+      .tex2d(0).tex2d(1).sampler(2).storageTex2d(3, F16).uniform(4));
   s_pso_glow = gpu::Device::createComputePSO(cs_glow, "main", gpu::Bindings()
-      .tex2d(0).tex2d(1).tex2d(2).storageTex2d(3, F16).uniform(4));
+      .tex2d(0).tex2d(1).tex2d(2).sampler(3).storageTex2d(4, F16).uniform(5));
   s_pso_sun = gpu::Device::createComputePSO(cs_sun, "main", gpu::Bindings()
-      .tex2d(0).storageTex2d(1, F16).uniform(2));
+      .storageTex2d(1, F16).uniform(2));   // no input — writes contribution only
   s_pso_finish = gpu::Device::createComputePSO(cs_finish, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
   s_blur16.init();
@@ -512,6 +529,7 @@ void* create() {
   s->hood_buf    = gpu::Device::createBuffer(sizeof(HoodU),    gpu::BufferUsage::Uniform);
   s->glow_buf    = gpu::Device::createBuffer(sizeof(GlowU),    gpu::BufferUsage::Uniform);
   s->sun_buf     = gpu::Device::createBuffer(sizeof(SunU),     gpu::BufferUsage::Uniform);
+  s->downsample_buf = gpu::Device::createBuffer(sizeof(DownsampleU), gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -520,6 +538,9 @@ void destroy(void* self) {
   if (!s) return;
   if (s->bufA.valid()) s->bufA.release();
   if (s->bufB.valid()) s->bufB.release();
+  if (s->small.valid())   s->small.release();
+  if (s->bokeh_s.valid()) s->bokeh_s.release();
+  if (s->flo.valid())  s->flo.release();
   if (s->hi.valid())   s->hi.release();
   if (s->hi_a.valid()) s->hi_a.release();
   if (s->hi_b.valid()) s->hi_b.release();
@@ -534,6 +555,7 @@ void destroy(void* self) {
   s->hood_buf.release();
   s->glow_buf.release();
   s->sun_buf.release();
+  s->downsample_buf.release();
   delete s;
 }
 
@@ -633,7 +655,7 @@ int32_t is_identity(void* self) {
 static bool ensureTextures(State* s, int w, int h) {
   if (s->tex_w == w && s->tex_h == h && s->bufA.valid() && s->bufB.valid()) return true;
   const auto F16 = gpu::TextureFormat::RGBA16F;
-  gpu::Texture* texs[] = { &s->bufA, &s->bufB, &s->hi, &s->hi_a, &s->hi_b };
+  gpu::Texture* texs[] = { &s->bufA, &s->bufB };
   bool ok = true;
   for (auto* t : texs) {
     if (t->valid()) t->release();
@@ -643,6 +665,61 @@ static bool ensureTextures(State* s, int w, int h) {
   if (!ok) return false;
   s->tex_w = w; s->tex_h = h;
   return true;
+}
+
+// Reduced-resolution flare/glow working buffers (downsampled image + highlight +
+// two blurred copies). The wide veil/halation/bloom blurs run here so their sigma
+// (and Blur16 tap count) shrink by the flare-downsample factor.
+static bool ensureFlareTextures(State* s, int fw, int fh) {
+  if (s->flare_w == fw && s->flare_h == fh && s->flo.valid()) return true;
+  const auto F16 = gpu::TextureFormat::RGBA16F;
+  gpu::Texture* texs[] = { &s->flo, &s->hi, &s->hi_a, &s->hi_b };
+  bool ok = true;
+  for (auto* t : texs) {
+    if (t->valid()) t->release();
+    *t = gpu::Device::createTexture(fw, fh, F16);
+    if (!t->valid()) ok = false;
+  }
+  if (!ok) return false;
+  s->flare_w = fw; s->flare_h = fh;
+  return true;
+}
+
+// Reduced-resolution bokeh working buffers (reallocated when the proc size
+// changes — ds only jumps at a handful of blur-amount thresholds).
+static bool ensureProcTextures(State* s, int pw, int ph) {
+  if (s->proc_w == pw && s->proc_h == ph && s->small.valid() && s->bokeh_s.valid())
+    return true;
+  const auto F16 = gpu::TextureFormat::RGBA16F;
+  if (s->small.valid())   s->small.release();
+  if (s->bokeh_s.valid()) s->bokeh_s.release();
+  s->small   = gpu::Device::createTexture(pw, ph, F16);
+  s->bokeh_s = gpu::Device::createTexture(pw, ph, F16);
+  if (!s->small.valid() || !s->bokeh_s.valid()) return false;
+  s->proc_w = pw; s->proc_h = ph;
+  return true;
+}
+
+// Downsample factor for the bokeh gather (pipeline.pass_bokeh :168-175): size it
+// off the LARGEST circle-of-confusion in frame so the working-res disc stays
+// ≤ work_radius px — a FIXED tap count then covers it densely.
+static int bokehDownsample(State* s, int vp_w, int vp_h, float coc_px0) {
+  float half = (float)(vp_w > vp_h ? vp_w : vp_h) * 0.5f;
+  float fx = s->focus_cx, fy = s->focus_cy;
+  float r_max = 0.f;
+  for (int sx = -1; sx <= 1; sx += 2)
+    for (int sy = -1; sy <= 1; sy += 2) {
+      float dx = (sx * vp_w * 0.5f) / half - fx;
+      float dy = (sy * vp_h * 0.5f) / half - fy;
+      float rr = std::sqrt(dx * dx + dy * dy);
+      if (rr > r_max) r_max = rr;
+    }
+  float fc = s->field_curvature < 0.f ? 0.f : s->field_curvature;
+  float coc_px_max = coc_px0 * (1.f + fc * r_max * r_max);
+  float wr = s->work_radius < 1.f ? 1.f : s->work_radius;
+  int ds = 1;
+  while (coc_px_max / ds > wr && ds < 8) ds *= 2;
+  return ds;
 }
 
 // Rebuild the Vogel tap set + its pixel-independent weight (aperture · rim ·
@@ -703,26 +780,57 @@ void render(void* self, int vp_w, int vp_h) {
   gpu::Texture src = s->bufA, dst = s->bufB;
   auto swap = [&]() { gpu::Texture t = src; src = dst; dst = t; };
 
-  // 2. bokeh gather (full-res for now). Skip at ~zero blur.
+  // 2. bokeh gather. Skip at ~zero blur. Downsampled-before-gather when the disc
+  // is large so a FIXED tap count covers it (the GPU-DOF cost lever).
   if (coc_px0 > 0.5f) {
     writeTaps(s);
-    BokehU u = {};
-    u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h;
-    u.coc_px = coc_px0;
-    u.field_curv = s->field_curvature;
-    u.focus_cx = s->focus_cx; u.focus_cy = s->focus_cy;
-    u.cats_eye = s->cats_eye; u.swirl = s->swirl; u.anamorphic = s->anamorphic;
-    u.loca_scale = s->loca * coatingOf(s->coating).loca;
-    u.taps = (uint32_t)(s->taps < 1 ? 1 : (s->taps > MAX_TAPS ? MAX_TAPS : s->taps));
-    s->bokeh_buf.writeOne(u);
-    auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_bokeh);
-    cp.setTexture(src, 0, 0); cp.setBuffer(s->tap_buf, 1);
-    cp.setSampler(s->sampler, 2);
-    cp.setTexture(dst, 3, 1); cp.setBuffer(s->bokeh_buf, 4);
-    cp.dispatch(gx, gy); cp.end();
-    // (fill anti-stipple blur deferred — needs an RGBA16F-safe blur.)
-    swap();
+    int ds = bokehDownsample(s, vp_w, vp_h, coc_px0);
+    uint32_t K = (uint32_t)(s->taps < 1 ? 1 : (s->taps > MAX_TAPS ? MAX_TAPS : s->taps));
+    float loca_scale = s->loca * coatingOf(s->coating).loca;
+
+    if (ds <= 1) {
+      // full-res gather: src → dst.
+      BokehU u = {};
+      u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h; u.coc_px = coc_px0;
+      u.field_curv = s->field_curvature; u.focus_cx = s->focus_cx; u.focus_cy = s->focus_cy;
+      u.cats_eye = s->cats_eye; u.swirl = s->swirl; u.anamorphic = s->anamorphic;
+      u.loca_scale = loca_scale; u.taps = K;
+      s->bokeh_buf.writeOne(u);
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_bokeh);
+      cp.setTexture(src, 0, 0); cp.setBuffer(s->tap_buf, 1); cp.setSampler(s->sampler, 2);
+      cp.setTexture(dst, 3, 1); cp.setBuffer(s->bokeh_buf, 4);
+      cp.dispatch(gx, gy); cp.end();
+      swap();
+    } else {
+      int pw = vp_w / ds < 1 ? 1 : vp_w / ds;
+      int ph = vp_h / ds < 1 ? 1 : vp_h / ds;
+      if (ensureProcTextures(s, pw, ph)) {
+        const int pgx = (pw + 7) / 8, pgy = (ph + 7) / 8;
+        // downsample src → small (proc-res box average).
+        { DownsampleU du = { (uint32_t)ds, 0, 0, 0 }; s->downsample_buf.writeOne(du);
+          auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_downsample);
+          cp.setTexture(src, 0, 0); cp.setTexture(s->small, 1, 1);
+          cp.setBuffer(s->downsample_buf, 2); cp.dispatch(pgx, pgy); cp.end(); }
+        // gather at proc-res: small → bokeh_s.
+        { BokehU u = {};
+          u.half = (float)(pw > ph ? pw : ph) * 0.5f; u.dimw = (float)pw; u.dimh = (float)ph;
+          u.coc_px = coc_px0 / ds;
+          u.field_curv = s->field_curvature; u.focus_cx = s->focus_cx; u.focus_cy = s->focus_cy;
+          u.cats_eye = s->cats_eye; u.swirl = s->swirl; u.anamorphic = s->anamorphic;
+          u.loca_scale = loca_scale; u.taps = K;
+          s->bokeh_buf.writeOne(u);
+          auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_bokeh);
+          cp.setTexture(s->small, 0, 0); cp.setBuffer(s->tap_buf, 1); cp.setSampler(s->sampler, 2);
+          cp.setTexture(s->bokeh_s, 3, 1); cp.setBuffer(s->bokeh_buf, 4);
+          cp.dispatch(pgx, pgy); cp.end(); }
+        // bilinear upsample bokeh_s → dst (full res).
+        { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_upsample);
+          cp.setTexture(s->bokeh_s, 0, 0); cp.setSampler(s->sampler, 1);
+          cp.setTexture(dst, 2, 1); cp.dispatch(gx, gy); cp.end(); }
+        swap();
+      }
+    }
   }
 
   // 3. coating colour grade (linear tint × warmth × transmission + micro-contrast).
@@ -747,29 +855,52 @@ void render(void* self, int vp_w, int vp_h) {
     }
   }
 
-  const bool blur_ok = s_pso_extract.valid() && s_blur16.valid();
+  // Reduced-resolution flare/glow tier: the wide veil/halation/bloom blurs run
+  // here so their sigma (and Blur16 tap count) shrink by `fds` — otherwise a wide
+  // blur at full 1080p clamps to a 128-tap-per-side kernel and walls the frame.
+  const int maxdim = vp_w > vp_h ? vp_w : vp_h;
+  const int fds = maxdim < 360 ? 1 : (maxdim + 179) / 360;
+  const int flare_w = vp_w / fds < 1 ? 1 : vp_w / fds;
+  const int flare_h = vp_h / fds < 1 ? 1 : vp_h / fds;
+  const float fmin = (float)(flare_w < flare_h ? flare_w : flare_h);
+  const int fgx = (flare_w + 7) / 8, fgy = (flare_h + 7) / 8;
+  const bool blur_ok = s_pso_extract.valid() && s_blur16.valid() && s_pso_downsample.valid();
+
+  // Downsample the CURRENT image to `flo` (flare res) for the extract.
+  auto toFlare = [&](gpu::Texture t) {
+    DownsampleU du = { (uint32_t)fds, 0, 0, 0 }; s->downsample_buf.writeOne(du);
+    auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_downsample);
+    cp.setTexture(t, 0, 0); cp.setTexture(s->flo, 1, 1);
+    cp.setBuffer(s->downsample_buf, 2); cp.dispatch(fgx, fgy); cp.end();
+  };
+  auto extractFlare = [&](float threshold) {
+    ExtractU eu = { threshold, 0.f, 0.f, 0.f }; s->extract_buf.writeOne(eu);
+    auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_extract);
+    cp.setTexture(s->flo, 0, 0); cp.setTexture(s->hi, 1, 1);
+    cp.setBuffer(s->extract_buf, 2); cp.dispatch(fgx, fgy); cp.end();
+  };
 
   // 4. in-frame veiling glare (hood). Skip when the hood fully shades the frame.
   { const Coating& coat = coatingOf(s->coating);
     float strength = s->flare_strength * coat.flare * (1.f - s->hood_extension);
-    if (strength > 1e-4f && blur_ok && s_pso_hood.valid()) {
-      ExtractU eu = { s->hl_threshold, 0.f, 0.f, 0.f };
-      s->extract_buf.writeOne(eu);
-      { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_extract);
-        cp.setTexture(src, 0, 0); cp.setTexture(s->hi, 1, 1);
-        cp.setBuffer(s->extract_buf, 2); cp.dispatch(gx, gy); cp.end(); }
-      s_blur16.apply(s->hi, s->hi_a, vp_w, vp_h, 0.06f * md0);
+    if (strength > 1e-4f && blur_ok && s_pso_hood.valid() && ensureFlareTextures(s, flare_w, flare_h)) {
+      toFlare(src);
+      extractFlare(s->hl_threshold);
+      s_blur16.apply(s->hi, s->hi_a, flare_w, flare_h, 0.06f * fmin);
       HoodU hu = { coat.flare_tint[0], coat.flare_tint[1], coat.flare_tint[2], strength };
       s->hood_buf.writeOne(hu);
-      { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_hood);
-        cp.setTexture(src, 0, 0); cp.setTexture(s->hi_a, 1, 0); cp.setTexture(dst, 2, 1);
-        cp.setBuffer(s->hood_buf, 3); cp.dispatch(gx, gy); cp.end(); }
+      auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_hood);
+      cp.setTexture(src, 0, 0); cp.setTexture(s->hi_a, 1, 0); cp.setSampler(s->sampler, 2);
+      cp.setTexture(dst, 3, 1); cp.setBuffer(s->hood_buf, 4);
+      cp.dispatch(gx, gy); cp.end();
       swap();
     }
   }
 
   // 5. off-frame sun / stray light. Off by default (sun_intensity 0 → skipped).
-  if (s->sun_intensity > 1e-4f && s_pso_sun.valid()) {
+  // Analytic + low-frequency → computed at flare res, then upsample-added.
+  if (s->sun_intensity > 1e-4f && s_pso_sun.valid() && s_pso_hood.valid() &&
+      ensureFlareTextures(s, flare_w, flare_h)) {
     const Coating& coat = coatingOf(s->coating);
     float az = s->sun_azimuth * (float)(2.0 * M_PI);
     float petal = 1.f + s->hood_shape * 0.5f * std::cos(4.f * (az - (float)M_PI / 4.f));
@@ -780,7 +911,8 @@ void render(void* self, int vp_w, int vp_h) {
       int blades = s->blades < 3 ? 3 : s->blades;
       int nsp = (blades % 2 == 0) ? blades : 2 * blades;
       SunU u = {};
-      u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h; u.gate = gate;
+      u.half = (float)(flare_w > flare_h ? flare_w : flare_h) * 0.5f;
+      u.dimw = (float)flare_w; u.dimh = (float)flare_h; u.gate = gate;
       u.azimuth = az; u.obliqueness = s->sun_obliqueness;
       u.sun_r = s->sun_r; u.sun_g = s->sun_g; u.sun_b = s->sun_b;
       u.w_glow = s->sun_glow; u.w_veil = s->sun_veil; u.w_streak = s->sun_streak;
@@ -792,29 +924,35 @@ void render(void* self, int vp_w, int vp_h) {
       u.ndesigns = (uint32_t)coat.ndesigns;
       u.blades = (uint32_t)blades; u.nsp = (uint32_t)nsp;
       s->sun_buf.writeOne(u);
-      auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_sun);
-      cp.setTexture(src, 0, 0); cp.setTexture(dst, 1, 1); cp.setBuffer(s->sun_buf, 2);
+      // sun contribution → hi (flare res).
+      { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_sun);
+        cp.setTexture(s->hi, 1, 1); cp.setBuffer(s->sun_buf, 2);
+        cp.dispatch(fgx, fgy); cp.end(); }
+      // upsample-add via the hood composite (tint white, strength 1).
+      HoodU hu = { 1.f, 1.f, 1.f, 1.f };
+      s->hood_buf.writeOne(hu);
+      auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_hood);
+      cp.setTexture(src, 0, 0); cp.setTexture(s->hi, 1, 0); cp.setSampler(s->sampler, 2);
+      cp.setTexture(dst, 3, 1); cp.setBuffer(s->hood_buf, 4);
       cp.dispatch(gx, gy); cp.end();
       swap();
     }
   }
 
   // 6. halation + bloom. Skip when both off.
-  if ((s->halation > 1e-4f || s->bloom > 1e-4f) && blur_ok && s_pso_glow.valid()) {
-    ExtractU eu = { 0.75f, 0.f, 0.f, 0.f };
-    s->extract_buf.writeOne(eu);
-    { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_extract);
-      cp.setTexture(src, 0, 0); cp.setTexture(s->hi, 1, 1);
-      cp.setBuffer(s->extract_buf, 2); cp.dispatch(gx, gy); cp.end(); }
-    s_blur16.apply(s->hi, s->hi_a, vp_w, vp_h, 0.02f * md0);   // bloom
-    s_blur16.apply(s->hi, s->hi_b, vp_w, vp_h, 0.05f * md0);   // halation
+  if ((s->halation > 1e-4f || s->bloom > 1e-4f) && blur_ok && s_pso_glow.valid() &&
+      ensureFlareTextures(s, flare_w, flare_h)) {
+    toFlare(src);
+    extractFlare(0.75f);
+    s_blur16.apply(s->hi, s->hi_a, flare_w, flare_h, 0.02f * fmin);   // bloom
+    s_blur16.apply(s->hi, s->hi_b, flare_w, flare_h, 0.05f * fmin);   // halation
     GlowU gu = {};
     gu.bloom = s->bloom; gu.halation = s->halation;
     gu.hr = s->hal_r; gu.hg = s->hal_g; gu.hb = s->hal_b;
     s->glow_buf.writeOne(gu);
     auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_glow);
     cp.setTexture(src, 0, 0); cp.setTexture(s->hi_a, 1, 0); cp.setTexture(s->hi_b, 2, 0);
-    cp.setTexture(dst, 3, 1); cp.setBuffer(s->glow_buf, 4);
+    cp.setSampler(s->sampler, 3); cp.setTexture(dst, 4, 1); cp.setBuffer(s->glow_buf, 5);
     cp.dispatch(gx, gy); cp.end();
     swap();
   }
