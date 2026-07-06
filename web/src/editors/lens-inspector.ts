@@ -27,7 +27,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
 import type { FieldBinding } from '../widgets/field-editor';
 import '../widgets/scalar-slider';
-import '../widgets/field-select';
+import '../widgets/field-tab-bar';
 import '../widgets/field-color';
 import '../widgets/field-vec';
 import '../widgets/help-slot';
@@ -56,10 +56,12 @@ export const LENS_PRESETS: Record<number, Record<string, number | number[]>> = {
     distortion: -0.10, hl_desat: 0.55, halation: 0.22, bloom: 0.12, tone: 0.85,
     tone_black: 0.02, grain: 0.05, mech_vignette: 0.3,
   },
-  // 4 — Dreamy: very soft, blooming, low contrast, big rounded bokeh.
+  // 4 — Dreamy: very soft, blooming, low contrast, big rounded bokeh. (Blur
+  // Amount is the overall DOF-strength knob — a preset never touches it; the
+  // prototype's coc_amount override is deliberately dropped here.)
   4: {
     coating: 1, warmth: 0.10, blades: 11, blade_curvature: 0.85, apodize: 0.8,
-    rim: 0.05, onion_ring: 0.0, loca: 0.15, cats_eye: 0.5, blur_amount: 0.20,
+    rim: 0.05, onion_ring: 0.0, loca: 0.15, cats_eye: 0.5,
     bloom: 0.4, halation: 0.42, hl_desat: 0.7, tone: 0.6, tone_black: 0.0,
     grain: 0.05, mech_vignette: 0.26,
   },
@@ -101,18 +103,35 @@ export class LensInspector extends MobxLitElement {
       font-size: var(--app-fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
       color: var(--app-text-color2, #b0b0b0); padding: 6px 0 2px; opacity: 0.7;
     }
+    /* Preset picker: a tab bar (matching <field-tab-bar>) rather than a stock
+       widget, because its click must apply the whole override bundle as one undo
+       point — a plain <field-tab-bar> would fire its own single-field edit. */
     .preset-row {
-      display: flex; align-items: center; gap: 8px; margin: 2px 0 4px;
+      display: flex; align-items: flex-start; gap: var(--app-sp-3);
+      padding: 2px 0; margin: 2px 0 4px; font-size: var(--app-fs-sm);
     }
-    .preset-row label {
-      font-size: var(--app-fs-sm); color: var(--app-text-color2, #b0b0b0); flex: 0 0 auto;
+    .preset-row .label {
+      min-width: 70px; flex-shrink: 0; padding-top: 4px;
+      color: var(--app-text-color2, #b0b0b0);
     }
-    .preset-row select {
-      flex: 1 1 auto; min-width: 0; padding: 3px 6px;
-      background: var(--app-input-bg, #201d28); color: var(--app-text-color, #e0e0e0);
-      border: 1px solid var(--app-border-color, #3a3346); border-radius: 2px;
-      font-size: var(--app-fs-sm); cursor: pointer;
+    .tabs {
+      display: inline-flex; flex: 1; min-width: 0; flex-wrap: wrap; justify-content: center;
+      border: 1px solid var(--app-tint-4); border-radius: 4px;
+      overflow: hidden; background: var(--app-bg-color1);
     }
+    .tabs button {
+      flex: 0 1 auto; min-width: 0; background: transparent; border: none;
+      border-left: 1px solid var(--app-tint-4); color: var(--app-text-color2, #b0b0b0);
+      font-size: var(--app-fs-sm); font-family: inherit; padding: 3px 9px;
+      cursor: pointer; text-align: center; white-space: nowrap;
+    }
+    .tabs button:first-child { border-left: none; }
+    .tabs button:hover { background: var(--app-tint-2); color: var(--app-text-color1, #eaeaea); }
+    .tabs button[active] {
+      color: var(--app-hi-color2, #4169E1); background: var(--app-tint-3);
+      box-shadow: inset 0 -2px 0 var(--app-hi-color2, #4169E1);
+    }
+    .tabs button[active]:hover { background: var(--app-tint-3); }
   `;
 
   /** Section header + its schema-sourced help slot. */
@@ -144,11 +163,11 @@ export class LensInspector extends MobxLitElement {
       <help-slot .binding=${b} .path=${'intro'}></help-slot>
 
       <div class="preset-row">
-        <label>Preset</label>
-        <select @change=${(e: Event) => this.applyPreset(Number((e.target as HTMLSelectElement).value))}>
+        <span class="label">Preset</span>
+        <div class="tabs">
           ${PRESET_OPTIONS.map((o) => html`
-            <option value=${o.value} ?selected=${o.value === preset}>${o.label}</option>`)}
-        </select>
+            <button ?active=${o.value === preset} @click=${() => this.applyPreset(o.value)}>${o.label}</button>`)}
+        </div>
       </div>
 
       ${this.section('Depth of Field', 'focus')}
@@ -175,10 +194,10 @@ export class LensInspector extends MobxLitElement {
       ${this.s('hl_boost', 'HL Boost', 0, 1, 0.01, 0.375)}
 
       ${this.section('Coating & Colour', 'coating')}
-      <field-select .fieldPath=${'coating'} .label=${'Coating'}
+      <field-tab-bar .fieldPath=${'coating'} .label=${'Coating'}
         .options=${[{ label: 'SMC', value: 0 }, { label: 'Single', value: 1 },
                     { label: 'Uncoated', value: 2 }, { label: 'Custom', value: 3 }]}
-        .defaultValue=${0} .binding=${b}></field-select>
+        .defaultValue=${0} .binding=${b}></field-tab-bar>
       ${this.s('warmth', 'Warmth', -1, 1, 0.01, 0)}
       ${this.s('transmission', 'Transmission', 0.5, 1.5, 0.01, 1.0)}
 
@@ -220,20 +239,20 @@ export class LensInspector extends MobxLitElement {
       ${this.s('grain', 'Grain', 0, 1, 0.01, 0.05)}
 
       ${this.section('Quality', 'quality')}
-      <field-select .fieldPath=${'quality'} .label=${'Quality'}
+      <field-tab-bar .fieldPath=${'quality'} .label=${'Quality'}
         .options=${[{ label: 'Cheap', value: 0 }, { label: 'Standard', value: 1 },
                     { label: 'Max', value: 2 }]}
-        .defaultValue=${1} .binding=${b}></field-select>
+        .defaultValue=${1} .binding=${b}></field-tab-bar>
       ${this.s('taps', 'Taps', 16, 192, 1, 96)}
       ${this.s('work_radius', 'Work Radius', 4, 24, 0.5, 11, 'px')}
       ${this.s('fill', 'Fill', 0, 2, 0.05, 0.7, 'px')}
 
       ${this.section('Debug', 'debug')}
-      <field-select .fieldPath=${'debug_view'} .label=${'Debug View'}
+      <field-tab-bar .fieldPath=${'debug_view'} .label=${'Debug View'} ?wrap=${true}
         .options=${[{ label: 'Off', value: 0 }, { label: 'Highlight Mask', value: 1 },
                     { label: 'CoC Field', value: 2 }, { label: 'Bokeh Only', value: 3 },
                     { label: 'Flare Only', value: 4 }]}
-        .defaultValue=${0} .binding=${b}></field-select>
+        .defaultValue=${0} .binding=${b}></field-tab-bar>
     `;
   }
 }

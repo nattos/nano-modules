@@ -46,6 +46,12 @@ describe('lensPresetEdit', () => {
     expect(LENS_PRESETS[3].sun_color).toEqual([0.5, 0.7, 1.0]);
   });
 
+  it('no preset touches blur_amount (the overall DOF-strength knob stays put)', () => {
+    for (const [, dict] of Object.entries(LENS_PRESETS)) {
+      expect(dict).not.toHaveProperty('blur_amount');
+    }
+  });
+
   it('every override value is a number or a numeric array', () => {
     for (const [, dict] of Object.entries(LENS_PRESETS)) {
       for (const [, v] of Object.entries(dict)) {
