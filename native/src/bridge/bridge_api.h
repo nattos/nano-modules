@@ -97,9 +97,14 @@ void bridge_executor_destroy(BridgeHandle h, const char* key);
 // for this key — the barrel does none of that anymore. Returns 1 if the output
 // texture was written, 0 if the sketch passed through (caller should present the
 // INPUT texture instead).
+// `bar_phase` (0..1 over one bar) + `bpm` carry the host musical clock (FFGL
+// SetBeatInfo) into the executor's host::barPhase/bpm imports — beat-synced
+// effects (control.nanolooper) advance off these. 0/120 when the host has no
+// transport.
 int bridge_executor_render(BridgeHandle h, const char* key,
     void* in_tex, void* out_tex, int w, int hgt, double dt, double elapsed,
-    int dirty, const float* macros, int n_macros);
+    int dirty, const float* macros, int n_macros,
+    double bar_phase, double bpm);
 
 // Function pointer typedefs for dlsym loading
 typedef BridgeHandle (*BridgeInitFn)(void);
@@ -136,7 +141,7 @@ typedef void* (*BridgeRtMetalDeviceFn)(BridgeHandle);
 typedef char* (*BridgeRtSchemasFn)(BridgeHandle);
 typedef void (*BridgeExecutorCreateFn)(BridgeHandle, const char*);
 typedef void (*BridgeExecutorDestroyFn)(BridgeHandle, const char*);
-typedef int (*BridgeExecutorRenderFn)(BridgeHandle, const char*, void*, void*, int, int, double, double, int, const float*, int);
+typedef int (*BridgeExecutorRenderFn)(BridgeHandle, const char*, void*, void*, int, int, double, double, int, const float*, int, double, double);
 
 #ifdef __cplusplus
 }

@@ -391,12 +391,18 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // texture, and publishes rail telemetry + preview frames over the shared WS.
     // Returns nonzero iff it wrote the output texture (else the sketch passed
     // through and we present the input).
+    // barPhase/bpm come from FFGL SetBeatInfo (base CFFGLPlugin stores them);
+    // Resolume drives them on the render thread, same as ProcessOpenGL. Forward
+    // the host musical clock so beat-synced effects (the looper) advance. bpm 0
+    // means "no transport" — normalize to a sane default.
+    const double hostBpm = this->bpm > 0.0f ? (double)this->bpm : 120.0;
     int outputUsed = loader_.bridge_executor_render(
         bridge_, barrel_plugin_key_.c_str(),
         (__bridge void*)input_interop_->getMetalTexture(),
         (__bridge void*)output_interop_->getMetalTexture(),
         (int)W, (int)H, dt, hostT - time_start_, dirty ? 1 : 0,
-        macros_snapshot.data(), (int)N_MACROS);
+        macros_snapshot.data(), (int)N_MACROS,
+        (double)this->barPhase, hostBpm);
 
     blitInteropToGlOutput(pGL, outputUsed != 0);
     return FF_SUCCESS;

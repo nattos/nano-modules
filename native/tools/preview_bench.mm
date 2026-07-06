@@ -361,7 +361,8 @@ int main(int argc, char** argv) {
       elapsed = wallElapsed();
       return bridge_executor_render(h, key.c_str(),
                                     (__bridge void*)inTex, (__bridge void*)outTex,
-                                    W, H, dt, elapsed, d ? 1 : 0, nullptr, 0);
+                                    W, H, dt, elapsed, d ? 1 : 0, nullptr, 0,
+                                    /*bar_phase=*/0.0, /*bpm=*/120.0);
     };
     if (getenv("PREVIEW_BENCH_DEBUG")) {
       char* s = bridge_get_at(h, (base + "/sketch").c_str());

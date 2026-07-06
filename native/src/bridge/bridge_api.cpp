@@ -210,10 +210,11 @@ void bridge_executor_destroy(BridgeHandle h, const char* key) {
 
 int bridge_executor_render(BridgeHandle h, const char* key,
     void* in_tex, void* out_tex, int w, int hgt, double dt, double elapsed,
-    int dirty, const float* macros, int n_macros) {
+    int dirty, const float* macros, int n_macros,
+    double bar_phase, double bpm) {
   if (!h || !key) return 0;
   return bridge::BarrelRuntime::instance().render(key, in_tex, out_tex, w, hgt,
-      dt, elapsed, dirty != 0, macros, n_macros) ? 1 : 0;
+      dt, elapsed, dirty != 0, macros, n_macros, bar_phase, bpm) ? 1 : 0;
 }
 
 } // extern "C"

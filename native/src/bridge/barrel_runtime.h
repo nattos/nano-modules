@@ -55,7 +55,8 @@ class BarrelRuntime {
   // written, false if the sketch passed through (present the input instead).
   bool render(const std::string& key, void* in_tex, void* out_tex,
               int w, int h, double dt, double elapsed, bool dirty,
-              const float* macros, int n_macros);
+              const float* macros, int n_macros,
+              double bar_phase = 0.0, double bpm = 120.0);
 
  private:
   BarrelRuntime();
