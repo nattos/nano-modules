@@ -40,6 +40,7 @@
 #include "plugin/bridge_loader.h"
 #include "plugin/nano_barrel/channel_marker_codec.h"
 #include "bridge/preview_codec.h"
+#include "bridge/trig_log.h"
 
 namespace {
 constexpr unsigned int P_CONFIG = 0;   // FF_TYPE_FILE: nanoch://config?<...>
@@ -302,6 +303,8 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
                                      /*schema_json=*/"", instance_uuid_.c_str(),
                                      keybuf, (int32_t)sizeof(keybuf));
       key_ = keybuf;
+      bridge::trig_log("marker InitGL registered uuid=%s -> key=%s (ch=%d name='%s')",
+                       instance_uuid_.c_str(), key_.c_str(), channel_, name_.c_str());
     }
     return FF_SUCCESS;
   }
@@ -334,28 +337,54 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
   // present, and rate-limited to ~30 Hz. The capture itself is non-blocking
   // (async PBO ring in ThumbCapturer).
   void maybe_capture_thumbnail(ProcessOpenGLStruct* pGL) {
-    if (!bridge_ || key_.empty() || !pGL) return;
-    if (pGL->numInputTextures < 1 || !pGL->inputTextures || !pGL->inputTextures[0])
-      return;
-    if (!loader_.bridge_key_observed ||
-        !loader_.bridge_key_observed(bridge_, key_.c_str()))
-      return;
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_capture_ < std::chrono::milliseconds(33)) return;
-
+    // Evaluate the gate chain, recording where we stopped, so the periodic
+    // heartbeat below shows a live tail exactly why a thumbnail isn't flowing.
+    const char* stage = "ok";
     int req_w = 0, req_h = 0;
     std::string trace_id;
-    if (!read_preview_request(&trace_id, &req_w, &req_h)) return;
-    last_capture_ = now;
+    if (!bridge_ || key_.empty() || !pGL) {
+      stage = "no-bridge";
+    } else if (pGL->numInputTextures < 1 || !pGL->inputTextures ||
+               !pGL->inputTextures[0]) {
+      stage = "no-input";
+    } else if (!loader_.bridge_key_observed ||
+               !loader_.bridge_key_observed(bridge_, key_.c_str())) {
+      stage = "not-observed";  // web isn't observing /plugins/<key>/state
+    } else {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_capture_ < std::chrono::milliseconds(33)) {
+        // Don't clobber dbg_stage_ on a throttled frame — keep the last real one.
+        maybe_heartbeat();
+        return;
+      }
+      if (!read_preview_request(&trace_id, &req_w, &req_h)) {
+        stage = "no-request";  // observed but the web wrote no preview_requests
+      } else {
+        last_capture_ = now;
+        const FFGLTextureStruct* in = pGL->inputTextures[0];
+        capturer_.capture(in, in->HardwareWidth, in->HardwareHeight, key_,
+                          trace_id, req_w, req_h,
+                          [this](const uint8_t* data, size_t len) {
+                            if (loader_.bridge_broadcast_binary)
+                              loader_.bridge_broadcast_binary(bridge_, data,
+                                                              (uint32_t)len);
+                            dbg_broadcasts_++;
+                          });
+        stage = "capture";  // a broadcast lands ~2 frames later (PBO ring)
+      }
+    }
+    dbg_stage_ = stage;
+    dbg_req_ = trace_id.empty() ? std::string("-") : trace_id;
+    dbg_w_ = req_w;
+    dbg_h_ = req_h;
+    maybe_heartbeat();
+  }
 
-    const FFGLTextureStruct* in = pGL->inputTextures[0];
-    capturer_.capture(in, in->HardwareWidth, in->HardwareHeight, key_, trace_id,
-                      req_w, req_h,
-                      [this](const uint8_t* data, size_t len) {
-                        if (loader_.bridge_broadcast_binary)
-                          loader_.bridge_broadcast_binary(bridge_, data,
-                                                          (uint32_t)len);
-                      });
+  void maybe_heartbeat() {
+    if ((++dbg_frames_ % 180) != 0) return;  // ~ every 3s at 60fps
+    bridge::trig_log("marker key=%s stage=%s req=%s %dx%d broadcasts=%u frames=%u",
+                     key_.c_str(), dbg_stage_.c_str(), dbg_req_.c_str(), dbg_w_,
+                     dbg_h_, dbg_broadcasts_, dbg_frames_);
   }
 
   // Read this marker's preview request from the shared doc (the web writes it
@@ -422,6 +451,12 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
   char small_return_buf_[1] = {0};
   ThumbCapturer capturer_;
   std::chrono::steady_clock::time_point last_capture_{};
+  // Diagnostics for the always-on trigger.log heartbeat.
+  unsigned dbg_frames_ = 0;
+  unsigned dbg_broadcasts_ = 0;
+  std::string dbg_stage_ = "init";
+  std::string dbg_req_ = "-";
+  int dbg_w_ = 0, dbg_h_ = 0;
 };
 
 static CFFGLPluginInfo PluginInfo(
