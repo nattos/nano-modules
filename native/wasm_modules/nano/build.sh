@@ -305,9 +305,11 @@ echo "  line_reconstruct shaders compiled (SPV: stats+cstar+blur16+tensor+featur
 #   finish         — exposure/vignette/hl-desat/filmic tonemap/grain → tex_out (rgba8).
 compile_shaders_compute_var_spv lens prepare
 compile_shaders_compute_var_spv lens bokeh
+compile_shaders_compute_var_spv lens color
+compile_shaders_compute_var_spv lens geo
 compile_shaders_compute_var_spv lens finish
-_emit_spv_header_var lens prepare bokeh finish
-echo "  lens shaders compiled (SPV: prepare+bokeh+finish)"
+_emit_spv_header_var lens prepare bokeh color geo finish
+echo "  lens shaders compiled (SPV: prepare+bokeh+color+geo+finish)"
 
 echo "=== Building WASM (nano) ==="
 

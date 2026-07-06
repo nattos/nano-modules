@@ -90,6 +90,30 @@ describe('Lens (filter.blur.lens) E2E', () => {
     noisy.trace('out').expectDifferentFrom(clean.trace('out'), 50);
   });
 
+  it('coating changes the colour grade (SMC vs Uncoated)', async () => {
+    const smc = await runChain('lens_cs', { coating: 0, blur_amount: 0.2 }, 'lens_coat_smc', GRID);
+    const unc = await runChain('lens_cu', { coating: 2, blur_amount: 0.2 }, 'lens_coat_unc', GRID);
+    expect(smc.success).toBe(true);
+    expect(unc.success).toBe(true);
+    unc.trace('out').expectDifferentFrom(smc.trace('out'), 100);
+  });
+
+  it('distortion warps the geometry', async () => {
+    const flat = await runChain('lens_d0', { distortion: 0.0, blur_amount: 0.1 }, 'lens_dist_0', GRID);
+    const bent = await runChain('lens_d1', { distortion: 0.9, blur_amount: 0.1 }, 'lens_dist_1', GRID);
+    expect(flat.success).toBe(true);
+    expect(bent.success).toBe(true);
+    bent.trace('out').expectDifferentFrom(flat.trace('out'), 100);
+  });
+
+  it('chromatic aberration fringes high-contrast edges', async () => {
+    const clean  = await runChain('lens_t0', { tca: 0.0, blur_amount: 0.1 }, 'lens_tca_0', GRID);
+    const fringe = await runChain('lens_t1', { tca: 1.0, blur_amount: 0.1 }, 'lens_tca_1', GRID);
+    expect(clean.success).toBe(true);
+    expect(fringe.success).toBe(true);
+    fringe.trace('out').expectDifferentFrom(clean.trace('out'), 50);
+  });
+
   it('exposure changes the output brightness', async () => {
     const dim    = await runChain('lens_e0', { exposure: -0.5 }, 'lens_exp_0', GRID);
     const bright = await runChain('lens_e1', { exposure: 0.5 },  'lens_exp_1', GRID);

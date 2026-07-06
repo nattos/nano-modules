@@ -16,11 +16,13 @@
  * stages"). See lenssim/{pipeline,optics,coatings}.py for the per-pass math this
  * ports 1:1; the out*\/ study montages are the eyeball golden.
  *
- * STAGE 2 (current): prepare (sRGB→linear + highlight boost) → bokeh gather
- * (full-res Vogel-disc shaped-aperture gather with cats-eye/swirl/anamorphic/
- * field-curvature/LoCA) → finish (exposure/vignette/hl-desat/tonemap/grain). The
- * downsample tier, the `fill` anti-stipple blur, coating/flare/glow/geo, and the
- * spec-constant quality tiers land in later stages.
+ * CURRENT: prepare (sRGB→linear + highlight boost) → bokeh gather (full-res
+ * Vogel-disc shaped-aperture gather with cats-eye/swirl/anamorphic/field-
+ * curvature/LoCA) → coating colour grade → distortion + transverse CA →
+ * finish (exposure/vignette/hl-desat/tonemap/grain), ping-ponged bufA/bufB.
+ * Still to land: the flare stack (hood veiling glare + spectral sun) and
+ * halation/bloom (need an RGBA16F-safe wide blur), the downsample tier, the
+ * `fill` anti-stipple blur, and the spec-constant quality tiers.
  *
  * Per-instance instance ABI (class-like): module_init() compiles the shared PSOs
  * + publishes the schema once per type; each chain entry gets its own State.
@@ -107,6 +109,20 @@ struct FinishU {
 };
 static_assert(sizeof(FinishU) == 48, "FinishU layout");
 
+struct ColorU { float mr, mg, mb, contrast; };
+static_assert(sizeof(ColorU) == 16, "ColorU layout");
+
+struct GeoU {
+  float half, dimw, dimh, distortion;
+  float wave, tca, _p0, _p1;
+};
+static_assert(sizeof(GeoU) == 32, "GeoU layout");
+
+// Normalized-slider → prototype-raw mappings for the geometry pass (the raw
+// coefficients are small; presets sit around ±0.05 distortion / 0.01 TCA).
+static constexpr float DIST_SCALE = 0.30f;   // distortion / mustache slider → raw
+static constexpr float TCA_SCALE  = 0.03f;   // TCA slider → raw
+
 static constexpr int MAX_TAPS = 192;
 
 // --- per-instance state -------------------------------------------------------
@@ -118,7 +134,7 @@ struct State {
   gpu::Texture bufA, bufB;       // full-res linear-HDR ping/pong
   gpu::Sampler sampler;          // Linear/ClampToEdge (bokeh taps)
   gpu::Buffer  tap_buf;          // Vogel tap set (float4/tap: ox,oy,base_w,_)
-  gpu::Buffer  prepare_buf, bokeh_buf, finish_buf;
+  gpu::Buffer  prepare_buf, bokeh_buf, color_buf, geo_buf, finish_buf;
 
   // Schema-mirrored params (normalized unless noted). Defaults mirror the schema.
   int   preset = 0;             // inert (UI-only); serialized
@@ -189,7 +205,7 @@ struct State {
 // RGBA8, which clamps HDR — see line_reconstruct's Blur16). The `fill` anti-
 // stipple micro-blur is deferred until an RGBA16F-safe blur is wired for the
 // flare/glow passes.
-static gpu::ComputePSO s_pso_prepare, s_pso_bokeh, s_pso_finish;
+static gpu::ComputePSO s_pso_prepare, s_pso_bokeh, s_pso_color, s_pso_geo, s_pso_finish;
 
 void module_init() {
   state::init("filter.blur.lens", {1, 0, 0},
@@ -406,11 +422,15 @@ void module_init() {
   const auto F16 = gpu::TextureFormat::RGBA16F;
   state::registerShaderSPV("lens_prepare", PREPARE_SPV, PREPARE_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("lens_bokeh",   BOKEH_SPV,   BOKEH_SPV_SIZE,   "rgba16float", "write");
+  state::registerShaderSPV("lens_color",   COLOR_SPV,   COLOR_SPV_SIZE,   "rgba16float", "write");
+  state::registerShaderSPV("lens_geo",     GEO_SPV,     GEO_SPV_SIZE,     "rgba16float", "write");
   state::registerShaderSPV("lens_finish",  FINISH_SPV,  FINISH_SPV_SIZE,  "rgba8unorm",  "write");
   auto cs_prepare = gpu::Device::createShaderModuleByName("lens_prepare");
   auto cs_bokeh   = gpu::Device::createShaderModuleByName("lens_bokeh");
+  auto cs_color   = gpu::Device::createShaderModuleByName("lens_color");
+  auto cs_geo     = gpu::Device::createShaderModuleByName("lens_geo");
   auto cs_finish  = gpu::Device::createShaderModuleByName("lens_finish");
-  if (!cs_prepare || !cs_bokeh || !cs_finish) {
+  if (!cs_prepare || !cs_bokeh || !cs_color || !cs_geo || !cs_finish) {
     state::log("lens: a shader failed to compile");
     return;
   }
@@ -418,10 +438,14 @@ void module_init() {
       .tex2d(0).storageTex2d(1, F16).uniform(2));
   s_pso_bokeh = gpu::Device::createComputePSO(cs_bokeh, "main", gpu::Bindings()
       .tex2d(0).storage(1).sampler(2).storageTex2d(3, F16).uniform(4));
+  s_pso_color = gpu::Device::createComputePSO(cs_color, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, F16).uniform(2));
+  s_pso_geo = gpu::Device::createComputePSO(cs_geo, "main", gpu::Bindings()
+      .tex2d(0).sampler(1).storageTex2d(2, F16).uniform(3));
   s_pso_finish = gpu::Device::createComputePSO(cs_finish, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
 
-  gpu::ComputePSO* psos[] = { &s_pso_prepare, &s_pso_bokeh, &s_pso_finish };
+  gpu::ComputePSO* psos[] = { &s_pso_prepare, &s_pso_bokeh, &s_pso_color, &s_pso_geo, &s_pso_finish };
   for (auto* p : psos) if (!p->valid()) state::log("lens: a PSO is INVALID");
   state::log("lens: module_init done");
 }
@@ -432,6 +456,8 @@ void* create() {
   s->tap_buf = gpu::Device::createBuffer(sizeof(float) * 4 * MAX_TAPS, gpu::BufferUsage::Storage);
   s->prepare_buf = gpu::Device::createBuffer(sizeof(PrepareU), gpu::BufferUsage::Uniform);
   s->bokeh_buf   = gpu::Device::createBuffer(sizeof(BokehU),   gpu::BufferUsage::Uniform);
+  s->color_buf   = gpu::Device::createBuffer(sizeof(ColorU),   gpu::BufferUsage::Uniform);
+  s->geo_buf     = gpu::Device::createBuffer(sizeof(GeoU),     gpu::BufferUsage::Uniform);
   s->finish_buf  = gpu::Device::createBuffer(sizeof(FinishU),  gpu::BufferUsage::Uniform);
   return s;
 }
@@ -445,6 +471,8 @@ void destroy(void* self) {
   s->tap_buf.release();
   s->prepare_buf.release();
   s->bokeh_buf.release();
+  s->color_buf.release();
+  s->geo_buf.release();
   s->finish_buf.release();
   delete s;
 }
@@ -453,7 +481,7 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->initialized = s_pso_prepare.valid() && s_pso_bokeh.valid() &&
-                   s_pso_finish.valid() &&
+                   s_pso_color.valid() && s_pso_geo.valid() && s_pso_finish.valid() &&
                    s->tap_buf.valid() && s->finish_buf.valid();
 }
 
@@ -605,9 +633,11 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->prepare_buf, 2);
     cp.dispatch(gx, gy); cp.end(); }
 
-  gpu::Texture cur = s->bufA;
+  // Ping-pong the linear-HDR image between bufA (holds prepare's output) and bufB.
+  gpu::Texture src = s->bufA, dst = s->bufB;
+  auto swap = [&]() { gpu::Texture t = src; src = dst; dst = t; };
 
-  // 2. bokeh gather (full-res for now) → bufB. Skip at ~zero blur.
+  // 2. bokeh gather (full-res for now). Skip at ~zero blur.
   if (coc_px0 > 0.5f) {
     writeTaps(s);
     BokehU u = {};
@@ -621,12 +651,51 @@ void render(void* self, int vp_w, int vp_h) {
     s->bokeh_buf.writeOne(u);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_bokeh);
-    cp.setTexture(s->bufA, 0, 0); cp.setBuffer(s->tap_buf, 1);
+    cp.setTexture(src, 0, 0); cp.setBuffer(s->tap_buf, 1);
     cp.setSampler(s->sampler, 2);
-    cp.setTexture(s->bufB, 3, 1); cp.setBuffer(s->bokeh_buf, 4);
+    cp.setTexture(dst, 3, 1); cp.setBuffer(s->bokeh_buf, 4);
     cp.dispatch(gx, gy); cp.end();
     // (fill anti-stipple blur deferred — needs an RGBA16F-safe blur.)
-    cur = s->bufB;
+    swap();
+  }
+
+  // 3. coating colour grade (linear tint × warmth × transmission + micro-contrast).
+  { const Coating& coat = coatingOf(s->coating);
+    float w = s->warmth < -1.f ? -1.f : (s->warmth > 1.f ? 1.f : s->warmth);
+    float t = coat.transmission * s->transmission;
+    ColorU cu;
+    cu.mr = coat.tint[0] * (1.f + 0.18f * w) * t;
+    cu.mg = coat.tint[1] * t;
+    cu.mb = coat.tint[2] * (1.f - 0.18f * w) * t;
+    cu.contrast = coat.contrast;
+    bool neutral = std::fabs(cu.mr - 1.f) < 1e-3f && std::fabs(cu.mg - 1.f) < 1e-3f &&
+                   std::fabs(cu.mb - 1.f) < 1e-3f && std::fabs(cu.contrast - 1.f) < 1e-3f;
+    if (!neutral) {
+      s->color_buf.writeOne(cu);
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_color);
+      cp.setTexture(src, 0, 0); cp.setTexture(dst, 1, 1);
+      cp.setBuffer(s->color_buf, 2);
+      cp.dispatch(gx, gy); cp.end();
+      swap();
+    }
+  }
+
+  // 7. geometry: distortion + transverse chromatic aberration. Skip if neutral.
+  { float dist = s->distortion * DIST_SCALE;
+    float wave = s->distortion_wave * DIST_SCALE;
+    float tca  = s->tca * TCA_SCALE;
+    bool active = std::fabs(dist) > 1e-5f || std::fabs(wave) > 1e-5f || std::fabs(tca) > 1e-5f;
+    if (active) {
+      GeoU u = { half, (float)vp_w, (float)vp_h, dist, wave, tca, 0.f, 0.f };
+      s->geo_buf.writeOne(u);
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_geo);
+      cp.setTexture(src, 0, 0); cp.setSampler(s->sampler, 1);
+      cp.setTexture(dst, 2, 1); cp.setBuffer(s->geo_buf, 3);
+      cp.dispatch(gx, gy); cp.end();
+      swap();
+    }
   }
 
   // 8. finish: exposure → vignette → hl_desat → tonemap → sRGB → grain → tex_out.
@@ -638,7 +707,7 @@ void render(void* self, int vp_w, int vp_h) {
     s->finish_buf.writeOne(u);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_finish);
-    cp.setTexture(cur, 0, 0); cp.setTexture(out, 1, 1);
+    cp.setTexture(src, 0, 0); cp.setTexture(out, 1, 1);
     cp.setBuffer(s->finish_buf, 2);
     cp.dispatch(gx, gy); cp.end(); }
 
