@@ -165,8 +165,6 @@ void BridgeServer::shutdown_subsystems() {
   draw_lists_.clear();
   frame_states_.clear();
   clip_launcher_.reset();
-  subscribed_connected_.clear();
-  connected_observed_.clear();
   trigger_channels_hash_ = 0;
 }
 
@@ -317,10 +315,8 @@ void BridgeServer::process_resolume_messages() {
     } else if (auto* ps = std::get_if<resolume::ParameterSubscribed>(&msg)) {
       if (ps->value.is_number()) core_.param_cache().set(ps->id, ps->value.get<double>());
       core_.set_param_path(ps->id, ps->path);
-      observe_connected_param(ps->id, ps->value);
     } else if (auto* pu = std::get_if<resolume::ParameterUpdate>(&msg)) {
       if (pu->value.is_number()) core_.param_cache().set(pu->id, pu->value.get<double>());
-      observe_connected_param(pu->id, pu->value);
     }
   }
 }
@@ -336,15 +332,6 @@ void BridgeServer::flush_outbox() {
   }
 }
 
-void BridgeServer::observe_connected_param(int64_t id, const nlohmann::json& value) {
-  // Only clip `connected` ParamStates we've subscribed to carry a string value
-  // we care about; "Connected" (and "Connected & previewing") mean on-screen.
-  if (!value.is_string() || subscribed_connected_.find(id) == subscribed_connected_.end())
-    return;
-  connected_observed_[id] =
-      value.get<std::string>().find("Connected") != std::string::npos;
-}
-
 void BridgeServer::drive_clip_launches() {
   if (!resolume_client_) return;
   // Snapshot new trigger-rail events (own leaf mutex — safe under tick_mutex_).
@@ -353,28 +340,24 @@ void BridgeServer::drive_clip_launches() {
   // Build channel → launchable clips from the current composition cache. Keyed
   // by 1-based trigger channel (CompositionCache.channel is 0-based; the
   // NanoLooper Ch marker's "Channel 1..4" → cache 0..3 → event channel 1..4).
+  //
+  // Observed connected state comes from the composition CACHE, i.e. Resolume's
+  // full-composition rebroadcast (measured ~60ms after a connect/disconnect on
+  // a live Arena). We do NOT subscribe to the connected ParamState by id:
+  // Resolume does not reliably push parameter_update for it (0 frames observed
+  // live) — a per-param subscription would freeze at its initial value and make
+  // the reconciler oscillate (it would never see convergence).
   std::map<int, std::vector<LaunchTarget>> channel_clips;
   CompositionCache& cache = core_.composition_cache();
   const int n = cache.clip_count();
   for (int i = 0; i < n; ++i) {
     CachedClip cc = cache.get_clip(i);
     if (cc.channel < 0 || cc.connect_path.empty()) continue;
-    // Subscribe to this clip's connected ParamState by id for push feedback
-    // (~ms) instead of the ~1s composition rebroadcast — the lever that makes
-    // the reconciler's gated disconnect + re-arm timing work. Subscribe once.
-    if (cc.connected_param_id > 0 &&
-        subscribed_connected_.insert(cc.connected_param_id).second) {
-      resolume_client_->subscribe_by_id(cc.connected_param_id);
-    }
     LaunchTarget t;
     t.clip_id = cc.clip_id;
     t.connect_path = cc.connect_path;
     t.connected_param_id = cc.connected_param_id;
-    // Prefer the fast subscription value; fall back to the composition cache
-    // (from the last rebroadcast) until the first push arrives.
-    auto oit = connected_observed_.find(cc.connected_param_id);
-    t.observed_connected = (oit != connected_observed_.end()) ? oit->second
-                                                              : cc.connected;
+    t.observed_connected = cc.connected;
     t.is_piano = (cc.trigger_style == "Piano");
     t.evict_path = cc.evict_path;
     channel_clips[cc.channel + 1].push_back(std::move(t));

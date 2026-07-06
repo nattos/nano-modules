@@ -42,25 +42,28 @@ IncomingMessage parse_incoming(const nlohmann::json& j) {
     return err;
   }
 
-  // Messages with a "type" field
-  if (j.contains("type")) {
+  // Messages with a "type" field. Be TOLERANT of missing fields: real Resolume's
+  // parameter_update for a subscribed param may omit "path"/"valuetype" (unlike
+  // the parameter_subscribed reply). A hard .get() there throws and the ws_client
+  // silently drops the whole frame — which would swallow every clip connected-
+  // state push and leave the ClipLauncher blind (→ oscillation).
+  if (j.contains("type") && j["type"].is_string()) {
     auto type = j["type"].get<std::string>();
-    if (type == "parameter_subscribed") {
-      ParameterSubscribed ps;
-      ps.id = j["id"].get<int64_t>();
-      ps.valuetype = j["valuetype"].get<std::string>();
-      ps.value = j["value"];
-      ps.path = j["path"].get<std::string>();
-      if (j.contains("min")) ps.min = j["min"].get<double>();
-      if (j.contains("max")) ps.max = j["max"].get<double>();
-      return ps;
-    }
-    if (type == "parameter_update") {
+    if (type == "parameter_subscribed" || type == "parameter_update") {
+      int64_t id = (j.contains("id") && j["id"].is_number_integer())
+                       ? j["id"].get<int64_t>() : 0;
+      std::string valuetype = j.value("valuetype", std::string());
+      nlohmann::json value = j.contains("value") ? j["value"] : nlohmann::json();
+      std::string path = j.value("path", std::string());
+      if (type == "parameter_subscribed") {
+        ParameterSubscribed ps;
+        ps.id = id; ps.valuetype = valuetype; ps.value = value; ps.path = path;
+        if (j.contains("min") && j["min"].is_number()) ps.min = j["min"].get<double>();
+        if (j.contains("max") && j["max"].is_number()) ps.max = j["max"].get<double>();
+        return ps;
+      }
       ParameterUpdate pu;
-      pu.id = j["id"].get<int64_t>();
-      pu.valuetype = j["valuetype"].get<std::string>();
-      pu.value = j["value"];
-      pu.path = j["path"].get<std::string>();
+      pu.id = id; pu.valuetype = valuetype; pu.value = value; pu.path = path;
       return pu;
     }
   }

@@ -99,9 +99,6 @@ private:
   void flush_outbox();
   // Drain the trigger rail + reconcile Resolume clip launches (pump thread).
   void drive_clip_launches();
-  // Record a subscribed clip's connected ParamState push into connected_observed_
-  // (string "Connected" → true). No-op for ids we didn't subscribe to.
-  void observe_connected_param(int64_t id, const nlohmann::json& value);
   // Publish channel → registered marker clips to /global/channels for the web
   // Instances tab (change-gated). Pump thread; after process_resolume_messages
   // so the composition cache is fresh.
@@ -137,13 +134,6 @@ private:
   // FNV hash of the last /global/channels doc we published — skip the set_at
   // (and its patch broadcast) when the channel→clips map is unchanged.
   uint64_t trigger_channels_hash_ = 0;
-  // Fast observed connected-state for launchable clips: we subscribe to each
-  // clip's `connected` ParamState by id (push updates in ~ms) instead of relying
-  // on Resolume's ~1s full-composition rebroadcast. subscribed_connected_ tracks
-  // which ids we've already subscribed; connected_observed_ is the live value the
-  // ClipLauncher reconciles against. Only touched from the pump thread.
-  std::set<int64_t> subscribed_connected_;
-  std::map<int64_t, bool> connected_observed_;
   // shared_ptr (not unique): broadcast_binary copies the pointer under a brief
   // tick_mutex_ hold, then runs the (CPU-heavy) permessage-deflate + send on the
   // copy OUTSIDE the lock — so a preview frame's compression never stalls the

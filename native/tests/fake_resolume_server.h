@@ -133,8 +133,9 @@ private:
   // queue a parameter_update to broadcast (collected, sent outside the lock).
   void set_connected(ClipRuntime& c, const std::string& value,
                      std::vector<std::pair<int64_t, std::string>>& out_changes);
-  // Broadcast a parameter_update frame to every connected client.
-  void broadcast_param_update(int64_t id, const std::string& value);
+  // Rebroadcast the full composition to every client (how real Resolume signals
+  // a connected-state change — the bridge's observed state; no per-param push).
+  void broadcast_composition();
 
   std::unique_ptr<ix::WebSocketServer> server_;
   int port_ = 0;

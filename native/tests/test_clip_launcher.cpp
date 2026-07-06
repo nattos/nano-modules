@@ -108,30 +108,58 @@ TEST_CASE("piano off: gated disconnect while observed connected",
   CHECK(h.cmds.size() == 1);
 }
 
-TEST_CASE("piano off stuck-on: re-arm connect, dwell, then disconnect",
+TEST_CASE("piano off stuck-on with an empty clip: escalates via eviction",
           "[clip_launcher]") {
-  Harness h(/*debounce=*/100, /*dwell=*/50);
+  Harness h(/*debounce=*/100);
   h.launcher.tick({Harness::ev(1, true)}, Harness::clips(1, false), 1000);
   h.launcher.tick({}, Harness::clips(1, true), 1100);
   h.cmds.clear();
-  // Off edge; clip is stuck-on (observed stays true).
+  // Off edge; stuck-on. First = gated disconnect.
   h.launcher.tick({Harness::ev(1, false)}, Harness::clips(1, true), 1200);
   REQUIRE(h.cmds.size() == 1);
-  CHECK(h.cmds[0].value == false);  // simple disconnect (dropped by Resolume)
-  // Debounce elapses, still stuck → re-arm connect.
+  CHECK(h.cmds[0].path == "C");
+  CHECK(h.cmds[0].value == false);
+  // Still stuck after debounce → escalate by EVICTING (connect "E"), never by
+  // re-connecting the target (which would oscillate).
   h.launcher.tick({}, Harness::clips(1, true), 1310);
   REQUIRE(h.cmds.size() == 2);
-  CHECK(h.cmds[1].value == true);   // re-arm connect
-  // Within the dwell → nothing yet.
-  h.launcher.tick({}, Harness::clips(1, true), 1330);
-  CHECK(h.cmds.size() == 2);
-  // Dwell elapsed → deferred disconnect (now the clip is re-armed).
-  h.launcher.tick({}, Harness::clips(1, true), 1370);
+  CHECK(h.cmds[1].path == "E");
+  CHECK(h.cmds[1].value == true);
+  // Note: no command re-connects "C" — the escalation cannot toggle the clip.
+  for (const auto& c : h.cmds) CHECK_FALSE((c.path == "C" && c.value == true));
+}
+
+TEST_CASE("piano off stuck-on, no empty clip: re-arm toggle",
+          "[clip_launcher]") {
+  Harness h(/*debounce=*/100, /*dwell=*/50);
+  h.launcher.tick({Harness::ev(1, true)},
+                  Harness::clips(1, false, /*piano=*/true, /*evict=*/""), 1000);
+  h.launcher.tick({}, Harness::clips(1, true, true, ""), 1100);
+  h.cmds.clear();
+  h.launcher.tick({Harness::ev(1, false)}, Harness::clips(1, true, true, ""), 1200);
+  REQUIRE(h.cmds.size() == 1);
+  CHECK(h.cmds[0].value == false);  // simple disconnect
+  h.launcher.tick({}, Harness::clips(1, true, true, ""), 1310);
+  REQUIRE(h.cmds.size() == 2);
+  CHECK(h.cmds[1].value == true);   // re-arm connect (last-resort toggle)
+  h.launcher.tick({}, Harness::clips(1, true, true, ""), 1330);
+  CHECK(h.cmds.size() == 2);        // within dwell
+  h.launcher.tick({}, Harness::clips(1, true, true, ""), 1370);
   REQUIRE(h.cmds.size() == 3);
-  CHECK(h.cmds[2].value == false);
-  // Releases → done.
-  h.launcher.tick({}, Harness::clips(1, false), 1500);
-  CHECK(h.cmds.size() == 3);
+  CHECK(h.cmds[2].value == false);  // deferred disconnect after dwell
+}
+
+TEST_CASE("gives up after max attempts (bounds oscillation)", "[clip_launcher]") {
+  Harness h(/*debounce=*/10);
+  h.launcher.set_max_attempts(4);
+  // Observed never converges (always disconnected while we want it on) — a
+  // wrong/laggy observed. Drive many ticks; the launcher must stop, not spin.
+  h.launcher.tick({Harness::ev(1, true)}, Harness::clips(1, false), 1000);
+  for (uint64_t t = 1020; t < 2000; t += 20)
+    h.launcher.tick({}, Harness::clips(1, false), t);
+  // 4 attempts: 1 plain connect + 3 re-arms (each 2 cmds) = 1 + 6 = 7 commands,
+  // then it gives up — bounded, not unbounded.
+  CHECK(h.cmds.size() <= 7);
 }
 
 TEST_CASE("normal off: evict via the empty clip, never connect:false",

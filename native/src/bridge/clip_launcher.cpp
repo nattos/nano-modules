@@ -69,6 +69,20 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
     return;
   }
 
+  // Give up after a bounded number of attempts (until desired changes). With
+  // accurate observed state the simple first attempt converges and we never get
+  // here; this backstop means a wrong/laggy observed can only ever cause a few
+  // cycles of correction, never an unbounded connect/disconnect oscillation.
+  if (r.attempts >= max_attempts_) {
+    if (r.attempts == max_attempts_) {
+      trig_log("clip %lld: gave up driving to %s after %d attempts "
+               "(observed stuck at %s)", (long long)t.clip_id,
+               want ? "on" : "off", r.attempts, have ? "on" : "off");
+      r.attempts++;  // log once
+    }
+    return;
+  }
+
   // Rate-limit (re)sends. First attempt fires immediately (last_action_ms == 0).
   if (r.last_action_ms != 0 && now_ms - r.last_action_ms < debounce_ms_) return;
   const bool first = (r.attempts == 0);
@@ -78,7 +92,8 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
   if (want) {
     // Want ON, observed OFF. First try a plain connect; if that didn't take
     // (stuck-OFF from a prior eviction/click), re-arm: connect:false clears the
-    // latch, connect:true then connects.
+    // latch, connect:true then connects. This sequence ENDS on a connect, so it
+    // converges to ON — it cannot leave the clip toggling.
     if (first) {
       writer_(t.connect_path, true);
     } else {
@@ -91,29 +106,34 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
   }
 
   // Want OFF, observed ON.
-  if (t.is_piano) {
-    // Gated disconnect (we're only here because observed-connected, i.e.
-    // registered). If it doesn't release (pre-existing stuck-ON), re-arm:
-    // connect, dwell so it registers, then disconnect.
-    if (first) {
+  if (first) {
+    // Piano: a gated disconnect (we're only here because observed-connected)
+    // releases it. Normal: connect:false is a no-op, so go straight to evicting.
+    if (t.is_piano) {
       writer_(t.connect_path, false);
-    } else {
-      writer_(t.connect_path, true);
-      r.rearm_wait = true;
-      r.rearm_at_ms = now_ms;
-      trig_log("clip %lld: re-arm disconnect (stuck-on recovery)",
-               (long long)t.clip_id);
+    } else if (!t.evict_path.empty()) {
+      writer_(t.evict_path, true);
     }
     return;
   }
 
-  // Normal clip: connect:false is a no-op — turn it off by eviction (connect an
-  // empty clip on the layer). Nothing we can do if the layer has no empty clip.
+  // Escalation for a clip that won't turn off. Prefer EVICTION (connect the
+  // layer's empty clip) — a single action that forces the layer off via
+  // mutual-exclusion and, crucially, NEVER re-connects the target, so it cannot
+  // oscillate. Only if the layer has no empty clip fall back to the re-arm
+  // toggle (connect, dwell, disconnect) for a stuck-ON Piano clip.
   if (!t.evict_path.empty()) {
     writer_(t.evict_path, true);
+    trig_log("clip %lld: escalate OFF via eviction", (long long)t.clip_id);
+  } else if (t.is_piano) {
+    writer_(t.connect_path, true);
+    r.rearm_wait = true;
+    r.rearm_at_ms = now_ms;
+    trig_log("clip %lld: re-arm disconnect (stuck-on recovery, no evict clip)",
+             (long long)t.clip_id);
   } else {
-    trig_log("clip %lld: Normal clip OFF requested but no empty clip on layer "
-             "to evict with — cannot disconnect", (long long)t.clip_id);
+    trig_log("clip %lld: Normal clip OFF but no empty clip to evict with",
+             (long long)t.clip_id);
   }
 }
 

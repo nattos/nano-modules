@@ -103,17 +103,18 @@ void FakeResolumeServer::set_connected(
   out_changes.push_back({c.connected_id, value});
 }
 
-void FakeResolumeServer::broadcast_param_update(int64_t id, const std::string& value) {
-  if (!server_) return;
-  json upd = {
-    {"type", "parameter_update"},
-    {"id", id},
-    {"valuetype", "ParamState"},
-    {"value", value},
-    {"path", "/parameter/by-id/" + std::to_string(id)},
-  };
-  const std::string s = upd.dump();
-  for (auto& client : server_->getClients()) client->send(s);
+void FakeResolumeServer::broadcast_composition() {
+  // Real Resolume signals a connected-state change by rebroadcasting the WHOLE
+  // composition (it does NOT reliably push a per-param parameter_update). The
+  // bridge rebuilds its composition cache from this — that's the ClipLauncher's
+  // observed state. Dump + send under the lock's snapshot.
+  std::string snapshot;
+  {
+    std::lock_guard lock(mu_);
+    composition_str_ = composition_.dump();
+    snapshot = composition_str_;
+  }
+  if (server_) for (auto& client : server_->getClients()) client->send(snapshot);
 }
 
 void FakeResolumeServer::seed_stuck(const std::string& connect_path,
@@ -128,7 +129,7 @@ void FakeResolumeServer::seed_stuck(const std::string& connect_path,
     c.stuck_off = stuck_off;
     if (stuck_on) set_connected(c, "Connected", changes);  // stuck-on ⇒ on-screen
   }
-  for (auto& [id, val] : changes) broadcast_param_update(id, val);
+  if (!changes.empty()) broadcast_composition();
 }
 
 std::string FakeResolumeServer::clip_connected(const std::string& connect_path) const {
@@ -289,10 +290,11 @@ void FakeResolumeServer::handle_message(ix::WebSocket& ws, const std::string& ms
             set_connected(c, "Disconnected", changes);
           }
         }
-        composition_str_ = composition_.dump();
       }
     }
-    for (auto& [id, val] : changes) broadcast_param_update(id, val);
+    // Real Resolume rebroadcasts the whole composition on any connected-state
+    // change (there's no reliable per-param push) — the bridge's observed state.
+    if (!changes.empty()) broadcast_composition();
     return;
   }
 }

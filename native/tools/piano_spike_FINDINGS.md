@@ -39,15 +39,28 @@ workaround.
 
 ### Implemented in `native/src/bridge/clip_launcher.*` (+ bridge_server, cache)
 
-**Done.** The launcher is now a per-clip re-arm state machine driven by
-subscription-fed observed state. `bridge_server` subscribes to each launchable
-clip's `connected` param by id (`connected_observed_`); `composition_cache`
-carries `trigger_style` + an `evict_path` (an empty clip on the layer). The fake
-Resolume server (`tests/fake_resolume_server`) MODELS the quirks (piano stuck-on,
-Normal connect:false no-op + eviction stuck-off, re-arm recovery), and
-`test_clip_launcher{,_e2e}.cpp` assert the reconciler converges for: piano
+**Done.** Per-clip re-arm state machine. `composition_cache` carries
+`trigger_style` + an `evict_path` (an empty clip on the layer). The fake Resolume
+server MODELS the quirks; `test_clip_launcher{,_e2e}.cpp` cover piano
 connect/disconnect, piano stuck-on recovery, normal connect, normal off via
-eviction, and normal stuck-off recovery. The design below is what shipped:
+eviction, normal stuck-off recovery.
+
+**CORRECTION on observed state (learned the hard way — caused a live ~20Hz
+oscillation).** Resolume does NOT reliably push `parameter_update` for a clip's
+`connected` ParamState — on a live Arena, connecting/disconnecting a clip
+produced **0** per-param updates, only a **full-composition rebroadcast (~60ms
+after the change)**. A per-param subscription therefore FREEZES at its initial
+value, so a reconciler that trusts it never sees convergence and oscillates
+(connect/disconnect via re-arm) forever. So observed state = the composition
+rebroadcast (`composition_cache`, `cc.connected`), NOT a subscription. The
+debounce (250ms) must exceed the rebroadcast latency so we confirm convergence
+before escalating; escalation is EVICTION (a single connect that forces a
+rebroadcast and can't toggle), not a connect/disconnect re-arm; and attempts are
+bounded. This gives a staccato note floor ≈ the rebroadcast latency (~60ms) —
+the reconciler only disconnects once it observes the clip connected, so a
+sub-60ms request stretches to ~60ms. (piano_spike.py's ~11ms figure used a
+subscription that happened to push updates for that simpler composition; it is
+not reliable in general.) The design below is what shipped:
 
 1. Subscribe each launchable clip's `connected` param by id (push feedback;
    `bridge_server.cpp` already has the plumbing to `subscribe`/route

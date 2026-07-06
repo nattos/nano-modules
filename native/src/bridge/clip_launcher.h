@@ -67,8 +67,12 @@ class ClipLauncher {
   // because observed state is now push-fed (~ms), not rebroadcast-gated (~1s).
   void set_debounce_ms(uint64_t ms) { debounce_ms_ = ms; }
   // Dwell between a re-arm connect and the deferred disconnect (Piano stuck-ON
-  // recovery), so the re-arm connect registers before the disconnect lands.
+  // recovery via toggle, only when the layer has no empty clip to evict with).
   void set_rearm_dwell_ms(uint64_t ms) { rearm_dwell_ms_ = ms; }
+  // Hard cap on drive attempts before giving up on a clip (until its desired
+  // state changes). Bounds any oscillation to a few cycles if the observed
+  // state is ever wrong — we never fight Resolume forever.
+  void set_max_attempts(int n) { max_attempts_ = n; }
 
   /**
    * One pump tick:
@@ -101,8 +105,14 @@ class ClipLauncher {
   void reconcile_clip(const LaunchTarget& t, uint64_t now_ms);
 
   RawWriter writer_;
-  uint64_t debounce_ms_ = 60;
-  uint64_t rearm_dwell_ms_ = 45;
+  // Observed state is the composition rebroadcast (~60ms on a live Arena), so
+  // the debounce must comfortably exceed it: we send the first (low-latency)
+  // edge immediately, then wait for the rebroadcast to confirm convergence
+  // before escalating. Too small and we'd escalate before observed updates.
+  uint64_t debounce_ms_ = 250;
+  uint64_t rearm_dwell_ms_ = 120;  // > rebroadcast, so the deferred disconnect
+                                   // sees the re-arm connect registered
+  int max_attempts_ = 6;
   std::map<int64_t, bool> desired_;      // clip_id → desired connected
   std::map<int64_t, Recon> recon_;       // clip_id → reconcile state
 };
