@@ -322,16 +322,22 @@ static void on_param_change(State& s, int index, double value) {
       } else {
         int step = (int)s.phase % NUM_STEPS;
         s.last_action_was_clear = 0;
-        /* Latch: the first trigger (or one past the 1-bar window) clears the
-         * pattern and (re)opens a capture window before we record. */
-        if (s.latch) {
-          double inv_grace = (double)s.grace_beats * (NUM_STEPS / 4.0);
-          if (looper_latch_press(&s.latch_capturing, &s.latch_start_abs,
-                                 s.abs_phase, (double)NUM_STEPS, inv_grace))
-            looper_clear_all(&s.looper);
+        /* Record ARMS writing to the pattern. When it's off, a trigger still
+         * plays live (the gate fires clips/audio/rail via recompute_gates) but
+         * doesn't record. Latch is a capture mode, so it always records. */
+        bool recording = s.record_held || s.latch;
+        if (recording) {
+          /* Latch: the first trigger (or one past the 1-bar window) clears the
+           * pattern and (re)opens a capture window before we record. */
+          if (s.latch) {
+            double inv_grace = (double)s.grace_beats * (NUM_STEPS / 4.0);
+            if (looper_latch_press(&s.latch_capturing, &s.latch_start_abs,
+                                   s.abs_phase, (double)NUM_STEPS, inv_grace))
+              looper_clear_all(&s.looper);
+          }
+          looper_begin_note(&s.looper, ch, s.phase);
+          log_structured(LOG_INFO, "Note on", json_ch_step(ch + 1, step));
         }
-        looper_begin_note(&s.looper, ch, s.phase);
-        log_structured(LOG_INFO, "Note on", json_ch_step(ch + 1, step));
       }
     } else if (!pressed && was) {
       /* Falling edge — finalize the note's gate length from the hold duration */
@@ -372,15 +378,10 @@ static void on_param_change(State& s, int index, double value) {
       log_msg(LOG_INFO, "Redo");
     }
   } else if (index == PID_RECORD) {
-    if (pressed && !s.record_held) {
-      s.last_action_was_clear = 0;
-      looper_begin_destructive_record(&s.looper);
-      log_msg(LOG_WARN, "Record mode ON");
-    } else if (!pressed && s.record_held) {
-      looper_end_destructive_record(&s.looper);
-      log_msg(LOG_INFO, "Record mode OFF");
-    }
+    /* Record-arm toggle: gates whether triggers write to the pattern (they
+     * always play live regardless). See the trigger branch above. */
     s.record_held = pressed;
+    log_msg(LOG_INFO, pressed ? "Record armed" : "Record off (play only)");
   } else if (index == PID_SHOW_OVERLAY) {
     s.show_overlay = pressed;
   } else if (index == PID_SEND_TO_RAIL) {
@@ -527,7 +528,9 @@ void module_init() {
     "\"mute\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":5},"
     "\"undo\":{\"type\":\"event\",\"io\":5,\"order\":6},"
     "\"redo\":{\"type\":\"event\",\"io\":5,\"order\":7},"
-    "\"record\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":8},"
+    // Record-arm: on = triggers write to the pattern (default), off = triggers
+    // play live only (the loop keeps playing; your taps don't overwrite it).
+    "\"record\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":8},"
     "\"show_overlay\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":9},"
     "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
     "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11},"
@@ -615,7 +618,7 @@ void init(void* self) {
   s->delete_acted = 0;
   s->last_action_was_clear = 0;
   s->mute_held = 0;
-  s->record_held = 0;
+  s->record_held = 1;   /* armed by default (see schema); on_state_patched syncs */
 
   char key_buf[64];
   int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
@@ -716,6 +719,10 @@ static void draw_note_bar(overlay::Canvas& ov, const Event& e,
   const float edge_a = muted ? 0.45f : 1.0f;
   const float bf = playing ? 0.85f : 0.55f;   // body brightness
 
+  /* Minimum on-screen width so even a genuinely tiny gate stays visible (wide
+   * enough to show body past the onset marker). */
+  const float min_w = 7.0f * scale;
+
   bool first = true;
   while (rem > 1e-4) {
     double seg = rem;
@@ -723,7 +730,7 @@ static void draw_note_bar(overlay::Canvas& ov, const Event& e,
 
     float x = track_x + (float)(s0 / loop) * track_w;
     float w = (float)(seg / loop) * track_w;
-    if (w < 2.0f * scale) w = 2.0f * scale;
+    if (w < min_w) w = min_w;
 
     ov.fillRect(x, bar_y, w, bar_h,
                 overlay::rgba(cr * bf, cg * bf, cb * bf, body_a));
@@ -787,6 +794,9 @@ void render(void* self, int vp_w, int vp_h) {
   if (s->record_held)
     ov.text("\xe2\x97\x8f REC", margin + title_sz * 5.6f, top + 4.0f * scale, label_sz,
             overlay::rgba(1.0f, 0.28f, 0.28f, 1.0f), 700);
+  else
+    ov.text("\xe2\x96\xb6 PLAY", margin + title_sz * 5.6f, top + 4.0f * scale, label_sz,
+            overlay::rgba(0.55f, 0.75f, 0.95f, 0.7f), 700);
 
   /* --- Connection status (top-right, pulsing dot) --- */
   {
@@ -866,15 +876,23 @@ void render(void* self, int vp_w, int vp_h) {
           overlay::rgba(0.55f, 1.0f, 0.65f,
                         s->latch ? (s->latch_capturing ? 1.0f : 0.65f) : 0.32f), 700);
 
-  /* Latch capture-window progress: a thin bar above the lanes filling over the
-   * 1-bar window (green while capturing). */
+  /* Latch capture indicator: a thin green bar above the lanes that fills over
+   * the window in which a trigger ADDS to the current phrase. It vanishes the
+   * moment a trigger would instead CLEAR + restart (past the add-window, i.e.
+   * inside the trailing inverse-grace zone or beyond) — its presence is the
+   * direct "a press now adds / a press now wipes" cue. */
   if (s->latch && s->latch_capturing) {
-    double prog = (s->abs_phase - s->latch_start_abs) / (double)NUM_STEPS;
-    if (prog < 0) prog = 0; else if (prog > 1) prog = 1;
-    float by = lanes_top - 9.0f * scale;
-    ov.fillRect(track_x, by, track_w, 3.0f * scale, overlay::rgba(0.2f, 0.4f, 0.25f, 0.5f));
-    ov.fillRect(track_x, by, track_w * (float)prog, 3.0f * scale,
-                overlay::rgba(0.45f, 1.0f, 0.6f, 0.9f));
+    double inv = (double)s->grace_beats * (NUM_STEPS / 4.0);
+    double add_window = (double)NUM_STEPS - inv;
+    if (add_window < 1e-4) add_window = (double)NUM_STEPS;
+    double elapsed = s->abs_phase - s->latch_start_abs;
+    if (elapsed >= 0 && elapsed < add_window) {   /* a press right now ADDS */
+      float prog = (float)(elapsed / add_window);
+      float by = lanes_top - 9.0f * scale;
+      ov.fillRect(track_x, by, track_w, 3.0f * scale, overlay::rgba(0.2f, 0.4f, 0.25f, 0.4f));
+      ov.fillRect(track_x, by, track_w * prog, 3.0f * scale,
+                  overlay::rgba(0.45f, 1.0f, 0.6f, 0.9f));
+    }
   }
 
   ov.end();
