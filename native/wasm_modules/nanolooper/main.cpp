@@ -7,11 +7,20 @@
  * Class-like instance model (v2 ABI): module_init() publishes the schema
  * once per type; each chain entry gets its own State (sequencer core,
  * transport, edge-state, timers, channel mapping) via create(). All
- * instance callbacks take `self`. There is no GPU PSO — the visual overlay
- * is drawn through the canvas API.
+ * instance callbacks take `self`.
+ *
+ * The visual overlay is drawn with the in-effect overlay toolbox (overlay.h):
+ * solid rects/borders via an instanced GPU pass + labels via the host text
+ * engine, composited onto tex_out over tex_in. (The old host `canvas_*` ABI is
+ * a no-op in the sketch-executor / barrel render path, so the overlay never
+ * showed there.) Declaring tex_out is what makes the executor bind a writable
+ * render target and call render() at all — without it the looper is a
+ * modulation-source passthrough and render() never runs.
  */
 
+#include <gpu.h>
 #include <host.h>
+#include <overlay.h>
 #include <val.h>
 #include "core.h"
 #include "../../src/json/json_doc_client.h"
@@ -114,6 +123,9 @@ struct State {
   int channel_thumb_tex[NUM_CHANNELS] = {0};
   int channel_connected[NUM_CHANNELS] = {0};
 
+  /* Debug overlay drawer (solid-quad GPU rects + host-text labels). */
+  overlay::Canvas ov;
+
   bool initialized = false;
 };
 
@@ -125,11 +137,6 @@ static int str_len(const char* s) {
   int n = 0;
   while (s[n]) n++;
   return n;
-}
-
-static void text(const char* s, float x, float y, float size,
-                 float r, float g, float b, float a) {
-  canvas_draw_text(s, str_len(s), x, y, size, r, g, b, a);
 }
 
 /* Log levels */
@@ -500,9 +507,20 @@ void module_init() {
     "\"out_1\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":15},"
     "\"out_2\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":16},"
     "\"out_3\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":17},"
-    "\"out_4\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":18}"
+    "\"out_4\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":18},"
+    // The texture passthrough. Declaring tex_out (PrimaryOutput texture) is what
+    // makes the executor treat the looper as a rendering stage — binding a
+    // writable output + calling render() — instead of a modulation-source
+    // passthrough (which skips render() entirely). It still drains triggers and
+    // publishes out_N in the render branch, so those are unaffected.
+    "\"tex_in\":{\"type\":\"texture\",\"io\":5,\"order\":19},"
+    "\"tex_out\":{\"type\":\"texture\",\"io\":6,\"order\":20}"
     "}}";
   state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
+
+  /* Compile the overlay toolbox's solid-quad shader up front (idempotent; also
+   * retried lazily on first render if no GPU backend exists yet). */
+  overlay::initShaders();
 }
 
 /* Per-instance construction: allocate State + one-time looper init. */
@@ -515,6 +533,7 @@ void* create() {
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  s->ov.dispose();
   delete s;
 }
 
@@ -625,186 +644,171 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 }
 
 
+/* Draw one recorded note as a continuous bar on a lane's timeline. start/length
+ * are in loop units [0, NUM_STEPS); the bar may wrap the loop seam, so it's
+ * drawn as up to two segments. A bright leading edge marks the true onset. */
+static void draw_note_bar(overlay::Canvas& ov, const Event& e,
+                          float track_x, float track_w, float bar_y, float bar_h,
+                          float cr, float cg, float cb,
+                          bool muted, bool playing, float scale) {
+  const double loop = (double)NUM_STEPS;
+  double s0 = e.start;
+  if (s0 < 0) s0 = 0; else if (s0 >= loop) s0 -= loop;
+  double rem = e.length;
+  if (rem > loop) rem = loop;
+
+  const float body_a = muted ? 0.30f : (playing ? 0.95f : 0.72f);
+  const float edge_a = muted ? 0.45f : 1.0f;
+  const float bf = playing ? 0.85f : 0.55f;   // body brightness
+
+  bool first = true;
+  while (rem > 1e-4) {
+    double seg = rem;
+    if (s0 + seg > loop) seg = loop - s0;      // clip at the seam → wrap
+
+    float x = track_x + (float)(s0 / loop) * track_w;
+    float w = (float)(seg / loop) * track_w;
+    if (w < 2.0f * scale) w = 2.0f * scale;
+
+    ov.fillRect(x, bar_y, w, bar_h,
+                overlay::rgba(cr * bf, cg * bf, cb * bf, body_a));
+    if (first)   // onset marker (only on the leading segment)
+      ov.fillRect(x, bar_y, 3.5f * scale, bar_h, overlay::rgba(cr, cg, cb, edge_a));
+
+    rem -= seg;
+    s0 += seg;
+    if (s0 >= loop) s0 -= loop;
+    first = false;
+  }
+}
+
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  if (!s->show_overlay) return;
 
-  /* Scale factor: base design at 1080p, scale proportionally */
-  float scale = (float)vp_h / 1080.0f;
-  float gw = 24.0f * scale;        /* glyph width (monospace advance) */
-  float lh = 28.0f * scale;        /* line height */
-  float font_size = 24.0f * scale; /* bitmap font render size */
-  float margin = 20.0f * scale;
-  float row_gap = 6.0f * scale;
+  /* The looper now owns its output texture (tex_out), so it must always write
+   * it — even when the overlay is hidden, forward the input so downstream sees
+   * the image (this replaces the executor's old alias-passthrough). */
+  if (!s->show_overlay || vp_w <= 0 || vp_h <= 0) {
+    int out = gpu::Device::textureForField("tex_out").id;
+    if (out >= 0) {
+      int in = gpu::Device::textureForField("tex_in").id;
+      if (in >= 0) gpu::Device::copy(gpu::Texture{in}, gpu::Texture{out});
+      else         gpu::Device::clear(gpu::Texture{out}, 0, 0, 0, 0);
+      gpu::Device::submit();
+    }
+    return;
+  }
 
-  float y = margin;
+  overlay::Canvas& ov = s->ov;
+  ov.begin(vp_w, vp_h);
 
-  /* --- Title --- */
-  text("Looper", margin, y, font_size, 0.9f, 0.9f, 0.9f, 0.9f);
+  /* Base design at 1080p, scaled proportionally. */
+  const float scale = (float)vp_h / 1080.0f;
+  const float margin = 28.0f * scale;
+  const float title_sz = 30.0f * scale;
+  const float label_sz = 22.0f * scale;
+  const float small_sz = 17.0f * scale;
+
+  const float lane_h = 46.0f * scale;
+  const float lane_gap = 10.0f * scale;
+  const float number_x = margin + 6.0f * scale;
+  const float name_x = margin + 34.0f * scale;
+  const float track_x = margin + 210.0f * scale;
+  float track_w = (float)vp_w - track_x - margin;
+  if (track_w < 60.0f * scale) track_w = 60.0f * scale;
+
+  const float top = margin;
+  const float lanes_top = top + title_sz + 20.0f * scale;
+  const float lanes_h = NUM_CHANNELS * (lane_h + lane_gap) - lane_gap;
+  const float panel_h = (lanes_top - top) + lanes_h + 52.0f * scale;
+
+  /* --- Panel background (first rect → behind everything else) --- */
+  ov.fillRect(margin * 0.5f, top - 14.0f * scale, (float)vp_w - margin, panel_h,
+              overlay::rgba(0.04f, 0.05f, 0.07f, 0.72f));
+
+  /* --- Title + REC --- */
+  ov.text("LOOPER", margin, top, title_sz, overlay::rgba(0.90f, 0.92f, 0.95f, 0.95f), 800);
   if (s->record_held)
-    text("* REC", margin + gw * 8, y, font_size, 1, 0.2f, 0.2f, 1);
-  y += lh + row_gap;
+    ov.text("\xe2\x97\x8f REC", margin + title_sz * 5.6f, top + 4.0f * scale, label_sz,
+            overlay::rgba(1.0f, 0.28f, 0.28f, 1.0f), 700);
 
-  /* --- Connection status --- */
+  /* --- Connection status (top-right, pulsing dot) --- */
   {
-    float dot_size = lh * 0.5f;
-    float dot_y = y + (lh - dot_size) * 0.5f;
-    float text_x = margin + dot_size + gw * 0.5f;
     float t = (float)s->elapsed;
-
-    float pulse = 0.3f + 0.7f * (0.5f + 0.5f * sinf(t * 8.0f));
-    canvas_fill_rect(margin, dot_y, dot_size, dot_size,
-                     0.3f, 0.5f, 1.0f, pulse);
-    text("Connecting...", text_x, y, font_size, 0.4f, 0.6f, 1.0f, 0.6f);
-  }
-  y += lh + row_gap;
-
-  /* --- Clip cards --- */
-  {
-    float card_w = lh * 5;
-    float thumb_h = card_w * 0.6f;
-    float card_h = thumb_h + lh + 4 * scale;
-    float card_gap = 8.0f * scale;
-    float border = 3.0f * scale;
-
-    for (int i = 0; i < NUM_CHANNELS; i++) {
-      float cx = margin + i * (card_w + card_gap);
-      int has_content = (s->channel_clip_count[i] > 0);
-      int ch_active = (s->gate_state[i]);
-
-      float br, bg, bb, ba;
-      if (ch_active) {
-        br = CH_R[i]; bg = CH_G[i]; bb = CH_B[i]; ba = 0.9f;
-      } else if (has_content) {
-        br = CH_R[i]*0.4f; bg = CH_G[i]*0.4f; bb = CH_B[i]*0.4f; ba = 0.5f;
-      } else {
-        br = 0.25f; bg = 0.25f; bb = 0.25f; ba = 0.3f;
-      }
-
-      /* Border */
-      canvas_fill_rect(cx, y, card_w, card_h, br, bg, bb, ba);
-      /* Inner */
-      canvas_fill_rect(cx + border, y + border,
-                       card_w - border*2, card_h - border*2,
-                       0.05f, 0.05f, 0.05f, 0.85f);
-
-      /* Thumbnail */
-      float tw = card_w - border*2 - 2*scale;
-      float th = thumb_h - border - 2*scale;
-      if (s->channel_thumb_tex[i] >= 0) {
-        canvas_draw_image(s->channel_thumb_tex[i],
-                          cx + border + scale, y + border + scale, tw, th);
-      } else {
-        canvas_fill_rect(cx + border + scale, y + border + scale,
-                         tw, th, 0.12f, 0.12f, 0.12f, 0.6f);
-      }
-
-      /* Clip name */
-      const char* name = s->channel_names[i];
-      if (name[0] == 0) name = "(empty)";
-      float name_y = y + thumb_h + 2*scale;
-      float name_size = font_size * 0.7f;
-      text(name, cx + border + 2*scale, name_y, name_size,
-           0.7f, 0.7f, 0.7f, 0.7f);
-
-      /* Mute overlay */
-      if (s->mute_held && s->trigger_held[i]) {
-        canvas_fill_rect(cx + border, y + border,
-                         card_w - border*2, card_h - border*2,
-                         0, 0, 0, 0.6f);
-        text("MUTE", cx + card_w*0.25f, y + thumb_h*0.4f, font_size,
-             0.8f, 0.3f, 0.3f, 0.8f);
-      }
-    }
-    y += card_h + row_gap * 2;
+    float pulse = 0.35f + 0.65f * (0.5f + 0.5f * sinf(t * 6.0f));
+    float dot = 12.0f * scale;
+    float cx = (float)vp_w - margin - 168.0f * scale;
+    ov.fillRect(cx, top + 5.0f * scale, dot, dot, overlay::rgba(0.30f, 0.55f, 1.0f, pulse));
+    ov.text("connecting", cx + dot + 8.0f * scale, top + 1.0f * scale, small_sz,
+            overlay::rgba(0.60f, 0.72f, 1.0f, 0.80f));
   }
 
-  /* --- Beat markers --- */
-  float cells_x = margin + gw * 2;
-  float cell = lh + 4*scale;
-  int current_step = (int)floor(s->phase);
-  if (current_step >= NUM_STEPS) current_step = 0;
-
-  {
-    char buf[4];
-    for (int beat = 0; beat < 4; beat++) {
-      float bx = cells_x + beat * 4 * cell;
-      buf[0] = '|';
-      buf[1] = '1' + beat;
-      buf[2] = 0;
-      canvas_draw_text(buf, 2, bx, y, font_size, 0.5f, 0.5f, 0.5f, 0.4f);
-    }
+  /* --- Beat gridlines behind the lanes (4 beats / bar) --- */
+  for (int beat = 0; beat <= 4; beat++) {
+    float gx = track_x + (beat / 4.0f) * track_w;
+    float a = (beat % 4 == 0) ? 0.34f : 0.15f;
+    ov.fillRect(gx, lanes_top, 1.5f * scale, lanes_h, overlay::rgba(0.60f, 0.66f, 0.78f, a));
   }
-  y += lh * 0.8f + row_gap;
 
-  /* --- Grid --- */
+  /* --- Lanes: continuous note bars per channel --- */
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    int is_muted = s->mute_held && s->trigger_held[ch];
+    float ly = lanes_top + ch * (lane_h + lane_gap);
     float cr = CH_R[ch], cg = CH_G[ch], cb = CH_B[ch];
+    bool muted = s->mute_held && s->trigger_held[ch];
+    float dim = muted ? 0.35f : 1.0f;
+    bool playing = s->gate_state[ch] != 0;
 
-    char label[2] = { char('1' + ch), 0 };
-    text(label, margin, y, font_size,
-         is_muted ? cr*0.3f : cr, is_muted ? cg*0.3f : cg, is_muted ? cb*0.3f : cb, 1.0f);
+    /* Lane track background (highlights while the channel is gated). */
+    float track_a = playing ? 0.14f : 0.05f;
+    ov.fillRect(track_x, ly, track_w, lane_h, overlay::rgba(cr, cg, cb, track_a));
 
-    int act_step = s->gate_state[ch] ? current_step : -1;
+    /* Channel number + optional clip name. */
+    char num[2] = { char('1' + ch), 0 };
+    ov.text(num, number_x, ly + lane_h * 0.5f - label_sz * 0.55f, label_sz,
+            overlay::rgba(cr * dim, cg * dim, cb * dim, 1.0f), 700);
+    if (s->channel_names[ch][0])
+      ov.text(s->channel_names[ch], name_x, ly + lane_h * 0.5f - small_sz * 0.55f,
+              small_sz, overlay::rgba(0.70f, 0.72f, 0.76f, 0.80f));
 
-    for (int st = 0; st < NUM_STEPS; st++) {
-      float cx = cells_x + st * cell;
-      int has_event = looper_has_event(&s->looper, ch, st);
-      int covered = looper_step_covered(&s->looper, ch, st);
-      int cur = (st == current_step);
-      int playing = (st == act_step);
-
-      if (cur)
-        canvas_fill_rect(cx - scale, y - scale, cell, cell, 0.5f, 0.5f, 0.5f, 0.25f);
-
-      if (has_event) {
-        /* Onset cell: bright leading bar (the trigger point) + fill. */
-        float bar_w = 3.0f * scale;
-        if (is_muted) {
-          canvas_fill_rect(cx, y, bar_w, lh, cr, cg, cb, 0.4f);
-          canvas_fill_rect(cx + bar_w, y, cell - 2*scale - bar_w, lh, cr, cg, cb, 0.25f);
-        } else if (playing) {
-          canvas_fill_rect(cx, y, bar_w, lh, cr, cg, cb, 1.0f);
-          canvas_fill_rect(cx + bar_w, y, cell - 2*scale - bar_w, lh, cr, cg, cb, 1.0f);
-        } else {
-          canvas_fill_rect(cx, y, bar_w, lh, cr, cg, cb, 1.0f);
-          canvas_fill_rect(cx + bar_w, y, cell - 2*scale - bar_w, lh,
-                           cr*0.5f, cg*0.5f, cb*0.5f, 0.7f);
-        }
-      } else if (covered) {
-        /* Sustained cell: the recorded gate is still held through this step —
-         * a dimmer continuation bar so long notes read as bars, not dots. */
-        float a = is_muted ? 0.18f : (playing ? 0.6f : 0.4f);
-        canvas_fill_rect(cx, y, cell - 2*scale, lh, cr*0.6f, cg*0.6f, cb*0.6f, a);
-      } else {
-        canvas_fill_rect(cx, y, cell - 2*scale, lh, 0.5f, 0.5f, 0.5f, cur ? 0.15f : 0.06f);
-      }
+    /* Note bars (unquantized: positioned/sized by real onset + gate length). */
+    float bar_pad = 6.0f * scale;
+    for (int i = 0; i < s->looper.event_count; i++) {
+      const Event& e = s->looper.events[i];
+      if (e.channel != ch) continue;
+      draw_note_bar(ov, e, track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
+                    cr, cg, cb, muted, playing, scale);
     }
-    y += cell;
   }
-  y += row_gap;
 
-  /* --- Trigger indicators + modifiers --- */
+  /* --- Playhead: continuous position across all lanes --- */
+  {
+    float ph = (float)s->phase / (float)NUM_STEPS;
+    if (ph < 0) ph = 0; else if (ph > 1) ph = 1;
+    float px = track_x + ph * track_w;
+    ov.fillRect(px - 1.5f * scale, lanes_top - 4.0f * scale, 3.0f * scale,
+                lanes_h + 8.0f * scale, overlay::rgba(1.0f, 1.0f, 1.0f, 0.88f));
+  }
+
+  /* --- Trigger flashes + modifier state (bottom row) --- */
+  float row_y = lanes_top + lanes_h + 16.0f * scale;
   for (int i = 0; i < NUM_CHANNELS; i++) {
-    float x = margin + i * gw * 3;
-    float alpha = s->flash[i] > 0 ? 1.0f : 0.3f;
-    char label[2] = { char('1' + i), 0 };
-    text(label, x, y, font_size, CH_R[i], CH_G[i], CH_B[i], alpha);
+    float x = margin + i * 44.0f * scale;
+    float a = s->flash[i] > 0 ? 1.0f : 0.28f;
+    ov.fillRect(x, row_y, 16.0f * scale, 16.0f * scale,
+                overlay::rgba(CH_R[i], CH_G[i], CH_B[i], a));
   }
-  float mod_x = margin + NUM_CHANNELS * gw * 3 + gw * 2;
-  text("D", mod_x, y, font_size, 1, 0.2f, 0.2f, s->delete_held ? 1.0f : 0.25f);
-  text("M", mod_x + gw * 2, y, font_size, 1, 1, 0.2f, s->mute_held ? 1.0f : 0.25f);
-  y += lh + row_gap;
+  float mod_x = margin + NUM_CHANNELS * 44.0f * scale + 16.0f * scale;
+  ov.text("DEL", mod_x, row_y - 2.0f * scale, small_sz,
+          overlay::rgba(1.0f, 0.30f, 0.30f, s->delete_held ? 1.0f : 0.30f), 700);
+  ov.text("MUTE", mod_x + 56.0f * scale, row_y - 2.0f * scale, small_sz,
+          overlay::rgba(1.0f, 0.85f, 0.30f, s->mute_held ? 1.0f : 0.30f), 700);
+  ov.text("Q.start", mod_x + 140.0f * scale, row_y - 2.0f * scale, small_sz,
+          overlay::rgba(0.55f, 0.80f, 1.0f, s->quantize_start ? 1.0f : 0.32f), 700);
+  ov.text("Q.len", mod_x + 232.0f * scale, row_y - 2.0f * scale, small_sz,
+          overlay::rgba(0.55f, 0.80f, 1.0f, s->quantize_length ? 1.0f : 0.32f), 700);
 
-  /* --- Background panel (drawn as first rect, will be behind due to draw order) --- */
-  /* Note: Unlike the original GL code, we can't reorder draw commands after the fact.
-     So we draw the background first in a separate pass. For the WASM version, the
-     host should handle z-ordering or we accept the simpler approach of drawing
-     the background first. We insert it at the top. */
-  /* TODO: For proper z-ordering, the host would need a "begin layer" / "end layer" concept.
-     For now, the background is drawn on top which is acceptable for the prototype. */
+  ov.end();
 }
 
 } // namespace nanolooper

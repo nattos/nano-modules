@@ -257,6 +257,18 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       declare_texture_output: () => {},
       declare_data_output: () => {},
     },
+    // Host text engine. nanolooper's overlay now composites its labels through
+    // text::layout/render (not the old canvas draw list). This GPU-less harness
+    // just needs the imports to exist; returning 0 from layout makes render()
+    // skip the composite (no fonts here), so the logic tests still run.
+    text: {
+      layout: () => 0,   // 0 = error → text::render skipped
+      measure: () => 0,
+      render: () => {},
+      atlas: () => -1,
+      glyphs: () => 0,
+      release: () => {},
+    },
     gpu: {
       get_backend: () => -1,
       create_shader_module: () => -1,
@@ -387,7 +399,11 @@ describe('WasmHost', () => {
     module.tick(0.016);
   });
 
-  it('render produces draw commands', async () => {
+  // The overlay is now drawn via the in-effect overlay toolbox (GPU solid-quad
+  // rects + text::render), not the old host canvas draw list. Without a GPU
+  // backend (this harness stubs gpu.* to -1) render() resolves no writable
+  // target and returns cleanly — so here we only assert it runs without error.
+  it('render runs without error (GPU-less host)', async () => {
     const { host, module } = await loadHost();
     module.init();
 
@@ -396,12 +412,7 @@ describe('WasmHost', () => {
     host.frameState.viewportW = 1920;
     host.frameState.viewportH = 1080;
 
-    host.drawList = [];
-    module.render(1920, 1080);
-
-    expect(host.drawList.length).toBeGreaterThan(0);
-    expect(host.drawList.filter(c => c.type === 'fill_rect').length).toBeGreaterThan(0);
-    expect(host.drawList.filter(c => c.type === 'draw_text').length).toBeGreaterThan(0);
+    expect(() => module.render(1920, 1080)).not.toThrow();
   });
 
   it('on_param_change triggers audio callback', async () => {
@@ -414,22 +425,6 @@ describe('WasmHost', () => {
 
     host.notifyStatePatched(module, [{ op: 'replace', path: 'trigger_1', value: 1.0 }]);
     expect(triggeredChannel).toBe(0);
-  });
-
-  it('draw commands contain expected text', async () => {
-    const { host, module } = await loadHost();
-    module.init();
-
-    host.frameState.elapsedTime = 1.0;
-    host.frameState.viewportW = 1920;
-    host.frameState.viewportH = 1080;
-
-    host.drawList = [];
-    module.render(1920, 1080);
-
-    const texts = host.drawList.filter(c => c.type === 'draw_text').map(c => c.text);
-    expect(texts).toContain('Looper');
-    expect(texts).toContain('Connecting...');
   });
 
   it('on_state_patched reads grid from canonical state', async () => {
@@ -510,11 +505,9 @@ describe('WasmHost', () => {
       module.tick(0.016);
     }
 
-    host.drawList = [];
     host.frameState.viewportW = 800;
     host.frameState.viewportH = 600;
-    module.render(800, 600);
-    expect(host.drawList.length).toBeGreaterThan(0);
+    expect(() => module.render(800, 600)).not.toThrow();
   });
 });
 

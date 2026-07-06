@@ -2833,6 +2833,97 @@ TEST_CASE("control.nanolooper replays a recorded note as the beat clock loops",
   // replay the gate on its own. THIS is "it loops".
   CHECK(step(0.15625, false));               // phase 2.5, inside [2,3) → ON re-fires
 }
+
+// The looper now DRAWS its debug overlay through the in-effect overlay toolbox
+// (overlay.h): solid-quad GPU rects + host-text labels composited onto tex_out
+// over tex_in. This is only possible because it declares a tex_out texture
+// field — otherwise the executor classifies it a modulation-source passthrough
+// and never calls render(). This test proves both halves:
+//   show_overlay=true  → the output differs from the passthrough input (the
+//                        overlay's panel darkens the top and the playhead paints
+//                        a near-white column), while a pixel below the panel
+//                        still equals the input (passthrough preserved).
+//   show_overlay=false → the output equals the input (clean passthrough — the
+//                        effect owns the output texture now and must forward it).
+TEST_CASE("control.nanolooper composites its overlay over the passthrough input",
+          "[effect_render][nanolooper]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+  const uint32_t W = 480, H = 270;
+  int inTex = backend->createTexture(W, H, 1);
+  int outTex = backend->createTexture(W, H, 1);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // Uniform mid-gray input so any overlay pixel is unambiguous.
+  std::vector<uint8_t> gray(W * H * 4, 128);
+  for (size_t i = 3; i < gray.size(); i += 4) gray[i] = 255;
+  backend->writeTexture(inTex, W, H, gray.data(), (uint32_t)gray.size());
+
+  auto sketchFor = [](bool overlay) {
+    auto s = nlohmann::json::parse(R"JSON({
+      "chain": [ { "type": "module", "module_type": "control.nanolooper", "instance_key": "lp" } ],
+      "instances": { "lp": { "module_type": "control.nanolooper", "state": {} } }
+    })JSON");
+    s["instances"]["lp"]["state"]["show_overlay"] = overlay;
+    return s;
+  };
+
+  auto pixAt = [&](std::vector<uint8_t>& px, uint32_t x, uint32_t y) {
+    size_t i = ((size_t)y * W + x) * 4;
+    return std::array<int,4>{ px[i], px[i+1], px[i+2], px[i+3] };
+  };
+
+  // --- Overlay ON: panel darkens the top band; playhead paints a bright column.
+  bundles.setHostClock(0.0, 1.0 / 60.0, 0.5, 120.0, (int)W, (int)H);  // playhead mid-bar
+  {
+    auto sketch = sketchFor(true);
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+    backend->submit();
+    auto px = backend->readbackTexture(out, W, H);
+
+    // Scan the lane band for the darkest and brightest luma we can find.
+    int lo = 255, hi = 0;
+    for (uint32_t y = 20; y < 70; ++y)
+      for (uint32_t x = 4; x < W - 4; ++x) {
+        auto p = pixAt(px, x, y);
+        int l = (p[0] + p[1] + p[2]) / 3;
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+      }
+    INFO("overlay band luma range [" << lo << ", " << hi << "] (input was 128)");
+    CHECK(lo < 100);   // the semi-transparent panel darkens the input
+    CHECK(hi > 170);   // the playhead / labels paint bright pixels
+
+    // A pixel well below the panel is untouched → passthrough preserved.
+    auto below = pixAt(px, W / 2, H - 6);
+    INFO("below-panel rgba = " << below[0] << "," << below[1] << "," << below[2]);
+    CHECK(std::abs(below[0] - 128) <= 6);
+    CHECK(std::abs(below[1] - 128) <= 6);
+    CHECK(std::abs(below[2] - 128) <= 6);
+  }
+
+  // --- Overlay OFF: clean passthrough (the effect still owns tex_out).
+  {
+    auto sketch = sketchFor(false);
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+    backend->submit();
+    auto px = backend->readbackTexture(out, W, H);
+    double m = mean_rgb(px);
+    INFO("overlay-off mean = " << m << " (input 128)");
+    CHECK(std::abs(m - 128.0) <= 3.0);
+    auto top = pixAt(px, W / 2, 40);   // where the panel WOULD be
+    CHECK(std::abs(top[0] - 128) <= 6);
+  }
+}
 #endif  // NANO_WASM_PATH
 
 // Second Arena repro axis: the user isolated a MULTI-CARD PASTE that crashed
