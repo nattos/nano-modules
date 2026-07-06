@@ -114,6 +114,38 @@ describe('Lens (filter.blur.lens) E2E', () => {
     fringe.trace('out').expectDifferentFrom(clean.trace('out'), 50);
   });
 
+  it('veiling glare (hood) lifts the image when the hood retracts', async () => {
+    // Highlights (grid lines) above a low threshold scatter into a wide bloom when
+    // the hood is retracted (extension 0); a shaded hood (extension 1) stays clean.
+    const clean = await runChain('lens_h1', { hood_extension: 1.0, flare_strength: 1.0, hl_threshold: 0.3, blur_amount: 0.1 }, 'lens_hood_clean', GRID);
+    const flary = await runChain('lens_h0', { hood_extension: 0.0, flare_strength: 1.0, hl_threshold: 0.3, blur_amount: 0.1 }, 'lens_hood_flary', GRID);
+    expect(clean.success).toBe(true);
+    expect(flary.success).toBe(true);
+    flary.trace('out').expectDifferentFrom(clean.trace('out'), 50);
+  });
+
+  it('sun / stray light adds flare when enabled and admitted', async () => {
+    // The hood must be retracted (extension 0) to admit the oblique source.
+    const off = await runChain('lens_s0', { sun_intensity: 0.0, hood_extension: 0.0, blur_amount: 0.1 }, 'lens_sun_off', GRID);
+    const on  = await runChain('lens_s1', { sun_intensity: 1.0, hood_extension: 0.0, sun_glow: 1.0, sun_ghost: 1.0, blur_amount: 0.1 }, 'lens_sun_on', GRID);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 50);
+  });
+
+  it('halation + bloom bleed a glow from the highlights', async () => {
+    // The glow is additive (it bleeds highlight energy into the surrounding dark
+    // areas), so it lifts the total brightness.
+    const dry = await runChain('lens_gl0', { halation: 0.0, bloom: 0.0, blur_amount: 0.0 }, 'lens_glow_off', GRID);
+    const wet = await runChain('lens_gl1', { halation: 1.0, bloom: 1.0, blur_amount: 0.0 }, 'lens_glow_on', GRID);
+    expect(dry.success).toBe(true);
+    expect(wet.success).toBe(true);
+    let sumDry = 0, sumWet = 0;
+    dry.trace('out').forEachPixel((c) => { sumDry += c.r + c.g + c.b; });
+    wet.trace('out').forEachPixel((c) => { sumWet += c.r + c.g + c.b; });
+    expect(sumWet).toBeGreaterThan(sumDry);
+  });
+
   it('exposure changes the output brightness', async () => {
     const dim    = await runChain('lens_e0', { exposure: -0.5 }, 'lens_exp_0', GRID);
     const bright = await runChain('lens_e1', { exposure: 0.5 },  'lens_exp_1', GRID);

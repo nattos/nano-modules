@@ -16,13 +16,14 @@
  * stages"). See lenssim/{pipeline,optics,coatings}.py for the per-pass math this
  * ports 1:1; the out*\/ study montages are the eyeball golden.
  *
- * CURRENT: prepare (sRGB→linear + highlight boost) → bokeh gather (full-res
- * Vogel-disc shaped-aperture gather with cats-eye/swirl/anamorphic/field-
- * curvature/LoCA) → coating colour grade → distortion + transverse CA →
- * finish (exposure/vignette/hl-desat/tonemap/grain), ping-ponged bufA/bufB.
- * Still to land: the flare stack (hood veiling glare + spectral sun) and
- * halation/bloom (need an RGBA16F-safe wide blur), the downsample tier, the
- * `fill` anti-stipple blur, and the spec-constant quality tiers.
+ * All nine passes are implemented (ping-ponged bufA/bufB, RGBA16F linear-HDR):
+ * prepare (sRGB→linear + highlight boost) → bokeh gather (Vogel-disc shaped
+ * aperture: cats-eye/swirl/anamorphic/field-curvature/LoCA) → coating colour
+ * grade → veiling glare (hood) → off-frame spectral sun (veil/glow/streak/ghost
+ * chain + thin-film coating) → halation+bloom → distortion + transverse CA →
+ * finish (exposure/vignette/hl-desat/tonemap/grain). Wide blurs use the RGBA16F-
+ * safe Blur16. Still to optimize (Stage 5): the downsample tier, the reduced-res
+ * flare tier, the `fill` anti-stipple blur, and the spec-constant quality tiers.
  *
  * Per-instance instance ABI (class-like): module_init() compiles the shared PSOs
  * + publishes the schema once per type; each chain entry gets its own State.
@@ -33,6 +34,7 @@
 #include <gpu.h>
 #include <host.h>
 #include "lens_shaders.h"
+#include "blur16.h"
 
 #include <cmath>
 #include <cstdint>
@@ -118,6 +120,29 @@ struct GeoU {
 };
 static_assert(sizeof(GeoU) == 32, "GeoU layout");
 
+struct ExtractU { float threshold, _p0, _p1, _p2; };
+static_assert(sizeof(ExtractU) == 16, "ExtractU layout");
+
+struct HoodU { float ftr, ftg, ftb, strength; };   // u_flare_tint (vec3) then u_strength
+static_assert(sizeof(HoodU) == 16, "HoodU layout");
+
+struct GlowU {
+  float bloom, halation, _p0, _p1;
+  float hr, hg, hb, _p2;                            // u_hal_color
+};
+static_assert(sizeof(GlowU) == 32, "GlowU layout");
+
+struct SunU {
+  float half, dimw, dimh, gate;
+  float azimuth, obliqueness, sun_r, sun_g;
+  float sun_b, w_glow, w_veil, w_streak;
+  float w_ghost, coat_flare, elem_curv, dispersion;
+  float aperture_rot, blade_curv, coat_r0, _p0;
+  float design0, design1, design2; uint32_t ndesigns;
+  uint32_t blades, nsp; float _p1, _p2;
+};
+static_assert(sizeof(SunU) == 112, "SunU layout");
+
 // Normalized-slider → prototype-raw mappings for the geometry pass (the raw
 // coefficients are small; presets sit around ±0.05 distortion / 0.01 TCA).
 static constexpr float DIST_SCALE = 0.30f;   // distortion / mustache slider → raw
@@ -132,9 +157,11 @@ struct State {
 
   // GPU resources (per-instance).
   gpu::Texture bufA, bufB;       // full-res linear-HDR ping/pong
+  gpu::Texture hi, hi_a, hi_b;   // highlight map + two blurred copies (flare/glow)
   gpu::Sampler sampler;          // Linear/ClampToEdge (bokeh taps)
   gpu::Buffer  tap_buf;          // Vogel tap set (float4/tap: ox,oy,base_w,_)
   gpu::Buffer  prepare_buf, bokeh_buf, color_buf, geo_buf, finish_buf;
+  gpu::Buffer  extract_buf, hood_buf, glow_buf, sun_buf;
 
   // Schema-mirrored params (normalized unless noted). Defaults mirror the schema.
   int   preset = 0;             // inert (UI-only); serialized
@@ -206,6 +233,8 @@ struct State {
 // stipple micro-blur is deferred until an RGBA16F-safe blur is wired for the
 // flare/glow passes.
 static gpu::ComputePSO s_pso_prepare, s_pso_bokeh, s_pso_color, s_pso_geo, s_pso_finish;
+static gpu::ComputePSO s_pso_extract, s_pso_hood, s_pso_glow, s_pso_sun;
+static Blur16 s_blur16;   // RGBA16F wide blur (veiling glare, halation, bloom)
 
 void module_init() {
   state::init("filter.blur.lens", {1, 0, 0},
@@ -424,13 +453,22 @@ void module_init() {
   state::registerShaderSPV("lens_bokeh",   BOKEH_SPV,   BOKEH_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("lens_color",   COLOR_SPV,   COLOR_SPV_SIZE,   "rgba16float", "write");
   state::registerShaderSPV("lens_geo",     GEO_SPV,     GEO_SPV_SIZE,     "rgba16float", "write");
+  state::registerShaderSPV("lens_extract", EXTRACT_SPV, EXTRACT_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("lens_hood",    HOOD_SPV,    HOOD_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("lens_glow",    GLOW_SPV,    GLOW_SPV_SIZE,    "rgba16float", "write");
+  state::registerShaderSPV("lens_sun",     SUN_SPV,     SUN_SPV_SIZE,     "rgba16float", "write");
   state::registerShaderSPV("lens_finish",  FINISH_SPV,  FINISH_SPV_SIZE,  "rgba8unorm",  "write");
   auto cs_prepare = gpu::Device::createShaderModuleByName("lens_prepare");
   auto cs_bokeh   = gpu::Device::createShaderModuleByName("lens_bokeh");
   auto cs_color   = gpu::Device::createShaderModuleByName("lens_color");
   auto cs_geo     = gpu::Device::createShaderModuleByName("lens_geo");
+  auto cs_extract = gpu::Device::createShaderModuleByName("lens_extract");
+  auto cs_hood    = gpu::Device::createShaderModuleByName("lens_hood");
+  auto cs_glow    = gpu::Device::createShaderModuleByName("lens_glow");
+  auto cs_sun     = gpu::Device::createShaderModuleByName("lens_sun");
   auto cs_finish  = gpu::Device::createShaderModuleByName("lens_finish");
-  if (!cs_prepare || !cs_bokeh || !cs_color || !cs_geo || !cs_finish) {
+  if (!cs_prepare || !cs_bokeh || !cs_color || !cs_geo || !cs_extract ||
+      !cs_hood || !cs_glow || !cs_sun || !cs_finish) {
     state::log("lens: a shader failed to compile");
     return;
   }
@@ -442,11 +480,22 @@ void module_init() {
       .tex2d(0).storageTex2d(1, F16).uniform(2));
   s_pso_geo = gpu::Device::createComputePSO(cs_geo, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, F16).uniform(3));
+  s_pso_extract = gpu::Device::createComputePSO(cs_extract, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, F16).uniform(2));
+  s_pso_hood = gpu::Device::createComputePSO(cs_hood, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).storageTex2d(2, F16).uniform(3));
+  s_pso_glow = gpu::Device::createComputePSO(cs_glow, "main", gpu::Bindings()
+      .tex2d(0).tex2d(1).tex2d(2).storageTex2d(3, F16).uniform(4));
+  s_pso_sun = gpu::Device::createComputePSO(cs_sun, "main", gpu::Bindings()
+      .tex2d(0).storageTex2d(1, F16).uniform(2));
   s_pso_finish = gpu::Device::createComputePSO(cs_finish, "main", gpu::Bindings()
       .tex2d(0).storageTex2d(1, gpu::TextureFormat::RGBA8).uniform(2));
+  s_blur16.init();
 
-  gpu::ComputePSO* psos[] = { &s_pso_prepare, &s_pso_bokeh, &s_pso_color, &s_pso_geo, &s_pso_finish };
+  gpu::ComputePSO* psos[] = { &s_pso_prepare, &s_pso_bokeh, &s_pso_color, &s_pso_geo,
+    &s_pso_extract, &s_pso_hood, &s_pso_glow, &s_pso_sun, &s_pso_finish };
   for (auto* p : psos) if (!p->valid()) state::log("lens: a PSO is INVALID");
+  if (!s_blur16.valid()) state::log("lens: Blur16 INVALID");
   state::log("lens: module_init done");
 }
 
@@ -459,6 +508,10 @@ void* create() {
   s->color_buf   = gpu::Device::createBuffer(sizeof(ColorU),   gpu::BufferUsage::Uniform);
   s->geo_buf     = gpu::Device::createBuffer(sizeof(GeoU),     gpu::BufferUsage::Uniform);
   s->finish_buf  = gpu::Device::createBuffer(sizeof(FinishU),  gpu::BufferUsage::Uniform);
+  s->extract_buf = gpu::Device::createBuffer(sizeof(ExtractU), gpu::BufferUsage::Uniform);
+  s->hood_buf    = gpu::Device::createBuffer(sizeof(HoodU),    gpu::BufferUsage::Uniform);
+  s->glow_buf    = gpu::Device::createBuffer(sizeof(GlowU),    gpu::BufferUsage::Uniform);
+  s->sun_buf     = gpu::Device::createBuffer(sizeof(SunU),     gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -467,6 +520,9 @@ void destroy(void* self) {
   if (!s) return;
   if (s->bufA.valid()) s->bufA.release();
   if (s->bufB.valid()) s->bufB.release();
+  if (s->hi.valid())   s->hi.release();
+  if (s->hi_a.valid()) s->hi_a.release();
+  if (s->hi_b.valid()) s->hi_b.release();
   s->sampler.release();
   s->tap_buf.release();
   s->prepare_buf.release();
@@ -474,12 +530,18 @@ void destroy(void* self) {
   s->color_buf.release();
   s->geo_buf.release();
   s->finish_buf.release();
+  s->extract_buf.release();
+  s->hood_buf.release();
+  s->glow_buf.release();
+  s->sun_buf.release();
   delete s;
 }
 
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  // Core pipeline must be valid; the flare/glow passes degrade gracefully (each
+  // guarded on its own PSO at dispatch time).
   s->initialized = s_pso_prepare.valid() && s_pso_bokeh.valid() &&
                    s_pso_color.valid() && s_pso_geo.valid() && s_pso_finish.valid() &&
                    s->tap_buf.valid() && s->finish_buf.valid();
@@ -570,11 +632,15 @@ int32_t is_identity(void* self) {
 
 static bool ensureTextures(State* s, int w, int h) {
   if (s->tex_w == w && s->tex_h == h && s->bufA.valid() && s->bufB.valid()) return true;
-  if (s->bufA.valid()) s->bufA.release();
-  if (s->bufB.valid()) s->bufB.release();
-  s->bufA = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
-  s->bufB = gpu::Device::createTexture(w, h, gpu::TextureFormat::RGBA16F);
-  if (!s->bufA.valid() || !s->bufB.valid()) return false;
+  const auto F16 = gpu::TextureFormat::RGBA16F;
+  gpu::Texture* texs[] = { &s->bufA, &s->bufB, &s->hi, &s->hi_a, &s->hi_b };
+  bool ok = true;
+  for (auto* t : texs) {
+    if (t->valid()) t->release();
+    *t = gpu::Device::createTexture(w, h, F16);
+    if (!t->valid()) ok = false;
+  }
+  if (!ok) return false;
   s->tex_w = w; s->tex_h = h;
   return true;
 }
@@ -679,6 +745,78 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch(gx, gy); cp.end();
       swap();
     }
+  }
+
+  const bool blur_ok = s_pso_extract.valid() && s_blur16.valid();
+
+  // 4. in-frame veiling glare (hood). Skip when the hood fully shades the frame.
+  { const Coating& coat = coatingOf(s->coating);
+    float strength = s->flare_strength * coat.flare * (1.f - s->hood_extension);
+    if (strength > 1e-4f && blur_ok && s_pso_hood.valid()) {
+      ExtractU eu = { s->hl_threshold, 0.f, 0.f, 0.f };
+      s->extract_buf.writeOne(eu);
+      { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_extract);
+        cp.setTexture(src, 0, 0); cp.setTexture(s->hi, 1, 1);
+        cp.setBuffer(s->extract_buf, 2); cp.dispatch(gx, gy); cp.end(); }
+      s_blur16.apply(s->hi, s->hi_a, vp_w, vp_h, 0.06f * md0);
+      HoodU hu = { coat.flare_tint[0], coat.flare_tint[1], coat.flare_tint[2], strength };
+      s->hood_buf.writeOne(hu);
+      { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_hood);
+        cp.setTexture(src, 0, 0); cp.setTexture(s->hi_a, 1, 0); cp.setTexture(dst, 2, 1);
+        cp.setBuffer(s->hood_buf, 3); cp.dispatch(gx, gy); cp.end(); }
+      swap();
+    }
+  }
+
+  // 5. off-frame sun / stray light. Off by default (sun_intensity 0 → skipped).
+  if (s->sun_intensity > 1e-4f && s_pso_sun.valid()) {
+    const Coating& coat = coatingOf(s->coating);
+    float az = s->sun_azimuth * (float)(2.0 * M_PI);
+    float petal = 1.f + s->hood_shape * 0.5f * std::cos(4.f * (az - (float)M_PI / 4.f));
+    float mp = petal < 0.2f ? 0.2f : petal;
+    float cutoff = (0.06f + (1.f - s->hood_extension) * 1.10f) * mp;
+    float gate = (1.f - ss(0.65f * cutoff, cutoff, s->sun_obliqueness)) * s->sun_intensity;
+    if (gate > 1e-4f) {
+      int blades = s->blades < 3 ? 3 : s->blades;
+      int nsp = (blades % 2 == 0) ? blades : 2 * blades;
+      SunU u = {};
+      u.half = half; u.dimw = (float)vp_w; u.dimh = (float)vp_h; u.gate = gate;
+      u.azimuth = az; u.obliqueness = s->sun_obliqueness;
+      u.sun_r = s->sun_r; u.sun_g = s->sun_g; u.sun_b = s->sun_b;
+      u.w_glow = s->sun_glow; u.w_veil = s->sun_veil; u.w_streak = s->sun_streak;
+      u.w_ghost = s->sun_ghost; u.coat_flare = coat.flare;
+      u.elem_curv = s->element_curvature; u.dispersion = s->dispersion;
+      u.aperture_rot = s->aperture_rotation * (float)(2.0 * M_PI);
+      u.blade_curv = s->blade_curvature; u.coat_r0 = coat.r0;
+      u.design0 = coat.designs[0]; u.design1 = coat.designs[1]; u.design2 = coat.designs[2];
+      u.ndesigns = (uint32_t)coat.ndesigns;
+      u.blades = (uint32_t)blades; u.nsp = (uint32_t)nsp;
+      s->sun_buf.writeOne(u);
+      auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_sun);
+      cp.setTexture(src, 0, 0); cp.setTexture(dst, 1, 1); cp.setBuffer(s->sun_buf, 2);
+      cp.dispatch(gx, gy); cp.end();
+      swap();
+    }
+  }
+
+  // 6. halation + bloom. Skip when both off.
+  if ((s->halation > 1e-4f || s->bloom > 1e-4f) && blur_ok && s_pso_glow.valid()) {
+    ExtractU eu = { 0.75f, 0.f, 0.f, 0.f };
+    s->extract_buf.writeOne(eu);
+    { auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_extract);
+      cp.setTexture(src, 0, 0); cp.setTexture(s->hi, 1, 1);
+      cp.setBuffer(s->extract_buf, 2); cp.dispatch(gx, gy); cp.end(); }
+    s_blur16.apply(s->hi, s->hi_a, vp_w, vp_h, 0.02f * md0);   // bloom
+    s_blur16.apply(s->hi, s->hi_b, vp_w, vp_h, 0.05f * md0);   // halation
+    GlowU gu = {};
+    gu.bloom = s->bloom; gu.halation = s->halation;
+    gu.hr = s->hal_r; gu.hg = s->hal_g; gu.hb = s->hal_b;
+    s->glow_buf.writeOne(gu);
+    auto cp = gpu::ComputePass::begin(); cp.setPSO(s_pso_glow);
+    cp.setTexture(src, 0, 0); cp.setTexture(s->hi_a, 1, 0); cp.setTexture(s->hi_b, 2, 0);
+    cp.setTexture(dst, 3, 1); cp.setBuffer(s->glow_buf, 4);
+    cp.dispatch(gx, gy); cp.end();
+    swap();
   }
 
   // 7. geometry: distortion + transverse chromatic aberration. Skip if neutral.
