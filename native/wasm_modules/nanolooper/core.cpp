@@ -233,6 +233,26 @@ void looper_end_note(LooperCore* c, int channel, double current_time) {
   }
 }
 
+int looper_latch_press(int* capturing, double* start_abs,
+                       double now_abs, double loop, double inv_grace) {
+  if (!*capturing) {
+    *capturing = 1;
+    *start_abs = now_abs;
+    return 1;   /* first trigger — start capture, clear the pattern */
+  }
+  double elapsed = now_abs - *start_abs;
+  if (elapsed < loop - inv_grace) {
+    return 0;   /* inside the 1-bar window (before the inverse-grace edge) — add */
+  }
+  /* Past the window (or in its trailing inverse-grace zone) — restart. Align to
+   * the previous bar boundary when the retrigger lands within one bar of it, so
+   * a repeatedly-tapped phrase stays on a stable grid instead of drifting. */
+  double next_boundary = *start_abs + loop;
+  if (now_abs - next_boundary < loop) *start_abs = next_boundary;
+  else                                *start_abs = now_abs;
+  return 1;
+}
+
 void looper_active_channels(const LooperCore* c, double phase, int* active) {
   for (int ch = 0; ch < NUM_CHANNELS; ch++) active[ch] = 0;
   double p = wrap(phase, c->loop_length);

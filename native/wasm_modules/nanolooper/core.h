@@ -78,6 +78,20 @@ void looper_end_note(LooperCore* c, int channel, double current_time);
  * that end_note finalizes (and quantizes) on release. */
 void looper_tick_pending(LooperCore* c, double current_time);
 
+/* Latch-mode capture-window state machine (pure; the module owns the transport
+ * timer and does the actual clear). Given a trigger at monotonic time `now_abs`
+ * (accumulated transport phase, never wrapping), the bar length `loop`, and an
+ * inverse-grace `inv_grace` at the bar's TRAILING edge:
+ *   - the first trigger, or one AFTER the 1-bar window (including the trailing
+ *     inverse-grace zone, so the first tap of a repeated phrase reads as a NEW
+ *     bar), starts/restarts a capture: returns 1 (the caller clears the pattern)
+ *     and updates *start_abs / *capturing;
+ *   - a trigger inside the window just adds to it: returns 0, state unchanged.
+ * A restart within one bar of the previous bar boundary snaps *start_abs to that
+ * boundary (grid-aligned) so a repeatedly-tapped phrase's start doesn't drift. */
+int looper_latch_press(int* capturing, double* start_abs,
+                       double now_abs, double loop, double inv_grace);
+
 /* Playback gate: fills active[NUM_CHANNELS] with 1 where some recorded note's
  * [start, start+length) window (wrapping) covers `phase`. The module diffs this
  * against the previous frame to emit gate on/off — frame-rate independent and

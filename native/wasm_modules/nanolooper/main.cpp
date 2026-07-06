@@ -74,6 +74,7 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_QUANTIZE_START  13
 #define PID_QUANTIZE_LENGTH 14
 #define PID_GRACE           15
+#define PID_LATCH           16
 
 /* ======================================================================
  * State
@@ -105,6 +106,15 @@ struct State {
   int quantize_start = 0;
   int quantize_length = 0;
   float grace_beats = 0.0625f;   /* overwrite grace, in beats (1/64 note) */
+
+  /* Latch mode: the first trigger clears the pattern and opens a 1-bar capture
+   * window; triggers inside it accumulate; a trigger past it (incl. the trailing
+   * inverse-grace zone) restarts. abs_phase is the monotonic transport clock the
+   * window is measured against (a repeatedly-tapped phrase stays grid-aligned). */
+  int latch = 0;
+  int latch_capturing = 0;
+  double latch_start_abs = 0.0;
+  double abs_phase = 0.0;
 
   /* Connection state */
   int ws_connected = 0;
@@ -312,6 +322,14 @@ static void on_param_change(State& s, int index, double value) {
       } else {
         int step = (int)s.phase % NUM_STEPS;
         s.last_action_was_clear = 0;
+        /* Latch: the first trigger (or one past the 1-bar window) clears the
+         * pattern and (re)opens a capture window before we record. */
+        if (s.latch) {
+          double inv_grace = (double)s.grace_beats * (NUM_STEPS / 4.0);
+          if (looper_latch_press(&s.latch_capturing, &s.latch_start_abs,
+                                 s.abs_phase, (double)NUM_STEPS, inv_grace))
+            looper_clear_all(&s.looper);
+        }
         looper_begin_note(&s.looper, ch, s.phase);
         log_structured(LOG_INFO, "Note on", json_ch_step(ch + 1, step));
       }
@@ -378,6 +396,9 @@ static void on_param_change(State& s, int index, double value) {
      * (NUM_STEPS steps), so 1 beat == NUM_STEPS/4 units. */
     s.grace_beats = (float)value;
     looper_set_grace(&s.looper, (double)s.grace_beats * (NUM_STEPS / 4.0));
+  } else if (index == PID_LATCH) {
+    s.latch = pressed;
+    s.latch_capturing = 0;   /* re-arm: the next trigger starts a fresh capture */
   }
 
   /* One authority for gate emission — reflect the new input state immediately. */
@@ -474,6 +495,7 @@ static int field_to_pid(const char* path, int pathLen) {
     {"quantize_start", PID_QUANTIZE_START},
     {"quantize_length", PID_QUANTIZE_LENGTH},
     {"grace", PID_GRACE},
+    {"latch", PID_LATCH},
   };
   for (auto& m : map) {
     int mlen = std::strlen(m.name);
@@ -526,7 +548,11 @@ void module_init() {
     // Overwrite grace period, in fractions of a beat (default 0.0625 = a 1/64
     // note). See core.h: it deletes a note truncated below this, and decides
     // swallow-vs-truncate when a new note grows over an old onset.
-    "\"grace\":{\"type\":\"float\",\"default\":0.0625,\"min\":0,\"max\":1,\"io\":5,\"order\":21}"
+    "\"grace\":{\"type\":\"float\",\"default\":0.0625,\"min\":0,\"max\":1,\"io\":5,\"order\":21},"
+    // Latch mode: capture a tapped 1-bar phrase. First trigger clears + opens a
+    // 1-bar window; later triggers accumulate; a trigger past it restarts. `grace`
+    // doubles as the trailing inverse-grace so a repeated tap reads as a new bar.
+    "\"latch\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":22}"
     "}}";
   state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
 
@@ -577,6 +603,10 @@ void init(void* self) {
   looper_set_quantize(&s->looper, 0, 0);
   s->grace_beats = 0.0625f;
   looper_set_grace(&s->looper, (double)s->grace_beats * (NUM_STEPS / 4.0));
+  s->latch = 0;
+  s->latch_capturing = 0;
+  s->latch_start_abs = 0.0;
+  s->abs_phase = 0.0;
   /* send_to_rail keeps its schema default (on) via on_state_patched; reset the
    * ring so a re-init never replays stale events. */
   s->trig_ring_len = 0;
@@ -615,6 +645,12 @@ void tick(void* self, double dt) {
   double bar = host_get_bar_phase();
   s->prev_phase = s->phase;
   s->phase = bar * NUM_STEPS;
+
+  /* Monotonic transport clock (never wraps) — the reference the latch capture
+   * window is measured against. */
+  double dphase = s->phase - s->prev_phase;
+  if (dphase < 0) dphase += (double)NUM_STEPS;   /* crossed the loop seam */
+  s->abs_phase += dphase;
 
   /* Gate emission is fully driven by recompute_gates: as the phase sweeps
    * through each recorded note's [start, start+length) window, gates turn on at
@@ -826,6 +862,20 @@ void render(void* self, int vp_w, int vp_h) {
           overlay::rgba(0.55f, 0.80f, 1.0f, s->quantize_start ? 1.0f : 0.32f), 700);
   ov.text("Q.len", mod_x + 232.0f * scale, row_y - 2.0f * scale, small_sz,
           overlay::rgba(0.55f, 0.80f, 1.0f, s->quantize_length ? 1.0f : 0.32f), 700);
+  ov.text("LATCH", mod_x + 314.0f * scale, row_y - 2.0f * scale, small_sz,
+          overlay::rgba(0.55f, 1.0f, 0.65f,
+                        s->latch ? (s->latch_capturing ? 1.0f : 0.65f) : 0.32f), 700);
+
+  /* Latch capture-window progress: a thin bar above the lanes filling over the
+   * 1-bar window (green while capturing). */
+  if (s->latch && s->latch_capturing) {
+    double prog = (s->abs_phase - s->latch_start_abs) / (double)NUM_STEPS;
+    if (prog < 0) prog = 0; else if (prog > 1) prog = 1;
+    float by = lanes_top - 9.0f * scale;
+    ov.fillRect(track_x, by, track_w, 3.0f * scale, overlay::rgba(0.2f, 0.4f, 0.25f, 0.5f));
+    ov.fillRect(track_x, by, track_w * (float)prog, 3.0f * scale,
+                overlay::rgba(0.45f, 1.0f, 0.6f, 0.9f));
+  }
 
   ov.end();
 }

@@ -241,6 +241,70 @@ TEST_CASE("a held note grows to the current time for the overlay",
   CHECK(active_ch(c, 4.0, 0));                        // now it plays
 }
 
+TEST_CASE("latch: first trigger starts a capture, in-window triggers accumulate",
+          "[looper_core]") {
+  int capturing = 0;
+  double start = 0;
+  const double INV = 0.25;   // inverse grace (a 1/64 note)
+
+  // First trigger at abs=3 → start capture (returns 1 = clear the pattern).
+  CHECK(looper_latch_press(&capturing, &start, 3.0, LOOP, INV) == 1);
+  CHECK(capturing == 1);
+  CHECK(start == 3.0);
+
+  // Later triggers within the window just add (return 0, state unchanged).
+  CHECK(looper_latch_press(&capturing, &start, 8.0, LOOP, INV) == 0);
+  CHECK(looper_latch_press(&capturing, &start, 18.0, LOOP, INV) == 0);  // 15 in
+  CHECK(start == 3.0);
+}
+
+TEST_CASE("latch: a trigger past the window restarts (and aligns to the grid)",
+          "[looper_core]") {
+  int capturing = 0;
+  double start = 0;
+  const double INV = 0.25;
+
+  looper_latch_press(&capturing, &start, 3.0, LOOP, INV);   // start at 3
+
+  // A trigger ~1 bar later (abs 19.1) is past the window → restart, aligned to
+  // the previous bar boundary (3 + 16 = 19), NOT to the jittered tap time.
+  CHECK(looper_latch_press(&capturing, &start, 19.1, LOOP, INV) == 1);
+  CHECK(start == Catch::Approx(19.0));   // snapped to the grid, no drift
+}
+
+TEST_CASE("latch: inverse grace treats a near-end trigger as a new bar",
+          "[looper_core]") {
+  int capturing = 0;
+  double start = 0;
+  const double INV = 0.25;
+
+  looper_latch_press(&capturing, &start, 3.0, LOOP, INV);   // window [3, 3+16)
+
+  // A tap at abs 18.8 (elapsed 15.8) lands inside the trailing inverse-grace
+  // zone [15.75, 16) → treated as OUTSIDE → restart (a fresh repeat), aligned.
+  CHECK(looper_latch_press(&capturing, &start, 18.8, LOOP, INV) == 1);
+  CHECK(start == Catch::Approx(19.0));
+
+  // Whereas a tap just before that zone (elapsed 15.5) still accumulates.
+  int cap2 = 0; double st2 = 0;
+  looper_latch_press(&cap2, &st2, 3.0, LOOP, INV);
+  CHECK(looper_latch_press(&cap2, &st2, 18.5, LOOP, INV) == 0);
+}
+
+TEST_CASE("latch: a retrigger well after a bar starts fresh (unaligned)",
+          "[looper_core]") {
+  int capturing = 0;
+  double start = 0;
+  const double INV = 0.25;
+
+  looper_latch_press(&capturing, &start, 3.0, LOOP, INV);   // start 3
+
+  // Waited more than a full bar past the boundary (abs 43, boundary 19, 24 > 16)
+  // → not aligned; a brand-new capture anchored at the tap.
+  CHECK(looper_latch_press(&capturing, &start, 43.0, LOOP, INV) == 1);
+  CHECK(start == Catch::Approx(43.0));
+}
+
 TEST_CASE("clear and undo restore the pattern", "[looper_core]") {
   LooperCore c;
   looper_init(&c, LOOP);
