@@ -92,7 +92,7 @@ export interface Selectable {
    * The texture this selectable previews, if any. When selected, the main
    * sketch monitor switches to show it; with none selected (or a selection that
    * has no viewable texture, e.g. a scalar param), the monitor falls back to the
-   * sketch's final output. See edit-tab's `edit_preview` registration.
+   * sketch's final output. See sketch-app's `edit_preview` registration.
    */
   traceTarget?: TracePoint['target'];
   /**
@@ -163,15 +163,23 @@ export interface UserSettings {
   /** Width in pixels of the IDE's left details panel. */
   ideLeftPanelWidth: number;
   /** Currently active left tab in the IDE. */
-  ideLeftTab: 'explorer' | 'project_editor' | 'debug_info';
+  ideLeftTab: 'explorer' | 'project_editor' | 'debug_info' | 'settings';
   /** Currently selected project id (`default:<effectId>` or `user:<uuid>`). */
   selectedProjectId: string | null;
   /** Scroll positions keyed by an arbitrary scope id. */
   scrollPositions: Record<string, number>;
   /** Whether the engine is paused. */
   paused: boolean;
-  /** Resolume sketch-IDE: last active top tab (create/organize/edit). */
-  activeTab: 'create' | 'organize' | 'edit';
+  /** Resolume sketch-IDE: last active top tab (create/organize/edit/settings). */
+  activeTab: 'create' | 'organize' | 'edit' | 'settings';
+  /**
+   * Which of the three top-level surfaces this session prefers. Set at boot
+   * time to reflect the actual surface (see `boot.ts`); changed explicitly via
+   * the Settings tab's mode selector, which navigates to the matching entry
+   * URL (`resolume-mode.ts`'s `switchAppMode`). Never auto-redirects a
+   * mismatched bookmark/deep-link — it only records + drives explicit switches.
+   */
+  appMode: 'effect-dev' | 'playground' | 'live';
   /** Resolume sketch-IDE: the sketch currently open in the edit tab. */
   editingSketchId: string | null;
   /** Target framerate the GPU headroom estimate is measured against (FPS). */
@@ -261,7 +269,7 @@ export interface EngineStatus {
 }
 
 export interface LocalState {
-  activeTab: 'organize' | 'edit';
+  activeTab: 'organize' | 'edit' | 'settings';
   plugins: PluginInfo[];
   availableEffects: AvailableEffect[];
   editingSketchId: string | null;

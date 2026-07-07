@@ -135,6 +135,11 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
   }
+  // Record the surface actually booting into `appMode`, regardless of what
+  // was last persisted — the URL (which decided `mode`) is the source of
+  // truth for the current surface; `appMode` only remembers it for the
+  // Settings tab's selector. Never auto-redirects a mismatched bookmark.
+  appController.setUserSetting('appMode', mode === 'barrel' ? 'live' : mode === 'playground' ? 'playground' : 'effect-dev');
   // Effect-IDE projects load ONLY in ide mode: barrel gets its sketch from
   // the bridge; the playground has its own store (loaded by resolume-app).
   if (mode === 'ide') {

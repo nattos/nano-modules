@@ -1,17 +1,19 @@
 /**
- * <edit-tab> — Single-column sketch editor with drag-drop, field widgets,
- * and configurable rail/tap routing.
+ * <sketch-column-editor> — the single-column sketch editor body shared by the
+ * Effect IDE's Project Editor tab and the Resolume shell's Edit tab (they
+ * used to be two independent reimplementations — `ide-project-editor.ts` and
+ * `edit-tab.ts` — that could silently drift; this is the one canonical
+ * columns-editor now).
  *
- * Layout mirrors the Effect IDE's main area (`effect-ide-app.ts`): a
- * resizable `.left-panel` holding the column editor, an `<ide-splitter>`,
- * and a `.right-panel` holding the shared `<sketch-monitor>` (preview +
- * bottom transport strip). The width is persisted as
- * `userSettings.editLeftPanelWidth`, the IDE's own `ideLeftPanelWidth`
- * counterpart.
+ * Fully driven by the `sketchId` property — the caller decides which sketch
+ * that is (`userSettings.selectedProjectId` for the IDE,
+ * `appState.local.editingSketchId` for Resolume). Renders only the
+ * columns-editor body (`.columns-wrap`: `<columns-view>` + `<taps-overlay>`);
+ * the surrounding left-panel/splitter/monitor chrome lives in `<app-shell>`.
  *
- * Uses <columns-view> for virtualized column management. Each column is a
- * <column-group> custom element; columns outside the viewport are detached
- * from the DOM (pausing MobX reactions and trace registrations).
+ * Uses <columns-view> for virtualized column management (a single column —
+ * multi-column mode is retired, the data model has been single-`chain` for a
+ * while). Each column is a <column-group> custom element.
  *
  * IMPORTANT: Field editors and custom inspectors have NO knowledge of tapping,
  * selection, or layout tracking. The column-group renders overlay layers on
@@ -19,7 +21,7 @@
  */
 
 import { html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, property } from 'lit/decorators.js';
 import { keyed } from 'lit/directives/keyed.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
@@ -27,60 +29,85 @@ import { appController } from '../state/controller';
 import { ensureChain, chainEntryAt } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
 
-import type { FieldBinding } from '../widgets/field-editor';
-import type { ColumnHost } from '../widgets/columns-view';
-import type { ColumnGroupCallbacks } from '../widgets/column-group';
-import { ColumnGroup } from '../widgets/column-group';
-import '../widgets/columns-view';
-import '../widgets/column-group';
+import type { FieldBinding } from './field-editor';
+import type { ColumnHost } from './columns-view';
+import type { ColumnGroupCallbacks } from './column-group';
+import { ColumnGroup } from './column-group';
+import './columns-view';
+import './column-group';
 import { ideColumnAdapter } from '../state/ide-column-adapter';
-import '../widgets/taps-overlay';
-import '../widgets/sketch-monitor';
-import '../widgets/splitter';
-import '../widgets/spark-chart';
+import './taps-overlay';
 import { editorRegistry } from '../editor-registry';
 import { isTypingInEditable } from '../utils/keyboard';
 import { handleCommonEditShortcut } from '../utils/common-edit-shortcuts';
 
-// Import inspector registrations (self-registering) — single barrel shared with
-// the effects IDE so the lists can't drift.
+// Import inspector registrations (self-registering) — single barrel shared by
+// every surface so the lists can't drift.
 import '../editors/all-inspectors';
 
-@customElement('edit-tab')
-export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
-  // Cached column-group elements by column index
-  private columnCache = new Map<number, HTMLElement>();
+@customElement('sketch-column-editor')
+export class SketchColumnEditor extends MobxLitElement implements ColumnHost, ColumnGroupCallbacks {
+  /** The sketch to edit. Null / missing from the database renders `emptyMessage`. */
+  @property({ attribute: false }) sketchId: string | null = null;
+  /** Shown when `sketchId` is unset or not (yet) in the database. */
+  @property({ type: String }) emptyMessage = 'No sketch selected.';
 
-  // Cached inspector elements by instance key
+  // Cached column-group elements by column index.
+  private columnCache = new Map<number, HTMLElement>();
+  // Cached inspector elements by instance key.
   private inspectorCache = new Map<string, HTMLElement>();
 
   // The sketch the caches above were built for. Both caches hold per-sketch
   // elements (column-groups carry their sketchId; inspectors bind instance
-  // keys), so switching the edited instance while the tab stays mounted must
-  // reset them — paired with the keyed() remount of columns-view in render(),
-  // which drops the stale DOM. Without this, changing instances kept showing
-  // the previous instance's chain (the cache is index-keyed, so index 0
-  // returned the old sketch's column-group forever).
+  // keys), so switching the edited sketch while this stays mounted must reset
+  // them — paired with the keyed() remount of columns-view in render(), which
+  // drops the stale DOM.
   private cachedSketchId: string | null = null;
 
-  // Drag state
+  // Drag state.
   private dragSketchId: string | null = null;
   private dragSourceCol = -1;
   private dragSourceIdx = -1;
   private dragCardEl: HTMLElement | null = null;
   private dragOp: PointerDragOp | null = null;
-  private dragHoverTarget: { type: 'zone'; colIdx: number; insertIdx: number }
-    | { type: 'placeholder'; colIdx: number } | null = null;
+  private dragHoverTarget: { colIdx: number; insertIdx: number } | null = null;
 
-  get columnCount(): number {
-    const sketchId = appState.local.editingSketchId;
-    if (!sketchId) return 0;
-    const sketch = appState.database.sketches[sketchId];
-    if (!sketch) return 0;
-    // Single linear stack — one chain, one column. (Multi-column mode is
-    // retired; the data model has been single-`chain` for a while.)
-    return 1;
-  }
+  static styles = css`
+    :host {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+    }
+    .empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 16px;
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-lg);
+      text-align: center;
+      line-height: 1.6;
+    }
+    .columns-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      /* min-height: 0 is load-bearing: .columns-wrap is a main-axis item of a
+         column-flex host, so the default min-height:auto would let it grow to
+         its content height. columns-view sizes its scroll content to
+         max(columns, clientHeight×1.5) (the scroll-past-end tail), so an
+         unpinned clientHeight feeds back and diverges to the browser height
+         clamp — leaving nothing to scroll. */
+      min-height: 0;
+      display: flex;
+    }
+    columns-view {
+      flex: 1;
+      min-width: 0;
+    }
+  `;
 
   connectedCallback() {
     super.connectedCallback();
@@ -95,8 +122,7 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
   private clearSketchCaches() {
     for (const [, el] of this.inspectorCache) {
-      const factory = editorRegistry.getInspectorFactory(
-        (el as any).moduleType ?? '');
+      const factory = editorRegistry.getInspectorFactory((el as any).moduleType ?? '');
       factory?.destroy(el);
     }
     this.inspectorCache.clear();
@@ -110,18 +136,18 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   private handleGlobalKeyDown = (e: KeyboardEvent) => {
     if (!this.isConnected) return;
     if (isTypingInEditable(e)) return;
-    // Copy/Cut/Paste/Undo/Redo (⌘/Ctrl+C/X/V/Z), shared with the effect IDE
-    // so the two surfaces can't drift apart on these.
+    // Copy/Cut/Paste/Undo/Redo (⌘/Ctrl+C/X/V/Z), shared across every surface
+    // so they can't drift apart on these.
     if (handleCommonEditShortcut(e)) return;
     // `W` toggles wires (taps) mode (global, when not typing) — same key as the
-    // arrangement view, so the two surfaces are consistent.
+    // arrangement view, so all surfaces are consistent.
     if (e.key === 'w' || e.key === 'W') {
       e.preventDefault();
       appController.setTappingMode(!appState.local.tappingMode);
       return;
     }
-    // `?` toggles help mode (global, when not typing) — a sibling of W/A, and
-    // the same key as the arrangement view for consistency.
+    // `?` toggles help mode (global, when not typing) — a sibling of W, same
+    // key across all surfaces.
     if (e.key === '?') {
       e.preventDefault();
       appController.setHelpMode(!appState.local.helpMode);
@@ -148,8 +174,8 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     const parts = selection.path.split('/');
     if (parts[0] !== 'effect' || parts.length < 4) return;
     const sketchId = parts[1];
-    const colIdx = parseInt(parts[2]);
-    const chainIdx = parseInt(parts[3]);
+    const colIdx = parseInt(parts[2], 10);
+    const chainIdx = parseInt(parts[3], 10);
     if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
 
     if (e.key === '0') {
@@ -169,60 +195,11 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
     appController.removeEffectFromChain(sketchId, colIdx, chainIdx);
   };
 
-  static styles = css`
-    :host {
-      display: flex;
-      flex: 1;
-      min-height: 0;
-    }
-    .left-panel {
-      background: var(--app-bg-color2);
-      flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      min-width: 0;
-    }
-    .columns-wrap {
-      position: relative;
-      flex: 1;
-      min-width: 0;
-      /* min-height: 0 is load-bearing: .columns-wrap is a main-axis item of
-         the column-flex .left-panel, so the default min-height:auto would let
-         it grow to its content height. columns-view sizes its scroll content
-         to max(columns, clientHeight×1.5) (the scroll-past-end tail), so an
-         unpinned clientHeight feeds back and diverges to the browser height
-         clamp — leaving nothing to scroll. The Effect IDE's equivalent chain
-         is pinned the same way (ide-project-editor's :host min-height: 0). */
-      min-height: 0;
-      display: flex;
-    }
-    .right-panel {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    .empty-state {
-      color: var(--app-text-color2); font-size: var(--app-fs-lg);
-      text-align: center; padding: 32px 16px;
-    }
-  `;
-
   render() {
-    const sketchId = appState.local.editingSketchId;
-    const leftWidth = appState.local.userSettings.editLeftPanelWidth;
+    const sketchId = this.sketchId;
     if (!sketchId || !appState.database.sketches[sketchId]) {
-      return html`
-        <div style="flex:1;display:flex;align-items:center;justify-content:center">
-          <div class="empty-state">No sketch selected for editing.<br>Go to Organize and pick one.</div>
-        </div>
-      `;
+      return html`<div class="empty">${this.emptyMessage}</div>`;
     }
-
-    const traceTarget = appState.local.selection?.traceTarget
-      ?? ({ type: 'sketch_output', sketchId } as any);
 
     // Per-sketch cache reset — see cachedSketchId.
     if (sketchId !== this.cachedSketchId) {
@@ -230,52 +207,47 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
       this.clearSketchCaches();
     }
 
-    return html`
-      <div class="left-panel" style="width: ${leftWidth}px">
-        ${keyed(sketchId, html`<div class="columns-wrap">
-          <columns-view .host=${this as ColumnHost}
-            fitWidth
-            .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}
-            @click=${(e: Event) => {
-              // Deselect when clicking on empty space (not handled by a child)
-              if (e.target === e.currentTarget) appController.select(null);
-            }}
-          ></columns-view>
-          <taps-overlay .sketchId=${sketchId}></taps-overlay>
-        </div>`)}
-      </div>
-      <ide-splitter
-        .width=${leftWidth}
-        @resize=${this.onResize}
-      ></ide-splitter>
-      <div class="right-panel">
-        <sketch-monitor
-          .sketchId=${sketchId}
-          traceId="edit_preview"
-          .traceTarget=${traceTarget}
-          emptyMessage="No sketch selected for editing."
-        ></sketch-monitor>
-      </div>
+    return html`${keyed(sketchId, html`
+      <div class="columns-wrap">
+        <columns-view .host=${this as ColumnHost}
+          fitWidth
+          .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}
+          @click=${(e: Event) => {
+            // Deselect when clicking on empty space (not handled by a child)
+            if (e.target === e.currentTarget) appController.select(null);
+          }}
+        ></columns-view>
+        <taps-overlay .sketchId=${sketchId}></taps-overlay>
+      </div>`)}
     `;
   }
-
-  private onResize = (e: CustomEvent<{ width: number }>) => {
-    appController.setUserSetting('editLeftPanelWidth', e.detail.width);
-  };
 
   // ========================================================================
   // ColumnHost implementation
   // ========================================================================
 
-  getColumnElement(index: number): HTMLElement {
-    const cached = this.columnCache.get(index);
-    if (cached) return cached;
+  get columnCount(): number {
+    const sketchId = this.sketchId;
+    if (!sketchId) return 0;
+    // Single linear stack — one chain, one column.
+    return appState.database.sketches[sketchId] ? 1 : 0;
+  }
 
-    const sketchId = appState.local.editingSketchId ?? '';
+  getColumnElement(index: number): HTMLElement {
+    const sketchId = this.sketchId ?? '';
+    const cached = this.columnCache.get(index);
+    if (cached) {
+      // Refresh sketchId in case the selection materialized to a new id
+      // (e.g. a default project promoted to a fresh user: id) without the
+      // cache having been cleared.
+      (cached as any).sketchId = sketchId;
+      return cached;
+    }
 
     const colGroup = document.createElement('column-group') as any;
     colGroup.colIdx = index;
     colGroup.sketchId = sketchId;
+    colGroup.isPlaceholder = false;
     colGroup.callbacks = this;
     colGroup.adapter = ideColumnAdapter;
     this.columnCache.set(index, colGroup as HTMLElement);
@@ -308,19 +280,12 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
 
     this.dragOp = new PointerDragOp(e, header, {
       threshold: 5,
-
       move: (me) => {
         card.setAttribute('dragging', '');
         this.updateDragHover(me.clientX, me.clientY);
       },
-
-      accept: () => {
-        this.commitDrop();
-      },
-
-      cancel: () => {
-        this.cleanupDrag();
-      },
+      accept: () => this.commitDrop(),
+      cancel: () => this.cleanupDrag(),
     });
   }
 
@@ -358,112 +323,77 @@ export class EditTab extends MobxLitElement implements ColumnHost, ColumnGroupCa
   // ========================================================================
 
   /**
-   * Find the globally closest insertion point to the pointer and show the marker.
-   * Always selects a target — no proximity threshold.
+   * Find the globally closest insertion point to the pointer and show the
+   * marker. Single-column → no placeholder/new-column drops.
    */
   private updateDragHover(px: number, py: number) {
-    // Hide all previous markers
-    for (const [, el] of this.columnCache) {
-      (el as ColumnGroup).hideInsertMarker?.();
-    }
+    for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
     this.dragHoverTarget = null;
 
-    // Collect all insertion points from all cached column-groups
     let bestDist = Infinity;
-    let bestPoint: { colIdx: number; insertIdx: number; x: number; y: number; isPlaceholder: boolean; element: HTMLElement } | null = null;
+    let bestPoint: { colIdx: number; insertIdx: number; x: number; y: number; element: HTMLElement } | null = null;
 
     for (const [, el] of this.columnCache) {
       const colGroup = el as ColumnGroup;
       if (!colGroup.getInsertionPoints) continue;
-      const points = colGroup.getInsertionPoints();
-      for (const pt of points) {
+      for (const pt of colGroup.getInsertionPoints()) {
         const dx = px - pt.x;
         const dy = py - pt.y;
         const dist = dx * dx + dy * dy;
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestPoint = { ...pt, element: el };
-        }
+        if (dist < bestDist) { bestDist = dist; bestPoint = { ...pt, element: el }; }
       }
     }
-
     if (!bestPoint) return;
 
-    // Set the hover target
-    if (bestPoint.isPlaceholder) {
-      this.dragHoverTarget = { type: 'placeholder', colIdx: bestPoint.colIdx };
-    } else {
-      this.dragHoverTarget = { type: 'zone', colIdx: bestPoint.colIdx, insertIdx: bestPoint.insertIdx };
-    }
-
-    // Show insertion marker at the correct Y position in the target column
+    this.dragHoverTarget = { colIdx: bestPoint.colIdx, insertIdx: bestPoint.insertIdx };
     const colGroup = bestPoint.element as ColumnGroup;
     const colEl = colGroup.renderRoot?.querySelector('.column') as HTMLElement | null;
     if (colEl) {
       const colRect = colEl.getBoundingClientRect();
-      const relativeY = bestPoint.y - colRect.top;
-      colGroup.showInsertMarker(relativeY);
+      colGroup.showInsertMarker(bestPoint.y - colRect.top);
     }
   }
 
-  /** Commit the drop to the currently hovered target. */
+  /** Commit the drop — splice the dragged module to the hovered insert index. */
   private commitDrop() {
-    if (!this.dragSketchId || !this.dragHoverTarget) {
-      this.cleanupDrag();
-      return;
-    }
+    if (!this.dragSketchId || !this.dragHoverTarget) { this.cleanupDrag(); return; }
 
     const sketchId = this.dragSketchId;
     const sketch = appState.database.sketches[sketchId];
-    if (!sketch) {
-      this.cleanupDrag();
-      return;
-    }
-
     const sourceEntry = chainEntryAt(sketch, this.dragSourceIdx);
-    if (!sourceEntry || sourceEntry.type !== 'module') {
-      this.cleanupDrag();
-      return;
-    }
+    if (!sketch || !sourceEntry || sourceEntry.type !== 'module') { this.cleanupDrag(); return; }
 
-    // Capture all drag state before cleanup clears it
-    const hoverTarget = this.dragHoverTarget;
+    const { insertIdx: targetInsertIdx } = this.dragHoverTarget;
     const sourceIdx = this.dragSourceIdx;
-
-    // Clean up drag visual state first (markers, dragging attribute)
     this.cleanupDrag();
 
-    // Single linear stack: every drop is a reorder within the one chain. A
-    // `zone` drop inserts at the zone index; a `placeholder` drop (the extra
-    // drag-out columns) just moves the entry to the bottom of the stack.
+    // Single linear stack: every drop is a reorder within the one chain.
     appController.mutate('Move effect', draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
       const chain = ensureChain(sk);
       const [removed] = chain.splice(sourceIdx, 1);
       if (!removed) return;
-
-      if (hoverTarget.type === 'zone') {
-        let adjustedIdx = hoverTarget.insertIdx;
-        if (hoverTarget.insertIdx > sourceIdx) adjustedIdx--;
-        chain.splice(adjustedIdx, 0, removed);
-      } else {
-        chain.push(removed);
-      }
+      let adjustedIdx = targetInsertIdx;
+      if (targetInsertIdx > sourceIdx) adjustedIdx--;
+      chain.splice(adjustedIdx, 0, removed);
     });
   }
 
   private cleanupDrag() {
     this.dragCardEl?.removeAttribute('dragging');
-    // Hide all insertion markers
-    for (const [, el] of this.columnCache) {
-      (el as ColumnGroup).hideInsertMarker?.();
-    }
+    for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
     this.dragSketchId = null;
     this.dragSourceCol = -1;
     this.dragSourceIdx = -1;
     this.dragCardEl = null;
     this.dragOp = null;
     this.dragHoverTarget = null;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'sketch-column-editor': SketchColumnEditor;
   }
 }

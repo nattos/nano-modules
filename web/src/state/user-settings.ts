@@ -26,6 +26,7 @@ export function defaultUserSettings(): UserSettings {
     editLeftPanelWidth: 320,
     sidechannelNames: {},
     instanceNames: {},
+    appMode: 'effect-dev',
   };
 }
 

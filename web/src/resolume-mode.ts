@@ -33,6 +33,24 @@ export function switchMode(target: 'barrel' | 'playground') {
   location.href = url.toString();
 }
 
+/**
+ * The three top-level surfaces, each its own Vite entry. `switchAppMode` on
+ * `appController` writes the `appMode` setting, flushes it, then navigates
+ * here — the URL (not the setting) is the actual source of truth for which
+ * surface is live; `appMode` only remembers the last-chosen one so the
+ * Settings tab's selector reflects reality and a bookmark is never
+ * auto-redirected.
+ */
+export type AppMode = 'effect-dev' | 'playground' | 'live';
+
+export function appModeUrl(mode: AppMode): string {
+  switch (mode) {
+    case 'effect-dev': return '/index.html';
+    case 'playground': return '/resolume/?playground';
+    case 'live': return '/resolume/';
+  }
+}
+
 /** sessionStorage keys recording a dismissed mode-switch offer (per tab —
  *  the offer returns on a fresh session, but never nags within one). */
 export const OFFER_PLAYGROUND_DISMISSED_KEY = 'nano.offerPlayground.dismissed';

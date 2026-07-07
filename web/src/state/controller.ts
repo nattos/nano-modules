@@ -40,7 +40,7 @@ import {
   type PlaygroundInstanceRecord,
 } from './playground-store';
 import { PLAYGROUND_ID_PREFIX } from './types';
-import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId } from '../resolume-mode';
+import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, appModeUrl, type AppMode } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -914,7 +914,7 @@ export class AppController {
   // Local state changes (ephemeral, no undo)
   // ========================================================================
 
-  setActiveTab(tab: 'organize' | 'edit') {
+  setActiveTab(tab: 'organize' | 'edit' | 'settings') {
     runInAction(() => { appState.local.activeTab = tab; });
     this.setUserSetting('activeTab', tab);   // remember across reloads
   }
@@ -1052,6 +1052,30 @@ export class AppController {
         console.warn('[user-settings] save failed', err);
       });
     }, debounceMs);
+  }
+
+  /**
+   * Force the debounced settings save to run now. Used before navigating to
+   * a different entry URL (`switchAppMode`) — a `location.href` write would
+   * otherwise tear down the page mid-debounce and lose the just-set value.
+   */
+  async flushUserSettings(): Promise<void> {
+    if (this.settingsSaveTimer) { clearTimeout(this.settingsSaveTimer); this.settingsSaveTimer = null; }
+    if (!this.persistenceEnabled) return;
+    await saveUserSettings(toJS(appState.local.userSettings));
+  }
+
+  /**
+   * Navigate this session into a different top-level surface. Reload-based
+   * by design — Effect Dev / Playground / Live boot with different stores
+   * and engine wiring (see `boot.ts`'s `BootOptions.mode`), so a URL swap is
+   * the whole mode switch. Flushes the setting first so a slow debounce
+   * can't lose the "remembered surface" write to the navigation.
+   */
+  async switchAppMode(target: AppMode): Promise<void> {
+    this.setUserSetting('appMode', target);
+    await this.flushUserSettings();
+    location.href = appModeUrl(target);
   }
 
   private requestProjectsSave(debounceMs = 300) {
@@ -2301,10 +2325,10 @@ export class AppController {
     // re-sync. (No-op persistence/save until boot enables it.)
     this.setUserSetting('editingSketchId', id);
     this.syncSketchesToEngine();
-    // The `edit_preview` monitor trace is owned by edit-tab, which registers it
-    // reactively (final output, or the selected texture) for its whole lifetime
-    // — keeping it alive across selection changes so the monitor never blanks on
-    // deselect. See edit-tab's `previewTargetDisposer`.
+    // The `edit_preview` monitor trace is owned by sketch-app's renderMonitor
+    // (formerly edit-tab), which registers it reactively (final output, or the
+    // selected texture) for its whole lifetime — keeping it alive across
+    // selection changes so the monitor never blanks on deselect.
   }
 
   setEngineFps(fps: number) {
