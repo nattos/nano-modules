@@ -321,10 +321,10 @@ export class NanolooperInspector extends MobxLitElement {
       <div class="section">Triggers</div>
       <help-slot .binding=${b} .path=${'@group/triggers'}></help-slot>
       <div class="pads">
-        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .accent=${rgba(CH_RGB[0], 1)} .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .accent=${rgba(CH_RGB[1], 1)} .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .accent=${rgba(CH_RGB[2], 1)} .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .accent=${rgba(CH_RGB[3], 1)} .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
       </div>
 
       <div class="section">Editing</div>

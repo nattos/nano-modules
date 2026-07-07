@@ -11,6 +11,9 @@ import './ui-icon';
 /** Light sanitize for a Line Awesome icon NAME before it becomes a CSS class —
  *  only the chars a `la-*` name can contain. */
 function cleanIcon(name: string): string { return (name || '').replace(/[^a-z0-9-]/gi, ''); }
+/** Light sanitize for an accent CSS color before it becomes a custom-property
+ *  value — only the chars a color literal needs (rgb()/hsl()/#hex/name/%). */
+function cleanColor(c: string): string { return (c || '').replace(/[^a-z0-9(),.#%\s-]/gi, ''); }
 
 @customElement('field-trigger')
 export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
@@ -28,6 +31,9 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
    *  above the label in tall mode. Rendered via <ui-icon> (which carries the
    *  icon font), lightly sanitized. */
   @property() icon = '';
+  /** Optional accent CSS color: lightly tints the resting button and fills it on
+   *  press. Applied via the `--acc` custom property (color-mix). */
+  @property() accent = '';
 
   get controlledFields() { return [this.fieldPath]; }
 
@@ -58,8 +64,10 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
     }
     button {
       flex: 1;
-      background: var(--app-tint-2);
-      border: 1px solid var(--app-tint-4);
+      /* --acc (optional accent) lightly tints the resting button; unset → the
+         plain tint (color-mix falls back to tint-2/tint-4, so no visual change). */
+      background: color-mix(in srgb, var(--acc, var(--app-tint-2)) 14%, var(--app-tint-2));
+      border: 1px solid color-mix(in srgb, var(--acc, var(--app-tint-4)) 42%, var(--app-tint-4));
       color: var(--app-text-color1, #eaeaea);
       font-size: var(--app-fs-xs);
       padding: 3px 6px;
@@ -70,8 +78,8 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
       user-select: none;
     }
     button:active {
-      background: var(--app-hi-color2, #4169E1);
-      border-color: var(--app-hi-color2, #4169E1);
+      background: var(--acc, var(--app-hi-color2, #4169E1));
+      border-color: var(--acc, var(--app-hi-color2, #4169E1));
     }
 
     /* Label-as-button: the button fills the whole width and carries the label. */
@@ -93,15 +101,16 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
   }
 
   render() {
+    const acc = this.accent ? `--acc:${cleanColor(this.accent)}` : nothing;
     if (this.labelButton) {
       return html`
-        <button @mousedown=${this.onDown} @mouseup=${this.onUp}
+        <button style=${acc} @mousedown=${this.onDown} @mouseup=${this.onUp}
                 @mouseleave=${this.onUp}>${this.content()}</button>
       `;
     }
     return html`
       <span class="label">${this.label}</span>
-      <button @mousedown=${this.onDown} @mouseup=${this.onUp}
+      <button style=${acc} @mousedown=${this.onDown} @mouseup=${this.onUp}
               @mouseleave=${this.onUp}>Trigger</button>
     `;
   }
