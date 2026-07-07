@@ -866,6 +866,16 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   auto it = impl_->executors.find(key);
   if (it == impl_->executors.end()) return false;
   Impl::PerExecutor& pe = it->second;
+  // Per-frame autorelease pool. The Metal render path creates autoreleased
+  // objects every frame (MTLRenderPassDescriptor + command encoders and their
+  // AGX backing contexts). A plugin must NOT rely on the host draining a pool
+  // around each render: Resolume's render thread isn't guaranteed to, and
+  // ffgl_runner's serve loop runs thousands of frames inside one outer pool — so
+  // without this those objects pile up unbounded (~5/frame → a steady multi-
+  // MB/min heap climb, caught by the soak test). Draining here keeps every
+  // frame's Metal temporaries self-contained. (All exits below are `return`s, so
+  // the pool drains on each.)
+  @autoreleasepool {
   ++pe.frame;
   // Best-effort present proxy: a new frame is being produced, so the previous
   // one was consumed by Resolume (it asked for the next). Bump the process-global
@@ -1034,6 +1044,7 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   impl_->gpu->release(outputHandle);
 
   return finalHandle == outputHandle;
+  }  // @autoreleasepool
 }
 
 }  // namespace bridge
