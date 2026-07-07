@@ -138,6 +138,16 @@ export class AppController {
 
   /** True when this session is the bare `/resolume/` (barrel/Live) surface. */
   private liveMode = false;
+  /**
+   * Which sketch id Live mode edits ('barrel', a constant) — set as soon as
+   * Live mode boots, independent of `barrelSketchId` (which is only set once
+   * the editor→bridge push is wired, deliberately deferred until
+   * reconciliation resolves — see `boot-resolume.ts`'s `wirePusher`). Using
+   * `barrelSketchId` here too would mean edits made before ever reconciling
+   * once (e.g. "Edit offline" with nothing cached yet) never got stamped or
+   * saved at all.
+   */
+  private liveSketchId: string | null = null;
   private liveCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
   /** `flushLiveCacheSave` change detection, keyed by instance key (playground-flush twin). */
   private liveCacheLastSavedJson = new Map<string, string>();
@@ -169,13 +179,17 @@ export class AppController {
       if (sel && draft.sketches[sel]?.isTemplate) {
         draft.sketches[sel].isTemplate = false;
       }
-      // Stamp the barrel-mirrored sketch's edit timestamp inside the same
-      // Immer transaction as the user's edit, so it rides the same push (and
-      // the same cache save) atomically. Used only for the live-mode
+      // Stamp the live-mode sketch's edit timestamp inside the same Immer
+      // transaction as the user's edit, so it rides the same push (and the
+      // same cache save) atomically. Used only for the live-mode
       // reconciliation dialog's recency display/recommendation — never to
-      // decide silently (see state/live-reconcile.ts).
-      if (this.barrelSketchId && draft.sketches[this.barrelSketchId]) {
-        draft.sketches[this.barrelSketchId].lastModified = Date.now();
+      // decide silently (see state/live-reconcile.ts). Keyed on
+      // `liveSketchId`, NOT `barrelSketchId` — the latter is only set once
+      // the bridge push is wired (deferred until reconciliation resolves),
+      // so edits made before that (e.g. "Edit offline" from scratch) would
+      // otherwise never get stamped.
+      if (this.liveSketchId && draft.sketches[this.liveSketchId]) {
+        draft.sketches[this.liveSketchId].lastModified = Date.now();
       }
     };
     // Post-record hook: every committed mutation (including long-edit
@@ -1201,6 +1215,11 @@ export class AppController {
     this.liveMode = on;
   }
 
+  /** Which sketch id Live mode edits — see `liveSketchId`'s own doc comment. */
+  setLiveSketchId(id: string | null) {
+    this.liveSketchId = id;
+  }
+
   private requestLiveCacheSave(debounceMs = 300) {
     if (!this.liveMode) return;
     if (this.liveCacheSaveTimer) clearTimeout(this.liveCacheSaveTimer);
@@ -1213,8 +1232,17 @@ export class AppController {
   }
 
   /**
-   * Save the barrel-mirrored sketch (the only one Live mode edits) under its
-   * instance key, change-gated per key like `flushPlaygroundSave`.
+   * Save the live-mode sketch under its instance key, change-gated per key
+   * like `flushPlaygroundSave`.
+   *
+   * The key is `selectedBarrelKey` (the real instance we're wired to) when
+   * known, falling back to the persisted `lastLiveInstanceKey` — needed
+   * because edits can happen BEFORE we've ever connected/selected a real
+   * instance this session (e.g. "Edit offline" on first-ever boot with
+   * nothing cached yet); without the fallback those edits would never save.
+   * Still null-safe: if neither is known (truly first-ever session, no
+   * prior successful connection at all), there's no stable identity to save
+   * under yet and the edit only lives in memory for this session.
    *
    * `dirty` is recomputed fresh on every save rather than tracked as mutable
    * state: it's true whenever this save can't be considered pushed-and-
@@ -1225,9 +1253,12 @@ export class AppController {
    * this drives silent-adopt vs. the conflict dialog.
    */
   private async flushLiveCacheSave() {
-    const key = appState.local.selectedBarrelKey;
-    if (!key || !this.barrelSketchId) return;
-    const sketch = appState.database.sketches[this.barrelSketchId];
+    const key = appState.local.selectedBarrelKey ?? appState.local.userSettings.lastLiveInstanceKey;
+    if (!key || !this.liveSketchId) {
+      console.log(`[live-cache] save skipped: key=${key ?? '(none)'}, liveSketchId=${this.liveSketchId ?? '(none)'}`);
+      return;
+    }
+    const sketch = appState.database.sketches[this.liveSketchId];
     if (!sketch) return;
     const json = JSON.stringify(toJS(sketch));
     if (this.liveCacheLastSavedJson.get(key) === json) return;
@@ -1235,6 +1266,7 @@ export class AppController {
     try {
       await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, dirty);
       this.liveCacheLastSavedJson.set(key, json);
+      console.log(`[live-cache] saved key=${key} dirty=${dirty}`);
     } catch (err) {
       console.warn('[live-cache-store] save failed', key, err);
     }

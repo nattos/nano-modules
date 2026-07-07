@@ -49,6 +49,22 @@ import './wasm-hmr-client';
 const BARREL_SKETCH_ID = 'barrel';
 
 /**
+ * Guarantee there's something to edit: if no cached sketch was found for the
+ * offline/pre-connect display (first-ever session, or the cache row was
+ * deleted), seed an empty one instead of leaving `editingSketchId` unset —
+ * otherwise "Edit offline" clears readonly but the editor still shows "No
+ * sketch selected", which reads as the action having done nothing. A no-op
+ * when a sketch is already loaded (cache hit, or a previous call already ran
+ * this).
+ */
+function ensureEditableBarrelSketch() {
+  if (!appState.database.sketches[BARREL_SKETCH_ID]) {
+    appController.setBarrelSketch(BARREL_SKETCH_ID, { anchor: null, chain: [], wires: [], instances: {} });
+  }
+  appController.editSketch(BARREL_SKETCH_ID);
+}
+
+/**
  * @param mode 'barrel' (Live) or 'playground', already resolved by `main.ts`
  *   from the persisted `appMode` setting (or a `?playground`/`?barrel`
  *   boot-time override) — no URL parsing happens here.
@@ -102,6 +118,7 @@ export async function bootResolume(mode: 'barrel' | 'playground', barrelUrl: str
 
   // -- Live mode --
   appController.setLiveMode(true);
+  appController.setLiveSketchId(BARREL_SKETCH_ID);
   // User-settings persistence (the Remote toggle, appMode, the remembered
   // instance key) needs to actually save while in Live mode too — this was
   // previously skipped entirely for barrel mode (the remote bridge being the
@@ -129,14 +146,12 @@ async function bootOfflineOnly() {
   if (key) {
     try {
       const record = await loadLiveCacheInstance(key);
-      if (record) {
-        appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
-        appController.editSketch(BARREL_SKETCH_ID);
-      }
+      if (record) appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
     } catch (err) {
       console.warn('[live-cache] failed to load offline copy', err);
     }
   }
+  ensureEditableBarrelSketch();
   appController.setReadonly(false);
   snackbars.show({
     message: 'Resolume Remote is disabled — editing the offline copy.',
@@ -225,7 +240,16 @@ function connectBarrel(url: string) {
       timeoutMs: 0,
       dedupeKey: 'live-offline-edit',
       actions: [
-        { label: 'Edit offline', run: () => appController.setReadonly(false) },
+        {
+          label: 'Edit offline',
+          run: () => {
+            // The pre-connect guess (above) already applied a cache hit, if
+            // any — this only needs to cover the "nothing cached yet" case
+            // so there's actually something to edit.
+            ensureEditableBarrelSketch();
+            appController.setReadonly(false);
+          },
+        },
         { label: 'Keep waiting', run: () => {} },
       ],
     });
@@ -238,13 +262,18 @@ function connectBarrel(url: string) {
   // this is only a best-effort guess to avoid a blank screen.
   {
     const guessKey = appState.local.userSettings.lastLiveInstanceKey;
+    console.log(`[live-cache] pre-connect guess: lastLiveInstanceKey=${guessKey ?? '(none)'}`);
     if (guessKey) {
       void getCacheLoad(guessKey).then((record) => {
+        console.log(`[live-cache] pre-connect guess resolved: key=${guessKey}`,
+          record ? `found (dirty=${record.dirty}, updatedAt=${new Date(record.updatedAt).toISOString()})` : 'NOT FOUND in liveCache store',
+          `currentKey=${currentKey ?? '(none)'}`);
         // A real wire already happened by the time this resolved — its own
         // load path (below) owns the display now.
         if (currentKey !== null || !record) return;
         appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
         appController.editSketch(BARREL_SKETCH_ID);
+        console.log('[live-cache] pre-connect guess APPLIED to appState');
       });
     }
   }
@@ -302,6 +331,7 @@ function connectBarrel(url: string) {
 
     const label = instanceDisplayLabel(forKey);
     const decision = reconcileDecision({ cached: cached ?? null, canonical });
+    console.log(`[live-cache] reconcile for key=${forKey}: cached=${cached ? `dirty=${cached.dirty}` : 'none'} → ${decision.action}`);
     if (decision.action === 'adopt-canonical') {
       appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
       appController.editSketch(BARREL_SKETCH_ID);
@@ -424,12 +454,17 @@ function connectBarrel(url: string) {
       // here, memoized) may already be running from a pre-connect guess.
       resolvedKey = null;
       dialogKey = null;
+      console.log(`[live-cache] wireInstance: new key=${key} (was ${currentKey === key ? key : 'null/other'}) — persisting as lastLiveInstanceKey`);
       appController.setUserSetting('lastLiveInstanceKey', key);
       appController.setReadonly(true);
       void getCacheLoad(key).then((record) => {
+        console.log(`[live-cache] wireInstance cache load resolved: key=${key}`,
+          record ? `found (dirty=${record.dirty})` : 'NOT FOUND',
+          `currentKey=${currentKey}, resolvedKey=${resolvedKey}`);
         if (currentKey !== key || resolvedKey === key || !record) return;
         appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
         appController.editSketch(BARREL_SKETCH_ID);
+        console.log(`[live-cache] wireInstance cache APPLIED for key=${key}`);
       });
     }
 
