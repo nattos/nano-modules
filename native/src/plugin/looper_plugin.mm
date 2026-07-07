@@ -60,40 +60,42 @@
 namespace {
 
 // FFGL param layout. `field` is the looper effect's state field the knob drives
-// (nullptr = handled locally, i.e. the native synth). `momentary` fields are
-// edge controls the WASM detects rising/falling on — they get the press latch.
+// (nullptr = handled locally — see `local`). `momentary` fields are edge
+// controls the WASM detects rising/falling on; they get the press latch.
+// `group` is the Resolume param-panel section (SetParamGroup). `local` routes
+// nullptr-field params to the native synth instead of the sketch doc.
+enum class Local { None, SynthEnable, SynthGain };
 struct ParamDef {
   const char* name;
+  const char* group;    // Resolume param-panel section
   unsigned int type;    // FF_TYPE_*
   const char* field;    // control.nanolooper state field, or nullptr (local)
   float def;
   bool momentary;
+  Local local;
 };
 
-// Order is cosmetic (Resolume's param panel); the WASM is driven by field NAME,
-// not index. Field names must match nanolooper/main.cpp field_to_pid.
-constexpr unsigned int P_TRIGGER_1      = 0;
-constexpr unsigned int P_SYNTH          = 10;
-constexpr unsigned int P_SYNTH_GAIN     = 11;
-
+// Order is the param-panel order; it mirrors the effect schema's field order in
+// nanolooper/main.cpp. The WASM is driven by field NAME, not index — field names
+// must match field_to_pid there. Grouped for Resolume; synth is plugin-local.
 const ParamDef kParams[] = {
-  {"Trigger 1",       FF_TYPE_BOOLEAN,  "trigger_1",        0.0f,    true},
-  {"Trigger 2",       FF_TYPE_BOOLEAN,  "trigger_2",        0.0f,    true},
-  {"Trigger 3",       FF_TYPE_BOOLEAN,  "trigger_3",        0.0f,    true},
-  {"Trigger 4",       FF_TYPE_BOOLEAN,  "trigger_4",        0.0f,    true},
-  {"Delete",          FF_TYPE_BOOLEAN,  "delete",           0.0f,    true},
-  {"Mute",            FF_TYPE_BOOLEAN,  "mute",             0.0f,    false},
-  {"Undo",            FF_TYPE_EVENT,    "undo",             0.0f,    true},
-  {"Redo",            FF_TYPE_EVENT,    "redo",             0.0f,    true},
-  {"Record",          FF_TYPE_BOOLEAN,  "record",           1.0f,    false},
-  {"Show Overlay",    FF_TYPE_BOOLEAN,  "show_overlay",     1.0f,    false},
-  {"Synth",           FF_TYPE_BOOLEAN,  nullptr,            0.0f,    false},  // P_SYNTH
-  {"Synth Gain",      FF_TYPE_STANDARD, nullptr,            0.5f,    false},  // P_SYNTH_GAIN
-  {"Send To Rail",    FF_TYPE_BOOLEAN,  "send_to_rail",     1.0f,    false},
-  {"Quantize Start",  FF_TYPE_BOOLEAN,  "quantize_start",   0.0f,    false},
-  {"Quantize Length", FF_TYPE_BOOLEAN,  "quantize_length",  0.0f,    false},
-  {"Grace",           FF_TYPE_STANDARD, "grace",            0.0625f, false},
-  {"Latch",           FF_TYPE_BOOLEAN,  "latch",            0.0f,    false},
+  {"Trigger 1",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_1",        0.0f,    true,  Local::None},
+  {"Trigger 2",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_2",        0.0f,    true,  Local::None},
+  {"Trigger 3",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_3",        0.0f,    true,  Local::None},
+  {"Trigger 4",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_4",        0.0f,    true,  Local::None},
+  {"Delete",          "Editing",   FF_TYPE_BOOLEAN,  "delete",           0.0f,    true,  Local::None},
+  {"Mute",            "Editing",   FF_TYPE_BOOLEAN,  "mute",             0.0f,    false, Local::None},
+  {"Undo",            "Editing",   FF_TYPE_EVENT,    "undo",             0.0f,    true,  Local::None},
+  {"Redo",            "Editing",   FF_TYPE_EVENT,    "redo",             0.0f,    true,  Local::None},
+  {"Latch",           "Recording", FF_TYPE_BOOLEAN,  "latch",            0.0f,    false, Local::None},
+  {"Record",          "Recording", FF_TYPE_BOOLEAN,  "record",           1.0f,    false, Local::None},
+  {"Quantize Start",  "Quantize",  FF_TYPE_BOOLEAN,  "quantize_start",   0.0f,    false, Local::None},
+  {"Quantize Length", "Quantize",  FF_TYPE_BOOLEAN,  "quantize_length",  0.0f,    false, Local::None},
+  {"Grace",           "Quantize",  FF_TYPE_STANDARD, "grace",            0.0625f, false, Local::None},
+  {"Send To Rail",    "Output",    FF_TYPE_BOOLEAN,  "send_to_rail",     1.0f,    false, Local::None},
+  {"Show Overlay",    "Output",    FF_TYPE_BOOLEAN,  "show_overlay",     1.0f,    false, Local::None},
+  {"Synth",           "Synth",     FF_TYPE_BOOLEAN,  nullptr,            0.0f,    false, Local::SynthEnable},
+  {"Synth Gain",      "Synth",     FF_TYPE_STANDARD, nullptr,            0.5f,    false, Local::SynthGain},
 };
 constexpr unsigned int P_COUNT = sizeof(kParams) / sizeof(kParams[0]);
 
@@ -111,6 +113,7 @@ class LooperPlugin : public CFFGLPlugin {
     SetTimeSupported(true);
     for (unsigned int i = 0; i < P_COUNT; ++i) {
       SetParamInfo(i, kParams[i].name, kParams[i].type, kParams[i].def);
+      if (kParams[i].group) SetParamGroup(i, kParams[i].group);
       param_values_[i] = kParams[i].def;
     }
     // No runtime/WASM/bridge work in the ctor: Resolume builds a throwaway
@@ -125,8 +128,10 @@ class LooperPlugin : public CFFGLPlugin {
     CFFGLPlugin::InitGL(vp);
     glGenFramebuffers(1, &src_fbo_);
     synth_.init();
-    synth_.set_enabled(param_values_[P_SYNTH] >= 0.5f);
-    synth_.set_gain(param_values_[P_SYNTH_GAIN]);
+    for (unsigned int i = 0; i < P_COUNT; ++i) {
+      if (kParams[i].local == Local::SynthEnable) synth_.set_enabled(param_values_[i] >= 0.5f);
+      else if (kParams[i].local == Local::SynthGain) synth_.set_gain(param_values_[i]);
+    }
     setupBridge();
     return FF_SUCCESS;
   }
@@ -146,10 +151,10 @@ class LooperPlugin : public CFFGLPlugin {
     param_values_[idx] = value;
 
     // Native synth controls — local, not part of the sketch.
-    if (idx == P_SYNTH)      { synth_.set_enabled(value >= 0.5f); return FF_SUCCESS; }
-    if (idx == P_SYNTH_GAIN) { synth_.set_gain(value);            return FF_SUCCESS; }
-
     const ParamDef& pd = kParams[idx];
+    if (pd.local == Local::SynthEnable) { synth_.set_enabled(value >= 0.5f); return FF_SUCCESS; }
+    if (pd.local == Local::SynthGain)   { synth_.set_gain(value);            return FF_SUCCESS; }
+
     if (!pd.field) return FF_SUCCESS;
 
     std::lock_guard<std::mutex> lock(tick_mu_);

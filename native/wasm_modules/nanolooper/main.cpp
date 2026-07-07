@@ -509,55 +509,139 @@ static int field_to_pid(const char* path, int pathLen) {
  * Exports (v2 instance ABI)
  * ====================================================================== */
 
-/* Type-level setup: schema registration. Runs once per type. No GPU work. */
+/* Type-level setup: schema registration. Runs once per type. No GPU work.
+ *
+ * Built with the state::Schema builder so every param carries a proper display
+ * name (+ compact short name), lives in a labelled GROUP, and has help text
+ * (per-group markdown in the inspector's "?" mode + per-field tooltips). The
+ * declaration ORDER below is the inspector layout order — it mirrors the
+ * NanoLooper FFGL plugin's param panel (looper_plugin.mm). Field names/types/io
+ * and defaults are unchanged from the original raw-JSON schema; only the
+ * presentation metadata and ordering are new.
+ *
+ * io 5 = PrimaryInput (controls + tex_in), 6 = PrimaryOutput (out_N + tex_out).
+ * The 4 per-channel `out_N` fields are modulation outputs (0/1 with a short
+ * decay); the module declares trigger_source so the executor drains its
+ * "triggers" ring onto the global trigger rail (see drainTriggerRing). */
 void module_init() {
-  /* Register plugin with schema */
   static const char id[] = "control.nanolooper";
-  // io 5 = PrimaryInput, 6 = PrimaryOutput. The 4 per-channel `out_N` fields are
-  // modulation outputs (0/1 with a short decay), and the module declares
-  // trigger_source so the executor drains its "triggers" ring onto the global
-  // trigger rail (see sketch_executor drainTriggerRing).
-  static const char schema[] =
-    "{\"capabilities\":[\"trigger_source\",\"modulation_source\",\"modulation_source_multi\"],"
-    "\"fields\":{"
-    "\"trigger_1\":{\"type\":\"event\",\"io\":5,\"order\":0},"
-    "\"trigger_2\":{\"type\":\"event\",\"io\":5,\"order\":1},"
-    "\"trigger_3\":{\"type\":\"event\",\"io\":5,\"order\":2},"
-    "\"trigger_4\":{\"type\":\"event\",\"io\":5,\"order\":3},"
-    "\"delete\":{\"type\":\"event\",\"io\":5,\"order\":4},"
-    "\"mute\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":5},"
-    "\"undo\":{\"type\":\"event\",\"io\":5,\"order\":6},"
-    "\"redo\":{\"type\":\"event\",\"io\":5,\"order\":7},"
-    // Record-arm: on = triggers write to the pattern (default), off = triggers
-    // play live only (the loop keeps playing; your taps don't overwrite it).
-    "\"record\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":8},"
-    "\"show_overlay\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":9},"
-    "\"synth\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":10},"
-    "\"synth_gain\":{\"type\":\"float\",\"default\":0.5,\"min\":0,\"max\":1,\"io\":5,\"order\":11},"
-    "\"send_to_rail\":{\"type\":\"bool\",\"default\":true,\"io\":5,\"order\":12},"
-    "\"quantize_start\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":13},"
-    "\"quantize_length\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":14},"
-    "\"out_1\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":15},"
-    "\"out_2\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":16},"
-    "\"out_3\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":17},"
-    "\"out_4\":{\"type\":\"float\",\"default\":0,\"min\":0,\"max\":1,\"io\":6,\"order\":18},"
-    // The texture passthrough. Declaring tex_out (PrimaryOutput texture) is what
-    // makes the executor treat the looper as a rendering stage — binding a
-    // writable output + calling render() — instead of a modulation-source
-    // passthrough (which skips render() entirely). It still drains triggers and
-    // publishes out_N in the render branch, so those are unaffected.
-    "\"tex_in\":{\"type\":\"texture\",\"io\":5,\"order\":19},"
-    "\"tex_out\":{\"type\":\"texture\",\"io\":6,\"order\":20},"
-    // Overwrite grace period, in fractions of a beat (default 0.0625 = a 1/64
-    // note). See core.h: it deletes a note truncated below this, and decides
-    // swallow-vs-truncate when a new note grows over an old onset.
-    "\"grace\":{\"type\":\"float\",\"default\":0.0625,\"min\":0,\"max\":1,\"io\":5,\"order\":21},"
-    // Latch mode: capture a tapped 1-bar phrase. First trigger clears + opens a
-    // 1-bar window; later triggers accumulate; a trigger past it restarts. `grace`
-    // doubles as the trailing inverse-grace so a repeated tap reads as a new bar.
-    "\"latch\":{\"type\":\"bool\",\"default\":false,\"io\":5,\"order\":22}"
-    "}}";
-  state_set_schema(id, sizeof(id) - 1, (1 << 16), schema, sizeof(schema) - 1);
+
+  state::Schema schema;
+
+  schema.helpField("intro",
+    "## NanoLooper\n"
+    "A 4-channel / 16-step performance looper. Tap the **triggers** in time and it "
+    "records what you play, looping it against the host's beat clock. Each channel "
+    "can launch Resolume clips through the trigger rail and — in the dedicated "
+    "NanoLooper plugin — pluck a built-in synth. Everything is live; nothing is "
+    "saved between sessions.");
+
+  // --- Triggers -------------------------------------------------------
+  schema.group("triggers", "Triggers")
+    .groupHelp(
+      "The four performance pads. Tap one to play — and, when **Record** is armed, "
+      "record — a note on that channel at the current beat; the note lasts as long "
+      "as you hold it. Hold **Delete** and tap a pad to clear just that channel. "
+      "Each channel maps to a color in the overlay and to clips tagged with its "
+      "NanoLooper Ch marker.");
+  schema.eventField("trigger_1", state::PrimaryInput).label("Trigger 1", "T1");
+  schema.eventField("trigger_2", state::PrimaryInput).label("Trigger 2", "T2");
+  schema.eventField("trigger_3", state::PrimaryInput).label("Trigger 3", "T3");
+  schema.eventField("trigger_4", state::PrimaryInput).label("Trigger 4", "T4");
+
+  // --- Editing --------------------------------------------------------
+  schema.group("editing", "Editing")
+    .groupHelp(
+      "Modifiers that reshape what you've recorded. **Mute** and **Delete** are held "
+      "while you tap a trigger; **Undo**/**Redo** step through edit history.");
+  schema.eventField("delete", state::PrimaryInput).label("Delete", "Del");
+  schema.boolField("mute", false, state::PrimaryInput,
+    "Hold and tap a trigger to silence that channel without erasing it. Tapped alone, "
+    "Delete clears everything; a double-tap undoes.").label("Mute", "Mute");
+  schema.eventField("undo", state::PrimaryInput).label("Undo", "Undo");
+  schema.eventField("redo", state::PrimaryInput).label("Redo", "Redo");
+
+  // --- Recording ------------------------------------------------------
+  schema.group("recording", "Recording")
+    .groupHelp(
+      "How your taps are captured. **Record** arms writing to the pattern (off = play "
+      "live over the existing loop without overwriting it). **Latch** turns the first "
+      "tap into a one-bar capture window for building a phrase hands-free.");
+  schema.boolField("latch", false, state::PrimaryInput,
+    "Capture a tapped one-bar phrase: the first trigger clears the loop and opens a "
+    "one-bar window, taps inside it accumulate, and a tap past it restarts the capture.")
+    .label("Latch", "Latch");
+  schema.boolField("record", true, state::PrimaryInput,
+    "Arm recording. On (default), triggers write notes into the loop. Off, triggers "
+    "still play and launch clips live, but the recorded loop keeps playing untouched.")
+    .label("Record", "Rec");
+
+  // --- Quantize -------------------------------------------------------
+  schema.group("quantize", "Quantize")
+    .groupHelp(
+      "Snap recorded notes to the 16-step beat grid. **Start** aligns each note's "
+      "onset; **Length** aligns its duration. **Grace** sets how forgiving overwrite "
+      "and truncation are near a step boundary.");
+  schema.boolField("quantize_start", false, state::PrimaryInput,
+    "Snap each recorded note's start to the nearest step of the 16-step grid.")
+    .label("Quantize Start", "Q Start");
+  schema.boolField("quantize_length", false, state::PrimaryInput,
+    "Snap each recorded note's length to whole grid steps.")
+    .label("Quantize Length", "Q Len");
+  schema.floatField("grace", 0.0625f, 0.0f, 1.0f, state::PrimaryInput,
+    /*magnitude=*/nullptr, /*step=*/0.f, /*units=*/"beats",
+    "Overwrite grace, in fractions of a beat (default 1/64 note). A note truncated "
+    "below this is deleted; it also decides swallow-vs-truncate when a new note grows "
+    "over an old onset, and doubles as the trailing zone that ends a Latch capture.")
+    .label("Grace", "Grace");
+
+  // --- Output ---------------------------------------------------------
+  schema.group("output", "Output")
+    .groupHelp(
+      "Where the looper sends its gates. **Send To Rail** publishes each channel's "
+      "on/off onto the global trigger rail, launching clips tagged with that channel's "
+      "NanoLooper Ch marker. **Show Overlay** draws the sequencer UI over the video.");
+  schema.boolField("send_to_rail", true, state::PrimaryInput,
+    "Emit each channel's gate onto the trigger rail so it can launch Resolume clips. "
+    "Off = the looper runs as a modulation/overlay source only, launching nothing.")
+    .label("Send To Rail", "Rail");
+  schema.boolField("show_overlay", true, state::PrimaryInput,
+    "Draw the looper's lanes, playhead and status overlay on top of the video. Off = "
+    "the image passes through untouched (the looper keeps running).")
+    .label("Show Overlay", "Overlay");
+
+  // --- Synth ----------------------------------------------------------
+  schema.group("synth", "Synth")
+    .groupHelp(
+      "The built-in audio voice — dedicated NanoLooper plugin only. When enabled, each "
+      "channel gate-on plucks an audible tone through the host audio bus. Inside a "
+      "barrel sketch these fields have no effect (no synth is attached).");
+  schema.boolField("synth", false, state::PrimaryInput,
+    "Enable the built-in synth: each trigger gate-on plucks an audible note.")
+    .label("Synth", "Synth");
+  schema.floatField("synth_gain", 0.5f, 0.0f, 1.0f, state::PrimaryInput,
+    /*magnitude=*/nullptr, /*step=*/0.f, /*units=*/nullptr,
+    "Output level of the built-in synth.")
+    .label("Synth Gain", "Gain");
+
+  // --- System fields (ungrouped): modulation outputs + image passthrough.
+  // out_N are the per-channel decaying gate pulses (wireable modulation outs).
+  // Declaring tex_out (PrimaryOutput texture) is what makes the executor treat
+  // the looper as a rendering stage — binding a writable output + calling
+  // render() — instead of a modulation-source passthrough (which skips render()).
+  schema.endGroup();
+  schema.floatField("out_1", 0.f, 0.f, 1.f, state::PrimaryOutput).label("Out 1", "O1");
+  schema.floatField("out_2", 0.f, 0.f, 1.f, state::PrimaryOutput).label("Out 2", "O2");
+  schema.floatField("out_3", 0.f, 0.f, 1.f, state::PrimaryOutput).label("Out 3", "O3");
+  schema.floatField("out_4", 0.f, 0.f, 1.f, state::PrimaryOutput).label("Out 4", "O4");
+  schema.textureField("tex_in",  state::PrimaryInput);
+  schema.textureField("tex_out", state::PrimaryOutput);
+
+  schema.capability(state::Capability::TriggerSource)
+        .capability(state::Capability::ModulationSource)
+        .capability(state::Capability::ModulationSourceMulti);
+
+  state::init(id, {1, 0, 0}, schema);
 
   /* Compile the overlay toolbox's solid-quad shader up front (idempotent; also
    * retried lazily on first render if no GPU backend exists yet). */
