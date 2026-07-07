@@ -1,6 +1,6 @@
 /**
  * Minimal WASI shim for running wasm32-wasip1 modules in the browser.
- * Only provides the 6 imports that C++/libc++ modules need.
+ * Only provides the imports that C++/libc++ modules need.
  */
 
 export function createWasiShim(getMemory: () => WebAssembly.Memory): WebAssembly.ModuleImports {
@@ -22,6 +22,17 @@ export function createWasiShim(getMemory: () => WebAssembly.Memory): WebAssembly
     },
     fd_write: (_fd: number, _iovs: number, _iovsLen: number, _nwritten: number): number => {
       return 0;
+    },
+    // libc++'s preopen-directory enumeration (triggered by any static init that
+    // pulls in wasi-libc's path-resolution code, e.g. nlohmann/json's iostream
+    // usage) calls fd_prestat_get in a loop until it errors — EBADF (8) says
+    // "no preopens" and ends the loop. Without this stub WebAssembly.instantiate
+    // throws a LinkError for modules that reference it (bridge_core.wasm).
+    fd_prestat_get: (_fd: number, _bufPtr: number): number => {
+      return 8; // __WASI_ERRNO_BADF
+    },
+    fd_prestat_dir_name: (_fd: number, _pathPtr: number, _pathLen: number): number => {
+      return 8; // __WASI_ERRNO_BADF
     },
     proc_exit: (_code: number): void => {
       // No-op in browser context
