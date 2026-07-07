@@ -93,10 +93,17 @@ const ParamDef kParams[] = {
   {"Quantize Length", "Quantize",  FF_TYPE_BOOLEAN,  "quantize_length",  0.0f,    false, Local::None},
   {"Grace",           "Quantize",  FF_TYPE_STANDARD, "grace",            0.0625f, false, Local::None},
   {"Send To Rail",    "Output",    FF_TYPE_BOOLEAN,  "send_to_rail",     1.0f,    false, Local::None},
-  {"Show Overlay",    "Output",    FF_TYPE_BOOLEAN,  "show_overlay",     1.0f,    false, Local::None},
+  {"Show Overlay",    "Display",   FF_TYPE_BOOLEAN,  "show_overlay",     1.0f,    false, Local::None},
+  {"Anchor",          "Display",   FF_TYPE_OPTION,   "anchor",           0.0f,    false, Local::None},
+  {"Overlay Opacity", "Display",   FF_TYPE_STANDARD, "overlay_opacity",  1.0f,    false, Local::None},
   {"Synth",           "Synth",     FF_TYPE_BOOLEAN,  nullptr,            0.0f,    false, Local::SynthEnable},
   {"Synth Gain",      "Synth",     FF_TYPE_STANDARD, nullptr,            0.5f,    false, Local::SynthGain},
 };
+
+// The overlay-anchor dropdown elements. Element VALUES double as the field value
+// (0..3), matching the effect schema's `anchor` selectField — Resolume delivers
+// the picked element's value straight to SetFloatParameter.
+const char* const kAnchorLabels[4] = {"Top Left", "Bottom Left", "Top Right", "Bottom Right"};
 constexpr unsigned int P_COUNT = sizeof(kParams) / sizeof(kParams[0]);
 
 // The single effect instance key inside the fixed sketch.
@@ -112,7 +119,14 @@ class LooperPlugin : public CFFGLPlugin {
     SetMaxInputs(1);
     SetTimeSupported(true);
     for (unsigned int i = 0; i < P_COUNT; ++i) {
-      SetParamInfo(i, kParams[i].name, kParams[i].type, kParams[i].def);
+      if (kParams[i].type == FF_TYPE_OPTION) {
+        // The only option param is the overlay anchor (4 corners).
+        SetOptionParamInfo(i, kParams[i].name, 4, kParams[i].def);
+        for (unsigned int e = 0; e < 4; ++e)
+          SetParamElementInfo(i, e, kAnchorLabels[e], (float)e);
+      } else {
+        SetParamInfo(i, kParams[i].name, kParams[i].type, kParams[i].def);
+      }
       if (kParams[i].group) SetParamGroup(i, kParams[i].group);
       param_values_[i] = kParams[i].def;
     }

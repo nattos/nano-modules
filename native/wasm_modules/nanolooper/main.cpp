@@ -75,6 +75,8 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_QUANTIZE_LENGTH 14
 #define PID_GRACE           15
 #define PID_LATCH           16
+#define PID_ANCHOR          17
+#define PID_OVERLAY_OPACITY 18
 
 /* ======================================================================
  * State
@@ -103,6 +105,8 @@ struct State {
   int mute_held = 0;
   int record_held = 0;
   int show_overlay = 0;
+  int anchor = 0;               /* overlay corner: 0=top-left, 1=bottom-left, 2=top-right, 3=bottom-right */
+  float overlay_opacity = 1.0f; /* overall overlay alpha multiplier */
   int quantize_start = 0;
   int quantize_length = 0;
   float grace_beats = 0.0625f;   /* overwrite grace, in beats (1/64 note) */
@@ -384,6 +388,12 @@ static void on_param_change(State& s, int index, double value) {
     log_msg(LOG_INFO, pressed ? "Record armed" : "Record off (play only)");
   } else if (index == PID_SHOW_OVERLAY) {
     s.show_overlay = pressed;
+  } else if (index == PID_ANCHOR) {
+    int a = (int)(value + 0.5);
+    s.anchor = a < 0 ? 0 : (a > 3 ? 3 : a);
+  } else if (index == PID_OVERLAY_OPACITY) {
+    float o = (float)value;
+    s.overlay_opacity = o < 0.0f ? 0.0f : (o > 1.0f ? 1.0f : o);
   } else if (index == PID_SEND_TO_RAIL) {
     s.send_to_rail = pressed;
   } else if (index == PID_QUANTIZE_START) {
@@ -492,6 +502,7 @@ static int field_to_pid(const char* path, int pathLen) {
     {"delete", PID_DELETE}, {"mute", PID_MUTE},
     {"undo", PID_UNDO}, {"redo", PID_REDO},
     {"record", PID_RECORD}, {"show_overlay", PID_SHOW_OVERLAY},
+    {"anchor", PID_ANCHOR}, {"overlay_opacity", PID_OVERLAY_OPACITY},
     {"send_to_rail", PID_SEND_TO_RAIL},
     {"quantize_start", PID_QUANTIZE_START},
     {"quantize_length", PID_QUANTIZE_LENGTH},
@@ -600,15 +611,30 @@ void module_init() {
     .groupHelp(
       "Where the looper sends its gates. **Send To Rail** publishes each channel's "
       "on/off onto the global trigger rail, launching clips tagged with that channel's "
-      "NanoLooper Ch marker. **Show Overlay** draws the sequencer UI over the video.");
+      "NanoLooper Ch marker.");
   schema.boolField("send_to_rail", true, state::PrimaryInput,
     "Emit each channel's gate onto the trigger rail so it can launch Resolume clips. "
     "Off = the looper runs as a modulation/overlay source only, launching nothing.")
     .label("Send To Rail", "Rail");
+
+  // --- Display --------------------------------------------------------
+  schema.group("display", "Display")
+    .groupHelp(
+      "The on-video sequencer overlay. It's sized to the smaller of the viewport's "
+      "width/height and **Anchor**ed to a corner, at **Overlay Opacity**.");
   schema.boolField("show_overlay", true, state::PrimaryInput,
     "Draw the looper's lanes, playhead and status overlay on top of the video. Off = "
     "the image passes through untouched (the looper keeps running).")
     .label("Show Overlay", "Overlay");
+  schema.selectField("anchor", 0, state::PrimaryInput,
+    { {"Top Left", 0}, {"Bottom Left", 1}, {"Top Right", 2}, {"Bottom Right", 3} },
+    /*wrap=*/false,
+    "Which corner of the video the overlay panel sits in.")
+    .label("Anchor", "Anchor");
+  schema.floatField("overlay_opacity", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+    /*magnitude=*/nullptr, /*step=*/0.f, /*units=*/nullptr,
+    "Overall opacity of the overlay. 0 hides it (image passes through); 1 is fully opaque.")
+    .label("Overlay Opacity", "Opacity");
 
   // --- Synth ----------------------------------------------------------
   schema.group("synth", "Synth")
@@ -673,6 +699,8 @@ void init(void* self) {
   s->prev_phase = 0;
   s->elapsed = 0;
   s->show_overlay = 1;
+  s->anchor = 0;
+  s->overlay_opacity = 1.0f;
   s->ws_connected = 0;
 
   for (int i = 0; i < NUM_CHANNELS; i++) {
@@ -786,21 +814,37 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 }
 
 
+/* Is this note sounding at `phase`? True when phase falls in the note's
+ * [start, start+length) window (wrap-aware). Per-NOTE, so only the step actually
+ * under the playhead lights up — not every recorded note in the channel. */
+static bool note_active(const Event& e, double phase) {
+  const double loop = (double)NUM_STEPS;
+  double len = e.length;
+  if (len <= 0.0) return false;
+  if (len > loop) len = loop;
+  double d = phase - e.start;
+  d = std::fmod(d, loop);
+  if (d < 0) d += loop;
+  return d < len;
+}
+
 /* Draw one recorded note as a continuous bar on a lane's timeline. start/length
  * are in loop units [0, NUM_STEPS); the bar may wrap the loop seam, so it's
- * drawn as up to two segments. A bright leading edge marks the true onset. */
+ * drawn as up to two segments. A bright leading edge marks the true onset.
+ * `playing` is per-NOTE (this note is under the playhead); `op` is the overlay
+ * opacity multiplier. */
 static void draw_note_bar(overlay::Canvas& ov, const Event& e,
                           float track_x, float track_w, float bar_y, float bar_h,
                           float cr, float cg, float cb,
-                          bool muted, bool playing, float scale) {
+                          bool muted, bool playing, float scale, float op) {
   const double loop = (double)NUM_STEPS;
   double s0 = e.start;
   if (s0 < 0) s0 = 0; else if (s0 >= loop) s0 -= loop;
   double rem = e.length;
   if (rem > loop) rem = loop;
 
-  const float body_a = muted ? 0.30f : (playing ? 0.95f : 0.72f);
-  const float edge_a = muted ? 0.45f : 1.0f;
+  const float body_a = (muted ? 0.30f : (playing ? 0.95f : 0.72f)) * op;
+  const float edge_a = (muted ? 0.45f : 1.0f) * op;
   const float bf = playing ? 0.85f : 0.55f;   // body brightness
 
   /* Minimum on-screen width so even a genuinely tiny gate stays visible (wide
@@ -846,87 +890,124 @@ void render(void* self, int vp_w, int vp_h) {
     return;
   }
 
+  /* Opacity: 0 → nothing to draw, forward the input like an off overlay. */
+  const float op = s->overlay_opacity;
+  if (op <= 0.001f) {
+    int out = gpu::Device::textureForField("tex_out").id;
+    if (out >= 0) {
+      int in = gpu::Device::textureForField("tex_in").id;
+      if (in >= 0) gpu::Device::copy(gpu::Texture{in}, gpu::Texture{out});
+      else         gpu::Device::clear(gpu::Texture{out}, 0, 0, 0, 0);
+      gpu::Device::submit();
+    }
+    return;
+  }
+
   overlay::Canvas& ov = s->ov;
   ov.begin(vp_w, vp_h);
 
-  /* Base design at 1080p, scaled proportionally. */
-  const float scale = (float)vp_h / 1080.0f;
-  const float margin = 28.0f * scale;
+  /* Every alpha runs through the overlay-opacity multiplier. */
+  auto C = [op](float r, float g, float b, float a) {
+    return overlay::rgba(r, g, b, a * op);
+  };
+
+  /* Design at 1080 reference units, scaled by the SMALLER viewport dimension so
+   * the panel stays a compact block (never a full-width bar) and reads the same
+   * on wide, tall, or square outputs. */
+  const int   S = vp_w < vp_h ? vp_w : vp_h;
+  const float scale = (float)S / 1080.0f;
+  const float pad = 24.0f * scale;         // gap from the viewport corner
+  const float m = 22.0f * scale;           // inner content margin
+
   const float title_sz = 30.0f * scale;
   const float label_sz = 22.0f * scale;
   const float small_sz = 17.0f * scale;
-
   const float lane_h = 46.0f * scale;
   const float lane_gap = 10.0f * scale;
-  const float number_x = margin + 6.0f * scale;
-  const float name_x = margin + 34.0f * scale;
-  const float track_x = margin + 210.0f * scale;
-  float track_w = (float)vp_w - track_x - margin;
+
+  /* Content layout in box-LOCAL coords (origin = panel top-left). */
+  const float title_y = m;
+  const float lanes_top = title_y + title_sz + 20.0f * scale;
+  const float lanes_h = NUM_CHANNELS * (lane_h + lane_gap) - lane_gap;
+  const float row_y = lanes_top + lanes_h + 16.0f * scale;   // bottom modifier row
+  const float boxH = row_y + small_sz + 14.0f * scale + m;
+  const float boxW = (float)S - 2.0f * pad;
+
+  const float number_x = m + 6.0f * scale;
+  const float name_x = m + 34.0f * scale;
+  const float track_x = m + 200.0f * scale;
+  float track_w = boxW - m - track_x;
   if (track_w < 60.0f * scale) track_w = 60.0f * scale;
 
-  const float top = margin;
-  const float lanes_top = top + title_sz + 20.0f * scale;
-  const float lanes_h = NUM_CHANNELS * (lane_h + lane_gap) - lane_gap;
-  const float panel_h = (lanes_top - top) + lanes_h + 52.0f * scale;
+  /* Anchor the box to the chosen corner (0=TL, 1=BL, 2=TR, 3=BR). */
+  const bool left = (s->anchor == 0 || s->anchor == 1);
+  const bool top  = (s->anchor == 0 || s->anchor == 2);
+  const float ox = left ? pad : ((float)vp_w - pad - boxW);
+  const float oy = top  ? pad : ((float)vp_h - pad - boxH);
 
   /* --- Panel background (first rect → behind everything else) --- */
-  ov.fillRect(margin * 0.5f, top - 14.0f * scale, (float)vp_w - margin, panel_h,
-              overlay::rgba(0.04f, 0.05f, 0.07f, 0.72f));
+  ov.fillRect(ox, oy, boxW, boxH, C(0.04f, 0.05f, 0.07f, 0.72f));
 
   /* --- Title + REC --- */
-  ov.text("LOOPER", margin, top, title_sz, overlay::rgba(0.90f, 0.92f, 0.95f, 0.95f), 800);
+  ov.text("LOOPER", ox + m, oy + title_y, title_sz, C(0.90f, 0.92f, 0.95f, 0.95f), 800);
   if (s->record_held)
-    ov.text("\xe2\x97\x8f REC", margin + title_sz * 5.6f, top + 4.0f * scale, label_sz,
-            overlay::rgba(1.0f, 0.28f, 0.28f, 1.0f), 700);
+    ov.text("\xe2\x97\x8f REC", ox + m + title_sz * 5.6f, oy + title_y + 4.0f * scale, label_sz,
+            C(1.0f, 0.28f, 0.28f, 1.0f), 700);
   else
-    ov.text("\xe2\x96\xb6 PLAY", margin + title_sz * 5.6f, top + 4.0f * scale, label_sz,
-            overlay::rgba(0.55f, 0.75f, 0.95f, 0.7f), 700);
+    ov.text("\xe2\x96\xb6 PLAY", ox + m + title_sz * 5.6f, oy + title_y + 4.0f * scale, label_sz,
+            C(0.55f, 0.75f, 0.95f, 0.7f), 700);
 
-  /* --- Connection status (top-right, pulsing dot) --- */
+  /* --- Connection status (top-right of the panel, pulsing dot) --- */
   {
     float t = (float)s->elapsed;
     float pulse = 0.35f + 0.65f * (0.5f + 0.5f * sinf(t * 6.0f));
     float dot = 12.0f * scale;
-    float cx = (float)vp_w - margin - 168.0f * scale;
-    ov.fillRect(cx, top + 5.0f * scale, dot, dot, overlay::rgba(0.30f, 0.55f, 1.0f, pulse));
-    ov.text("connecting", cx + dot + 8.0f * scale, top + 1.0f * scale, small_sz,
-            overlay::rgba(0.60f, 0.72f, 1.0f, 0.80f));
+    float cx = ox + boxW - m - 144.0f * scale;
+    ov.fillRect(cx, oy + title_y + 5.0f * scale, dot, dot, C(0.30f, 0.55f, 1.0f, pulse));
+    ov.text("connecting", cx + dot + 8.0f * scale, oy + title_y + 1.0f * scale, small_sz,
+            C(0.60f, 0.72f, 1.0f, 0.80f));
   }
 
   /* --- Beat gridlines behind the lanes (4 beats / bar) --- */
   for (int beat = 0; beat <= 4; beat++) {
-    float gx = track_x + (beat / 4.0f) * track_w;
+    float gx = ox + track_x + (beat / 4.0f) * track_w;
     float a = (beat % 4 == 0) ? 0.34f : 0.15f;
-    ov.fillRect(gx, lanes_top, 1.5f * scale, lanes_h, overlay::rgba(0.60f, 0.66f, 0.78f, a));
+    ov.fillRect(gx, oy + lanes_top, 1.5f * scale, lanes_h, C(0.60f, 0.66f, 0.78f, a));
   }
 
   /* --- Lanes: continuous note bars per channel --- */
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    float ly = lanes_top + ch * (lane_h + lane_gap);
+    float ly = oy + lanes_top + ch * (lane_h + lane_gap);
     float cr = CH_R[ch], cg = CH_G[ch], cb = CH_B[ch];
     bool muted = s->mute_held && s->trigger_held[ch];
     float dim = muted ? 0.35f : 1.0f;
-    bool playing = s->gate_state[ch] != 0;
+    bool gated = s->gate_state[ch] != 0;
 
-    /* Lane track background (highlights while the channel is gated). */
-    float track_a = playing ? 0.14f : 0.05f;
-    ov.fillRect(track_x, ly, track_w, lane_h, overlay::rgba(cr, cg, cb, track_a));
+    /* Lane track background — the CHANNEL flash: an onset pulse (from flash[])
+     * plus a steady highlight while the channel is gated. (The individual note
+     * bars light per-step, below.) */
+    float fl = s->flash[ch] > 0 ? s->flash[ch] / 0.25f : 0.0f;
+    float track_a = 0.05f + 0.11f * fl;
+    if (gated && track_a < 0.15f) track_a = 0.15f;
+    ov.fillRect(ox + track_x, ly, track_w, lane_h, C(cr, cg, cb, track_a));
 
     /* Channel number + optional clip name. */
     char num[2] = { char('1' + ch), 0 };
-    ov.text(num, number_x, ly + lane_h * 0.5f - label_sz * 0.55f, label_sz,
-            overlay::rgba(cr * dim, cg * dim, cb * dim, 1.0f), 700);
+    ov.text(num, ox + number_x, ly + lane_h * 0.5f - label_sz * 0.55f, label_sz,
+            C(cr * dim, cg * dim, cb * dim, 1.0f), 700);
     if (s->channel_names[ch][0])
-      ov.text(s->channel_names[ch], name_x, ly + lane_h * 0.5f - small_sz * 0.55f,
-              small_sz, overlay::rgba(0.70f, 0.72f, 0.76f, 0.80f));
+      ov.text(s->channel_names[ch], ox + name_x, ly + lane_h * 0.5f - small_sz * 0.55f,
+              small_sz, C(0.70f, 0.72f, 0.76f, 0.80f));
 
-    /* Note bars (unquantized: positioned/sized by real onset + gate length). */
+    /* Note bars (unquantized: positioned/sized by real onset + gate length).
+     * Only the note currently under the playhead flashes bright. */
     float bar_pad = 6.0f * scale;
     for (int i = 0; i < s->looper.event_count; i++) {
       const Event& e = s->looper.events[i];
       if (e.channel != ch) continue;
-      draw_note_bar(ov, e, track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
-                    cr, cg, cb, muted, playing, scale);
+      bool note_playing = note_active(e, s->phase);
+      draw_note_bar(ov, e, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
+                    cr, cg, cb, muted, note_playing, scale, op);
     }
   }
 
@@ -934,31 +1015,32 @@ void render(void* self, int vp_w, int vp_h) {
   {
     float ph = (float)s->phase / (float)NUM_STEPS;
     if (ph < 0) ph = 0; else if (ph > 1) ph = 1;
-    float px = track_x + ph * track_w;
-    ov.fillRect(px - 1.5f * scale, lanes_top - 4.0f * scale, 3.0f * scale,
-                lanes_h + 8.0f * scale, overlay::rgba(1.0f, 1.0f, 1.0f, 0.88f));
+    float px = ox + track_x + ph * track_w;
+    ov.fillRect(px - 1.5f * scale, oy + lanes_top - 4.0f * scale, 3.0f * scale,
+                lanes_h + 8.0f * scale, C(1.0f, 1.0f, 1.0f, 0.88f));
   }
 
-  /* --- Trigger flashes + modifier state (bottom row) --- */
-  float row_y = lanes_top + lanes_h + 16.0f * scale;
+  /* --- Trigger-state dots + modifier state (bottom row). The dots track the
+   * gate EXACTLY — on while the channel is gated, off the instant it releases
+   * (no hold/decay). --- */
+  float row_abs = oy + row_y;
   for (int i = 0; i < NUM_CHANNELS; i++) {
-    float x = margin + i * 44.0f * scale;
-    float a = s->flash[i] > 0 ? 1.0f : 0.28f;
-    ov.fillRect(x, row_y, 16.0f * scale, 16.0f * scale,
-                overlay::rgba(CH_R[i], CH_G[i], CH_B[i], a));
+    float x = ox + m + i * 44.0f * scale;
+    float a = s->gate_state[i] ? 1.0f : 0.28f;
+    ov.fillRect(x, row_abs, 16.0f * scale, 16.0f * scale, C(CH_R[i], CH_G[i], CH_B[i], a));
   }
-  float mod_x = margin + NUM_CHANNELS * 44.0f * scale + 16.0f * scale;
-  ov.text("DEL", mod_x, row_y - 2.0f * scale, small_sz,
-          overlay::rgba(1.0f, 0.30f, 0.30f, s->delete_held ? 1.0f : 0.30f), 700);
-  ov.text("MUTE", mod_x + 56.0f * scale, row_y - 2.0f * scale, small_sz,
-          overlay::rgba(1.0f, 0.85f, 0.30f, s->mute_held ? 1.0f : 0.30f), 700);
-  ov.text("Q.start", mod_x + 140.0f * scale, row_y - 2.0f * scale, small_sz,
-          overlay::rgba(0.55f, 0.80f, 1.0f, s->quantize_start ? 1.0f : 0.32f), 700);
-  ov.text("Q.len", mod_x + 232.0f * scale, row_y - 2.0f * scale, small_sz,
-          overlay::rgba(0.55f, 0.80f, 1.0f, s->quantize_length ? 1.0f : 0.32f), 700);
-  ov.text("LATCH", mod_x + 314.0f * scale, row_y - 2.0f * scale, small_sz,
-          overlay::rgba(0.55f, 1.0f, 0.65f,
-                        s->latch ? (s->latch_capturing ? 1.0f : 0.65f) : 0.32f), 700);
+  float mod_x = ox + m + NUM_CHANNELS * 44.0f * scale + 16.0f * scale;
+  ov.text("DEL", mod_x, row_abs - 2.0f * scale, small_sz,
+          C(1.0f, 0.30f, 0.30f, s->delete_held ? 1.0f : 0.30f), 700);
+  ov.text("MUTE", mod_x + 56.0f * scale, row_abs - 2.0f * scale, small_sz,
+          C(1.0f, 0.85f, 0.30f, s->mute_held ? 1.0f : 0.30f), 700);
+  ov.text("Q.start", mod_x + 140.0f * scale, row_abs - 2.0f * scale, small_sz,
+          C(0.55f, 0.80f, 1.0f, s->quantize_start ? 1.0f : 0.32f), 700);
+  ov.text("Q.len", mod_x + 232.0f * scale, row_abs - 2.0f * scale, small_sz,
+          C(0.55f, 0.80f, 1.0f, s->quantize_length ? 1.0f : 0.32f), 700);
+  ov.text("LATCH", mod_x + 314.0f * scale, row_abs - 2.0f * scale, small_sz,
+          C(0.55f, 1.0f, 0.65f,
+            s->latch ? (s->latch_capturing ? 1.0f : 0.65f) : 0.32f), 700);
 
   /* Latch capture indicator: a thin green bar above the lanes that fills over
    * the window in which a trigger ADDS to the current phrase. It vanishes the
@@ -972,10 +1054,9 @@ void render(void* self, int vp_w, int vp_h) {
     double elapsed = s->abs_phase - s->latch_start_abs;
     if (elapsed >= 0 && elapsed < add_window) {   /* a press right now ADDS */
       float prog = (float)(elapsed / add_window);
-      float by = lanes_top - 9.0f * scale;
-      ov.fillRect(track_x, by, track_w, 3.0f * scale, overlay::rgba(0.2f, 0.4f, 0.25f, 0.4f));
-      ov.fillRect(track_x, by, track_w * prog, 3.0f * scale,
-                  overlay::rgba(0.45f, 1.0f, 0.6f, 0.9f));
+      float by = oy + lanes_top - 9.0f * scale;
+      ov.fillRect(ox + track_x, by, track_w, 3.0f * scale, C(0.2f, 0.4f, 0.25f, 0.4f));
+      ov.fillRect(ox + track_x, by, track_w * prog, 3.0f * scale, C(0.45f, 1.0f, 0.6f, 0.9f));
     }
   }
 
