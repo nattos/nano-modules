@@ -13,6 +13,10 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
   @property() label = '';
   @property({ type: Number }) defaultValue = 0;
   @property({ attribute: false }) binding: FieldBinding | null = null;
+  /** Label-as-button mode: the button IS the label (no separate label column)
+   *  and fills the full field-editor width; ON/OFF is shown by the active tint.
+   *  Reflected for the `:host([labelButton])` rules below. */
+  @property({ type: Boolean, reflect: true }) labelButton = false;
 
   get controlledFields() { return [this.fieldPath]; }
 
@@ -76,11 +80,23 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
       color: #fff;
     }
     button[mixed] { font-style: italic; color: var(--app-text-color2, #888); }
+
+    /* Label-as-button: the button fills the whole width and carries the label;
+       the active tint shows the ON state. */
+    :host([labelButton]) { display: block; padding: 2px 0; }
+    :host([labelButton]) button { width: 100%; }
   `;
 
   render() {
     const mixed = this.mixed;
     const on = this.value;
+    if (this.labelButton) {
+      return html`
+        <button ?active=${!mixed && on} ?mixed=${mixed} @click=${this.onClick}>
+          ${mixed ? `${this.label} (many)` : this.label}
+        </button>
+      `;
+    }
     return html`
       <span class="label">${this.label}</span>
       <button ?active=${!mixed && on} ?mixed=${mixed} @click=${this.onClick}>

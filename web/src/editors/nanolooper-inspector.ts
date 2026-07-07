@@ -71,11 +71,17 @@ export class NanolooperGrid extends MobxLitElement {
 
   static styles = css`
     :host { display: block; }
-    canvas {
-      width: 100%; height: 176px; display: block;
+    /* The canvas is absolutely positioned inside a fixed-height wrapper so its
+       backing-store width (canvas.width, set to clientWidth*dpr each frame) does
+       NOT contribute to the inspector's min-content width. Without this a plain
+       width:100% canvas both (a) pins a large minimum panel width and (b) feeds
+       back — clientWidth→canvas.width→intrinsic→clientWidth — creeping wider. */
+    .wrap {
+      position: relative; width: 100%; height: 176px;
       background: rgba(8, 10, 16, 0.55);
       border: 1px solid var(--app-border-color, #3a3346); border-radius: 2px;
     }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   `;
 
   connectedCallback() {
@@ -234,7 +240,7 @@ export class NanolooperGrid extends MobxLitElement {
   }
 
   render() {
-    return html`<canvas></canvas>`;
+    return html`<div class="wrap"><canvas></canvas></div>`;
   }
 }
 
@@ -272,53 +278,51 @@ export class NanolooperInspector extends MobxLitElement {
       <div class="section">Triggers</div>
       <help-slot .binding=${b} .path=${'@group/triggers'}></help-slot>
       <div class="pads">
-        <field-trigger .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
       </div>
 
       <div class="section">Editing</div>
       <help-slot .binding=${b} .path=${'@group/editing'}></help-slot>
       <div class="row">
-        <field-trigger .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-toggle .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <field-trigger .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-toggle ?labelButton=${true} .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-trigger ?labelButton=${true} .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
       </div>
 
       <div class="section">Recording</div>
       <help-slot .binding=${b} .path=${'@group/recording'}></help-slot>
       <div class="row">
-        <field-toggle .fieldPath=${'latch'} .label=${'Latch'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <field-toggle .fieldPath=${'record'} .label=${'Record'} .defaultValue=${1} .binding=${b}></field-toggle>
+        <field-toggle ?labelButton=${true} .fieldPath=${'latch'} .label=${'Latch'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-toggle ?labelButton=${true} .fieldPath=${'record'} .label=${'Record'} .defaultValue=${1} .binding=${b}></field-toggle>
       </div>
 
       <div class="section">Quantize</div>
       <help-slot .binding=${b} .path=${'@group/quantize'}></help-slot>
       <div class="row">
-        <field-toggle .fieldPath=${'quantize_start'} .label=${'Q Start'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <field-toggle .fieldPath=${'quantize_length'} .label=${'Q Length'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-toggle ?labelButton=${true} .fieldPath=${'quantize_start'} .label=${'Q Start'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-toggle ?labelButton=${true} .fieldPath=${'quantize_length'} .label=${'Q Length'} .defaultValue=${0} .binding=${b}></field-toggle>
       </div>
       <scalar-slider style="width:100%;" .fieldPath=${'grace'} .label=${'Grace'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0625} .binding=${b}></scalar-slider>
 
       <div class="section">Output</div>
       <help-slot .binding=${b} .path=${'@group/output'}></help-slot>
-      <field-toggle .fieldPath=${'send_to_rail'} .label=${'Send To Rail'} .defaultValue=${1} .binding=${b}></field-toggle>
+      <field-toggle ?labelButton=${true} .fieldPath=${'send_to_rail'} .label=${'Send To Rail'} .defaultValue=${1} .binding=${b}></field-toggle>
 
       <div class="section">Display</div>
       <help-slot .binding=${b} .path=${'@group/display'}></help-slot>
-      <field-toggle .fieldPath=${'show_overlay'} .label=${'Show Overlay'} .defaultValue=${1} .binding=${b}></field-toggle>
+      <field-toggle ?labelButton=${true} .fieldPath=${'show_overlay'} .label=${'Show Overlay'} .defaultValue=${1} .binding=${b}></field-toggle>
       <field-tab-bar .fieldPath=${'anchor'} .label=${'Anchor'} ?wrap=${true}
         .options=${ANCHOR_OPTIONS} .defaultValue=${0} .binding=${b}></field-tab-bar>
       <scalar-slider style="width:100%;" .fieldPath=${'overlay_opacity'} .label=${'Overlay Opacity'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
 
       <div class="section">Synth</div>
       <help-slot .binding=${b} .path=${'@group/synth'}></help-slot>
-      <div class="row">
-        <field-toggle .fieldPath=${'synth'} .label=${'Synth'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <scalar-slider .fieldPath=${'synth_gain'} .label=${'Synth Gain'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
-      </div>
+      <field-toggle ?labelButton=${true} .fieldPath=${'synth'} .label=${'Synth'} .defaultValue=${0} .binding=${b}></field-toggle>
+      <scalar-slider style="width:100%;" .fieldPath=${'synth_gain'} .label=${'Synth Gain'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
     `;
   }
 }
