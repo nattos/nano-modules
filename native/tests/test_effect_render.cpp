@@ -2887,6 +2887,83 @@ TEST_CASE("control.nanolooper replays a recorded note as the beat clock loops",
   CHECK(step(0.15625, false));               // phase 2.5, inside [2,3) → ON re-fires
 }
 
+// Two ABUTTING recorded notes (one ends exactly as the next begins) must
+// RETRIGGER: playback coverage never lapses, but the boundary is a real new hit,
+// so the looper emits an off THEN an on at the seam (not one sustained gate).
+// This is what strict mode then holds a frame of "off" between.
+TEST_CASE("control.nanolooper retriggers at an abutting-note boundary",
+          "[effect_render][nanolooper][trigger_rail]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+  const uint32_t W = 64, H = 64;
+  int inTex = backend->createTexture(W, H, 1);
+  int outTex = backend->createTexture(W, H, 1);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "control.nanolooper", "instance_key": "lp" }
+    ],
+    "instances": {
+      "lp": { "module_type": "control.nanolooper",
+              "state": { "send_to_rail": true, "trigger_1": 0 } }
+    }
+  })JSON");
+
+  trigger_bus::resetForTest();
+
+  // step returns (sawOn, sawOff) for channel 1 this frame.
+  auto step = [&](double barPhase, bool dirty) -> std::pair<bool, bool> {
+    bundles.setHostClock(0.0, 1.0 / 60.0, barPhase, 120.0, (int)W, (int)H);
+    REQUIRE(executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty) >= 0);
+    backend->submit();
+    bool on = false, off = false;
+    for (const auto& e : trigger_bus::drain("test")) {
+      if (e.channel != 1) continue;
+      if (e.on) on = true; else off = true;
+    }
+    return {on, off};
+  };
+
+  step(0.0, true);  // baseline (phase 0)
+
+  // Record note A over [2,4): press sees phase 2, release sees phase 4.
+  step(0.125, false);                            // settle phase 2
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 1;
+  step(0.125, true);                             // press → phase 2
+  step(0.25, false);                             // hold to phase 4
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 0;
+  step(0.3125, true);                            // release → note A [2,4)
+
+  // Record note B over [4,6): press sees phase 4, release sees phase 6.
+  step(0.25, false);                             // settle phase 4
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 1;
+  step(0.25, true);                              // press → phase 4
+  step(0.375, false);                            // hold to phase 6
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 0;
+  step(0.4375, true);                            // release → note B [4,6)
+
+  // Play through the coverage with NOTHING held. Enter note A → ON.
+  step(0.0, false);                              // phase 0, silence, reset gate
+  { auto r = step(0.15625, false); CHECK(r.first); }    // phase 2.5 inside A → ON
+  { auto r = step(0.21875, false); CHECK_FALSE(r.first); CHECK_FALSE(r.second); } // 3.5, still on
+
+  // Cross the A→B boundary at phase 4: coverage is continuous, but the retrigger
+  // must emit BOTH an off and an on this frame.
+  auto boundary = step(0.28125, false);          // phase 4.5, crossed onset at 4
+  CHECK(boundary.first);                          // ON (note B)
+  CHECK(boundary.second);                         // OFF (note A ended) — the retrigger
+}
+
 // The looper now DRAWS its debug overlay through the in-effect overlay toolbox
 // (overlay.h): solid-quad GPU rects + host-text labels composited onto tex_out
 // over tex_in. This is only possible because it declares a tex_out texture

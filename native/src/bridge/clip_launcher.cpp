@@ -2,6 +2,8 @@
 
 #include "bridge/clip_launcher.h"
 
+#include <set>
+
 #include "bridge/trig_log.h"
 
 namespace bridge {
@@ -192,11 +194,25 @@ StrictPlan planStrict(const std::vector<trigger_bus::Event>& drained,
       pending.clear();
     }
   } else {
-    // Present-proxy: release events whose emitting frame has been presented.
+    // Present-proxy, SERIALIZED PER CHANNEL. Release at most one event per
+    // channel per presented frame — otherwise a same-channel off+on emitted in
+    // one frame (e.g. an abutting-note retrigger) would release together and
+    // ClipLauncher::tick would fold them to the final desired state, so the
+    // "off" never reaches Resolume. Holding the on until the NEXT presented
+    // frame guarantees the off gets its own frame. `pending` is in seq order.
     std::vector<StrictPending> waiting;
+    std::set<int> released;  // channels that already released an event this tick
     for (auto& p : pending) {
-      if (present_seq > p.floor_present) plan.reconcile.push_back(p.ev);
-      else waiting.push_back(std::move(p));
+      const bool blocked = released.count(p.ev.channel) != 0;
+      if (!blocked && present_seq > p.floor_present) {
+        plan.reconcile.push_back(p.ev);
+        released.insert(p.ev.channel);
+      } else {
+        // A later same-channel event must wait for a FRESH presented frame, not
+        // the one that just released its predecessor.
+        if (blocked && p.floor_present < present_seq) p.floor_present = present_seq;
+        waiting.push_back(std::move(p));
+      }
     }
     pending = std::move(waiting);
   }

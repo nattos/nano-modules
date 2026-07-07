@@ -358,6 +358,26 @@ static void set_gate(State& s, int ch, bool on) {
   }
 }
 
+/* True if some recorded note on `ch` has its ONSET in (prev, phase] modulo the
+ * loop — i.e. a note started this frame. Used to RETRIGGER abutting notes: when
+ * one note ends exactly as the next begins, playback coverage never lapses (the
+ * gate would otherwise stay continuously on and emit no edge), but the boundary
+ * is a real new hit, so we force an off→on. Wrap-aware. */
+static bool onset_crossed(const LooperCore* c, int ch, double prev, double phase,
+                          double loop) {
+  double advance = phase - prev;
+  if (advance < 0) advance += loop;           /* frame's forward phase travel */
+  if (advance <= 0) return false;             /* no advance (e.g. param edit) */
+  for (int i = 0; i < c->event_count; i++) {
+    if (c->events[i].channel != ch) continue;
+    double d = c->events[i].start - prev;     /* forward distance prev → onset */
+    d = std::fmod(d, loop);
+    if (d < 0) d += loop;
+    if (d > 0.0 && d <= advance) return true; /* onset landed in (prev, phase] */
+  }
+  return false;
+}
+
 /* Single source of truth for every channel's gate: the live press OR a
  * played-back note window covering the current phase. Called after any input
  * edge and every tick (as the phase moves through recorded windows). Mute
@@ -367,10 +387,21 @@ static void recompute_gates(State& s) {
   int active[NUM_CHANNELS];
   looper_active_channels(&s.looper, s.phase, active);
   bool pattern_on = (s.loop_mode != LOOP_OFF);
+  double loop = s.looper.loop_length > 0 ? s.looper.loop_length : (double)NUM_STEPS;
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
     bool live = s.trigger_held[ch] && !s.mute_held && !s.delete_held;
     bool played = pattern_on && active[ch] && !(s.mute_held && s.trigger_held[ch]);
-    set_gate(s, ch, live || played);
+    bool want = live || played;
+    /* Abutting-note retrigger: coverage stays on across a note boundary, but a
+     * new playback onset was crossed → emit an off then on so downstream sees a
+     * distinct new hit (and strict mode can hold a frame of "off" between). */
+    if (want && played && s.gate_state[ch] &&
+        onset_crossed(&s.looper, ch, s.prev_phase, s.phase, loop)) {
+      set_gate(s, ch, false);
+      set_gate(s, ch, true);
+    } else {
+      set_gate(s, ch, want);
+    }
   }
 }
 

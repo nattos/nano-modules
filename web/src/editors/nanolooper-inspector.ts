@@ -352,6 +352,7 @@ export class NanolooperInspector extends MobxLitElement {
       <div class="section">Output</div>
       <help-slot .binding=${b} .path=${'@group/output'}></help-slot>
       <field-toggle ?labelButton=${true} .fieldPath=${'send_to_rail'} .label=${'Send To Rail'} .defaultValue=${1} .binding=${b}></field-toggle>
+      <scalar-slider style="width:100%;" .fieldPath=${'strict_deadline'} .label=${'Strict Deadline'} .min=${0} .max=${250} .step=${5} .defaultValue=${0} .binding=${b}></scalar-slider>
 
       <div class="section">Display</div>
       <help-slot .binding=${b} .path=${'@group/display'}></help-slot>

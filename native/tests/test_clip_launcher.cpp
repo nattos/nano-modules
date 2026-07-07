@@ -285,6 +285,38 @@ TEST_CASE("planStrict holds a strict event until a frame is presented",
   CHECK(pending.empty());
 }
 
+TEST_CASE("planStrict serializes same-channel off+on across presented frames",
+          "[strict]") {
+  std::vector<bridge::StrictPending> pending;
+
+  // An abutting-note retrigger emits off then on for the SAME channel in one
+  // frame → both drained in one pump tick, both enqueued at present_seq=10.
+  auto p0 = bridge::planStrict(
+      {strictEv(1, 3, /*on=*/false, 200), strictEv(2, 3, /*on=*/true, 200)},
+      pending, /*now_ms=*/1000, /*present_seq=*/10);
+  CHECK(p0.reconcile.empty());
+  REQUIRE(pending.size() == 2);
+
+  // Frame presented → ONLY the off (older seq) releases; the on must wait so the
+  // off gets its own frame (else tick() would fold them and the off never shows).
+  auto p1 = bridge::planStrict({}, pending, /*now_ms=*/1010, /*present_seq=*/11);
+  REQUIRE(p1.reconcile.size() == 1);
+  CHECK(p1.reconcile[0].on == false);
+  CHECK(p1.reconcile[0].seq == 1);
+  REQUIRE(pending.size() == 1);  // the on still waits
+
+  // Same frame (present_seq unchanged) → the on stays held.
+  auto p1b = bridge::planStrict({}, pending, /*now_ms=*/1015, /*present_seq=*/11);
+  CHECK(p1b.reconcile.empty());
+  REQUIRE(pending.size() == 1);
+
+  // Next frame presented → the on releases.
+  auto p2 = bridge::planStrict({}, pending, /*now_ms=*/1025, /*present_seq=*/12);
+  REQUIRE(p2.reconcile.size() == 1);
+  CHECK(p2.reconcile[0].on == true);
+  CHECK(pending.empty());
+}
+
 TEST_CASE("planStrict deadline flushes all, reconciling only the newest",
           "[strict]") {
   std::vector<bridge::StrictPending> pending;
