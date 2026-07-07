@@ -77,6 +77,16 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_LATCH           16
 #define PID_ANCHOR          17
 #define PID_OVERLAY_OPACITY 18
+#define PID_LOOP_MODE       19
+
+/* Loop mode (single enum replacing the old record/latch bools):
+ *   Off     — the recorded pattern is DISABLED (kept in memory, not played);
+ *             live triggers still play + show as transient overlay notes.
+ *   Overdub — pattern plays; triggers overdub into it (the old record-arm).
+ *   Latch   — pattern plays; latch capture (first tap clears + captures a bar). */
+#define LOOP_OFF     0
+#define LOOP_OVERDUB 1
+#define LOOP_LATCH   2
 
 /* ======================================================================
  * State
@@ -102,8 +112,17 @@ struct State {
   int delete_acted = 0;           /* did delete+trigger happen during this press? */
   int last_action_was_clear = 0;  /* was the last standalone delete a clear-all? */
   int mute_held = 0;
-  int record_held = 0;
+  /* loop_mode is the authority (Off/Overdub/Latch); record_held + latch are
+   * derived mirrors kept in sync so the trigger/latch logic reads naturally.
+   * record_held||latch ⟺ "pattern enabled" (plays back). */
+  int loop_mode = LOOP_OVERDUB;
+  int record_held = 1;
   int show_overlay = 0;
+
+  /* Off-mode transient live notes: a held trigger shows a growing overlay bar
+   * that vanishes on release, WITHOUT touching the (disabled) recorded pattern. */
+  int live_held[NUM_CHANNELS] = {0};
+  double live_start[NUM_CHANNELS] = {0};
   int anchor = 0;               /* overlay corner: 0=top-left, 1=bottom-left, 2=top-right, 3=bottom-right */
   float overlay_opacity = 1.0f; /* overall overlay alpha multiplier */
   int quantize_start = 0;
@@ -186,6 +205,8 @@ static const char* json_ch_step(int ch, int step) {
  * State-touching helpers
  * ====================================================================== */
 
+static bool live_note_for(const State& s, int ch, Event& out);  /* defined below */
+
 /* Publish the current sequencer grid state as JSON */
 static void publish_state(State& s) {
   /* Build a JSON string representing the grid and playback state.
@@ -194,6 +215,7 @@ static void publish_state(State& s) {
   auto state = val::object();
   val::set(state, "phase", val::number(s.phase));
   val::set(state, "recording", val::boolean(s.record_held != 0));
+  val::set(state, "loop_mode", val::number(s.loop_mode));  /* 0=Off 1=Overdub 2=Latch */
   val::set(state, "event_count", val::number(s.looper.event_count));
 
   auto grid = val::array();
@@ -222,6 +244,21 @@ static void publish_state(State& s) {
     val::push(notes, n);
   }
   val::set(state, "notes", notes);
+
+  /* Off-mode transient live notes (display only; the recorded `notes` above are
+   * shown DISABLED in Off). Empty in Overdub/Latch (held notes live in `notes`). */
+  auto live_notes = val::array();
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    Event lv;
+    if (live_note_for(s, ch, lv)) {
+      auto n = val::object();
+      val::set(n, "ch", val::number(lv.channel));
+      val::set(n, "start", val::number(lv.start));
+      val::set(n, "length", val::number(lv.length));
+      val::push(live_notes, n);
+    }
+  }
+  val::set(state, "live_notes", live_notes);
 
   /* Per-channel live gate (1 while sounding) — for lane highlight + the trigger
    * dots. Exact (no fade). */
@@ -295,15 +332,33 @@ static void set_gate(State& s, int ch, bool on) {
 /* Single source of truth for every channel's gate: the live press OR a
  * played-back note window covering the current phase. Called after any input
  * edge and every tick (as the phase moves through recorded windows). Mute
- * silences a channel you're actively holding (mute + that trigger). */
+ * silences a channel you're actively holding (mute + that trigger). In Off mode
+ * the recorded pattern is DISABLED, so only live presses gate. */
 static void recompute_gates(State& s) {
   int active[NUM_CHANNELS];
   looper_active_channels(&s.looper, s.phase, active);
+  bool pattern_on = (s.loop_mode != LOOP_OFF);
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
     bool live = s.trigger_held[ch] && !s.mute_held && !s.delete_held;
-    bool played = active[ch] && !(s.mute_held && s.trigger_held[ch]);
+    bool played = pattern_on && active[ch] && !(s.mute_held && s.trigger_held[ch]);
     set_gate(s, ch, live || played);
   }
+}
+
+/* Off-mode transient live note for a held channel: the note's onset + its length
+ * grown to the current phase (with a small visible minimum so a fresh press
+ * shows even when the transport is paused). Returns false when the channel has
+ * no live note. Wrap-aware. */
+static bool live_note_for(const State& s, int ch, Event& out) {
+  if (!s.live_held[ch]) return false;
+  double len = s.phase - s.live_start[ch];
+  if (len < 0) len += (double)NUM_STEPS;
+  if (len < 0.35) len = 0.35;
+  if (len > (double)NUM_STEPS) len = (double)NUM_STEPS;
+  out.channel = ch;
+  out.start = s.live_start[ch];
+  out.length = len;
+  return true;
 }
 
 static void refresh_channels(State& s) {
@@ -348,9 +403,9 @@ static void on_param_change(State& s, int index, double value) {
       } else {
         int step = (int)s.phase % NUM_STEPS;
         s.last_action_was_clear = 0;
-        /* Record ARMS writing to the pattern. When it's off, a trigger still
-         * plays live (the gate fires clips/audio/rail via recompute_gates) but
-         * doesn't record. Latch is a capture mode, so it always records. */
+        /* Overdub/Latch RECORD the tap into the pattern; Off doesn't — but Off
+         * still plays live (recompute_gates gates it) and shows a TRANSIENT
+         * overlay note that vanishes on release. */
         bool recording = s.record_held || s.latch;
         if (recording) {
           /* Latch: the first trigger (or one past the 1-bar window) clears the
@@ -363,11 +418,17 @@ static void on_param_change(State& s, int index, double value) {
           }
           looper_begin_note(&s.looper, ch, s.phase);
           log_structured(LOG_INFO, "Note on", json_ch_step(ch + 1, step));
+        } else {
+          /* Off mode: transient live note (display only, pattern untouched). */
+          s.live_held[ch] = 1;
+          s.live_start[ch] = s.phase;
         }
       }
     } else if (!pressed && was) {
-      /* Falling edge — finalize the note's gate length from the hold duration */
-      looper_end_note(&s.looper, ch, s.phase);
+      /* Falling edge — finalize a recorded note, or drop the transient one so it
+       * disappears the instant the trigger releases. */
+      if (s.record_held || s.latch) looper_end_note(&s.looper, ch, s.phase);
+      else s.live_held[ch] = 0;
     }
   } else if (index == PID_DELETE) {
     if (pressed) {
@@ -403,11 +464,32 @@ static void on_param_change(State& s, int index, double value) {
       s.last_action_was_clear = 0;
       log_msg(LOG_INFO, "Redo");
     }
-  } else if (index == PID_RECORD) {
-    /* Record-arm toggle: gates whether triggers write to the pattern (they
-     * always play live regardless). See the trigger branch above. */
-    s.record_held = pressed;
-    log_msg(LOG_INFO, pressed ? "Record armed" : "Record off (play only)");
+  } else if (index == PID_LOOP_MODE) {
+    /* The single Loop enum. Off disables the recorded pattern (kept in memory);
+     * Overdub/Latch play + record. record_held/latch are derived mirrors. */
+    int m = (int)(value + 0.5);
+    m = m < LOOP_OFF ? LOOP_OFF : (m > LOOP_LATCH ? LOOP_LATCH : m);
+    if (m != s.loop_mode) {
+      /* Finalize/drop any in-flight notes so a switch mid-hold doesn't dangle. */
+      for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        looper_end_note(&s.looper, ch, s.phase);  /* no-op if not pending */
+        s.live_held[ch] = 0;
+      }
+      s.loop_mode = m;
+      s.record_held = (m != LOOP_OFF);     /* Overdub/Latch record */
+      s.latch = (m == LOOP_LATCH);
+      s.latch_capturing = 0;               /* re-arm latch capture */
+      /* Entering Off with triggers physically held → show them as transient. */
+      if (m == LOOP_OFF) {
+        for (int ch = 0; ch < NUM_CHANNELS; ch++)
+          if (s.trigger_held[ch] && !s.mute_held && !s.delete_held) {
+            s.live_held[ch] = 1;
+            s.live_start[ch] = s.phase;
+          }
+      }
+      log_msg(LOG_INFO, m == LOOP_OFF ? "Loop: off (pattern disabled)"
+                        : m == LOOP_LATCH ? "Loop: latch" : "Loop: overdub");
+    }
   } else if (index == PID_SHOW_OVERLAY) {
     s.show_overlay = pressed;
   } else if (index == PID_ANCHOR) {
@@ -429,9 +511,6 @@ static void on_param_change(State& s, int index, double value) {
      * (NUM_STEPS steps), so 1 beat == NUM_STEPS/4 units. */
     s.grace_beats = (float)value;
     looper_set_grace(&s.looper, (double)s.grace_beats * (NUM_STEPS / 4.0));
-  } else if (index == PID_LATCH) {
-    s.latch = pressed;
-    s.latch_capturing = 0;   /* re-arm: the next trigger starts a fresh capture */
   }
 
   /* One authority for gate emission — reflect the new input state immediately. */
@@ -523,13 +602,12 @@ static int field_to_pid(const char* path, int pathLen) {
     {"trigger_3", PID_TRIGGER_3}, {"trigger_4", PID_TRIGGER_4},
     {"delete", PID_DELETE}, {"mute", PID_MUTE},
     {"undo", PID_UNDO}, {"redo", PID_REDO},
-    {"record", PID_RECORD}, {"show_overlay", PID_SHOW_OVERLAY},
+    {"loop_mode", PID_LOOP_MODE}, {"show_overlay", PID_SHOW_OVERLAY},
     {"anchor", PID_ANCHOR}, {"overlay_opacity", PID_OVERLAY_OPACITY},
     {"send_to_rail", PID_SEND_TO_RAIL},
     {"quantize_start", PID_QUANTIZE_START},
     {"quantize_length", PID_QUANTIZE_LENGTH},
     {"grace", PID_GRACE},
-    {"latch", PID_LATCH},
   };
   for (auto& m : map) {
     int mlen = std::strlen(m.name);
@@ -594,20 +672,19 @@ void module_init() {
   schema.eventField("undo", state::PrimaryInput).label("Undo", "Undo");
   schema.eventField("redo", state::PrimaryInput).label("Redo", "Redo");
 
-  // --- Recording ------------------------------------------------------
-  schema.group("recording", "Recording")
+  // --- Loop -----------------------------------------------------------
+  schema.group("loop", "Loop")
     .groupHelp(
-      "How your taps are captured. **Record** arms writing to the pattern (off = play "
-      "live over the existing loop without overwriting it). **Latch** turns the first "
-      "tap into a one-bar capture window for building a phrase hands-free.");
-  schema.boolField("latch", false, state::PrimaryInput,
-    "Capture a tapped one-bar phrase: the first trigger clears the loop and opens a "
-    "one-bar window, taps inside it accumulate, and a tap past it restarts the capture.")
-    .label("Latch", "Latch");
-  schema.boolField("record", true, state::PrimaryInput,
-    "Arm recording. On (default), triggers write notes into the loop. Off, triggers "
-    "still play and launch clips live, but the recorded loop keeps playing untouched.")
-    .label("Record", "Rec");
+      "What your taps do to the loop. **Off** disables the recorded pattern (it stops "
+      "playing but is kept — switch back to restore it); triggers still play live. "
+      "**Overdub** plays the loop and records your taps into it. **Latch** turns the "
+      "first tap into a one-bar capture window for building a phrase hands-free.");
+  schema.selectField("loop_mode", LOOP_OVERDUB, state::PrimaryInput,
+    { {"Off", LOOP_OFF}, {"Overdub", LOOP_OVERDUB}, {"Latch", LOOP_LATCH} },
+    /*wrap=*/false,
+    "Off = pattern disabled (kept, live triggers only); Overdub = play + record; "
+    "Latch = one-bar capture.")
+    .label("Loop", "Loop");
 
   // --- Quantize -------------------------------------------------------
   schema.group("quantize", "Quantize")
@@ -739,10 +816,12 @@ void init(void* self) {
   looper_set_quantize(&s->looper, 0, 0);
   s->grace_beats = 0.0625f;
   looper_set_grace(&s->looper, (double)s->grace_beats * (NUM_STEPS / 4.0));
+  s->loop_mode = LOOP_OVERDUB;   /* default (see schema); on_state_patched syncs */
   s->latch = 0;
   s->latch_capturing = 0;
   s->latch_start_abs = 0.0;
   s->abs_phase = 0.0;
+  for (int i = 0; i < NUM_CHANNELS; i++) { s->live_held[i] = 0; s->live_start[i] = 0.0; }
   /* send_to_rail keeps its schema default (on) via on_state_patched; reset the
    * ring so a re-init never replays stale events. */
   s->trig_ring_len = 0;
@@ -751,7 +830,7 @@ void init(void* self) {
   s->delete_acted = 0;
   s->last_action_was_clear = 0;
   s->mute_held = 0;
-  s->record_held = 1;   /* armed by default (see schema); on_state_patched syncs */
+  s->record_held = 1;   /* Overdub records by default; on_state_patched syncs */
 
   char key_buf[64];
   int key_len = state_get_key(key_buf, sizeof(key_buf) - 1);
@@ -849,16 +928,20 @@ static bool note_active(const Event& e, double phase) {
 static void draw_note_bar(overlay::Canvas& ov, const Event& e,
                           float track_x, float track_w, float bar_y, float bar_h,
                           float cr, float cg, float cb,
-                          bool muted, bool playing, float scale, float op) {
+                          bool muted, bool playing, float scale, float op,
+                          bool disabled = false) {
   const double loop = (double)NUM_STEPS;
   double s0 = e.start;
   if (s0 < 0) s0 = 0; else if (s0 >= loop) s0 -= loop;
   double rem = e.length;
   if (rem > loop) rem = loop;
 
-  const float body_a = (muted ? 0.30f : (playing ? 0.95f : 0.72f)) * op;
-  const float edge_a = (muted ? 0.45f : 1.0f) * op;
-  const float bf = playing ? 0.85f : 0.55f;   // body brightness
+  // `disabled` (Off mode): the recorded pattern is kept but inactive — draw it
+  // dim + desaturated so it reads as "there but off".
+  const float body_a = disabled ? 0.26f * op
+                     : (muted ? 0.30f : (playing ? 0.95f : 0.72f)) * op;
+  const float edge_a = disabled ? 0.40f * op : (muted ? 0.45f : 1.0f) * op;
+  const float bf = disabled ? 0.42f : (playing ? 0.85f : 0.55f);   // body brightness
 
   /* Minimum on-screen width so even a genuinely tiny gate stays visible (wide
    * enough to show body past the onset marker). */
@@ -961,14 +1044,17 @@ void render(void* self, int vp_w, int vp_h) {
   /* --- Panel background (first rect → behind everything else) --- */
   ov.fillRect(ox, oy, boxW, boxH, C(0.04f, 0.05f, 0.07f, 0.72f));
 
-  /* --- Title + REC --- */
+  /* --- Title + loop-mode badge --- */
   ov.text("LOOPER", ox + m, oy + title_y, title_sz, C(0.90f, 0.92f, 0.95f, 0.95f), 800);
-  if (s->record_held)
-    ov.text("\xe2\x97\x8f REC", ox + m + title_sz * 5.6f, oy + title_y + 4.0f * scale, label_sz,
-            C(1.0f, 0.28f, 0.28f, 1.0f), 700);
-  else
-    ov.text("\xe2\x96\xb6 PLAY", ox + m + title_sz * 5.6f, oy + title_y + 4.0f * scale, label_sz,
-            C(0.55f, 0.75f, 0.95f, 0.7f), 700);
+  {
+    const float bx = ox + m + title_sz * 5.6f, by = oy + title_y + 4.0f * scale;
+    if (s->loop_mode == LOOP_OVERDUB)
+      ov.text("\xe2\x97\x8f OVERDUB", bx, by, label_sz, C(1.0f, 0.28f, 0.28f, 1.0f), 700);
+    else if (s->loop_mode == LOOP_LATCH)
+      ov.text("\xe2\x97\x89 LATCH", bx, by, label_sz, C(0.45f, 1.0f, 0.6f, 0.95f), 700);
+    else  /* Off — pattern disabled */
+      ov.text("\xe2\x96\xa0 OFF", bx, by, label_sz, C(0.62f, 0.66f, 0.72f, 0.8f), 700);
+  }
 
   /* --- Connection status (top-right of the panel, pulsing dot) --- */
   {
@@ -1011,15 +1097,22 @@ void render(void* self, int vp_w, int vp_h) {
               small_sz, C(0.70f, 0.72f, 0.76f, 0.80f));
 
     /* Note bars (unquantized: positioned/sized by real onset + gate length).
-     * Only the note currently under the playhead flashes bright. */
+     * Only the note under the playhead flashes bright. In Off mode the recorded
+     * pattern is drawn DISABLED (dim); a held trigger's TRANSIENT note draws
+     * bright and vanishes on release. */
+    const bool disabled = (s->loop_mode == LOOP_OFF);
     float bar_pad = 6.0f * scale;
     for (int i = 0; i < s->looper.event_count; i++) {
       const Event& e = s->looper.events[i];
       if (e.channel != ch) continue;
-      bool note_playing = note_active(e, s->phase);
+      bool note_playing = !disabled && note_active(e, s->phase);
       draw_note_bar(ov, e, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
-                    cr, cg, cb, muted, note_playing, scale, op);
+                    cr, cg, cb, muted, note_playing, scale, op, disabled);
     }
+    Event lv;
+    if (live_note_for(*s, ch, lv))
+      draw_note_bar(ov, lv, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
+                    cr, cg, cb, /*muted=*/false, /*playing=*/true, scale, op, /*disabled=*/false);
   }
 
   /* --- Playhead: continuous position across all lanes --- */
@@ -1049,9 +1142,7 @@ void render(void* self, int vp_w, int vp_h) {
           C(0.55f, 0.80f, 1.0f, s->quantize_start ? 1.0f : 0.32f), 700);
   ov.text("Q.len", mod_x + 232.0f * scale, row_abs - 2.0f * scale, small_sz,
           C(0.55f, 0.80f, 1.0f, s->quantize_length ? 1.0f : 0.32f), 700);
-  ov.text("LATCH", mod_x + 314.0f * scale, row_abs - 2.0f * scale, small_sz,
-          C(0.55f, 1.0f, 0.65f,
-            s->latch ? (s->latch_capturing ? 1.0f : 0.65f) : 0.32f), 700);
+  /* (Loop mode is shown as the header badge; the latch capture bar is below.) */
 
   /* Latch capture indicator: a thin green bar above the lanes that fills over
    * the window in which a trigger ADDS to the current phrase. It vanishes the

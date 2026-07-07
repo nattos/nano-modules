@@ -2,7 +2,7 @@
  * <field-trigger> — Standard momentary button widget for event fields.
  */
 
-import { html, css } from 'lit';
+import { html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding, FieldEditorElement } from './field-editor';
@@ -17,6 +17,12 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
    *  and fills the full field-editor width. Reflected for the `:host([labelButton])`
    *  rules below. */
   @property({ type: Boolean, reflect: true }) labelButton = false;
+  /** Double-height button (label-as-button mode). Reflected. */
+  @property({ type: Boolean, reflect: true }) tall = false;
+  /** Optional leading glyph (emoji/text) shown on the button, above the label in
+   *  tall mode. NOTE: an icon-font class (line-awesome) won't work here — the
+   *  class→glyph rules aren't in this shadow root; pass a literal glyph. */
+  @property() icon = '';
 
   get controlledFields() { return [this.fieldPath]; }
 
@@ -66,13 +72,25 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
     /* Label-as-button: the button fills the whole width and carries the label. */
     :host([labelButton]) { display: block; padding: 2px 0; }
     :host([labelButton]) button { width: 100%; }
+    /* Tall (double-height) button: icon stacked above the label. */
+    :host([tall]) button {
+      min-height: 42px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 2px; line-height: 1.1;
+    }
+    .ico { font-size: 1.25em; line-height: 1; }
   `;
+
+  private content() {
+    return html`${this.icon ? html`<span class="ico">${this.icon}</span>` : nothing}
+      <span>${this.label || 'Trigger'}</span>`;
+  }
 
   render() {
     if (this.labelButton) {
       return html`
         <button @mousedown=${this.onDown} @mouseup=${this.onUp}
-                @mouseleave=${this.onUp}>${this.label || 'Trigger'}</button>
+                @mouseleave=${this.onUp}>${this.content()}</button>
       `;
     }
     return html`

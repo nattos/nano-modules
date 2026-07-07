@@ -6,10 +6,11 @@
  * length, wrap-aware), a sweeping playhead, per-channel gate highlight, and the
  * trigger-state dots. It's a pure VISUALIZER (like the overlay) — it reads the
  * effect's live published state each frame via `binding.getValue(...)`:
- *   notes:     [{ch,start,length}, …]  full note events (same data the overlay draws)
- *   phase:     0..16                    playhead position (bar * NUM_STEPS)
- *   recording: bool                     REC vs PLAY
- *   gates:     [g0,g1,g2,g3]            live per-channel gate (exact, no fade)
+ *   notes:      [{ch,start,length}, …]  recorded pattern (dim when loop_mode=Off)
+ *   live_notes: [{ch,start,length}, …]  Off-mode transient live taps (bright)
+ *   phase:      0..16                    playhead position (bar * NUM_STEPS)
+ *   loop_mode:  0=Off 1=Overdub 2=Latch  header badge + disabled-pattern styling
+ *   gates:      [g0,g1,g2,g3]            live per-channel gate (exact, no fade)
  * (published by nanolooper/main.cpp publish_state()).
  *
  * Below the canvas are the looper's controls, grouped exactly like the schema /
@@ -44,6 +45,14 @@ const ANCHOR_OPTIONS = [
   { label: 'Bottom Left', value: 1 },
   { label: 'Top Right', value: 2 },
   { label: 'Bottom Right', value: 3 },
+];
+
+// Loop mode enum — must match LOOP_OFF/OVERDUB/LATCH in nanolooper/main.cpp.
+const LOOP_OFF = 0, LOOP_OVERDUB = 1, LOOP_LATCH = 2;
+const LOOP_OPTIONS = [
+  { label: 'Off', value: LOOP_OFF },
+  { label: 'Overdub', value: LOOP_OVERDUB },
+  { label: 'Latch', value: LOOP_LATCH },
 ];
 
 const rgba = (c: [number, number, number], a: number) =>
@@ -120,6 +129,16 @@ export class NanolooperGrid extends MobxLitElement {
     return [0, 0, 0, 0];
   }
 
+  private liveNotes(): Note[] {
+    const v = this.binding?.getValue('live_notes');
+    if (!Array.isArray(v)) return [];
+    const out: Note[] = [];
+    for (const e of v) {
+      if (e && typeof e.ch === 'number') out.push({ ch: e.ch, start: +e.start || 0, length: +e.length || 0 });
+    }
+    return out;
+  }
+
   private draw() {
     const c = this.canvas;
     if (!c || !this.binding) return;
@@ -136,9 +155,11 @@ export class NanolooperGrid extends MobxLitElement {
     ctx.clearRect(0, 0, cw, chh);
 
     const phase = this.num('phase', 0);
-    const recording = !!this.binding.getValue('recording');
+    const loopMode = this.num('loop_mode', LOOP_OVERDUB);
+    const disabled = loopMode === LOOP_OFF;   // pattern kept but not playing
     const gates = this.gates();
     const notes = this.notes();
+    const liveNotes = this.liveNotes();
 
     // --- Layout -----------------------------------------------------------
     const pad = 10;
@@ -152,14 +173,15 @@ export class NanolooperGrid extends MobxLitElement {
     const laneGap = 4;
     const laneH = (lanesH - laneGap * (NUM_CHANNELS - 1)) / NUM_CHANNELS;
 
-    // --- Header: LOOPER + REC/PLAY ---------------------------------------
+    // --- Header: LOOPER + loop-mode badge --------------------------------
     ctx.textBaseline = 'top';
     ctx.font = '700 14px sans-serif';
     ctx.fillStyle = 'rgba(230,235,242,0.95)';
     ctx.fillText('LOOPER', pad, pad);
     ctx.font = '700 11px sans-serif';
-    if (recording) { ctx.fillStyle = 'rgba(255,72,72,1)'; ctx.fillText('● REC', pad + 74, pad + 2); }
-    else { ctx.fillStyle = 'rgba(140,190,242,0.75)'; ctx.fillText('▶ PLAY', pad + 74, pad + 2); }
+    if (loopMode === LOOP_OVERDUB) { ctx.fillStyle = 'rgba(255,72,72,1)'; ctx.fillText('● OVERDUB', pad + 74, pad + 2); }
+    else if (loopMode === LOOP_LATCH) { ctx.fillStyle = 'rgba(115,255,153,0.95)'; ctx.fillText('◉ LATCH', pad + 74, pad + 2); }
+    else { ctx.fillStyle = 'rgba(158,168,184,0.8)'; ctx.fillText('■ OFF', pad + 74, pad + 2); }
 
     // --- Beat gridlines (4 beats / bar) ----------------------------------
     for (let beat = 0; beat <= 4; beat++) {
@@ -185,12 +207,18 @@ export class NanolooperGrid extends MobxLitElement {
       ctx.fillText(String(ch + 1), pad + 6, ly + laneH / 2);
       ctx.textBaseline = 'top';
 
-      // Note bars — only the note under the playhead flashes bright.
+      // Recorded note bars — only the note under the playhead flashes bright.
+      // In Off mode the pattern is drawn DISABLED (dim); the transient live
+      // notes (below) draw bright and vanish on release.
       const barPad = Math.min(4, laneH * 0.12);
       for (const n of notes) {
         if (n.ch !== ch) continue;
         this.drawNoteBar(ctx, n, trackX, trackW, ly + barPad, laneH - 2 * barPad, col,
-          noteActive(n, phase));
+          !disabled && noteActive(n, phase), disabled);
+      }
+      for (const n of liveNotes) {
+        if (n.ch !== ch) continue;
+        this.drawNoteBar(ctx, n, trackX, trackW, ly + barPad, laneH - 2 * barPad, col, true, false);
       }
     }
 
@@ -212,16 +240,19 @@ export class NanolooperGrid extends MobxLitElement {
   }
 
   // One note as a continuous bar (up to two segments across the loop seam),
-  // bright leading edge on the true onset — mirrors draw_note_bar().
+  // bright leading edge on the true onset — mirrors draw_note_bar(). `disabled`
+  // (Off mode) draws the recorded pattern dim + desaturated.
   private drawNoteBar(
     ctx: CanvasRenderingContext2D, n: Note, trackX: number, trackW: number,
     barY: number, barH: number, col: [number, number, number], playing: boolean,
+    disabled = false,
   ) {
     const loop = NUM_STEPS;
     let s0 = n.start % loop; if (s0 < 0) s0 += loop;
     let rem = Math.min(n.length, loop);
-    const bodyA = playing ? 0.95 : 0.72;
-    const bf = playing ? 0.85 : 0.55;
+    const bodyA = disabled ? 0.26 : (playing ? 0.95 : 0.72);
+    const edgeA = disabled ? 0.4 : 1;
+    const bf = disabled ? 0.42 : (playing ? 0.85 : 0.55);
     const body: [number, number, number] = [col[0] * bf, col[1] * bf, col[2] * bf];
     const minW = 4;
     let first = true;
@@ -234,7 +265,7 @@ export class NanolooperGrid extends MobxLitElement {
       const wDraw = Math.max(wRaw, minW);
       ctx.fillStyle = rgba(body, bodyA);
       ctx.fillRect(x, barY, wDraw, barH);
-      if (first) { ctx.fillStyle = rgba(col, 1); ctx.fillRect(x, barY, 2.5, barH); }
+      if (first) { ctx.fillStyle = rgba(col, edgeA); ctx.fillRect(x, barY, 2.5, barH); }
       rem -= seg; s0 += seg; if (s0 >= loop) s0 -= loop; first = false;
     }
   }
@@ -278,27 +309,25 @@ export class NanolooperInspector extends MobxLitElement {
       <div class="section">Triggers</div>
       <help-slot .binding=${b} .path=${'@group/triggers'}></help-slot>
       <div class="pads">
-        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
       </div>
 
       <div class="section">Editing</div>
       <help-slot .binding=${b} .path=${'@group/editing'}></help-slot>
-      <div class="row">
-        <field-trigger ?labelButton=${true} .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-toggle ?labelButton=${true} .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <field-trigger ?labelButton=${true} .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
+      <div class="pads">
+        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'🗑️'} .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-toggle ?labelButton=${true} ?tall=${true} .icon=${'🔇'} .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'↩️'} .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'↪️'} .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
       </div>
 
-      <div class="section">Recording</div>
-      <help-slot .binding=${b} .path=${'@group/recording'}></help-slot>
-      <div class="row">
-        <field-toggle ?labelButton=${true} .fieldPath=${'latch'} .label=${'Latch'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <field-toggle ?labelButton=${true} .fieldPath=${'record'} .label=${'Record'} .defaultValue=${1} .binding=${b}></field-toggle>
-      </div>
+      <div class="section">Loop</div>
+      <help-slot .binding=${b} .path=${'@group/loop'}></help-slot>
+      <field-tab-bar .fieldPath=${'loop_mode'} .label=${''}
+        .options=${LOOP_OPTIONS} .defaultValue=${1} .binding=${b}></field-tab-bar>
 
       <div class="section">Quantize</div>
       <help-slot .binding=${b} .path=${'@group/quantize'}></help-slot>

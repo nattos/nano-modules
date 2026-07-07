@@ -87,8 +87,7 @@ const ParamDef kParams[] = {
   {"Mute",            "Editing",   FF_TYPE_BOOLEAN,  "mute",             0.0f,    false, Local::None},
   {"Undo",            "Editing",   FF_TYPE_EVENT,    "undo",             0.0f,    true,  Local::None},
   {"Redo",            "Editing",   FF_TYPE_EVENT,    "redo",             0.0f,    true,  Local::None},
-  {"Latch",           "Recording", FF_TYPE_BOOLEAN,  "latch",            0.0f,    false, Local::None},
-  {"Record",          "Recording", FF_TYPE_BOOLEAN,  "record",           1.0f,    false, Local::None},
+  {"Loop",            "Loop",      FF_TYPE_OPTION,   "loop_mode",        1.0f,    false, Local::None},
   {"Quantize Start",  "Quantize",  FF_TYPE_BOOLEAN,  "quantize_start",   0.0f,    false, Local::None},
   {"Quantize Length", "Quantize",  FF_TYPE_BOOLEAN,  "quantize_length",  0.0f,    false, Local::None},
   {"Grace",           "Quantize",  FF_TYPE_STANDARD, "grace",            0.0625f, false, Local::None},
@@ -100,10 +99,11 @@ const ParamDef kParams[] = {
   {"Synth Gain",      "Synth",     FF_TYPE_STANDARD, nullptr,            0.5f,    false, Local::SynthGain},
 };
 
-// The overlay-anchor dropdown elements. Element VALUES double as the field value
-// (0..3), matching the effect schema's `anchor` selectField — Resolume delivers
-// the picked element's value straight to SetFloatParameter.
+// Option-dropdown elements. Element VALUES double as the field value, matching
+// the effect schema's selectField — Resolume delivers the picked element's value
+// straight to SetFloatParameter.
 const char* const kAnchorLabels[4] = {"Top Left", "Bottom Left", "Top Right", "Bottom Right"};
+const char* const kLoopLabels[3]   = {"Off", "Overdub", "Latch"};
 constexpr unsigned int P_COUNT = sizeof(kParams) / sizeof(kParams[0]);
 
 // The single effect instance key inside the fixed sketch.
@@ -120,10 +120,16 @@ class LooperPlugin : public CFFGLPlugin {
     SetTimeSupported(true);
     for (unsigned int i = 0; i < P_COUNT; ++i) {
       if (kParams[i].type == FF_TYPE_OPTION) {
-        // The only option param is the overlay anchor (4 corners).
-        SetOptionParamInfo(i, kParams[i].name, 4, kParams[i].def);
-        for (unsigned int e = 0; e < 4; ++e)
-          SetParamElementInfo(i, e, kAnchorLabels[e], (float)e);
+        // Enum dropdowns: pick the element table by field.
+        const char* const* labels = nullptr; unsigned int n = 0;
+        if (kParams[i].field && std::strcmp(kParams[i].field, "loop_mode") == 0) {
+          labels = kLoopLabels; n = 3;
+        } else {  // anchor
+          labels = kAnchorLabels; n = 4;
+        }
+        SetOptionParamInfo(i, kParams[i].name, n, kParams[i].def);
+        for (unsigned int e = 0; e < n; ++e)
+          SetParamElementInfo(i, e, labels[e], (float)e);
       } else {
         SetParamInfo(i, kParams[i].name, kParams[i].type, kParams[i].def);
       }

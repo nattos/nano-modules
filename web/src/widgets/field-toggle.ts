@@ -2,7 +2,7 @@
  * <field-toggle> — Standard toggle widget for boolean fields.
  */
 
-import { html, css } from 'lit';
+import { html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding, FieldEditorElement } from './field-editor';
@@ -17,6 +17,12 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
    *  and fills the full field-editor width; ON/OFF is shown by the active tint.
    *  Reflected for the `:host([labelButton])` rules below. */
   @property({ type: Boolean, reflect: true }) labelButton = false;
+  /** Double-height button (label-as-button mode). Reflected. */
+  @property({ type: Boolean, reflect: true }) tall = false;
+  /** Optional leading glyph (emoji/text) shown on the button, above the label in
+   *  tall mode. Pass a literal glyph — icon-font classes won't resolve in this
+   *  shadow root. */
+  @property() icon = '';
 
   get controlledFields() { return [this.fieldPath]; }
 
@@ -85,6 +91,13 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
        the active tint shows the ON state. */
     :host([labelButton]) { display: block; padding: 2px 0; }
     :host([labelButton]) button { width: 100%; }
+    /* Tall (double-height) button: icon stacked above the label. */
+    :host([tall]) button {
+      min-height: 42px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 2px; line-height: 1.1;
+    }
+    .ico { font-size: 1.25em; line-height: 1; }
   `;
 
   render() {
@@ -93,7 +106,8 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
     if (this.labelButton) {
       return html`
         <button ?active=${!mixed && on} ?mixed=${mixed} @click=${this.onClick}>
-          ${mixed ? `${this.label} (many)` : this.label}
+          ${this.icon ? html`<span class="ico">${this.icon}</span>` : nothing}
+          <span>${mixed ? `${this.label} (many)` : this.label}</span>
         </button>
       `;
     }
