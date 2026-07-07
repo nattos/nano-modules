@@ -6,6 +6,10 @@ import { html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding, FieldEditorElement } from './field-editor';
+import './ui-icon';
+
+/** Light sanitize for a Line Awesome icon NAME before it becomes a CSS class. */
+function cleanIcon(name: string): string { return (name || '').replace(/[^a-z0-9-]/gi, ''); }
 
 @customElement('field-toggle')
 export class FieldToggle extends MobxLitElement implements FieldEditorElement {
@@ -19,9 +23,8 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
   @property({ type: Boolean, reflect: true }) labelButton = false;
   /** Double-height button (label-as-button mode). Reflected. */
   @property({ type: Boolean, reflect: true }) tall = false;
-  /** Optional leading glyph (emoji/text) shown on the button, above the label in
-   *  tall mode. Pass a literal glyph — icon-font classes won't resolve in this
-   *  shadow root. */
+  /** Optional Line Awesome icon NAME (e.g. "la-volume-mute") shown on the button,
+   *  above the label in tall mode. Rendered via <ui-icon>, lightly sanitized. */
   @property() icon = '';
 
   get controlledFields() { return [this.fieldPath]; }
@@ -97,16 +100,17 @@ export class FieldToggle extends MobxLitElement implements FieldEditorElement {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 2px; line-height: 1.1;
     }
-    .ico { font-size: 1.25em; line-height: 1; }
+    .ico { --icon-size: 1.35em; line-height: 1; }
   `;
 
   render() {
     const mixed = this.mixed;
     const on = this.value;
     if (this.labelButton) {
+      const ico = cleanIcon(this.icon);
       return html`
         <button ?active=${!mixed && on} ?mixed=${mixed} @click=${this.onClick}>
-          ${this.icon ? html`<span class="ico">${this.icon}</span>` : nothing}
+          ${ico ? html`<ui-icon class="ico" .icon=${ico}></ui-icon>` : nothing}
           <span>${mixed ? `${this.label} (many)` : this.label}</span>
         </button>
       `;

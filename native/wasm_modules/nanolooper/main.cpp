@@ -218,6 +218,19 @@ static void publish_state(State& s) {
   val::set(state, "loop_mode", val::number(s.loop_mode));  /* 0=Off 1=Overdub 2=Latch */
   val::set(state, "event_count", val::number(s.looper.event_count));
 
+  /* Latch capture progress (0..1 over the add-window) while a phrase is being
+   * captured, else -1. Drives the web editor's green capture bar, matching the
+   * on-video overlay's. See the render() latch indicator for the same math. */
+  double latch_capture = -1.0;
+  if (s.latch && s.latch_capturing) {
+    double inv = (double)s.grace_beats * (NUM_STEPS / 4.0);
+    double add_window = (double)NUM_STEPS - inv;
+    if (add_window < 1e-4) add_window = (double)NUM_STEPS;
+    double elapsed = s.abs_phase - s.latch_start_abs;
+    if (elapsed >= 0 && elapsed < add_window) latch_capture = elapsed / add_window;
+  }
+  val::set(state, "latch_capture", val::number(latch_capture));
+
   auto grid = val::array();
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
     auto channel = val::array();

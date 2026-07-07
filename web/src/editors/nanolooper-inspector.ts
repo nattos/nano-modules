@@ -222,6 +222,18 @@ export class NanolooperGrid extends MobxLitElement {
       }
     }
 
+    // --- Latch capture bar (green progress above the lanes, Latch mode) ---
+    // A press while it's showing ADDS to the phrase; it vanishes once a press
+    // would instead CLEAR + restart. Mirrors the on-video overlay.
+    const latchProg = this.num('latch_capture', -1);
+    if (latchProg >= 0) {
+      const by = lanesTop - 6;
+      ctx.fillStyle = 'rgba(51,102,64,0.4)';
+      ctx.fillRect(trackX, by, trackW, 3);
+      ctx.fillStyle = 'rgba(115,255,153,0.9)';
+      ctx.fillRect(trackX, by, trackW * Math.max(0, Math.min(1, latchProg)), 3);
+    }
+
     // --- Playhead ---------------------------------------------------------
     let ph = phase / NUM_STEPS;
     ph = ph < 0 ? 0 : ph > 1 ? 1 : ph;
@@ -318,10 +330,10 @@ export class NanolooperInspector extends MobxLitElement {
       <div class="section">Editing</div>
       <help-slot .binding=${b} .path=${'@group/editing'}></help-slot>
       <div class="pads">
-        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'🗑️'} .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-toggle ?labelButton=${true} ?tall=${true} .icon=${'🔇'} .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
-        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'↩️'} .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
-        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'↪️'} .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'la-trash'} .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-toggle ?labelButton=${true} ?tall=${true} .icon=${'la-volume-mute'} .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'la-undo'} .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger ?labelButton=${true} ?tall=${true} .icon=${'la-redo'} .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
       </div>
 
       <div class="section">Loop</div>

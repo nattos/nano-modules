@@ -6,6 +6,11 @@ import { html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding, FieldEditorElement } from './field-editor';
+import './ui-icon';
+
+/** Light sanitize for a Line Awesome icon NAME before it becomes a CSS class —
+ *  only the chars a `la-*` name can contain. */
+function cleanIcon(name: string): string { return (name || '').replace(/[^a-z0-9-]/gi, ''); }
 
 @customElement('field-trigger')
 export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
@@ -19,9 +24,9 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
   @property({ type: Boolean, reflect: true }) labelButton = false;
   /** Double-height button (label-as-button mode). Reflected. */
   @property({ type: Boolean, reflect: true }) tall = false;
-  /** Optional leading glyph (emoji/text) shown on the button, above the label in
-   *  tall mode. NOTE: an icon-font class (line-awesome) won't work here — the
-   *  class→glyph rules aren't in this shadow root; pass a literal glyph. */
+  /** Optional Line Awesome icon NAME (e.g. "la-trash") shown on the button,
+   *  above the label in tall mode. Rendered via <ui-icon> (which carries the
+   *  icon font), lightly sanitized. */
   @property() icon = '';
 
   get controlledFields() { return [this.fieldPath]; }
@@ -78,11 +83,12 @@ export class FieldTrigger extends MobxLitElement implements FieldEditorElement {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 2px; line-height: 1.1;
     }
-    .ico { font-size: 1.25em; line-height: 1; }
+    .ico { --icon-size: 1.35em; line-height: 1; }
   `;
 
   private content() {
-    return html`${this.icon ? html`<span class="ico">${this.icon}</span>` : nothing}
+    const ico = cleanIcon(this.icon);
+    return html`${ico ? html`<ui-icon class="ico" .icon=${ico}></ui-icon>` : nothing}
       <span>${this.label || 'Trigger'}</span>`;
   }
 
