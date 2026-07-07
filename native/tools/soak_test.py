@@ -205,6 +205,32 @@ def sample_footprint(pid):
     return phys, gpu
 
 
+# Effects the structural driver adds/removes. Empty state → the effect falls back
+# to its schema defaults (safe: no guessing field values). DEST/SRC list the
+# fields the wire driver may connect (kept to ones we're confident exist).
+ADDABLE_EFFECTS = [
+    "color.tone.brightness_contrast",
+    "color.saturate",
+    "color.invert",
+    "color.posterize",
+    "filter.blur.gaussian",
+    "filter.blur.fast",
+    "mod.source.lfo",
+    "mod.source.adsr",
+]
+WIRE_DEST_FIELDS = {
+    "color.tone.brightness_contrast": ["brightness", "contrast"],
+    "color.saturate": ["amount"],
+    "filter.blur.gaussian": ["blur"],
+    "filter.blur.fast": ["blur"],
+}
+WIRE_SRC_OUTPUT = {  # modulation-source instances → their output field
+    "mod.source.lfo": "output",
+    "mod.source.adsr": "output",
+    "control.nanolooper": "out_1",
+}
+
+
 # --------------------------------------------------------------------------
 # Parameter driver — random churn over the WS bridge.
 # --------------------------------------------------------------------------
@@ -214,7 +240,7 @@ class Driver:
         self.port = port
         self.key = key
         self.rng = rng
-        self.mode = mode  # full | fields (only param nudges) | triggers (only looper)
+        self.mode = mode  # full | fields | triggers | structural
         self.ws = None
         self._drain_stop = threading.Event()
         self._drain = None
@@ -230,6 +256,78 @@ class Driver:
         self.looper = next((i for i, s in sketch.get("instances", {}).items()
                             if s.get("module_type") == "control.nanolooper"), None)
         self.stats = {"patches": 0, "trigger_pulses": 0, "errors": 0, "reconnects": 0}
+        # Structural mode: own a live copy of the sketch to mutate + republish.
+        # base_keys are permanent (always rendering + the looper); dynamic
+        # instances (dyn<N>) are added/removed. Bounded random walk so a leak,
+        # not legitimate growth, is what shows up as a rising memory floor.
+        self.model = json.loads(json.dumps(sketch))
+        self.base_keys = set(self.model.get("instances", {}).keys())
+        self.dyn_counter = 0
+        self.max_dynamic = 6
+        self.stats.update({"sketch_replaces": 0, "fx_added": 0, "fx_removed": 0,
+                           "wires_added": 0, "wires_removed": 0})
+
+    # -- structural helpers ---------------------------------------------
+    def _dynamic_keys(self):
+        return [k for k in self.model["instances"] if k not in self.base_keys]
+
+    def _mod_type(self, ik):
+        return self.model["instances"].get(ik, {}).get("module_type", "")
+
+    def _add_effect(self):
+        mt = self.rng.choice(ADDABLE_EFFECTS)
+        ik = f"dyn{self.dyn_counter}"
+        self.dyn_counter += 1
+        self.model["instances"][ik] = {"module_type": mt, "state": {}}
+        # Insert into the chain just before the looper so it stays the top overlay.
+        entry = {"type": "module", "module_type": mt, "instance_key": ik}
+        chain = self.model["chain"]
+        idx = next((i for i, e in enumerate(chain)
+                    if e.get("instance_key") == self.looper), len(chain))
+        chain.insert(idx, entry)
+        self.stats["fx_added"] += 1
+
+    def _remove_effect(self):
+        dyn = self._dynamic_keys()
+        if not dyn:
+            return
+        ik = self.rng.choice(dyn)
+        self.model["instances"].pop(ik, None)
+        self.model["chain"] = [e for e in self.model["chain"]
+                               if e.get("instance_key") != ik]
+        # Drop any wire touching the removed instance.
+        before = len(self.model["wires"])
+        self.model["wires"] = [
+            w for w in self.model["wires"]
+            if w.get("src", {}).get("instanceKey") != ik
+            and w.get("dest", {}).get("instanceKey") != ik]
+        self.stats["wires_removed"] += before - len(self.model["wires"])
+        self.stats["fx_removed"] += 1
+
+    def _add_wire(self):
+        insts = self.model["instances"]
+        srcs = [k for k in insts if self._mod_type(k) in WIRE_SRC_OUTPUT]
+        dests = [(k, f) for k in insts
+                 for f in WIRE_DEST_FIELDS.get(self._mod_type(k), [])]
+        if not srcs or not dests:
+            return
+        sk = self.rng.choice(srcs)
+        dk, df = self.rng.choice(dests)
+        wid = f"w{self.dyn_counter}"
+        self.dyn_counter += 1
+        self.model["wires"].append({
+            "id": wid,
+            "src": {"instanceKey": sk, "field": WIRE_SRC_OUTPUT[self._mod_type(sk)]},
+            "dest": {"instanceKey": dk, "field": df},
+            "magnitude": self.rng.choice(["signed", "unsigned"]),
+            "combine": "add", "mod": {"scale": round(self.rng.uniform(0.2, 0.8), 3)},
+        })
+        self.stats["wires_added"] += 1
+
+    def _remove_wire(self):
+        if self.model["wires"]:
+            self.model["wires"].pop(self.rng.randrange(len(self.model["wires"])))
+            self.stats["wires_removed"] += 1
 
     def connect(self):
         try:
@@ -254,19 +352,16 @@ class Driver:
             except (OSError, ValueError):
                 return
 
-    def _patch(self, field_path, value):
-        msg = json.dumps({
-            "action": "patch",
-            "target": f"/plugins/{self.key}/state",
-            "ops": [{"op": "replace",
-                     "path": f"/sketch/instances/{field_path}", "value": value}],
-        })
+    def _send_ops(self, ops):
+        """Send a state patch (list of RFC-6902 ops) with reconnect handling."""
+        msg = json.dumps({"action": "patch",
+                          "target": f"/plugins/{self.key}/state", "ops": ops})
         try:
             if self.ws is None and not self.connect():
                 self.stats["errors"] += 1
-                return
+                return False
             self.ws.send_text(msg)
-            self.stats["patches"] += 1
+            return True
         except OSError:
             self.stats["errors"] += 1
             self.stats["reconnects"] += 1
@@ -275,9 +370,44 @@ class Driver:
             except Exception:
                 pass
             self.ws = None
+            return False
+
+    def _patch(self, field_path, value):
+        if self._send_ops([{"op": "replace",
+                            "path": f"/sketch/instances/{field_path}",
+                            "value": value}]):
+            self.stats["patches"] += 1
+
+    def _replace_sketch(self):
+        """Push the whole current sketch model — how structural edits land."""
+        if self._send_ops([{"op": "replace", "path": "/sketch",
+                            "value": self.model}]):
+            self.stats["sketch_replaces"] += 1
 
     def tick(self):
         """One churn step: nudge a few fields; sometimes stress the looper."""
+        if self.mode == "structural":
+            # Add/remove effects and wires, biased to keep the dynamic count a
+            # bounded random walk (so a rising memory floor means a lifecycle
+            # leak, not legitimate growth). Then republish the whole sketch —
+            # the barrel re-fetches + recompiles, exercising instance create/
+            # destroy, schema handling and the wire graph rebuild.
+            ndyn = len(self._dynamic_keys())
+            roll = self.rng.random()
+            if ndyn <= 0:
+                self._add_effect()
+            elif ndyn >= self.max_dynamic:
+                (self._remove_effect if roll < 0.6 else self._remove_wire)()
+            elif roll < 0.35:
+                self._add_effect()
+            elif roll < 0.60:
+                self._remove_effect()
+            elif roll < 0.85:
+                self._add_wire()
+            else:
+                self._remove_wire()
+            self._replace_sketch()
+            return
         if self.mode in ("full", "fields") and self.targets:
             for _ in range(self.rng.randint(1, 3)):
                 inst, field, lo, hi = self.rng.choice(self.targets)
@@ -419,8 +549,11 @@ def main():
                     help="exclude this leading window from the leak-slope fit")
     ap.add_argument("--csv", default="/tmp/soak_timeline.csv")
     ap.add_argument("--no-drive", action="store_true", help="don't change params")
-    ap.add_argument("--drive-mode", choices=["full", "fields", "triggers"],
-                    default="full", help="what the driver churns (bisect leaks)")
+    ap.add_argument("--drive-mode",
+                    choices=["full", "fields", "triggers", "structural"],
+                    default="full",
+                    help="what the driver churns: full=params+looper, fields/"
+                         "triggers isolate those, structural=add/remove effects+wires")
     ap.add_argument("--leak-threshold-mb-min", type=float, default=2.0,
                     help="flag a leak if phys grows faster than this")
     args = ap.parse_args()
@@ -501,11 +634,16 @@ def main():
                     cell(pms, 1.0, 2),
                 ]) + "\n")
                 csv.flush()
+                if driver and args.drive_mode == "structural":
+                    churn = (f"replaces={driver.stats['sketch_replaces']} "
+                             f"fx={len(driver._dynamic_keys())} "
+                             f"wires={len(driver.model['wires'])}")
+                else:
+                    churn = f"patches={driver.stats['patches'] if driver else 0}"
                 print(f"[soak] t={elapsed:6.0f}s  rss={mb(RSS[-1])}  "
                       f"phys={mb(phys)}  gpu={mb(gpu)}  "
                       f"fps={'n/a' if fps is None else f'{fps:5.1f}'}  "
-                      f"proc={'n/a' if pms is None else f'{pms:4.2f}ms'}  "
-                      f"patches={driver.stats['patches'] if driver else 0}",
+                      f"proc={'n/a' if pms is None else f'{pms:4.2f}ms'}  {churn}",
                       flush=True)
                 next_sample = now + args.sample_interval
 
