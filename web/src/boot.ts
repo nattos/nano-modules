@@ -1,6 +1,7 @@
 /**
- * Shared engine + state bootstrap, used by both entry points
- * (`resolume-app.ts` and `effect-ide-app.ts`).
+ * Shared engine + state bootstrap, used by both surface boots
+ * (`boot-resolume.ts` and `boot-effect-dev.ts`), themselves invoked by the
+ * single unified entry (`main.ts`).
  *
  * Steps:
  *   1. Create the engine proxy and wire its callbacks to the controller.
@@ -29,12 +30,14 @@ export interface BootOptions {
    * Which app surface is booting. Default `'ide'` (the effect IDE): load
    * effect-IDE projects from IndexedDB and enable persistence.
    *
-   * `'barrel'`: skip the project load AND persistence AND the engine
-   * callbacks — the remote NanoBarrel bridge is the source of truth
-   * (`resolume-app.ts` supplies the sketch). Stale local projects would
-   * otherwise feed the engine sync the moment effects are discovered, and
-   * mutations to the barrel-mirrored sketch would silently persist on top
-   * of unrelated local state.
+   * `'barrel'`: skip the project load and the engine callbacks — the remote
+   * NanoBarrel bridge is the source of truth (`boot-resolume.ts` supplies
+   * the sketch). Stale local projects would otherwise feed the engine sync
+   * the moment effects are discovered. Persistence is NOT skipped here —
+   * `boot-resolume.ts` calls `enablePersistence()` itself once booted, so
+   * user settings (the Remote toggle, appMode, ...) still save; the barrel
+   * sketch id never collides with the effect-IDE project id patterns, so
+   * project/playground autosave stay no-ops regardless.
    *
    * `'playground'`: the local shared-server playground. Keeps the engine
    * callbacks (the worker simulates), but skips the effect-IDE project

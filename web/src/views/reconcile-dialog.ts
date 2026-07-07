@@ -76,7 +76,14 @@ function summarize(sketch: Sketch): string {
 @customElement('reconcile-dialog')
 export class ReconcileDialog extends MobxLitElement {
   static styles = css`
+    /* No request → no box at all, so this can't swallow clicks meant for
+       whatever's underneath (the Settings tab, a snackbar's buttons, ...).
+       Only the [open] state (set in render(), reflecting reconcileStore.request)
+       becomes the full-viewport scrim. */
     :host {
+      display: none;
+    }
+    :host([open]) {
       position: fixed;
       inset: 0;
       z-index: 10000;
@@ -168,6 +175,7 @@ export class ReconcileDialog extends MobxLitElement {
 
   render() {
     const req = reconcileStore.request;
+    this.toggleAttribute('open', !!req);
     if (!req) return html``;
 
     const cachedLM = req.cached.lastModified;

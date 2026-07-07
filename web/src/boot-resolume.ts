@@ -1,24 +1,18 @@
 /**
- * Resolume sketch editor entry point. Mounted at /resolume/.
+ * Resolume Playground/Live surface boot. Invoked by `main.ts` when the
+ * resolved mode is `'playground'` or `'live'` — mounts `<sketch-app>` and
+ * boots the shared engine in one of two modes:
  *
- * Boots the shared engine and mounts the <sketch-app> shell in one of two modes:
- *
- *   - BARREL (the default): bound to the shared NanoBarrel server over WS; the
+ *   - BARREL (Live): bound to the shared NanoBarrel server over WS; the
  *     remote bridge is the source of truth, nothing simulates locally.
- *   - PLAYGROUND (`?playground`): a local simulation of the shared server —
- *     fake "instances" (one sketch each, all running simultaneously in the
- *     worker) persisted in their own IndexedDB store, for testing
- *     multi-instance routings without Resolume.
+ *   - PLAYGROUND: a local simulation of the shared server — fake "instances"
+ *     (one sketch each, all running simultaneously in the worker) persisted
+ *     in their own IndexedDB store, for testing multi-instance routings
+ *     without Resolume.
  */
-
-// Global (document-level) Line Awesome load: <ui-icon> inlines the CSS into
-// its shadow root, but @font-face only registers at document level — without
-// this import every glyph in this entry renders as a blank box.
-import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 
 import { boot } from './boot';
 import {
-  decideMode,
   groupPreviewRequests, instanceKeyFromThumbTraceId,
   laneUrl, NbpcReassembler, previewTransportPorts,
 } from './resolume-mode';
@@ -54,11 +48,15 @@ import './wasm-hmr-client';
  */
 const BARREL_SKETCH_ID = 'barrel';
 
-async function main() {
-  // Decide the mode from the URL, BEFORE booting — boot needs it so it can
-  // skip the IndexedDB project load in both modes (stale effect-IDE sketches
-  // must never feed the engine sync here).
-  const { mode, barrelUrl } = decideMode(location.search);
+/**
+ * @param mode 'barrel' (Live) or 'playground', already resolved by `main.ts`
+ *   from the persisted `appMode` setting (or a `?playground`/`?barrel`
+ *   boot-time override) — no URL parsing happens here.
+ * @param barrelUrl Only meaningful for `mode: 'barrel'`.
+ */
+export async function bootResolume(mode: 'barrel' | 'playground', barrelUrl: string): Promise<void> {
+  document.body.appendChild(document.createElement('sketch-app'));
+
   const barrelMode = mode === 'barrel';
 
   // The playground simulates sketches in-worker — render at full 1920×1080
@@ -733,5 +731,3 @@ function coerceSketch(remote: any): Sketch {
   // are implicit in the current model — and flatten to the single `chain`.
   return normalizeSketchChains(draft);
 }
-
-main();

@@ -1,9 +1,10 @@
 /**
- * URL → app-mode resolution for the Resolume sketch editor (/resolume/),
- * plus the pure routing helpers behind the Instances-tab live thumbnails.
+ * URL-override + pure routing helpers for the single unified entry
+ * (`main.ts`) and the Resolume sketch editor's Instances-tab live
+ * thumbnails.
  *
- * Kept in its own module (rather than resolume-app.ts, which boots the app on
- * import) so it can be unit-tested and shared with the mode-switch UI.
+ * Kept in its own module (rather than `boot-resolume.ts`, which boots the
+ * app on import) so it can be unit-tested and shared with the mode-switch UI.
  */
 
 import type { TracePoint } from './engine-types';
@@ -12,46 +13,22 @@ import type { TracePoint } from './engine-types';
 export const DEFAULT_BARREL_URL = 'ws://localhost:8081';
 
 /**
- * Bare `/resolume/` = BARREL against the fixed shared-server port. `?barrel`
- * stays as an explicit form whose value optionally overrides the server URL
- * (`?barrel=ws://host:port`). `?playground` (which wins over `?barrel`)
- * enters the local playground environment instead.
- */
-export function decideMode(search: string): { mode: 'barrel' | 'playground'; barrelUrl: string } {
-  const params = new URLSearchParams(search);
-  const mode = params.has('playground') ? 'playground' : 'barrel';
-  const barrelUrl = params.get('barrel') || DEFAULT_BARREL_URL;
-  return { mode, barrelUrl };
-}
-
-/**
- * Navigate this session into the other environment. Reload-based by design:
- * barrel and playground boot with different stores + engine wiring, so a URL
- * swap is the whole mode switch. Bare URL = barrel (the default); the
- * playground is always the explicit `?playground` form.
- */
-export function switchMode(target: 'barrel' | 'playground') {
-  const url = new URL(location.href);
-  url.search = target === 'playground' ? '?playground' : '';
-  location.href = url.toString();
-}
-
-/**
- * The three top-level surfaces, each its own Vite entry. `switchAppMode` on
- * `appController` writes the `appMode` setting, flushes it, then navigates
- * here — the URL (not the setting) is the actual source of truth for which
- * surface is live; `appMode` only remembers the last-chosen one so the
- * Settings tab's selector reflects reality and a bookmark is never
- * auto-redirected.
+ * The three top-level surfaces. Which one boots is normally decided by the
+ * persisted `appMode` setting (read from IndexedDB before anything else —
+ * see `main.ts`), NOT by the URL. `?playground` / `?barrel[=ws://host:port]`
+ * remain as a boot-time OVERRIDE purely for deep-link/e2e convenience: if
+ * present, `main.ts` boots that mode for this load and persists it (via
+ * `boot.ts`'s existing appMode recording) so a later plain reload remembers
+ * it too. Returns null when neither is present — the normal path, defer
+ * entirely to the persisted setting.
  */
 export type AppMode = 'effect-dev' | 'playground' | 'live';
 
-export function appModeUrl(mode: AppMode): string {
-  switch (mode) {
-    case 'effect-dev': return '/index.html';
-    case 'playground': return '/resolume/?playground';
-    case 'live': return '/resolume/';
-  }
+export function modeOverrideFromUrl(search: string): { mode: AppMode; barrelUrl?: string } | null {
+  const params = new URLSearchParams(search);
+  if (params.has('playground')) return { mode: 'playground' };
+  if (params.has('barrel')) return { mode: 'live', barrelUrl: params.get('barrel') || undefined };
+  return null;
 }
 
 /** sessionStorage keys recording a dismissed mode-switch offer (per tab —

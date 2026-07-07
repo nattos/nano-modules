@@ -1,8 +1,9 @@
 /**
  * <sketch-monitor> — Main preview + transport panel, shared by the Effect
- * IDE (`effect-ide-app.ts`) and the Resolume sketch IDE's edit tab
- * (`edit-tab.ts`). Both render a single-column sketch on the left and this
- * monitor on the right, so the panel — and its bottom transport strip
+ * IDE and the Resolume shell's Edit tab (both via `widgets/app-shell.ts`'s
+ * `renderMonitor`). Both render a single-column sketch on the left
+ * (`widgets/sketch-column-editor.ts`) and this monitor on the right, so the
+ * panel — and its bottom transport strip
  * (undo/redo/copy/cut/paste/pause/step/fps) — lives here once instead of
  * being hand-rolled per view.
  *

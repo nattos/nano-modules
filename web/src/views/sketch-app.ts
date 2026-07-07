@@ -87,7 +87,7 @@ export class SketchApp extends MobxLitElement {
           ></sketch-column-editor>
         `,
         },
-        { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', align: 'bottom', render: () => html`<app-settings></app-settings>` },
+        { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
       activeTabSettingKey: 'activeTab',
       panelWidthSettingKey: 'editLeftPanelWidth',

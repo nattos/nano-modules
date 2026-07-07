@@ -1,34 +1,34 @@
 import { describe, it, expect } from 'vitest';
 import {
-  decideMode, bannerOffer,
+  modeOverrideFromUrl, bannerOffer,
   instanceThumbTraceId, instanceKeyFromThumbTraceId, groupPreviewRequests,
   laneUrl, NbpcReassembler, previewTransportPorts,
 } from './resolume-mode';
 import type { TracePoint } from './engine-types';
 
-describe('decideMode', () => {
-  it('bare URL defaults to barrel at the fixed shared-server port', () => {
-    expect(decideMode('')).toEqual({ mode: 'barrel', barrelUrl: 'ws://localhost:8081' });
+describe('modeOverrideFromUrl', () => {
+  it('bare URL has no override — defer to the persisted setting', () => {
+    expect(modeOverrideFromUrl('')).toBeNull();
   });
 
-  it('?playground enters the playground', () => {
-    expect(decideMode('?playground').mode).toBe('playground');
+  it('unrelated params still have no override', () => {
+    expect(modeOverrideFromUrl('?foo=1&bar')).toBeNull();
   });
 
-  it('?barrel stays as an explicit barrel form', () => {
-    expect(decideMode('?barrel')).toEqual({ mode: 'barrel', barrelUrl: 'ws://localhost:8081' });
+  it('?playground overrides into the playground', () => {
+    expect(modeOverrideFromUrl('?playground')).toEqual({ mode: 'playground' });
   });
 
-  it('?barrel=ws://host:port overrides the server URL', () => {
-    expect(decideMode('?barrel=ws://vjbox:9000').barrelUrl).toBe('ws://vjbox:9000');
+  it('?barrel overrides into live, at the default server URL', () => {
+    expect(modeOverrideFromUrl('?barrel')).toEqual({ mode: 'live', barrelUrl: undefined });
+  });
+
+  it('?barrel=ws://host:port overrides the server URL too', () => {
+    expect(modeOverrideFromUrl('?barrel=ws://vjbox:9000')).toEqual({ mode: 'live', barrelUrl: 'ws://vjbox:9000' });
   });
 
   it('?playground wins over ?barrel', () => {
-    expect(decideMode('?playground&barrel=ws://vjbox:9000').mode).toBe('playground');
-  });
-
-  it('unrelated params leave the default barrel mode intact', () => {
-    expect(decideMode('?foo=1&bar').mode).toBe('barrel');
+    expect(modeOverrideFromUrl('?playground&barrel=ws://vjbox:9000')?.mode).toBe('playground');
   });
 });
 

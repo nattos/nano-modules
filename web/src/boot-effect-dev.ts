@@ -1,9 +1,9 @@
 /**
- * Effect IDE entry point. Mounted at /index.html (the new default page).
- *
- * Boots the shared engine, mounts <effect-ide-app>. The IDE shell is responsible
- * for synthesizing default projects and selecting one to render — there are no
- * resolume-style auto-instantiations here.
+ * Effect Dev surface boot. Invoked by `main.ts` when the resolved mode is
+ * `'effect-dev'` — mounts `<effect-ide-app>` and boots the shared engine.
+ * The IDE shell is responsible for synthesizing default projects and
+ * selecting one to render — there are no resolume-style auto-instantiations
+ * here.
  */
 
 import { boot } from './boot';
@@ -20,13 +20,13 @@ import './views/effect-ide/effect-ide-app';
 // Dev-only WASM HMR listener (no-op in production).
 import './wasm-hmr-client';
 
-import 'line-awesome/dist/line-awesome/css/line-awesome.css';
+export async function bootEffectDev(): Promise<void> {
+  document.body.appendChild(document.createElement('effect-ide-app'));
 
-async function main() {
   // Boot the engine at 1920x1080 — the IDE is a development testbed for
   // effects, so we want the chain to render at full resolution by default.
   // (Resolume's entry stays at the smaller default for performance.)
-  await boot({ width: 1920, height: 1080 });
+  await boot({ width: 1920, height: 1080, mode: 'ide' });
 
   // The IDE renders only the currently-selected project. Other user
   // projects and template copies stay in `appState.database.sketches` so
@@ -47,5 +47,3 @@ async function main() {
   installModeOffers();
   startBarrelProbe(DEFAULT_BARREL_URL);
 }
-
-main();

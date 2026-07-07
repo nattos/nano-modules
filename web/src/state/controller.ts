@@ -42,7 +42,7 @@ import {
 import { saveLiveCacheInstance } from './live-cache-store';
 import { instanceDisplayLabel } from './instance-labels';
 import { PLAYGROUND_ID_PREFIX } from './types';
-import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, appModeUrl, type AppMode } from '../resolume-mode';
+import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, type AppMode } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -1082,9 +1082,9 @@ export class AppController {
   }
 
   /**
-   * Force the debounced settings save to run now. Used before navigating to
-   * a different entry URL (`switchAppMode`) — a `location.href` write would
-   * otherwise tear down the page mid-debounce and lose the just-set value.
+   * Force the debounced settings save to run now. Used before reloading
+   * (`switchAppMode`) — a reload would otherwise tear down the page
+   * mid-debounce and lose the just-set value.
    */
   async flushUserSettings(): Promise<void> {
     if (this.settingsSaveTimer) { clearTimeout(this.settingsSaveTimer); this.settingsSaveTimer = null; }
@@ -1093,16 +1093,18 @@ export class AppController {
   }
 
   /**
-   * Navigate this session into a different top-level surface. Reload-based
-   * by design — Effect Dev / Playground / Live boot with different stores
-   * and engine wiring (see `boot.ts`'s `BootOptions.mode`), so a URL swap is
-   * the whole mode switch. Flushes the setting first so a slow debounce
-   * can't lose the "remembered surface" write to the navigation.
+   * Switch this session into a different top-level surface. Reload-based by
+   * design — Effect Dev / Playground / Live boot with different stores and
+   * engine wiring (see `boot.ts`'s `BootOptions.mode`) — but all three now
+   * share one entry point (`main.ts`), which reads the persisted `appMode`
+   * setting before booting anything, so a plain reload is the whole mode
+   * switch (no URL involved). Flushes the setting first so a slow debounce
+   * can't lose the write to the reload.
    */
   async switchAppMode(target: AppMode): Promise<void> {
     this.setUserSetting('appMode', target);
     await this.flushUserSettings();
-    location.href = appModeUrl(target);
+    location.reload();
   }
 
   private requestProjectsSave(debounceMs = 300) {

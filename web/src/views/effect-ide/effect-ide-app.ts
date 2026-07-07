@@ -80,7 +80,7 @@ export class EffectIdeApp extends MobxLitElement {
         { id: 'explorer', icon: 'la-folder', title: 'Explorer', kind: 'inline', render: () => html`<ide-explorer></ide-explorer>` },
         { id: 'project_editor', icon: 'la-stream', title: 'Project Editor', kind: 'inline', render: () => html`<ide-project-editor></ide-project-editor>` },
         { id: 'debug_info', icon: 'la-bug', title: 'Debug Info', kind: 'inline', render: () => html`<ide-debug-info></ide-debug-info>` },
-        { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', align: 'bottom', render: () => html`<app-settings></app-settings>` },
+        { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
       activeTabSettingKey: 'ideLeftTab',
       panelWidthSettingKey: 'ideLeftPanelWidth',

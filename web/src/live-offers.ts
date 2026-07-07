@@ -14,7 +14,7 @@ import { appState } from './state/app-state';
 import { appController } from './state/controller';
 import { snackbars } from './widgets/snackbars';
 import {
-  bannerOffer, switchMode,
+  bannerOffer,
   OFFER_PLAYGROUND_DISMISSED_KEY, OFFER_LIVE_DISMISSED_KEY,
 } from './resolume-mode';
 
@@ -71,7 +71,7 @@ export function installModeOffers() {
         timeoutMs: 5000,
         dedupeKey: 'mode-offer',
         actions: [
-          { label: 'Switch to Playground', run: () => switchMode('playground') },
+          { label: 'Switch to Playground', run: () => { void appController.switchAppMode('playground'); } },
           { label: 'Stay', run: dismiss },
         ],
       });
