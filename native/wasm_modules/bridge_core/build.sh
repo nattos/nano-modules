@@ -8,6 +8,10 @@ MODULE_NAME=bridge_core
 
 SRC_DIR=../../src
 NLOHMANN_DIR=../../build/_deps/nlohmann_json-src/include
+# barrel_codec.h #includes "miniz.h" (vendored). The executor only ODR-uses the
+# base64 helpers, not the mz_*-backed gzip path, so the header just has to parse
+# — no need to compile miniz.c into the bundle (CMake links it for native only).
+MINIZ_DIR=../../third_party/miniz
 
 # Verify nlohmann/json headers exist (populated by CMake FetchContent)
 if [ ! -f "$NLOHMANN_DIR/nlohmann/json.hpp" ]; then
@@ -88,6 +92,7 @@ echo "Building $MODULE_NAME.wasm..."
   -DBRIDGE_SINGLE_THREADED \
   -I"$SRC_DIR" \
   -I"$NLOHMANN_DIR" \
+  -I"$MINIZ_DIR" \
   "${WASM_LDFLAGS[@]}" \
   "${WASM_EXPORTS[@]}" \
   "${SOURCES[@]}" \
