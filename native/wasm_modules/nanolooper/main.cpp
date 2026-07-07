@@ -96,7 +96,6 @@ struct State {
    * a played note's gate lasts exactly as long as it was recorded. */
   int trigger_held[NUM_CHANNELS] = {0};
   int gate_state[NUM_CHANNELS] = {0};
-  float flash[NUM_CHANNELS] = {0};
 
   /* Modifier keys */
   int delete_held = 0;
@@ -124,8 +123,8 @@ struct State {
   int ws_connected = 0;
 
   /* Trigger-rail output. `send_to_rail` gates emission; the ring carries on/off
-   * events (channel = ch+1); ch_out[] is a per-channel 1→0 decay pulse exposed
-   * as the out_N modulation outputs (visible trace + wireable gate). */
+   * events (channel = ch+1); ch_out[] is a per-channel EXACT gate (1 while
+   * gated, 0 otherwise — no decay) exposed as the out_N modulation outputs. */
   int send_to_rail = 1;
   LoopEv trig_ring[TRIG_RING_CAP] = {};
   int trig_ring_len = 0;
@@ -209,7 +208,29 @@ static void publish_state(State& s) {
   }
   val::set(state, "grid", grid);
 
-  /* Per-channel modulation outputs (out_1..out_4): the decaying gate pulse. */
+  /* Full note events (onset + gate length + channel) — the SAME data the debug
+   * overlay draws its continuous bars from, so a web custom editor can mirror it
+   * exactly (the `grid` above is onset-only / lossy). A held note appears here
+   * too, growing, because looper_tick_pending extends its length in-place. */
+  auto notes = val::array();
+  for (int i = 0; i < s.looper.event_count; i++) {
+    const Event& e = s.looper.events[i];
+    auto n = val::object();
+    val::set(n, "ch", val::number(e.channel));
+    val::set(n, "start", val::number(e.start));
+    val::set(n, "length", val::number(e.length));
+    val::push(notes, n);
+  }
+  val::set(state, "notes", notes);
+
+  /* Per-channel live gate (1 while sounding) — for lane highlight + the trigger
+   * dots. Exact (no fade). */
+  auto gates = val::array();
+  for (int ch = 0; ch < NUM_CHANNELS; ch++)
+    val::push(gates, val::number(s.gate_state[ch]));
+  val::set(state, "gates", gates);
+
+  /* Per-channel modulation outputs (out_1..out_4): the exact gate (1/0). */
   val::set(state, "out_1", val::number(s.ch_out[0]));
   val::set(state, "out_2", val::number(s.ch_out[1]));
   val::set(state, "out_3", val::number(s.ch_out[2]));
@@ -250,13 +271,13 @@ static void push_trigger(State& s, bool on, int ch /*0-based*/) {
 }
 
 /* Emit a gate transition for one channel (idempotent — no-op if already in the
- * requested state). ON fires the flash + modulation pulse + audio + rail event;
- * OFF fires the rail off event. */
+ * requested state). ON fires the modulation output + audio + rail event; OFF
+ * fires the rail off event. The modulation output (ch_out) is an EXACT gate
+ * (1 while gated, 0 otherwise) — no flash/decay envelope. */
 static void set_gate(State& s, int ch, bool on) {
   if (on && !s.gate_state[ch]) {
     s.gate_state[ch] = 1;
-    s.flash[ch] = 0.25f;
-    s.ch_out[ch] = 1.0f;              /* per-channel modulation-output pulse */
+    s.ch_out[ch] = 1.0f;              /* per-channel modulation output = gate */
     push_trigger(s, /*on=*/true, ch); /* → global trigger rail */
     // Legacy direct-launch imports are no-op stubs; the rail is the live path.
     for (int i = 0; i < s.channel_clip_count[ch]; i++)
@@ -264,6 +285,7 @@ static void set_gate(State& s, int ch, bool on) {
     host_trigger_audio(ch);
   } else if (!on && s.gate_state[ch]) {
     s.gate_state[ch] = 0;
+    s.ch_out[ch] = 0.0f;              /* gate off → output off immediately */
     push_trigger(s, /*on=*/false, ch);
     for (int i = 0; i < s.channel_clip_count[ch]; i++)
       resolume_trigger_clip(s.channel_clip_ids[ch][i], 0);
@@ -531,8 +553,8 @@ static int field_to_pid(const char* path, int pathLen) {
  * presentation metadata and ordering are new.
  *
  * io 5 = PrimaryInput (controls + tex_in), 6 = PrimaryOutput (out_N + tex_out).
- * The 4 per-channel `out_N` fields are modulation outputs (0/1 with a short
- * decay); the module declares trigger_source so the executor drains its
+ * The 4 per-channel `out_N` fields are modulation outputs — an exact 0/1 gate
+ * (no decay); the module declares trigger_source so the executor drains its
  * "triggers" ring onto the global trigger rail (see drainTriggerRing). */
 void module_init() {
   static const char id[] = "control.nanolooper";
@@ -651,7 +673,7 @@ void module_init() {
     .label("Synth Gain", "Gain");
 
   // --- System fields (ungrouped): modulation outputs + image passthrough.
-  // out_N are the per-channel decaying gate pulses (wireable modulation outs).
+  // out_N are the per-channel exact gates (wireable modulation outs; no decay).
   // Declaring tex_out (PrimaryOutput texture) is what makes the executor treat
   // the looper as a rendering stage — binding a writable output + calling
   // render() — instead of a modulation-source passthrough (which skips render()).
@@ -706,7 +728,6 @@ void init(void* self) {
   for (int i = 0; i < NUM_CHANNELS; i++) {
     s->trigger_held[i] = 0;
     s->gate_state[i] = 0;
-    s->flash[i] = 0;
     s->channel_clip_count[i] = 0;
     s->channel_names[i][0] = 0;
     s->channel_thumb_tex[i] = -1;
@@ -778,19 +799,11 @@ void tick(void* self, double dt) {
    * pending notes; end_note finalizes + overwrites on release. */
   looper_tick_pending(&s->looper, s->phase);
 
-  /* Decay overlay flash + the modulation-output pulse. While a gate is held the
-   * output pins at 1; on release it decays with a ~120ms tail (matches
-   * mod.trigger.beat's feel). */
-  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-    if (s->flash[ch] > 0)
-      s->flash[ch] -= (float)dt;
-    if (s->gate_state[ch]) {
-      s->ch_out[ch] = 1.0f;
-    } else if (s->ch_out[ch] > 0.0f) {
-      s->ch_out[ch] *= (float)std::exp(-dt / 0.12);
-      if (s->ch_out[ch] < 0.001f) s->ch_out[ch] = 0.0f;
-    }
-  }
+  /* Modulation output tracks the gate EXACTLY — no flash/decay envelope. (Kept
+   * pinned to gate_state here too so it's correct even if a gate was set outside
+   * a transition.) */
+  for (int ch = 0; ch < NUM_CHANNELS; ch++)
+    s->ch_out[ch] = s->gate_state[ch] ? 1.0f : 0.0f;
 
   publish_state(*s);
 }
@@ -983,12 +996,10 @@ void render(void* self, int vp_w, int vp_h) {
     float dim = muted ? 0.35f : 1.0f;
     bool gated = s->gate_state[ch] != 0;
 
-    /* Lane track background — the CHANNEL flash: an onset pulse (from flash[])
-     * plus a steady highlight while the channel is gated. (The individual note
-     * bars light per-step, below.) */
-    float fl = s->flash[ch] > 0 ? s->flash[ch] / 0.25f : 0.0f;
-    float track_a = 0.05f + 0.11f * fl;
-    if (gated && track_a < 0.15f) track_a = 0.15f;
+    /* Lane track background — the CHANNEL flash: a steady highlight while the
+     * channel is gated, off the instant it releases (no fade/decay envelope).
+     * (The individual note bars light per-step, below.) */
+    float track_a = gated ? 0.16f : 0.05f;
     ov.fillRect(ox + track_x, ly, track_w, lane_h, C(cr, cg, cb, track_a));
 
     /* Channel number + optional clip name. */

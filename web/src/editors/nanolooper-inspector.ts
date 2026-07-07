@@ -1,0 +1,335 @@
+/**
+ * Custom inspector for control.nanolooper — the 4-channel / 16-step looper.
+ *
+ * The top half is a live <nanolooper-grid> canvas that mirrors the effect's own
+ * on-video debug overlay: four lanes of continuous note bars (onset + gate
+ * length, wrap-aware), a sweeping playhead, per-channel gate highlight, and the
+ * trigger-state dots. It's a pure VISUALIZER (like the overlay) — it reads the
+ * effect's live published state each frame via `binding.getValue(...)`:
+ *   notes:     [{ch,start,length}, …]  full note events (same data the overlay draws)
+ *   phase:     0..16                    playhead position (bar * NUM_STEPS)
+ *   recording: bool                     REC vs PLAY
+ *   gates:     [g0,g1,g2,g3]            live per-channel gate (exact, no fade)
+ * (published by nanolooper/main.cpp publish_state()).
+ *
+ * Below the canvas are the looper's controls, grouped exactly like the schema /
+ * FFGL param panel, so the effect stays fully editable in the IDE.
+ */
+
+import { html, css } from 'lit';
+import { customElement, property } from 'lit/decorators.js';
+import { MobxLitElement } from '../mobx-lit-element';
+import { editorRegistry } from '../editor-registry';
+import type { FieldBinding } from '../widgets/field-editor';
+import '../widgets/scalar-slider';
+import '../widgets/field-tab-bar';
+import '../widgets/field-toggle';
+import '../widgets/field-trigger';
+import '../widgets/help-slot';
+
+const NUM_STEPS = 16;
+const NUM_CHANNELS = 4;
+
+// Per-channel colours — must match CH_R/CH_G/CH_B in nanolooper/main.cpp so the
+// inspector reads identically to the on-video overlay.
+const CH_RGB: [number, number, number][] = [
+  [1.0, 0.33, 0.33],  // 1 — red
+  [0.33, 1.0, 0.33],  // 2 — green
+  [1.0, 1.0, 0.33],   // 3 — yellow
+  [0.33, 1.0, 1.0],   // 4 — cyan
+];
+
+const ANCHOR_OPTIONS = [
+  { label: 'Top Left', value: 0 },
+  { label: 'Bottom Left', value: 1 },
+  { label: 'Top Right', value: 2 },
+  { label: 'Bottom Right', value: 3 },
+];
+
+const rgba = (c: [number, number, number], a: number) =>
+  `rgba(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0},${a})`;
+
+interface Note { ch: number; start: number; length: number; }
+
+// Wrap-aware "is this note sounding at `phase`?" — mirrors note_active() in the
+// native overlay so exactly the note(s) under the playhead light up.
+function noteActive(n: Note, phase: number): boolean {
+  if (!(n.length > 0)) return false;
+  const len = Math.min(n.length, NUM_STEPS);
+  let d = (phase - n.start) % NUM_STEPS;
+  if (d < 0) d += NUM_STEPS;
+  return d < len;
+}
+
+// ---------------------------------------------------------------------------
+// The live grid visualization (canvas + rAF), a compact twin of the overlay.
+// ---------------------------------------------------------------------------
+@customElement('nanolooper-grid')
+export class NanolooperGrid extends MobxLitElement {
+  binding: FieldBinding | null = null;
+  private rafId = 0;
+
+  static styles = css`
+    :host { display: block; }
+    canvas {
+      width: 100%; height: 176px; display: block;
+      background: rgba(8, 10, 16, 0.55);
+      border: 1px solid var(--app-border-color, #3a3346); border-radius: 2px;
+    }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    const tick = () => { this.rafId = requestAnimationFrame(tick); this.draw(); };
+    this.rafId = requestAnimationFrame(tick);
+  }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
+  }
+
+  private get canvas(): HTMLCanvasElement | null {
+    return this.renderRoot?.querySelector('canvas') ?? null;
+  }
+
+  private num(field: string, dflt: number): number {
+    const v = this.binding?.getValue(field);
+    return typeof v === 'number' && Number.isFinite(v) ? v : dflt;
+  }
+
+  private notes(): Note[] {
+    const v = this.binding?.getValue('notes');
+    if (!Array.isArray(v)) return [];
+    const out: Note[] = [];
+    for (const e of v) {
+      if (e && typeof e.ch === 'number') out.push({ ch: e.ch, start: +e.start || 0, length: +e.length || 0 });
+    }
+    return out;
+  }
+
+  private gates(): number[] {
+    const v = this.binding?.getValue('gates');
+    if (Array.isArray(v)) return v.map((x) => (x ? 1 : 0));
+    return [0, 0, 0, 0];
+  }
+
+  private draw() {
+    const c = this.canvas;
+    if (!c || !this.binding) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(c.clientWidth * dpr));
+    const h = Math.max(1, Math.round(c.clientHeight * dpr));
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    const cw = c.clientWidth, chh = c.clientHeight;
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cw, chh);
+
+    const phase = this.num('phase', 0);
+    const recording = !!this.binding.getValue('recording');
+    const gates = this.gates();
+    const notes = this.notes();
+
+    // --- Layout -----------------------------------------------------------
+    const pad = 10;
+    const headerH = 22;
+    const dotsH = 20;
+    const labelW = 26;                         // channel-number column
+    const trackX = pad + labelW;
+    const trackW = Math.max(40, cw - trackX - pad);
+    const lanesTop = pad + headerH;
+    const lanesH = chh - lanesTop - dotsH - pad;
+    const laneGap = 4;
+    const laneH = (lanesH - laneGap * (NUM_CHANNELS - 1)) / NUM_CHANNELS;
+
+    // --- Header: LOOPER + REC/PLAY ---------------------------------------
+    ctx.textBaseline = 'top';
+    ctx.font = '700 14px sans-serif';
+    ctx.fillStyle = 'rgba(230,235,242,0.95)';
+    ctx.fillText('LOOPER', pad, pad);
+    ctx.font = '700 11px sans-serif';
+    if (recording) { ctx.fillStyle = 'rgba(255,72,72,1)'; ctx.fillText('● REC', pad + 74, pad + 2); }
+    else { ctx.fillStyle = 'rgba(140,190,242,0.75)'; ctx.fillText('▶ PLAY', pad + 74, pad + 2); }
+
+    // --- Beat gridlines (4 beats / bar) ----------------------------------
+    for (let beat = 0; beat <= 4; beat++) {
+      const gx = trackX + (beat / 4) * trackW;
+      ctx.fillStyle = `rgba(153,168,199,${beat % 4 === 0 ? 0.32 : 0.13})`;
+      ctx.fillRect(gx, lanesTop, 1, lanesH);
+    }
+
+    // --- Lanes ------------------------------------------------------------
+    for (let ch = 0; ch < NUM_CHANNELS; ch++) {
+      const ly = lanesTop + ch * (laneH + laneGap);
+      const col = CH_RGB[ch];
+      const gated = gates[ch] !== 0;
+
+      // Lane track (channel highlight while gated — no fade).
+      ctx.fillStyle = rgba(col, gated ? 0.16 : 0.05);
+      ctx.fillRect(trackX, ly, trackW, laneH);
+
+      // Channel number.
+      ctx.font = '700 13px sans-serif';
+      ctx.fillStyle = rgba(col, 1);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(ch + 1), pad + 6, ly + laneH / 2);
+      ctx.textBaseline = 'top';
+
+      // Note bars — only the note under the playhead flashes bright.
+      const barPad = Math.min(4, laneH * 0.12);
+      for (const n of notes) {
+        if (n.ch !== ch) continue;
+        this.drawNoteBar(ctx, n, trackX, trackW, ly + barPad, laneH - 2 * barPad, col,
+          noteActive(n, phase));
+      }
+    }
+
+    // --- Playhead ---------------------------------------------------------
+    let ph = phase / NUM_STEPS;
+    ph = ph < 0 ? 0 : ph > 1 ? 1 : ph;
+    const px = trackX + ph * trackW;
+    ctx.fillStyle = 'rgba(255,255,255,0.88)';
+    ctx.fillRect(px - 1, lanesTop - 3, 2, lanesH + 6);
+
+    // --- Trigger-state dots (exact, no hold) -----------------------------
+    const dotY = chh - dotsH + 2;
+    const dot = 14;
+    for (let i = 0; i < NUM_CHANNELS; i++) {
+      ctx.fillStyle = rgba(CH_RGB[i], gates[i] ? 1 : 0.28);
+      ctx.fillRect(pad + i * (dot + 8), dotY, dot, dot);
+    }
+    ctx.restore();
+  }
+
+  // One note as a continuous bar (up to two segments across the loop seam),
+  // bright leading edge on the true onset — mirrors draw_note_bar().
+  private drawNoteBar(
+    ctx: CanvasRenderingContext2D, n: Note, trackX: number, trackW: number,
+    barY: number, barH: number, col: [number, number, number], playing: boolean,
+  ) {
+    const loop = NUM_STEPS;
+    let s0 = n.start % loop; if (s0 < 0) s0 += loop;
+    let rem = Math.min(n.length, loop);
+    const bodyA = playing ? 0.95 : 0.72;
+    const bf = playing ? 0.85 : 0.55;
+    const body: [number, number, number] = [col[0] * bf, col[1] * bf, col[2] * bf];
+    const minW = 4;
+    let first = true;
+    let guard = 0;
+    while (rem > 1e-4 && guard++ < 4) {
+      let seg = rem;
+      if (s0 + seg > loop) seg = loop - s0;
+      const x = trackX + (s0 / loop) * trackW;
+      const wRaw = (seg / loop) * trackW;
+      const wDraw = Math.max(wRaw, minW);
+      ctx.fillStyle = rgba(body, bodyA);
+      ctx.fillRect(x, barY, wDraw, barH);
+      if (first) { ctx.fillStyle = rgba(col, 1); ctx.fillRect(x, barY, 2.5, barH); }
+      rem -= seg; s0 += seg; if (s0 >= loop) s0 -= loop; first = false;
+    }
+  }
+
+  render() {
+    return html`<canvas></canvas>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The inspector: live grid on top, grouped controls below.
+// ---------------------------------------------------------------------------
+@customElement('nanolooper-inspector')
+export class NanolooperInspector extends MobxLitElement {
+  @property() label = 'Looper';
+  @property({ attribute: false }) binding: FieldBinding | null = null;
+
+  static styles = css`
+    :host { display: block; }
+    .hint {
+      font-size: var(--app-fs-xs); color: var(--app-text-color2, #b0b0b0); opacity: 0.7;
+      padding: 4px 0 6px; line-height: 1.4;
+    }
+    .section {
+      font-size: var(--app-fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--app-text-color2, #b0b0b0); padding: 8px 0 2px; opacity: 0.7;
+    }
+    .row { display: flex; gap: var(--app-sp-4); flex-wrap: wrap; }
+    .row > * { flex: 1; min-width: 0; }
+    .pads { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--app-sp-4); }
+  `;
+
+  render() {
+    if (!this.binding) return html``;
+    const b = this.binding;
+    return html`
+      <help-slot .binding=${b} .path=${'intro'}></help-slot>
+      <nanolooper-grid .binding=${b}></nanolooper-grid>
+      <div class="hint">live view of the recorded loop — tap the pads to play/record, exactly like the on-video overlay</div>
+
+      <div class="section">Triggers</div>
+      <help-slot .binding=${b} .path=${'@group/triggers'}></help-slot>
+      <div class="pads">
+        <field-trigger .fieldPath=${'trigger_1'} .label=${'1'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger .fieldPath=${'trigger_2'} .label=${'2'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger .fieldPath=${'trigger_3'} .label=${'3'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger .fieldPath=${'trigger_4'} .label=${'4'} .defaultValue=${0} .binding=${b}></field-trigger>
+      </div>
+
+      <div class="section">Editing</div>
+      <help-slot .binding=${b} .path=${'@group/editing'}></help-slot>
+      <div class="row">
+        <field-trigger .fieldPath=${'delete'} .label=${'Delete'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-toggle .fieldPath=${'mute'} .label=${'Mute'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-trigger .fieldPath=${'undo'} .label=${'Undo'} .defaultValue=${0} .binding=${b}></field-trigger>
+        <field-trigger .fieldPath=${'redo'} .label=${'Redo'} .defaultValue=${0} .binding=${b}></field-trigger>
+      </div>
+
+      <div class="section">Recording</div>
+      <help-slot .binding=${b} .path=${'@group/recording'}></help-slot>
+      <div class="row">
+        <field-toggle .fieldPath=${'latch'} .label=${'Latch'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-toggle .fieldPath=${'record'} .label=${'Record'} .defaultValue=${1} .binding=${b}></field-toggle>
+      </div>
+
+      <div class="section">Quantize</div>
+      <help-slot .binding=${b} .path=${'@group/quantize'}></help-slot>
+      <div class="row">
+        <field-toggle .fieldPath=${'quantize_start'} .label=${'Q Start'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <field-toggle .fieldPath=${'quantize_length'} .label=${'Q Length'} .defaultValue=${0} .binding=${b}></field-toggle>
+      </div>
+      <scalar-slider style="width:100%;" .fieldPath=${'grace'} .label=${'Grace'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0625} .binding=${b}></scalar-slider>
+
+      <div class="section">Output</div>
+      <help-slot .binding=${b} .path=${'@group/output'}></help-slot>
+      <field-toggle .fieldPath=${'send_to_rail'} .label=${'Send To Rail'} .defaultValue=${1} .binding=${b}></field-toggle>
+
+      <div class="section">Display</div>
+      <help-slot .binding=${b} .path=${'@group/display'}></help-slot>
+      <field-toggle .fieldPath=${'show_overlay'} .label=${'Show Overlay'} .defaultValue=${1} .binding=${b}></field-toggle>
+      <field-tab-bar .fieldPath=${'anchor'} .label=${'Anchor'} ?wrap=${true}
+        .options=${ANCHOR_OPTIONS} .defaultValue=${0} .binding=${b}></field-tab-bar>
+      <scalar-slider style="width:100%;" .fieldPath=${'overlay_opacity'} .label=${'Overlay Opacity'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+
+      <div class="section">Synth</div>
+      <help-slot .binding=${b} .path=${'@group/synth'}></help-slot>
+      <div class="row">
+        <field-toggle .fieldPath=${'synth'} .label=${'Synth'} .defaultValue=${0} .binding=${b}></field-toggle>
+        <scalar-slider .fieldPath=${'synth_gain'} .label=${'Synth Gain'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
+      </div>
+    `;
+  }
+}
+
+editorRegistry.register('control.nanolooper', {
+  inspector: {
+    create(_pluginKey: string, binding: FieldBinding): HTMLElement {
+      const el = document.createElement('nanolooper-inspector') as NanolooperInspector;
+      el.binding = binding;
+      return el;
+    },
+    destroy(_element: HTMLElement) {},
+  },
+});

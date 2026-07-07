@@ -19,3 +19,4 @@ import './envelope-inspector';
 import './adsr-inspector';
 import './paramlinker-editor';
 import './sidechannel-inspector';
+import './nanolooper-inspector';
