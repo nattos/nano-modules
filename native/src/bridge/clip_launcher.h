@@ -86,6 +86,17 @@ class ClipLauncher {
             const std::map<int, std::vector<LaunchTarget>>& channel_clips,
             uint64_t now_ms);
 
+  /**
+   * Best-effort one-shot: issue each event's immediate connect/disconnect edge
+   * WITHOUT recording desired/reconcile state (no retry, no re-arm, no
+   * convergence tracking). Used by the strict-precision deadline flush to punch
+   * stale queued triggers through to Resolume when only the most recent one is
+   * worth fully reconciling (via tick). Does not fight, does not track — fire
+   * and forget.
+   */
+  void fireOnce(const std::vector<trigger_bus::Event>& events,
+                const std::map<int, std::vector<LaunchTarget>>& channel_clips);
+
   // Forget all desired/timing state (e.g. on Resolume disconnect / tests).
   void reset();
 
@@ -116,5 +127,38 @@ class ClipLauncher {
   std::map<int64_t, bool> desired_;      // clip_id → desired connected
   std::map<int64_t, Recon> recon_;       // clip_id → reconcile state
 };
+
+// ── Strict-precision queue (pure decision logic) ──────────────────────────────
+// A strict trigger (precision.mode == "strict") is withheld from the launcher
+// until the barrel render loop presents a frame reflecting it (best-effort
+// proxy), or its deadline elapses. This logic is extracted from BridgeServer so
+// the invariants are unit-testable with an injected clock + present watermark
+// (mirrors precise_gate). See bridge_server.cpp for the wiring.
+struct StrictPending {
+  trigger_bus::Event ev;
+  uint64_t arrival_ms = 0;
+  uint32_t deadline_ms = 0;
+  uint64_t floor_present = 0;
+};
+
+struct StrictPlan {
+  std::vector<trigger_bus::Event> reconcile;    // → ClipLauncher::tick (full)
+  std::vector<trigger_bus::Event> best_effort;  // → ClipLauncher::fireOnce
+};
+
+/**
+ * Fold this tick's freshly-drained events into the pending strict queue and
+ * decide what to dispatch now. `pending` is MUTATED in place (grown with new
+ * strict events, shrunk as they release/flush).
+ *   - non-strict events → `reconcile` immediately;
+ *   - strict events → enqueued (deadline defaults to 100ms if unset);
+ *   - if ANY queued event's deadline has elapsed → flush ALL: the newest (max
+ *     seq) → `reconcile`, the rest → `best_effort`; queue cleared;
+ *   - else → release every event whose emitting frame is presented
+ *     (`present_seq > floor_present`) to `reconcile`; the rest keep waiting.
+ */
+StrictPlan planStrict(const std::vector<trigger_bus::Event>& drained,
+                      std::vector<StrictPending>& pending,
+                      uint64_t now_ms, uint64_t present_seq);
 
 }  // namespace bridge

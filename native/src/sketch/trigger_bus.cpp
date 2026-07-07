@@ -23,6 +23,8 @@ struct ChannelInfo {
   bool on = false;
   float velocity = 0.0f;
   std::string writerTag;
+  bool strict = false;       // latest event's precision.mode == "strict"
+  uint32_t deadline_ms = 0;  // latest event's precision.deadline (ms)
 };
 
 // Process globals — the whole point (shared across every executor in the
@@ -58,7 +60,7 @@ std::mutex& mu() {
 }  // namespace
 
 void emit(const char* rail, int channel, bool on, float velocity,
-          const char* writerTag) {
+          const char* writerTag, bool strict, uint32_t deadlineMs) {
   const std::string r = (rail && *rail) ? rail : kGlobalRail;
   const std::string tag = writerTag ? writerTag : "";
   TRIG_LOCK();
@@ -69,6 +71,8 @@ void emit(const char* rail, int channel, bool on, float velocity,
   e.on = on;
   e.velocity = velocity;
   e.writerTag = tag;
+  e.strict = strict;
+  e.deadline_ms = deadlineMs;
   log().push_back(e);
   if (log().size() > kLogCap) log().erase(log().begin());
 
@@ -84,6 +88,8 @@ void emit(const char* rail, int channel, bool on, float velocity,
   cit->second.on = on;
   cit->second.velocity = velocity;
   cit->second.writerTag = tag;
+  cit->second.strict = strict;
+  cit->second.deadline_ms = deadlineMs;
 }
 
 std::vector<Event> drain(const char* consumerId) {
@@ -110,12 +116,16 @@ int32_t infoJson(char* out, int32_t cap) {
     for (const auto& [rail, channels] : meta()) {
       nlohmann::json rj = nlohmann::json::object();
       for (const auto& [ch, info] : channels) {
-        rj[std::to_string(ch)] = {
+        nlohmann::json cj = {
           {"on", info.on},
           {"velocity", info.velocity},
           {"writer", info.writerTag},
           {"seq", info.seq},
         };
+        if (info.strict) {
+          cj["precision"] = {{"mode", "strict"}, {"deadline", info.deadline_ms}};
+        }
+        rj[std::to_string(ch)] = std::move(cj);
       }
       j[rail] = std::move(rj);
     }

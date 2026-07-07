@@ -131,6 +131,13 @@ private:
   // Turns trigger-rail events into Resolume clip launches with a reconcile loop
   // (the piano-trigger stuck-on fix). Only touched from the pump thread.
   ClipLauncher clip_launcher_;
+  // Strict-precision trigger queue (precision.mode == "strict"). A strict event
+  // waits here until the barrel render loop presents a frame reflecting it
+  // (barrelPresentSeq advanced past `floor_present` → release + full reconcile),
+  // or its `deadline_ms` elapses → the pipe is assumed borked and ALL queued
+  // strict events flush, fully reconciling only the newest. The fold that
+  // decides this is the pure `planStrict` (clip_launcher.h). Pump thread only.
+  std::vector<StrictPending> pending_strict_;
   // FNV hash of the last /global/channels doc we published — skip the set_at
   // (and its patch broadcast) when the channel→clips map is unchanged.
   uint64_t trigger_channels_hash_ = 0;

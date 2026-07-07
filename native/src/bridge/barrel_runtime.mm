@@ -39,6 +39,10 @@ void textInstallDefaultFonts(const char* primaryTtfPath);
 
 namespace bridge {
 
+// Best-effort "a barrel frame reached the display" watermark (see barrel_runtime.h).
+static std::atomic<uint64_t> g_barrel_present_seq{0};
+uint64_t barrelPresentSeq() { return g_barrel_present_seq.load(std::memory_order_relaxed); }
+
 namespace {
 constexpr const char* kBundleNames[] = {"core", "lights", "nano", "text", "richtext", "legacy"};
 constexpr unsigned kNumMacros = 16;
@@ -863,6 +867,10 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   if (it == impl_->executors.end()) return false;
   Impl::PerExecutor& pe = it->second;
   ++pe.frame;
+  // Best-effort present proxy: a new frame is being produced, so the previous
+  // one was consumed by Resolume (it asked for the next). Bump the process-global
+  // watermark the pump reads to release strict triggers (~1 frame after emit).
+  g_barrel_present_seq.fetch_add(1, std::memory_order_relaxed);
 
   auto& server = BridgeServer::instance();
   const std::string base = "/plugins/" + key + "/state";

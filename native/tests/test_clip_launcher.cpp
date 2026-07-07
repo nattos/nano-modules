@@ -218,3 +218,90 @@ TEST_CASE("one event fans out to every clip on the channel", "[clip_launcher]") 
   CHECK(h.cmds[0].value == true);
   CHECK(h.cmds[1].value == true);
 }
+
+// ── fireOnce: best-effort single edge, no reconcile/retry state ───────────────
+
+TEST_CASE("fireOnce issues a one-shot connect and tracks nothing",
+          "[clip_launcher]") {
+  Harness h;
+  // Even though observed is already ON (which tick() would treat as converged →
+  // no command), fireOnce is unconditional best-effort — it just punches.
+  h.launcher.fireOnce({Harness::ev(1, true)}, Harness::clips(1, /*observed=*/true));
+  REQUIRE(h.cmds.size() == 1);
+  CHECK(h.cmds[0].path == "C");
+  CHECK(h.cmds[0].value == true);
+  // No desired/recon state recorded: a following tick with the clip observed OFF
+  // does NOT re-drive it (fireOnce never set a desire), so no extra command.
+  h.cmds.clear();
+  h.launcher.tick({}, Harness::clips(1, /*observed=*/false), 2000);
+  CHECK(h.cmds.empty());
+}
+
+// ── planStrict: the pure strict-queue fold ───────────────────────────────────
+
+namespace {
+trigger_bus::Event strictEv(uint64_t seq, int channel, bool on, uint32_t deadline) {
+  trigger_bus::Event e;
+  e.seq = seq;
+  e.rail = trigger_bus::kGlobalRail;
+  e.channel = channel;
+  e.on = on;
+  e.strict = true;
+  e.deadline_ms = deadline;
+  return e;
+}
+}  // namespace
+
+TEST_CASE("planStrict passes non-strict events straight through", "[strict]") {
+  std::vector<bridge::StrictPending> pending;
+  auto plan = bridge::planStrict({Harness::ev(1, true)}, pending,
+                                 /*now_ms=*/1000, /*present_seq=*/10);
+  CHECK(plan.reconcile.size() == 1);
+  CHECK(plan.best_effort.empty());
+  CHECK(pending.empty());  // "any" never queues
+}
+
+TEST_CASE("planStrict holds a strict event until a frame is presented",
+          "[strict]") {
+  std::vector<bridge::StrictPending> pending;
+
+  // Enqueue at present_seq=10 — held (nothing reconciles this tick).
+  auto p0 = bridge::planStrict({strictEv(1, 3, true, 120)}, pending,
+                               /*now_ms=*/1000, /*present_seq=*/10);
+  CHECK(p0.reconcile.empty());
+  CHECK(p0.best_effort.empty());
+  REQUIRE(pending.size() == 1);
+
+  // Same frame (present_seq still 10), before the deadline → still held.
+  auto p1 = bridge::planStrict({}, pending, /*now_ms=*/1005, /*present_seq=*/10);
+  CHECK(p1.reconcile.empty());
+  REQUIRE(pending.size() == 1);
+
+  // A frame has been presented (present_seq advanced) → release + full reconcile.
+  auto p2 = bridge::planStrict({}, pending, /*now_ms=*/1020, /*present_seq=*/11);
+  REQUIRE(p2.reconcile.size() == 1);
+  CHECK(p2.reconcile[0].seq == 1);
+  CHECK(p2.best_effort.empty());
+  CHECK(pending.empty());
+}
+
+TEST_CASE("planStrict deadline flushes all, reconciling only the newest",
+          "[strict]") {
+  std::vector<bridge::StrictPending> pending;
+
+  // Three strict events pile up while no frame is presented (present_seq stuck).
+  bridge::planStrict({strictEv(1, 3, true, 100)}, pending, 1000, /*present=*/5);
+  bridge::planStrict({strictEv(2, 3, true, 100)}, pending, 1030, /*present=*/5);
+  bridge::planStrict({strictEv(3, 4, true, 100)}, pending, 1060, /*present=*/5);
+  REQUIRE(pending.size() == 3);
+
+  // At now=1101 the oldest (arrived 1000, deadline 100) has expired → flush all.
+  auto plan = bridge::planStrict({}, pending, /*now_ms=*/1101, /*present=*/5);
+  // Newest = seq 3 → full reconcile; the other two → best-effort.
+  REQUIRE(plan.reconcile.size() == 1);
+  CHECK(plan.reconcile[0].seq == 3);
+  REQUIRE(plan.best_effort.size() == 2);
+  CHECK(plan.best_effort[0].seq == 1);
+  CHECK(plan.best_effort[1].seq == 2);
+  CHECK(pending.empty());  // queue drained
+}

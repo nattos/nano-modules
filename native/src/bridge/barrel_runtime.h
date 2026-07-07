@@ -14,10 +14,20 @@
 // may link the engine — the dylib. The barrel bundle links none of it and
 // drives rendering purely through the C ABI (bridge_api.h).
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 namespace bridge {
+
+// Monotonic count of barrel render frames produced (process-global, thread-safe).
+// The BridgeServer pump reads it as a best-effort "a frame reached the display"
+// proxy for strict-precision triggers: a strict trigger's emitting frame is
+// rendered before the pump drains it, so once this advances past the value
+// snapshotted at enqueue, ≥1 post-emit frame has been produced and handed to
+// Resolume. There is no true present callback from Resolume/FFGL — this is the
+// strongest signal available. Bumped on the render thread; read on the pump.
+uint64_t barrelPresentSeq();
 
 class BarrelRuntime {
  public:

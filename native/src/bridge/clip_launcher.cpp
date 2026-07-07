@@ -137,9 +137,70 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
   }
 }
 
+void ClipLauncher::fireOnce(
+    const std::vector<trigger_bus::Event>& events,
+    const std::map<int, std::vector<LaunchTarget>>& channel_clips) {
+  if (!writer_) return;
+  for (const auto& ev : events) {
+    auto it = channel_clips.find(ev.channel);
+    if (it == channel_clips.end()) continue;
+    for (const auto& t : it->second) {
+      // The same first-attempt edge the reconciler would issue, but untracked:
+      // ON → connect; OFF → gated disconnect (Piano) or eviction (Normal).
+      if (ev.on) {
+        writer_(t.connect_path, true);
+      } else if (t.is_piano) {
+        writer_(t.connect_path, false);
+      } else if (!t.evict_path.empty()) {
+        writer_(t.evict_path, true);
+      }
+      trig_log("clip %lld: best-effort flush %s (deadline)", (long long)t.clip_id,
+               ev.on ? "on" : "off");
+    }
+  }
+}
+
 void ClipLauncher::reset() {
   desired_.clear();
   recon_.clear();
+}
+
+StrictPlan planStrict(const std::vector<trigger_bus::Event>& drained,
+                      std::vector<StrictPending>& pending,
+                      uint64_t now_ms, uint64_t present_seq) {
+  StrictPlan plan;
+  for (const auto& e : drained) {
+    if (e.strict) {
+      pending.push_back({e, now_ms, e.deadline_ms ? e.deadline_ms : 100u, present_seq});
+    } else {
+      plan.reconcile.push_back(e);  // "any" → immediate, as before
+    }
+  }
+
+  bool deadline_hit = false;
+  for (const auto& p : pending)
+    if (now_ms - p.arrival_ms >= p.deadline_ms) { deadline_hit = true; break; }
+
+  if (deadline_hit) {
+    // Pipe assumed borked: flush ALL, fully reconcile only the newest.
+    if (!pending.empty()) {
+      size_t newest = 0;
+      for (size_t i = 1; i < pending.size(); ++i)
+        if (pending[i].ev.seq > pending[newest].ev.seq) newest = i;
+      for (size_t i = 0; i < pending.size(); ++i)
+        (i == newest ? plan.reconcile : plan.best_effort).push_back(pending[i].ev);
+      pending.clear();
+    }
+  } else {
+    // Present-proxy: release events whose emitting frame has been presented.
+    std::vector<StrictPending> waiting;
+    for (auto& p : pending) {
+      if (present_seq > p.floor_present) plan.reconcile.push_back(p.ev);
+      else waiting.push_back(std::move(p));
+    }
+    pending = std::move(waiting);
+  }
+  return plan;
 }
 
 }  // namespace bridge

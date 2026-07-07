@@ -306,8 +306,15 @@ export interface FontRequest { key: string; family: string; weight: number; ital
 export interface SidechannelInfo { writer: string; w: number; h: number; }
 
 /** One trigger-rail channel's latest activity: the last event's on/off state,
- *  its velocity, the emitting instance (writer), and the bus seq. */
-export interface TriggerChannelInfo { on: boolean; velocity: number; writer: string; seq: number; }
+ *  its velocity, the emitting instance (writer), and the bus seq. `precision`
+ *  rides along only for a strict channel (telemetry; web enforces nothing). */
+export interface TriggerChannelInfo {
+  on: boolean;
+  velocity: number;
+  writer: string;
+  seq: number;
+  precision?: { mode: 'strict'; deadline: number };
+}
 
 /** One Resolume clip registered on a trigger channel via a NanoLooper Ch marker.
  *  `key` is the marker's registered instance key (== uuid) — used to render the

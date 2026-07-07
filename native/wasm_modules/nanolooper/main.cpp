@@ -78,6 +78,7 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_ANCHOR          17
 #define PID_OVERLAY_OPACITY 18
 #define PID_LOOP_MODE       19
+#define PID_STRICT_DEADLINE 20
 
 /* Loop mode (single enum replacing the old record/latch bools):
  *   Off     — the recorded pattern is DISABLED (kept in memory, not played);
@@ -145,6 +146,12 @@ struct State {
    * events (channel = ch+1); ch_out[] is a per-channel EXACT gate (1 while
    * gated, 0 otherwise — no decay) exposed as the out_N modulation outputs. */
   int send_to_rail = 1;
+  /* Strict-precision deadline, in ms. 0 → precision "any" (immediate dispatch,
+   * today's behavior). >0 → each emitted trigger carries precision
+   * {mode:"strict", deadline:<this>}, asking the barrel pump to hold the clip
+   * launch until a rendered frame reflecting it reaches the display (bounded by
+   * the deadline). Range clamps to [0,250]. */
+  float strict_deadline = 0.0f;
   LoopEv trig_ring[TRIG_RING_CAP] = {};
   int trig_ring_len = 0;
   long long trig_seq = 0;
@@ -295,6 +302,15 @@ static void publish_state(State& s) {
     val::set(e, "on", val::boolean(s.trig_ring[i].on));
     val::set(e, "channel", val::number(s.trig_ring[i].channel));
     val::set(e, "velocity", val::number(s.trig_ring[i].velocity));
+    /* Optional precision subtree — uniform per instance (the current param), so
+     * read here rather than widening LoopEv. >0 → strict with that deadline;
+     * 0 → omit entirely (drain treats absence as "any"). */
+    if (s.strict_deadline > 0.0f) {
+      auto prec = val::object();
+      val::set(prec, "mode", val::string("strict"));
+      val::set(prec, "deadline", val::number((double)s.strict_deadline));
+      val::set(e, "precision", prec);
+    }
     val::push(triggers, e);
   }
   val::set(state, "triggers", triggers);
@@ -524,6 +540,9 @@ static void on_param_change(State& s, int index, double value) {
      * (NUM_STEPS steps), so 1 beat == NUM_STEPS/4 units. */
     s.grace_beats = (float)value;
     looper_set_grace(&s.looper, (double)s.grace_beats * (NUM_STEPS / 4.0));
+  } else if (index == PID_STRICT_DEADLINE) {
+    float d = (float)value;
+    s.strict_deadline = d < 0.0f ? 0.0f : (d > 250.0f ? 250.0f : d);
   }
 
   /* One authority for gate emission — reflect the new input state immediately. */
@@ -621,6 +640,7 @@ static int field_to_pid(const char* path, int pathLen) {
     {"quantize_start", PID_QUANTIZE_START},
     {"quantize_length", PID_QUANTIZE_LENGTH},
     {"grace", PID_GRACE},
+    {"strict_deadline", PID_STRICT_DEADLINE},
   };
   for (auto& m : map) {
     int mlen = std::strlen(m.name);
@@ -728,6 +748,16 @@ void module_init() {
     "Emit each channel's gate onto the trigger rail so it can launch Resolume clips. "
     "Off = the looper runs as a modulation/overlay source only, launching nothing.")
     .label("Send To Rail", "Rail");
+  schema.floatField("strict_deadline", 0.0f, 0.0f, 250.0f, state::PrimaryInput,
+    /*magnitude=*/nullptr, /*step=*/0.0f, /*units=*/"ms",
+    "Strict on-screen coordination for launched clips, in milliseconds. **0 = Any** "
+    "(default): triggers launch immediately, as usual. **Above 0 = Strict**: the "
+    "launch is held until a rendered frame reflecting the trigger reaches the display "
+    "(so the clip lands in sync and isn't lost to a dropped frame or the flaky "
+    "connect/disconnect pipe). This value is the deadline — if that long elapses "
+    "without confirmation the pipe is assumed borked and all queued triggers flush "
+    "through, fully reconciling only the most recent.")
+    .label("Strict Deadline", "Strict");
 
   // --- Display --------------------------------------------------------
   schema.group("display", "Display")
@@ -837,6 +867,7 @@ void init(void* self) {
   for (int i = 0; i < NUM_CHANNELS; i++) { s->live_held[i] = 0; s->live_start[i] = 0.0; }
   /* send_to_rail keeps its schema default (on) via on_state_patched; reset the
    * ring so a re-init never replays stale events. */
+  s->strict_deadline = 0.0f;  /* schema default: "any" (immediate) */
   s->trig_ring_len = 0;
   s->trig_seq = 0;
   s->delete_held = 0;

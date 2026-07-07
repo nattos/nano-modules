@@ -2761,6 +2761,59 @@ TEST_CASE("control.nanolooper emits a trigger onto the rail when fired",
   CHECK(saw_ch1_on);
 }
 
+// strict_deadline > 0 makes each emitted trigger carry the precision subtree,
+// which the executor's drainTriggerRing parses onto the bus Event (strict +
+// deadline_ms). strict_deadline == 0 emits none (→ "any"). This proves the full
+// authoring path effect-schema → publish → drain → bus for the new payload.
+TEST_CASE("control.nanolooper strict_deadline authors the precision payload",
+          "[effect_render][nanolooper][trigger_rail]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+  const uint32_t W = 64, H = 64;
+  int inTex = backend->createTexture(W, H, 1);
+  int outTex = backend->createTexture(W, H, 1);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "control.nanolooper", "instance_key": "lp" }
+    ],
+    "instances": {
+      "lp": { "module_type": "control.nanolooper",
+              "state": { "send_to_rail": true, "strict_deadline": 120, "trigger_1": 0 } }
+    }
+  })JSON");
+
+  trigger_bus::resetForTest();
+  REQUIRE(executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true) >= 0);
+  backend->submit();
+  trigger_bus::drain("test");
+
+  sketch["instances"]["lp"]["state"]["trigger_1"] = 1;
+  REQUIRE(executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true) >= 0);
+  backend->submit();
+
+  auto events = trigger_bus::drain("test");
+  bool saw_strict = false;
+  for (const auto& e : events) {
+    if (e.channel == 1 && e.on) {
+      CHECK(e.strict == true);
+      CHECK(e.deadline_ms == 120);
+      saw_strict = true;
+    }
+  }
+  CHECK(saw_strict);
+}
+
 // The host musical clock (WasmEffectBundles::setHostClock → the bundle FrameState
 // the barrel now feeds from FFGL SetBeatInfo, and a headless ffgl_runner --bpm
 // supplies) is what drives the looper. This test manually steps that transport to

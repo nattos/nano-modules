@@ -470,9 +470,10 @@ export class WasmSketchExecutor {
    * Trigger-bus rail/channel activity, for the worker's `triggerRails` push:
    * `version` bumps only on metadata change (a rail/channel/writer first seen —
    * NOT per event), so poll it per frame and parse the JSON only on change.
-   * Shape: `{ "<rail>": { "<channel>": {on, velocity, writer, seq} } }`.
+   * Shape: `{ "<rail>": { "<channel>": {on, velocity, writer, seq[, precision]} } }`
+   * (precision only for a strict channel).
    */
-  getTriggerRailInfo(): { version: number; rails: Record<string, Record<string, { on: boolean; velocity: number; writer: string; seq: number }>> } | null {
+  getTriggerRailInfo(): { version: number; rails: Record<string, Record<string, { on: boolean; velocity: number; writer: string; seq: number; precision?: { mode: 'strict'; deadline: number } }>> } | null {
     if (!this.exports.executor_triggers_version || !this.exports.executor_triggers_json) return null;
     const version = this.exports.executor_triggers_version();
     let cap = 4096;

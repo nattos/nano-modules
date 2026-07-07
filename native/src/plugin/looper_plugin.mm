@@ -70,9 +70,14 @@ struct ParamDef {
   const char* group;    // Resolume param-panel section
   unsigned int type;    // FF_TYPE_*
   const char* field;    // control.nanolooper state field, or nullptr (local)
-  float def;
+  float def;            // FFGL-normalized default (0..1)
   bool momentary;
   Local local;
+  // Doc-write scale: the field's real max (min assumed 0). FFGL STANDARD knobs
+  // are normalized 0..1, but a field whose schema range isn't 0..1 must be
+  // rescaled before it hits the sketch doc. 1.0 = write the 0..1 value straight
+  // through (the case for every 0..1 field). `def` above stays normalized.
+  float scale = 1.0f;
 };
 
 // Order is the param-panel order; it mirrors the effect schema's field order in
@@ -92,6 +97,7 @@ const ParamDef kParams[] = {
   {"Quantize Length", "Quantize",  FF_TYPE_BOOLEAN,  "quantize_length",  0.0f,    false, Local::None},
   {"Grace",           "Quantize",  FF_TYPE_STANDARD, "grace",            0.0625f, false, Local::None},
   {"Send To Rail",    "Output",    FF_TYPE_BOOLEAN,  "send_to_rail",     1.0f,    false, Local::None},
+  {"Strict Deadline", "Output",    FF_TYPE_STANDARD, "strict_deadline",  0.0f,    false, Local::None, 250.0f},
   {"Show Overlay",    "Display",   FF_TYPE_BOOLEAN,  "show_overlay",     1.0f,    false, Local::None},
   {"Anchor",          "Display",   FF_TYPE_OPTION,   "anchor",           0.0f,    false, Local::None},
   {"Overlay Opacity", "Display",   FF_TYPE_STANDARD, "overlay_opacity",  1.0f,    false, Local::None},
@@ -186,8 +192,9 @@ class LooperPlugin : public CFFGLPlugin {
       if (v == 1 && st.held == 0) st.saw_rise = true;
       st.held = v;
     } else {
-      // Level params (toggles + grace): write straight through.
-      writeFieldLocked(pd.field, (double)value);
+      // Level params (toggles + grace): write straight through, rescaled for
+      // fields whose schema range isn't 0..1 (e.g. Strict Deadline → 0..250 ms).
+      writeFieldLocked(pd.field, (double)value * (double)pd.scale);
       dirty_frame_ = true;
     }
     return FF_SUCCESS;
@@ -410,7 +417,8 @@ class LooperPlugin : public CFFGLPlugin {
 
     nlohmann::json looperState = nlohmann::json::object();
     for (unsigned int i = 0; i < P_COUNT; ++i)
-      if (kParams[i].field) looperState[kParams[i].field] = (double)kParams[i].def;
+      if (kParams[i].field)
+        looperState[kParams[i].field] = (double)kParams[i].def * (double)kParams[i].scale;
 
     nlohmann::json sketch = {
       {"chain", nlohmann::json::array({

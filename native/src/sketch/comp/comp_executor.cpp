@@ -733,8 +733,10 @@ void CompExecutor::readTriggerSignals() {
           e.contains("seq") && e["seq"].is_number() ? e["seq"].get<long long>() : 0;
       if (seq <= last) continue;
       seen->second = std::max(seen->second, seq);
-      // `on` + `channel` required; `velocity` (+ any extra keys) ride along for
-      // future consumers — scenes ignore off events and velocity for now.
+      // `on` + `channel` required; `velocity` and the optional `precision`
+      // subtree (+ any extra keys) ride along for future consumers — web/comp
+      // does not enforce strict precision, so scenes ignore off/velocity/
+      // precision and launch immediately.
       const bool on = e.contains("on") && (e["on"].is_boolean() ? e["on"].get<bool>()
                                                                 : e["on"].is_number() &&
                                                                       e["on"].get<double>() != 0);

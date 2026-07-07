@@ -1,5 +1,6 @@
 #include "bridge/bridge_server.h"
 
+#include "bridge/barrel_runtime.h"
 #include "bridge/ws_server.h"
 #include "bridge/composition_cache.h"
 #include "bridge/trig_log.h"
@@ -362,7 +363,7 @@ void BridgeServer::drive_clip_launches() {
     t.evict_path = cc.evict_path;
     channel_clips[cc.channel + 1].push_back(std::move(t));
   }
-  if (events.empty() && channel_clips.empty()) return;
+  if (events.empty() && channel_clips.empty() && pending_strict_.empty()) return;
 
   // Diagnostics: log drained events + the current channel→clips map when
   // anything fires, so a live repro shows exactly where the pipeline breaks
@@ -385,7 +386,20 @@ void BridgeServer::drive_clip_launches() {
 
   const uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-  clip_launcher_.tick(events, channel_clips, now_ms);
+
+  // Partition by precision + evaluate the strict queue (pure fold — see
+  // planStrict). "any" events reconcile immediately; strict events wait for a
+  // presented frame (barrelPresentSeq) or their deadline flush.
+  StrictPlan plan =
+      planStrict(events, pending_strict_, now_ms, barrelPresentSeq());
+  if (!plan.best_effort.empty())
+    trig_log("strict deadline: flushed %zu best-effort trigger(s)",
+             plan.best_effort.size());
+
+  // Stale flushes first, so the fully-reconciled newest issues last and wins.
+  if (!plan.best_effort.empty())
+    clip_launcher_.fireOnce(plan.best_effort, channel_clips);
+  clip_launcher_.tick(plan.reconcile, channel_clips, now_ms);
 }
 
 void BridgeServer::publish_trigger_channels() {

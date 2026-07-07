@@ -95,6 +95,38 @@ TEST_CASE("infoJson reflects latest per-channel activity", "[trigger_bus]") {
              Catch::Matchers::WithinAbs(0.8, 1e-6));
 }
 
+TEST_CASE("precision subtree survives emit → drain and reaches infoJson",
+          "[trigger_bus]") {
+  trigger_bus::resetForTest();
+
+  // Default emit → "any" (strict=false), no precision in infoJson.
+  trigger_bus::emit(kRail, 1, true, 1.0f, "anyw");
+  // Strict emit carries mode + deadline through the Event.
+  trigger_bus::emit(kRail, 2, true, 1.0f, "strictw", /*strict=*/true,
+                    /*deadlineMs=*/120);
+
+  auto ev = trigger_bus::drain("c");
+  REQUIRE(ev.size() == 2);
+  CHECK(ev[0].strict == false);
+  CHECK(ev[0].deadline_ms == 0);
+  CHECK(ev[1].strict == true);
+  CHECK(ev[1].deadline_ms == 120);
+
+  std::string buf(1024, '\0');
+  int32_t n = trigger_bus::infoJson(buf.data(), (int32_t)buf.size());
+  REQUIRE(n > 0);
+  buf.resize(n);
+  json j = json::parse(buf);
+
+  // The "any" channel has no precision object; the strict channel does.
+  REQUIRE(j[kRail].contains("1"));
+  CHECK_FALSE(j[kRail]["1"].contains("precision"));
+  REQUIRE(j[kRail].contains("2"));
+  REQUIRE(j[kRail]["2"].contains("precision"));
+  CHECK(j[kRail]["2"]["precision"]["mode"] == "strict");
+  CHECK(j[kRail]["2"]["precision"]["deadline"] == 120);
+}
+
 TEST_CASE("empty rail argument falls back to the global rail", "[trigger_bus]") {
   trigger_bus::resetForTest();
   trigger_bus::emit(nullptr, 1, true, 1.0f, "w");

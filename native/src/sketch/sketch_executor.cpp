@@ -2152,11 +2152,24 @@ void SketchExecutor::drainTriggerRing(const RegisteredModule* reg,
                               : e["on"].is_number() && e["on"].get<double>() != 0);
     const float velocity = e.contains("velocity") && e["velocity"].is_number()
         ? (float)e["velocity"].get<double>() : 1.0f;
+    // Optional precision subtree: {"mode":"any"|"strict","deadline":<ms>}.
+    // Absent → "any" (immediate). "strict" with no deadline → 100ms default.
+    bool strict = false;
+    uint32_t deadlineMs = 0;
+    if (auto p = e.find("precision"); p != e.end() && p->is_object()) {
+      auto m = p->find("mode");
+      strict = m != p->end() && m->is_string() && m->get<std::string>() == "strict";
+      if (strict) {
+        auto d = p->find("deadline");
+        deadlineMs = (d != p->end() && d->is_number() && d->get<double>() > 0)
+            ? (uint32_t)std::lround(d->get<double>()) : 100u;
+      }
+    }
     // v1: every sketch trigger source writes the default global rail (there is
     // no per-node rail-wiring UI in the barrel sketch yet — unwired sources go
     // global, matching the compositor's default).
     trigger_bus::emit(trigger_bus::kGlobalRail, channel, on, velocity,
-                      instKey.c_str());
+                      instKey.c_str(), strict, deadlineMs);
   }
 }
 
