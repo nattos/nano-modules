@@ -218,17 +218,43 @@ ADDABLE_EFFECTS = [
     "mod.source.lfo",
     "mod.source.adsr",
 ]
-WIRE_DEST_FIELDS = {
+# Float INPUT fields a scalar wire may target, per module_type (verified against
+# each effect's floatField schema — invert/fast_blur expose NO float inputs).
+SCALAR_DEST_FIELDS = {
     "color.tone.brightness_contrast": ["brightness", "contrast"],
-    "color.saturate": ["amount"],
-    "filter.blur.gaussian": ["blur"],
-    "filter.blur.fast": ["blur"],
+    "color.saturate": ["prescale", "asymm", "linear_deadzone"],
+    "color.posterize": ["amount"],
+    "filter.blur.gaussian": ["radius", "quality"],
 }
-WIRE_SRC_OUTPUT = {  # modulation-source instances → their output field
+# Modulation OUTPUT field per producer module_type (sources AND shapers — a shaper
+# is both: it consumes on "input" and produces on "output"). So a source→shaper→
+# dest chain is just two ordinary scalar wires.
+MOD_SRC_OUTPUT = {
     "mod.source.lfo": "output",
     "mod.source.adsr": "output",
+    "mod.source.spectral_lfo": "output",
+    "mod.shaper.smooth": "output",
+    "mod.shaper.remap": "output",
+    "mod.shaper.threshold": "output",
     "control.nanolooper": "out_1",
 }
+SHAPER_TYPES = {"mod.shaper.smooth", "mod.shaper.remap", "mod.shaper.threshold"}
+# Reserved per-effect keys that are WIRE-modulatable. The executor's
+# foldReservedOverrides maps ONLY these two (slot 0/1); __blend__ has a reader but
+# no fold slot, so a wire to it never lands — don't drive it.
+RESERVED_DESTS = ["__opacity__", "__bypass__"]
+# Effects exposing a texture out/in for TEXTURE wires. composite.blend reads
+# inputTexture(0)=tex_a (linear chain) and inputTexture(1)=tex_b (wire-injected).
+IMAGE_EFFECT_TYPES = {
+    "source.gradient", "color.tone.brightness_contrast", "color.saturate",
+    "filter.blur.gaussian", "color.posterize", "composite.blend",
+}
+TEX_BLEND_TYPE = "composite.blend"
+TEX_BLEND_DEST = "tex_b"
+
+# Back-compat aliases for the structural driver (uses the scalar catalogs).
+WIRE_DEST_FIELDS = SCALAR_DEST_FIELDS
+WIRE_SRC_OUTPUT = MOD_SRC_OUTPUT
 
 
 # --------------------------------------------------------------------------
@@ -265,7 +291,16 @@ class Driver:
         self.dyn_counter = 0
         self.max_dynamic = 6
         self.stats.update({"sketch_replaces": 0, "fx_added": 0, "fx_removed": 0,
-                           "wires_added": 0, "wires_removed": 0})
+                           "wires_added": 0, "wires_removed": 0,
+                           "wires_scalar": 0, "wires_structural": 0,
+                           "wires_texture": 0})
+        # Wires mode: fixed effect topology, churn only WIRES. Precompute the
+        # valid endpoint pools once (topology never changes) so a rising memory
+        # floor isolates the wire/read-tap/modulation/reserved-fold/texture-rail
+        # paths from the fusion-cache churn that structural mode manufactures.
+        self.wire_min, self.wire_max = 4, 14
+        if self.mode == "wires":
+            self._init_wire_pools()
 
     # -- structural helpers ---------------------------------------------
     def _dynamic_keys(self):
@@ -329,6 +364,77 @@ class Driver:
             self.model["wires"].pop(self.rng.randrange(len(self.model["wires"])))
             self.stats["wires_removed"] += 1
 
+    # -- wires-mode helpers (fixed topology, churn every wire variety) ----
+    def _init_wire_pools(self):
+        insts = self.model["instances"]
+
+        def mt(k):
+            return insts[k].get("module_type", "")
+
+        # Producers: every modulation source + shaper output.
+        self.wsrcs = [(k, MOD_SRC_OUTPUT[mt(k)]) for k in insts
+                      if mt(k) in MOD_SRC_OUTPUT]
+        # Scalar float-input dests + shaper "input" channels.
+        self.wscalar_dests = [(k, f) for k in insts
+                              for f in SCALAR_DEST_FIELDS.get(mt(k), [])]
+        self.wscalar_dests += [(k, "input") for k in insts
+                               if mt(k) in SHAPER_TYPES]
+        # Reserved structural dests (opacity / bypass) on the image effects.
+        self.wreserved_dests = [(k, rk) for k in insts
+                                if mt(k) in IMAGE_EFFECT_TYPES
+                                for rk in RESERVED_DESTS]
+        # Texture wire: any image effect's tex_out → composite.blend.tex_b.
+        self.wtex_srcs = [(k, "tex_out") for k in insts
+                          if mt(k) in IMAGE_EFFECT_TYPES and mt(k) != TEX_BLEND_TYPE]
+        self.wtex_dest = next(((k, TEX_BLEND_DEST) for k in insts
+                               if mt(k) == TEX_BLEND_TYPE), None)
+
+    def _wire_exists(self, sk, sf, dk, df):
+        return any(w["src"]["instanceKey"] == sk and w["src"]["field"] == sf
+                   and w["dest"]["instanceKey"] == dk and w["dest"]["field"] == df
+                   for w in self.model["wires"])
+
+    def _wire_add(self):
+        """Append one wire of a weighted-random variety (scalar / structural /
+        texture), if the endpoint pair is new and not a self-loop."""
+        roll = self.rng.random()
+        if roll < 0.20 and self.wtex_dest and self.wtex_srcs:
+            variety = "texture"
+            sk, sf = self.rng.choice(self.wtex_srcs)
+            dk, df = self.wtex_dest
+            wire = {"id": None, "src": {"instanceKey": sk, "field": sf},
+                    "dest": {"instanceKey": dk, "field": df}}
+        elif not self.wsrcs:
+            return
+        else:
+            sk, sf = self.rng.choice(self.wsrcs)
+            if roll < 0.50 and self.wreserved_dests:
+                variety = "structural"
+                dk, df = self.rng.choice(self.wreserved_dests)
+                mag = "unsigned"
+            elif self.wscalar_dests:
+                variety = "scalar"
+                dk, df = self.rng.choice(self.wscalar_dests)
+                mag = self.rng.choice(["signed", "unsigned"])
+            else:
+                return
+            # Never let one shaper feed another's input (would risk a mod cycle);
+            # shaper inputs are driven only by non-shaper sources.
+            if df == "input" and self._mod_type(sk) in SHAPER_TYPES:
+                return
+            wire = {"id": None,
+                    "src": {"instanceKey": sk, "field": sf},
+                    "dest": {"instanceKey": dk, "field": df},
+                    "magnitude": mag, "combine": "add",
+                    "mod": {"scale": round(self.rng.uniform(0.2, 1.0), 3)}}
+        if sk == dk or self._wire_exists(sk, sf, dk, df):
+            return
+        wire["id"] = f"dw{self.dyn_counter}"
+        self.dyn_counter += 1
+        self.model["wires"].append(wire)
+        self.stats["wires_added"] += 1
+        self.stats[f"wires_{variety}"] += 1
+
     def connect(self):
         try:
             self.ws = WS(self.port)
@@ -386,6 +492,22 @@ class Driver:
 
     def tick(self):
         """One churn step: nudge a few fields; sometimes stress the looper."""
+        if self.mode == "wires":
+            # Fixed effects; add/remove wires as a bounded random walk across
+            # every variety (scalar float, structural opacity/bypass, source→
+            # shaper→dest, texture). Republish the whole sketch so the barrel
+            # rebuilds the wire graph / read-taps each step.
+            n = len(self.model["wires"])
+            if n <= self.wire_min:
+                self._wire_add()
+            elif n >= self.wire_max:
+                self._remove_wire()
+            elif self.rng.random() < 0.55:
+                self._wire_add()
+            else:
+                self._remove_wire()
+            self._replace_sketch()
+            return
         if self.mode == "structural":
             # Add/remove effects and wires, biased to keep the dynamic count a
             # bounded random walk (so a rising memory floor means a lifecycle
@@ -550,16 +672,25 @@ def main():
     ap.add_argument("--csv", default="/tmp/soak_timeline.csv")
     ap.add_argument("--no-drive", action="store_true", help="don't change params")
     ap.add_argument("--drive-mode",
-                    choices=["full", "fields", "triggers", "structural"],
+                    choices=["full", "fields", "triggers", "structural", "wires"],
                     default="full",
                     help="what the driver churns: full=params+looper, fields/"
-                         "triggers isolate those, structural=add/remove effects+wires")
+                         "triggers isolate those, structural=add/remove effects+"
+                         "wires, wires=fixed effects + churn every wire variety "
+                         "(scalar/opacity+bypass/shaper/texture). wires defaults "
+                         "to soak_wires_sketch.json.")
     ap.add_argument("--leak-threshold-mb-min", type=float, default=2.0,
                     help="flag a leak if phys grows faster than this")
     args = ap.parse_args()
 
     import random
     rng = random.Random(args.seed)
+
+    # The wire-churn mode needs the fixed-topology sketch (sources, shapers,
+    # composite.blend). Auto-swap it in if the user left --sketch at the default.
+    default_sketch = os.path.join(here, "soak_sketch.json")
+    if args.drive_mode == "wires" and os.path.abspath(args.sketch) == default_sketch:
+        args.sketch = os.path.join(here, "soak_wires_sketch.json")
 
     with open(args.sketch) as f:
         sketch = json.load(f)
@@ -638,6 +769,11 @@ def main():
                     churn = (f"replaces={driver.stats['sketch_replaces']} "
                              f"fx={len(driver._dynamic_keys())} "
                              f"wires={len(driver.model['wires'])}")
+                elif driver and args.drive_mode == "wires":
+                    churn = (f"wires={len(driver.model['wires'])} "
+                             f"(scl={driver.stats['wires_scalar']} "
+                             f"struct={driver.stats['wires_structural']} "
+                             f"tex={driver.stats['wires_texture']})")
                 else:
                     churn = f"patches={driver.stats['patches'] if driver else 0}"
                 print(f"[soak] t={elapsed:6.0f}s  rss={mb(RSS[-1])}  "

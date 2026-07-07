@@ -10,8 +10,8 @@
   "instances": {
     "gen":  { "module_type": "source.gradient",                "state": { "angle": 0.25, "scale": 1.0 } },
     "bc":   { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.1, "contrast": 0.1 } },
-    "sat":  { "module_type": "color.saturate",                 "state": { "amount": 0.5 } },
-    "blur": { "module_type": "filter.blur.gaussian",           "state": { "blur": 0.3 } },
+    "sat":  { "module_type": "color.saturate",                 "state": { "prescale": 1.0 } },
+    "blur": { "module_type": "filter.blur.gaussian",           "state": { "radius": 0.3 } },
     "lfo":  { "module_type": "mod.source.lfo",                 "state": { "rate": 0.5, "amplitude": 1.0, "output": 0.0 } },
     "loop": { "module_type": "control.nanolooper",
               "state": {
@@ -24,7 +24,7 @@
       "dest": { "instanceKey": "bc", "field": "brightness" },
       "magnitude": "signed", "combine": "add", "mod": { "scale": 0.5 } },
     { "id": "w1", "src": { "instanceKey": "lfo", "field": "output" },
-      "dest": { "instanceKey": "blur", "field": "blur" },
+      "dest": { "instanceKey": "blur", "field": "radius" },
       "magnitude": "unsigned", "combine": "add", "mod": { "scale": 0.4 } }
   ]
 }

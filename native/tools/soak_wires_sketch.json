@@ -1,0 +1,52 @@
+{
+  "_comment": "Fixed-topology sketch for --drive-mode wires. The effect chain never changes; only WIRES churn, so a rising memory floor points at the wire/read-tap/modulation/reserved-fold/texture-rail paths (NOT the fusion-cache churn that structural mode exercises). Sources (lfo/adsr), shapers (smooth/remap) and composite.blend give the driver every wire variety: scalar float, structural __opacity__/__bypass__, source->shaper->dest, and a texture wire into tex_b.",
+  "chain": [
+    { "type": "module", "module_type": "source.gradient",                "instance_key": "gen" },
+    { "type": "module", "module_type": "color.tone.brightness_contrast", "instance_key": "bc" },
+    { "type": "module", "module_type": "color.saturate",                 "instance_key": "sat" },
+    { "type": "module", "module_type": "filter.blur.gaussian",           "instance_key": "blur" },
+    { "type": "module", "module_type": "color.posterize",                "instance_key": "post" },
+    { "type": "module", "module_type": "composite.blend",                "instance_key": "blend" },
+    { "type": "module", "module_type": "mod.source.lfo",                 "instance_key": "lfo" },
+    { "type": "module", "module_type": "mod.source.adsr",                "instance_key": "adsr" },
+    { "type": "module", "module_type": "mod.shaper.smooth",              "instance_key": "smooth" },
+    { "type": "module", "module_type": "mod.shaper.remap",               "instance_key": "remap" },
+    { "type": "module", "module_type": "control.nanolooper",             "instance_key": "loop" }
+  ],
+  "instances": {
+    "gen":    { "module_type": "source.gradient",                "state": { "angle": 0.25, "scale": 1.0 } },
+    "bc":     { "module_type": "color.tone.brightness_contrast", "state": { "brightness": 0.1, "contrast": 0.1 } },
+    "sat":    { "module_type": "color.saturate",                 "state": { "prescale": 1.0 } },
+    "blur":   { "module_type": "filter.blur.gaussian",           "state": { "radius": 0.3, "quality": 1.0 } },
+    "post":   { "module_type": "color.posterize",                "state": { "amount": 0.5 } },
+    "blend":  { "module_type": "composite.blend",                "state": {} },
+    "lfo":    { "module_type": "mod.source.lfo",                 "state": { "rate": 0.5, "amplitude": 1.0, "output": 0.0 } },
+    "adsr":   { "module_type": "mod.source.adsr",                "state": {} },
+    "smooth": { "module_type": "mod.shaper.smooth",              "state": {} },
+    "remap":  { "module_type": "mod.shaper.remap",               "state": {} },
+    "loop":   { "module_type": "control.nanolooper",
+                "state": {
+                  "overlay_opacity": 1.0, "strict_deadline": 0.0, "send_to_rail": 1, "loop_mode": 1,
+                  "grid": [[0, 4, 8, 12], [2, 6, 10, 14], [1, 9], [5, 13]]
+                } }
+  },
+  "wires": [
+    { "id": "s0", "src": { "instanceKey": "lfo", "field": "output" },
+      "dest": { "instanceKey": "bc", "field": "brightness" },
+      "magnitude": "signed", "combine": "add", "mod": { "scale": 0.5 } },
+    { "id": "s1", "src": { "instanceKey": "adsr", "field": "output" },
+      "dest": { "instanceKey": "blur", "field": "radius" },
+      "magnitude": "unsigned", "combine": "add", "mod": { "scale": 0.4 } },
+    { "id": "r0", "src": { "instanceKey": "lfo", "field": "output" },
+      "dest": { "instanceKey": "bc", "field": "__opacity__" },
+      "magnitude": "unsigned", "combine": "add", "mod": { "scale": 0.6 } },
+    { "id": "h0", "src": { "instanceKey": "lfo", "field": "output" },
+      "dest": { "instanceKey": "smooth", "field": "input" },
+      "magnitude": "signed", "combine": "add", "mod": { "scale": 1.0 } },
+    { "id": "h1", "src": { "instanceKey": "smooth", "field": "output" },
+      "dest": { "instanceKey": "sat", "field": "prescale" },
+      "magnitude": "signed", "combine": "add", "mod": { "scale": 0.5 } },
+    { "id": "t0", "src": { "instanceKey": "gen", "field": "tex_out" },
+      "dest": { "instanceKey": "blend", "field": "tex_b" } }
+  ]
+}
