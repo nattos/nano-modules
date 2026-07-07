@@ -122,9 +122,29 @@ export class AppSettings extends MobxLitElement {
             `)}
           </div>
         </section>
+        <section>
+          <h2>Resolume Remote</h2>
+          <div class="hint">
+            Off: never try to reach Resolume, in any mode (Live falls back to
+            editing its offline copy). On: also watch quietly from Effect Dev
+            and Playground, so either can offer switching to Live.
+          </div>
+          <div class="toggle-row">
+            <label>
+              <input type="checkbox"
+                .checked=${settings.barrelRemoteEnabled}
+                @change=${this.onToggleRemote}>
+              Enable Resolume Remote
+            </label>
+          </div>
+        </section>
       </div>
     `;
   }
+
+  private onToggleRemote = (e: Event) => {
+    appController.setUserSetting('barrelRemoteEnabled', (e.target as HTMLInputElement).checked);
+  };
 }
 
 declare global {

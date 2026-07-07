@@ -20,6 +20,7 @@ import './ide-project-editor';
 import './ide-debug-info';
 import '../app-settings';
 import '../../widgets/sketch-monitor';
+import '../../widgets/snackbars';
 
 @customElement('effect-ide-app')
 export class EffectIdeApp extends MobxLitElement {
@@ -97,6 +98,9 @@ export class EffectIdeApp extends MobxLitElement {
       `,
     };
 
-    return html`<app-shell .config=${config}></app-shell>`;
+    return html`
+      <app-shell .config=${config}></app-shell>
+      <snackbar-host></snackbar-host>
+    `;
   }
 }

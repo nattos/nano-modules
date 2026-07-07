@@ -54,6 +54,17 @@ export interface Sketch {
    * in barrel, playground, effect-IDE and arrangement clips.
    */
   outputFormat?: SketchOutputFormat;
+  /**
+   * Epoch-ms client-side edit timestamp, stamped on every local mutation of
+   * the barrel-mirrored sketch (see `AppController`'s `inDraftHook`). Rides
+   * the same opaque JSON blob pushed to/persisted by the barrel — the native
+   * side treats `sketch` as opaque `nlohmann::json` end to end (bridge
+   * doc, Resolume's own composition-file save/reload), so this field
+   * round-trips untouched. Used only to recommend a side in the live-mode
+   * reconciliation dialog (`state/live-reconcile.ts`) — never to decide
+   * silently, since client clocks can disagree.
+   */
+  lastModified?: number;
 }
 
 /** Internal-resolution override — multiplier of the host size, or fixed. */

@@ -202,6 +202,17 @@ export interface UserSettings {
    * metadata only.
    */
   instanceNames: Record<string, string>;
+  /**
+   * Global kill-switch for the Resolume barrel remote: off means never
+   * attempt the background probe or the main WS connection, in ANY mode
+   * (including Live — a Live boot with this off skips straight to editing
+   * the offline cache). On means the probe runs in Effect Dev/Playground too
+   * (not just Playground), so either can offer switching to Live.
+   */
+  barrelRemoteEnabled: boolean;
+  /** Which barrel instance's cache to show at Live-mode boot, before the
+   *  WS connects (and to re-select on the next Live session). */
+  lastLiveInstanceKey: string | null;
 }
 
 // --- Local state (ephemeral, not in undo history) ---
@@ -344,6 +355,14 @@ export interface LocalState {
    * Live?" offer.
    */
   barrelDetected: boolean;
+  /**
+   * True while the edited sketch is a not-yet-reconciled Live-mode cache
+   * mirror (shown before the WS connects, or while offline-editing after a
+   * failed connect) — blocks mutations (see `AppController.mutate`) and the
+   * shared editor shows a read-only ribbon. Cleared once the cache is
+   * confirmed matching canonical, adopted, or a conflict is resolved.
+   */
+  readonly: boolean;
 }
 
 /**

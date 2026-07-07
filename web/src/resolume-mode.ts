@@ -8,6 +8,9 @@
 
 import type { TracePoint } from './engine-types';
 
+/** Fixed shared-server port the barrel listens on, absent a `?barrel=` override. */
+export const DEFAULT_BARREL_URL = 'ws://localhost:8081';
+
 /**
  * Bare `/resolume/` = BARREL against the fixed shared-server port. `?barrel`
  * stays as an explicit form whose value optionally overrides the server URL
@@ -17,7 +20,7 @@ import type { TracePoint } from './engine-types';
 export function decideMode(search: string): { mode: 'barrel' | 'playground'; barrelUrl: string } {
   const params = new URLSearchParams(search);
   const mode = params.has('playground') ? 'playground' : 'barrel';
-  const barrelUrl = params.get('barrel') || 'ws://localhost:8081';
+  const barrelUrl = params.get('barrel') || DEFAULT_BARREL_URL;
   return { mode, barrelUrl };
 }
 

@@ -10,6 +10,9 @@ import { boot } from './boot';
 import { appState } from './state/app-state';
 import { appController } from './state/controller';
 import { EFFECT_BUNDLES } from './effect-bundles';
+import { DEFAULT_BARREL_URL } from './resolume-mode';
+import { startBarrelProbe } from './barrel-probe';
+import { installModeOffers } from './live-offers';
 
 // Import the root IDE component (self-registering)
 import './views/effect-ide/effect-ide-app';
@@ -37,6 +40,12 @@ async function main() {
 
   // The IDE loads the shipping effect bundles (shared list; `testonly` excluded).
   for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+
+  // Effect Dev has no barrel connection of its own, but still watches for
+  // Resolume coming up (and drives the resulting offer) so it can offer
+  // switching to Live — same as the Playground surface.
+  installModeOffers();
+  startBarrelProbe(DEFAULT_BARREL_URL);
 }
 
 main();

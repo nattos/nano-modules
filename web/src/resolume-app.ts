@@ -18,12 +18,19 @@ import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 
 import { boot } from './boot';
 import {
-  decideMode, OFFER_LIVE_DISMISSED_KEY,
+  decideMode,
   groupPreviewRequests, instanceKeyFromThumbTraceId,
   laneUrl, NbpcReassembler, previewTransportPorts,
 } from './resolume-mode';
+import { startBarrelProbe } from './barrel-probe';
+import { installModeOffers } from './live-offers';
 import { traceController } from './state/trace-controller';
 import { loadAllPlaygroundInstances } from './state/playground-store';
+import { loadLiveCacheInstance, saveLiveCacheInstance, type LiveCacheRecord } from './state/live-cache-store';
+import { reconcileDecision } from './state/live-reconcile';
+import { reconcileStore } from './views/reconcile-dialog';
+import { instanceDisplayLabel } from './state/instance-labels';
+import { snackbars } from './widgets/snackbars';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
@@ -59,6 +66,8 @@ async function main() {
   // plugin renders), so the size is irrelevant there.
   await boot({ width: 1920, height: 1080, mode });
   appController.setBarrelMode(barrelMode);
+  // Drives the "switch to Live/Playground?" snackbar in both modes.
+  installModeOffers();
 
   if (!barrelMode) {
     appController.setPlaygroundMode(true);
@@ -90,9 +99,59 @@ async function main() {
 
     // Quietly watch for Resolume coming up so the shell can offer Live mode.
     startBarrelProbe(barrelUrl);
+    return;
   }
 
-  if (barrelMode) connectBarrel(barrelUrl);
+  // -- Live mode --
+  appController.setLiveMode(true);
+  // User-settings persistence (the Remote toggle, appMode, the remembered
+  // instance key) needs to actually save while in Live mode too — this was
+  // previously skipped entirely for barrel mode (the remote bridge being the
+  // source of truth for SKETCHES doesn't mean settings shouldn't persist).
+  // Safe: Live mode's only sketch id ('barrel') never matches the effect-IDE
+  // project id patterns, so `flushProjectsSave`/`flushPlaygroundSave` (also
+  // gated by this flag) stay no-ops here.
+  appController.enablePersistence();
+  if (!appState.local.userSettings.barrelRemoteEnabled) {
+    await bootOfflineOnly();
+    return;
+  }
+  connectBarrel(barrelUrl);
+}
+
+/**
+ * `barrelRemoteEnabled` is off: never attempt any connection (probe or main
+ * socket), in Live mode or otherwise — the literal reading of a setting whose
+ * whole point is "never touch the network." Load whatever was last cached
+ * for this browser's remembered instance (if any) and drop straight into
+ * editing it.
+ */
+async function bootOfflineOnly() {
+  const key = appState.local.userSettings.lastLiveInstanceKey;
+  if (key) {
+    try {
+      const record = await loadLiveCacheInstance(key);
+      if (record) {
+        appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
+        appController.editSketch(BARREL_SKETCH_ID);
+      }
+    } catch (err) {
+      console.warn('[live-cache] failed to load offline copy', err);
+    }
+  }
+  appController.setReadonly(false);
+  snackbars.show({
+    message: 'Resolume Remote is disabled — editing the offline copy.',
+    timeoutMs: 0,
+    dedupeKey: 'remote-disabled',
+    actions: [{
+      label: 'Enable Remote',
+      run: () => {
+        appController.setUserSetting('barrelRemoteEnabled', true);
+        void appController.flushUserSettings().then(() => location.reload());
+      },
+    }],
+  });
 }
 
 /**
@@ -124,6 +183,74 @@ function connectBarrel(url: string) {
   // handlers once and have them bail if they're no longer the selected key.
   const handlersWired = new Set<string>();
 
+  // -- Live-mode readonly cache / reconciliation state -------------------
+  // `resolvedKey` is the key we've finished reconciling THIS wiring session
+  // (cleared whenever `wireInstance` picks a new key); `dialogKey` guards
+  // against reopening the conflict dialog while one is already showing for
+  // the same key (a patch can arrive mid-decision). Cache loads are
+  // memoized per key so a pre-connect guess and the real wire (often the
+  // same key) share one IndexedDB read.
+  let resolvedKey: string | null = null;
+  let dialogKey: string | null = null;
+  const cacheLoadByKey = new Map<string, Promise<LiveCacheRecord | undefined>>();
+  const getCacheLoad = (key: string) => {
+    let p = cacheLoadByKey.get(key);
+    if (!p) { p = loadLiveCacheInstance(key); cacheLoadByKey.set(key, p); }
+    return p;
+  };
+  // Wire the editor→bridge push only once reconciliation resolves for a key
+  // (adopt-canonical, or the conflict dialog's choice) — withholds any push
+  // of a possibly-about-to-be-discarded cached copy while the user decides.
+  const wirePusher = (key: string) => {
+    const statePath = `/plugins/${key}/state`;
+    appController.setBarrelPusher(BARREL_SKETCH_ID, (snapshot) => {
+      if (currentKey !== key) return;
+      barrel.patch(statePath, [{ op: 'replace', path: '/sketch', value: snapshot }]);
+    });
+  };
+
+  // Phase A: readonly until reconciled (see below), before we even know
+  // whether the barrel will respond.
+  appController.setReadonly(true);
+
+  // 5s connect timeout → offer to edit the offline cache. Cleared on a
+  // successful open regardless of how reconciliation later resolves — this
+  // timer is about the WS connection itself, not about how long the
+  // reconciliation dialog takes. Accepting the offer just clears readonly;
+  // the eventual connection re-asserts it and reconciles normally (below).
+  let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(onConnectTimeout, 5000);
+  function onConnectTimeout() {
+    connectTimer = null;
+    if (barrel.isOpen) return;  // guard a race with onOpen
+    snackbars.show({
+      message: "Can't reach Resolume. Edit the offline copy? You'll reconcile once it reconnects.",
+      timeoutMs: 0,
+      dedupeKey: 'live-offline-edit',
+      actions: [
+        { label: 'Edit offline', run: () => appController.setReadonly(false) },
+        { label: 'Keep waiting', run: () => {} },
+      ],
+    });
+  }
+
+  // Pre-connect: show the last-cached copy for this browser's remembered
+  // instance immediately, before we know whether the barrel will even
+  // respond. `wireInstance` (once the real selection is known) applies its
+  // OWN cache load for whatever key actually turns out to be selected —
+  // this is only a best-effort guess to avoid a blank screen.
+  {
+    const guessKey = appState.local.userSettings.lastLiveInstanceKey;
+    if (guessKey) {
+      void getCacheLoad(guessKey).then((record) => {
+        // A real wire already happened by the time this resolved — its own
+        // load path (below) owns the display now.
+        if (currentKey !== null || !record) return;
+        appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
+        appController.editSketch(BARREL_SKETCH_ID);
+      });
+    }
+  }
+
   // -- Instance-state observations (single ownership) -------------------
   // The native `key_observed` gate only lets an instance do preview/telemetry
   // work while some client observes its `/plugins/<key>/state`. Two things
@@ -153,9 +280,65 @@ function connectBarrel(url: string) {
   };
 
 
-  const applySketchFromSnapshot = (sketch: any) => {
-    appController.setBarrelSketch(BARREL_SKETCH_ID, coerceSketch(sketch));
-    appController.editSketch(BARREL_SKETCH_ID);
+  /**
+   * Apply a sketch snapshot arriving for `forKey`. Steady-state (already
+   * reconciled this wiring session): adopt it directly, like before — this
+   * covers both a genuine remote change and the pusher's own edits echoing
+   * back. Otherwise this is the FIRST snapshot since `wireInstance` picked
+   * this key: run `reconcileDecision` against whatever cache load is
+   * pending for it (memoized — the same promise a pre-connect guess or
+   * `wireInstance` already started).
+   */
+  const applySketchFromSnapshot = async (sketch: any, forKey: string) => {
+    if (forKey !== currentKey) return;  // superseded by a later wireInstance
+    const canonical = coerceSketch(sketch);
+    if (resolvedKey === forKey) {
+      appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
+      appController.editSketch(BARREL_SKETCH_ID);
+      return;
+    }
+    if (dialogKey === forKey) return;  // already asking the user about this key
+
+    const cached = await getCacheLoad(forKey);
+    if (forKey !== currentKey) return;  // superseded while awaiting the cache load
+
+    const label = instanceDisplayLabel(forKey);
+    const decision = reconcileDecision({ cached: cached ?? null, canonical });
+    if (decision.action === 'adopt-canonical') {
+      appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
+      appController.editSketch(BARREL_SKETCH_ID);
+      void saveLiveCacheInstance(forKey, label, canonical, false);
+      appController.setReadonly(false);
+      resolvedKey = forKey;
+      wirePusher(forKey);
+      return;
+    }
+
+    // Conflict — keep showing the cached copy already on screen, stay
+    // readonly, and withhold the pusher until the user decides.
+    dialogKey = forKey;
+    reconcileStore.open({
+      instanceKey: forKey,
+      instanceLabel: label,
+      cached: cached!.sketch,
+      canonical,
+      recommended: decision.recommended,
+      onResolve: (choice) => {
+        if (choice === 'keep-cached') {
+          wirePusher(forKey);
+          appController.forcePushBarrelSketch();
+          void saveLiveCacheInstance(forKey, label, cached!.sketch, false);
+        } else {
+          appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
+          appController.editSketch(BARREL_SKETCH_ID);
+          void saveLiveCacheInstance(forKey, label, canonical, false);
+          wirePusher(forKey);
+        }
+        appController.setReadonly(false);
+        resolvedKey = forKey;
+        dialogKey = null;
+      },
+    });
   };
 
   /**
@@ -209,10 +392,10 @@ function connectBarrel(url: string) {
 
   // Apply a full /plugins/<key>/state object (schemas first — the sketch
   // apply path backfills instance defaults from them).
-  const applyInstanceState = (state: any) => {
+  const applyInstanceState = (state: any, forKey: string) => {
     if (!state || typeof state !== 'object') return;
     applyPluginSchemasFromSnapshot(state.plugin_schemas);
-    applySketchFromSnapshot(state.sketch ?? {});
+    void applySketchFromSnapshot(state.sketch ?? {}, forKey);
     ingestRailState(state.sketch_state);
     ingestMacroOutputs(state.macro_outputs);
     ingestPluginStates(state.plugin_states);
@@ -231,8 +414,26 @@ function connectBarrel(url: string) {
       barrel.get(statePath);
       return;
     }
+    const isNewKey = currentKey !== key;
     currentKey = key;
     const sketchPath = `${statePath}/sketch`;
+
+    if (isNewKey) {
+      // A different instance than whatever was wired before (including the
+      // very first wire): reset reconciliation for it and remember it for
+      // next session's pre-connect guess. Readonly stays/goes true until
+      // its first snapshot resolves (below) — its own cache load (started
+      // here, memoized) may already be running from a pre-connect guess.
+      resolvedKey = null;
+      dialogKey = null;
+      appController.setUserSetting('lastLiveInstanceKey', key);
+      appController.setReadonly(true);
+      void getCacheLoad(key).then((record) => {
+        if (currentKey !== key || resolvedKey === key || !record) return;
+        appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
+        appController.editSketch(BARREL_SKETCH_ID);
+      });
+    }
 
     // Move the active observation to this instance (precise gating).
     reconcileObservations();
@@ -242,11 +443,11 @@ function connectBarrel(url: string) {
       handlersWired.add(key);
       barrel.onSnapshot(statePath, (state) => {
         if (key !== currentKey) return;
-        applyInstanceState(state);
+        applyInstanceState(state, key);
       });
       barrel.onSnapshot(sketchPath, (latest) => {
         if (key !== currentKey) return;
-        applySketchFromSnapshot(latest);
+        void applySketchFromSnapshot(latest, key);
       });
       // Telemetry-channel refetch targets (the onPatch fallback for ops too
       // deep to merge in place).
@@ -258,15 +459,15 @@ function connectBarrel(url: string) {
       });
     }
 
-    // Editor → bridge push for this instance's sketch.
-    appController.setBarrelPusher(BARREL_SKETCH_ID, (snapshot) => {
-      if (currentKey !== key) return;
-      barrel.patch(statePath, [{ op: 'replace', path: '/sketch', value: snapshot }]);
-    });
+    // Editor → bridge push for this instance's sketch is wired by
+    // `wirePusher()` once `applySketchFromSnapshot` resolves reconciliation
+    // for this key (adopt-canonical, or the conflict dialog's choice) — not
+    // here, so an in-flight edit can't push a possibly-about-to-be-discarded
+    // cached copy while the user is still deciding.
 
     // Fetch the newly selected instance's full state, and re-flush the trace
     // registrations — they haven't changed, but their preview requests now
-    // route to this instance (the pusher below keys them by currentKey).
+    // route to this instance (the preview pusher below keys them by currentKey).
     barrel.get(statePath);
     traceController.requestFlush();
     console.log(`[barrel] editing instance ${key}`);
@@ -484,46 +685,18 @@ function connectBarrel(url: string) {
   };
   // Surface connection health for the shell's "switch to Playground?" offer.
   barrel.onOpen = () => {
+    if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
     appController.setBarrelConnectionState('open');
     subscribe();
   };
   barrel.onClose = () => appController.setBarrelConnectionState('closed');
   if (barrel.isOpen) {
+    if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
     appController.setBarrelConnectionState('open');
     subscribe();
   }
 
   console.log(`[barrel] connecting ${url} (window.__barrel / __barrelInstances)`);
-}
-
-/**
- * Playground-mode background probe: is a shared NanoBarrel server up on the
- * barrel port? One lightweight WebSocket attempt every 10 s (NOT a
- * WsBridgeClient — its infinite exponential backoff and logging are wrong
- * for probing). Stops once detected, or once the user dismisses the offer
- * (the shell records the dismissal in sessionStorage).
- */
-function startBarrelProbe(url: string) {
-  const PROBE_INTERVAL_MS = 10000;
-  const attempt = () => {
-    if (appState.local.barrelDetected) return;
-    if (sessionStorage.getItem(OFFER_LIVE_DISMISSED_KEY)) return;
-    let ws: WebSocket;
-    try { ws = new WebSocket(url); }
-    catch { setTimeout(attempt, PROBE_INTERVAL_MS); return; }
-    let settled = false;
-    const settle = (up: boolean) => {
-      if (settled) return;
-      settled = true;
-      try { ws.close(); } catch { /* ignore */ }
-      if (up) appController.setBarrelDetected(true);
-      else setTimeout(attempt, PROBE_INTERVAL_MS);
-    };
-    ws.onopen = () => settle(true);
-    ws.onerror = () => settle(false);
-    ws.onclose = () => settle(false);
-  };
-  attempt();
 }
 
 /**
@@ -548,6 +721,11 @@ function coerceSketch(remote: any): Sketch {
     instances: (r.instances && typeof r.instances === 'object' && !Array.isArray(r.instances))
                   ? r.instances
                   : undefined,
+    // Carried through opaquely — round-trips via the barrel and Resolume's
+    // own composition-file persistence unchanged (confirmed: neither treats
+    // `sketch` as anything but generic JSON). Used only by the live-mode
+    // reconciliation dialog's recency display (state/live-reconcile.ts).
+    lastModified: typeof r.lastModified === 'number' ? r.lastModified : undefined,
   };
   // Carry any legacy multi-column blob through untyped so normalize can flatten it.
   if (!draft.chain && Array.isArray(r.columns)) (draft as any).columns = r.columns;

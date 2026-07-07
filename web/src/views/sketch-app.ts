@@ -20,12 +20,10 @@ import type { ShellConfig } from '../widgets/app-shell';
 import '../widgets/app-shell';
 import '../widgets/sketch-column-editor';
 import '../widgets/sketch-monitor';
+import '../widgets/snackbars';
 import './organize-tab';
 import './app-settings';
-import {
-  switchMode, bannerOffer,
-  OFFER_PLAYGROUND_DISMISSED_KEY, OFFER_LIVE_DISMISSED_KEY,
-} from '../resolume-mode';
+import './reconcile-dialog';
 
 @customElement('sketch-app')
 export class SketchApp extends MobxLitElement {
@@ -40,30 +38,6 @@ export class SketchApp extends MobxLitElement {
       color: var(--app-text-color1);
       background: var(--app-bg-color1);
     }
-    .offer-banner {
-      display: flex;
-      align-items: center;
-      gap: var(--app-sp-4);
-      background: var(--app-bg-color2);
-      border-bottom: 1px solid var(--app-warn);
-      color: var(--app-text-color1);
-      font-size: var(--app-fs-md);
-      padding: 6px 12px;
-      flex-shrink: 0;
-    }
-    .offer-banner .spacer { flex: 1; }
-    .offer-banner button {
-      background: transparent;
-      border: 1px solid var(--app-tint-5);
-      border-radius: 2px;
-      color: var(--app-text-color1);
-      font-family: inherit;
-      font-size: var(--app-fs-sm);
-      padding: 2px 10px;
-      cursor: pointer;
-    }
-    .offer-banner button:hover { border-color: var(--app-text-color2); }
-    .offer-banner .dismiss { border: none; padding: 2px 6px; color: var(--app-text-color2); }
     .status-strip {
       display: flex;
       align-items: center;
@@ -95,76 +69,6 @@ export class SketchApp extends MobxLitElement {
       cursor: pointer;
     }
   `;
-
-  /** True once the connection has been continuously not-open past the grace
-   *  window — a momentary reconnect blip must not flash the offer. */
-  private connGraceElapsed = false;
-  private connGraceTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Bumped on dismiss so the (non-observable) sessionStorage flag re-reads. */
-  private dismissedEpoch = 0;
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    if (this.connGraceTimer) { clearTimeout(this.connGraceTimer); this.connGraceTimer = null; }
-  }
-
-  /** Track "not open for >4s" without a MobX reaction on time: (re)arm a
-   *  timer whenever render sees a not-open connection, clear it on open. */
-  private trackConnectionGrace(connection: string) {
-    if (connection === 'open') {
-      if (this.connGraceTimer) { clearTimeout(this.connGraceTimer); this.connGraceTimer = null; }
-      this.connGraceElapsed = false;
-      return;
-    }
-    if (this.connGraceElapsed || this.connGraceTimer) return;
-    this.connGraceTimer = setTimeout(() => {
-      this.connGraceTimer = null;
-      // Only latch if still not open when the grace window closes.
-      if (appState.local.barrelConnection !== 'open') {
-        this.connGraceElapsed = true;
-        this.requestUpdate();
-      }
-    }, 4000);
-  }
-
-  private renderOfferBanner(barrelMode: boolean) {
-    const connection = appState.local.barrelConnection;
-    this.trackConnectionGrace(barrelMode ? connection : 'open');
-    void this.dismissedEpoch;  // re-render hook for the dismissal flag
-    const dismissKey = barrelMode ? OFFER_PLAYGROUND_DISMISSED_KEY : OFFER_LIVE_DISMISSED_KEY;
-    let dismissed = false;
-    try { dismissed = !!sessionStorage.getItem(dismissKey); } catch { /* ignore */ }
-
-    const offer = bannerOffer({
-      barrelMode,
-      connection,
-      graceElapsed: this.connGraceElapsed,
-      barrelDetected: appState.local.barrelDetected,
-      dismissed,
-    });
-    if (!offer) return '';
-
-    const dismiss = () => {
-      try { sessionStorage.setItem(dismissKey, '1'); } catch { /* ignore */ }
-      this.dismissedEpoch++;
-      this.requestUpdate();
-    };
-    return offer === 'offer-playground'
-      ? html`
-        <div class="offer-banner">
-          <span>Can't reach Resolume (the shared NanoBarrel server isn't answering).</span>
-          <span class="spacer"></span>
-          <button @click=${() => switchMode('playground')}>Switch to Playground</button>
-          <button class="dismiss" title="Keep trying quietly" @click=${dismiss}>×</button>
-        </div>`
-      : html`
-        <div class="offer-banner">
-          <span>Resolume detected — a shared NanoBarrel server is up.</span>
-          <span class="spacer"></span>
-          <button @click=${() => switchMode('barrel')}>Switch to Live</button>
-          <button class="dismiss" title="Stay in the playground" @click=${dismiss}>×</button>
-        </div>`;
-  }
 
   render() {
     const barrelMode = appState.local.barrelMode;
@@ -200,8 +104,9 @@ export class SketchApp extends MobxLitElement {
     };
 
     return html`
-      ${this.renderOfferBanner(barrelMode)}
       <app-shell .config=${config}></app-shell>
+      <snackbar-host></snackbar-host>
+      <reconcile-dialog></reconcile-dialog>
     `;
   }
 

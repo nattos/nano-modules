@@ -39,6 +39,8 @@ import {
   deletePlaygroundInstance as idbDeletePlaygroundInstance,
   type PlaygroundInstanceRecord,
 } from './playground-store';
+import { saveLiveCacheInstance } from './live-cache-store';
+import { instanceDisplayLabel } from './instance-labels';
 import { PLAYGROUND_ID_PREFIX } from './types';
 import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, appModeUrl, type AppMode } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
@@ -132,6 +134,14 @@ export class AppController {
    */
   private playgroundLabels = new Map<string, string>();
 
+  // -- Live mode (Resolume barrel, offline instance cache) --
+
+  /** True when this session is the bare `/resolume/` (barrel/Live) surface. */
+  private liveMode = false;
+  private liveCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `flushLiveCacheSave` change detection, keyed by instance key (playground-flush twin). */
+  private liveCacheLastSavedJson = new Map<string, string>();
+
   /**
    * Owns the off-screen video element / image lifecycle that drives the
    * active sketch's `texture_input`. Survives UI re-mounts (tab switches),
@@ -159,6 +169,14 @@ export class AppController {
       if (sel && draft.sketches[sel]?.isTemplate) {
         draft.sketches[sel].isTemplate = false;
       }
+      // Stamp the barrel-mirrored sketch's edit timestamp inside the same
+      // Immer transaction as the user's edit, so it rides the same push (and
+      // the same cache save) atomically. Used only for the live-mode
+      // reconciliation dialog's recency display/recommendation — never to
+      // decide silently (see state/live-reconcile.ts).
+      if (this.barrelSketchId && draft.sketches[this.barrelSketchId]) {
+        draft.sketches[this.barrelSketchId].lastModified = Date.now();
+      }
     };
     // Post-record hook: every committed mutation (including long-edit
     // accepts and undo/redo) syncs to the engine and schedules a save.
@@ -168,6 +186,7 @@ export class AppController {
       this.syncSketchesToEngine();
       this.requestProjectsSave();
       this.requestPlaygroundSave();
+      this.requestLiveCacheSave();
       this.maybePushBarrelSketch();
       // Instance create/delete can also arrive via undo/redo, which
       // bypasses the explicit CRUD methods — keep the list mirrored.
@@ -212,6 +231,14 @@ export class AppController {
    * just sugar over `history.record` now.
    */
   mutate(description: string, recipe: (draft: DatabaseState) => void) {
+    // Live-mode readonly window (pre-connect cache display, or awaiting
+    // reconciliation) — the shared editor also goes `inert` so this is a
+    // backstop, not the primary defense (it doesn't reach slider/long-edit
+    // drags, which `inert` prevents from ever starting).
+    if (appState.local.readonly) {
+      console.warn(`[readonly] blocked mutation: ${description}`);
+      return;
+    }
     this.history.record(description, recipe);
   }
 
@@ -1167,6 +1194,50 @@ export class AppController {
     }
   }
 
+  /** Entered by resolume-app when booting the bare `/resolume/` (Live) surface. */
+  setLiveMode(on: boolean) {
+    this.liveMode = on;
+  }
+
+  private requestLiveCacheSave(debounceMs = 300) {
+    if (!this.liveMode) return;
+    if (this.liveCacheSaveTimer) clearTimeout(this.liveCacheSaveTimer);
+    this.liveCacheSaveTimer = setTimeout(() => {
+      this.liveCacheSaveTimer = null;
+      this.flushLiveCacheSave().catch(err => {
+        console.warn('[live-cache-store] flush failed', err);
+      });
+    }, debounceMs);
+  }
+
+  /**
+   * Save the barrel-mirrored sketch (the only one Live mode edits) under its
+   * instance key, change-gated per key like `flushPlaygroundSave`.
+   *
+   * `dirty` is recomputed fresh on every save rather than tracked as mutable
+   * state: it's true whenever this save can't be considered pushed-and-
+   * confirmed — no pusher wired (pre-connect / offline-editing), or the
+   * bridge isn't open. Once connected with a live pusher, edits push
+   * synchronously in the same `postRecordHook` tick, so `dirty:false` is
+   * accurate the moment the save runs. See `state/live-reconcile.ts` for how
+   * this drives silent-adopt vs. the conflict dialog.
+   */
+  private async flushLiveCacheSave() {
+    const key = appState.local.selectedBarrelKey;
+    if (!key || !this.barrelSketchId) return;
+    const sketch = appState.database.sketches[this.barrelSketchId];
+    if (!sketch) return;
+    const json = JSON.stringify(toJS(sketch));
+    if (this.liveCacheLastSavedJson.get(key) === json) return;
+    const dirty = !(this.barrelPusher && appState.local.barrelConnection === 'open');
+    try {
+      await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, dirty);
+      this.liveCacheLastSavedJson.set(key, json);
+    } catch (err) {
+      console.warn('[live-cache-store] save failed', key, err);
+    }
+  }
+
   /** Store discovered effects from a loaded WASM module. */
   setAvailableEffects(effects: EffectInfo[]) {
     runInAction(() => {
@@ -1866,6 +1937,16 @@ export class AppController {
     runInAction(() => { appState.local.barrelDetected = on; });
   }
 
+  /**
+   * Live-mode readonly window: true while showing a not-yet-reconciled cache
+   * (pre-connect, or awaiting the reconciliation dialog). Blocks `mutate()`
+   * and drives the shared editor's `inert` + ribbon (see `sketch-column-editor.ts`).
+   */
+  setReadonly(on: boolean) {
+    if (appState.local.readonly === on) return;
+    runInAction(() => { appState.local.readonly = on; });
+  }
+
   /** Adopt sidechannel-bus channel metadata (worker push in playground/ide,
    *  /global/sidechannels observation in barrel mode). Change-gated upstream. */
   setSidechannels(channels: Record<string, import('../engine-types').SidechannelInfo>) {
@@ -2316,6 +2397,19 @@ export class AppController {
     this.lastPushedBarrelJson = json;
     try { pusher(plain as Sketch); }
     catch (err) { console.warn('[barrel] pusher failed:', err); }
+  }
+
+  /**
+   * Force-push the local barrel sketch over whatever canonical currently
+   * holds, bypassing the dedup high-water mark. Used by the "keep my copy"
+   * reconciliation resolution (`views/reconcile-dialog.ts`) — without
+   * clearing `lastPushedBarrelJson` first, an offline-edited sketch that
+   * happens to match what was last pushed/received would be silently
+   * skipped even though canonical has since diverged.
+   */
+  forcePushBarrelSketch() {
+    this.lastPushedBarrelJson = null;
+    this.maybePushBarrelSketch();
   }
 
   editSketch(id: string | null) {

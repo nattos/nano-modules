@@ -75,9 +75,18 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   static styles = css`
     :host {
       display: flex;
+      flex-direction: column;
       flex: 1;
       min-height: 0;
       min-width: 0;
+    }
+    .readonly-ribbon {
+      flex-shrink: 0;
+      padding: 5px 12px;
+      font-size: var(--app-fs-sm);
+      color: var(--app-warn);
+      background: var(--app-bg-color2);
+      border-bottom: 1px solid var(--app-tint-3);
     }
     .empty {
       flex: 1;
@@ -207,8 +216,11 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       this.clearSketchCaches();
     }
 
-    return html`${keyed(sketchId, html`
-      <div class="columns-wrap">
+    const readonly = appState.local.readonly;
+    return html`
+      ${readonly ? html`<div class="readonly-ribbon">Read-only — syncing with Resolume…</div>` : ''}
+      ${keyed(sketchId, html`
+      <div class="columns-wrap" ?inert=${readonly}>
         <columns-view .host=${this as ColumnHost}
           fitWidth
           .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}

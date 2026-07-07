@@ -49,6 +49,7 @@ export class AppState {
     selectedSidechannel: null,
     barrelConnection: 'connecting',
     barrelDetected: false,
+    readonly: false,
   };
 
   constructor() {

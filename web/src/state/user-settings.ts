@@ -27,6 +27,8 @@ export function defaultUserSettings(): UserSettings {
     sidechannelNames: {},
     instanceNames: {},
     appMode: 'effect-dev',
+    barrelRemoteEnabled: true,
+    lastLiveInstanceKey: null,
   };
 }
 

@@ -66,11 +66,21 @@ export const STORE_FIELD_DOCS = 'fieldDocs';
  * never read or write effect-IDE state.
  */
 export const STORE_PLAYGROUND = 'playgroundInstances';
+/**
+ * Live-mode composition cache — the last-known sketch for each barrel
+ * instance this browser has edited, keyed by the instance's stable UUID.
+ * Loaded readonly at Live-mode boot (before the WS connects) so there's
+ * something to show immediately, and compared against the canonical
+ * snapshot once connected (see `state/live-reconcile.ts`). Expressly
+ * separate from `playgroundInstances`: same shape, different environment.
+ */
+export const STORE_LIVE_CACHE = 'liveCache';
 
 /** Every store + its keyPath. `ensureStores` creates any that are missing. */
 const STORE_KEYPATHS: Record<string, string> = {
   [STORE_PROJECTS]: 'id',
   [STORE_PLAYGROUND]: 'id',
+  [STORE_LIVE_CACHE]: 'key',
   [STORE_SETTINGS]: 'id',
   [STORE_SKETCH_INPUTS]: 'id',
   [STORE_VIDEO_SOURCE_PROFILES]: 'sourceKey',
