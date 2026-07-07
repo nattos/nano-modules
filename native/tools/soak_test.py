@@ -210,10 +210,11 @@ def sample_footprint(pid):
 # --------------------------------------------------------------------------
 class Driver:
     # numeric fields worth nudging per instance (skip arrays like grid).
-    def __init__(self, port, key, sketch, rng):
+    def __init__(self, port, key, sketch, rng, mode="full"):
         self.port = port
         self.key = key
         self.rng = rng
+        self.mode = mode  # full | fields (only param nudges) | triggers (only looper)
         self.ws = None
         self._drain_stop = threading.Event()
         self._drain = None
@@ -277,11 +278,13 @@ class Driver:
 
     def tick(self):
         """One churn step: nudge a few fields; sometimes stress the looper."""
-        if self.targets:
+        if self.mode in ("full", "fields") and self.targets:
             for _ in range(self.rng.randint(1, 3)):
                 inst, field, lo, hi = self.rng.choice(self.targets)
                 v = round(self.rng.uniform(lo, hi), 4)
                 self._patch(f"{inst}/state/{field}", v)
+        if self.mode == "fields":
+            return
         r = self.rng.random()
         if self.looper and r < 0.25:
             # Pulse a trigger (records a note → fat publish tree next frames).
@@ -416,6 +419,8 @@ def main():
                     help="exclude this leading window from the leak-slope fit")
     ap.add_argument("--csv", default="/tmp/soak_timeline.csv")
     ap.add_argument("--no-drive", action="store_true", help="don't change params")
+    ap.add_argument("--drive-mode", choices=["full", "fields", "triggers"],
+                    default="full", help="what the driver churns (bisect leaks)")
     ap.add_argument("--leak-threshold-mb-min", type=float, default=2.0,
                     help="flag a leak if phys grows faster than this")
     args = ap.parse_args()
@@ -443,7 +448,7 @@ def main():
         key = discover_barrel_key(args.port)
         if key:
             print(f"[soak] barrel key={key}", flush=True)
-            driver = Driver(args.port, key, sketch, rng)
+            driver = Driver(args.port, key, sketch, rng, mode=args.drive_mode)
             driver.connect()
         else:
             print("[soak] WARNING: could not find barrel key — running WITHOUT param drive",
