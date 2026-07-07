@@ -853,13 +853,14 @@ static int32_t val_get(wasm_exec_env_t env, int32_t obj_h, int32_t key_ptr, int3
 }
 static void val_set(wasm_exec_env_t env, int32_t obj_h, int32_t key_ptr, int32_t key_len, int32_t value_h) {
   auto* ctx = get_ctx(env);
-  auto* obj = ctx ? ctx->get_val(obj_h) : nullptr;
-  auto* val = ctx ? ctx->get_val(value_h) : nullptr;
-  if (!obj || !obj->is_object() || !val) return;
+  if (!ctx) return;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, key_ptr, key_len)) return;
   char* key = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, key_ptr));
-  (*obj)[std::string(key, key_len)] = *val;
+  // Copies the value into obj's subtree AND frees the (now-consumed) value
+  // handle — see WasmContext::set_val_member; this is what stops the per-frame
+  // val-handle leak that eventually wedges the executor.
+  ctx->set_val_member(obj_h, std::string(key, key_len), value_h);
 }
 static int32_t val_keys_count(wasm_exec_env_t env, int32_t h) {
   auto* ctx = get_ctx(env);
@@ -889,10 +890,9 @@ static int32_t val_get_index(wasm_exec_env_t env, int32_t arr_h, int32_t index) 
 }
 static void val_push(wasm_exec_env_t env, int32_t arr_h, int32_t value_h) {
   auto* ctx = get_ctx(env);
-  auto* arr = ctx ? ctx->get_val(arr_h) : nullptr;
-  auto* val = ctx ? ctx->get_val(value_h) : nullptr;
-  if (!arr || !arr->is_array() || !val) return;
-  arr->push_back(*val);
+  // Appends the value AND frees the (now-consumed) value handle — see
+  // WasmContext::push_val_member; stops the per-frame val-handle leak.
+  if (ctx) ctx->push_val_member(arr_h, value_h);
 }
 static int32_t val_length(wasm_exec_env_t env, int32_t h) {
   auto* ctx = get_ctx(env);

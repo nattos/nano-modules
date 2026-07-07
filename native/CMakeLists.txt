@@ -328,6 +328,13 @@ target_include_directories(test_clip_launcher PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_clip_launcher PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_clip_launcher)
 
+# val host-ABI handle lifecycle: set/push must consume child handles so a
+# per-frame published tree doesn't leak and wedge the executor (header-only).
+add_executable(test_val_handles tests/test_val_handles.cpp)
+target_include_directories(test_val_handles PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_val_handles PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_val_handles)
+
 # Tap-mod range remapper + summation math (header-only; lock-step with web).
 add_executable(test_tap_mod tests/test_tap_mod.cpp)
 target_include_directories(test_tap_mod PRIVATE ${CMAKE_SOURCE_DIR}/src)

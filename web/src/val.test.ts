@@ -52,6 +52,10 @@ function createValHost() {
       const obj = getVal(objH);
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
       obj[key] = getVal(valH);
+      // set CONSUMES the child handle (matches wasm-host.ts + the C++ hosts):
+      // its value now lives in obj's subtree, so free the standalone handle or
+      // it leaks — the effect only releases the ROOT of the tree.
+      if (valH !== objH) values.delete(valH);
     },
     keys_count: (h: number) => {
       const v = getVal(h);
@@ -72,6 +76,8 @@ function createValHost() {
       const arr = getVal(arrH);
       if (!Array.isArray(arr)) return;
       arr.push(getVal(valH));
+      // push CONSUMES the child handle — see `set`.
+      if (valH !== arrH) values.delete(valH);
     },
     length: (h: number) => {
       const v = getVal(h);
@@ -290,6 +296,44 @@ describe('val host functions', () => {
 
     it('releasing invalid handle does not crash', () => {
       val.release(9999); // no-op
+    });
+
+    it('building a tree consumes children — only the root leaks until released', () => {
+      // set/push consume, so after wiring a nested tree the ONLY live handle is
+      // the root the effect will release. This is the invariant that stops the
+      // per-frame val-handle leak that froze the executor.
+      const root = val.object();
+      val.set(root, 'phase', val.number(1.5));
+      const arr = val.array();
+      for (let i = 0; i < 8; i++) {
+        const e = val.object();
+        val.set(e, 'seq', val.number(i));
+        const prec = val.object();
+        val.set(prec, 'mode', val.string('strict'));
+        val.set(e, 'precision', prec);
+        val.push(arr, e);
+      }
+      val.set(root, 'triggers', arr);
+
+      expect(val.values.size).toBe(1);       // just the root
+      expect([...val.values.keys()]).toEqual([root]);
+      val.release(root);
+      expect(val.values.size).toBe(0);
+    });
+
+    it('repeated per-frame publishes do not accumulate handles', () => {
+      for (let frame = 0; frame < 500; frame++) {
+        const root = val.object();
+        const grid = val.array();
+        for (let ch = 0; ch < 4; ch++) {
+          const lane = val.array();
+          for (let st = 0; st < 16; st++) val.push(lane, val.number(st));
+          val.push(grid, lane);
+        }
+        val.set(root, 'grid', grid);
+        val.release(root);
+        expect(val.values.size).toBe(0);     // never ratchets upward
+      }
     });
   });
 

@@ -1115,6 +1115,13 @@ export class WasmHost {
             if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
             const key = this.readString(keyPtr, keyLen);
             obj[key] = getVal(valH);
+            // set CONSUMES the child handle. Without releasing it, every
+            // intermediate val (number/object/array/...) built into a published
+            // tree leaks in _valStore — the effect only releases the ROOT — so a
+            // busy per-frame publisher (control.nanolooper) grows the store every
+            // frame until the worker OOMs and the executor stops. Mirrors the C++
+            // WasmContext::set_val_member consume semantics.
+            if (valH !== objH) valStore.release(valH);
           },
           keys_count: (h: number) => {
             const v = getVal(h);
@@ -1136,6 +1143,8 @@ export class WasmHost {
             const arr = getVal(arrH);
             if (!Array.isArray(arr)) return;
             arr.push(getVal(valH));
+            // push CONSUMES the child handle — see `set` above.
+            if (valH !== arrH) valStore.release(valH);
           },
           length: (h: number) => {
             const v = getVal(h);

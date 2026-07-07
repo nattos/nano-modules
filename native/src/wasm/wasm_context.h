@@ -132,6 +132,35 @@ struct WasmContext {
     return it != val_handles.end() ? &it->second : nullptr;
   }
   void release_val(int32_t h) { val_handles.erase(h); }
+
+  // set/push CONSUME the value handle: once the value has been copied into the
+  // container's subtree, the standalone child handle is freed. Without this,
+  // every intermediate val::number/object/array/... built into a published tree
+  // LEAKS — the effect only releases the root (see val.h: "release(root) frees
+  // the tree") — so `val_handles` grows by dozens-to-hundreds of entries every
+  // frame for a busy publisher (e.g. control.nanolooper's per-tick publish_state
+  // builds grid/notes/live_notes/triggers). That unbounded growth eventually
+  // exhausts the host heap → a trap that poisons the WAMR runtime → the whole
+  // executor stops rendering (even unrelated effects). Returns false (nothing
+  // consumed) if the handles are missing or the container is mistyped.
+  bool set_val_member(int32_t obj_h, const std::string& key, int32_t value_h) {
+    auto* obj = get_val(obj_h);
+    auto* val = get_val(value_h);
+    if (!obj || !obj->is_object() || !val) return false;
+    (*obj)[key] = *val;
+    if (value_h != obj_h) release_val(value_h);
+    return true;
+  }
+  bool push_val_member(int32_t arr_h, int32_t value_h) {
+    auto* arr = get_val(arr_h);
+    auto* val = get_val(value_h);
+    if (!arr || !arr->is_array() || !val) return false;
+    arr->push_back(*val);
+    if (value_h != arr_h) release_val(value_h);
+    return true;
+  }
+
+  size_t val_handle_count() const { return val_handles.size(); }
 };
 
 } // namespace wasm

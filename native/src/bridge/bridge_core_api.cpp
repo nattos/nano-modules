@@ -379,6 +379,11 @@ void bridge_core_val_set(BridgeCoreHandle h, int obj_h, const char* key, int key
   auto* val = as(h)->get_val(val_h);
   if (!obj || !obj->is_object() || !val) return;
   (*obj)[std::string(key, key_len)] = *val;
+  // set CONSUMES the child handle (its data now lives in obj's subtree). Without
+  // this, every intermediate handle in a published tree leaks — only the root is
+  // released — an unbounded per-frame growth of val_handles that eventually
+  // exhausts the (bridge-core WASM) heap. Mirrors WasmContext::set_val_member.
+  if (val_h != obj_h) as(h)->release_val(val_h);
 }
 
 int bridge_core_val_keys_count(BridgeCoreHandle h, int obj_h) {
@@ -405,6 +410,8 @@ void bridge_core_val_push(BridgeCoreHandle h, int arr_h, int val_h) {
   auto* val = as(h)->get_val(val_h);
   if (!arr || !arr->is_array() || !val) return;
   arr->push_back(*val);
+  // push CONSUMES the child handle — see bridge_core_val_set for why.
+  if (val_h != arr_h) as(h)->release_val(val_h);
 }
 
 int bridge_core_val_length(BridgeCoreHandle h, int arr_h) {
