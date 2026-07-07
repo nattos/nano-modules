@@ -12,12 +12,12 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import type { AppMode } from '../resolume-mode';
+import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 
 const MODE_OPTIONS: { id: AppMode; label: string; description: string }[] = [
   { id: 'effect-dev', label: 'Effect Dev', description: 'Author and test individual effects in isolation.' },
-  { id: 'playground', label: 'Playground', description: 'Simulate the shared server locally, without Resolume.' },
   { id: 'live', label: 'Live', description: 'Bound to the shared NanoBarrel server (Resolume).' },
+  { id: 'playground', label: 'Playground', description: 'Simulate the shared server locally, without Resolume.' },
 ];
 
 @customElement('app-settings')
@@ -138,12 +138,60 @@ export class AppSettings extends MobxLitElement {
             </label>
           </div>
         </section>
+        ${this.renderConnectionSection()}
       </div>
     `;
   }
 
+  /**
+   * Only shown while in Live's universe (attempting to connect, or already
+   * offline-editing) — the "have an editable cached composition" case from
+   * the feature request is `bootLiveOffline`'s own job (it seeds an empty
+   * state gracefully when nothing's cached yet), so this just needs to
+   * offer the same action the automatic snackbars already do, reachable
+   * without waiting for the 5s timeout.
+   */
+  private renderConnectionSection() {
+    const { barrelMode, liveOfflineMode, barrelConnection } = appState.local;
+    if (!barrelMode && !liveOfflineMode) return null;
+
+    if (liveOfflineMode) {
+      return html`
+        <section>
+          <h2>Connection</h2>
+          <div class="hint">Currently editing offline. Reconnecting reconciles any changes against Resolume's current composition.</div>
+          <button class="mode-btn" style="flex:none" @click=${this.onTryReconnect}>
+            <span class="label">Try reconnecting</span>
+          </button>
+        </section>
+      `;
+    }
+    if (barrelConnection !== 'open') {
+      return html`
+        <section>
+          <h2>Connection</h2>
+          <div class="hint">Not connected to Resolume yet. You can switch to editing the offline copy right away instead of waiting.</div>
+          <button class="mode-btn" style="flex:none" @click=${this.onEditOffline}>
+            <span class="label">Edit offline</span>
+          </button>
+        </section>
+      `;
+    }
+    return null;
+  }
+
   private onToggleRemote = (e: Event) => {
     appController.setUserSetting('barrelRemoteEnabled', (e.target as HTMLInputElement).checked);
+  };
+
+  private onEditOffline = () => {
+    try { sessionStorage.setItem(LIVE_OFFLINE_KEY, '1'); } catch { /* ignore */ }
+    location.reload();
+  };
+
+  private onTryReconnect = () => {
+    try { sessionStorage.removeItem(LIVE_OFFLINE_KEY); } catch { /* ignore */ }
+    location.reload();
   };
 }
 

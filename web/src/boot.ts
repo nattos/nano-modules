@@ -44,8 +44,16 @@ export interface BootOptions {
    * load — the playground expressly has its OWN IndexedDB store
    * (`playgroundInstances`) and must not read effect-IDE sketches. The
    * caller loads those instances and calls `enablePersistence()` itself.
+   *
+   * `'live-offline'`: Live mode's offline fallback — identical to
+   * `'playground'` in every way `boot()` cares about (engine actually
+   * simulates, no effect-IDE project load), just a distinct name so
+   * `boot-resolume.ts` doesn't have to lie about which surface is booting.
+   * Sourced from a different IndexedDB store (`liveCache`, not
+   * `playgroundInstances`) — the caller loads those instances and calls
+   * `enablePersistence()` itself, same as `'playground'`.
    */
-  mode?: 'ide' | 'barrel' | 'playground';
+  mode?: 'ide' | 'barrel' | 'playground' | 'live-offline';
 }
 
 export interface BootResult {
@@ -139,10 +147,13 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     console.warn('[boot] failed to load user settings', err);
   }
   // Record the surface actually booting into `appMode`, regardless of what
-  // was last persisted — the URL (which decided `mode`) is the source of
-  // truth for the current surface; `appMode` only remembers it for the
-  // Settings tab's selector. Never auto-redirects a mismatched bookmark.
-  appController.setUserSetting('appMode', mode === 'barrel' ? 'live' : mode === 'playground' ? 'playground' : 'effect-dev');
+  // was last persisted — this reflects the resolved mode (settings, or a
+  // boot-time override); `appMode` remembers it for the Settings tab's
+  // selector. `'live-offline'` still counts as `'live'` — the Settings
+  // selector shouldn't show "Effect Dev" just because Live happens to be
+  // running its offline fallback right now.
+  appController.setUserSetting('appMode',
+    mode === 'barrel' || mode === 'live-offline' ? 'live' : mode === 'playground' ? 'playground' : 'effect-dev');
   // Effect-IDE projects load ONLY in ide mode: barrel gets its sketch from
   // the bridge; the playground has its own store (loaded by resolume-app).
   if (mode === 'ide') {

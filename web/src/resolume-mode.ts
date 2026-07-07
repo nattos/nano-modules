@@ -36,6 +36,18 @@ export function modeOverrideFromUrl(search: string): { mode: AppMode; barrelUrl?
 export const OFFER_PLAYGROUND_DISMISSED_KEY = 'nano.offerPlayground.dismissed';
 export const OFFER_LIVE_DISMISSED_KEY = 'nano.offerLive.dismissed';
 
+/**
+ * sessionStorage flag forcing Live mode to boot straight into offline
+ * editing (a local, Playground-like simulation sourced from the `liveCache`
+ * store — see `boot-resolume.ts`'s `bootLiveOffline`) instead of attempting
+ * the barrel connection. Set when the user accepts a "reconnect failed —
+ * edit offline?" offer; cleared by any explicit "try reconnecting"/"switch
+ * to Live" action. A boot-time-only decision (the engine worker's
+ * barrel/local-simulation mode can't be toggled after construction — see
+ * `boot-resolume.ts`), so going offline or reconnecting always reloads.
+ */
+export const LIVE_OFFLINE_KEY = 'nano.liveOffline';
+
 export type BannerOffer = 'offer-playground' | 'offer-live' | null;
 
 /**

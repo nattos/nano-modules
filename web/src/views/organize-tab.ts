@@ -152,6 +152,10 @@ export class OrganizeTab extends MobxLitElement {
 
   render() {
     const barrelMode = appState.local.barrelMode;
+    // Neither a connected barrel instance NOR a Live-offline cached one has
+    // a "create new" story — both are real Resolume instance identities, not
+    // fabricatable from here (unlike Playground's throwaway `pg:` ones).
+    const instancesFixed = barrelMode || appState.local.liveOfflineMode;
     const instances = appState.local.barrelInstances;
     const selectedKey = appState.local.selectedBarrelKey;
     const selected = instances.find(i => i.key === selectedKey) ?? null;
@@ -168,13 +172,15 @@ export class OrganizeTab extends MobxLitElement {
 
     return html`
       <div class="main-area">
-        ${barrelMode ? '' : html`
+        ${instancesFixed ? '' : html`
           <button class="btn new-instance"
             @click=${() => appController.createPlaygroundInstance()}>+ New instance</button>
         `}
         ${instances.length === 0
         ? (barrelMode
           ? html`<div class="empty-state">No NanoBarrel instances connected.<br>Add a NanoBarrel effect in Resolume.</div>`
+          : appState.local.liveOfflineMode
+          ? html`<div class="empty-state">Nothing cached from a previous session yet.<br>Connect to Resolume once to start building a recoverable offline copy.</div>`
           : html`<div class="empty-state">No playground instances yet.<br>Each instance stands in for one NanoBarrel effect in Resolume.</div>`)
         : html`
             <div class="instance-grid">
@@ -226,7 +232,7 @@ export class OrganizeTab extends MobxLitElement {
                 (${instanceDefaultLabel(selected.key)})</div>
             </div>
             <button class="btn" @click=${() => open(selected.key)}>Edit</button>
-            ${barrelMode ? '' : html`
+            ${instancesFixed ? '' : html`
               <button class="btn danger" @click=${() => this.deleteInstance(selected.key, instanceDisplayLabel(selected.key))}>Delete</button>
             `}
           `

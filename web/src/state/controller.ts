@@ -8,6 +8,7 @@
  */
 
 import { runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
+import type { Patch } from 'immer';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
@@ -39,10 +40,10 @@ import {
   deletePlaygroundInstance as idbDeletePlaygroundInstance,
   type PlaygroundInstanceRecord,
 } from './playground-store';
-import { saveLiveCacheInstance } from './live-cache-store';
+import { saveLiveCacheInstance, type LiveCacheRecord } from './live-cache-store';
 import { instanceDisplayLabel } from './instance-labels';
 import { PLAYGROUND_ID_PREFIX } from './types';
-import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, type AppMode } from '../resolume-mode';
+import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -139,17 +140,20 @@ export class AppController {
   /** True when this session is the bare `/resolume/` (barrel/Live) surface. */
   private liveMode = false;
   /**
-   * Which sketch id Live mode edits ('barrel', a constant) — set as soon as
-   * Live mode boots, independent of `barrelSketchId` (which is only set once
-   * the editor→bridge push is wired, deliberately deferred until
-   * reconciliation resolves — see `boot-resolume.ts`'s `wirePusher`). Using
-   * `barrelSketchId` here too would mean edits made before ever reconciling
-   * once (e.g. "Edit offline" with nothing cached yet) never got stamped or
-   * saved at all.
+   * Sketch ids Live mode currently tracks for stamping/caching — the sketch
+   * id IS the real barrel instance key (no `pg:`-style prefix needed, real
+   * UUIDs never collide with the other id spaces). Exactly one entry while
+   * connected (whichever instance is wired — see `boot-resolume.ts`'s
+   * `wireInstance`); one entry PER cached instance while offline-editing
+   * (`bootLiveOffline`, mirroring Playground's "every instance runs
+   * simultaneously"). Independent of `barrelSketchId` (only set once the
+   * editor→bridge push is wired, deliberately deferred until reconciliation
+   * resolves) — using that instead would mean edits made before ever
+   * reconciling once (e.g. offline from scratch) never got stamped/saved.
    */
-  private liveSketchId: string | null = null;
+  private liveSketchIds = new Set<string>();
   private liveCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  /** `flushLiveCacheSave` change detection, keyed by instance key (playground-flush twin). */
+  /** `flushAllLiveCacheSave` change detection, keyed by instance key (playground-flush twin). */
   private liveCacheLastSavedJson = new Map<string, string>();
 
   /**
@@ -179,27 +183,31 @@ export class AppController {
       if (sel && draft.sketches[sel]?.isTemplate) {
         draft.sketches[sel].isTemplate = false;
       }
-      // Stamp the live-mode sketch's edit timestamp inside the same Immer
-      // transaction as the user's edit, so it rides the same push (and the
-      // same cache save) atomically. Used only for the live-mode
-      // reconciliation dialog's recency display/recommendation — never to
-      // decide silently (see state/live-reconcile.ts). Keyed on
-      // `liveSketchId`, NOT `barrelSketchId` — the latter is only set once
-      // the bridge push is wired (deferred until reconciliation resolves),
-      // so edits made before that (e.g. "Edit offline" from scratch) would
-      // otherwise never get stamped.
-      if (this.liveSketchId && draft.sketches[this.liveSketchId]) {
-        draft.sketches[this.liveSketchId].lastModified = Date.now();
-      }
     };
     // Post-record hook: every committed mutation (including long-edit
     // accepts and undo/redo) syncs to the engine and schedules a save.
     // Without this, slider drags (which use long edits) never fire the
     // IndexedDB save.
-    this.history.postRecordHook = () => {
+    this.history.postRecordHook = (_description, patches) => {
       this.syncSketchesToEngine();
       this.requestProjectsSave();
       this.requestPlaygroundSave();
+      // Stamp exactly the live-mode sketches THIS mutation touched (not
+      // every tracked one — with several offline instances loaded at once,
+      // stamping untouched ones too would make their JSON differ from the
+      // last save and force a spurious re-save of each on every edit). A
+      // direct write (like `setBarrelSketch`), not part of undo history —
+      // this is display-only metadata for the reconciliation dialog, never
+      // used to decide anything silently (see state/live-reconcile.ts).
+      const touched = this.touchedLiveSketchIds(patches);
+      if (touched.length > 0) {
+        runInAction(() => {
+          for (const id of touched) {
+            const sk = appState.database.sketches[id];
+            if (sk) sk.lastModified = Date.now();
+          }
+        });
+      }
       this.requestLiveCacheSave();
       this.maybePushBarrelSketch();
       // Instance create/delete can also arrive via undo/redo, which
@@ -1117,6 +1125,10 @@ export class AppController {
    */
   async switchAppMode(target: AppMode): Promise<void> {
     this.setUserSetting('appMode', target);
+    // An explicit mode switch always means "try this for real" — clear any
+    // "stay offline" override so switching to Live actually attempts to
+    // connect rather than booting straight back into offline editing.
+    try { sessionStorage.removeItem(LIVE_OFFLINE_KEY); } catch { /* ignore */ }
     await this.flushUserSettings();
     location.reload();
   }
@@ -1210,14 +1222,46 @@ export class AppController {
     }
   }
 
-  /** Entered by resolume-app when booting the bare `/resolume/` (Live) surface. */
+  /** Entered by resolume-app when booting the bare `/resolume/` (Live) surface,
+   *  connected or offline. */
   setLiveMode(on: boolean) {
     this.liveMode = on;
   }
 
-  /** Which sketch id Live mode edits — see `liveSketchId`'s own doc comment. */
-  setLiveSketchId(id: string | null) {
-    this.liveSketchId = id;
+  /** True while running the local, Playground-like offline simulation
+   *  (`boot-resolume.ts`'s `bootLiveOffline`) — a UI-gating flag only. */
+  setLiveOfflineMode(on: boolean) {
+    if (appState.local.liveOfflineMode === on) return;
+    runInAction(() => { appState.local.liveOfflineMode = on; });
+  }
+
+  /**
+   * Replace the set of sketch ids Live mode tracks for stamping/caching.
+   * Exactly one id while connected (`wireInstance` calls this each time it
+   * switches); every cached instance's key at once for offline editing
+   * (`loadInitialLiveCacheInstances`).
+   */
+  setLiveSketchIds(ids: Iterable<string>) {
+    this.liveSketchIds = new Set(ids);
+  }
+
+  /** Is `id` one of the currently-tracked live sketch ids? Used by the
+   *  offline boot's `engineSketchFilter` so every loaded instance simulates
+   *  simultaneously, mirroring Playground's `id.startsWith(PLAYGROUND_ID_PREFIX)`. */
+  isLiveSketch(id: string): boolean {
+    return this.liveSketchIds.has(id);
+  }
+
+  /** Top-level `sketches.<id>` keys touched by `patches` that are also
+   *  tracked live sketches — see `PostRecordHook`'s doc comment. */
+  private touchedLiveSketchIds(patches: Patch[]): string[] {
+    if (this.liveSketchIds.size === 0) return [];
+    const ids = new Set<string>();
+    for (const p of patches) {
+      const id = p.path[0] === 'sketches' && typeof p.path[1] === 'string' ? p.path[1] : null;
+      if (id && this.liveSketchIds.has(id)) ids.add(id);
+    }
+    return [...ids];
   }
 
   private requestLiveCacheSave(debounceMs = 300) {
@@ -1225,50 +1269,41 @@ export class AppController {
     if (this.liveCacheSaveTimer) clearTimeout(this.liveCacheSaveTimer);
     this.liveCacheSaveTimer = setTimeout(() => {
       this.liveCacheSaveTimer = null;
-      this.flushLiveCacheSave().catch(err => {
+      this.flushAllLiveCacheSave().catch(err => {
         console.warn('[live-cache-store] flush failed', err);
       });
     }, debounceMs);
   }
 
   /**
-   * Save the live-mode sketch under its instance key, change-gated per key
-   * like `flushPlaygroundSave`.
-   *
-   * The key is `selectedBarrelKey` (the real instance we're wired to) when
-   * known, falling back to the persisted `lastLiveInstanceKey` — needed
-   * because edits can happen BEFORE we've ever connected/selected a real
-   * instance this session (e.g. "Edit offline" on first-ever boot with
-   * nothing cached yet); without the fallback those edits would never save.
-   * Still null-safe: if neither is known (truly first-ever session, no
-   * prior successful connection at all), there's no stable identity to save
-   * under yet and the edit only lives in memory for this session.
+   * Save every tracked live sketch that changed since its last save,
+   * change-gated per id like `flushPlaygroundSave`. The sketch id IS the
+   * real barrel instance key (see `liveSketchIds`'s doc comment), so no
+   * separate key lookup is needed.
    *
    * `dirty` is recomputed fresh on every save rather than tracked as mutable
-   * state: it's true whenever this save can't be considered pushed-and-
-   * confirmed — no pusher wired (pre-connect / offline-editing), or the
-   * bridge isn't open. Once connected with a live pusher, edits push
+   * state: true whenever THIS id can't be considered pushed-and-confirmed —
+   * no pusher wired, the bridge isn't open, or the pusher is wired for a
+   * DIFFERENT id (only the actively-wired connected instance ever has a
+   * confirmed push channel). Once connected with a live pusher, edits push
    * synchronously in the same `postRecordHook` tick, so `dirty:false` is
    * accurate the moment the save runs. See `state/live-reconcile.ts` for how
    * this drives silent-adopt vs. the conflict dialog.
    */
-  private async flushLiveCacheSave() {
-    const key = appState.local.selectedBarrelKey ?? appState.local.userSettings.lastLiveInstanceKey;
-    if (!key || !this.liveSketchId) {
-      console.log(`[live-cache] save skipped: key=${key ?? '(none)'}, liveSketchId=${this.liveSketchId ?? '(none)'}`);
-      return;
-    }
-    const sketch = appState.database.sketches[this.liveSketchId];
-    if (!sketch) return;
-    const json = JSON.stringify(toJS(sketch));
-    if (this.liveCacheLastSavedJson.get(key) === json) return;
-    const dirty = !(this.barrelPusher && appState.local.barrelConnection === 'open');
-    try {
-      await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, dirty);
-      this.liveCacheLastSavedJson.set(key, json);
-      console.log(`[live-cache] saved key=${key} dirty=${dirty}`);
-    } catch (err) {
-      console.warn('[live-cache-store] save failed', key, err);
+  private async flushAllLiveCacheSave() {
+    for (const key of this.liveSketchIds) {
+      const sketch = appState.database.sketches[key];
+      if (!sketch) continue;
+      const json = JSON.stringify(toJS(sketch));
+      if (this.liveCacheLastSavedJson.get(key) === json) continue;
+      const dirty = !(this.barrelPusher && this.barrelSketchId === key && appState.local.barrelConnection === 'open');
+      try {
+        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, dirty);
+        this.liveCacheLastSavedJson.set(key, json);
+        console.log(`[live-cache] saved key=${key} dirty=${dirty}`);
+      } catch (err) {
+        console.warn('[live-cache-store] save failed', key, err);
+      }
     }
   }
 
@@ -2112,6 +2147,44 @@ export class AppController {
         label: this.playgroundLabels.get(id) ?? id,
       }));
     this.setBarrelInstances(list);
+  }
+
+  // ========================================================================
+  // Live Offline instances (local simulation of cached Live/barrel
+  // instances, sourced from `state/live-cache-store.ts` — see
+  // `boot-resolume.ts`'s `bootLiveOffline`)
+  // ========================================================================
+
+  /**
+   * Boot-time load of every cached Live instance, mirroring
+   * `loadInitialPlaygroundInstances` but sourced from `liveCache` and keyed
+   * by the REAL barrel instance UUID (no synthetic prefix needed — it can't
+   * collide with `pg:`/`default:`/`user:` id spaces). Seeds `liveSketchIds`
+   * and the last-saved-JSON snapshots so the flush doesn't echo the load
+   * straight back to disk, then surfaces the instances through the shared
+   * barrel-instances list (same selection-restore/select-handler flow
+   * Playground and connected Live both use).
+   */
+  loadInitialLiveCacheInstances(records: LiveCacheRecord[]) {
+    runInAction(() => {
+      for (const r of records) {
+        appState.database.sketches[r.key] = normalizeSketchChains(r.sketch);
+      }
+      const editing = appState.local.editingSketchId;
+      if (editing && !appState.database.sketches[editing]) {
+        appState.local.editingSketchId = null;
+      }
+    });
+    this.setLiveSketchIds(records.map(r => r.key));
+    for (const r of records) {
+      this.liveCacheLastSavedJson.set(
+        r.key, JSON.stringify(toJS(appState.database.sketches[r.key])));
+    }
+    const list: BarrelInstanceInfo[] = records.map(r => ({
+      key: r.key, id: 'com.nano.nanobarrel', label: r.label,
+    }));
+    this.setBarrelInstances(list);
+    this.syncSketchesToEngine();
   }
 
   /**

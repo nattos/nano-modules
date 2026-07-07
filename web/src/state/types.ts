@@ -357,12 +357,22 @@ export interface LocalState {
   barrelDetected: boolean;
   /**
    * True while the edited sketch is a not-yet-reconciled Live-mode cache
-   * mirror (shown before the WS connects, or while offline-editing after a
-   * failed connect) — blocks mutations (see `AppController.mutate`) and the
-   * shared editor shows a read-only ribbon. Cleared once the cache is
-   * confirmed matching canonical, adopted, or a conflict is resolved.
+   * mirror, shown before the WS connects — blocks mutations (see
+   * `AppController.mutate`) and the shared editor shows a read-only ribbon.
+   * Cleared once the cache is confirmed matching canonical, adopted, or a
+   * conflict is resolved.
    */
   readonly: boolean;
+  /**
+   * True while running as "Live Offline" — a local, Playground-like
+   * simulation of every cached Live instance (see `boot-resolume.ts`'s
+   * `bootLiveOffline`), entered instead of attempting the barrel connection.
+   * Distinct from `barrelMode` (which is false here, since the local engine
+   * IS simulating): used only to gate UI that shouldn't apply while
+   * offline-editing (e.g. Organize-tab instance create/delete, which have no
+   * real Resolume counterpart to sync against either way).
+   */
+  liveOfflineMode: boolean;
 }
 
 /**

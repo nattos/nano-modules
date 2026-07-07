@@ -50,6 +50,7 @@ export class AppState {
     barrelConnection: 'connecting',
     barrelDetected: false,
     readonly: false,
+    liveOfflineMode: false,
   };
 
   constructor() {

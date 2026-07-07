@@ -76,8 +76,19 @@ export type InDraftHook = (draft: DatabaseState, description: string) => void;
  * Used for downstream side-effects like syncing to the engine worker and
  * scheduling IndexedDB persistence — also needs to fire for long-edit
  * accepts, undo, and redo, not just direct `mutate` calls.
+ *
+ * `patches` are the forward patches actually applied (a record's own
+ * patches; an undo's inverse patches; a redo's forward patches again) — lets
+ * consumers cheaply determine which top-level `sketches.<id>` keys were
+ * touched by THIS mutation, e.g. to stamp/save only the live-mode sketches
+ * that changed rather than every tracked one (see `AppController`'s
+ * `touchedLiveSketchIds`).
  */
-export type PostRecordHook = (description: string) => void;
+export type PostRecordHook = (description: string, patches: Patch[]) => void;
+
+/** Fires during a long-edit preview (begin/update/cancel) — no committed
+ *  patches exist yet at that point, so this stays description-only. */
+export type LongEditHook = (description: string) => void;
 
 export class HistoryManager {
   @observable.shallow public history: Mutation[] = [];
@@ -96,7 +107,7 @@ export class HistoryManager {
    * postRecordHook fires for the final value the normal way — this
    * hook only covers the preview window.
    */
-  /** @internal */ public longEditHook: PostRecordHook | null = null;
+  /** @internal */ public longEditHook: LongEditHook | null = null;
 
   constructor(private appState: AppState) {
     // Required for the @observable/@action decorators above to take effect in
@@ -144,7 +155,7 @@ export class HistoryManager {
       this.redoStack.length = 0;
     });
 
-    this.postRecordHook?.(description);
+    this.postRecordHook?.(description, patches);
   }
 
   @action
@@ -156,7 +167,7 @@ export class HistoryManager {
       this.applyPatchesToObservable(this.appState.database, mutation.inversePatches);
       this.redoStack.push(mutation);
     });
-    this.postRecordHook?.(`undo: ${mutation.description}`);
+    this.postRecordHook?.(`undo: ${mutation.description}`, mutation.inversePatches);
   }
 
   @action
@@ -168,7 +179,7 @@ export class HistoryManager {
       this.applyPatchesToObservable(this.appState.database, mutation.patches);
       this.history.push(mutation);
     });
-    this.postRecordHook?.(`redo: ${mutation.description}`);
+    this.postRecordHook?.(`redo: ${mutation.description}`, mutation.patches);
   }
 
   get canUndo() { return this.history.length > 0; }

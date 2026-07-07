@@ -1,10 +1,17 @@
 /**
  * Resolume Playground/Live surface boot. Invoked by `main.ts` when the
  * resolved mode is `'playground'` or `'live'` — mounts `<sketch-app>` and
- * boots the shared engine in one of two modes:
+ * boots the shared engine in one of three ways:
  *
- *   - BARREL (Live): bound to the shared NanoBarrel server over WS; the
- *     remote bridge is the source of truth, nothing simulates locally.
+ *   - BARREL (Live, connected): bound to the shared NanoBarrel server over
+ *     WS; the remote bridge is the source of truth, nothing simulates
+ *     locally.
+ *   - LIVE OFFLINE (Live, disconnected): a local, Playground-like simulation
+ *     of every cached Live instance (`state/live-cache-store.ts`) — the
+ *     engine actually runs (see `bootLiveOffline`'s doc comment for why this
+ *     needs a fresh boot rather than an in-place toggle). Entered when
+ *     `barrelRemoteEnabled` is off, or the user accepts a failed-connect
+ *     "edit offline?" offer (`LIVE_OFFLINE_KEY`, sessionStorage).
  *   - PLAYGROUND: a local simulation of the shared server — fake "instances"
  *     (one sketch each, all running simultaneously in the worker) persisted
  *     in their own IndexedDB store, for testing multi-instance routings
@@ -15,12 +22,17 @@ import { boot } from './boot';
 import {
   groupPreviewRequests, instanceKeyFromThumbTraceId,
   laneUrl, NbpcReassembler, previewTransportPorts,
+  LIVE_OFFLINE_KEY,
 } from './resolume-mode';
 import { startBarrelProbe } from './barrel-probe';
 import { installModeOffers } from './live-offers';
 import { traceController } from './state/trace-controller';
+import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
-import { loadLiveCacheInstance, saveLiveCacheInstance, type LiveCacheRecord } from './state/live-cache-store';
+import {
+  loadLiveCacheInstance, loadAllLiveCacheInstances, saveLiveCacheInstance,
+  type LiveCacheRecord,
+} from './state/live-cache-store';
 import { reconcileDecision } from './state/live-reconcile';
 import { reconcileStore } from './views/reconcile-dialog';
 import { instanceDisplayLabel } from './state/instance-labels';
@@ -40,28 +52,8 @@ import './views/sketch-app';
 // Dev-only WASM HMR listener (no-op in production).
 import './wasm-hmr-client';
 
-/**
- * The sketch ID we use locally to mirror the barrel's single sketch.
- * Doesn't need to match the plugin key — it's just the row index in
- * `appState.database.sketches` that the edit tab will hand to its
- * children.
- */
-const BARREL_SKETCH_ID = 'barrel';
-
-/**
- * Guarantee there's something to edit: if no cached sketch was found for the
- * offline/pre-connect display (first-ever session, or the cache row was
- * deleted), seed an empty one instead of leaving `editingSketchId` unset —
- * otherwise "Edit offline" clears readonly but the editor still shows "No
- * sketch selected", which reads as the action having done nothing. A no-op
- * when a sketch is already loaded (cache hit, or a previous call already ran
- * this).
- */
-function ensureEditableBarrelSketch() {
-  if (!appState.database.sketches[BARREL_SKETCH_ID]) {
-    appController.setBarrelSketch(BARREL_SKETCH_ID, { anchor: null, chain: [], wires: [], instances: {} });
-  }
-  appController.editSketch(BARREL_SKETCH_ID);
+function forceOfflineFlag(): boolean {
+  try { return sessionStorage.getItem(LIVE_OFFLINE_KEY) === '1'; } catch { return false; }
 }
 
 /**
@@ -73,98 +65,160 @@ function ensureEditableBarrelSketch() {
 export async function bootResolume(mode: 'barrel' | 'playground', barrelUrl: string): Promise<void> {
   document.body.appendChild(document.createElement('sketch-app'));
 
-  const barrelMode = mode === 'barrel';
+  if (mode === 'playground') {
+    await bootPlaygroundMode(barrelUrl);
+    return;
+  }
+
+  // -- Live mode: peek `barrelRemoteEnabled` + the offline override BEFORE
+  // booting the engine — this decides whether the engine actually simulates
+  // locally (offline, like Playground) or stays idle waiting on the remote
+  // barrel, and that choice is baked into the engine worker at construction
+  // time with no supported way to change it after (see `bootLiveOffline`'s
+  // doc comment). A second settings read (boot() below does its own) —
+  // cheap, and keeps this decision self-contained.
+  const settings = await loadUserSettings();
+  const offlineFlag = forceOfflineFlag();
+  console.log(`[live-cache] bootResolume dispatch: barrelRemoteEnabled=${settings.barrelRemoteEnabled}, forceOfflineFlag=${offlineFlag}`);
+  if (!settings.barrelRemoteEnabled || offlineFlag) {
+    await bootLiveOffline(barrelUrl);
+    return;
+  }
 
   // The playground simulates sketches in-worker — render at full 1920×1080
   // (the boot default is a tiny 320×180). Barrel mode never simulates (the
   // plugin renders), so the size is irrelevant there.
-  await boot({ width: 1920, height: 1080, mode });
-  appController.setBarrelMode(barrelMode);
-  // Drives the "switch to Live/Playground?" snackbar in both modes.
+  await boot({ width: 1920, height: 1080, mode: 'barrel' });
+  appController.setBarrelMode(true);
   installModeOffers();
-
-  if (!barrelMode) {
-    appController.setPlaygroundMode(true);
-
-    // Playground: every playground instance (`pg:` sketch) runs in the worker
-    // simultaneously — that's the point (test multi-instance routings as if
-    // Resolume were running). The `editingSketchId` disjunct additionally
-    // admits ad-hoc sketches created directly by tests/devtools.
-    appController.setEngineSketchFilter(
-      (id) => id.startsWith(PLAYGROUND_ID_PREFIX) || id === appState.local.editingSketchId);
-
-    // Load every effect bundle so all effects are reachable. Barrel mode
-    // skips this — the worker never instantiates anything; the plugin list
-    // comes from the barrel's WS state subtree (see connectBarrel).
-    for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
-
-    // Selecting a playground instance just opens its sketch (the barrel-mode
-    // twin of this handler rewires the WS transport instead). Register BEFORE
-    // loading instances so the boot-time default pick opens something.
-    appController.setBarrelSelectHandler((key) => appController.editSketch(key));
-    try {
-      appController.loadInitialPlaygroundInstances(await loadAllPlaygroundInstances());
-    } catch (err) {
-      console.warn('[playground] failed to load instances', err);
-    }
-    // Persistence goes live only after the load, so loaded state isn't
-    // immediately echoed back to the playground store.
-    appController.enablePersistence();
-
-    // Quietly watch for Resolume coming up so the shell can offer Live mode.
-    startBarrelProbe(barrelUrl);
-    return;
-  }
-
-  // -- Live mode --
   appController.setLiveMode(true);
-  appController.setLiveSketchId(BARREL_SKETCH_ID);
   // User-settings persistence (the Remote toggle, appMode, the remembered
   // instance key) needs to actually save while in Live mode too — this was
   // previously skipped entirely for barrel mode (the remote bridge being the
   // source of truth for SKETCHES doesn't mean settings shouldn't persist).
-  // Safe: Live mode's only sketch id ('barrel') never matches the effect-IDE
-  // project id patterns, so `flushProjectsSave`/`flushPlaygroundSave` (also
-  // gated by this flag) stay no-ops here.
+  // Safe: Live-mode sketch ids are real barrel instance UUIDs, which never
+  // match the effect-IDE project id patterns, so `flushProjectsSave`/
+  // `flushPlaygroundSave` (also gated by this flag) stay no-ops here.
   appController.enablePersistence();
-  if (!appState.local.userSettings.barrelRemoteEnabled) {
-    await bootOfflineOnly();
-    return;
-  }
   connectBarrel(barrelUrl);
 }
 
-/**
- * `barrelRemoteEnabled` is off: never attempt any connection (probe or main
- * socket), in Live mode or otherwise — the literal reading of a setting whose
- * whole point is "never touch the network." Load whatever was last cached
- * for this browser's remembered instance (if any) and drop straight into
- * editing it.
- */
-async function bootOfflineOnly() {
-  const key = appState.local.userSettings.lastLiveInstanceKey;
-  if (key) {
-    try {
-      const record = await loadLiveCacheInstance(key);
-      if (record) appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
-    } catch (err) {
-      console.warn('[live-cache] failed to load offline copy', err);
-    }
+async function bootPlaygroundMode(barrelUrl: string): Promise<void> {
+  await boot({ width: 1920, height: 1080, mode: 'playground' });
+  appController.setBarrelMode(false);
+  installModeOffers();
+  appController.setPlaygroundMode(true);
+
+  // Playground: every playground instance (`pg:` sketch) runs in the worker
+  // simultaneously — that's the point (test multi-instance routings as if
+  // Resolume were running). The `editingSketchId` disjunct additionally
+  // admits ad-hoc sketches created directly by tests/devtools.
+  appController.setEngineSketchFilter(
+    (id) => id.startsWith(PLAYGROUND_ID_PREFIX) || id === appState.local.editingSketchId);
+
+  // Load every effect bundle so all effects are reachable. Barrel mode
+  // skips this — the worker never instantiates anything; the plugin list
+  // comes from the barrel's WS state subtree (see connectBarrel).
+  for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+
+  // Selecting a playground instance just opens its sketch (the barrel-mode
+  // twin of this handler rewires the WS transport instead). Register BEFORE
+  // loading instances so the boot-time default pick opens something.
+  appController.setBarrelSelectHandler((key) => appController.editSketch(key));
+  try {
+    appController.loadInitialPlaygroundInstances(await loadAllPlaygroundInstances());
+  } catch (err) {
+    console.warn('[playground] failed to load instances', err);
   }
-  ensureEditableBarrelSketch();
-  appController.setReadonly(false);
-  snackbars.show({
-    message: 'Resolume Remote is disabled — editing the offline copy.',
-    timeoutMs: 0,
-    dedupeKey: 'remote-disabled',
-    actions: [{
-      label: 'Enable Remote',
-      run: () => {
-        appController.setUserSetting('barrelRemoteEnabled', true);
-        void appController.flushUserSettings().then(() => location.reload());
-      },
-    }],
-  });
+  // Persistence goes live only after the load, so loaded state isn't
+  // immediately echoed back to the playground store.
+  appController.enablePersistence();
+
+  // Quietly watch for Resolume coming up so the shell can offer Live mode.
+  startBarrelProbe(barrelUrl);
+}
+
+/**
+ * Boot Live mode's offline fallback as a REAL local simulation — every
+ * cached Live instance loaded at once and actually rendered by the local
+ * WebGPU engine, exactly like Playground (just sourced from `liveCache`
+ * instead of `playgroundInstances`, keyed by real barrel instance UUIDs so
+ * whichever one you're editing reconciles against the right canonical
+ * once reconnected).
+ *
+ * This needs a FRESH `boot()` call (a fresh `EngineProxy`/worker) rather
+ * than flipping a flag on whatever's already running: the engine worker's
+ * `barrelMode` is sent once in its `init` command and there is no exposed
+ * way to change it afterward — with `barrelMode: true` the worker never
+ * acquires a GPU device or starts its render loop at all (confirmed by
+ * reading `engine-worker.ts`'s `init()`), so simulating anything requires
+ * booting like Playground (`mode: 'live-offline'` — behaves identically to
+ * `'playground'` for `boot()`'s purposes, see `BootOptions.mode`) from the
+ * start. Reloading into this function (rather than mutating in place) is
+ * the simplest way to guarantee that.
+ */
+async function bootLiveOffline(barrelUrl: string): Promise<void> {
+  await boot({ width: 1920, height: 1080, mode: 'live-offline' });
+  appController.setBarrelMode(false);
+  installModeOffers();
+  appController.setLiveMode(true);
+  appController.setLiveOfflineMode(true);
+
+  // Every cached instance simulates simultaneously — mirrors Playground's
+  // `id.startsWith(PLAYGROUND_ID_PREFIX)`, just via explicit membership
+  // since live-cache keys are real UUIDs with no common prefix to match on.
+  appController.setEngineSketchFilter(
+    (id) => appController.isLiveSketch(id) || id === appState.local.editingSketchId);
+  for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+
+  // Direct switch, no network rewiring needed — the sketch is already
+  // loaded locally (same as Playground's select handler).
+  appController.setBarrelSelectHandler((key) => appController.editSketch(key));
+
+  let records: LiveCacheRecord[] = [];
+  try {
+    records = await loadAllLiveCacheInstances();
+  } catch (err) {
+    console.warn('[live-cache] failed to load offline instances', err);
+  }
+  console.log(`[live-cache] offline boot: loaded ${records.length} cached instance(s)`);
+  appController.loadInitialLiveCacheInstances(records);
+  appController.enablePersistence();
+
+  if (!appState.local.userSettings.barrelRemoteEnabled) {
+    snackbars.show({
+      message: 'Resolume Remote is disabled — editing offline.',
+      timeoutMs: 0,
+      dedupeKey: 'live-offline-active',
+      actions: [{
+        label: 'Enable Remote',
+        run: () => {
+          appController.setUserSetting('barrelRemoteEnabled', true);
+          try { sessionStorage.removeItem(LIVE_OFFLINE_KEY); } catch { /* ignore */ }
+          void appController.flushUserSettings().then(() => location.reload());
+        },
+      }],
+    });
+  } else {
+    snackbars.show({
+      message: records.length > 0
+        ? 'Editing offline — changes reconcile once Resolume reconnects.'
+        : 'Editing offline — nothing cached yet. This will need to reconcile once Resolume reconnects.',
+      timeoutMs: 0,
+      dedupeKey: 'live-offline-active',
+      actions: [{
+        label: 'Try reconnecting',
+        run: () => {
+          try { sessionStorage.removeItem(LIVE_OFFLINE_KEY); } catch { /* ignore */ }
+          location.reload();
+        },
+      }],
+    });
+  }
+
+  // Quietly watch for Resolume coming up, same as Playground — offers
+  // switching to (actually connected) Live once detected.
+  startBarrelProbe(barrelUrl);
 }
 
 /**
@@ -175,8 +229,10 @@ async function bootOfflineOnly() {
  *   - Observe `/global/plugins` → maintain the live instance list (the
  *     Organize tab renders it; the controller picks/persists a selection).
  *   - For the SELECTED instance, observe its `/plugins/<key>/state`, mirror
- *     its sketch into `appState.database.sketches[BARREL_SKETCH_ID]`, and
- *     wire the editor→bridge push + preview-request relay at that key.
+ *     its sketch into `appState.database.sketches[key]` (the sketch id IS
+ *     the instance key — see `state/controller.ts`'s `liveSketchIds` doc
+ *     comment), and wire the editor→bridge push + preview-request relay at
+ *     that key.
  *   - Switching instances (Organize tab) re-points all of the above.
  *
  * We deliberately observe only `/global/plugins` + the state paths that are
@@ -216,7 +272,7 @@ function connectBarrel(url: string) {
   // of a possibly-about-to-be-discarded cached copy while the user decides.
   const wirePusher = (key: string) => {
     const statePath = `/plugins/${key}/state`;
-    appController.setBarrelPusher(BARREL_SKETCH_ID, (snapshot) => {
+    appController.setBarrelPusher(key, (snapshot) => {
       if (currentKey !== key) return;
       barrel.patch(statePath, [{ op: 'replace', path: '/sketch', value: snapshot }]);
     });
@@ -226,11 +282,11 @@ function connectBarrel(url: string) {
   // whether the barrel will respond.
   appController.setReadonly(true);
 
-  // 5s connect timeout → offer to edit the offline cache. Cleared on a
-  // successful open regardless of how reconciliation later resolves — this
-  // timer is about the WS connection itself, not about how long the
-  // reconciliation dialog takes. Accepting the offer just clears readonly;
-  // the eventual connection re-asserts it and reconciles normally (below).
+  // 5s connect timeout → offer to edit offline (a full reload into
+  // `bootLiveOffline`, same as `barrelRemoteEnabled` being off — see
+  // `LIVE_OFFLINE_KEY`). Cleared on a successful open regardless of how
+  // reconciliation later resolves — this timer is about the WS connection
+  // itself, not about how long the reconciliation dialog takes.
   let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(onConnectTimeout, 5000);
   function onConnectTimeout() {
     connectTimer = null;
@@ -243,11 +299,8 @@ function connectBarrel(url: string) {
         {
           label: 'Edit offline',
           run: () => {
-            // The pre-connect guess (above) already applied a cache hit, if
-            // any — this only needs to cover the "nothing cached yet" case
-            // so there's actually something to edit.
-            ensureEditableBarrelSketch();
-            appController.setReadonly(false);
+            try { sessionStorage.setItem(LIVE_OFFLINE_KEY, '1'); } catch { /* ignore */ }
+            location.reload();
           },
         },
         { label: 'Keep waiting', run: () => {} },
@@ -259,7 +312,8 @@ function connectBarrel(url: string) {
   // instance immediately, before we know whether the barrel will even
   // respond. `wireInstance` (once the real selection is known) applies its
   // OWN cache load for whatever key actually turns out to be selected —
-  // this is only a best-effort guess to avoid a blank screen.
+  // this is only a best-effort guess to avoid a blank screen during the
+  // (usually brief) connect wait.
   {
     const guessKey = appState.local.userSettings.lastLiveInstanceKey;
     console.log(`[live-cache] pre-connect guess: lastLiveInstanceKey=${guessKey ?? '(none)'}`);
@@ -271,8 +325,8 @@ function connectBarrel(url: string) {
         // A real wire already happened by the time this resolved — its own
         // load path (below) owns the display now.
         if (currentKey !== null || !record) return;
-        appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
-        appController.editSketch(BARREL_SKETCH_ID);
+        appController.setBarrelSketch(guessKey, record.sketch);
+        appController.editSketch(guessKey);
         console.log('[live-cache] pre-connect guess APPLIED to appState');
       });
     }
@@ -320,8 +374,8 @@ function connectBarrel(url: string) {
     if (forKey !== currentKey) return;  // superseded by a later wireInstance
     const canonical = coerceSketch(sketch);
     if (resolvedKey === forKey) {
-      appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
-      appController.editSketch(BARREL_SKETCH_ID);
+      appController.setBarrelSketch(forKey, canonical);
+      appController.editSketch(forKey);
       return;
     }
     if (dialogKey === forKey) return;  // already asking the user about this key
@@ -333,8 +387,8 @@ function connectBarrel(url: string) {
     const decision = reconcileDecision({ cached: cached ?? null, canonical });
     console.log(`[live-cache] reconcile for key=${forKey}: cached=${cached ? `dirty=${cached.dirty}` : 'none'} → ${decision.action}`);
     if (decision.action === 'adopt-canonical') {
-      appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
-      appController.editSketch(BARREL_SKETCH_ID);
+      appController.setBarrelSketch(forKey, canonical);
+      appController.editSketch(forKey);
       void saveLiveCacheInstance(forKey, label, canonical, false);
       appController.setReadonly(false);
       resolvedKey = forKey;
@@ -357,8 +411,8 @@ function connectBarrel(url: string) {
           appController.forcePushBarrelSketch();
           void saveLiveCacheInstance(forKey, label, cached!.sketch, false);
         } else {
-          appController.setBarrelSketch(BARREL_SKETCH_ID, canonical);
-          appController.editSketch(BARREL_SKETCH_ID);
+          appController.setBarrelSketch(forKey, canonical);
+          appController.editSketch(forKey);
           void saveLiveCacheInstance(forKey, label, canonical, false);
           wirePusher(forKey);
         }
@@ -393,12 +447,15 @@ function connectBarrel(url: string) {
   };
 
   // Per-frame float-rail telemetry (native mirror of the local executor's
-  // /sketch_state), carried in one patch op.
+  // /sketch_state), carried in one patch op. Keyed by `currentKey` — only
+  // ever called from contexts where that's guaranteed to be the right key
+  // (a per-key snapshot handler already gated on it, or barrel.onPatch's
+  // own currentKey-scoped path derivation below).
   const ingestRailState = (data: any) => {
     const railState = coerceJsonObject(data);
-    if (!railState) return;
+    if (!railState || !currentKey) return;
     appController.applySketchStateDiff({
-      changed: { [BARREL_SKETCH_ID]: railState }, removed: [],
+      changed: { [currentKey]: railState }, removed: [],
     });
   };
 
@@ -449,21 +506,24 @@ function connectBarrel(url: string) {
     if (isNewKey) {
       // A different instance than whatever was wired before (including the
       // very first wire): reset reconciliation for it and remember it for
-      // next session's pre-connect guess. Readonly stays/goes true until
-      // its first snapshot resolves (below) — its own cache load (started
-      // here, memoized) may already be running from a pre-connect guess.
+      // next session's pre-connect guess, and as the sole tracked live
+      // sketch (connected mode only ever actively edits one at a time).
+      // Readonly stays/goes true until its first snapshot resolves (below)
+      // — its own cache load (started here, memoized) may already be
+      // running from a pre-connect guess.
       resolvedKey = null;
       dialogKey = null;
-      console.log(`[live-cache] wireInstance: new key=${key} (was ${currentKey === key ? key : 'null/other'}) — persisting as lastLiveInstanceKey`);
+      console.log(`[live-cache] wireInstance: new key=${key} — persisting as lastLiveInstanceKey`);
       appController.setUserSetting('lastLiveInstanceKey', key);
+      appController.setLiveSketchIds([key]);
       appController.setReadonly(true);
       void getCacheLoad(key).then((record) => {
         console.log(`[live-cache] wireInstance cache load resolved: key=${key}`,
           record ? `found (dirty=${record.dirty})` : 'NOT FOUND',
           `currentKey=${currentKey}, resolvedKey=${resolvedKey}`);
         if (currentKey !== key || resolvedKey === key || !record) return;
-        appController.setBarrelSketch(BARREL_SKETCH_ID, record.sketch);
-        appController.editSketch(BARREL_SKETCH_ID);
+        appController.setBarrelSketch(key, record.sketch);
+        appController.editSketch(key);
         console.log(`[live-cache] wireInstance cache APPLIED for key=${key}`);
       });
     }
@@ -645,14 +705,14 @@ function connectBarrel(url: string) {
     });
     return true;
   };
-  // Rail leaf update: /sketch_state/<railId>. Rails live under the barrel
-  // sketch's single entry in engine.sketchState.
+  // Rail leaf update: /sketch_state/<railId>. Rails live under the
+  // currently-wired instance's own entry in engine.sketchState.
   const applyRailLeaf = (relPath: string, value: any): boolean => {
     const parts = relPath.slice(1).split('/');
-    if (parts.length !== 1 || !parts[0]) return false;
-    const cur = (appState.local.engine.sketchState as Record<string, any>)[BARREL_SKETCH_ID];
+    if (parts.length !== 1 || !parts[0] || !currentKey) return false;
+    const cur = (appState.local.engine.sketchState as Record<string, any>)[currentKey];
     appController.applySketchStateDiff({
-      changed: { [BARREL_SKETCH_ID]: { ...(cur ?? {}), [parts[0]]: value } }, removed: [],
+      changed: { [currentKey]: { ...(cur ?? {}), [parts[0]]: value } }, removed: [],
     });
     return true;
   };
