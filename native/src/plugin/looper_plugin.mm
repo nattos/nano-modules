@@ -83,16 +83,22 @@ struct ParamDef {
 // Order is the param-panel order; it mirrors the effect schema's field order in
 // nanolooper/main.cpp. The WASM is driven by field NAME, not index — field names
 // must match field_to_pid there. Grouped for Resolume; synth is plugin-local.
+//
+// The key PERFORMANCE controls (triggers, delete, mute, undo, redo, loop mode)
+// deliberately carry NO group: Resolume renders grouped params inside a collapsed
+// section that's a pain to reach live, so these stay at the panel's top level for
+// instant access. The editor (nanolooper/main.cpp schema) keeps them grouped —
+// this ungrouping is FFGL-only. The remaining, set-once params stay grouped.
 const ParamDef kParams[] = {
-  {"Trigger 1",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_1",        0.0f,    true,  Local::None},
-  {"Trigger 2",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_2",        0.0f,    true,  Local::None},
-  {"Trigger 3",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_3",        0.0f,    true,  Local::None},
-  {"Trigger 4",       "Triggers",  FF_TYPE_BOOLEAN,  "trigger_4",        0.0f,    true,  Local::None},
-  {"Delete",          "Editing",   FF_TYPE_BOOLEAN,  "delete",           0.0f,    true,  Local::None},
-  {"Mute",            "Editing",   FF_TYPE_BOOLEAN,  "mute",             0.0f,    false, Local::None},
-  {"Undo",            "Editing",   FF_TYPE_EVENT,    "undo",             0.0f,    true,  Local::None},
-  {"Redo",            "Editing",   FF_TYPE_EVENT,    "redo",             0.0f,    true,  Local::None},
-  {"Loop",            "Loop",      FF_TYPE_OPTION,   "loop_mode",        1.0f,    false, Local::None},
+  {"Trigger 1",       nullptr,     FF_TYPE_BOOLEAN,  "trigger_1",        0.0f,    true,  Local::None},
+  {"Trigger 2",       nullptr,     FF_TYPE_BOOLEAN,  "trigger_2",        0.0f,    true,  Local::None},
+  {"Trigger 3",       nullptr,     FF_TYPE_BOOLEAN,  "trigger_3",        0.0f,    true,  Local::None},
+  {"Trigger 4",       nullptr,     FF_TYPE_BOOLEAN,  "trigger_4",        0.0f,    true,  Local::None},
+  {"Delete",          nullptr,     FF_TYPE_BOOLEAN,  "delete",           0.0f,    true,  Local::None},
+  {"Mute",            nullptr,     FF_TYPE_BOOLEAN,  "mute",             0.0f,    false, Local::None},
+  {"Undo",            nullptr,     FF_TYPE_EVENT,    "undo",             0.0f,    true,  Local::None},
+  {"Redo",            nullptr,     FF_TYPE_EVENT,    "redo",             0.0f,    true,  Local::None},
+  {"Loop",            nullptr,     FF_TYPE_OPTION,   "loop_mode",        1.0f,    false, Local::None},
   {"Quantize Start",  "Quantize",  FF_TYPE_BOOLEAN,  "quantize_start",   0.0f,    false, Local::None},
   {"Quantize Length", "Quantize",  FF_TYPE_BOOLEAN,  "quantize_length",  0.0f,    false, Local::None},
   {"Grace",           "Quantize",  FF_TYPE_STANDARD, "grace",            0.0625f, false, Local::None},
