@@ -27,8 +27,8 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { ensureChain, chainEntryAt, sketchChain } from '../sketch-types';
-import type { ModuleEntry } from '../sketch-types';
-import { PointerDragOp } from '../utils/pointer-drag-op';
+import { PointerDragOp, CancelReason } from '../utils/pointer-drag-op';
+import { effectPath, parseEffectPath, type EffectPathParts } from '../state/effects-payload';
 import { categoryColor, effectDomain } from './category-color';
 import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
 import './ui-icon';
@@ -71,14 +71,20 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   // Drag state.
   private dragSketchId: string | null = null;
   private dragSourceCol = -1;
+  // The clicked card's chain index (the group's primary / inspector anchor).
   private dragSourceIdx = -1;
-  private dragCardEl: HTMLElement | null = null;
+  // Every chain index being moved, ascending. A single-card drag is `[idx]`; a
+  // group drag is the whole multi-selection (see onCardPointerDown).
+  private dragSourceIdxs: number[] = [];
   private dragOp: PointerDragOp | null = null;
   private dragHoverTarget: { colIdx: number; insertIdx: number } | null = null;
   // True while a card reorder is in flight — drives the floating compact
   // headers popup (see renderReorderPopup). Not observable; toggled with an
   // explicit requestUpdate() so the popup mounts/unmounts on drag start/end.
   private dragActive = false;
+  // Viewport Y of the clicked header's center at drag start — the popup is
+  // anchored so the dragged card's row lines up with it (clamped to viewport).
+  private dragAnchorY = 0;
 
   static styles = css`
     :host {
@@ -353,14 +359,17 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     const chain = sketchChain(sketch);
     const rect = this.getBoundingClientRect();
     const left = Math.round(rect.right + 8);
-    const top = Math.round(rect.top + 48);
+    // Provisional vertical anchor around the clicked header (positionReorderPopup
+    // refines this to exact row alignment + viewport clamp once measurable).
+    const top = Math.round(Math.max(8, this.dragAnchorY - 60));
+    const count = this.dragSourceIdxs.length;
     return html`
       <div class="reorder-popup" style=${`left:${left}px;top:${top}px`}>
-        <div class="reorder-popup-title">Move effect</div>
+        <div class="reorder-popup-title">${count > 1 ? `Move ${count} effects` : 'Move effect'}</div>
         <div class="reorder-popup-list">
           ${chain.map((entry, i) => html`
             <div class="reorder-row" data-insert-idx=${i}
-              ?data-dragged=${i === this.dragSourceIdx}>
+              ?data-dragged=${this.dragSourceIdxs.includes(i)}>
               ${this.renderPopupGlyph(entry.module_type)}
               <span class="reorder-row-name" title=${entry.module_type}
                 >${this.effectName(entry.module_type)}</span>
@@ -447,15 +456,32 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     const card = header.closest('.effect-card') as HTMLElement | null;
     if (!card) return;
 
+    // A drag on a card that's part of a 2+ multi-selection moves the whole
+    // group; otherwise just this card. The group's selection was preserved on
+    // pointerdown (see column-group's selectOnPointerDown) so we can read it here.
+    const clickedPath = effectPath(sketchId, colIdx, chainIdx);
+    const multi = appState.local.multiSelection;
+    const isGroup = multi.length >= 2 && multi.includes(clickedPath);
+    const sourceIdxs = isGroup
+      ? multi
+          .map(parseEffectPath)
+          .filter((p): p is EffectPathParts =>
+            !!p && p.sketchId === sketchId && p.colIdx === colIdx)
+          .map(p => p.chainIdx)
+          .sort((a, b) => a - b)
+      : [chainIdx];
+
+    const hr = header.getBoundingClientRect();
     this.dragSketchId = sketchId;
     this.dragSourceCol = colIdx;
     this.dragSourceIdx = chainIdx;
-    this.dragCardEl = card;
+    this.dragSourceIdxs = sourceIdxs;
+    this.dragAnchorY = hr.top + hr.height / 2;
 
     this.dragOp = new PointerDragOp(e, header, {
       threshold: 5,
       move: (me) => {
-        card.setAttribute('dragging', '');
+        this.setDraggingCards(true);
         // First movement past the threshold: raise the floating compact-headers
         // popup and start listening for Escape (cancel). The real cards stay
         // expanded — the popup, not a collapse, is the short list to drop into.
@@ -463,12 +489,47 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
           this.dragActive = true;
           document.addEventListener('keydown', this.handleDragKeyDown, true);
           this.requestUpdate();
+          void this.updateComplete.then(() => this.positionReorderPopup());
         }
         this.updateDragHover(me.clientX, me.clientY);
       },
       accept: () => this.commitDrop(),
-      cancel: () => this.cleanupDrag(),
+      cancel: (reason) => {
+        // A plain click (no drag) on a group member collapses the selection to
+        // just that card — the collapse was deferred on pointerdown to allow a
+        // group drag, so apply it here now that we know it wasn't a drag.
+        if (reason === CancelReason.NoChange && isGroup) appController.select(clickedPath);
+        this.cleanupDrag();
+      },
     });
+  }
+
+  /** Toggle the dimmed `dragging` marker on every card being moved. */
+  private setDraggingCards(on: boolean) {
+    const col = this.columnCache.get(this.dragSourceCol);
+    const root = (col as ColumnGroup | undefined)?.renderRoot;
+    if (!root) return;
+    for (const idx of this.dragSourceIdxs) {
+      const card = root.querySelector(`.effect-card[data-chain-idx="${idx}"]`);
+      if (on) card?.setAttribute('dragging', '');
+      else card?.removeAttribute('dragging');
+    }
+  }
+
+  /**
+   * Anchor the popup so the dragged card's row lines up with where its header
+   * was, clamped to stay fully within the viewport. Run after the popup renders
+   * (its height + row offsets are then measurable).
+   */
+  private positionReorderPopup() {
+    const popup = this.renderRoot.querySelector('.reorder-popup') as HTMLElement | null;
+    if (!popup) return;
+    const row = popup.querySelector(
+      `.reorder-row[data-insert-idx="${this.dragSourceIdx}"]`) as HTMLElement | null;
+    const rowCenter = row ? row.offsetTop + row.offsetHeight / 2 : popup.offsetHeight / 2;
+    const h = popup.offsetHeight;
+    const top = Math.max(8, Math.min(this.dragAnchorY - rowCenter, window.innerHeight - h - 8));
+    popup.style.top = `${Math.round(top)}px`;
   }
 
   /** Escape cancels an in-flight reorder (disposing the drag op fires cancel →
@@ -602,41 +663,56 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     marker?.classList.remove('visible');
   }
 
-  /** Commit the drop — splice the dragged module to the hovered insert index. */
+  /** Commit the drop — splice the dragged module(s) to the hovered insert index
+   *  as a contiguous block, then move the selection with them. */
   private commitDrop() {
     if (!this.dragSketchId || !this.dragHoverTarget) { this.cleanupDrag(); return; }
 
     const sketchId = this.dragSketchId;
+    const colIdx = this.dragSourceCol;
     const sketch = appState.database.sketches[sketchId];
-    const sourceEntry = chainEntryAt(sketch, this.dragSourceIdx);
-    if (!sketch || !sourceEntry || sourceEntry.type !== 'module') { this.cleanupDrag(); return; }
+    const sourceIdxs = [...this.dragSourceIdxs].sort((a, b) => a - b);
+    const allModules = sourceIdxs.length > 0
+      && sourceIdxs.every(i => chainEntryAt(sketch, i)?.type === 'module');
+    if (!sketch || !allModules) { this.cleanupDrag(); return; }
 
-    const { insertIdx: targetInsertIdx } = this.dragHoverTarget;
-    const sourceIdx = this.dragSourceIdx;
+    const targetInsertIdx = this.dragHoverTarget.insertIdx;
+    const clickedIdx = this.dragSourceIdx;
+    // Where the block lands: the target gap shifts down by the removed entries
+    // that were above it.
+    const countBefore = sourceIdxs.filter(i => i < targetInsertIdx).length;
+    const adjusted = targetInsertIdx - countBefore;
+    const clickedPosInBlock = Math.max(0, sourceIdxs.indexOf(clickedIdx));
     this.cleanupDrag();
 
-    // Single linear stack: every drop is a reorder within the one chain.
-    appController.mutate('Move effect', draft => {
-      const sk = draft.sketches[sketchId];
-      if (!sk) return;
-      const chain = ensureChain(sk);
-      const [removed] = chain.splice(sourceIdx, 1);
-      if (!removed) return;
-      let adjustedIdx = targetInsertIdx;
-      if (targetInsertIdx > sourceIdx) adjustedIdx--;
-      chain.splice(adjustedIdx, 0, removed);
-    });
+    appController.mutate(
+      sourceIdxs.length > 1 ? `Move ${sourceIdxs.length} effects` : 'Move effect',
+      draft => {
+        const sk = draft.sketches[sketchId];
+        if (!sk) return;
+        const chain = ensureChain(sk);
+        const removed = sourceIdxs.map(i => chain[i]).filter(Boolean);
+        // Splice out from highest index down so the lower indices stay valid.
+        for (let k = sourceIdxs.length - 1; k >= 0; k--) chain.splice(sourceIdxs[k], 1);
+        chain.splice(adjusted, 0, ...removed);
+      });
+
+    // Selection follows the moved effects to their new positions.
+    const newPaths = sourceIdxs.map((_, k) => effectPath(sketchId, colIdx, adjusted + k));
+    const primary = newPaths[clickedPosInBlock] ?? newPaths[0];
+    if (newPaths.length > 1) appController.selectEffectGroup(newPaths, primary);
+    else appController.select(primary);
   }
 
   private cleanupDrag() {
-    this.dragCardEl?.removeAttribute('dragging');
+    this.setDraggingCards(false);
     for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
     this.hidePopupMarker();
     document.removeEventListener('keydown', this.handleDragKeyDown, true);
     this.dragSketchId = null;
     this.dragSourceCol = -1;
     this.dragSourceIdx = -1;
-    this.dragCardEl = null;
+    this.dragSourceIdxs = [];
     this.dragOp = null;
     this.dragHoverTarget = null;
     // Tear down the floating popup.

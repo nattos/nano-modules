@@ -1817,6 +1817,25 @@ export class AppController {
     return appState.local.multiSelection.includes(path);
   }
 
+  /** True when `path` belongs to an actionable GROUP (2+ selected cards) — vs.
+   *  a plain single selection (which also lives in multiSelection as `[path]`).
+   *  Used to decide whether a plain pointerdown starts a group drag. */
+  isEffectInGroup(path: string): boolean {
+    const m = appState.local.multiSelection;
+    return m.length >= 2 && m.includes(path);
+  }
+
+  /** Select a group of effect paths at once, with `primaryPath` as the inspector
+   *  anchor. Falls back to a plain select for 0/1 paths. Used to keep a moved
+   *  group selected at its new positions after a reorder. */
+  selectEffectGroup(paths: string[], primaryPath: string) {
+    if (paths.length <= 1) { this.select(paths[0] ?? primaryPath ?? null); return; }
+    // Primary first (queues if the moved cards haven't re-rendered yet), then
+    // overwrite the collapsed [primary] with the full group.
+    this.select(primaryPath);
+    runInAction(() => { appState.local.multiSelection = [...paths]; });
+  }
+
   /**
    * The sketch the edit surface is showing: the resolume shell's edited sketch
    * when it resolves, else the effect IDE's selected project. Checked against

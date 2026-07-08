@@ -124,6 +124,10 @@ export interface ColumnController {
   rangeSelectEffect?(path: string): void;
   /** Card highlight: part of the multi-selected group. */
   isMultiSelected?(path: string): boolean;
+  /** True when the card is part of an actionable 2+ group (vs. a lone
+   *  selection). Lets a plain pointerdown on a group member start a group drag
+   *  without collapsing the selection first. */
+  isEffectInGroup?(path: string): boolean;
 
   // params / device controls
   setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): void;

@@ -1323,6 +1323,11 @@ export class ColumnGroup extends MobxLitElement {
         this.ctl.toggleSelectEffect(effectPath);
       } else if (e.shiftKey && this.ctl.rangeSelectEffect) {
         this.ctl.rangeSelectEffect(effectPath);
+      } else if (this.ctl.isEffectInGroup?.(effectPath)) {
+        // Plain click on a card already in a 2+ group: keep the group intact so
+        // a drag moves the whole group. The host-driven drag collapses to just
+        // this card if it turns out to be a click, not a drag (see
+        // onCardPointerDown's cancel handler).
       } else {
         this.ctl.select(effectPath);
       }

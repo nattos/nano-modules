@@ -61,6 +61,7 @@ const controller: ColumnController = {
   toggleSelectEffect: (path) => appController.toggleSelectEffect(path),
   rangeSelectEffect: (path) => appController.rangeSelectEffect(path),
   isMultiSelected: (path) => appController.isMultiSelected(path),
+  isEffectInGroup: (path) => appController.isEffectInGroup(path),
 
   setEffectParam: (s, c, ch, k, v: ParamValue) => appController.setEffectParam(s, c, ch, k, v),
   beginSetEffectParam: (s, c, ch, k, v: ParamValue) => appController.beginSetEffectParam(s, c, ch, k, v),
