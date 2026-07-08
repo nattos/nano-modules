@@ -39,8 +39,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <ixwebsocket/IXWebSocket.h>
@@ -147,12 +150,43 @@ std::string fullRequests(int w, int h, int nMonitors, int nThumbs) {
 // ---------------------------------------------------------------------------
 
 struct EditorClient {
-  ix::WebSocket ws;
+  ix::WebSocket ws;                                    // main JSON/control socket
+  std::vector<std::unique_ptr<ix::WebSocket>> lanes;   // NBPC pixel lanes
   std::atomic<bool> open{false};
   std::atomic<uint64_t> textMsgs{0};
   std::atomic<uint64_t> textBytes{0};
-  std::atomic<uint64_t> nbpvFrames{0};
-  std::atomic<uint64_t> nbpvBytes{0};
+  std::atomic<uint64_t> nbpvFrames{0};   // reassembled whole preview frames
+  std::atomic<uint64_t> nbpvBytes{0};    // raw wire bytes across all lanes
+
+  // NBPC reassembly (mirrors resolume-mode.ts): 12-byte chunk header
+  // [0..3]"NBPC" [4..7]u32 seq [8..9]u16 idx [10..11]u16 cnt, then payload.
+  // The real editor stripes one frame across all lanes, so reassembly state is
+  // shared, not per-lane. Guarded by lane_mu since callbacks fire on N threads.
+  std::mutex lane_mu;
+  struct Partial { uint16_t cnt; uint16_t got; };
+  std::unordered_map<uint32_t, Partial> partials;
+
+  void onLaneBinary(const std::string& s) {
+    nbpvBytes.fetch_add(s.size(), std::memory_order_relaxed);
+    if (s.size() < 12 || s[0] != 'N' || s[1] != 'B' || s[2] != 'P' || s[3] != 'C') {
+      // Whole (un-chunked) NBPV frame — count it directly.
+      nbpvFrames.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(s.data());
+    uint32_t seq = (uint32_t)b[4] | ((uint32_t)b[5] << 8) |
+                   ((uint32_t)b[6] << 16) | ((uint32_t)b[7] << 24);
+    uint16_t cnt = (uint16_t)b[10] | ((uint16_t)b[11] << 8);
+    if (cnt == 0) return;
+    std::lock_guard<std::mutex> lk(lane_mu);
+    auto& p = partials[seq];
+    p.cnt = cnt;
+    if (++p.got >= cnt) {
+      nbpvFrames.fetch_add(1, std::memory_order_relaxed);
+      partials.erase(seq);
+    }
+    if (partials.size() > 128) partials.clear();  // bound stragglers
+  }
 
   bool connect(int port, const std::string& observePath) {
     ws.setUrl("ws://127.0.0.1:" + std::to_string(port));
@@ -162,6 +196,8 @@ struct EditorClient {
         open.store(true);
       } else if (msg->type == ix::WebSocketMessageType::Message) {
         if (msg->binary) {
+          // Fan-out currently sends pixels only on lanes, but count any stray
+          // binary on the main socket as a whole frame for robustness.
           nbpvFrames.fetch_add(1, std::memory_order_relaxed);
           nbpvBytes.fetch_add(msg->str.size(), std::memory_order_relaxed);
         } else {
@@ -179,15 +215,46 @@ struct EditorClient {
     return true;
   }
 
+  // Connect to every advertised preview-fan-out lane. lanesHaveClients() gates
+  // ALL readback, so without this the barrel produces zero preview frames and
+  // the preview path is never exercised (nbpv stays 0, CPU flat vs preview size).
+  bool connectLanes(const std::vector<int>& ports) {
+    for (int p : ports) {
+      auto lane = std::make_unique<ix::WebSocket>();
+      lane->setUrl("ws://127.0.0.1:" + std::to_string(p));
+      lane->disablePerMessageDeflate();
+      ix::WebSocket* lp = lane.get();
+      std::atomic<bool>* openedFlag = new std::atomic<bool>(false);
+      lane->setOnMessageCallback([this, openedFlag](const ix::WebSocketMessagePtr& msg) {
+        if (msg->type == ix::WebSocketMessageType::Open) openedFlag->store(true);
+        else if (msg->type == ix::WebSocketMessageType::Message && msg->binary)
+          onLaneBinary(msg->str);
+      });
+      lane->start();
+      for (int i = 0; i < 300 && !openedFlag->load(); i++)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      bool ok = openedFlag->load();
+      delete openedFlag;
+      if (!ok) { fprintf(stderr, "lane %d failed to open\n", p); return false; }
+      lanes.push_back(std::move(lane));
+      (void)lp;
+    }
+    return !lanes.empty();
+  }
+
   void resetCounters() {
     textMsgs = 0; textBytes = 0; nbpvFrames = 0; nbpvBytes = 0;
+    std::lock_guard<std::mutex> lk(lane_mu);
+    partials.clear();
   }
 
   void disconnect() {
+    for (auto& lane : lanes) lane->stop();
+    lanes.clear();
     ws.stop();
     open.store(false);
     // Give the server's pump a moment to process the disconnect so
-    // key_observed flips false before the next baseline scenario.
+    // key_observed / lanesHaveClients flips false before the next baseline.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 };
@@ -343,8 +410,25 @@ int main(int argc, char** argv) {
         fprintf(stderr, "editor client failed to connect\n");
         return 1;
       }
+      // Connect the preview fan-out lanes too — lanesHaveClients() gates all
+      // readback, so without a lane client the barrel produces zero preview
+      // frames and the whole readback/pack/send path is never measured.
+      std::vector<int> lanePorts;
+      if (char* tp = bridge_get_at(h, "/global/preview_transport")) {
+        try {
+          auto doc = nlohmann::json::parse(tp);
+          if (doc.contains("ports"))
+            for (const auto& p : doc["ports"]) lanePorts.push_back(p.get<int>());
+        } catch (...) {}
+        bridge_free_string(tp);
+      }
+      if (!client.connectLanes(lanePorts)) {
+        fprintf(stderr, "editor failed to connect preview lanes (%zu advertised)\n",
+                lanePorts.size());
+        return 1;
+      }
       clientConnected = true;
-      // Let the pump register the observation before we render.
+      // Let the pump register the observation + lane opens before we render.
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     } else if (!sc.client && clientConnected) {
       client.disconnect();
