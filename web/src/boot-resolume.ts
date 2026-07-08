@@ -310,6 +310,36 @@ function connectBarrel(url: string) {
     barrel.get(statePath);
   };
 
+  // A freshly-launched instance can briefly register under a PROVISIONAL
+  // UUID before the real persisted config arrives and re-keys it to the
+  // confirmed one (native's ensureRegistered → adoptRestoredUuid — a real,
+  // consistently-observed ~50-90ms window, not a hypothetical). Since
+  // `liveCache` rows are never pruned (see the /global/plugins handler
+  // below), passively caching a key the instant it's seen would leave a
+  // permanent ghost row for every one of those transient provisional keys —
+  // this is the actual mechanism behind "offline mode piling up tons of
+  // instances" over repeated Resolume restarts. Debounce so a key that
+  // disappears from /global/plugins before the window elapses (see
+  // `cancelPendingPassiveCache`) never gets written at all.
+  const PASSIVE_CACHE_DEBOUNCE_MS = 500;
+  const pendingPassiveCache = new Map<string, ReturnType<typeof setTimeout>>();
+  const cachePassiveInstanceOnceDebounced = (key: string) => {
+    if (key === currentKey || passiveCached.has(key) || pendingPassiveCache.has(key)) return;
+    pendingPassiveCache.set(key, setTimeout(() => {
+      pendingPassiveCache.delete(key);
+      cachePassiveInstanceOnce(key);
+    }, PASSIVE_CACHE_DEBOUNCE_MS));
+  };
+  const cancelPendingPassiveCache = (liveKeys: Set<string>) => {
+    for (const [key, timer] of pendingPassiveCache) {
+      if (!liveKeys.has(key)) {
+        clearTimeout(timer);
+        pendingPassiveCache.delete(key);
+        console.log(`[live-cache] key=${key} vanished from /global/plugins before the passive-cache debounce elapsed — likely a provisional UUID, skipping`);
+      }
+    }
+  };
+
   // Phase A: readonly until reconciled (see below), before we even know
   // whether the barrel will respond.
   appController.setReadonly(true);
@@ -674,7 +704,9 @@ function connectBarrel(url: string) {
     const instances = parseInstances(arr);
     console.log(`[live-cache] /global/plugins: ${instances.length} instance(s): [${instances.map(i => i.key).join(', ')}]`);
     appController.setBarrelInstances(instances);
-    for (const inst of instances) cachePassiveInstanceOnce(inst.key);
+    const liveKeys = new Set(instances.map((inst) => inst.key));
+    cancelPendingPassiveCache(liveKeys);
+    for (const inst of instances) cachePassiveInstanceOnceDebounced(inst.key);
   });
 
   // Sidechannel-bus channel metadata (channel → writer plugin key + size),
