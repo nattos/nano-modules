@@ -13,6 +13,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
+import { TARGET_FPS_OPTIONS } from './gpu-headroom';
 
 const MODE_OPTIONS: { id: AppMode; label: string; description: string }[] = [
   { id: 'effect-dev', label: 'Effect Dev', description: 'Author and test individual effects in isolation.' },
@@ -101,6 +102,17 @@ export class AppSettings extends MobxLitElement {
       gap: var(--app-sp-3);
       cursor: pointer;
     }
+    select {
+      font-family: inherit;
+      font-size: var(--app-fs-md);
+      color: var(--app-text-color1);
+      background: var(--app-bg-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      padding: var(--app-sp-2) var(--app-sp-3);
+      cursor: pointer;
+      align-self: flex-start;
+    }
   `;
 
   render() {
@@ -137,6 +149,21 @@ export class AppSettings extends MobxLitElement {
               Enable Resolume Remote
             </label>
           </div>
+        </section>
+        <section>
+          <h2>Target Framerate</h2>
+          <div class="hint">
+            Sets the GPU headroom budget (the monitor's "% free" readout). Doesn't
+            cap the render loop — it's the frame time to measure against.
+          </div>
+          <select
+            title="Target framerate (the GPU headroom budget)"
+            .value=${String(settings.targetFps)}
+            @change=${this.onTargetChange}>
+            ${TARGET_FPS_OPTIONS.map(
+              (t) => html`<option value=${t} ?selected=${t === settings.targetFps}>${t} FPS</option>`,
+            )}
+          </select>
         </section>
         ${this.renderConnectionSection()}
       </div>
@@ -182,6 +209,11 @@ export class AppSettings extends MobxLitElement {
 
   private onToggleRemote = (e: Event) => {
     appController.setUserSetting('barrelRemoteEnabled', (e.target as HTMLInputElement).checked);
+  };
+
+  private onTargetChange = (e: Event) => {
+    const v = parseInt((e.target as HTMLSelectElement).value, 10);
+    if (!Number.isNaN(v)) appController.setUserSetting('targetFps', v);
   };
 
   private onEditOffline = () => {

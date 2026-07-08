@@ -28,7 +28,7 @@ import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { TracePoint } from '../engine-types';
 
-import { computeHeadroom, fixedNum, TARGET_FPS_OPTIONS } from '../views/gpu-headroom';
+import { computeHeadroom, fixedNum } from '../views/gpu-headroom';
 
 import './texture-monitor';
 import './ui-button';
@@ -150,15 +150,6 @@ export class SketchMonitor extends MobxLitElement {
     }
     .stat .headroom.over {
       color: var(--app-error);
-    }
-    .stat .target {
-      font-size: var(--app-fs-sm);
-      color: var(--app-text-color2);
-      background: var(--app-bg-color);
-      border: 1px solid var(--app-tint-5);
-      border-radius: 1px;
-      padding: 1px 2px;
-      cursor: pointer;
     }
   `;
 
@@ -290,15 +281,6 @@ export class SketchMonitor extends MobxLitElement {
             : html`
                 <span class="metric">${fixedNum(fps, 3)} FPS</span>
                 ${this.renderHeadroom(gpuMs, targetFps)}
-                <select
-                  class="target"
-                  title="Target framerate (the GPU headroom budget)"
-                  .value=${String(targetFps)}
-                  @change=${this.onTargetChange}>
-                  ${TARGET_FPS_OPTIONS.map(
-                    (t) => html`<option value=${t} ?selected=${t === targetFps}>${t}↑</option>`,
-                  )}
-                </select>
               `}
         </span>
       </div>
@@ -319,11 +301,6 @@ export class SketchMonitor extends MobxLitElement {
       >GPU ${fixedNum(h.gpuMs.toFixed(1), 4)}ms · ${fixedNum(h.headroomPct, 3)}% free</span
     >`;
   }
-
-  private onTargetChange = (e: Event) => {
-    const v = parseInt((e.target as HTMLSelectElement).value, 10);
-    if (!Number.isNaN(v)) appController.setUserSetting('targetFps', v);
-  };
 
   private onUndo = () => appController.undo();
   private onRedo = () => appController.redo();
