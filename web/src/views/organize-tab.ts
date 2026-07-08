@@ -28,6 +28,8 @@ import {
   sidechannelDefaultLabel, sidechannelDisplayLabel, sidechannelWriterLabel,
 } from '../state/sidechannel-labels';
 import { instanceDefaultLabel, instanceDisplayLabel } from '../state/instance-labels';
+import { buildInstanceRows } from '../state/instance-rows';
+import type { BarrelInstanceInfo } from '../state/types';
 import '../widgets/texture-monitor';
 import '../widgets/editable-text';
 
@@ -57,6 +59,20 @@ export class OrganizeTab extends MobxLitElement {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
       gap: var(--app-sp-4);
+    }
+    /* Composition-shaped layout: a vertical stack of rows (one per group /
+       track, then Main), each a horizontal wrap of cards. */
+    .inst-rows { display: flex; flex-direction: column; gap: var(--app-sp-6); }
+    .inst-row-head {
+      font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--app-text-color2); margin-bottom: 8px;
+    }
+    .inst-row-cards { display: flex; flex-wrap: wrap; gap: var(--app-sp-4); align-items: flex-start; }
+    .inst-row-cards .instance-card { flex: 0 0 200px; width: 200px; }
+    /* Separates a group/track's own effects (leading) from its clips. */
+    .row-divider {
+      flex: 0 0 auto; align-self: stretch; width: 1px;
+      background: var(--app-tint-4); margin: 0 var(--app-sp-2);
     }
     .instance-card {
       background: var(--app-tint-1);
@@ -178,6 +194,13 @@ export class OrganizeTab extends MobxLitElement {
       appController.selectSidechannel(null);  // panel back to the instance
       appController.selectBarrelInstance(key);
     };
+    const card = (inst: BarrelInstanceInfo) =>
+      this.renderCard(inst, selectedKey, selectedChannel, barrelMode, pickInstance, open);
+
+    // Organize into composition-ordered rows when placement is known (Live /
+    // offline with a scanned composition); fall back to the plain flow grid
+    // otherwise (playground, or a legacy cache without placement).
+    const rows = buildInstanceRows(instances);
 
     return html`
       <div class="main-area">
@@ -191,31 +214,24 @@ export class OrganizeTab extends MobxLitElement {
           : appState.local.liveOfflineMode
           ? html`<div class="empty-state">Nothing cached from a previous session yet.<br>Connect to Resolume once to start building a recoverable offline copy.</div>`
           : html`<div class="empty-state">No playground instances yet.<br>Each instance stands in for one NanoBarrel effect in Resolume.</div>`)
-        : html`
-            <div class="instance-grid">
-              ${instances.map(inst => html`
-                <div class="instance-card ${inst.unlaunched ? 'unlaunched' : ''}"
-                  ?selected=${inst.key === selectedKey && !selectedChannel}
-                  @click=${() => pickInstance(inst.key)}
-                  @dblclick=${() => open(inst.key)}>
-                  <div class="thumb">
-                    <texture-monitor
-                      fit
-                      thumbnail
-                      eager
-                      .traceId=${instanceThumbTraceId(inst.key)}
-                      .traceTarget=${{ type: 'sketch_output', sketchId: inst.key } as any}
-                      resolution="low"
-                    ></texture-monitor>
-                  </div>
-                  <div class="card-meta">
-                    <div class="card-name">${instanceDisplayLabel(inst.key)}</div>
-                    ${inst.unlaunched
-                      ? html`<div class="unlaunched-badge">Not launched</div>`
-                      : html`<div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>`}
+        : rows
+        ? html`
+            <div class="inst-rows">
+              ${rows.map(row => html`
+                <div class="inst-row">
+                  <div class="inst-row-head">${row.label}</div>
+                  <div class="inst-row-cards">
+                    ${row.leading.map(card)}
+                    ${row.leading.length && row.clips.length ? html`<div class="row-divider"></div>` : ''}
+                    ${row.clips.map(card)}
                   </div>
                 </div>
               `)}
+            </div>
+          `
+        : html`
+            <div class="instance-grid">
+              ${instances.map(card)}
             </div>
           `}
         ${this.renderSidechannels(selectedChannel)}
@@ -254,6 +270,41 @@ export class OrganizeTab extends MobxLitElement {
             `}
           `
         : html`<div class="empty-state" style="padding:16px 0">Select an instance to edit</div>`}
+      </div>
+    `;
+  }
+
+  /** One instance card — shared by the composition-ordered rows and the
+   *  fallback flow grid. */
+  private renderCard(
+    inst: BarrelInstanceInfo,
+    selectedKey: string | null,
+    selectedChannel: string | null,
+    barrelMode: boolean,
+    pickInstance: (key: string) => void,
+    open: (key: string) => void,
+  ) {
+    return html`
+      <div class="instance-card ${inst.unlaunched ? 'unlaunched' : ''}"
+        ?selected=${inst.key === selectedKey && !selectedChannel}
+        @click=${() => pickInstance(inst.key)}
+        @dblclick=${() => open(inst.key)}>
+        <div class="thumb">
+          <texture-monitor
+            fit
+            thumbnail
+            eager
+            .traceId=${instanceThumbTraceId(inst.key)}
+            .traceTarget=${{ type: 'sketch_output', sketchId: inst.key } as any}
+            resolution="low"
+          ></texture-monitor>
+        </div>
+        <div class="card-meta">
+          <div class="card-name">${instanceDisplayLabel(inst.key)}</div>
+          ${inst.unlaunched
+            ? html`<div class="unlaunched-badge">Not launched</div>`
+            : html`<div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>`}
+        </div>
       </div>
     `;
   }

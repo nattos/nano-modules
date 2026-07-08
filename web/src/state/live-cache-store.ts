@@ -17,6 +17,7 @@
 
 import { toJS } from 'mobx';
 import type { Sketch } from '../sketch-types';
+import type { ResolumePlacement } from './types';
 import { ENGINE_VERSION } from '../version';
 import { idbGetAll, idbGet, idbPut, idbDelete, STORE_LIVE_CACHE } from './idb-store';
 
@@ -27,6 +28,12 @@ export interface LiveCacheRecord {
   updatedAt: number;
   /** Has local edits not yet confirmed pushed to / matching canonical. */
   dirty: boolean;
+  /**
+   * Last-known Resolume composition placement (from the native locator), so the
+   * offline Instances tab reproduces the same group/track/clip row organization
+   * without a live connection. Absent for rows cached before this field existed.
+   */
+  placement?: ResolumePlacement;
 }
 
 export async function loadAllLiveCacheInstances(): Promise<LiveCacheRecord[]> {
@@ -40,12 +47,16 @@ export async function loadLiveCacheInstance(key: string): Promise<LiveCacheRecor
 
 export async function saveLiveCacheInstance(
   key: string, label: string, sketch: Sketch, dirty: boolean,
+  placement?: ResolumePlacement,
 ): Promise<void> {
   // toJS + JSON round-trip to avoid sending MobX proxies into IDB.
   const safe = JSON.parse(JSON.stringify(toJS(sketch)));
   safe.engineVersion = ENGINE_VERSION;
   await idbPut(STORE_LIVE_CACHE, {
     key, label, sketch: safe, updatedAt: Date.now(), dirty,
+    // Strip any MobX proxy — placement is a plain shape, so a JSON round-trip
+    // (via the parse above would need its own) is overkill; toJS suffices.
+    placement: placement ? toJS(placement) : undefined,
   } satisfies LiveCacheRecord);
 }
 

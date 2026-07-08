@@ -1305,8 +1305,9 @@ export class AppController {
       const json = JSON.stringify(toJS(sketch));
       if (this.liveCacheLastSavedJson.get(key) === json) continue;
       const dirty = !(this.barrelPusher && this.barrelSketchId === key && appState.local.barrelConnection === 'open');
+      const placement = appState.local.barrelInstances.find(i => i.key === key)?.resolumePlacement;
       try {
-        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, dirty);
+        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, dirty, placement);
         this.liveCacheLastSavedJson.set(key, json);
         console.log(`[live-cache] saved key=${key} dirty=${dirty}`);
       } catch (err) {
@@ -2190,6 +2191,7 @@ export class AppController {
     }
     const list: BarrelInstanceInfo[] = records.map(r => ({
       key: r.key, id: 'com.nano.nanobarrel', label: r.label,
+      resolumePlacement: r.placement,
     }));
     this.setBarrelInstances(list);
     this.syncSketchesToEngine();

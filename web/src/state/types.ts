@@ -395,6 +395,32 @@ export interface LocalState {
  */
 export const PLAYGROUND_ID_PREFIX = 'pg:';
 
+/**
+ * Where a NanoBarrel effect sits in the Resolume composition, pre-resolved by
+ * the native `InstanceLocator` (`placement_json`) and carried on both
+ * `/global/plugins[].resolume.placement` (launched) and
+ * `/global/composition_barrel_ids[].placement` (unlaunched). The Instances tab
+ * uses it to organize cards into composition-ordered rows — one row per group /
+ * track (with the group/track's own effects leading, then its clips), plus a
+ * "Main" row for composition-level effects. Names are display-ready ('#'
+ * ordinals expanded, numbered fallback applied); indices are 0-based array
+ * positions. Only the fields relevant to `scope` are present.
+ */
+export interface ResolumePlacement {
+  scope: 'clip' | 'layer' | 'group' | 'composition';
+  /** Layer (track) index + display name — present for clip & layer scope. */
+  trackIndex?: number;
+  trackName?: string;
+  /** Clip index + display name — present for clip scope only. */
+  clipIndex?: number;
+  clipName?: string;
+  /** Layer-group index + display name — present for group scope only. */
+  groupIndex?: number;
+  groupName?: string;
+  /** The effect's 0-based position within its host's effect chain. */
+  chainIndex?: number;
+}
+
 /** One NanoBarrel plugin instance live on the shared server. */
 export interface BarrelInstanceInfo {
   /** Stable per-instance key (the persisted UUID) — the routing key. */
@@ -418,4 +444,11 @@ export interface BarrelInstanceInfo {
    * live connected instances, playground, and offline-cache instances.
    */
   unlaunched?: boolean;
+  /**
+   * Composition placement (from the native locator), when known — drives the
+   * Instances-tab row organization. Absent for playground instances (no
+   * Resolume) and briefly for a launched instance before its resolume info
+   * arrives; such instances fall into a catch-all "Other" row.
+   */
+  resolumePlacement?: ResolumePlacement;
 }

@@ -40,8 +40,8 @@ import { snackbars } from './widgets/snackbars';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
-import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo } from './state/types';
-import { parseBarrelInstances } from './state/barrel-instances';
+import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo, type ResolumePlacement } from './state/types';
+import { parseBarrelInstances, parseResolumePlacement } from './state/barrel-instances';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
 import { EFFECT_BUNDLES } from './effect-bundles';
@@ -274,6 +274,11 @@ function connectBarrel(url: string) {
 
   // The instance currently wired for editing.
   let currentKey: string | null = null;
+  // The composition placement most recently known for a key (from the merged
+  // instance list), so every offline-cache write records where the instance
+  // sits in Resolume — the offline Instances tab reproduces the same rows.
+  const placementForKey = (key: string): ResolumePlacement | undefined =>
+    appState.local.barrelInstances.find((i) => i.key === key)?.resolumePlacement;
   // Snapshot handlers are keyed by exact path; register each instance's
   // handlers once and have them bail if they're no longer the selected key.
   const handlersWired = new Set<string>();
@@ -329,7 +334,7 @@ function connectBarrel(url: string) {
         const existing = await loadLiveCacheInstance(key);
         if (existing?.dirty) return;  // don't clobber unresolved offline edits
         const sketch = coerceSketch(state?.sketch ?? {});
-        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false);
+        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false, placementForKey(key));
         console.log(`[live-cache] passively cached instance key=${key} (not the wired instance)`);
       })();
     });
@@ -496,7 +501,7 @@ function connectBarrel(url: string) {
     if (decision.action === 'adopt-canonical') {
       appController.setBarrelSketch(forKey, canonical);
       appController.editSketch(forKey);
-      void saveLiveCacheInstance(forKey, label, canonical, false);
+      void saveLiveCacheInstance(forKey, label, canonical, false, placementForKey(forKey));
       appController.setReadonly(false);
       resolvedKey = forKey;
       wirePusher(forKey);
@@ -521,11 +526,11 @@ function connectBarrel(url: string) {
         if (choice === 'keep-cached') {
           wirePusher(forKey);
           appController.forcePushBarrelSketch();
-          void saveLiveCacheInstance(forKey, label, cached!.sketch, false);
+          void saveLiveCacheInstance(forKey, label, cached!.sketch, false, placementForKey(forKey));
         } else {
           appController.setBarrelSketch(forKey, resolvedCanonical);
           appController.editSketch(forKey);
-          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false);
+          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false, placementForKey(forKey));
           wirePusher(forKey);
         }
         appController.setReadonly(false);
@@ -738,7 +743,9 @@ function connectBarrel(url: string) {
   // graduates to a live instance under the SAME key (selection preserved).
   // Both handlers below feed these two vars and recompute the merged list.
   let latestLivePlugins: BarrelInstanceInfo[] = [];
-  let latestCompositionMembers: Array<{ uuid: string; name: string; location: string }> = [];
+  let latestCompositionMembers: Array<{
+    uuid: string; name: string; location: string; placement?: ResolumePlacement;
+  }> = [];
   const recomputeInstanceList = () => {
     const liveByKey = new Set(latestLivePlugins.map((i) => i.key));
     const placeholders: BarrelInstanceInfo[] = latestCompositionMembers
@@ -748,6 +755,7 @@ function connectBarrel(url: string) {
         id: 'com.nano.nanobarrel',
         label: m.name || (m.uuid.split('-')[0] || m.uuid),
         resolumeLocation: m.location || undefined,
+        resolumePlacement: m.placement,
         unlaunched: true,
       }));
     // Launched first, so the default selection / first-in-list pick lands on a
@@ -794,6 +802,7 @@ function connectBarrel(url: string) {
             uuid: m.uuid,
             name: typeof m.name === 'string' ? m.name : '',
             location: typeof m.location === 'string' ? m.location : '',
+            placement: parseResolumePlacement(m.placement),
           }];
           return [];
         })
