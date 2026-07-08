@@ -118,13 +118,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
     // The Metal runtime + WASM effect loading is deferred to InitGL, NOT done
     // here. Resolume constructs a throwaway PROTOTYPE of every FFGL plugin at
-    // startup just to enumerate params — those prototypes never call InitGL.
-    // Loading all 63 effect modules per prototype floods the process-global
-    // (refcounted) WAMR heap pool, so a later real clip instance's load fails
-    // and it comes up with zero effects (→ empty plugin_schemas → no editor
-    // chips). Params are static (config + 16 macros), so the prototype scan
-    // needs nothing more than the SetParamInfo calls above. The shared bridge
-    // server is likewise acquired in InitGL, not here.
+    // startup just to enumerate params — those prototypes never call InitGL,
+    // and (being type-level, not tied to any clip) never receive a real
+    // persisted config via SetTextParameter either. Loading all 63 effect
+    // modules per prototype floods the process-global (refcounted) WAMR heap
+    // pool, so a later real clip instance's load fails and it comes up with
+    // zero effects (→ empty plugin_schemas → no editor chips). Params are
+    // static (config + 16 macros), so the prototype scan needs nothing more
+    // than the SetParamInfo calls above.
+    //
+    // The bridge server ITSELF may be acquired earlier than InitGL, though:
+    // SetTextParameter's cold-start restore calls ensureRegistered() as soon
+    // as a genuine persisted config arrives, registering this instance's
+    // identity + state-doc entry (cheap — no WASM/effect loading) so it's
+    // visible in the editor's Instances list before its clip is ever
+    // launched. See ensureRegistered()/setupBridge() for the split.
 
     // Stash the persisted payload (envelope JSON) for InitGL to apply once the
     // bridge is up. The process cache holds ONLY the most-recently-DESTROYED
@@ -291,7 +299,13 @@ class NanoBarrelPlugin : public CFFGLPlugin {
         // Cold start: the host is restoring the saved value before InitGL.
         // (On in-process delete+undo pending_payload_ was already seeded
         // from the live process cache, so we keep that and ignore this.)
+        // Register with the bridge right away — identity + the state-doc
+        // entry only, NOT the heavy WASM runtime (still InitGL/launch-gated,
+        // see ensureRegistered()) — so this instance shows up in the
+        // editor's Instances list as soon as the composition loads, instead
+        // of waiting for its clip to actually be launched.
         pending_payload_ = payload;
+        ensureRegistered();
       } else {
         BARREL_LOG("SetTextParameter",
                    "config: live payload already pending, ignoring persisted value");
@@ -494,45 +508,31 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   }
 
   // -- Shared-bridge lifecycle ----------------------------------------
-  // Located + acquired in InitGL (NOT the ctor — see ctor note). Registers
-  // this instance under its persisted UUID, seeds initial state, applies any
-  // pending sketch, and subscribes for editor patches targeting this key.
-  void setupBridge() {
-    if (bridge_) return;  // already up (InitGL re-entry without DeInitGL)
+  // Registers this instance's identity + state-doc entry with the shared
+  // bridge server — cheap (BridgeServer::acquire + a StateDocument insert),
+  // and deliberately does NOT touch bridge_rt_acquire/executor_create (the
+  // heavy WASM/effect loading, still InitGL/launch-gated — see the ctor
+  // note on why loading all 63 effect modules per instance can't happen for
+  // every composition-resident-but-unlaunched clip). Called both from
+  // SetTextParameter's cold-start restore (so a composition-persisted
+  // instance is visible in /global/plugins before its clip is ever
+  // launched) and from setupBridge()/InitGL — idempotent no-op if already
+  // registered from the former.
+  void ensureRegistered() {
+    if (bridge_) return;  // already registered
 
     std::string dylib = bundleDylibPath();
     if (dylib.empty() || !loader_.load(dylib.c_str())) {
-      BARREL_LOG("setupBridge", "FAILED to load %s — running render-only",
+      BARREL_LOG("ensureRegistered", "FAILED to load %s — running render-only",
                  dylib.c_str());
       return;
     }
     if (!loader_.bridge_init || !loader_.bridge_register_plugin) {
-      BARREL_LOG("setupBridge", "dylib missing required symbols");
+      BARREL_LOG("ensureRegistered", "dylib missing required symbols");
       return;
     }
     bridge_ = loader_.bridge_init();
-    if (!bridge_) { BARREL_LOG("setupBridge", "bridge_init returned null"); return; }
-
-    // Acquire the shared effect runtime (Metal backend + WAMR + effect bundles +
-    // executor pool), loading the effect set ONCE for the whole process. The
-    // shared MTLDevice it returns is what our InteropTexture pair must be built
-    // against (the executor renders on that device). Without these symbols the
-    // dylib is too old — we stay render-only (badge).
-    if (loader_.bridge_rt_acquire && loader_.bridge_executor_create &&
-        loader_.bridge_executor_render && loader_.bridge_rt_metal_device) {
-      std::string wasmDir  = bundleWasmDir();
-      std::string fontPath = bundleFontPath("default.ttf");
-      rt_ready_ = loader_.bridge_rt_acquire(bridge_, wasmDir.c_str(),
-                                            fontPath.c_str()) != 0;
-      if (rt_ready_) {
-        shared_device_ =
-            (__bridge id<MTLDevice>)loader_.bridge_rt_metal_device(bridge_);
-      }
-      BARREL_LOG("setupBridge", "rt_acquire=%d wasmDir=%s device=%p",
-                 rt_ready_ ? 1 : 0, wasmDir.c_str(), (void*)shared_device_);
-    } else {
-      BARREL_LOG("setupBridge", "dylib lacks shared-runtime symbols — render-only");
-    }
+    if (!bridge_) { BARREL_LOG("ensureRegistered", "bridge_init returned null"); return; }
 
     // Identity: prefer the UUID from the pending payload (cold start / undo —
     // a GENUINE persisted identity, so uuid_confirmed_ goes true immediately).
@@ -557,21 +557,18 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       // Collision (duplicated clip, both carrying the same persisted UUID) —
       // server reminted. This IS a confirmed, real identity (resolving an
       // actual conflict), so persist it right away.
-      BARREL_LOG("setupBridge", "key collision: requested=%s actual=%s",
+      BARREL_LOG("ensureRegistered", "key collision: requested=%s actual=%s",
                  requested_uuid.c_str(), instance_uuid_.c_str());
       uuid_confirmed_ = true;
       need_persist = true;
     }
     barrel_plugin_key_ = instance_uuid_;
-    BARREL_LOG("setupBridge", "registered key=%s confirmed=%d",
+    BARREL_LOG("ensureRegistered", "registered key=%s confirmed=%d",
                barrel_plugin_key_.c_str(), uuid_confirmed_ ? 1 : 0);
 
-    // Create this instance's executor in the shared runtime, namespaced by the
-    // plugin key so its effect state is isolated from every other barrel.
-    if (rt_ready_ && loader_.bridge_executor_create) {
-      loader_.bridge_executor_create(bridge_, barrel_plugin_key_.c_str());
-    }
-
+    // plugin_schemas starts empty here (rt not acquired yet) — setupBridge's
+    // publishSchemasIfReady() backfills it once InitGL actually acquires the
+    // runtime.
     publishInitialState();
 
     if (loader_.bridge_register_patch_listener) {
@@ -602,6 +599,63 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       dirty_ = true;
       dirty_since_ms_ = ::nano_barrel_log::now_ms() - kRegenDebounceMs;
     }
+    sketch_snapshot_dirty_.store(true, std::memory_order_release);
+  }
+
+  // Re-publish plugin_schemas once the shared runtime becomes available.
+  // ensureRegistered()'s publishInitialState() runs before rt_acquire when
+  // triggered by a pre-InitGL registration, so schemas start empty; this
+  // backfills them once InitGL actually acquires the runtime.
+  void publishSchemasIfReady() {
+    if (!bridge_ || !rt_ready_ || !loader_.bridge_rt_schemas ||
+        !loader_.bridge_free_string || !loader_.bridge_set_at)
+      return;
+    char* raw = loader_.bridge_rt_schemas(bridge_);
+    if (!raw) return;
+    auto parsed = nlohmann::json::parse(raw, nullptr, false);
+    loader_.bridge_free_string(raw);
+    if (!parsed.is_object()) return;
+    loader_.bridge_set_at(
+        bridge_, ("/plugins/" + barrel_plugin_key_ + "/state/plugin_schemas").c_str(),
+        parsed.dump().c_str());
+  }
+
+  // Located + acquired in InitGL (NOT the ctor — see ctor note). Ensures
+  // identity/state-doc registration (idempotent — a head start may already
+  // have happened via SetTextParameter's cold-start path), then acquires the
+  // shared effect runtime + creates this instance's executor.
+  void setupBridge() {
+    ensureRegistered();
+    if (!bridge_) return;   // registration failed entirely — stay render-only
+    if (rt_ready_) return;  // already acquired (InitGL re-entry)
+
+    // Acquire the shared effect runtime (Metal backend + WAMR + effect bundles +
+    // executor pool), loading the effect set ONCE for the whole process. The
+    // shared MTLDevice it returns is what our InteropTexture pair must be built
+    // against (the executor renders on that device). Without these symbols the
+    // dylib is too old — we stay render-only (badge).
+    if (loader_.bridge_rt_acquire && loader_.bridge_executor_create &&
+        loader_.bridge_executor_render && loader_.bridge_rt_metal_device) {
+      std::string wasmDir  = bundleWasmDir();
+      std::string fontPath = bundleFontPath("default.ttf");
+      rt_ready_ = loader_.bridge_rt_acquire(bridge_, wasmDir.c_str(),
+                                            fontPath.c_str()) != 0;
+      if (rt_ready_) {
+        shared_device_ =
+            (__bridge id<MTLDevice>)loader_.bridge_rt_metal_device(bridge_);
+      }
+      BARREL_LOG("setupBridge", "rt_acquire=%d wasmDir=%s device=%p",
+                 rt_ready_ ? 1 : 0, wasmDir.c_str(), (void*)shared_device_);
+    } else {
+      BARREL_LOG("setupBridge", "dylib lacks shared-runtime symbols — render-only");
+    }
+
+    // Create this instance's executor in the shared runtime, namespaced by the
+    // plugin key so its effect state is isolated from every other barrel.
+    if (rt_ready_ && loader_.bridge_executor_create) {
+      loader_.bridge_executor_create(bridge_, barrel_plugin_key_.c_str());
+    }
+    publishSchemasIfReady();
     sketch_snapshot_dirty_.store(true, std::memory_order_release);
   }
 
