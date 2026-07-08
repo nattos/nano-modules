@@ -16,6 +16,7 @@ import { snackbars } from './widgets/snackbars';
 import {
   bannerOffer,
   OFFER_PLAYGROUND_DISMISSED_KEY, OFFER_LIVE_DISMISSED_KEY,
+  LIVE_OFFLINE_KEY,
 } from './resolume-mode';
 
 /** Not-open for this long, continuously, before offering the playground
@@ -64,13 +65,22 @@ export function installModeOffers() {
     if (!offer) return;
 
     const dismiss = () => { try { sessionStorage.setItem(dismissKey, '1'); } catch { /* ignore */ } };
+    const editOffline = () => {
+      try { sessionStorage.setItem(LIVE_OFFLINE_KEY, '1'); } catch { /* ignore */ }
+      location.reload();
+    };
 
     if (offer === 'offer-playground') {
+      // One sticky snackbar carrying BOTH recovery paths for a dropped/absent
+      // Live connection: keep editing the offline cached copy (reconciles on
+      // reconnect), or leave for a local Playground. Sticky so a disconnect
+      // mid-performance doesn't auto-vanish before it's seen.
       snackbars.show({
         message: "Can't reach Resolume (the shared NanoBarrel server isn't answering).",
-        timeoutMs: 5000,
+        timeoutMs: 0,
         dedupeKey: 'mode-offer',
         actions: [
+          { label: 'Edit offline', run: editOffline },
           { label: 'Switch to Playground', run: () => { void appController.switchAppMode('playground'); } },
           { label: 'Stay', run: dismiss },
         ],

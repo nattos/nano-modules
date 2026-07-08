@@ -375,31 +375,10 @@ function connectBarrel(url: string) {
   // whether the barrel will respond.
   appController.setReadonly(true);
 
-  // 5s connect timeout → offer to edit offline (a full reload into
-  // `bootLiveOffline`, same as `barrelRemoteEnabled` being off — see
-  // `LIVE_OFFLINE_KEY`). Cleared on a successful open regardless of how
-  // reconciliation later resolves — this timer is about the WS connection
-  // itself, not about how long the reconciliation dialog takes.
-  let connectTimer: ReturnType<typeof setTimeout> | null = setTimeout(onConnectTimeout, 5000);
-  function onConnectTimeout() {
-    connectTimer = null;
-    if (barrel.isOpen) return;  // guard a race with onOpen
-    snackbars.show({
-      message: "Can't reach Resolume. Edit the offline copy? You'll reconcile once it reconnects.",
-      timeoutMs: 0,
-      dedupeKey: 'live-offline-edit',
-      actions: [
-        {
-          label: 'Edit offline',
-          run: () => {
-            try { sessionStorage.setItem(LIVE_OFFLINE_KEY, '1'); } catch { /* ignore */ }
-            location.reload();
-          },
-        },
-        { label: 'Keep waiting', run: () => {} },
-      ],
-    });
-  }
+  // The "can't reach Resolume" offer (Edit offline / Switch to Playground) is
+  // owned by `live-offers.ts` — it fires off the same `barrelConnection` state
+  // after a grace window, covering BOTH the initial connect timeout and a
+  // mid-session disconnect with a single unified sticky snackbar.
 
   // Pre-connect: show the last-cached copy for this browser's remembered
   // instance immediately, before we know whether the barrel will even
@@ -986,13 +965,11 @@ function connectBarrel(url: string) {
   };
   // Surface connection health for the shell's "switch to Playground?" offer.
   barrel.onOpen = () => {
-    if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
     appController.setBarrelConnectionState('open');
     subscribe();
   };
   barrel.onClose = () => appController.setBarrelConnectionState('closed');
   if (barrel.isOpen) {
-    if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
     appController.setBarrelConnectionState('open');
     subscribe();
   }
