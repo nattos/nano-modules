@@ -181,6 +181,10 @@ export type WorkerCommand =
   // while paused; the worker simulates one tick with a fixed nominal dt.
   | { type: 'stepFrame' }
   | { type: 'setSketchInput'; sketchId: string; bitmap: ImageBitmap | null }
+  // A single shared "test input" frame used as the fallback input for EVERY
+  // sketch that has no anchor and no per-sketch input — the offline/playground
+  // stand-in for Resolume's live layer feed. Pass null to clear.
+  | { type: 'setGlobalInput'; bitmap: ImageBitmap | null }
   // Bind a decoded frame to a specific instance's host-injected `frame` texture
   // field (the arrangement video pump → a `source.video.file` chain entry).
   // Keyed by the global instance key; pass null to clear.

@@ -75,6 +75,13 @@ export const STORE_PLAYGROUND = 'playgroundInstances';
  * separate from `playgroundInstances`: same shape, different environment.
  */
 export const STORE_LIVE_CACHE = 'liveCache';
+/**
+ * The single, global "test input" video for offline/playground mode — one
+ * `FileSystemFileHandle` (keyed 'current') the user picks to feed every running
+ * instance a stand-in for Resolume's live layer feed. Restored silently at app
+ * start. Shared browser-wide across all offline + playground instances.
+ */
+export const STORE_INPUT_VIDEO = 'inputVideo';
 
 /** Every store + its keyPath. `ensureStores` creates any that are missing. */
 const STORE_KEYPATHS: Record<string, string> = {
@@ -89,6 +96,7 @@ const STORE_KEYPATHS: Record<string, string> = {
   [STORE_MEDIA]: 'sourceKey',
   [STORE_LIBRARY]: 'id',
   [STORE_FIELD_DOCS]: 'key',
+  [STORE_INPUT_VIDEO]: 'id',
 };
 
 function ensureStores(db: IDBDatabase) {

@@ -376,6 +376,9 @@ async function handleCommand(cmd: WorkerCommand) {
       // it's available when that phase lands.
       handleSetSketchInput(cmd.sketchId, cmd.bitmap);
       break;
+    case 'setGlobalInput':
+      handleSetGlobalInput(cmd.bitmap);
+      break;
     case 'setInstanceTexture':
       handleSetInstanceTexture(cmd.instanceKey, cmd.bitmap);
       break;
@@ -704,6 +707,40 @@ async function stepOneFrame() {
  */
 const sketchInputTextures = new Map<string, { handle: number; width: number; height: number }>();
 
+/** A single shared "test input" frame (offline/playground stand-in for
+ *  Resolume's live feed). Uploaded once per pumped frame, then used as the
+ *  input fallback for every sketch lacking an anchor / per-sketch input. */
+let globalInputTexture: { handle: number; width: number; height: number } | null = null;
+
+function handleSetGlobalInput(bitmap: ImageBitmap | null) {
+  if (!bitmap) {
+    globalInputTexture = null;
+    markDirty();
+    return;
+  }
+  if (!gpuHost || !gpuDevice) {
+    bitmap.close();
+    return;
+  }
+  const w = bitmap.width;
+  const h = bitmap.height;
+  if (!globalInputTexture || globalInputTexture.width !== w || globalInputTexture.height !== h) {
+    const handle = gpuHost.createTexture(w, h, 1); // 1 = rgba8unorm
+    globalInputTexture = { handle, width: w, height: h };
+  }
+  const tex = gpuHost.getTextureByHandle(globalInputTexture.handle);
+  if (tex) {
+    gpuDevice.queue.copyExternalImageToTexture(
+      { source: bitmap, flipY: false },
+      { texture: tex },
+      { width: w, height: h },
+    );
+  }
+  bitmap.close();
+  // Per-frame video feed, not inspector state — no markDirty (same reasoning as
+  // handleSetSketchInput). The frame loop samples the latest texture each tick.
+}
+
 function handleSetSketchInput(sketchId: string, bitmap: ImageBitmap | null) {
   if (!bitmap) {
     sketchInputTextures.delete(sketchId);
@@ -891,6 +928,10 @@ async function simulateTick(dt: number, execDt: number = dt) {
     // User-injected input bitmap (drag-drop) takes priority over anchor.
     const userInput = sketchInputTextures.get(sketchId);
     if (userInput) inputHandle = userInput.handle;
+    // Global test-input video: fallback ONLY when this sketch has neither an
+    // anchor output nor its own per-sketch input (the offline/playground case,
+    // where Resolume's live layer feed is absent).
+    else if (inputHandle < 0 && globalInputTexture) inputHandle = globalInputTexture.handle;
 
     try {
       // Re-bind injected video textures AFTER the executor (re)creates this frame's

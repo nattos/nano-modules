@@ -45,6 +45,10 @@ import { instanceDisplayLabel } from './instance-labels';
 import { PLAYGROUND_ID_PREFIX } from './types';
 import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { SketchInputManager } from './sketch-input-manager';
+import { GlobalInputManager } from './global-input-manager';
+import {
+  rememberInputVideo, forgetInputVideo, restoreInputVideoFile,
+} from './input-video-store';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
  *  inspector — the field whose value the wire modulates. */
@@ -164,6 +168,16 @@ export class AppController {
    */
   private inputManager = new SketchInputManager(
     (sketchId, bitmap) => this.engine?.setSketchInput(sketchId, bitmap),
+  );
+
+  /**
+   * Drives the single global "test input" frame that feeds every running
+   * instance in offline/playground mode (the stand-in for Resolume's live
+   * layer feed). Its source file handle is persisted globally and restored at
+   * app start (`restoreGlobalInput`).
+   */
+  private globalInputManager = new GlobalInputManager(
+    (bitmap) => this.engine?.setGlobalInput(bitmap),
   );
 
   /**
@@ -2694,6 +2708,68 @@ export class AppController {
    */
   handleSketchInputDrop(sketchId: string, file: File): Promise<void> {
     return this.inputManager.handleDrop(sketchId, file);
+  }
+
+  // ---- Global "test input" video (offline / playground) -------------------
+
+  /**
+   * Prompt for a video/image file and use it as the single global test input
+   * fed to every running instance. Persists the picked `FileSystemFileHandle`
+   * globally so it re-loads at app start. Must run from a user gesture.
+   */
+  async pickGlobalInputVideo(): Promise<void> {
+    const picker = (window as any).showOpenFilePicker;
+    if (typeof picker !== 'function') {
+      console.warn('[global-input] File System Access API unavailable');
+      return;
+    }
+    let handle: FileSystemFileHandle;
+    try {
+      [handle] = await picker({
+        multiple: false,
+        types: [{
+          description: 'Video or image',
+          accept: { 'video/*': ['.mp4', '.mov', '.webm', '.dxv', '.avi'], 'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp'] },
+        }],
+      });
+    } catch {
+      return; // user cancelled
+    }
+    let file: File;
+    try {
+      file = await handle.getFile();
+    } catch (err) {
+      console.warn('[global-input] getFile failed', err);
+      return;
+    }
+    await rememberInputVideo(handle);
+    await this.globalInputManager.setSource(file, handle.name);
+    runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
+  }
+
+  /** Clear the global test input (input card's "clear" button). */
+  async clearGlobalInput(): Promise<void> {
+    this.globalInputManager.clear();
+    await forgetInputVideo();
+    runInAction(() => { appState.local.globalInputLabel = null; });
+  }
+
+  /**
+   * Re-load the remembered global input video at app start (offline/playground).
+   * Query-only permission (no prompt) — a previously-granted handle resolves
+   * silently; otherwise it stays cleared until the user re-picks.
+   */
+  async restoreGlobalInput(): Promise<void> {
+    let file: File | null;
+    try {
+      file = await restoreInputVideoFile({ prompt: false });
+    } catch (err) {
+      console.warn('[global-input] restore failed', err);
+      return;
+    }
+    if (!file) return;
+    await this.globalInputManager.setSource(file);
+    runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
   }
 
   /**

@@ -51,6 +51,7 @@ export class AppState {
     barrelDetected: false,
     readonly: false,
     liveOfflineMode: false,
+    globalInputLabel: null,
   };
 
   constructor() {

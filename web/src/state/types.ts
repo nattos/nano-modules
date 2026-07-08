@@ -385,6 +385,12 @@ export interface LocalState {
    * real Resolume counterpart to sync against either way).
    */
   liveOfflineMode: boolean;
+  /**
+   * Display name (file name) of the global "test input" video currently feeding
+   * every offline/playground instance, or null when none is loaded. Drives the
+   * input card's label + "clear" affordance. See `GlobalInputManager`.
+   */
+  globalInputLabel: string | null;
 }
 
 /**

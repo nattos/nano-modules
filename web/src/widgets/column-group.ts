@@ -40,6 +40,7 @@ import './scalar-slider';
 import './editable-number';
 import './output-trace-card';
 import './texture-drop-zone';
+import './global-input-control';
 import '../editors/envelope-field';   // <envelope-field> for the wire Envelope stage
 import './ui-icon';
 
@@ -1040,6 +1041,7 @@ export class ColumnGroup extends MobxLitElement {
           </div>
           ${canFormat && this.inputOptionsOpen ? this.renderOutputFormatOptions(fmt) : nothing}
           ${this.renderInputTraceCardRow(column)}
+          <global-input-control></global-input-control>
         </div>
         <texture-drop-zone .sketchId=${this.sketchId}></texture-drop-zone>
       </div>

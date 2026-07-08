@@ -134,6 +134,10 @@ async function bootPlaygroundMode(barrelUrl: string): Promise<void> {
   // immediately echoed back to the playground store.
   appController.enablePersistence();
 
+  // Re-load the remembered global "test input" video (offline/playground stand-in
+  // for Resolume's live feed) — silent, only if its handle permission survived.
+  void appController.restoreGlobalInput();
+
   // Quietly watch for Resolume coming up so the shell can offer Live mode.
   startBarrelProbe(barrelUrl);
 }
@@ -210,6 +214,10 @@ async function bootLiveOffline(barrelUrl: string): Promise<void> {
   console.log(`[live-cache] offline boot: loaded ${records.length} cached instance(s): [${records.map(r => `${r.key}${r.dirty ? '*' : ''}`).join(', ')}]`);
   appController.loadInitialLiveCacheInstances(records);
   appController.enablePersistence();
+
+  // Re-load the remembered global "test input" video (offline stand-in for
+  // Resolume's live feed) — silent, only if its handle permission survived.
+  void appController.restoreGlobalInput();
 
   if (!appState.local.userSettings.barrelRemoteEnabled) {
     snackbars.show({

@@ -197,6 +197,19 @@ export class EngineProxy {
     }
   }
 
+  /**
+   * Inject the shared "test input" frame used as the fallback input for every
+   * sketch without an anchor / per-sketch input (offline/playground). Pass
+   * `null` to clear. The bitmap is transferred (consumed on the main thread).
+   */
+  setGlobalInput(bitmap: ImageBitmap | null) {
+    if (bitmap) {
+      this.send({ type: 'setGlobalInput', bitmap }, [bitmap]);
+    } else {
+      this.send({ type: 'setGlobalInput', bitmap: null });
+    }
+  }
+
   /** Bind a decoded frame to an instance's host `frame` field (null to clear). */
   setInstanceTexture(instanceKey: string, bitmap: ImageBitmap | null) {
     if (bitmap) {

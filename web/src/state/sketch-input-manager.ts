@@ -23,6 +23,7 @@ import { GPUHost } from '../gpu-host';
 import { VideoPlaybackService, type ClipHandle } from '../video/playback-service';
 import { Playhead, defaultParams } from '../video/playhead-controllers';
 import { FrameBlitter } from '../video/frame-blitter';
+import { getMainThreadVideoStack } from '../video/main-thread-video-stack';
 
 /** Default playback rate for the IDE's looping preview. The frame
  *  sources don't expose an exact source fps, so we drive the loop at a
@@ -80,22 +81,11 @@ export class SketchInputManager {
 
   private ensureService(): Promise<VideoPlaybackService> {
     if (this.servicePromise) return this.servicePromise;
-    this.servicePromise = (async () => {
-      const adapter = await navigator.gpu?.requestAdapter();
-      if (!adapter) throw new Error('no WebGPU adapter for video playback');
-      const required: GPUFeatureName[] = [];
-      // DXV's BC1 fast path needs this; harmless when the host lacks it
-      // (only the DXV codec is then unavailable — <video> formats still work).
-      if (adapter.features.has('texture-compression-bc')) {
-        required.push('texture-compression-bc');
-      }
-      const device = await adapter.requestDevice({ requiredFeatures: required });
-      this.gpuHost = new GPUHost(device, 'rgba8unorm');
-      this.blitter = new FrameBlitter(device);
-      // Absolute path: the dev server (and the built app) serve /wasm/
-      // at the root regardless of which page loaded the module.
-      return new VideoPlaybackService(this.gpuHost, { dxvWasmUrl: '/wasm/dxv_decoder.wasm' });
-    })();
+    this.servicePromise = getMainThreadVideoStack().then(({ service, gpuHost, blitter }) => {
+      this.gpuHost = gpuHost;
+      this.blitter = blitter;
+      return service;
+    });
     return this.servicePromise;
   }
 
