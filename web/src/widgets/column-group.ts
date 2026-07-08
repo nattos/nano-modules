@@ -348,6 +348,14 @@ export class ColumnGroup extends MobxLitElement {
     .cat-chip:hover { background: var(--app-tint-3); }
     .cat-chip:active { background: var(--app-tint-4); }
     .cat-chip ui-icon { --icon-size: 12px; color: var(--chip, var(--app-text-color2)); }
+    /* The top-level "New" chip — the primary insert action, tinted with the
+     * selection accent so it stands apart from the per-category chips. */
+    .cat-chip--new {
+      --chip: var(--app-hi-color2, #4169E1);
+      background: var(--device-sel-bg);
+      font-weight: 600;
+    }
+    .cat-chip--new ui-icon { color: var(--app-hi-color2, #4169E1); }
     .column-placeholder {
       border: 1px dashed var(--app-tint-3);
       border-radius: 1px;
@@ -2507,6 +2515,14 @@ export class ColumnGroup extends MobxLitElement {
     }
     return html`
       <div class="insert-header">
+        <button
+          class="cat-chip cat-chip--new"
+          title="Insert an effect (pick any type) — or drag to a position"
+          @pointerdown=${(e: PointerEvent) => this.onNewChipPointerDown(e)}
+        >
+          <ui-icon icon="la-plus"></ui-icon>
+          <span>New</span>
+        </button>
         ${cats.map((cat) => html`
           <button
             class="cat-chip"
@@ -2545,20 +2561,29 @@ export class ColumnGroup extends MobxLitElement {
     return has(CATEGORY_FALLBACK) ? CATEGORY_FALLBACK : (avail[0]?.id ?? CATEGORY_FALLBACK);
   }
 
+  /** Placeholder effect id for a top-level ("New") insert — brightness/contrast
+   *  when present (a neutral, obviously-visual default), else the first
+   *  available effect. */
+  private newDefaultType(): string {
+    const avail = this.ds.availableEffects;
+    if (avail.some((e) => e.id === CATEGORY_FALLBACK)) return CATEGORY_FALLBACK;
+    return avail[0]?.id ?? CATEGORY_FALLBACK;
+  }
+
   /**
-   * Begin inserting a new effect for a category — seeds the category default
-   * and opens the smart-input drilled into "<category>." so the user picks
-   * the exact effect within that category. The whole insertion rides one long
-   * edit: Escape backs it out entirely (no undo point); clicking away or
+   * Begin inserting a new effect — seeds a placeholder `defaultType` and opens
+   * the smart-input primed with `prefill` (`"<category>."` to drill into a
+   * category, `""` to start at the top level). The whole insertion rides one
+   * long edit: Escape backs it out entirely (no undo point); clicking away or
    * committing a pick accepts the current type as a single "Add <type>" undo
    * point — see handleTypeCancel/handleTypeCommit.
    */
-  private insertCategoryEffectAt(category: string, insertIdx: number) {
+  private beginInsertAt(insertIdx: number, defaultType: string, prefill: string) {
     this.finishPendingEdit();
     const { edit, instanceKey } = this.ctl.beginInsertEffect(
-      this.sketchId, this.colIdx, insertIdx, this.categoryDefault(category));
+      this.sketchId, this.colIdx, insertIdx, defaultType);
     this.typeLongEdit = edit;
-    this.insertCtx = { instanceKey, insertIdx, prefill: `${category}.` };
+    this.insertCtx = { instanceKey, insertIdx, prefill };
     this.editingTypeChainIdx = insertIdx;
     this.editSession++;
     this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${insertIdx}`);
@@ -2571,12 +2596,24 @@ export class ColumnGroup extends MobxLitElement {
     });
   }
 
+  /** Insert drilled into a category (smart-input prefilled with "<category>."). */
+  private insertCategoryEffectAt(category: string, insertIdx: number) {
+    this.beginInsertAt(insertIdx, this.categoryDefault(category), `${category}.`);
+  }
+
+  /** Insert at the top level — the smart-input opens with the full effect list
+   *  (no category drill-down) and a brightness/contrast placeholder. */
+  private insertNewEffectAt(insertIdx: number) {
+    this.beginInsertAt(insertIdx, this.newDefaultType(), '');
+  }
+
   // ── Self-contained drag (caps.reorder): drag a chip to insert at a position,
   //    or drag a card header to reorder. Shows the insert cursor while dragging. ──
   private drag: {
     kind: 'card' | 'chip';
     from: number;           // card: source chainIdx; chip: -1
-    category?: string;      // chip: which category
+    category?: string;      // chip: which category (absent ⇒ top-level "New")
+    topLevel?: boolean;     // chip: insert from the top level (the "New" chip)
     startX: number; startY: number;
     active: boolean;        // crossed the move threshold
     targetIdx: number;      // current insertion index under the pointer
@@ -2587,11 +2624,18 @@ export class ColumnGroup extends MobxLitElement {
     this.startDrag(e, { kind: 'chip', from: -1, category });
   }
 
+  /** The top-level "New" chip — same gesture as a category chip, but the
+   *  insertion opens at the top of the effect list rather than a category. */
+  private onNewChipPointerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    this.startDrag(e, { kind: 'chip', from: -1, topLevel: true });
+  }
+
   private beginCardDrag(e: PointerEvent, chainIdx: number) {
     this.startDrag(e, { kind: 'card', from: chainIdx });
   }
 
-  private startDrag(e: PointerEvent, partial: { kind: 'card' | 'chip'; from: number; category?: string }) {
+  private startDrag(e: PointerEvent, partial: { kind: 'card' | 'chip'; from: number; category?: string; topLevel?: boolean }) {
     this.drag = { ...partial, startX: e.clientX, startY: e.clientY, active: false, targetIdx: -1 };
     const move = (ev: PointerEvent) => this.onDragMove(ev);
     const up = (ev: PointerEvent) => {
@@ -2610,6 +2654,13 @@ export class ColumnGroup extends MobxLitElement {
       if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 4) return;
       d.active = true;
       if (d.kind === 'card') this.markDragging(d.from, true);
+    }
+    // Dragging a NEW effect (chip) out of the sketch column area cancels the
+    // insertion — clear the target and hide the marker so a drop does nothing.
+    if (d.kind === 'chip' && !this.isPointerInSketchArea(e.clientX, e.clientY)) {
+      d.targetIdx = -1;
+      this.hideInsertMarker();
+      return;
     }
     const pts = this.getInsertionPoints();
     if (pts.length === 0) return;
@@ -2633,15 +2684,33 @@ export class ColumnGroup extends MobxLitElement {
     if (!d.active) {
       // A plain click (no drag): a chip inserts at the default point; a card
       // header just selects (already handled on pointerdown).
-      if (d.kind === 'chip' && d.category) this.insertCategoryEffectAt(d.category, this.computeInsertIdx());
+      if (d.kind === 'chip') this.insertFromChip(d, this.computeInsertIdx());
       return;
     }
+    // targetIdx stays -1 when a chip was released outside the sketch area — the
+    // drag is cancelled, insert nothing.
     if (d.targetIdx < 0) return;
-    if (d.kind === 'chip' && d.category) {
-      this.insertCategoryEffectAt(d.category, d.targetIdx);
+    if (d.kind === 'chip') {
+      this.insertFromChip(d, d.targetIdx);
     } else if (d.kind === 'card' && d.from !== d.targetIdx && d.from + 1 !== d.targetIdx) {
       this.ctl.moveEffect?.(this.sketchId, this.colIdx, d.from, d.targetIdx);
     }
+  }
+
+  /** Dispatch a chip drop to the right insert flow: top-level "New" vs. a
+   *  specific category. */
+  private insertFromChip(d: { topLevel?: boolean; category?: string }, insertIdx: number) {
+    if (d.topLevel) this.insertNewEffectAt(insertIdx);
+    else if (d.category) this.insertCategoryEffectAt(d.category, insertIdx);
+  }
+
+  /** Bounding rect of the visible sketch column area (the host columns-view),
+   *  used to cancel a chip drag released outside it. */
+  private isPointerInSketchArea(x: number, y: number): boolean {
+    const root = this.getRootNode();
+    const host = root instanceof ShadowRoot ? (root.host as HTMLElement) : null;
+    const rect = (host ?? this).getBoundingClientRect();
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
   }
 
   private markDragging(chainIdx: number, on: boolean) {
