@@ -261,6 +261,11 @@ function connectBarrel(url: string) {
   // same key) share one IndexedDB read.
   let resolvedKey: string | null = null;
   let dialogKey: string | null = null;
+  // Latest canonical seen while `dialogKey` is open — a later, more complete
+  // snapshot can arrive and update the dialog's display (see below); the
+  // eventual resolve must apply that latest value, not whatever was current
+  // when the dialog first opened.
+  let dialogCanonical: Sketch | null = null;
   const cacheLoadByKey = new Map<string, Promise<LiveCacheRecord | undefined>>();
   const getCacheLoad = (key: string) => {
     let p = cacheLoadByKey.get(key);
@@ -405,7 +410,18 @@ function connectBarrel(url: string) {
       appController.editSketch(forKey);
       return;
     }
-    if (dialogKey === forKey) return;  // already asking the user about this key
+    if (dialogKey === forKey) {
+      // A dialog is already open for this key — a later, more complete
+      // snapshot (e.g. the first `/plugins/<key>/state` fired before its
+      // `sketch` field was populated) must still update what's on screen,
+      // not be dropped, or the dialog is stuck showing "0 effects · 0 wires".
+      const cachedForDialog = await getCacheLoad(forKey);
+      if (forKey !== currentKey || dialogKey !== forKey) return;
+      const decision = reconcileDecision({ cached: cachedForDialog ?? null, canonical });
+      dialogCanonical = canonical;
+      reconcileStore.updateCanonical(forKey, canonical, decision.recommended);
+      return;
+    }
 
     const cached = await getCacheLoad(forKey);
     if (forKey !== currentKey) return;  // superseded while awaiting the cache load
@@ -426,6 +442,7 @@ function connectBarrel(url: string) {
     // Conflict — keep showing the cached copy already on screen, stay
     // readonly, and withhold the pusher until the user decides.
     dialogKey = forKey;
+    dialogCanonical = canonical;
     reconcileStore.open({
       instanceKey: forKey,
       instanceLabel: label,
@@ -433,19 +450,24 @@ function connectBarrel(url: string) {
       canonical,
       recommended: decision.recommended,
       onResolve: (choice) => {
+        // Apply whatever canonical was last seen while the dialog was open
+        // (it may have been refreshed after the initial, possibly-incomplete
+        // snapshot), not the value captured when the dialog first opened.
+        const resolvedCanonical = dialogCanonical ?? canonical;
         if (choice === 'keep-cached') {
           wirePusher(forKey);
           appController.forcePushBarrelSketch();
           void saveLiveCacheInstance(forKey, label, cached!.sketch, false);
         } else {
-          appController.setBarrelSketch(forKey, canonical);
+          appController.setBarrelSketch(forKey, resolvedCanonical);
           appController.editSketch(forKey);
-          void saveLiveCacheInstance(forKey, label, canonical, false);
+          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false);
           wirePusher(forKey);
         }
         appController.setReadonly(false);
         resolvedKey = forKey;
         dialogKey = null;
+        dialogCanonical = null;
       },
     });
   };

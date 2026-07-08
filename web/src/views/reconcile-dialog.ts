@@ -43,6 +43,21 @@ class ReconcileStore {
     runInAction(() => { this.request = request; });
   }
 
+  /**
+   * Refresh the canonical side of an already-open dialog in place — the
+   * first `/plugins/<key>/state` snapshot can arrive before its `sketch`
+   * field is populated (the barrel is still decoding the persisted config),
+   * so a later, more complete snapshot for the same key must update what's
+   * on screen instead of being silently dropped.
+   */
+  updateCanonical(key: string, canonical: Sketch, recommended: RecencySide) {
+    runInAction(() => {
+      if (this.request && this.request.instanceKey === key) {
+        this.request = { ...this.request, canonical, recommended };
+      }
+    });
+  }
+
   resolve(choice: 'keep-cached' | 'keep-canonical') {
     const req = this.request;
     if (!req) return;
@@ -211,8 +226,8 @@ export class ReconcileDialog extends MobxLitElement {
           </div>
         </div>
         <div class="actions">
-          <button @click=${() => reconcileStore.resolve('keep-canonical')}>Keep Resolume's version</button>
           <button @click=${() => reconcileStore.resolve('keep-cached')}>Keep my copy</button>
+          <button @click=${() => reconcileStore.resolve('keep-canonical')}>Keep Resolume's version</button>
         </div>
       </div>
     `;
