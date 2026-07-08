@@ -2212,12 +2212,15 @@ export class AppController {
     if (has(appState.local.selectedBarrelKey)) return;  // keep current
 
     let next: string | null = null;
+    let source = 'none';
     try {
       const saved = localStorage.getItem(this.selectedKeyStorageKey());
-      if (has(saved)) next = saved;
+      if (has(saved)) { next = saved; source = 'localStorage'; }
+      else if (saved) console.log(`[live-cache] setBarrelInstances: saved key=${saved} not in current list [${list.map(i => i.key).join(', ')}]`);
     } catch { /* ignore */ }
-    if (!next && list.length > 0) next = list[0].key;
+    if (!next && list.length > 0) { next = list[0].key; source = 'first-in-list'; }
 
+    console.log(`[live-cache] setBarrelInstances: selecting key=${next ?? '(none)'} (source=${source})`);
     if (next) this.selectBarrelInstance(next);
     else runInAction(() => { appState.local.selectedBarrelKey = null; });
   }
