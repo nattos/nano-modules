@@ -58,6 +58,15 @@ TEST_CASE("BridgeServer locates a barrel via a fake Resolume", "[instance_locato
   REQUIRE_FALSE(resolume.is_null());
   CHECK(resolume["default_name"] == "Layer 1 \xC2\xB7 NanoBarrel");
   CHECK(resolume["location"] == "/layers/0/clips/0/video/effects/0");
+  // Structured placement drives the web Instances-tab row organization.
+  REQUIRE(resolume.contains("placement"));
+  const json& pl = resolume["placement"];
+  CHECK(pl["scope"] == "clip");
+  CHECK(pl["track_index"] == 0);
+  CHECK(pl["track_name"] == "Layer 1");
+  CHECK(pl["clip_index"] == 0);
+  CHECK(pl["clip_name"] == "NanoBarrel");
+  CHECK(pl["chain_index"] == 0);
 }
 
 TEST_CASE("BridgeServer publishes composition_barrel_ids for an UNREGISTERED (unlaunched) barrel",
@@ -110,6 +119,12 @@ TEST_CASE("BridgeServer publishes composition_barrel_ids for an UNREGISTERED (un
   // label its card without a live plugin registration.
   CHECK(entry["name"] == "Layer 1 \xC2\xB7 NanoBarrel");
   CHECK(entry["location"] == "/layers/0/clips/0/video/effects/0");
+  // The unlaunched placeholder carries the same structured placement so the
+  // offline/live Instances tab can slot it into the right composition row.
+  REQUIRE(entry.contains("placement"));
+  CHECK(entry["placement"]["scope"] == "clip");
+  CHECK(entry["placement"]["track_name"] == "Layer 1");
+  CHECK(entry["placement"]["clip_index"] == 0);
 }
 
 namespace {

@@ -131,6 +131,58 @@ std::string expand_hash(const std::string& name, int ordinal) {
   return out;
 }
 
+// Display names for a placement's track / clip / group, with '#' expanded and a
+// numbered fallback when Resolume gave no name. Shared by default_name_for and
+// placement_json so the composed name and the structured fields agree.
+std::string track_display(const BarrelPlacement& p) {
+  std::string n = expand_hash(p.layer_name, p.layer_index + 1);
+  return n.empty() ? "Layer " + std::to_string(p.layer_index + 1) : n;
+}
+std::string clip_display(const BarrelPlacement& p) {
+  std::string n = expand_hash(p.clip_name, p.clip_index + 1);
+  return n.empty() ? "Clip " + std::to_string(p.clip_index + 1) : n;
+}
+std::string group_display(const BarrelPlacement& p) {
+  std::string n = expand_hash(p.group_name, p.group_index + 1);
+  return n.empty() ? "Group " + std::to_string(p.group_index + 1) : n;
+}
+
+// Structured placement fields the web Instances tab uses to organize cards into
+// composition-ordered rows (one per group / track, plus a "Main" row for
+// composition effects). Carries pre-resolved display names + array indices so
+// the web renders row headers directly without re-deriving them from `location`.
+// Only the fields relevant to the scope are present. Published alongside the
+// resolved default name in BOTH `set_plugin_resolume_info` (launched instances,
+// via `/global/plugins[].resolume`) and `/global/composition_barrel_ids`
+// (unlaunched placeholders).
+nlohmann::json placement_json(const BarrelPlacement& p) {
+  nlohmann::json j;
+  switch (p.scope) {
+    case PlacementScope::Clip:
+      j["scope"] = "clip";
+      j["track_index"] = p.layer_index;
+      j["track_name"] = track_display(p);
+      j["clip_index"] = p.clip_index;
+      j["clip_name"] = clip_display(p);
+      break;
+    case PlacementScope::Layer:
+      j["scope"] = "layer";
+      j["track_index"] = p.layer_index;
+      j["track_name"] = track_display(p);
+      break;
+    case PlacementScope::Group:
+      j["scope"] = "group";
+      j["group_index"] = p.group_index;
+      j["group_name"] = group_display(p);
+      break;
+    case PlacementScope::Composition:
+      j["scope"] = "composition";
+      break;
+  }
+  if (p.chain_index >= 0) j["chain_index"] = p.chain_index;
+  return j;
+}
+
 }  // namespace
 
 std::vector<BarrelPlacement> InstanceLocator::enumerate(const json& comp) {
@@ -241,21 +293,12 @@ std::string InstanceLocator::resolve_sketch(const std::string& config_value) {
 
 std::string InstanceLocator::default_name_for(const BarrelPlacement& p) {
   switch (p.scope) {
-    case PlacementScope::Clip: {
-      std::string layer = expand_hash(p.layer_name, p.layer_index + 1);
-      if (layer.empty()) layer = "Layer " + std::to_string(p.layer_index + 1);
-      std::string clip = expand_hash(p.clip_name, p.clip_index + 1);
-      if (clip.empty()) clip = "Clip " + std::to_string(p.clip_index + 1);
-      return layer + " \xC2\xB7 " + clip;  // U+00B7 MIDDLE DOT
-    }
-    case PlacementScope::Layer: {
-      std::string n = expand_hash(p.layer_name, p.layer_index + 1);
-      return n.empty() ? "Layer " + std::to_string(p.layer_index + 1) : n;
-    }
-    case PlacementScope::Group: {
-      std::string n = expand_hash(p.group_name, p.group_index + 1);
-      return n.empty() ? "Group " + std::to_string(p.group_index + 1) : n;
-    }
+    case PlacementScope::Clip:
+      return track_display(p) + " \xC2\xB7 " + clip_display(p);  // U+00B7 MIDDLE DOT
+    case PlacementScope::Layer:
+      return track_display(p);
+    case PlacementScope::Group:
+      return group_display(p);
     case PlacementScope::Composition:
       return p.comp_name.empty() ? std::string("Composition") : p.comp_name;
   }
@@ -308,7 +351,8 @@ void InstanceLocator::update(const json& comp, StateDocument& doc,
     std::string name = default_name_for(p);
     auto prev = published_names_.find(uuid);
     if (prev != published_names_.end() && prev->second == name) continue;  // unchanged
-    json info = {{"default_name", name}, {"location", p.path}};
+    json info = {{"default_name", name}, {"location", p.path},
+                 {"placement", placement_json(p)}};
     if (doc.set_plugin_resolume_info(uuid, info)) {
       published_names_[uuid] = name;
     }
@@ -347,7 +391,8 @@ void InstanceLocator::update(const json& comp, StateDocument& doc,
       if (p.config_kind != ConfigKind::Barrel) continue;
       barrels.push_back({{"uuid", uuid},
                          {"name", default_name_for(p)},
-                         {"location", p.path}});
+                         {"location", p.path},
+                         {"placement", placement_json(p)}});
     }
     if (barrels != last_published_composition_barrels_) {
       doc.set_at("/global/composition_barrel_ids", barrels);
