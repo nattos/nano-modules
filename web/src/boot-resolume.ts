@@ -31,7 +31,7 @@ import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
 import {
   loadLiveCacheInstance, loadAllLiveCacheInstances, saveLiveCacheInstance,
-  deleteLiveCacheInstance, type LiveCacheRecord,
+  type LiveCacheRecord,
 } from './state/live-cache-store';
 import { reconcileDecision } from './state/live-reconcile';
 import { reconcileStore } from './views/reconcile-dialog';
@@ -219,44 +219,6 @@ async function bootLiveOffline(barrelUrl: string): Promise<void> {
   // Quietly watch for Resolume coming up, same as Playground — offers
   // switching to (actually connected) Live once detected.
   startBarrelProbe(barrelUrl);
-}
-
-/**
- * Delete any cached Live instance whose key is no longer among the barrel's
- * currently-reported instances. Called every time `/global/plugins` is
- * (re)published — cheap (one IDB scan) and keeps offline mode's "every
- * cached instance" list from accumulating ghosts forever (nothing else ever
- * prunes `liveCache`).
- *
- * Only prunes CLEAN rows (`dirty:false`) — a `dirty` row holds offline edits
- * that were never confirmed pushed/matched; its key vanishing from the live
- * list (deleted instance, or the plugin never persisted a stable UUID — see
- * `project_barrel_stable_uuid_keys` — and re-minted one) is exactly the case
- * reconciliation exists for, so silently discarding it would lose real user
- * work. Those are left in place and logged instead.
- */
-async function pruneStaleLiveCache(liveKeys: string[]): Promise<void> {
-  const live = new Set(liveKeys);
-  let all: LiveCacheRecord[];
-  try {
-    all = await loadAllLiveCacheInstances();
-  } catch (err) {
-    console.warn('[live-cache] prune: failed to load cache for scan', err);
-    return;
-  }
-  for (const r of all) {
-    if (live.has(r.key)) continue;
-    if (r.dirty) {
-      console.warn(`[live-cache] stale+dirty cached instance key=${r.key} label=${r.label} — not in current /global/plugins, keeping (has unresolved offline edits)`);
-      continue;
-    }
-    console.log(`[live-cache] pruning stale cached instance key=${r.key} label=${r.label} — not in current /global/plugins`);
-    try {
-      await deleteLiveCacheInstance(r.key);
-    } catch (err) {
-      console.warn('[live-cache] prune: failed to delete', r.key, err);
-    }
-  }
 }
 
 /**
@@ -649,19 +611,20 @@ function connectBarrel(url: string) {
   // it calls back here to rewire the transport.
   appController.setBarrelSelectHandler(wireInstance);
 
-  // Maintain the live instance list from /global/plugins. This is the one
-  // authoritative source of "which barrel instance keys actually exist right
-  // now" — any `liveCache` row whose key ISN'T in it belongs to an instance
-  // that no longer exists upstream (deleted, or the plugin never persisted a
-  // stable UUID — see `project_barrel_stable_uuid_keys` — and re-minted one
-  // on this launch). Nothing can ever reconcile such a row again, so prune it
-  // rather than let it accumulate as a ghost "instance" in offline mode.
+  // Maintain the live instance list from /global/plugins. Deliberately does
+  // NOT prune `liveCache` rows whose key drops out of this list: instances
+  // unregister one at a time (observed during a Resolume shutdown: 4 → 2 → 1
+  // → 0 over several publishes before the socket even closes), so an absent
+  // key is not reliable evidence the instance is gone for good — treating it
+  // as such deleted the offline safety net at exactly the moment (Resolume
+  // closing) it exists to protect against. Stale rows just sit in IndexedDB
+  // unused; a future manual "forget this instance" action would be a safer
+  // place for cleanup than an automatic one keyed off this snapshot.
   barrel.onSnapshot('/global/plugins', (arr) => {
     (window as any).__barrelInstances = arr;
     const instances = parseInstances(arr);
     console.log(`[live-cache] /global/plugins: ${instances.length} instance(s): [${instances.map(i => i.key).join(', ')}]`);
     appController.setBarrelInstances(instances);
-    void pruneStaleLiveCache(instances.map((i) => i.key));
   });
 
   // Sidechannel-bus channel metadata (channel → writer plugin key + size),
