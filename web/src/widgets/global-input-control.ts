@@ -63,23 +63,39 @@ export class GlobalInputControl extends MobxLitElement {
     if (!eligible) return nothing;
 
     const label = local.globalInputLabel;
-    if (!label) {
+    if (label) {
       return html`<div class="row">
-        <button title="Load a local video/image as a test input for every instance"
+        <span class="name" title=${label}>▶ ${label}</span>
+        <button class="clear" title="Remove the test input"
           @pointerdown=${(e: Event) => e.stopPropagation()}
-          @click=${this.onLoad}>Load test input…</button>
+          @click=${this.onClear}>Clear</button>
       </div>`;
     }
+
+    // Remembered from a previous session but its handle needs a fresh grant.
+    const relink = local.globalInputRelink;
+    if (relink) {
+      return html`<div class="row">
+        <button title="Re-grant access to the last test input"
+          @pointerdown=${(e: Event) => e.stopPropagation()}
+          @click=${this.onRelink}>Reconnect ${relink}</button>
+        <button class="clear" title="Forget it"
+          @pointerdown=${(e: Event) => e.stopPropagation()}
+          @click=${this.onDismiss}>✕</button>
+      </div>`;
+    }
+
     return html`<div class="row">
-      <span class="name" title=${label}>▶ ${label}</span>
-      <button class="clear" title="Remove the test input"
+      <button title="Load a local video/image as a test input for every instance"
         @pointerdown=${(e: Event) => e.stopPropagation()}
-        @click=${this.onClear}>Clear</button>
+        @click=${this.onLoad}>Load test input…</button>
     </div>`;
   }
 
   private onLoad = (e: Event) => { e.stopPropagation(); void appController.pickGlobalInputVideo(); };
   private onClear = (e: Event) => { e.stopPropagation(); void appController.clearGlobalInput(); };
+  private onRelink = (e: Event) => { e.stopPropagation(); void appController.relinkGlobalInput(); };
+  private onDismiss = (e: Event) => { e.stopPropagation(); void appController.dismissGlobalInputRelink(); };
 }
 
 declare global {

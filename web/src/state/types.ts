@@ -391,6 +391,13 @@ export interface LocalState {
    * input card's label + "clear" affordance. See `GlobalInputManager`.
    */
   globalInputLabel: string | null;
+  /**
+   * File name of a remembered global test input that couldn't be re-opened
+   * silently at boot (its handle needs a fresh permission grant), or null. When
+   * set, the input card offers a one-click "Reconnect <name>" (see
+   * `appController.relinkGlobalInput`). Cleared once reconnected or forgotten.
+   */
+  globalInputRelink: string | null;
 }
 
 /**

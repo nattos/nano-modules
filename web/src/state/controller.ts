@@ -47,7 +47,7 @@ import { instanceKeyFromThumbTraceId, isSidechannelThumbTraceId, LIVE_OFFLINE_KE
 import { SketchInputManager } from './sketch-input-manager';
 import { GlobalInputManager } from './global-input-manager';
 import {
-  rememberInputVideo, forgetInputVideo, restoreInputVideoFile,
+  rememberInputVideo, forgetInputVideo, restoreInputVideoFile, rememberedInputVideoLabel,
 } from './input-video-store';
 
 /** Selectable path for a wire. Selecting it shows the dest (reader) field's
@@ -2742,17 +2742,21 @@ export class AppController {
       console.warn('[global-input] getFile failed', err);
       return;
     }
-    await rememberInputVideo(file, handle);
+    await rememberInputVideo(handle);
     await this.globalInputManager.setSource(file, handle.name);
-    runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
+    runInAction(() => {
+      appState.local.globalInputLabel = this.globalInputManager.label;
+      appState.local.globalInputRelink = null;
+    });
   }
 
   /**
    * A file dropped on the input card (offline/playground) becomes the global
-   * test input — persisted (as bytes) exactly like the picker, so it survives
-   * reload. A dropped `FileSystemFileHandle` (Chromium) is stored too as a
-   * re-link hint. Both are captured synchronously by the drop zone since the
-   * DataTransfer is transient.
+   * test input. A dropped `FileSystemFileHandle` (Chromium) is persisted as a
+   * relocatable ref so it re-loads across reloads — the file's bytes are NOT
+   * copied into IDB. A handle-less drop still feeds the input for this session
+   * but can't be remembered. Both are captured synchronously by the drop zone
+   * since the DataTransfer is transient.
    */
   async dropGlobalInput(file: File | null, handlePromise: Promise<FileSystemHandle | null> | null): Promise<void> {
     let handle: FileSystemFileHandle | null = null;
@@ -2765,33 +2769,75 @@ export class AppController {
     let f = file;
     if (handle) { try { f = await handle.getFile(); } catch { /* keep dropped file */ } }
     if (!f) return;
-    await rememberInputVideo(f, handle ?? undefined);
+    if (handle) await rememberInputVideo(handle);
+    else await forgetInputVideo();  // no handle → nothing durable to remember
     await this.globalInputManager.setSource(f, f.name);
-    runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
+    runInAction(() => {
+      appState.local.globalInputLabel = this.globalInputManager.label;
+      appState.local.globalInputRelink = null;
+    });
   }
 
   /** Clear the global test input (input card's "clear" button). */
   async clearGlobalInput(): Promise<void> {
     this.globalInputManager.clear();
     await forgetInputVideo();
-    runInAction(() => { appState.local.globalInputLabel = null; });
+    runInAction(() => {
+      appState.local.globalInputLabel = null;
+      appState.local.globalInputRelink = null;
+    });
   }
 
   /**
-   * Re-load the remembered global input video at app start (offline/playground)
-   * from its stored bytes — no permission prompt needed.
+   * Re-load the remembered global input video at app start (offline/playground).
+   * Tries a SILENT resolve (library-relative refs, or handles the browser
+   * persisted); if the handle merely needs a fresh permission grant, surfaces a
+   * one-click "Reconnect" affordance instead of silently dropping it.
    */
   async restoreGlobalInput(): Promise<void> {
-    let file: File | null;
+    let file: File | null = null;
     try {
-      file = await restoreInputVideoFile();
+      file = await restoreInputVideoFile({ prompt: false });
     } catch (err) {
       console.warn('[global-input] restore failed', err);
+    }
+    if (!file) {
+      // Remembered but not silently reachable → offer a gesture-driven re-link.
+      const label = await rememberedInputVideoLabel();
+      if (label) runInAction(() => { appState.local.globalInputRelink = label; });
       return;
     }
-    if (!file) return;
     await this.globalInputManager.setSource(file);
-    runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
+    runInAction(() => {
+      appState.local.globalInputLabel = this.globalInputManager.label;
+      appState.local.globalInputRelink = null;
+    });
+  }
+
+  /**
+   * Re-grant access to a remembered global input whose handle lost permission
+   * across reload — prompts (must run from a user gesture, i.e. the input
+   * card's "Reconnect" button), then loads it. Forgets it if the file is gone.
+   */
+  async relinkGlobalInput(): Promise<void> {
+    let file: File | null = null;
+    try {
+      file = await restoreInputVideoFile({ prompt: true });
+    } catch (err) {
+      console.warn('[global-input] relink failed', err);
+    }
+    if (!file) return; // declined / gone — keep the offer for another try
+    await this.globalInputManager.setSource(file);
+    runInAction(() => {
+      appState.local.globalInputLabel = this.globalInputManager.label;
+      appState.local.globalInputRelink = null;
+    });
+  }
+
+  /** Dismiss a pending re-link offer and forget the remembered input. */
+  async dismissGlobalInputRelink(): Promise<void> {
+    await forgetInputVideo();
+    runInAction(() => { appState.local.globalInputRelink = null; });
   }
 
   /**

@@ -52,6 +52,7 @@ export class AppState {
     readonly: false,
     liveOfflineMode: false,
     globalInputLabel: null,
+    globalInputRelink: null,
   };
 
   constructor() {
