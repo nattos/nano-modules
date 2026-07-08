@@ -98,6 +98,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   NanoBarrelPlugin() : CFFGLPlugin() {
     BARREL_LOG("ctor", "this=%p", (void*)this);
 
+    // Bring the shared bridge server up NOW — this ctor runs for Resolume's
+    // param-scan prototype at launch, so the server (WS + composition scan)
+    // starts at launch instead of waiting on the first clip. Cheap; no WAMR.
+    // See ensureSharedServerStarted().
+    ensureSharedServerStarted();
+
     SetMinInputs(1);
     SetMaxInputs(1);
     SetTimeSupported(true);
@@ -127,11 +133,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // static (config + 16 macros), so the prototype scan needs nothing more
     // than the SetParamInfo calls above.
     //
-    // The bridge server ITSELF may be acquired earlier than InitGL, though:
-    // SetTextParameter's cold-start restore calls ensureRegistered() as soon
-    // as a genuine persisted config arrives, registering this instance's
-    // identity + state-doc entry (cheap — no WASM/effect loading) so it's
-    // visible in the editor's Instances list before its clip is ever
+    // The bridge server ITSELF starts even earlier — at THIS ctor, via
+    // ensureSharedServerStarted() above, so the shared WS server + Resolume
+    // composition scan is running from launch (even for the throwaway
+    // prototype, which never reaches InitGL or SetTextParameter). This
+    // instance's own IDENTITY registration is still deferred to the first
+    // genuine persisted config: SetTextParameter's cold-start restore calls
+    // ensureRegistered() (cheap — no WASM/effect loading) so a real instance
+    // is visible in the editor's Instances list before its clip is ever
     // launched. See ensureRegistered()/setupBridge() for the split.
 
     // Stash the persisted payload (envelope JSON) for InitGL to apply once the
@@ -471,6 +480,41 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     auto slash = p.rfind('/');
     if (slash != std::string::npos) p = p.substr(0, slash + 1);
     return p + "libbridge_server.dylib";
+  }
+
+  // Start the shared bridge server as EARLY as possible — at Resolume launch,
+  // long before any clip is launched. Resolume constructs a throwaway
+  // PROTOTYPE of every FFGL plugin at startup (to enumerate params); every
+  // NanoBarrel ctor (prototype included) calls this, so the shared WS server +
+  // Resolume composition scan is up from the moment Resolume starts. That
+  // makes /global/composition_barrel_ids populate as soon as a composition
+  // loads (→ the editor's pre-launch placeholder cards) without waiting for a
+  // real instance to register.
+  //
+  // Held via a process-lifetime keepalive ref (acquired ONCE, NEVER released),
+  // so the server's lifetime is decoupled from any instance's: it stays up
+  // even when zero barrel instances exist (e.g. the prototype is destroyed
+  // after the param scan, or every clip is unlaunched). This is CHEAP and does
+  // NOT touch the heavy WAMR runtime (bridge_rt_acquire, still launch-gated) —
+  // BridgeServer::acquire only spins up the WS server + Resolume client +
+  // InstanceLocator. Per-instance ensureRegistered()/teardownBridge() keep
+  // their own balanced acquire/release refs on top; the keepalive just pins
+  // the floor at 1.
+  static void ensureSharedServerStarted() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+      static plugin::BridgeLoader keepalive_loader;  // process-lifetime
+      std::string dylib = bundleDylibPath();
+      if (dylib.empty() || !keepalive_loader.load(dylib.c_str()) ||
+          !keepalive_loader.bridge_init) {
+        BARREL_LOG("server-start",
+                   "could NOT start shared server early (dylib=%s)", dylib.c_str());
+        return;
+      }
+      BridgeHandle h = keepalive_loader.bridge_init();  // acquire, never released
+      BARREL_LOG("server-start",
+                 "shared bridge server started early (ctor/prototype), h=%p", (void*)h);
+    });
   }
 
   static std::string generateUuid() {
