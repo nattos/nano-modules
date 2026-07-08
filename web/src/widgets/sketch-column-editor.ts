@@ -302,6 +302,9 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       threshold: 5,
       move: (me) => {
         card.setAttribute('dragging', '');
+        // Collapse every card to a compact header row so a long chain becomes a
+        // short list you can drag through freely.
+        this.setReorderingAll(true);
         this.updateDragHover(me.clientX, me.clientY);
       },
       accept: () => this.commitDrop(),
@@ -400,8 +403,15 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     });
   }
 
+  /** Toggle compact-reorder mode on every column so their cards collapse to
+   *  header-only rows during a drag. */
+  private setReorderingAll(on: boolean) {
+    for (const [, el] of this.columnCache) (el as ColumnGroup).reordering = on;
+  }
+
   private cleanupDrag() {
     this.dragCardEl?.removeAttribute('dragging');
+    this.setReorderingAll(false);
     for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
     this.dragSketchId = null;
     this.dragSourceCol = -1;
