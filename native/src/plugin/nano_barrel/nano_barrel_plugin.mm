@@ -466,6 +466,21 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
   }
 
+  // Register `candidate_uuid` with the shared bridge server. Returns the
+  // ACTUAL key the server assigned — normally `candidate_uuid` verbatim,
+  // but a distinct derivative (`<uuid>-2`, ...) if another live instance
+  // already holds it (a genuine clip-copy duplicate — see
+  // `StateDocument::allocate_key`). `out_collided` reports which happened.
+  std::string registerWithBridge(const std::string& candidate_uuid, bool& out_collided) {
+    char keybuf[128] = {0};
+    int n = loader_.bridge_register_plugin(
+        bridge_, "com.nano.nanobarrel", 0, 1, 0,
+        /*schema_json=*/"", candidate_uuid.c_str(), keybuf, sizeof(keybuf));
+    std::string actual_key(keybuf, (n > 0 && n < (int)sizeof(keybuf)) ? n : (int)strlen(keybuf));
+    out_collided = !actual_key.empty() && actual_key != candidate_uuid;
+    return out_collided ? actual_key : candidate_uuid;
+  }
+
   // Read a JSON pointer out of the shared doc via the loader ABI, returning a
   // parsed json (object() on any failure). Frees the dylib-allocated string.
   nlohmann::json getAtJson(const std::string& path) {
@@ -519,31 +534,37 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       BARREL_LOG("setupBridge", "dylib lacks shared-runtime symbols — render-only");
     }
 
-    // Identity: prefer the UUID from the pending payload (cold start / undo),
-    // else mint a fresh one + persist it after registration.
+    // Identity: prefer the UUID from the pending payload (cold start / undo —
+    // a GENUINE persisted identity, so uuid_confirmed_ goes true immediately).
+    // Otherwise mint a PROVISIONAL one: registered with the bridge right away
+    // (so the instance is selectable/editable in the editor without delay),
+    // but NOT persisted into P_CONFIG yet — see uuid_confirmed_'s doc comment
+    // for why minting unconditionally here was the actual churn bug.
     bool need_persist = false;
     if (instance_uuid_.empty()) {
       instance_uuid_ = payloadUuid(pending_payload_);
       if (instance_uuid_.empty()) {
         instance_uuid_ = generateUuid();
-        need_persist = true;
+      } else {
+        uuid_confirmed_ = true;
       }
     }
 
-    char keybuf[128] = {0};
-    int n = loader_.bridge_register_plugin(
-        bridge_, "com.nano.nanobarrel", 0, 1, 0,
-        /*schema_json=*/"", instance_uuid_.c_str(), keybuf, sizeof(keybuf));
-    std::string actual_key(keybuf, (n > 0 && n < (int)sizeof(keybuf)) ? n : (int)strlen(keybuf));
-    if (!actual_key.empty() && actual_key != instance_uuid_) {
-      // Collision (duplicated clip) — server reminted. Adopt + persist.
+    bool collided = false;
+    std::string requested_uuid = instance_uuid_;
+    instance_uuid_ = registerWithBridge(instance_uuid_, collided);
+    if (collided) {
+      // Collision (duplicated clip, both carrying the same persisted UUID) —
+      // server reminted. This IS a confirmed, real identity (resolving an
+      // actual conflict), so persist it right away.
       BARREL_LOG("setupBridge", "key collision: requested=%s actual=%s",
-                 instance_uuid_.c_str(), actual_key.c_str());
-      instance_uuid_ = actual_key;
+                 requested_uuid.c_str(), instance_uuid_.c_str());
+      uuid_confirmed_ = true;
       need_persist = true;
     }
-    barrel_plugin_key_ = actual_key.empty() ? instance_uuid_ : actual_key;
-    BARREL_LOG("setupBridge", "registered key=%s", barrel_plugin_key_.c_str());
+    barrel_plugin_key_ = instance_uuid_;
+    BARREL_LOG("setupBridge", "registered key=%s confirmed=%d",
+               barrel_plugin_key_.c_str(), uuid_confirmed_ ? 1 : 0);
 
     // Create this instance's executor in the shared runtime, namespaced by the
     // plugin key so its effect state is isolated from every other barrel.
@@ -669,11 +690,63 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     return env.dump();
   }
 
-  // Apply a persisted payload: extract uuid (if we don't have one) + sketch.
+  // Apply a persisted payload: extract uuid (if we don't have one yet, or if
+  // one we're still holding provisionally gets superseded by a genuine
+  // restore that arrives late — see uuid_confirmed_) + sketch.
   void applyPayload(const std::string& payload) {
-    if (instance_uuid_.empty()) instance_uuid_ = payloadUuid(payload);
+    std::string restored_uuid = payloadUuid(payload);
+    if (instance_uuid_.empty()) {
+      instance_uuid_ = restored_uuid;
+      uuid_confirmed_ = !restored_uuid.empty();
+    } else if (!uuid_confirmed_ && !restored_uuid.empty() &&
+               restored_uuid != instance_uuid_) {
+      adoptRestoredUuid(restored_uuid);
+    }
     std::string sketch_json = payloadSketch(payload);
     if (!sketch_json.empty()) applyConfigJson(sketch_json);
+  }
+
+  // The real persisted identity arrived via a late `SetTextParameter` — after
+  // setupBridge already registered under a provisional mint (setupBridge
+  // never waits for this; see uuid_confirmed_'s doc comment). Re-key this
+  // instance's bridge registration + executor + patch listener to the
+  // restored UUID so it becomes permanent, exactly as if we'd had it from
+  // the start. Nothing rendered under the provisional key yet (rendering
+  // only starts once the host Connects, which happens after this), so
+  // there's no in-flight state to migrate — just tear down and re-stand-up.
+  // Runs the same collision/remint protocol setupBridge does, so a genuine
+  // clip-copy duplicate is still deduped normally.
+  void adoptRestoredUuid(const std::string& restored_uuid) {
+    const std::string old_key = barrel_plugin_key_;
+    if (loader_.bridge_unregister_patch_listener)
+      loader_.bridge_unregister_patch_listener(bridge_, old_key.c_str());
+    if (rt_ready_ && loader_.bridge_executor_destroy)
+      loader_.bridge_executor_destroy(bridge_, old_key.c_str());
+    if (loader_.bridge_unregister_plugin)
+      loader_.bridge_unregister_plugin(bridge_, old_key.c_str());
+
+    bool collided = false;
+    instance_uuid_ = registerWithBridge(restored_uuid, collided);
+    barrel_plugin_key_ = instance_uuid_;
+    uuid_confirmed_ = true;
+    BARREL_LOG("adoptRestoredUuid", "old=%s restored=%s actual=%s collided=%d",
+               old_key.c_str(), restored_uuid.c_str(),
+               barrel_plugin_key_.c_str(), collided ? 1 : 0);
+
+    if (rt_ready_ && loader_.bridge_executor_create)
+      loader_.bridge_executor_create(bridge_, barrel_plugin_key_.c_str());
+    publishInitialState();
+    if (loader_.bridge_register_patch_listener) {
+      loader_.bridge_register_patch_listener(
+          bridge_, barrel_plugin_key_.c_str(), &NanoBarrelPlugin::onPatchTrampoline, this);
+    }
+
+    if (collided) {
+      // Same as setupBridge's collision path: a confirmed, real identity
+      // resolving an actual conflict, so persist it right away.
+      dirty_ = true;
+      dirty_since_ms_ = ::nano_barrel_log::now_ms() - kRegenDebounceMs;
+    }
   }
 
   // -- Interop management ---------------------------------------------
@@ -810,6 +883,12 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     if (!should_regen || !bridge_) return;
 
+    // A genuine editor patch (the only thing besides setupBridge's own
+    // collision-remint that sets dirty_) proves this instance is actually in
+    // use — worth persisting even if its UUID was only a provisional mint
+    // (see uuid_confirmed_'s doc comment). Idempotent past the first time.
+    uuid_confirmed_ = true;
+
     std::string sketch_json =
         getAtJson("/plugins/" + barrel_plugin_key_ + "/state/sketch").dump();
     // Persist the {uuid,sketch} envelope into the FILE param (config_blob_ is
@@ -831,6 +910,20 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   BridgeHandle                     bridge_ = nullptr;
   std::string                      barrel_plugin_key_;   // == instance_uuid_
   std::string                      instance_uuid_;       // stable, persisted
+  // False while instance_uuid_ is only a PROVISIONAL mint (setupBridge had no
+  // pending_payload_ to restore from) — read/written only from the main/
+  // render thread (setupBridge, applyPayload/adoptRestoredUuid,
+  // maybeRegenerateConfig; onPatchTrampoline deliberately does NOT touch it).
+  // While false, maybeRegenerateConfig must never persist instance_uuid_ into
+  // P_CONFIG: a mint that turns out to never matter (the real persisted UUID
+  // arrives moments later via a late SetTextParameter, or the instance stays
+  // untouched forever) must never overwrite Resolume's saved identity. Goes
+  // true the moment identity is no longer a guess — a genuine restore (cold
+  // start, or a late-arriving SetTextParameter adopted in applyPayload), a
+  // real dedup collision (setupBridge/adoptRestoredUuid), or the first
+  // genuine editor edit (maybeRegenerateConfig) proving this really is a new
+  // instance worth persisting.
+  bool                             uuid_confirmed_ = false;
   std::string                      pending_payload_;     // envelope to apply in InitGL
   nlohmann::json                   host_info_;           // applied once bridge is up
 
