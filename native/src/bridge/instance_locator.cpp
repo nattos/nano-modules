@@ -1,5 +1,6 @@
 #include "bridge/instance_locator.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -321,6 +322,27 @@ void InstanceLocator::update(const json& comp, StateDocument& doc,
       it = published_names_.erase(it);
     else
       ++it;
+  }
+
+  // Publish every NanoBarrel uuid currently in the composition (launched or
+  // not — `paths_by_uuid_` comes from a structural scan, independent of
+  // plugin registration). The web app uses this to know the FULL current
+  // composition's instance set for offline-cache generation bookkeeping
+  // (state/live-cache-store.ts's `session` field) — `/global/plugins` alone
+  // only lists instances that have actually rendered a frame. Excludes
+  // NanoLooper Ch markers (ConfigKind::Marker) — not NanoBarrel instances.
+  {
+    std::vector<std::string> barrel_ids;
+    for (auto& [uuid, paths] : paths_by_uuid_) {
+      if (uuid.empty() || paths.empty()) continue;
+      if (by_path_.at(*paths.begin()).config_kind != ConfigKind::Barrel) continue;
+      barrel_ids.push_back(uuid);
+    }
+    std::sort(barrel_ids.begin(), barrel_ids.end());
+    if (barrel_ids != last_published_barrel_ids_) {
+      doc.set_at("/global/composition_barrel_ids", json(barrel_ids));
+      last_published_barrel_ids_ = barrel_ids;
+    }
   }
 
   // Phase 2: fork dormant copy-paste duplicates.

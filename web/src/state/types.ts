@@ -213,6 +213,22 @@ export interface UserSettings {
   /** Which barrel instance's cache to show at Live-mode boot, before the
    *  WS connects (and to re-select on the next Live session). */
   lastLiveInstanceKey: string | null;
+  /**
+   * Monotonic counter bumped whenever `/global/composition_barrel_ids` (the
+   * full set of NanoBarrel UUIDs in Resolume's currently loaded composition —
+   * launched or not) differs from `lastCompositionBarrelIds`, i.e. a genuine
+   * composition switch. Every `liveCache` row gets stamped with the
+   * generation its key was last confirmed a member of; offline-mode loading
+   * only loads/renders rows at the LATEST generation, so instances left over
+   * from a composition you've switched away from stop piling up in the
+   * Instances tab (reconciliation still looks at every cached row regardless
+   * of generation — see `state/live-reconcile.ts`).
+   */
+  liveSessionGeneration: number;
+  /** The composition-barrel-id set `liveSessionGeneration` was last bumped
+   *  against — compared on the next `/global/composition_barrel_ids` to
+   *  detect a genuine switch (vs. the same composition reconnecting). */
+  lastCompositionBarrelIds: string[];
 }
 
 // --- Local state (ephemeral, not in undo history) ---

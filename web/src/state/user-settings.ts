@@ -29,6 +29,8 @@ export function defaultUserSettings(): UserSettings {
     appMode: 'effect-dev',
     barrelRemoteEnabled: true,
     lastLiveInstanceKey: null,
+    liveSessionGeneration: 0,
+    lastCompositionBarrelIds: [],
   };
 }
 

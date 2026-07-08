@@ -31,7 +31,7 @@ import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
 import {
   loadLiveCacheInstance, loadAllLiveCacheInstances, saveLiveCacheInstance,
-  type LiveCacheRecord,
+  touchLiveCacheSession, type LiveCacheRecord,
 } from './state/live-cache-store';
 import { reconcileDecision } from './state/live-reconcile';
 import { reconcileStore } from './views/reconcile-dialog';
@@ -181,6 +181,20 @@ async function bootLiveOffline(barrelUrl: string): Promise<void> {
   } catch (err) {
     console.warn('[live-cache] failed to load offline instances', err);
   }
+  // Only load/render instances from the LATEST composition this browser has
+  // seen (see types.ts's `liveSessionGeneration` doc comment) — otherwise
+  // switching between compositions piles up every instance from every
+  // composition ever cached. `session == null` (rows written before this
+  // field existed, or never confirmed against a composition scan yet) is
+  // shown rather than hidden — we can't yet tell which composition it
+  // belongs to, and hiding it outright risks discarding a real cached
+  // instance the first time this ships.
+  const latestGeneration = appState.local.userSettings.liveSessionGeneration;
+  const allRecords = records;
+  records = records.filter((r) => r.session == null || r.session === latestGeneration);
+  if (records.length !== allRecords.length) {
+    console.log(`[live-cache] offline boot: hiding ${allRecords.length - records.length} instance(s) from an older composition (generation !== ${latestGeneration})`);
+  }
   console.log(`[live-cache] offline boot: loaded ${records.length} cached instance(s): [${records.map(r => `${r.key}${r.dirty ? '*' : ''}`).join(', ')}]`);
   appController.loadInitialLiveCacheInstances(records);
   appController.enablePersistence();
@@ -303,7 +317,8 @@ function connectBarrel(url: string) {
         const existing = await loadLiveCacheInstance(key);
         if (existing?.dirty) return;  // don't clobber unresolved offline edits
         const sketch = coerceSketch(state?.sketch ?? {});
-        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false);
+        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false,
+          appState.local.userSettings.liveSessionGeneration);
         console.log(`[live-cache] passively cached instance key=${key} (not the wired instance)`);
       })();
     });
@@ -462,7 +477,8 @@ function connectBarrel(url: string) {
     if (decision.action === 'adopt-canonical') {
       appController.setBarrelSketch(forKey, canonical);
       appController.editSketch(forKey);
-      void saveLiveCacheInstance(forKey, label, canonical, false);
+      void saveLiveCacheInstance(forKey, label, canonical, false,
+        appState.local.userSettings.liveSessionGeneration);
       appController.setReadonly(false);
       resolvedKey = forKey;
       wirePusher(forKey);
@@ -484,14 +500,15 @@ function connectBarrel(url: string) {
         // (it may have been refreshed after the initial, possibly-incomplete
         // snapshot), not the value captured when the dialog first opened.
         const resolvedCanonical = dialogCanonical ?? canonical;
+        const session = appState.local.userSettings.liveSessionGeneration;
         if (choice === 'keep-cached') {
           wirePusher(forKey);
           appController.forcePushBarrelSketch();
-          void saveLiveCacheInstance(forKey, label, cached!.sketch, false);
+          void saveLiveCacheInstance(forKey, label, cached!.sketch, false, session);
         } else {
           appController.setBarrelSketch(forKey, resolvedCanonical);
           appController.editSketch(forKey);
-          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false);
+          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false, session);
           wirePusher(forKey);
         }
         appController.setReadonly(false);
@@ -708,6 +725,35 @@ function connectBarrel(url: string) {
     cancelPendingPassiveCache(liveKeys);
     for (const inst of instances) cachePassiveInstanceOnceDebounced(inst.key);
   });
+
+  // The FULL composition-known NanoBarrel uuid set — launched or not (native's
+  // InstanceLocator structurally scans the composition independent of plugin
+  // registration; see nano_barrel_plugin.mm's ensureRegistered doc + the
+  // queued composition-polling work this implements). Unlike /global/plugins
+  // (only instances that have actually rendered a frame), this lets us detect
+  // a genuine COMPOSITION SWITCH (vs. the same composition just reconnecting,
+  // or more of its clips getting launched) and bump `liveSessionGeneration` —
+  // every liveCache row gets stamped with the generation its key was last
+  // confirmed a member of, so `bootLiveOffline` can load/render only the
+  // latest one instead of piling up every composition this browser has ever
+  // seen. Reconciliation is unaffected — it always looks up by exact key
+  // regardless of generation (see applySketchFromSnapshot/getCacheLoad).
+  barrel.onSnapshot('/global/composition_barrel_ids', (arr) => {
+    if (!Array.isArray(arr)) return;
+    const ids = arr.filter((id): id is string => typeof id === 'string');
+    const prevIds = appState.local.userSettings.lastCompositionBarrelIds;
+    const changed = ids.length !== prevIds.length || !ids.every((id) => prevIds.includes(id));
+    let generation = appState.local.userSettings.liveSessionGeneration;
+    if (changed) {
+      generation += 1;
+      appController.setUserSetting('liveSessionGeneration', generation);
+      appController.setUserSetting('lastCompositionBarrelIds', ids);
+      console.log(`[live-cache] composition changed — liveSessionGeneration=${generation}: [${ids.join(', ')}]`);
+    }
+    for (const id of ids) void touchLiveCacheSession(id, generation);
+  });
+  barrel.get('/global/composition_barrel_ids');
+  barrel.observe('/global/composition_barrel_ids');
 
   // Sidechannel-bus channel metadata (channel → writer plugin key + size),
   // published by the native runtime only when it changes. Feeds the same

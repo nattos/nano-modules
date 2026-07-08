@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -57,6 +58,50 @@ TEST_CASE("BridgeServer locates a barrel via a fake Resolume", "[instance_locato
   REQUIRE_FALSE(resolume.is_null());
   CHECK(resolume["default_name"] == "Layer 1 \xC2\xB7 NanoBarrel");
   CHECK(resolume["location"] == "/layers/0/clips/0/video/effects/0");
+}
+
+TEST_CASE("BridgeServer publishes composition_barrel_ids for an UNREGISTERED (unlaunched) barrel",
+          "[instance_locator][e2e]") {
+  const int kFakePort = 19092;
+  const std::string uuid = "5B6E0B8D-9E2A-4B1A-9D9F-8C7E6A5B4C3D";
+
+  // Fake Resolume with one barrel on layer 0 / clip 0 — but NOTHING registers
+  // it with the bridge (mirrors a clip Resolume has never launched: the
+  // structural composition scan still sees it).
+  bridge::FakeResolumeServer fake;
+  fake.set_composition(bridge::FakeResolumeServer::make_default_composition({uuid}));
+  REQUIRE(fake.start(kFakePort));
+
+  std::string url = "ws://127.0.0.1:" + std::to_string(kFakePort) + "/api/v1";
+  setenv("NANO_RESOLUME_URL", url.c_str(), 1);
+  setenv("NANO_BRIDGE_PORT", "19093", 1);
+
+  auto& server = bridge::BridgeServer::instance();
+  server.acquire();
+
+  // Poll for OUR uuid specifically, not just any non-empty array — the
+  // BridgeServer singleton (and its state doc) is process-lifetime and
+  // shared across every TEST_CASE in this binary, so a stale
+  // composition_barrel_ids array from an earlier (randomly-ordered) test
+  // case can still be sitting there when this test's connection first comes
+  // up.
+  json ids;
+  for (int i = 0; i < 400; i++) {  // up to ~10s
+    json v = json::parse(server.get_at("/global/composition_barrel_ids"), nullptr, false);
+    if (!v.is_discarded() && v.is_array() &&
+        std::find(v.begin(), v.end(), json(uuid)) != v.end()) {
+      ids = v;
+      break;
+    }
+    std::this_thread::sleep_for(25ms);
+  }
+
+  server.release();
+  fake.stop();
+
+  REQUIRE_FALSE(ids.is_null());
+  REQUIRE(ids.size() == 1);
+  CHECK(ids[0] == uuid);
 }
 
 namespace {
