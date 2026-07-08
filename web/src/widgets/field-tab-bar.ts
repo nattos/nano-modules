@@ -69,8 +69,10 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       font-size: var(--app-fs-sm);
     }
     .label {
-      min-width: 70px;
-      flex-shrink: 0;
+      /* Shrinkable, not a fixed 70px column — the card must be free to narrow
+       *  below the label's natural width (it ellipsises). */
+      flex: 0 1 auto;
+      min-width: 0;
       color: var(--app-text-color2, #b0b0b0);
       overflow: hidden;
       text-overflow: ellipsis;
@@ -128,7 +130,10 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       flex-wrap: wrap;
       justify-content: center;
     }
-    :host([wrap]) button { flex: 0 1 auto; }
+    /* max-width caps a segment to the row so a single wide option (e.g.
+     *  "Difference") ellipsises instead of using wrap as an escape valve and
+     *  pinning the card to that segment's natural width. */
+    :host([wrap]) button { flex: 0 1 auto; max-width: 100%; }
   `;
 
   render() {
