@@ -169,10 +169,10 @@ private:
   std::map<std::string, std::set<std::string>> paths_by_uuid_;
   // uuid -> last name we successfully published (dedupe across ticks).
   std::map<std::string, std::string> published_names_;
-  // The barrel-only uuid set we last published to
-  // /global/composition_barrel_ids — change-gated (sorted) to skip redundant
-  // set_at calls when the composition update didn't affect barrel placements.
-  std::vector<std::string> last_published_barrel_ids_;
+  // The barrel array we last published to /global/composition_barrel_ids —
+  // full `[{uuid,name,location}]` payload, change-gated to skip redundant
+  // set_at calls when neither the barrel placements nor their names changed.
+  nlohmann::json last_published_composition_barrels_;
   // config_param_id -> {hash(config_value), uuid}. Editing a sketch changes the
   // config blob (which can be large) but NOT the UUID; this lets update() skip
   // re-decoding a config whose value hasn't changed since the last composition.

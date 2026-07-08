@@ -70,6 +70,15 @@ export class OrganizeTab extends MobxLitElement {
       border-color: var(--app-hi-color2);
       background: rgba(65,105,225,0.08);
     }
+    /* A composition-resident instance Resolume hasn't launched yet: read-only,
+       no live thumbnail (black), dimmed like an idle trigger-channel clip. */
+    .instance-card.unlaunched { opacity: 0.55; }
+    .instance-card.unlaunched:hover { opacity: 0.8; }
+    .unlaunched-badge {
+      display: inline-block; font-size: var(--app-fs-sm); color: var(--app-text-color2);
+      border: 1px solid var(--app-tint-4); border-radius: 1px;
+      padding: 0 5px; margin-top: 2px;
+    }
     .thumb {
       aspect-ratio: 16 / 9;
       background: #000;
@@ -185,7 +194,8 @@ export class OrganizeTab extends MobxLitElement {
         : html`
             <div class="instance-grid">
               ${instances.map(inst => html`
-                <div class="instance-card" ?selected=${inst.key === selectedKey && !selectedChannel}
+                <div class="instance-card ${inst.unlaunched ? 'unlaunched' : ''}"
+                  ?selected=${inst.key === selectedKey && !selectedChannel}
                   @click=${() => pickInstance(inst.key)}
                   @dblclick=${() => open(inst.key)}>
                   <div class="thumb">
@@ -200,7 +210,9 @@ export class OrganizeTab extends MobxLitElement {
                   </div>
                   <div class="card-meta">
                     <div class="card-name">${instanceDisplayLabel(inst.key)}</div>
-                    <div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>
+                    ${inst.unlaunched
+                      ? html`<div class="unlaunched-badge">Not launched</div>`
+                      : html`<div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>`}
                   </div>
                 </div>
               `)}
@@ -231,7 +243,12 @@ export class OrganizeTab extends MobxLitElement {
               <div class="name-hint">"#" stands for the auto-name
                 (${instanceDefaultLabel(selected.key)})</div>
             </div>
-            <button class="btn" @click=${() => open(selected.key)}>Edit</button>
+            ${selected.unlaunched
+              ? html`<div class="name-hint" style="margin-bottom:12px">Not launched — launch this
+                  clip in Resolume to edit. Opening shows a read-only preview.</div>`
+              : ''}
+            <button class="btn" @click=${() => open(selected.key)}>
+              ${selected.unlaunched ? 'Open (read-only)' : 'Edit'}</button>
             ${instancesFixed ? '' : html`
               <button class="btn danger" @click=${() => this.deleteInstance(selected.key, instanceDisplayLabel(selected.key))}>Delete</button>
             `}

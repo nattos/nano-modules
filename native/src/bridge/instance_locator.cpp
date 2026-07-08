@@ -324,24 +324,34 @@ void InstanceLocator::update(const json& comp, StateDocument& doc,
       ++it;
   }
 
-  // Publish every NanoBarrel uuid currently in the composition (launched or
-  // not — `paths_by_uuid_` comes from a structural scan, independent of
-  // plugin registration). The web app uses this to know the FULL current
-  // composition's instance set for offline-cache generation bookkeeping
-  // (state/live-cache-store.ts's `session` field) — `/global/plugins` alone
-  // only lists instances that have actually rendered a frame. Excludes
-  // NanoLooper Ch markers (ConfigKind::Marker) — not NanoBarrel instances.
+  // Publish every NanoBarrel currently in the composition (launched or not —
+  // `paths_by_uuid_` comes from a structural scan, independent of plugin
+  // registration). `/global/plugins` alone only lists instances that have
+  // actually rendered a frame; the web app needs the FULL set for two things:
+  //   1. scoping its offline cache to the currently loaded composition, and
+  //   2. rendering a labeled read-only placeholder card for a composition-
+  //      resident clip Resolume hasn't launched yet.
+  // Each entry carries the resolved default display name + composition path —
+  // the registered-plugin naming path above (`set_plugin_resolume_info`) can't
+  // reach an *unregistered* instance, so a placeholder would otherwise have no
+  // human name. Excludes NanoLooper Ch markers (ConfigKind::Marker).
+  //
+  // `paths_by_uuid_` is a std::map (uuid-ordered), so the array is
+  // deterministic; change-gate on the full payload (default_name derives from
+  // clip/layer names, which the user can rename) so a rename republishes.
   {
-    std::vector<std::string> barrel_ids;
+    json barrels = json::array();
     for (auto& [uuid, paths] : paths_by_uuid_) {
       if (uuid.empty() || paths.empty()) continue;
-      if (by_path_.at(*paths.begin()).config_kind != ConfigKind::Barrel) continue;
-      barrel_ids.push_back(uuid);
+      const BarrelPlacement& p = by_path_.at(*paths.begin());
+      if (p.config_kind != ConfigKind::Barrel) continue;
+      barrels.push_back({{"uuid", uuid},
+                         {"name", default_name_for(p)},
+                         {"location", p.path}});
     }
-    std::sort(barrel_ids.begin(), barrel_ids.end());
-    if (barrel_ids != last_published_barrel_ids_) {
-      doc.set_at("/global/composition_barrel_ids", json(barrel_ids));
-      last_published_barrel_ids_ = barrel_ids;
+    if (barrels != last_published_composition_barrels_) {
+      doc.set_at("/global/composition_barrel_ids", barrels);
+      last_published_composition_barrels_ = barrels;
     }
   }
 

@@ -64,6 +64,19 @@ class ReconcileStore {
     runInAction(() => { this.request = null; });
     req.onResolve(choice);
   }
+
+  /**
+   * Abandon an open dialog whose instance is no longer the wired one — e.g.
+   * Resolume dropped that instance from `/global/plugins` mid-decision and the
+   * controller auto-selected another. Clears WITHOUT running `onResolve`,
+   * which would otherwise wire a pusher / clear readonly for a key that's no
+   * longer active, leaving the newly-wired instance unreconciled.
+   */
+  dismissForOtherKey(key: string) {
+    runInAction(() => {
+      if (this.request && this.request.instanceKey !== key) this.request = null;
+    });
+  }
 }
 
 export const reconcileStore = new ReconcileStore();

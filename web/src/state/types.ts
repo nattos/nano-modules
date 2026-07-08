@@ -214,20 +214,16 @@ export interface UserSettings {
    *  WS connects (and to re-select on the next Live session). */
   lastLiveInstanceKey: string | null;
   /**
-   * Monotonic counter bumped whenever `/global/composition_barrel_ids` (the
-   * full set of NanoBarrel UUIDs in Resolume's currently loaded composition —
-   * launched or not) differs from `lastCompositionBarrelIds`, i.e. a genuine
-   * composition switch. Every `liveCache` row gets stamped with the
-   * generation its key was last confirmed a member of; offline-mode loading
-   * only loads/renders rows at the LATEST generation, so instances left over
-   * from a composition you've switched away from stop piling up in the
-   * Instances tab (reconciliation still looks at every cached row regardless
-   * of generation — see `state/live-reconcile.ts`).
+   * The set of NanoBarrel UUIDs in Resolume's last-seen composition (launched
+   * or not), from `/global/composition_barrel_ids`. This is the authoritative
+   * "what's in the current composition" signal: `bootLiveOffline` filters the
+   * offline instance list to membership in this set, so instances from a
+   * composition you've switched away from stop piling up in the Instances tab.
+   * Only overwritten by a non-empty publish (a transient `[]` must not wipe
+   * scoping). Reconciliation is unaffected — it always looks up a cached row
+   * by exact key regardless of composition membership (see
+   * `state/live-reconcile.ts`).
    */
-  liveSessionGeneration: number;
-  /** The composition-barrel-id set `liveSessionGeneration` was last bumped
-   *  against — compared on the next `/global/composition_barrel_ids` to
-   *  detect a genuine switch (vs. the same composition reconnecting). */
   lastCompositionBarrelIds: string[];
 }
 
@@ -413,4 +409,13 @@ export interface BarrelInstanceInfo {
   label: string;
   /** The Resolume composition path the instance was located at, if known. */
   resolumeLocation?: string;
+  /**
+   * True for a composition-resident instance Resolume hasn't launched yet:
+   * it appears in `/global/composition_barrel_ids` (the structural scan) but
+   * not in `/global/plugins` (which only lists instances that have rendered a
+   * frame). No live bridge registration exists, so it's shown as a read-only
+   * placeholder card — selecting it can't wire a pusher. Absent (falsy) for
+   * live connected instances, playground, and offline-cache instances.
+   */
+  unlaunched?: boolean;
 }

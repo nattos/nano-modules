@@ -31,7 +31,7 @@ import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
 import {
   loadLiveCacheInstance, loadAllLiveCacheInstances, saveLiveCacheInstance,
-  touchLiveCacheSession, type LiveCacheRecord,
+  type LiveCacheRecord,
 } from './state/live-cache-store';
 import { reconcileDecision } from './state/live-reconcile';
 import { reconcileStore } from './views/reconcile-dialog';
@@ -40,7 +40,7 @@ import { snackbars } from './widgets/snackbars';
 import { appController } from './state/controller';
 import { appState } from './state/app-state';
 import type { Sketch } from './sketch-types';
-import { PLAYGROUND_ID_PREFIX } from './state/types';
+import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo } from './state/types';
 import { parseBarrelInstances } from './state/barrel-instances';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
@@ -181,19 +181,29 @@ async function bootLiveOffline(barrelUrl: string): Promise<void> {
   } catch (err) {
     console.warn('[live-cache] failed to load offline instances', err);
   }
-  // Only load/render instances from the LATEST composition this browser has
-  // seen (see types.ts's `liveSessionGeneration` doc comment) — otherwise
-  // switching between compositions piles up every instance from every
-  // composition ever cached. `session == null` (rows written before this
-  // field existed, or never confirmed against a composition scan yet) is
-  // shown rather than hidden — we can't yet tell which composition it
-  // belongs to, and hiding it outright risks discarding a real cached
-  // instance the first time this ships.
-  const latestGeneration = appState.local.userSettings.liveSessionGeneration;
-  const allRecords = records;
-  records = records.filter((r) => r.session == null || r.session === latestGeneration);
-  if (records.length !== allRecords.length) {
-    console.log(`[live-cache] offline boot: hiding ${allRecords.length - records.length} instance(s) from an older composition (generation !== ${latestGeneration})`);
+  // Show only instances that belong to the LATEST composition this browser saw
+  // while online. `lastCompositionBarrelIds` is the authoritative member set —
+  // native's `/global/composition_barrel_ids`, every NanoBarrel uuid in the
+  // loaded composition, launched or not. Without this, every instance from
+  // every composition this browser has ever cached piles up here forever. Two
+  // deliberate exemptions:
+  //   - empty member set → show ALL: we've never been online with a native
+  //     build that publishes the set (or never connected at all), so we can't
+  //     scope yet — don't hide everything and look broken.
+  //   - `dirty` rows (unresolved offline edits) are ALWAYS shown, even if
+  //     they're from a composition you've since switched away from — never
+  //     silently hide unsynced work; reconciliation still folds it back in on
+  //     the next reconnect to a composition that contains it (it looks up by
+  //     exact key regardless of composition membership).
+  const compositionIds = appState.local.userSettings.lastCompositionBarrelIds;
+  if (compositionIds.length > 0) {
+    const member = new Set(compositionIds);
+    const allRecords = records;
+    records = records.filter((r) => member.has(r.key) || r.dirty);
+    const hidden = allRecords.length - records.length;
+    if (hidden > 0) {
+      console.log(`[live-cache] offline boot: hiding ${hidden} instance(s) not in the last-seen composition (${compositionIds.length} member(s), ${records.filter(r => r.dirty && !member.has(r.key)).length} off-composition dirty row(s) kept)`);
+    }
   }
   console.log(`[live-cache] offline boot: loaded ${records.length} cached instance(s): [${records.map(r => `${r.key}${r.dirty ? '*' : ''}`).join(', ')}]`);
   appController.loadInitialLiveCacheInstances(records);
@@ -317,8 +327,7 @@ function connectBarrel(url: string) {
         const existing = await loadLiveCacheInstance(key);
         if (existing?.dirty) return;  // don't clobber unresolved offline edits
         const sketch = coerceSketch(state?.sketch ?? {});
-        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false,
-          appState.local.userSettings.liveSessionGeneration);
+        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false);
         console.log(`[live-cache] passively cached instance key=${key} (not the wired instance)`);
       })();
     });
@@ -453,6 +462,14 @@ function connectBarrel(url: string) {
     if (resolvedKey === forKey) {
       appController.setBarrelSketch(forKey, canonical);
       appController.editSketch(forKey);
+      // Keep the offline cache current with the authoritative barrel state.
+      // The FIRST snapshot after wiring can arrive before the barrel has
+      // decoded the sketch (empty) — the adopt path below saved THAT, and
+      // `setBarrelSketch` bypasses mutate/postRecordHook, so a later complete
+      // snapshot would otherwise never reach IndexedDB, leaving a blank
+      // offline copy for a never-edited instance. Change-detected + debounced,
+      // so echoes of our own pushes and unchanged remote snapshots don't churn.
+      appController.requestLiveCacheSave();
       return;
     }
     if (dialogKey === forKey) {
@@ -477,8 +494,7 @@ function connectBarrel(url: string) {
     if (decision.action === 'adopt-canonical') {
       appController.setBarrelSketch(forKey, canonical);
       appController.editSketch(forKey);
-      void saveLiveCacheInstance(forKey, label, canonical, false,
-        appState.local.userSettings.liveSessionGeneration);
+      void saveLiveCacheInstance(forKey, label, canonical, false);
       appController.setReadonly(false);
       resolvedKey = forKey;
       wirePusher(forKey);
@@ -500,15 +516,14 @@ function connectBarrel(url: string) {
         // (it may have been refreshed after the initial, possibly-incomplete
         // snapshot), not the value captured when the dialog first opened.
         const resolvedCanonical = dialogCanonical ?? canonical;
-        const session = appState.local.userSettings.liveSessionGeneration;
         if (choice === 'keep-cached') {
           wirePusher(forKey);
           appController.forcePushBarrelSketch();
-          void saveLiveCacheInstance(forKey, label, cached!.sketch, false, session);
+          void saveLiveCacheInstance(forKey, label, cached!.sketch, false);
         } else {
           appController.setBarrelSketch(forKey, resolvedCanonical);
           appController.editSketch(forKey);
-          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false, session);
+          void saveLiveCacheInstance(forKey, label, resolvedCanonical, false);
           wirePusher(forKey);
         }
         appController.setReadonly(false);
@@ -609,6 +624,11 @@ function connectBarrel(url: string) {
       // running from a pre-connect guess.
       resolvedKey = null;
       dialogKey = null;
+      // If a conflict dialog was still open for the PREVIOUS key (e.g. Resolume
+      // dropped it and the controller auto-selected this one), abandon it —
+      // resolving it now would wire a pusher / clear readonly for a key that's
+      // no longer wired, leaving this instance unreconciled.
+      reconcileStore.dismissForOtherKey(key);
       console.log(`[live-cache] wireInstance: new key=${key} — persisting as lastLiveInstanceKey`);
       appController.setUserSetting('lastLiveInstanceKey', key);
       appController.setLiveSketchIds([key]);
@@ -707,6 +727,32 @@ function connectBarrel(url: string) {
   // it calls back here to rewire the transport.
   appController.setBarrelSelectHandler(wireInstance);
 
+  // The Instances tab shows the UNION of two server signals: `/global/plugins`
+  // (instances Resolume has actually launched — these have live thumbnails and
+  // are editable) and `/global/composition_barrel_ids` (EVERY NanoBarrel in
+  // the loaded composition, launched or not). A composition-resident clip
+  // Resolume hasn't launched yet has no bridge registration, so it shows as a
+  // read-only `unlaunched` placeholder card; when it's later launched it
+  // graduates to a live instance under the SAME key (selection preserved).
+  // Both handlers below feed these two vars and recompute the merged list.
+  let latestLivePlugins: BarrelInstanceInfo[] = [];
+  let latestCompositionMembers: Array<{ uuid: string; name: string; location: string }> = [];
+  const recomputeInstanceList = () => {
+    const liveByKey = new Set(latestLivePlugins.map((i) => i.key));
+    const placeholders: BarrelInstanceInfo[] = latestCompositionMembers
+      .filter((m) => !liveByKey.has(m.uuid))
+      .map((m) => ({
+        key: m.uuid,
+        id: 'com.nano.nanobarrel',
+        label: m.name || (m.uuid.split('-')[0] || m.uuid),
+        resolumeLocation: m.location || undefined,
+        unlaunched: true,
+      }));
+    // Launched first, so the default selection / first-in-list pick lands on a
+    // real, editable instance rather than a read-only placeholder.
+    appController.setBarrelInstances([...latestLivePlugins, ...placeholders]);
+  };
+
   // Maintain the live instance list from /global/plugins. Deliberately does
   // NOT prune `liveCache` rows whose key drops out of this list: instances
   // unregister one at a time (observed during a Resolume shutdown: 4 → 2 → 1
@@ -720,37 +766,50 @@ function connectBarrel(url: string) {
     (window as any).__barrelInstances = arr;
     const instances = parseInstances(arr);
     console.log(`[live-cache] /global/plugins: ${instances.length} instance(s): [${instances.map(i => i.key).join(', ')}]`);
-    appController.setBarrelInstances(instances);
+    latestLivePlugins = instances;
+    recomputeInstanceList();
     const liveKeys = new Set(instances.map((inst) => inst.key));
     cancelPendingPassiveCache(liveKeys);
     for (const inst of instances) cachePassiveInstanceOnceDebounced(inst.key);
   });
 
-  // The FULL composition-known NanoBarrel uuid set — launched or not (native's
+  // The FULL composition-known NanoBarrel set — launched or not (native's
   // InstanceLocator structurally scans the composition independent of plugin
-  // registration; see nano_barrel_plugin.mm's ensureRegistered doc + the
-  // queued composition-polling work this implements). Unlike /global/plugins
-  // (only instances that have actually rendered a frame), this lets us detect
-  // a genuine COMPOSITION SWITCH (vs. the same composition just reconnecting,
-  // or more of its clips getting launched) and bump `liveSessionGeneration` —
-  // every liveCache row gets stamped with the generation its key was last
-  // confirmed a member of, so `bootLiveOffline` can load/render only the
-  // latest one instead of piling up every composition this browser has ever
-  // seen. Reconciliation is unaffected — it always looks up by exact key
-  // regardless of generation (see applySketchFromSnapshot/getCacheLoad).
+  // registration; see nano_barrel_plugin.mm's ensureRegistered doc). Each
+  // entry is `{uuid, name, location}` so an unlaunched placeholder card gets a
+  // real Resolume-derived name without a live plugin registration. Two uses:
+  //   1. Placeholder cards for unlaunched composition members (recompute above).
+  //   2. Persisting `lastCompositionBarrelIds` — the authoritative member set
+  //      `bootLiveOffline` filters its instance list to, so instances from a
+  //      composition you've switched away from stop piling up offline.
+  // Tolerates the legacy bare-string[] payload from a not-yet-redeployed
+  // native barrel (uuid only, no name) so scoping still engages.
   barrel.onSnapshot('/global/composition_barrel_ids', (arr) => {
-    if (!Array.isArray(arr)) return;
-    const ids = arr.filter((id): id is string => typeof id === 'string');
+    const members = Array.isArray(arr)
+      ? arr.flatMap((m: any) => {
+          if (typeof m === 'string') return [{ uuid: m, name: '', location: '' }];
+          if (m && typeof m.uuid === 'string') return [{
+            uuid: m.uuid,
+            name: typeof m.name === 'string' ? m.name : '',
+            location: typeof m.location === 'string' ? m.location : '',
+          }];
+          return [];
+        })
+      : [];
+    latestCompositionMembers = members;
+    const ids = members.map((m) => m.uuid);
+    // Persist the member set for offline scoping, but only on a real change,
+    // and NEVER overwrite a known set with an empty one: a transient `[]`
+    // (mid-reload, or the composition momentarily reporting no barrels) would
+    // otherwise wipe scoping and re-show every cached instance — the same
+    // class of bug as the reverted liveCache auto-prune.
     const prevIds = appState.local.userSettings.lastCompositionBarrelIds;
     const changed = ids.length !== prevIds.length || !ids.every((id) => prevIds.includes(id));
-    let generation = appState.local.userSettings.liveSessionGeneration;
-    if (changed) {
-      generation += 1;
-      appController.setUserSetting('liveSessionGeneration', generation);
+    if (changed && ids.length > 0) {
       appController.setUserSetting('lastCompositionBarrelIds', ids);
-      console.log(`[live-cache] composition changed — liveSessionGeneration=${generation}: [${ids.join(', ')}]`);
+      console.log(`[live-cache] composition members (${ids.length}): [${ids.join(', ')}]`);
     }
-    for (const id of ids) void touchLiveCacheSession(id, generation);
+    recomputeInstanceList();
   });
   barrel.get('/global/composition_barrel_ids');
   barrel.observe('/global/composition_barrel_ids');

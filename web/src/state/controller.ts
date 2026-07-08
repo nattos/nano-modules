@@ -1264,7 +1264,15 @@ export class AppController {
     return [...ids];
   }
 
-  private requestLiveCacheSave(debounceMs = 300) {
+  /**
+   * Debounced, change-detected save of every wired live sketch to the offline
+   * cache. Driven by `mutate`'s postRecordHook for local edits, and by
+   * `boot-resolume`'s snapshot-apply path so an authoritative barrel snapshot
+   * that arrives via `setBarrelSketch` (which bypasses mutate) still reaches
+   * IndexedDB — otherwise a never-edited instance's offline copy would be
+   * whatever the first, possibly-empty snapshot happened to be.
+   */
+  requestLiveCacheSave(debounceMs = 300) {
     if (!this.liveMode) return;
     if (this.liveCacheSaveTimer) clearTimeout(this.liveCacheSaveTimer);
     this.liveCacheSaveTimer = setTimeout(() => {

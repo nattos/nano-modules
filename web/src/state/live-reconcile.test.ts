@@ -24,6 +24,15 @@ describe('sketchContentEqual', () => {
     expect(sketchContentEqual(a, b)).toBe(true);
   });
 
+  it('ignores engineVersion (stamped onto stored rows, absent on canonical)', () => {
+    // saveLiveCacheInstance stamps engineVersion onto every IDB row; the
+    // barrel's canonical snapshot (coerceSketch) never carries it. Without
+    // stripping it, EVERY real cached row would compare unequal to canonical.
+    const stored = sketch({ engineVersion: 7 } as any);
+    const canonical = sketch();
+    expect(sketchContentEqual(stored, canonical)).toBe(true);
+  });
+
   it('detects real content differences', () => {
     const a = sketch({ chain: [] });
     const b = sketch({ chain: [{ type: 'module', instance_key: 'x', module_type: 'y' } as any] });

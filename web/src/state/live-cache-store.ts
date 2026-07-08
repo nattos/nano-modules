@@ -27,15 +27,6 @@ export interface LiveCacheRecord {
   updatedAt: number;
   /** Has local edits not yet confirmed pushed to / matching canonical. */
   dirty: boolean;
-  /**
-   * Composition generation (`UserSettings.liveSessionGeneration`) this key
-   * was last confirmed a member of, via `/global/composition_barrel_ids`.
-   * Offline-mode loading filters to the LATEST generation only — see
-   * `types.ts`'s `liveSessionGeneration` doc comment. `undefined` for rows
-   * written before this field existed; treated as "unknown generation" by
-   * callers (never filtered out on that basis alone).
-   */
-  session?: number;
 }
 
 export async function loadAllLiveCacheInstances(): Promise<LiveCacheRecord[]> {
@@ -48,29 +39,14 @@ export async function loadLiveCacheInstance(key: string): Promise<LiveCacheRecor
 }
 
 export async function saveLiveCacheInstance(
-  key: string, label: string, sketch: Sketch, dirty: boolean, session?: number,
+  key: string, label: string, sketch: Sketch, dirty: boolean,
 ): Promise<void> {
   // toJS + JSON round-trip to avoid sending MobX proxies into IDB.
   const safe = JSON.parse(JSON.stringify(toJS(sketch)));
   safe.engineVersion = ENGINE_VERSION;
-  const record: LiveCacheRecord = {
+  await idbPut(STORE_LIVE_CACHE, {
     key, label, sketch: safe, updatedAt: Date.now(), dirty,
-  };
-  if (session != null) record.session = session;
-  await idbPut(STORE_LIVE_CACHE, record satisfies LiveCacheRecord);
-}
-
-/**
- * Stamp an EXISTING row's `session` generation without touching its sketch/
- * dirty/updatedAt — the composition-scan pass calls this for every key it
- * confirms is still in the loaded composition. No-op if the row doesn't
- * exist yet (nothing to stamp; it'll get a real `session` on its first
- * `saveLiveCacheInstance`).
- */
-export async function touchLiveCacheSession(key: string, session: number): Promise<void> {
-  const existing = await idbGet<LiveCacheRecord>(STORE_LIVE_CACHE, key);
-  if (!existing || existing.session === session) return;
-  await idbPut(STORE_LIVE_CACHE, { ...existing, session } satisfies LiveCacheRecord);
+  } satisfies LiveCacheRecord);
 }
 
 export async function deleteLiveCacheInstance(key: string): Promise<void> {

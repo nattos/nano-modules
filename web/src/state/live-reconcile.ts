@@ -10,14 +10,23 @@ import type { Sketch } from '../sketch-types';
 import type { LiveCacheRecord } from './live-cache-store';
 
 /**
- * Deep, key-order-stable JSON string of `sketch` with `lastModified` removed
- * — so cached-vs-canonical content compares equal regardless of key
- * insertion order (an IDB-loaded object vs. a freshly `JSON.parse`d wire
- * payload can differ in order despite meaning the same thing). Array order
- * is preserved (semantically meaningful for `chain`/`wires`).
+ * Deep, key-order-stable JSON string of `sketch` with the storage-only
+ * metadata fields (`lastModified`, `engineVersion`) removed — so cached-vs-
+ * canonical content compares equal regardless of key insertion order (an
+ * IDB-loaded object vs. a freshly `JSON.parse`d wire payload can differ in
+ * order despite meaning the same thing). Array order is preserved
+ * (semantically meaningful for `chain`/`wires`).
+ *
+ * `engineVersion` MUST be stripped: `saveLiveCacheInstance` stamps it onto
+ * every stored sketch, but the canonical snapshot from the barrel
+ * (`coerceSketch`) never carries it — leaving it in would make
+ * `sketchContentEqual` always false for a real IDB row, so a dirty cache that
+ * actually matches canonical would wrongly open the conflict dialog instead
+ * of silently adopting.
  */
 export function stripForCompare(sketch: Sketch): string {
-  const { lastModified: _lastModified, ...rest } = sketch as Sketch & { lastModified?: number };
+  const { lastModified: _lastModified, engineVersion: _engineVersion, ...rest } =
+    sketch as Sketch & { lastModified?: number; engineVersion?: number };
   return stableStringify(rest);
 }
 

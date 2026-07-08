@@ -217,8 +217,16 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     }
 
     const readonly = appState.local.readonly;
+    // An unlaunched placeholder instance will never "sync" — it has no live
+    // bridge registration until Resolume launches its clip. Say so instead of
+    // implying an in-flight sync that isn't coming.
+    const unlaunched = readonly && appState.local.barrelInstances.some(
+      i => i.key === sketchId && i.unlaunched);
+    const ribbonText = unlaunched
+      ? 'Read-only — launch this clip in Resolume to edit.'
+      : 'Read-only — syncing with Resolume…';
     return html`
-      ${readonly ? html`<div class="readonly-ribbon">Read-only — syncing with Resolume…</div>` : ''}
+      ${readonly ? html`<div class="readonly-ribbon">${ribbonText}</div>` : ''}
       ${keyed(sketchId, html`
       <div class="columns-wrap" ?inert=${readonly}>
         <columns-view .host=${this as ColumnHost}

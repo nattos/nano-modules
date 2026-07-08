@@ -84,14 +84,19 @@ TEST_CASE("BridgeServer publishes composition_barrel_ids for an UNREGISTERED (un
   // shared across every TEST_CASE in this binary, so a stale
   // composition_barrel_ids array from an earlier (randomly-ordered) test
   // case can still be sitting there when this test's connection first comes
-  // up.
-  json ids;
+  // up. Entries are `{uuid, name, location}` objects.
+  json entry;
+  auto find_entry = [&](const json& v) -> json {
+    if (!v.is_array()) return json();
+    for (const auto& e : v)
+      if (e.is_object() && e.value("uuid", std::string()) == uuid) return e;
+    return json();
+  };
   for (int i = 0; i < 400; i++) {  // up to ~10s
     json v = json::parse(server.get_at("/global/composition_barrel_ids"), nullptr, false);
-    if (!v.is_discarded() && v.is_array() &&
-        std::find(v.begin(), v.end(), json(uuid)) != v.end()) {
-      ids = v;
-      break;
+    if (!v.is_discarded()) {
+      json e = find_entry(v);
+      if (!e.is_null()) { entry = e; break; }
     }
     std::this_thread::sleep_for(25ms);
   }
@@ -99,9 +104,12 @@ TEST_CASE("BridgeServer publishes composition_barrel_ids for an UNREGISTERED (un
   server.release();
   fake.stop();
 
-  REQUIRE_FALSE(ids.is_null());
-  REQUIRE(ids.size() == 1);
-  CHECK(ids[0] == uuid);
+  REQUIRE_FALSE(entry.is_null());
+  CHECK(entry["uuid"] == uuid);
+  // The placeholder carries a human name + composition path so the web can
+  // label its card without a live plugin registration.
+  CHECK(entry["name"] == "Layer 1 \xC2\xB7 NanoBarrel");
+  CHECK(entry["location"] == "/layers/0/clips/0/video/effects/0");
 }
 
 namespace {
