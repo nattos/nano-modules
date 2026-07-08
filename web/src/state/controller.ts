@@ -2742,8 +2742,31 @@ export class AppController {
       console.warn('[global-input] getFile failed', err);
       return;
     }
-    await rememberInputVideo(handle);
+    await rememberInputVideo(file, handle);
     await this.globalInputManager.setSource(file, handle.name);
+    runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
+  }
+
+  /**
+   * A file dropped on the input card (offline/playground) becomes the global
+   * test input — persisted (as bytes) exactly like the picker, so it survives
+   * reload. A dropped `FileSystemFileHandle` (Chromium) is stored too as a
+   * re-link hint. Both are captured synchronously by the drop zone since the
+   * DataTransfer is transient.
+   */
+  async dropGlobalInput(file: File | null, handlePromise: Promise<FileSystemHandle | null> | null): Promise<void> {
+    let handle: FileSystemFileHandle | null = null;
+    if (handlePromise) {
+      const h = await handlePromise;
+      if (h && h.kind === 'file') handle = h as FileSystemFileHandle;
+    }
+    // Prefer the handle's live file (drop and picker converge), else the
+    // dropped File itself.
+    let f = file;
+    if (handle) { try { f = await handle.getFile(); } catch { /* keep dropped file */ } }
+    if (!f) return;
+    await rememberInputVideo(f, handle ?? undefined);
+    await this.globalInputManager.setSource(f, f.name);
     runInAction(() => { appState.local.globalInputLabel = this.globalInputManager.label; });
   }
 
@@ -2755,14 +2778,13 @@ export class AppController {
   }
 
   /**
-   * Re-load the remembered global input video at app start (offline/playground).
-   * Query-only permission (no prompt) — a previously-granted handle resolves
-   * silently; otherwise it stays cleared until the user re-picks.
+   * Re-load the remembered global input video at app start (offline/playground)
+   * from its stored bytes — no permission prompt needed.
    */
   async restoreGlobalInput(): Promise<void> {
     let file: File | null;
     try {
-      file = await restoreInputVideoFile({ prompt: false });
+      file = await restoreInputVideoFile();
     } catch (err) {
       console.warn('[global-input] restore failed', err);
       return;

@@ -13,6 +13,7 @@
 import { html, css, LitElement } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { appController } from '../state/controller';
+import { appState } from '../state/app-state';
 import { dragHasFiles, claimDrop } from '../utils/drag-drop';
 
 @customElement('texture-drop-zone')
@@ -92,9 +93,31 @@ export class TextureDropZone extends LitElement {
   private onDrop = (e: DragEvent) => {
     claimDrop(e);
     this.hovering = false;
-    if (!this.sketchId) return;
-    const file = e.dataTransfer?.files?.[0];
-    if (!file) return;
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const file = dt.files?.[0] ?? null;
+
+    // Offline / playground: the drop feeds the SINGLE global test input (fed to
+    // every instance), mirroring the "Load test input…" button — those surfaces
+    // have no Resolume feed and no per-sketch input pump. Everywhere else it's
+    // the per-sketch input drop.
+    const local = appState.local;
+    const globalSurface = local.userSettings.appMode === 'playground' || local.liveOfflineMode;
+    if (globalSurface) {
+      // A dropped file exposes a FileSystemFileHandle in Chromium — capture it
+      // SYNCHRONOUSLY (the DataTransfer is only live during the event) so the
+      // dropped input persists across reload, exactly like the picker. Fall
+      // back to the plain File (no persistence) when handles aren't available.
+      const item = dt.items?.[0] as any;
+      const handlePromise: Promise<FileSystemHandle | null> | null =
+        item && typeof item.getAsFileSystemHandle === 'function'
+          ? item.getAsFileSystemHandle().catch(() => null)
+          : null;
+      if (file || handlePromise) void appController.dropGlobalInput(file, handlePromise);
+      return;
+    }
+
+    if (!this.sketchId || !file) return;
     void appController.handleSketchInputDrop(this.sketchId, file);
   };
 }
