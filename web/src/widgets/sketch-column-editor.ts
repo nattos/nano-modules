@@ -20,14 +20,18 @@
  * top of effect cards, using bounding boxes from the FieldLayoutManager.
  */
 
-import { html, css } from 'lit';
+import { html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { keyed } from 'lit/directives/keyed.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
-import { ensureChain, chainEntryAt } from '../sketch-types';
+import { ensureChain, chainEntryAt, sketchChain } from '../sketch-types';
+import type { ModuleEntry } from '../sketch-types';
 import { PointerDragOp } from '../utils/pointer-drag-op';
+import { categoryColor, effectDomain } from './category-color';
+import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
+import './ui-icon';
 
 import type { FieldBinding } from './field-editor';
 import type { ColumnHost } from './columns-view';
@@ -38,7 +42,7 @@ import './column-group';
 import { ideColumnAdapter } from '../state/ide-column-adapter';
 import './taps-overlay';
 import { editorRegistry } from '../editor-registry';
-import { isTypingInEditable } from '../utils/keyboard';
+import { isTypingInEditable, isFieldControlFocused } from '../utils/keyboard';
 import { handleCommonEditShortcut } from '../utils/common-edit-shortcuts';
 
 // Import inspector registrations (self-registering) — single barrel shared by
@@ -71,6 +75,10 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   private dragCardEl: HTMLElement | null = null;
   private dragOp: PointerDragOp | null = null;
   private dragHoverTarget: { colIdx: number; insertIdx: number } | null = null;
+  // True while a card reorder is in flight — drives the floating compact
+  // headers popup (see renderReorderPopup). Not observable; toggled with an
+  // explicit requestUpdate() so the popup mounts/unmounts on drag start/end.
+  private dragActive = false;
 
   static styles = css`
     :host {
@@ -116,6 +124,87 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       flex: 1;
       min-width: 0;
     }
+
+    /* Floating compact-headers popup shown while dragging a card to reorder.
+     * Fixed-positioned just past the sketch panel's right edge so it floats
+     * over the main output monitor — a short, always-visible list of the chain
+     * you can drop into without scrolling the (uncollapsed) real cards. */
+    .reorder-popup {
+      position: fixed;
+      z-index: 200;
+      width: 190px;
+      max-height: 60vh;
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: 4px;
+      background: var(--app-bg-color1);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+      /* Pointer capture keeps events on the dragged header — the popup is a
+         hit-tested drop zone (via getBoundingClientRect), never an event
+         target, so it must not intercept the pointer. */
+      pointer-events: none;
+      user-select: none;
+    }
+    .reorder-popup-title {
+      font-size: var(--app-fs-sm);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--app-text-color2);
+      padding: 2px 6px 6px;
+    }
+    .reorder-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px;
+      margin-bottom: 3px;
+      box-sizing: border-box;
+      background: var(--app-bg-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 2px;
+    }
+    .reorder-row:last-child { margin-bottom: 0; }
+    /* The card being dragged, dimmed in the list (it stays in the chain until
+       the drop commits — matching the real column's dragging card). */
+    .reorder-row[data-dragged] { opacity: 0.4; }
+    .reorder-row-name {
+      flex: 1;
+      min-width: 0;
+      font-size: var(--app-fs-md);
+      color: var(--app-text-color1);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .reorder-glyph {
+      flex: 0 0 auto;
+      width: 14px; height: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .reorder-glyph.reorder-thumb { border-radius: 2px; object-fit: cover; }
+    .reorder-dot {
+      flex: 0 0 auto;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      opacity: 0.8;
+    }
+    /* Insertion marker inside the popup — mirrors the in-column one. */
+    .reorder-popup-marker {
+      position: absolute;
+      left: 4px; right: 4px;
+      height: 3px;
+      margin-top: -1px;
+      background: var(--app-hi-color2, #4169E1);
+      border-radius: 1px;
+      box-shadow: 0 0 6px rgba(65, 105, 225, 0.5);
+      pointer-events: none;
+      display: none;
+    }
+    .reorder-popup-marker.visible { display: block; }
   `;
 
   connectedCallback() {
@@ -126,6 +215,9 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('keydown', this.handleGlobalKeyDown);
+    // Abort any in-flight reorder so its window listeners + Escape handler don't
+    // outlive the element (dispose → cancel → cleanupDrag).
+    this.dragOp?.dispose();
     this.clearSketchCaches();
   }
 
@@ -163,6 +255,11 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       return;
     }
     if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== '0') return;
+    // A focused field control on the selected card (knob/slider/number/…) owns
+    // Delete/Backspace (reset to default) and `0` — never let the key fall
+    // through to deleting or bypassing the effect card itself. The card stays
+    // app-selected while a field only holds DOM focus, so guard on focus here.
+    if (isFieldControlFocused(e)) return;
     // A multi-selected GROUP (2+ cards) deletes as one undo point; falls
     // through when the multi-selection isn't an actionable group.
     if ((e.key === 'Delete' || e.key === 'Backspace')
@@ -239,7 +336,64 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
         ></columns-view>
         <taps-overlay .sketchId=${sketchId}></taps-overlay>
       </div>`)}
+      ${this.dragActive ? this.renderReorderPopup(sketchId) : nothing}
     `;
+  }
+
+  /**
+   * The floating compact-headers popup shown during a reorder drag. Lists every
+   * chain entry as a short icon+name row, positioned just past the sketch
+   * panel's right edge (over the monitor). Rendered once when the drag starts;
+   * the insertion marker inside it is moved imperatively during the drag (see
+   * updatePopupHover), so this doesn't re-render per pointer move.
+   */
+  private renderReorderPopup(sketchId: string) {
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return nothing;
+    const chain = sketchChain(sketch);
+    const rect = this.getBoundingClientRect();
+    const left = Math.round(rect.right + 8);
+    const top = Math.round(rect.top + 48);
+    return html`
+      <div class="reorder-popup" style=${`left:${left}px;top:${top}px`}>
+        <div class="reorder-popup-title">Move effect</div>
+        <div class="reorder-popup-list">
+          ${chain.map((entry, i) => html`
+            <div class="reorder-row" data-insert-idx=${i}
+              ?data-dragged=${i === this.dragSourceIdx}>
+              ${this.renderPopupGlyph(entry.module_type)}
+              <span class="reorder-row-name" title=${entry.module_type}
+                >${this.effectName(entry.module_type)}</span>
+            </div>
+          `)}
+        </div>
+        <div class="reorder-popup-marker"></div>
+      </div>
+    `;
+  }
+
+  /** Human name for an effect id — availableEffects label, else the last segment. */
+  private effectName(moduleType: string): string {
+    const eff = appState.local.availableEffects?.find(e => e.id === moduleType);
+    return eff?.name || (moduleType.split('.').pop() ?? moduleType);
+  }
+
+  /** Leading glyph for a popup row — the effect's thumbnail/icon tinted with its
+   *  category accent, else a plain category dot. Mirrors the card header glyph. */
+  private renderPopupGlyph(moduleType: string) {
+    const domain = effectDomain(moduleType);
+    const eff = appState.local.availableEffects?.find(e => e.id === moduleType);
+    const thumb = thumbnailDataUri(eff?.thumbnail);
+    if (thumb) {
+      return html`<img class="reorder-glyph reorder-thumb" src=${thumb} alt="" title=${domain}>`;
+    }
+    const icon = sanitizeIconName(eff?.icon);
+    if (icon) {
+      return html`<ui-icon class="reorder-glyph" icon=${icon} title=${domain}
+        style=${`--icon-color:${categoryColor(domain)};--icon-size:13px`}></ui-icon>`;
+    }
+    return html`<span class="reorder-dot" title=${domain}
+      style=${`background:${categoryColor(domain)}`}></span>`;
   }
 
   // ========================================================================
@@ -302,15 +456,29 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       threshold: 5,
       move: (me) => {
         card.setAttribute('dragging', '');
-        // Collapse every card to a compact header row so a long chain becomes a
-        // short list you can drag through freely.
-        this.setReorderingAll(true);
+        // First movement past the threshold: raise the floating compact-headers
+        // popup and start listening for Escape (cancel). The real cards stay
+        // expanded — the popup, not a collapse, is the short list to drop into.
+        if (!this.dragActive) {
+          this.dragActive = true;
+          document.addEventListener('keydown', this.handleDragKeyDown, true);
+          this.requestUpdate();
+        }
         this.updateDragHover(me.clientX, me.clientY);
       },
       accept: () => this.commitDrop(),
       cancel: () => this.cleanupDrag(),
     });
   }
+
+  /** Escape cancels an in-flight reorder (disposing the drag op fires cancel →
+   *  cleanupDrag). Captured so it wins over other global handlers. */
+  private handleDragKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || !this.dragOp) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.dragOp.dispose();
+  };
 
   onGutterWidthChanged(): void {
     const columnsView = this.renderRoot.querySelector('columns-view') as any;
@@ -346,13 +514,36 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   // ========================================================================
 
   /**
-   * Find the globally closest insertion point to the pointer and show the
-   * marker. Single-column → no placeholder/new-column drops.
+   * Route the pointer to a drop target and draw the insertion marker there:
+   * the floating popup takes priority when hovered, otherwise the real sketch
+   * column. Hovering neither area clears the target so the drop cancels.
    */
   private updateDragHover(px: number, py: number) {
     for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
+    this.hidePopupMarker();
     this.dragHoverTarget = null;
 
+    // 1) Over the floating compact-headers popup?
+    const popup = this.renderRoot.querySelector('.reorder-popup') as HTMLElement | null;
+    if (popup && this.pointInRect(px, py, popup.getBoundingClientRect())) {
+      this.updatePopupHover(popup, py);
+      return;
+    }
+    // 2) Over the real sketch column area?
+    const columnsView = this.renderRoot.querySelector('columns-view') as HTMLElement | null;
+    if (columnsView && this.pointInRect(px, py, columnsView.getBoundingClientRect())) {
+      this.updateColumnHover(px, py);
+      return;
+    }
+    // 3) Outside both — no target; the drop will cancel.
+  }
+
+  private pointInRect(x: number, y: number, r: DOMRect): boolean {
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  /** Marker + target over the real cards — the globally closest insertion point. */
+  private updateColumnHover(px: number, py: number) {
     let bestDist = Infinity;
     let bestPoint: { colIdx: number; insertIdx: number; x: number; y: number; element: HTMLElement } | null = null;
 
@@ -375,6 +566,40 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       const colRect = colEl.getBoundingClientRect();
       colGroup.showInsertMarker(bestPoint.y - colRect.top);
     }
+  }
+
+  /** Marker + target over the popup — the closest gap between compact rows. */
+  private updatePopupHover(popup: HTMLElement, py: number) {
+    const rows = [...popup.querySelectorAll('.reorder-row')] as HTMLElement[];
+    if (rows.length === 0) return;
+    const popRect = popup.getBoundingClientRect();
+
+    let bestDist = Infinity;
+    let bestIdx = 0;
+    let bestY = popRect.top;
+    for (const row of rows) {
+      const idx = parseInt(row.dataset.insertIdx ?? '0', 10);
+      const r = row.getBoundingClientRect();
+      const d = Math.abs(py - r.top);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; bestY = r.top; }
+    }
+    // Trailing gap: below the last row appends at chain.length.
+    const last = rows[rows.length - 1];
+    const lr = last.getBoundingClientRect();
+    const dLast = Math.abs(py - lr.bottom);
+    if (dLast < bestDist) { bestDist = dLast; bestIdx = rows.length; bestY = lr.bottom; }
+
+    this.dragHoverTarget = { colIdx: 0, insertIdx: bestIdx };
+    const marker = popup.querySelector('.reorder-popup-marker') as HTMLElement | null;
+    if (marker) {
+      marker.style.top = `${bestY - popRect.top + popup.scrollTop}px`;
+      marker.classList.add('visible');
+    }
+  }
+
+  private hidePopupMarker() {
+    const marker = this.renderRoot.querySelector('.reorder-popup-marker') as HTMLElement | null;
+    marker?.classList.remove('visible');
   }
 
   /** Commit the drop — splice the dragged module to the hovered insert index. */
@@ -403,22 +628,22 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     });
   }
 
-  /** Toggle compact-reorder mode on every column so their cards collapse to
-   *  header-only rows during a drag. */
-  private setReorderingAll(on: boolean) {
-    for (const [, el] of this.columnCache) (el as ColumnGroup).reordering = on;
-  }
-
   private cleanupDrag() {
     this.dragCardEl?.removeAttribute('dragging');
-    this.setReorderingAll(false);
     for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
+    this.hidePopupMarker();
+    document.removeEventListener('keydown', this.handleDragKeyDown, true);
     this.dragSketchId = null;
     this.dragSourceCol = -1;
     this.dragSourceIdx = -1;
     this.dragCardEl = null;
     this.dragOp = null;
     this.dragHoverTarget = null;
+    // Tear down the floating popup.
+    if (this.dragActive) {
+      this.dragActive = false;
+      this.requestUpdate();
+    }
   }
 }
 

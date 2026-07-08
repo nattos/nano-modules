@@ -201,11 +201,6 @@ export class ColumnGroup extends MobxLitElement {
   @property({ type: Number }) colIdx = -1;
   @property() sketchId = '';
   @property({ type: Number }) columnWidth = 300;
-  /** While an effect-reorder drag is active, collapse every card in this column
-   *  to a compact header row so the whole chain is short and any card can be
-   *  dragged past any other without traversing tall bodies. Reflected so the
-   *  `:host([reordering])` rules can hide the card bodies. */
-  @property({ type: Boolean, reflect: true }) reordering = false;
   @property({ attribute: false }) callbacks: ColumnGroupCallbacks | null = null;
   /** Injected data/controller/taps seam. The effect IDE passes `ideColumnAdapter`
    *  (all caps on → original behavior); other surfaces pass their own. */
@@ -402,16 +397,6 @@ export class ColumnGroup extends MobxLitElement {
       isolation: isolate;
     }
     .effect-card[dragging] { opacity: 0.4; }
-    /* During a reorder drag every card collapses to just its header row, so a
-     * long chain becomes a short list of names — you can drag any card past any
-     * other without traversing tall bodies. Names + the insert marker stay
-     * visible for precise drops. */
-    :host([reordering]) .effect-card-options,
-    :host([reordering]) .effect-card-divider,
-    :host([reordering]) .effect-card-body,
-    :host([reordering]) .trace-card-row {
-      display: none;
-    }
     /* While the type editor is open, lift the whole card above its siblings so
      * the smart-input autocomplete dropdown paints over the cards below (each
      * card is its own stacking context via isolation, so the dropdown can't
