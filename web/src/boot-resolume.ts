@@ -278,6 +278,33 @@ function connectBarrel(url: string) {
     });
   };
 
+  // Every barrel instance — not just the one actively wired for editing —
+  // gets a one-shot, non-continuous cache mirror so the offline fallback
+  // (`bootLiveOffline`) has something for ALL of them, not only whichever one
+  // happened to be selected when the connection dropped (previously the
+  // only instance ever cached at all). One `get()` per newly-seen key, no
+  // `observe()` — cheap, and avoids the native `key_observed` per-frame cost
+  // that continuous observation of every instance would impose. Never
+  // touches a key that's dirty (unresolved offline edits) or the currently
+  // wired key (the main reconciliation flow owns that one).
+  const passiveCached = new Set<string>();
+  const cachePassiveInstanceOnce = (key: string) => {
+    if (key === currentKey || passiveCached.has(key)) return;
+    passiveCached.add(key);
+    const statePath = `/plugins/${key}/state`;
+    barrel.onSnapshot(statePath, (state) => {
+      if (key === currentKey) return;  // promoted to wired — that path owns it now
+      void (async () => {
+        const existing = await loadLiveCacheInstance(key);
+        if (existing?.dirty) return;  // don't clobber unresolved offline edits
+        const sketch = coerceSketch(state?.sketch ?? {});
+        await saveLiveCacheInstance(key, instanceDisplayLabel(key), sketch, false);
+        console.log(`[live-cache] passively cached instance key=${key} (not the wired instance)`);
+      })();
+    });
+    barrel.get(statePath);
+  };
+
   // Phase A: readonly until reconciled (see below), before we even know
   // whether the barrel will respond.
   appController.setReadonly(true);
@@ -625,6 +652,7 @@ function connectBarrel(url: string) {
     const instances = parseInstances(arr);
     console.log(`[live-cache] /global/plugins: ${instances.length} instance(s): [${instances.map(i => i.key).join(', ')}]`);
     appController.setBarrelInstances(instances);
+    for (const inst of instances) cachePassiveInstanceOnce(inst.key);
   });
 
   // Sidechannel-bus channel metadata (channel → writer plugin key + size),
