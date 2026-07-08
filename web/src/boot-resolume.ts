@@ -181,28 +181,30 @@ async function bootLiveOffline(barrelUrl: string): Promise<void> {
   } catch (err) {
     console.warn('[live-cache] failed to load offline instances', err);
   }
-  // Show only instances that belong to the LATEST composition this browser saw
-  // while online. `lastCompositionBarrelIds` is the authoritative member set —
-  // native's `/global/composition_barrel_ids`, every NanoBarrel uuid in the
-  // loaded composition, launched or not. Without this, every instance from
-  // every composition this browser has ever cached piles up here forever. Two
-  // deliberate exemptions:
-  //   - empty member set → show ALL: we've never been online with a native
-  //     build that publishes the set (or never connected at all), so we can't
-  //     scope yet — don't hide everything and look broken.
-  //   - `dirty` rows (unresolved offline edits) are ALWAYS shown, even if
-  //     they're from a composition you've since switched away from — never
-  //     silently hide unsynced work; reconciliation still folds it back in on
-  //     the next reconnect to a composition that contains it (it looks up by
-  //     exact key regardless of composition membership).
-  const compositionIds = appState.local.userSettings.lastCompositionBarrelIds;
-  if (compositionIds.length > 0) {
-    const member = new Set(compositionIds);
+  // NEVER load the whole cached pile — offline mode runs a real local executor
+  // over EVERY instance in this list (for the Instances-tab thumbnails), so an
+  // unbounded list melts the GPU. Always filter to a bounded working set:
+  //   - members of the last-seen composition (`lastCompositionBarrelIds`,
+  //     native's `/global/composition_barrel_ids`) — the legitimate set;
+  //   - any `dirty` row (unsynced offline edits — the user's own recoverable
+  //     work; reconciliation still folds these back in by exact key on the
+  //     next reconnect regardless of composition membership);
+  //   - the single last-edited instance, so there's always something to land
+  //     on even before we've ever captured a composition (first-ever offline
+  //     boot, or a not-yet-redeployed native barrel).
+  // Everything else — clean ghosts from compositions you've moved on from —
+  // stays in IndexedDB, UNLOADED (not rendered), until a reconnect re-lists it
+  // or a future "forget instance" action purges it. There is deliberately NO
+  // "show all" fallback: hidden-but-safe beats melting the GPU.
+  {
+    const member = new Set(appState.local.userSettings.lastCompositionBarrelIds);
+    const lastKey = appState.local.userSettings.lastLiveInstanceKey;
     const allRecords = records;
-    records = records.filter((r) => member.has(r.key) || r.dirty);
+    records = records.filter((r) => member.has(r.key) || r.dirty || r.key === lastKey);
     const hidden = allRecords.length - records.length;
     if (hidden > 0) {
-      console.log(`[live-cache] offline boot: hiding ${hidden} instance(s) not in the last-seen composition (${compositionIds.length} member(s), ${records.filter(r => r.dirty && !member.has(r.key)).length} off-composition dirty row(s) kept)`);
+      const offCompDirty = records.filter((r) => r.dirty && !member.has(r.key)).length;
+      console.log(`[live-cache] offline boot: NOT loading ${hidden} cached instance(s) outside the working set — kept ${records.length} (${member.size} composition member(s) + ${offCompDirty} off-composition dirty + last-edited)`);
     }
   }
   console.log(`[live-cache] offline boot: loaded ${records.length} cached instance(s): [${records.map(r => `${r.key}${r.dirty ? '*' : ''}`).join(', ')}]`);
