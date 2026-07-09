@@ -371,6 +371,8 @@ export class OrganizeTab extends MobxLitElement {
     return html`
       <div class="trig-btn ${playing ? 'playing' : ''}"
         title=${playing ? 'Disconnect clip' : 'Connect clip'}
+        @pointerdown=${(e: Event) => e.stopPropagation()}
+        @dblclick=${(e: Event) => e.stopPropagation()}
         @click=${(e: Event) => {
           e.stopPropagation();
           appController.triggerClip({ layer: p.trackIndex, clip: p.clipIndex }, !playing);
