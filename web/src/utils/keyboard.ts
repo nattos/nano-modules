@@ -20,3 +20,23 @@ export function isTypingInEditable(e: Event): boolean {
   }
   return false;
 }
+
+/**
+ * Return true if the keyboard event is targeted at a focused field-control host
+ * — a knob/slider/number/toggle/etc. value editor on a card.
+ *
+ * Unlike a bare `<input>`, these are focusable custom-element hosts (they set
+ * `tabindex` on themselves and render an inner `<input>` only while editing), so
+ * `isTypingInEditable` misses them when they hold focus but aren't in edit mode.
+ * We detect them structurally: a focusable (`tabindex >= 0`) custom element
+ * (hyphenated tag) in the event path. The effect card is a plain non-focusable
+ * `<div>`, so it never matches — this lets a focused field own Delete/Backspace
+ * (reset to default) instead of the global handler deleting the whole card.
+ */
+export function isFieldControlFocused(e: Event): boolean {
+  for (const node of e.composedPath()) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.tabIndex >= 0 && node.localName.includes('-')) return true;
+  }
+  return false;
+}

@@ -41,8 +41,9 @@ export class SketchApp extends MobxLitElement {
 
   render() {
     const sketchId = appState.local.editingSketchId;
-    const traceTarget = appState.local.selection?.traceTarget
-      ?? ({ type: 'sketch_output', sketchId } as any);
+    // Main monitor always shows the sketch output. Selecting an effect card no
+    // longer retargets the monitor to that card's chain-output texture.
+    const traceTarget = { type: 'sketch_output', sketchId } as any;
 
     const config: ShellConfig = {
       tabs: [
