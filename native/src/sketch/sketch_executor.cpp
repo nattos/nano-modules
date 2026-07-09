@@ -899,8 +899,54 @@ int32_t SketchExecutor::execute(
         const std::string dstField = dst.value("field", std::string());
         const std::string wid = w.value("id", std::string());
         if (wid.empty()) continue;
-        auto si = byKey.find(src.value("instanceKey", std::string()));
+        const std::string srcKey = src.value("instanceKey", std::string());
+        auto si = byKey.find(srcKey);
         auto di = byKey.find(dst.value("instanceKey", std::string()));
+        // EXTERNAL scalar source (a MIDI device control from the app-level
+        // device library — no chain entry exists for it): synthesize a float
+        // rail tagged `external`, seeded per frame from setExternalScalars,
+        // plus the normal read-tap fold on the dest. Absent value → rail
+        // unseeded → read tap skipped → dormant wire (dest keeps its authored
+        // value). Never delayed: the host publishes values before the frame.
+        // Endpoints publish normalized unsigned 0..1 (web midi-types contract).
+        if (si == byKey.end() && di != byKey.end() &&
+            srcKey.rfind("midi:", 0) == 0) {
+          rails.push_back(json{{"id", wid}, {"dataType", "float"},
+                               {"external", json{{"instance", srcKey},
+                                                 {"field", srcField}}}});
+          json rtap{{"direction", "read"}, {"railId", wid}, {"fieldPath", dstField}};
+          if (w.contains("mod")) rtap["mod"] = w["mod"];
+          if (w.contains("combine")) rtap["combine"] = w["combine"];
+          if (w.contains("mixFactor")) rtap["mixFactor"] = w["mixFactor"];
+          rtap["srcMin"] = 0.0;
+          rtap["srcMax"] = 1.0;
+          std::string mag = w.value("magnitude", std::string("auto"));
+          if (mag != "absolute") {
+            if (mag == "auto") {
+              mag = "unsigned";
+            } else if (mag == "signed") {
+              // Explicitly-unsigned source forced bipolar: prescale 0..1 →
+              // −1..1 so it spans the full signed range (same rule as below).
+              rtap["preScale"] = 2.0;
+              rtap["preBias"] = -1.0;
+            }
+            double dmin = 0.0, dmax = 1.0;
+            const RegisteredModule* dreg = findSchema(
+                chain[di->second].value("module_type", std::string()));
+            if (dreg && dreg->schemaFields.is_object()) {
+              auto dfit = dreg->schemaFields.find(dstField);
+              if (dfit != dreg->schemaFields.end() && dfit->is_object()) {
+                dmin = dfit->value("min", 0.0);
+                dmax = dfit->value("max", 1.0);
+              }
+            }
+            rtap["magnitude"] = mag;
+            rtap["destMin"] = dmin;
+            rtap["destMax"] = dmax;
+          }
+          chain[di->second]["taps"].push_back(std::move(rtap));
+          continue;
+        }
         if (si == byKey.end() || di == byKey.end()) continue;
         // Route by the producer field's schema type. Float → float rail,
         // texture → texture rail, object/array → struct rail (its texture
@@ -1150,6 +1196,22 @@ int32_t SketchExecutor::execute(
     std::unordered_map<std::string, float> railFloats;
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railBuffers;
+
+    // Seed EXTERNAL float rails (out-of-chain sources, e.g. MIDI device
+    // controls) from the host's setExternalScalars table. No producer entry
+    // writes these; a rail whose value is absent stays unseeded, so its read
+    // taps are skipped — the dormant-wire contract.
+    if (!externalScalars_.empty()) {
+      for (const auto& [railId, railDef] : railsById) {
+        auto eit = railDef.find("external");
+        if (eit == railDef.end() || !eit->is_object()) continue;
+        auto ii = externalScalars_.find(eit->value("instance", std::string()));
+        if (ii == externalScalars_.end()) continue;
+        auto fi = ii->second.find(eit->value("field", std::string()));
+        if (fi == ii->second.end()) continue;
+        railFloats[railId] = fi->second;
+      }
+    }
 
     int32_t colInput = execInput;
     const bool isLastCol = (colIdx == columns.size() - 1);
@@ -2212,6 +2274,18 @@ void SketchExecutor::setAutomation(const json& entries) {
     if (!e.is_object()) continue;
     const std::string inst = e.value("instance", std::string());
     if (!inst.empty()) automationByInstance_[inst].push_back(e);
+  }
+}
+
+void SketchExecutor::setExternalScalars(const json& values) {
+  externalScalars_.clear();
+  if (!values.is_object()) return;
+  for (const auto& [instKey, fields] : values.items()) {
+    if (!fields.is_object()) continue;
+    auto& table = externalScalars_[instKey];
+    for (const auto& [field, v] : fields.items()) {
+      if (v.is_number()) table[field] = v.get<float>();
+    }
   }
 }
 

@@ -249,6 +249,12 @@ export class EngineProxy {
     this.send({ type: 'setAutomation', json });
   }
 
+  /** Push the external scalar table (MIDI device control values) to the
+   *  executor — see the `setExternalScalars` command in engine-types.ts. */
+  setExternalScalars(json: string) {
+    this.send({ type: 'setExternalScalars', json });
+  }
+
   setFusionMode(mode: 'auto' | 'force-on' | 'force-off') {
     this.send({ type: 'setFusionMode', mode });
   }

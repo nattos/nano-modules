@@ -408,6 +408,9 @@ async function handleCommand(cmd: WorkerCommand) {
     case 'setAutomation':
       executor?.setAutomation(cmd.json);
       break;
+    case 'setExternalScalars':
+      executor?.setExternalScalars(cmd.json);
+      break;
     // ── Composition executor (arrangement comp mode) ──
     case 'compMode':
       compActive = !!cmd.on;

@@ -156,6 +156,10 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   } catch (err) {
     console.warn('[boot] failed to load MIDI device library', err);
   }
+  // Device values reach the local executor as external scalars. Harmless in
+  // barrel mode (the idle worker ignores it); the live-mode bridge push is a
+  // separate channel.
+  midiController.bindEnginePush(json => engine.setExternalScalars(json));
   // Record the surface actually booting into `appMode`, regardless of what
   // was last persisted — this reflects the resolved mode (settings, or a
   // boot-time override); `appMode` remembers it for the Settings tab's

@@ -132,6 +132,22 @@ class SketchExecutor {
   void setAutomation(const nlohmann::json& entries);
 
   /**
+   * Host-supplied EXTERNAL scalar sources for the next execute() — values for
+   * wires whose `src.instanceKey` lives outside the chain (currently MIDI
+   * device controls, prefix "midi:"). Shape:
+   * `{ "midi:<uuid>": { "b0/e05/turn": 0.42, ... }, ... }`, values normalized
+   * unsigned 0..1. The wire translation synthesizes a float rail (tagged
+   * `external`) + the normal read tap for such wires, so TapMod / combine /
+   * magnitude / smoothing and the modulation band all fold through the SAME
+   * pipeline as module wires. A wire whose value is absent here leaves its
+   * rail unseeded → its read tap is skipped → the dest keeps its authored
+   * value (dormant wire: missing/deleted/disconnected device). Values ride
+   * outside the sketch JSON, so per-frame changes never dirty the cached plan.
+   * Replaces the previous frame's set; empty clears.
+   */
+  void setExternalScalars(const nlohmann::json& values);
+
+  /**
    * Forget the per-instance applied-state cache so every instance's authored
    * state re-fires on the next frame (as if freshly dirty). Hosts call this at
    * EDIT rate (e.g. on a composition document reload) to fix the pinned-param
@@ -337,6 +353,12 @@ class SketchExecutor {
   // This frame's parameter automation (setAutomation), keyed by instance key →
   // array of {field,value,combine,magnitude}. Folded in execute() after read taps.
   std::unordered_map<std::string, nlohmann::json> automationByInstance_;
+
+  // This frame's external scalar sources (setExternalScalars), keyed by the
+  // out-of-chain instance key ("midi:<uuid>") → endpoint field → value 0..1.
+  // Seeds the `external`-tagged float rails at the top of execute().
+  std::unordered_map<std::string, std::unordered_map<std::string, float>>
+      externalScalars_;
 
   // Per-(instance,field) modulation DELAY lines (the wire's continuous-time
   // `mod.shaper.delay`, seconds), persisted across frames. A wire shaper stage parallel

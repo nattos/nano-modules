@@ -196,6 +196,12 @@ export type WorkerCommand =
   // byte-identity between the standalone and fused paths.
   | { type: 'setFusionMode'; mode: 'auto' | 'force-on' | 'force-off' }
   | { type: 'setAutomation'; json: string }
+  // External scalar sources (MIDI device control values) —
+  // `{"midi:<uuid>": {"b0/e05/turn": 0.42}}`. Wires from out-of-chain
+  // `midi:` sources fold these through the normal read-tap pipeline;
+  // absent values leave their wires dormant. Replaces the previous
+  // table; '{}' clears.
+  | { type: 'setExternalScalars'; json: string }
   // Toggle debug-stats collection. When on, the worker tracks
   // per-frame counters (effects executed, dispatches issued, fused
   // runs, dispatches saved) and ships them on each frame event.

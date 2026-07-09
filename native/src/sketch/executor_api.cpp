@@ -104,6 +104,18 @@ void executor_set_automation(SketchExecutor* ex, const char* json, int32_t len) 
   ex->setAutomation(j.is_discarded() ? nlohmann::json::array() : j);
 }
 
+// Push external scalar sources (MIDI device controls) for the next execute():
+// `{"midi:<uuid>": {"b0/e05/turn": 0.42, ...}, ...}`, values normalized 0..1.
+// Wires from such out-of-chain sources fold through the normal read-tap
+// pipeline (see SketchExecutor::setExternalScalars). Replaces the previous
+// set; "{}" clears.
+EXEC_EXPORT("executor_set_external_scalars")
+void executor_set_external_scalars(SketchExecutor* ex, const char* json, int32_t len) {
+  if (!ex) return;
+  auto j = nlohmann::json::parse(std::string(json, len), nullptr, false);
+  ex->setExternalScalars(j.is_discarded() ? nlohmann::json::object() : j);
+}
+
 // Push the absolute transport time (seconds) for the NEXT execute() — drives
 // deterministic effect seeks (backward jump + clip activation). Optional: a host that
 // never calls it leaves the executor at 0 (no jump seeks). See SketchExecutor::setFrameTime.

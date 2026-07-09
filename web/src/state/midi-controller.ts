@@ -21,6 +21,7 @@ import { getDeviceTemplate } from '../midi/device-registry';
 import { forkInstance } from '../midi/matching';
 import { MidiManager } from '../midi/midi-manager';
 import type { ControlMapping, DeviceInstance, PhysicalIdentity } from '../midi/midi-types';
+import { buildExternalScalars } from '../midi/wire-lowering';
 import { appState } from './app-state';
 import { loadDeviceLibrary, saveDeviceInstance } from './midi-device-store';
 
@@ -34,6 +35,8 @@ export class MidiController {
 
   private saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pushQueued: Set<string> | null = null;
+  private enginePush: ((json: string) => void) | null = null;
+  private lastPushedJson = '';
 
   constructor() {
     const midi = () => appState.local.midi;
@@ -174,13 +177,27 @@ export class MidiController {
 
   // --- Engine push (external scalars) ---
 
+  /** Boot wires this to `engine.setExternalScalars` (see boot.ts). */
+  bindEnginePush(push: (json: string) => void): void {
+    this.enginePush = push;
+    this.lastPushedJson = '';
+    this.pushExternalScalars();
+  }
+
   /**
-   * Push current device values into the engine. Wired up in the
-   * external-scalars phase; the rAF-coalesced trigger below already funnels
-   * every value change (hardware + simulation) through here.
+   * Lower the current device values through the sketches' `midi:` wires into
+   * the executor's external-scalar table. Called from the rAF-coalesced value
+   * trigger below AND from AppController's postRecord hook (wire edits change
+   * which endpoints are referenced). Deduped by JSON compare — identical
+   * states cost one string build, no worker message.
    */
   pushExternalScalars(): void {
-    // TODO(midi): build via midi/wire-lowering.ts and hand to the engine.
+    if (!this.enginePush) return;
+    const json = buildExternalScalars(
+      appState.database.sketches, id => this.manager.getValues(id));
+    if (json === this.lastPushedJson) return;
+    this.lastPushedJson = json;
+    this.enginePush(json);
   }
 
   // --- Internals ---

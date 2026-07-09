@@ -70,6 +70,7 @@ interface ExecutorExports {
   /** Optional: push the absolute transport time (s) before execute (effect seeks). */
   executor_set_time?(ex: number, sec: number): void;
   executor_set_automation(ex: number, json: number, len: number): void;
+  executor_set_external_scalars(ex: number, json: number, len: number): void;
   executor_debug_stats(ex: number, out: number): void;
   executor_modulation_json(ex: number, out: number, cap: number): number;
   executor_set_bus_tag(ex: number, tag: number, len: number): void;
@@ -165,6 +166,8 @@ export class WasmSketchExecutor {
   // collapses to auto). Applied to each slot when it's created + retroactively
   // when the mode changes.
   private fusionEnabled = true;
+  /** Last external-scalar table (setExternalScalars), re-applied to new slots. */
+  private externalScalarsJson = '';
 
   // Per-frame debug counters, accumulated across every sketch's executor_execute
   // and drained by consumeDebugStats() (called once per frame). The C++ executor
@@ -425,6 +428,16 @@ export class WasmSketchExecutor {
       const exPtr = this.exports.executor_create();
       // Apply the current fusion toggle to the fresh executor (default is on).
       if (!this.fusionEnabled) this.exports.executor_set_fusion_enabled(exPtr, 0);
+      // Seed the fresh executor with the current external-scalar table —
+      // MIDI values only re-push on device events, which a slot created
+      // mid-session would otherwise miss until the next knob twist.
+      if (this.externalScalarsJson) {
+        const esBytes = encoder.encode(this.externalScalarsJson);
+        const esPtr = this.exports.malloc(esBytes.length);
+        new Uint8Array(this.memory.buffer, esPtr, esBytes.length).set(esBytes);
+        this.exports.executor_set_external_scalars(exPtr, esPtr, esBytes.length);
+        this.exports.free(esPtr);
+      }
       // Tag the executor's sidechannel-bus writes with its sketch id (the UI
       // maps it to the playground instance label for channel names).
       const tagBytes = encoder.encode(sketchId);
@@ -531,6 +544,23 @@ export class WasmSketchExecutor {
     new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
     for (const slot of this.slots.values()) {
       this.exports.executor_set_automation(slot.exPtr, ptr, bytes.length);
+    }
+    this.exports.free(ptr);
+  }
+
+  /** Push the external scalar table (MIDI device control values,
+   *  `{"midi:<uuid>": {"b0/e05/turn": 0.42}}`) to every live slot. Wires from
+   *  out-of-chain `midi:` sources fold these through the normal read-tap
+   *  pipeline; wires whose value is absent stay dormant. Unlike automation
+   *  this changes on MIDI events (not per frame), so the last table is
+   *  remembered and re-applied to slots created later. Empty object clears. */
+  setExternalScalars(json: string): void {
+    this.externalScalarsJson = json;
+    const bytes = encoder.encode(json);
+    const ptr = this.exports.malloc(bytes.length);
+    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+    for (const slot of this.slots.values()) {
+      this.exports.executor_set_external_scalars(slot.exPtr, ptr, bytes.length);
     }
     this.exports.free(ptr);
   }

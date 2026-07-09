@@ -23,6 +23,7 @@ import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat } from '../sketch-types';
 import { midiInstanceKey } from '../midi/midi-types';
+import { midiController } from './midi-controller';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
 export type { FieldConnectInfo } from '../sketch-types';
@@ -211,6 +212,9 @@ export class AppController {
     // IndexedDB save.
     this.history.postRecordHook = (_description, patches) => {
       this.syncSketchesToEngine();
+      // Wire edits change which MIDI device endpoints are referenced — keep
+      // the executor's external-scalar table in step (deduped internally).
+      midiController.pushExternalScalars();
       this.requestProjectsSave();
       this.requestPlaygroundSave();
       // Stamp exactly the live-mode sketches THIS mutation touched (not
