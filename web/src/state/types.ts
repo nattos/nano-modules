@@ -291,6 +291,14 @@ export interface EngineStatus {
    * per clip with a live thumbnail. Change-gated upstream (never per frame).
    */
   triggerChannels: Record<string, import('../engine-types').TriggerChannelClips>;
+
+  /**
+   * Per-clip connected state, keyed by `"<layer>:<clip>"` (0-based composition
+   * indices), published by the shared server at /global/clip_states (barrel
+   * only). Lets the Instances tab show a clip-scope instance's play/stop state
+   * (its `resolumePlacement` gives the layer/clip). Change-gated upstream.
+   */
+  clipStates: Record<string, boolean>;
 }
 
 export interface LocalState {
@@ -356,6 +364,14 @@ export interface LocalState {
    * (the panel shows the sidechannel while one is picked).
    */
   selectedSidechannel: string | null;
+
+  /**
+   * Trigger-channel clip selected on the Instances tab (its inspector — channel
+   * reassignment — shows in the right panel), or null. `{ key, channel }`: the
+   * marker uuid and its current 1-based channel. Mutually exclusive with the
+   * sidechannel / instance selections in the panel.
+   */
+  selectedTriggerClip: { key: string; channel: number } | null;
 
   /**
    * Health of the shared-server WebSocket (barrel mode only; stays

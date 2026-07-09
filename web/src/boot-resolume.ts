@@ -833,6 +833,25 @@ function connectBarrel(url: string) {
     appController.setTriggerChannels(data);
   };
   barrel.onSnapshot('/global/channels', ingestTriggerChannels);
+
+  // Per-clip connected state (keyed "<layer>:<clip>"), published only on change.
+  // Drives the Instances-tab clip cards' play/stop button.
+  const ingestClipStates = (data: any) => {
+    if (!data || typeof data !== 'object') return;
+    appController.setClipStates(data);
+  };
+  barrel.onSnapshot('/global/clip_states', ingestClipStates);
+
+  // Clip control: the web triggers/disconnects Resolume clips and reassigns
+  // trigger channels through the barrel's WS action channel. Fire-and-forget —
+  // the result surfaces as a /global/channels + /global/clip_states patch.
+  appController.setBarrelClipCommander((cmd) => {
+    if (cmd.kind === 'trigger') {
+      barrel.triggerClip({ key: cmd.key, layer: cmd.layer, clip: cmd.clip }, cmd.on);
+    } else {
+      barrel.reassignChannel(cmd.key, cmd.channel);
+    }
+  });
   // NOTE: marker instance-state observation (the native key_observed gate) is
   // handled by the single-owner reconcileObservations() above — each Trigger
   // Channels thumbnail is an `inst_thumb:<markerKey>` trace point, so its key
@@ -930,6 +949,10 @@ function connectBarrel(url: string) {
         ingestSidechannels(op.value);  // whole-object replace per publish
       } else if (p === '/global/channels') {
         ingestTriggerChannels(op.value);  // whole-object replace per publish
+      } else if (p === '/global/clip_states') {
+        ingestClipStates(op.value);       // whole-object replace per publish
+      } else if (p.startsWith('/global/clip_states')) {
+        barrel.get('/global/clip_states'); // partial patch — refetch whole
       } else if (p === '/global/preview_transport') {
         reconcileLanes(op.value);      // published whole on (re)start
       } else if (p.startsWith('/global/preview_transport/')) {
@@ -965,6 +988,8 @@ function connectBarrel(url: string) {
     barrel.observe('/global/sidechannels');
     barrel.get('/global/channels');
     barrel.observe('/global/channels');
+    barrel.get('/global/clip_states');
+    barrel.observe('/global/clip_states');
     barrel.get('/global/preview_transport');
     barrel.observe('/global/preview_transport');
     // If a selection already exists (reconnect), rewire it.

@@ -85,6 +85,22 @@ export class WsBridgeClient {
     this.send({ action: 'patch', target, ops });
   }
 
+  /**
+   * Connect (`on`) or disconnect a Resolume clip. Address it by marker uuid
+   * (`key`) OR by 0-based composition `layer`/`clip` indices. Fire-and-forget:
+   * the native barrel resolves the clip and issues the Resolume WS trigger; the
+   * result arrives as the usual /global/channels + /global/clip_states patch.
+   */
+  triggerClip(target: { key?: string; layer?: number; clip?: number }, on: boolean): void {
+    this.send({ action: 'trigger_clip', ...target, on });
+  }
+
+  /** Reassign a clip (by marker uuid) to a new 1-based trigger channel. The
+   *  native barrel writes the marker's Channel param over the Resolume WS. */
+  reassignChannel(key: string, channel: number): void {
+    this.send({ action: 'reassign_channel', key, channel });
+  }
+
   onPatch(handler: (ops: any[]) => void): void {
     this.patchHandlers.push(handler);
   }

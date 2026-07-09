@@ -328,3 +328,14 @@ export interface TriggerChannelClip { key: string; clip: string; connected: bool
 /** A trigger channel's registered clips + cosmetic label, published by the
  *  shared server at /global/channels (keyed by 1-based channel number). */
 export interface TriggerChannelClips { name: string; clips: TriggerChannelClip[]; }
+
+/**
+ * A clip-control command the web sends to the native barrel (which forwards it
+ * to the Resolume WS client). `trigger` connects (`on`) or disconnects a clip —
+ * addressed either by its marker uuid (`key`, trigger-channel clips) or by its
+ * 0-based composition `layer`/`clip` indices (Instances-tab clip cards).
+ * `reassign` moves a clip (by marker uuid) to a new 1-based trigger `channel`.
+ */
+export type BarrelClipCommand =
+  | { kind: 'trigger'; key?: string; layer?: number; clip?: number; on: boolean }
+  | { kind: 'reassign'; key: string; channel: number };

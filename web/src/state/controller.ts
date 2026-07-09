@@ -19,7 +19,7 @@ import {
   type EffectPathParts,
 } from './effects-payload';
 import type { EngineProxy } from '../engine-proxy';
-import type { EngineState, EffectInfo, TracePoint, ParamValue } from '../engine-types';
+import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat } from '../sketch-types';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
@@ -111,6 +111,11 @@ export class AppController {
   // subscriptions/pushers for the newly selected key. Not a MobX reaction
   // — selection is an explicit action, so we call the handler from it.
   private barrelSelectHandler: ((key: string) => void) | null = null;
+  // Sends a clip-control command (connect/disconnect a Resolume clip, or
+  // reassign its trigger channel) to the shared server. resolume-app installs
+  // this to translate the command into a WS action the native barrel maps onto
+  // the Resolume WS client. Null in playground (no Resolume) → commands no-op.
+  private barrelClipCommander: ((cmd: BarrelClipCommand) => void) | null = null;
 
   // -- Persistence scheduling (no MobX reactions; fired explicitly by
   //    every method that mutates the relevant slice) --
@@ -2120,10 +2125,51 @@ export class AppController {
     runInAction(() => { appState.local.engine.triggerChannels = channels ?? {}; });
   }
 
+  /** Adopt per-clip connected state, keyed `"<layer>:<clip>"` (barrel only,
+   *  from /global/clip_states). Change-gated upstream — drives the Instances-tab
+   *  clip cards' play/stop button. */
+  setClipStates(states: Record<string, boolean>) {
+    runInAction(() => { appState.local.engine.clipStates = states ?? {}; });
+  }
+
+  /** Wire the shared server's clip-control channel (resolume-app installs it). */
+  setBarrelClipCommander(fn: ((cmd: BarrelClipCommand) => void) | null) {
+    this.barrelClipCommander = fn;
+  }
+
+  /**
+   * Connect (`on`) or disconnect a Resolume clip. Address it by marker uuid
+   * (`target.key`, trigger-channel clips) OR by 0-based composition indices
+   * (`target.layer`/`target.clip`, Instances-tab clip cards). No-ops in
+   * playground (no commander wired).
+   */
+  triggerClip(target: { key?: string; layer?: number; clip?: number }, on: boolean) {
+    this.barrelClipCommander?.({ kind: 'trigger', ...target, on });
+  }
+
+  /** Move a clip (by marker uuid) to a new 1-based trigger channel. No-ops when
+   *  no commander is wired (playground). */
+  reassignClipChannel(key: string, channel: number) {
+    this.barrelClipCommander?.({ kind: 'reassign', key, channel });
+  }
+
+  /** Select a trigger-channel clip on the Instances tab (its reassignment
+   *  inspector shows in the right panel), or clear with null. Clears the
+   *  sidechannel selection so the panel shows one thing at a time. */
+  selectTriggerClip(sel: { key: string; channel: number } | null) {
+    runInAction(() => {
+      appState.local.selectedTriggerClip = sel;
+      if (sel) appState.local.selectedSidechannel = null;
+    });
+  }
+
   /** Select a sidechannel card on the Instances tab (its inspector shows in
    *  the right panel), or clear with null. */
   selectSidechannel(channel: string | null) {
-    runInAction(() => { appState.local.selectedSidechannel = channel; });
+    runInAction(() => {
+      appState.local.selectedSidechannel = channel;
+      if (channel) appState.local.selectedTriggerClip = null;
+    });
   }
 
   /** Set a sidechannel's display-name override template ("#" expands to the
@@ -2312,7 +2358,10 @@ export class AppController {
 
   /** Pick the barrel instance to edit; persists + rewires the bridge. */
   selectBarrelInstance(key: string) {
-    runInAction(() => { appState.local.selectedBarrelKey = key; });
+    runInAction(() => {
+      appState.local.selectedBarrelKey = key;
+      appState.local.selectedTriggerClip = null;
+    });
     try { localStorage.setItem(this.selectedKeyStorageKey(), key); } catch { /* ignore */ }
     this.barrelSelectHandler?.(key);
   }

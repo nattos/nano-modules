@@ -18,7 +18,7 @@
  */
 
 import { html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
@@ -29,12 +29,21 @@ import {
 } from '../state/sidechannel-labels';
 import { instanceDefaultLabel, instanceDisplayLabel } from '../state/instance-labels';
 import { buildInstanceRows } from '../state/instance-rows';
+import { triggerChannelColumns } from '../state/trigger-channels-layout';
 import type { BarrelInstanceInfo } from '../state/types';
+import type { TriggerChannelClip } from '../engine-types';
 import '../widgets/texture-monitor';
 import '../widgets/editable-text';
+import '../widgets/editable-number';
+import '../widgets/ui-icon';
 
 @customElement('organize-tab')
 export class OrganizeTab extends MobxLitElement {
+  /** Marker uuid of the clip currently being dragged (channel reassignment). */
+  private dragKey: string | null = null;
+  /** 1-based channel currently under the drag (for drop-target highlight). */
+  @state() private dragOverChannel: number | null = null;
+
   static styles = css`
     :host {
       display: flex;
@@ -102,6 +111,22 @@ export class OrganizeTab extends MobxLitElement {
     .card-meta { padding: 8px 12px 10px; }
     .card-name { font-size: var(--app-fs-lg); color: var(--app-text-color1); }
     .card-info { font-size: var(--app-fs-sm); color: var(--app-text-color2); margin-top: 2px; }
+    /* Bottom label area laid out as text (left) + a trigger button (right). */
+    .meta-row { display: flex; align-items: flex-end; gap: 8px; }
+    .meta-text { flex: 1; min-width: 0; }
+    .meta-text .card-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Clip trigger button: play when idle, X when connected/playing. */
+    .trig-btn {
+      flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--app-tint-4); background: var(--app-tint-2);
+      color: var(--app-text-color2); cursor: pointer; --icon-size: 13px;
+    }
+    .trig-btn:hover { border-color: var(--app-hi-color2); color: var(--app-text-color1); }
+    .trig-btn.playing {
+      border-color: var(--app-hi-color2); color: var(--app-hi-color2);
+      background: rgba(65,105,225,0.12);
+    }
     .section-header {
       font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2); margin-bottom: 8px;
@@ -163,14 +188,28 @@ export class OrganizeTab extends MobxLitElement {
       grid-template-columns: repeat(8, minmax(0, 1fr));
       gap: var(--app-sp-3);
     }
-    .chan-col { display: flex; flex-direction: column; gap: var(--app-sp-2); min-width: 0; }
+    .chan-col {
+      display: flex; flex-direction: column; gap: var(--app-sp-2); min-width: 0;
+      border: 1px dashed transparent; border-radius: 2px; padding: 2px;
+    }
+    /* Drop target highlight while a clip is dragged over this channel. */
+    .chan-col.drop-target { border-color: var(--app-hi-color2); background: rgba(65,105,225,0.06); }
     .chan-col-head {
       font-size: var(--app-fs-md); color: var(--app-text-color1);
       padding: 2px 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .chan-clip { cursor: default; }
-    .chan-clip .thumb { aspect-ratio: 16 / 9; background: #000; }
+    .chan-col.empty .chan-col-head { color: var(--app-text-color2); }
+    .chan-empty {
+      flex: 1; min-height: 48px; display: flex; align-items: center; justify-content: center;
+      color: var(--app-text-color2); font-size: var(--app-fs-sm); font-style: italic;
+      border: 1px dashed var(--app-tint-3); border-radius: 1px;
+    }
+    .chan-clip { cursor: grab; }
+    .chan-clip:active { cursor: grabbing; }
+    .chan-clip .thumb { aspect-ratio: 16 / 9; background: #000; cursor: pointer; }
     .chan-clip.disconnected { opacity: 0.55; }
+    .chan-clip[selected] { border-color: var(--app-hi-color2); background: rgba(65,105,225,0.08); }
+    .chan-clip .card-meta { cursor: pointer; }
     @media (max-width: 1100px) { .chan-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
     @media (max-width: 640px) { .chan-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   `;
@@ -185,6 +224,7 @@ export class OrganizeTab extends MobxLitElement {
     const selectedKey = appState.local.selectedBarrelKey;
     const selected = instances.find(i => i.key === selectedKey) ?? null;
     const selectedChannel = appState.local.selectedSidechannel;
+    const selectedClip = appState.local.selectedTriggerClip;
 
     const open = (key: string) => {
       appController.selectBarrelInstance(key);
@@ -238,7 +278,9 @@ export class OrganizeTab extends MobxLitElement {
         ${this.renderTriggerChannels()}
       </div>
       <div class="right-panel">
-        ${selectedChannel && appState.local.engine.sidechannels[selectedChannel]
+        ${selectedClip
+        ? this.renderTriggerClipPanel(selectedClip)
+        : selectedChannel && appState.local.engine.sidechannels[selectedChannel]
         ? this.renderSidechannelPanel(selectedChannel)
         : selected
         ? html`
@@ -300,11 +342,38 @@ export class OrganizeTab extends MobxLitElement {
           ></texture-monitor>
         </div>
         <div class="card-meta">
-          <div class="card-name">${instanceDisplayLabel(inst.key)}</div>
-          ${inst.unlaunched
-            ? html`<div class="unlaunched-badge">Not launched</div>`
-            : html`<div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>`}
+          <div class="meta-row">
+            <div class="meta-text">
+              <div class="card-name">${instanceDisplayLabel(inst.key)}</div>
+              ${inst.unlaunched
+                ? html`<div class="unlaunched-badge">Not launched</div>`
+                : html`<div class="card-info">${this.instanceInfo(inst.key, barrelMode)}</div>`}
+            </div>
+            ${this.renderClipTriggerButton(inst, barrelMode)}
+          </div>
         </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Play / stop button for a clip-scope instance card (barrel only). A play icon
+   * connects the hosting clip in Resolume; once connected it becomes an X that
+   * disconnects it. Addressed by the instance's 0-based layer/clip placement.
+   */
+  private renderClipTriggerButton(inst: BarrelInstanceInfo, barrelMode: boolean) {
+    if (!barrelMode) return '';
+    const p = inst.resolumePlacement;
+    if (!p || p.scope !== 'clip' || p.trackIndex == null || p.clipIndex == null) return '';
+    const playing = appState.local.engine.clipStates[`${p.trackIndex}:${p.clipIndex}`] === true;
+    return html`
+      <div class="trig-btn ${playing ? 'playing' : ''}"
+        title=${playing ? 'Disconnect clip' : 'Connect clip'}
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          appController.triggerClip({ layer: p.trackIndex, clip: p.clipIndex }, !playing);
+        }}>
+        <ui-icon icon=${playing ? 'la-times' : 'la-play'}></ui-icon>
       </div>
     `;
   }
@@ -356,57 +425,102 @@ export class OrganizeTab extends MobxLitElement {
   }
 
   /**
-   * Grid of trigger channels: one column per channel that has registered clips
-   * (from the shared server's /global/channels), wrapping after 8 columns. Each
-   * column stacks its clips vertically, each showing a live thumbnail (captured
-   * on-demand by its NanoLooper Ch marker) + name + connected state. The column
-   * header shows the channel's cosmetic name and its live trigger-rail activity
-   * dot (from /global/triggerRails), so this doubles as the rail monitor.
+   * Grid of trigger channels (from the shared server's /global/channels), always
+   * padded to a whole bank of 8 columns (empty channels show `<empty>` and stay
+   * drop targets). Per clip: the thumbnail connects/disconnects it in Resolume;
+   * the bottom label selects it into the right panel (to reassign its channel).
+   * Clips drag between columns to reassign their channel. The column header shows
+   * the cosmetic name + its live trigger-rail activity dot (/global/triggerRails).
    */
   private renderTriggerChannels() {
     const channels = appState.local.engine.triggerChannels;
     const rails = appState.local.engine.triggerRails;
-    const nums = Object.keys(channels).sort((a, b) => Number(a) - Number(b));
-    if (nums.length === 0) return '';
-    // A channel is "live" if any rail currently reports it on (numeric match).
-    const railOn = (ch: string) =>
-      Object.values(rails).some(r => r[ch]?.on);
+    // Only surface the section once the barrel has published any channels — an
+    // empty map means no composition scanned yet (playground has none).
+    if (Object.keys(channels).length === 0) return '';
+    const cols = triggerChannelColumns(channels);
+    const railOn = (ch: number) => Object.values(rails).some(r => r[String(ch)]?.on);
+    const selKey = appState.local.selectedTriggerClip?.key ?? null;
     return html`
       <div class="sc-section">
         <div class="section-header">Trigger Channels</div>
         <div class="chan-grid">
-          ${nums.map(ch => {
-            const col = channels[ch];
-            const label = col.name?.trim() ? col.name : `Channel ${ch}`;
+          ${cols.map(col => {
+            const label = col.name?.trim() ? col.name : `Channel ${col.channel}`;
             return html`
-              <div class="chan-col">
+              <div class="chan-col ${col.empty ? 'empty' : ''} ${this.dragOverChannel === col.channel ? 'drop-target' : ''}"
+                @dragover=${(e: DragEvent) => this.onChannelDragOver(e, col.channel)}
+                @dragleave=${() => this.onChannelDragLeave(col.channel)}
+                @drop=${(e: DragEvent) => this.onChannelDrop(e, col.channel)}>
                 <div class="chan-col-head" title=${label}>
-                  <span class="trig-dot ${railOn(ch) ? 'on' : ''}"></span>${label}
+                  <span class="trig-dot ${railOn(col.channel) ? 'on' : ''}"></span>${label}
                 </div>
-                ${(col.clips ?? []).map(clip => html`
-                  <div class="sc-card chan-clip ${clip.connected ? '' : 'disconnected'}">
-                    <div class="thumb">
-                      <texture-monitor
-                        fit
-                        thumbnail
-                        eager
-                        .traceId=${instanceThumbTraceId(clip.key)}
-                        .traceTarget=${{ type: 'sketch_output', sketchId: clip.key } as any}
-                        resolution="low"
-                      ></texture-monitor>
-                    </div>
-                    <div class="card-meta">
-                      <div class="sc-card-name">${clip.clip || '(clip)'}</div>
-                      <div class="sc-card-info">${clip.connected ? 'connected' : 'idle'}</div>
-                    </div>
-                  </div>
-                `)}
+                ${col.empty
+                  ? html`<div class="chan-empty">&lt;empty&gt;</div>`
+                  : col.clips.map(clip => this.renderChannelClip(clip, col.channel, clip.key === selKey))}
               </div>
             `;
           })}
         </div>
       </div>
     `;
+  }
+
+  /** One clip card in a trigger-channel column. Thumbnail → connect/disconnect;
+   *  label → select into the right panel; whole card draggable for reassignment. */
+  private renderChannelClip(clip: TriggerChannelClip, channel: number, selected: boolean) {
+    return html`
+      <div class="sc-card chan-clip ${clip.connected ? '' : 'disconnected'}"
+        ?selected=${selected}
+        draggable="true"
+        @dragstart=${(e: DragEvent) => this.onClipDragStart(e, clip.key)}
+        @dragend=${() => this.onClipDragEnd()}>
+        <div class="thumb"
+          title=${clip.connected ? 'Disconnect clip' : 'Connect clip'}
+          @click=${() => appController.triggerClip({ key: clip.key }, !clip.connected)}>
+          <texture-monitor
+            fit
+            thumbnail
+            eager
+            .traceId=${instanceThumbTraceId(clip.key)}
+            .traceTarget=${{ type: 'sketch_output', sketchId: clip.key } as any}
+            resolution="low"
+          ></texture-monitor>
+        </div>
+        <div class="card-meta"
+          @click=${() => appController.selectTriggerClip({ key: clip.key, channel })}>
+          <div class="sc-card-name">${clip.clip || '(clip)'}</div>
+          <div class="sc-card-info">${clip.connected ? 'connected' : 'idle'}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // --- Channel drag-drop reassignment -----------------------------------
+  private onClipDragStart(e: DragEvent, key: string) {
+    this.dragKey = key;
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); }
+  }
+  private onClipDragEnd() { this.dragKey = null; this.dragOverChannel = null; }
+  private onChannelDragOver(e: DragEvent, channel: number) {
+    if (!this.dragKey) return;
+    e.preventDefault();              // allow the drop
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    if (this.dragOverChannel !== channel) this.dragOverChannel = channel;
+  }
+  private onChannelDragLeave(channel: number) {
+    if (this.dragOverChannel === channel) this.dragOverChannel = null;
+  }
+  private onChannelDrop(e: DragEvent, channel: number) {
+    e.preventDefault();
+    const key = this.dragKey ?? e.dataTransfer?.getData('text/plain') ?? '';
+    this.dragOverChannel = null;
+    this.dragKey = null;
+    if (!key) return;
+    appController.reassignClipChannel(key, channel);
+    // Keep the panel in sync if this clip is the selected one.
+    if (appState.local.selectedTriggerClip?.key === key)
+      appController.selectTriggerClip({ key, channel });
   }
 
   /** Right-panel inspector for the selected sidechannel. */
@@ -428,6 +542,42 @@ export class OrganizeTab extends MobxLitElement {
         ></editable-text>
         <div class="name-hint">"#" stands for the default label
           (${sidechannelDefaultLabel(channel)})</div>
+      </div>
+    `;
+  }
+
+  /** Right-panel inspector for the selected trigger-channel clip: shows its
+   *  current channel + connected state, a connect/disconnect button, and a
+   *  channel-reassignment field (writes the marker's Channel param via native). */
+  private renderTriggerClipPanel(sel: { key: string; channel: number }) {
+    const channels = appState.local.engine.triggerChannels;
+    // Re-resolve the clip's live record + channel (it may have moved since
+    // selection); fall back to the selection's channel if it's gone.
+    let rec: TriggerChannelClip | null = null;
+    let curChannel = sel.channel;
+    for (const [ch, col] of Object.entries(channels)) {
+      const found = col.clips?.find(c => c.key === sel.key);
+      if (found) { rec = found; curChannel = Number(ch); break; }
+    }
+    const name = rec?.clip || '(clip)';
+    const connected = rec?.connected ?? false;
+    return html`
+      <div class="section-header">Clip: ${name}</div>
+      <div class="summary">
+        <div>Channel: ${curChannel}</div>
+        <div>${connected ? 'Connected' : 'Idle'}</div>
+      </div>
+      <button class="btn" @click=${() => appController.triggerClip({ key: sel.key }, !connected)}>
+        ${connected ? 'Disconnect' : 'Connect'}</button>
+      <div class="name-row" style="margin-top:12px">
+        <label>Trigger Channel</label>
+        <editable-number .value=${curChannel} .min=${1} .step=${1}
+          @input=${(e: CustomEvent<number>) => {
+            const ch = Math.max(1, Math.round(e.detail));
+            appController.reassignClipChannel(sel.key, ch);
+            appController.selectTriggerClip({ key: sel.key, channel: ch });
+          }}></editable-number>
+        <div class="name-hint">Reassigns the clip's NanoLooper "Ch" marker.</div>
       </div>
     `;
   }
