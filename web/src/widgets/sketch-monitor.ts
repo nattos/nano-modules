@@ -223,6 +223,7 @@ export class SketchMonitor extends MobxLitElement {
                 fullRes
                 .traceId=${this.traceId}
                 .traceTarget=${target as any}
+                .paused=${paused}
                 resolution="high"
               ></texture-monitor>
             </div>`

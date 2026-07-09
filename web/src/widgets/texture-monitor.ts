@@ -85,6 +85,14 @@ export class TextureMonitor extends MobxLitElement {
    */
   @property({ type: Boolean }) eager = false;
 
+  /**
+   * Freeze the preview: unregister the trace (stop requesting frames) while
+   * keeping the last-drawn canvas on screen. The main monitor's Live-mode
+   * pause sets this so the barrel stops the per-frame full-res readback + WS
+   * fan-out — pure CPU/bandwidth savings — without blanking the preview.
+   */
+  @property({ type: Boolean }) paused = false;
+
   private frameDisposer: IReactionDisposer | null = null;
   /** Viewport-visibility gate: we only register a trace while on-screen. */
   private io: IntersectionObserver | null = null;
@@ -218,7 +226,7 @@ export class TextureMonitor extends MobxLitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail') || changed.has('fullRes') || changed.has('width') || changed.has('height')) {
+    if (changed.has('traceId') || changed.has('traceTarget') || changed.has('resolution') || changed.has('traceSource') || changed.has('thumbnail') || changed.has('fullRes') || changed.has('width') || changed.has('height') || changed.has('paused')) {
       // Re-register if target, ID, resolution, requested size, or the source
       // changed (the main monitor resizes its capture request with its panel).
       if (changed.has('traceId')) {
@@ -235,6 +243,10 @@ export class TextureMonitor extends MobxLitElement {
     // the IntersectionObserver brings us back on-screen.
     if (!this.visible) return;
     if (!this.traceId || !this.traceTarget) return;
+    // Paused: drop the registration so no frames are requested/shipped. The
+    // last-drawn canvas stays as-is (we don't clear it), so the preview freezes
+    // on its final frame instead of blanking.
+    if (this.paused) { (this.traceSource ?? traceController).unregister(this.traceId); return; }
     if (this.thumbnail || this.fullRes) {
       // No size request: thumbnails get the controller's LOW_RES default;
       // fullRes 'high' registrations fall through to source resolution.
