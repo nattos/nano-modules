@@ -39,6 +39,8 @@ import '../widgets/ui-icon';
 
 @customElement('organize-tab')
 export class OrganizeTab extends MobxLitElement {
+  /** Marker uuid of the clip whose thumbnail is held down (momentary trigger). */
+  private momentaryKey: string | null = null;
   /** Marker uuid of the clip currently being dragged (channel reassignment). */
   private dragKey: string | null = null;
   /** 1-based channel currently under the drag (for drop-target highlight). */
@@ -466,8 +468,10 @@ export class OrganizeTab extends MobxLitElement {
     `;
   }
 
-  /** One clip card in a trigger-channel column. Thumbnail → connect/disconnect;
-   *  label → select into the right panel; whole card draggable for reassignment. */
+  /** One clip card in a trigger-channel column. Thumbnail → momentary rail
+   *  trigger (on while held, off on release — Resolume's clip trigger style
+   *  decides what that does); label → select into the right panel; whole card
+   *  draggable for reassignment. */
   private renderChannelClip(clip: TriggerChannelClip, channel: number, selected: boolean) {
     return html`
       <div class="sc-card chan-clip ${clip.connected ? '' : 'disconnected'}"
@@ -476,8 +480,11 @@ export class OrganizeTab extends MobxLitElement {
         @dragstart=${(e: DragEvent) => this.onClipDragStart(e, clip.key)}
         @dragend=${() => this.onClipDragEnd()}>
         <div class="thumb"
-          title=${clip.connected ? 'Disconnect clip' : 'Connect clip'}
-          @click=${() => appController.triggerClip({ key: clip.key }, !clip.connected)}>
+          title="Trigger (hold)"
+          @pointerdown=${(e: PointerEvent) => this.onClipTriggerDown(e, clip.key)}
+          @pointerup=${() => this.onClipTriggerUp(clip.key)}
+          @pointerleave=${() => this.onClipTriggerUp(clip.key)}
+          @pointercancel=${() => this.onClipTriggerUp(clip.key)}>
           <texture-monitor
             fit
             thumbnail
@@ -496,8 +503,34 @@ export class OrganizeTab extends MobxLitElement {
     `;
   }
 
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    // Releasing a held gate on unmount (tab switch) so it never sticks `on`.
+    if (this.momentaryKey) this.onClipTriggerUp(this.momentaryKey);
+  }
+
+  // --- Momentary trigger (thumbnail press-and-hold) ---------------------
+  // rail `on` on pointer-down, `off` on release — the clip's Resolume trigger
+  // style (Piano / Normal / Toggle) decides what that gate actually does. We
+  // never compute connect-vs-disconnect here; every press is the same edge.
+  private onClipTriggerDown(e: PointerEvent, key: string) {
+    // Left button / touch / pen only; ignore right-clicks etc.
+    if (e.button !== 0) return;
+    if (this.momentaryKey === key) return;  // already held (re-entry guard)
+    this.momentaryKey = key;
+    appController.triggerClip({ key }, true);
+  }
+  private onClipTriggerUp(key: string) {
+    if (this.momentaryKey !== key) return;
+    this.momentaryKey = null;
+    appController.triggerClip({ key }, false);
+  }
+
   // --- Channel drag-drop reassignment -----------------------------------
   private onClipDragStart(e: DragEvent, key: string) {
+    // A drag that begins mid-press must release the momentary trigger first, so
+    // the gate never sticks `on` for the duration of the drag.
+    this.onClipTriggerUp(key);
     this.dragKey = key;
     if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); }
   }
