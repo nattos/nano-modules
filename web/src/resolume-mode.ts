@@ -160,7 +160,7 @@ export class NbpcReassembler {
   }
 
   /** Reused reassembly output (see ingest) — sized to the current frame. */
-  private out: Uint8Array | null = null;
+  private out: Uint8Array<ArrayBuffer> | null = null;
 }
 
 // ---------------------------------------------------------------------------

@@ -2507,13 +2507,29 @@ export class AppController {
     if (key !== appState.local.selectedBarrelKey &&
         instanceKeyFromThumbTraceId(traceId) !== key &&
         !isSidechannelThumbTraceId(traceId)) return;
-    // Upload the RGBA8 pixels straight to a per-trace GPUTexture — no CPU copy,
-    // no ImageData, no createImageBitmap decode. `writeTexture` reads this
-    // subview over the received buffer directly; the texture is pooled and
-    // reused across frames (see preview-gpu.ts). Monitors blit it on the GPU.
-    const frame = previewGpu.uploadFrame(
+    // Fast path: upload the RGBA8 pixels straight to a per-trace GPUTexture —
+    // no CPU copy, no ImageData, no createImageBitmap decode. `writeTexture`
+    // reads this subview over the received buffer directly; the texture is
+    // pooled and reused across frames (see preview-gpu.ts). Monitors blit it.
+    let frame: import('../preview-gpu').PreviewFrame;
+    const gpuFrame = previewGpu.uploadFrame(
       traceId, new Uint8Array(buf, headerEnd, pixelBytes), width, height);
-    if (!frame) return;  // WebGPU device not ready yet (first ms at boot) — drop
+    if (gpuFrame) {
+      frame = gpuFrame;
+    } else if (previewGpu.unavailable) {
+      // No WebGPU in this environment — fall back to the CPU ImageBitmap path.
+      // This is a stable per-session decision (a canvas can't switch context
+      // type), so a monitor never mixes GPU and 2d frames.
+      const owned = new Uint8ClampedArray(pixelBytes);
+      owned.set(new Uint8Array(buf, headerEnd, pixelBytes));
+      try {
+        frame = await createImageBitmap(new ImageData(owned, width, height));
+      } catch {
+        return;
+      }
+    } else {
+      return;  // WebGPU device still initializing (first ms at boot) — drop
+    }
     runInAction(() => {
       const prev = appState.local.engine.tracedFrames[traceId];
       // Only ImageBitmaps (local-engine frames) are one-shot resources needing

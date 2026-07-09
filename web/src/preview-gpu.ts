@@ -72,6 +72,11 @@ class PreviewGpu {
   /** Kick off device init once; safe to call repeatedly. */
   ensureInit(): void {
     if (this.initStarted || this.initFailed) return;
+    // Detect "no WebGPU at all" SYNCHRONOUSLY so callers can fall back to the
+    // CPU path in the same tick (jsdom tests, browsers without WebGPU) rather
+    // than dropping frames while an async requestAdapter that will never
+    // succeed is pending.
+    if (!navigator.gpu) { this.initFailed = true; return; }
     this.initStarted = true;
     void this.init();
   }
