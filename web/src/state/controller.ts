@@ -22,6 +22,7 @@ import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat } from '../sketch-types';
+import { midiInstanceKey } from '../midi/midi-types';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
 export type { FieldConnectInfo } from '../sketch-types';
@@ -1923,6 +1924,13 @@ export class AppController {
    * wire mode (struct auto-connect etc.); we always ensure the array exists.
    */
   connectWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    // MIDI device controls are wire SOURCES living outside any sketch chain
+    // (the app-level device library) — they bypass the writer/reader
+    // resolution below entirely: the device end is always the writer.
+    if (a.deviceControl || b.deviceControl) {
+      this.connectDeviceWire(a, b);
+      return;
+    }
     if (a.sketchId !== b.sketchId) return;
     if (a.colIdx === b.colIdx && a.chainIdx === b.chainIdx && a.fieldPath === b.fieldPath) return;
 
@@ -1967,6 +1975,42 @@ export class AppController {
         // current value instead of overwriting it. (Ignored for texture rails.)
         // `unset` still means `replace` everywhere else, so auto-connect and the
         // dashboard mute heuristic are unaffected; we set it explicitly here.
+        combine: 'add',
+      });
+    });
+  }
+
+  /**
+   * Connect a MIDI device control (always the writer) to a sketch input
+   * field. The wire's src addresses the device by its library uuid
+   * (`midi:<id>` + endpoint field, e.g. 'b0/e05/turn') — no chain entry
+   * exists for it, and the executor synthesizes an external rail instead.
+   * Same dest-dedupe + `add` default as module wires.
+   */
+  private connectDeviceWire(a: FieldConnectInfo, b: FieldConnectInfo) {
+    if (a.deviceControl && b.deviceControl) return;   // device→device is meaningless
+    const device = (a.deviceControl ? a : b).deviceControl!;
+    const reader = a.deviceControl ? b : a;
+    if (reader.isOutput) return;                       // devices only drive inputs
+
+    const sketchId = reader.sketchId;
+    const sketch = appState.database.sketches[sketchId];
+    if (!sketch) return;
+    const readerEntry = sketchChain(sketch)[reader.chainIdx];
+    if (readerEntry?.type !== 'module' || !readerEntry.instance_key) return;
+    const destKey = readerEntry.instance_key;
+
+    const id = `wire_${Date.now().toString(36)}_${this.nextWireId++}`;
+    this.mutate('Connect device wire', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      sk.wires = sk.wires ?? [];
+      sk.wires = sk.wires.filter(
+        w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath));
+      sk.wires.push({
+        id,
+        src: { instanceKey: midiInstanceKey(device.deviceInstanceId), field: device.controlId },
+        dest: { instanceKey: destKey, field: reader.fieldPath },
         combine: 'add',
       });
     });

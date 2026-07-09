@@ -4,6 +4,9 @@
  * Stored in the state document at /sketches/{sketch_id}.
  */
 
+// Pure string helpers only — midi-types has no DOM/MobX deps (worker-safe).
+import { isMidiInstanceKey } from './midi/midi-types';
+
 /** The ID of the special unassigned bucket sketch that holds modules not yet placed in a real sketch. */
 export const BUCKET_SKETCH_ID = '__unassigned__';
 
@@ -265,7 +268,11 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
     const keys = new Set(chain.map(e => e.instance_key));
     const seen = new Set<string>();
     result.wires = result.wires
-      .filter(w => keys.has(w.src.instanceKey) && keys.has(w.dest.instanceKey))
+      // `midi:` sources live OUTSIDE the chain (the app-level MIDI device
+      // library) — keep those wires even when the device is missing/deleted;
+      // the executor treats an unseeded external rail as dormant.
+      .filter(w => (keys.has(w.src.instanceKey) || isMidiInstanceKey(w.src.instanceKey))
+        && keys.has(w.dest.instanceKey))
       .map(w => {
         if (!seen.has(w.id)) { seen.add(w.id); return w; }
         let n = 2, nid = `${w.id}_${n}`;
@@ -502,5 +509,14 @@ export interface FieldConnectInfo {
   /** With `triggerTrack`: a single scene's listen override (else the whole
    *  track's default). */
   triggerScene?: string;
+  /**
+   * Set when this endpoint is a MIDI device control (the Devices tab) — a
+   * wire SOURCE living outside any sketch chain. The other endpoint must be
+   * an input field; the wire stores
+   * `src: { instanceKey: 'midi:<deviceInstanceId>', field: <controlId> }`.
+   * `controlId` is the full endpoint field, e.g. 'b0/e05/turn' (see
+   * midi/midi-types.ts). Devices publish normalized unsigned 0..1 values.
+   */
+  deviceControl?: { deviceInstanceId: string; controlId: string };
 }
 
