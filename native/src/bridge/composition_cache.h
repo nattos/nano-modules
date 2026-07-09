@@ -38,6 +38,10 @@ struct CachedClip {
   // OFF by eviction (connecting another clip on a layer disconnects the current
   // one). "" if the layer has no empty clip. The style-independent "off" verb.
   std::string evict_path;
+  // Resolume param id of the marker's "Channel" param, or 0 if the clip has no
+  // marker. Lets the server WRITE a new channel (web-driven reassignment) via
+  // resolume set("/parameter/by-id/<id>", ...).
+  int64_t channel_param_id = 0;
 };
 
 /// Maintains a flat, indexed view of the Resolume composition
@@ -51,6 +55,12 @@ public:
   int clip_count() const;
   CachedClip get_clip(int index) const;
 
+  /// Look up a cached clip by its NanoLooper Ch marker uuid (the web's clip
+  /// `key`). Returns false with `out` untouched when no clip carries it.
+  bool find_by_marker(const std::string& uuid, CachedClip& out) const;
+  /// Look up a cached clip by its 0-based composition layer + clip index.
+  bool find_by_placement(int layer, int clip, CachedClip& out) const;
+
   /// Get the cached BPM (extracted from composition state)
   double bpm() const;
   void set_bpm(double bpm);
@@ -61,11 +71,13 @@ private:
   double bpm_ = 120.0;
 
   // Resolve a clip's trigger channel (0-based) from a NanoLooper Ch marker, and
-  // (optionally) the marker's registered uuid + cosmetic name. Returns -1 with
-  // empty out-params if the clip carries no marker.
+  // (optionally) the marker's registered uuid + cosmetic name + the "Channel"
+  // param's id (for write-back). Returns -1 with empty out-params if the clip
+  // carries no marker.
   static int channel_from_clip(const resolume::Clip& clip,
                                std::string* out_uuid = nullptr,
-                               std::string* out_name = nullptr);
+                               std::string* out_name = nullptr,
+                               int64_t* out_channel_param_id = nullptr);
 };
 
 } // namespace bridge

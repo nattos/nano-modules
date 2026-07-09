@@ -25,6 +25,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <random>
@@ -43,13 +44,17 @@
 
 namespace {
 constexpr unsigned int P_CONFIG = 0;   // FF_TYPE_FILE: nanoch://config?<...>
-constexpr unsigned int P_CHANNEL = 1;  // FF_TYPE_STANDARD: 1..4 via 0..1
+constexpr unsigned int P_CHANNEL = 1;  // FF_TYPE_TEXT: 1-based channel integer
 constexpr unsigned int P_NAME = 2;     // FF_TYPE_TEXT: cosmetic channel label
 constexpr unsigned int N_PARAMS = 3;
-// Normalized slider (0..1) <-> 1-based channel — shared with the server's
-// CompositionCache via channel_marker_codec.h so both agree.
-using channel_marker::channel_to_norm;
-using channel_marker::norm_to_channel;
+
+// Parse a 1-based channel from the "Channel" text param (min 1; non-numeric → 1).
+inline int parse_channel_text(const char* s) {
+  if (!s) return 1;
+  char* end = nullptr;
+  const long ch = std::strtol(s, &end, 10);
+  return (end != s && ch >= 1) ? (int)ch : 1;
+}
 
 // ThumbCapturer — grabs the marker's FFGL input texture into a small NBPV
 // thumbnail WITHOUT ever stalling Resolume's render thread. A bare glReadPixels
@@ -219,7 +224,10 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
     instance_uuid_ = generate_uuid();
     regenerate_config();
     SetParamInfo(P_CONFIG, "config", FF_TYPE_TEXT, config_blob_.c_str());
-    SetParamInfo(P_CHANNEL, "Channel", FF_TYPE_STANDARD, channel_to_norm(1));
+    // Channel is a TEXT param holding the 1-based channel integer as a string,
+    // so it's uncapped (the old FF_TYPE_STANDARD slider maxed at 4). Resolume
+    // broadcasts the text value inline, and the server writes it back on reassign.
+    SetParamInfo(P_CHANNEL, "Channel", FF_TYPE_TEXT, "1");
     // Cosmetic label for the channel (numeric Channel stays the matching key).
     SetParamInfo(P_NAME, "Name", FF_TYPE_TEXT, name_.c_str());
   }
@@ -227,6 +235,14 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
   // -- Config persistence (durable across host restarts) ----------------
   FFResult SetTextParameter(unsigned int idx, const char* value) override {
     const char* v = value ? value : "";
+    if (idx == P_CHANNEL) {
+      const int ch = parse_channel_text(v);
+      if (ch != channel_) {
+        channel_ = ch;
+        regenerate_config();
+      }
+      return FF_SUCCESS;
+    }
     if (idx == P_NAME) {
       if (name_ != v) {
         name_ = v;
@@ -264,23 +280,21 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
       name_return_buf_[name_.size()] = '\0';
       return name_return_buf_.data();
     }
+    if (idx == P_CHANNEL) {
+      std::snprintf(small_return_buf_, sizeof(small_return_buf_), "%d", channel_);
+      return small_return_buf_;
+    }
     small_return_buf_[0] = '\0';
     return small_return_buf_;
   }
 
-  FFResult SetFloatParameter(unsigned int idx, float value) override {
-    if (idx == P_CHANNEL) {
-      const int ch = norm_to_channel(value);
-      if (ch != channel_) {
-        channel_ = ch;
-        regenerate_config();
-      }
-    }
+  // Channel moved to a TEXT param; no FF_TYPE_STANDARD params remain, so the
+  // float accessors are inert (kept as no-ops for the FFGL ABI surface).
+  FFResult SetFloatParameter(unsigned int /*idx*/, float /*value*/) override {
     return FF_SUCCESS;
   }
 
-  float GetFloatParameter(unsigned int idx) override {
-    if (idx == P_CHANNEL) return channel_to_norm(channel_);
+  float GetFloatParameter(unsigned int /*idx*/) override {
     return 0.0f;
   }
 
@@ -430,7 +444,7 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
   int channel_ = 1;
   std::vector<char> config_return_buf_;
   std::vector<char> name_return_buf_;
-  char small_return_buf_[1] = {0};
+  char small_return_buf_[16] = {0};  // holds the Channel integer as text
   ThumbCapturer capturer_;
   std::chrono::steady_clock::time_point last_capture_{};
 };

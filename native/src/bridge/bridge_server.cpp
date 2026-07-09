@@ -167,6 +167,7 @@ void BridgeServer::shutdown_subsystems() {
   frame_states_.clear();
   clip_launcher_.reset();
   trigger_channels_hash_ = 0;
+  clip_states_hash_ = 0;
 }
 
 void BridgeServer::pump_loop() {
@@ -186,8 +187,14 @@ void BridgeServer::pump_loop() {
       // has been flipped false at the start of shutdown.
       std::lock_guard lock(tick_mutex_);
       for (auto& e : events) {
-        if (e.is_message) core_.handle_message(e.cid, e.msg);
-        else core_.remove_client(e.cid);
+        if (e.is_message) {
+          // Peek clip-control actions (which need resolume_client_) before the
+          // generic observe/get/patch dispatch in BridgeCore.
+          if (!handle_client_command(e.cid, e.msg))
+            core_.handle_message(e.cid, e.msg);
+        } else {
+          core_.remove_client(e.cid);
+        }
       }
       process_resolume_messages();
       flush_outbox();
@@ -197,6 +204,8 @@ void BridgeServer::pump_loop() {
       drive_clip_launches();
       // Surface channel → marker-clip assignments to the web (change-gated).
       publish_trigger_channels();
+      // Surface per-clip connected state to the web (change-gated).
+      publish_clip_states();
       // Re-run Phase 2 fork detection every tick (not just on composition
       // messages) so the collision dwell fires even when Resolume's composition
       // is static — it only rebroadcasts on change.
@@ -430,6 +439,89 @@ void BridgeServer::publish_trigger_channels() {
   if (h == trigger_channels_hash_) return;  // unchanged — skip the patch
   trigger_channels_hash_ = h;
   core_.state_document().set_at("/global/channels", channels);
+}
+
+void BridgeServer::publish_clip_states() {
+  // Per-clip connected state, keyed "<layer>:<clip>" (0-based), so the web
+  // Instances tab can show a clip-scope instance's play/stop state (it knows its
+  // own layer/clip from resolume.placement). Covers ALL clips, not just markered
+  // ones — a plain barrel clip has no /global/channels entry but still needs the
+  // button. Change-gated by the same FNV hash pattern as the channels doc.
+  CompositionCache& cache = core_.composition_cache();
+  const int n = cache.clip_count();
+  nlohmann::json states = nlohmann::json::object();
+  for (int i = 0; i < n; ++i) {
+    CachedClip cc = cache.get_clip(i);
+    if (cc.layer_index < 0 || cc.clip_index < 0) continue;
+    states[std::to_string(cc.layer_index) + ":" + std::to_string(cc.clip_index)] =
+        cc.connected;
+  }
+
+  const std::string dump = states.dump();
+  const uint64_t h = fnv1a64(dump);
+  if (h == clip_states_hash_) return;  // unchanged — skip the patch
+  clip_states_hash_ = h;
+  core_.state_document().set_at("/global/clip_states", states);
+}
+
+bool BridgeServer::handle_client_command(int /*client_id*/, const std::string& msg) {
+  auto j = nlohmann::json::parse(msg, nullptr, /*allow_exceptions=*/false);
+  if (j.is_discarded() || !j.contains("action") || !j["action"].is_string())
+    return false;
+  const std::string action = j["action"].get<std::string>();
+
+  // Connect (`on`) / disconnect a clip. Addressed by marker uuid (`key`) OR by
+  // 0-based composition layer/clip indices. Off uses the layer's empty-clip
+  // eviction (style-independent), falling back to connect:false.
+  if (action == "trigger_clip") {
+    if (!resolume_client_) return true;
+    // Type-guarded extraction — this runs on the pump thread, so a malformed
+    // field must never throw (an uncaught json type_error would kill the pump).
+    const bool on = j["on"].is_boolean() ? j["on"].get<bool>() : true;
+    CachedClip cc;
+    bool found = false;
+    if (j["key"].is_string()) {
+      found = core_.composition_cache().find_by_marker(j["key"].get<std::string>(), cc);
+    } else if (j["layer"].is_number_integer() && j["clip"].is_number_integer()) {
+      found = core_.composition_cache().find_by_placement(
+          j["layer"].get<int>(), j["clip"].get<int>(), cc);
+    }
+    if (!found) { trig_log("trigger_clip: no clip matched"); return true; }
+    if (on) {
+      if (!cc.connect_path.empty()) resolume_client_->trigger(cc.connect_path, true);
+    } else if (!cc.evict_path.empty()) {
+      resolume_client_->trigger(cc.evict_path, true);         // evict = off
+    } else if (!cc.connect_path.empty()) {
+      resolume_client_->trigger(cc.connect_path, false);      // Piano-style off
+    }
+    trig_log("trigger_clip %s -> %s", on ? "on" : "off", cc.connect_path.c_str());
+    return true;
+  }
+
+  // Reassign a markered clip to a new 1-based trigger channel by writing its
+  // NanoLooper Ch marker's "Channel" text param over the Resolume WS.
+  if (action == "reassign_channel") {
+    if (!resolume_client_) return true;
+    if (!j["key"].is_string()) return true;
+    int channel = j["channel"].is_number_integer() ? j["channel"].get<int>() : 0;
+    if (channel < 1) channel = 1;
+    CachedClip cc;
+    if (!core_.composition_cache().find_by_marker(j["key"].get<std::string>(), cc)) {
+      trig_log("reassign_channel: no clip matched"); return true;
+    }
+    if (cc.channel_param_id == 0) {
+      trig_log("reassign_channel: clip has no Channel param id"); return true;
+    }
+    // Channel is now an FF_TYPE_TEXT param — write the integer as a string.
+    resolume_client_->set("/parameter/by-id/" + std::to_string(cc.channel_param_id),
+                          cc.channel_param_id, std::to_string(channel));
+    trig_log("reassign_channel key=%s -> ch=%d (param %lld)",
+             j["key"].get<std::string>().c_str(), channel,
+             (long long)cc.channel_param_id);
+    return true;
+  }
+
+  return false;
 }
 
 // --- WASM module management ---

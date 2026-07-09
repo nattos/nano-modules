@@ -1,5 +1,7 @@
 #include "bridge/composition_cache.h"
 
+#include <cstdlib>
+
 #include "bridge/trig_log.h"
 #include "plugin/nano_barrel/channel_marker_codec.h"
 
@@ -37,9 +39,11 @@ static bool has_marker_config(const resolume::Effect& eff) {
 // source (carries the channel too, but may be stale/absent in the broadcast).
 int CompositionCache::channel_from_clip(const resolume::Clip& clip,
                                         std::string* out_uuid,
-                                        std::string* out_name) {
+                                        std::string* out_name,
+                                        int64_t* out_channel_param_id) {
   if (out_uuid) out_uuid->clear();
   if (out_name) out_name->clear();
+  if (out_channel_param_id) *out_channel_param_id = 0;
   for (const auto& eff : clip.effects) {
     const bool is_marker = is_channel_tag_effect(eff.name) ||
                            is_channel_tag_effect(eff.display_name) ||
@@ -64,15 +68,31 @@ int CompositionCache::channel_from_clip(const resolume::Clip& clip,
         *out_name = nit->second.value.get<std::string>();
     }
 
-    // PRIMARY channel: the "Channel" float param value (norm 0..1 → 1..N, shared
-    // encoding with the plugin). Reliable — always broadcast.
+    // PRIMARY channel: the "Channel" param value, always broadcast. Capture its
+    // id for write-back regardless of type. The param is now an FF_TYPE_TEXT
+    // holding the channel INTEGER as a string (uncapped); older compositions may
+    // still carry the legacy FF_TYPE_STANDARD slider (norm 0..1 → 1..4).
     auto it = eff.params.find(kChannelParamName);
-    if (it != eff.params.end() && it->second.value.is_number()) {
-      const float v = (float)it->second.value.get<double>();
-      const int ch0 = channel_marker::norm_to_channel(v) - 1;
-      trig_log("resolve clip='%s' marker='%s' Channel=%.4f -> ch(1-based)=%d",
-               clip.name.c_str(), eff.name.c_str(), v, ch0 + 1);
-      return ch0;
+    if (it != eff.params.end()) {
+      if (out_channel_param_id) *out_channel_param_id = it->second.id;
+      const auto& val = it->second.value;
+      if (val.is_string()) {
+        const std::string s = val.get<std::string>();
+        char* end = nullptr;
+        const long ch = std::strtol(s.c_str(), &end, 10);
+        if (end != s.c_str() && ch >= 1) {
+          trig_log("resolve clip='%s' marker='%s' Channel(text)='%s' -> ch(1-based)=%ld",
+                   clip.name.c_str(), eff.name.c_str(), s.c_str(), ch);
+          return (int)ch - 1;
+        }
+        // Non-numeric text (e.g. blank) → fall through to the config blob.
+      } else if (val.is_number()) {
+        const float v = (float)val.get<double>();
+        const int ch0 = channel_marker::norm_to_channel(v) - 1;
+        trig_log("resolve clip='%s' marker='%s' Channel=%.4f -> ch(1-based)=%d",
+                 clip.name.c_str(), eff.name.c_str(), v, ch0 + 1);
+        return ch0;
+      }
     }
 
     // SECONDARY: the {uuid,channel} config blob, if present in the broadcast.
@@ -115,7 +135,8 @@ void CompositionCache::rebuild(const resolume::Composition& comp) {
       CachedClip cc;
       cc.clip_id = clip.id;
       cc.name = clip.name;
-      cc.channel = channel_from_clip(clip, &cc.marker_uuid, &cc.channel_name);
+      cc.channel = channel_from_clip(clip, &cc.marker_uuid, &cc.channel_name,
+                                     &cc.channel_param_id);
       cc.connected = (clip.connected_state == "Connected");
       cc.connected_param_id = clip.connected_id;
       cc.thumbnail_tex_id = -1;
@@ -147,6 +168,23 @@ CachedClip CompositionCache::get_clip(int index) const {
   if (index < 0 || index >= static_cast<int>(clips_.size()))
     return {};
   return clips_[index];
+}
+
+bool CompositionCache::find_by_marker(const std::string& uuid, CachedClip& out) const {
+  if (uuid.empty()) return false;
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+  for (const auto& cc : clips_) {
+    if (cc.marker_uuid == uuid) { out = cc; return true; }
+  }
+  return false;
+}
+
+bool CompositionCache::find_by_placement(int layer, int clip, CachedClip& out) const {
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+  for (const auto& cc : clips_) {
+    if (cc.layer_index == layer && cc.clip_index == clip) { out = cc; return true; }
+  }
+  return false;
 }
 
 double CompositionCache::bpm() const {

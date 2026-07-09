@@ -155,6 +155,60 @@ TEST_CASE("CompositionCache channel assignment across the slider range", "[compo
   REQUIRE(cache.get_clip(2).channel == 1);   // 0.333  -> Channel 2
 }
 
+TEST_CASE("CompositionCache resolves an uncapped channel from a text Channel param",
+          "[composition_cache]") {
+  // The marker's "Channel" is now an FF_TYPE_TEXT param holding the 1-based
+  // channel integer as a string — uncapped (the old slider maxed at 4). The
+  // param id is captured for write-back (channel reassignment).
+  auto j = nlohmann::json::parse(R"({
+    "layers": [{
+      "id": 1, "name": {"value": "L"},
+      "clips": [
+        {"id": 1, "name": {"value": "C1"}, "connected": {"value": "Connected", "id": 1},
+         "video": {"effects": [{"id": 1, "name": "NLCH", "display_name": "NanoLooper Ch",
+           "params": {"Channel": {"id": 701, "valuetype": "ParamText", "value": "7"}}}]}},
+        {"id": 2, "name": {"value": "C2"}, "connected": {"value": "Connected", "id": 2},
+         "video": {"effects": [{"id": 2, "name": "NLCH", "display_name": "NanoLooper Ch",
+           "params": {"Channel": {"id": 702, "valuetype": "ParamText", "value": "12"}}}]}}
+      ]
+    }]
+  })");
+  auto comp = resolume::parse_composition(j);
+
+  CompositionCache cache;
+  cache.rebuild(comp);
+
+  auto c1 = cache.get_clip(0);
+  REQUIRE(c1.channel == 6);              // "7" -> 1-based 7 -> 0-based 6
+  REQUIRE(c1.channel_param_id == 701);  // captured for write-back
+
+  auto c2 = cache.get_clip(1);
+  REQUIRE(c2.channel == 11);            // "12" -> uncapped
+  REQUIRE(c2.channel_param_id == 702);
+}
+
+TEST_CASE("CompositionCache find_by_marker and find_by_placement", "[composition_cache]") {
+  auto j = nlohmann::json::parse(TEST_COMPOSITION);
+  auto comp = resolume::parse_composition(j);
+  CompositionCache cache;
+  cache.rebuild(comp);
+
+  // Clip A's marker uuid — rebuild decodes it from the config blob; here the
+  // test comp has no blob, so marker_uuid is empty. Use placement instead for
+  // the uuid-less clips, and assert find_by_marker misses on an unknown key.
+  bridge::CachedClip out;
+  REQUIRE_FALSE(cache.find_by_marker("does-not-exist", out));
+
+  REQUIRE(cache.find_by_placement(0, 0, out));   // layer 0, clip 0 = Clip A
+  REQUIRE(out.clip_id == 101);
+  REQUIRE(out.connected == true);
+
+  REQUIRE(cache.find_by_placement(1, 0, out));   // layer 1, clip 0 = Clip D
+  REQUIRE(out.clip_id == 104);
+
+  REQUIRE_FALSE(cache.find_by_placement(9, 9, out));  // out of range
+}
+
 TEST_CASE("CompositionCache out-of-bounds returns empty clip", "[composition_cache]") {
   CompositionCache cache;
   auto clip = cache.get_clip(999);
