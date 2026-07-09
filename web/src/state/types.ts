@@ -4,6 +4,7 @@
 
 import type { Sketch, FieldOptions, Wire } from '../sketch-types';
 import type { PreviewFrame } from '../preview-gpu';
+import type { DeviceInstance, PhysicalIdentity } from '../midi/midi-types';
 
 // --- Plugin info (from engine worker) ---
 
@@ -416,6 +417,25 @@ export interface LocalState {
    * `appController.relinkGlobalInput`). Cleared once reconnected or forgotten.
    */
   globalInputRelink: string | null;
+
+  /** MIDI device library + connection state (see `state/midi-controller.ts`). */
+  midi: MidiLocalState;
+}
+
+/**
+ * Observable mirror of the MIDI device world. Coarse state only — live
+ * control VALUES deliberately stay out of MobX (192 endpoints × drag rate);
+ * the UI polls `midiController.manager.getValues()` from rAF loops instead.
+ */
+export interface MidiLocalState {
+  /** The persisted device library, soft-deleted rows included (UI filters). */
+  library: DeviceInstance[];
+  /** instanceId → a physical unit is currently paired + listening. */
+  connected: Record<string, boolean>;
+  /** instanceId → bank the hardware last reported (UI view state may differ). */
+  activeBanks: Record<string, number>;
+  /** Connected inputs no library instance claims — drives the define offer. */
+  unknownPorts: PhysicalIdentity[];
 }
 
 /**

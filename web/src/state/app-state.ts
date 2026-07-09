@@ -54,6 +54,7 @@ export class AppState {
     liveOfflineMode: false,
     globalInputLabel: null,
     globalInputRelink: null,
+    midi: { library: [], connected: {}, activeBanks: {}, unknownPorts: [] },
   };
 
   constructor() {

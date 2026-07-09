@@ -24,8 +24,8 @@
  */
 
 import {
-  bankedControlId, controlEndpoint, DeviceDriver, DeviceLayout, DeviceTemplate,
-  DriverContext,
+  bankedControlId, controlEndpoint, ControlMapping, DeviceDriver, DeviceLayout,
+  DeviceTemplate, DriverContext, parseControlId,
 } from '../midi-types';
 import { registerDeviceTemplate } from '../device-registry';
 
@@ -213,6 +213,13 @@ export class MftDriver implements DeviceDriver {
   }
 }
 
+/** Endpoint field → slot index, bounds-checked. */
+function mftSlot(field: string): { slot: number; gesture: 'turn' | 'press' | 'shift' } | null {
+  const parsed = parseControlId(field);
+  if (!parsed || parsed.bank >= MFT_BANKS || parsed.index >= MFT_ENCODERS_PER_BANK) return null;
+  return { slot: parsed.bank * MFT_ENCODERS_PER_BANK + parsed.index, gesture: parsed.gesture };
+}
+
 export const MFT_TEMPLATE: DeviceTemplate<MftConfig> = {
   templateId: MFT_TEMPLATE_ID,
   name: 'Midi Fighter Twister',
@@ -221,6 +228,46 @@ export const MFT_TEMPLATE: DeviceTemplate<MftConfig> = {
   defaultConfig: defaultMftConfig(),
   portMatchers: [/midi\s*fighter\s*twister/i, /\btwister\b/i],
   createDriver: ctx => new MftDriver(ctx),
+  mapping: {
+    // Colors are per-encoder, surfaced on the 'turn' endpoint only. The
+    // channel is shared per gesture class on the MFT — editing it moves the
+    // whole class, which the details panel should surface.
+    get(config, field): ControlMapping | null {
+      const at = mftSlot(field);
+      if (!at) return null;
+      const { channels, encoders, buttons, shift, colors } = config;
+      switch (at.gesture) {
+        case 'turn': return {
+          cc: encoders[at.slot].cc, channel: channels.encoder, mode: encoders[at.slot].mode,
+          ringColor: colors[at.slot]?.ring, capColor: colors[at.slot]?.cap,
+        };
+        case 'press': return { cc: buttons[at.slot].cc, channel: channels.button };
+        case 'shift': return { cc: shift[at.slot].cc, channel: channels.shift, mode: encoders[at.slot].mode };
+      }
+    },
+    set(config, field, patch) {
+      const at = mftSlot(field);
+      if (!at) return;
+      const { channels, encoders, buttons, shift, colors } = config;
+      if (patch.mode !== undefined) encoders[at.slot].mode = patch.mode;
+      if (patch.ringColor !== undefined) (colors[at.slot] ??= {}).ring = patch.ringColor;
+      if (patch.capColor !== undefined) (colors[at.slot] ??= {}).cap = patch.capColor;
+      switch (at.gesture) {
+        case 'turn':
+          if (patch.cc !== undefined) encoders[at.slot].cc = patch.cc;
+          if (patch.channel !== undefined) channels.encoder = patch.channel;
+          break;
+        case 'press':
+          if (patch.cc !== undefined) buttons[at.slot].cc = patch.cc;
+          if (patch.channel !== undefined) channels.button = patch.channel;
+          break;
+        case 'shift':
+          if (patch.cc !== undefined) shift[at.slot].cc = patch.cc;
+          if (patch.channel !== undefined) channels.shift = patch.channel;
+          break;
+      }
+    },
+  },
 };
 
 registerDeviceTemplate(MFT_TEMPLATE);

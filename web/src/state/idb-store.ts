@@ -82,6 +82,13 @@ export const STORE_LIVE_CACHE = 'liveCache';
  * start. Shared browser-wide across all offline + playground instances.
  */
 export const STORE_INPUT_VIDEO = 'inputVideo';
+/**
+ * MIDI device library — user-owned device instances (forks of code-registered
+ * templates), keyed by instance uuid. App-level and cross-sketch (wires
+ * reference instances by `midi:<uuid>`), NOT undoable, includes soft-deleted
+ * rows. See `state/midi-device-store.ts` / `state/midi-controller.ts`.
+ */
+export const STORE_MIDI_DEVICES = 'midiDevices';
 
 /** Every store + its keyPath. `ensureStores` creates any that are missing. */
 const STORE_KEYPATHS: Record<string, string> = {
@@ -97,6 +104,7 @@ const STORE_KEYPATHS: Record<string, string> = {
   [STORE_LIBRARY]: 'id',
   [STORE_FIELD_DOCS]: 'key',
   [STORE_INPUT_VIDEO]: 'id',
+  [STORE_MIDI_DEVICES]: 'id',
 };
 
 function ensureStores(db: IDBDatabase) {

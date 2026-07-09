@@ -21,6 +21,7 @@ import { EngineProxy } from './engine-proxy';
 import { initFontProvider, requestFont } from './font-access';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllProjects } from './state/project-store';
+import { midiController } from './state/midi-controller';
 import { idbGetAll, idbGet, STORE_PROJECTS, STORE_SETTINGS, STORE_SKETCH_INPUTS } from './state/idb-store';
 
 export interface BootOptions {
@@ -145,6 +146,15 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     if (settings.paused) appController.setPaused(true);
   } catch (err) {
     console.warn('[boot] failed to load user settings', err);
+  }
+  // MIDI device library — app-level and cross-sketch, so it loads in EVERY
+  // mode. When the user already owns devices this also requests Web MIDI
+  // access right away (hot-plug + values); an empty library defers the
+  // permission prompt to the first Devices-tab visit.
+  try {
+    await midiController.loadLibrary();
+  } catch (err) {
+    console.warn('[boot] failed to load MIDI device library', err);
   }
   // Record the surface actually booting into `appMode`, regardless of what
   // was last persisted — this reflects the resolved mode (settings, or a

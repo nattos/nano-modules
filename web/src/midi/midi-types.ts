@@ -104,6 +104,21 @@ export interface DeviceDriver {
   dispose(): void;
 }
 
+/**
+ * A control endpoint's MIDI address as shown/edited in the details panel.
+ * Which fields apply is template-specific; absent fields aren't editable for
+ * that endpoint.
+ */
+export interface ControlMapping {
+  cc?: number;
+  /** 0-based MIDI channel. */
+  channel?: number;
+  mode?: 'absolute' | 'relative';
+  /** Device color values 0..127 (visual customization, not addressing). */
+  ringColor?: number;
+  capColor?: number;
+}
+
 /** A factory device model, registered in code (see device-registry.ts). */
 export interface DeviceTemplate<C = unknown> {
   /** Reverse-DNS id, e.g. 'com.nano.midi.mft'. */
@@ -117,6 +132,16 @@ export interface DeviceTemplate<C = unknown> {
   /** Ranks unknown-port suggestions in define mode. */
   portMatchers: RegExp[];
   createDriver(ctx: DriverContext<C>): DeviceDriver;
+  /**
+   * Generic mapping accessors — how the details panel reads/edits an
+   * endpoint's MIDI address inside this template's opaque config. `set`
+   * mutates `config` in place (the host persists + calls
+   * `DeviceDriver.configChanged()` afterwards).
+   */
+  mapping: {
+    get(config: C, endpointField: string): ControlMapping | null;
+    set(config: C, endpointField: string, patch: ControlMapping): void;
+  };
 }
 
 /** A user-owned fork of a template (or of another instance). Persisted in the
