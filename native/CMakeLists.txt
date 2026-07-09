@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
+
+# Default to an optimized build. With no build type CMake compiles at -O0, which
+# makes the shared runtime (libbridge_server.dylib — the barrel Arena dlopens)
+# several times slower on the memcpy/STL-heavy preview send path. RelWithDebInfo
+# (-O2 -g -DNDEBUG) keeps symbols for profiling. Override with -DCMAKE_BUILD_TYPE.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+  message(STATUS "No CMAKE_BUILD_TYPE set — defaulting to RelWithDebInfo (-O2 -g)")
+endif()
+
 project(nano-repatch-native LANGUAGES C CXX OBJCXX ASM)
 
 set(CMAKE_CXX_STANDARD 17)
