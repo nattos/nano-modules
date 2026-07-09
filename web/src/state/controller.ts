@@ -549,6 +549,47 @@ export class AppController {
     return { sketchId, parts };
   }
 
+  /**
+   * "0" shortcut: toggle bypass (on/off) across ALL currently-selected effect
+   * cards, as a single undo point. `multiSelection` mirrors the single
+   * selection as `[path]`, so this handles the one-card case too. Mixed states
+   * are unified — if every selected card is already bypassed, enable them all;
+   * otherwise bypass them all. Returns false when the selection holds no effect
+   * cards (caller can ignore the key).
+   */
+  toggleBypassSelectedEffects(): boolean {
+    const parts = appState.local.multiSelection
+      .map(parseEffectPath)
+      .filter((p): p is EffectPathParts => !!p);
+    if (parts.length === 0) return false;
+    const isBypassed = (p: EffectPathParts): boolean => {
+      const sk = appState.database.sketches[p.sketchId];
+      const entry = sk ? sketchChain(sk)[p.chainIdx] : undefined;
+      if (!entry || entry.type !== 'module') return false;
+      const st = sk?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
+      return st?.__bypass__ === true || st?.__bypass__ === 1;
+    };
+    // Enable all only when every card is already bypassed; otherwise bypass all.
+    const target = !parts.every(isBypassed);
+    this.mutate(parts.length > 1 ? `Toggle bypass ${parts.length} effects` : 'Toggle bypass', draft => {
+      for (const p of parts) {
+        const sk = draft.sketches[p.sketchId];
+        const entry = sk ? sketchChain(sk)[p.chainIdx] : undefined;
+        if (!entry || entry.type !== 'module') continue;
+        const inst = sk!.instances?.[entry.instance_key];
+        if (inst) inst.state.__bypass__ = target;
+      }
+    });
+    for (const p of parts) {
+      const sk = appState.database.sketches[p.sketchId];
+      const entry = sk ? sketchChain(sk)[p.chainIdx] : undefined;
+      if (entry && entry.type === 'module') {
+        this.engine?.setParam(p.sketchId, p.colIdx, p.chainIdx, '__bypass__', target);
+      }
+    }
+    return true;
+  }
+
   // ============================== Copy / Paste =============================
   // Tied to the Selectable system: a selectable may expose `copy`/`paste`
   // handlers (see types.ts). The toolbar buttons and Cmd/Ctrl+C/V call the two

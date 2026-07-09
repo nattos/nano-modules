@@ -266,6 +266,12 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     // through to deleting or bypassing the effect card itself. The card stays
     // app-selected while a field only holds DOM focus, so guard on focus here.
     if (isFieldControlFocused(e)) return;
+    // `0` toggles bypass across the whole selection (single or multi-card) as a
+    // single undo point, mirroring the card header light.
+    if (e.key === '0') {
+      if (appController.toggleBypassSelectedEffects()) e.preventDefault();
+      return;
+    }
     // A multi-selected GROUP (2+ cards) deletes as one undo point; falls
     // through when the multi-selection isn't an actionable group.
     if ((e.key === 'Delete' || e.key === 'Backspace')
@@ -289,18 +295,6 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     const colIdx = parseInt(parts[2], 10);
     const chainIdx = parseInt(parts[3], 10);
     if (Number.isNaN(colIdx) || Number.isNaN(chainIdx)) return;
-
-    if (e.key === '0') {
-      // Toggle the selected device on/off (bypass), mirroring the header light.
-      const entry = chainEntryAt(appState.database.sketches[sketchId], chainIdx);
-      if (!entry || entry.type !== 'module') return;
-      const st = appState.database.sketches[sketchId]
-        ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
-      const bypass = st?.__bypass__ === true || st?.__bypass__ === 1;
-      e.preventDefault();
-      appController.setEffectParam(sketchId, colIdx, chainIdx, '__bypass__', !bypass);
-      return;
-    }
 
     e.preventDefault();
     appController.select(null);
