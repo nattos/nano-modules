@@ -471,10 +471,8 @@ bool BridgeServer::handle_client_command(int /*client_id*/, const std::string& m
   const std::string action = j["action"].get<std::string>();
 
   // Connect (`on`) / disconnect a clip. Addressed by marker uuid (`key`) OR by
-  // 0-based composition layer/clip indices. Off uses the layer's empty-clip
-  // eviction (style-independent), falling back to connect:false.
+  // 0-based composition layer/clip indices.
   if (action == "trigger_clip") {
-    if (!resolume_client_) return true;
     // Type-guarded extraction — this runs on the pump thread, so a malformed
     // field must never throw (an uncaught json type_error would kill the pump).
     const bool on = j["on"].is_boolean() ? j["on"].get<bool>() : true;
@@ -487,14 +485,22 @@ bool BridgeServer::handle_client_command(int /*client_id*/, const std::string& m
           j["layer"].get<int>(), j["clip"].get<int>(), cc);
     }
     if (!found) { trig_log("trigger_clip: no clip matched"); return true; }
-    if (on) {
-      if (!cc.connect_path.empty()) resolume_client_->trigger(cc.connect_path, true);
-    } else if (!cc.evict_path.empty()) {
-      resolume_client_->trigger(cc.evict_path, true);         // evict = off
-    } else if (!cc.connect_path.empty()) {
-      resolume_client_->trigger(cc.connect_path, false);      // Piano-style off
+
+    if (cc.channel >= 0) {
+      // Route through the shared trigger rail as a momentary edge, exactly like a
+      // NanoLooper Ch trigger — drive_clip_launches() drains it THIS tick and the
+      // ClipLauncher reconciles the connect/evict/re-arm against observed state
+      // (a bare direct connect/evict latches Resolume and gets stuck; the
+      // launcher is what un-sticks it). Web is just another rail emitter.
+      trigger_bus::emit(trigger_bus::kGlobalRail, cc.channel + 1, on, 1.0f, "web");
+      trig_log("trigger_clip ch=%d %s (via rail)", cc.channel + 1, on ? "on" : "off");
+    } else if (resolume_client_) {
+      // Unchanneled clip (a barrel with no Ch marker) has no rail to reconcile
+      // on: connect / release directly. No eviction — that's the latch that
+      // sticks; the rail path owns the robust off for channeled clips.
+      if (!cc.connect_path.empty()) resolume_client_->trigger(cc.connect_path, on);
+      trig_log("trigger_clip %s -> %s (direct)", on ? "on" : "off", cc.connect_path.c_str());
     }
-    trig_log("trigger_clip %s -> %s", on ? "on" : "off", cc.connect_path.c_str());
     return true;
   }
 
