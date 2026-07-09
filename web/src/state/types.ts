@@ -3,6 +3,7 @@
  */
 
 import type { Sketch, FieldOptions, Wire } from '../sketch-types';
+import type { PreviewFrame } from '../preview-gpu';
 
 // --- Plugin info (from engine worker) ---
 
@@ -239,8 +240,9 @@ export interface EngineStatus {
    */
   gpuTimeMs: number;
   error: string | null;
-  /** Traced output frames keyed by trace point ID. */
-  tracedFrames: Record<string, ImageBitmap | null>;
+  /** Traced output frames keyed by trace point ID. Barrel/live previews are
+   *  GPU-resident (GpuPreviewFrame); local-engine previews are ImageBitmaps. */
+  tracedFrames: Record<string, PreviewFrame | null>;
   /** Incremented every time tracedFrames is updated, to force MobX reactivity. */
   frameGeneration: number;
   /** Per-sketch rail values from the executor, keyed by sketch ID. */

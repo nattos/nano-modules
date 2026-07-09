@@ -143,7 +143,13 @@ export class NbpcReassembler {
     if (p.got < cnt) return null;
     this.partials.delete(seq);
     const total = p.chunks.reduce((a, c) => a + (c ? c.byteLength : 0), 0);
-    const full = new Uint8Array(total);
+    // Reuse one output buffer across same-size frames instead of allocating a
+    // fresh Uint8Array every frame — at full-res 1080p@30 that alloc+free is
+    // ~250 MB/s of GC churn. Safe because the consumer copies the bytes out
+    // synchronously (queue.writeTexture) before the next frame is reassembled;
+    // JS is single-threaded so no completed frame overlaps another in flight.
+    if (!this.out || this.out.byteLength !== total) this.out = new Uint8Array(total);
+    const full = this.out;
     let off = 0;
     for (const c of p.chunks) {
       if (!c) return null;  // unreachable given got === cnt; defensive
@@ -152,6 +158,9 @@ export class NbpcReassembler {
     }
     return full.buffer;
   }
+
+  /** Reused reassembly output (see ingest) — sized to the current frame. */
+  private out: Uint8Array | null = null;
 }
 
 // ---------------------------------------------------------------------------

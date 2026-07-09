@@ -7,6 +7,7 @@
  */
 
 import type { TracePoint } from '../engine-types';
+import type { PreviewFrame } from '../preview-gpu';
 
 export interface TraceRegistration {
   /** Unique ID for this registration (caller-provided). */
@@ -34,8 +35,8 @@ export interface TraceRegistration {
 export interface TraceSource {
   register(reg: TraceRegistration): void;
   unregister(id: string): void;
-  /** The latest captured ImageBitmap for a trace id, or undefined. */
-  frame(traceId: string): ImageBitmap | undefined;
+  /** The latest captured frame (ImageBitmap or GPU-resident) for a trace id. */
+  frame(traceId: string): PreviewFrame | undefined;
   /** Bumps whenever frames change (drives the monitor's reactive redraw). */
   readonly generation: number;
 }

@@ -12,6 +12,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { traceController, type TraceSource } from '../state/trace-controller';
 import type { TracePoint } from '../engine-types';
+import { previewGpu, isGpuPreviewFrame } from '../preview-gpu';
 
 @customElement('texture-monitor')
 export class TextureMonitor extends MobxLitElement {
@@ -169,16 +170,25 @@ export class TextureMonitor extends MobxLitElement {
     }
 
     this.frameDisposer = autorun(() => {
-      const bitmap = this.traceSource
+      const frame = this.traceSource
         ? (this.traceSource.generation, this.traceSource.frame(this.traceId))
         : (appState.local.engine.frameGeneration, appState.local.engine.tracedFrames[this.traceId]);
-      if (!bitmap) return;
+      if (!frame) return;
       const canvas = this.renderRoot.querySelector('canvas') as HTMLCanvasElement | null;
       if (!canvas) return;
-      canvas.width = bitmap.width;
-      canvas.height = bitmap.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.drawImage(bitmap, 0, 0);
+      if (isGpuPreviewFrame(frame)) {
+        // GPU-resident (barrel) frame: one GPU blit, no CPU decode/upload.
+        // preview-gpu owns the canvas's webgpu context + sizing. A monitor's
+        // frame kind is stable for its lifetime, so the canvas commits to one
+        // context type on first frame (getContext returns null on a mismatch,
+        // which safely no-ops rather than throwing).
+        previewGpu.blitToCanvas(canvas, frame);
+      } else {
+        canvas.width = frame.width;
+        canvas.height = frame.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(frame, 0, 0);
+      }
     });
   }
 
@@ -190,6 +200,8 @@ export class TextureMonitor extends MobxLitElement {
     this.frameDisposer?.();
     this.frameDisposer = null;
     (this.traceSource ?? traceController).unregister(this.traceId);
+    // Free this trace's pooled GPU texture (no-op for 2d/ImageBitmap monitors).
+    previewGpu.release(this.traceId);
   }
 
   firstUpdated() {

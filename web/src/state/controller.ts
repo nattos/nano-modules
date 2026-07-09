@@ -12,6 +12,7 @@ import type { Patch } from 'immer';
 import { appState } from './app-state';
 import { HistoryManager, LongEdit } from './history';
 import { traceController } from './trace-controller';
+import { previewGpu, isGpuPreviewFrame } from '../preview-gpu';
 import type { DatabaseState, PluginInfo, AvailableEffect, Selectable, UserSettings, ClipboardPayload, EffectClipboard, EffectsClipboard, BarrelInstanceInfo } from './types';
 import {
   effectPath, parseEffectPath, buildEffectsPayload, remapEffectsPayload, isEffectsClipboard,
@@ -2506,28 +2507,21 @@ export class AppController {
     if (key !== appState.local.selectedBarrelKey &&
         instanceKeyFromThumbTraceId(traceId) !== key &&
         !isSidechannelThumbTraceId(traceId)) return;
-    // ImageData requires its backing Uint8ClampedArray to span its own
-    // buffer (byteOffset 0, full length). A subview over the incoming
-    // ArrayBuffer would be cheaper but breaks the spec — so we copy
-    // into a fresh tightly-owned buffer. At low-res (128×72×4 = 36 kB)
-    // this is single-digit microseconds.
-    const owned = new Uint8ClampedArray(pixelBytes);
-    owned.set(new Uint8Array(buf, headerEnd, pixelBytes));
-    let bitmap: ImageBitmap;
-    try {
-      const imageData = new ImageData(owned, width, height);
-      bitmap = await createImageBitmap(imageData);
-    } catch {
-      return;
-    }
+    // Upload the RGBA8 pixels straight to a per-trace GPUTexture — no CPU copy,
+    // no ImageData, no createImageBitmap decode. `writeTexture` reads this
+    // subview over the received buffer directly; the texture is pooled and
+    // reused across frames (see preview-gpu.ts). Monitors blit it on the GPU.
+    const frame = previewGpu.uploadFrame(
+      traceId, new Uint8Array(buf, headerEnd, pixelBytes), width, height);
+    if (!frame) return;  // WebGPU device not ready yet (first ms at boot) — drop
     runInAction(() => {
       const prev = appState.local.engine.tracedFrames[traceId];
-      // ImageBitmap is a one-shot resource — drop the old one if any
-      // before swapping so the GPU-backed buffer can be freed.
-      try { prev?.close(); } catch { /* ignore */ }
+      // Only ImageBitmaps (local-engine frames) are one-shot resources needing
+      // close(); pooled GPU frames reuse their texture, so leave them be.
+      if (prev && !isGpuPreviewFrame(prev)) { try { prev.close(); } catch { /* ignore */ } }
       appState.local.engine.tracedFrames = {
         ...appState.local.engine.tracedFrames,
-        [traceId]: bitmap,
+        [traceId]: frame,
       };
       appState.local.engine.frameGeneration++;
     });
@@ -2641,9 +2635,10 @@ export class AppController {
 
   setTracedFrames(frames: Record<string, ImageBitmap>) {
     runInAction(() => {
-      // Close old bitmaps
+      // Close old bitmaps (local-engine frames). Pooled GPU frames have no
+      // close() and are managed by preview-gpu — skip them.
       for (const old of Object.values(appState.local.engine.tracedFrames)) {
-        old?.close();
+        if (old && !isGpuPreviewFrame(old)) old.close();
       }
       appState.local.engine.tracedFrames = frames;
       appState.local.engine.frameGeneration++;

@@ -18,6 +18,7 @@
  */
 
 import { store } from '../state/store';
+import { isGpuPreviewFrame } from '../../../preview-gpu';
 import { engineBridge } from '../engine/engine-bridge';
 import { catalogEffect } from '../engine/effect-catalog';
 import {
@@ -71,6 +72,9 @@ class GeneratorThumbCapturer {
       this.ensureRegistered(track.id, clip);
       const src = engineBridge.traceSource.frame(TRACE_PREFIX + clip.id);
       if (!src) continue; // trace not produced yet (clip not active this frame / 1-frame latency)
+      // The arrangement engine emits ImageBitmaps; GPU-resident frames only come
+      // from the barrel path, which never feeds this capture. Narrow defensively.
+      if (isGpuPreviewFrame(src)) continue;
 
       const key = `${fp}|${sample}`;
       if (this.inFlight.has(key)) continue;
