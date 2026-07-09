@@ -148,7 +148,26 @@ const waitUrl = async (url, timeoutMs = 15000) => {
   // the offline sessionStorage flag).
   await page.evaluateOnNewDocument(() => {
     try { sessionStorage.removeItem('nano.liveOffline'); } catch {}
-    const S = (window.__prof = { rx: 0, tx: 0, frames: 0, msgs: 0, laneMsgs: 0 });
+    const S = (window.__prof = { rx: 0, tx: 0, frames: 0, msgs: 0, laneMsgs: 0,
+      cibN: 0, cibMs: 0, drawN: 0, drawMs: 0 });
+
+    // Time the two dominant browser-side stages of the preview ingest, both
+    // globally wrappable: createImageBitmap (decode + premultiply, resolves when
+    // the decode worker finishes) and ctx.drawImage of an ImageBitmap (GPU
+    // upload/blit). Per-frame ms tells us where the off-main-thread CPU lives.
+    const nativeCIB = window.createImageBitmap.bind(window);
+    window.createImageBitmap = (...a) => {
+      const t = performance.now();
+      return nativeCIB(...a).then((r) => { S.cibN++; S.cibMs += performance.now() - t; return r; });
+    };
+    const proto = CanvasRenderingContext2D.prototype;
+    const nativeDraw = proto.drawImage;
+    proto.drawImage = function (...a) {
+      const t = performance.now();
+      const r = nativeDraw.apply(this, a);
+      S.drawN++; S.drawMs += performance.now() - t;
+      return r;
+    };
     const partials = new Map();
     const isNBPC = (dv) => dv.byteLength >= 12 && dv.getUint8(0) === 0x4e && dv.getUint8(1) === 0x42 && dv.getUint8(2) === 0x50 && dv.getUint8(3) === 0x43;
     const countBinary = (buf) => {
@@ -230,24 +249,35 @@ const waitUrl = async (url, timeoutMs = 15000) => {
   const cpu0 = browserPid ? treeCpuSeconds(browserPid) : NaN;
   const m0 = await page.metrics();
   const t0 = Date.now();
-  await page.evaluate(() => { const s = window.__prof; s.rx = s.tx = s.frames = s.msgs = s.laneMsgs = 0; });
+  await page.evaluate(() => { const s = window.__prof; s.rx = s.tx = s.frames = s.msgs = s.laneMsgs = s.cibN = s.cibMs = s.drawN = s.drawMs = 0; });
 
   // Attach the native sampler for the measurement window. NOT tracked in
   // `children` — cleanup() would SIGTERM it before it flushes the file; instead
   // we await its own exit below (it self-terminates after its duration).
-  let sampleOut = null, sampleProc = null;
-  if (DO_SAMPLE) {
-    sampleOut = path.join(REPO, 'native', 'build', `live_profile_sample_${W}x${H}.txt`);
-    sampleProc = spawn('sample', [String(RUNNER_PID), String(Math.round(SECS)), '-file', sampleOut],
-                       { cwd: REPO, stdio: ['ignore', 'ignore', 'inherit'] });
-    console.log(`[live_profile] sampling ffgl_runner pid ${RUNNER_PID} → ${sampleOut}`);
+  const samplers = [];  // { name, proc, out }
+  const dur = Math.round(SECS);
+  const startSample = (pid, tag) => {
+    const out = path.join(REPO, 'native', 'build', `live_profile_sample_${tag}.txt`);
+    const proc = spawn('sample', [String(pid), String(dur), '-file', out], { cwd: REPO, stdio: ['ignore', 'ignore', 'inherit'] });
+    samplers.push({ name: tag, proc, out });
+    console.log(`[live_profile] sampling ${tag} pid ${pid} → ${out}`);
+  };
+  if (DO_SAMPLE) startSample(RUNNER_PID, `ffgl_${W}x${H}`);
+  // --web-sample: sample the chrome GPU process (does the texture upload +
+  // canvas composite) and the renderer (JS + reassembly copies + decode
+  // dispatch) — the ~120% the JS-level wrappers can't see.
+  if (has('web-sample') && browserPid) {
+    for (const pid of descendants(browserPid)) {
+      const argsStr = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout;
+      if (/--type=gpu-process/.test(argsStr)) startSample(pid, `chrome_gpu_${W}x${H}`);
+      else if (/--type=renderer/.test(argsStr)) startSample(pid, `chrome_renderer_${W}x${H}`);
+    }
   }
 
   console.log(`[live_profile] measuring ${SECS}s (comp ${W}x${H}, preview ${PW}x${PH}, hz ${HZ}, fanout ${FANOUT})…`);
   await sleep(SECS * 1000);
-  if (sampleProc) {
-    await new Promise((res) => { sampleProc.on('exit', res); setTimeout(res, 8000); });
-  }
+  for (const s of samplers) await new Promise((res) => { s.proc.on('exit', res); setTimeout(res, 8000); });
+  const sampleOut = samplers.length ? samplers.map((s) => s.out) : null;
 
   const m1 = await page.metrics();
   const cpu1 = browserPid ? treeCpuSeconds(browserPid) : NaN;
@@ -256,7 +286,8 @@ const waitUrl = async (url, timeoutMs = 15000) => {
     clearInterval(window.__profRepush); clearInterval(window.__rttTimer);
     const s = window.__prof, rtt = window.__rtt.slice().sort((a, b) => a - b);
     const pct = (q) => rtt.length ? rtt[Math.min(rtt.length - 1, Math.floor(q * rtt.length))] : NaN;
-    return { rx: s.rx, tx: s.tx, frames: s.frames, msgs: s.msgs, laneMsgs: s.laneMsgs, rttP50: pct(0.5), rttP95: pct(0.95) };
+    return { rx: s.rx, tx: s.tx, frames: s.frames, msgs: s.msgs, laneMsgs: s.laneMsgs,
+      cibN: s.cibN, cibMs: s.cibMs, drawN: s.drawN, drawMs: s.drawMs, rttP50: pct(0.5), rttP95: pct(0.95) };
   });
   await browser.close();
 
@@ -274,9 +305,13 @@ const waitUrl = async (url, timeoutMs = 15000) => {
   const cpuTreePct = isFinite(cpu1) ? ((cpu1 - cpu0) / wall) * 100 : NaN;
   console.log(`  browser CPU (whole proc): ${isFinite(cpuTreePct) ? cpuTreePct.toFixed(0) + ' %' : 'n/a'}   (chrome process tree — incl. decode + GPU upload)`);
   console.log(`  browser CPU (main thread): ${cpuMainPct.toFixed(0)} %   (page.metrics TaskDuration)`);
+  const per = (ms, n) => n ? (ms / n).toFixed(2) : 'n/a';
+  const share = (ms) => wall ? ((ms / 1000 / wall) * 100).toFixed(0) : '?';
+  console.log(`  createImageBitmap       : ${per(client.cibMs, client.cibN)} ms/frame  (${client.cibN} calls, ~${share(client.cibMs)}% of one thread — decode+premultiply)`);
+  console.log(`  ctx.drawImage           : ${per(client.drawMs, client.drawN)} ms/frame  (${client.drawN} calls, ~${share(client.drawMs)}% of one thread — GPU upload/blit)`);
   console.log(`  browser JS heap         : ${(m1.JSHeapUsedSize / 1e6).toFixed(0)} MB`);
   console.log(`  control RTT p50 / p95   : ${client.rttP50.toFixed(1)} / ${client.rttP95.toFixed(1)} ms`);
-  if (sampleOut) console.log(`  FFGL hotspot profile    : ${sampleOut}`);
+  if (sampleOut) for (const s of samplers) console.log(`  hotspot profile         : ${s.name} → ${s.out}`);
   console.log('==============================================\n');
   cleanup();
   process.exit(0);
