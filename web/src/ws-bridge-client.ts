@@ -85,6 +85,13 @@ export class WsBridgeClient {
     this.send({ action: 'patch', target, ops });
   }
 
+  /** Whole-value write to a whitelisted GLOBAL path — the server accepts
+   *  only `/global/midi_*` (the MIDI device-library mirror + live simulation
+   *  overrides consumed by the native MIDI host). */
+  setGlobal(path: string, value: unknown): void {
+    this.send({ action: 'set', path, value });
+  }
+
   /**
    * Connect (`on`) or disconnect a Resolume clip. Address it by marker uuid
    * (`key`) OR by 0-based composition `layer`/`clip` indices. Fire-and-forget:

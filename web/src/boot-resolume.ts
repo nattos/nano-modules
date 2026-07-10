@@ -27,6 +27,7 @@ import {
 import { startBarrelProbe } from './barrel-probe';
 import { installModeOffers } from './live-offers';
 import { installDeviceDefineOffers } from './views/devices/define-offer';
+import { midiController } from './state/midi-controller';
 import { traceController } from './state/trace-controller';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
@@ -1001,9 +1002,20 @@ function connectBarrel(url: string) {
     if (sel) wireInstance(sel);
   };
   // Surface connection health for the shell's "switch to Playground?" offer.
+  // MIDI bridge mirror: the device library + on-screen simulation overrides
+  // flow to the native CoreMIDI host over whitelisted /global/midi_* writes.
+  // bindBridge re-pushes the library, so re-binding on every (re)open keeps
+  // a restarted barrel seeded.
+  const bindMidiBridge = () => midiController.bindBridge({
+    library: instances => barrel.setGlobal('/global/midi_devices', instances),
+    sim: table => barrel.setGlobal('/global/midi_sim', table),
+  });
+  bindMidiBridge();
+
   barrel.onOpen = () => {
     appController.setBarrelConnectionState('open');
     subscribe();
+    bindMidiBridge();
   };
   barrel.onClose = () => appController.setBarrelConnectionState('closed');
   if (barrel.isOpen) {

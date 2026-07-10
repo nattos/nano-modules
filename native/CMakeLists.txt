@@ -362,6 +362,14 @@ target_include_directories(test_param_smoothing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_param_smoothing PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_param_smoothing)
 
+# MFT MIDI driver — lock-step goldens shared with web/src/midi/drivers/mft.test.ts.
+add_executable(test_mft_driver tests/test_mft_driver.cpp)
+target_include_directories(test_mft_driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mft_driver PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+target_compile_definitions(test_mft_driver PRIVATE
+  MFT_GOLDENS_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/mft_goldens.json")
+catch_discover_tests(test_mft_driver)
+
 add_executable(test_delay_line tests/test_delay_line.cpp)
 target_include_directories(test_delay_line PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_delay_line PRIVATE Catch2::Catch2WithMain)
@@ -923,9 +931,11 @@ if(APPLE)
   # image may link it — the dylib here; the barrel bundle must NOT (see its
   # link list). sketch_executor PUBLIC-pulls effect_runtime/gpu_backend/
   # wasm_host/text_engine/spv_to_msl transitively.
-  target_sources(bridge_server PRIVATE src/bridge/barrel_runtime.mm)
-  target_link_libraries(bridge_server PRIVATE sketch_executor)
-  set_source_files_properties(src/bridge/barrel_runtime.mm
+  target_sources(bridge_server PRIVATE
+    src/bridge/barrel_runtime.mm
+    src/midi/midi_host.mm)
+  target_link_libraries(bridge_server PRIVATE sketch_executor "-framework CoreMIDI")
+  set_source_files_properties(src/bridge/barrel_runtime.mm src/midi/midi_host.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
   # Config-driven CLI test runner — JSON config on stdin, JSON pixel

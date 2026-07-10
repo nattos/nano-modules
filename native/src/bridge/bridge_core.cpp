@@ -32,6 +32,15 @@ void BridgeCore::handle_message(int client_id, const std::string& msg) {
     };
     if (send_cb_) send_cb_(client_id, response.dump());
   }
+  else if (action == "set") {
+    // Whitelisted client-writable GLOBAL paths: the web mirrors its MIDI
+    // device library (/global/midi_devices) + live simulation overrides
+    // (/global/midi_sim) so the native MIDI host works headless. Everything
+    // else stays client-read-only (plugin state goes through "patch").
+    const std::string path = j.contains("path") ? j["path"].get<std::string>() : "";
+    if (path.rfind("/global/midi_", 0) != 0 || !j.contains("value")) return;
+    state_doc_.set_at(path, j["value"]);
+  }
   else if (action == "patch") {
     if (!j.contains("target") || !j.contains("ops")) return;
     std::string target = j["target"].get<std::string>();

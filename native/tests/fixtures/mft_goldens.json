@@ -1,0 +1,86 @@
+{
+  "comment": "Lock-step MFT driver goldens — consumed by BOTH web/src/midi/drivers/mft.test.ts (vitest) and native/tests/test_mft_driver.cpp (Catch2). Byte-level parse/render contract: same MIDI bytes in -> same {controlId, value} out (values compared at 1e-6; TS computes in double, C++ in float). configPatch entries are sparse edits over the factory default config; seedValues pre-load the HARDWARE value table (relative-mode integration reads it).",
+  "parse": [
+    {
+      "name": "encoder turn, bank 0",
+      "messages": [[176, 5, 100]],
+      "expect": [{ "controlId": "b0/e05/turn", "value": 0.7874015748031497 }]
+    },
+    {
+      "name": "encoder turn, bank 1 (factory CCs are bank*16+idx)",
+      "messages": [[176, 21, 0]],
+      "expect": [{ "controlId": "b1/e05/turn", "value": 0 }]
+    },
+    {
+      "name": "encoder turn, full scale",
+      "messages": [[176, 63, 127]],
+      "expect": [{ "controlId": "b3/e15/turn", "value": 1 }]
+    },
+    {
+      "name": "button press + release (threshold 64)",
+      "messages": [[177, 5, 127], [177, 5, 63]],
+      "expect": [
+        { "controlId": "b0/e05/press", "value": 1 },
+        { "controlId": "b0/e05/press", "value": 0 }
+      ]
+    },
+    {
+      "name": "shifted turn rides the shift channel",
+      "messages": [[180, 12, 64]],
+      "expect": [{ "controlId": "b0/e12/shift", "value": 0.5039370078740157 }]
+    },
+    {
+      "name": "unmapped CC is ignored",
+      "messages": [[176, 90, 10]],
+      "expect": []
+    },
+    {
+      "name": "non-CC status is ignored",
+      "messages": [[144, 5, 100]],
+      "expect": []
+    },
+    {
+      "name": "bank change emits no control event, moves activeBank",
+      "messages": [[179, 2, 127]],
+      "expect": [],
+      "expectBank": 2
+    },
+    {
+      "name": "relative mode integrates offset-64 deltas against hardware",
+      "configPatch": { "encoders": { "5": { "mode": "relative" } } },
+      "seedValues": { "b0/e05/turn": 0.5 },
+      "messages": [[176, 5, 65]],
+      "expect": [{ "controlId": "b0/e05/turn", "value": 0.5078740157480315 }]
+    },
+    {
+      "name": "relative decrement clamps at 0",
+      "configPatch": { "encoders": { "5": { "mode": "relative" } } },
+      "seedValues": { "b0/e05/turn": 0 },
+      "messages": [[176, 5, 63]],
+      "expect": [{ "controlId": "b0/e05/turn", "value": 0 }]
+    },
+    {
+      "name": "shifted turn follows its encoder slot mode (relative, +2)",
+      "configPatch": { "encoders": { "5": { "mode": "relative" } } },
+      "seedValues": { "b0/e05/shift": 0.5 },
+      "messages": [[180, 5, 66]],
+      "expect": [{ "controlId": "b0/e05/shift", "value": 0.5157480314960629 }]
+    },
+    {
+      "name": "duplicate CC across banks resolves to the active bank",
+      "configPatch": { "encoders": { "16": { "cc": 0 }, "17": { "cc": 1 }, "18": { "cc": 2 }, "19": { "cc": 3 }, "20": { "cc": 4 }, "21": { "cc": 5 } } },
+      "messages": [[179, 1, 127], [176, 5, 127]],
+      "expect": [{ "controlId": "b1/e05/turn", "value": 1 }],
+      "expectBank": 1
+    }
+  ],
+  "render": [
+    {
+      "name": "ring echo + cap color, unchanged bytes skipped on repeat",
+      "configPatch": { "colors": { "5": { "cap": 40 } } },
+      "values": { "b0/e05/turn": 0.5, "b1/e00/turn": 1 },
+      "expect": [[176, 5, 64], [177, 5, 40], [176, 16, 127]],
+      "repeatExpect": []
+    }
+  ]
+}

@@ -18,10 +18,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <fstream>
+#include <sys/stat.h>
+
 #include "bridge/bridge_server.h"
 #include "bridge/preview_codec.h"
 #include "bridge/ws_server.h"
 #include "gpu/gpu_backend.h"
+#include "midi/midi_host.h"
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
 #include "sketch/sidechannel_bus.h"
@@ -231,8 +235,62 @@ struct BarrelRuntime::Impl {
     bool haveLastPluginStates = false;
     // Host-elapsed time of the last preview-capture frame, for rate limiting.
     double lastPreviewElapsed = -1e9;
+    // Last-applied MidiHost table version — setExternalScalars only re-runs
+    // when a device value / sim override / library rematch actually changed.
+    uint64_t lastMidiVersion = 0;
   };
   std::unordered_map<std::string, PerExecutor> executors;
+
+  // --- MIDI library/sim sync (render thread, under render_mu) ---
+  std::string lastMidiDevicesJson;
+  std::string lastMidiSimJson;
+  std::chrono::steady_clock::time_point lastMidiLibPoll{};
+  std::chrono::steady_clock::time_point lastMidiSimPoll{};
+
+  static std::string midiSidecarPath() {
+    const char* home = getenv("HOME");
+    if (!home) return {};
+    const std::string dir = std::string(home) + "/Library/Application Support/NanoBarrel";
+    mkdir(dir.c_str(), 0755);
+    return dir + "/midi_devices.json";
+  }
+
+  /// Keep the native MIDI host fed: the device library rides
+  /// /global/midi_devices (web-mirrored; 1 Hz poll — a few KB, don't dump it
+  /// per frame; persisted to a sidecar for headless restarts) and the web's
+  /// simulation overrides ride /global/midi_sim (small + latency-sensitive —
+  /// polled at up to ~120 Hz, dropped when no client is connected so a
+  /// vanished editor can't pin stale overrides).
+  void pollMidi(BridgeServer& server) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastMidiLibPoll > std::chrono::seconds(1)) {
+      lastMidiLibPoll = now;
+      std::string devices = server.get_at("/global/midi_devices");
+      if (devices != lastMidiDevicesJson) {
+        lastMidiDevicesJson = devices;
+        auto parsed = nlohmann::json::parse(devices, nullptr, false);
+        if (parsed.is_array()) {
+          nano_midi::MidiHost::instance().setLibrary(parsed);
+          const std::string path = midiSidecarPath();
+          if (!path.empty()) {
+            std::ofstream f(path, std::ios::trunc);
+            if (f.good()) f << devices;
+          }
+        }
+      }
+    }
+    if (now - lastMidiSimPoll > std::chrono::milliseconds(8)) {
+      lastMidiSimPoll = now;
+      std::string sim = server.has_clients() ? server.get_at("/global/midi_sim")
+                                             : std::string("{}");
+      if (sim != lastMidiSimJson) {
+        lastMidiSimJson = sim;
+        auto parsed = nlohmann::json::parse(sim, nullptr, false);
+        nano_midi::MidiHost::instance().setSimOverrides(
+            parsed.is_object() ? parsed : nlohmann::json::object());
+      }
+    }
+  }
 
   // Last-published sidechannel-bus metadata version. The bus bumps it only on
   // channel-identity changes (new channel / writer / size), so the version
@@ -752,6 +810,33 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
   impl_->startSendWorker();
   impl_->rt->drainConsoleLog();
   impl_->usable = (total > 0);
+
+  // Native MIDI host: start CoreMIDI and seed the device library from the
+  // persisted sidecar so headless sessions (no web editor connected) still
+  // map hardware to instances. The web's live mirror (/global/midi_devices,
+  // via pollMidi) overwrites this as soon as an editor pushes.
+  if (impl_->usable) {
+    auto& server = BridgeServer::instance();
+    const std::string existing = server.get_at("/global/midi_devices");
+    auto existingParsed = nlohmann::json::parse(existing, nullptr, false);
+    if (!existingParsed.is_array()) {
+      const std::string path = Impl::midiSidecarPath();
+      std::ifstream f(path);
+      if (f.good()) {
+        std::string blob((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+        auto parsed = nlohmann::json::parse(blob, nullptr, false);
+        if (parsed.is_array()) {
+          server.set_at("/global/midi_devices", blob);
+          nano_midi::MidiHost::instance().setLibrary(parsed);
+          impl_->lastMidiDevicesJson = server.get_at("/global/midi_devices");
+          BRT_LOG("midi: seeded %d device(s) from sidecar", (int)parsed.size());
+        }
+      }
+    }
+    nano_midi::MidiHost::instance().start();
+  }
+
   BRT_LOG("acquired: %d effect(s) loaded", total);
   return impl_->usable;
 }
@@ -895,6 +980,19 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     impl_->refreshPreviewRequests(pe, server.get_at(base + "/preview_requests"));
   }
   if (!pe.haveSketch || !in_tex || !out_tex) return false;
+
+  // MIDI device values → the executor's external-scalar table. The host's
+  // version bumps on hardware/sim/library change; a static table costs one
+  // integer compare per frame.
+  impl_->pollMidi(server);
+  {
+    auto& mh = nano_midi::MidiHost::instance();
+    const uint64_t mv = mh.version();
+    if (mv != pe.lastMidiVersion) {
+      pe.lastMidiVersion = mv;
+      pe.executor->setExternalScalars(mh.externalScalars());
+    }
+  }
 
   // Only do telemetry/preview work when an editor actually observes THIS key.
   const bool watched = server.key_observed(key);

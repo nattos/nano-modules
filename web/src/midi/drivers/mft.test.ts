@@ -1,13 +1,36 @@
 /**
  * MFT driver goldens — byte-level parse/render fixtures.
  *
- * The PARSE_GOLDENS / RENDER_GOLDENS tables are the lock-step contract with
- * the native C++ driver (native/src/midi/mft_driver.h): the Catch2 side will
- * consume the same cases so web and native emit identical ids/values.
+ * The cases live in native/tests/fixtures/mft_goldens.json, the LOCK-STEP
+ * contract shared with the native C++ driver (native/src/midi/mft_driver.h,
+ * exercised by native/tests/test_mft_driver.cpp): same MIDI bytes in → same
+ * {controlId, value} out on both platforms.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ControlEvent, DriverContext, parseControlId } from '../midi-types';
 import { defaultMftConfig, MftConfig, MftDriver } from './mft';
+
+interface GoldenCase {
+  name: string;
+  configPatch?: Record<string, Record<string, Record<string, unknown>>>;
+  seedValues?: Record<string, number>;
+  messages: number[][];
+  expect: ControlEvent[];
+  expectBank?: number;
+}
+interface RenderCase {
+  name: string;
+  configPatch?: GoldenCase['configPatch'];
+  values: Record<string, number>;
+  expect: number[][];
+  repeatExpect: number[][];
+}
+
+const GOLDENS: { parse: GoldenCase[]; render: RenderCase[] } = JSON.parse(readFileSync(
+  fileURLToPath(new URL('../../../../native/tests/fixtures/mft_goldens.json', import.meta.url)),
+  'utf8'));
 
 class FakeContext implements DriverContext<MftConfig> {
   config = defaultMftConfig();
@@ -21,113 +44,61 @@ class FakeContext implements DriverContext<MftConfig> {
   onBankChanged(bank: number) { this.banks.push(bank); }
 }
 
-function drive(ctx: FakeContext, messages: number[][]): MftDriver {
-  const driver = new MftDriver(ctx);
-  for (const m of messages) driver.onMidiMessage(new Uint8Array(m), 0);
-  return driver;
+/** Sparse fixture patch: { encoders: { "5": { mode: "relative" } } } merges
+ *  into config.encoders[5] — same application as the C++ test. */
+function applyConfigPatch(config: MftConfig, patch?: GoldenCase['configPatch']) {
+  for (const [section, entries] of Object.entries(patch ?? {})) {
+    for (const [idx, fields] of Object.entries(entries)) {
+      Object.assign((config as unknown as Record<string, Record<string, object>>)[section][idx], fields);
+    }
+  }
 }
 
-// Factory config: encoders CC 0..63 ch1 (0-based 0), buttons ch2, shift ch5,
-// bank notifications ch4. One golden per protocol behavior.
-const PARSE_GOLDENS: {
-  name: string;
-  messages: number[][];
-  expect: ControlEvent[];
-}[] = [
-  {
-    name: 'encoder turn, bank 0',
-    messages: [[0xb0, 5, 100]],
-    expect: [{ controlId: 'b0/e05/turn', value: 100 / 127 }],
-  },
-  {
-    name: 'encoder turn, bank 1 (factory CCs are bank*16+idx)',
-    messages: [[0xb0, 21, 0]],
-    expect: [{ controlId: 'b1/e05/turn', value: 0 }],
-  },
-  {
-    name: 'encoder turn, full scale',
-    messages: [[0xb0, 63, 127]],
-    expect: [{ controlId: 'b3/e15/turn', value: 1 }],
-  },
-  {
-    name: 'button press + release (threshold 64)',
-    messages: [[0xb1, 5, 127], [0xb1, 5, 63]],
-    expect: [
-      { controlId: 'b0/e05/press', value: 1 },
-      { controlId: 'b0/e05/press', value: 0 },
-    ],
-  },
-  {
-    name: 'shifted turn rides the shift channel',
-    messages: [[0xb4, 12, 64]],
-    expect: [{ controlId: 'b0/e12/shift', value: 64 / 127 }],
-  },
-  {
-    name: 'unmapped CC is ignored',
-    messages: [[0xb0, 90, 10]],
-    expect: [],
-  },
-  {
-    name: 'non-CC status is ignored',
-    messages: [[0x90, 5, 100]],
-    expect: [],
-  },
-  {
-    name: 'bank change emits no control event',
-    messages: [[0xb3, 2, 127]],
-    expect: [],
-  },
-];
-
-describe('MftDriver parse', () => {
-  for (const g of PARSE_GOLDENS) {
+describe('MftDriver parse (shared goldens)', () => {
+  for (const g of GOLDENS.parse) {
     it(g.name, () => {
       const ctx = new FakeContext();
-      drive(ctx, g.messages);
-      expect(ctx.emitted).toEqual(g.expect);
+      applyConfigPatch(ctx.config, g.configPatch);
+      for (const [k, v] of Object.entries(g.seedValues ?? {})) ctx.values.set(k, v);
+      const driver = new MftDriver(ctx);
+      for (const m of g.messages) driver.onMidiMessage(new Uint8Array(m), 0);
+      expect(ctx.emitted.map(e => e.controlId)).toEqual(g.expect.map(e => e.controlId));
+      ctx.emitted.forEach((e, i) => expect(e.value).toBeCloseTo(g.expect[i].value, 6));
+      if (g.expectBank !== undefined) expect(driver.activeBank).toBe(g.expectBank);
+    });
+  }
+});
+
+describe('MftDriver renderOutput (shared goldens)', () => {
+  for (const g of GOLDENS.render) {
+    it(g.name, () => {
+      const ctx = new FakeContext();
+      applyConfigPatch(ctx.config, g.configPatch);
+      const driver = new MftDriver(ctx);
+      const values = new Map(Object.entries(g.values));
+      driver.renderOutput(values);
+      expect(ctx.sent).toEqual(g.expect);
+      ctx.sent.length = 0;
+      driver.renderOutput(values);
+      expect(ctx.sent).toEqual(g.repeatExpect);
     });
   }
 
-  it('bank-change notification updates activeBank once', () => {
+  it('sends only the delta after a value change', () => {
     const ctx = new FakeContext();
-    const driver = drive(ctx, [[0xb3, 2, 127], [0xb3, 2, 127]]);
-    expect(driver.activeBank).toBe(2);
-    expect(ctx.banks).toEqual([2]);   // repeat is a no-op
-  });
-
-  it('relative mode integrates offset-64 deltas against the hardware value', () => {
-    const ctx = new FakeContext();
-    ctx.config.encoders[5].mode = 'relative';
-    ctx.values.set('b0/e05/turn', 0.5);
-    drive(ctx, [[0xb0, 5, 65]]);
-    expect(ctx.emitted).toEqual([{ controlId: 'b0/e05/turn', value: 0.5 + 1 / 127 }]);
-
-    const ctx2 = new FakeContext();
-    ctx2.config.encoders[5].mode = 'relative';
-    ctx2.values.set('b0/e05/turn', 0);
-    drive(ctx2, [[0xb0, 5, 63]]);
-    expect(ctx2.emitted).toEqual([{ controlId: 'b0/e05/turn', value: 0 }]);  // clamped
-  });
-
-  it('shifted turn follows its encoder slot mode (relative)', () => {
-    const ctx = new FakeContext();
-    ctx.config.encoders[5].mode = 'relative';
-    ctx.values.set('b0/e05/shift', 0.5);
-    drive(ctx, [[0xb4, 5, 66]]);
-    expect(ctx.emitted).toEqual([{ controlId: 'b0/e05/shift', value: 0.5 + 2 / 127 }]);
-  });
-
-  it('duplicate CC across banks resolves to the active bank', () => {
-    const ctx = new FakeContext();
-    // "All banks send CC 0-15" style fork: bank 1's encoders reuse CC 0..15.
-    for (let i = 0; i < 16; i++) ctx.config.encoders[16 + i].cc = i;
     const driver = new MftDriver(ctx);
-    driver.onMidiMessage(new Uint8Array([0xb3, 1, 127]), 0);   // switch to bank 1
-    driver.onMidiMessage(new Uint8Array([0xb0, 5, 127]), 0);
-    expect(ctx.emitted).toEqual([{ controlId: 'b1/e05/turn', value: 1 }]);
+    const values = new Map([['b0/e05/turn', 0.5], ['b1/e00/turn', 1]]);
+    driver.renderOutput(values);
+    ctx.sent.length = 0;
+    values.set('b0/e05/turn', 0);
+    driver.renderOutput(values);
+    expect(ctx.sent).toEqual([[0xb0, 5, 0]]);
   });
+});
 
-  it('config edits invalidate CC lookups', () => {
+// TS-side extras (not part of the byte contract).
+describe('MftDriver config invalidation', () => {
+  it('config edits invalidate CC lookups after configChanged()', () => {
     const ctx = new FakeContext();
     const driver = new MftDriver(ctx);
     driver.onMidiMessage(new Uint8Array([0xb0, 5, 127]), 0);
@@ -139,29 +110,14 @@ describe('MftDriver parse', () => {
       { controlId: 'b0/e05/turn', value: 0 },
     ]);
   });
-});
 
-describe('MftDriver renderOutput', () => {
-  it('echoes ring positions and sends cap colors, skipping unchanged bytes', () => {
+  it('bank-change notification updates activeBank once', () => {
     const ctx = new FakeContext();
-    ctx.config.colors[5] = { cap: 40 };
     const driver = new MftDriver(ctx);
-    const values = new Map([['b0/e05/turn', 0.5], ['b1/e00/turn', 1]]);
-
-    driver.renderOutput(values);
-    expect(ctx.sent).toEqual([
-      [0xb0, 5, 64],     // ring echo, round(0.5*127)
-      [0xb1, 5, 40],     // cap color on the button channel
-      [0xb0, 16, 127],   // bank 1 encoder 0 ring echo
-    ]);
-
-    ctx.sent.length = 0;
-    driver.renderOutput(values);                 // nothing changed
-    expect(ctx.sent).toEqual([]);
-
-    values.set('b0/e05/turn', 0);
-    driver.renderOutput(values);                 // only the delta goes out
-    expect(ctx.sent).toEqual([[0xb0, 5, 0]]);
+    driver.onMidiMessage(new Uint8Array([0xb3, 2, 127]), 0);
+    driver.onMidiMessage(new Uint8Array([0xb3, 2, 127]), 0);
+    expect(driver.activeBank).toBe(2);
+    expect(ctx.banks).toEqual([2]);
   });
 });
 

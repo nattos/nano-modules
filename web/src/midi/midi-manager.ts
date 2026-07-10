@@ -127,6 +127,18 @@ export class MidiManager {
     this.connected.get(instanceId)?.driver.renderOutput(this.getValues(instanceId));
   }
 
+  /** All live simulation overrides, per instance — the blob mirrored to the
+   *  native host in live mode (/global/midi_sim). {} when nothing is
+   *  simulated. */
+  getSimulatedTable(): Record<string, Record<string, number>> {
+    const out: Record<string, Record<string, number>> = {};
+    for (const [instanceId, table] of this.tables) {
+      if (table.simulated.size === 0) continue;
+      out[instanceId] = Object.fromEntries(table.simulated);
+    }
+    return out;
+  }
+
   /** Config was edited — refresh the driver's lookups + hardware state. */
   notifyConfigChanged(instanceId: string): void {
     const device = this.connected.get(instanceId);

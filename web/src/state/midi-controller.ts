@@ -16,7 +16,7 @@
  * `DeviceInstance` first; callers re-target to the returned id.
  */
 
-import { runInAction } from 'mobx';
+import { runInAction, toJS } from 'mobx';
 import { getDeviceTemplate } from '../midi/device-registry';
 import { forkInstance } from '../midi/matching';
 import { MidiManager } from '../midi/midi-manager';
@@ -37,6 +37,8 @@ export class MidiController {
   private pushQueued: Set<string> | null = null;
   private enginePush: ((json: string) => void) | null = null;
   private lastPushedJson = '';
+  private bridge: { library: (instances: unknown) => void; sim: (table: unknown) => void } | null = null;
+  private lastSimJson = '';
 
   constructor() {
     const midi = () => appState.local.midi;
@@ -185,6 +187,33 @@ export class MidiController {
   }
 
   /**
+   * Live-mode bridge mirror (boot-resolume wires this once the barrel WS
+   * client exists): the device library rides /global/midi_devices (so the
+   * native CoreMIDI host maps hardware headlessly) and on-screen simulation
+   * overrides ride /global/midi_sim (native merges them over its own
+   * hardware values). Call again on reconnect — it re-pushes the library.
+   */
+  bindBridge(bridge: { library: (instances: unknown) => void; sim: (table: unknown) => void } | null): void {
+    this.bridge = bridge;
+    this.lastSimJson = '';
+    if (bridge) this.mirrorLibrary();
+  }
+
+  private mirrorLibrary(): void {
+    if (!this.bridge) return;
+    this.bridge.library(toJS(appState.local.midi.library));
+  }
+
+  private mirrorSim(): void {
+    if (!this.bridge) return;
+    const table = this.manager.getSimulatedTable();
+    const json = JSON.stringify(table);
+    if (json === this.lastSimJson) return;
+    this.lastSimJson = json;
+    this.bridge.sim(table);
+  }
+
+  /**
    * Lower the current device values through the sketches' `midi:` wires into
    * the executor's external-scalar table. Called from the rAF-coalesced value
    * trigger below AND from AppController's postRecord hook (wire edits change
@@ -228,6 +257,8 @@ export class MidiController {
       this.saveTimers.delete(instance.id);
       saveDeviceInstance(instance).catch(err =>
         console.warn('[midi] failed to persist device instance', instance.id, err));
+      // Keep the native host's copy in step with every library edit.
+      this.mirrorLibrary();
     }, SAVE_DEBOUNCE_MS));
   }
 
@@ -240,6 +271,7 @@ export class MidiController {
       this.pushQueued = null;
       for (const id of ids) this.manager.renderOutput(id);
       this.pushExternalScalars();
+      this.mirrorSim();
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
     else setTimeout(flush, 16);
