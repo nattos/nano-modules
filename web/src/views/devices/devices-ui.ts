@@ -53,6 +53,12 @@ class DevicesUiStore {
     }
   }
 
+  /** Replace the whole selection (range select); first entry is primary. */
+  selectControls(selections: ControlSelection[]): void {
+    this.selectedCardId = null;
+    this.selectedControls = selections;
+  }
+
   /** Selection follows a lazy fork: template-id targets become the fork's. */
   retargetSelection(fromDeviceId: string, toDeviceId: string): void {
     for (const s of this.selectedControls) {

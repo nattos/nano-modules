@@ -26,6 +26,8 @@ import type { DeviceInstance, DeviceTemplate, PhysicalIdentity } from '../../mid
 import { devicesUi } from './devices-ui';
 
 import './device-card';
+import './device-surface';
+import './device-control-details';
 
 const FILTER_LABELS = {
   connected: 'connected',
@@ -189,7 +191,12 @@ export class DevicesTab extends MobxLitElement {
         ?forkable=${forkable}
         ?dimmed=${define && !forkable}
         @click=${() => this.onCardClick(instance.id, forkable)}
-      ></device-card>
+      >
+        <device-surface
+          .deviceId=${instance.id}
+          .interactive=${status !== 'deleted' && !define}
+        ></device-surface>
+      </device-card>
     `;
   }
 
@@ -203,7 +210,12 @@ export class DevicesTab extends MobxLitElement {
         ?selected=${devicesUi.selectedCardId === template.templateId}
         ?forkable=${define}
         @click=${() => this.onCardClick(template.templateId, define)}
-      ></device-card>
+      >
+        <device-surface
+          .deviceId=${template.templateId}
+          .interactive=${!define}
+        ></device-surface>
+      </device-card>
     `;
   }
 
@@ -284,6 +296,7 @@ export class DevicesTab extends MobxLitElement {
       }}>
         ${groups}
       </div>
+      <device-control-details></device-control-details>
     `;
   }
 }
