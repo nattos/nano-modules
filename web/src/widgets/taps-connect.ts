@@ -96,6 +96,20 @@ export class WireConnect implements ColumnTaps {
     this.end();
   }
 
+  /** Complete a CLICK-mode connection onto a MIDI device control (the Devices
+   *  tab's surface hit zones). The device is always the wire's writer;
+   *  `controlId` is the full endpoint field, e.g. 'b0/e05/turn'. */
+  completeOnDeviceControl(deviceInstanceId: string, controlId: string) {
+    if (!this.state) return;
+    const info: FieldConnectInfo = {
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: true,
+      viewportY: this.state.pointerY, schemaDef: null,
+      deviceControl: { deviceInstanceId, controlId },
+    };
+    this.commit({ key: `device/${deviceInstanceId}/${controlId}`, info });
+    this.end();
+  }
+
   /** Complete a CLICK-mode connection onto a track/group LAYER endpoint (the
    *  arrangement's mixer strip / opacity fader). */
   completeOnLayer(ownerId: string, layerField: string = 'opacity') {
@@ -125,6 +139,15 @@ export class WireConnect implements ColumnTaps {
         viewportY: rr.top + rr.height / 2, schemaDef: null,
         triggerTrack: hit.dataset.triggerTrack,
         ...(hit.dataset.triggerScene ? { triggerScene: hit.dataset.triggerScene } : {}) };
+    }
+    // A MIDI device control (the Devices tab): always a wire SOURCE. Carries
+    // the device instance/template id + the endpoint field.
+    if (hit.dataset.deviceInstance && hit.dataset.deviceControl) {
+      const rr = hit.getBoundingClientRect();
+      return { sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: true,
+        viewportY: rr.top + rr.height / 2, schemaDef: null,
+        deviceControl: { deviceInstanceId: hit.dataset.deviceInstance,
+                         controlId: hit.dataset.deviceControl } };
     }
     // A track/group LAYER endpoint (the arrangement's mixer strip): carries the
     // owner id + which layer param it exposes.

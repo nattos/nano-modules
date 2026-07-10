@@ -9,7 +9,7 @@
  * the Effect IDE uses for its own Project Editor tab.
  */
 
-import { html, css } from 'lit';
+import { html, css, nothing } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
@@ -24,6 +24,8 @@ import './organize-tab';
 import './app-settings';
 import './reconcile-dialog';
 import './devices/devices-tab';
+import './devices/devices-float-monitor';
+import './devices/device-wire-overlay';
 
 @customElement('sketch-app')
 export class SketchApp extends MobxLitElement {
@@ -85,8 +87,14 @@ export class SketchApp extends MobxLitElement {
       `,
     };
 
+    const devicesActive =
+      (appState.local.userSettings.activeTab ?? 'edit') === 'devices';
     return html`
       <app-shell .config=${config}></app-shell>
+      ${devicesActive ? html`
+        <devices-float-monitor></devices-float-monitor>
+        <device-wire-overlay></device-wire-overlay>
+      ` : nothing}
       <snackbar-host></snackbar-host>
       <reconcile-dialog></reconcile-dialog>
     `;

@@ -1993,9 +1993,19 @@ export class AppController {
    */
   private connectDeviceWire(a: FieldConnectInfo, b: FieldConnectInfo) {
     if (a.deviceControl && b.deviceControl) return;   // device→device is meaningless
-    const device = (a.deviceControl ? a : b).deviceControl!;
+    const device = { ...(a.deviceControl ? a : b).deviceControl! };
     const reader = a.deviceControl ? b : a;
     if (reader.isOutput) return;                       // devices only drive inputs
+
+    // A gesture may start on a TEMPLATE card — the wire needs a real library
+    // instance, so this IS the template's "first edit": lazy-fork now.
+    if (!midiController.instance(device.deviceInstanceId)) {
+      try {
+        device.deviceInstanceId = midiController.ensureInstanceForEdit(device.deviceInstanceId).id;
+      } catch {
+        return;   // unknown device/template id — drop the gesture
+      }
+    }
 
     const sketchId = reader.sketchId;
     const sketch = appState.database.sketches[sketchId];

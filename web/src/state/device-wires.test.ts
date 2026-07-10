@@ -29,6 +29,12 @@ function seedSketch() {
         ],
       },
     } as any;
+    // connectWire lazy-forks unknown device ids (and DROPS unknown ids that
+    // aren't templates either) — the tests use a real library instance.
+    appState.local.midi.library = [{
+      id: 'dev-1', templateId: 'com.nano.midi.mft', parentId: 'com.nano.midi.mft',
+      forkedAt: 0, name: 'Test Twister', config: {}, identities: [], updatedAt: 0,
+    }];
   });
 }
 const wires = () => (appState.database.sketches.sk.wires ?? []) as any[];
@@ -36,6 +42,7 @@ const wires = () => (appState.database.sketches.sk.wires ?? []) as any[];
 afterEach(() => {
   runInAction(() => {
     appState.database.sketches = {} as any;
+    appState.local.midi.library = [];
   });
 });
 
@@ -63,6 +70,30 @@ describe('connectWire with a device endpoint', () => {
     appController.connectWire(deviceEnd('b1/e00/press'), field({ chainIdx: 0 }));
     expect(wires()).toHaveLength(1);
     expect(wires()[0].src.field).toBe('b1/e00/press');
+  });
+
+  it('lazy-forks a TEMPLATE source into a library instance on connect', () => {
+    seedSketch();
+    runInAction(() => { appState.local.midi.library = []; });
+    const end = field({
+      sketchId: '', chainIdx: -1, fieldPath: '',
+      deviceControl: { deviceInstanceId: 'com.nano.midi.mft', controlId: 'b0/e00/turn' },
+    });
+    appController.connectWire(end, field({ chainIdx: 0, fieldPath: 'brightness' }));
+    const lib = appState.local.midi.library;
+    expect(lib).toHaveLength(1);
+    expect(lib[0].parentId).toBe('com.nano.midi.mft');
+    expect(wires()[0].src.instanceKey).toBe(`midi:${lib[0].id}`);
+  });
+
+  it('drops gestures from ids that are neither instances nor templates', () => {
+    seedSketch();
+    const end = field({
+      sketchId: '', chainIdx: -1, fieldPath: '',
+      deviceControl: { deviceInstanceId: 'garbage-id', controlId: 'b0/e00/turn' },
+    });
+    appController.connectWire(end, field({ chainIdx: 0, fieldPath: 'brightness' }));
+    expect(wires()).toHaveLength(0);
   });
 
   it('rejects device→device and device→output connections', () => {

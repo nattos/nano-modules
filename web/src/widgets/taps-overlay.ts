@@ -20,6 +20,7 @@ import { appController, wireSelectablePath } from '../state/controller';
 import type { Sketch } from '../sketch-types';
 import { sketchChain } from '../sketch-types';
 import { layoutFloaters, type Floater } from './floating-layout';
+import { fieldHitIn, fieldOptionPipIn } from './field-anchor-lookup';
 import { tapsConnect } from './taps-connect';
 import './spark-chart';
 
@@ -224,13 +225,7 @@ export class TapsOverlay extends MobxLitElement {
   /** The field's option pip in the gutter (anchor for the card). */
   private fieldOptionPip(fieldKey: string): HTMLElement | null {
     const cvRoot = this.columnsRoot();
-    if (!cvRoot) return null;
-    for (const g of cvRoot.querySelectorAll('column-group')) {
-      const el = (g as HTMLElement).shadowRoot?.querySelector(
-        `.field-option-pip[data-field-key="${fieldKey}"]`) as HTMLElement | null;
-      if (el) return el;
-    }
-    return null;
+    return cvRoot ? fieldOptionPipIn(cvRoot, fieldKey) : null;
   }
 
   /**
@@ -371,14 +366,7 @@ export class TapsOverlay extends MobxLitElement {
   /** The tap-port hit-box element for a field key `<sketch>/<col>/<chain>/<field>`. */
   private fieldHit(key: string): HTMLElement | null {
     const cvRoot = this.columnsRoot();
-    if (!cvRoot) return null;
-    const [, colStr, chainStr, ...fp] = key.split('/');
-    const sel = `.tap-overlay-hit[data-col-idx="${colStr}"][data-chain-idx="${chainStr}"][data-field-path="${fp.join('/')}"]`;
-    for (const g of cvRoot.querySelectorAll('column-group')) {
-      const hit = (g as HTMLElement).shadowRoot?.querySelector(sel) as HTMLElement | null;
-      if (hit) return hit;
-    }
-    return null;
+    return cvRoot ? fieldHitIn(cvRoot, key) : null;
   }
 
   private position() {

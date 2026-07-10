@@ -24,9 +24,11 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { midiController } from '../../state/midi-controller';
 import { getDeviceTemplate } from '../../midi/device-registry';
-import type { DeviceControlDef, DeviceTemplate } from '../../midi/midi-types';
+import type { ControlGesture, DeviceControlDef, DeviceTemplate } from '../../midi/midi-types';
+import type { FieldConnectInfo } from '../../sketch-types';
+import { tapsConnect, WireConnect } from '../../widgets/taps-connect';
+import { DeviceAnchorKeys, setDeviceAnchor } from './device-anchors';
 import { devicesUi } from './devices-ui';
-import type { DeviceEncoder } from './device-encoder';
 
 import './device-encoder';
 import './device-slider';
@@ -69,6 +71,40 @@ export class DeviceSurface extends MobxLitElement {
       right: 2px;
       bottom: 2px;
       z-index: 2;
+    }
+
+    /* --- W wire-mode hit zones (sources) --- */
+    /* Same visual language as column-group's tap ports, output-colored (a
+       device control is always a wire SOURCE). Stacked above the widgets so
+       they own the pointer while wire mode is on. */
+    .tap-overlay-hit {
+      position: absolute;
+      z-index: 3;
+      box-sizing: border-box;
+      border: 1px dashed var(--app-io-output, #ff8c00);
+      background: rgba(255, 140, 0, 0.07);
+      cursor: crosshair;
+    }
+    .tap-overlay-hit:hover,
+    .tap-overlay-hit[tap-drop-target] {
+      border-style: solid;
+      background: rgba(255, 140, 0, 0.18);
+    }
+    .hit-turn { border-radius: 50%; }
+    .hit-press {
+      border-radius: 50%;
+      background: rgba(255, 140, 0, 0.12);
+    }
+    .hit-shift {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px; height: 14px;
+      font-size: 9px;
+      line-height: 1;
+      color: var(--app-io-output, #ff8c00);
+      background: var(--app-bg-color2);
+      border-radius: 50%;
     }
   `;
 
@@ -156,6 +192,75 @@ export class DeviceSurface extends MobxLitElement {
     return template.layout.controls.filter(c => c.bank === undefined || c.bank === bank);
   }
 
+  // --- W wire-mode hit zones ---
+
+  private connectInfo(endpoint: string, el: HTMLElement): FieldConnectInfo {
+    const r = el.getBoundingClientRect();
+    return {
+      sketchId: '', colIdx: -1, chainIdx: -1, fieldPath: '', isOutput: true,
+      viewportY: r.top + r.height / 2, schemaDef: null,
+      deviceControl: { deviceInstanceId: this.deviceId, controlId: endpoint },
+    };
+  }
+
+  private onHitPointerDown(e: PointerEvent, endpoint: string) {
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    tapsConnect.beginFromFieldDrag(
+      e, el, '', `device/${this.deviceId}/${endpoint}`, this.connectInfo(endpoint, el));
+  }
+
+  private onHitClick(e: MouseEvent, endpoint: string) {
+    e.stopPropagation();
+    if (tapsConnect.consumeClickSuppression()) return;
+    // A gesture in flight completes here (the device is the writer);
+    // otherwise the click PICKS UP this control as the source.
+    if (WireConnect.active) {
+      WireConnect.active.completeOnDeviceControl(this.deviceId, endpoint);
+      return;
+    }
+    const el = e.currentTarget as HTMLElement;
+    tapsConnect.beginFromFieldClick(
+      '', `device/${this.deviceId}/${endpoint}`, this.connectInfo(endpoint, el));
+  }
+
+  /** Hit zones for one control: turn = the dial annulus, press = the center
+   *  disc, shift = a small satellite pip at the cell's top-right. */
+  private renderHitZones(def: DeviceControlDef) {
+    const zones = [];
+    const pct = (v: number) => `${(v * 100).toFixed(3)}%`;
+    const mk = (gesture: ControlGesture, cls: string, style: string, label = '') => {
+      const endpoint = `${def.id}/${gesture}`;
+      return html`
+        <div class="tap-overlay-hit ${cls}" style=${style}
+          data-endpoint=${endpoint}
+          data-device-instance=${this.deviceId}
+          data-device-control=${endpoint}
+          title="${def.id} · ${gesture}"
+          @pointerdown=${(e: PointerEvent) => this.onHitPointerDown(e, endpoint)}
+          @click=${(e: MouseEvent) => this.onHitClick(e, endpoint)}
+        >${label}</div>`;
+    };
+    for (const gesture of def.gestures) {
+      switch (gesture) {
+        case 'turn':
+          zones.push(mk('turn', 'hit-turn',
+            `left:${pct(def.x)}; top:${pct(def.y)}; width:${pct(def.w)}; height:${pct(def.h)};`));
+          break;
+        case 'press':
+          zones.push(mk('press', 'hit-press',
+            `left:${pct(def.x + def.w * 0.28)}; top:${pct(def.y + def.h * 0.28)}; ` +
+            `width:${pct(def.w * 0.44)}; height:${pct(def.h * 0.44)};`));
+          break;
+        case 'shift':
+          zones.push(mk('shift', 'hit-shift',
+            `left: calc(${pct(def.x + def.w)} - 8px); top: calc(${pct(def.y)} - 6px);`, '⇧'));
+          break;
+      }
+    }
+    return zones;
+  }
+
   // --- Render ---
 
   private renderControl(def: DeviceControlDef) {
@@ -227,6 +332,9 @@ export class DeviceSurface extends MobxLitElement {
           if (!devicesUi.defineMode) e.stopPropagation();
         }}>
         ${this.shownControls().map(def => this.renderControl(def))}
+        ${this.interactive && appState.local.tappingMode
+          ? this.shownControls().map(def => this.renderHitZones(def))
+          : nothing}
         ${layout.banks > 1 ? html`
           <device-bank-switcher class="banks"
             .banks=${layout.banks}
@@ -244,6 +352,11 @@ export class DeviceSurface extends MobxLitElement {
       this.widgets.set(el.getAttribute('data-control-id')!, el as LiveWidget);
     }
     this.pushLiveValues();
+    // Register the W-mode hit zones as wire anchors (self-pruning rects).
+    for (const el of this.renderRoot.querySelectorAll('[data-endpoint]')) {
+      setDeviceAnchor(
+        DeviceAnchorKeys.control(this.deviceId, el.getAttribute('data-endpoint')!), el);
+    }
   }
 }
 
