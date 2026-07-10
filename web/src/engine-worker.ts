@@ -242,11 +242,21 @@ function markDirty() { stateGeneration++; }
 async function processQueue() {
   if (processing) return;
   processing = true;
-  while (pendingCommands.length > 0) {
-    const cmd = pendingCommands.shift()!;
-    await handleCommand(cmd);
+  try {
+    while (pendingCommands.length > 0) {
+      const cmd = pendingCommands.shift()!;
+      // A command that throws must not wedge the queue: every live edit
+      // (setParam etc.) rides it, and with `processing` stuck true the
+      // worker would silently ignore ALL further commands until reload.
+      try {
+        await handleCommand(cmd);
+      } catch (e) {
+        console.error(`[engine-worker] command '${cmd.type}' failed:`, e);
+      }
+    }
+  } finally {
+    processing = false;
   }
-  processing = false;
 }
 
 async function handleCommand(cmd: WorkerCommand) {

@@ -343,7 +343,11 @@ export class TextEngine {
   /** Resolves to the engine once init completes (or null if init never started).
    *  Lets late arrivals — e.g. a registerFont message that races init — wait. */
   static whenReady(): Promise<TextEngine | null> {
-    return G.__textEngineInit ?? Promise.resolve(G.__textEngine ?? null);
+    // If init failed, __textEngineInit is a REJECTED promise cached forever —
+    // surface that as null rather than re-throwing into every later awaiter
+    // (a throwing awaiter in the worker's command queue would wedge it).
+    return (G.__textEngineInit ?? Promise.resolve(G.__textEngine ?? null))
+      .catch(() => null);
   }
 
   // Host hook: invoked (once per face key, via ensureFontsForSpec) when a spec
