@@ -30,6 +30,8 @@ export function defaultUserSettings(): UserSettings {
     barrelRemoteEnabled: true,
     lastLiveInstanceKey: null,
     lastCompositionBarrelIds: [],
+    deviceFilters: { connected: true, disconnected: true, templates: true, deleted: false },
+    devicesMonitorHeight: 180,
   };
 }
 

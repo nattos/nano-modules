@@ -23,6 +23,7 @@ import '../widgets/snackbars';
 import './organize-tab';
 import './app-settings';
 import './reconcile-dialog';
+import './devices/devices-tab';
 
 @customElement('sketch-app')
 export class SketchApp extends MobxLitElement {
@@ -56,11 +57,24 @@ export class SketchApp extends MobxLitElement {
           ></sketch-column-editor>
         `,
         },
+        {
+          // Devices keeps the sketch editor in the left panel (same instance
+          // as Edit — W-mode wires drag between device controls and editor
+          // fields); the device grid replaces the monitor AREA, and the main
+          // output pops out to the floating overlay rendered below.
+          id: 'devices', icon: 'la-sliders-h', title: 'Devices', kind: 'inline', render: () => html`
+          <sketch-column-editor
+            .sketchId=${sketchId}
+            emptyMessage="No sketch selected for editing. Go to Instances and pick one."
+          ></sketch-column-editor>
+        `,
+          renderRight: () => html`<devices-tab></devices-tab>`,
+        },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
       activeTabSettingKey: 'activeTab',
       panelWidthSettingKey: 'editLeftPanelWidth',
-      onSelectTab: (id) => appController.setActiveTab(id as 'organize' | 'edit' | 'settings'),
+      onSelectTab: (id) => appController.setActiveTab(id as 'organize' | 'edit' | 'devices' | 'settings'),
       renderMonitor: () => html`
         <sketch-monitor
           .sketchId=${sketchId}

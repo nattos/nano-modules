@@ -24,6 +24,14 @@ import './splitter';
 
 export interface ShellTabConfig extends AppTabDef {
   render: () => TemplateResult | typeof nothing;
+  /**
+   * 'inline' tabs only: replaces the shared `renderMonitor()` content in the
+   * right panel while this tab is active (the left panel + splitter stay).
+   * Used by tabs that take over the monitor AREA but still need the left
+   * editor panel alive (e.g. Devices, whose W-mode wires drag between the
+   * device grid and the editor's fields).
+   */
+  renderRight?: () => TemplateResult;
 }
 
 export interface ShellConfig {
@@ -117,7 +125,7 @@ export class AppShell extends MobxLitElement {
           <div class="left-panel" style="width: ${width}px">${active?.render() ?? nothing}</div>
           <ide-splitter .width=${width} @resize=${onResize}></ide-splitter>
           <div class="right-panel">
-            ${cfg.renderMonitor()}
+            ${active?.renderRight?.() ?? cfg.renderMonitor()}
             ${cfg.renderStatus?.() ?? nothing}
           </div>
         `}

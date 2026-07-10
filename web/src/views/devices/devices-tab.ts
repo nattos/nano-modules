@@ -1,0 +1,295 @@
+/**
+ * <devices-tab> — the MIDI device library/manager. Occupies the app-shell's
+ * monitor AREA (the sketch editor stays in the left panel; the main output
+ * pops out to <devices-float-monitor>).
+ *
+ * Groups, gated by the persisted `deviceFilters` toggles in the header:
+ *   CONNECTED    — instances with a live port pair, plus ghost placeholders
+ *                  for plugged-in-but-unknown ports (not forkable).
+ *   DISCONNECTED — user forks with no matching port.
+ *   TEMPLATES    — code-registered factory originals.
+ *   DELETED      — soft-deleted forks (restorable; off by default).
+ *
+ * DEFINE MODE (entered via the unknown-device snackbar): everything that
+ * can't be forked dims out; clicking a template/fork forks it and claims the
+ * unknown port for the new instance. Esc / the banner button cancels.
+ */
+
+import { html, css, nothing } from 'lit';
+import { customElement } from 'lit/decorators.js';
+import { MobxLitElement } from '../../mobx-lit-element';
+import { appState } from '../../state/app-state';
+import { appController } from '../../state/controller';
+import { midiController } from '../../state/midi-controller';
+import { allDeviceTemplates } from '../../midi/device-registry';
+import type { DeviceInstance, DeviceTemplate, PhysicalIdentity } from '../../midi/midi-types';
+import { devicesUi } from './devices-ui';
+
+import './device-card';
+
+const FILTER_LABELS = {
+  connected: 'connected',
+  disconnected: 'disconnected',
+  templates: 'templates',
+  deleted: 'deleted',
+} as const;
+type FilterKey = keyof typeof FILTER_LABELS;
+
+@customElement('devices-tab')
+export class DevicesTab extends MobxLitElement {
+  static styles = css`
+    :host {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+      color: var(--app-text-color1);
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: var(--app-sp-4);
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--app-tint-3);
+      background: var(--app-bg-color2);
+    }
+    .title {
+      font-size: var(--app-fs-lg);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--app-text-color2);
+    }
+    .spacer { flex: 1; }
+    .chip {
+      font: inherit;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      background: none;
+      border: 1px solid var(--app-tint-3);
+      border-radius: 1px;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .chip:hover { border-color: var(--app-tint-5); }
+    .chip[data-on] {
+      color: var(--app-text-color1);
+      border-color: var(--app-hi-color2);
+      background: rgba(65, 105, 225, 0.12);
+    }
+    .define-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--app-sp-4);
+      padding: 6px 16px;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color1);
+      background: rgba(65, 105, 225, 0.14);
+      border-bottom: 1px solid var(--app-hi-color2);
+    }
+    .define-bar .cancel {
+      font: inherit;
+      color: var(--app-text-color2);
+      background: none;
+      border: 1px solid var(--app-tint-4);
+      border-radius: 1px;
+      padding: 1px 8px;
+      cursor: pointer;
+    }
+    .define-bar .cancel:hover { border-color: var(--app-tint-5); color: var(--app-text-color1); }
+    .scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: var(--app-sp-6);
+    }
+    .group-label {
+      font-size: var(--app-fs-xs);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--app-text-color2);
+      margin-bottom: 6px;
+    }
+    .cards {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--app-sp-4);
+      align-items: flex-start;
+    }
+    .empty-note {
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      border: 1px dashed var(--app-tint-3);
+      border-radius: 1px;
+      padding: 10px 12px;
+    }
+    .enable {
+      font: inherit;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color1);
+      background: none;
+      border: 1px dashed var(--app-tint-4);
+      border-radius: 1px;
+      padding: 2px 10px;
+      cursor: pointer;
+    }
+    .enable:hover { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
+  `;
+
+  private readonly onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && devicesUi.defineMode) {
+      e.preventDefault();
+      devicesUi.exitDefineMode();
+    }
+  };
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('keydown', this.onKeyDown);
+    // First visit is the permission-prompt moment when the library is empty
+    // (boot already initialized when devices exist).
+    void midiController.initMidi();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('keydown', this.onKeyDown);
+  }
+
+  private toggleFilter(key: FilterKey) {
+    const current = appState.local.userSettings.deviceFilters;
+    appController.setUserSetting('deviceFilters', { ...current, [key]: !current[key] });
+  }
+
+  private onCardClick(id: string, forkable: boolean) {
+    const define = devicesUi.defineMode;
+    if (define) {
+      if (!forkable) return;
+      const fork = midiController.forkAndClaim(id, define);
+      devicesUi.exitDefineMode();
+      devicesUi.selectCard(fork.id);
+      return;
+    }
+    devicesUi.selectCard(devicesUi.selectedCardId === id ? null : id);
+  }
+
+  private renderInstanceCard(instance: DeviceInstance, status: 'connected' | 'disconnected' | 'deleted') {
+    const define = devicesUi.defineMode !== null;
+    const forkable = define && !instance.deleted;
+    return html`
+      <device-card
+        .name=${instance.name}
+        .subtitle=${''}
+        .status=${status}
+        ?selected=${devicesUi.selectedCardId === instance.id}
+        ?forkable=${forkable}
+        ?dimmed=${define && !forkable}
+        @click=${() => this.onCardClick(instance.id, forkable)}
+      ></device-card>
+    `;
+  }
+
+  private renderTemplateCard(template: DeviceTemplate) {
+    const define = devicesUi.defineMode !== null;
+    return html`
+      <device-card
+        .name=${template.name}
+        .subtitle=${template.vendor}
+        .status=${'template'}
+        ?selected=${devicesUi.selectedCardId === template.templateId}
+        ?forkable=${define}
+        @click=${() => this.onCardClick(template.templateId, define)}
+      ></device-card>
+    `;
+  }
+
+  private renderGhostCard(port: PhysicalIdentity) {
+    // Plugged in but unknown — a placeholder, never forkable (you fork a
+    // template/instance FOR it in define mode).
+    return html`
+      <device-card
+        .name=${port.name || 'Unknown device'}
+        .subtitle=${port.manufacturer}
+        .status=${'ghost'}
+        ?dimmed=${devicesUi.defineMode !== null}
+      ></device-card>
+    `;
+  }
+
+  render() {
+    const midi = appState.local.midi;
+    const filters = appState.local.userSettings.deviceFilters;
+    const define = devicesUi.defineMode;
+
+    const live = midi.library.filter(i => !i.deleted);
+    const connected = live.filter(i => midi.connected[i.id]);
+    const disconnected = live.filter(i => !midi.connected[i.id]);
+    const deleted = midi.library.filter(i => i.deleted);
+    const templates = allDeviceTemplates();
+
+    const groups = [
+      filters.connected ? html`
+        <div>
+          <div class="group-label">Connected</div>
+          <div class="cards">
+            ${connected.map(i => this.renderInstanceCard(i, 'connected'))}
+            ${midi.unknownPorts.map(p => this.renderGhostCard(p))}
+            ${connected.length === 0 && midi.unknownPorts.length === 0
+              ? html`<div class="empty-note">No devices detected.
+                  ${midiController.manager.initialized ? nothing : html`
+                    <button class="enable" @click=${() => midiController.initMidi()}>enable MIDI access</button>`}
+                </div>`
+              : nothing}
+          </div>
+        </div>` : nothing,
+      filters.disconnected && disconnected.length > 0 ? html`
+        <div>
+          <div class="group-label">Your devices — disconnected</div>
+          <div class="cards">${disconnected.map(i => this.renderInstanceCard(i, 'disconnected'))}</div>
+        </div>` : nothing,
+      filters.templates ? html`
+        <div>
+          <div class="group-label">Templates</div>
+          <div class="cards">${templates.map(t => this.renderTemplateCard(t))}</div>
+        </div>` : nothing,
+      filters.deleted && deleted.length > 0 ? html`
+        <div>
+          <div class="group-label">Deleted</div>
+          <div class="cards">${deleted.map(i => this.renderInstanceCard(i, 'deleted'))}</div>
+        </div>` : nothing,
+    ];
+
+    return html`
+      <div class="header">
+        <div class="title">Devices</div>
+        <div class="spacer"></div>
+        ${(Object.keys(FILTER_LABELS) as FilterKey[]).map(key => html`
+          <button class="chip" ?data-on=${filters[key]} @click=${() => this.toggleFilter(key)}>
+            ${FILTER_LABELS[key]}
+          </button>
+        `)}
+      </div>
+      ${define ? html`
+        <div class="define-bar">
+          <span>Defining «${define.name || 'unknown device'}» — pick a device or template to fork</span>
+          <div class="spacer"></div>
+          <button class="cancel" @click=${() => devicesUi.exitDefineMode()}>cancel (Esc)</button>
+        </div>` : nothing}
+      <div class="scroll" @click=${(e: Event) => {
+        if (e.target === e.currentTarget) devicesUi.clearSelection();
+      }}>
+        ${groups}
+      </div>
+    `;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'devices-tab': DevicesTab;
+  }
+}

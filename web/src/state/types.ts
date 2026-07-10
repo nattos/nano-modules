@@ -172,8 +172,16 @@ export interface UserSettings {
   scrollPositions: Record<string, number>;
   /** Whether the engine is paused. */
   paused: boolean;
-  /** Resolume sketch-IDE: last active top tab (create/organize/edit/settings). */
-  activeTab: 'create' | 'organize' | 'edit' | 'settings';
+  /** Resolume sketch-IDE: last active top tab (create/organize/edit/devices/settings). */
+  activeTab: 'create' | 'organize' | 'edit' | 'devices' | 'settings';
+  /**
+   * Devices-tab group filters — which sections of the MIDI device library
+   * show: connected units, disconnected user forks, factory templates, and
+   * soft-deleted instances (kept around for wire provenance / restore).
+   */
+  deviceFilters: { connected: boolean; disconnected: boolean; templates: boolean; deleted: boolean };
+  /** Height (px) of the Devices tab's floating output monitor (aspect-locked). */
+  devicesMonitorHeight: number;
   /**
    * Which of the three top-level surfaces this session prefers. Set at boot
    * time to reflect the actual surface (see `boot.ts`); changed explicitly via
@@ -303,7 +311,7 @@ export interface EngineStatus {
 }
 
 export interface LocalState {
-  activeTab: 'organize' | 'edit' | 'settings';
+  activeTab: 'organize' | 'edit' | 'devices' | 'settings';
   plugins: PluginInfo[];
   availableEffects: AvailableEffect[];
   editingSketchId: string | null;
