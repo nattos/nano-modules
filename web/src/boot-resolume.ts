@@ -26,6 +26,7 @@ import {
 } from './resolume-mode';
 import { startBarrelProbe } from './barrel-probe';
 import { installModeOffers } from './live-offers';
+import { installDeviceDefineOffers } from './views/devices/define-offer';
 import { traceController } from './state/trace-controller';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
@@ -64,6 +65,9 @@ function forceOfflineFlag(): boolean {
  */
 export async function bootResolume(mode: 'barrel' | 'playground', barrelUrl: string): Promise<void> {
   document.body.appendChild(document.createElement('sketch-app'));
+  // Unknown-MIDI-device → "define it" snackbar. Installed once for every
+  // <sketch-app> surface (the Devices tab lives here, not in the effect IDE).
+  installDeviceDefineOffers();
 
   if (mode === 'playground') {
     await bootPlaygroundMode(barrelUrl);
