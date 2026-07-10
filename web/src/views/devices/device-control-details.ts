@@ -72,6 +72,27 @@ export class DeviceControlDetails extends MobxLitElement {
       padding: 1px 4px;
     }
     input:focus, select:focus { outline: none; border-color: var(--app-hi-color2); }
+    /* Device color values are a 0..127 hue wheel — pick on a hue strip. */
+    input[type='range'].hue {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 10px;
+      border: 1px solid var(--app-tint-3);
+      border-radius: 1px;
+      background: linear-gradient(to right,
+        hsl(0,75%,55%), hsl(60,75%,55%), hsl(120,75%,55%), hsl(180,75%,55%),
+        hsl(240,75%,55%), hsl(300,75%,55%), hsl(330,75%,55%));
+    }
+    input[type='range'].hue::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 6px;
+      height: 14px;
+      background: var(--app-text-color1);
+      border: 1px solid var(--app-bg-color1);
+      border-radius: 1px;
+      cursor: ew-resize;
+    }
     .swatch {
       width: 14px; height: 14px;
       border: 1px solid var(--app-tint-4);
@@ -141,6 +162,21 @@ export class DeviceControlDetails extends MobxLitElement {
     `;
   }
 
+  /** 0..127 hue-wheel picker. Commits on every input — the LED follows the
+   *  drag live (config edits re-render device output; persistence is
+   *  debounced by the controller). */
+  private hueSlider(gesture: ControlGesture, key: 'ringColor' | 'capColor', value: number | undefined) {
+    return html`
+      <input type="range" class="hue" min="0" max="127" .value=${String(value ?? 0)}
+        @input=${(e: Event) => {
+          const v = Math.min(127, Math.max(0, Math.round(Number((e.target as HTMLInputElement).value))));
+          this.commit(gesture, { [key]: v });
+        }}
+      />
+      <div class="swatch" style="background:${deviceColorCss(value, 'transparent')}"></div>
+    `;
+  }
+
   private gestureRows(gesture: ControlGesture) {
     const primary = devicesUi.selectedControls[0];
     const mapping = this.mappingOf(primary.deviceId, primary.controlId, gesture);
@@ -181,13 +217,11 @@ export class DeviceControlDetails extends MobxLitElement {
       ${gesture === 'turn' ? html`
         <div class="row">
           <label>Ring color</label>
-          ${this.numberInput(gesture, 'ringColor', mapping.ringColor ?? 0, 127, '')}
-          <div class="swatch" style="background:${deviceColorCss(mapping.ringColor, 'transparent')}"></div>
+          ${this.hueSlider(gesture, 'ringColor', mapping.ringColor)}
         </div>
         <div class="row">
           <label>Cap color</label>
-          ${this.numberInput(gesture, 'capColor', mapping.capColor ?? 0, 127, '')}
-          <div class="swatch" style="background:${deviceColorCss(mapping.capColor, 'transparent')}"></div>
+          ${this.hueSlider(gesture, 'capColor', mapping.capColor)}
         </div>` : nothing}
     `;
   }
