@@ -50,13 +50,16 @@ cbuffer Uniforms : register(b2) {
   uint   u_forward_steps;             // floor of the Y-axis "forward" step clock (live)
   float  u_forward_frac;              // its fractional part
   uint   u_debug;                     // overlay spawn-cell grid
-  float  u_anim_jitter;               // phase spread: 0 = lock-step, 1 = fully staggered
+  float  u_anim_jitter;               // step-instant spread: 0 = quantized (ticks
+                                      // aligned), 1 = spread. Phase is ALWAYS staggered.
   // Per-cycle captured snapshots — [0]=current cycle, [1]=previous cycle. Every
   // visible wave sits in one of these two cycles; it reads its latched values here.
   float  u_dens_cur,  u_dens_prev;    // density captured at that cycle's start
   float  u_back_cur,  u_back_prev;    // backwards
   float  u_djit_cur,  u_djit_prev;    // X-drift sub-step jitter
   float  u_fjit_cur,  u_fjit_prev;    // Y-forward sub-step jitter
+  float  u_t0_cur,    u_t0_prev;      // type cumulative thresholds (weights): <t0 dot,
+  float  u_t1_cur,    u_t1_prev;      //   <t1 omega, else spiral
 };
 
 // ---------------------------------------------------------------------------
@@ -79,45 +82,46 @@ cbuffer Uniforms : register(b2) {
 #define PO_CYCLE_LEN 16u
 
 static const uint PO_ACT_LEN[3]    = { 12u, 12u, 8u };  // dot, omega, spiral
-static const uint PO_FRAME_BASE[3] = { 0u, 2u, 5u };    // dot 2, omega 3, spiral 8
+static const uint PO_FRAME_BASE[3] = { 0u, 3u, 6u };    // dot 3, omega 3, spiral 8
 static const uint PO_BOX_W[3]      = { 8u, 8u, 4u };    // per-type sprite box width
 static const uint PO_BOX_H[3]      = { 4u, 4u, 8u };    //              …    height
 
-static const uint PO_SPRITES[13] = {
-  // type 0 — dot line (8×4): a two-pixel fleck lapping one pixel along travel.
-  //   f0 ........   f1 ........
-  //      ...##...      ........
-  //      ........      ...##...
-  //      ........      ........
-  0x00001800u, 0x00180000u,
-  // type 1 — omega crest (8×4): a two-hump wavelet that breathes wider/flatter
-  // ↔ narrower/peakier. Ping-pongs flat → normal → sharp → normal.
-  //   flat ........  normal ........  sharp ..#..#..
-  //        .#....#.         ..#..#..        ..#..#..
-  //        #.#..#.#         .#.##.#.        ..####..
+static const uint PO_SPRITES[14] = {
+  // type 0 — dot (8×4): a two-pixel fleck that blinks to a single dot and splits
+  // into two dots with a 2px gap. Ping-pongs pair → one → split → one.
+  //   pair ........  one ........  split ........
+  //        ...##...      ...#....        ..#..#..
+  //        ........      ........        ........
+  //        ........      ........        ........
+  0x00001800u, 0x00000800u, 0x00002400u,
+  // type 1 — omega crest (8×4): the classic two-hump "w" (2px-wide peaks) that
+  // breathes flat → normal → sharp (peaks raised a row). Ping-pongs 0,1,2,1.
+  //   flat ........  normal ........  sharp .##.##..
+  //        .##..##.         .##.##..        .##.##..
+  //        #..##..#         #..#..#.        #..#..#.
   //        ........         ........        ........
-  0x00A54200u, 0x005A2400u, 0x003C2424u,
-  // type 2 — spiral / wind curl (4×8, VERTICAL): forward travels UP, so the loop
-  // leads at the TOP and the stem trails DOWNWARD behind it. Frames unroll the
-  // loop and draw the stem out. bit = y*4 + x.
-  //   f0 ....  f1 .##.  f2 .##.  f3 .##.
-  //      .##.     #..#     #..#     #..#
-  //      #...     #..#     #..#     #..#
-  //      .#..     .##.     .##.     .###
+  0x00996600u, 0x00493600u, 0x00493636u,
+  // type 2 — spiral / wind curl (4×8, VERTICAL): forward travels UP, so the coil
+  // leads at the TOP and the stem trails DOWNWARD. An inward SWIRL (open coil,
+  // not a closed ring) that unrolls and draws its stem out. bit = y*4 + x.
+  //   f0 .#..  f1 .##.  f2 .##.  f3 .##.
+  //      ##..     #..#     #..#     #..#
+  //      ....     ##..     ##.#     ##.#
+  //      ....     ....     ...#     ...#
   //      ....     ....     ..#.     ..#.
   //      ....     ....     ....     ..#.
   //      ....     ....     ....     ....
   //      ....     ....     ....     ....
-  0x00002160u, 0x00006996u, 0x00046996u, 0x0044E996u,
-  //   f4 .##.  f5 ..#.  f6 ....  f7 ....
-  //      #..#     .#.#     ..##     ....
-  //      ...#     ...#     ...#     ....
-  //      .###     ..#.     ..#.     ..#.
+  0x00000032u, 0x00000396u, 0x00048B96u, 0x00448B96u,
+  //   f4 .##.  f5 .#..  f6 ....  f7 ....
+  //      #..#     #.#.     .##.     ....
+  //      ##.#     .##.     ...#     ....
+  //      ...#     ...#     ..#.     ..#.
   //      ..#.     ..#.     ..#.     ..#.
   //      ..#.     ..#.     ..#.     ..#.
   //      ..#.     ..#.     ..#.     ..#.
   //      ....     ..#.     ..#.     ..#.
-  0x0444E896u, 0x444448A4u, 0x444448C0u, 0x44444000u,
+  0x04448B96u, 0x44448652u, 0x44444860u, 0x44444000u,
 };
 
 // Hash streams. Effective stream id = base*2 + dir_bit, so the forward and
@@ -152,14 +156,19 @@ int po_div_floor(int a, int b) {
   return q;
 }
 
-// The cell's place in the phase clock. Each cell has a fixed phase offset
-// φ ∈ [0,1) cycle (hashed, scaled by the anim jitter) that staggers when it
-// ticks over. Subtracting φ from the global phase gives this cell's own cycle
-// index + its fractional position in that cycle. Because φ < 1, a cell is always
-// in either the current global cycle (u_cyc_index) or the previous one — which
-// is exactly why two captured snapshots suffice.
+// The cell's place in the phase clock. Each cell has a fixed phase offset φ that
+// staggers when it spawns/steps. The offset ALWAYS carries a whole-step part
+// (so spawn times are always staggered, even at jitter 0); the anim jitter only
+// scales the SUB-step part, which is what decides whether every wave's step
+// transitions land on the same globally-quantized instants (jitter 0 → the sub
+// part is dropped, so subtracting φ shifts by whole steps and the transition
+// instant stays global) or spread out onto per-wave instants (jitter 1). Either
+// way each wave is born/decays at its own step boundary, staggered from its
+// neighbours. Because φ < 1 cycle, a cell is always in either the current global
+// cycle or the previous one — which is why two captured snapshots suffice.
 void po_cell_cycle(int cx, int cy, uint dir, out uint cyc, out uint step) {
-  float phi = po_hash01(cx, cy, 0u, PO_S_ANIM * 2u + dir) * u_anim_jitter;  // [0,1)
+  float phs = po_hash01(cx, cy, 0u, PO_S_ANIM * 2u + dir) * float(PO_CYCLE_LEN); // [0,CYCLE_LEN)
+  float phi = (floor(phs) + frac(phs) * u_anim_jitter) / float(PO_CYCLE_LEN);    // [0,1)
   float f;
   if (u_cyc_frac >= phi) { cyc = u_cyc_index;      f = u_cyc_frac - phi; }
   else                   { cyc = u_cyc_index - 1u; f = u_cyc_frac - phi + 1.0; }
@@ -179,6 +188,8 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   float back = cur ? u_back_cur : u_back_prev;
   float djit = cur ? u_djit_cur : u_djit_prev;
   float fjit = cur ? u_fjit_cur : u_fjit_prev;
+  float t0   = cur ? u_t0_cur   : u_t0_prev;
+  float t1   = cur ? u_t1_cur   : u_t1_prev;
 
   // Existence gates per (cell, cycle) against the density/backwards CAPTURED at
   // this cell's cycle start — so a live density/backwards change only affects
@@ -186,8 +197,9 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   float p = (dir == 0u) ? dens * (1.0 - back) : dens * back;
   if (po_hash01(cx, cy, cycle, PO_S_GATE * 2u + dir) >= p) return false;
 
+  // Type by the captured per-shape weights (t0/t1 partition [0,1)).
   float th = po_hash01(cx, cy, cycle, PO_S_TYPE * 2u + dir);
-  uint type = th < 0.45 ? 0u : (th < 0.80 ? 1u : 2u);   // dot / omega / spiral
+  uint type = th < t0 ? 0u : (th < t1 ? 1u : 2u);       // dot / omega / spiral
   if (step >= PO_ACT_LEN[type]) return false;           // rest gap
 
   // Anchor: stratified-jittered inside the cell (re-rolled each cycle), plus
@@ -215,9 +227,8 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   uint by = (dir == 0u) ? uint(dy) : uint(H - 1 - dy);
 
   uint frame;
-  if      (type == 0u) frame = step & 1u;                             // dot: 2-frame lap
-  else if (type == 1u) { uint m = step % 4u; frame = (m == 3u) ? 1u : m; }  // omega ping-pong
-  else                 frame = step;                                  // spiral: play once
+  if (type == 2u) frame = step;                          // spiral: play its 8 once
+  else { uint m = step % 4u; frame = (m == 3u) ? 1u : m; } // dot/omega ping-pong 0,1,2,1
   uint bits = PO_SPRITES[PO_FRAME_BASE[type] + frame];
   return ((bits >> (by * uint(W) + bx)) & 1u) != 0u;
 }

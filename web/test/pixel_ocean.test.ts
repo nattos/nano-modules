@@ -231,6 +231,48 @@ describe('Pixel Ocean', () => {
   // A native Catch2 test (SketchExecutor supports live config changes) would be
   // the right committed home for it.
 
+  it('spawns stay staggered even at anim_jitter 0 (sea never all-empty)', async () => {
+    // Phase is always staggered, so at any instant cells sit at all points of
+    // the cycle: births and rest-gaps are spread out and the sea never blinks
+    // empty. Sample coverage across a whole cycle — it must never drop to ~0
+    // (old lockstep-at-jitter-0 would empty during the global rest gap).
+    let minCov = 1;
+    for (const ticks of [6, 22, 38, 54, 70, 86]) {
+      const f = await runGpuEffectTest({
+        module: 'source.pixel.ocean', bundle: 'nano', width: 96, height: 96, inputColor: [0, 0, 0, 1],
+        params: [['density', 1.0], ['rotation', 0.0], ['pixel_size', 0.6],
+                 ['anim_rate', 1.0], ['anim_jitter', 0.0], ['drift_rate', 0.0], ['forward_rate', 0.0]],
+        ticks,
+      });
+      expect(f.success).toBe(true);
+      let n = 0; f.forEachPixel((c) => { if (c.r < 30 && c.g < 30 && c.b < 30) n++; });
+      minCov = Math.min(minCov, n / (96 * 96));
+    }
+    expect(minCov).toBeGreaterThan(0.005);
+  });
+
+  it('shape weights steer which wave type spawns', async () => {
+    const base = {
+      module: 'source.pixel.ocean' as const, bundle: 'nano' as const,
+      width: 96, height: 96,
+      inputColor: [0, 0, 0, 1] as [number, number, number, number],
+      ticks: 8,
+    };
+    const common: [string, number][] = [['density', 1.0], ['rotation', 0.0], ['pixel_size', 0.6], ['seed', 0.3]];
+    // Same sea, same seed — only the type mix differs, so the fields must differ.
+    const dots = await runGpuEffectTest({ ...base,
+      params: [...common, ['dot_weight', 1.0], ['omega_weight', 0.0], ['spiral_weight', 0.0]] });
+    const swirls = await runGpuEffectTest({ ...base,
+      params: [...common, ['dot_weight', 0.0], ['omega_weight', 0.0], ['spiral_weight', 1.0]] });
+    expect(dots.success && swirls.success).toBe(true);
+    // Both still populate the sea...
+    dots.expectCoverage((c) => c.r < 30 && c.g < 30 && c.b < 30, { min: 0.002 });
+    swirls.expectCoverage((c) => c.r < 30 && c.g < 30 && c.b < 30, { min: 0.002 });
+    // ...but with different shapes, so the frames diverge, and swirls (taller,
+    // longer sprites) cover more black than the tiny dots.
+    swirls.expectDifferentFrom(dots, 20);
+  });
+
   it('debug cell overlay draws the lattice', async () => {
     const base = {
       module: 'source.pixel.ocean' as const, bundle: 'nano' as const,

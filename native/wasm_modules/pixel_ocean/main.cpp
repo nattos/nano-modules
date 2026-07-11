@@ -54,8 +54,10 @@ struct Uniforms {
   float back_cur, back_prev;  // u_back_cur / u_back_prev
   float djit_cur, djit_prev;  // u_djit_cur / u_djit_prev
   float fjit_cur, fjit_prev;  // u_fjit_cur / u_fjit_prev
+  float t0_cur, t0_prev;      // u_t0_cur / u_t0_prev  (type thresholds)
+  float t1_cur, t1_prev;      // u_t1_cur / u_t1_prev
 };
-static_assert(sizeof(Uniforms) == 144, "cbuffer mirror drifted from compute.hlsl");
+static_assert(sizeof(Uniforms) == 160, "cbuffer mirror drifted from compute.hlsl");
 
 struct State {
   // Pixel grid.
@@ -75,6 +77,10 @@ struct State {
   float forward_rate = 0.30f;     // Y-axis (forward) drift
   float forward_jitter = 1.0f;
   float backwards = 0.10f;
+  // Wave mix — relative spawn weights per shape type (normalised at spawn).
+  float dot_weight = 0.45f;
+  float omega_weight = 0.35f;
+  float spiral_weight = 0.20f;
   // Tuning.
   int spawn_size = 12;
   float seed = 0.0f;
@@ -98,6 +104,8 @@ struct State {
   float back_cur = 0.10f, back_prev = 0.10f;
   float djit_cur = 1.0f,  djit_prev = 1.0f;
   float fjit_cur = 1.0f,  fjit_prev = 1.0f;
+  float t0_cur = 0.45f,   t0_prev = 0.45f;
+  float t1_cur = 0.80f,   t1_prev = 0.80f;
 
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -122,6 +130,19 @@ static inline double driftStepsPerSec(float p) {
 }
 // Forward (Y) drift shares the drift curve — same feel on both axes.
 static inline double forwardStepsPerSec(float p) { return driftStepsPerSec(p); }
+
+// The three shape weights → two cumulative thresholds partitioning [0,1):
+// hash < t0 → dot, < t1 → omega, else spiral. Weights are clamped ≥ 0; if they
+// all vanish, fall back to dot-only so the sea never silently empties.
+static inline void typeThresholds(const State& s, float& t0, float& t1) {
+  float w0 = s.dot_weight    > 0.f ? s.dot_weight    : 0.f;
+  float w1 = s.omega_weight  > 0.f ? s.omega_weight  : 0.f;
+  float w2 = s.spiral_weight > 0.f ? s.spiral_weight : 0.f;
+  float sum = w0 + w1 + w2;
+  if (sum <= 0.f) { t0 = 1.f; t1 = 1.f; return; }   // all-zero → dot only
+  t0 = w0 / sum;
+  t1 = (w0 + w1) / sum;
+}
 
 void module_init() {
   state::init("source.pixel.ocean", {1, 0, 0},
@@ -169,15 +190,17 @@ void module_init() {
           "along the grid's own axes: *Anim Rate* ticks each wave through its "
           "shape frames; *Drift* slides them sideways (the grid ±X axis); "
           "*Forward* carries them along the grid's Y axis. Give both a rate and "
-          "waves swim diagonally. The *Jitter* knob beside each clock sets the "
-          "stagger — 0 = every wave steps in the same instant (lock step), 1 = "
-          "fully scattered phases. *Backwards* is the chance a wave runs against "
-          "the current — it reverses BOTH the drift and the forward direction. "
-          "**Anim Rate, the jitters and Backwards latch at spawn** (like "
-          "Density): changing one never re-speeds or redirects a wave already "
-          "alive — it takes hold at each wave's next respawn. Drift/Forward "
-          "SPEED stays live, so all waves glide together and speed changes read "
-          "smoothly rather than as a jolt.")
+          "waves swim diagonally. Waves ALWAYS spawn out of phase with each "
+          "other — *Anim Jitter* only sets whether their step ticks land on the "
+          "same quantized instants (0 = the whole sea ticks together, though "
+          "each wave is still at its own point in its animation) or spread onto "
+          "per-wave instants (1). *Drift/Forward Jitter* stagger each axis's "
+          "sub-step. *Backwards* is the chance a wave runs against the current — "
+          "it reverses BOTH drift and forward. **Anim Rate, the jitters and "
+          "Backwards latch at spawn** (like Density): changing one never "
+          "re-speeds or redirects a wave already alive — it takes hold at each "
+          "wave's next respawn. Drift/Forward SPEED stays live, so all waves "
+          "glide together and speed changes read smoothly rather than as a jolt.")
       .floatField("anim_rate", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Anim Rate", "Anim")
       .floatField("anim_jitter", 1.0f, 0.f, 1.f, state::PrimaryInput).label("Anim Jitter", "AJit")
       .floatField("drift_rate", 0.40f, 0.f, 1.f, state::PrimaryInput).label("Drift Rate (X)", "Drift")
@@ -185,6 +208,17 @@ void module_init() {
       .floatField("forward_rate", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Forward Rate (Y)", "Fwd")
       .floatField("forward_jitter", 1.0f, 0.f, 1.f, state::PrimaryInput).label("Forward Jitter", "FJit")
       .floatField("backwards", 0.10f, 0.f, 1.f, state::PrimaryInput).label("Backwards", "Back")
+      // --- Wave mix: relative spawn weight per shape ---
+      .group("mix", "Wave Mix")
+        .groupHelp(
+          "Relative odds each new wave is a *Dot* (fleck that blinks and splits), "
+          "an *Omega* (two-hump crest), or a *Swirl* (unrolling wind-curl). The "
+          "three are normalised, so only their ratio matters; set one to 0 to "
+          "drop that shape. Like the rest of the wave settings these latch at "
+          "spawn, so a change re-mixes future waves, not ones already swimming.")
+      .floatField("dot_weight", 0.45f, 0.f, 1.f, state::PrimaryInput).label("Dot Weight", "Dot")
+      .floatField("omega_weight", 0.35f, 0.f, 1.f, state::PrimaryInput).label("Omega Weight", "Omega")
+      .floatField("spiral_weight", 0.20f, 0.f, 1.f, state::PrimaryInput).label("Swirl Weight", "Swirl")
       // --- Tuning + debug ---
       .group("tuning", "Tuning")
         .groupHelp(
@@ -247,6 +281,8 @@ void tick(void* self, double dt) {
     s->back_cur = s->back_prev = s->backwards;
     s->djit_cur = s->djit_prev = s->drift_jitter;
     s->fjit_cur = s->fjit_prev = s->forward_jitter;
+    typeThresholds(*s, s->t0_cur, s->t1_cur);
+    s->t0_prev = s->t0_cur; s->t1_prev = s->t1_cur;
     s->captured_anim_rate = animStepsPerSec(s->anim_rate);
     s->clock_init = true;
   }
@@ -267,6 +303,8 @@ void tick(void* self, double dt) {
     s->back_prev = s->back_cur; s->back_cur = s->backwards;
     s->djit_prev = s->djit_cur; s->djit_cur = s->drift_jitter;
     s->fjit_prev = s->fjit_cur; s->fjit_cur = s->forward_jitter;
+    s->t0_prev = s->t0_cur; s->t1_prev = s->t1_cur;
+    typeThresholds(*s, s->t0_cur, s->t1_cur);
     s->captured_anim_rate = animStepsPerSec(s->anim_rate);
   }
 
@@ -307,6 +345,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "forward_rate"))   s->forward_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "forward_jitter")) s->forward_jitter = state::patchFloat(i);
     else if (state::pathIs(p, l, "backwards"))    s->backwards = state::patchFloat(i);
+    else if (state::pathIs(p, l, "dot_weight"))    s->dot_weight = state::patchFloat(i);
+    else if (state::pathIs(p, l, "omega_weight"))  s->omega_weight = state::patchFloat(i);
+    else if (state::pathIs(p, l, "spiral_weight")) s->spiral_weight = state::patchFloat(i);
     else if (state::pathIs(p, l, "spawn_size"))   s->spawn_size = state::patchInt(i);
     else if (state::pathIs(p, l, "seed"))         s->seed = state::patchFloat(i);
     else if (state::pathIs(p, l, "debug_cells"))  s->debug_cells = state::patchBool(i);
@@ -355,6 +396,8 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.back_cur = s->back_cur; u.back_prev = s->back_prev;
   u.djit_cur = s->djit_cur; u.djit_prev = s->djit_prev;
   u.fjit_cur = s->fjit_cur; u.fjit_prev = s->fjit_prev;
+  u.t0_cur = s->t0_cur; u.t0_prev = s->t0_prev;
+  u.t1_cur = s->t1_cur; u.t1_prev = s->t1_prev;
 }
 
 void render(void* self, int vp_w, int vp_h) {
