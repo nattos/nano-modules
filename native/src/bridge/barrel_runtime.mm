@@ -230,9 +230,11 @@ struct BarrelRuntime::Impl {
     nlohmann::json lastRail;
     nlohmann::json lastMacroOut;
     nlohmann::json lastPluginStates;
+    nlohmann::json lastModulation;
     bool haveLastRail = false;
     bool haveLastMacroOut = false;
     bool haveLastPluginStates = false;
+    bool haveLastModulation = false;
     // Host-elapsed time of the last preview-capture frame, for rate limiting.
     double lastPreviewElapsed = -1e9;
     // Last-applied MidiHost table version — setExternalScalars only re-runs
@@ -1111,6 +1113,21 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
       pe.haveLastPluginStates = true;
       if (!firstAndEmpty)
         server.set_at(base + "/plugin_states", pe.lastPluginStates.dump());
+    }
+  }
+
+  // Per-modulated-input effective value + swing band (executor-computed) —
+  // the native mirror of the worker's modulationDataDiff channel; without it
+  // no wire in live mode ever shows its modulation band on the dest slider.
+  // Deduped like the channels above: static modulation costs one compare.
+  if (watched) {
+    const nlohmann::json& md = pe.executor->lastModulationData();
+    if (!pe.haveLastModulation || md != pe.lastModulation) {
+      const bool firstAndEmpty = !pe.haveLastModulation && md.empty();
+      pe.lastModulation = md;
+      pe.haveLastModulation = true;
+      if (!firstAndEmpty)
+        server.set_at(base + "/modulation_data", md.dump());
     }
   }
 

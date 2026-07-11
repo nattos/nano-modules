@@ -585,6 +585,18 @@ function connectBarrel(url: string) {
     appController.applyPluginStatesDiff({ changed: states, removed: [] });
   };
 
+  // Per-modulated-input value+band telemetry (the dest slider's gold band),
+  // the native mirror of the worker's modulationData channel. The native side
+  // publishes the FULL table each change, so drop instance keys that vanished
+  // (a removed wire must clear its band, not pin the last one).
+  const ingestModulationData = (data: any) => {
+    const states = coerceJsonObject(data);
+    if (!states) return;
+    const removed = Object.keys(appState.local.engine.modulationData)
+      .filter((k) => !(k in states));
+    appController.applyModulationDataDiff({ changed: states, removed });
+  };
+
   // Apply a full /plugins/<key>/state object (schemas first — the sketch
   // apply path backfills instance defaults from them).
   const applyInstanceState = (state: any, forKey: string) => {
@@ -594,6 +606,7 @@ function connectBarrel(url: string) {
     ingestRailState(state.sketch_state);
     ingestMacroOutputs(state.macro_outputs);
     ingestPluginStates(state.plugin_states);
+    ingestModulationData(state.modulation_data);
   };
 
   // Parse /global/plugins into the NanoBarrel instance list for the Organize
@@ -664,6 +677,9 @@ function connectBarrel(url: string) {
       });
       barrel.onSnapshot(`${statePath}/plugin_states`, (data) => {
         if (key === currentKey) ingestPluginStates(data);
+      });
+      barrel.onSnapshot(`${statePath}/modulation_data`, (data) => {
+        if (key === currentKey) ingestModulationData(data);
       });
     }
 
@@ -924,6 +940,37 @@ function connectBarrel(url: string) {
     });
     return true;
   };
+  // Modulation-band leaf update. The band record is 3 levels deep
+  // (/<ik>/<field>/{value,min,max,neutral}) and `value` changes per frame, so
+  // ops arrive at every depth. Merge in place; anything odd → refetch.
+  const applyModulationLeaf = (relPath: string, value: any): boolean => {
+    const parts = relPath.slice(1).split('/');
+    const ik = parts[0];
+    if (!ik) return false;
+    const md = appState.local.engine.modulationData as Record<string, any>;
+    if (parts.length === 1) {
+      const obj = coerceJsonObject(value);
+      if (obj) appController.applyModulationDataDiff({ changed: { [ik]: obj }, removed: [] });
+      return !!obj;
+    }
+    if (parts.length === 2) {
+      const obj = coerceJsonObject(value);
+      if (!obj) return false;
+      appController.applyModulationDataDiff({
+        changed: { [ik]: { ...(md[ik] ?? {}), [parts[1]]: obj } }, removed: [],
+      });
+      return true;
+    }
+    if (parts.length === 3 && typeof value === 'number') {
+      const cur = md[ik]?.[parts[1]];
+      if (!cur) return false;
+      appController.applyModulationDataDiff({
+        changed: { [ik]: { ...md[ik], [parts[1]]: { ...cur, [parts[2]]: value } } }, removed: [],
+      });
+      return true;
+    }
+    return false;
+  };
   // Rail leaf update: /sketch_state/<railId>. Rails live under the
   // currently-wired instance's own entry in engine.sketchState.
   const applyRailLeaf = (relPath: string, value: any): boolean => {
@@ -943,9 +990,11 @@ function connectBarrel(url: string) {
     const sketchStatePath = statePath ? `${statePath}/sketch_state` : null;
     const macroOutputsPath = statePath ? `${statePath}/macro_outputs` : null;
     const pluginStatesPath = statePath ? `${statePath}/plugin_states` : null;
+    const modulationDataPath = statePath ? `${statePath}/modulation_data` : null;
     let sketchTouched = false;
     let railRefetch = false;
     let pluginStatesRefetch = false;
+    let modulationRefetch = false;
     for (const op of ops) {
       const p = typeof op?.path === 'string' ? op.path : '';
       if (p === '/global/plugins' || p.startsWith('/global/plugins')) {
@@ -978,12 +1027,18 @@ function connectBarrel(url: string) {
       } else if (pluginStatesPath && p.startsWith(pluginStatesPath + '/')) {
         if (!applyInstanceStatesLeaf(p.slice(pluginStatesPath.length), op.value))
           pluginStatesRefetch = true;
+      } else if (p === modulationDataPath) {
+        ingestModulationData(op.value);
+      } else if (modulationDataPath && p.startsWith(modulationDataPath + '/')) {
+        if (!applyModulationLeaf(p.slice(modulationDataPath.length), op.value))
+          modulationRefetch = true;
       }
     }
     if (globalTouched) barrel.get('/global/plugins');  // refresh the list
     if (sketchTouched && sketchPath) barrel.get(sketchPath);
     if (railRefetch && sketchStatePath) barrel.get(sketchStatePath);
     if (pluginStatesRefetch && pluginStatesPath) barrel.get(pluginStatesPath);
+    if (modulationRefetch && modulationDataPath) barrel.get(modulationDataPath);
   });
 
   const subscribe = () => {
