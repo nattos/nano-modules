@@ -102,26 +102,27 @@ static const uint PO_SPRITES[14] = {
   //        ##.....##         .#..#..#.        ..#.#.#..
   0x060C0000u, 0x0248D800u, 0x01505000u,
   // type 2 — spiral / wind curl (4×8, VERTICAL): forward travels UP, so the coil
-  // leads at the TOP and the stem trails DOWNWARD. An inward SWIRL (open coil,
-  // not a closed ring) that unrolls and draws its stem out. bit = y*4 + x.
-  //   f0 .#..  f1 .##.  f2 .##.  f3 .##.
-  //      ##..     #..#     #..#     #..#
-  //      ....     ##..     ##.#     ##.#
+  // leads at the TOP and the short (2px) stem trails DOWNWARD. The coil GROWS out
+  // of the stem — the stem is there from the start and the swirl winds up from
+  // its tip, one pixel per frame (spiralling in). bit = y*4 + x.
+  //   f0 ....  f1 ....  f2 ....  f3 ..#.
   //      ....     ....     ...#     ...#
-  //      ....     ....     ..#.     ..#.
-  //      ....     ....     ....     ..#.
+  //      ....     ...#     ...#     ...#
+  //      ...#     ...#     ...#     ...#
+  //      ..#.     ..#.     ..#.     ..#.
+  //      ..#.     ..#.     ..#.     ..#.
   //      ....     ....     ....     ....
   //      ....     ....     ....     ....
-  0x00000032u, 0x00000396u, 0x00048B96u, 0x00448B96u,
-  //   f4 .##.  f5 .#..  f6 ....  f7 ....
-  //      #..#     #.#.     .##.     ....
-  //      ##.#     .##.     ...#     ....
-  //      ...#     ...#     ..#.     ..#.
+  0x00448000u, 0x00448800u, 0x00448880u, 0x00448884u,
+  //   f4 .##.  f5 .##.  f6 .##.  f7 .##.
+  //      ...#     #..#     #..#     #..#
+  //      ...#     ...#     #..#     ##.#
+  //      ...#     ...#     ...#     ...#
   //      ..#.     ..#.     ..#.     ..#.
   //      ..#.     ..#.     ..#.     ..#.
-  //      ..#.     ..#.     ..#.     ..#.
-  //      ....     ..#.     ..#.     ..#.
-  0x04448B96u, 0x44448652u, 0x44444860u, 0x44444000u,
+  //      ....     ....     ....     ....
+  //      ....     ....     ....     ....
+  0x00448886u, 0x00448896u, 0x00448996u, 0x00448B96u,
 };
 
 // Hash streams. Effective stream id = base*2 + dir_bit, so the forward and
@@ -221,10 +222,10 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   int H = int(PO_BOX_H[type]);
   if (dx < 0 || dx >= W || dy < 0 || dy >= H) return false;
 
-  // The backward cohort travels opposite in BOTH axes, so its sprite is the
-  // forward art reflected 180° (mirror x and y).
-  uint bx = (dir == 0u) ? uint(dx) : uint(W - 1 - dx);
-  uint by = (dir == 0u) ? uint(dy) : uint(H - 1 - dy);
+  // Both cohorts draw the sprite the SAME way: a backward wave travels backward
+  // but still points the same direction — no reflection.
+  uint bx = uint(dx);
+  uint by = uint(dy);
 
   uint frame;
   if (type == 2u) frame = step;                          // spiral: play its 8 once
