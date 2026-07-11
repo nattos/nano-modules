@@ -72,7 +72,11 @@ export class MidiController {
   async loadLibrary(): Promise<void> {
     const rows = await loadDeviceLibrary();
     runInAction(() => { appState.local.midi.library = rows; });
-    if (rows.length > 0) void this.initMidi();
+    // The Devices tab can mount (and init MIDI) BEFORE this IDB read lands —
+    // that first match pass saw an empty library and nothing re-runs it
+    // (no statechange fires for a library load). Re-match explicitly now.
+    if (this.manager.initialized) this.manager.refreshMatching();
+    else if (rows.length > 0) void this.initMidi();
   }
 
   /** Request Web MIDI access + start matching. Safe to call repeatedly. */

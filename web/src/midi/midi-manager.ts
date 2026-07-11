@@ -53,6 +53,7 @@ export class MidiManager {
   onIdentityStamp?: (instanceId: string, identityIndex: number, webPortId: string) => void;
 
   private access: MIDIAccess | null = null;
+  private initPromise: Promise<boolean> | null = null;
   private getLibrary: () => readonly DeviceInstance[] = () => [];
   private connected = new Map<string, ConnectedDevice>();
   /** Survives disconnects (sticky simulation on disconnected devices). */
@@ -65,17 +66,20 @@ export class MidiManager {
   }
 
   /** Request Web MIDI access (no sysex — lower permission friction). False
-   *  when unsupported or denied; safe to call repeatedly. */
+   *  when unsupported or denied; safe to call repeatedly and concurrently —
+   *  boot and the Devices tab race here, and two live MIDIAccess objects
+   *  would both fire statechange forever. */
   async init(): Promise<boolean> {
     if (this.access) return true;
     if (typeof navigator === 'undefined' || !navigator.requestMIDIAccess) return false;
-    try {
-      this.attachAccess(await navigator.requestMIDIAccess({ sysex: false }));
-      return true;
-    } catch (err) {
-      console.warn('[midi] requestMIDIAccess failed', err);
-      return false;
-    }
+    this.initPromise ??= navigator.requestMIDIAccess({ sysex: false }).then(
+      access => { this.attachAccess(access); return true; },
+      err => {
+        console.warn('[midi] requestMIDIAccess failed', err);
+        this.initPromise = null;   // allow a retry (e.g. after granting)
+        return false;
+      });
+    return this.initPromise;
   }
 
   /** Adopt a (possibly fake) MIDIAccess — the seam unit tests inject through. */
@@ -272,5 +276,6 @@ export class MidiManager {
     this.connected.clear();
     if (this.access) this.access.onstatechange = null;
     this.access = null;
+    this.initPromise = null;
   }
 }

@@ -101,6 +101,21 @@ describe('MidiManager', () => {
     expect(manager.getValue(a.id, 'b0/e05/turn')).toBe(1);
   });
 
+  it('concurrent init() shares one requestMIDIAccess (boot vs Devices tab)', async () => {
+    const manager = new MidiManager();
+    let calls = 0;
+    const access = new FakeAccess();
+    (navigator as any).requestMIDIAccess = async () => { calls++; return access; };
+    try {
+      const [a, b] = await Promise.all([manager.init(), manager.init()]);
+      expect(a).toBe(true);
+      expect(b).toBe(true);
+      expect(calls).toBe(1);
+    } finally {
+      delete (navigator as any).requestMIDIAccess;
+    }
+  });
+
   it('reports unmatched ports as unknown', () => {
     const { access, events } = setup([]);
     access.addPair('x', 'Mystery Pad', 'Acme');
