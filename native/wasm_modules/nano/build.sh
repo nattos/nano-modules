@@ -244,6 +244,14 @@ compile_shaders_compute_var_spv shape_burst motion
 _emit_spv_header_var shape_burst compute motion
 echo "  shape_burst shaders compiled (SPV: compute + motion)"
 
+# pixel_ocean — pixel-art ocean generator. One compute pass: stateless
+# per-pixel waves hashed from a stratified spawn-cell lattice (co-moving with
+# the drift step clock), rendered on a rotated coarse pixel grid. Shares
+# nano_coords.hlsl + nano_hash.hlsl.
+compile_shaders_compute_var_spv pixel_ocean compute
+_emit_spv_header_var pixel_ocean compute
+echo "  pixel_ocean shaders compiled (SPV: compute)"
+
 # simulant — faithful port of the Resolume Wire "Simulant" patch: a
 # difference-blend + blur-diffusion feedback loop thresholded into Sobel lines.
 #   inject — abs(fadedPrev - input) difference-blend feedback (rgba16f).
@@ -350,6 +358,7 @@ wasm_build \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \
   ../shape_burst/main.cpp \
+  ../pixel_ocean/main.cpp \
   ../simulant/main.cpp \
   ../smear/main.cpp \
   ../line_reconstruct/main.cpp \

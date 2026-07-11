@@ -27,6 +27,7 @@ NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
+NANO_DECLARE_INSTANCE_EFFECT(pixel_ocean)
 NANO_DECLARE_INSTANCE_EFFECT(simulant)
 NANO_DECLARE_INSTANCE_EFFECT(smear)
 NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
@@ -212,6 +213,17 @@ void nano_module_main() {
         "generator,shape,burst,ring,circle,square,triangle,trigger,adsr,decay,shockwave,ripple,pulse",
         "la-bullseye",
         NANO_INSTANCE_LIFECYCLE(shape_burst),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.pixel.ocean",
+        "Pixel Ocean",
+        "Pixel-art ocean generator, world-map style. A rotatable coarse pixel grid of flat blue dotted with sparse tiny wave sprites (dot-line / omega / unrolling wind-curl), each hosted at a hashed jittered position inside a stratified spawn-cell lattice — a very uniform spread with no clumping. Shape animation and forward drift run on separate discrete step clocks with per-wave jitter (0 = the whole sea ticks in lock step, 1 = fully staggered); a backwards probability sends some waves against the current. Density gates births per life-cycle so waves always appear at the start of their animation. Fully procedural and stateless per pixel — no particle pool.",
+        "source",
+        "generator,ocean,water,waves,sea,pixel,pixel-art,retro,map,monster-hunter,procedural",
+        "la-water",
+        NANO_INSTANCE_LIFECYCLE(pixel_ocean),
     });
 
     nano::registerEffect({
