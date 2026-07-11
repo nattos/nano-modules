@@ -20,7 +20,7 @@
  * top of effect cards, using bounding boxes from the FieldLayoutManager.
  */
 
-import { html, css, nothing } from 'lit';
+import { html, css, nothing, type PropertyValues } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { keyed } from 'lit/directives/keyed.js';
 import { MobxLitElement } from '../mobx-lit-element';
@@ -34,7 +34,8 @@ import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
 import './ui-icon';
 
 import type { FieldBinding } from './field-editor';
-import type { ColumnHost } from './columns-view';
+import type { ColumnHost, ColumnsView } from './columns-view';
+import { loadSketchUiState, saveSketchUiState } from '../state/sketch-ui-store';
 import type { ColumnGroupCallbacks } from './column-group';
 import { ColumnGroup } from './column-group';
 import './columns-view';
@@ -85,6 +86,27 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   // Viewport Y of the clicked header's center at drag start — the popup is
   // anchored so the dragged card's row lines up with it (clamped to viewport).
   private dragAnchorY = 0;
+
+  // ── Per-sketch scroll persistence (UI-only, keyed by sketchId) ──────────
+  // Cached to indexeddb so a sketch reopens where you left it, across the
+  // effect-dev / live / playground surfaces (all edit the same sketch ids).
+  //
+  // The sketch whose scroll we're currently tracking. Distinct from
+  // cachedSketchId so the switch handler in updated() runs exactly once per
+  // change and only once the editor is actually mounted.
+  private scrollSketchId: string | null = null;
+  // Last user scroll offset of the mounted columns-view, mirrored on every
+  // scroll event so we can persist the OLD sketch's position at switch time —
+  // its DOM is already gone by then (keyed() remounted for the new sketch).
+  private lastScrollTop = 0;
+  private lastScrollLeft = 0;
+  private scrollSaveTimer = 0;
+  // True while programmatically restoring — suppresses save and keeps the
+  // restore's own scroll events from being mistaken for a user scroll.
+  private suppressScrollSave = false;
+  // Frames spent re-applying a restore while the content height fills in.
+  // Bumped past the cap by a real user scroll to abandon the loop.
+  private scrollRestoreTries = 0;
 
   static styles = css`
     :host {
@@ -224,7 +246,97 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     // Abort any in-flight reorder so its window listeners + Escape handler don't
     // outlive the element (dispose → cancel → cleanupDrag).
     this.dragOp?.dispose();
+    // Persist the final scroll position before the DOM goes away.
+    this.flushScrollSave();
     this.clearSketchCaches();
+  }
+
+  /**
+   * Detect a sketch switch (or first mount) and hand off scroll persistence:
+   * flush the previous sketch's position, then restore the new one's. Runs on
+   * every reactive render but the body only fires when `sketchId` actually
+   * changes AND its editor is mounted.
+   */
+  protected updated(changed: PropertyValues) {
+    super.updated(changed);
+    const sketchId = this.sketchId;
+    if (sketchId === this.scrollSketchId) return;
+    // A sketchId set but not (yet) in the database renders the empty message —
+    // there's no columns-view to track. Wait for it to materialize.
+    if (sketchId && !appState.database.sketches[sketchId]) return;
+    this.flushScrollSave();
+    this.scrollSketchId = sketchId;
+    this.lastScrollTop = 0;
+    this.lastScrollLeft = 0;
+    if (sketchId) void this.restoreScroll(sketchId);
+  }
+
+  /** Mirror the columns-view's scroll offset and debounce-persist it. */
+  private onColumnsScroll = (e: Event) => {
+    // Our own restore writes scrollTop; ignore those so they don't save partial
+    // offsets or cancel the restore retry.
+    if (this.suppressScrollSave) return;
+    const off = (e.currentTarget as ColumnsView).getScrollOffset();
+    this.lastScrollTop = off.top;
+    this.lastScrollLeft = off.left;
+    // A real user scroll ends any in-flight restore.
+    this.scrollRestoreTries = Number.MAX_SAFE_INTEGER;
+    this.scheduleScrollSave();
+  };
+
+  private scheduleScrollSave() {
+    const sketchId = this.scrollSketchId;
+    if (!sketchId) return;
+    clearTimeout(this.scrollSaveTimer);
+    this.scrollSaveTimer = window.setTimeout(() => {
+      this.scrollSaveTimer = 0;
+      void saveSketchUiState(sketchId, {
+        scrollTop: this.lastScrollTop, scrollLeft: this.lastScrollLeft,
+      });
+    }, 300);
+  }
+
+  /** Persist the tracked position now (on sketch switch / unmount). */
+  private flushScrollSave() {
+    if (this.scrollSaveTimer) { clearTimeout(this.scrollSaveTimer); this.scrollSaveTimer = 0; }
+    const sketchId = this.scrollSketchId;
+    if (!sketchId) return;
+    void saveSketchUiState(sketchId, {
+      scrollTop: this.lastScrollTop, scrollLeft: this.lastScrollLeft,
+    });
+  }
+
+  /**
+   * Restore the sketch's saved scroll offset once its columns editor mounts.
+   * Re-applied over a few frames because the content height (and thus the
+   * scrollable range) fills in as columns attach — a one-shot set would clamp
+   * to a not-yet-tall-enough container.
+   */
+  private async restoreScroll(sketchId: string) {
+    const state = await loadSketchUiState(sketchId);
+    // Bail if the user switched sketches while we were loading.
+    if (this.sketchId !== sketchId || this.scrollSketchId !== sketchId) return;
+    const top = state?.scrollTop ?? 0;
+    const left = state?.scrollLeft ?? 0;
+    this.lastScrollTop = top;
+    this.lastScrollLeft = left;
+    if (top === 0 && left === 0) return;
+    this.scrollRestoreTries = 0;
+    const apply = () => {
+      if (this.sketchId !== sketchId || this.scrollSketchId !== sketchId) return;
+      if (this.scrollRestoreTries > 30) return; // user scrolled, or content maxed out
+      const cv = this.renderRoot.querySelector('columns-view') as ColumnsView | null;
+      if (!cv) return;
+      this.suppressScrollSave = true;
+      cv.setScrollOffset(top, left);
+      this.suppressScrollSave = false;
+      const got = cv.getScrollOffset();
+      if (Math.abs(got.top - top) > 1 || Math.abs(got.left - left) > 1) {
+        this.scrollRestoreTries++;
+        requestAnimationFrame(apply);
+      }
+    };
+    requestAnimationFrame(apply);
   }
 
   private clearSketchCaches() {
@@ -329,6 +441,7 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
         <columns-view .host=${this as ColumnHost}
           fitWidth
           .defaultGutterWidth=${ColumnGroup.GUTTER_WIDTH}
+          @scroll-changed=${this.onColumnsScroll}
           @click=${(e: Event) => {
             // Deselect when clicking on empty space (not handled by a child)
             if (e.target === e.currentTarget) appController.select(null);

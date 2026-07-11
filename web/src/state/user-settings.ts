@@ -18,7 +18,6 @@ export function defaultUserSettings(): UserSettings {
     ideLeftPanelWidth: 320,
     ideLeftTab: 'explorer',
     selectedProjectId: null,
-    scrollPositions: {},
     paused: false,
     activeTab: 'edit',
     editingSketchId: null,

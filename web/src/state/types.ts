@@ -168,8 +168,6 @@ export interface UserSettings {
   ideLeftTab: 'explorer' | 'project_editor' | 'devices' | 'debug_info' | 'settings';
   /** Currently selected project id (`default:<effectId>` or `user:<uuid>`). */
   selectedProjectId: string | null;
-  /** Scroll positions keyed by an arbitrary scope id. */
-  scrollPositions: Record<string, number>;
   /** Whether the engine is paused. */
   paused: boolean;
   /** Resolume sketch-IDE: last active top tab (create/organize/edit/devices/settings). */

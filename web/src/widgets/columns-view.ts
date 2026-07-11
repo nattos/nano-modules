@@ -136,7 +136,12 @@ export class ColumnsView extends LitElement {
     this.scrollEl = this.renderRoot.querySelector('.scroll-container') as HTMLElement;
     this.contentEl = this.renderRoot.querySelector('.content') as HTMLElement;
     if (this.scrollEl) {
-      this.scrollEl.addEventListener('scroll', () => this.updateVisibleRange(), { passive: true });
+      this.scrollEl.addEventListener('scroll', () => {
+        this.updateVisibleRange();
+        // Re-emit on the host so a parent (which owns the sketch id) can persist
+        // the position. A fresh Event — native scroll doesn't cross the shadow.
+        this.dispatchEvent(new Event('scroll-changed'));
+      }, { passive: true });
       this.resizeObs?.observe(this.scrollEl);
     }
     this.recalcLayout();
@@ -170,6 +175,23 @@ export class ColumnsView extends LitElement {
 
     this.recalcLayout();
     this.updateVisibleRange();
+  }
+
+  /** Current scroll offset of the inner scroll container. */
+  getScrollOffset(): { top: number; left: number } {
+    return { top: this.scrollEl?.scrollTop ?? 0, left: this.scrollEl?.scrollLeft ?? 0 };
+  }
+
+  /**
+   * Restore a scroll offset. The browser clamps to the current scrollable
+   * range, so call this once the content has been laid out (and re-call while
+   * it grows) — a fresh columns editor's content height fills in over a few
+   * frames as columns attach.
+   */
+  setScrollOffset(top: number, left: number) {
+    if (!this.scrollEl) return;
+    this.scrollEl.scrollTop = top;
+    this.scrollEl.scrollLeft = left;
   }
 
   /** Returns the column index at the given client X coordinate, or -1. */

@@ -89,6 +89,15 @@ export const STORE_INPUT_VIDEO = 'inputVideo';
  * rows. See `state/midi-device-store.ts` / `state/midi-controller.ts`.
  */
 export const STORE_MIDI_DEVICES = 'midiDevices';
+/**
+ * Per-sketch UI-only editor state, keyed by sketch id (`user:<uuid>`,
+ * `default:<effectId>`, `pg:<uuid>`, or a live barrel UUID). A small bag of
+ * view-local preferences — currently the editor's last scroll offset — that
+ * should survive reloads and follow a sketch across the effect-dev / live /
+ * playground surfaces (they all edit the same sketch ids). Purely cosmetic,
+ * NOT part of the sketch document, NOT undoable. See `state/sketch-ui-store.ts`.
+ */
+export const STORE_SKETCH_UI = 'sketchUiState';
 
 /** Every store + its keyPath. `ensureStores` creates any that are missing. */
 const STORE_KEYPATHS: Record<string, string> = {
@@ -105,6 +114,7 @@ const STORE_KEYPATHS: Record<string, string> = {
   [STORE_FIELD_DOCS]: 'key',
   [STORE_INPUT_VIDEO]: 'id',
   [STORE_MIDI_DEVICES]: 'id',
+  [STORE_SKETCH_UI]: 'id',
 };
 
 function ensureStores(db: IDBDatabase) {
