@@ -54,6 +54,7 @@ export class DeviceEncoder extends MobxLitElement {
   @query('.value-arc') private declare valueArc: SVGPathElement;
   @query('.pointer-line') private declare pointerLine: SVGLineElement;
   @query('.cap') private declare cap: SVGCircleElement;
+  @query('.press-light') private declare pressLight: SVGCircleElement;
 
   private lastValue = -1;
   private lastPressed = false;
@@ -93,7 +94,21 @@ export class DeviceEncoder extends MobxLitElement {
       stroke-width: 1;
       transition: filter 0.05s ease;
     }
-    .cap.pressed { filter: brightness(1.8); }
+    /* Pressed = the cap LIGHTS UP (the MFT's push-button lives under the
+       cap). brightness() alone is invisible on the default near-background
+       cap fill, so the .press-light disc below carries the actual light;
+       this just lifts configured cap colors and rims the cap. */
+    .cap.pressed {
+      filter: brightness(1.6) drop-shadow(0 0 4px rgba(255, 255, 255, 0.35));
+      stroke: var(--app-text-color1);
+    }
+    .press-light {
+      fill: var(--app-text-color1);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.06s ease;
+    }
+    .press-light.on { opacity: 0.3; }
     .pointer-line {
       stroke: var(--app-text-color1);
       stroke-width: 1.5;
@@ -135,6 +150,7 @@ export class DeviceEncoder extends MobxLitElement {
     if (pressed !== this.lastPressed && this.cap) {
       this.lastPressed = pressed;
       this.cap.classList.toggle('pressed', pressed);
+      this.pressLight?.classList.toggle('on', pressed);
     }
   }
 
@@ -185,6 +201,7 @@ export class DeviceEncoder extends MobxLitElement {
           <path class="track" d=${ringArc(START_DEG, START_DEG + SWEEP_DEG, RING_R)}></path>
           <path class="value-arc" d="" style="stroke: ${this.ringColor}"></path>
           <circle class="cap" cx="50" cy="50" r=${CAP_R} style="fill: ${this.capColor}"></circle>
+          <circle class="press-light" cx="50" cy="50" r=${CAP_R - 4}></circle>
           <line class="pointer-line" x1="50" y1="${50 - CAP_R + 6}" x2="50" y2="${50 - RING_R + 6}"></line>
           <circle class="halo" cx="50" cy="50" r="${RING_R + 4}"></circle>
         `}
