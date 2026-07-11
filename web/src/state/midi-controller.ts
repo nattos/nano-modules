@@ -101,14 +101,43 @@ export class MidiController {
     return this.addFork(forkInstance(template, this.libraryNames()));
   }
 
-  /** Define-mode commit: fork `sourceId` (template or instance) and claim the
-   *  unknown port for the new fork. */
-  forkAndClaim(sourceId: string, port: PhysicalIdentity): DeviceInstance {
-    const source = this.instance(sourceId) ?? getDeviceTemplate(sourceId);
-    if (!source) throw new Error(`[midi] unknown fork source: ${sourceId}`);
-    const fork = forkInstance(source, this.libraryNames());
-    fork.identities.push({ ...port });
-    return this.addFork(fork);
+  /**
+   * Define-mode commit: bind a physical port to `sourceId`. A template forks
+   * first (lazy-fork rule); an EXISTING instance claims the port directly —
+   * forking a copy here would strand the instance's wires on the original
+   * while the hardware feeds the copy (knobs turn, nothing moves).
+   *
+   * The claim is exclusive: the same platform port id is revoked from every
+   * other instance, so repeated defines can't leave stale claims that steal
+   * the device back by library order. Tuple-only identities on OTHER
+   * instances are left alone — they may be a second identical unit.
+   */
+  claimPort(sourceId: string, port: PhysicalIdentity): DeviceInstance {
+    const instance = this.ensureInstanceForEdit(sourceId);
+    runInAction(() => {
+      // Refresh an existing tuple claim in place (re-define after an id
+      // drift) rather than accumulating one identity per define.
+      const existing = instance.identities.find(
+        i => i.name === port.name && i.manufacturer === port.manufacturer);
+      if (existing) existing.webPortId = port.webPortId;
+      else instance.identities.push({ ...port });
+      instance.updatedAt = Date.now();
+
+      if (port.webPortId !== undefined) {
+        for (const other of appState.local.midi.library) {
+          if (other.id === instance.id) continue;
+          const kept = other.identities.filter(i => i.webPortId !== port.webPortId);
+          if (kept.length !== other.identities.length) {
+            other.identities = kept;
+            other.updatedAt = Date.now();
+            this.schedulePersist(other);
+          }
+        }
+      }
+    });
+    this.schedulePersist(instance);
+    this.manager.refreshMatching();
+    return instance;
   }
 
   renameDevice(id: string, name: string): void {

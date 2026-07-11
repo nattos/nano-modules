@@ -65,9 +65,9 @@ describe('forkInstance', () => {
     expect((parent.config as typeof MFT_TEMPLATE.defaultConfig).encoders[3].cc).toBe(77);
   });
 
-  it('forks a MobX-observable instance (define mode clicks a library fork)', () => {
-    // Regression: structuredClone throws DataCloneError on observable proxies;
-    // the library instances handed to forkAndClaim are exactly that.
+  it('forks a MobX-observable instance without DataCloneError', () => {
+    // Regression: structuredClone throws DataCloneError on observable
+    // proxies — any caller forking a live library instance hits that.
     const parent = observable(forkInstance(MFT_TEMPLATE));
     const child = forkInstance(parent);
     expect(child.parentId).toBe(parent.id);

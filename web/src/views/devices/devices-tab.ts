@@ -173,9 +173,11 @@ export class DevicesTab extends MobxLitElement {
     const define = devicesUi.defineMode;
     if (define) {
       if (!forkable) return;
-      const fork = midiController.forkAndClaim(id, define);
+      // Templates fork; an existing instance claims the port DIRECTLY (its
+      // wires must keep pointing at the instance the hardware now feeds).
+      const claimed = midiController.claimPort(id, define);
       devicesUi.exitDefineMode();
-      devicesUi.selectCard(fork.id);
+      devicesUi.selectCard(claimed.id);
       return;
     }
     devicesUi.selectCard(devicesUi.selectedCardId === id ? null : id);
