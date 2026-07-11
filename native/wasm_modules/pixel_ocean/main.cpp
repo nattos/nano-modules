@@ -30,6 +30,19 @@ namespace pixel_ocean {
 enum Composite { CompOcean = 0, CompTransparent = 1, CompCustom = 2, CompInput = 3 };
 
 static const int PO_CYCLE_LEN = 12;   // anim steps per life cycle (matches compute.hlsl)
+static const int PO_MAX_SPARK = 24;   // hard cap on live sparkles (uniform array size)
+
+// A sparkle is a small stateful twinkle that spawns near a live wave and plays
+// its 5-frame bloom on its own clock. Its position is fixed in the (separate,
+// viewport-aligned) sparkle grid at spawn — it does not track the wave after.
+struct Sparkle {
+  bool  active = false;
+  float age = 0.f;        // 0..1 across its life; frame = min(4, age*5)
+  float rate = 1.f;       // life/sec for this sparkle (carries the timing jitter)
+  int   gx = 0, gy = 0;   // sparkle-grid cell of the sprite centre
+  int   cx = 0, cy = 0;   // the wave cell it claimed (so two sparkles don't share)
+  uint32_t cdir = 0;
+};
 
 // Uniform layout — MUST match compute.hlsl's cbuffer byte-for-byte.
 struct Uniforms {
@@ -56,8 +69,14 @@ struct Uniforms {
   float fjit_cur, fjit_prev;  // u_fjit_cur / u_fjit_prev
   float t0_cur, t0_prev;      // u_t0_cur / u_t0_prev  (type thresholds)
   float t1_cur, t1_prev;      // u_t1_cur / u_t1_prev
+  // Sparkle layer.
+  float spark_cell_px;        // u_spark_cell_px
+  float spark_cos, spark_sin; // u_spark_cos / u_spark_sin
+  uint32_t spark_pad0;
+  float spark_color[4];       // u_spark_color
+  int32_t sparkles[24][4];    // u_sparkles: (gridX, gridY, frame, active)
 };
-static_assert(sizeof(Uniforms) == 160, "cbuffer mirror drifted from compute.hlsl");
+static_assert(sizeof(Uniforms) == 576, "cbuffer mirror drifted from compute.hlsl");
 
 struct State {
   // Pixel grid.
@@ -81,6 +100,14 @@ struct State {
   float dot_weight = 0.45f;
   float omega_weight = 0.35f;
   float spiral_weight = 0.20f;
+  // Sparkles (separate viewport-aligned grid).
+  float sparkle_rate = 0.5f;      // spawn rate
+  int sparkle_cap = 24;           // max live
+  float sparkle_size = 0.40f;     // sparkle grid pixel size (own, unlinked)
+  float sparkle_rotation = 0.0f;  // default 0 → aligned to the viewport
+  float sparkle_speed = 0.5f;     // animation rate
+  float sparkle_jitter = 0.5f;    // per-sparkle timing spread
+  float sparkle_color[3] = { 1.0f, 1.0f, 1.0f };
   // Tuning.
   int spawn_size = 12;
   float seed = 0.0f;
@@ -106,6 +133,13 @@ struct State {
   float fjit_cur = 1.0f,  fjit_prev = 1.0f;
   float t0_cur = 0.45f,   t0_prev = 0.45f;
   float t1_cur = 0.80f,   t1_prev = 0.80f;
+
+  // Sparkle runtime state.
+  Sparkle sparkles[PO_MAX_SPARK];
+  double spark_spawn_acc = 0.0;
+  uint32_t rng = 0;            // xorshift PRNG (deterministic given the tick stream)
+  bool spark_init = false;
+  int last_vp_w = 0, last_vp_h = 0;   // remembered from render() for tick's spawn math
 
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -219,6 +253,24 @@ void module_init() {
       .floatField("dot_weight", 0.45f, 0.f, 1.f, state::PrimaryInput).label("Dot Weight", "Dot")
       .floatField("omega_weight", 0.35f, 0.f, 1.f, state::PrimaryInput).label("Omega Weight", "Omega")
       .floatField("spiral_weight", 0.20f, 0.f, 1.f, state::PrimaryInput).label("Swirl Weight", "Swirl")
+      // --- Sparkles: a twinkle layer on its OWN viewport-aligned pixel grid ---
+      .group("sparkle", "Sparkles")
+        .groupHelp(
+          "A separate twinkle layer. Each sparkle claims a live wave (one no "
+          "other sparkle has), blooms its little star just up-left of it, then "
+          "fades — on its own clock, staggered from the rest. *Rate* is how "
+          "fast they appear (up to *Cap* live at once); *Speed* how fast they "
+          "bloom, *Timing Jitter* how much their clocks scatter. Critically the "
+          "sparkle grid is UNLINKED from the waves: *Sparkle Size* is its own "
+          "pixel pitch and *Sparkle Angle* its own rotation (default 0 = square "
+          "to the viewport, whatever the ocean's rotation).")
+      .floatField("sparkle_rate", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Sparkle Rate", "Rate")
+      .intField("sparkle_cap", 24, 0, 24, state::PrimaryInput).label("Sparkle Cap", "Cap")
+      .floatField("sparkle_speed", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Sparkle Speed", "Spd")
+      .floatField("sparkle_jitter", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Timing Jitter", "SJit")
+      .rgbField("sparkle_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Sparkle Colour", "SpkC")
+      .floatField("sparkle_size", 0.40f, 0.f, 1.f, state::SecondaryInput).label("Sparkle Size", "SpkPx")
+      .floatField("sparkle_rotation", 0.0f, -1.f, 1.f, state::SecondaryInput).label("Sparkle Angle", "SpkR")
       // --- Tuning + debug ---
       .group("tuning", "Tuning")
         .groupHelp(
@@ -246,6 +298,119 @@ void module_init() {
   // (no upstream tex_in) — "Input" composite then falls back to black.
   s_black = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA8);
   if (s_black.valid()) gpu::Device::clear(s_black, 0.f, 0.f, 0.f, 1.f);
+}
+
+// --- Sparkle helpers -------------------------------------------------------
+// Integer hash (mirror of nano_hash.hlsl's nano_uhash) + po_hash01, so the CPU
+// can ask "is this wave cell live?" exactly as the shader would.
+static inline uint32_t nano_uhash(uint32_t x) {
+  x ^= x >> 17; x *= 0xed5ad4bbu; x ^= x >> 11; x *= 0xac4c1b51u;
+  x ^= x >> 15; x *= 0x31848babu; x ^= x >> 14; return x;
+}
+static inline float po_hash01(int cx, int cy, uint32_t cycle, uint32_t stream, uint32_t seed) {
+  uint32_t h = nano_uhash(seed ^ (stream * 0x9E3779B9u));
+  h = nano_uhash(h + (uint32_t)cx);
+  h = nano_uhash(h + (uint32_t)cy);
+  h = nano_uhash(h + cycle);
+  return (float)h * (1.0f / 4294967296.0f);
+}
+enum { SS_GATE = 0, SS_TYPE = 1, SS_POSX = 2, SS_POSY = 3, SS_ANIM = 4 };  // *2+dir
+
+static inline uint32_t xorshift(uint32_t& s) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+static inline float rnd01(uint32_t& s) { return (float)(xorshift(s) >> 8) * (1.0f / 16777216.0f); }
+static inline int floorDiv(int a, int b) { int q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }
+static inline float gridColsFor(float px_size) { return 256.0f * std::pow(16.0f / 256.0f, px_size); }
+static inline int clampSpawn(int S) { return S < 8 ? 8 : (S > 24 ? 24 : S); }
+static inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+
+// Is the wave in spawn cell (cx,cy) of the `dir` lattice live now? If so, return
+// its anchor in co-moving wave-grid pixels. Mirrors po_cell_covers' gate/type/
+// active logic (ignoring the ±1 drift sub-step, which doesn't matter here).
+static bool waveLive(const State& s, uint32_t seed, int cx, int cy, uint32_t dir,
+                     float cycFrac, uint32_t cycIndex, float& ax, float& ay) {
+  int S = clampSpawn(s.spawn_size);
+  float phs = po_hash01(cx, cy, 0, SS_ANIM * 2u + dir, seed) * (float)PO_CYCLE_LEN;
+  float phi = (std::floor(phs) + (phs - std::floor(phs)) * s.anim_jitter) / (float)PO_CYCLE_LEN;
+  uint32_t cycle; float f;
+  if (cycFrac >= phi) { cycle = cycIndex;      f = cycFrac - phi; }
+  else                { cycle = cycIndex - 1u; f = cycFrac - phi + 1.0f; }
+  uint32_t step = (uint32_t)(f * (float)PO_CYCLE_LEN);
+  if (step >= (uint32_t)PO_CYCLE_LEN) step = PO_CYCLE_LEN - 1;
+  bool cur = (cycle == cycIndex);
+  float dens = cur ? s.dens_cur : s.dens_prev, back = cur ? s.back_cur : s.back_prev;
+  float t0 = cur ? s.t0_cur : s.t0_prev, t1 = cur ? s.t1_cur : s.t1_prev;
+  float p = (dir == 0u) ? dens * (1.0f - back) : dens * back;
+  float th = po_hash01(cx, cy, cycle, SS_TYPE * 2u + dir, seed);
+  uint32_t type = th < t0 ? 0u : (th < t1 ? 1u : 2u);
+  uint32_t gateKey;
+  if (type == 2u) { if (step >= 8u) return false; gateKey = cycle; }
+  else            { gateKey = cycle * 3u + step / 4u; }
+  if (po_hash01(cx, cy, gateKey, SS_GATE * 2u + dir, seed) >= p) return false;
+  int jx = (int)(po_hash01(cx, cy, cycle, SS_POSX * 2u + dir, seed) * (float)S);
+  int jy = (int)(po_hash01(cx, cy, cycle, SS_POSY * 2u + dir, seed) * (float)S);
+  ax = (float)(cx * S + jx);
+  ay = (float)(cy * S + jy);
+  return true;
+}
+
+// Try once to spawn a sparkle: sample random on-screen points until one lands on
+// a live wave no other sparkle has claimed, then place the sparkle just up-left
+// of that wave in the (separate, viewport-aligned) sparkle grid.
+static void trySpawnSparkle(State& s) {
+  if (s.last_vp_w <= 0 || s.last_vp_h <= 0) return;
+  auto [aspx, aspy] = fx::coverSquare(s.last_vp_w, s.last_vp_h);
+  const float PI = 3.14159265f;
+  float wcell = 2.0f / gridColsFor(s.pixel_size);
+  float wcos = std::cos(s.rotation * PI), wsin = std::sin(s.rotation * PI);
+  float scell = 2.0f / gridColsFor(s.sparkle_size);
+  float scos = std::cos(s.sparkle_rotation * PI), ssin = std::sin(s.sparkle_rotation * PI);
+  int S = clampSpawn(s.spawn_size);
+  uint32_t seed = (uint32_t)(s.seed * 65535.0f);
+  float cycFrac = (float)(s.cyc_phase - std::floor(s.cyc_phase));
+  uint32_t cycIndex = (uint32_t)s.cyc_index;
+  int driftSteps = (int)(uint32_t)(uint64_t)s.drift_acc;
+  int fwdSteps   = (int)(uint32_t)(uint64_t)s.forward_acc;
+
+  for (int attempt = 0; attempt < 48; attempt++) {
+    uint32_t dir = (rnd01(s.rng) < s.backwards) ? 1u : 0u;
+    int d = (dir == 0u) ? 1 : -1;
+    // Random viewport point → cover square → wave grid → co-moving cell.
+    float sqx = (rnd01(s.rng) - 0.5f) / aspx, sqy = (rnd01(s.rng) - 0.5f) / aspy;
+    float gwx = ( wcos * sqx + wsin * sqy) / wcell;
+    float gwy = (-wsin * sqx + wcos * sqy) / wcell;
+    int px = (int)std::floor(gwx) - d * driftSteps;
+    int py = (int)std::floor(gwy) + d * fwdSteps;
+    int cx = floorDiv(px, S), cy = floorDiv(py, S);
+
+    float ax, ay;
+    if (!waveLive(s, seed, cx, cy, dir, cycFrac, cycIndex, ax, ay)) continue;
+    bool taken = false;
+    for (int i = 0; i < PO_MAX_SPARK; i++)
+      if (s.sparkles[i].active && s.sparkles[i].cx == cx && s.sparkles[i].cy == cy
+          && s.sparkles[i].cdir == dir) { taken = true; break; }
+    if (taken) continue;
+
+    // Wave anchor → its screen grid pos → cover square → sparkle grid cell.
+    float gsx = ax + (float)(d * driftSteps);
+    float gsy = ay - (float)(d * fwdSteps);
+    float wsqx = wcell * (wcos * gsx - wsin * gsy);
+    float wsqy = wcell * (wsin * gsx + wcos * gsy);
+    float sgx = ( scos * wsqx + ssin * wsqy) / scell;
+    float sgy = (-ssin * wsqx + scos * wsqy) / scell;
+    int scx = (int)std::floor(sgx - (rnd01(s.rng) * 3.0f + 0.5f));   // biased up-left
+    int scy = (int)std::floor(sgy - (rnd01(s.rng) * 3.0f + 0.5f));
+
+    for (int i = 0; i < PO_MAX_SPARK; i++) {
+      if (s.sparkles[i].active) continue;
+      Sparkle& sp = s.sparkles[i];
+      float j = 1.0f + (rnd01(s.rng) - 0.5f) * 1.2f * s.sparkle_jitter;
+      sp.active = true; sp.age = 0.f;
+      sp.rate = (0.4f + s.sparkle_speed * 3.0f) * (j < 0.2f ? 0.2f : j);
+      sp.gx = scx; sp.gy = scy; sp.cx = cx; sp.cy = cy; sp.cdir = dir;
+      return;
+    }
+    return;   // no free slot
+  }
 }
 
 void* create() {
@@ -312,6 +477,30 @@ void tick(void* self, double dt) {
   // wave in a lattice to share one translation).
   s->drift_acc   += dt * driftStepsPerSec(s->drift_rate);
   s->forward_acc += dt * forwardStepsPerSec(s->forward_rate);
+
+  // Sparkles: advance each one's own clock, retire finished ones, and spawn new
+  // ones (on live waves) up to the cap at the spawn rate.
+  if (!s->spark_init) {
+    s->rng = nano_uhash(0x53504b21u ^ (uint32_t)(s->seed * 65535.0f)) | 1u;
+    s->spark_init = true;
+  }
+  int live = 0;
+  for (int i = 0; i < PO_MAX_SPARK; i++) {
+    Sparkle& sp = s->sparkles[i];
+    if (!sp.active) continue;
+    sp.age += (float)dt * sp.rate;
+    if (sp.age >= 1.0f) sp.active = false;
+    else live++;
+  }
+  int cap = s->sparkle_cap < 0 ? 0 : (s->sparkle_cap > PO_MAX_SPARK ? PO_MAX_SPARK : s->sparkle_cap);
+  s->spark_spawn_acc += dt * (std::pow(30.0, (double)clamp01(s->sparkle_rate)) - 1.0);
+  int guard = 0;
+  while (s->spark_spawn_acc >= 1.0 && live < cap && guard++ < PO_MAX_SPARK) {
+    s->spark_spawn_acc -= 1.0;
+    trySpawnSparkle(*s);
+    live = 0;
+    for (int i = 0; i < PO_MAX_SPARK; i++) if (s->sparkles[i].active) live++;
+  }
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -348,6 +537,16 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "dot_weight"))    s->dot_weight = state::patchFloat(i);
     else if (state::pathIs(p, l, "omega_weight"))  s->omega_weight = state::patchFloat(i);
     else if (state::pathIs(p, l, "spiral_weight")) s->spiral_weight = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_rate"))     s->sparkle_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_cap"))      s->sparkle_cap = state::patchInt(i);
+    else if (state::pathIs(p, l, "sparkle_speed"))    s->sparkle_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_jitter"))   s->sparkle_jitter = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_size"))     s->sparkle_size = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_rotation")) s->sparkle_rotation = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_color")) {
+      auto v = state::patchVec3(i);
+      s->sparkle_color[0] = v.x; s->sparkle_color[1] = v.y; s->sparkle_color[2] = v.z;
+    }
     else if (state::pathIs(p, l, "spawn_size"))   s->spawn_size = state::patchInt(i);
     else if (state::pathIs(p, l, "seed"))         s->seed = state::patchFloat(i);
     else if (state::pathIs(p, l, "debug_cells"))  s->debug_cells = state::patchBool(i);
@@ -398,11 +597,33 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.fjit_cur = s->fjit_cur; u.fjit_prev = s->fjit_prev;
   u.t0_cur = s->t0_cur; u.t0_prev = s->t0_prev;
   u.t1_cur = s->t1_cur; u.t1_prev = s->t1_prev;
+
+  // Sparkle layer: its own grid + the live sparkle list (grid cell + frame).
+  u.spark_cell_px = 2.0f / gridColsFor(s->sparkle_size);
+  u.spark_cos = std::cos(s->sparkle_rotation * 3.14159265f);
+  u.spark_sin = std::sin(s->sparkle_rotation * 3.14159265f);
+  u.spark_pad0 = 0;
+  u.spark_color[0] = s->sparkle_color[0];
+  u.spark_color[1] = s->sparkle_color[1];
+  u.spark_color[2] = s->sparkle_color[2];
+  u.spark_color[3] = 1.0f;
+  for (int i = 0; i < PO_MAX_SPARK; i++) {
+    const Sparkle& sp = s->sparkles[i];
+    if (sp.active) {
+      int frame = (int)(sp.age * 5.0f);
+      frame = frame < 0 ? 0 : (frame > 4 ? 4 : frame);
+      u.sparkles[i][0] = sp.gx; u.sparkles[i][1] = sp.gy;
+      u.sparkles[i][2] = frame; u.sparkles[i][3] = 1;
+    } else {
+      u.sparkles[i][0] = u.sparkles[i][1] = u.sparkles[i][2] = u.sparkles[i][3] = 0;
+    }
+  }
 }
 
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
+  s->last_vp_w = vp_w; s->last_vp_h = vp_h;   // remembered for tick's sparkle spawn
 
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");

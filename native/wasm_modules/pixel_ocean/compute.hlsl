@@ -60,6 +60,12 @@ cbuffer Uniforms : register(b2) {
   float  u_fjit_cur,  u_fjit_prev;    // Y-forward sub-step jitter
   float  u_t0_cur,    u_t0_prev;      // type cumulative thresholds (weights): <t0 dot,
   float  u_t1_cur,    u_t1_prev;      //   <t1 omega, else spiral
+  // --- Sparkle layer: a separate, viewport-aligned pixel grid drawn on top ---
+  float  u_spark_cell_px;             // cover-square units per sparkle grid pixel
+  float  u_spark_cos, u_spark_sin;    // sparkle grid rotation (default 0 → 1,0)
+  uint   u_spark_pad0;
+  float4 u_spark_color;               // sparkle colour
+  int4   u_sparkles[24];              // per sparkle: (gridX, gridY, frame, active)
 };
 
 // ---------------------------------------------------------------------------
@@ -129,6 +135,18 @@ static const uint PO_SPRITES[14] = {
   //      ....     ....     ....     ....
   //      ....     ....     ....     ....
   0x00448886u, 0x00448896u, 0x00448996u, 0x00448B96u,
+};
+
+// Sparkle sprites: 7×7, 5 frames — a twinkle that blooms from a dot out to a
+// diamond and bursts. 49 bits per frame → two uints (lo = bits 0..31, hi = 32+).
+// bit = y*7 + x, centred at (3,3).
+#define PO_SPARK_ACT 5u
+static const uint2 PO_SPARK[5] = {
+  uint2(0x01000000u, 0x00000000u),   // f0  ·  (dot)
+  uint2(0x82820000u, 0x00000000u),   // f1  small diamond
+  uint2(0x04400400u, 0x00000040u),   // f2  wider diamond
+  uint2(0x44450400u, 0x00000041u),   // f3  full diamond
+  uint2(0x08200008u, 0x00002000u),   // f4  burst (4 far points)
 };
 
 // Hash streams. Effective stream id = base*2 + dir_bit, so the forward and
@@ -296,6 +314,24 @@ void main(uint3 gid : SV_DispatchThreadID) {
         wave = po_cell_covers(cx0 + ox, cy0 + oy, px, py, dir, S);
   }
   if (wave) acc = float4(u_wave.rgb, 1.0);
+
+  // --- Sparkle layer: its own viewport-aligned grid, drawn on top ---
+  // This pixel's sparkle-grid cell (same cover square, sparkle rotation/pitch).
+  float2 gs = float2( u_spark_cos * sq.x + u_spark_sin * sq.y,
+                     -u_spark_sin * sq.x + u_spark_cos * sq.y) / u_spark_cell_px;
+  int ssx = int(floor(gs.x));
+  int ssy = int(floor(gs.y));
+  for (uint si = 0u; si < 24u; si++) {
+    int4 sp = u_sparkles[si];
+    if (sp.w == 0) continue;                       // inactive slot
+    int lx = ssx - sp.x + 3;                       // sprite is centred at (3,3)
+    int ly = ssy - sp.y + 3;
+    if (lx < 0 || lx >= 7 || ly < 0 || ly >= 7) continue;
+    uint b = uint(ly * 7 + lx);
+    uint2 bits = PO_SPARK[uint(sp.z)];
+    uint on = (b < 32u) ? (bits.x >> b) : (bits.y >> (b - 32u));
+    if ((on & 1u) != 0u) { acc = float4(u_spark_color.rgb, 1.0); break; }
+  }
 
   // Debug overlay: forward-lattice cell borders + a faint tint on cells whose
   // current cycle is active.

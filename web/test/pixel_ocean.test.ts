@@ -273,6 +273,25 @@ describe('Pixel Ocean', () => {
     swirls.expectDifferentFrom(dots, 20);
   });
 
+  it('sparkle layer blooms twinkles over the sea (and none when off)', async () => {
+    // Sparkles spawn CPU-side in tick() using the last render's viewport, so
+    // they only appear when tick/render interleave — renderEachTick does that.
+    const base = {
+      module: 'source.pixel.ocean' as const, bundle: 'nano' as const, width: 128, height: 128,
+      inputColor: [0, 0, 0, 1] as [number, number, number, number], renderEachTick: true, ticks: 50,
+    };
+    const common: [string, number | number[]][] = [
+      ['density', 1.0], ['rotation', 0.0], ['pixel_size', 0.5], ['anim_rate', 0.5],
+      ['sparkle_speed', 0.4], ['sparkle_size', 0.5], ['sparkle_color', [1, 0, 0]],
+    ];
+    const isRed = (c: { r: number; g: number; b: number }) => c.r > 180 && c.g < 70 && c.b < 70;
+    const on = await runGpuEffectTest({ ...base, params: [...common, ['sparkle_rate', 1.0]] as any });
+    const off = await runGpuEffectTest({ ...base, params: [...common, ['sparkle_rate', 0.0]] as any });
+    expect(on.success && off.success).toBe(true);
+    on.expectCoverage(isRed, { min: 0.002 });     // red sparkles present
+    off.expectCoverage(isRed, { max: 0.0002 });   // and gone when the layer is off
+  });
+
   it('debug cell overlay draws the lattice', async () => {
     const base = {
       module: 'source.pixel.ocean' as const, bundle: 'nano' as const,
