@@ -64,7 +64,7 @@ export class SketchApp extends MobxLitElement {
           // as Edit — W-mode wires drag between device controls and editor
           // fields); the device grid replaces the monitor AREA, and the main
           // output pops out to the floating overlay rendered below.
-          id: 'devices', icon: 'la-braille', title: 'Devices', kind: 'inline', render: () => html`
+          id: 'devices', icon: 'la-icons', title: 'Devices', kind: 'inline', render: () => html`
           <sketch-column-editor
             .sketchId=${sketchId}
             emptyMessage="No sketch selected for editing. Go to Instances and pick one."

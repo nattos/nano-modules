@@ -89,7 +89,7 @@ export class EffectIdeApp extends MobxLitElement {
           // lookup finds it at `.left-panel sketch-column-editor`); the device
           // grid takes over the monitor area, and the output pops out to the
           // floating overlay below.
-          id: 'devices', icon: 'la-braille', title: 'Devices', kind: 'inline', render: () => html`
+          id: 'devices', icon: 'la-icons', title: 'Devices', kind: 'inline', render: () => html`
           <sketch-column-editor
             .sketchId=${sel}
             emptyMessage="No project selected. Pick one in the explorer first."
