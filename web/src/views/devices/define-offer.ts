@@ -5,15 +5,15 @@
  *
  * When a plugged-in MIDI input matches no library instance it lands in
  * `appState.local.midi.unknownPorts`; each such port gets ONE sticky snackbar
- * per session offering to define it. "Define" jumps to the Devices tab and
- * enters define mode for that port (fork a template/instance → claim). The
- * snackbar auto-dismisses when the port stops being unknown — claimed via
- * define mode or unplugged — and never re-toasts for the same port (replug /
- * rematch churn, or a dismissed offer): the Devices tab's "unrecognized" card
- * carries a persistent define button instead.
+ * EVER (persisted in userSettings.midiOfferedPorts, so replug / rematch
+ * churn / the next session never re-toast) offering to define it. "Define"
+ * jumps to the Devices tab and enters define mode for that port (fork a
+ * template/instance → claim). The snackbar auto-dismisses when the port
+ * stops being unknown — claimed via define mode or unplugged. The Devices
+ * tab's "unrecognized" card carries the persistent define affordance.
  */
 
-import { autorun } from 'mobx';
+import { autorun, untracked } from 'mobx';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
 import { snackbars } from '../../widgets/snackbars';
@@ -26,8 +26,6 @@ export function installDeviceDefineOffers(): void {
   // portKey → live snackbar id, so a port that stops being unknown can pull
   // its own snackbar down.
   const shown = new Map<string, number>();
-  // Ports we've already offered this session — one toast per device, ever.
-  const offered = new Set<string>();
 
   autorun(() => {
     const unknown = appState.local.midi.unknownPorts;
@@ -40,10 +38,16 @@ export function installDeviceDefineOffers(): void {
       }
     }
 
+    // Read the persisted offered set untracked: showing a toast records into
+    // it below, and observing our own write would re-run the autorun for
+    // nothing (the loop converges, but why churn).
+    const offered = new Set(untracked(() => appState.local.userSettings.midiOfferedPorts));
+
     for (const port of unknown) {
       const key = portKey(port);
       if (offered.has(key)) continue;
       offered.add(key);
+      appController.setUserSetting('midiOfferedPorts', [...offered]);
       const label = port.name || 'Unknown MIDI device';
       const id = snackbars.show({
         message: `Unknown MIDI device «${label}»`,

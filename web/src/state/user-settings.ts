@@ -32,6 +32,7 @@ export function defaultUserSettings(): UserSettings {
     lastCompositionBarrelIds: [],
     deviceFilters: { connected: true, disconnected: true, templates: true, deleted: false },
     devicesMonitorHeight: 180,
+    midiOfferedPorts: [],
   };
 }
 

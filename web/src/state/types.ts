@@ -183,6 +183,12 @@ export interface UserSettings {
   /** Height (px) of the Devices tab's floating output monitor (aspect-locked). */
   devicesMonitorHeight: number;
   /**
+   * Unknown-MIDI-device ports (`manufacturer|name`) whose define-offer
+   * snackbar has already been shown — once EVER, across sessions; the
+   * Devices tab's "unrecognized" card is the persistent affordance.
+   */
+  midiOfferedPorts: string[];
+  /**
    * Which of the three top-level surfaces this session prefers. Set at boot
    * time to reflect the actual surface (see `boot.ts`); changed explicitly via
    * the Settings tab's mode selector, which navigates to the matching entry
