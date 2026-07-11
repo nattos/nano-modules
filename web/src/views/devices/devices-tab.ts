@@ -140,6 +140,8 @@ export class DevicesTab extends MobxLitElement {
       cursor: pointer;
     }
     .enable:hover { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
+    /* Slotted into the ghost card's body (light DOM — styled from here). */
+    .ghost-define { display: block; margin: 6px auto; padding: 2px 16px; }
   `;
 
   private readonly onKeyDown = (e: KeyboardEvent) => {
@@ -221,14 +223,19 @@ export class DevicesTab extends MobxLitElement {
 
   private renderGhostCard(port: PhysicalIdentity) {
     // Plugged in but unknown — a placeholder, never forkable (you fork a
-    // template/instance FOR it in define mode).
+    // template/instance FOR it in define mode). Its define button is the
+    // persistent entry into define mode (the snackbar offer only shows once).
     return html`
       <device-card
         .name=${port.name || 'Unknown device'}
         .subtitle=${port.manufacturer}
         .status=${'ghost'}
         ?dimmed=${devicesUi.defineMode !== null}
-      ></device-card>
+      >
+        <button class="enable ghost-define"
+          @click=${(e: Event) => { e.stopPropagation(); devicesUi.enterDefineMode(port); }}
+        >define</button>
+      </device-card>
     `;
   }
 
