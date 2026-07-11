@@ -183,6 +183,15 @@ export class DevicesTab extends MobxLitElement {
     devicesUi.selectCard(devicesUi.selectedCardId === id ? null : id);
   }
 
+  /** Re-enter define mode for an already-claimed device (its port never
+   *  shows as unknown, so this is the only path to move it to another
+   *  instance — e.g. the fork that actually holds the wires). */
+  private onReassign(instanceId: string) {
+    const port = midiController.manager.connectedPortIdentity(instanceId);
+    if (!port) return;
+    devicesUi.enterDefineMode(port);
+  }
+
   private renderInstanceCard(instance: DeviceInstance, status: 'connected' | 'disconnected' | 'deleted') {
     const define = devicesUi.defineMode !== null;
     const forkable = define && !instance.deleted;
@@ -191,10 +200,12 @@ export class DevicesTab extends MobxLitElement {
         .name=${instance.name}
         .subtitle=${''}
         .status=${status}
+        .actionLabel=${status === 'connected' && !define ? 'reassign' : ''}
         ?selected=${devicesUi.selectedCardId === instance.id}
         ?forkable=${forkable}
         ?dimmed=${define && !forkable}
         @click=${() => this.onCardClick(instance.id, forkable)}
+        @card-action=${() => this.onReassign(instance.id)}
       >
         <device-surface
           .deviceId=${instance.id}

@@ -22,6 +22,9 @@ export class DeviceCard extends MobxLitElement {
   @property({ type: Boolean, reflect: true }) declare forkable: boolean;
   /** Define mode: everything non-forkable grays out. */
   @property({ type: Boolean, reflect: true }) declare dimmed: boolean;
+  /** Optional header action (e.g. 'reassign' on connected cards) — clicking
+   *  fires 'card-action' without triggering the card's own click. */
+  @property() declare actionLabel: string;
 
   constructor() {
     super();
@@ -31,6 +34,7 @@ export class DeviceCard extends MobxLitElement {
     this.selected = false;
     this.forkable = false;
     this.dimmed = false;
+    this.actionLabel = '';
   }
 
   static styles = css`
@@ -107,6 +111,20 @@ export class DeviceCard extends MobxLitElement {
       text-transform: uppercase;
       letter-spacing: 0.06em;
     }
+    .action {
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color2);
+      background: none;
+      border: 1px solid var(--app-tint-4);
+      border-radius: 1px;
+      padding: 0 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+    }
+    .action:hover { border-color: var(--app-hi-color2); color: var(--app-hi-color2); }
     .sub {
       padding: 2px 8px 0;
       font-size: var(--app-fs-xs);
@@ -132,6 +150,11 @@ export class DeviceCard extends MobxLitElement {
         <div class="dot ${this.status === 'connected' ? 'on' : ''}"></div>
         <div class="name" title=${this.name}>${this.name}</div>
         ${badge ? html`<div class="badge">${badge}</div>` : nothing}
+        ${this.actionLabel ? html`
+          <button class="action" @click=${(e: Event) => {
+            e.stopPropagation();
+            this.dispatchEvent(new CustomEvent('card-action', { bubbles: true, composed: true }));
+          }}>${this.actionLabel}</button>` : nothing}
       </div>
       ${this.subtitle ? html`<div class="sub">${this.subtitle}</div>` : nothing}
       <div class="body"><slot></slot></div>

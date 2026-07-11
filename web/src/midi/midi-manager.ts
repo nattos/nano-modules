@@ -89,6 +89,18 @@ export class MidiManager {
 
   isConnected(instanceId: string): boolean { return this.connected.has(instanceId); }
 
+  /** The physical port an instance is currently paired with — feeds the
+   *  "reassign" flow (re-enter define mode for an already-claimed device). */
+  connectedPortIdentity(instanceId: string): PhysicalIdentity | null {
+    const device = this.connected.get(instanceId);
+    if (!device) return null;
+    return {
+      name: device.input.name ?? '',
+      manufacturer: device.input.manufacturer ?? '',
+      webPortId: device.input.id,
+    };
+  }
+
   activeBank(instanceId: string): number { return this.connected.get(instanceId)?.driver.activeBank ?? 0; }
 
   unknownPorts(): readonly PhysicalIdentity[] { return this.unknown; }
@@ -196,8 +208,12 @@ export class MidiManager {
     }
 
     // Anything left in `connected` lost its port (or its instance) this pass.
+    // If the port was REASSIGNED to another instance (define-mode reassign),
+    // openDevice above already installed the new handler on the same input —
+    // don't null it out from under the new owner.
+    const reassignedInputs = new Set([...next.values()].map(d => d.input.id));
     for (const [instanceId, device] of this.connected) {
-      device.input.onmidimessage = null;
+      if (!reassignedInputs.has(device.input.id)) device.input.onmidimessage = null;
       device.driver.dispose();
       this.onConnectionChanged?.(instanceId, false);
     }

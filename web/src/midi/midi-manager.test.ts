@@ -78,6 +78,29 @@ describe('MidiManager', () => {
     expect(events.changed).toEqual([inst.id]);
   });
 
+  it('reassigning a port to another instance keeps the new message handler', () => {
+    // Regression: the disposal pass nulled input.onmidimessage AFTER
+    // openDevice installed the new owner's handler on the same input —
+    // reassigned devices showed connected but received nothing.
+    const a = twisterInstance();
+    const b = twisterInstance();
+    b.identities[0].webPortId = 'in-a';        // b claims the port exactly
+    const library = [a, b];
+    const { access, manager } = setup(library);
+    const { input } = access.addPair('a', 'Midi Fighter Twister', 'DJ TechTools');
+    expect(manager.isConnected(b.id)).toBe(true);
+
+    // Reassign: the exact claim moves b → a (what claimPort does), rematch.
+    a.identities[0].webPortId = 'in-a';
+    b.identities = [];
+    manager.refreshMatching();
+    expect(manager.isConnected(a.id)).toBe(true);
+    expect(manager.isConnected(b.id)).toBe(false);
+    expect(typeof input.onmidimessage).toBe('function');
+    input.onmidimessage!({ data: new Uint8Array([0xb0, 5, 127]), timeStamp: 0 });
+    expect(manager.getValue(a.id, 'b0/e05/turn')).toBe(1);
+  });
+
   it('reports unmatched ports as unknown', () => {
     const { access, events } = setup([]);
     access.addPair('x', 'Mystery Pad', 'Acme');
