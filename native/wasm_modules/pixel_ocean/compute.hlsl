@@ -73,8 +73,8 @@ cbuffer Uniforms : register(b2) {
 //
 // Sprites are drawn for the FORWARD cohort, which travels UP (−Y) — so the
 // leading edge is at the TOP and the trailing "stem" points DOWN. Each type
-// has its own box: dot/omega are 8 wide × 4 tall, the spiral is 4 wide × 8 tall
-// (a VERTICAL curl). One uint bitmask per frame, bit index = y*W + x (x=0 left,
+// has its own box: the dot is 8×4, the omega 9×3, the spiral 4×8 (a VERTICAL
+// curl). One uint bitmask per frame, bit index = y*W + x (x=0 left,
 // y=0 top; anchor = top-left corner). The backward cohort renders the same art
 // reflected 180°. Placeholder art — hand-tune these constants in the IDE.
 // ---------------------------------------------------------------------------
@@ -83,8 +83,8 @@ cbuffer Uniforms : register(b2) {
 
 static const uint PO_ACT_LEN[3]    = { 12u, 12u, 8u };  // dot, omega, spiral
 static const uint PO_FRAME_BASE[3] = { 0u, 3u, 6u };    // dot 3, omega 3, spiral 8
-static const uint PO_BOX_W[3]      = { 8u, 8u, 4u };    // per-type sprite box width
-static const uint PO_BOX_H[3]      = { 4u, 4u, 8u };    //              …    height
+static const uint PO_BOX_W[3]      = { 8u, 9u, 4u };    // per-type sprite box width
+static const uint PO_BOX_H[3]      = { 4u, 3u, 8u };    //              …    height
 
 static const uint PO_SPRITES[14] = {
   // type 0 — dot (8×4): a two-pixel fleck that blinks to a single dot and splits
@@ -94,13 +94,13 @@ static const uint PO_SPRITES[14] = {
   //        ........      ........        ........
   //        ........      ........        ........
   0x00001800u, 0x00000800u, 0x00002400u,
-  // type 1 — omega crest (8×4): the classic two-hump "w" (2px-wide peaks) that
-  // breathes flat → normal → sharp (peaks raised a row). Ping-pongs 0,1,2,1.
-  //   flat ........  normal ........  sharp .##.##..
-  //        .##..##.         .##.##..        .##.##..
-  //        #..##..#         #..#..#.        #..#..#.
-  //        ........         ........        ........
-  0x00996600u, 0x00493600u, 0x00493636u,
+  // type 1 — omega crest (9×3): a two-hump "w" that breathes flat → normal →
+  // sharp. flat = low humps at the far edges, normal = the classic 2px-peak w,
+  // sharp = a pointy 1px-peak w. Ping-pongs 0,1,2,1. bit = y*9 + x.
+  //   flat .........  normal .........  sharp .........
+  //        .........         ..##.##..        ...#.#...
+  //        ##.....##         .#..#..#.        ..#.#.#..
+  0x060C0000u, 0x0248D800u, 0x01505000u,
   // type 2 — spiral / wind curl (4×8, VERTICAL): forward travels UP, so the coil
   // leads at the TOP and the stem trails DOWNWARD. An inward SWIRL (open coil,
   // not a closed ring) that unrolls and draws its stem out. bit = y*4 + x.
@@ -259,8 +259,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // so in the co-moving frame every wave is static.
   //
   // Candidate-cell bounds: a cell's anchor stays inside it (±1 px of sub-step
-  // stagger per axis) and the sprite boxes are at most 8×8, so with S ≥ 8 a
-  // pixel can only be covered by cells at ox ∈ [−1, +1], oy ∈ [−1, +1].
+  // stagger per axis); the widest sprite is 9 (omega) and tallest 8 (spiral),
+  // so with S ≥ 8 a pixel can only be covered by cells at ox ∈ [−2, +1] (9 wide
+  // can straddle an extra cell), oy ∈ [−1, +1].
   bool wave = false;
   for (uint dir = 0u; dir < 2u && !wave; dir++) {
     // Coarse skip: no wave in this direction if BOTH captured cycles gate it out
@@ -274,7 +275,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     int py  = gy + d * int(u_forward_steps);   // un-drift Y (forward travels −Y)
     int cx0 = po_div_floor(px, S);
     int cy0 = po_div_floor(py, S);
-    for (int ox = -1; ox <= 1 && !wave; ox++)
+    for (int ox = -2; ox <= 1 && !wave; ox++)
       for (int oy = -1; oy <= 1 && !wave; oy++)
         wave = po_cell_covers(cx0 + ox, cy0 + oy, px, py, dir, S);
   }
