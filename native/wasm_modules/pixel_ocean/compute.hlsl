@@ -79,9 +79,15 @@ cbuffer Uniforms : register(b2) {
 // reflected 180°. Placeholder art — hand-tune these constants in the IDE.
 // ---------------------------------------------------------------------------
 
-#define PO_CYCLE_LEN 16u
+// The cycle is split into 3 sub-cycles (loop points). The dot/omega loop once
+// per sub-cycle — 3 loops per cycle — and re-gate (spawn/despawn) at each; the
+// swirl runs its single 8-frame unroll across the whole cycle, so in the same
+// time it loops once while the others loop three times.
+#define PO_CYCLE_LEN 12u
+#define PO_SUB_LEN    4u   // steps per dot/omega loop (one ping-pong)
+#define PO_NSUB       3u   // sub-cycles per cycle
+#define PO_SWIRL_ACT  8u   // swirl's 8-frame unroll, then rest to the cycle end
 
-static const uint PO_ACT_LEN[3]    = { 12u, 12u, 8u };  // dot, omega, spiral
 static const uint PO_FRAME_BASE[3] = { 0u, 3u, 6u };    // dot 3, omega 3, spiral 8
 static const uint PO_BOX_W[3]      = { 8u, 9u, 4u };    // per-type sprite box width
 static const uint PO_BOX_H[3]      = { 4u, 3u, 8u };    //              …    height
@@ -192,16 +198,29 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   float t0   = cur ? u_t0_cur   : u_t0_prev;
   float t1   = cur ? u_t1_cur   : u_t1_prev;
 
-  // Existence gates per (cell, cycle) against the density/backwards CAPTURED at
-  // this cell's cycle start — so a live density/backwards change only affects
-  // cycles that begin after it, never a wave already animating.
   float p = (dir == 0u) ? dens * (1.0 - back) : dens * back;
-  if (po_hash01(cx, cy, cycle, PO_S_GATE * 2u + dir) >= p) return false;
 
-  // Type by the captured per-shape weights (t0/t1 partition [0,1)).
+  // Type is per (cell, cycle) so a swirl keeps its whole-cycle slot (weights t0/t1).
   float th = po_hash01(cx, cy, cycle, PO_S_TYPE * 2u + dir);
   uint type = th < t0 ? 0u : (th < t1 ? 1u : 2u);       // dot / omega / spiral
-  if (step >= PO_ACT_LEN[type]) return false;           // rest gap
+
+  // Animation frame + the key the existence gate is rolled against. The swirl
+  // runs once over the cycle (gate per cycle); the dot/omega loop once per
+  // sub-cycle and re-gate (spawn/despawn) at each of the 3 loop points.
+  uint frame, gateKey;
+  if (type == 2u) {                                     // swirl: one loop / cycle
+    if (step >= PO_SWIRL_ACT) return false;             // 8-frame unroll, then rest
+    frame = step;
+    gateKey = cycle;
+  } else {                                              // dot/omega: 3 sub-loops
+    uint m = step % PO_SUB_LEN;                          // 0..3 within this loop
+    frame = (m == 3u) ? 1u : m;                          // ping-pong 0,1,2,1
+    gateKey = cycle * PO_NSUB + (step / PO_SUB_LEN);     // unique per (cell,cycle,sub)
+  }
+
+  // Density/backwards gate at this loop point, against the CAPTURED values — a
+  // live density/backwards change only lands on cycles that begin after it.
+  if (po_hash01(cx, cy, gateKey, PO_S_GATE * 2u + dir) >= p) return false;
 
   // Anchor: stratified-jittered inside the cell (re-rolled each cycle), plus
   // this cell's per-axis sub-step drift stagger e ∈ {0,1} — the fraction of a
@@ -226,10 +245,6 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   // but still points the same direction — no reflection.
   uint bx = uint(dx);
   uint by = uint(dy);
-
-  uint frame;
-  if (type == 2u) frame = step;                          // spiral: play its 8 once
-  else { uint m = step % 4u; frame = (m == 3u) ? 1u : m; } // dot/omega ping-pong 0,1,2,1
   uint bits = PO_SPRITES[PO_FRAME_BASE[type] + frame];
   return ((bits >> (by * uint(W) + bx)) & 1u) != 0u;
 }
@@ -296,7 +311,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
       po_cell_cycle(cx, cy, 0u, cycle, step);
       bool curc = (cycle == u_cyc_index);
       float p = (curc ? u_dens_cur : u_dens_prev) * (1.0 - (curc ? u_back_cur : u_back_prev));
-      if (po_hash01(cx, cy, cycle, PO_S_GATE * 2u) < p)
+      uint gk = cycle * PO_NSUB + (step / PO_SUB_LEN);   // current sub-cycle's gate
+      if (po_hash01(cx, cy, gk, PO_S_GATE * 2u) < p)
         acc.rgb = lerp(acc.rgb, float3(1.0, 1.0, 1.0), 0.10);
     }
   }

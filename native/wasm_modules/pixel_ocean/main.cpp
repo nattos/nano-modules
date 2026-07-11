@@ -29,7 +29,7 @@ namespace pixel_ocean {
 
 enum Composite { CompOcean = 0, CompTransparent = 1, CompCustom = 2, CompInput = 3 };
 
-static const int PO_CYCLE_LEN = 16;   // anim steps per life cycle (matches compute.hlsl)
+static const int PO_CYCLE_LEN = 12;   // anim steps per life cycle (matches compute.hlsl)
 
 // Uniform layout — MUST match compute.hlsl's cbuffer byte-for-byte.
 struct Uniforms {
