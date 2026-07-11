@@ -380,6 +380,7 @@ enum class Capability {
   ModulationSourceMulti,   //   ...several channels; the user picks one
   ModulationShaper,        // transforms modulation value(s): N in -> M out
   ModulationShaperUnary,   //   ...1 in -> 1 out (e.g. the envelope remapper)
+  ModulationShaperBinary,  //   ...2 in -> 1 out (e.g. the binary combiner)
   TriggerSource,           // emits structured trigger EVENTS ({on, channel, velocity})
                            //   via a published "triggers" ring — launches scenes through
                            //   rails (never the scalar wire fold)
@@ -398,6 +399,7 @@ inline const char* capabilityName(Capability c) {
     case Capability::ModulationSourceMulti:  return "modulation_source_multi";
     case Capability::ModulationShaper:       return "modulation_shaper";
     case Capability::ModulationShaperUnary:  return "modulation_shaper_unary";
+    case Capability::ModulationShaperBinary: return "modulation_shaper_binary";
     case Capability::TriggerSource:          return "trigger_source";
     case Capability::TimeIndependent:        return "time_independent";
     case Capability::SeekablePrefill:        return "seekable_prefill";

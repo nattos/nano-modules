@@ -112,6 +112,7 @@ wasm_build \
   ../auto_level/main.cpp \
   ../twitch_mask/main.cpp \
   ../mod_remap/main.cpp \
+  ../mod_combine/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_delay/main.cpp \
   ../mod_envelope/main.cpp \

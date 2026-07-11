@@ -215,6 +215,7 @@ export type DeviceCapability =
   | 'modulation_source_multi'
   | 'modulation_shaper'
   | 'modulation_shaper_unary'
+  | 'modulation_shaper_binary'
   | 'trigger_source'
   | 'offline_renderable';
 
@@ -235,6 +236,7 @@ const MODULATION_ONLY_CAPS = new Set<DeviceCapability>([
   'modulation_source_multi',
   'modulation_shaper',
   'modulation_shaper_unary',
+  'modulation_shaper_binary',
   'trigger_source',
   'offline_renderable',
 ]);

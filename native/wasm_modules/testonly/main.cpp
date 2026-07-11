@@ -47,6 +47,7 @@ NANO_DECLARE_INSTANCE_EFFECT(fuse_mul)
 NANO_DECLARE_INSTANCE_EFFECT(fuse_solid)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
+NANO_DECLARE_INSTANCE_EFFECT(mod_combine)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 
@@ -200,6 +201,17 @@ void nano_module_main() {
         "modulation,remap,shaper,curve,range,envelope",
         "la-exchange-alt",
         NANO_INSTANCE_LIFECYCLE(mod_remap),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.combine",
+        "Combine",
+        "Binary modulation shaper: combines two modulation signals with a selectable math op",
+        "mod",
+        "modulation,combine,math,binary,add,multiply,mix,shaper",
+        "la-calculator",
+        NANO_INSTANCE_LIFECYCLE(mod_combine),
     });
 
     nano::registerEffect({

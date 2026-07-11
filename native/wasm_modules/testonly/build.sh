@@ -121,6 +121,7 @@ wasm_build \
   ../env_lfo/main.cpp \
   ../env_adsr/main.cpp \
   ../mod_remap/main.cpp \
+  ../mod_combine/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_delay/main.cpp \
   ../mod_envelope/main.cpp \
