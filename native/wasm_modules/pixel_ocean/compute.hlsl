@@ -137,16 +137,22 @@ static const uint PO_SPRITES[14] = {
   0x00448886u, 0x00448896u, 0x00448996u, 0x00448B96u,
 };
 
-// Sparkle sprites: 7×7, 5 frames — a twinkle that blooms from a dot out to a
-// diamond and bursts. 49 bits per frame → two uints (lo = bits 0..31, hi = 32+).
-// bit = y*7 + x, centred at (3,3).
+// Sparkle sprites: 7×7, 5 frames, TWO types (index = type*5 + frame). 49 bits
+// per frame → two uints (lo = bits 0..31, hi = 32+). bit = y*7 + x, centred (3,3).
 #define PO_SPARK_ACT 5u
-static const uint2 PO_SPARK[5] = {
+static const uint2 PO_SPARK[10] = {
+  // type 0 — bloom: a dot swells to a diamond and bursts.
   uint2(0x01000000u, 0x00000000u),   // f0  ·  (dot)
   uint2(0x82820000u, 0x00000000u),   // f1  small diamond
   uint2(0x04400400u, 0x00000040u),   // f2  wider diamond
   uint2(0x44450400u, 0x00000041u),   // f3  full diamond
   uint2(0x08200008u, 0x00002000u),   // f4  burst (4 far points)
+  // type 1 — blink: a dot flickers on/off, then pops out to a diamond.
+  uint2(0x01000000u, 0x00000000u),   // f0  ·
+  uint2(0x00000000u, 0x00000000u),   // f1  (off)
+  uint2(0x01000000u, 0x00000000u),   // f2  ·
+  uint2(0x00000000u, 0x00000000u),   // f3  (off)
+  uint2(0x04400400u, 0x00000040u),   // f4  diamond
 };
 
 // Hash streams. Effective stream id = base*2 + dir_bit, so the forward and
@@ -323,12 +329,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int ssy = int(floor(gs.y));
   for (uint si = 0u; si < 24u; si++) {
     int4 sp = u_sparkles[si];
-    if (sp.w == 0) continue;                       // inactive slot
+    if (sp.w == 0) continue;                       // inactive (w = type+1 when live)
     int lx = ssx - sp.x + 3;                       // sprite is centred at (3,3)
     int ly = ssy - sp.y + 3;
     if (lx < 0 || lx >= 7 || ly < 0 || ly >= 7) continue;
     uint b = uint(ly * 7 + lx);
-    uint2 bits = PO_SPARK[uint(sp.z)];
+    uint2 bits = PO_SPARK[(uint(sp.w) - 1u) * 5u + uint(sp.z)];
     uint on = (b < 32u) ? (bits.x >> b) : (bits.y >> (b - 32u));
     if ((on & 1u) != 0u) { acc = float4(u_spark_color.rgb, 1.0); break; }
   }

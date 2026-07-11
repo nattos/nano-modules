@@ -37,6 +37,7 @@ static const int PO_MAX_SPARK = 24;   // hard cap on live sparkles (uniform arra
 // viewport-aligned) sparkle grid at spawn — it does not track the wave after.
 struct Sparkle {
   bool  active = false;
+  int   type = 0;         // 0 bloom, 1 blink
   float age = 0.f;        // 0..1 across its life; frame = min(4, age*5)
   float rate = 1.f;       // life/sec for this sparkle (carries the timing jitter)
   int   gx = 0, gy = 0;   // sparkle-grid cell of the sprite centre
@@ -107,6 +108,8 @@ struct State {
   float sparkle_rotation = 0.0f;  // default 0 → aligned to the viewport
   float sparkle_speed = 0.5f;     // animation rate
   float sparkle_jitter = 0.5f;    // per-sparkle timing spread
+  float sparkle_bloom = 0.5f;     // relative weight: bloom type
+  float sparkle_blink = 0.5f;     // relative weight: blink type
   float sparkle_color[3] = { 1.0f, 1.0f, 1.0f };
   // Tuning.
   int spawn_size = 12;
@@ -268,6 +271,8 @@ void module_init() {
       .intField("sparkle_cap", 24, 0, 24, state::PrimaryInput).label("Sparkle Cap", "Cap")
       .floatField("sparkle_speed", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Sparkle Speed", "Spd")
       .floatField("sparkle_jitter", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Timing Jitter", "SJit")
+      .floatField("sparkle_bloom", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Bloom Weight", "Bloom")
+      .floatField("sparkle_blink", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Blink Weight", "Blink")
       .rgbField("sparkle_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Sparkle Colour", "SpkC")
       .floatField("sparkle_size", 0.40f, 0.f, 1.f, state::SecondaryInput).label("Sparkle Size", "SpkPx")
       .floatField("sparkle_rotation", 0.0f, -1.f, 1.f, state::SecondaryInput).label("Sparkle Angle", "SpkR")
@@ -406,6 +411,9 @@ static void trySpawnSparkle(State& s) {
       float j = 1.0f + (rnd01(s.rng) - 0.5f) * 1.2f * s.sparkle_jitter;
       sp.active = true; sp.age = 0.f;
       sp.rate = (0.4f + s.sparkle_speed * 3.0f) * (j < 0.2f ? 0.2f : j);
+      float wsum = s.sparkle_bloom + s.sparkle_blink;
+      float thr = wsum > 0.f ? s.sparkle_bloom / wsum : 0.5f;
+      sp.type = (rnd01(s.rng) < thr) ? 0 : 1;   // weighted bloom / blink
       sp.gx = scx; sp.gy = scy; sp.cx = cx; sp.cy = cy; sp.cdir = dir;
       return;
     }
@@ -541,6 +549,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sparkle_cap"))      s->sparkle_cap = state::patchInt(i);
     else if (state::pathIs(p, l, "sparkle_speed"))    s->sparkle_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "sparkle_jitter"))   s->sparkle_jitter = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_bloom"))    s->sparkle_bloom = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sparkle_blink"))    s->sparkle_blink = state::patchFloat(i);
     else if (state::pathIs(p, l, "sparkle_size"))     s->sparkle_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "sparkle_rotation")) s->sparkle_rotation = state::patchFloat(i);
     else if (state::pathIs(p, l, "sparkle_color")) {
@@ -613,7 +623,7 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
       int frame = (int)(sp.age * 5.0f);
       frame = frame < 0 ? 0 : (frame > 4 ? 4 : frame);
       u.sparkles[i][0] = sp.gx; u.sparkles[i][1] = sp.gy;
-      u.sparkles[i][2] = frame; u.sparkles[i][3] = 1;
+      u.sparkles[i][2] = frame; u.sparkles[i][3] = sp.type + 1;   // w: 0 off, else type+1
     } else {
       u.sparkles[i][0] = u.sparkles[i][1] = u.sparkles[i][2] = u.sparkles[i][3] = 0;
     }
