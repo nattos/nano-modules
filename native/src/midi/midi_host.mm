@@ -204,16 +204,24 @@ struct MidiHost::Impl {
 };
 
 MidiHost& MidiHost::instance() {
-  static MidiHost host;
-  return host;
+  // Intentionally leaked — never destructed. This singleton owns a CoreMIDI
+  // client thread running CFRunLoopRun(). If it were a Meyers singleton, its
+  // destructor would run from __cxa_finalize_ranges at exit(), *after*
+  // CoreFoundation has finalized: CFRunLoopStop() would then dereference a
+  // dead CFRunLoopRef and trap in __CFCheckCFInfoPACSignature (a shutdown
+  // crash observed in Arena). Leaking skips the destructor entirely; the OS
+  // reclaims the thread, client, and run loop at process exit anyway.
+  static MidiHost* host = new MidiHost();
+  return *host;
 }
 
 MidiHost::MidiHost() : impl_(std::make_unique<Impl>()) {}
 
-MidiHost::~MidiHost() {
-  if (impl_->runLoop) CFRunLoopStop(impl_->runLoop);
-  if (impl_->runLoopThread.joinable()) impl_->runLoopThread.join();
-}
+// Never invoked in practice — see instance(). Defined so the type stays
+// complete for unique_ptr<Impl>. Deliberately does NOT touch CoreFoundation,
+// since the only path that could reach it is atexit teardown where the run
+// loop is already gone.
+MidiHost::~MidiHost() = default;
 
 void MidiHost::start() {
   {
