@@ -167,6 +167,44 @@ describe('Pixel Ocean', () => {
     late.expectDifferentFrom(early, 10);
   });
 
+  it('forward drift travels upward (−Y): scroll direction is up', async () => {
+    // Freeze the shape clock and run pure forward drift, so between two tick
+    // counts the whole field is one rigid vertical translation. Cross-correlate
+    // the two frames: the best vertical shift's sign is the true scroll
+    // direction (a uniform field's mean-Y is scroll-invariant, so it can't tell
+    // us — but the match peak can). Forward must scroll UP (negative shift).
+    const W = 128, H = 128;
+    const cfg = (ticks: number) => ({
+      module: 'source.pixel.ocean' as const, bundle: 'nano' as const, width: W, height: H,
+      inputColor: [0, 0, 0, 1] as [number, number, number, number],
+      params: [['density', 1.0], ['rotation', 0.0], ['pixel_size', 0.55],
+               ['drift_rate', 0.0], ['forward_rate', 1.0], ['anim_rate', 0.0],
+               ['backwards', 0.0]] as [string, number][],
+      ticks,
+    });
+    const dark = (f: Awaited<ReturnType<typeof runGpuEffectTest>>) => {
+      const m: boolean[] = [];
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const c = f.pixelAt(x, y); m[y * W + x] = c.r < 40 && c.g < 40 && c.b < 40;
+      }
+      return m;
+    };
+    const early = await runGpuEffectTest(cfg(4));
+    const late = await runGpuEffectTest(cfg(60));
+    expect(early.success && late.success).toBe(true);
+    const a = dark(early), b = dark(late);
+    let bestS = 0, bestMatch = -1;
+    for (let s = -20; s <= 20; s++) {
+      let match = 0;
+      for (let y = 0; y < H; y++) { const ys = y - s; if (ys < 0 || ys >= H) continue;
+        for (let x = 0; x < W; x++) if (b[y * W + x] && a[ys * W + x]) match++; }
+      if (match > bestMatch) { bestMatch = match; bestS = s; }
+    }
+    // late(y) best-matches early(y − bestS): bestS < 0 ⇒ the pattern moved UP.
+    expect(bestMatch).toBeGreaterThan(0);
+    expect(bestS).toBeLessThan(0);
+  });
+
   it('animates when the clocks run', async () => {
     const base = {
       module: 'source.pixel.ocean' as const, bundle: 'nano' as const,

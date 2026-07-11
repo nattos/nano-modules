@@ -64,41 +64,60 @@ cbuffer Uniforms : register(b2) {
 //
 // All types share one CYCLE_LEN-step life slot: active for the first
 // ACT_LEN[type] steps, blank for the rest (the rest gap keeps the sea sparse
-// and gives every respawn a clean start at step 0). Dot/omega loop two frames;
-// the spiral plays its 8 frames once per cycle (unroll → release).
+// and gives every respawn a clean start at step 0). The dot laps a 2-frame
+// fleck; the omega breathes flat → normal → sharp (a 3-state ping-pong); the
+// spiral plays its 8 unroll frames once per cycle.
 //
-// Sprites live in an 8-wide × 4-tall grid-pixel box, one uint bitmask per
-// frame, bit index = y*8 + x (x=0 left, y=0 top; anchor = top-left corner).
-// Placeholder art — hand-tune these constants in the IDE.
+// Sprites are drawn for the FORWARD cohort, which travels UP (−Y) — so the
+// leading edge is at the TOP and the trailing "stem" points DOWN. Each type
+// has its own box: dot/omega are 8 wide × 4 tall, the spiral is 4 wide × 8 tall
+// (a VERTICAL curl). One uint bitmask per frame, bit index = y*W + x (x=0 left,
+// y=0 top; anchor = top-left corner). The backward cohort renders the same art
+// reflected 180°. Placeholder art — hand-tune these constants in the IDE.
 // ---------------------------------------------------------------------------
 
 #define PO_CYCLE_LEN 16u
 
 static const uint PO_ACT_LEN[3]    = { 12u, 12u, 8u };  // dot, omega, spiral
-static const uint PO_FRAME_BASE[3] = { 0u, 2u, 4u };
+static const uint PO_FRAME_BASE[3] = { 0u, 2u, 5u };    // dot 2, omega 3, spiral 8
+static const uint PO_BOX_W[3]      = { 8u, 8u, 4u };    // per-type sprite box width
+static const uint PO_BOX_H[3]      = { 4u, 4u, 8u };    //              …    height
 
-static const uint PO_SPRITES[12] = {
-  // type 0 — dot line: a two-pixel fleck that laps one pixel forward and back.
-  //   f0: ..##....      f1: ...##...
-  0x00000C00u, 0x00001800u,
-  // type 1 — omega wave: a two-hump crest drawn as one connected 1px line,
-  // shimmying one pixel per step.
-  //   f0: .##.##..      f1: ..##.##.
-  //       #..#..#.          .#..#..#
-  0x00004936u, 0x0000926Cu,
-  // type 2 — spiral / wind curl. A closed loop coils up on the leading (right)
-  // side and unrolls a tail to the left, then the curl releases and flattens
-  // toward a wavy line as the tail shortens away (tail trails the travel dir).
-  //   f0 ........   f1 .....#..   f2 ....##..   f3 ....##..
-  //      .....##.      ....#.#.      ...#..#.      ...#..#.
-  //      ....#...      ....#.#.      ..##..#.      ####..#.
-  //      .....#..      .....#..      ....##..      ....##..
-  0x20106000u, 0x20505020u, 0x304C4830u, 0x304F4830u,
-  //   f4 ...###..   f5 ..####..   f6 .#####..   f7 ..####..
-  //      ..#...#.      .#....#.      #.....#.      .#....#.
-  //      ###...#.      ###...#.      ##....#.      ......#.
-  //      ....##..      .....#..      ........      ........
-  0x30474438u, 0x2047423Cu, 0x0043413Eu, 0x0040423Cu,
+static const uint PO_SPRITES[13] = {
+  // type 0 — dot line (8×4): a two-pixel fleck lapping one pixel along travel.
+  //   f0 ........   f1 ........
+  //      ...##...      ........
+  //      ........      ...##...
+  //      ........      ........
+  0x00001800u, 0x00180000u,
+  // type 1 — omega crest (8×4): a two-hump wavelet that breathes wider/flatter
+  // ↔ narrower/peakier. Ping-pongs flat → normal → sharp → normal.
+  //   flat ........  normal ........  sharp ..#..#..
+  //        .#....#.         ..#..#..        ..#..#..
+  //        #.#..#.#         .#.##.#.        ..####..
+  //        ........         ........        ........
+  0x00A54200u, 0x005A2400u, 0x003C2424u,
+  // type 2 — spiral / wind curl (4×8, VERTICAL): forward travels UP, so the loop
+  // leads at the TOP and the stem trails DOWNWARD behind it. Frames unroll the
+  // loop and draw the stem out. bit = y*4 + x.
+  //   f0 ....  f1 .##.  f2 .##.  f3 .##.
+  //      .##.     #..#     #..#     #..#
+  //      #...     #..#     #..#     #..#
+  //      .#..     .##.     .##.     .###
+  //      ....     ....     ..#.     ..#.
+  //      ....     ....     ....     ..#.
+  //      ....     ....     ....     ....
+  //      ....     ....     ....     ....
+  0x00002160u, 0x00006996u, 0x00046996u, 0x0044E996u,
+  //   f4 .##.  f5 ..#.  f6 ....  f7 ....
+  //      #..#     .#.#     ..##     ....
+  //      ...#     ...#     ...#     ....
+  //      .###     ..#.     ..#.     ..#.
+  //      ..#.     ..#.     ..#.     ..#.
+  //      ..#.     ..#.     ..#.     ..#.
+  //      ..#.     ..#.     ..#.     ..#.
+  //      ....     ..#.     ..#.     ..#.
+  0x0444E896u, 0x444448A4u, 0x444448C0u, 0x44444000u,
 };
 
 // Hash streams. Effective stream id = base*2 + dir_bit, so the forward and
@@ -182,16 +201,25 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
   int jx = int(po_hash01(cx, cy, cycle, PO_S_POSX * 2u + dir) * float(S));
   int jy = int(po_hash01(cx, cy, cycle, PO_S_POSY * 2u + dir) * float(S));
   int ax = cx * S + jx + d * ex;
-  int ay = cy * S + jy + d * ey;
+  int ay = cy * S + jy - d * ey;   // forward travels −Y (see main), so ey flips too
 
   int dx = px - ax;
   int dy = py - ay;
-  if (dx < 0 || dx >= 8 || dy < 0 || dy >= 4) return false;
+  int W = int(PO_BOX_W[type]);
+  int H = int(PO_BOX_H[type]);
+  if (dx < 0 || dx >= W || dy < 0 || dy >= H) return false;
 
-  uint bx = (dir == 0u) ? uint(dx) : uint(7 - dx);      // mirror when travelling backward
-  uint frame = (type == 2u) ? step : (step & 1u);
+  // The backward cohort travels opposite in BOTH axes, so its sprite is the
+  // forward art reflected 180° (mirror x and y).
+  uint bx = (dir == 0u) ? uint(dx) : uint(W - 1 - dx);
+  uint by = (dir == 0u) ? uint(dy) : uint(H - 1 - dy);
+
+  uint frame;
+  if      (type == 0u) frame = step & 1u;                             // dot: 2-frame lap
+  else if (type == 1u) { uint m = step % 4u; frame = (m == 3u) ? 1u : m; }  // omega ping-pong
+  else                 frame = step;                                  // spiral: play once
   uint bits = PO_SPRITES[PO_FRAME_BASE[type] + frame];
-  return ((bits >> (uint(dy) * 8u + bx)) & 1u) != 0u;
+  return ((bits >> (by * uint(W) + bx)) & 1u) != 0u;
 }
 
 [numthreads(8, 8, 1)]
@@ -215,13 +243,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int gy = int(floor(g.y));
   int S  = int(u_spawn);
 
-  // Two co-moving lattices: forward (+X drift, +Y forward) and backward
-  // (−X, −Y). Each lattice translates in 2D with its two step clocks, so in
-  // the co-moving frame every wave is static.
+  // Two co-moving lattices: forward (+X drift, −Y forward = travels up) and
+  // backward (−X, +Y). Each lattice translates in 2D with its two step clocks,
+  // so in the co-moving frame every wave is static.
   //
   // Candidate-cell bounds: a cell's anchor stays inside it (±1 px of sub-step
-  // stagger per axis) and the sprite box is 8×4, so with S ≥ 8 a pixel can only
-  // be covered by cells at ox ∈ [−1, +1], oy ∈ [−1, +1].
+  // stagger per axis) and the sprite boxes are at most 8×8, so with S ≥ 8 a
+  // pixel can only be covered by cells at ox ∈ [−1, +1], oy ∈ [−1, +1].
   bool wave = false;
   for (uint dir = 0u; dir < 2u && !wave; dir++) {
     // Coarse skip: no wave in this direction if BOTH captured cycles gate it out
@@ -232,7 +260,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     if (pmax <= 0.0) continue;
     int d   = (dir == 0u) ? 1 : -1;
     int px  = gx - d * int(u_drift_steps);     // un-drift X into the co-moving frame
-    int py  = gy - d * int(u_forward_steps);   // un-drift Y
+    int py  = gy + d * int(u_forward_steps);   // un-drift Y (forward travels −Y)
     int cx0 = po_div_floor(px, S);
     int cy0 = po_div_floor(py, S);
     for (int ox = -1; ox <= 1 && !wave; ox++)
@@ -245,7 +273,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // current cycle is active.
   if (u_debug != 0u) {
     int px = gx - int(u_drift_steps);
-    int py = gy - int(u_forward_steps);
+    int py = gy + int(u_forward_steps);
     int cx = po_div_floor(px, S);
     int cy = po_div_floor(py, S);
     if (px - cx * S == 0 || py - cy * S == 0) {
