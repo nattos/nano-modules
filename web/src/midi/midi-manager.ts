@@ -214,12 +214,16 @@ export class MidiManager {
     // Anything left in `connected` lost its port (or its instance) this pass.
     // If the port was REASSIGNED to another instance (define-mode reassign),
     // openDevice above already installed the new handler on the same input —
-    // don't null it out from under the new owner.
+    // don't null it out from under the new owner. Same idea for the
+    // connection callback: an instance that REOPENED on a different port id
+    // this pass (replug whose unplug event was missed/coalesced) is in
+    // `next` — its stale pairing must not fire (id, false) AFTER openDevice
+    // fired (id, true), or the UI shows disconnected while the knobs work.
     const reassignedInputs = new Set([...next.values()].map(d => d.input.id));
     for (const [instanceId, device] of this.connected) {
       if (!reassignedInputs.has(device.input.id)) device.input.onmidimessage = null;
       device.driver.dispose();
-      this.onConnectionChanged?.(instanceId, false);
+      if (!next.has(instanceId)) this.onConnectionChanged?.(instanceId, false);
     }
     this.connected = next;
 

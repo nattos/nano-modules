@@ -116,6 +116,28 @@ describe('MidiManager', () => {
     }
   });
 
+  it('replug with a new port id in ONE pass stays connected in the mirror', () => {
+    // Regression: when the unplug statechange is missed/coalesced, one
+    // refresh sees the instance's old pairing (stale input) AND its new
+    // port. The disposal pass fired (id, false) AFTER openDevice's
+    // (id, true) — UI showed disconnected while messages flowed.
+    const inst = twisterInstance();
+    const { access, manager, events } = setup([inst]);
+    const { input } = access.addPair('a', 'Midi Fighter Twister', 'DJ TechTools');
+    expect(manager.isConnected(inst.id)).toBe(true);
+
+    // Unplug + replug with a different id, with NO event in between.
+    access.inputs.delete(input.id);
+    const input2 = new FakePort('in-b', 'Midi Fighter Twister', 'DJ TechTools');
+    access.inputs.set(input2.id, input2);
+    manager.refreshMatching();
+
+    expect(manager.isConnected(inst.id)).toBe(true);
+    expect(events.connections.at(-1)).toEqual([inst.id, true]);   // no trailing false
+    input2.onmidimessage!({ data: new Uint8Array([0xb0, 5, 127]), timeStamp: 0 });
+    expect(manager.getValue(inst.id, 'b0/e05/turn')).toBe(1);
+  });
+
   it('reports unmatched ports as unknown', () => {
     const { access, events } = setup([]);
     access.addPair('x', 'Mystery Pad', 'Acme');
