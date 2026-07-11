@@ -30,7 +30,7 @@ export function defaultUserSettings(): UserSettings {
     barrelRemoteEnabled: true,
     lastLiveInstanceKey: null,
     lastCompositionBarrelIds: [],
-    deviceFilters: { connected: true, disconnected: true, templates: true, deleted: false },
+    deviceFilters: { connected: true, disconnected: true, unrecognized: true, templates: true, deleted: false },
     devicesMonitorHeight: 180,
     midiOfferedPorts: [],
   };
@@ -48,8 +48,14 @@ export async function loadUserSettings(): Promise<UserSettings> {
   try {
     const record = await idbGet<SettingsRecord>(STORE_SETTINGS, SETTINGS_KEY);
     if (!record?.settings) return defaults;
-    // Merge against defaults so newly-added keys get sensible values.
-    return { ...defaults, ...record.settings };
+    // Merge against defaults so newly-added keys get sensible values. The
+    // top-level spread is shallow — nested option bags need their own merge
+    // or a persisted copy from before a new key hides it forever.
+    return {
+      ...defaults,
+      ...record.settings,
+      deviceFilters: { ...defaults.deviceFilters, ...record.settings.deviceFilters },
+    };
   } catch (err) {
     console.warn('[user-settings] load failed, using defaults', err);
     return defaults;

@@ -176,10 +176,14 @@ export interface UserSettings {
   activeTab: 'create' | 'organize' | 'edit' | 'devices' | 'settings';
   /**
    * Devices-tab group filters — which sections of the MIDI device library
-   * show: connected units, disconnected user forks, factory templates, and
-   * soft-deleted instances (kept around for wire provenance / restore).
+   * show: connected units, disconnected user forks, unrecognized (plugged-in
+   * but unclaimed) ghost cards, factory templates, and soft-deleted
+   * instances (kept around for wire provenance / restore).
    */
-  deviceFilters: { connected: boolean; disconnected: boolean; templates: boolean; deleted: boolean };
+  deviceFilters: {
+    connected: boolean; disconnected: boolean; unrecognized: boolean;
+    templates: boolean; deleted: boolean;
+  };
   /** Height (px) of the Devices tab's floating output monitor (aspect-locked). */
   devicesMonitorHeight: number;
   /**

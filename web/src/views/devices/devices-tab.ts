@@ -32,6 +32,7 @@ import './device-control-details';
 const FILTER_LABELS = {
   connected: 'connected',
   disconnected: 'disconnected',
+  unrecognized: 'unrecognized',
   templates: 'templates',
   deleted: 'deleted',
 } as const;
@@ -269,7 +270,7 @@ export class DevicesTab extends MobxLitElement {
           <div class="group-label">Connected</div>
           <div class="cards">
             ${connected.map(i => this.renderInstanceCard(i, 'connected'))}
-            ${midi.unknownPorts.map(p => this.renderGhostCard(p))}
+            ${filters.unrecognized ? midi.unknownPorts.map(p => this.renderGhostCard(p)) : nothing}
             ${connected.length === 0 && midi.unknownPorts.length === 0
               ? html`<div class="empty-note">No devices detected.
                   ${midiController.manager.initialized ? nothing : html`
