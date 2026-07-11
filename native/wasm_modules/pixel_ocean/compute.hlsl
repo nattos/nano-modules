@@ -4,14 +4,25 @@
 // of "grid pixels", partitioned into S×S spawn cells. Each cell hosts at most
 // one tiny wave sprite (dot-line / omega / unrolling wind-curl) at a hashed
 // jittered position — a stratified-jittered distribution, so coverage is very
-// uniform with no clumping. Everything about a wave (existence, type, position,
-// timing offsets) is a pure function of integer hashes + two global step
-// clocks, so no particle pool and no cross-frame GPU state.
+// uniform with no clumping. Everything about a wave (existence, type, position)
+// is a pure function of integer hashes + the global clocks, so no particle pool
+// and no cross-frame GPU state.
 //
-// Drift uses a CO-MOVING LATTICE: the spawn-cell lattice itself translates
-// with the global drift step counter (one lattice per travel direction), so in
-// the co-moving frame every wave is static and the candidate-cell loop is a
-// small fixed neighborhood regardless of drift speed or wave lifetime.
+// CAPTURE-ON-SPAWN: the animation clock is a per-cycle *phase* clock (u_cyc_*)
+// advanced CPU-side at the rate captured when the current cycle began, so a live
+// anim-rate change never speeds up or cuts off a wave already alive — it only
+// takes hold at the next respawn. Existence/shape params (density, backwards,
+// the drift/forward jitters) are likewise latched at cycle start: the CPU keeps
+// the snapshot for the current cycle and the previous one (every visible wave is
+// in one of those two), and the shader reads a wave's captured values from the
+// snapshot for its cycle. Raising density can't pop a wave in mid-animation and
+// lowering it can't cull one mid-animation — the change lands only at respawn.
+//
+// Drift uses a CO-MOVING LATTICE: the spawn-cell lattice itself translates with
+// the global drift/forward step counters (one lattice per travel direction), so
+// in the co-moving frame every wave is static and the candidate-cell loop is a
+// small fixed neighborhood. Drift/forward *speed* stays live (all waves in a
+// lattice share the rigid translation) — only per-wave shape/timing latches.
 //
 // Hard on/off pixels only — no AA, no alpha fades (pixel-art aesthetic).
 
@@ -32,18 +43,20 @@ cbuffer Uniforms : register(b2) {
   uint   u_spawn;                     // S: grid pixels per spawn cell (>= 8)
   uint   u_composite;                 // 0 ocean / 1 transparent / 2 custom / 3 input
   uint   u_seed;
-  uint   u_anim_steps;                // floor of the shape-animation step clock
-  float  u_anim_frac;                 // its fractional part
-  uint   u_drift_steps;               // floor of the X-axis drift step clock
+  uint   u_cyc_index;                 // integer part of the anim phase clock (cycles)
+  float  u_cyc_frac;                  // its fractional part ∈ [0,1) — position in cycle
+  uint   u_drift_steps;               // floor of the X-axis drift step clock (live)
   float  u_drift_frac;                // its fractional part
-  float  u_anim_jitter;               // 0 = lock-step, 1 = fully staggered
-  float  u_drift_jitter;              // X-drift stagger: 0 lock-step … 1 scattered
-  float  u_density;                   // per-(cell,cycle) activation probability
-  float  u_backwards;                 // probability a wave travels backward (−X,−Y)
-  uint   u_debug;                     // overlay spawn-cell grid
-  uint   u_forward_steps;             // floor of the Y-axis "forward" step clock
+  uint   u_forward_steps;             // floor of the Y-axis "forward" step clock (live)
   float  u_forward_frac;              // its fractional part
-  float  u_forward_jitter;            // Y-forward stagger: 0 lock-step … 1 scattered
+  uint   u_debug;                     // overlay spawn-cell grid
+  float  u_anim_jitter;               // phase spread: 0 = lock-step, 1 = fully staggered
+  // Per-cycle captured snapshots — [0]=current cycle, [1]=previous cycle. Every
+  // visible wave sits in one of these two cycles; it reads its latched values here.
+  float  u_dens_cur,  u_dens_prev;    // density captured at that cycle's start
+  float  u_back_cur,  u_back_prev;    // backwards
+  float  u_djit_cur,  u_djit_prev;    // X-drift sub-step jitter
+  float  u_fjit_cur,  u_fjit_prev;    // Y-forward sub-step jitter
 };
 
 // ---------------------------------------------------------------------------
@@ -120,26 +133,38 @@ int po_div_floor(int a, int b) {
   return q;
 }
 
-// The anim step clock local to a cell: global steps plus this cell's stagger
-// offset. The offset is continuous in [0, jitter*CYCLE_LEN) — its integer part
-// shifts whole steps, its fractional part staggers the step INSTANT (folded in
-// with the global clock's fractional part), so jitter=1 fully decorrelates
-// both the phase and the moment cells tick over.
-uint po_local_anim_steps(int cx, int cy, uint dir) {
-  float off = po_hash01(cx, cy, 0u, PO_S_ANIM * 2u + dir)
-            * u_anim_jitter * float(PO_CYCLE_LEN);
-  return u_anim_steps + uint(floor(u_anim_frac + off));
+// The cell's place in the phase clock. Each cell has a fixed phase offset
+// φ ∈ [0,1) cycle (hashed, scaled by the anim jitter) that staggers when it
+// ticks over. Subtracting φ from the global phase gives this cell's own cycle
+// index + its fractional position in that cycle. Because φ < 1, a cell is always
+// in either the current global cycle (u_cyc_index) or the previous one — which
+// is exactly why two captured snapshots suffice.
+void po_cell_cycle(int cx, int cy, uint dir, out uint cyc, out uint step) {
+  float phi = po_hash01(cx, cy, 0u, PO_S_ANIM * 2u + dir) * u_anim_jitter;  // [0,1)
+  float f;
+  if (u_cyc_frac >= phi) { cyc = u_cyc_index;      f = u_cyc_frac - phi; }
+  else                   { cyc = u_cyc_index - 1u; f = u_cyc_frac - phi + 1.0; }
+  step = uint(f * float(PO_CYCLE_LEN));            // 0 … CYCLE_LEN-1
 }
 
 // Does the wave hosted by spawn cell (cx,cy) of the `dir` lattice cover the
-// co-moving grid pixel (px, py)? `p` is that lattice's activation probability.
-bool po_cell_covers(int cx, int cy, int px, int py, uint dir, float p, int S) {
-  uint localA = po_local_anim_steps(cx, cy, dir);
-  uint cycle  = localA / PO_CYCLE_LEN;
-  uint step   = localA % PO_CYCLE_LEN;
+// co-moving grid pixel (px, py)? Existence/shape params are the values latched
+// when this cell's cycle began (current- vs previous-cycle snapshot).
+bool po_cell_covers(int cx, int cy, int px, int py, uint dir, int S) {
+  uint cycle, step;
+  po_cell_cycle(cx, cy, dir, cycle, step);
 
-  // Density gates per (cell, cycle): raising density only lights up future
-  // cycles, so every birth starts at step 0.
+  // Captured snapshot: current cycle uses [cur], the previous one uses [prev].
+  bool cur = (cycle == u_cyc_index);
+  float dens = cur ? u_dens_cur : u_dens_prev;
+  float back = cur ? u_back_cur : u_back_prev;
+  float djit = cur ? u_djit_cur : u_djit_prev;
+  float fjit = cur ? u_fjit_cur : u_fjit_prev;
+
+  // Existence gates per (cell, cycle) against the density/backwards CAPTURED at
+  // this cell's cycle start — so a live density/backwards change only affects
+  // cycles that begin after it, never a wave already animating.
+  float p = (dir == 0u) ? dens * (1.0 - back) : dens * back;
   if (po_hash01(cx, cy, cycle, PO_S_GATE * 2u + dir) >= p) return false;
 
   float th = po_hash01(cx, cy, cycle, PO_S_TYPE * 2u + dir);
@@ -151,9 +176,9 @@ bool po_cell_covers(int cx, int cy, int px, int py, uint dir, float p, int S) {
   // whole-pixel step this cell has already taken along its travel direction.
   int d  = (dir == 0u) ? 1 : -1;
   int ex = int(floor(u_drift_frac
-                     + po_hash01(cx, cy, 0u, PO_S_DRIFT * 2u + dir) * u_drift_jitter));
+                     + po_hash01(cx, cy, 0u, PO_S_DRIFT * 2u + dir) * djit));
   int ey = int(floor(u_forward_frac
-                     + po_hash01(cx, cy, 0u, PO_S_FWD * 2u + dir) * u_forward_jitter));
+                     + po_hash01(cx, cy, 0u, PO_S_FWD * 2u + dir) * fjit));
   int jx = int(po_hash01(cx, cy, cycle, PO_S_POSX * 2u + dir) * float(S));
   int jy = int(po_hash01(cx, cy, cycle, PO_S_POSY * 2u + dir) * float(S));
   int ax = cx * S + jx + d * ex;
@@ -199,9 +224,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // be covered by cells at ox ∈ [−1, +1], oy ∈ [−1, +1].
   bool wave = false;
   for (uint dir = 0u; dir < 2u && !wave; dir++) {
-    float p = (dir == 0u) ? u_density * (1.0 - u_backwards)
-                          : u_density * u_backwards;
-    if (p <= 0.0) continue;
+    // Coarse skip: no wave in this direction if BOTH captured cycles gate it out
+    // (density 0 → skip everything; backwards 0 → skip the backward lattice).
+    float pmax = (dir == 0u)
+        ? max(u_dens_cur * (1.0 - u_back_cur), u_dens_prev * (1.0 - u_back_prev))
+        : max(u_dens_cur * u_back_cur,         u_dens_prev * u_back_prev);
+    if (pmax <= 0.0) continue;
     int d   = (dir == 0u) ? 1 : -1;
     int px  = gx - d * int(u_drift_steps);     // un-drift X into the co-moving frame
     int py  = gy - d * int(u_forward_steps);   // un-drift Y
@@ -209,7 +237,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     int cy0 = po_div_floor(py, S);
     for (int ox = -1; ox <= 1 && !wave; ox++)
       for (int oy = -1; oy <= 1 && !wave; oy++)
-        wave = po_cell_covers(cx0 + ox, cy0 + oy, px, py, dir, p, S);
+        wave = po_cell_covers(cx0 + ox, cy0 + oy, px, py, dir, S);
   }
   if (wave) acc = float4(u_wave.rgb, 1.0);
 
@@ -223,8 +251,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
     if (px - cx * S == 0 || py - cy * S == 0) {
       acc.rgb = lerp(acc.rgb, float3(1.0, 1.0, 1.0), 0.25);
     } else {
-      uint cycle = po_local_anim_steps(cx, cy, 0u) / PO_CYCLE_LEN;
-      float p = u_density * (1.0 - u_backwards);
+      uint cycle, step;
+      po_cell_cycle(cx, cy, 0u, cycle, step);
+      bool curc = (cycle == u_cyc_index);
+      float p = (curc ? u_dens_cur : u_dens_prev) * (1.0 - (curc ? u_back_cur : u_back_prev));
       if (po_hash01(cx, cy, cycle, PO_S_GATE * 2u) < p)
         acc.rgb = lerp(acc.rgb, float3(1.0, 1.0, 1.0), 0.10);
     }

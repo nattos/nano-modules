@@ -29,6 +29,8 @@ namespace pixel_ocean {
 
 enum Composite { CompOcean = 0, CompTransparent = 1, CompCustom = 2, CompInput = 3 };
 
+static const int PO_CYCLE_LEN = 16;   // anim steps per life cycle (matches compute.hlsl)
+
 // Uniform layout — MUST match compute.hlsl's cbuffer byte-for-byte.
 struct Uniforms {
   float aspect_x, aspect_y;   // u_aspect
@@ -40,20 +42,20 @@ struct Uniforms {
   uint32_t spawn_size;        // u_spawn
   uint32_t composite;         // u_composite
   uint32_t seed;              // u_seed
-  uint32_t anim_steps;        // u_anim_steps
-  float anim_frac;            // u_anim_frac
+  uint32_t cyc_index;         // u_cyc_index
+  float cyc_frac;             // u_cyc_frac
   uint32_t drift_steps;       // u_drift_steps
   float drift_frac;           // u_drift_frac
-  float anim_jitter;          // u_anim_jitter
-  float drift_jitter;         // u_drift_jitter
-  float density;              // u_density
-  float backwards;            // u_backwards
-  uint32_t debug_cells;       // u_debug
   uint32_t forward_steps;     // u_forward_steps
   float forward_frac;         // u_forward_frac
-  float forward_jitter;       // u_forward_jitter
+  uint32_t debug_cells;       // u_debug
+  float anim_jitter;          // u_anim_jitter
+  float dens_cur, dens_prev;  // u_dens_cur / u_dens_prev
+  float back_cur, back_prev;  // u_back_cur / u_back_prev
+  float djit_cur, djit_prev;  // u_djit_cur / u_djit_prev
+  float fjit_cur, fjit_prev;  // u_fjit_cur / u_fjit_prev
 };
-static_assert(sizeof(Uniforms) == 128, "cbuffer mirror drifted from compute.hlsl");
+static_assert(sizeof(Uniforms) == 144, "cbuffer mirror drifted from compute.hlsl");
 
 struct State {
   // Pixel grid.
@@ -79,9 +81,23 @@ struct State {
   bool debug_cells = false;
 
   // Step-clock accumulators (§2.1 — never time*rate).
-  double anim_acc = 0.0;
-  double drift_acc = 0.0;     // X-axis
-  double forward_acc = 0.0;   // Y-axis
+  double drift_acc = 0.0;     // X-axis (live)
+  double forward_acc = 0.0;   // Y-axis (live)
+
+  // Anim PHASE clock (capture-on-spawn). cyc_phase counts whole cycles; it
+  // advances at the anim rate CAPTURED when the current cycle began, so a live
+  // anim-rate change never re-speeds a wave already alive — it lands at the next
+  // respawn. Existence/shape params are latched the same way: we keep the
+  // snapshot for the current cycle and the previous one (every visible wave is
+  // in one of those two), captured at each cycle boundary.
+  double cyc_phase = 0.0;
+  uint64_t cyc_index = 0;             // = floor(cyc_phase)
+  double captured_anim_rate = 0.0;    // steps/sec latched at current cycle start
+  bool clock_init = false;
+  float dens_cur = 0.35f, dens_prev = 0.35f;
+  float back_cur = 0.10f, back_prev = 0.10f;
+  float djit_cur = 1.0f,  djit_prev = 1.0f;
+  float fjit_cur = 1.0f,  fjit_prev = 1.0f;
 
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -133,11 +149,12 @@ void module_init() {
       .group("look", "Ocean")
         .groupHelp(
           "*Ocean* and *Wave* are the two flat colours. *Density* is the chance "
-          "each spawn slot hosts a wave — it only gates NEW waves, so every "
-          "birth starts at the beginning of its animation (while you drag the "
-          "knob itself a mid-cycle wave can pop in; parked anywhere, spawning "
-          "is always clean). **Composite** picks the backdrop: Ocean / "
-          "Transparent / Custom / the Input image, with waves drawn on top.")
+          "each spawn slot hosts a wave. It's LATCHED at spawn: raising it never "
+          "pops a wave in mid-animation and lowering it never culls one — the "
+          "change simply decides which cells do or don't respawn as they reach "
+          "their next cycle, so it rolls in cleanly over about one cycle. "
+          "**Composite** picks the backdrop: Ocean / Transparent / Custom / the "
+          "Input image, with waves drawn on top.")
       .rgbField("ocean_color", 0.10f, 0.32f, 0.55f, state::PrimaryInput).label("Ocean Colour", "Ocean")
       .rgbField("wave_color", 0.0f, 0.0f, 0.0f, state::PrimaryInput).label("Wave Colour", "Wave")
       .floatField("density", 0.35f, 0.f, 1.f, state::PrimaryInput).label("Density", "Dens")
@@ -155,7 +172,12 @@ void module_init() {
           "waves swim diagonally. The *Jitter* knob beside each clock sets the "
           "stagger — 0 = every wave steps in the same instant (lock step), 1 = "
           "fully scattered phases. *Backwards* is the chance a wave runs against "
-          "the current — it reverses BOTH the drift and the forward direction.")
+          "the current — it reverses BOTH the drift and the forward direction. "
+          "**Anim Rate, the jitters and Backwards latch at spawn** (like "
+          "Density): changing one never re-speeds or redirects a wave already "
+          "alive — it takes hold at each wave's next respawn. Drift/Forward "
+          "SPEED stays live, so all waves glide together and speed changes read "
+          "smoothly rather than as a jolt.")
       .floatField("anim_rate", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Anim Rate", "Anim")
       .floatField("anim_jitter", 1.0f, 0.f, 1.f, state::PrimaryInput).label("Anim Jitter", "AJit")
       .floatField("drift_rate", 0.40f, 0.f, 1.f, state::PrimaryInput).label("Drift Rate (X)", "Drift")
@@ -217,7 +239,39 @@ void init(void* self) {
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->anim_acc    += dt * animStepsPerSec(s->anim_rate);
+
+  // Cycle 0 begins on the first tick: latch the current params + rate as its
+  // captured snapshot so the opening cycle already reflects the live settings.
+  if (!s->clock_init) {
+    s->dens_cur = s->dens_prev = s->density;
+    s->back_cur = s->back_prev = s->backwards;
+    s->djit_cur = s->djit_prev = s->drift_jitter;
+    s->fjit_cur = s->fjit_prev = s->forward_jitter;
+    s->captured_anim_rate = animStepsPerSec(s->anim_rate);
+    s->clock_init = true;
+  }
+
+  // Advance the phase clock at the rate captured for the current cycle. If that
+  // cycle was captured frozen (rate 0), follow the live rate instead so raising
+  // the slider from 0 unfreezes rather than latching us out forever.
+  double rate = s->captured_anim_rate > 0.0 ? s->captured_anim_rate
+                                            : animStepsPerSec(s->anim_rate);
+  s->cyc_phase += dt * rate / (double)PO_CYCLE_LEN;
+
+  // Each cycle boundary: shift current snapshot → previous and re-capture the
+  // live params + rate as the new cycle's latched values. This is the only place
+  // param changes take hold, which is what makes them "capture on spawn".
+  while (std::floor(s->cyc_phase) > (double)s->cyc_index) {
+    s->cyc_index++;
+    s->dens_prev = s->dens_cur; s->dens_cur = s->density;
+    s->back_prev = s->back_cur; s->back_cur = s->backwards;
+    s->djit_prev = s->djit_cur; s->djit_cur = s->drift_jitter;
+    s->fjit_prev = s->fjit_cur; s->fjit_cur = s->forward_jitter;
+    s->captured_anim_rate = animStepsPerSec(s->anim_rate);
+  }
+
+  // Drift / forward speed stay LIVE (the rigid co-moving lattice needs every
+  // wave in a lattice to share one translation).
   s->drift_acc   += dt * driftStepsPerSec(s->drift_rate);
   s->forward_acc += dt * forwardStepsPerSec(s->forward_rate);
 }
@@ -285,22 +339,22 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.composite = (uint32_t)s->composite;
   u.seed = (uint32_t)(s->seed * 65535.0f);
 
-  // Step clocks: integer steps + fraction, so the shader's cycle math stays
-  // exact integer arithmetic (no float decay after hours of runtime).
-  u.anim_steps = (uint32_t)(uint64_t)s->anim_acc;
-  u.anim_frac  = (float)(s->anim_acc - std::floor(s->anim_acc));
+  // Anim PHASE clock: integer cycle index + fractional position, so the shader's
+  // per-cell cycle math stays exact. Drift/forward stay as live step + fraction.
+  u.cyc_index = (uint32_t)s->cyc_index;
+  u.cyc_frac  = (float)(s->cyc_phase - (double)s->cyc_index);
   u.drift_steps = (uint32_t)(uint64_t)s->drift_acc;
   u.drift_frac  = (float)(s->drift_acc - std::floor(s->drift_acc));
-
   u.forward_steps = (uint32_t)(uint64_t)s->forward_acc;
   u.forward_frac  = (float)(s->forward_acc - std::floor(s->forward_acc));
 
-  u.anim_jitter = s->anim_jitter;
-  u.drift_jitter = s->drift_jitter;
-  u.forward_jitter = s->forward_jitter;
-  u.density = s->density;
-  u.backwards = s->backwards;
   u.debug_cells = s->debug_cells ? 1u : 0u;
+  u.anim_jitter = s->anim_jitter;   // live: the per-cell phase spread
+  // Captured per-cycle snapshots (current + previous).
+  u.dens_cur = s->dens_cur; u.dens_prev = s->dens_prev;
+  u.back_cur = s->back_cur; u.back_prev = s->back_prev;
+  u.djit_cur = s->djit_cur; u.djit_prev = s->djit_prev;
+  u.fjit_cur = s->fjit_cur; u.fjit_prev = s->fjit_prev;
 }
 
 void render(void* self, int vp_w, int vp_h) {

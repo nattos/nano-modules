@@ -184,6 +184,15 @@ describe('Pixel Ocean', () => {
     late.expectDifferentFrom(early, 10);
   });
 
+  // NOTE: capture-on-spawn (a live param change only taking effect at each
+  // wave's next respawn) is verified against the real IDE — see
+  // scratchpad/ocean_capture_verify.js — because it needs a *continuous* effect
+  // instance with a mid-run param change. Neither web harness supports that: the
+  // engine runner doesn't push param patches to the live instance, and the
+  // gpu-test-runner reloads a fresh instance per step (losing the phase clock).
+  // A native Catch2 test (SketchExecutor supports live config changes) would be
+  // the right committed home for it.
+
   it('debug cell overlay draws the lattice', async () => {
     const base = {
       module: 'source.pixel.ocean' as const, bundle: 'nano' as const,
