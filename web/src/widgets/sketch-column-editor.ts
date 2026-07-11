@@ -246,8 +246,11 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     // Abort any in-flight reorder so its window listeners + Escape handler don't
     // outlive the element (dispose → cancel → cleanupDrag).
     this.dragOp?.dispose();
-    // Persist the final scroll position before the DOM goes away.
+    // Persist the final scroll position before the DOM goes away, then forget
+    // the tracked sketch so a reconnect (element reused on tab toggle) restores
+    // fresh rather than assuming the columns-view kept its offset.
     this.flushScrollSave();
+    this.scrollSketchId = null;
     this.clearSketchCaches();
   }
 
