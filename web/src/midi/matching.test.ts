@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { observable, toJS } from 'mobx';
 import { MFT_TEMPLATE } from './drivers/mft';
 import { forkInstance, matchInstanceForPort } from './matching';
 import type { DeviceInstance, PhysicalIdentity } from './midi-types';
@@ -62,6 +63,15 @@ describe('forkInstance', () => {
     expect((child.config as typeof MFT_TEMPLATE.defaultConfig).encoders[3].cc).toBe(77);
     (child.config as typeof MFT_TEMPLATE.defaultConfig).encoders[3].cc = 11;
     expect((parent.config as typeof MFT_TEMPLATE.defaultConfig).encoders[3].cc).toBe(77);
+  });
+
+  it('forks a MobX-observable instance (define mode clicks a library fork)', () => {
+    // Regression: structuredClone throws DataCloneError on observable proxies;
+    // the library instances handed to forkAndClaim are exactly that.
+    const parent = observable(forkInstance(MFT_TEMPLATE));
+    const child = forkInstance(parent);
+    expect(child.parentId).toBe(parent.id);
+    expect(child.config).toEqual(toJS(parent.config));
   });
 
   it('uniquifies display names against the library', () => {

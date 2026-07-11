@@ -70,8 +70,11 @@ export function forkInstance(
     ? source as DeviceTemplate
     : getDeviceTemplate((source as DeviceInstance).templateId);
   if (!template) throw new Error(`unknown template for fork: ${JSON.stringify((source as DeviceInstance).templateId)}`);
-  const config = structuredClone(
-    fromTemplate ? template.defaultConfig : (source as DeviceInstance).config);
+  // JSON round-trip, not structuredClone: an existing instance's config is a
+  // MobX observable proxy (structuredClone throws DataCloneError on proxies),
+  // and configs are JSON-serializable by contract (they persist to IndexedDB).
+  const config = JSON.parse(JSON.stringify(
+    fromTemplate ? template.defaultConfig : (source as DeviceInstance).config));
   const baseName = fromTemplate ? template.name : (source as DeviceInstance).name;
   const now = Date.now();
   return {
