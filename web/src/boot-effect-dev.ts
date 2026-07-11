@@ -13,6 +13,7 @@ import { EFFECT_BUNDLES } from './effect-bundles';
 import { DEFAULT_BARREL_URL } from './resolume-mode';
 import { startBarrelProbe } from './barrel-probe';
 import { installModeOffers } from './live-offers';
+import { installDeviceDefineOffers } from './views/devices/define-offer';
 
 // Import the root IDE component (self-registering)
 import './views/effect-ide/effect-ide-app';
@@ -45,5 +46,6 @@ export async function bootEffectDev(): Promise<void> {
   // Resolume coming up (and drives the resulting offer) so it can offer
   // switching to Live — same as the Playground surface.
   installModeOffers();
+  installDeviceDefineOffers();
   startBarrelProbe(DEFAULT_BARREL_URL);
 }

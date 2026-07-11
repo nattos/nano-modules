@@ -47,7 +47,13 @@ export function installDeviceDefineOffers(): void {
         actions: [{
           label: 'define',
           run: () => {
-            appController.setActiveTab('devices');
+            // Each surface keys its tab bar differently: the effect IDE on
+            // `ideLeftTab`, the unified surface on `activeTab`.
+            if (appState.local.userSettings.appMode === 'effect-dev') {
+              appController.setUserSetting('ideLeftTab', 'devices');
+            } else {
+              appController.setActiveTab('devices');
+            }
             devicesUi.enterDefineMode(port);
           },
         }],

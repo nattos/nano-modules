@@ -9,6 +9,20 @@
  * string `hitKey`/`fieldHit` use everywhere.
  */
 
+import { appState } from '../state/app-state';
+
+/**
+ * The sketch the ACTIVE surface's editor is editing: the unified surface
+ * tracks it in `local.editingSketchId`; the effect IDE binds its editor to
+ * `userSettings.selectedProjectId` instead.
+ */
+export function activeEditorSketchId(): string | null {
+  if (appState.local.userSettings.appMode === 'effect-dev') {
+    return appState.local.userSettings.selectedProjectId;
+  }
+  return appState.local.editingSketchId;
+}
+
 /** A field's `.tap-overlay-hit` (wire mode, expanded card) in `cvRoot`. */
 export function fieldHitIn(cvRoot: ShadowRoot, key: string): HTMLElement | null {
   const [, colStr, chainStr, ...fp] = key.split('/');

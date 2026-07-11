@@ -165,7 +165,7 @@ export interface UserSettings {
   /** Width in pixels of the IDE's left details panel. */
   ideLeftPanelWidth: number;
   /** Currently active left tab in the IDE. */
-  ideLeftTab: 'explorer' | 'project_editor' | 'debug_info' | 'settings';
+  ideLeftTab: 'explorer' | 'project_editor' | 'devices' | 'debug_info' | 'settings';
   /** Currently selected project id (`default:<effectId>` or `user:<uuid>`). */
   selectedProjectId: string | null;
   /** Scroll positions keyed by an arbitrary scope id. */

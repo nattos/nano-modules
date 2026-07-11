@@ -6,7 +6,7 @@
  * common chrome shared with the Resolume shell (`views/sketch-app.ts`).
  */
 
-import { html, css } from 'lit';
+import { html, css, nothing } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
@@ -21,6 +21,9 @@ import './ide-debug-info';
 import '../app-settings';
 import '../../widgets/sketch-monitor';
 import '../../widgets/snackbars';
+import '../devices/devices-tab';
+import '../devices/devices-float-monitor';
+import '../devices/device-wire-overlay';
 
 @customElement('effect-ide-app')
 export class EffectIdeApp extends MobxLitElement {
@@ -79,6 +82,21 @@ export class EffectIdeApp extends MobxLitElement {
       tabs: [
         { id: 'explorer', icon: 'la-folder', title: 'Explorer', kind: 'inline', render: () => html`<ide-explorer></ide-explorer>` },
         { id: 'project_editor', icon: 'la-stream', title: 'Project Editor', kind: 'inline', render: () => html`<ide-project-editor></ide-project-editor>` },
+        {
+          // Same layout as the unified surface's Devices tab: the project's
+          // sketch editor stays in the left panel (rendered DIRECTLY — not via
+          // <ide-project-editor> — so the shared cross-panel field-anchor
+          // lookup finds it at `.left-panel sketch-column-editor`); the device
+          // grid takes over the monitor area, and the output pops out to the
+          // floating overlay below.
+          id: 'devices', icon: 'la-sliders-h', title: 'Devices', kind: 'inline', render: () => html`
+          <sketch-column-editor
+            .sketchId=${sel}
+            emptyMessage="No project selected. Pick one in the explorer first."
+          ></sketch-column-editor>
+        `,
+          renderRight: () => html`<devices-tab></devices-tab>`,
+        },
         { id: 'debug_info', icon: 'la-bug', title: 'Debug Info', kind: 'inline', render: () => html`<ide-debug-info></ide-debug-info>` },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
@@ -98,8 +116,16 @@ export class EffectIdeApp extends MobxLitElement {
       `,
     };
 
+    const devicesActive = appState.local.userSettings.ideLeftTab === 'devices';
     return html`
       <app-shell .config=${config}></app-shell>
+      ${devicesActive ? html`
+        <devices-float-monitor
+          .sketchId=${sel ?? ''}
+          .traceId=${`ide_preview:${sel}`}
+        ></devices-float-monitor>
+        <device-wire-overlay></device-wire-overlay>
+      ` : nothing}
       <snackbar-host></snackbar-host>
     `;
   }

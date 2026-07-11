@@ -7,7 +7,7 @@
  */
 
 import { html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
@@ -19,6 +19,11 @@ const MAX_H = 520;
 
 @customElement('devices-float-monitor')
 export class DevicesFloatMonitor extends MobxLitElement {
+  /** Surface overrides: the effect IDE passes its own sketch + trace point
+   *  (`ide_preview:<project>`); unset (unified surface) falls back to the
+   *  editing sketch + the Edit tab's 'edit_preview' trace. */
+  @property({ attribute: false }) sketchId?: string;
+  @property({ attribute: false }) traceId?: string;
   static styles = css`
     :host {
       position: fixed;
@@ -41,7 +46,7 @@ export class DevicesFloatMonitor extends MobxLitElement {
 
   /** Aspect from the latest traced output frame; 16:9 until one arrives. */
   private aspect(): number {
-    const frame = appState.local.engine.tracedFrames['edit_preview'];
+    const frame = appState.local.engine.tracedFrames[this.traceId ?? 'edit_preview'];
     return frame && frame.height > 0 ? frame.width / frame.height : 16 / 9;
   }
 
@@ -73,7 +78,8 @@ export class DevicesFloatMonitor extends MobxLitElement {
   }
 
   render() {
-    const sketchId = appState.local.editingSketchId;
+    const sketchId = this.sketchId ?? appState.local.editingSketchId;
+    const traceId = this.traceId ?? 'edit_preview';
     const h = appState.local.userSettings.devicesMonitorHeight;
     const w = Math.round(h * this.aspect());
     this.style.width = `${w}px`;
@@ -84,8 +90,8 @@ export class DevicesFloatMonitor extends MobxLitElement {
       <div class="fm-edge corner" @pointerdown=${(e: PointerEvent) => this.onResize(e, true, true)}></div>
       <sketch-monitor
         .sketchId=${sketchId}
-        traceId="edit_preview"
-        .traceTarget=${{ type: 'sketch_output', sketchId } as never}
+        .traceId=${traceId}
+        .traceTarget=${(this.traceId ? undefined : { type: 'sketch_output', sketchId }) as never}
         emptyMessage="No sketch selected."
       ></sketch-monitor>
     `;

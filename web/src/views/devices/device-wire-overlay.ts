@@ -18,7 +18,7 @@ import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { isMidiInstanceKey, midiInstanceIdFromKey } from '../../midi/midi-types';
 import { sketchChain } from '../../sketch-types';
-import { activeEditorFieldAnchor } from '../../widgets/field-anchor-lookup';
+import { activeEditorFieldAnchor, activeEditorSketchId } from '../../widgets/field-anchor-lookup';
 import { tapsConnect } from '../../widgets/taps-connect';
 import { DeviceAnchorKeys, deviceAnchorRect } from './device-anchors';
 
@@ -77,7 +77,7 @@ export class DeviceWireOverlay extends MobxLitElement {
   }
 
   private wires(): DeviceWireVis[] {
-    const sketchId = appState.local.editingSketchId;
+    const sketchId = activeEditorSketchId();
     if (!sketchId) return [];
     const sketch = appState.database.sketches[sketchId];
     if (!sketch?.wires) return [];
