@@ -25,7 +25,7 @@ std::string make_envelope(const std::string& uuid) {
                                {"type", "module"}});
     sketch["instances"][key] = {
         {"module_type", "color.tone.auto_level"},
-        {"state", {{"equalize", 0.87}, {"median_pull", 0.57}, {"__bypass__", false}}},
+        {"state", {{"equalize", 0.87}, {"median_pull", 0.57}, {"__enable__", true}}},
         {"version", {{"effect", {0, 0, 0}}, {"module", {0, 0, 0}}}},
     };
   }

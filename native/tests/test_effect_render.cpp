@@ -370,7 +370,7 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
 // probe it via lastModulationData (same mechanism as the chaining test above).
 //   - mid enabled : tail.input = mid.output (0.9).
 //   - mid disabled: tail skips mid, connects to lfo → tail.input = lfo.output (0.5).
-// Only __bypass__ on mid differs, so the 0.9 -> 0.5 flip isolates the re-route.
+// Only __enable__ on mid differs, so the 0.9 -> 0.5 flip isolates the re-route.
 TEST_CASE("disabled shaper is skipped by modulation auto-connect", "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) {
@@ -395,7 +395,7 @@ TEST_CASE("disabled shaper is skipped by modulation auto-connect", "[effect_rend
 
   auto buildSketch = [](bool midBypassed) {
     nlohmann::json midState = {{"output", 0.9}};
-    if (midBypassed) midState["__bypass__"] = true;
+    if (midBypassed) midState["__enable__"] = false;
     return nlohmann::json{
       {"chain", nlohmann::json::array({
         {{"module_type", "source.solid_color"}, {"instance_key", "src"}, {"params", {{"color", {1.0, 1.0, 1.0}}}}},
@@ -2479,14 +2479,14 @@ TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][s
 
   // 4) Writer BYPASSED: no publish. B holds at most one more frame (its
   //    prevSeq still predates A's last live write), then goes black.
-  sketchA["instances"]["so"]["state"]["__bypass__"] = 1;
+  sketchA["instances"]["so"]["state"]["__enable__"] = 0;
   runA(true);
   runB(false);                       // ≤1 held frame allowed here
   runA(false);
   bOut = runB(false);                // by now the channel must read stale
   CHECK(meanCh(bOut, W, H, 0) < 4.0);
   CHECK(meanCh(bOut, W, H, 3) < 4.0);
-  sketchA["instances"]["so"]["state"].erase("__bypass__");
+  sketchA["instances"]["so"]["state"].erase("__enable__");
 
   // 5) Writer STOPPED entirely (A no longer executes): same decay to black.
   runA(true);
@@ -3655,7 +3655,7 @@ TEST_CASE("frame delay replays the frame from N renders ago", "[effect_render]")
 
   auto sketchWith = [](double delay, bool bypass = false) {
     nlohmann::json st{{"delay", delay}};
-    if (bypass) st["__bypass__"] = 1.0;
+    if (bypass) st["__enable__"] = 0.0;
     return nlohmann::json{
       {"chain", nlohmann::json::array({
         nlohmann::json{{"module_type", "motion.frame_delay"}, {"instance_key", "fd"}}})},
@@ -3728,7 +3728,7 @@ TEST_CASE("frame delay only holds the frames its delay needs", "[effect_render]"
 
   auto sketchWith = [](double delay, bool bypass = false) {
     nlohmann::json st{{"delay", delay}};
-    if (bypass) st["__bypass__"] = 1.0;
+    if (bypass) st["__enable__"] = 0.0;
     return nlohmann::json{
       {"chain", nlohmann::json::array({
         nlohmann::json{{"module_type", "motion.frame_delay"}, {"instance_key", "fd"}}})},

@@ -7,7 +7,7 @@ const sketches = {
     anchor: null,
     wires: [
       { id: 'w1', src: { instanceKey: 'midi:dev-1', field: 'b0/e05/turn' }, dest: { instanceKey: 'bc', field: 'brightness' } },
-      { id: 'w2', src: { instanceKey: 'midi:dev-1', field: 'b0/e05/press' }, dest: { instanceKey: 'bc', field: '__bypass__' } },
+      { id: 'w2', src: { instanceKey: 'midi:dev-1', field: 'b0/e05/press' }, dest: { instanceKey: 'bc', field: '__enable__' } },
       { id: 'w3', src: { instanceKey: 'lfo', field: 'output' }, dest: { instanceKey: 'bc', field: 'contrast' } },
     ],
   } as unknown as Sketch,

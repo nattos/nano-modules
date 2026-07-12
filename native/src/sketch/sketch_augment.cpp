@@ -166,6 +166,8 @@ void augmentColumn(json& sketch, int colIdx,
   // neither consumes a rail nor acts as a producer, so the rail re-routes to
   // the nearest ENABLED compatible producer (matching the runtime, where a
   // bypassed module passes its input straight through).
+  // Mirrors the executor's readEnable: `__enable__` 1/absent = the effect runs;
+  // 0 = bypassed.
   auto isBypassed = [&sketch](const json& entry) -> bool {
     if (!sketch.contains("instances") || !sketch["instances"].is_object()) return false;
     const std::string key = entry.value("instance_key", std::string());
@@ -174,10 +176,10 @@ void augmentColumn(json& sketch, int colIdx,
     if (iit == sketch["instances"].end()) return false;
     auto sit = iit->find("state");
     if (sit == iit->end() || !sit->is_object()) return false;
-    auto bit = sit->find("__bypass__");
+    auto bit = sit->find("__enable__");
     if (bit == sit->end()) return false;
-    if (bit->is_boolean()) return bit->get<bool>();
-    if (bit->is_number())  return bit->get<double>() != 0.0;
+    if (bit->is_boolean()) return !bit->get<bool>();
+    if (bit->is_number())  return bit->get<double>() == 0.0;
     return false;
   };
 

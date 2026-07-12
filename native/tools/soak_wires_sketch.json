@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixed-topology sketch for --drive-mode wires. The effect chain never changes; only WIRES churn, so a rising memory floor points at the wire/read-tap/modulation/reserved-fold/texture-rail paths (NOT the fusion-cache churn that structural mode exercises). Sources (lfo/adsr), shapers (smooth/remap) and composite.blend give the driver every wire variety: scalar float, structural __opacity__/__bypass__, source->shaper->dest, and a texture wire into tex_b.",
+  "_comment": "Fixed-topology sketch for --drive-mode wires. The effect chain never changes; only WIRES churn, so a rising memory floor points at the wire/read-tap/modulation/reserved-fold/texture-rail paths (NOT the fusion-cache churn that structural mode exercises). Sources (lfo/adsr), shapers (smooth/remap) and composite.blend give the driver every wire variety: scalar float, structural __opacity__/__enable__, source->shaper->dest, and a texture wire into tex_b.",
   "chain": [
     { "type": "module", "module_type": "source.gradient",                "instance_key": "gen" },
     { "type": "module", "module_type": "color.tone.brightness_contrast", "instance_key": "bc" },

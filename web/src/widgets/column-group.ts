@@ -14,7 +14,7 @@ import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, TapCurve, TapCombine, WireMagnitude, FieldConnectInfo, SketchOutputFormat, SketchResolutionOverride } from '../sketch-types';
-import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat } from '../sketch-types';
+import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat, isDeviceOff } from '../sketch-types';
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -1301,7 +1301,7 @@ export class ColumnGroup extends MobxLitElement {
     // Per-effect device controls (reserved engine keys in instance state).
     const reservedState = this.ds.getSketch(this.sketchId)
       ?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
-    const bypass = reservedState?.__bypass__ === true || reservedState?.__bypass__ === 1;
+    const bypass = isDeviceOff(reservedState);
     const opacity = typeof reservedState?.__opacity__ === 'number'
       ? reservedState!.__opacity__ as number : 1;
     const blendMode = typeof reservedState?.__blend__ === 'number'
@@ -1367,7 +1367,7 @@ export class ColumnGroup extends MobxLitElement {
               @pointerdown=${(e: Event) => e.stopPropagation()}
               @click=${(e: Event) => {
                 e.stopPropagation();
-                this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__bypass__', !bypass);
+                this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, '__enable__', bypass);
               }}>⏻</button>
             ${this.renderEffectGlyph(entry.module_type)}
             <div class="effect-card-name-wrapper" style=${isEditingType ? 'flex:1' : 'flex:0 1 auto'}>
@@ -1735,10 +1735,10 @@ export class ColumnGroup extends MobxLitElement {
       `);
     }
 
-    // Engine-reserved header controls (bypass ⏻ + opacity) as wire/lane DESTS.
+    // Engine-reserved header controls (power ⏻ + opacity) as wire/lane DESTS.
     // They aren't schema fields — no layoutManager key — so measure their DOM
     // rects directly and attach a synthetic [0,1] float schemaDef (the executor
-    // folds `__` dests through its own opacity/bypass decisions).
+    // folds `__` dests through its own opacity/enable decisions).
     {
       const headerEl = innerEl.querySelector('.effect-card-header') as HTMLElement | null;
       const base = innerEl.getBoundingClientRect();
@@ -1762,7 +1762,7 @@ export class ColumnGroup extends MobxLitElement {
             @click=${(e: Event) => this.onTapOverlayClick(key, fieldPath, false, schemaDef, chainIdx, e)}></div>
         `);
       };
-      pushReserved(headerEl?.querySelector('.device-bypass-btn') ?? null, '__bypass__');
+      pushReserved(headerEl?.querySelector('.device-bypass-btn') ?? null, '__enable__');
       pushReserved(headerEl?.querySelector('.device-opacity-slider') ?? null, '__opacity__');
     }
 
@@ -1909,7 +1909,7 @@ export class ColumnGroup extends MobxLitElement {
         const v = st?.[fieldPath];
         return typeof v === 'number' ? v : undefined;
       },
-      // Wire-driven reserved keys (__opacity__/__bypass__) record modulation
+      // Wire-driven reserved keys (__opacity__/__enable__) record modulation
       // bands like any float field — draw them on the header controls.
       getModulation: (fieldPath: string) =>
         this.ds.modulation(entry.instance_key)?.[fieldPath] ?? null,

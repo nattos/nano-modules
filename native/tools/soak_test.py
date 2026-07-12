@@ -242,7 +242,7 @@ SHAPER_TYPES = {"mod.shaper.smooth", "mod.shaper.remap", "mod.shaper.threshold"}
 # Reserved per-effect keys that are WIRE-modulatable. The executor's
 # foldReservedOverrides maps ONLY these two (slot 0/1); __blend__ has a reader but
 # no fold slot, so a wire to it never lands — don't drive it.
-RESERVED_DESTS = ["__opacity__", "__bypass__"]
+RESERVED_DESTS = ["__opacity__", "__enable__"]
 # Effects exposing a texture out/in for TEXTURE wires. composite.blend reads
 # inputTexture(0)=tex_a (linear chain) and inputTexture(1)=tex_b (wire-injected).
 IMAGE_EFFECT_TYPES = {

@@ -57,12 +57,12 @@ describe('bypass shortcut', () => {
     expect(store.compositeLayersAtBeat(2).some((l) => l.clip.id === clip)).toBe(false);
   });
 
-  it('focused effect card: bypass toggles its __bypass__ (not the clip)', () => {
+  it('focused effect card: bypass clears its __enable__ (not the clip)', () => {
     store.select(paths.clip(trk, clip));
     store.setChainFocus(`effect/clip/${trk}/${clip}/0/1`); // the saturate device
     store.toggleBypassShortcut();
     const devs = store.trackById(trk)!.clips.find((x) => x.id === clip)!.sketch.devices;
-    expect(devs[1].state?.__bypass__).toBe(true);
+    expect(devs[1].state?.__enable__).toBe(false);
     expect(store.trackById(trk)!.clips.find((x) => x.id === clip)!.bypassed).toBeFalsy();
   });
 

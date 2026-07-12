@@ -641,9 +641,9 @@ TEST_CASE("eval-skip: update-loop micro-benchmark", "[.comp_bench]") {
   CHECK(skipMs < everyFrameMs);
 }
 
-TEST_CASE("engine-reserved __opacity__/__bypass__ accept wires + automation", "[comp_render]") {
+TEST_CASE("engine-reserved __opacity__/__enable__ accept wires + automation", "[comp_render]") {
   // Phase-1 reserved-key modulation: the executor folds wires/automation whose
-  // dest is an engine-reserved `__` key into its OWN opacity/bypass decisions
+  // dest is an engine-reserved `__` key into its OWN opacity/enable decisions
   // (pre-gate), instead of uselessly setParamFloat-ing the plugin. Chain:
   // white solid -> color.invert. Inverted white = black, so the invert's
   // effective opacity IS the output brightness: 1 -> ~0, 0.5 -> ~127, 0 -> 255.
@@ -668,7 +668,7 @@ TEST_CASE("engine-reserved __opacity__/__bypass__ accept wires + automation", "[
 
   int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
 
-  SECTION("automation drives __opacity__ and __bypass__; clearing restores authored") {
+  SECTION("automation drives __opacity__ and __enable__; clearing restores authored") {
     sketch_executor::SketchExecutor ex(hx.rt.get(), hx.registry.get(), hx.backend.get());
     ex.setKeyNamespace("resauto/");
     // Baseline: authored opacity 1 -> fully inverted (black).
@@ -688,23 +688,33 @@ TEST_CASE("engine-reserved __opacity__/__bypass__ accept wires + automation", "[
     ex.execute(sketch, inTex, outTex, W, H, 1.0 / 60.0, false);
     const double off = meanRgb(hx.read(outTex));
 
+    // `__enable__` is stated as ON: driving it to 0 is what bypasses.
     ex.setAutomation(json::parse(
-        R"([{ "instance": "inv", "field": "__bypass__", "value": 1.0,
+        R"([{ "instance": "inv", "field": "__enable__", "value": 0.0,
               "combine": "replace", "magnitude": "unsigned" }])"));
     ex.execute(sketch, inTex, outTex, W, H, 1.0 / 60.0, false);
     const double bypassed = meanRgb(hx.read(outTex));
 
-    // Clearing automation restores the authored (opacity 1, unbypassed) look.
+    // ...and holding it at 1 leaves the effect running (the authored default).
+    ex.setAutomation(json::parse(
+        R"([{ "instance": "inv", "field": "__enable__", "value": 1.0,
+              "combine": "replace", "magnitude": "unsigned" }])"));
+    ex.execute(sketch, inTex, outTex, W, H, 1.0 / 60.0, false);
+    const double enabled = meanRgb(hx.read(outTex));
+
+    // Clearing automation restores the authored (opacity 1, enabled) look.
     ex.setAutomation(json::array());
     ex.execute(sketch, inTex, outTex, W, H, 1.0 / 60.0, false);
     const double restored = meanRgb(hx.read(outTex));
 
     INFO("base " << base << " half " << half << " off " << off
-         << " bypassed " << bypassed << " restored " << restored);
+         << " bypassed " << bypassed << " enabled " << enabled
+         << " restored " << restored);
     CHECK(base < 20.0);                        // inverted white = black
     CHECK(std::abs(half - 127.0) < 25.0);      // wet/dry mix at 0.5
     CHECK(off > 235.0);                        // opacity 0 -> passthrough white
-    CHECK(bypassed > 235.0);                   // bypass >= 0.5 -> passthrough
+    CHECK(bypassed > 235.0);                   // enable < 0.5 -> passthrough
+    CHECK(enabled < 20.0);                     // enable >= 0.5 -> the effect runs
     CHECK(restored < 20.0);
     // None of this is structural: the plan never rebuilt.
     CHECK(ex.planBuildCountForTest() == plans0);
@@ -736,29 +746,32 @@ TEST_CASE("engine-reserved __opacity__/__bypass__ accept wires + automation", "[
     CHECK(mod["inv"].contains("__opacity__"));
   }
 
-  SECTION("a wire un-bypasses a statically-bypassed effect") {
+  SECTION("a wire wakes a statically-bypassed effect") {
+    // The polarity check for `__enable__`: a modulation source at its TOP turns
+    // the effect ON. Signed LFO forced unsigned prescales v*0.5+0.5, so
+    // +0.5 -> 0.75 (>= 0.5, ON) and -0.5 -> 0.25 (< 0.5, OFF). Under the old
+    // `__bypass__` key both of these assertions read the other way round — which
+    // is exactly the inversion this key exists to kill.
     auto wired = sketch;
-    // Signed LFO forced unsigned prescales v*0.5+0.5: -0.5 -> 0.25 (< 0.5, ON),
-    // +0.5 -> 0.75 (>= 0.5, OFF).
-    wired["instances"]["inv"]["state"]["__bypass__"] = true;  // authored: OFF
-    wired["instances"]["lfo"]["state"]["output"] = -0.5;      // wire says: ON
+    wired["instances"]["inv"]["state"]["__enable__"] = false;  // authored: OFF
+    wired["instances"]["lfo"]["state"]["output"] = 0.5;        // wire says: ON
     wired["wires"] = json::parse(
         R"([{ "id": "w0", "src": { "instanceKey": "lfo", "field": "output" },
-              "dest": { "instanceKey": "inv", "field": "__bypass__" },
+              "dest": { "instanceKey": "inv", "field": "__enable__" },
               "combine": "replace", "magnitude": "unsigned" }])");
     sketch_executor::SketchExecutor ex(hx.rt.get(), hx.registry.get(), hx.backend.get());
     ex.setKeyNamespace("resunbyp/");
     ex.execute(wired, inTex, outTex, W, H, 1.0 / 60.0, true);
     const double on = meanRgb(hx.read(outTex));
 
-    // Flip the producer above threshold: bypassed again (passthrough white).
-    wired["instances"]["lfo"]["state"]["output"] = 0.5;
+    // Drop the producer below threshold: dormant again (passthrough white).
+    wired["instances"]["lfo"]["state"]["output"] = -0.5;
     ex.execute(wired, inTex, outTex, W, H, 1.0 / 60.0, true);
     const double off = meanRgb(hx.read(outTex));
 
-    INFO("unbypassed " << on << " bypassed " << off);
-    CHECK(on < 20.0);    // wire held the effect ON despite authored __bypass__
-    CHECK(off > 235.0);  // wire crossed 0.5 -> dormant passthrough
+    INFO("enabled " << on << " bypassed " << off);
+    CHECK(on < 20.0);    // wire held the effect ON despite authored __enable__=0
+    CHECK(off > 235.0);  // wire fell under 0.5 -> dormant passthrough
   }
 }
 

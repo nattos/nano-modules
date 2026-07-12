@@ -597,17 +597,17 @@ class SketchExecutor {
                          const std::string& fieldPath, float railVal,
                          bool hasCanon, float canon);
 
-  // Engine-reserved per-effect overrides (`__opacity__` / `__bypass__`)
+  // Engine-reserved per-effect overrides (`__opacity__` / `__enable__`)
   // modulated by wires/automation THIS frame. Reserved keys are consumed by the
-  // executor itself (never the plugin): readOpacity/readBypass supply the
+  // executor itself (never the plugin): readOpacity/readEnable supply the
   // authored canon; wires fold from it (and stack), automation folds from it
   // only when no wire drove the same key (wire precedence, matching
   // applyAutomation). Folded at the TOP of an entry's standalone processing —
-  // BEFORE the bypass gate — so a wire can un-bypass a dormant effect. Values
+  // BEFORE the enable gate — so a wire can wake a dormant effect. Values
   // re-fold every frame from scratch (no persistent overlay to go stale).
   struct ReservedOverrides {
     std::optional<float> opacity;
-    std::optional<float> bypass;  // thresholded >= 0.5 by the caller
+    std::optional<float> enable;  // 1 = on; thresholded >= 0.5 by the caller
   };
   ReservedOverrides foldReservedOverrides(
       const nlohmann::json& entry, const nlohmann::json& sketchInstances,

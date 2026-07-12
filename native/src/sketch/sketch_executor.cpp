@@ -326,14 +326,21 @@ const json* findState(const json& instances, const std::string& instKey) {
   return &*sit;
 }
 
-bool readBypass(const json& instances, const std::string& instKey) {
+// Per-effect device on/off (`__enable__`): 1 = the effect runs, 0 = it's
+// bypassed (aliases its input through). Stated as ENABLE, not bypass, so the
+// key reads the same way everywhere it's seen — as the card's power light, as a
+// wire dest (a modulation source at full turns the effect ON, which is the only
+// polarity that isn't a trap), and as an automation lane. ABSENT means enabled:
+// a freshly-dropped effect, and every sketch authored before the key existed,
+// runs.
+bool readEnable(const json& instances, const std::string& instKey) {
   const json* st = findState(instances, instKey);
-  if (!st) return false;
-  auto it = st->find("__bypass__");
-  if (it == st->end()) return false;
+  if (!st) return true;
+  auto it = st->find("__enable__");
+  if (it == st->end()) return true;
   if (it->is_boolean()) return it->get<bool>();
   if (it->is_number())  return it->get<double>() != 0.0;
-  return false;
+  return true;
 }
 
 float readOpacity(const json& instances, const std::string& instKey) {
@@ -357,7 +364,7 @@ int readBlendMode(const json& instances, const std::string& instKey) {
   return (m > 0 && m <= 15) ? m : 0;
 }
 
-// Engine-reserved field paths (`__opacity__`, `__bypass__`, ...): consumed by
+// Engine-reserved field paths (`__opacity__`, `__enable__`, ...): consumed by
 // the executor, stripped before the plugin (see applyState). Wires/automation
 // targeting them fold through foldReservedOverrides, never setParamFloat.
 bool isReservedField(const std::string& fieldPath) {
@@ -410,10 +417,10 @@ const json& refOr(const json& parent, const char* key, const json& fallback,
 // whether a dirty frame actually needs a plan REBUILD vs. just a state re-apply.
 // The plan depends only on chain TOPOLOGY (module_types, instance_keys, whether
 // an entry has any taps) + rail definitions + the two state-derived fusion
-// eligibility inputs (bypass, opacity). It does NOT depend on effect param
+// eligibility inputs (enable, opacity). It does NOT depend on effect param
 // values — those are read live per frame (applyState / read taps). So a pure
 // param-slider drag produces an identical signature and skips the rebuild, while
-// add/remove/reorder, wire edits, and bypass/opacity toggles still change it.
+// add/remove/reorder, wire edits, and enable/opacity toggles still change it.
 // (Tap CONTENT — mod/combine/magnitude — is read live each frame from the
 // sketch, never cached in the plan, so only taps-PRESENCE affects the plan.)
 // True iff a chain entry has at least one engine-level `smoothing` option
@@ -461,7 +468,7 @@ std::string computeStructSig(const json& columns, const json& instances,
       // standalone), so it's structural — track it so toggling rebuilds the plan.
       sig.push_back(entryHasSmoothing(e) ? 'S' : 's');
       sig.push_back('|');
-      sig.push_back(readBypass(instances, key) ? 'B' : 'b');
+      sig.push_back(readEnable(instances, key) ? 'E' : 'e');
       sig.push_back('|');
       sig += std::to_string(readOpacity(instances, key));
       sig.push_back('|');
@@ -581,7 +588,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
       if (!reg) continue;  // unknown module_type → silent passthrough
       std::string instKey = entry.value("instance_key", std::string());
       // Fusion eligibility — structural (fusion kind/fragment/prepare, tap-free)
-      // plus bypass/opacity, which are sketch state and thus only change on a
+      // plus enable/opacity, which are sketch state and thus only change on a
       // dirty frame. instanceFor materialises the per-key instance here.
       EffectRef inst = instanceRef(mt, nsPrefix_ + instKey);
       bool e = false;
@@ -599,7 +606,7 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
         if (e && entryHasSmoothing(entry)) {
           e = false;
         }
-        if (e && (readBypass(instances, instKey) ||
+        if (e && (!readEnable(instances, instKey) ||
                   readOpacity(instances, instKey) != 1.0f ||
                   readBlendMode(instances, instKey) != 0)) {
           e = false;
@@ -802,7 +809,7 @@ int32_t SketchExecutor::execute(
       const json& modInstances = refOr(rawSketch, "instances", kEmptyObj, false);
       for (size_t i = 0; i < chain.size(); ++i) {
         if (!chain[i].is_object() || !chain[i].contains("instance_key")) continue;
-        if (readBypass(modInstances, chain[i].value("instance_key", std::string())))
+        if (!readEnable(modInstances, chain[i].value("instance_key", std::string())))
           continue;  // a disabled shaper takes no auto-connect
         const RegisteredModule* sreg =
             findSchema(chain[i].value("module_type", std::string()));
@@ -815,7 +822,7 @@ int32_t SketchExecutor::execute(
         for (int j = static_cast<int>(i) - 1; j >= 0; --j) {
           if (chain[j].is_object() && chain[j].contains("module_type") &&
               chain[j].contains("instance_key")) {
-            if (readBypass(modInstances, chain[j].value("instance_key", std::string())))
+            if (!readEnable(modInstances, chain[j].value("instance_key", std::string())))
               continue;  // skip disabled producers
             p = j; break;
           }
@@ -1118,10 +1125,10 @@ int32_t SketchExecutor::execute(
   // it's set on every frame of a continuous slider/knob drag, but those edits
   // change only effect param VALUES, which the plan never caches (they're read
   // live below via applyState + read taps). buildPlan depends purely on topology
-  // (module_types, instance_keys, taps-presence, rail defs) + bypass/opacity, all
+  // (module_types, instance_keys, taps-presence, rail defs) + enable/opacity, all
   // captured by computeStructSig. So we only pay buildPlan's cost (per-entry
   // instanceFor + fusion probes) when that signature shifts — a real add/remove/
-  // reorder, wire edit, or bypass/opacity toggle — not on every drag frame. In
+  // reorder, wire edit, or enable/opacity toggle — not on every drag frame. In
   // standalone / steady state nothing edits the sketch and the cached plan is
   // reused untouched. See buildPlan + the PlanColumn cache.
   if (!planValid_) {
@@ -1231,7 +1238,7 @@ int32_t SketchExecutor::execute(
       // size cap is 28. Beyond that, the planner just starts a new
       // group; no observable behavior change.
       static constexpr size_t kMaxFusionStages = 28;
-      // Eligibility is cached in the plan (structural + bypass/opacity, all
+      // Eligibility is cached in the plan (structural + enable/opacity, all
       // dirty-gated). Only the barrier predicate is re-evaluated per frame — the
       // host flips it as preview-monitor subscriptions change, independent of any
       // sketch edit — and group splitting is re-derived from both.
@@ -1326,21 +1333,22 @@ int32_t SketchExecutor::execute(
         return src;
       };
 
-      // -- Engine-reserved modulation (`__opacity__`/`__bypass__`): wires +
+      // -- Engine-reserved modulation (`__opacity__`/`__enable__`): wires +
       // automation targeting the executor's own per-effect controls fold HERE,
-      // before the bypass gate, so a wire can un-bypass a dormant effect. Rail
+      // before the enable gate, so a wire can wake a dormant effect. Rail
       // values from earlier-in-chain producers are current (same availability
       // as applyReadTaps); the fold never touches the plugin. --
       const ReservedOverrides resOv =
           foldReservedOverrides(entry, instances, instKey, railsById, railFloats);
 
-      // -- Device on/off ("bypass"): when off, fire the on_active transition
+      // -- Device on/off (`__enable__`): when off, fire the on_active transition
       // then go fully dormant — no state, no taps, no tick/render — and alias
-      // the column input straight through as this stage's output. --
-      const bool bypass = resOv.bypass ? (*resOv.bypass >= 0.5f)
-                                       : readBypass(instances, instKey);
-      inst.doSetActive(!bypass);
-      if (bypass) {
+      // the column input straight through as this stage's output. Modulation
+      // thresholds at the range midpoint, so a source's top half means ON. --
+      const bool enabled = resOv.enable ? (*resOv.enable >= 0.5f)
+                                        : readEnable(instances, instKey);
+      inst.doSetActive(enabled);
+      if (!enabled) {
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
@@ -1941,7 +1949,7 @@ void SketchExecutor::applyState(
   for (auto it = state.begin(); it != state.end(); ++it) {
     const auto& v = it.value();
     const std::string& name = it.key();
-    // Reserved engine keys (e.g. __bypass__, __opacity__) are handled by the
+    // Reserved engine keys (e.g. __enable__, __opacity__) are handled by the
     // executor itself — never delivered to the effect as params.
     if (name.size() >= 2 && name[0] == '_' && name[1] == '_') continue;
     // Per-field skip: only patch fields whose value differs from the last
@@ -2028,18 +2036,20 @@ SketchExecutor::ReservedOverrides SketchExecutor::foldReservedOverrides(
     const std::unordered_map<std::string, json>& railsById,
     const std::unordered_map<std::string, float>& railFloats) {
   ReservedOverrides ov;
-  bool wireDrove[2] = {false, false};  // [0]=opacity, [1]=bypass
+  bool wireDrove[2] = {false, false};  // [0]=opacity, [1]=enable
   auto slotOf = [&](const std::string& f) -> int {
     if (f == "__opacity__") return 0;
-    if (f == "__bypass__") return 1;
+    if (f == "__enable__") return 1;
     return -1;
   };
-  auto get = [&](int s) -> std::optional<float>& { return s == 0 ? ov.opacity : ov.bypass; };
+  auto get = [&](int s) -> std::optional<float>& { return s == 0 ? ov.opacity : ov.enable; };
   // Authored canon: the executor's own readers supply the defaults (opacity 1,
-  // bypass off) — the value modulation folds from / returns to.
+  // enable on) — the value modulation folds from / returns to. Both reserved
+  // keys therefore sit at the TOP of their [0,1] range when untouched, so a
+  // `mul` wire is an attenuator on either and `replace` is a straight override.
   auto canonOf = [&](int s) -> float {
     return s == 0 ? readOpacity(sketchInstances, instanceKey)
-                  : (readBypass(sketchInstances, instanceKey) ? 1.0f : 0.0f);
+                  : (readEnable(sketchInstances, instanceKey) ? 1.0f : 0.0f);
   };
 
   // Wires first (they stack, like applyReadTaps' running accumulator)...
@@ -2130,7 +2140,7 @@ void SketchExecutor::applyReadTaps(
     // reads from this frame's local rails. See delayedRailFloats_ doc.
     const bool delayed = tap.value("delayed", false);
 
-    // Engine-reserved dest (`__opacity__`/`__bypass__`): folded separately at
+    // Engine-reserved dest (`__opacity__`/`__enable__`): folded separately at
     // the top of the entry's standalone processing (foldReservedOverrides) —
     // never setParamFloat'd onto the plugin, which strips `__` keys anyway.
     if (isReservedField(fieldPath)) continue;

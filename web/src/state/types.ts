@@ -114,7 +114,7 @@ export interface Selectable {
 export interface EffectClipboard {
   kind: 'effect';
   moduleType: string;
-  /** Deep-copied instance state (params + `__opacity__`/`__bypass__`), minus
+  /** Deep-copied instance state (params + `__opacity__`/`__enable__`), minus
    *  UI-only view state like collapse. */
   state: Record<string, any>;
   /** Per-field engine options (smoothing, …), if the source had any. */

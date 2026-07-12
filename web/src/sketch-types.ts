@@ -456,15 +456,30 @@ export const SKETCH_OUTPUT_MODULE_TYPE = 'util.sketch_output';
 /**
  * Synthetic schema defs for the ENGINE-RESERVED per-effect keys. They aren't
  * plugin schema fields (the executor strips `__` keys before the plugin and
- * consumes them itself: wet/dry opacity + the bypass gate), but wires and
+ * consumes them itself: wet/dry opacity + the enable gate), but wires and
  * automation may target them — these defs supply the dest range contract
- * ([0,1]; bypass thresholds at >= 0.5 executor-side) and let the wire UI treat
+ * ([0,1]; enable thresholds at >= 0.5 executor-side) and let the wire UI treat
  * them like ordinary float inputs.
+ *
+ * `__enable__` is the card's power light, stated as ON (1 = the effect runs,
+ * 0 = bypassed) rather than as bypass, so modulating it isn't inverted: a
+ * source at full turns the effect on. Absent = enabled, which is why the
+ * default is 1 — a freshly-dropped effect has no key and must still run.
  */
 export const RESERVED_FIELD_DEFS: Record<string, { type: string; io: number; min: number; max: number; default: number }> = {
   __opacity__: { type: 'float', io: 1, min: 0, max: 1, default: 1 },
-  __bypass__: { type: 'float', io: 1, min: 0, max: 1, default: 0 },
+  __enable__: { type: 'float', io: 1, min: 0, max: 1, default: 1 },
 };
+
+/**
+ * Is an effect instance's device power OFF (bypassed)? Only an explicit 0/false
+ * disables — an absent `__enable__` is ON. The sole owner of that rule on the
+ * web side; mirrors the executor's `readEnable`.
+ */
+export function isDeviceOff(state: Record<string, unknown> | undefined): boolean {
+  const v = state?.__enable__;
+  return v === false || v === 0;
+}
 
 /**
  * Composite blend mode names, indexed to match the native `composite.blend`

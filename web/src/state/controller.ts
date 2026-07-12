@@ -21,7 +21,7 @@ import {
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
-import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceKey } from '../midi/midi-types';
 import { midiController } from './midi-controller';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
@@ -577,6 +577,9 @@ export class AppController {
    * are unified — if every selected card is already bypassed, enable them all;
    * otherwise bypass them all. Returns false when the selection holds no effect
    * cards (caller can ignore the key).
+   *
+   * The stored key is `__enable__` (1 = the effect runs); an absent key means
+   * enabled, so a card that has never been toggled reads as on.
    */
   toggleBypassSelectedEffects(): boolean {
     const parts = appState.local.multiSelection
@@ -587,25 +590,24 @@ export class AppController {
       const sk = appState.database.sketches[p.sketchId];
       const entry = sk ? sketchChain(sk)[p.chainIdx] : undefined;
       if (!entry || entry.type !== 'module') return false;
-      const st = sk?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined;
-      return st?.__bypass__ === true || st?.__bypass__ === 1;
+      return isDeviceOff(sk?.instances?.[entry.instance_key]?.state as Record<string, unknown> | undefined);
     };
     // Enable all only when every card is already bypassed; otherwise bypass all.
-    const target = !parts.every(isBypassed);
+    const enable = parts.every(isBypassed);
     this.mutate(parts.length > 1 ? `Toggle bypass ${parts.length} effects` : 'Toggle bypass', draft => {
       for (const p of parts) {
         const sk = draft.sketches[p.sketchId];
         const entry = sk ? sketchChain(sk)[p.chainIdx] : undefined;
         if (!entry || entry.type !== 'module') continue;
         const inst = sk!.instances?.[entry.instance_key];
-        if (inst) inst.state.__bypass__ = target;
+        if (inst) inst.state.__enable__ = enable;
       }
     });
     for (const p of parts) {
       const sk = appState.database.sketches[p.sketchId];
       const entry = sk ? sketchChain(sk)[p.chainIdx] : undefined;
       if (entry && entry.type === 'module') {
-        this.engine?.setParam(p.sketchId, p.colIdx, p.chainIdx, '__bypass__', target);
+        this.engine?.setParam(p.sketchId, p.colIdx, p.chainIdx, '__enable__', enable);
       }
     }
     return true;

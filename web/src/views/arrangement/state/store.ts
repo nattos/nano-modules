@@ -10,6 +10,7 @@
 import { makeAutoObservable, runInAction, toJS, set as mobxSet, remove as mobxRemove } from 'mobx';
 import type { StateDiff, PluginInfo } from '../../../engine-types';
 import type { FieldConnectInfo } from '../../../sketch-types';
+import { isDeviceOff } from '../../../sketch-types';
 import {
   Composition,
   Clip,
@@ -1456,7 +1457,7 @@ export class ArrangementStore {
     const name = dev ? (catalogEffect(dev.moduleType)?.name ?? dev.moduleType) : '?';
     // Engine-reserved per-device keys get friendly names.
     const fieldName = field === '__opacity__' ? 'Opacity'
-      : field === '__bypass__' ? 'Bypass' : field;
+      : field === '__enable__' ? 'Enable' : field;
     return `${name} · ${fieldName}`;
   }
   /** Select (or replace) the owner's automation field. */
@@ -2960,8 +2961,9 @@ export class ArrangementStore {
     });
   }
 
-  /** Toggle the focused effect card's bypass (__bypass__). Returns false if no
-   *  effect card is focused (so the caller can fall back to clip bypass). */
+  /** Toggle the focused effect card's power (`__enable__`, 1 = on; absent = on).
+   *  Returns false if no effect card is focused (so the caller can fall back to
+   *  clip bypass). */
   toggleChainFocusBypass(): boolean {
     const path = this.chainFocusPath;
     if (!path?.startsWith('effect/')) return false;
@@ -2974,14 +2976,14 @@ export class ArrangementStore {
       const [, trackId, clipId] = sketchId.split('/');
       const dev = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
       if (!dev) return false;
-      this.setClipDeviceField(trackId, clipId, dev.id, '__bypass__', dev.state?.__bypass__ !== true);
+      this.setClipDeviceField(trackId, clipId, dev.id, '__enable__', isDeviceOff(dev.state));
       return true;
     }
     if (sketchId.startsWith('track/')) {
       const trackId = sketchId.split('/')[1];
       const dev = this.trackById(trackId)?.sketch.devices[chainIdx];
       if (!dev) return false;
-      this.setTrackDeviceField(trackId, dev.id, '__bypass__', dev.state?.__bypass__ !== true);
+      this.setTrackDeviceField(trackId, dev.id, '__enable__', isDeviceOff(dev.state));
       return true;
     }
     return false;
