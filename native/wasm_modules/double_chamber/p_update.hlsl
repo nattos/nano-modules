@@ -57,11 +57,13 @@ cbuffer Uniforms : register(b4) {
 
   float to_big_range;    // s-space radius of Big influence (0 → effectively global)
   float image_smoothing; // matches the blur radius → scales the gradient step
-  float to_line_rate;    // P(respawn onto a tracer line vertex)
-  float seg_total;       // number of tracer segment slots (l_count * max_seg)
+  float to_line_rate;    // P(respawn onto a tracer line)
+  float seg_total;       // number of tracer segment slots (l_count * seg_stride)
 
   float boundary_death;  // P(die+respawn) when over the boundary, ∝ overshoot
-  float _bp0, _bp1, _bp2;
+  float l_count_f;       // tracer count
+  float seg_stride;      // segment slots per tracer (its private block size)
+  float seg_live;        // slots per tracer actually written (the rest are zeroed)
 }
 
 static const float DC_FORCE_MAX = 6.0;
@@ -199,15 +201,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // below tolerates out-of-range uv via the ClampToEdge sampler.
     float2 nuv = 0.5 + sp * aspect;
 
-    // Spawn-on-line: with prob to_line_rate, snap onto a tracer vertex instead
-    // (biased toward the line end, like the original's ChamberSpawnSelect).
-    uint segTotal = (uint)seg_total;
-    if (to_line_rate > 0.0 && segTotal > 0u
+    // Spawn-on-line: with prob to_line_rate, respawn somewhere on a tracer line.
+    //
+    // The segment buffer is BLOCKED per tracer — tracer j owns
+    // [j*seg_stride, j*seg_stride + seg_live), the tail of each block being
+    // zeroed — so the tracer and the slot within it must be drawn separately.
+    // (Indexing the flat buffer instead lands most spawns in the last tracer's
+    // block, and in its dead tail at that.) Then land at a UNIFORM POINT ALONG
+    // the chosen segment rather than on its p0: the vertices are a coarse
+    // lattice, and snapping to them quantizes the cloud into hard rails.
+    uint lc   = (uint)l_count_f;
+    uint live = (uint)seg_live;
+    if (to_line_rate > 0.0 && lc > 0u && live > 0u
         && dc_unit(dc_hash(h ^ 0x0777u)) < to_line_rate) {
-      float rr = dc_unit(dc_hash(h ^ 0x0999u));
-      float r2 = 1.0 - (1.0 - rr) * (1.0 - rr);          // bias toward end
-      uint si = min(segTotal - 1u, (uint)(r2 * (float)segTotal));
-      if (segs[si].b.w > 0.0) nuv = segs[si].a.xy;
+      uint li = min(lc   - 1u, (uint)(dc_unit(dc_hash(h ^ 0x0999u)) * (float)lc));
+      uint sk = min(live - 1u, (uint)(dc_unit(dc_hash(h ^ 0x0BB5u)) * (float)live));
+      Seg sg = segs[li * (uint)seg_stride + sk];
+      if (sg.b.w > 0.0) nuv = lerp(sg.a.xy, sg.a.zw, dc_unit(dc_hash(h ^ 0x0CCDu)));
     }
 
     float4 capt = inputTex.SampleLevel(samp, nuv, 0);

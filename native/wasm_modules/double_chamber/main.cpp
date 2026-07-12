@@ -64,7 +64,7 @@ struct PUpdateUniforms {
   float to_image, to_image_curl, undertow_skew, undertow_squash;
   float ttl, spawn_size, aspect_x, aspect_y;
   float to_big_range, image_smoothing, to_line_rate, seg_total;
-  float boundary_death, _bp0, _bp1, _bp2;
+  float boundary_death, l_count_f, seg_stride, seg_live;
 };
 struct TraceUniforms {
   uint32_t count, max_seg, frame_index; float dt;
@@ -640,6 +640,15 @@ void render(void* self, int vp_w, int vp_h) {
   int seg_total = (s->l_count > 0) ? s->l_count * MAX_SEG : 0;
   pu.to_line_rate = (seg_total > 0) ? s->spawn_on_line : 0.0f;
   pu.seg_total = (float)seg_total;
+  // Spawn-on-line needs the segment buffer's BLOCK geometry, not just its size:
+  // each tracer owns [i*MAX_SEG, i*MAX_SEG + live), and only `live` of those
+  // slots are written (the rest are zeroed). Mirrors trace.hlsl's `steps`.
+  float l01 = s->l_length < 0.0f ? 0.0f : (s->l_length > 1.0f ? 1.0f : s->l_length);
+  int l_steps = (int)(l01 * (float)(MAX_SEG / 2));
+  if (l_steps < 2) l_steps = 2;
+  pu.l_count_f = (float)s->l_count;
+  pu.seg_stride = (float)MAX_SEG;
+  pu.seg_live = (float)(2 * l_steps > MAX_SEG ? MAX_SEG : 2 * l_steps);
   pu.boundary_death = s->boundary_death;
   s->p_uniform.writeOne(pu);
 
