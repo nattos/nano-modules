@@ -8,7 +8,17 @@
  * between racks. A `util.sidechannel_out` stage publishes its input texture
  * onto a channel; a `util.sidechannel_in` stage in ANY executor replaces its
  * chain with that texture — or goes transparent black when the channel is
- * stale (see freshness rule below). The bus lives in PROCESS GLOBALS of the
+ * stale (see freshness rule below).
+ *
+ * SCALAR channels (`util.sidechannel_scalar_out` / `_in`) are the same idea for
+ * a modulation value: one float per channel instead of a texture. They live in
+ * their OWN namespace — scalar channel "1" and texture channel "1" are
+ * unrelated — but share this file's render-seq clock, freshness rule, and
+ * metadata version. A stale scalar channel reads 0.0, the same "unplugged cable
+ * carries no signal" contract as the texture side's transparent black. Booleans
+ * need no special handling: the wire layer already carries them as 0.0/1.0.
+ *
+ * The bus lives in PROCESS GLOBALS of the
  * shared executor code, which is exactly the sharing domain on both platforms:
  *   - native: every barrel instance's SketchExecutor lives in the one
  *     bridge-server dylib and renders through the one shared GPUBackend
@@ -50,6 +60,8 @@ namespace sidechannel_bus {
 // Module types the executor host-services (see sketch_executor.cpp).
 inline constexpr const char* kOutModuleType = "util.sidechannel_out";
 inline constexpr const char* kInModuleType  = "util.sidechannel_in";
+inline constexpr const char* kScalarOutModuleType = "util.sidechannel_scalar_out";
+inline constexpr const char* kScalarInModuleType  = "util.sidechannel_scalar_in";
 
 /** Advance + return the global render sequence. Called exactly once at the
  *  top of every SketchExecutor::execute(). */
@@ -87,9 +99,32 @@ Read acquire(const char* channel, const char* readerId, uint64_t currentSeq);
  */
 Read peek(const char* channel);
 
-/** Bumped when channel METADATA changes (new channel, writer identity, size/
- *  format) — deliberately NOT per write, so hosts can gate metadata pushes on
- *  it without per-frame traffic. */
+// ── Scalar channels ──────────────────────────────────────────────────────────
+// Same clock, same freshness rule, separate namespace (see the header intro).
+
+/**
+ * Publish `value` onto scalar `channel`, stamping the current renderSeq + the
+ * writer's tag. Last writer in a frame wins. No-op on an empty channel name.
+ */
+void publishScalar(const char* channel, float value, const char* writerTag);
+
+struct ScalarRead {
+  float value = 0.0f;  // 0 unless `fresh` — a stale channel carries no signal
+  bool fresh = false;
+};
+
+/**
+ * Read scalar `channel` for `readerId` (same per-reader-instance id and prevSeq
+ * bookkeeping as acquire() — a given instance reads one bus kind, so the two
+ * share the reader table). A channel that is unwritten, unbound, or stale
+ * returns {0.0, false}.
+ */
+ScalarRead acquireScalar(const char* channel, const char* readerId,
+                         uint64_t currentSeq);
+
+/** Bumped when channel METADATA changes (new channel — texture or scalar —
+ *  writer identity, size/format) — deliberately NOT per write, so hosts can
+ *  gate metadata pushes on it without per-frame traffic. */
 uint64_t version();
 
 /**
@@ -99,6 +134,15 @@ uint64_t version();
  * `/global/sidechannels` (native) or the worker `sidechannels` message (web).
  */
 int32_t infoJson(char* out, int32_t cap);
+
+/**
+ * The same, for SCALAR channels — `{"<channel>": {"writer": tag}}`. A separate
+ * document because the namespaces are separate; gated on the same version(), so
+ * a host fetches both when it changes. The live VALUE is deliberately absent:
+ * it moves every frame while version() only bumps on metadata, so anything
+ * shipped here would be arbitrarily stale.
+ */
+int32_t scalarInfoJson(char* out, int32_t cap);
 
 /** Release bus textures + clear all state (tests only). */
 void resetForTest();

@@ -131,7 +131,10 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
     engine.onDebugStats = (stats) => appController.setDebugStats(stats);
     engine.onDebugConsoleLog = (entries) => appController.appendDebugConsoleLog(entries);
     engine.onEffectsDiscovered = (effects) => appController.setAvailableEffects(effects);
-    engine.onSidechannels = (channels) => appController.setSidechannels(channels);
+    engine.onSidechannels = (channels, scalars) => {
+      appController.setSidechannels(channels);
+      appController.setScalarSidechannels(scalars);
+    };
     engine.onTriggerRails = (rails) => appController.setTriggerRails(rails);
   }
 

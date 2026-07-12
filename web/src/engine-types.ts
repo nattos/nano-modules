@@ -292,7 +292,8 @@ export type WorkerEvent =
   // Sidechannel-bus channel metadata (channel name → last writer + size).
   // Sent only when it CHANGES (new channel / writer identity / size), never
   // per frame — the UI uses it to label channel selectors.
-  | { type: 'sidechannels'; channels: Record<string, SidechannelInfo> }
+  | { type: 'sidechannels'; channels: Record<string, SidechannelInfo>;
+      scalars: Record<string, ScalarSidechannelInfo> }
   // Trigger-bus rail/channel activity (rail → channel → last event). Sent only
   // when metadata changes (a rail/channel/writer first seen), never per event.
   | { type: 'triggerRails'; rails: Record<string, Record<string, TriggerChannelInfo>> }
@@ -314,6 +315,12 @@ export interface FontRequest { key: string; family: string; weight: number; ital
 /** One sidechannel-bus channel's metadata: who wrote it last (an executor bus
  *  tag — sketch id on web, plugin key on the barrel) and its texture size. */
 export interface SidechannelInfo { writer: string; w: number; h: number; }
+
+/** One SCALAR (value) sidechannel's metadata. Its own channel namespace — value
+ *  channel "1" is unrelated to texture channel "1" — and metadata only: the live
+ *  value moves every frame while the bus version bumps only on channel identity,
+ *  so nothing shipped here would stay current. */
+export interface ScalarSidechannelInfo { writer: string; }
 
 /** One trigger-rail channel's latest activity: the last event's on/off state,
  *  its velocity, the emitting instance (writer), and the bus seq. `precision`

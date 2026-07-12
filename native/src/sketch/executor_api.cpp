@@ -163,6 +163,16 @@ int32_t executor_sidechannels_json(char* out, int32_t cap) {
   return sidechannel_bus::infoJson(out, cap);
 }
 
+// Serialize the SCALAR sidechannel-bus channel metadata as JSON into `out`
+// (host-allocated, capacity `cap`): {"<channel>": {"writer"}}. Scalar channels
+// are their own namespace but share the version above, so a host fetches this
+// alongside executor_sidechannels_json on a version change. Returns the FULL
+// byte length; the host grows and retries if it exceeds `cap`.
+EXEC_EXPORT("executor_scalar_sidechannels_json")
+int32_t executor_scalar_sidechannels_json(char* out, int32_t cap) {
+  return sidechannel_bus::scalarInfoJson(out, cap);
+}
+
 // The bus-owned texture handle currently carrying `channel` (last-written
 // content, no reader/freshness semantics — see sidechannel_bus::peek), or -1.
 // For the host's thumbnail trace capture; handles resolve in the same shared

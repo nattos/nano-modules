@@ -24,10 +24,22 @@ struct Entry {
   std::string writerTag;
 };
 
+struct ScalarEntry {
+  float value = 0.0f;
+  uint64_t writeSeq = 0;
+  std::string writerTag;
+};
+
 // Process globals — the whole point (shared across every executor in the
 // dylib / the wasm memory).
 std::map<std::string, Entry>& channels() {
   static std::map<std::string, Entry> m;
+  return m;
+}
+// Scalar channels: a separate namespace from the texture channels above (see
+// the header) sharing the same seq clock, reader table, and metadata version.
+std::map<std::string, ScalarEntry>& scalarChannels() {
+  static std::map<std::string, ScalarEntry> m;
   return m;
 }
 std::map<std::string, uint64_t>& readerPrevSeq() {
@@ -111,6 +123,42 @@ Read peek(const char* channel) {
   return r;
 }
 
+void publishScalar(const char* channel, float value, const char* writerTag) {
+  if (!channel || !*channel) return;
+  BUS_LOCK();
+  auto it = scalarChannels().find(channel);
+  if (it == scalarChannels().end()) {
+    it = scalarChannels().emplace(channel, ScalarEntry{}).first;
+    ++g_version;                       // a new channel is metadata
+  }
+  ScalarEntry& e = it->second;
+  e.value = value;                     // NOT metadata — never bumps g_version
+  e.writeSeq = g_renderSeq;
+  const char* tag = writerTag ? writerTag : "";
+  if (e.writerTag != tag) {
+    e.writerTag = tag;
+    ++g_version;                       // writer identity is metadata
+  }
+}
+
+ScalarRead acquireScalar(const char* channel, const char* readerId,
+                         uint64_t currentSeq) {
+  ScalarRead r;
+  if (!channel || !*channel || !readerId) return r;
+  BUS_LOCK();
+  // Same reader bookkeeping as acquire() — see the freshness rule in the header.
+  uint64_t& prev = readerPrevSeq()[readerId];
+  const uint64_t prevSeq = prev;
+  prev = currentSeq;
+  auto it = scalarChannels().find(channel);
+  if (it == scalarChannels().end()) return r;
+  r.fresh = it->second.writeSeq >= prevSeq && it->second.writeSeq > 0;
+  // A stale channel carries no signal: the value stays at the 0.0 default, so a
+  // reader can just take `value` and get the "unplugged" contract for free.
+  if (r.fresh) r.value = it->second.value;
+  return r;
+}
+
 uint64_t version() {
   BUS_LOCK();
   return g_version;
@@ -139,12 +187,31 @@ int32_t infoJson(char* out, int32_t cap) {
   return n;
 }
 
+int32_t scalarInfoJson(char* out, int32_t cap) {
+  nlohmann::json j = nlohmann::json::object();
+  {
+    BUS_LOCK();
+    for (const auto& kv : scalarChannels()) {
+      j[kv.first] = {{"writer", kv.second.writerTag}};
+    }
+  }
+  static std::string buf;  // alive until the host copies it out (same call site)
+  buf = j.dump();
+  const int32_t n = (int32_t)buf.size();
+  if (out && cap > 0) {
+    const int32_t c = n < cap ? n : cap;
+    __builtin_memcpy(out, buf.data(), (size_t)c);
+  }
+  return n;
+}
+
 void resetForTest() {
   BUS_LOCK();
   for (auto& kv : channels()) {
     if (kv.second.tex >= 0) gpu_release(kv.second.tex);
   }
   channels().clear();
+  scalarChannels().clear();
   readerPrevSeq().clear();
   g_renderSeq = 0;
   g_version = 0;

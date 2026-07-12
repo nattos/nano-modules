@@ -3346,3 +3346,159 @@ TEST_CASE("wire from a wasm mod source works with no state mirror (barrel repro)
   CHECK(b["min"].get<double>() == Catch::Approx(-1.0).margin(0.01));
   CHECK(b["max"].get<double>() == Catch::Approx(1.0).margin(0.01));
 }
+
+// ---------------------------------------------------------------------------
+// SCALAR sidechannel bus — cross-executor VALUE channels (sidechannel_bus.h).
+//
+// The scalar twin of the texture-bus test above, and deliberately pixel-free:
+// what matters is the value, and every hop it makes is observable through the
+// bus itself. Executor A runs a Value Send; executor B receives on the same
+// channel and immediately re-sends the received value onto a SECOND channel —
+// so reading channel "9" proves the whole round trip (A's wire → publish →
+// B's acquire → B's outgoing wire → publish) in one number.
+//
+// Covers: the knob-only send; a wired send publishing the POST-wire value; the
+// cross-executor round trip; and a stale channel decaying to 0.0 (the scalar
+// twin of the texture side's transparent black).
+TEST_CASE("scalar sidechannel bus passes values across executors",
+          "[effect_render][sidechannel]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sidechannel_bus::resetForTest();  // process-global — scrub prior state
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor A(&rt, &registry, backend.get());
+  A.setKeyNamespace("A/");
+  A.setBusTag("writerA");
+  sketch_executor::SketchExecutor B(&rt, &registry, backend.get());
+  B.setKeyNamespace("B/");
+  B.setBusTag("writerB");
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // Peek a channel with no reader semantics: a virgin reader id each call, so
+  // the probe never disturbs a real reader's prevSeq bookkeeping. Its `fresh`
+  // therefore means only "ever written" (a virgin prevSeq of 0 can't go stale) —
+  // STALENESS is asserted where it's actually observable, in the VALUE a real
+  // reader (the util.sidechannel_scalar_in below) hands on.
+  int probeSeq = 0;
+  auto peekScalar = [&](const char* ch) {
+    const std::string id = "probe/" + std::to_string(probeSeq++);
+    return sidechannel_bus::acquireScalar(ch, id.c_str(), /*currentSeq=*/0);
+  };
+
+  // A: a knob-only send (nothing wired in) publishes its authored value.
+  auto sketchA = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "util.sidechannel_scalar_out", "instance_key": "so" }
+    ],
+    "instances": {
+      "so": { "module_type": "util.sidechannel_scalar_out",
+              "state": { "channel": 3, "value": 0.75 } }
+    }
+  })JSON");
+  auto runA = [&](bool dirty) {
+    A.execute(sketchA, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+  };
+
+  runA(true);
+  auto r = peekScalar("3");
+  CHECK(r.fresh);
+  CHECK(r.value == Catch::Approx(0.75).margin(0.001));
+
+  // ...and a WIRE into the send wins over the knob: the executor publishes the
+  // post-wire value (dashboard knob_0 = 0.6 → send.value, whose knob says 0.75).
+  sketchA = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "util.dashboard", "instance_key": "dash" },
+      { "module_type": "util.sidechannel_scalar_out", "instance_key": "so" }
+    ],
+    "instances": {
+      "dash": { "module_type": "util.dashboard", "state": { "knob_0": 0.6 } },
+      "so": { "module_type": "util.sidechannel_scalar_out",
+              "state": { "channel": 3, "value": 0.75 } }
+    },
+    "wires": [
+      { "id": "w0", "src": { "instanceKey": "dash", "field": "knob_0" },
+                    "dest": { "instanceKey": "so", "field": "value" } }
+    ]
+  })JSON");
+  runA(true);
+  r = peekScalar("3");
+  CHECK(r.fresh);
+  CHECK(r.value == Catch::Approx(0.6).margin(0.001));
+
+  // B: receive channel 3 and re-send it on channel 9. Channel 9 therefore reads
+  // the value only if the receive fed its outgoing wire — the full round trip.
+  auto sketchB = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "util.sidechannel_scalar_in",  "instance_key": "si" },
+      { "module_type": "util.sidechannel_scalar_out", "instance_key": "so2" }
+    ],
+    "instances": {
+      "si":  { "module_type": "util.sidechannel_scalar_in",  "state": { "channel": 3 } },
+      "so2": { "module_type": "util.sidechannel_scalar_out",
+               "state": { "channel": 9, "value": 0.0 } }
+    },
+    "wires": [
+      { "id": "w1", "src": { "instanceKey": "si",  "field": "value" },
+                    "dest": { "instanceKey": "so2", "field": "value" } }
+    ]
+  })JSON");
+  auto runB = [&](bool dirty) {
+    B.execute(sketchB, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+  };
+
+  runA(false);
+  runB(true);
+  r = peekScalar("9");
+  CHECK(r.fresh);
+  CHECK(r.value == Catch::Approx(0.6).margin(0.001));
+
+  // Writer STOPPED (A no longer executes): channel 3 goes stale under B's
+  // receive, which falls back to 0.0 — an unplugged cable carries no signal.
+  // Channel 9 is the witness: B keeps publishing, but now publishes a ZERO.
+  runB(false);   // ≤1 held frame (its prevSeq still predates A's last write)
+  runB(false);
+  r = peekScalar("9");
+  CHECK(r.fresh);
+  CHECK(r.value == Catch::Approx(0.0).margin(0.001));
+
+  // A resumes → the value flows again (the receive re-arms, no reset needed).
+  runA(false);
+  runB(false);
+  r = peekScalar("9");
+  CHECK(r.value == Catch::Approx(0.6).margin(0.001));
+
+  // Metadata: scalar channels are their own namespace (a texture channel "3" is
+  // unrelated), carry the writer tag, and a plain re-write is NOT a version bump.
+  const uint64_t v0 = sidechannel_bus::version();
+  runA(false);
+  runB(false);
+  CHECK(sidechannel_bus::version() == v0);
+  std::vector<char> buf(4096);
+  const int32_t n = sidechannel_bus::scalarInfoJson(buf.data(), (int32_t)buf.size());
+  REQUIRE(n > 0);
+  REQUIRE(n <= (int32_t)buf.size());
+  auto info = nlohmann::json::parse(std::string(buf.data(), (size_t)n));
+  REQUIRE(info.contains("3"));
+  CHECK(info["3"]["writer"] == "writerA");
+  REQUIRE(info.contains("9"));
+  CHECK(info["9"]["writer"] == "writerB");
+  // The TEXTURE channel document is untouched by any of this.
+  const int32_t tn = sidechannel_bus::infoJson(buf.data(), (int32_t)buf.size());
+  REQUIRE(tn > 0);
+  CHECK(nlohmann::json::parse(std::string(buf.data(), (size_t)tn)).empty());
+}

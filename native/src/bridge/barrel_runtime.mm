@@ -1140,14 +1140,20 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     const int64_t busVersion = (int64_t)sidechannel_bus::version();
     if (busVersion != impl_->lastBusVersion) {
       impl_->lastBusVersion = busVersion;
-      std::string info(1024, '\0');
-      int32_t n = sidechannel_bus::infoJson(info.data(), (int32_t)info.size());
-      if (n > (int32_t)info.size()) {
-        info.resize((size_t)n);
-        n = sidechannel_bus::infoJson(info.data(), (int32_t)info.size());
-      }
-      info.resize((size_t)(n < 0 ? 0 : n));
-      server.set_at("/global/sidechannels", info);
+      auto fetch = [](int32_t (*dump)(char*, int32_t)) {
+        std::string info(1024, '\0');
+        int32_t n = dump(info.data(), (int32_t)info.size());
+        if (n > (int32_t)info.size()) {
+          info.resize((size_t)n);
+          n = dump(info.data(), (int32_t)info.size());
+        }
+        info.resize((size_t)(n < 0 ? 0 : n));
+        return info;
+      };
+      server.set_at("/global/sidechannels", fetch(&sidechannel_bus::infoJson));
+      // Scalar (value) channels: their own namespace, same version gate.
+      server.set_at("/global/sidechannels_scalar",
+                    fetch(&sidechannel_bus::scalarInfoJson));
     }
   }
 

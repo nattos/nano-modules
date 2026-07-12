@@ -37,7 +37,9 @@ export class EngineProxy {
   /// The main thread resolves it via Local Font Access and calls registerFont().
   onFontRequest: ((req: FontRequest) => void) | null = null;
   /// Sidechannel-bus channel metadata (fires only on change, not per frame).
-  onSidechannels: ((channels: Record<string, import('./engine-types').SidechannelInfo>) => void) | null = null;
+  /// Texture channels and scalar (value) channels are separate namespaces.
+  onSidechannels: ((channels: Record<string, import('./engine-types').SidechannelInfo>,
+                    scalars: Record<string, import('./engine-types').ScalarSidechannelInfo>) => void) | null = null;
   onTriggerRails: ((rails: Record<string, Record<string, import('./engine-types').TriggerChannelInfo>>) => void) | null = null;
   private debugDumpResolve: ((data: any) => void) | null = null;
   private fieldVisReqId = 0;
@@ -76,7 +78,7 @@ export class EngineProxy {
           }
           break;
         case 'sidechannels':
-          this.onSidechannels?.(event.channels);
+          this.onSidechannels?.(event.channels, event.scalars);
           break;
         case 'triggerRails':
           this.onTriggerRails?.(event.rails);

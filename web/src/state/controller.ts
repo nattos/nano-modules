@@ -2180,6 +2180,12 @@ export class AppController {
     runInAction(() => { appState.local.engine.sidechannels = channels ?? {}; });
   }
 
+  /** The same for SCALAR (value) sidechannels — a separate channel namespace
+   *  (/global/sidechannels_scalar in barrel mode). */
+  setScalarSidechannels(scalars: Record<string, import('../engine-types').ScalarSidechannelInfo>) {
+    runInAction(() => { appState.local.engine.scalarSidechannels = scalars ?? {}; });
+  }
+
   /** Adopt trigger-bus rail/channel activity (worker push in playground/ide;
    *  a /global/triggerRails observation in barrel mode later). Change-gated
    *  upstream — surfaces the Instances-tab Trigger Rails cards. */

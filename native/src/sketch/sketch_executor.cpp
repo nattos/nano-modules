@@ -1416,6 +1416,45 @@ int32_t SketchExecutor::execute(
         return;
       }
 
+      // -- Scalar sidechannel bus (host-serviced; the scalar twin of the
+      // texture send/receive above — see sidechannel_bus.h). Both are pure
+      // data nodes (no texture fields), so they take the modulation-source
+      // path below: the chain image passes through untouched and their whole
+      // job is this scalar hand-off, run once the stage's wires have settled.
+      //
+      // SEND: publish the stage's post-wire `value` (a wire folded it into the
+      // field like any other param, so a bool source arrives as 0.0/1.0);
+      // knob-only when nothing is wired in.
+      // RECEIVE: fold the channel's value into `value` so the stage's write
+      // taps carry it downstream. A stale channel reads 0.0 — the unplugged-
+      // cable contract acquireScalar already returns for us.
+      auto serviceScalarBus =
+          [&](std::unordered_map<std::string, float>& modScalars) {
+        const bool isSend = (mt == sidechannel_bus::kScalarOutModuleType);
+        if (!isSend && mt != sidechannel_bus::kScalarInModuleType) return;
+        const std::string ch = sidechannelName(instances, instKey);
+        if (ch.empty()) return;  // Custom with a blank name: unbound
+        if (isSend) {
+          float v = 0.0f;
+          auto mit = modScalars.find("value");
+          if (mit != modScalars.end()) {
+            v = mit->second;  // wire / automation / smoothing result
+          } else if (const json* st = findState(instances, instKey)) {
+            auto vit = st->find("value");
+            if (vit != st->end() && vit->is_number()) v = (float)vit->get<double>();
+          }
+          sidechannel_bus::publishScalar(ch.c_str(), v, busTag_.c_str());
+          return;
+        }
+        const std::string readerId =
+            std::to_string((uintptr_t)this) + "/" + instKey;
+        const float v =
+            sidechannel_bus::acquireScalar(ch.c_str(), readerId.c_str(),
+                                           sidechannelSeq).value;
+        modScalars["value"] = v;          // what captureWriteTaps publishes
+        inst.setParamFloat("value", v);   // and what the inspector reads back
+      };
+
       // -- Identity skip: stateless passthrough → alias input as this
       // stage's output, no dispatch, no intermediate consumed. Gated on
       // tap-free entries: read taps can drive params from rails (which
@@ -1493,6 +1532,7 @@ int32_t SketchExecutor::execute(
         // downstream readers see fresh data. It doesn't touch the chain texture,
         // so the passthrough below still forwards colInput untouched.
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
+        serviceScalarBus(modScalars);
         captureWriteTaps(inst.h, entry, instKey, instances,
                          railsById, railTextures, railFloats, railBuffers,
                          &modScalars);
@@ -1562,6 +1602,7 @@ int32_t SketchExecutor::execute(
       inst.doRender(W, H);
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
+      serviceScalarBus(modScalars);
       captureWriteTaps(inst.h, entry, instKey, instances,
                        railsById, railTextures, railFloats, railBuffers,
                        &modScalars);

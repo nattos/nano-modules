@@ -85,6 +85,8 @@ wasm_build \
   ../sketch_output/main.cpp \
   ../sidechannel_out/main.cpp \
   ../sidechannel_in/main.cpp \
+  ../sidechannel_scalar_out/main.cpp \
+  ../sidechannel_scalar_in/main.cpp \
   ../bake_alpha/main.cpp \
   ../curve/main.cpp \
   ../exposure/main.cpp \

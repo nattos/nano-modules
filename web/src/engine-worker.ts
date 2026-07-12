@@ -1181,7 +1181,7 @@ function captureAndSendFrame() {
   const scInfo = activeExecutor()?.getSidechannelInfo();
   if (scInfo && scInfo.version !== lastSidechannelVersion) {
     lastSidechannelVersion = scInfo.version;
-    post({ type: 'sidechannels', channels: scInfo.channels });
+    post({ type: 'sidechannels', channels: scInfo.channels, scalars: scInfo.scalars });
   }
   // Trigger-bus rail/channel activity (rail → channel → last {on/velocity/
   // writer}). Same version-gated cheap poll as the sidechannels above.

@@ -294,6 +294,13 @@ export interface EngineStatus {
   sidechannels: Record<string, import('../engine-types').SidechannelInfo>;
 
   /**
+   * The same, for SCALAR (value) sidechannels — a SEPARATE channel namespace
+   * (value "1" is unrelated to texture "1"), so it gets its own map. Metadata
+   * only (writer): the live value moves every frame while this is change-gated.
+   */
+  scalarSidechannels: Record<string, import('../engine-types').ScalarSidechannelInfo>;
+
+  /**
    * Trigger-bus activity: rail id → channel id → last event ({on, velocity,
    * writer, seq}). Updated only when metadata changes (never per event).
    * Feeds the Instances-tab "Trigger Rails" cards. Writer is a bus tag: a

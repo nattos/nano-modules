@@ -77,6 +77,7 @@ interface ExecutorExports {
   /** Module-level (the sidechannel bus is process-global across slots). */
   executor_sidechannels_version(): number;
   executor_sidechannels_json(out: number, cap: number): number;
+  executor_scalar_sidechannels_json(out: number, cap: number): number;
   executor_sidechannel_texture(name: number, len: number): number;
   /** Module-level (the trigger bus is process-global across slots). */
   executor_triggers_version?(): number;
@@ -457,25 +458,41 @@ export class WasmSketchExecutor {
    * Sidechannel-bus channel metadata, for the worker's `sidechannels` push:
    * `version` bumps only on metadata change (new channel / writer / size —
    * NOT per write), so poll it per frame and parse the JSON only on change.
+   * TEXTURE channels and SCALAR (value) channels are separate namespaces
+   * sharing the one version, so both are fetched on a change.
    */
-  getSidechannelInfo(): { version: number; channels: Record<string, { writer: string; w: number; h: number }> } | null {
+  getSidechannelInfo(): {
+    version: number;
+    channels: Record<string, { writer: string; w: number; h: number }>;
+    scalars: Record<string, { writer: string }>;
+  } | null {
     if (!this.exports.executor_sidechannels_version) return null;
     const version = this.exports.executor_sidechannels_version();
+    return {
+      version,
+      channels: this.readBusJson(this.exports.executor_sidechannels_json),
+      scalars: this.readBusJson(this.exports.executor_scalar_sidechannels_json),
+    };
+  }
+
+  /** Read one of the bus's grow-and-retry JSON dumps out of wasm memory. */
+  private readBusJson(dump?: (out: number, cap: number) => number): any {
+    if (!dump) return {};
     let cap = 4096;
     let ptr = this.exports.malloc(cap);
-    let n = this.exports.executor_sidechannels_json(ptr, cap);
+    let n = dump(ptr, cap);
     if (n > cap) {
       this.exports.free(ptr);
       cap = n;
       ptr = this.exports.malloc(cap);
-      n = this.exports.executor_sidechannels_json(ptr, cap);
+      n = dump(ptr, cap);
     }
     const json = decoder.decode(new Uint8Array(this.memory.buffer, ptr, n));
     this.exports.free(ptr);
     try {
-      return { version, channels: JSON.parse(json) };
+      return JSON.parse(json);
     } catch {
-      return { version, channels: {} };
+      return {};
     }
   }
 

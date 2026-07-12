@@ -37,6 +37,17 @@ import '../widgets/editable-text';
 import '../widgets/editable-number';
 import '../widgets/ui-icon';
 
+/** Channel names, numerics-first then lexicographic — the order both
+ *  sidechannel grids (texture and value) list their channels in. */
+function sortChannelNames(names: string[]): string[] {
+  return [...names].sort((a, b) => {
+    const an = /^\d+$/.test(a), bn = /^\d+$/.test(b);
+    if (an && bn) return Number(a) - Number(b);
+    if (an !== bn) return an ? -1 : 1;
+    return a.localeCompare(b);
+  });
+}
+
 @customElement('organize-tab')
 export class OrganizeTab extends MobxLitElement {
   /** Marker uuid of the clip whose thumbnail is held down (momentary trigger). */
@@ -163,6 +174,9 @@ export class OrganizeTab extends MobxLitElement {
       overflow: hidden;
     }
     .sc-card:hover { border-color: var(--app-tint-5); }
+    /* Value channels have no thumbnail and no inspector — inert cards. */
+    .sc-card.value-card { cursor: default; }
+    .sc-card.value-card:hover { border-color: var(--app-tint-2); }
     .sc-card[selected] {
       border-color: var(--app-hi-color2);
       background: rgba(65,105,225,0.08);
@@ -277,6 +291,7 @@ export class OrganizeTab extends MobxLitElement {
             </div>
           `}
         ${this.renderSidechannels(selectedChannel)}
+        ${this.renderScalarSidechannels()}
         ${this.renderTriggerChannels()}
       </div>
       <div class="right-panel">
@@ -390,12 +405,7 @@ export class OrganizeTab extends MobxLitElement {
    */
   private renderSidechannels(selectedChannel: string | null) {
     const channels = appState.local.engine.sidechannels;
-    const names = Object.keys(channels).sort((a, b) => {
-      const an = /^\d+$/.test(a), bn = /^\d+$/.test(b);
-      if (an && bn) return Number(a) - Number(b);
-      if (an !== bn) return an ? -1 : 1;
-      return a.localeCompare(b);
-    });
+    const names = sortChannelNames(Object.keys(channels));
     if (names.length === 0) return '';
     return html`
       <div class="sc-section">
@@ -419,6 +429,35 @@ export class OrganizeTab extends MobxLitElement {
                 <div class="sc-card-info">
                   from ${sidechannelWriterLabel(channels[name].writer) || '—'}
                   · ${channels[name].w}×${channels[name].h}
+                </div>
+              </div>
+            </div>
+          `)}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * The same, for SCALAR (value) sidechannels — a separate channel namespace,
+   * so a separate grid. There is nothing to picture (the live value moves every
+   * frame while this metadata is change-gated), so a card is just the channel
+   * name + its writer: enough to see that a channel exists and who feeds it.
+   */
+  private renderScalarSidechannels() {
+    const channels = appState.local.engine.scalarSidechannels;
+    const names = sortChannelNames(Object.keys(channels));
+    if (names.length === 0) return '';
+    return html`
+      <div class="sc-section">
+        <div class="section-header">Value Sidechannels</div>
+        <div class="sc-grid">
+          ${names.map(name => html`
+            <div class="sc-card value-card">
+              <div class="card-meta">
+                <div class="sc-card-name">${name}</div>
+                <div class="sc-card-info">
+                  from ${sidechannelWriterLabel(channels[name].writer) || '—'}
                 </div>
               </div>
             </div>

@@ -847,6 +847,15 @@ function connectBarrel(url: string) {
   };
   barrel.onSnapshot('/global/sidechannels', ingestSidechannels);
 
+  // Scalar (value) sidechannels — their own channel namespace, published under
+  // the same version gate as the texture channels above. Metadata only (writer),
+  // so there is no preview routing to re-flush.
+  const ingestScalarSidechannels = (data: any) => {
+    if (!data || typeof data !== 'object') return;
+    appController.setScalarSidechannels(data);
+  };
+  barrel.onSnapshot('/global/sidechannels_scalar', ingestScalarSidechannels);
+
   // Channel → registered marker clips (from CompositionCache), published only
   // when the map changes. Feeds the Instances-tab "Trigger Channels" grid.
   const ingestTriggerChannels = (data: any) => {
@@ -1001,6 +1010,8 @@ function connectBarrel(url: string) {
         globalTouched = true;          // instance added/removed
       } else if (p === '/global/sidechannels') {
         ingestSidechannels(op.value);  // whole-object replace per publish
+      } else if (p === '/global/sidechannels_scalar') {
+        ingestScalarSidechannels(op.value);  // whole-object replace per publish
       } else if (p === '/global/channels') {
         ingestTriggerChannels(op.value);  // whole-object replace per publish
       } else if (p === '/global/clip_states') {
@@ -1046,6 +1057,8 @@ function connectBarrel(url: string) {
     barrel.observe('/global/plugins');
     barrel.get('/global/sidechannels');
     barrel.observe('/global/sidechannels');
+    barrel.get('/global/sidechannels_scalar');
+    barrel.observe('/global/sidechannels_scalar');
     barrel.get('/global/channels');
     barrel.observe('/global/channels');
     barrel.get('/global/clip_states');

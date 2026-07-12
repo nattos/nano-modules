@@ -43,6 +43,16 @@ namespace sidechannel_in {
 int32_t is_identity(void* self);
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops);
 }
+// The scalar twins. No is_identity: they declare no texture fields at all, so
+// the executor runs them as modulation nodes (the chain image passes through).
+NANO_DECLARE_INSTANCE_EFFECT(sidechannel_scalar_out)
+namespace sidechannel_scalar_out {
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
+NANO_DECLARE_INSTANCE_EFFECT(sidechannel_scalar_in)
+namespace sidechannel_scalar_in {
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
 
 NANO_DECLARE_INSTANCE_EFFECT(bake_alpha)
 
@@ -257,6 +267,36 @@ void nano_module_main() {
         nullptr,  // on_active
         nullptr,  // seek
         &sidechannel_in::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "util.sidechannel_scalar_out",
+        "Value Send",
+        "Publish a scalar onto a named cross-instance value channel (numbered separately from the image channels)",
+        "control",
+        "sidechannel,send,value,scalar,modulation,route,bus,channel,share,util",
+        "la-share-square",
+        NANO_INSTANCE_LIFECYCLE(sidechannel_scalar_out),
+        nullptr,  // is_identity — no texture output; runs as a modulation node
+        nullptr,  // on_active
+        nullptr,  // seek
+        &sidechannel_scalar_out::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "util.sidechannel_scalar_in",
+        "Value Receive",
+        "Read a named cross-instance value channel as a modulation source (0 when nothing is sending)",
+        "control",
+        "sidechannel,receive,value,scalar,modulation,route,bus,channel,share,util",
+        "la-sign-in-alt",
+        NANO_INSTANCE_LIFECYCLE(sidechannel_scalar_in),
+        nullptr,  // is_identity — no texture output; runs as a modulation node
+        nullptr,  // on_active
+        nullptr,  // seek
+        &sidechannel_scalar_in::eval_visibility,
     });
 
     nano::registerEffect({
