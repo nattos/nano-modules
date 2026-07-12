@@ -213,6 +213,7 @@ struct QuadPSOs { int bg = -1, box = -1, glyph = -1; };
 
 struct TextGpu {
   gpu::GPUBackend* backend = nullptr;  // cache is valid only for this backend
+  uint64_t backendSerial = 0;
   int quadShader = -1, sampler = -1, bg = -1;
   std::unordered_map<int, QuadPSOs> psos;  // keyed by TextureFormat enum
   int atlas = -1, atlasLayers = 0, atlasW = 0, atlasH = 0;
@@ -238,8 +239,27 @@ constexpr int kFmtRGBA8 = 1;
 // scratch — since both intermediates and the output interop carry RenderTarget
 // usage). blendMode 0 = alpha-over; the bg pass writes alpha=1 so alpha-over ==
 // replace, initialising the frame from the background.
+// Rebind the cache to `b` if it isn't already bound to THIS backend instance
+// (serial, not pointer: a destroyed-then-recreated backend can reuse the same
+// heap address, and stale handles then index arbitrary slots in the new
+// backend's resource table). Every ensure* entry point must call this FIRST —
+// text_render reaches ensureAtlas before ensurePipeline, so checking in only
+// one of them would still touch stale handles after a backend swap. Note the
+// old code reset in ensurePipeline AFTER ensureAtlas had filled atlasW/H, so
+// the first frame's UBO carried atlas_h=0 and the glyph shader took its
+// spr=1.0 fallback — first-frame text rendered sharper than the web (which
+// always sends real atlas dims). Rebinding up front keeps the dims and makes
+// every native frame match the web's MSDF math.
+void ensureBackend(gpu::GPUBackend* b) {
+  if (g_gpu.backend != b || g_gpu.backendSerial != b->instanceSerial()) {
+    g_gpu.reset();
+    g_gpu.backend = b;
+    g_gpu.backendSerial = b->instanceSerial();
+  }
+}
+
 const QuadPSOs* ensurePipeline(gpu::GPUBackend* b, int fmt) {
-  if (g_gpu.backend != b) { g_gpu.reset(); g_gpu.backend = b; }
+  ensureBackend(b);
   if (g_gpu.quadShader < 0) {
     g_gpu.quadShader = b->createShaderModule(kTextCompositeQuadMSL);
     if (g_gpu.quadShader < 0) return nullptr;
@@ -266,6 +286,7 @@ const QuadPSOs* ensurePipeline(gpu::GPUBackend* b, int fmt) {
 
 // (Re)build + upload the MSDF atlas array for `id`; returns the atlas handle.
 int ensureAtlas(gpu::GPUBackend* b, int /*id*/) {
+  ensureBackend(b);
   int aw = engine().atlasWidth(), ah = engine().atlasHeight();
   int pages = engine().atlasPageCount();
   if (aw <= 0 || ah <= 0) { aw = 1; ah = 1; }

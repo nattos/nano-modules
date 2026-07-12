@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -340,9 +341,21 @@ public:
   // only climbs. Default -1 = the backend doesn't track it.
   virtual int32_t liveResourceCount() const { return -1; }
 
+  // Monotonic per-process instance identity. A process-global cache holding
+  // resource HANDLES keyed by "the backend" (e.g. the text compositor's
+  // atlas/PSO cache) must compare THIS, not the backend pointer: a
+  // destroyed-then-recreated backend can land on the same heap address, and the
+  // stale handles then index arbitrary slots in the NEW backend's resource
+  // table (observed as replaceRegion: hitting a _MTLLibrary).
+  uint64_t instanceSerial() const { return instance_serial_; }
+
  protected:
   // See setDefaultTextureFormat. TextureFormat code, 1 = RGBA8.
   int32_t defaultTextureFormatCode_ = 1;
+
+ private:
+  inline static std::atomic<uint64_t> s_next_serial_{1};
+  const uint64_t instance_serial_ = s_next_serial_.fetch_add(1);
 };
 
 // Factory

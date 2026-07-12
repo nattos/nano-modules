@@ -2248,6 +2248,38 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   INFO("no-input: glyph " << glyph2 << "  transparent " << transparent << " / " << (W * H));
   CHECK(glyph2 > 50);                 // glyphs still drawn (opaque)
   CHECK(transparent > W * H / 2);     // mostly TRANSPARENT, not opaque black
+
+  // Third phase (#v-anchor), SAME backend + instance (see the singleton note
+  // above): vertical anchoring. "HHH" has a flat bottom that SITS ON the
+  // baseline, so the lowest lit row IS the baseline row. With v_align=Baseline
+  // (1) the baseline must hold at v_pos×H regardless of font size; with the
+  // default box-centering (0) it shifts as the layout box grows with the size.
+  auto bottomLitRow = [&](const char* size, const char* valign) -> int {
+    inst->setParamJson("size", size);
+    inst->setParamJson("v_align", valign);
+    backend->clearTexture(outTex, 0, 0, 0, 0);
+    backend->submit();
+    inst->doRender(W, H);
+    auto p = backend->readbackTexture(outTex, W, H);
+    REQUIRE(p.size() == W * H * 4);
+    for (int y = (int)H - 1; y >= 0; y--)
+      for (uint32_t x = 0; x < W; x++) {
+        const size_t i = ((size_t)y * W + x) * 4;
+        if (p[i + 3] > 200 && p[i] > 150) return y;
+      }
+    return -1;
+  };
+  inst->setParamJson("text", "\"HHH\"");
+  inst->setParamJson("v_pos", "0.5");
+
+  const int blSmall = bottomLitRow("32", "1"), blBig = bottomLitRow("80", "1");
+  INFO("baseline-anchored bottom row: size 32 → " << blSmall << ", size 80 → " << blBig);
+  CHECK(std::abs(blSmall - (int)H / 2) <= 2);   // baseline pinned at v_pos×H...
+  CHECK(std::abs(blBig - (int)H / 2) <= 2);     // ...at any size
+
+  const int ctSmall = bottomLitRow("32", "0"), ctBig = bottomLitRow("80", "0");
+  INFO("box-centered bottom row: size 32 → " << ctSmall << ", size 80 → " << ctBig);
+  CHECK(std::abs(ctSmall - ctBig) > 5);         // box-centering moves with size
 }
 #endif  // TEXT_WASM_PATH
 
@@ -3031,7 +3063,15 @@ TEST_CASE("control.nanolooper composites its overlay over the passthrough input"
       }
     INFO("overlay band luma range [" << lo << ", " << hi << "] (input was 128)");
     CHECK(lo < 100);   // the semi-transparent panel darkens the input
-    CHECK(hi > 170);   // the playhead / labels paint bright pixels
+    // Labels paint clearly-bright pixels. Threshold note: at this quarter-res
+    // canvas the overlay labels are a few px tall, so the MSDF glyph shader's
+    // screen-px-range (spr = px_range * screen_h / tile_h) is well below 1 and
+    // the softened peaks top out ~147 — the same value the web path produces.
+    // The old 170 passed only via a first-frame accident (the text GPU cache
+    // reset zeroed atlas dims AFTER the atlas was built, so frame 1 hit the
+    // shader's spr=1.0 fallback and rendered over-sharp, unlike every frame
+    // after it).
+    CHECK(hi > 140);
 
     // A pixel well below the panel is untouched → passthrough preserved.
     auto below = pixAt(px, W / 2, H - 6);

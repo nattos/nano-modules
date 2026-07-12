@@ -4,8 +4,9 @@
  * Renders multiline text into its output texture via the host `text.*` service
  * (FreeType + HarfBuzz + msdfgen live in the host, shared across effects). The
  * effect itself is tiny: it builds a JSON spec from its params, calls
- * text::layout, centers it, and calls text::render into the render target. No
- * shaders or GPU resources here — the host owns the MSDF atlas + compositor.
+ * text::layout, places it (horizontally centered; vertically per the anchor
+ * params), and calls text::render into the render target. No shaders or GPU
+ * resources here — the host owns the MSDF atlas + compositor.
  *
  * Class-like instance ABI (v2): module_init() publishes the schema once; each
  * chain entry gets its own State via create().
@@ -20,6 +21,13 @@
 
 namespace gen_text {
 
+// What part of the laid-out text sits at the anchor line (v_pos × viewport
+// height). Center is the layout BOX's center — it depends on the font's
+// ascender/descender metrics, so text shifts when the face/size changes.
+// Baseline pins the FIRST line's baseline, which is what stays visually stable
+// across fonts and sizes (the typographic anchor).
+enum VAlign { AlignCenter = 0, AlignBaseline = 1, AlignTop = 2, AlignBottom = 3 };
+
 struct State {
   char  text[2048] = "Text";
   char  font[128] = "";       // OS/bundled family name ("" = host primary font)
@@ -30,6 +38,8 @@ struct State {
   float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
   float max_width = 0.0f;     // 0 = no wrap
   float line_spacing = 1.2f;
+  int   v_align = AlignCenter;
+  float v_pos = 0.5f;         // anchor line, fraction of viewport height
   bool  initialized = false;
 };
 
@@ -96,9 +106,22 @@ void module_init() {
         .groupHelp(
           "*Max Width* controls wrapping — 0 keeps everything on one line; any "
           "positive value (in pixels) wraps the text into a column. *Line Spacing* "
-          "is a multiplier on the font's natural leading (1.0 = tight, 1.5 = airy).")
+          "is a multiplier on the font's natural leading (1.0 = tight, 1.5 = airy).\n\n"
+          "*V Anchor* picks what sits on the anchor line at *V Position* (a "
+          "fraction of the output height): **Center** centers the layout box — "
+          "note the box depends on the font's own metrics, so text shifts when "
+          "the face or size changes; **Baseline** pins the first line's baseline, "
+          "keeping text rock-steady across fonts and sizes; **Top** / **Bottom** "
+          "hang the box below or stack it above the line. Modulate *V Position* "
+          "to slide text vertically.")
       .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput).label("Max Width", "Width")
       .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput).label("Line Spacing", "Lead")
+      .selectField("v_align", AlignCenter, state::PrimaryInput,
+                   {{"Center", AlignCenter},
+                    {"Baseline", AlignBaseline},
+                    {"Top", AlignTop},
+                    {"Bottom", AlignBottom}}).label("V Anchor", "VAnc")
+      .floatField ("v_pos",        0.5f,   0.0f, 1.0f,    state::PrimaryInput).label("V Position", "VPos")
       .textureField("tex_in",  state::PrimaryInput)   // overlay text on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
       // Generates its image; the tex_in overlay is optional (transparent when
@@ -128,6 +151,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, pl, "size"))         s->size = state::patchFloat(i);
     else if (state::pathIs(p, pl, "max_width"))    s->max_width = state::patchFloat(i);
     else if (state::pathIs(p, pl, "line_spacing")) s->line_spacing = state::patchFloat(i);
+    else if (state::pathIs(p, pl, "v_align"))      s->v_align = state::patchInt(i);
+    else if (state::pathIs(p, pl, "v_pos"))        s->v_pos = state::patchFloat(i);
     else if (state::pathIs(p, pl, "color")) {
       auto v = state::patchVec4(i); s->r=v.x; s->g=v.y; s->b=v.z; s->a=v.w;
     }
@@ -173,12 +198,21 @@ void render(void* self, int vp_w, int vp_h) {
 
   int id = text::layout(spec, pos);
   if (id > 0) {
-    // Center the laid-out text in the viewport.
+    // Horizontally centered; vertically the chosen part of the layout sits on
+    // the anchor line (v_pos × height). text::render's origin is the layout
+    // box's TOP-left, and metrics give the box height + the first line's
+    // baseline offset within it.
     text::TextMetrics m;
     float ox = 0, oy = 0;
     if (text::measure(id, m)) {
       ox = (vp_w - m.width) * 0.5f;
-      oy = (vp_h - m.height) * 0.5f;
+      float anchor_y = s->v_pos * (float)vp_h;
+      switch (s->v_align) {
+        case AlignBaseline: oy = anchor_y - m.first_baseline;  break;
+        case AlignTop:      oy = anchor_y;                     break;
+        case AlignBottom:   oy = anchor_y - m.height;          break;
+        default:            oy = anchor_y - m.height * 0.5f;   break;   // Center
+      }
     }
     char xform[96];
     std::snprintf(xform, sizeof(xform), "{\"x\":%.2f,\"y\":%.2f}", ox, oy);
