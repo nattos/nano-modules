@@ -320,8 +320,19 @@ export class AppController {
       if (outputs.has(name)) continue;                    // live output, not state
       if (field?.default !== undefined) state[name] = field.default;
     }
+    // The legacy `params` list carries no type/io, so it must re-apply BOTH
+    // skips or it silently re-adds what the schema loop just excluded. Missing
+    // the help skip here made this function non-idempotent with
+    // pruneHelpFieldState: an effect whose schema is only a help field + pure
+    // outputs (control.barrel_macros) defaulted to `{intro: 0}` instead of `{}`,
+    // so backfillEmptyInstanceStates seeded `intro` and pruneHelpFieldState
+    // immediately stripped it — two mutations per snapshot, each restamping
+    // lastModified, which defeated the push dedup and drove a push↔refetch loop
+    // that wholesale-replaced the sketch ~70x/sec and ate the user's edits.
+    const help = this.helpFieldNames(plugin);
     for (const p of plugin.params) {
       if (outputs.has(p.name)) continue;
+      if (help.has(p.name)) continue;
       if (!(p.name in state)) state[p.name] = p.defaultValue;
     }
     return state;

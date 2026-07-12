@@ -154,6 +154,54 @@ describe('help-slot fields stay out of persisted state', () => {
     expect('intro' in dbState).toBe(true);
   });
 
+  // control.barrel_macros' real shape: ONE help field + 16 pure outputs +
+  // textures — i.e. nothing authorable at all. Its legacy `params` list carries
+  // the help field too, and the params fallback loop only filtered OUTPUTS, so
+  // it re-added `intro` after the schema loop had skipped it. Defaults came out
+  // as `{intro: 0}` instead of `{}`, which made defaultStateForPlugin
+  // non-idempotent with pruneHelpFieldState: every mirror-in seeded `intro`
+  // (backfillEmptyInstanceStates) and then stripped it (prune) — two no-op
+  // mutations, each restamping lastModified, defeating the push dedup and
+  // driving a push -> echo -> refetch -> mirror-in loop that replaced the whole
+  // sketch ~70x/sec. Any edit racing an in-flight refetch was silently reverted:
+  // the user saw edits "stick" only by chance.
+  const MACROS_PLUGIN: PluginInfo = {
+    id: 'control.barrel_macros',
+    key: 'control.barrel_macros',
+    version: '1',
+    params: [
+      { index: 0, name: 'intro', type: 10, defaultValue: 0, min: 0, max: 1 },
+      { index: 1, name: 'macro_0', type: 10, defaultValue: 0, min: 0, max: 1 },
+    ],
+    io: [],
+    schema: {
+      intro: { type: 'help', default: '## Barrel Macros\nHelp text.' },
+      macro_0: { type: 'float', default: 0, min: 0, max: 1, io: 2 /* Output only */ },
+      tex_in: { type: 'texture', io: 5 },
+      tex_out: { type: 'texture', io: 6 },
+    },
+  } as any;
+
+  it('an all-help+output effect seeds EMPTY state (help never re-added by params)', () => {
+    runInAction(() => {
+      appState.local.plugins = [MACROS_PLUGIN];
+      appState.database.sketches = {
+        sk: { anchor: null, chain: [], instances: {} },
+      } as any;
+    });
+
+    appController.addEffectToChain('sk', 0, 0, 'control.barrel_macros');
+
+    const entry = sketchChain(appState.database.sketches.sk)[0] as any;
+    const state = appState.database.sketches.sk.instances![entry.instance_key].state;
+
+    // Nothing here is authorable, so the defaults must be EMPTY. `intro: 0` —
+    // the help field re-added by the params loop — is what armed the loop: it
+    // made the seed non-idempotent with the prune that immediately removes it.
+    expect('intro' in state).toBe(false);
+    expect(state).toEqual({});
+  });
+
   it('slims a barrel instance the moment it is viewed (setBarrelSketch) and pushes slim', () => {
     // Viewing an instance mirrors the barrel's (fat) sketch into the DB via
     // setBarrelSketch; with schemas known, the prune must fire there so the
