@@ -9,6 +9,15 @@ A real module instance (`realModules`) that appears in more than one sketch chai
 
 **Resolume behavior**: Resolume handles this by cloning the instance per-composition. We'll need to do the same — either by creating separate WASM instances per sketch, or by re-rendering the module with each sketch's params.
 
+### Barrel sketch sync full-syncs on every edit (latent edit loss)
+In barrel mode the editor reacts to its **own** echoed edit by refetching the whole sketch and wholesale-replacing local state (`boot-resolume.ts:1015` sets `sketchTouched`, `:1038` does `barrel.get(sketchPath)` → `setBarrelSketch`, `controller.ts:2547`). The replace overwrites the local sketch with a snapshot that may predate an in-flight edit — and it reseeds `lastPushedBarrelJson` (`controller.ts:2552`), so the lost edit is never re-pushed. Silent, no conflict, no warning.
+
+Compounding it, `postRecordHook` stamps `sketch.lastModified` on every committed mutation and `slimSketchForBarrel` (`controller.ts:1631`) doesn't strip it, so a mutation that changes *nothing* still defeats the push dedup and pushes.
+
+**How it bit us**: `control.barrel_macros`' schema is one help field + 16 pure outputs (nothing authorable), and `defaultStateForPlugin`'s legacy `params` fallback re-added the help field the schema loop had skipped — so every mirror-in seeded `intro` and then pruned it. Two no-op mutations per snapshot, each restamping `lastModified` → push → echo → refetch → replace → repeat. Measured **with the editor idle**: ~140 pushes/sec, ~70 whole-sketch replaces/sec. Edits "stuck" only by chance.
+
+**Status**: the *trigger* is fixed (the seeder is idempotent now; regression test in `src/state/output-field-seeding.test.ts`). The *loop* is not — any future non-idempotent mutation, or a genuinely concurrent remote write, re-arms it. Full plan: **[BARREL_SYNC_PLAN.md](BARREL_SYNC_PLAN.md)**.
+
 ### Empty columns left behind after drag-drop
 When a module is dragged out of a column, the empty column (just `texture_input` → `texture_output`) is not automatically removed. This is cosmetic — the executor correctly skips empty columns for output — but it clutters the UI.
 
@@ -27,6 +36,9 @@ Fixed in the same pass (for context): the engine/gpu test-runner readiness check
 
 ## Future Work
 
+### Barrel sketch sync: never patch the world (queued 2026-07)
+Make a full sketch sync a **recovery mechanism, not a data path** — it should run only on initial wire-up, instance switch, reconnect, or detected divergence; never on an ordinary edit. Four steps, each independently shippable, each of which alone would have prevented the edit-loss outage above: (1) keep UI-only metadata (`lastModified`) off the wire and out of the push-dedup key; (2) tag broadcast ops with an `origin` client id so a client ignores its own echo instead of refetching; (3) apply remote ops incrementally rather than refetching the whole document; (4) revision numbers on the state doc so a *stale* snapshot can be recognized and discarded — today we can't tell, which is the root reason the replace was unsafe. Plus a dev-mode loop canary (the outage ran at ~140 pushes/sec and nothing warned). Full write-up: **[BARREL_SYNC_PLAN.md](BARREL_SYNC_PLAN.md)**.
+
 ### Shared-server / event push (queued 2026-07)
 - **Naming barrel instances**: user-editable names; auto-assign unnamed instances from their Resolume context by enumerating effects via the Resolume webserver and locating the barrel instance. (Playground labels + the sidechannel writerTag→label mapping are ready consumers.)
 - **Resolume crash recovery**: cache a copy of each barrel sketch in IndexedDB web-side, detect unclean shutdown, offer restore.
@@ -44,6 +56,7 @@ Fixed in the same pass (for context): the engine/gpu test-runner readiness check
 
 ## Recently Completed
 
+- **`control.barrel_macros` edit-loss loop** (2026-07): with a macros instance in the sketch, barrel-mode edits stuck only by chance. `defaultStateForPlugin`'s legacy `params` fallback loop applied only the OUTPUT skip, so it silently re-added the help field the schema loop had excluded — and `barrel_macros` is *nothing but* a help field + 16 pure outputs, so its defaults came out `{intro: 0}` instead of `{}`. That made the seeder non-idempotent with `pruneHelpFieldState`, and the resulting seed/prune churn drove a push↔refetch loop. Fixed by applying the help skip in the fallback loop too. Note the barrel was **not** at fault (a raw-WS client editing the same running barrel loses nothing) — the surviving sync weaknesses are tracked under Known Issues + [BARREL_SYNC_PLAN.md](BARREL_SYNC_PLAN.md).
 - **Multi-select effect cards** (2026-07): `appState.local.multiSelection` (effect paths, one sketch) beside the primary selection. Cmd/ctrl-click toggles, shift-click range-selects from the primary anchor, Cmd+A selects the whole edited sketch (all via `handleCommonEditShortcut` / `column-group`'s pointerdown, so both sketch surfaces get it). Group copy captures a `kind:'effects'` payload — chain-ordered cards PLUS the wires internal to the group — mirrored to the OS clipboard as JSON, which is what carries groups BETWEEN surfaces (effect IDE ↔ playground ↔ live Resolume tabs). Paste mints fresh instance keys, remaps the wires onto them (fresh wire ids), inserts a contiguous block, selects it; one undo point. Group delete/cut are one undo point. Pure capture/remap helpers in `state/effects-payload.ts` (vitest); gestures e2e'd in `test/multi-select.test.ts`. Multi-select-only surfaces stay opt-in via optional `ColumnController` methods (the arrangement keeps its own system).
 - **Sidechannel texture previews** (2026-07): shipped as the Instances-tab sidechannel cards — `{type:'sidechannel', channel}` trace target, `sidechannel_bus::peek` → `executor_sidechannel_texture` (playground) / preview requests routed to the channel's writer instance (barrel).
 - **`util.dashboard` knob `{}` "reset" was a test artifact, not a real bug**: the previously-reported "authored knob state resets to `{}` in the resolume shell" did NOT exist. `dashboard-knobs.test.ts` test 1 returned the raw MobX-observable `inst.state` to Puppeteer, whose structured clone walks the Proxy and yields `{}` (a false "wiped"). In-page snapshots (`Object.keys(instances)`) showed the authored knobs intact through the entire drag. Fix: serialize in-page (`JSON.parse(JSON.stringify(inst.state))`) before returning; test re-enabled (no longer `it.skip`). The engine never stomps the state — the local path was always correct (the distinct, real output-mirror bug — `{knob_i: 0}` — was fixed separately).
