@@ -1420,7 +1420,7 @@ int32_t SketchExecutor::execute(
       // texture send/receive above — see sidechannel_bus.h). Both are pure
       // data nodes (no texture fields), so they take the modulation-source
       // path below: the chain image passes through untouched and their whole
-      // job is this scalar hand-off, run once the stage's wires have settled.
+      // job is this scalar hand-off.
       //
       // SEND: publish the stage's post-wire `value` (a wire folded it into the
       // field like any other param, so a bool source arrives as 0.0/1.0);
@@ -1428,6 +1428,12 @@ int32_t SketchExecutor::execute(
       // RECEIVE: fold the channel's value into `value` so the stage's write
       // taps carry it downstream. A stale channel reads 0.0 — the unplugged-
       // cable contract acquireScalar already returns for us.
+      //
+      // Called after the stage's wires have settled (read taps + automation +
+      // smoothing all land before the tick) but BEFORE doTick, which matters
+      // for the receive: setParamFloat is a real state patch, so ticking after
+      // it lets the effect republish the value as its output — that published
+      // value is what the IDE's output trace draws (see the effect's tick()).
       auto serviceScalarBus =
           [&](std::unordered_map<std::string, float>& modScalars) {
         const bool isSend = (mt == sidechannel_bus::kScalarOutModuleType);
@@ -1524,6 +1530,7 @@ int32_t SketchExecutor::execute(
         applyAutomation(inst.h, entry, instances, instKey, &modScalars);
         applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
         markWriteTapOutputsConnected(inst.h, entry);
+        serviceScalarBus(modScalars);
         maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
         inst.doTick(tickDt);
         drainTriggerRing(reg, inst.h, instKey);  // TriggerSource → trigger_bus
@@ -1532,7 +1539,6 @@ int32_t SketchExecutor::execute(
         // downstream readers see fresh data. It doesn't touch the chain texture,
         // so the passthrough below still forwards colInput untouched.
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
-        serviceScalarBus(modScalars);
         captureWriteTaps(inst.h, entry, instKey, instances,
                          railsById, railTextures, railFloats, railBuffers,
                          &modScalars);
@@ -1596,13 +1602,13 @@ int32_t SketchExecutor::execute(
       }
       gpu_set_surface(fxHandle, W, H);
 
+      serviceScalarBus(modScalars);
       maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
       inst.doTick(tickDt);
       drainTriggerRing(reg, inst.h, instKey);  // TriggerSource → trigger_bus
       inst.doRender(W, H);
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
-      serviceScalarBus(modScalars);
       captureWriteTaps(inst.h, entry, instKey, instances,
                        railsById, railTextures, railFloats, railBuffers,
                        &modScalars);

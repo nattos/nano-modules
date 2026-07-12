@@ -24,6 +24,11 @@ namespace sidechannel_scalar_in {
 struct State {
   bool initialized = false;
   int channel = 1;  // 1..8, or 0 = Custom (channel_name text field)
+  // The channel's value, patched in by the executor each frame BEFORE tick (a
+  // host setParamFloat is a real state patch, so it arrives via
+  // on_state_patched like any other). We republish it as an output below —
+  // see tick().
+  float value = 0.0f;
 };
 
 /// Hide the custom-name text field unless "Custom" is selected. Shared by
@@ -89,9 +94,24 @@ void  init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->channel = 1;
+  s->value = 0.0f;
   s->initialized = true;
 }
-void tick(void*, double) {}
+
+// Republish the host-patched value as this module's OUTPUT — the same
+// `setValPath` every modulation source ends its tick with. The executor already
+// routes the value to a WIRE without any of this (it folds it straight into the
+// write tap), but a wire is not the only consumer: the IDE's output trace reads
+// live output fields out of published state, and a value that is never published
+// pins the trace at 0. So the effect echoes what the host handed it, and the
+// Value output reads like an LFO's.
+void tick(void* self, double) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized) return;
+  auto vh = val::number(s->value);
+  state::setValPath("value", vh);
+  val::release(vh);
+}
 
 void on_state_patched(void* self, int n, const char* pb, const int* off, const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
@@ -104,6 +124,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
         s->channel = ch;
         apply_channel_visibility(ch);
       }
+    } else if (state::pathIs(pb + off[i], len[i], "value")) {
+      s->value = state::patchFloat(i);   // the executor's per-frame bus read
     }
   }
 }

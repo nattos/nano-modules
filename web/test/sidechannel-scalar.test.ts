@@ -98,6 +98,15 @@ describe('scalar sidechannels across playground instances', () => {
     expect(meta.channels).toContain('2');
     expect(meta.writer).toBe(ids.a);
 
+    // The receive PUBLISHES the value as its output, which is what the IDE's
+    // output trace draws. Without the effect echoing it, published state pins at
+    // the schema default and the trace reads a permanent 0 even though the wire
+    // downstream is carrying 0.8.
+    const published = await page.evaluate(
+      `(() => (window.appState.local.engine.pluginStates['recv@1'] || {}).value)()`,
+    ) as number | undefined;
+    expect(published).toBeCloseTo(0.8, 2);
+
     // Remove the sender stage from A → the channel goes quiet → the receive
     // falls back to 0.0, so brightness returns to neutral (mid gray). A latched
     // value would still read ~229 here.
