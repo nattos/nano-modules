@@ -1016,6 +1016,17 @@ if(APPLE)
     target_compile_options(test_effect_render PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_render)
 
+    # TEMPORARY repro: dashboard/barrel_macros wire -> R/B swap.
+    add_executable(test_texture_copy_format tests/test_texture_copy_format.cpp)
+    target_link_libraries(test_texture_copy_format PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_texture_copy_format PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_texture_copy_format PRIVATE -Wno-attributes)
+    catch_discover_tests(test_texture_copy_format)
+
     # External scalar rails (MIDI device wires) through the executor.
     add_executable(test_external_scalars tests/test_external_scalars.cpp)
     target_link_libraries(test_external_scalars PRIVATE

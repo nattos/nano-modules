@@ -340,11 +340,40 @@ public:
     [enc endEncoding];
   }
 
+  // A blit copies BYTES. Metal happily blits between two formats of the same
+  // bytes/pixel, so copying BGRA8 → RGBA8 (or back) silently SWAPS R and B —
+  // blue comes out orange. That boundary is real: the barrel's FFGL interop
+  // textures are BGRA8 while the executor's intermediates are RGBA8, and any
+  // effect that calls gpu::Device::copy (the is_identity passthroughs —
+  // util.dashboard, control.barrel_macros, sketch_output, sidechannel_out)
+  // straddles it. So: same channel order → blit (the fast path); different →
+  // a compute copy, which reads and writes THROUGH the pixel formats and thus
+  // channel-orders both sides correctly.
   void copyTexture(int32_t src, int32_t dst) override {
     id<MTLTexture> s = getAs<id<MTLTexture>>(src);
     id<MTLTexture> d = getAs<id<MTLTexture>>(dst);
     if (!s || !d) return;
     if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
+
+    if ([s pixelFormat] != [d pixelFormat]) {
+      if (id<MTLComputePipelineState> pso = formatCopyPSO()) {
+        const NSUInteger w = std::min([s width], [d width]);
+        const NSUInteger h = std::min([s height], [d height]);
+        id<MTLComputeCommandEncoder> enc = [cmdBuffer_ computeCommandEncoder];
+        [enc setComputePipelineState:pso];
+        [enc setTexture:s atIndex:0];
+        [enc setTexture:d atIndex:1];
+        [enc dispatchThreadgroups:MTLSizeMake((w + 7) / 8, (h + 7) / 8, 1)
+            threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+        [enc endEncoding];
+        markBound(src);
+        markBound(dst);
+        return;
+      }
+      // PSO failed to build: fall through to the blit rather than drop the
+      // frame — a channel-swapped image beats a black one, and it's logged.
+    }
+
     id<MTLBlitCommandEncoder> blit = [cmdBuffer_ blitCommandEncoder];
     [blit copyFromTexture:s sourceSlice:0 sourceLevel:0
                 sourceOrigin:MTLOriginMake(0, 0, 0)
@@ -354,6 +383,33 @@ public:
     [blit endEncoding];
     markBound(src);
     markBound(dst);
+  }
+
+  // Lazily built, then cached for the backend's lifetime.
+  id<MTLComputePipelineState> formatCopyPSO() {
+    if (formatCopyPso_) return formatCopyPso_;
+    NSString* src =
+        @"#include <metal_stdlib>\n"
+         "using namespace metal;\n"
+         "kernel void nano_format_copy(\n"
+         "    texture2d<float, access::read>  src [[texture(0)]],\n"
+         "    texture2d<float, access::write> dst [[texture(1)]],\n"
+         "    uint2 gid [[thread_position_in_grid]]) {\n"
+         "  if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;\n"
+         "  if (gid.x >= src.get_width() || gid.y >= src.get_height()) return;\n"
+         "  dst.write(src.read(gid), gid);\n"
+         "}\n";
+    NSError* err = nil;
+    id<MTLLibrary> lib = [device_ newLibraryWithSource:src options:nil error:&err];
+    if (!lib) {
+      NSLog(@"Metal format-copy library error: %@", err);
+      return nil;
+    }
+    id<MTLFunction> fn = [lib newFunctionWithName:@"nano_format_copy"];
+    if (!fn) return nil;
+    formatCopyPso_ = [device_ newComputePipelineStateWithFunction:fn error:&err];
+    if (!formatCopyPso_) NSLog(@"Metal format-copy PSO error: %@", err);
+    return formatCopyPso_;
   }
 
   int32_t createRenderPSO(int32_t vsHandle, const std::string& vsEntry,
@@ -1295,6 +1351,7 @@ private:
 
   id<MTLCommandBuffer> cmdBuffer_ = nil;
   id<MTLComputeCommandEncoder> computeEncoder_ = nil;
+  id<MTLComputePipelineState> formatCopyPso_ = nil;  // lazy; see copyTexture
   id<MTLComputePipelineState> currentComputePSO_ = nil;
   // Threads-per-threadgroup of the bound compute PSO (Metal supplies this at
   // dispatch, not from the shader). Defaults to 8×8×1 so raw-MSL kernels with
