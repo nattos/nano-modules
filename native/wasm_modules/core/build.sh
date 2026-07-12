@@ -17,6 +17,7 @@ compile_shaders_compute_fused_spv curve
 compile_shaders_compute_fused_spv exposure
 compile_shaders_compute_fused_spv color_temperature
 compile_shaders_compute_fused_spv invert
+compile_shaders_compute_fused_spv alpha_remap
 compile_shaders_compute_fused_spv posterize
 compile_shaders_compute_fused_spv levels
 compile_shaders_compute_fused_spv hsl
@@ -92,6 +93,8 @@ wasm_build \
   ../exposure/main.cpp \
   ../color_temperature/main.cpp \
   ../invert/main.cpp \
+  ../alpha_remap/main.cpp \
+  ../video_delay/main.cpp \
   ../posterize/main.cpp \
   ../levels/main.cpp \
   ../hsl/main.cpp \

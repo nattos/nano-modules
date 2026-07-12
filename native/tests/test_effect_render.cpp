@@ -3502,3 +3502,319 @@ TEST_CASE("scalar sidechannel bus passes values across executors",
   REQUIRE(tn > 0);
   CHECK(nlohmann::json::parse(std::string(buf.data(), (size_t)tn)).empty());
 }
+
+// --- color.alpha.remap ------------------------------------------------------
+//
+// The alpha twin of mod.shaper.remap: the SAME curve pipeline (tap_mod), applied
+// per-pixel to the alpha channel. The shader is a hand-port of tap_mod.h, so what
+// this pins is that the port agrees with the C++ on the pipeline's shape —
+// window normalize, curve, output window, scale — and that RGB is left alone.
+TEST_CASE("alpha remap reshapes alpha and leaves RGB alone", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // Uniform input: RGB 200, alpha 64 (0.25). A quarter-covered pixel — far enough
+  // from 0/0.5/1 that an inverted, squared or rescaled result is unmistakable.
+  const uint8_t RGB_IN = 200, A_IN = 64;
+  {
+    std::vector<uint8_t> px(W * H * 4);
+    for (size_t i = 0; i + 3 < px.size(); i += 4) {
+      px[i] = px[i + 1] = px[i + 2] = RGB_IN;
+      px[i + 3] = A_IN;
+    }
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+  }
+
+  auto meanAlpha = [&](const std::vector<uint8_t>& px) {
+    long sum = 0, n = 0;
+    for (size_t i = 3; i < px.size(); i += 4) { sum += px[i]; n++; }
+    return n ? (double)sum / n : 0.0;
+  };
+
+  // Render alpha_remap alone; `overrides` is merged onto a FULL default state.
+  // The instance persists across execute() calls, and the executor patches only
+  // the keys a sketch names — so a partial state would silently inherit the
+  // previous case's params. Spelling every field out each time keeps the cases
+  // independent of the order they run in.
+  auto run = [&](nlohmann::json overrides) {
+    nlohmann::json st{
+      {"in_min", 0.0}, {"in_max", 1.0}, {"out_min", 0.0}, {"out_max", 1.0},
+      {"curve_in", 0}, {"curve_out", 0}, {"exponent", 2.0},
+      {"saturate", false}, {"scale", 1.0},
+    };
+    st.update(overrides);
+    nlohmann::json sketch{
+      {"chain", nlohmann::json::array({
+        nlohmann::json{{"module_type", "color.alpha.remap"}, {"instance_key", "ar"}}})},
+      {"instances", {{"ar", {{"module_type", "color.alpha.remap"}, {"state", st}}}}},
+    };
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                   /*sketchDirty=*/true);
+    backend->submit();
+    auto px = backend->readbackTexture(out, W, H);
+    return std::pair<double, double>{mean_rgb(px), meanAlpha(px)};
+  };
+
+  // Identity window + linear curves + unit scale: nothing moves (and is_identity
+  // lets the executor alias the stage away entirely).
+  {
+    auto [rgb, a] = run(nlohmann::json::object());
+    CHECK(std::abs(a - A_IN) < 2.0);
+    CHECK(std::abs(rgb - RGB_IN) < 2.0);
+  }
+
+  // Inverted output window: alpha 0.25 -> 0.75 (~191). The matte flips; RGB does
+  // not (straight alpha — the effect never touches colour).
+  {
+    auto [rgb, a] = run(nlohmann::json{{"out_min", 1.0}, {"out_max", 0.0}});
+    CHECK(std::abs(a - 191.0) < 3.0);
+    CHECK(std::abs(rgb - RGB_IN) < 2.0);
+  }
+
+  // Quad ease-in: t^2. 0.25 -> 0.0625 (~16) — an edge eaten away.
+  {
+    auto [rgb, a] = run(nlohmann::json{{"curve_in", 1}});
+    CHECK(std::abs(a - 16.0) < 3.0);
+    CHECK(std::abs(rgb - RGB_IN) < 2.0);
+  }
+
+  // Halved input window: [0,0.5] maps onto [0,1], so 0.25 lands mid — 0.5 (~128).
+  // This is the "steepen a soft key" move.
+  {
+    auto [rgb, a] = run(nlohmann::json{{"in_max", 0.5}});
+    CHECK(std::abs(a - 128.0) < 3.0);
+    CHECK(std::abs(rgb - RGB_IN) < 2.0);
+  }
+
+  // Scale is applied LAST, in the same place tap_mod applies it: 0.25 * 2 = 0.5.
+  {
+    auto [rgb, a] = run(nlohmann::json{{"scale", 2.0}});
+    CHECK(std::abs(a - 128.0) < 3.0);
+    CHECK(std::abs(rgb - RGB_IN) < 2.0);
+  }
+
+  // Input entirely below the window. Unsaturated the normalized t goes negative
+  // and the shader's final clamp pins alpha at 0 — fully transparent, not
+  // wrapped or NaN. (Saturate makes the clip explicit rather than incidental.)
+  {
+    auto [rgb, a] = run(nlohmann::json{{"in_min", 0.5}, {"in_max", 1.0}, {"saturate", true}});
+    (void)rgb;
+    CHECK(a < 3.0);
+  }
+}
+
+// --- motion.frame_delay -----------------------------------------------------
+//
+// A frame-counted video delay. Two things worth pinning: it hands back the frame
+// from exactly N renders ago (not N-1, not an interpolation of neighbours), and
+// it holds only as much video as the delay actually in use — 30 frames of 1080p
+// is a few hundred MB, so the memory discipline IS the feature.
+TEST_CASE("frame delay replays the frame from N renders ago", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+
+  // Each frame is a flat grey, so the pixel value IS the frame's identity: a mean
+  // of 90 in the output means "the frame we fed in when the input was 90".
+  auto writeInput = [&](uint8_t v) {
+    std::vector<uint8_t> px(W * H * 4, v);
+    for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+  };
+
+  auto sketchWith = [](double delay, bool bypass = false) {
+    nlohmann::json st{{"delay", delay}};
+    if (bypass) st["__bypass__"] = 1.0;
+    return nlohmann::json{
+      {"chain", nlohmann::json::array({
+        nlohmann::json{{"module_type", "motion.frame_delay"}, {"instance_key", "fd"}}})},
+      {"instances", {{"fd", {{"module_type", "motion.frame_delay"}, {"state", st}}}}},
+    };
+  };
+
+  // Distinct value per frame; index i is "the frame fed on render i".
+  auto frameValue = [](int i) { return (uint8_t)(20 + i * 15); };
+
+  auto sketch = sketchWith(3);
+  bool dirty = true;
+  auto renderFrame = [&](int i) {
+    writeInput(frameValue(i));
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty);
+    dirty = false;
+    backend->submit();
+    return mean_rgb(backend->readbackTexture(out, W, H));
+  };
+
+  // Delay 3, ring still filling (renders 0..2): pass the live image through. A
+  // black hole for the first few frames after a drop reads as a bug, not an effect.
+  for (int i = 0; i < 3; i++) {
+    INFO("fill frame " << i);
+    CHECK(std::abs(renderFrame(i) - frameValue(i)) < 3.0);
+  }
+
+  // Filled: from render 3 on, the output is exactly the frame from 3 renders ago.
+  for (int i = 3; i < 9; i++) {
+    INFO("delayed frame " << i);
+    CHECK(std::abs(renderFrame(i) - frameValue(i - 3)) < 3.0);
+  }
+
+  // Delay 0 is still a live frame, not a frozen one — the ring keeps capturing.
+  sketch = sketchWith(0);
+  dirty = true;
+  for (int i = 9; i < 12; i++) {
+    INFO("delay-0 frame " << i);
+    CHECK(std::abs(renderFrame(i) - frameValue(i)) < 3.0);
+  }
+}
+
+// The memory half of the contract. `liveResourceCount` is the backend's own
+// bookkeeping, so this catches both a per-frame allocation leak (a count that
+// climbs while nothing changes) and a failure to hand frames back.
+TEST_CASE("frame delay only holds the frames its delay needs", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+  if (backend->liveResourceCount() < 0) {
+    SKIP("Backend does not track live resources");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+  {
+    std::vector<uint8_t> px(W * H * 4, 128);
+    backend->writeTexture(inTex, W, H, px.data(), (uint32_t)px.size());
+  }
+
+  auto sketchWith = [](double delay, bool bypass = false) {
+    nlohmann::json st{{"delay", delay}};
+    if (bypass) st["__bypass__"] = 1.0;
+    return nlohmann::json{
+      {"chain", nlohmann::json::array({
+        nlohmann::json{{"module_type", "motion.frame_delay"}, {"instance_key", "fd"}}})},
+      {"instances", {{"fd", {{"module_type", "motion.frame_delay"}, {"state", st}}}}},
+    };
+  };
+
+  // The executor holds its own textures (intermediates, pools), so absolute counts
+  // are meaningless — every assertion below is a DELTA against a settled baseline.
+  auto settle = [&](sketch_executor::SketchExecutor& ex, const nlohmann::json& sk,
+                    int frames, bool dirty) {
+    for (int f = 0; f < frames; f++) {
+      ex.execute(sk, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty && f == 0);
+      backend->submit();
+    }
+    return backend->liveResourceCount();
+  };
+
+  int32_t heldRing = 0;
+  {
+    sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+    // Delay 0 = one slot. Settle first: the executor's own pools allocate on the
+    // opening frames, and we want them out of the baseline.
+    auto small = sketchWith(0);
+    settle(executor, small, 8, /*dirty=*/true);
+    const int32_t base = backend->liveResourceCount();
+
+    // Steady state allocates NOTHING. The ring recycles its oldest slot as the new
+    // head each frame — a version that allocated a frame per render would climb by
+    // 20 here, and at 1080p that is 160MB of garbage in a third of a second.
+    CHECK(settle(executor, small, 20, /*dirty=*/false) == base);
+
+    // Delay 8 -> 9 slots (8 frames of history + the live one). Growth is immediate.
+    auto big = sketchWith(8);
+    const int32_t grown = settle(executor, big, 12, /*dirty=*/true);
+    CHECK(grown - base == 8);   // 9 slots now vs the 1 in the baseline
+
+    // Dial the delay back down. The shrink is deliberately HELD (kShrinkHoldFrames
+    // = 120): a delay swept by an LFO would otherwise free and reallocate the tail
+    // every single frame. So a few frames after the change, we still hold all 9.
+    settle(executor, small, 5, /*dirty=*/true);
+    CHECK(backend->liveResourceCount() == grown);
+
+    // ...but once the smaller delay has actually settled, the frames come back.
+    settle(executor, small, 130, /*dirty=*/false);
+    CHECK(backend->liveResourceCount() == base);
+
+    // Bypass releases the whole ring rather than sitting on it: while a device is
+    // off it gets no render at all, so holding a quarter-gigabyte of frames nobody
+    // can see is pure waste. (This is the on_active path.)
+    //
+    // Both measurements below are taken while BYPASSED, and compared to each
+    // other rather than to `base` — flipping bypass changes what the EXECUTOR
+    // itself keeps around (it aliases the stage's input to its output and drops
+    // the intermediates), so a delta against an active baseline would be reading
+    // the executor's pool as much as the effect's ring. Between two bypassed
+    // states that noise is identical and cancels.
+    settle(executor, big, 12, /*dirty=*/true);                          // build a 9-slot ring
+    CHECK(backend->liveResourceCount() - base == 8);
+    const int32_t bypassedAfterBig =
+        settle(executor, sketchWith(8, /*bypass=*/true), 3, /*dirty=*/true);
+
+    // Now reach a bypassed state that never had more than the 1 slot: un-bypass at
+    // delay 0, let the shrink hold expire, then bypass again.
+    settle(executor, small, 130, /*dirty=*/true);
+    const int32_t bypassedAfterSmall =
+        settle(executor, sketchWith(0, /*bypass=*/true), 3, /*dirty=*/true);
+
+    // Equal ⇒ the 9-slot ring really was handed back on the way into bypass. Had
+    // on_active been a no-op, the ring would have survived and this side would sit
+    // 8 textures higher.
+    CHECK(bypassedAfterBig == bypassedAfterSmall);
+
+    // Un-bypassing re-primes from nothing. Re-baseline first: the bypass
+    // round-trip shifted the executor's own pool, so `base` is no longer the right
+    // zero point — but a fresh active delay-0 measurement is.
+    settle(executor, small, 130, /*dirty=*/true);
+    const int32_t base2 = backend->liveResourceCount();
+    CHECK(settle(executor, big, 12, /*dirty=*/true) - base2 == 8);
+    heldRing = backend->liveResourceCount();
+  }
+
+  // The SketchExecutor is gone, but effect instances are pooled in the RUNTIME and
+  // outlive it — so this is the moment destroy() actually runs. It must give every
+  // held frame back, not just the ones a resize would have caught.
+  rt.destroyInstance("motion.frame_delay", "fd");
+  CHECK(heldRing - backend->liveResourceCount() >= 9);
+}

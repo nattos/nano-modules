@@ -334,6 +334,12 @@ public:
   // Cleanup
   virtual void release(int32_t handle) = 0;
 
+  // Number of GPU resources (textures, buffers, ...) the backend is currently
+  // holding. Introspection for leak tests — an effect that allocates per frame,
+  // or fails to give its buffers back on destroy/bypass, shows up as a count that
+  // only climbs. Default -1 = the backend doesn't track it.
+  virtual int32_t liveResourceCount() const { return -1; }
+
  protected:
   // See setDefaultTextureFormat. TextureFormat code, 1 = RGBA8.
   int32_t defaultTextureFormatCode_ = 1;

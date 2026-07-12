@@ -1311,6 +1311,10 @@ public:
     resources_.erase(handle);
   }
 
+  int32_t liveResourceCount() const override {
+    return (int32_t)resources_.size();
+  }
+
 private:
   int32_t alloc(ResourceType type, id obj) {
     int32_t h = nextHandle_++;

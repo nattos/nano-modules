@@ -66,6 +66,12 @@ namespace color_temperature { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(invert)
 
+NANO_DECLARE_INSTANCE_EFFECT(alpha_remap)
+namespace alpha_remap { int32_t is_identity(void* self); }
+
+NANO_DECLARE_INSTANCE_EFFECT(video_delay)
+namespace video_delay { void on_active(void* self, int32_t active); }
+
 NANO_DECLARE_INSTANCE_EFFECT(posterize)
 
 NANO_DECLARE_INSTANCE_EFFECT(levels)
@@ -354,6 +360,31 @@ void nano_module_main() {
         "invert,negative,color",
         "la-yin-yang",
         NANO_INSTANCE_LIFECYCLE(invert),
+    });
+
+    nano::registerEffect({
+        2,
+        "color.alpha.remap",
+        "Alpha Remap",
+        "Reshapes the alpha channel with the wire remap's curves: input/output windows, ease-in/out, foldback, saturate, scale",
+        "color",
+        "alpha,remap,matte,key,curve,range,transparency",
+        "la-adjust",
+        NANO_INSTANCE_LIFECYCLE(alpha_remap),
+        &alpha_remap::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "motion.frame_delay",
+        "Frame Delay",
+        "Video delay line: replays the chain image a whole number of frames late (max 30), with no interpolation",
+        "motion",
+        "delay,echo,frame,history,time,buffer",
+        "la-history",
+        NANO_INSTANCE_LIFECYCLE(video_delay),
+        nullptr,                    // is_identity — stateful; a skipped frame never enters the ring
+        &video_delay::on_active,    // bypassed: hand the frame history back
     });
 
     nano::registerEffect({
