@@ -149,6 +149,55 @@ TEST_CASE("piano off stuck-on, no empty clip: re-arm toggle",
   CHECK(h.cmds[2].value == false);  // deferred disconnect after dwell
 }
 
+// A marked clip must still be playable BY HAND. We hold a desire only while
+// converging it; once the clip settles we release it, so a later change we did
+// not ask for (the user clicking a Piano clip, or holding a mapped MIDI button)
+// is not read as a divergence to correct.
+//
+// The bug: `desired_` kept the last value the rail ever published — typically OFF
+// — forever. A user holding the clip down drove it observed-ON against that stale
+// desired-OFF, the reconciler "corrected" it, and the clip flashed on and dropped
+// while the button was still held, with nothing actually triggering it.
+TEST_CASE("a settled clip is released — a manual Resolume trigger is not fought",
+          "[clip_launcher]") {
+  Harness h(/*debounce=*/100);
+
+  // The rail drives the clip on, then off. Both converge, so both settle.
+  h.launcher.tick({Harness::ev(1, true)}, Harness::clips(1, /*observed=*/false), 1000);
+  h.launcher.tick({}, Harness::clips(1, /*observed=*/true), 1100);
+  h.launcher.tick({Harness::ev(1, false)}, Harness::clips(1, /*observed=*/true), 1200);
+  h.launcher.tick({}, Harness::clips(1, /*observed=*/false), 1300);
+  h.cmds.clear();
+
+  // Now the USER holds the clip down in Resolume: it goes observed-ON with no
+  // event on the rail. Nothing is triggering it — we must not touch it, for as
+  // long as they hold it.
+  for (uint64_t t = 1400; t < 5000; t += 100)
+    h.launcher.tick({}, Harness::clips(1, /*observed=*/true), t);
+  CHECK(h.cmds.empty());  // before the fix: a disconnect on the very first tick
+}
+
+TEST_CASE("releasing a clip does not disarm the rail — a later edge still drives it",
+          "[clip_launcher]") {
+  Harness h(/*debounce=*/100);
+  // Settle it off (the state the release path leaves behind).
+  h.launcher.tick({Harness::ev(1, false)}, Harness::clips(1, /*observed=*/false), 1000);
+  h.cmds.clear();
+
+  // A fresh ON edge must still connect it, from a clean simple attempt.
+  h.launcher.tick({Harness::ev(1, true)}, Harness::clips(1, /*observed=*/false), 1100);
+  REQUIRE(h.cmds.size() == 1);
+  CHECK(h.cmds[0].path == "C");
+  CHECK(h.cmds[0].value == true);
+
+  // And a clip that does NOT take is still escalated — the stuck-clip protection
+  // is untouched, because an unconverged clip is by definition still owned.
+  h.launcher.tick({}, Harness::clips(1, /*observed=*/false), 1250);
+  REQUIRE(h.cmds.size() == 3);      // re-arm: connect:false then connect:true
+  CHECK(h.cmds[1].value == false);
+  CHECK(h.cmds[2].value == true);
+}
+
 TEST_CASE("gives up after max attempts (bounds oscillation)", "[clip_launcher]") {
   Harness h(/*debounce=*/10);
   h.launcher.set_max_attempts(4);

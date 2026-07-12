@@ -39,54 +39,69 @@ void ClipLauncher::tick(
   for (const auto& [channel, targets] : channel_clips)
     for (const auto& t : targets) fresh[t.clip_id] = &t;
 
+  // Reconcile, then RELEASE every clip that has settled (reached its desired
+  // state, or exhausted its attempts). We own a clip only while actively driving
+  // it somewhere; a settled clip is handed back to Resolume.
+  //
+  // Holding the desire forever is what made a NanoLooper-marked clip unusable by
+  // hand: `desired_` kept the last value the rail ever published (typically OFF),
+  // so a Piano clip the user held down in Resolume — or via a MIDI button — went
+  // observed-ON against a stale desired-OFF, the reconciler read that as a
+  // divergence to correct, and disconnected it under them. The clip flashed on
+  // and dropped while the button was still down, with nothing actually
+  // triggering it.
+  //
+  // The stuck-clip protection this file exists for is unaffected: it only ever
+  // matters while converging (a dropped trigger edge is by definition a clip that
+  // has NOT reached its desired state), and a released clip re-arms from a fresh
+  // simple attempt the moment the rail publishes a new edge for it.
+  std::vector<int64_t> settled;
   for (const auto& [clip_id, want_on] : desired_) {
     auto fit = fresh.find(clip_id);
     if (fit == fresh.end()) continue;  // clip no longer in the composition
-    reconcile_clip(*fit->second, now_ms);
+    if (reconcile_clip(*fit->second, now_ms)) settled.push_back(clip_id);
+  }
+  for (int64_t clip_id : settled) {
+    desired_.erase(clip_id);
+    recon_.erase(clip_id);
   }
 }
 
-void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
+bool ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
   Recon& r = recon_[t.clip_id];
   const bool want = r.desired;
   const bool have = t.observed_connected;
 
-  // Converged: clear progress and stop. This is also what makes us race-safe —
-  // we only ever act on a real mismatch, so a disconnect is only ever issued
-  // while observed-connected and a connect only while observed-disconnected.
-  if (have == want) {
-    r.attempts = 0;
-    r.last_action_ms = 0;
-    r.rearm_wait = false;
-    return;
-  }
+  // Converged: we're done — settle and let go. This is also what makes us
+  // race-safe: we only ever act on a real mismatch, so a disconnect is only ever
+  // issued while observed-connected and a connect only while observed-disconnected.
+  if (have == want) return true;
 
   // Piano stuck-ON recovery: we sent a re-arm connect last time; once the dwell
   // elapses (so it has registered), send the deferred disconnect.
   if (r.rearm_wait) {
-    if (now_ms - r.rearm_at_ms < rearm_dwell_ms_) return;
+    if (now_ms - r.rearm_at_ms < rearm_dwell_ms_) return false;
     writer_(t.connect_path, false);
     r.rearm_wait = false;
     r.last_action_ms = now_ms;
-    return;
+    return false;
   }
 
-  // Give up after a bounded number of attempts (until desired changes). With
-  // accurate observed state the simple first attempt converges and we never get
-  // here; this backstop means a wrong/laggy observed can only ever cause a few
-  // cycles of correction, never an unbounded connect/disconnect oscillation.
+  // Give up after a bounded number of attempts, and RELEASE the clip — "we never
+  // fight Resolume forever" is meant literally. With accurate observed state the
+  // simple first attempt converges and we never get here; this backstop means a
+  // wrong/laggy observed can only ever cause a few cycles of correction, never an
+  // unbounded connect/disconnect oscillation.
   if (r.attempts >= max_attempts_) {
-    if (r.attempts == max_attempts_) {
-      trig_log("clip %lld: gave up driving to %s after %d attempts "
-               "(observed stuck at %s)", (long long)t.clip_id,
-               want ? "on" : "off", r.attempts, have ? "on" : "off");
-      r.attempts++;  // log once
-    }
-    return;
+    trig_log("clip %lld: gave up driving to %s after %d attempts "
+             "(observed stuck at %s) — releasing it to Resolume",
+             (long long)t.clip_id, want ? "on" : "off", r.attempts,
+             have ? "on" : "off");
+    return true;
   }
 
   // Rate-limit (re)sends. First attempt fires immediately (last_action_ms == 0).
-  if (r.last_action_ms != 0 && now_ms - r.last_action_ms < debounce_ms_) return;
+  if (r.last_action_ms != 0 && now_ms - r.last_action_ms < debounce_ms_) return false;
   const bool first = (r.attempts == 0);
   r.attempts++;
   r.last_action_ms = now_ms;
@@ -104,7 +119,7 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
       trig_log("clip %lld: re-arm connect (stuck-off recovery)",
                (long long)t.clip_id);
     }
-    return;
+    return false;
   }
 
   // Want OFF, observed ON.
@@ -116,7 +131,7 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
     } else if (!t.evict_path.empty()) {
       writer_(t.evict_path, true);
     }
-    return;
+    return false;
   }
 
   // Escalation for a clip that won't turn off. Prefer EVICTION (connect the
@@ -137,6 +152,7 @@ void ClipLauncher::reconcile_clip(const LaunchTarget& t, uint64_t now_ms) {
     trig_log("clip %lld: Normal clip OFF but no empty clip to evict with",
              (long long)t.clip_id);
   }
+  return false;
 }
 
 void ClipLauncher::fireOnce(

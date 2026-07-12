@@ -27,6 +27,25 @@
  *     debounce (recovers a PRE-EXISTING stuck state, e.g. from a user click);
  *   - turns a Normal clip off by eviction, never by connect:false.
  *
+ * OWNERSHIP RULE — we drive a clip only while actively converging it. The moment
+ * it SETTLES (reaches its desired state, or exhausts max_attempts) we drop it
+ * from the reconcile set entirely, handing it back to Resolume. We do NOT hold a
+ * standing desire.
+ *
+ * This is what lets a marked clip still be played by hand. Holding the desire
+ * forever meant `desired_` kept whatever the rail last published (typically OFF),
+ * so a Piano clip the user held down in Resolume — or on a MIDI button — went
+ * observed-ON against a stale desired-OFF; the reconciler read that as divergence
+ * and disconnected it under them. The clip flashed on and dropped while the
+ * button was still held, with nothing actually triggering it.
+ *
+ * The stuck-clip protection above is untouched by this: a dropped trigger edge is
+ * BY DEFINITION a clip that hasn't reached its desired state, so it is still in
+ * the reconcile set and still gets the re-arm escalation. The tradeoff is that we
+ * no longer re-assert a settled clip that something else later changes (e.g. a
+ * held clip evicted by another clip on its layer stays evicted) — which is the
+ * intent: external control wins once we're done.
+ *
  * It never touches the Resolume WS directly — it calls a RawWriter (wired in
  * BridgeServer to resolume_client_->trigger), so it stays unit-testable and
  * free of bridge locks.
@@ -113,7 +132,10 @@ class ClipLauncher {
   };
 
   // Drive one clip toward its desired state (called per tick per desired clip).
-  void reconcile_clip(const LaunchTarget& t, uint64_t now_ms);
+  // Returns true when the clip has SETTLED — reached its desired state, or
+  // exhausted its attempts — meaning tick() should release it (see the ownership
+  // rule in the class docs).
+  bool reconcile_clip(const LaunchTarget& t, uint64_t now_ms);
 
   RawWriter writer_;
   // Observed state is the composition rebroadcast (~60ms on a live Arena), so
