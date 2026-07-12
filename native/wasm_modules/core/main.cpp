@@ -129,6 +129,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 NANO_DECLARE_INSTANCE_EFFECT(mod_envelope)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_threshold)
+NANO_DECLARE_INSTANCE_EFFECT(mod_invert)
 
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
@@ -692,6 +693,17 @@ void nano_module_main() {
         "modulation,threshold,gate,comparator,edge,trigger,schmitt,shaper",
         "la-toggle-on",
         NANO_INSTANCE_LIFECYCLE(mod_threshold),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.invert",
+        "Invert",
+        "Unary modulation shaper: flips a modulation value (1 - x). The Invert switch and a Trigger-toggled internal latch XOR together, so either can invert and either can cancel the other",
+        "mod",
+        "modulation,invert,flip,negate,toggle,latch,trigger,shaper",
+        "la-arrows-alt-v",
+        NANO_INSTANCE_LIFECYCLE(mod_invert),
     });
 
     nano::registerEffect({

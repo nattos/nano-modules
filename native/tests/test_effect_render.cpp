@@ -3818,3 +3818,106 @@ TEST_CASE("frame delay only holds the frames its delay needs", "[effect_render]"
   rt.destroyInstance("motion.frame_delay", "fd");
   CHECK(heldRing - backend->liveResourceCount() >= 9);
 }
+
+// --- mod.shaper.invert ------------------------------------------------------
+//
+// A stateful unary shaper: `output` is 1 - `input` when inversion is on, and the
+// input untouched when it isn't. Two controls decide "on" and they XOR — the
+// `invert` PARAM, and an internal latch that each `trigger` rising edge toggles.
+//
+// The invert's own output is read the way the auto-connect tests above read a
+// shaper's: park a second shaper below it and look at what auto-connect delivered
+// into that shaper's `input` (lastModulationData). lfo(0.3) -> inv -> tail, so
+// tail.input is exactly inv.output — 0.3 passed through, 0.7 inverted.
+TEST_CASE("invert shaper XORs its param against a trigger-toggled latch",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0); REQUIRE(outTex >= 0);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  // The SAME executor (and so the same latch) across every step below — the latch
+  // surviving from one call to the next is the whole point of the effect.
+  auto step = [&](bool invert, bool trigger) {
+    nlohmann::json sketch{
+      {"chain", nlohmann::json::array({
+        {{"module_type", "source.solid_color"}, {"instance_key", "src"}},
+        {{"module_type", "mod.source.lfo"},     {"instance_key", "lfo"}},
+        {{"module_type", "mod.shaper.invert"},  {"instance_key", "inv"}},
+        {{"module_type", "mod.shaper.remap"},   {"instance_key", "tail"}},
+      })},
+      {"instances", {
+        {"lfo", {{"module_type", "mod.source.lfo"},
+                 {"state", {{"output", 0.3}}}}},
+        {"inv", {{"module_type", "mod.shaper.invert"},
+                 {"state", {{"invert", invert}, {"trigger", trigger ? 1.0 : 0.0}}}}},
+      }},
+    };
+    executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                     /*sketchDirty=*/true);
+    backend->submit();
+    const auto& md = executor.lastModulationData();
+    INFO("modulationData = " << md.dump());
+    REQUIRE(md.contains("tail"));
+    REQUIRE(md["tail"].contains("input"));
+    return md["tail"]["input"]["value"].get<double>();
+  };
+
+  const double PASS = 0.3, FLIP = 0.7;
+
+  // Both off: pass through.
+  CHECK(step(/*invert=*/false, /*trigger=*/false) == Catch::Approx(PASS).margin(0.02));
+
+  // The param alone inverts.
+  CHECK(step(true, false) == Catch::Approx(FLIP).margin(0.02));
+  CHECK(step(false, false) == Catch::Approx(PASS).margin(0.02));
+
+  // A trigger's RISING EDGE toggles the latch, and the latch alone inverts.
+  CHECK(step(false, /*trigger=*/true) == Catch::Approx(FLIP).margin(0.02));
+
+  // The latch is sticky: releasing the trigger does NOT un-invert. (A momentary
+  // control driving a momentary flip would collapse right here.)
+  CHECK(step(false, false) == Catch::Approx(FLIP).margin(0.02));
+
+  // XOR, not OR: with the latch already on, turning the param on CANCELS it —
+  // two inversions make a pass-through. An OR would stay inverted.
+  CHECK(step(true, false) == Catch::Approx(PASS).margin(0.02));
+
+  // A second rising edge toggles the latch back off; the param is still on, so
+  // now the param alone inverts again.
+  CHECK(step(true, true) == Catch::Approx(FLIP).margin(0.02));
+
+  // A trigger left high does not keep toggling: the latch flipped once, on the
+  // edge, and now stays put across frames.
+  //
+  // Note what this does and does NOT prove. The executor patches a field only when
+  // its value CHANGES, so a trigger held high simply isn't re-delivered — the
+  // latch holds here even for a module with no edge detection at all (verified by
+  // making the toggle level-triggered: this loop still passed). What it pins is
+  // the property that matters to a user — the output doesn't shimmer while a
+  // footswitch is held — not the mechanism inside on_state_patched.
+  for (int f = 0; f < 4; f++) {
+    INFO("held-trigger frame " << f);
+    CHECK(step(true, true) == Catch::Approx(FLIP).margin(0.02));
+  }
+
+  // Release, then one more edge: latch on, param on -> they cancel again.
+  CHECK(step(true, false) == Catch::Approx(FLIP).margin(0.02));
+  CHECK(step(true, true) == Catch::Approx(PASS).margin(0.02));
+}
