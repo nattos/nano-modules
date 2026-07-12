@@ -4,6 +4,14 @@
  * For each trace point, maintains a dedicated OffscreenCanvas + WebGPU context.
  * Blits the source texture to the canvas via a full-screen textured quad render pass,
  * then calls transferToImageBitmap() — no CPU readback involved.
+ *
+ * Minification goes through a PYRAMID, not a single pass. A thumbnail is a ~15x
+ * linear reduction (1920x1080 -> 128x72); a `linear` sampler is only a 2x2 tap,
+ * so at that ratio it reads 4 of every ~225 source texels and degenerates to
+ * point sampling — pixel-level noise aliases straight through and the thumbnail
+ * looks crunchy. Halving repeatedly first makes each linear tap an exact 2x2 box
+ * filter, so every source texel contributes. The pyramid is cached per slot, so
+ * the steady-state cost is a handful of tiny passes.
  */
 
 const BLIT_SHADER = /* wgsl */`
@@ -25,6 +33,12 @@ const BLIT_SHADER = /* wgsl */`
 
   @group(0) @binding(0) var src: texture_2d<f32>;
   @group(0) @binding(1) var samp: sampler;
+
+  // A plain resampling copy, used for the halving pyramid levels. Straight alpha
+  // is carried through untouched — only the final pass composites.
+  @fragment fn fs_copy(@location(0) uv: vec2f) -> @location(0) vec4f {
+    return textureSample(src, samp, uv);
+  }
 
   // Composite the source texture (assumed straight-alpha) over a
   // light/dark checkerboard so transparent regions show through as
@@ -54,12 +68,18 @@ interface CaptureSlot {
   context: GPUCanvasContext;
   width: number;
   height: number;
+  /** Halving pyramid between the source and the target size (may be empty). */
+  pyramid: GPUTexture[];
+  /** Source dims the pyramid was built for — a resize rebuilds it. */
+  srcWidth: number;
+  srcHeight: number;
 }
 
 export class TraceCapture {
   private device: GPUDevice;
   private format: GPUTextureFormat;
   private pipeline: GPURenderPipeline | null = null;
+  private halvePipeline: GPURenderPipeline | null = null;
   private sampler: GPUSampler | null = null;
   private slots = new Map<string, CaptureSlot>();
 
@@ -81,12 +101,32 @@ export class TraceCapture {
         targets: [{ format: this.format }],
       },
     });
+    // Pyramid levels keep straight alpha (no checkerboard) — the checkerboard
+    // composite happens once, in the final pass onto the canvas.
+    this.halvePipeline = this.device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module, entryPoint: 'vs' },
+      fragment: {
+        module,
+        entryPoint: 'fs_copy',
+        targets: [{ format: this.format }],
+      },
+    });
     this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   }
 
-  private ensureSlot(id: string, width: number, height: number): CaptureSlot {
+  private ensureSlot(id: string, width: number, height: number,
+                     srcWidth: number, srcHeight: number): CaptureSlot {
     let slot = this.slots.get(id);
-    if (slot && slot.width === width && slot.height === height) return slot;
+    if (slot && slot.width === width && slot.height === height &&
+        slot.srcWidth === srcWidth && slot.srcHeight === srcHeight) {
+      return slot;
+    }
+
+    if (slot) {
+      for (const t of slot.pyramid) t.destroy();
+      slot.pyramid.length = 0;
+    }
 
     // Create or recreate the OffscreenCanvas at the right size
     const canvas = new OffscreenCanvas(width, height);
@@ -100,9 +140,48 @@ export class TraceCapture {
       // here keeps trace captures faithful for monitor previews.
       alphaMode: 'opaque',
     });
-    slot = { canvas, context, width, height };
+    slot = { canvas, context, width, height, pyramid: [], srcWidth, srcHeight };
+
+    // Halve until one more halving would undershoot the target — the last level
+    // is then within 2x of it, which is exactly where a bilinear tap is honest.
+    // Nothing is allocated when the source is already near the target size.
+    let w = srcWidth, h = srcHeight;
+    while (w >> 1 >= width && h >> 1 >= height && (w >> 1) >= 1 && (h >> 1) >= 1) {
+      w >>= 1;
+      h >>= 1;
+      slot.pyramid.push(this.device.createTexture({
+        size: { width: w, height: h },
+        format: this.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      }));
+    }
+
     this.slots.set(id, slot);
     return slot;
+  }
+
+  /** One full-screen pass: `src` -> `target`, with `pipeline`'s fragment shader. */
+  private blit(encoder: GPUCommandEncoder, pipeline: GPURenderPipeline,
+               src: GPUTextureView, target: GPUTextureView) {
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: src },
+        { binding: 1, resource: this.sampler! },
+      ],
+    });
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: target,
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3); // full-screen triangle
+    pass.end();
   }
 
   /**
@@ -118,37 +197,32 @@ export class TraceCapture {
     this.ensurePipeline();
     const w = overrideSize?.width ?? srcTexture.width;
     const h = overrideSize?.height ?? srcTexture.height;
-    const slot = this.ensureSlot(id, w, h);
-
-    const targetTex = slot.context.getCurrentTexture();
-
-    const bindGroup = this.device.createBindGroup({
-      layout: this.pipeline!.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: srcTexture.createView() },
-        { binding: 1, resource: this.sampler! },
-      ],
-    });
+    const slot = this.ensureSlot(id, w, h, srcTexture.width, srcTexture.height);
 
     const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: targetTex.createView(),
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      }],
-    });
-    pass.setPipeline(this.pipeline!);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(3); // full-screen triangle
-    pass.end();
+
+    // Walk the halving pyramid. Each step is an exact 2x2 box filter, so no
+    // source texel is skipped by the time we reach the final pass. An empty
+    // pyramid (no minification, or barely any) leaves `view` as the source.
+    let view = srcTexture.createView();
+    for (const level of slot.pyramid) {
+      const next = level.createView();
+      this.blit(encoder, this.halvePipeline!, view, next);
+      view = next;
+    }
+
+    // Final pass onto the canvas: now a <2x reduction, and the one that
+    // composites over the transparency checkerboard.
+    this.blit(encoder, this.pipeline!, view, slot.context.getCurrentTexture().createView());
     this.device.queue.submit([encoder.finish()]);
 
     return slot.canvas.transferToImageBitmap();
   }
 
   dispose() {
+    for (const slot of this.slots.values()) {
+      for (const t of slot.pyramid) t.destroy();
+    }
     this.slots.clear();
   }
 }

@@ -952,7 +952,7 @@ public:
       if (!dst) return {};
 
       if (!scaler_) {
-        scaler_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
+        scaler_ = [[MPSImageLanczosScale alloc] initWithDevice:device_];
       }
 
       // Use a dedicated command buffer so this doesn't tangle with
@@ -987,7 +987,7 @@ public:
       id<MTLTexture> dst = nextAsyncScratchScaleTarget(dstW, dstH);
       if (!dst) return;
       if (!scaler_) {
-        scaler_ = [[MPSImageBilinearScale alloc] initWithDevice:device_];
+        scaler_ = [[MPSImageLanczosScale alloc] initWithDevice:device_];
       }
 
       // If a batch is open, encode into the shared cmd buffer and
@@ -1373,7 +1373,12 @@ private:
 
   // Bilinear downscale used by readbackTextureScaled. Lazily created so
   // backends that never preview pay nothing.
-  MPSImageBilinearScale* scaler_ = nil;
+  // Lanczos, not bilinear: previews are a ~15x linear minification (1920x1080 ->
+  // 128x72), and a 2x2 bilinear tap at that ratio reads 4 of every ~225 source
+  // texels — i.e. it degenerates to point sampling and pixel-level noise aliases
+  // straight through. Lanczos is a windowed filter that actually integrates the
+  // footprint. Same encodeToCommandBuffer: API, so it's a drop-in.
+  MPSImageLanczosScale* scaler_ = nil;
   // Destination textures keyed by ((w << 32) | h). Read+write-only;
   // never published through `resources_` because no caller outside this
   // class needs handles to them. Sync-path uses one scratch per size;
