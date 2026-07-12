@@ -342,31 +342,7 @@ void InstanceLocator::update(const json& comp, StateDocument& doc,
       ++it;
   }
 
-  // Publish a default display name per resolved UUID. For a UUID at multiple
-  // paths (copy-paste), name it from the lexicographically-smallest path so the
-  // label stays stable; Phase 2 will fork the duplicate.
-  for (auto& [uuid, paths] : paths_by_uuid_) {
-    if (uuid.empty() || paths.empty()) continue;
-    const BarrelPlacement& p = by_path_.at(*paths.begin());
-    std::string name = default_name_for(p);
-    auto prev = published_names_.find(uuid);
-    if (prev != published_names_.end() && prev->second == name) continue;  // unchanged
-    json info = {{"default_name", name}, {"location", p.path},
-                 {"placement", placement_json(p)}};
-    if (doc.set_plugin_resolume_info(uuid, info)) {
-      published_names_[uuid] = name;
-    }
-    // else: not registered yet — leave published_names_ untouched so we retry
-    // once the plugin registers on a later update.
-  }
-
-  // Forget UUIDs that have left the composition, so a later re-add republishes.
-  for (auto it = published_names_.begin(); it != published_names_.end();) {
-    if (paths_by_uuid_.find(it->first) == paths_by_uuid_.end())
-      it = published_names_.erase(it);
-    else
-      ++it;
-  }
+  publish_placements(doc);
 
   // Publish every NanoBarrel currently in the composition (launched or not —
   // `paths_by_uuid_` comes from a structural scan, independent of plugin
@@ -405,6 +381,31 @@ void InstanceLocator::update(const json& comp, StateDocument& doc,
 }
 
 void InstanceLocator::tick(uint64_t now_ms) { detect_and_fork(now_ms); }
+
+void InstanceLocator::publish_placements(StateDocument& doc) {
+  // Publish a default display name + placement per resolved UUID. For a UUID at
+  // multiple paths (copy-paste), name it from the lexicographically-smallest
+  // path so the label stays stable; Phase 2 will fork the duplicate.
+  //
+  // Deliberately NOT gated on a "last published" cache here. An earlier version
+  // kept a uuid -> name map and skipped when the name was unchanged, which broke
+  // in two ways: it suppressed the retry for a plugin that registered after the
+  // composition scan (see the header — this is what dumped layer-mounted barrels
+  // into the web's "Other" row), and it missed placement-only changes that leave
+  // the name identical (e.g. reordering a barrel within its effect chain moves
+  // `chain_index`). StateDocument::set_plugin_resolume_info already no-ops when
+  // the info is byte-identical, so it is the dedup — and it is the one that
+  // actually knows whether the plugin is registered.
+  for (auto& [uuid, paths] : paths_by_uuid_) {
+    if (uuid.empty() || paths.empty()) continue;
+    const BarrelPlacement& p = by_path_.at(*paths.begin());
+    doc.set_plugin_resolume_info(
+        uuid, json{{"default_name", default_name_for(p)},
+                   {"location", p.path},
+                   {"placement", placement_json(p)}});
+    // A false return just means "not registered yet" — the next tick retries.
+  }
+}
 
 void InstanceLocator::detect_and_fork(uint64_t now_ms) {
   // Forking is opt-in: it needs a real clock and a writer. The naming path

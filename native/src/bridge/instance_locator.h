@@ -104,6 +104,25 @@ public:
   /// timestamp; pass 0 to disable.
   void tick(uint64_t now_ms);
 
+  /// Publish `{default_name, location, placement}` onto every registered plugin
+  /// we have a placement for, from the LAST ingested composition. Idempotent and
+  /// self-deduping (StateDocument no-ops when the info is unchanged), so the
+  /// pump calls it every tick.
+  ///
+  /// It must, because a barrel only registers on its FIRST RENDER, which can
+  /// land long after the composition broadcast that discovered it — and then
+  /// `update()` alone would never publish its placement:
+  ///   - a CLIP-mounted barrel registers when its clip is launched, and
+  ///     launching a clip IS a composition change, so Resolume re-broadcasts and
+  ///     `update()` re-runs. It self-heals by luck.
+  ///   - a LAYER-mounted barrel registers when the layer first renders. Nothing
+  ///     re-broadcasts the composition, so it stayed placement-less until the
+  ///     composition next changed for an unrelated reason — and the web filed it
+  ///     under the catch-all "Other" row instead of its layer's row.
+  /// Re-registration (a plugin that drops out and comes back) loses its
+  /// `resolume` field the same way, and is likewise restored by this pass.
+  void publish_placements(StateDocument& doc);
+
   // --- Phase 2: copy-paste collision forking ---
 
   /// Sink that writes a barrel's `config` param over the Resolume WS API:
@@ -167,8 +186,6 @@ private:
 
   std::map<std::string, BarrelPlacement> by_path_;
   std::map<std::string, std::set<std::string>> paths_by_uuid_;
-  // uuid -> last name we successfully published (dedupe across ticks).
-  std::map<std::string, std::string> published_names_;
   // The barrel array we last published to /global/composition_barrel_ids —
   // full `[{uuid,name,location}]` payload, change-gated to skip redundant
   // set_at calls when neither the barrel placements nor their names changed.

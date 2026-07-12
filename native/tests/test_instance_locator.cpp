@@ -184,6 +184,66 @@ TEST_CASE("update publishes default names for registered instances", "[instance_
   CHECK_FALSE(saw_resolume2);
 }
 
+// A barrel registers in /global/plugins on its FIRST RENDER, which can land long
+// after the composition broadcast that discovered it. Publishing only from
+// update() meant such an instance carried no `resolume` info until the
+// composition next changed for an unrelated reason — and the web, seeing no
+// placement, filed it under the catch-all "Other" row instead of its layer's.
+//
+// This bit LAYER-mounted barrels in practice and clip-mounted ones almost never:
+// launching a clip (which is what makes a clip barrel first render) is itself a
+// composition change, so Resolume re-broadcasts and update() re-runs. A layer
+// effect just starts rendering, silently.
+TEST_CASE("an instance that registers AFTER the composition scan still gets its placement",
+          "[instance_locator]") {
+  StateDocument doc;
+  InstanceLocator loc;
+
+  // Composition scanned while NOTHING has registered yet (the barrels haven't
+  // rendered a frame).
+  loc.update(make_composition(), doc);
+  CHECK(doc.get_at("/global/plugins").empty());
+
+  // Now the layer-mounted barrel renders for the first time and registers. No
+  // new composition broadcast follows — a layer effect rendering changes nothing.
+  doc.register_plugin(PluginMetadata{"com.nano.nanobarrel", 0, 1, 0}, "LAYER-UUID");
+  doc.drain_patches();
+
+  // Before the fix this stayed empty forever: update() never ran again.
+  loc.publish_placements(doc);
+
+  json entry = doc.get_at("/global/plugins/0");
+  REQUIRE(entry.contains("resolume"));
+  CHECK(entry["resolume"]["default_name"] == "Layer 2");
+  CHECK(entry["resolume"]["location"] == "/layers/1/video/effects/0");
+  CHECK(entry["resolume"]["placement"]["scope"] == "layer");
+  CHECK(entry["resolume"]["placement"]["track_index"] == 1);
+
+  // And it stays deduped — a tick that changes nothing emits no patch.
+  doc.drain_patches();
+  loc.publish_placements(doc);
+  for (auto& p : doc.drain_patches())
+    CHECK(p.path.find("/resolume") == std::string::npos);
+}
+
+// The same hole, re-entered: a plugin that unregisters and comes back gets a
+// fresh /global/plugins entry with no `resolume` field. The old name-keyed
+// publish cache believed it had already published this uuid and skipped it.
+TEST_CASE("a re-registered instance gets its placement re-published", "[instance_locator]") {
+  StateDocument doc;
+  doc.register_plugin(PluginMetadata{"com.nano.nanobarrel", 0, 1, 0}, "LAYER-UUID");
+  InstanceLocator loc;
+  loc.update(make_composition(), doc);
+  REQUIRE(doc.get_at("/global/plugins/0").contains("resolume"));
+
+  doc.unregister_plugin("LAYER-UUID");
+  doc.register_plugin(PluginMetadata{"com.nano.nanobarrel", 0, 1, 0}, "LAYER-UUID");
+  REQUIRE_FALSE(doc.get_at("/global/plugins/0").contains("resolume"));
+
+  loc.publish_placements(doc);  // the pump's every-tick pass restores it
+  CHECK(doc.get_at("/global/plugins/0")["resolume"]["placement"]["scope"] == "layer");
+}
+
 TEST_CASE("editing a sketch (config changes, uuid stable) does not republish", "[instance_locator]") {
   // A barrel with uuid U and a given sketch payload, on layer 0 / clip 0.
   auto comp_with_sketch = [](const json& sketch) {

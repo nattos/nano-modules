@@ -211,6 +211,12 @@ void BridgeServer::pump_loop() {
       // is static — it only rebroadcasts on change.
       instance_locator_.tick((uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count());
+      // Same reason, for placement: a barrel registers on its first RENDER, which
+      // for a LAYER-mounted effect lands after the composition broadcast that
+      // discovered it and triggers no new one. Publishing only from update()
+      // left those instances placement-less (the web's "Other" row) until the
+      // composition next changed. Self-deduping, so re-running it is free.
+      instance_locator_.publish_placements(core_.state_document());
       core_.broadcast_state_patches();
     }
     std::this_thread::sleep_for(5ms);
