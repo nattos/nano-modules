@@ -14,6 +14,7 @@
 // blitz_metal tools), so tests and tools work with no extra wiring.
 
 #include <cstdint>
+#include <vector>
 
 namespace effect_runtime {
 
@@ -33,6 +34,15 @@ void textSetDefaultLang(const char* lang, int lang_len);
 // True once a primary font is installed (explicitly or via env bootstrap).
 bool textFontsReady();
 
+// One installed OS face of a family: its CSS-style weight (100–900), italic
+// flag, and standalone sfnt bytes (a face living in a .ttc is extracted into
+// its own single-face sfnt, so FreeType/fontique open exactly the matched face).
+struct OsFace {
+  int weight = 400;
+  bool italic = false;
+  std::vector<uint8_t> bytes;
+};
+
 // --- Core Text provider (host_impls_font.mm, macOS) -------------------------
 // One-shot bootstrap for a host with no env config (the FFGL plugin): install
 // `primaryPath` (a bundled face, for Latin parity) if it loads, else the system
@@ -43,5 +53,11 @@ void textInstallDefaultFonts(const char* primaryPath);
 void textInstallSystemFallbacks();
 // Install the system UI font as the primary face. Returns false on failure.
 bool textInstallSystemPrimary();
+// Every installed face of `family` (exact family-name match, case-insensitive;
+// empty if the family isn't installed — Core Text's silent substitution is
+// rejected). Normal-width faces are ordered before condensed/expanded ones so
+// the plain face wins a CSS-weight-bucket collision. This is the native
+// counterpart of the web's Local Font Access resolution (font-access.ts).
+std::vector<OsFace> textResolveOsFamily(const char* family);
 
 }  // namespace effect_runtime

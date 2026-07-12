@@ -23,6 +23,7 @@
 #include "text/text_blitz.h"
 #include "text/shaders/text_composite_quad_msl.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -109,6 +110,98 @@ bool ensureFonts() {
     }
   }
   return true;
+}
+
+// --- Named-family resolution (OS fonts) --------------------------------------
+// Native mirror of the web's ensureFontsForSpec pipeline (wasm-host.ts
+// text_layout → text-engine.ts → font-access.ts / Local Font Access): scan the
+// incoming spec for family names and resolve any unknown ones through Core Text
+// (textResolveOsFamily), registering EVERY face of the family into the engine
+// (under its styled faceKey) AND the Blitz session (under the real family name
+// + weight/italic, so CSS font-weight/font-style select the true static face)
+// in lock-step. Unlike the web — where resolution is async and the face appears
+// a frame late — this is synchronous (a couple of file reads), so the first
+// layout naming a family already renders with it. Each family is probed at most
+// once per process (success or failure); after that it's one set lookup.
+
+std::set<std::string> g_probed_families;   // lowercased family names, either outcome
+
+// CSS generic keywords resolve host-side (alias or primary-font fallthrough),
+// never as OS families. Mirrors GENERIC_FAMILIES in web/src/font-list.ts.
+bool isGenericFamily(const std::string& lower) {
+  static const std::set<std::string> kGenerics = {
+      "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+      "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math",
+      "emoji", "fangsong"};
+  return kGenerics.count(lower) != 0;
+}
+
+void registerOsFamily(const std::string& family) {
+  ensureBlitz();
+  auto faces = effect_runtime::textResolveOsFamily(family.c_str());
+  for (auto& f : faces) {
+    std::string key = text_engine::faceKey(family, f.weight, f.italic);
+    // Two faces can land in the same CSS weight bucket (condensed variants
+    // etc.): first registered wins. Re-adding would return the EXISTING engine
+    // id while appending a stray Blitz face — desyncing lock-step face ids.
+    if (engine().hasFontNamed(key.c_str(), (int)key.size())) continue;
+    int fid = engine().addFont(key.c_str(), (int)key.size(),
+                               f.bytes.data(), (int)f.bytes.size());
+    // Lock-step: mirror into Blitz only when the engine accepted the face.
+    if (fid >= 0)
+      tb_add_font(g_blitz, (const unsigned char*)family.data(), (int)family.size(),
+                  f.weight, f.italic ? 1 : 0, f.bytes.data(), (int)f.bytes.size());
+  }
+}
+
+// Probe every not-yet-seen concrete family in a CSS-style family list.
+void ensureFamilies(const std::string& familyList) {
+  for (const std::string& fam : text_engine::parseFamilyList(familyList)) {
+    std::string lower = fam;
+    for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+    if (isGenericFamily(lower)) continue;
+    if (!g_probed_families.insert(lower).second) continue;   // already probed
+    if (engine().hasFontNamed(lower.c_str(), (int)lower.size())) continue;
+    registerOsFamily(fam);
+  }
+}
+
+// Scan a raw attributed-string spec for `"family"` string values — the
+// tolerant equivalent of the web's "family" regex fallback: catches run
+// families wherever they sit, with no full JSON parse on the per-frame path.
+void ensureSpecFonts(std::string_view spec) {
+  size_t i = 0;
+  while ((i = spec.find("\"family\"", i)) != std::string_view::npos) {
+    i += 8;
+    while (i < spec.size() &&
+           (spec[i] == ' ' || spec[i] == '\t' || spec[i] == ':')) i++;
+    if (i >= spec.size() || spec[i] != '"') continue;
+    std::string fam;
+    for (i++; i < spec.size() && spec[i] != '"'; i++) {
+      if (spec[i] == '\\' && i + 1 < spec.size()) i++;   // \" and \\ in names
+      fam.push_back(spec[i]);
+    }
+    ensureFamilies(fam);
+  }
+}
+
+// Scan an HTML document's inline CSS for `font-family:` declarations (mirrors
+// the web's /font-family\s*:\s*([^;}{]+)/gi scan over the parsed html).
+void ensureHtmlFonts(const std::string& html) {
+  std::string lower = html;
+  for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+  size_t i = 0;
+  while ((i = lower.find("font-family", i)) != std::string::npos) {
+    i += 11;
+    while (i < html.size() && (html[i] == ' ' || html[i] == '\t')) i++;
+    if (i >= html.size() || html[i] != ':') continue;
+    i++;
+    size_t end = i;
+    while (end < html.size() && html[end] != ';' && html[end] != '}' &&
+           html[end] != '{' && html[end] != '"') end++;
+    ensureFamilies(html.substr(i, end - i));
+    i = end;
+  }
 }
 
 // --- GPU compositor resource cache ------------------------------------------
@@ -287,6 +380,7 @@ int text_layout(const char* spec_json, int spec_len) {
     if (!j.is_discarded() && j.value("mode", std::string()) == "html") {
       ensureBlitz();
       std::string html = j.value("html", std::string());
+      ensureHtmlFonts(html);   // resolve OS families named in CSS (once each)
       unsigned w = (unsigned)j.value("width", 1920);
       unsigned h = (unsigned)j.value("height", 1080);
       float scale = j.value("scale", 1.0f);
@@ -304,6 +398,7 @@ int text_layout(const char* spec_json, int spec_len) {
     }
     // Unknown mode → fall through to the attributed-string engine.
   }
+  ensureSpecFonts(spec);   // resolve OS families named by runs (once each)
   return engine().layout(spec_json, spec_len);
 }
 

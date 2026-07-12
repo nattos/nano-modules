@@ -982,6 +982,14 @@ if(APPLE)
     catch_discover_tests(test_wasm_bundles)
   endif()
 
+  # Native OS-font resolution for the text.* service (Core Text provider +
+  # the text_layout spec scan). CPU-only — no GPU backend, no wasm bundles.
+  add_executable(test_text_fonts tests/test_text_fonts.cpp)
+  target_link_libraries(test_text_fonts PRIVATE
+    effect_runtime Catch2::Catch2WithMain)
+  target_compile_options(test_text_fonts PRIVATE -Wno-attributes)
+  catch_discover_tests(test_text_fonts)
+
   # End-to-end GPU render of a WASM effect on a real Metal backend.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     # Composition executor end-to-end GPU render (Metal-gated): pixel parity

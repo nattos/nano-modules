@@ -22,8 +22,22 @@
  */
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace text_engine {
+
+// Canonical face-registry key for a (family, weight, italic) style — the name
+// a host font provider registers a resolved styled face under (addFont) and
+// the key a run's family/weight/italic resolves through. MUST stay
+// byte-identical to faceKey() in web/src/text-engine.ts. Regular (400,
+// upright) is the bare ASCII-lowercased family name.
+std::string faceKey(const std::string& family, int weight, bool italic);
+
+// Split a CSS-style font-family value into ordered family names (comma-split,
+// trimmed, surrounding quotes stripped). MUST match parseFamilyList() in
+// web/src/font-list.ts.
+std::vector<std::string> parseFamilyList(const std::string& s);
 
 // Atlas pixel encoding, so the GPU-side shader knows how to interpret samples.
 enum class AtlasKind : int {

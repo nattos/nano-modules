@@ -164,8 +164,9 @@ static std::string lowerAscii(const std::string& s) {
 // byte-identical to faceKey() in web/src/text-engine.ts so the host registers a
 // resolved face under exactly the key the engine looks up. The family is
 // ASCII-lowercased (case-insensitive matching); regular (weight 400, upright)
-// keeps the bare family name (the common case).
-static std::string faceKey(const std::string& family, int weight, bool italic) {
+// keeps the bare family name (the common case). Public (text_engine.h): the
+// native host font provider builds registration keys with it.
+std::string faceKey(const std::string& family, int weight, bool italic) {
   std::string fam = lowerAscii(family);
   if (fam.empty()) return std::string();
   if (weight == 400 && !italic) return fam;
@@ -181,8 +182,9 @@ static std::string faceKey(const std::string& family, int weight, bool italic) {
 // or a generic keyword (serif, sans-serif, …). Whitespace-trimmed; quotes
 // stripped. Generics resolve like any other name (the host registers "serif"
 // etc. as aliases; unmatched names fall through to the primary font). MUST match
-// parseFamilyList() in web/src/text-engine.ts.
-static std::vector<std::string> parseFamilyList(const std::string& s) {
+// parseFamilyList() in web/src/text-engine.ts. Public (text_engine.h): the
+// native host font provider walks the same list when resolving OS fonts.
+std::vector<std::string> parseFamilyList(const std::string& s) {
   std::vector<std::string> out;
   size_t i = 0, n = s.size();
   while (i <= n) {
