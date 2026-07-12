@@ -9,11 +9,11 @@ describe('parseBarrelInstances', () => {
     const arr = [{
       key: '9B96D63F-FFFC-4477-97B2-78F8E0CE1795',
       metadata: { id: NB },
-      resolume: { default_name: 'Layer 2 · My Clip', location: '/layers/1/clips/0/video/effects/0' },
+      resolume: { default_name: 'My Clip', location: '/layers/1/clips/0/video/effects/0' },
     }];
     const out = parseBarrelInstances(arr);
     expect(out).toHaveLength(1);
-    expect(out[0].label).toBe('Layer 2 · My Clip');
+    expect(out[0].label).toBe('My Clip');
     expect(out[0].resolumeLocation).toBe('/layers/1/clips/0/video/effects/0');
   });
 

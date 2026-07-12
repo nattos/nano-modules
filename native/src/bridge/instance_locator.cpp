@@ -294,7 +294,11 @@ std::string InstanceLocator::resolve_sketch(const std::string& config_value) {
 std::string InstanceLocator::default_name_for(const BarrelPlacement& p) {
   switch (p.scope) {
     case PlacementScope::Clip:
-      return track_display(p) + " \xC2\xB7 " + clip_display(p);  // U+00B7 MIDDLE DOT
+      // Clip name only — no "Layer N \xC2\xB7 " prefix. The Instances tab already
+      // groups cards into per-track rows under a "Layer N" header (built from
+      // placement.track_name, published separately), so the prefix was pure
+      // duplication on every card.
+      return clip_display(p);
     case PlacementScope::Layer:
       return track_display(p);
     case PlacementScope::Group:

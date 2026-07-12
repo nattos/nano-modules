@@ -56,7 +56,7 @@ TEST_CASE("BridgeServer locates a barrel via a fake Resolume", "[instance_locato
   fake.stop();
 
   REQUIRE_FALSE(resolume.is_null());
-  CHECK(resolume["default_name"] == "Layer 1 \xC2\xB7 NanoBarrel");
+  CHECK(resolume["default_name"] == "NanoBarrel");
   CHECK(resolume["location"] == "/layers/0/clips/0/video/effects/0");
   // Structured placement drives the web Instances-tab row organization.
   REQUIRE(resolume.contains("placement"));
@@ -117,7 +117,7 @@ TEST_CASE("BridgeServer publishes composition_barrel_ids for an UNREGISTERED (un
   CHECK(entry["uuid"] == uuid);
   // The placeholder carries a human name + composition path so the web can
   // label its card without a live plugin registration.
-  CHECK(entry["name"] == "Layer 1 \xC2\xB7 NanoBarrel");
+  CHECK(entry["name"] == "NanoBarrel");
   CHECK(entry["location"] == "/layers/0/clips/0/video/effects/0");
   // The unlaunched placeholder carries the same structured placement so the
   // offline/live Instances tab can slot it into the right composition row.

@@ -125,14 +125,16 @@ TEST_CASE("non-barrel effects are ignored", "[instance_locator]") {
   CHECK(InstanceLocator::enumerate(comp).empty());
 }
 
-TEST_CASE("default_name_for expands # and combines layer/clip", "[instance_locator]") {
+TEST_CASE("default_name_for expands # and names by scope", "[instance_locator]") {
+  // A clip instance is named by its CLIP alone — the layer is not prefixed, since
+  // the Instances tab groups the cards under a per-layer row header already.
   BarrelPlacement clip;
   clip.scope = PlacementScope::Clip;
   clip.layer_name = "Layer #";
   clip.layer_index = 1;  // ordinal 2
   clip.clip_name = "My Clip";
   clip.clip_index = 0;
-  CHECK(InstanceLocator::default_name_for(clip) == "Layer 2 \xC2\xB7 My Clip");
+  CHECK(InstanceLocator::default_name_for(clip) == "My Clip");
 
   BarrelPlacement layer;
   layer.scope = PlacementScope::Layer;
@@ -152,7 +154,7 @@ TEST_CASE("default_name_for expands # and combines layer/clip", "[instance_locat
   bare.layer_index = 0;
   bare.clip_name = "";
   bare.clip_index = 2;
-  CHECK(InstanceLocator::default_name_for(bare) == "Layer 1 \xC2\xB7 Clip 3");
+  CHECK(InstanceLocator::default_name_for(bare) == "Clip 3");
 }
 
 TEST_CASE("update publishes default names for registered instances", "[instance_locator]") {
@@ -167,7 +169,7 @@ TEST_CASE("update publishes default names for registered instances", "[instance_
   // The registered instance got a resolume.default_name; unregistered ones did not.
   json entry = doc.get_at("/global/plugins/0");
   REQUIRE(entry.contains("resolume"));
-  CHECK(entry["resolume"]["default_name"] == "Layer 2 \xC2\xB7 My Clip");
+  CHECK(entry["resolume"]["default_name"] == "My Clip");
   CHECK(entry["resolume"]["location"] == "/layers/1/clips/0/video/effects/0");
 
   // A patch was emitted for the publish.
