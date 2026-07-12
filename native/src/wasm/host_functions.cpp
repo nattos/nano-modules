@@ -622,8 +622,15 @@ static int32_t state_is_field_connected(wasm_exec_env_t env,
   char* p = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
   if (!p) return 0;
   std::string path(p, path_len);
-  // direction bit: 1=input, 2=output (mirrors the io bitfield).
-  bool connected = (direction & 1)
+  // direction is an ENUM, not the io bitfield: 0 = input ("is anyone writing
+  // this?"), 1 = output ("is anyone reading this?"). host.h's isInputConnected
+  // passes 0 and isOutputConnected passes 1; web's wasm-host.ts and the native
+  // non-wasm host_impls.cpp both read it that way. Testing `direction & 1` read
+  // 1 as INPUT, so every wasm effect's isOutputConnected() answered the input
+  // question — which silently killed double_chamber's motion pass in the barrel
+  // (render_outputs is output-only, so it always came back false → no motion
+  // rail → motion.blur passed through).
+  bool connected = (direction == 0)
       ? ctx->effect_instance->isInputConnected(path)
       : ctx->effect_instance->isOutputConnected(path);
   return connected ? 1 : 0;

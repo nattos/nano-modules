@@ -3287,6 +3287,83 @@ TEST_CASE("lut_collection presets bake distinct cubes in one batched frame",
   CHECK(meanAbsDiff(mono, hue270) > 15.0);
   CHECK(meanAbsDiff(process, hue270) > 15.0);
 }
+
+// The motion rail, end to end, through the BARREL's path (SketchExecutor over a
+// raw sketch — no editor-side augmentation). double_chamber publishes
+// render_outputs/motion only when a downstream sink reads it; motion.blur is
+// that sink, and the connection is IMPLICIT (wires:[] → sketch_augment
+// synthesises the rail). The two runs are byte-identical apart from the blur
+// strength, so a difference can only come from real velocity arriving over the
+// rail. The web engine harness covers the same chain via executor.wasm; this is
+// the native twin, so a native-only rail regression can't hide.
+TEST_CASE("motion rail: double_chamber drives motion.blur natively",
+          "[effect_render][motion_rail]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(LEGACY_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 128, H = 128;
+  const int RGBA8 = 1;
+
+  auto renderChain = [&](double strength) {
+    sketch_executor::SketchExecutor ex(&rt, &registry, backend.get());
+    int in = backend->createTexture(W, H, RGBA8);
+    int out = backend->createTexture(W, H, RGBA8);
+    std::vector<uint8_t> black((size_t)W * H * 4, 0);
+    for (size_t i = 3; i < black.size(); i += 4) black[i] = 255;
+    backend->writeTexture(in, W, H, black.data(), (uint32_t)black.size());
+
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "wires": [],
+      "chain": [
+        { "type": "module", "module_type": "source.legacy.double_chamber", "instance_key": "dc" },
+        { "type": "module", "module_type": "motion.blur",                  "instance_key": "mb" }
+      ],
+      "instances": {
+        "dc": { "module_type": "source.legacy.double_chamber", "state": {
+          "p_count": 6000, "p_point_size": 1.0, "p_opacity": 1.0, "exposure": 2.0,
+          "color_contrib": 0.0, "field_speed": 0.6, "motion_rate": 2.0, "jitter": 0.0,
+          "to_big": 0.5, "big_count": 4, "l_count": 8, "l_opacity": 1.0,
+          "motion_line_speed": 0.6, "bridger_count": 0 } },
+        "mb": { "module_type": "motion.blur", "state": {
+          "strength": 0.0, "samples": 16, "quality": 1 } }
+      }
+    })JSON");
+    sketch["instances"]["mb"]["state"]["strength"] = strength;
+
+    for (int f = 0; f < 24; ++f) {
+      REQUIRE(ex.execute(sketch, in, out, (int)W, (int)H, 1.0 / 60.0, /*dirty=*/f == 0) > 0);
+      backend->submit();
+    }
+    return backend->readbackTexture(out, W, H);
+  };
+
+  auto sharp   = renderChain(0.0);    // pass-through
+  auto blurred = renderChain(32.0);   // smeared along the motion vectors
+  REQUIRE(sharp.size() == (size_t)W * H * 4);
+  REQUIRE(blurred.size() == (size_t)W * H * 4);
+
+  // The cloud must actually be on screen, else "frames differ" proves nothing.
+  int lit = 0;
+  for (size_t i = 0; i < sharp.size(); i += 4)
+    if ((int)sharp[i] + sharp[i + 1] + sharp[i + 2] > 24) lit++;
+  INFO("lit pixels " << lit);
+  CHECK(lit > 100);
+
+  long diff = 0;
+  for (size_t i = 0; i < sharp.size(); i += 4)
+    diff += std::abs((int)sharp[i] - (int)blurred[i])
+          + std::abs((int)sharp[i + 1] - (int)blurred[i + 1])
+          + std::abs((int)sharp[i + 2] - (int)blurred[i + 2]);
+  INFO("total rgb delta blurred vs sharp " << diff);
+  CHECK(diff > 1000);   // no rail → both runs identical → diff == 0
+}
 #endif  // LEGACY_WASM_PATH
 
 // A wire from a WASM modulation source must work WITHOUT the host pre-mirroring
