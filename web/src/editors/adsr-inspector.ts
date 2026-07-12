@@ -45,6 +45,28 @@ export const RETRIG_OPTIONS = [
   { label: 'Poly', value: 2 },
 ];
 
+// Auto-trigger ids — must match the fx::AutoMode / fx::AutoDiv enums in
+// wasm_modules/include/effect_auto_trigger.h. This inspector replaces the
+// generic schema-driven one, so it also has to re-implement the mode-dependent
+// field visibility that `setFieldHidden` gives the generic path for free.
+const AUTO_OFF = 0, AUTO_RANDOM = 1, AUTO_BEATS = 2;
+export const AUTO_MODE_OPTIONS = [
+  { label: 'Off', value: AUTO_OFF },
+  { label: 'Random', value: AUTO_RANDOM },
+  { label: 'Beats', value: AUTO_BEATS },
+];
+const DIV_CUSTOM = 7;
+export const AUTO_BEATS_OPTIONS = [
+  { label: '4 bars', value: 0 },
+  { label: '2 bars', value: 1 },
+  { label: '1 bar', value: 2 },
+  { label: '1/2', value: 3 },
+  { label: '1/4 (beat)', value: 4 },
+  { label: '1/8', value: 5 },
+  { label: '1/16', value: 6 },
+  { label: 'Custom', value: DIV_CUSTOM },
+];
+
 interface AdsrParams {
   mode: number;
   attack: number; decay: number; sustain: number; release: number;
@@ -396,6 +418,8 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
   render() {
     if (!this.binding) return html``;
     const b = this.binding;
+    const autoMode = Number(b.getValue('auto_mode') ?? AUTO_OFF);
+    const autoDiv = Number(b.getValue('auto_beats') ?? 4);
     return html`
       <help-slot .binding=${b} .path=${'intro'}></help-slot>
       ${this.label ? html`<div class="label">${this.label}</div>` : ''}
@@ -429,7 +453,18 @@ export class AdsrInspector extends MobxLitElement implements FieldEditorElement 
 
       <div class="section">Trigger</div>
       <help-slot .binding=${b} .path=${'@group/trigger'}></help-slot>
-      <scalar-slider style="width:100%;" .fieldPath=${'auto_rate'} .label=${'Auto rate'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
+      <field-tab-bar .fieldPath=${'auto_mode'} .label=${'Auto'} .options=${AUTO_MODE_OPTIONS}
+        .defaultValue=${AUTO_OFF} .binding=${b}></field-tab-bar>
+      ${autoMode === AUTO_RANDOM ? html`
+        <scalar-slider style="width:100%;" .fieldPath=${'auto_rate'} .label=${'Auto rate'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.2} .binding=${b}></scalar-slider>
+      ` : ''}
+      ${autoMode === AUTO_BEATS ? html`
+        <field-tab-bar .fieldPath=${'auto_beats'} .label=${'Every'} ?wrap=${true}
+          .options=${AUTO_BEATS_OPTIONS} .defaultValue=${4} .binding=${b}></field-tab-bar>
+      ` : ''}
+      ${autoMode === AUTO_BEATS && autoDiv === DIV_CUSTOM ? html`
+        <scalar-slider style="width:100%;" .fieldPath=${'auto_beats_custom'} .label=${'Custom rate (x/bar)'} .min=${0.01} .max=${64} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
+      ` : ''}
       <div class="row">
         <field-toggle .fieldPath=${'gate'} .label=${'Gate'} .defaultValue=${0} .binding=${b}></field-toggle>
         <field-trigger .fieldPath=${'trigger'} .label=${'Trigger'} .defaultValue=${0} .binding=${b}></field-trigger>
