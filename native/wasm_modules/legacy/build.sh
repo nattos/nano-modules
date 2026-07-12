@@ -68,9 +68,17 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../double_chamber/line_motion_fs.hlsl -Fo "$TMP_DIR/double_chamber_line_motion_fs.spv"
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/density_vs.hlsl -Fo "$TMP_DIR/double_chamber_density_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../double_chamber/density_fs.hlsl -Fo "$TMP_DIR/double_chamber_density_fs.spv"
+compile_shaders_compute_var_spv double_chamber density_debug
 _emit_spv_header_var double_chamber big_update p_update prefill trace bridger motion_prefill \
-  vs fs line_vs line_fs motion_vs motion_fs line_motion_vs line_motion_fs
-echo "  double_chamber shaders compiled (SPV: + motion_prefill/vs/fs + line_motion vs/fs)"
+  vs fs line_vs line_fs motion_vs motion_fs line_motion_vs line_motion_fs \
+  density_vs density_fs density_debug
+echo "  double_chamber shaders compiled (SPV: + motion_prefill/vs/fs + line_motion vs/fs + density/debug)"
 
 # d_wave — Darkburst's polar radial-ripple distortion field ("D wave").
 #   field (compute) — stateful wave field: inject grain at centre, advect outward, decay.

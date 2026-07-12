@@ -16,6 +16,9 @@
 NANO_DECLARE_INSTANCE_EFFECT(bicolor_grad)
 NANO_DECLARE_INSTANCE_EFFECT(glisten)
 NANO_DECLARE_INSTANCE_EFFECT(double_chamber)
+namespace double_chamber {
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops);
+}
 NANO_DECLARE_INSTANCE_EFFECT(d_wave)
 NANO_DECLARE_INSTANCE_EFFECT(lut_collection)
 namespace lut_collection { int32_t is_identity(void* self); }
@@ -72,13 +75,17 @@ void nano_module_main() {
         "Double Chamber",
         "Particle field-chamber: a pool of particles flows through a chaotic "
         "polynomial vector field, pulled and curled around a few drifting "
-        "attractors, bounded in a soft disc, coloured from the input image. v2 "
+        "attractors, bounded in a soft disc, coloured from the input image. "
+        "Optional interactions let the particles feel each other through a "
+        "crowding buffer — thinning packed regions, avoiding neighbours, or "
+        "streaming with the local group. v2 "
         "of the shipped NanoGraph DoubleChamber (the used subset — no charged "
         "accelerator, no laser output).",
         "source",
-        "particles,field,chamber,attractor,curl,generative,legacy",
+        "particles,field,chamber,attractor,curl,interactions,flocking,generative,legacy",
         "la-columns",
         NANO_INSTANCE_LIFECYCLE(double_chamber),
+        nullptr, nullptr, nullptr, &double_chamber::eval_visibility,
     });
 
     nano::registerEffect({
