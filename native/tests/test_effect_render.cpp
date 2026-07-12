@@ -3288,3 +3288,61 @@ TEST_CASE("lut_collection presets bake distinct cubes in one batched frame",
   CHECK(meanAbsDiff(process, hue270) > 15.0);
 }
 #endif  // LEGACY_WASM_PATH
+
+// A wire from a WASM modulation source must work WITHOUT the host pre-mirroring
+// the producer's output into instance state.
+//
+// The float write-tap (captureWriteTaps) reads the producer's current scalar out
+// of `instances[key].state[field]` — a mirror the WEB editor refreshes every
+// frame. The BARREL has no editor: it renders a cached sketch fetched from the
+// bridge server, so that key is simply absent and the rail never gets seeded —
+// the read tap is skipped and the wire is silently DORMANT (no modulation, and
+// no band in lastModulationData, so the slider draws no range). Every other test
+// here hand-seeds `"state": {"output": 0.0}`, i.e. they encode the web host's
+// behaviour and can't see this.
+//
+// The producer has already ticked by the time captureWriteTaps runs, so its LIVE
+// value is available from its published state — that's the source of truth here.
+TEST_CASE("wire from a wasm mod source works with no state mirror (barrel repro)",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  // NOTE the `instances` entry carries NO "output" key — the barrel's reality.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "mod.source.lfo", "instance_key": "lfo", "params": { "rate": 0.0, "amplitude": 1.0 } },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc", "params": { "brightness": 1.0, "contrast": -0.5 } }
+    ],
+    "instances": { "lfo": { "module_type": "mod.source.lfo", "state": {} } },
+    "wires": [
+      { "id": "w0", "src": { "instanceKey": "lfo", "field": "output" }, "dest": { "instanceKey": "bc", "field": "brightness" } }
+    ]
+  })JSON");
+  executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+
+  // The band is the "orange bar" telemetry the user reports missing; its absence
+  // IS the dormant wire.
+  const auto& md = executor.lastModulationData();
+  INFO("modulationData = " << md.dump());
+  REQUIRE(md.contains("bc"));
+  REQUIRE(md["bc"].contains("brightness"));
+  const auto& b = md["bc"]["brightness"];
+  CHECK(b["min"].get<double>() == Catch::Approx(-1.0).margin(0.01));
+  CHECK(b["max"].get<double>() == Catch::Approx(1.0).margin(0.01));
+}

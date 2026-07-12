@@ -539,6 +539,12 @@ class SketchExecutor {
   void drainTriggerRing(const RegisteredModule* reg, int32_t instHandle,
                         const std::string& instKey);
 
+  // An instance's live published state (its accumulated set_val outputs), or a
+  // discarded json when it publishes nothing. The authoritative value of a
+  // producer's output field when no host mirrored it into the sketch JSON.
+  nlohmann::json publishedStateFor(int32_t instHandle);
+  std::vector<char> publishedScratch_;
+
   // Copy each delayed texture wire's producer output (gathered this frame in
   // pendingDelayRetain_) into a persistent retained texture matching its format,
   // so next frame's consumer reads a stable 1-frame-old copy. Releases + reallocs

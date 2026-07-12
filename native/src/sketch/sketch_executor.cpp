@@ -2423,6 +2423,21 @@ void SketchExecutor::applySmoothing(
   }
 }
 
+nlohmann::json SketchExecutor::publishedStateFor(int32_t instHandle) {
+  if (instHandle < 0) return json(nullptr);
+  if (publishedScratch_.size() < 256) publishedScratch_.resize(256);
+  int32_t len = effrt_published_state_json(instHandle, publishedScratch_.data(),
+                                           (int32_t)publishedScratch_.size());
+  if (len > (int32_t)publishedScratch_.size()) {
+    publishedScratch_.resize((size_t)len);
+    len = effrt_published_state_json(instHandle, publishedScratch_.data(),
+                                     (int32_t)publishedScratch_.size());
+  }
+  if (len <= 0) return json(nullptr);
+  return json::parse(publishedScratch_.data(), publishedScratch_.data() + len,
+                     nullptr, /*allow_exceptions=*/false);
+}
+
 void SketchExecutor::captureWriteTaps(
     int32_t inst_handle,
     const json& entry,
@@ -2464,7 +2479,10 @@ void SketchExecutor::captureWriteTaps(
       }
       // Otherwise the producer's current scalar lives in the sketch's instance
       // state — the editor mirrors it there each frame. The runtime doesn't
-      // expose a getParamFloat, so we read the canonical source.
+      // expose a getParamFloat, so we read the canonical source. This is also
+      // how a HOST injects a value it owns (the barrel writes the live macro
+      // knobs into control.barrel_macros' state), so it stays ahead of the
+      // published-state fallback below.
       if (!hasScalar && sketchInstances.is_object() &&
           sketchInstances.contains(producerInstanceKey)) {
         const auto& st = sketchInstances[producerInstanceKey]
@@ -2473,6 +2491,24 @@ void SketchExecutor::captureWriteTaps(
           const auto& v = st[fieldPath];
           if (v.is_number())       { raw = (float)v.get<double>(); hasScalar = true; }
           else if (v.is_boolean()) { raw = v.get<bool>() ? 1.0f : 0.0f; hasScalar = true; }
+        }
+      }
+      // No mirror: read the producer's LIVE published state. Only the editor
+      // refreshes the instance-state mirror above, so a host that renders a
+      // cached sketch (the barrel) has no such key and every wire out of a wasm
+      // mod source (LFO, ADSR, ...) would be silently dormant — the rail never
+      // seeds, the read tap is skipped, and the input shows no modulation band.
+      // The producer has already doTick'd by the time captureWriteTaps runs, so
+      // this is the CURRENT frame's value (CompExecutor::foldPublishedOutputs
+      // does the same thing one frame earlier).
+      if (!hasScalar) {
+        const json ps = publishedStateFor(inst_handle);
+        if (ps.is_object()) {
+          auto pit = ps.find(fieldPath);
+          if (pit != ps.end()) {
+            if (pit->is_number())       { raw = (float)pit->get<double>(); hasScalar = true; }
+            else if (pit->is_boolean()) { raw = pit->get<bool>() ? 1.0f : 0.0f; hasScalar = true; }
+          }
         }
       }
       if (hasScalar) {
