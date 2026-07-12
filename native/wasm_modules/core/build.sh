@@ -25,6 +25,7 @@ compile_shaders_compute_fused_spv color_space
 compile_shaders_compute_fused_spv hue_basis
 compile_shaders_compute_fused_spv saturate
 compile_shaders_compute_fused_spv vibrance
+compile_shaders_compute_fused_spv colorize
 compile_shaders_compute_fused_spv vignette
 compile_shaders_compute_spv blur
 compile_shaders_compute_var_spv fast_blur down
@@ -102,6 +103,7 @@ wasm_build \
   ../hue_basis/main.cpp \
   ../saturate/main.cpp \
   ../vibrance/main.cpp \
+  ../colorize/main.cpp \
   ../vignette/main.cpp \
   ../blur/main.cpp \
   ../fast_blur/main.cpp \

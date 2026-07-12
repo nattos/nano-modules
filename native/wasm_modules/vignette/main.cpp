@@ -8,6 +8,10 @@
  *                           0 = falloff begins at the anchor, 1 = at the cover-square edge.
  *   softness     [0, 1]     length of the soft-edge falloff (perceptual curve).
  *
+ *   invert       bool        swap inside and outside: the amount is applied to
+ *                           the centre instead of the rim (a darkening vignette
+ *                           darkens the middle; a lightening one lights it).
+ *
  * Tuning params:
  *   center_x, center_y      cover-square anchor (style guide §1.5).
  *                           [0, 0] = viewport centre, [-1, 0] = left edge of cover square.
@@ -42,7 +46,7 @@ struct FuseUniforms {
   float vp_w;
   float vp_h;
   float squash;   // signed [-1,+1]: -1 wider-than-tall, +1 taller-than-wide.
-  float _pad1;
+  float invert;   // 0/1: apply the amount to the inside rather than the rim.
 };
 
 // Per-instance state. One per chain entry.
@@ -54,6 +58,7 @@ struct State {
   float center_x = 0.0f;
   float center_y = 0.0f;
   float squash = 0.0f;
+  bool invert = false;
   bool initialized = false;
   gpu::Buffer uniform_buf;
 };
@@ -70,7 +75,7 @@ void prepare(void* self, int vp_w, int vp_h) {
     s->center_x, s->center_y,
     ax, ay,
     static_cast<float>(vp_w), static_cast<float>(vp_h),
-    s->squash, 0.f,
+    s->squash, s->invert ? 1.f : 0.f,
   };
   s->uniform_buf.writeOne(u);
 }
@@ -86,15 +91,19 @@ void module_init() {
         "lifts them. *Radius* and *Softness* place and feather the falloff.\n\n"
         "**Try:** a subtle negative *Amount* to ground a shot, or a positive value "
         "for a dreamy glow. Reshape the oval with *Shape* and *Squash*, and slide "
-        "*Center* off-axis for an off-centre spotlight.")
+        "*Center* off-axis for an off-centre spotlight. *Invert* swaps inside for "
+        "outside — the same darken or lighten, applied to the middle instead.")
       .group("vignette", "Vignette")
         .groupHelp(
           "*Amount* sets darken (negative) vs brighten (positive). *Radius* is how "
           "far the clear centre reaches before falloff begins; *Softness* feathers "
-          "the transition from a hard edge to a gentle gradient.")
+          "the transition from a hard edge to a gentle gradient. *Invert* flips which "
+          "side of that falloff gets the amount — a darkening vignette darkens the "
+          "centre and leaves the rim clean, and a lightening one lifts the centre.")
       .floatField("amount",   -0.5f, -1.f, 1.f, state::PrimaryInput).label("Amount", "Amt")
       .floatField("radius",    0.6f,  0.f, 1.f, state::PrimaryInput).label("Radius", "Rad")
       .floatField("softness",  0.4f,  0.f, 1.f, state::PrimaryInput).label("Softness", "Soft")
+      .boolField("invert",     false, state::SecondaryInput).label("Invert", "Inv")
       .group("geometry", "Shape")
         .groupHelp(
           "Position and distort the vignette oval. *Center* slides it off-axis; "
@@ -143,6 +152,7 @@ void init(void* self) {
   s->center_x = 0.0f;
   s->center_y = 0.0f;
   s->squash = 0.0f;
+  s->invert = false;
   if (!s->uniform_buf.valid()) return;
   s->initialized = true;
 
@@ -170,6 +180,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "softness")) s->softness = state::patchFloat(i);
     else if (state::pathIs(p, l, "shape"))    s->shape    = state::patchFloat(i);
     else if (state::pathIs(p, l, "squash"))   s->squash   = state::patchFloat(i);
+    else if (state::pathIs(p, l, "invert"))   s->invert   = state::patchBool(i);
     else if (state::pathIs(p, l, "center")) {
       auto v = state::patchVec2(i); s->center_x = v.x; s->center_y = v.y;
     }

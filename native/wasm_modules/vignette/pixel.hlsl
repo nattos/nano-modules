@@ -15,7 +15,7 @@ struct FuseUniforms {
   float vp_w;     // written by prepare() — mapper fuse_transform has no
   float vp_h;     // viewport-size parameter, so we route it via uniform.
   float squash;   // signed [-1,+1]: -1 wider-than-tall, +1 taller-than-wide.
-  float _pad1;
+  float invert;   // 0/1: apply the amount to the inside rather than the rim.
 };
 ConstantBuffer<FuseUniforms> u_fuse : register(b2);
 
@@ -39,7 +39,10 @@ float4 fuse_transform(uint2 gid, float4 c) {
   float t = smoothstep(u_fuse.radius,
                         u_fuse.radius + max(u_fuse.softness, 1e-4),
                         dist);
-  float gain = 1.0 + u_fuse.amount * t;
+  // invert swaps which side of the falloff carries the amount — the SIGN is
+  // untouched, so a darkening vignette darkens the centre (not lightens the rim).
+  float mask = lerp(t, 1.0 - t, saturate(u_fuse.invert));
+  float gain = 1.0 + u_fuse.amount * mask;
 
   return float4(saturate(c.rgb * gain), c.a);
 }

@@ -60,6 +60,7 @@ const EFFECTS: FusibleEffect[] = [
   { id: 'color.posterize',  params: [['levels', 4]] },
   { id: 'color.saturate',   params: [['asymm', 0.3]] },
   { id: 'color.vibrance',   params: [['amount', 0.5]] },
+  { id: 'color.colorize',   params: [['amount', 1.0]] },
   { id: 'filter.vignette' },
 ];
 

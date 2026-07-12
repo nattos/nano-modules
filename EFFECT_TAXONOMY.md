@@ -36,11 +36,12 @@ All source effects now declare the `Generator` capability (separate from the
 | `source.text.plain` | Text | `gen.text` | text | Y |  |
 | `source.text.rich` | Rich Text | `gen.richtext` | richtext | Y |  |
 
-## color  (13)
+## color  (14)
 
 | new id | display | ← old id | bundle | gen.cap | note |
 |---|---|---|---|---|---|
 | `color.color_space` | Color Space | `video.color_space` | core |  |  |
+| `color.colorize` | Colorize | *(new)* | core |  |  |
 | `color.hsl` | HSL | `video.hsl` | core |  |  |
 | `color.hue_basis` | Hue Basis | `video.hue_basis` | core |  |  |
 | `color.invert` | Invert | `video.invert` | core |  |  |

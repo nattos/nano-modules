@@ -86,6 +86,9 @@ NANO_DECLARE_INSTANCE_EFFECT(saturate)
 
 NANO_DECLARE_INSTANCE_EFFECT(vibrance)
 
+NANO_DECLARE_INSTANCE_EFFECT(colorize)
+namespace colorize { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(vignette)
 
 NANO_DECLARE_INSTANCE_EFFECT(blur)
@@ -463,6 +466,18 @@ void nano_module_main() {
         "vibrance,saturation,color",
         "la-tint",
         NANO_INSTANCE_LIFECYCLE(vibrance),
+    });
+
+    nano::registerEffect({
+        2,
+        "color.colorize",
+        "Colorize",
+        "Tint the frame toward one colour: luma-mapped monochrome, multiply gel, or screen wash",
+        "color",
+        "colorize,tint,color,monochrome,sepia,duotone,gel",
+        "la-palette",
+        NANO_INSTANCE_LIFECYCLE(colorize),
+        &colorize::is_identity,
     });
 
     nano::registerEffect({

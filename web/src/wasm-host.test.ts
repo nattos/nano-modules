@@ -756,7 +756,8 @@ describe('schema metadata round-trip (groups / names / help)', () => {
       'color.hue_basis', 'color.invert', 'color.tone.levels', 'mod.shaper.delay', 'mod.shaper.envelope',
       'mod.shaper.remap', 'mod.shaper.smooth', 'motion.blur', 'source.noise', 'color.posterize',
       'color.saturate', 'filter.sharpen', 'util.sketch_output', 'source.solid_color', 'warp.transform',
-      'filter.glitch.twitch_mask', 'color.vibrance', 'composite.blend', 'filter.vignette',
+      'filter.glitch.twitch_mask', 'color.vibrance', 'color.colorize', 'composite.blend',
+      'filter.vignette',
     ];
     const schemas = await captureSchemas(CORE, ids);   // JSON.parse per effect — throws on corruption
     if (schemas.size === 0) { console.warn('no core.wasm — skipping'); return; }

@@ -4,8 +4,9 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // input so the centre pixel is well inside the inner radius and the
 // corners are outside, which makes assertions straightforward.
 //
-// Schema: amount, radius, softness (primary scalars); center (vec2),
-// shape + squash (secondary). center is a vec2 so tests refer to it by name.
+// Schema: amount, radius, softness (primary scalars) + invert (bool); center
+// (vec2), shape + squash (secondary). center is a vec2 so tests refer to it by
+// name.
 
 describe('Vignette Effect E2E', () => {
   jest.setTimeout(30000);
@@ -23,7 +24,7 @@ describe('Vignette Effect E2E', () => {
     const names = frame.params.map(p => p.name).sort();
     // `center` is a vec2 so it doesn't appear in the legacy scalar
     // params[] list — only scalars do.
-    expect(names).toEqual(['amount', 'radius', 'shape', 'softness', 'squash']);
+    expect(names).toEqual(['amount', 'invert', 'radius', 'shape', 'softness', 'squash']);
   });
 
   it('amount=0 leaves the image unchanged everywhere', async () => {
@@ -82,6 +83,42 @@ describe('Vignette Effect E2E', () => {
     frame.expectPixelAt(32, 32, { r: 102, g: 102, b: 102 }, 6);
     const corner = frame.samples.find(s => s.x === 0 && s.y === 0);
     expect(corner!.r).toBeGreaterThan(140);
+  });
+
+  it('invert + amount=-1 darkens the CENTRE and leaves the corners intact', async () => {
+    // Same darkening amount as the corner test above, flipped inside-out: the
+    // sign is untouched, so the centre is what goes dark.
+    const frame = await runGpuEffectTest({
+      module: 'filter.vignette',
+      bundle: 'core',
+      width: 64, height: 64,
+      inputColor: [1.0, 1.0, 1.0, 1.0],
+      params: [['amount', -1.0], ['radius', 0.6], ['softness', 0.4], ['invert', 1]],
+      samplePoints: [[32, 32], [0, 0]],
+      dumpName: 'vignette_invert_dark_centre',
+    });
+
+    expect(frame.success).toBe(true);
+    frame.expectPixelAt(32, 32, { r: 0, g: 0, b: 0 }, 6);   // centre crushed
+    const corner = frame.samples.find(s => s.x === 0 && s.y === 0);
+    expect(corner!.r).toBeGreaterThan(140);                  // rim left alone
+  });
+
+  it('invert + amount=+1 lightens the CENTRE, not the corners', async () => {
+    const frame = await runGpuEffectTest({
+      module: 'filter.vignette',
+      bundle: 'core',
+      width: 64, height: 64,
+      inputColor: [0.4, 0.4, 0.4, 1.0],
+      params: [['amount', 1.0], ['radius', 0.6], ['softness', 0.4], ['invert', 1]],
+      samplePoints: [[32, 32], [0, 0]],
+      dumpName: 'vignette_invert_bright_centre',
+    });
+
+    expect(frame.success).toBe(true);
+    frame.expectPixelAt(32, 32, { r: 204, g: 204, b: 204 }, 6);  // 0.4 * 2 → 0.8
+    const corner = frame.samples.find(s => s.x === 0 && s.y === 0);
+    expect(corner!.r).toBeLessThan(140);                          // rim stays dim
   });
 
   it('center offset relocates the bright spot', async () => {
