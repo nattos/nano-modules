@@ -13,12 +13,14 @@
  *
  * GPU-resident particle pool: update compute (samples the voice mixture) →
  * prefill → instanced sparkle quads (additive) → motion passthrough. Trigger
- * surface: gate / trigger / level / auto_rate, default_gate_state as the
- * at-rest fallback (true = a permanently-sustaining voice).
+ * surface: gate / trigger / level / auto_mode (the shared Off/Random/Beats
+ * self-fire block), default_gate_state as the at-rest fallback (true = a
+ * permanently-sustaining voice).
  */
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "tingle_top_shaders.h"
 
 #include <algorithm>
@@ -68,7 +70,7 @@ struct State {
   // Standard.
   bool  gate = false;
   float level = 0.0f;
-  float auto_rate = 0.0f;
+  fx::AutoTrigger auto_trig;   // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
   float top_band_height = 0.1f;
   float release_s = 0.8f;
   float release_curve = 1.5f;   // trailing-edge acceleration exponent
@@ -119,7 +121,6 @@ struct State {
   bool     held_prev = false;
   bool     gate_prev = false;
   float    trigger_prev = 0.0f;
-  uint32_t auto_rng = 0xCAFEBABEu;
 };
 
 static gpu::ComputePSO s_pso_update, s_pso_prefill, s_pso_motion;
@@ -132,7 +133,8 @@ static void apply_mode_visibility(int mode) {
   state::setFieldHidden("one_bar_target", mode != BAR_ONE);
 }
 
-// Static (self-less) visibility evaluator — pure over state (see crop).
+// Static (self-less) visibility evaluator — pure over state (see crop). Covers
+// BOTH the bar_target_mode knobs and the shared auto-trigger block's.
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
   int mode = BAR_ALL;
   for (int i = 0; i < n; i++) {
@@ -140,11 +142,14 @@ void eval_visibility(int n, const char* pb, const int* off, const int* len, cons
     if (state::pathIs(pb + off[i], len[i], "bar_target_mode")) mode = (int)state::patchFloat(i);
   }
   apply_mode_visibility(mode);
+  fx::AutoTrigger::evalVisibility(n, pb, off, len, ops);
 }
 
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
-  if (s) apply_mode_visibility(s->bar_target_mode);
+  if (!s) return;
+  apply_mode_visibility(s->bar_target_mode);
+  fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 // Allocate a voice in a specific bar's pool (free slot, else steal the oldest
@@ -194,7 +199,10 @@ static void fire_note(State* s, bool held) {
 }
 
 void module_init() {
+  // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
+  // into the Trigger group (it takes and returns the Schema&).
   state::init("source.light.tingle_top", {1, 0, 1},
+    fx::AutoTrigger::fields(
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -211,13 +219,14 @@ void module_init() {
       .group("trigger", "Trigger")
         .groupHelp(
           "How sparkles are summoned. Any of *Gate* (held), *Trigger* (a pulse), or "
-          "*Level* (≥ 0.5) starts a held cluster at the top of the bar; *Auto Rate* "
-          "fires its own random notes on top. Drive these from MIDI, envelopes, or "
-          "audio to make the sparkles play along.")
+          "*Level* (≥ 0.5) starts a held cluster at the top of the bar. *Auto Mode* "
+          "is **Off** by default — set it to **Random** to fire its own notes on top "
+          "(Poisson, at *Auto Rate*), or **Beats** to lock them to the host transport. "
+          "Drive these from MIDI, envelopes, or audio to make the sparkles play along.")
       .boolField ("gate",                false,                state::PrimaryInput).label("Gate", "Gate")
       .eventField("trigger",                                   state::PrimaryInput).label("Trigger", "Trig")
       .floatField("level",               0.0f, 0.0f, 1.0f,     state::PrimaryInput).label("Level", "Lvl")
-      .floatField("auto_rate",           0.0f, 0.0f, 1.0f,     state::PrimaryInput).label("Auto Rate", "Auto")
+    )   // ← fx::AutoTrigger::fields: auto_mode + auto_rate + auto_beats + custom
       // --- Release Wave ---
       .group("release", "Release Wave")
         .groupHelp(
@@ -352,7 +361,6 @@ void init(void* self) {
   s->held_prev = false;
   s->gate_prev = false;
   s->trigger_prev = 0.0f;
-  s->auto_rng = 0xCAFEBABEu;
   if (!s_pso_update.valid() || !s_pso_prefill.valid() || !s_pso_render_add.valid() || !s_pso_motion.valid()) return;
   if (!s->part_buf.valid() || !s->update_uniform_buf.valid() || !s->prefill_uniform_buf.valid()
       || !s->vs_uniform_buf.valid() || !s->fs_uniform_buf.valid()) return;
@@ -366,16 +374,11 @@ void tick(void* self, double dt) {
   s->frame_dt = fdt;
   s->frame_index++;
 
-  // Poisson auto-trigger → a DISTINCT timed note (its own sustain countdown),
-  // so clustered events form polyphony rather than extending one held note.
-  if (s->auto_rate > 0.0f) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      s->auto_rng = s->auto_rng * 1664525u + 1013904223u;
-      float u = (s->auto_rng >> 8) * (1.0f / (float)(1u << 24));
-      if (u < 1.0f - std::exp(-rate_hz * fdt)) fire_note(s, false);   // a distinct timed note
-    }
-  }
+  // Self-fire (Off / Random / Beats — effect_auto_trigger.h) → a DISTINCT timed
+  // note (its own sustain countdown), so clustered events form polyphony rather
+  // than extending one held note. Loop the count: in Beats a long frame stall
+  // can cross several divisions at once.
+  for (int i = 0, nf = s->auto_trig.fires(fdt); i < nf; i++) fire_note(s, false);
 
   // The continuous "held" sources drive the per-bar held voice(s).
   bool held = s->gate || (s->level >= 0.5f) || s->default_gate_state;
@@ -412,10 +415,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* path = pb + off[i];
     int plen = len[i];
+    if (s->auto_trig.patch(path, plen, i, &vis_changed)) continue;
     if (state::pathIs(path, plen, "gate")) {
       s->gate = state::patchFloat(i) != 0.0f; s->gate_prev = s->gate;
     } else if (state::pathIs(path, plen, "trigger")) {
@@ -424,7 +429,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->trigger_prev = v;
     }
     else if (state::pathIs(path, plen, "level"))               s->level = state::patchFloat(i);
-    else if (state::pathIs(path, plen, "auto_rate"))           s->auto_rate = state::patchFloat(i);
     else if (state::pathIs(path, plen, "top_band_height"))     s->top_band_height = state::patchFloat(i);
     else if (state::pathIs(path, plen, "release_s"))           s->release_s = state::patchFloat(i);
     else if (state::pathIs(path, plen, "release_curve"))       s->release_curve = state::patchFloat(i);
@@ -458,6 +462,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "respect_position_bounds")) s->respect_position_bounds = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "debug_show_region"))   s->debug_show_region = state::patchFloat(i) != 0.0f;
   }
+  if (vis_changed)
+    fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 void render(void* self, int vp_w, int vp_h) {

@@ -29,6 +29,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <effect_utils.h>
+#include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "plasma_beam_cannon_shaders.h"
 
 #include <cmath>
@@ -141,7 +142,7 @@ struct State {
   float intensity       = 1.0f;
   int   bar_target      = 0;
   bool  bar_target_all  = true;
-  float auto_rate       = 0.2f;
+  fx::AutoTrigger auto_trig;   // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
 
   // --- Break-particle tuning params ---
   int   break_count           = 12;
@@ -427,10 +428,24 @@ static void update_breaks(State& s, double dt) {
   }
 }
 
+// Static (self-less) visibility evaluator — pure over state. The auto-trigger
+// block owns every mode-dependent knob here, so it's the whole evaluator.
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  fx::AutoTrigger::evalVisibility(n, pb, off, len, ops);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
+}
+
 // Type-level setup: schema + the shared color compute PSO. Runs once
 // per type.
 void module_init() {
+  // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
+  // into the Trigger group (it takes and returns the Schema&).
   state::init("source.light.plasma_beam_cannon", {1, 0, 1},
+    fx::AutoTrigger::fields(
     state::Schema()
       .helpField("intro",
         "## Plasma Beam Cannon\n"
@@ -447,11 +462,13 @@ void module_init() {
       .group("trigger", "Trigger")
         .groupHelp(
           "Fire the cannon from *Gate* (a level input — a rising edge starts a shot) or "
-          "*Trigger* (a momentary event, replay-safe). With no external clock, set *Auto "
-          "Rate* (Beam section) above 0 and it self-fires on its own bar clock. Each shot "
-          "runs the full ADSR once.")
+          "*Trigger* (a momentary event, replay-safe). Each shot runs the full ADSR once. "
+          "*Auto Mode* is **Off** by default — set it to **Random** to self-fire on its "
+          "own clock (Poisson, at *Auto Rate*), or **Beats** to lock the shots to the "
+          "host transport.")
       .boolField ("gate",            false,                        state::PrimaryInput).label("Gate", "Gate")
       .eventField("trigger",                                       state::PrimaryInput).label("Trigger", "Trig")
+    )   // ← fx::AutoTrigger::fields: auto_mode + auto_rate + auto_beats + custom
       // --- Envelope (ADSR) ---
       .group("envelope", "Envelope")
         .groupHelp(
@@ -482,7 +499,6 @@ void module_init() {
       .floatField("intensity",       1.0f, 0.0f, 2.0f,             state::PrimaryInput).label("Intensity", "Int")
       .intField  ("bar_target",      0, 0, 3,                      state::PrimaryInput).label("Bar Target", "Bar")
       .boolField ("bar_target_all",  true,                         state::PrimaryInput).label("All Bars", "All")
-      .floatField("auto_rate",       0.2f, 0.0f, 1.0f,             state::PrimaryInput).label("Auto Rate", "Auto")
 
       // --- Break particles (tuning) ---
       .group("breaks", "Break Particles")
@@ -573,6 +589,7 @@ void module_init() {
       .uniform(2)
       .storage(3));
 
+  state::setOnStateReady(&on_state_ready);
   state::log("plasma_beam_cannon: module initialized");
 }
 
@@ -625,18 +642,13 @@ void tick(void* self, double dt) {
   if (!s || !s->initialized) return;
   s->time_in_phase += dt;
 
-  // Poisson auto-trigger.
-  if (s->auto_rate > 0.0f && !s->trigger_pulse) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      float lambda = rate_hz * (float)dt;
-      s->rng_state = s->rng_state * 1664525u + 1013904223u;
-      float u = (s->rng_state >> 8) * (1.0f / float(1u << 24));
-      if (u < 1.0f - std::exp(-lambda)) {
-        s->trigger_pulse = true;
-        s->trigger_hold_remaining = (double)(s->attack_s + s->decay_s + s->sustain_s);
-      }
-    }
+  // Self-fire (Off / Random / Beats — effect_auto_trigger.h). A shot already in
+  // flight suppresses it, as before: one beam at a time. fires() must still run
+  // so the beat clock keeps advancing across the suppressed shot.
+  const int auto_fires = s->auto_trig.fires(dt);
+  if (auto_fires > 0 && !s->trigger_pulse) {
+    s->trigger_pulse = true;
+    s->trigger_hold_remaining = (double)(s->attack_s + s->decay_s + s->sustain_s);
   }
 
   // Trigger pulse decay.
@@ -677,12 +689,14 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     const char* path = pb + off[i];
     int plen = len[i];
     int op = ops[i];
 
     if (op == state::PatchReplace) {
+      if (s->auto_trig.patch(path, plen, i, &vis_changed)) continue;
       if      (state::pathIs(path, plen, "gate")) {
         bool new_gate = state::patchFloat(i) != 0.0f;
         if (new_gate && !s->gate_prev) {
@@ -704,7 +718,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       else if (state::pathIs(path, plen, "intensity"))            s->intensity = state::patchFloat(i);
       else if (state::pathIs(path, plen, "bar_target"))           s->bar_target = (int)state::patchFloat(i);
       else if (state::pathIs(path, plen, "bar_target_all"))       s->bar_target_all = state::patchFloat(i) != 0.0f;
-      else if (state::pathIs(path, plen, "auto_rate"))            s->auto_rate = state::patchFloat(i);
       else if (state::pathIs(path, plen, "beam_color")) {
         auto v = state::patchVec3(i);
         s->color_r = v.x; s->color_g = v.y; s->color_b = v.z;
@@ -754,6 +767,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->trigger_prev = tval;
     }
   }
+  if (vis_changed)
+    fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 void render(void* self, int vp_w, int vp_h) {

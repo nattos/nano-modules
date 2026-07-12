@@ -642,11 +642,15 @@ void nano_module_main() {
         2,
         "mod.source.adsr",
         "ADSR",
-        "ADSR envelope generator (modulation source). A trigger / gate / Poisson auto-rate drives an attack-decay-sustain-release phase machine that publishes a scalar 'output' in [0,1]. The 'mode' selector enables phases (Decay = instant falling pluck by default, through full ADSR); attack/decay/release are phase TIMES and sustain a held LEVEL, each ramp shaped by a per-phase ease curve (shared with mod.shaper.envelope). Polyphonic: up to 'voices' overlapping envelopes (output = their max) with Reset / Legato / Poly retrigger styles. Pure data module (no GPU, no input).",
+        "ADSR envelope generator (modulation source). A trigger / gate drives an attack-decay-sustain-release phase machine that publishes a scalar 'output' in [0,1]; it can also self-fire via 'auto_mode' (Off by default — Random is a Poisson stream, Beats locks to the host transport on a beat division). The 'mode' selector enables phases (Decay = instant falling pluck by default, through full ADSR); attack/decay/release are phase TIMES and sustain a held LEVEL, each ramp shaped by a per-phase ease curve (shared with mod.shaper.envelope). Polyphonic: up to 'voices' overlapping envelopes (output = their max) with Reset / Legato / Poly retrigger styles. Pure data module (no GPU, no input).",
         "mod",
-        "envelope,adsr,modulation,automation,trigger,gate,generator",
+        "envelope,adsr,modulation,automation,trigger,gate,generator,beat",
         "la-chart-line",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
+        nullptr,                     // is_identity
+        nullptr,                     // on_active
+        nullptr,                     // seek
+        &env_adsr::eval_visibility,  // auto-trigger knob visibility (Off/Random/Beats)
     });
 
     nano::registerEffect({

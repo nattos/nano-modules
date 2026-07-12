@@ -7,7 +7,9 @@
  * Trigger surface (style guide §8.1):
  *   gate      (bool)  — rising edge fires; held keeps SUSTAIN; falling releases
  *   trigger   (event) — momentary one-shot (rising-edge detected, §8.2)
- *   auto_rate (0..1)  — Poisson auto-trigger (default 0.2 so a fresh drop moves)
+ *   auto_mode (select)— the shared self-fire block (effect_auto_trigger.h):
+ *                       Off (default — an envelope is explicitly triggered) /
+ *                       Random (Poisson) / Beats (locked to the host transport).
  *
  * Shape:
  *   mode    (select) — which phases are active (see Mode). Default "Decay": an
@@ -24,7 +26,7 @@
  *   retrigger (select)          — Reset (mono restart) / Legato (mono re-gate
  *                      without re-attack) / Poly (allocate a fresh voice).
  *
- * Momentary triggers (trigger/auto_rate, and gate's rising edge) hold the voice
+ * Momentary triggers (trigger/auto-fire, and gate's rising edge) hold the voice
  * for attack+decay then release — so they play an A-D-R "pluck". A HELD gate
  * bool instead sustains at the sustain level until it falls.
  *
@@ -34,6 +36,7 @@
 
 #include <host.h>
 #include <val.h>
+#include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "sketch/envelope.h"   // envelope::applyEase — shared with mod.shaper.envelope
 #include <cmath>
 #include <cstdint>
@@ -84,12 +87,11 @@ struct State {
   int voices = 1;
   int retrigger = RetrigReset;
   // Triggers.
-  float auto_rate = 0.2f;
+  fx::AutoTrigger auto_trig;    // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
   bool gate_prev = false;
   bool trigger_prev = false;
   int gate_voice = -1;          // voice the held gate currently drives, or -1
 
-  uint32_t rng = 0x5EED5EEDu;   // auto-trigger Poisson stream
   uint64_t trig_counter = 0;    // monotonic, stamps Voice::age
   Voice v[kMaxVoices];
 };
@@ -175,67 +177,83 @@ static int triggerVoice(State* s, bool momentary, const Shape& sh) {
   return vi;
 }
 
+// Static (self-less) visibility evaluator — pure over state. The auto-trigger
+// block owns every mode-dependent knob here, so it's the whole evaluator.
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  fx::AutoTrigger::evalVisibility(n, pb, off, len, ops);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
+}
+
 void module_init() {
-  state::init("mod.source.adsr", {1, 0, 1},
-    state::Schema()
-      .helpField("intro",
-        "## ADSR Envelope\n"
-        "A triggered [0,1] modulation source: each trigger fires an attack / decay "
-        "/ sustain / release contour you wire into any param for plucks, swells, "
-        "and gated shapes.\n\n"
-        "**Try:** the default *Decay* mode is an instant-attack fall — great for "
-        "percussive hits. Raise *Auto Rate* to let it self-trigger, or feed a "
-        "*Gate* to hold at the sustain level. Switch to **ADSR** mode for full "
-        "independent control.")
-      // --- Shape: which phases run, their times, and per-phase slope ---
-      .group("shape", "Shape")
-        .groupHelp(
-          "Sets the envelope contour. *Mode* chooses which phases are active — "
-          "*Decay* is an instant fall, *ADSR* is the full four-stage shape. "
-          "*Attack* / *Decay* / *Release* are phase TIMES and *Sustain* is the "
-          "held LEVEL; the three *Curve* knobs bend each phase's slope (positive = "
-          "snappier). **Try** a long attack for a slow swell.")
-      .selectField("mode", ModeD, state::PrimaryInput,
-                   {{"Decay", ModeD},
-                    {"Attack-Decay", ModeAD},
-                    {"Attack-Decay-Sustain", ModeADS},
-                    {"ADSR", ModeADSR}}, /*wrap=*/true).label("Mode", "Mode")
-      .floatField("attack", 0.05f, 0.f, 1.f, state::PrimaryInput).label("Attack", "Atk")
-      .floatField("decay", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Decay", "Dec")
-      .floatField("sustain", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Sustain", "Sus")
-      .floatField("release", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Release", "Rel")
-      // Per-phase slope: ease ∈ [-1,1] (envelope.h convention; >0 snappier).
-      .floatField("attack_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Attack Curve", "AtkCrv")
-      .floatField("decay_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Decay Curve", "DecCrv")
-      .floatField("release_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Release Curve", "RelCrv")
-      // --- Polyphony: how many envelopes run at once + retrigger policy ---
-      .group("polyphony", "Polyphony")
-        .groupHelp(
-          "Controls overlapping triggers. *Voices* sets how many envelopes can run "
-          "simultaneously (the output is their max). *Retrigger* decides what a new "
-          "trigger does: **Reset** restarts a single voice, **Legato** re-gates "
-          "without re-attacking, **Poly** allocates a fresh voice each time.")
-      .intField("voices", 1, 1, kMaxVoices, state::PrimaryInput).label("Voices", "Voices")
-      .selectField("retrigger", RetrigReset, state::PrimaryInput,
-                   {{"Reset", RetrigReset},
-                    {"Legato", RetrigLegato},
-                    {"Poly", RetrigPoly}}).label("Retrigger", "Retrig")
-      // --- Trigger: what fires the envelope ---
-      .group("trigger", "Trigger")
-        .groupHelp(
-          "Fires the envelope. *Auto Rate* self-triggers at random (Poisson) — 0 "
-          "stops it. Wire a *Gate*: its rising edge fires and, while held, keeps "
-          "the sustain level until it falls. *Trigger* is a momentary one-shot that "
-          "plays an attack-decay-release pluck.")
-      .floatField("auto_rate", 0.2f, 0.f, 1.f, state::PrimaryInput).label("Auto Rate", "Auto")
-      .boolField("gate", false, state::PrimaryInput).label("Gate", "Gate")
-      .eventField("trigger", state::PrimaryInput).label("Trigger", "Trig")
-      // Unipolar [0,1] envelope — declared unsigned (the modulation-range
-      // contract; the UI band samples this declared range).
-      .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
-      .capability(state::Capability::ModulationSource)
-      .capability(state::Capability::ModulationSourceSingle)
-  );
+  // Built statement-wise (not one fluent chain) so the shared auto-trigger
+  // block can splice its fields into the Trigger group. Field order is the
+  // call order either way.
+  state::Schema sc;
+  sc.helpField("intro",
+      "## ADSR Envelope\n"
+      "A triggered [0,1] modulation source: each trigger fires an attack / decay "
+      "/ sustain / release contour you wire into any param for plucks, swells, "
+      "and gated shapes.\n\n"
+      "**Try:** the default *Decay* mode is an instant-attack fall — great for "
+      "percussive hits. Feed a *Gate* to hold at the sustain level, or set *Auto "
+      "Mode* to **Beats** to fire it on the transport. Switch to **ADSR** mode "
+      "for full independent control.")
+    // --- Shape: which phases run, their times, and per-phase slope ---
+    .group("shape", "Shape")
+      .groupHelp(
+        "Sets the envelope contour. *Mode* chooses which phases are active — "
+        "*Decay* is an instant fall, *ADSR* is the full four-stage shape. "
+        "*Attack* / *Decay* / *Release* are phase TIMES and *Sustain* is the "
+        "held LEVEL; the three *Curve* knobs bend each phase's slope (positive = "
+        "snappier). **Try** a long attack for a slow swell.")
+    .selectField("mode", ModeD, state::PrimaryInput,
+                 {{"Decay", ModeD},
+                  {"Attack-Decay", ModeAD},
+                  {"Attack-Decay-Sustain", ModeADS},
+                  {"ADSR", ModeADSR}}, /*wrap=*/true).label("Mode", "Mode")
+    .floatField("attack", 0.05f, 0.f, 1.f, state::PrimaryInput).label("Attack", "Atk")
+    .floatField("decay", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Decay", "Dec")
+    .floatField("sustain", 0.50f, 0.f, 1.f, state::PrimaryInput).label("Sustain", "Sus")
+    .floatField("release", 0.30f, 0.f, 1.f, state::PrimaryInput).label("Release", "Rel")
+    // Per-phase slope: ease ∈ [-1,1] (envelope.h convention; >0 snappier).
+    .floatField("attack_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Attack Curve", "AtkCrv")
+    .floatField("decay_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Decay Curve", "DecCrv")
+    .floatField("release_curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Release Curve", "RelCrv")
+    // --- Polyphony: how many envelopes run at once + retrigger policy ---
+    .group("polyphony", "Polyphony")
+      .groupHelp(
+        "Controls overlapping triggers. *Voices* sets how many envelopes can run "
+        "simultaneously (the output is their max). *Retrigger* decides what a new "
+        "trigger does: **Reset** restarts a single voice, **Legato** re-gates "
+        "without re-attacking, **Poly** allocates a fresh voice each time.")
+    .intField("voices", 1, 1, kMaxVoices, state::PrimaryInput).label("Voices", "Voices")
+    .selectField("retrigger", RetrigReset, state::PrimaryInput,
+                 {{"Reset", RetrigReset},
+                  {"Legato", RetrigLegato},
+                  {"Poly", RetrigPoly}}).label("Retrigger", "Retrig")
+    // --- Trigger: what fires the envelope ---
+    .group("trigger", "Trigger")
+      .groupHelp(
+        "Fires the envelope. An envelope is normally triggered explicitly, so "
+        "*Auto Mode* is **Off** by default: wire a *Gate* (its rising edge fires "
+        "and, while held, keeps the sustain level until it falls), or a *Trigger* "
+        "for a momentary attack-decay-release pluck. To self-fire, set *Auto Mode* "
+        "to **Random** (Poisson, at *Auto Rate*) or **Beats** (locked to the host "
+        "transport on a beat division).");
+  fx::AutoTrigger::fields(sc);   // auto_mode + auto_rate + auto_beats + custom
+  sc.boolField("gate", false, state::PrimaryInput).label("Gate", "Gate")
+    .eventField("trigger", state::PrimaryInput).label("Trigger", "Trig")
+    // Unipolar [0,1] envelope — declared unsigned (the modulation-range
+    // contract; the UI band samples this declared range).
+    .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
+    .capability(state::Capability::ModulationSource)
+    .capability(state::Capability::ModulationSourceSingle);
+  state::init("mod.source.adsr", {1, 0, 1}, sc);
+  state::setOnStateReady(&on_state_ready);
   state::log("ADSR: init");
 }
 
@@ -258,16 +276,10 @@ void tick(void* self, double dt) {
   if (!s) return;
   const Shape sh = shapeFor(s);
 
-  // Poisson auto-trigger (§4.1 / §8.1): rate_hz = pow(60, auto_rate) - 1.
-  if (s->auto_rate > 0.0f) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      float lambda = rate_hz * (float)dt;
-      s->rng = s->rng * 1664525u + 1013904223u;
-      float u = (s->rng >> 8) * (1.0f / 16777216.0f);
-      if (u < 1.0f - std::exp(-lambda)) triggerVoice(s, true, sh);
-    }
-  }
+  // Self-fire (Off / Random / Beats — effect_auto_trigger.h). Loop the count:
+  // in Beats a long frame stall can cross several divisions at once.
+  for (int i = 0, n = s->auto_trig.fires(dt); i < n; i++)
+    triggerVoice(s, /*momentary=*/true, sh);
 
   float out = 0.0f;
   for (int i = 0; i < kMaxVoices; i++) {
@@ -325,10 +337,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
     const int l = len[i];
+    if (s->auto_trig.patch(p, l, i, &vis_changed)) continue;
     if      (state::pathIs(p, l, "attack"))        s->attack = state::patchFloat(i);
     else if (state::pathIs(p, l, "decay"))         s->decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "sustain"))       s->sustain = state::patchFloat(i);
@@ -339,7 +353,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "mode"))          s->mode = (int)state::patchFloat(i);
     else if (state::pathIs(p, l, "voices"))        s->voices = (int)state::patchFloat(i);
     else if (state::pathIs(p, l, "retrigger"))     s->retrigger = (int)state::patchFloat(i);
-    else if (state::pathIs(p, l, "auto_rate"))     s->auto_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "gate")) {
       bool g = state::patchFloat(i) != 0.0f;
       if (g && !s->gate_prev) {                    // rising edge → fire (held)
@@ -356,6 +369,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->trigger_prev = t;
     }
   }
+  if (vis_changed)
+    fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 void render(void* self, int vp_w, int vp_h) {

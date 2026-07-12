@@ -15,8 +15,9 @@
  *     slice of tex_in (scaled by tex_in_boost) and uses that as its impulse.
  *
  * Trigger semantics (style guide §8.1): gate (bool) + trigger (event) fire
- * on a 0→1 rising edge; auto_rate (Poisson) self-fires. Impulses are
- * injected AFTER the diffusion hops so a fresh trigger is a solid flash.
+ * on a 0→1 rising edge; `auto_mode` is the shared self-fire block (Off by
+ * default — Random is Poisson, Beats locks to the host transport). Impulses
+ * are injected AFTER the diffusion hops so a fresh trigger is a solid flash.
  *
  * Outputs:
  *   tex_out                  — each bar fills its 1/4 column (hsv2rgb)
@@ -28,6 +29,7 @@
 #include <val.h>
 #include <effect_utils.h>
 #include <effect_diffusion_network.h>
+#include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "bounce_resonator_shaders.h"
 
 #include <algorithm>
@@ -104,7 +106,7 @@ struct State {
   float band_val          = 1.0f;
   float intensity         = 1.0f;
   float input_opacity     = 1.0f;
-  float auto_rate         = 0.3f;
+  fx::AutoTrigger auto_trig;   // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
 
   // --- Runtime state ---
   fx::DiffusionNetwork4 net;     // CPU: builds + exports the cycling matrices
@@ -119,7 +121,6 @@ struct State {
   // Rising-edge detection.
   bool     gate_prev      = false;
   float    trigger_prev   = 0.0f;
-  uint32_t autotrigger_rng = 0xCAFEBABEu;
   uint32_t target_rng      = 0x1357BD13u;
 };
 
@@ -158,7 +159,8 @@ static void apply_mode_visibility(int mode) {
   state::setFieldHidden("tex_in_boost",   mode != MODE_TEX_IN);
 }
 
-// Static (self-less) visibility evaluator — pure over state (see crop).
+// Static (self-less) visibility evaluator — pure over state (see crop). Covers
+// BOTH the impulse_mode knobs and the shared auto-trigger block's.
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
   int mode = MODE_ONE_BAR;
   for (int i = 0; i < n; i++) {
@@ -166,6 +168,7 @@ void eval_visibility(int n, const char* pb, const int* off, const int* len, cons
     if (state::pathIs(pb + off[i], len[i], "impulse_mode")) mode = (int)state::patchFloat(i);
   }
   apply_mode_visibility(mode);
+  fx::AutoTrigger::evalVisibility(n, pb, off, len, ops);
 }
 
 // On any trigger: flag it (tex_in mode samples on the GPU), and in the bar
@@ -188,11 +191,16 @@ static void fire_impulse(State& s) {
 
 static void on_state_ready(void* self) {
   auto* s = static_cast<State*>(self);
-  if (s) apply_mode_visibility(s->impulse_mode);
+  if (!s) return;
+  apply_mode_visibility(s->impulse_mode);
+  fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 void module_init() {
+  // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
+  // into the Trigger group (it takes and returns the Schema&).
   state::init("source.light.bounce_resonator", {1, 0, 1},
+    fx::AutoTrigger::fields(
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -211,14 +219,15 @@ void module_init() {
       .group("trigger", "Trigger")
         .groupHelp(
           "How and where impulses enter the network. **Gate** and **Trigger** both "
-          "fire on a rising edge; **Auto Rate** self-fires at random (Poisson) so "
-          "it lives on its own. **Impulse Mode** chooses the target — a fixed bar, "
-          "a random bar, all four at once, or sampling colour straight from the "
-          "incoming video. **Try:** hold a steady auto rate and modulate the mode "
-          "for an evolving, hands-off light show.")
+          "fire on a rising edge. *Auto Mode* is **Off** by default — set it to "
+          "**Random** (Poisson, at *Auto Rate*) so it lives on its own, or **Beats** "
+          "to lock the impulses to the host transport. **Impulse Mode** chooses the "
+          "target — a fixed bar, a random bar, all four at once, or sampling colour "
+          "straight from the incoming video. **Try:** hold a steady auto rate and "
+          "modulate the mode for an evolving, hands-off light show.")
       .boolField ("gate",                false,                  state::PrimaryInput).label("Gate", "Gate")
       .eventField("trigger",                                     state::PrimaryInput).label("Trigger", "Trig")
-      .floatField("auto_rate",           0.3f,  0.0f, 1.0f,      state::PrimaryInput).label("Auto Rate", "Auto")
+    )   // ← fx::AutoTrigger::fields: auto_mode + auto_rate + auto_beats + custom
       .selectField("impulse_mode",       MODE_ONE_BAR,           state::PrimaryInput,
                    {{"tex_in", MODE_TEX_IN}, {"one_bar", MODE_ONE_BAR},
                     {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}}, /*wrap=*/true).label("Impulse Mode", "Mode")
@@ -313,7 +322,6 @@ void init(void* self) {
   s->gate = false;
   s->gate_prev = false;
   s->trigger_prev = 0.0f;
-  s->autotrigger_rng = 0xCAFEBABEu;
   s->target_rng = 0x1357BD13u;
   s->accum = 0.0f;
   s->hop_idx = 0;
@@ -339,16 +347,9 @@ void tick(void* self, double dt) {
   if (!s) return;
   if (!s->initialized) return;
 
-  // Poisson auto-trigger.
-  if (s->auto_rate > 0.0f) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      float lambda = rate_hz * (float)dt;
-      s->autotrigger_rng = s->autotrigger_rng * 1664525u + 1013904223u;
-      float u = (s->autotrigger_rng >> 8) * (1.0f / (float)(1u << 24));
-      if (u < 1.0f - std::exp(-lambda)) fire_impulse(*s);
-    }
-  }
+  // Self-fire (Off / Random / Beats — effect_auto_trigger.h). Loop the count:
+  // in Beats a long frame stall can cross several divisions at once.
+  for (int i = 0, nf = s->auto_trig.fires(dt); i < nf; i++) fire_impulse(*s);
 
   // Build the cycling matrices on the CPU (cheap; uploaded in render()).
   fx::DiffusionNetwork4::Params p;
@@ -383,11 +384,13 @@ void tick(void* self, double dt) {
 void on_state_patched(void* self, int n, const char* pb, const int* off, const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     const char* path = pb + off[i];
     int plen = len[i];
     if (ops[i] != state::PatchReplace) continue;
 
+    if (s->auto_trig.patch(path, plen, i, &vis_changed)) continue;
     if (state::pathIs(path, plen, "gate")) {
       bool new_gate = state::patchFloat(i) != 0.0f;
       if (new_gate && !s->gate_prev) fire_impulse(*s);
@@ -399,7 +402,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
       if (v != 0.0f && s->trigger_prev == 0.0f) fire_impulse(*s);
       s->trigger_prev = v;
     }
-    else if (state::pathIs(path, plen, "auto_rate"))           s->auto_rate          = state::patchFloat(i);
     else if (state::pathIs(path, plen, "impulse_mode")) {
       s->impulse_mode = (int)state::patchFloat(i);
       apply_mode_visibility(s->impulse_mode);
@@ -424,6 +426,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
     else if (state::pathIs(path, plen, "intensity"))           s->intensity          = state::patchFloat(i);
     else if (state::pathIs(path, plen, "input_opacity"))       s->input_opacity      = state::patchFloat(i);
   }
+  if (vis_changed)
+    fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 void render(void* self, int vp_w, int vp_h) {

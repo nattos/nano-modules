@@ -190,6 +190,7 @@ void nano_module_main() {
         "envelope,adsr,modulation,automation,trigger,generator",
         "la-chart-line",
         NANO_INSTANCE_LIFECYCLE(env_adsr),
+        nullptr, nullptr, nullptr, &env_adsr::eval_visibility,
     });
 
     nano::registerEffect({

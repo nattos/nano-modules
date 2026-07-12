@@ -208,11 +208,12 @@ void nano_module_main() {
         2,
         "source.shape_burst",
         "Shape Burst",
-        "Triggered expanding-shape generator — an ADSR 'decay only' you can see. Each trigger fires a ring (circle / square / triangle) that grows from a min to a max scale over a duration, shaped by an easing curve, drawn hard-cut solid then gone; all bursts are concentric about a center pivot. Shares mod.source.adsr's trigger surface (auto_rate Poisson self-fire, a gate rising edge, a momentary trigger, plus voices + Reset/Legato/Poly retrigger for overlapping shockwaves). A manual 0..1 knob directly drives one highest-priority ring for a hands-free pulse (wire a modulation source into it). Composites over black, transparent, a custom colour, or the input.",
+        "Triggered expanding-shape generator — an ADSR 'decay only' you can see. Each trigger fires a ring (circle / square / triangle) that grows from a min to a max scale over a duration, shaped by an easing curve, drawn hard-cut solid then gone; all bursts are concentric about a center pivot. Shares mod.source.adsr's trigger surface (a gate rising edge, a momentary trigger, an 'auto_mode' self-fire that is Off by default — Random is a Poisson stream, Beats locks to the host transport on a beat division — plus voices + Reset/Legato/Poly retrigger for overlapping shockwaves). A manual 0..1 knob directly drives one highest-priority ring for a hands-free pulse (wire a modulation source into it). Composites over black, transparent, a custom colour, or the input.",
         "source",
-        "generator,shape,burst,ring,circle,square,triangle,trigger,adsr,decay,shockwave,ripple,pulse",
+        "generator,shape,burst,ring,circle,square,triangle,trigger,adsr,decay,shockwave,ripple,pulse,beat",
         "la-bullseye",
         NANO_INSTANCE_LIFECYCLE(shape_burst),
+        nullptr, nullptr, nullptr, &shape_burst::eval_visibility,
     });
 
     nano::registerEffect({

@@ -534,3 +534,115 @@ TEST_CASE("mod.source.adsr envelope phases + retrigger", "[effect_driver]") {
 
   host.shutdown();
 }
+
+// The shared auto-trigger block (effect_auto_trigger.h) on mod.source.adsr:
+// Off by default (a fresh drop never self-fires), Random = the Poisson stream,
+// Beats = locked to the host transport's bar phase.
+TEST_CASE("mod.source.adsr auto-trigger: Off default / Random / Beats", "[effect_driver]") {
+  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  REQUIRE(!bytecode.empty());
+
+  ParamCache cache;
+  WasmHost host(cache);
+  REQUIRE(host.init());
+  int32_t id = host.load_module(bytecode.data(), bytecode.size());
+  REQUIRE(id >= 0);
+
+  StateDocument doc;
+  host.set_state_doc(id, &doc);
+  FrameState fs;
+  fs.elapsed_time = 0.0;
+  fs.bpm = 120.0;
+  host.set_frame_state(id, &fs);
+
+  REQUIRE(host.call_function(id, "nano_module_main") == 0);
+  const WasmEffectDesc* w = nullptr;
+  for (const auto& e : host.registered_effects(id)) {
+    if (e.id == "mod.source.adsr") { w = &e; break; }
+  }
+  REQUIRE(w != nullptr);
+
+  EffectDesc desc;
+  desc.id = w->id;
+  desc.wasm_host = &host;
+  desc.wasm_module_id = id;
+  desc.wasm_fns = w->fns;
+
+  EffectRuntime rt(nullptr);
+  rt.registerEffect(desc);
+  const std::string key = host.plugin_key(id);
+  REQUIRE(!key.empty());
+
+  // Mirror of fx::AutoMode / fx::AutoDiv (effect_auto_trigger.h).
+  enum { AutoOff = 0, AutoRandom = 1, AutoBeats = 2 };
+  enum { Div1Bar = 2, DivBeat = 4, DivCustom = 7 };
+
+  const double kDt = 0.016;
+  auto out = [&]() { return doc.get_plugin_state(key)["output"].get<double>(); };
+
+  // A — OFF BY DEFAULT: a freshly-dropped ADSR, untouched, must stay silent.
+  // (This is the headline behaviour change: auto_rate used to default to 0.2.)
+  {
+    EffectInstance* a = rt.instanceFor("mod.source.adsr", "fresh");
+    REQUIRE(a != nullptr);
+    double peak = 0.0;
+    for (int i = 0; i < 600; i++) {          // ~10s at 60fps
+      a->doTick(kDt);
+      peak = std::max(peak, out());
+    }
+    CHECK(peak == 0.0);                      // never self-fired
+  }
+
+  // B — RANDOM: the Poisson stream still fires (a high rate is near-certain to
+  // land at least one hit over ~10s).
+  {
+    EffectInstance* b = rt.instanceFor("mod.source.adsr", "random");
+    b->setParamFloat("auto_mode", static_cast<float>(AutoRandom));
+    b->setParamFloat("auto_rate", 0.8f);
+    double peak = 0.0;
+    for (int i = 0; i < 600; i++) { b->doTick(kDt); peak = std::max(peak, out()); }
+    CHECK(peak > 0.5);
+  }
+
+  // C — BEATS: fires on the transport's beat division, NOT at random. Drive a
+  // continuous bar phase and count the rising edges; `ticksPerBar` divisions of
+  // a bar over `bars` bars must produce exactly ticksPerBar*bars fires.
+  //
+  // Two details make the count exact. fx::BeatTick deliberately swallows its
+  // FIRST frame (it seeds prev_bar_phase and reports no crossing, so init never
+  // emits a spurious tick) — so we spend one tick at phase 0 seeding it before
+  // measuring. And we run half a division PAST the last boundary, so the final
+  // crossing is unambiguously inside the span rather than landing exactly on
+  // its edge at the mercy of float rounding.
+  auto countFires = [&](const char* ikey, int div, float custom,
+                        double ticksPerBar, double bars) {
+    EffectInstance* inst = rt.instanceFor("mod.source.adsr", ikey);
+    REQUIRE(inst != nullptr);
+    inst->setParamFloat("auto_mode", static_cast<float>(AutoBeats));
+    inst->setParamFloat("auto_beats", static_cast<float>(div));
+    if (custom > 0.0f) inst->setParamFloat("auto_beats_custom", custom);
+    inst->setParamFloat("mode", 0.0f);       // Decay: instant attack → a 1-frame spike
+    inst->setParamFloat("decay", 0.0f);      // fastest fall, so spikes stay separable
+
+    fs.bar_phase = 0.0;
+    inst->doTick(kDt);                       // seed BeatTick (no crossing)
+
+    const double span = bars + 0.5 / ticksPerBar;   // half a division past the end
+    const int steps = 960;
+    int fires = 0;
+    bool high = false;
+    for (int i = 1; i <= steps; i++) {
+      fs.bar_phase = std::fmod((double)i / steps * span, 1.0);
+      inst->doTick(kDt);
+      const bool now = out() > 0.5;          // the instant-attack spike
+      if (now && !high) fires++;             // rising edge
+      high = now;
+    }
+    return fires;
+  };
+  CHECK(countFires("beats_quarter", DivBeat,  0.0f, 4.0, 2.0) == 8);  // 1/4 → 4/bar × 2 bars
+  CHECK(countFires("beats_bar",     Div1Bar,  0.0f, 1.0, 4.0) == 4);  // 1 bar → 1/bar × 4 bars
+  CHECK(countFires("beats_custom",  DivCustom, 3.0f, 3.0, 2.0) == 6); // Custom 3/bar × 2 bars
+
+  host.shutdown();
+}

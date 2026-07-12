@@ -11,7 +11,7 @@
  *
  * POLYPHONY: up to MAX_VOICES voices run concurrently, each its own CPU-side
  * envelope. A held gate/level holds ONE voice (charges until released); each
- * trigger event and auto_rate Poisson event spawns a fresh one-shot voice. The
+ * trigger event and auto-fire event spawns a fresh one-shot voice. The
  * CPU advances every active envelope, packs the active voices' blob geometry +
  * grade params into a storage buffer, and tells the shader how many to render;
  * the shader loops over them and accumulates the band phase (a small per-pixel
@@ -21,13 +21,15 @@
  *
  * Trigger surface (§8.1/§8.2): gate/level/default_gate_state hold a voice;
  * `trigger` is a momentary event fired on the rising edge of its value
- * (replay-safe); auto_rate is a Poisson source. The blob's colour is GENERATED
- * from the density grade, composited additively over tex_in.
+ * (replay-safe); `auto_mode` is the shared self-fire block (Off by default —
+ * Random is Poisson, Beats locks to the host transport). The blob's colour is
+ * GENERATED from the density grade, composited additively over tex_in.
  */
 
 #include <gpu.h>
 #include <host.h>
 #include <effect_utils.h>
+#include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "chroma_wave_shaders.h"
 
 #include <cmath>
@@ -121,7 +123,7 @@ struct State {
   // --- Standard trigger surface ---
   bool  gate               = false;
   float level              = 0.0f;
-  float auto_rate          = 0.15f;
+  fx::AutoTrigger auto_trig;   // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
   bool  default_gate_state = false;
 
   // --- Polyphony ---
@@ -383,8 +385,22 @@ static void compute_voice_gpu(State* s, const Voice& v, VoiceGpu& o) {
 
 // --- ABI -----------------------------------------------------------------
 
+// Static (self-less) visibility evaluator — pure over state. The auto-trigger
+// block owns every mode-dependent knob here, so it's the whole evaluator.
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  fx::AutoTrigger::evalVisibility(n, pb, off, len, ops);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
+}
+
 void module_init() {
+  // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
+  // into the Trigger group (it takes and returns the Schema&).
   state::init("source.light.chroma_wave", {1, 0, 1},
+    fx::AutoTrigger::fields(
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -393,19 +409,21 @@ void module_init() {
         "as pressure builds it flattens and curls into a downward crescent; release "
         "and it **bursts**, opening while prismatic colour bands travel down the "
         "gradient. It's **polyphonic**, so many waves can overlap.\n\n"
-        "**Try:** play it rhythmically with the trigger for stacked bursts; raise "
-        "*Auto Rate* to let it self-fire; push *Intensity* for glowing additive colour.")
+        "**Try:** play it rhythmically with the trigger for stacked bursts; set *Auto "
+        "Mode* to **Beats** to fire it on the transport; push *Intensity* for glowing "
+        "additive colour.")
       // --- Standard trigger surface ---
       .group("trigger", "Trigger")
         .groupHelp(
           "How the effect is *played*. Hold **Gate** (or push *Level* past halfway) to "
           "charge one sustained voice; fire **Trigger** for momentary one-shot bursts. "
-          "**Auto Rate** self-fires at random (Poisson) — great for hands-off ambience. "
+          "*Auto Mode* is **Off** by default — set it to **Random** (Poisson, at *Auto "
+          "Rate*) for hands-off ambience, or **Beats** to lock it to the host transport. "
           "*Default On* keeps a voice charging with no input.")
       .boolField ("gate",               false,                  state::PrimaryInput).label("Gate", "Gate")
       .eventField("trigger",                                    state::PrimaryInput).label("Trigger", "Trig")
       .floatField("level",              0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Level", "Lvl")
-      .floatField("auto_rate",          0.15f, 0.0f, 1.0f,      state::PrimaryInput).label("Auto Rate", "Auto")
+    )   // ← fx::AutoTrigger::fields: auto_mode + auto_rate + auto_beats + custom
       .boolField ("default_gate_state", false,                  state::PrimaryInput).label("Default On", "Def")
 
       // --- Polyphony ---
@@ -529,6 +547,7 @@ void module_init() {
       .uniform(2)
       .storage(3));
 
+  state::setOnStateReady(&on_state_ready);
   state::log("chroma_wave: module initialized");
 }
 
@@ -574,15 +593,10 @@ void tick(void* self, double dt) {
   if (!s || !s->initialized) return;
   float fdt = (float)dt;
 
-  // auto_rate Poisson — each event is a fresh one-shot voice (polyphonic).
-  if (s->auto_rate > 0.0f) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      float lambda = rate_hz * fdt;
-      float u = lcg_unit(s->rng_state);
-      if (u < 1.0f - std::exp(-lambda)) spawn_voice(s, false);
-    }
-  }
+  // Self-fire (Off / Random / Beats — effect_auto_trigger.h): each event is a
+  // fresh one-shot voice (polyphonic). Loop the count — in Beats a long frame
+  // stall can cross several divisions at once.
+  for (int i = 0, nf = s->auto_trig.fires(dt); i < nf; i++) spawn_voice(s, false);
 
   // Held gate/level: maintain exactly one held voice across its hold.
   bool held = s->gate || s->level >= 0.5f || s->default_gate_state;
@@ -611,15 +625,16 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     const char* path = pb + off[i];
     int plen = len[i];
     int op = ops[i];
 
     if (op == state::PatchReplace) {
+      if (s->auto_trig.patch(path, plen, i, &vis_changed)) continue;
       if      (state::pathIs(path, plen, "gate"))               s->gate = state::patchFloat(i) != 0.0f;
       else if (state::pathIs(path, plen, "level"))              s->level = state::patchFloat(i);
-      else if (state::pathIs(path, plen, "auto_rate"))          s->auto_rate = state::patchFloat(i);
       else if (state::pathIs(path, plen, "default_gate_state")) s->default_gate_state = state::patchFloat(i) != 0.0f;
       else if (state::pathIs(path, plen, "voice_limit"))        s->voice_limit = (int)state::patchFloat(i);
       else if (state::pathIs(path, plen, "voice_pos_jitter"))   s->voice_pos_jitter = state::patchFloat(i);
@@ -676,6 +691,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->trigger_prev = tval;
     }
   }
+  if (vis_changed)
+    fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 void render(void* self, int vp_w, int vp_h) {

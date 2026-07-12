@@ -70,9 +70,10 @@ void nano_module_main() {
         "Plasma Beam Cannon",
         "90s-anime power-up beam. Attack seed snaps small at a target Y, decay rapidly expands to fill the bar, sustain holds, release breaks up (break particles deferred for v2). All four bars share one linked ADSR timeline.",
         "source",
-        "plasma,beam,cannon,trigger,adsr,drama",
+        "plasma,beam,cannon,trigger,adsr,drama,beat",
         "la-fire",
         NANO_INSTANCE_LIFECYCLE(plasma_beam_cannon),
+        nullptr, nullptr, nullptr, &plasma_beam_cannon::eval_visibility,
     });
 
     nano::registerEffect({
@@ -160,9 +161,10 @@ void nano_module_main() {
         "Chroma Wave",
         "Charge-and-burst prismatic wave bloom. A soft super-gaussian blob grows from the top-center while gated; as pressure builds the top flattens into a plateau, the blob elongates in X and hollows out at the top so the mass piles into a downward crescent (max pressure). On release it bursts — rapidly expanding while the colour-grade transfer folds, sending prismatic bands travelling down the density gradient (dominant) and washing back up the inner edge (secondary). Additive bloom composited over the input.",
         "source",
-        "chroma,prismatic,wave,bloom,trigger,charge,burst",
+        "chroma,prismatic,wave,bloom,trigger,charge,burst,beat",
         "la-water",
         NANO_INSTANCE_LIFECYCLE(chroma_wave),
+        nullptr, nullptr, nullptr, &chroma_wave::eval_visibility,
     });
 }
 

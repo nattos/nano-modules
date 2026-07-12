@@ -8,7 +8,9 @@
  * cut solid (no fade) then gone. All bursts are concentric about `center`.
  *
  * Trigger surface (shared with env_adsr, style guide §8.1 / §8.2):
- *   auto_rate (0..1)  — Poisson auto-trigger (default 0.2 so a fresh drop moves)
+ *   auto_mode (select)— the shared self-fire block (effect_auto_trigger.h):
+ *                       Off (default — a burst is fired explicitly) / Random
+ *                       (Poisson) / Beats (locked to the host transport).
  *   gate      (bool)  — rising edge fires one burst
  *   trigger   (event) — momentary one-shot (rising-edge detected)
  *   voices / retrigger — polyphony + Reset / Legato / Poly allocation
@@ -27,6 +29,7 @@
 #include <host.h>
 #include <effect_utils.h>
 #include <effect_twitch_mask.h>   // fx::TwitchMask — roaming distortion mask
+#include <effect_auto_trigger.h>  // fx::AutoTrigger — the shared Off/Random/Beats self-fire
 #include "sketch/envelope.h"   // envelope::applyEase — shared with mod.source.adsr
 #include "shape_burst_shaders.h"
 
@@ -94,7 +97,7 @@ struct State {
   int voices = 1;
   int retrigger = RetrigReset;
   // Trigger.
-  float auto_rate = 0.2f;
+  fx::AutoTrigger auto_trig;   // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
   bool gate_prev = false;
   bool trigger_prev = false;
   // Composite.
@@ -112,7 +115,6 @@ struct State {
   float anchor[2] = { 0.0f, 0.0f };   // this frame's twitch anchor
   float twitch_strength = 0.0f;       // this frame's twitch intensity
 
-  uint32_t rng = 0x5EED5EEDu;         // auto-trigger Poisson stream
   uint32_t jitter_rng = 0x1234ABCDu;  // per-trigger rotation-jitter stream (§8.9)
   uint64_t trig_counter = 0;          // monotonic, stamps Voice::age
   Voice v[kMaxVoices];
@@ -190,8 +192,22 @@ static void triggerVoice(State* s) {
   }
 }
 
+// Static (self-less) visibility evaluator — pure over state. The auto-trigger
+// block owns every mode-dependent knob here, so it's the whole evaluator.
+void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
+  fx::AutoTrigger::evalVisibility(n, pb, off, len, ops);
+}
+
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
+}
+
 void module_init() {
+  // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
+  // into the Trigger group (it takes and returns the Schema&).
   state::init("source.shape_burst", {1, 0, 3},
+    fx::AutoTrigger::fields(
     state::Schema()
       .helpField("intro",
         "## Shape Burst\n"
@@ -246,10 +262,12 @@ void module_init() {
       // --- Trigger: what fires a burst ---
       .group("trigger", "Trigger")
         .groupHelp(
-          "*Auto Rate* self-fires at random (Poisson) — 0 stops it. A *Gate*'s "
-          "rising edge fires one burst; *Trigger* is a momentary one-shot. Drive "
-          "these from MIDI, a beat clock, or another modulation source.")
-      .floatField("auto_rate", 0.2f, 0.f, 1.f, state::PrimaryInput).label("Auto Rate", "Auto")
+          "A burst is normally fired explicitly, so *Auto Mode* is **Off** by "
+          "default: a *Gate*'s rising edge fires one burst and *Trigger* is a "
+          "momentary one-shot — drive them from MIDI or another modulation "
+          "source. To self-fire, set *Auto Mode* to **Random** (Poisson, at "
+          "*Auto Rate*) or **Beats** (locked to the host transport).")
+    )   // ← fx::AutoTrigger::fields: auto_mode + auto_rate + auto_beats + custom
       .boolField("gate", false, state::PrimaryInput).label("Gate", "Gate")
       .eventField("trigger", state::PrimaryInput).label("Trigger", "Trig")
       // --- Composite: how the rings land on the frame ---
@@ -296,6 +314,7 @@ void module_init() {
       .renderOutputs(state::PrimaryInput, "render_outputs_in")
       .capability(state::Capability::Generator)
   );
+  state::setOnStateReady(&on_state_ready);
   state::log("shape_burst: init");
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
@@ -349,16 +368,9 @@ void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
 
-  // Poisson auto-trigger (§4.1): rate_hz = pow(60, auto_rate) - 1.
-  if (s->auto_rate > 0.0f) {
-    float rate_hz = std::pow(60.0f, s->auto_rate) - 1.0f;
-    if (rate_hz > 0.0f) {
-      float lambda = rate_hz * (float)dt;
-      s->rng = s->rng * 1664525u + 1013904223u;
-      float u = (s->rng >> 8) * (1.0f / 16777216.0f);
-      if (u < 1.0f - std::exp(-lambda)) triggerVoice(s);
-    }
-  }
+  // Self-fire (Off / Random / Beats — effect_auto_trigger.h). Loop the count:
+  // in Beats a long frame stall can cross several divisions at once.
+  for (int i = 0, n = s->auto_trig.fires(dt); i < n; i++) triggerVoice(s);
 
   // Advance every active burst; hard-cut when it completes. Record each
   // voice's per-frame radius change (for the motion-vector pass).
@@ -389,10 +401,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
                       const int* len, const int* ops) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  bool vis_changed = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
     const int l = len[i];
+    if (s->auto_trig.patch(p, l, i, &vis_changed)) continue;
     if      (state::pathIs(p, l, "shape"))      s->shape = state::patchInt(i);
     else if (state::pathIs(p, l, "min_scale"))  s->min_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "max_scale"))  s->max_scale = state::patchFloat(i);
@@ -411,7 +425,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "manual"))     s->manual = state::patchFloat(i);
     else if (state::pathIs(p, l, "voices"))     s->voices = state::patchInt(i);
     else if (state::pathIs(p, l, "retrigger"))  s->retrigger = state::patchInt(i);
-    else if (state::pathIs(p, l, "auto_rate"))  s->auto_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "composite"))  s->composite = state::patchInt(i);
     else if (state::pathIs(p, l, "tilt"))       s->tilt = state::patchFloat(i);
     else if (state::pathIs(p, l, "motion_strength")) s->motion_strength = state::patchFloat(i);
@@ -434,6 +447,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->trigger_prev = t;
     }
   }
+  if (vis_changed)
+    fx::AutoTrigger::applyVisibility(s->auto_trig.mode, s->auto_trig.div);
 }
 
 // Build the draw list: manual voice first (highest priority), then the newest
