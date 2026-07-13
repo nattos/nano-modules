@@ -638,22 +638,34 @@ int Engine::layout(const char* spec_json, int len) {
   std::vector<SG> word; float wordW = 0;                 // current word (for wrap)
   struct LG { float x; SG g; };
   std::vector<LG> lineGlyphs;                            // glyphs placed on the current line
-  float penX = 0, lineMaxAscent = 0, lineMaxHeight = 0;
+  float penX = 0, lineMaxAscent = 0, lineMaxDescent = 0, lineMaxHeight = 0;
 
   auto runFor = [&](int off) -> const Run& {
     for (const Run& r : runs) if (off >= r.b0 && off < r.b1) return r;
     return runs.back();
   };
-  // Line ascent/height take the tallest contributing run, using that run's own
-  // face ascender so mixed faces (and sizes) share a correct baseline.
+  // Line ascent/descent/height take the tallest contributing run, using that
+  // run's own face metrics so mixed faces (and sizes) share a correct baseline.
   auto bumpLineMetrics = [&](float size, int faceId) {
-    float asc = impl_->faces[faceId].ascender_em * size, lh = size * line_sp;
-    if (asc > lineMaxAscent) lineMaxAscent = asc;
-    if (lh > lineMaxHeight)  lineMaxHeight = lh;
+    float asc  = impl_->faces[faceId].ascender_em * size;
+    float desc = -impl_->faces[faceId].descender_em * size;   // FT descender < 0
+    float lh   = size * line_sp;
+    if (asc  > lineMaxAscent)  lineMaxAscent  = asc;
+    if (desc > lineMaxDescent) lineMaxDescent = desc;
+    if (lh   > lineMaxHeight)  lineMaxHeight  = lh;
   };
   auto finalizeLine = [&]() {
     if (penX > maxLineW) maxLineW = penX;
-    float baseline = totalH + lineMaxAscent;
+    // HALF-LEADING (the CSS inline model, same as the Blitz/parley rich path):
+    // the leading beyond the font's natural ascent+descent splits evenly above
+    // and below the ink, so each line's ink sits CENTERED in its line box.
+    // This is what keeps a box-centered single line vertically stable when
+    // line_spacing changes — with all leading trailing (the old model), the
+    // box grew downward only and centered text crept up as spacing rose.
+    // Spacing below the natural extent yields negative half-leading (lines
+    // tighter than the ink), matching CSS.
+    float halfLead = (lineMaxHeight - (lineMaxAscent + lineMaxDescent)) * 0.5f;
+    float baseline = totalH + halfLead + lineMaxAscent;
     if (firstBaseline < 0) firstBaseline = baseline;
     for (const LG& lg : lineGlyphs) {
       const GlyphInfo* gi = lg.g.info;
@@ -671,7 +683,8 @@ int Engine::layout(const char* spec_json, int len) {
     }
     totalH += lineMaxHeight > 0 ? lineMaxHeight : defSize * line_sp;
     lines++;
-    lineGlyphs.clear(); penX = 0; lineMaxAscent = 0; lineMaxHeight = 0;
+    lineGlyphs.clear(); penX = 0;
+    lineMaxAscent = 0; lineMaxDescent = 0; lineMaxHeight = 0;
   };
   auto flushWord = [&]() {
     if (word.empty()) return;

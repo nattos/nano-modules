@@ -108,12 +108,13 @@ void module_init() {
           "positive value (in pixels) wraps the text into a column. *Line Spacing* "
           "is a multiplier on the font's natural leading (1.0 = tight, 1.5 = airy).\n\n"
           "*V Anchor* picks what sits on the anchor line at *V Position* (a "
-          "fraction of the output height): **Center** centers the layout box — "
-          "note the box depends on the font's own metrics, so text shifts when "
-          "the face or size changes; **Baseline** pins the first line's baseline, "
-          "keeping text rock-steady across fonts and sizes; **Top** / **Bottom** "
-          "hang the box below or stack it above the line. Modulate *V Position* "
-          "to slide text vertically.")
+          "fraction of the output height): **Center** centers the layout box "
+          "(leading splits evenly around each line, so this is stable as *Line "
+          "Spacing* changes — but the box still tracks the font's own metrics, "
+          "so text can shift a little when the face changes); **Baseline** pins "
+          "the first line's baseline, keeping text rock-steady across fonts and "
+          "sizes; **Top** / **Bottom** hang the box below or stack it above the "
+          "line. Modulate *V Position* to slide text vertically.")
       .floatField ("max_width",    0.0f,   0.0f, 4096.0f, state::PrimaryInput).label("Max Width", "Width")
       .floatField ("line_spacing", 1.2f,   0.5f, 3.0f,    state::PrimaryInput).label("Line Spacing", "Lead")
       .selectField("v_align", AlignCenter, state::PrimaryInput,

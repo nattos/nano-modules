@@ -2280,6 +2280,18 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   const int ctSmall = bottomLitRow("32", "0"), ctBig = bottomLitRow("80", "0");
   INFO("box-centered bottom row: size 32 → " << ctSmall << ", size 80 → " << ctBig);
   CHECK(std::abs(ctSmall - ctBig) > 5);         // box-centering moves with size
+
+  // Half-leading: leading splits evenly around the ink, so a box-centered
+  // single line must NOT move when line_spacing changes (the old all-leading-
+  // below model grew the box downward only, dragging centered text upward —
+  // size 48, spacing 1.0→3.0 shifted it by 48 px).
+  inst->setParamJson("line_spacing", "1.0");
+  const int ctTight = bottomLitRow("48", "0");
+  inst->setParamJson("line_spacing", "3.0");
+  const int ctAiry = bottomLitRow("48", "0");
+  inst->setParamJson("line_spacing", "1.2");   // restore the default
+  INFO("box-centered bottom row: spacing 1.0 → " << ctTight << ", 3.0 → " << ctAiry);
+  CHECK(std::abs(ctTight - ctAiry) <= 2);
 }
 #endif  // TEXT_WASM_PATH
 
