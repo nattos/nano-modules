@@ -1,9 +1,20 @@
 // filter.legacy.glisten — anchor finder (single thread).
 //
-// Coarse/fine search for the brightest spot in the input, then a 4-tap
-// finite-difference luminance gradient (the sparkle's stretch direction) and
-// per-channel colour gradients (the local tint). Writes one anchor record.
-// Mirrors NanoGraph GlistenFindAnchor.
+// Faithful port of NanoGraph GlistenFindAnchor.txt. Runs on the BLURRED 64×64
+// search grid (not the full-res input): an 8×8 coarse argmax at cell centres,
+// then an 8×8 fine argmax within the winning cell, then 4 linear taps for the
+// luma gradient (stretch direction) and per-channel colour gradients (tint).
+//
+// Deliberately preserved original quirks — all load-bearing for the look:
+//  - anchorUV gains an extra +coarseTexel/2, sitting the fan half a cell
+//    down-right of the peak, so the gradient taps read down-slope colours.
+//  - the fine texture carries a ×4 gain (the original's BlurF contrast=1 over
+//    two passes), so valueAvg/gradients/colours run "hot", up to ~4.
+//  - the colour-gradient channels reassemble in R,B,G order (a shipped swap).
+//  - the base-colour adjust `mix(1, adjust, valueAvg)` EXTRAPOLATES past
+//    valueAvg=1, pushing the base colour strongly negative near bright
+//    anchors — additive blending then digs into complementary colours.
+//  - Position = anchorUV + grad: the fan rides the gradient off the peak.
 //
 // anchor buffer layout (floats):
 //   [0,1]    Position.xy (uv)    [2,3]   Direction.xy (unit grad normal)
@@ -11,83 +22,89 @@
 //   [9..11]  ColorGradX.rgb      [12..14] ColorGradY.rgb
 //   [15]     valueAvg
 
-Texture2D<float4>         inputTex : register(t0);
-SamplerState             samp     : register(s1);
-RWStructuredBuffer<float> anchor   : register(u2);
+Texture2D<float4>         fineTex : register(t0);
+SamplerState              samp    : register(s1);
+RWStructuredBuffer<float> anchor  : register(u2);
 
 cbuffer U : register(b3) {
-  float coarse;            // coarse grid resolution per axis
-  float fine;              // fine refine resolution per axis
-  float sampling_width;    // gradient finite-difference step (uv)
   float color_grad_soft;
   float color_grad_squash;
   float color_grad_adjust;
-  float _p0, _p1;
+  float fine_gain;           // the original BlurF ×4
 };
 
 static const float PI = 3.14159265358979323846;
+static const float SAMPLING_WIDTH = 0.005;
 
 float lum(float3 c) { return max(c.r, max(c.g, c.b)); }
 
 [numthreads(1, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-  int C = (int)coarse;
-  int F = (int)fine;
-  float2 cstep = 1.0 / float2(C, C);
+  const int C = 8;                      // coarse cells per axis
+  const int F = 8;                      // fine texels per cell per axis
+  float2 cstep = 1.0 / float(C);
+  float2 fstep = 1.0 / float(C * F);
 
-  // ---- coarse pass ----
-  float2 bestC = float2(0.5, 0.5);
+  // ---- coarse pass: one tap per cell centre (the OneEighth resample) ----
+  float2 bestC = float2(0.0, 0.0);
   float  bestCV = -1.0;
   for (int cy = 0; cy < C; ++cy) {
     for (int cx = 0; cx < C; ++cx) {
       float2 uv = (float2(cx, cy) + 0.5) * cstep;
-      float v = lum(inputTex.SampleLevel(samp, uv, 0).rgb);
+      float v = lum(fineTex.SampleLevel(samp, uv, 0).rgb);
       if (v > bestCV) { bestCV = v; bestC = float2(cx, cy) * cstep; }
     }
   }
 
-  // ---- fine pass (within the best coarse cell) ----
-  float2 fstep = cstep / float2(F, F);
-  float2 anchorUV = bestC + cstep * 0.5;
+  // ---- fine pass within the winning cell ----
+  float2 bestF = float2(0.0, 0.0);
   float  bestFV = -1.0;
   for (int fy = 0; fy < F; ++fy) {
     for (int fx = 0; fx < F; ++fx) {
       float2 uv = bestC + (float2(fx, fy) + 0.5) * fstep;
-      float v = lum(inputTex.SampleLevel(samp, uv, 0).rgb);
-      if (v > bestFV) { bestFV = v; anchorUV = uv; }
+      float v = lum(fineTex.SampleLevel(samp, uv, 0).rgb);
+      if (v > bestFV) { bestFV = v; bestF = float2(fx, fy); }
     }
   }
+  // Original quirk: the extra +cstep/2 offsets the anchor half a coarse cell.
+  float2 anchorUV = bestC + bestF * fstep + fstep * 0.5 + cstep * 0.5;
 
-  // ---- local gradient (4 taps) ----
-  float sw = sampling_width;
-  float4 s01 = inputTex.SampleLevel(samp, anchorUV + float2(-sw, 0), 0);
-  float4 s21 = inputTex.SampleLevel(samp, anchorUV + float2( sw, 0), 0);
-  float4 s10 = inputTex.SampleLevel(samp, anchorUV + float2(0, -sw), 0);
-  float4 s12 = inputTex.SampleLevel(samp, anchorUV + float2(0,  sw), 0);
+  // ---- local gradient (4 taps, hot by fine_gain) ----
+  float sw = SAMPLING_WIDTH;
+  float4 s01 = fineTex.SampleLevel(samp, anchorUV + float2(-sw, 0), 0) * fine_gain;
+  float4 s21 = fineTex.SampleLevel(samp, anchorUV + float2( sw, 0), 0) * fine_gain;
+  float4 s10 = fineTex.SampleLevel(samp, anchorUV + float2(0, -sw), 0) * fine_gain;
+  float4 s12 = fineTex.SampleLevel(samp, anchorUV + float2(0,  sw), 0) * fine_gain;
   float v01 = lum(s01.rgb), v21 = lum(s21.rgb), v10 = lum(s10.rgb), v12 = lum(s12.rgb);
   float valueAvg = (v01 + v21 + v10 + v12) * 0.25;
 
   float2 grad = float2(v21 - v01, v12 - v10);
-  float2 gradNorm = grad / max(1e-5, length(grad));
+  float gl = length(grad);
+  // Degenerate-input fallback (uniform frame): keep a unit direction so the
+  // fan doesn't collapse to a point. The original emitted (0,0) here.
+  float2 gradNorm = (gl > 1e-6) ? (grad / gl) : float2(1.0, 0.0);
 
   float3 color = (s01.rgb + s21.rgb + s10.rgb + s12.rgb) * 0.25;
   float3 dCdx = s21.rgb - s01.rgb;
   float3 dCdy = s12.rgb - s10.rgb;
 
-  // Soften each channel's colour gradient (atan compression).
-  float3 lenC = float3(length(float2(dCdx.r, dCdy.r)),
-                       length(float2(dCdx.g, dCdy.g)),
-                       length(float2(dCdx.b, dCdy.b)));
-  float3 soft = atan((lenC + color_grad_soft) * color_grad_squash) * (PI * 2.0);
-  float3 colorGradX = (dCdx / max(soft, 1e-4)) * valueAvg;
-  float3 colorGradY = (dCdy / max(soft, 1e-4)) * valueAvg;
+  // Per-channel atan compression, then the original's R,B,G reassembly.
+  float2 gR = float2(dCdx.r, dCdy.r);
+  float2 gG = float2(dCdx.g, dCdy.g);
+  float2 gB = float2(dCdx.b, dCdy.b);
+  gR /= max(atan((length(gR) + color_grad_soft) * color_grad_squash) * (PI * 2.0), 1e-6);
+  gG /= max(atan((length(gG) + color_grad_soft) * color_grad_squash) * (PI * 2.0), 1e-6);
+  gB /= max(atan((length(gB) + color_grad_soft) * color_grad_squash) * (PI * 2.0), 1e-6);
+  float3 colorGradX = float3(gR.x, gB.x, gG.x) * valueAvg;
+  float3 colorGradY = float3(gR.y, gB.y, gG.y) * valueAvg;
 
-  // Bias the base colour slightly down-gradient so the glint reads against
-  // the local background (matches the original's colour adjust).
-  color -= (gradNorm.x * colorGradX + gradNorm.y * colorGradY)
-           * lerp(1.0, color_grad_adjust, saturate(valueAvg));
+  // Unclamped lerp: valueAvg can exceed 1 (fine_gain), extrapolating adjust.
+  float adj = 1.0 + (color_grad_adjust - 1.0) * valueAvg;
+  color -= (gradNorm.x * colorGradX + gradNorm.y * colorGradY) * adj;
 
-  anchor[0] = anchorUV.x; anchor[1] = anchorUV.y;
+  float2 pos = anchorUV + grad;
+
+  anchor[0] = pos.x;      anchor[1] = pos.y;
   anchor[2] = gradNorm.x; anchor[3] = gradNorm.y;
   anchor[4] = grad.x;     anchor[5] = grad.y;
   anchor[6] = color.r;    anchor[7] = color.g;    anchor[8] = color.b;

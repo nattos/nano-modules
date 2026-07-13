@@ -59,10 +59,12 @@ void nano_module_main() {
         2,
         "filter.legacy.glisten",
         "Glisten",
-        "Image-anchored sparkle. Locates the brightest spot via a coarse/fine "
-        "search, then draws layered triangle-fan glints radiating from it, "
-        "stretched along the local image gradient and tinted by the local "
-        "colour gradient, with a twinkling flicker. Port of NanoGraph Glisten.",
+        "Image-anchored sparkle. Locates the brightest region on a blurred "
+        "search grid, then stacks layered polygon-disc glints there, shaded "
+        "hard by the local colour gradient (colours run negative and dig "
+        "complementary hues out of the image), blurred into a glow layer "
+        "whose gain twinkles with a random flicker envelope. Faithful port "
+        "of NanoGraph Glisten.",
         "filter",
         "sparkle,glint,glisten,lens,star,legacy",
         "la-star",

@@ -91,7 +91,7 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
       bundle: 'legacy',
       width: 64, height: 64,
       inputColor: [0.3, 0.3, 0.3, 1.0],
-      params: [['intensity', 1.5], ['size', 0.3], ['flicker', 0.0]],
+      params: [['intensity', 1.5], ['size', 0.3], ['flicker_sustain', 1.0]],
       samplePoints: [[2, 2], [62, 62]],
       ticks: 2,
       renderEachTick: true,
@@ -102,6 +102,27 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
     const far = frame.samples.find(s => s.x === 62)!;
     expect(near.r).toBeGreaterThan(far.r + 10);  // sparkle brightened the anchor
     expect(Math.abs(far.r - 77)).toBeLessThan(12); // far corner ~ input (0.3*255)
+  });
+
+  it('sustain 0 at rest gates the layer to zero (passthrough)', async () => {
+    // The flicker envelope starts at 0; with sustain 0 the blur-pass gain is
+    // (contrast+1)·mix(env, 1, 0) = 0, so the sparkle layer contributes
+    // nothing and the output is exactly input × input_alpha.
+    const frame = await runGpuEffectTest({
+      module: 'filter.legacy.glisten',
+      bundle: 'legacy',
+      width: 64, height: 64,
+      inputColor: [0.3, 0.5, 0.7, 1.0],
+      params: [['flicker_sustain', 0.0], ['flicker_rate', 0.0]],
+      samplePoints: [[4, 4], [32, 32]],
+      dumpName: 'glisten_gated',
+    });
+    expect(frame.success).toBe(true);
+    for (const s of frame.samples) {
+      expect(Math.abs(s.r - 77)).toBeLessThan(4);
+      expect(Math.abs(s.g - 128)).toBeLessThan(4);
+      expect(Math.abs(s.b - 179)).toBeLessThan(4);
+    }
   });
 });
 

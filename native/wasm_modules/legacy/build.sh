@@ -21,21 +21,27 @@ compile_shaders_compute_var_spv bicolor_grad render
 _emit_spv_header_var bicolor_grad hist analyze render
 echo "  bicolor_grad shaders compiled (SPV: hist + analyze + render)"
 
-# glisten — image-anchored sparkle fans.
-#   findanchor (compute, 1 thread) — coarse/fine brightest-spot search +
-#                                    local luma/colour gradient extraction.
-#   prefill    (compute) — copy tex_in × input_alpha → tex_out base.
-#   vs/fs      (vert/frag) — instanced triangle-fan sparkle, additive blend.
+# glisten — image-anchored sparkle fans (faithful NanoGraph pipeline).
+#   downsample (compute) — input → 64² search grid.
+#   blur       (compute) — separable weighted blur w/ per-pass gain (used on
+#                          the search grid AND the sparkle layer; the flicker
+#                          pulses the layer gain).
+#   findanchor (compute, 1 thread) — coarse/fine argmax on the blurred grid +
+#                                    luma/colour gradient extraction.
+#   vs/fs      (vert/frag) — rim-vertex polygon-fan discs, additive, half-res.
+#   composite  (compute) — out = in × input_alpha + layer × tint.
+compile_shaders_compute_var_spv glisten downsample
+compile_shaders_compute_var_spv glisten blur
 compile_shaders_compute_var_spv glisten findanchor
-compile_shaders_compute_var_spv glisten prefill
+compile_shaders_compute_var_spv glisten composite
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../glisten/vs.hlsl -Fo "$TMP_DIR/glisten_vs.spv"
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../glisten/fs.hlsl -Fo "$TMP_DIR/glisten_fs.spv"
-_emit_spv_header_var glisten findanchor prefill vs fs
-echo "  glisten shaders compiled (SPV: findanchor + prefill + vs + fs)"
+_emit_spv_header_var glisten downsample blur findanchor composite vs fs
+echo "  glisten shaders compiled (SPV: downsample + blur + findanchor + composite + vs + fs)"
 
 # double_chamber — P field-particles + Big attractors (DoubleChamber v2).
 compile_shaders_compute_var_spv double_chamber big_update
