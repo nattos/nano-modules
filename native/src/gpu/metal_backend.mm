@@ -482,15 +482,19 @@ public:
       // No vertexDescriptor: the vertex shader synthesizes geometry from
       // [[vertex_id]] / [[instance_id]] + storage buffers (instanced quads).
       desc.colorAttachments[0].pixelFormat = fmt;
-      desc.colorAttachments[0].blendingEnabled = YES;
-      desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-      desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-      if (blendMode == 1) {  // additive: src*src.a + dst
-        desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
-        desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
-      } else {               // alpha-over: src*src.a + dst*(1 - src.a)
-        desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+      if (blendMode == 2) {  // replace: no blending, fragment overwrites dst
+        desc.colorAttachments[0].blendingEnabled = NO;
+      } else {
+        desc.colorAttachments[0].blendingEnabled = YES;
+        desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        if (blendMode == 1) {  // additive: src*src.a + dst
+          desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+          desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+        } else {               // alpha-over: src*src.a + dst*(1 - src.a)
+          desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+          desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        }
       }
 
       NSError* error = nil;

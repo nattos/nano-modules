@@ -327,6 +327,20 @@ compile_shaders_compute_var_spv lens debug
 _emit_spv_header_var lens prepare bokeh color geo downsample upsample blur16 extract hood sun glow finish debug
 echo "  lens shaders compiled (SPV: prepare+bokeh+color+geo+downsample+upsample+blur16+extract+hood+sun+glow+finish+debug)"
 
+# envelope_warp — warp along a hand-drawn parametric envelope.
+#   vs/fs   — instanced per-segment quads rasterizing 1D coordinate maps
+#             (rgba32float, Replace blend; fragment inverts the segment ease).
+#   resolve — composes the axis (or radial) maps and samples the input once.
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../envelope_warp/vs.hlsl -Fo "$TMP_DIR/envelope_warp_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../envelope_warp/fs.hlsl -Fo "$TMP_DIR/envelope_warp_fs.spv"
+compile_shaders_compute_var_spv envelope_warp resolve
+_emit_spv_header_var envelope_warp vs fs resolve
+echo "  envelope_warp shaders compiled (SPV: vs + fs + resolve)"
+
 echo "=== Building WASM (nano) ==="
 
 WASM_COMMON_EXPORTS=(
@@ -362,6 +376,7 @@ wasm_build \
   ../simulant/main.cpp \
   ../smear/main.cpp \
   ../line_reconstruct/main.cpp \
-  ../lens/main.cpp
+  ../lens/main.cpp \
+  ../envelope_warp/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

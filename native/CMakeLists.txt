@@ -1073,6 +1073,19 @@ if(APPLE)
     catch_discover_tests(test_tri_shear)
   endif()
 
+  # End-to-end GPU render of warp.envelope (nano.wasm) on a real Metal backend.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    add_executable(test_envelope_warp tests/test_envelope_warp.cpp)
+    target_link_libraries(test_envelope_warp PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_envelope_warp PRIVATE
+      NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    target_compile_options(test_envelope_warp PRIVATE -Wno-attributes)
+    catch_discover_tests(test_envelope_warp)
+  endif()
+
   # Shared-runtime instance isolation: two namespaced executors on one runtime.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     add_executable(test_barrel_isolation tests/test_barrel_isolation.cpp)

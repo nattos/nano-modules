@@ -132,6 +132,14 @@ function readBindingDecls(bytes: Uint8Array, count: number): BindingDecl[] {
   return out;
 }
 
+// Sampled-texture bindings carry the bound texture's format as a layout hint
+// (see gpu.h `Bindings::tex2d`): 32-bit float formats sample as
+// `unfilterable-float` in WebGPU — declaring them `float` fails bind group
+// validation regardless of whether a sampler ever filters them.
+function sampledTypeForFormat(code: number): GPUTextureSampleType {
+  return code === 4 || code === 5 ? 'unfilterable-float' : 'float';   // r32f / rgba32f
+}
+
 function bindingDeclToLayoutEntry(
     b: BindingDecl, visibility: number,
     resolveFormat: (code: number) => GPUTextureFormat): GPUBindGroupLayoutEntry {
@@ -150,13 +158,13 @@ function bindingDeclToLayoutEntry(
       e.sampler = { type: 'filtering' };
       break;
     case BIND_TEXTURE_2D:
-      e.texture = { sampleType: 'float', viewDimension: '2d' };
+      e.texture = { sampleType: sampledTypeForFormat(b.format), viewDimension: '2d' };
       break;
     case BIND_TEXTURE_3D:
-      e.texture = { sampleType: 'float', viewDimension: '3d' };
+      e.texture = { sampleType: sampledTypeForFormat(b.format), viewDimension: '3d' };
       break;
     case BIND_TEXTURE_2D_ARRAY:
-      e.texture = { sampleType: 'float', viewDimension: '2d-array' };
+      e.texture = { sampleType: sampledTypeForFormat(b.format), viewDimension: '2d-array' };
       break;
     case BIND_STORAGE_TEXTURE_2D:
       e.storageTexture = {
@@ -430,7 +438,8 @@ export class GPUHost {
    */
   createTextureWithMips(width: number, height: number, format: number, mipCount: number): number {
     const fmt = this.resolveFormat(format);
-    const renderable = (fmt === 'bgra8unorm' || fmt === 'rgba8unorm' || fmt === 'rgba16float');
+    const renderable = (fmt === 'bgra8unorm' || fmt === 'rgba8unorm' || fmt === 'rgba16float'
+                        || fmt === 'r32float' || fmt === 'rgba32float');
     const usage =
       GPUTextureUsage.TEXTURE_BINDING
       | GPUTextureUsage.STORAGE_BINDING
@@ -687,6 +696,7 @@ export class GPUHost {
   /// `blendMode` selects the color/alpha blend equation:
   ///   0 = alpha-over (default; src*src.a + dst*(1-src.a))
   ///   1 = additive  (src*src.a + dst; alpha channel sums)
+  ///   2 = replace   (no blending; the fragment output overwrites dst)
   /// Anything else falls back to alpha-over.
   createInstancedRenderPipelineWithLayout(
       vsShaderHandle: number, vsEntry: string,
@@ -698,7 +708,9 @@ export class GPUHost {
     const fmt: GPUTextureFormat = this.resolveFormat(format);
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
-    const blend: GPUBlendState = blendMode === 1
+    const blend: GPUBlendState | undefined = blendMode === 2
+      ? undefined
+      : blendMode === 1
       ? {
           color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
           alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' },

@@ -32,10 +32,12 @@ NANO_DECLARE_INSTANCE_EFFECT(simulant)
 NANO_DECLARE_INSTANCE_EFFECT(smear)
 NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
 NANO_DECLARE_INSTANCE_EFFECT(lens)
+NANO_DECLARE_INSTANCE_EFFECT(envelope_warp)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
 namespace lens { int32_t is_identity(void* self); }
+namespace envelope_warp { int32_t is_identity(void* self); }
 
 extern "C" {
 
@@ -260,6 +262,19 @@ void nano_module_main() {
         "la-bezier-curve",
         NANO_INSTANCE_LIFECYCLE(line_reconstruct),
         &line_reconstruct::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.envelope",
+        "Envelope Warp",
+        "Warps the image along an arbitrary hand-drawn parametric envelope — the same (x, y, ease) curve editor as mod.shaper.envelope, mapping source position to warped position (the straight diagonal = no warp). Symmetry modes mirror one curve about the center per axis (Horizontal / Vertical / XY), apply two independent curves (X and Y mirrored, or Rect edge-to-edge), or wrap the curve radially by distance from a movable center (1 on the graph = half the longer axis). Non-monotonic curves FOLD the image over itself (painter's order — later curve segments draw on top). Each envelope segment becomes one instanced quad rasterizing a 1D coordinate map (the per-segment exponential ease is analytically inverted in the fragment), then a single compute resolve composes the axis maps and samples the input once. Amount morphs identity <-> full curve (wire an LFO to breathe); uncovered regions either stretch the image edge or cut to transparent.",
+        "warp",
+        "warp,envelope,curve,remap,distort,bulge,pinch,fisheye,squeeze,mirror,radial,fold,stretch,displace",
+        "la-bezier-curve",
+        NANO_INSTANCE_LIFECYCLE(envelope_warp),
+        &envelope_warp::is_identity,
+        nullptr, nullptr, &envelope_warp::eval_visibility,
     });
 
     nano::registerEffect({

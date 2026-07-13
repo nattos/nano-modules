@@ -251,7 +251,14 @@ public:
   Bindings& storage(int slot)    { return push({slot, BindingKind::StorageRO, 0, 0}); }
   Bindings& storageRW(int slot)  { return push({slot, BindingKind::StorageRW, 0, 0}); }
   Bindings& sampler(int slot)    { return push({slot, BindingKind::Sampler, 0, 0}); }
-  Bindings& tex2d(int slot)      { return push({slot, BindingKind::Texture2D, 0, 0}); }
+  /// Sampled texture. The optional format is a WEB-LAYOUT HINT only: WebGPU
+  /// bind group layouts must declare `unfilterable-float` for 32-bit float
+  /// formats (r32float / rgba32float), which also forbids linear-sampling
+  /// them — read those with Load (or a manual tap lerp). Other formats (and
+  /// Metal) ignore it.
+  Bindings& tex2d(int slot, TextureFormat fmt = TextureFormat::BGRA8) {
+    return push({slot, BindingKind::Texture2D, static_cast<int>(fmt), 0});
+  }
   Bindings& tex3d(int slot)      { return push({slot, BindingKind::Texture3D, 0, 0}); }
   Bindings& tex2dArray(int slot) { return push({slot, BindingKind::Texture2DArray, 0, 0}); }
 
@@ -693,6 +700,7 @@ struct Device {
   enum class BlendMode : int {
     AlphaOver = 0,  ///< src*src.a + dst*(1 - src.a). Default.
     Additive  = 1,  ///< src*src.a + dst. Particles accumulate.
+    Replace   = 2,  ///< No blending: the fragment output overwrites dst.
   };
 
   /// Same as the bindings-only `createInstancedRenderPSO` overload, but

@@ -29,7 +29,8 @@ public:
   // geometry from storage buffers (no vertex descriptor / vertex buffer).
   // `format` is a TextureFormat enum value (2 = Surface). `blendMode`:
   // 0 = alpha-over (src*src.a + dst*(1-src.a)), 1 = additive
-  // (src*src.a + dst). Default unimplemented (returns -1).
+  // (src*src.a + dst), 2 = replace (no blending). Default unimplemented
+  // (returns -1).
   virtual int32_t createInstancedRenderPSO(
       int32_t vsHandle, const std::string& vsEntry,
       int32_t fsHandle, const std::string& fsEntry,
