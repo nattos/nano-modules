@@ -1118,6 +1118,14 @@ function coerceSketch(remote: any): Sketch {
     instances: (r.instances && typeof r.instances === 'object' && !Array.isArray(r.instances))
                   ? r.instances
                   : undefined,
+    // Must survive the echo of our own push: applySketchFromSnapshot adopts
+    // every snapshot through this coercion, so a field dropped here snaps the
+    // UI back to defaults while the barrel keeps rendering with it (and the
+    // "reset to default" click then produces zero immer patches — nothing is
+    // ever pushed to undo it). normalizeSketchChains sanitizes the value.
+    outputFormat: (r.outputFormat && typeof r.outputFormat === 'object' && !Array.isArray(r.outputFormat))
+                  ? r.outputFormat
+                  : undefined,
     // Carried through opaquely — round-trips via the barrel and Resolume's
     // own composition-file persistence unchanged (confirmed: neither treats
     // `sketch` as anything but generic JSON). Used only by the live-mode
