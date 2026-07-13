@@ -1981,9 +1981,12 @@ export class AppController {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
       sk.wires = sk.wires ?? [];
-      // Replace any existing wire into the same dest field (last wins).
+      // Multiple wires may target one input — the combine modes fold them
+      // (applyReadTaps' running accumulator). Only an exact re-drag of the
+      // SAME edge replaces its wire; a different source stacks alongside.
       sk.wires = sk.wires.filter(
-        w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath));
+        w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath
+               && w.src.instanceKey === srcKey && w.src.field === writer.fieldPath));
       sk.wires.push({
         id,
         src: { instanceKey: srcKey, field: writer.fieldPath },
@@ -2002,7 +2005,7 @@ export class AppController {
    * field. The wire's src addresses the device by its library uuid
    * (`midi:<id>` + endpoint field, e.g. 'b0/e05/turn') — no chain entry
    * exists for it, and the executor synthesizes an external rail instead.
-   * Same dest-dedupe + `add` default as module wires.
+   * Same edge-level dedupe + `add` default as module wires.
    */
   private connectDeviceWire(a: FieldConnectInfo, b: FieldConnectInfo) {
     if (a.deviceControl && b.deviceControl) return;   // device→device is meaningless
@@ -2028,15 +2031,19 @@ export class AppController {
     const destKey = readerEntry.instance_key;
 
     const id = `wire_${Date.now().toString(36)}_${this.nextWireId++}`;
+    const srcKey = midiInstanceKey(device.deviceInstanceId);
     this.mutate('Connect device wire', draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
       sk.wires = sk.wires ?? [];
+      // Same edge-level dedupe as module wires: re-dragging the same control
+      // onto the same input replaces; a different control/device stacks.
       sk.wires = sk.wires.filter(
-        w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath));
+        w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath
+               && w.src.instanceKey === srcKey && w.src.field === device.controlId));
       sk.wires.push({
         id,
-        src: { instanceKey: midiInstanceKey(device.deviceInstanceId), field: device.controlId },
+        src: { instanceKey: srcKey, field: device.controlId },
         dest: { instanceKey: destKey, field: reader.fieldPath },
         combine: 'add',
       });

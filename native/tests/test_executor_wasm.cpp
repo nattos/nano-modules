@@ -319,6 +319,75 @@ TEST_CASE("multiple wires into one field accumulate per combine (not last-wins)"
   CHECK(std::abs(two - 0.6) < 0.05);  // two `add` wires SUM (was 0.3 under last-wins)
 }
 
+TEST_CASE("a delayed wire keeps its history when a sibling wire shares the field",
+          "[executor_wasm]") {
+  // Delay-line state must be per WIRE: with the old per-(instance,field) key,
+  // a zero-delay wire into the same field ran applyModDelay's pass-through
+  // erase every frame, wiping the delayed sibling's line — its `delay` then
+  // read back the just-pushed sample, i.e. never delayed at all.
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+
+  // d1.knob_0 --add--------------------> so.out_0   (no delay)
+  // d2.knob_0 --add, delay 0.1s-------> so.out_0
+  auto sketchWith = [](double knob2) {
+    auto j = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "type":"module","module_type":"util.dashboard","instance_key":"d1@0" },
+        { "type":"module","module_type":"util.dashboard","instance_key":"d2@0" },
+        { "type":"module","module_type":"util.sketch_output","instance_key":"so@0" }
+      ],
+      "instances": {
+        "d1@0": { "module_type":"util.dashboard","state":{ "knob_0":0.2 } },
+        "d2@0": { "module_type":"util.dashboard","state":{ "knob_0":0.0 } },
+        "so@0": { "module_type":"util.sketch_output","state":{} }
+      },
+      "wires": [
+        { "id":"w1","combine":"add","src":{"instanceKey":"d1@0","field":"knob_0"},"dest":{"instanceKey":"so@0","field":"out_0"} },
+        { "id":"w2","combine":"add","mod":{"delay":0.1},"src":{"instanceKey":"d2@0","field":"knob_0"},"dest":{"instanceKey":"so@0","field":"out_0"} }
+      ]
+    })JSON");
+    j["instances"]["d2@0"]["state"]["knob_0"] = knob2;
+    return j;
+  };
+  SketchExecutor ex(&rt, &registry, backend.get());
+  auto outVal = [&](nlohmann::json& j, bool dirty) -> double {
+    ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, dirty);
+    backend->submit();
+    const auto& md = ex.lastModulationData();
+    REQUIRE(md.contains("so@0"));
+    REQUIRE(md["so@0"].contains("out_0"));
+    return md["so@0"]["out_0"].value("value", -1.0);
+  };
+
+  // Settle well past the 0.1s delay with d2 at 0 → out = 0.2 + delayed(0).
+  auto flat = sketchWith(0.0);
+  outVal(flat, true);
+  for (int i = 0; i < 10; ++i) outVal(flat, false);
+
+  // Step d2 to 0.6. The delayed wire must still read the PRE-step value for
+  // ~6 frames (0.1s at 60fps); a wiped line reads the new sample immediately.
+  auto stepped = sketchWith(0.6);
+  const double atStep = outVal(stepped, true);
+  INFO("frame after step " << atStep << " (wiped delay line would read ~0.8)");
+  CHECK(std::abs(atStep - 0.2) < 0.05);
+
+  // ...and after the delay elapses the step arrives in full.
+  for (int i = 0; i < 12; ++i) outVal(stepped, false);
+  const double settled = outVal(stepped, false);
+  INFO("settled " << settled);
+  CHECK(std::abs(settled - 0.8) < 0.05);
+}
+
 TEST_CASE("signed return rail carries bipolar values (no clamp at the relay)", "[executor_wasm]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");

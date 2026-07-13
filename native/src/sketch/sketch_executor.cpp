@@ -2030,7 +2030,14 @@ float SketchExecutor::foldFloatReadTap(const json& tap, const std::string& insta
   // which always lies within that range.
   const float delaySec = tap.contains("mod") && tap["mod"].is_object()
       ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
-  combined = applyModDelay(instanceKey, fieldPath, combined, delaySec);
+  // Delay-line state is per WIRE, not per field: multiple wires may target the
+  // same input (their combines stack), and a shared per-field line would get
+  // double-pushed each frame — worse, a zero-delay sibling's pass-through
+  // erase would wipe the delayed wire's history every frame, so its delay
+  // never took effect. railId == the wire id, unique per wire.
+  combined = applyModDelay(instanceKey,
+                           fieldPath + "\x1f" + tap.value("railId", std::string()),
+                           combined, delaySec);
   // Editor telemetry: the effective value + the swing band, sampled over the
   // source output's declared range (default 0..1). Fill anchor = the base the
   // fold modulates from (dmin seeds when no canonical).

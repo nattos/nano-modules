@@ -2266,12 +2266,15 @@ export class ColumnGroup extends MobxLitElement {
       return;
     }
     if (this.ds.caps.inlineWirePanel) {
-      const wire = (this.ds.getSketch(this.sketchId)?.wires ?? []).find((w) =>
+      // Exactly one wire on the field → jump straight to its panel. Several
+      // wires (stacked inputs) → fall through to the field card, which lists
+      // them all with per-wire inspectors.
+      const touching = (this.ds.getSketch(this.sketchId)?.wires ?? []).filter((w) =>
         (w.dest.instanceKey === instanceKey && w.dest.field === fieldPath) ||
         (w.src.instanceKey === instanceKey && w.src.field === fieldPath));
-      if (wire) {
+      if (touching.length === 1) {
         this.wirePanelPos = { x: e.clientX + 10, y: e.clientY };
-        this.ctl.select(`wire/${this.sketchId}/${wire.id}`);
+        this.ctl.select(`wire/${this.sketchId}/${touching[0].id}`);
         return;
       }
     }

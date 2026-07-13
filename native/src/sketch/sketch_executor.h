@@ -360,7 +360,7 @@ class SketchExecutor {
   std::unordered_map<std::string, std::unordered_map<std::string, float>>
       externalScalars_;
 
-  // Per-(instance,field) modulation DELAY lines (the wire's continuous-time
+  // Per-(instance, field+wire) modulation DELAY lines (the wire's continuous-time
   // `mod.shaper.delay`, seconds), persisted across frames. A wire shaper stage parallel
   // to smoothing: it time-shifts a modulated input's final (post-fold) value by
   // `delay` seconds via delay_line.h (the same math as the mod.shaper.delay effect).
@@ -635,8 +635,9 @@ class SketchExecutor {
                        std::unordered_map<std::string, float>* outModulatedScalars);
 
   // Apply a wire's continuous-time `delay` (seconds) to a modulated field's final
-  // post-fold `value`, via a per-(instance,field) delay line in delayState_. The
-  // line is fed one sample per frame at modClock_; the return is the value from
+  // post-fold `value`, via a delay line in delayState_ keyed (instance, field+wire)
+  // — per WIRE, since several wires may fold into one field and each carries its
+  // own delay. The line is fed one sample per frame at modClock_; the return is the value from
   // `delaySec` seconds ago (linearly interpolated, underrun-clamped to the start
   // value). `delaySec <= 0` is pass-through and forgets any stale line so a later
   // re-enable starts settled. Transitive — runs after the pure fold, before

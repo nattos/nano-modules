@@ -64,12 +64,19 @@ describe('connectWire with a device endpoint', () => {
     expect(wires()[0].src.instanceKey).toBe('midi:dev-1');
   });
 
-  it('replaces an existing wire into the same dest field (last wins)', () => {
+  it('re-dragging the SAME control onto the same dest replaces (no duplicates)', () => {
+    seedSketch();
+    appController.connectWire(deviceEnd('b0/e05/turn'), field({ chainIdx: 0 }));
+    appController.connectWire(deviceEnd('b0/e05/turn'), field({ chainIdx: 0 }));
+    expect(wires()).toHaveLength(1);
+  });
+
+  it('a different control onto the same dest STACKS (combines fold them)', () => {
     seedSketch();
     appController.connectWire(deviceEnd('b0/e05/turn'), field({ chainIdx: 0 }));
     appController.connectWire(deviceEnd('b1/e00/press'), field({ chainIdx: 0 }));
-    expect(wires()).toHaveLength(1);
-    expect(wires()[0].src.field).toBe('b1/e00/press');
+    expect(wires()).toHaveLength(2);
+    expect(wires().map(w => w.src.field).sort()).toEqual(['b0/e05/turn', 'b1/e00/press']);
   });
 
   it('lazy-forks a TEMPLATE source into a library instance on connect', () => {

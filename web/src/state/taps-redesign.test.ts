@@ -107,7 +107,20 @@ describe('connectWire', () => {
     });
   });
 
-  it('replaces an existing wire into the same dest field (last wins)', () => {
+  it('re-dragging the SAME edge replaces its wire (no duplicates)', () => {
+    seedWireSketch();
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),
+      field({ chainIdx: 1, fieldPath: 'brightness' }),
+    );
+    appController.connectWire(
+      field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),
+      field({ chainIdx: 1, fieldPath: 'brightness' }),
+    );
+    expect(wires()).toHaveLength(1);
+  });
+
+  it('a second source onto the same dest field STACKS (combines fold them)', () => {
     seedWireSketch();
     appController.connectWire(
       field({ chainIdx: 0, fieldPath: 'output', isOutput: true }),
@@ -117,8 +130,8 @@ describe('connectWire', () => {
       field({ chainIdx: 0, fieldPath: 'level', isOutput: true }),
       field({ chainIdx: 1, fieldPath: 'brightness' }),
     );
-    expect(wires()).toHaveLength(1);
-    expect(wires()[0].src.field).toBe('level');
+    expect(wires()).toHaveLength(2);
+    expect(wires().map(w => w.src.field).sort()).toEqual(['level', 'output']);
   });
 
   it('removeWire drops the wire by id', () => {
