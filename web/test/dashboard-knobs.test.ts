@@ -232,4 +232,82 @@ describe('util.dashboard knob bank', () => {
     expect(dom.knob2).toBe(true);
     expect(dom.knob2TapHit).toBe(true);
   });
+
+  it('renames a knob by double-clicking its label (persisted as state.label_i)', async () => {
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_rn'] = {
+          anchor: null,
+          chain: [{ type: 'module', module_type: 'source.solid_color', instance_key: 'sc@0',
+                    params: { color: [0.1,0.1,0.1] } }],
+          instances: { 'sc@0': { module_type: 'source.solid_color', state: { color:[0.1,0.1,0.1] } } },
+        };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_rn');
+      ac.addEffectToChain('sk_rn', 0, 1, 'util.dashboard');
+    })()`);
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Shadow-DOM probe: knob_3's label element rect + its current text.
+    const labelOf = () => page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      for (const el of walk(document)) {
+        if (el.tagName === 'SCALAR-KNOB' && el.fieldPath === 'knob_3') {
+          const lab = el.shadowRoot.querySelector('.label');
+          if (!lab) return null;
+          const r = lab.getBoundingClientRect();
+          return { text: lab.textContent, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+      }
+      return null;
+    })()`) as Promise<{ text: string; x: number; y: number } | null>;
+
+    const stateOf = () => page.evaluate(`(() => {
+      const inst = Object.values(window.appState.database.sketches['sk_rn'].instances)
+        .find(v => v.module_type === 'util.dashboard');
+      return JSON.parse(JSON.stringify(inst.state));
+    })()`) as Promise<Record<string, unknown>>;
+
+    let lab = await labelOf();
+    expect(lab).not.toBeNull();
+    expect(lab!.text).toBe('3');
+
+    // Double-click the label → inline input; type a name; Enter commits.
+    await page.mouse.click(lab!.x, lab!.y, { clickCount: 2 });
+    await new Promise(r => setTimeout(r, 200));
+    await page.keyboard.type('Speed');
+    await page.keyboard.press('Enter');
+    await new Promise(r => setTimeout(r, 300));
+
+    lab = await labelOf();
+    expect(lab!.text).toBe('Speed');
+    expect((await stateOf()).label_3).toBe('Speed');   // persisted in the instance state
+
+    // Escape cancels: the label and state are untouched.
+    await page.mouse.click(lab!.x, lab!.y, { clickCount: 2 });
+    await new Promise(r => setTimeout(r, 200));
+    await page.keyboard.type('nope');
+    await page.keyboard.press('Escape');
+    await new Promise(r => setTimeout(r, 300));
+    lab = await labelOf();
+    expect(lab!.text).toBe('Speed');
+    expect((await stateOf()).label_3).toBe('Speed');
+
+    // Clearing the name resets to the default numeric label and deletes the
+    // key. The input opens with its text selected, so Backspace clears it.
+    await page.mouse.click(lab!.x, lab!.y, { clickCount: 2 });
+    await new Promise(r => setTimeout(r, 200));
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Enter');
+    await new Promise(r => setTimeout(r, 300));
+    lab = await labelOf();
+    expect(lab!.text).toBe('3');
+    expect('label_3' in (await stateOf())).toBe(false);
+  });
 });

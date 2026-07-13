@@ -90,6 +90,15 @@ export class DashboardEditor extends MobxLitElement {
     return !hasOutgoing || replacedIn;
   }
 
+  /** Display label for knob i: the persisted rename (state.label_i, set via
+   *  double-click — display-only, see setDashboardKnobLabel) or the index. */
+  private knobLabel(i: number): string {
+    const st = appState.database.sketches[this.sketchId]?.instances?.[this.instanceKey]?.state as
+        Record<string, any> | undefined;
+    const v = st?.[`label_${i}`];
+    return typeof v === 'string' && v.trim() !== '' ? v : String(i);
+  }
+
   render() {
     if (!this.sketchId || !this.instanceKey) return html``;
     const binding = this.binding();
@@ -99,10 +108,13 @@ export class DashboardEditor extends MobxLitElement {
         ${knobs.map(i => html`
           <scalar-knob
             .fieldPath=${`knob_${i}`}
-            .label=${String(i)}
+            .label=${this.knobLabel(i)}
+            .labelEditable=${true}
             .min=${0} .max=${1} .step=${0.01} .defaultValue=${0}
             .muted=${this.isMuted(i)}
             .binding=${binding}
+            @label-change=${(e: CustomEvent<string>) =>
+              appController.setDashboardKnobLabel(this.sketchId, this.instanceKey, i, e.detail)}
           ></scalar-knob>
         `)}
       </div>

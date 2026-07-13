@@ -21,7 +21,9 @@
  *
  * Declares `sketch_input_source`: its knobs ARE the sketch's exposed input
  * parameters (consumed by the dashboard UI / a future external control surface).
- * The UI owns per-knob labels + active state at the sketch level.
+ * Per-knob display labels are UI-owned: the web editor persists renames as
+ * `label_i` keys in the instance state (collision-free with this schema; the
+ * state push delivers them here and this effect simply ignores them).
  */
 
 #include <gpu.h>

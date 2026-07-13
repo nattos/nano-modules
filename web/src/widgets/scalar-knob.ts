@@ -9,6 +9,9 @@
  * - Double-click or type digits to enter text edit mode
  * - Delete/Backspace resets to defaultValue
  * - The pointer angle + filled arc show the normalized position within [min,max]
+ * - With `labelEditable`, double-clicking the label opens an inline rename;
+ *   commits dispatch 'label-change' (detail: trimmed string, '' = reset) —
+ *   the OWNER stores it, the knob itself stays stateless about names
  *
  * Dispatches 'input' on every drag movement and 'change' on commit, matching
  * scalar-slider.
@@ -36,6 +39,8 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
   /** Grayed-out: the control currently has no effect (e.g. a dashboard knob with
    *  no outgoing wire, or overridden by a `replace` input wire). Still editable. */
   @property({ type: Boolean, reflect: true }) muted = false;
+  /** Double-click the label to rename it (see 'label-change' in the header). */
+  @property({ type: Boolean }) labelEditable = false;
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
@@ -43,6 +48,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
   bindInstance(binding: FieldBinding) { this.binding = binding; }
 
   @state() private isEditing = false;
+  @state() private isEditingLabel = false;
   private tempValue = '';
   private startValue = 0;
   private dragOp: PointerDragOp | null = null;
@@ -83,6 +89,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
     .dial:hover .knob-hub { stroke: var(--app-hi-color2, #4169E1); }
     .label { color: var(--app-text-color2, #b0b0b0); overflow: hidden; text-overflow: ellipsis;
              white-space: nowrap; max-width: 44px; text-align: center; }
+    .label[data-editable] { cursor: text; }
     .val { font-variant-numeric: tabular-nums; }
     input {
       width: 40px; height: 14px; border: none; border-radius: 1px;
@@ -163,7 +170,23 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
         </svg>
       </div>
       <div class="val">${this.formatValue(val)}</div>
-      ${this.label ? html`<div class="label">${this.label}</div>` : nothing}
+      ${this.renderLabel()}
+    `;
+  }
+
+  private renderLabel() {
+    if (this.isEditingLabel) {
+      return html`
+        <input class="label-input" type="text"
+          @keydown=${this.handleLabelKeyDown} @blur=${this.commitLabelEdit}
+          @pointerdown=${(e: Event) => e.stopPropagation()} />
+      `;
+    }
+    if (!this.label) return nothing;
+    return html`
+      <div class="label" ?data-editable=${this.labelEditable}
+        title=${this.labelEditable ? 'Double-click to rename' : this.label}
+        @dblclick=${this.handleLabelDoubleClick}>${this.label}</div>
     `;
   }
 
@@ -234,7 +257,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
   }
 
   private handleHostKeyDown = async (e: KeyboardEvent) => {
-    if (this.isEditing) return;
+    if (this.isEditing || this.isEditingLabel) return;
     if (/^[0-9.\-]$/.test(e.key) || e.key === 'Enter') {
       this.isEditing = true;
       this.tempValue = e.key === 'Enter' ? this.effectiveValue.toString() : e.key;
@@ -277,6 +300,34 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
       this.dispatchEvent(new CustomEvent('change', { detail: num }));
     }
     this.isEditing = false;
+    this.focus();
+  }
+
+  // --- Label rename (labelEditable) ---
+
+  private async handleLabelDoubleClick(e: Event) {
+    if (!this.labelEditable) return;
+    e.stopPropagation();
+    this.isEditingLabel = true;
+    await this.updateComplete;
+    const input = this.shadowRoot?.querySelector<HTMLInputElement>('.label-input');
+    if (input) { input.value = this.label; input.focus(); input.select(); }
+  }
+
+  private handleLabelKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Enter') this.commitLabelEdit();
+    else if (e.key === 'Escape') { this.isEditingLabel = false; this.focus(); }
+    // Keep digits/Backspace from reaching the host handler (value edit/reset).
+    e.stopPropagation();
+  }
+
+  private commitLabelEdit() {
+    if (!this.isEditingLabel) return;   // Enter already committed; this is the unmount blur
+    const input = this.shadowRoot?.querySelector<HTMLInputElement>('.label-input');
+    this.isEditingLabel = false;
+    // Trimmed; '' means "reset to the default label" — the owner decides what
+    // that is (the knob itself never stores names).
+    this.dispatchEvent(new CustomEvent('label-change', { detail: (input?.value ?? '').trim() }));
     this.focus();
   }
 }

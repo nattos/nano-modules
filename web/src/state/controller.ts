@@ -970,6 +970,24 @@ export class AppController {
     this.mutate('Set knob', this.dashboardKnobRecipe(sketchId, instanceKey, idx, value));
   }
 
+  /**
+   * Rename a dashboard knob (one undo point). Display-only: the name lives in
+   * the instance state as `label_i` — collision-free with the effect schema
+   * (`knob_i`/`tex_*`/`intro`), ignored by the effect when the state push
+   * delivers it, and persisted for free because instance state rides the
+   * sketch doc (IDB and the barrel's opaque blob alike). Empty/whitespace
+   * deletes the key, restoring the default numeric label.
+   */
+  setDashboardKnobLabel(sketchId: string, instanceKey: string, idx: number, label: string) {
+    const trimmed = label.trim();
+    this.mutate('Rename knob', (draft: DatabaseState) => {
+      const inst = draft.sketches[sketchId]?.instances?.[instanceKey];
+      if (!inst) return;
+      if (trimmed) inst.state[`label_${idx}`] = trimmed;
+      else delete inst.state[`label_${idx}`];
+    });
+  }
+
   // --- Help text ("?" mode) — per-instance, per-slot markdown overrides ---
 
   /**
