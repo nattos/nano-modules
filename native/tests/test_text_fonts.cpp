@@ -125,3 +125,82 @@ TEST_CASE("text_layout resolves + registers OS families from the spec", "[fonts]
   float wUnknown = layoutWidth(specFor("Definitely Not A Font ZZZ"));
   CHECK(wUnknown == wPrimary);
 }
+
+namespace {
+
+// Like specFor, but with an italic flag and an OPTIONAL family — no family key
+// at all when null (the primary-font case source.text.plain emits for a blank
+// Font, which still carries weight/italic).
+std::string specStyled(const char* family, int weight, bool italic) {
+  char buf[512];
+  int n = std::snprintf(buf, sizeof(buf), "{\"text\":\"Hamburgefonstiv\",\"runs\":[{");
+  if (family && family[0])
+    n += std::snprintf(buf + n, sizeof(buf) - n, "\"family\":\"%s\",", family);
+  n += std::snprintf(buf + n, sizeof(buf) - n,
+      "\"weight\":%d,\"italic\":%s,\"size_px\":48,\"rgba\":[1,1,1,1]}]}",
+      weight, italic ? "true" : "false");
+  return std::string(buf, (size_t)n);
+}
+
+// Ink slant of a CPU-rasterized layout: mean lit-x of the ink's top third minus
+// its bottom third — a faux-oblique shear leans glyph tops rightward.
+double rasterSlant(const std::string& spec) {
+  int id = text_layout(spec.c_str(), (int)spec.size());
+  REQUIRE(id > 0);
+  text_engine::Metrics m;
+  REQUIRE(Engine::instance().measure(id, m));
+  const int W = (int)m.width + 32, H = (int)m.height + 32;
+  std::vector<uint8_t> px((size_t)W * H * 4, 0);
+  REQUIRE(Engine::instance().rasterize(id, W, H, 16.0f, 16.0f, nullptr, px.data()));
+  Engine::instance().release(id);
+  // rasterize() composites onto an opaque-black background (alpha 255
+  // everywhere) — ink is detected by luminance, not alpha.
+  auto isInk = [&](int x, int y) { return px[((size_t)y * W + x) * 4] > 100; };
+  int inkTop = H, inkBot = -1;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++)
+      if (isInk(x, y)) {
+        if (y < inkTop) inkTop = y;
+        if (y > inkBot) inkBot = y;
+      }
+  double xTop = 0, xBot = 0; long nTop = 0, nBot = 0;
+  const int third = (inkBot - inkTop + 1) / 3;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      if (!isInk(x, y)) continue;
+      if (y < inkTop + third) { xTop += x; ++nTop; }
+      if (y > inkBot - third) { xBot += x; ++nBot; }
+    }
+  return (nTop && nBot) ? xTop / nTop - xBot / nBot : 0.0;
+}
+
+}  // namespace
+
+TEST_CASE("layout synthesizes bold/italic when no true styled face exists", "[fonts]") {
+  ensurePrimary();
+
+  // Primary font (no family in the spec — a blank Font in source.text.plain):
+  // weight 700 must WIDEN the layout, because synthetic embolden also widens
+  // each glyph's advance. Formerly weight/italic silently did nothing here.
+  float w400 = layoutWidth(specStyled(nullptr, 400, false));
+  float w700 = layoutWidth(specStyled(nullptr, 700, false));
+  CHECK(w700 > w400 + 1.0f);
+
+  // Same for a family that is not registered (falls back to the primary face).
+  float u700 = layoutWidth(specStyled("Definitely Not A Font ZZZ", 700, false));
+  CHECK(u700 == w700);
+
+  // A TRUE styled face still wins with no synthesis on top: Menlo is monospace,
+  // so its real bold shares advances with regular — if synthetic embolden
+  // leaked in, the width would grow by 0.03 em per glyph.
+  float m400 = layoutWidth(specStyled("Menlo", 400, false));
+  float m700 = layoutWidth(specStyled("Menlo", 700, false));
+  CHECK(m700 == m400);
+
+  // Faux oblique on the primary font: italic must lean the ink's top rightward
+  // (rasterized via the CPU golden compositor); advances stay untouched.
+  double slantReg  = rasterSlant(specStyled(nullptr, 400, false));
+  double slantItal = rasterSlant(specStyled(nullptr, 400, true));
+  CHECK(slantItal > slantReg + 2.0);
+  CHECK(layoutWidth(specStyled(nullptr, 400, true)) == w400);
+}

@@ -206,8 +206,18 @@ std::vector<std::string> parseFamilyList(const std::string& s) {
 
 // A styled run: a byte range [b0, b1) of the text with its size, color, the
 // resolved faceId (0 = primary font; >0 = a host-registered named family), and
-// the normalized CJK script (for regional Han fallback selection).
-struct Run { int b0, b1; float size; float r, g, b, a; int face; std::string lang; };
+// the normalized CJK script (for regional Han fallback selection). `skew` /
+// `embolden` carry SYNTHETIC oblique/bold for when the requested style has no
+// registered true face (0 = none — the resolved face already is that style).
+struct Run { int b0, b1; float size; float r, g, b, a; int face; std::string lang;
+             float skew, embolden; };
+
+// Synthetic style strengths — MUST match the Blitz/parley rich path (parley
+// flags faux bold/oblique when a face lacks the style; text_blitz applies
+// embolden 0.03 em and parley's default 14° oblique), so a faux-styled plain
+// run and a faux-styled rich run look identical.
+constexpr float kSynthEmbolden = 0.03f;              // em
+constexpr float kSynthSkewRad  = 0.24434610f;        // 14° in radians
 
 // Parse the spec's "runs" array. Each run = {start, len, size_px, rgba, family,
 // weight, italic, lang}. `family` resolves to a faceId via `faceByName`; `lang`
@@ -216,22 +226,39 @@ struct Run { int b0, b1; float size; float r, g, b, a; int face; std::string lan
 static std::vector<Run> parseRuns(const char* s, int n, float defSize,
                                   const std::unordered_map<std::string, int>& faceByName,
                                   const std::string& docLang) {
-  auto resolveFace = [&](const char* sub, int sl) -> int {
-    int fp = findField(sub, sl, "family");
-    std::string fam;
-    if (!(fp >= 0 && readString(sub, sl, fp, fam)) || fam.empty()) return 0;
+  // Resolved face + the synthetic styling the chosen face still lacks. A true
+  // styled face always wins; anything the winning face doesn't provide is
+  // synthesized (faux bold / faux oblique) so weight/italic ALWAYS take visible
+  // effect — browser behavior, and what the Blitz rich path already does.
+  struct RunFace { int face; float skew, embolden; };
+  auto resolveFace = [&](const char* sub, int sl) -> RunFace {
     int  weight = (int)readNumber(sub, sl, "weight", 400.0f);
     bool italic = readBool(sub, sl, "italic", false);
-    // `family` is a CSS-style list: walk it and use the FIRST registered family.
-    // For each candidate, prefer its exact styled face, then its regular face;
-    // try the next candidate if neither is registered. None → primary font.
-    for (const std::string& cand : parseFamilyList(fam)) {
-      auto it = faceByName.find(faceKey(cand, weight, italic));
-      if (it != faceByName.end()) return it->second;
-      auto rit = faceByName.find(lowerAscii(cand));
-      if (rit != faceByName.end()) return rit->second;
+    const bool wantBold = weight >= 600;
+    int fp = findField(sub, sl, "family");
+    std::string fam;
+    if (fp >= 0 && readString(sub, sl, fp, fam) && !fam.empty()) {
+      // `family` is a CSS-style list: walk it and use the FIRST registered
+      // family. Within a family prefer the exact styled face, then real italic
+      // (synthesizing bold), then real bold (synthesizing oblique), then the
+      // regular face (synthesizing both) — CSS font-matching order, style
+      // before weight. Try the next candidate only when NO face is registered.
+      struct Attempt { int w; bool i; };
+      const Attempt attempts[4] = {
+          {weight, italic}, {400, italic}, {weight, false}, {400, false}};
+      for (const std::string& cand : parseFamilyList(fam)) {
+        for (const Attempt& at : attempts) {
+          auto it = faceByName.find(faceKey(cand, at.w, at.i));
+          if (it == faceByName.end()) continue;
+          return {it->second,
+                  (italic && !at.i) ? kSynthSkewRad : 0.0f,
+                  (wantBold && at.w != weight) ? kSynthEmbolden : 0.0f};
+        }
+      }
     }
-    return 0;
+    // No family named (or none registered): the primary font — a single
+    // regular face — plus full synthesis for whatever style was requested.
+    return {0, italic ? kSynthSkewRad : 0.0f, wantBold ? kSynthEmbolden : 0.0f};
   };
   auto resolveLang = [&](const char* sub, int sl) -> std::string {
     int lp = findField(sub, sl, "lang");
@@ -252,11 +279,13 @@ static std::vector<Run> parseRuns(const char* s, int n, float defSize,
       float flen = readNumber(sub, sl, "len", -1.0f);
       float size = readNumber(sub, sl, "size_px", defSize);
       float rgba[4] = {1, 1, 1, 1}; readFloatArray(sub, sl, "rgba", rgba, 4);
+      RunFace rf = resolveFace(sub, sl);
       runs.push_back({start, flen < 0 ? INT_MAX : start + (int)flen, size,
-                      rgba[0], rgba[1], rgba[2], rgba[3], resolveFace(sub, sl), resolveLang(sub, sl)});
+                      rgba[0], rgba[1], rgba[2], rgba[3], rf.face, resolveLang(sub, sl),
+                      rf.skew, rf.embolden});
     }
   }
-  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1, 0, docLang});
+  if (runs.empty()) runs.push_back({0, INT_MAX, defSize, 1, 1, 1, 1, 0, docLang, 0.0f, 0.0f});
   return runs;
 }
 
@@ -712,10 +741,13 @@ int Engine::layout(const char* spec_json, int len) {
     const Run& r = runFor(byteStart);
     if (cp == '\n') { flushWord(); finalizeLine(); continue; }
     // Resolve via the run's face, falling through the fallback chain (CJK etc.),
-    // preferring the run's language for regional Han.
+    // preferring the run's language for regional Han. The run's synthetic
+    // styling applies to fallback faces too (a bold run faux-bolds its CJK
+    // fallback glyphs — matching browser faux-bold behavior); embolden also
+    // widens the glyph advance inside ensureGlyph, so layout spacing follows.
     int faceId; uint32_t gi;
     impl_->resolveCodepoint(cp, r.face, r.lang, faceId, gi);
-    const GlyphInfo* info = impl_->ensureGlyph(faceId, gi, cp);
+    const GlyphInfo* info = impl_->ensureGlyph(faceId, gi, cp, r.skew, r.embolden);
     if (cp == ' ') {
       flushWord();
       float adv = info->advance * r.size;

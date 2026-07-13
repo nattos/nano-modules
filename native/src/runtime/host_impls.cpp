@@ -294,8 +294,13 @@ int val_type_of(int h) {
 
 double val_as_number(int h) {
   auto* v = val_lookup(h);
-  if (!v || !v->is_number()) return 0.0;
-  return v->get<double>();
+  if (!v) return 0.0;
+  if (v->is_number()) return v->get<double>();
+  // Coerce booleans so effects calling state::patchFloat on a bool patch see
+  // 1.0/0.0 rather than 0.0 always — matches bridge_core_val_as_number and the
+  // web host's JS val store, which both coerce for exactly this reason.
+  if (v->is_boolean()) return v->get<bool>() ? 1.0 : 0.0;
+  return 0.0;
 }
 
 int val_as_bool(int h) {

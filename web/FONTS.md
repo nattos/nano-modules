@@ -24,6 +24,20 @@ The engine itself is multi-face: `setFont` installs the primary (face 0),
 `addFont(name, bytes)` registers a named face, and glyphs are cached by
 `(faceId, glyphIndex)` in one shared atlas.
 
+## Bold / italic: true faces first, synthesis otherwise
+
+A run's `weight`/`italic` resolve to a **true styled face** when one is
+registered (native registers every face of a Core Text family; the web
+registers every face Local Font Access returns). When the chosen face isn't
+truly styled — the primary font, the bundled regular-only families, an
+unresolved web family, or a family with no bold/italic cut — the engine
+**synthesizes** the missing style per glyph: faux bold via outline embolden
+(0.03 em, which also widens the advance) and faux oblique via a 14° shear.
+The constants match the Blitz/parley rich path, so a faux-styled plain run
+and a faux-styled rich run look identical. Within a family the preference
+order is CSS-like (style before weight): exact styled face → real italic
+(+faux bold) → real bold (+faux oblique) → regular (+both).
+
 ## Fallback chain (CJK and other missing codepoints)
 
 When a run's face lacks a codepoint (e.g. CJK in a Latin font), the engine

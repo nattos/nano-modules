@@ -827,12 +827,21 @@ static int32_t val_type_of(wasm_exec_env_t env, int32_t h) {
 static double val_as_number(wasm_exec_env_t env, int32_t h) {
   auto* ctx = get_ctx(env);
   auto* v = ctx ? ctx->get_val(h) : nullptr;
-  return (v && v->is_number()) ? v->get<double>() : 0.0;
+  if (!v) return 0.0;
+  if (v->is_number()) return v->get<double>();
+  // Coerce booleans so effects calling state::patchFloat on a bool patch see
+  // 1.0/0.0 rather than 0.0 always — matches bridge_core_val_as_number and the
+  // web host's JS val store, which both coerce for exactly this reason.
+  if (v->is_boolean()) return v->get<bool>() ? 1.0 : 0.0;
+  return 0.0;
 }
 static int32_t val_as_bool(wasm_exec_env_t env, int32_t h) {
   auto* ctx = get_ctx(env);
   auto* v = ctx ? ctx->get_val(h) : nullptr;
-  return (v && v->is_boolean() && v->get<bool>()) ? 1 : 0;
+  if (!v) return 0;
+  if (v->is_boolean()) return v->get<bool>() ? 1 : 0;
+  if (v->is_number()) return v->get<double>() != 0.0 ? 1 : 0;  // match host_impls
+  return 0;
 }
 static int32_t val_as_string(wasm_exec_env_t env, int32_t h, int32_t buf_ptr, int32_t buf_len) {
   auto* ctx = get_ctx(env);

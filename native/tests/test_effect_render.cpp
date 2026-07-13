@@ -2292,6 +2292,59 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   inst->setParamJson("line_spacing", "1.2");   // restore the default
   INFO("box-centered bottom row: spacing 1.0 → " << ctTight << ", 3.0 → " << ctAiry);
   CHECK(std::abs(ctTight - ctAiry) <= 2);
+
+  // Fourth phase (#bold-italic), SAME backend + instance: Bold/Italic must take
+  // effect for the DEFAULT (blank Font = primary face) via the engine's
+  // synthetic styling — these params were formerly dead unless a named family
+  // carried a true styled face. `bold`/`italic` are set as JSON *booleans* on
+  // purpose: that additionally pins the native val store's bool→number
+  // coercion (a bool patch used to read as 0.0 through state::patchFloat, so a
+  // state-document bool write could never turn a boolField on).
+  inst->setParamJson("text", "\"Hello Hamburg\"");
+  inst->setParamJson("size", "40");
+  inst->setParamJson("v_align", "0");
+  struct InkStats { long lit; double slant; };
+  auto inkStats = [&]() -> InkStats {
+    backend->clearTexture(outTex, 0, 0, 0, 0);
+    backend->submit();
+    inst->doRender(W, H);
+    auto p = backend->readbackTexture(outTex, W, H);
+    REQUIRE(p.size() == W * H * 4);
+    int inkTop = (int)H, inkBot = -1;
+    for (uint32_t y = 0; y < H; y++)
+      for (uint32_t x = 0; x < W; x++)
+        if (p[((size_t)y * W + x) * 4 + 3] > 100) {
+          if ((int)y < inkTop) inkTop = y;
+          if ((int)y > inkBot) inkBot = y;
+        }
+    // Coverage + slant: mean lit-x of the ink's top third minus its bottom
+    // third. A faux-oblique shear shifts the top of each glyph rightward, so
+    // italic reads as a positive slant increase; upright text stays ~0 (any
+    // glyph-mix asymmetry cancels — both renders draw the same string).
+    long lit = 0; double xTop = 0, xBot = 0; long nTop = 0, nBot = 0;
+    const int third = (inkBot - inkTop + 1) / 3;
+    for (uint32_t y = 0; y < H; y++)
+      for (uint32_t x = 0; x < W; x++) {
+        if (p[((size_t)y * W + x) * 4 + 3] <= 100) continue;
+        ++lit;
+        if ((int)y <  inkTop + third)  { xTop += x; ++nTop; }
+        if ((int)y >  inkBot - third)  { xBot += x; ++nBot; }
+      }
+    const double slant = (nTop && nBot) ? xTop / nTop - xBot / nBot : 0.0;
+    return {lit, slant};
+  };
+  inst->setParamJson("bold", "false");
+  inst->setParamJson("italic", "false");
+  const InkStats reg = inkStats();
+  inst->setParamJson("bold", "true");
+  const InkStats bold = inkStats();
+  inst->setParamJson("bold", "false");
+  inst->setParamJson("italic", "true");
+  const InkStats ital = inkStats();
+  INFO("regular lit " << reg.lit << " slant " << reg.slant
+       << " | bold lit " << bold.lit << " | italic slant " << ital.slant);
+  CHECK(bold.lit > reg.lit + reg.lit / 20);       // faux bold: visibly more ink
+  CHECK(ital.slant > reg.slant + 2.0);            // faux oblique: top leans right
 }
 #endif  // TEXT_WASM_PATH
 

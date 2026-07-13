@@ -94,8 +94,10 @@ void module_init() {
         .groupHelp(
           "Pick the typeface and weight. Leave *Font* empty to use the host's "
           "primary font; otherwise name any installed OS or bundled family — the "
-          "host resolves the matching **Bold** / **Italic** face for you. *Size* is "
-          "the cap height in output pixels (MSDF keeps it crisp when scaled).")
+          "host resolves the matching **Bold** / **Italic** face for you, and "
+          "synthesizes the style (faux bold / oblique) when the family has no "
+          "true face for it. *Size* is the cap height in output pixels (MSDF "
+          "keeps it crisp when scaled).")
       .textField  ("font",         "",     state::PrimaryInput).label("Font", "Font")
       .boolField  ("bold",         false,  state::PrimaryInput).label("Bold", "Bold")
       .boolField  ("italic",       false,  state::PrimaryInput).label("Italic", "Ital")
@@ -176,12 +178,16 @@ void render(void* self, int vp_w, int vp_h) {
     pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",");
   }
   pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"runs\":[{");
-  if (s->font[0]) {   // name a family → host resolves it (bundled / OS font),
-    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"family\":\"");  // incl. bold/italic face
+  if (s->font[0]) {   // name a family → host resolves it (bundled / OS font)
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"family\":\"");
     appendEscaped(spec, pos, (int)sizeof(spec), s->font);
-    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",\"weight\":%d,\"italic\":%s,",
-                         s->bold ? 700 : 400, s->italic ? "true" : "false");
+    pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\",");
   }
+  // Style is emitted UNCONDITIONALLY — with no family (the primary font) or an
+  // unresolved one, the engine synthesizes faux bold/oblique, so Bold/Italic
+  // always take effect; a registered true styled face still wins.
+  pos += std::snprintf(spec + pos, sizeof(spec) - pos, "\"weight\":%d,\"italic\":%s,",
+                       s->bold ? 700 : 400, s->italic ? "true" : "false");
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\"size_px\":%.3f,\"rgba\":[%.4f,%.4f,%.4f,%.4f]}],"
       "\"constraints\":{\"max_width_px\":%.3f,\"line_spacing\":%.3f}}",
