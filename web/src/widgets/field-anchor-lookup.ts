@@ -63,3 +63,58 @@ export function activeEditorFieldAnchor(key: string): HTMLElement | null {
   if (!root) return null;
   return fieldHitIn(root, key) ?? fieldOptionPipIn(root, key);
 }
+
+/**
+ * Scroll the active editor to a field and flash a locator halo on it — the
+ * "locate" affordance (Devices tab wire rows). Polls per-rAF until the anchor
+ * exists, so it works right after an `editSketch` switch while the editor is
+ * still rendering the new instance; gives up quietly after `timeoutMs` (a
+ * collapsed region / pruned field simply never resolves an anchor).
+ */
+export function scrollToAndFlashField(key: string, timeoutMs = 4000): void {
+  const t0 = performance.now();
+  const attempt = () => {
+    const el = activeEditorFieldAnchor(key);
+    if (!el) {
+      if (performance.now() - t0 < timeoutMs) requestAnimationFrame(attempt);
+      return;
+    }
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    flashAnchor(el);
+  };
+  requestAnimationFrame(attempt);
+}
+
+/**
+ * Pulse a viewport-fixed halo centered on `el`, tracking it per-rAF (the
+ * smooth scroll above is still moving it). Drawn as an overlay on
+ * document.body rather than styling `el` itself — the anchor lives in a
+ * foreign shadow tree whose styles we shouldn't reach into.
+ */
+function flashAnchor(el: HTMLElement): void {
+  const SIZE = 36;
+  const DURATION = 1800;
+  const ring = document.createElement('div');
+  ring.style.cssText =
+    `position:fixed;z-index:1000;pointer-events:none;width:${SIZE}px;height:${SIZE}px;` +
+    'border:2px solid var(--app-io-output, #ff8c00);border-radius:50%;' +
+    'box-shadow:0 0 12px 2px rgba(255,140,0,0.55);';
+  document.body.appendChild(ring);
+  ring.animate(
+    [
+      { opacity: 1, transform: 'scale(0.4)' },
+      { opacity: 1, transform: 'scale(1)', offset: 0.55 },
+      { opacity: 0, transform: 'scale(1.35)' },
+    ],
+    { duration: DURATION / 3, iterations: 3, easing: 'ease-out' },
+  );
+  const t0 = performance.now();
+  const track = () => {
+    if (!el.isConnected || performance.now() - t0 >= DURATION) { ring.remove(); return; }
+    const r = el.getBoundingClientRect();
+    ring.style.left = `${r.left + r.width / 2 - SIZE / 2}px`;
+    ring.style.top = `${r.top + r.height / 2 - SIZE / 2}px`;
+    requestAnimationFrame(track);
+  };
+  track();
+}

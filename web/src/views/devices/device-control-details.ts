@@ -9,6 +9,11 @@
  * control's value, and committing shifts every selected control by the delta
  * (so a block of encoders slides together instead of collapsing onto one
  * CC). Channel/mode apply uniformly.
+ *
+ * Below the mapping rows, a scrollable <device-wires-panel> lists every wire
+ * the selection drives across the whole composition (grouped per instance,
+ * with the full wire-mod inspector + a locate button per wire). Selecting a
+ * DEVICE CARD (no controls) shows the panel alone, scoped to the whole device.
  */
 
 import { html, css, nothing } from 'lit';
@@ -20,6 +25,7 @@ import { getDeviceTemplate } from '../../midi/device-registry';
 import type { ControlGesture, ControlMapping } from '../../midi/midi-types';
 import { devicesUi } from './devices-ui';
 import { deviceColorCss } from './device-surface';
+import './device-wires-panel';
 
 @customElement('device-control-details')
 export class DeviceControlDetails extends MobxLitElement {
@@ -29,7 +35,8 @@ export class DeviceControlDetails extends MobxLitElement {
       right: 12px;
       z-index: 210;
       width: 300px;
-      display: block;
+      display: flex;
+      flex-direction: column;
       font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
       background: var(--app-bg-color2);
       border: 1px solid var(--app-tint-3);
@@ -38,6 +45,8 @@ export class DeviceControlDetails extends MobxLitElement {
       color: var(--app-text-color1);
       font-size: var(--app-fs-sm);
     }
+    /* Nothing selected → no empty bordered sliver (render() stamps this). */
+    :host([data-empty]) { display: none; }
     .head {
       display: flex;
       align-items: baseline;
@@ -102,6 +111,23 @@ export class DeviceControlDetails extends MobxLitElement {
       padding: 0 10px 8px;
       color: var(--app-text-color2);
       font-size: var(--app-fs-xs);
+    }
+    .wires-head {
+      flex: none;
+      padding: 5px 10px 0;
+      border-top: 1px solid var(--app-tint-2);
+      font-size: var(--app-fs-xs);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--app-text-color2);
+    }
+    /* The wires list is the panel's scrollable tail — it shrinks first when
+     * the host hits its max-height budget (host is bottom-anchored, so it
+     * grows upward until then). */
+    device-wires-panel {
+      flex: 0 1 auto;
+      min-height: 0;
+      padding: 0 10px 8px;
     }
   `;
 
@@ -226,17 +252,52 @@ export class DeviceControlDetails extends MobxLitElement {
     `;
   }
 
+  /** Anchor directly above the floating output monitor, growing upward —
+   *  capped so a long wires list scrolls instead of running off-screen. */
+  private anchorAboveMonitor() {
+    const bottom = appState.local.userSettings.devicesMonitorHeight + 24;
+    this.style.bottom = `${bottom}px`;
+    this.style.maxHeight = `calc(100vh - ${bottom + 60}px)`;
+  }
+
+  /** Card selection (no controls): the device's whole wire fan-out. Only
+   *  library instances — a template can't own wires (wiring lazy-forks). */
+  private renderDeviceCard() {
+    const id = devicesUi.selectedCardId;
+    const instance = id ? midiController.instance(id) : undefined;
+    if (!instance) return nothing;
+    this.anchorAboveMonitor();
+    return html`
+      <div class="head">
+        <span class="title">${instance.name}</span>
+        <span class="count">wires</span>
+      </div>
+      <device-wires-panel .deviceId=${instance.id} .controlIds=${null}></device-wires-panel>
+    `;
+  }
+
   render() {
+    const content = this.renderContent();
+    this.toggleAttribute('data-empty', content === nothing);
+    return content;
+  }
+
+  private renderContent() {
     const selection = devicesUi.selectedControls;
-    if (selection.length === 0) return nothing;
+    if (selection.length === 0) return this.renderDeviceCard();
     const primary = selection[0];
     const instance = midiController.instance(primary.deviceId);
     const template = getDeviceTemplate(instance?.templateId ?? primary.deviceId);
     if (!template) return nothing;
     const def = template.layout.controls.find(c => c.id === primary.controlId);
     const deviceName = instance?.name ?? template.name;
-    // Anchor directly above the floating output monitor.
-    this.style.bottom = `${appState.local.userSettings.devicesMonitorHeight + 24}px`;
+    this.anchorAboveMonitor();
+    // The wires panel scopes to the selected controls of the PRIMARY device
+    // (cross-device multi-selections edit mappings per device group above,
+    // but one wires list keeps the panel readable).
+    const controlIds = selection
+      .filter(s => s.deviceId === primary.deviceId)
+      .map(s => s.controlId);
 
     return html`
       <div class="head">
@@ -252,6 +313,8 @@ export class DeviceControlDetails extends MobxLitElement {
       ${!instance
         ? html`<div class="hint">Template — the first edit forks it into your devices.</div>`
         : nothing}
+      <div class="wires-head">Wires</div>
+      <device-wires-panel .deviceId=${primary.deviceId} .controlIds=${controlIds}></device-wires-panel>
     `;
   }
 }
