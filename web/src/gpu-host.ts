@@ -22,6 +22,7 @@ function textureFormatFromCode(code: number): GPUTextureFormat {
     case 3: return 'rgba16float';
     case 4: return 'r32float';
     case 5: return 'rgba32float';
+    case 7: return 'rgba8unorm-srgb';
     case 1:
     default: return 'rgba8unorm';
   }
@@ -439,10 +440,14 @@ export class GPUHost {
   createTextureWithMips(width: number, height: number, format: number, mipCount: number): number {
     const fmt = this.resolveFormat(format);
     const renderable = (fmt === 'bgra8unorm' || fmt === 'rgba8unorm' || fmt === 'rgba16float'
-                        || fmt === 'r32float' || fmt === 'rgba32float');
+                        || fmt === 'r32float' || fmt === 'rgba32float'
+                        || fmt === 'rgba8unorm-srgb');
+    // WebGPU forbids STORAGE_BINDING on sRGB formats — they're render+sample
+    // only (gpu.h documents the same contract for RGBA8_SRGB).
+    const storable = !fmt.endsWith('-srgb');
     const usage =
       GPUTextureUsage.TEXTURE_BINDING
-      | GPUTextureUsage.STORAGE_BINDING
+      | (storable ? GPUTextureUsage.STORAGE_BINDING : 0)
       | GPUTextureUsage.COPY_SRC
       | GPUTextureUsage.COPY_DST
       | (renderable ? GPUTextureUsage.RENDER_ATTACHMENT : 0);
@@ -555,6 +560,7 @@ export class GPUHost {
       case 'rgba16float': return 3;
       case 'r32float': return 4;
       case 'rgba32float': return 5;
+      case 'rgba8unorm-srgb': return 7;
       default: return 1;
     }
   }

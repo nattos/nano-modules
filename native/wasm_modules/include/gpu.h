@@ -188,6 +188,12 @@ enum class TextureFormat : int {
   /// explicit format only where the effect genuinely requires it (R32F sim
   /// state, LUTs, byte-exact atlases).
   SketchDefault = 6,
+  /// 8-bit sRGB-encoded (rgba8unorm-srgb). Sampling decodes to linear and
+  /// render-target blending happens in LINEAR with encoded storage — 8-bit
+  /// cost with fine dark-end precision. RENDER + SAMPLE ONLY: WebGPU forbids
+  /// storage writes to sRGB formats, so never bind one as a storage texture
+  /// (encode manually into a plain RGBA8 instead).
+  RGBA8_SRGB = 7,
 };
 
 enum class FilterMode : int { Nearest = 0, Linear = 1 };

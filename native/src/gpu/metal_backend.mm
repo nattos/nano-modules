@@ -83,6 +83,7 @@ public:
         if (c == 2 || c == 6) c = 1;  // never self/surface-referential
         return pixelFormatFromCode(c);
       }
+      case 7:  return MTLPixelFormatRGBA8Unorm_sRGB;
       default: return MTLPixelFormatRGBA8Unorm;
     }
   }
@@ -102,9 +103,13 @@ public:
     desc.pixelFormat = pf;
     // ShaderWrite is required for storage-texture writes (the storageTex2d
     // bindings in modern effects). Add it unconditionally — it's a no-op
-    // if the shader doesn't write to the texture.
-    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead
-               | MTLTextureUsageShaderWrite;
+    // if the shader doesn't write to the texture. Exception: sRGB formats
+    // don't support shader writes (matching WebGPU, which forbids sRGB
+    // storage textures outright) — they're render+sample only.
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    if (pf != MTLPixelFormatRGBA8Unorm_sRGB && pf != MTLPixelFormatBGRA8Unorm_sRGB) {
+      desc.usage |= MTLTextureUsageShaderWrite;
+    }
     desc.storageMode = MTLStorageModeShared; // CPU-readable for readback
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
     if (!tex) return -1;

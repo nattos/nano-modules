@@ -89,4 +89,22 @@ float3 nano_hsv_to_rgb(float3 hsv) {
   return rgb + m;
 }
 
+// ---- sRGB transfer (exact piecewise curve) ----
+// For effects that emulate sRGB-storage pipelines: decode sampled 8-bit
+// codes to linear before doing math, encode back when writing to a plain
+// unorm texture. (RGBA8_SRGB textures do this in hardware — these are for
+// the storage-texture paths WebGPU won't let be sRGB.)
+
+float3 nano_srgb_to_linear(float3 c) {
+  float3 lo = c / 12.92;
+  float3 hi = pow(max((c + 0.055) / 1.055, 0.0), 2.4);
+  return lerp(lo, hi, step(0.04045, c));
+}
+
+float3 nano_linear_to_srgb(float3 l) {
+  float3 lo = l * 12.92;
+  float3 hi = 1.055 * pow(max(l, 1e-7), 1.0 / 2.4) - 0.055;
+  return lerp(lo, hi, step(0.0031308, l));
+}
+
 #endif

@@ -23,6 +23,8 @@
 //   [9..11]  ColorGradX.rgb      [12..14] ColorGradY.rgb
 //   [15]     valueAvg
 
+#include "nano_color.hlsl"   // nano_srgb_to_linear
+
 Texture2D<float4>         coarseTex : register(t0);
 Texture2D<float4>         fineTex   : register(t1);
 SamplerState              samp      : register(s2);
@@ -41,10 +43,15 @@ static const float SAMPLING_WIDTH = 0.005;
 float lum(float3 c) { return max(c.r, max(c.g, c.b)); }
 
 // clamp_to_zero addressing (the original's sampler mode): out-of-range reads
-// return transparent black instead of the edge texel.
+// return transparent black instead of the edge texel. The search textures
+// hold sRGB codes (the original's storage format); decode to linear — the
+// gradient/colour math ran in linear space. The argmax loops skip the decode
+// (it's monotonic, the winner is the same texel).
 float4 tapZero(float2 uv) {
   if (any(uv != saturate(uv))) return float4(0, 0, 0, 0);
-  return fineTex.SampleLevel(samp, uv, 0);
+  float4 t = fineTex.SampleLevel(samp, uv, 0);
+  t.rgb = nano_srgb_to_linear(t.rgb);
+  return t;
 }
 
 [numthreads(1, 1, 1)]
@@ -78,7 +85,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   // Original quirk: the extra +cstep/2 offsets the anchor half a coarse cell.
   float2 anchorUV = bestC + bestF * fstep + fstep * 0.5 + cstep * 0.5;
 
-  // ---- local gradient (4 taps, clamp-to-zero addressed) ----
+  // ---- local gradient (4 linear-space taps, clamp-to-zero addressed) ----
   float sw = SAMPLING_WIDTH;
   float4 s01 = tapZero(anchorUV + float2(-sw, 0));
   float4 s21 = tapZero(anchorUV + float2( sw, 0));
