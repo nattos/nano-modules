@@ -56,6 +56,15 @@ The op already contains the change; the refetch is pure loss (latency + a replac
 and **marks it as already pushed** — it is never re-sent. Silent data loss, no conflict, no
 warning.
 
+The replace is also **lossy**: every adopted snapshot passes through `coerceSketch`
+(`boot-resolume.ts`), which rebuilds the sketch from a field whitelist. Any `Sketch` field
+missing from that whitelist is stripped by the echo of the client's own push — the barrel
+keeps the value (it stores the doc opaquely) while the UI snaps back to the default, and
+the "reset to default" edit then produces zero immer patches so nothing is ever pushed to
+clear it. This bit `outputFormat` (the resolution-scale buttons, fixed 2026-07 by adding
+it to the whitelist); the durable fix is inverting `coerceSketch` to spread-everything +
+validate-structural-fields, still queued.
+
 ### 4. UI-only metadata rides the wire and defeats the push dedup
 `postRecordHook` (`controller.ts:~228-236`) stamps `sketch.lastModified = Date.now()` on
 every committed mutation. `maybePushBarrelSketch` (`controller.ts:2705`) dedups on
@@ -131,6 +140,12 @@ Step 3's replace was unsafe.
 
 ## What we already fixed
 
+- **`outputFormat` survives the echo** (shipped 2026-07): `coerceSketch`'s field whitelist
+  dropped `outputFormat`, so the echo replace snapped the resolution-scale UI back to 1×
+  while the barrel kept rendering at the pushed scale (see defect 3's *lossy* note). Fixed
+  by carrying the key through (`normalizeSketchChains` sanitizes it). The whitelist itself
+  is still a standing hazard for every future `Sketch` field — inverting it to
+  spread-everything + validate-structural-fields is the class-level fix, not yet done.
 - **Idempotent defaults** (shipped): `defaultStateForPlugin`'s legacy `params` fallback loop
   now applies the help-field skip as well as the output skip, so an all-help+output effect
   (`control.barrel_macros`) defaults to `{}` and the seed/prune churn never fires.
