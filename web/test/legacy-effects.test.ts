@@ -104,6 +104,32 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
     expect(Math.abs(far.r - 77)).toBeLessThan(12); // far corner ~ input (0.3*255)
   });
 
+  it('never darkens the input (unorm sparkle layer only adds light)', async () => {
+    // The sparkle layer accumulates in RGBA8 unorm like the original
+    // (GlobalBitDepth=Int8): its unclamped negative vertex colours carve the
+    // layer's own glow, but the layer itself is clamped ≥ 0, so the composite
+    // in + layer can only brighten. Crank the digging knobs and check no
+    // sample drops below the input.
+    const frame = await runGpuEffectTest({
+      module: 'filter.legacy.glisten',
+      bundle: 'legacy',
+      width: 64, height: 64,
+      inputColor: [0.5, 0.4, 0.3, 1.0],
+      params: [['intensity', 2.0], ['flicker_sustain', 1.0],
+               ['color_grad_power', 1.0], ['color_grad_sharp', 1.0], ['size', 0.8]],
+      samplePoints: [[4, 4], [16, 16], [32, 32], [48, 48], [62, 62]],
+      ticks: 2,
+      renderEachTick: true,
+      dumpName: 'glisten_no_darken',
+    });
+    expect(frame.success).toBe(true);
+    for (const s of frame.samples) {
+      expect(s.r).toBeGreaterThanOrEqual(127 - 3);
+      expect(s.g).toBeGreaterThanOrEqual(102 - 3);
+      expect(s.b).toBeGreaterThanOrEqual(76 - 3);
+    }
+  });
+
   it('sustain 0 at rest gates the layer to zero (passthrough)', async () => {
     // The flicker envelope starts at 0; with sustain 0 the blur-pass gain is
     // (contrast+1)·mix(env, 1, 0) = 0, so the sparkle layer contributes

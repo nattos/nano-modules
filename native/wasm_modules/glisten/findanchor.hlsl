@@ -8,12 +8,13 @@
 // Deliberately preserved original quirks — all load-bearing for the look:
 //  - anchorUV gains an extra +coarseTexel/2, sitting the fan half a cell
 //    down-right of the peak, so the gradient taps read down-slope colours.
-//  - the fine texture carries a ×4 gain (the original's BlurF contrast=1 over
-//    two passes), so valueAvg/gradients/colours run "hot", up to ~4.
+//  - the fine texture carries a ×2-per-pass gain (BlurF contrast=1) but is
+//    unorm8 like every "Global" texture in the original, so it SATURATES at
+//    1 rather than amplifying — bright regions plateau and the fine argmax
+//    tie-breaks to the first (top-left) saturated texel.
 //  - the colour-gradient channels reassemble in R,B,G order (a shipped swap).
-//  - the base-colour adjust `mix(1, adjust, valueAvg)` EXTRAPOLATES past
-//    valueAvg=1, pushing the base colour strongly negative near bright
-//    anchors — additive blending then digs into complementary colours.
+//  - gradient taps use clamp-to-zero addressing (the anchor offset can push
+//    them past the border, reading black — an inward edge gradient).
 //  - Position = anchorUV + grad: the fan rides the gradient off the peak.
 //
 // anchor buffer layout (floats):
@@ -22,21 +23,29 @@
 //   [9..11]  ColorGradX.rgb      [12..14] ColorGradY.rgb
 //   [15]     valueAvg
 
-Texture2D<float4>         fineTex : register(t0);
-SamplerState              samp    : register(s1);
-RWStructuredBuffer<float> anchor  : register(u2);
+Texture2D<float4>         coarseTex : register(t0);
+Texture2D<float4>         fineTex   : register(t1);
+SamplerState              samp      : register(s2);
+RWStructuredBuffer<float> anchor    : register(u3);
 
-cbuffer U : register(b3) {
+cbuffer U : register(b4) {
   float color_grad_soft;
   float color_grad_squash;
   float color_grad_adjust;
-  float fine_gain;           // the original BlurF ×4
+  float _p0;
 };
 
 static const float PI = 3.14159265358979323846;
 static const float SAMPLING_WIDTH = 0.005;
 
 float lum(float3 c) { return max(c.r, max(c.g, c.b)); }
+
+// clamp_to_zero addressing (the original's sampler mode): out-of-range reads
+// return transparent black instead of the edge texel.
+float4 tapZero(float2 uv) {
+  if (any(uv != saturate(uv))) return float4(0, 0, 0, 0);
+  return fineTex.SampleLevel(samp, uv, 0);
+}
 
 [numthreads(1, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -51,7 +60,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   for (int cy = 0; cy < C; ++cy) {
     for (int cx = 0; cx < C; ++cx) {
       float2 uv = (float2(cx, cy) + 0.5) * cstep;
-      float v = lum(fineTex.SampleLevel(samp, uv, 0).rgb);
+      float v = lum(coarseTex.SampleLevel(samp, uv, 0).rgb);
       if (v > bestCV) { bestCV = v; bestC = float2(cx, cy) * cstep; }
     }
   }
@@ -69,12 +78,12 @@ void main(uint3 id : SV_DispatchThreadID) {
   // Original quirk: the extra +cstep/2 offsets the anchor half a coarse cell.
   float2 anchorUV = bestC + bestF * fstep + fstep * 0.5 + cstep * 0.5;
 
-  // ---- local gradient (4 taps, hot by fine_gain) ----
+  // ---- local gradient (4 taps, clamp-to-zero addressed) ----
   float sw = SAMPLING_WIDTH;
-  float4 s01 = fineTex.SampleLevel(samp, anchorUV + float2(-sw, 0), 0) * fine_gain;
-  float4 s21 = fineTex.SampleLevel(samp, anchorUV + float2( sw, 0), 0) * fine_gain;
-  float4 s10 = fineTex.SampleLevel(samp, anchorUV + float2(0, -sw), 0) * fine_gain;
-  float4 s12 = fineTex.SampleLevel(samp, anchorUV + float2(0,  sw), 0) * fine_gain;
+  float4 s01 = tapZero(anchorUV + float2(-sw, 0));
+  float4 s21 = tapZero(anchorUV + float2( sw, 0));
+  float4 s10 = tapZero(anchorUV + float2(0, -sw));
+  float4 s12 = tapZero(anchorUV + float2(0,  sw));
   float v01 = lum(s01.rgb), v21 = lum(s21.rgb), v10 = lum(s10.rgb), v12 = lum(s12.rgb);
   float valueAvg = (v01 + v21 + v10 + v12) * 0.25;
 
@@ -98,7 +107,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 colorGradX = float3(gR.x, gB.x, gG.x) * valueAvg;
   float3 colorGradY = float3(gR.y, gB.y, gG.y) * valueAvg;
 
-  // Unclamped lerp: valueAvg can exceed 1 (fine_gain), extrapolating adjust.
+  // valueAvg ≤ 1 (unorm8 fine texture); bright anchors take the full adjust.
   float adj = 1.0 + (color_grad_adjust - 1.0) * valueAvg;
   color -= (gradNorm.x * colorGradX + gradNorm.y * colorGradY) * adj;
 

@@ -6,21 +6,29 @@
  * and the Blur / ExpCurve subgraphs). Pipeline per frame:
  *
  *   1. downsample — input → fixed 64×64 search grid (RGBA16F).
- *   2. blur ×2    — separable weighted blur of the search grid, width
- *                   1−input_chaos. The anchor search runs on brightness MASS,
- *                   not pixel peaks; more chaos = sharper search = jumpier.
+ *   2. blur ×4    — separable weighted blur of the search grid, width
+ *                   1−input_chaos, into a coarse (gain 1) and a fine
+ *                   (gain 2/pass, saturating) copy. The anchor search runs
+ *                   on brightness MASS, not pixel peaks.
  *   3. findanchor — 8×8 coarse + 8×8 fine argmax + gradient/colour taps
  *                   (single thread). Preserves the original's half-cell
- *                   anchor offset, ×4 fine gain, R,B,G channel swap and
- *                   unclamped colour adjust — see findanchor.hlsl.
+ *                   anchor offset, R,B,G channel swap and hot colour adjust
+ *                   — see findanchor.hlsl.
  *   4. fan render — levels × (blades−2) triangles: per level an inscribed
  *                   polygon disc fanned from a RIM vertex at the gradient
- *                   direction, additive into a half-res RGBA16F layer.
- *                   Vertex colours unclamped (negatives dig).
+ *                   direction, additive into a half-res layer.
  *   5. blur ×2    — the sparkle layer itself is blurred (smoothing) with a
  *                   per-pass gain (contrast+1)·mix(ExpCurve(env), 1, sustain)
  *                   — the flicker pulses the layer's gain, not its geometry.
  *   6. composite  — out = input·input_alpha + layer·tint.
+ *
+ * EVERY internal texture is RGBA8 UNORM, matching the original's
+ * GlobalBitDepth=Int8 (never set, so C# default). This is load-bearing:
+ * additive blending clamps the sparkle layer to [0,1], so its unclamped
+ * negative vertex colours carve into the layer's OWN glow (the deep-hue
+ * digging) but the layer never goes negative — the composite only ever ADDS
+ * light to the input. It also saturates the fine search texture's gain and
+ * quantizes the faintest levels, all part of the shipped look.
  *
  * Flicker is a CPU envelope: Poisson-ish trigger (rate Hz), LINEAR release,
  * shaped by ExpCurve. Stateful → SeekableApproximate.
@@ -47,7 +55,7 @@ struct BlurUniforms {
   float taps, jitter, seed, _p0;
 };
 struct FindUniforms {
-  float color_grad_soft, color_grad_squash, color_grad_adjust, fine_gain;
+  float color_grad_soft, color_grad_squash, color_grad_adjust, _p0;
 };
 struct VsUniforms {
   float aspect_x, blades, levels, size;
@@ -63,7 +71,8 @@ struct State {
   gpu::Buffer  vs_uniform;
   gpu::Buffer  comp_uniform;
   gpu::Sampler sampler;
-  gpu::Texture t64a, t64b;               // 64² search grid + scratch
+  gpu::Texture t64_in, t64_tmp;          // 64² search grid + blur scratch
+  gpu::Texture t64_coarse, t64_fine;     // blurred search copies (gain 1 / 2²)
   gpu::Texture spark_a, spark_b;         // half-res sparkle layer + scratch
   int spark_w = 0, spark_h = 0;
   bool initialized = false;
@@ -204,9 +213,9 @@ void module_init() {
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   state::registerShaderSPV("glisten_downsample", DOWNSAMPLE_SPV, DOWNSAMPLE_SPV_SIZE,
-                           "rgba16float", "write");
+                           "rgba8unorm", "write");
   state::registerShaderSPV("glisten_blur",       BLUR_SPV,       BLUR_SPV_SIZE,
-                           "rgba16float", "write");
+                           "rgba8unorm", "write");
   state::registerShaderSPV("glisten_findanchor", FINDANCHOR_SPV, FINDANCHOR_SPV_SIZE);
   state::registerShaderSPV("glisten_composite",  COMPOSITE_SPV,  COMPOSITE_SPV_SIZE);
   state::registerShaderSPV("glisten_vs",         VS_SPV,         VS_SPV_SIZE);
@@ -221,16 +230,16 @@ void module_init() {
   if (!cs_down || !cs_blur || !cs_find || !cs_comp || !vs || !fs) return;
 
   s_pso_downsample = gpu::Device::createComputePSO(cs_down, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA16F));
+      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8));
   s_pso_blur = gpu::Device::createComputePSO(cs_blur, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA16F).uniform(3));
+      .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8).uniform(3));
   s_pso_find = gpu::Device::createComputePSO(cs_find, "main", gpu::Bindings()
-      .tex2d(0).sampler(1).storageRW(2).uniform(3));
+      .tex2d(0).tex2d(1).sampler(2).storageRW(3).uniform(4));
   s_pso_composite = gpu::Device::createComputePSO(cs_comp, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).sampler(2).storageTex2d(3).uniform(4));
   s_pso_render = gpu::Device::createInstancedRenderPSO(
       vs, "main", fs, "main",
-      gpu::TextureFormat::RGBA16F,
+      gpu::TextureFormat::RGBA8,
       gpu::Bindings().storage(0).uniform(1),
       gpu::Device::BlendMode::Additive);
 
@@ -245,8 +254,10 @@ void* create() {
   s->vs_uniform   = gpu::Device::createBuffer(sizeof(VsUniforms), gpu::BufferUsage::Uniform);
   s->comp_uniform = gpu::Device::createBuffer(sizeof(CompositeUniforms), gpu::BufferUsage::Uniform);
   s->sampler      = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
-  s->t64a = gpu::Device::createTexture(SEARCH_N, SEARCH_N, gpu::TextureFormat::RGBA16F);
-  s->t64b = gpu::Device::createTexture(SEARCH_N, SEARCH_N, gpu::TextureFormat::RGBA16F);
+  s->t64_in     = gpu::Device::createTexture(SEARCH_N, SEARCH_N, gpu::TextureFormat::RGBA8);
+  s->t64_tmp    = gpu::Device::createTexture(SEARCH_N, SEARCH_N, gpu::TextureFormat::RGBA8);
+  s->t64_coarse = gpu::Device::createTexture(SEARCH_N, SEARCH_N, gpu::TextureFormat::RGBA8);
+  s->t64_fine   = gpu::Device::createTexture(SEARCH_N, SEARCH_N, gpu::TextureFormat::RGBA8);
   return s;
 }
 
@@ -259,8 +270,10 @@ void destroy(void* self) {
   s->vs_uniform.release();
   s->comp_uniform.release();
   s->sampler.release();
-  s->t64a.release();
-  s->t64b.release();
+  s->t64_in.release();
+  s->t64_tmp.release();
+  s->t64_coarse.release();
+  s->t64_fine.release();
   s->spark_a.release();
   s->spark_b.release();
   delete s;
@@ -353,8 +366,8 @@ void render(void* self, int vp_w, int vp_h) {
   if (sw != s->spark_w || sh != s->spark_h || !s->spark_a.valid()) {
     s->spark_a.release();
     s->spark_b.release();
-    s->spark_a = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
-    s->spark_b = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA16F);
+    s->spark_a = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA8);
+    s->spark_b = gpu::Device::createTexture(sw, sh, gpu::TextureFormat::RGBA8);
     s->spark_w = sw; s->spark_h = sh;
   }
 
@@ -377,7 +390,7 @@ void render(void* self, int vp_w, int vp_h) {
   float spark_hw, spark_taps;
   blur_kernel(std::fmax(s->smoothing, 0.005f), SPARK_BLUR_STEP, 255, spark_hw, spark_taps);
 
-  FindUniforms fu = { s->color_grad_soft, cg_squash, cg_adjust, 4.0f };
+  FindUniforms fu = { s->color_grad_soft, cg_squash, cg_adjust, 0.0f };
   s->find_uniform.writeOne(fu);
 
   int nBlades = s->blades < 3 ? 3 : s->blades;
@@ -407,28 +420,34 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_downsample);
     cp.setTexture(in, 0, 0);
     cp.setSampler(s->sampler, 1);
-    cp.setTexture(s->t64a, 2, 2);
+    cp.setTexture(s->t64_in, 2, 2);
     cp.dispatch(SEARCH_N / 8, SEARCH_N / 8);
     cp.end();
   }
 
-  // Passes 2+3 — blur the search grid (H then V, no gain).
-  runBlur(s, s->t64a, s->t64b, SEARCH_N, SEARCH_N, 1, 0, search_hw, 1.0f, search_taps, 0.0f);
-  runBlur(s, s->t64b, s->t64a, SEARCH_N, SEARCH_N, 0, 1, search_hw, 1.0f, search_taps, 0.0f);
+  // Passes 2–5 — blur the search grid twice: coarse copy (gain 1) and fine
+  // copy (gain 2 per pass, saturating in unorm8 — the original's BlurF
+  // contrast=1). Same blur width for both.
+  runBlur(s, s->t64_in,  s->t64_tmp,    SEARCH_N, SEARCH_N, 1, 0, search_hw, 1.0f, search_taps, 0.0f);
+  runBlur(s, s->t64_tmp, s->t64_coarse, SEARCH_N, SEARCH_N, 0, 1, search_hw, 1.0f, search_taps, 0.0f);
+  runBlur(s, s->t64_in,  s->t64_tmp,    SEARCH_N, SEARCH_N, 1, 0, search_hw, 2.0f, search_taps, 0.0f);
+  runBlur(s, s->t64_tmp, s->t64_fine,   SEARCH_N, SEARCH_N, 0, 1, search_hw, 2.0f, search_taps, 0.0f);
 
-  // Pass 4 — find the anchor.
+  // Pass 6 — find the anchor.
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_find);
-    cp.setTexture(s->t64a, 0, 0);
-    cp.setSampler(s->sampler, 1);
-    cp.setBuffer(s->anchor_buf, 2);
-    cp.setBuffer(s->find_uniform, 3);
+    cp.setTexture(s->t64_coarse, 0, 0);
+    cp.setTexture(s->t64_fine, 1, 1);
+    cp.setSampler(s->sampler, 2);
+    cp.setBuffer(s->anchor_buf, 3);
+    cp.setBuffer(s->find_uniform, 4);
     cp.dispatch(1, 1, 1);
     cp.end();
   }
 
-  // Pass 5 — render the fan layers (additive, half-res, cleared).
+  // Pass 7 — render the fan layers (additive, half-res, cleared; unorm
+  // clamps the accumulation to [0,1] — negatives carve the glow only).
   {
     int instances = nLevels * (nBlades - 2);
     auto rp = gpu::RenderPass::begin(s->spark_a, 0, 0, 0, 0);
@@ -439,11 +458,11 @@ void render(void* self, int vp_w, int vp_h) {
     rp.end();
   }
 
-  // Passes 6+7 — blur the sparkle layer with the flicker gain per pass.
+  // Passes 8+9 — blur the sparkle layer with the flicker gain per pass.
   runBlur(s, s->spark_a, s->spark_b, sw, sh, 1, 0, spark_hw, gain, spark_taps, s->jitter);
   runBlur(s, s->spark_b, s->spark_a, sw, sh, 0, 1, spark_hw, gain, spark_taps, s->jitter);
 
-  // Pass 8 — composite: out = in·input_alpha + layer·tint.
+  // Pass 10 — composite: out = in·input_alpha + layer·tint (layer ≥ 0).
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_composite);
