@@ -642,6 +642,7 @@ int32_t SketchExecutor::execute(
     // already-driven.
     internalFmt_ = outputOv.fmtCode;
     lastAppliedState_.clear();
+    ++stateEpoch_;   // applied-state stamps refer to the cleared cache
     knownKeys_.clear();
   }
   nsPrefix_ = keyNamespace_ + (internalFmt_ == 3 ? "f16!" : "");
@@ -1131,6 +1132,10 @@ int32_t SketchExecutor::execute(
   // reorder, wire edit, or enable/opacity toggle — not on every drag frame. In
   // standalone / steady state nothing edits the sketch and the cached plan is
   // reused untouched. See buildPlan + the PlanColumn cache.
+  // New sketch-state epoch: persisted params may have changed, so every
+  // instance's applied-state stamp goes stale (see stateEpoch_'s doc).
+  if (sketchDirty) ++stateEpoch_;
+
   if (!planValid_) {
     buildPlan(columns, instances, sketchRails);
     planStructSig_ = computeStructSig(columns, instances, sketchRails);
@@ -1291,11 +1296,16 @@ int32_t SketchExecutor::execute(
     auto maybeApplyState = [&](EffectRef inst,
                                const std::string& instKey,
                                const json& state) {
-      // Persisted params only change when the sketch is edited. When the host
-      // tells us it didn't change, skip the per-instance whole-state compare
-      // (multi-KB for rich text) entirely — they were applied on the last dirty
-      // frame and read taps re-drive any modulated params separately below.
-      if (!sketchDirty) return;
+      // Persisted params only change when the sketch is edited (a dirty frame
+      // bumps stateEpoch_). Skip the per-instance whole-state compare (multi-KB
+      // for rich text) once THIS instance has been applied under the current
+      // epoch — stamped per instance, not per frame, because the enable gate
+      // returns before this point: an entry dormant during the dirty frame
+      // itself (wire-driven `__enable__` waking it later) must still get its
+      // persisted state on the first frame it's actually evaluated.
+      auto& epoch = lastAppliedEpoch_[instKey];
+      if (epoch == stateEpoch_) return;
+      epoch = stateEpoch_;
       auto& cachedState = lastAppliedState_[instKey];
       if (cachedState == state) return;
       applyState(inst.h, cachedState, state);

@@ -155,7 +155,7 @@ class SketchExecutor {
    * the whole-state fast path would otherwise skip re-asserting the authored
    * value the modulation had been overriding.
    */
-  void forceStateReassert() { lastAppliedState_.clear(); }
+  void forceStateReassert() { lastAppliedState_.clear(); ++stateEpoch_; }
 
   /**
    * Prefix applied to every effect instance_key before it reaches the shared
@@ -419,6 +419,17 @@ class SketchExecutor {
   // instance key. Each chain entry has its own EffectInstance (see
   // EffectRuntime::instanceFor), so the cache keys purely on instance_key.
   std::unordered_map<std::string, nlohmann::json> lastAppliedState_;
+
+  // Sketch-state epoch: bumped on every dirty frame (and by forceStateReassert /
+  // the working-format reset). maybeApplyState stamps each instance with the
+  // epoch it last applied state under, and skips only when the stamp is
+  // CURRENT — not merely when the frame isn't dirty. The difference matters
+  // for entries the enable gate leaves dormant: an effect whose wire-driven
+  // `__enable__` was off during the dirty frame never reached maybeApplyState,
+  // and the old `if (!sketchDirty) return` skip then left it running schema
+  // defaults forever once the wire woke it on a later (non-dirty) frame.
+  uint64_t stateEpoch_ = 1;
+  std::unordered_map<std::string, uint64_t> lastAppliedEpoch_;
 
   // --- Compiled per-sketch plan (the native analogue of the web's compile-once
   // GraphDefinition). Built once and reused until the host signals the sketch

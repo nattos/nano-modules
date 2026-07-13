@@ -145,3 +145,69 @@ TEST_CASE("external scalar (midi:) wires fold through the tap pipeline",
     CHECK(b["max"].get<double>()   == Catch::Approx(0.5).margin(0.01));
   }
 }
+
+// Regression: persisted state must reach an effect that was DORMANT on the
+// dirty frame. The `__enable__` gate returns before maybeApplyState, and state
+// application used to be skipped outright on non-dirty frames — so an effect
+// whose enable is wire-driven (here: a midi: button, in the field a sidechannel
+// scalar) and OFF during the only dirty frame ran its schema DEFAULTS forever
+// once the wire woke it. Observed in the wild as "the effect turns on but does
+// the wrong thing until any editor patch lands while it happens to be enabled".
+TEST_CASE("wire-driven __enable__ wake applies the persisted state",
+          "[external_scalars]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  // white source -> bc with authored brightness -0.8 (strongly dark, far from
+  // the schema default 0 = identity), persistently disabled, enable driven by
+  // a midi: button wire.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "source.solid_color", "instance_key": "src", "params": { "color": [1.0,1.0,1.0] } },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc" }
+    ],
+    "instances": {
+      "bc": { "module_type": "color.tone.brightness_contrast",
+              "state": { "__enable__": false, "brightness": -0.8, "contrast": 0.0 } }
+    },
+    "wires": [
+      { "id": "w0", "src": { "instanceKey": "midi:dev-1", "field": "b0/e05/press" },
+        "dest": { "instanceKey": "bc", "field": "__enable__" }, "combine": "add" }
+    ]
+  })JSON");
+
+  auto frame = [&](double press, bool dirty) {
+    executor.setExternalScalars(nlohmann::json{
+        {"midi:dev-1", {{"b0/e05/press", press}}}});
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H,
+                                   1.0 / 60.0, dirty);
+    backend->submit();
+    return mean_rgb(backend->readbackTexture(out, W, H));
+  };
+
+  // The ONLY dirty frame: button up -> bc dormant -> pure passthrough (white).
+  const double offMean = frame(0.0, /*dirty=*/true);
+  CHECK(offMean > 240.0);
+
+  // Button down on a CLEAN frame wakes bc: the authored brightness must apply
+  // on this first evaluated frame, not stay at the identity default.
+  const double onMean = frame(1.0, /*dirty=*/false);
+  INFO("enabled-on-clean-frame mean " << onMean << " (identity default would stay ~255)");
+  CHECK(onMean < offMean - 100.0);
+
+  // Steady state holds, and releasing the button restores the passthrough.
+  CHECK(frame(1.0, /*dirty=*/false) == Catch::Approx(onMean).margin(4.0));
+  CHECK(frame(0.0, /*dirty=*/false) > 240.0);
+}
