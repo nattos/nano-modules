@@ -103,11 +103,29 @@ describe('connectWire with a device endpoint', () => {
     expect(wires()).toHaveLength(0);
   });
 
-  it('rejects device→device and device→output connections', () => {
+  it('rejects device→device and device→pure-output connections', () => {
     seedSketch();
     appController.connectWire(deviceEnd('b0/e00/turn'), deviceEnd('b0/e01/turn'));
+    // A pure output (no input io bit — e.g. an LFO's `output`).
+    appController.connectWire(deviceEnd(), field({
+      chainIdx: 0, fieldPath: 'output', isOutput: true, schemaDef: { io: 6 } as any }));
+    // isOutput with no schema info at all stays rejected too.
     appController.connectWire(deviceEnd(), field({ chainIdx: 0, fieldPath: 'output', isOutput: true }));
     expect(wires()).toHaveLength(0);
+  });
+
+  it('accepts a RELAY field (io = in|out, e.g. a dashboard knob) as dest', () => {
+    seedSketch();
+    // Dashboard knobs surface as outputs in the UI (they're wire sources) but
+    // declare the input bit too — a device wire modulating one is the whole
+    // "map MIDI to a macro knob" flow.
+    appController.connectWire(deviceEnd(), field({
+      chainIdx: 0, fieldPath: 'knob_0', isOutput: true, schemaDef: { io: 11 } as any }));
+    expect(wires()).toHaveLength(1);
+    expect(wires()[0]).toMatchObject({
+      src: { instanceKey: 'midi:dev-1', field: 'b0/e05/turn' },
+      dest: { instanceKey: 'bc', field: 'knob_0' },
+    });
   });
 });
 

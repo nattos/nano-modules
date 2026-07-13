@@ -2011,7 +2011,12 @@ export class AppController {
     if (a.deviceControl && b.deviceControl) return;   // device→device is meaningless
     const device = { ...(a.deviceControl ? a : b).deviceControl! };
     const reader = a.deviceControl ? b : a;
-    if (reader.isOutput) return;                       // devices only drive inputs
+    // Devices only drive inputs — but a RELAY field (io = in|out, e.g. a
+    // dashboard knob) surfaces as an output in the UI (it's a wire source)
+    // while still being a legitimate read-tap dest. Reject only fields with
+    // no input bit (a pure output like an LFO's `output`).
+    const readerIo = (reader.schemaDef as { io?: number } | null)?.io ?? 0;
+    if (reader.isOutput && !(readerIo & 1)) return;
 
     // A gesture may start on a TEMPLATE card — the wire needs a real library
     // instance, so this IS the template's "first edit": lazy-fork now.

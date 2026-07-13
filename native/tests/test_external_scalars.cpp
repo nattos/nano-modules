@@ -211,3 +211,72 @@ TEST_CASE("wire-driven __enable__ wake applies the persisted state",
   CHECK(frame(1.0, /*dirty=*/false) == Catch::Approx(onMean).margin(4.0));
   CHECK(frame(0.0, /*dirty=*/false) > 240.0);
 }
+
+// "Map MIDI to a dashboard knob": a midi: wire modulates dash.knob_0 (a RELAY
+// field — both read- and write-tapped), and the knob's outgoing wire must
+// forward the MODULATED value, not the knob's authored state (0.25 here, which
+// would fold to brightness -0.5 and pin the mean near grey regardless of the
+// device). Exercises applyReadTaps → captureWriteTaps' relay publish for an
+// external source.
+TEST_CASE("midi: wire into a dashboard knob relays through the knob's own wire",
+          "[external_scalars]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 16, H = 16; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> white(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, white.data(), (uint32_t)white.size());
+
+  // white -> dashboard (identity image) -> bc. Device turn (unsigned 0..1)
+  // replaces knob_0; knob_0's wire folds into brightness's signed [-1,1]:
+  // device 0 -> brightness -1 (black), device 1 -> brightness +1 (white).
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "util.dashboard", "instance_key": "dash" },
+      { "module_type": "color.tone.brightness_contrast", "instance_key": "bc" }
+    ],
+    "instances": {
+      "dash": { "module_type": "util.dashboard", "state": { "knob_0": 0.25 } },
+      "bc":   { "module_type": "color.tone.brightness_contrast",
+                "state": { "brightness": 0.0, "contrast": 0.0 } }
+    },
+    "wires": [
+      { "id": "w0", "src": { "instanceKey": "midi:dev-1", "field": "b0/e05/turn" },
+        "dest": { "instanceKey": "dash", "field": "knob_0" }, "combine": "replace" },
+      { "id": "w1", "src": { "instanceKey": "dash", "field": "knob_0" },
+        "dest": { "instanceKey": "bc", "field": "brightness" }, "combine": "replace" }
+    ]
+  })JSON");
+
+  auto frame = [&](double turn, bool dirty) {
+    executor.setExternalScalars(nlohmann::json{
+        {"midi:dev-1", {{"b0/e05/turn", turn}}}});
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H,
+                                   1.0 / 60.0, dirty);
+    backend->submit();
+    return mean_rgb(backend->readbackTexture(out, W, H));
+  };
+
+  const double low = frame(0.0, /*dirty=*/true);
+  INFO("device 0.0 mean " << low << " (authored-state relay would sit ~grey)");
+  CHECK(low < 40.0);                    // brightness -1: black
+
+  const double high = frame(1.0, /*dirty=*/false);
+  INFO("device 1.0 mean " << high);
+  CHECK(high > 240.0);                  // brightness +1: white
+
+  // The folded knob value shows up in telemetry for BOTH hops.
+  const auto& md = executor.lastModulationData();
+  REQUIRE(md.contains("dash"));
+  CHECK(md["dash"]["knob_0"]["value"].get<double>() == Catch::Approx(1.0).margin(0.01));
+  REQUIRE(md.contains("bc"));
+  CHECK(md["bc"]["brightness"]["value"].get<double>() == Catch::Approx(1.0).margin(0.01));
+}

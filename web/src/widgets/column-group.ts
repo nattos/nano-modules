@@ -2259,9 +2259,14 @@ export class ColumnGroup extends MobxLitElement {
       const rect = (e.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
       const ent = chainEntryAt(this.ds.getSketch(this.sketchId), chainIdx);
       const isOutput = ent?.type === 'module' ? this.getOutputFieldNames(ent).has(fieldPath) : false;
+      // Carry the real schemaDef: connect-side rules read it (e.g. a device
+      // wire accepts a RELAY dest — io input bit — even when isOutput).
+      const schemaDef = ent?.type === 'module'
+        ? (this.ds.getPlugin(ent.module_type, ent.instance_key)?.schema as any)?.[fieldPath] ?? null
+        : null;
       this.taps.completeOnField(fieldKey, {
         sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath, isOutput,
-        viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef: null,
+        viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef,
       });
       return;
     }
