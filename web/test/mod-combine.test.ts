@@ -17,7 +17,7 @@ import type { Sketch } from '../src/sketch-types';
  * the shaper auto-connect does not fire here — input_a/input_b keep their
  * authored slider values). Op values: Add 0, Subtract 1, Multiply 2, Divide 3,
  * Min 4, Max 5, Average 6, Difference 7, Screen 8, Power 9, Modulo 10,
- * Greater 11, Less 12, Hypot 13.
+ * Greater 11, Less 12, Hypot 13, Quantize 14.
  */
 describe('mod.shaper.combine shaper node E2E', () => {
   jest.setTimeout(30000);
@@ -86,6 +86,24 @@ describe('mod.shaper.combine shaper node E2E', () => {
     const g = gain.trace('out').averageColor().r;
     const u = unit.trace('out').averageColor().r;
     expect(g).toBeGreaterThan(u + 30);
+  });
+
+  it('quantize snaps A to the nearest multiple of B; zero step passes through', async () => {
+    // 0.55 snapped to steps of 0.25 → round(2.2)*0.25 = 0.5 → exact gray pivot.
+    const snap = await run('cb_qsnap', { op: 14, input_a: 0.55, input_b: 0.25 });
+    // Same step size, A on either side of a step boundary: 0.9 → 1.0 (white
+    // step), 0.7 → 0.5 (gray step) — proves values land ON steps, not between.
+    const hiStep = await run('cb_qhi', { op: 14, input_a: 0.9, input_b: 0.5 });
+    const loStep = await run('cb_qlo', { op: 14, input_a: 0.7, input_b: 0.5 });
+    // Step size 0 = infinite resolution: A passes through unquantized.
+    const zero = await run('cb_qzero', { op: 14, input_a: 0.5, input_b: 0.0 });
+    expect(snap.success && hiStep.success && loStep.success && zero.success).toBe(true);
+
+    snap.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+    zero.trace('out').expectPixelAt(32, 32, { r: 128, g: 128, b: 128 }, 15);
+    const hi = hiStep.trace('out').averageColor().r;
+    const lo = loStep.trace('out').averageColor().r;
+    expect(hi).toBeGreaterThan(lo + 60);
   });
 
   it('post scale multiplies the op result', async () => {

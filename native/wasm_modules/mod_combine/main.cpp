@@ -44,6 +44,7 @@ enum Op : int {
   OpGreater,
   OpLess,
   OpHypot,
+  OpQuantize,
 };
 
 // Per-instance state. One per chain entry. Mirrors the schema field-for-field.
@@ -78,6 +79,9 @@ static float applyOp(int op, float a, float b) {
     case OpGreater:    return a > b ? 1.0f : 0.0f;
     case OpLess:       return a < b ? 1.0f : 0.0f;
     case OpHypot:      return std::sqrt(a * a + b * b);
+    // Snap A to the nearest multiple of B ("steps"). A vanishing step size
+    // means infinite resolution — pass A through rather than divide by ~0.
+    case OpQuantize:   return (std::fabs(b) < eps) ? a : b * std::floor(a / b + 0.5f);
     default:           return a + b;
   }
 }
@@ -107,8 +111,9 @@ void module_init() {
         "modulation source sits right before it; wire *Input B* from a second "
         "source (or just leave it on its slider for an A-vs-constant blend).\n\n"
         "**Try:** *Multiply* two LFOs for ring-mod-style flicker, *Max* to take "
-        "whichever source is louder, *Difference* for a beat between two rates, or "
-        "*Greater Than* to gate one signal on another. Use *Gain A/B* to invert or "
+        "whichever source is louder, *Difference* for a beat between two rates, "
+        "*Greater Than* to gate one signal on another, or *Quantize* to snap a "
+        "smooth LFO into staircase steps of size B. Use *Gain A/B* to invert or "
         "scale each input first, and *Scale*/*Bias* to place the result.")
       // --- Inputs: the two signals + their pre-gains ---
       .group("inputs", "Inputs")
@@ -133,17 +138,20 @@ void module_init() {
         .groupHelp(
           "The binary op applied to the two gained inputs. Arithmetic (*Add*, "
           "*Subtract*, *Multiply*, *Divide*), selection (*Min*, *Max*, *Average*, "
-          "*Difference*), blend (*Screen*, *Power*), and comparison (*Greater "
-          "Than*, *Less Than*) — comparisons emit a hard 0/1 gate. *Divide*, "
-          "*Modulo*, and *Power* are guarded so a zero or negative operand can "
-          "never produce NaN.")
+          "*Difference*), blend (*Screen*, *Power*), comparison (*Greater "
+          "Than*, *Less Than*) — comparisons emit a hard 0/1 gate — and "
+          "*Quantize*, which snaps A to the nearest multiple of B for stepped "
+          "\"bit-crushed\" motion. *Divide*, *Modulo*, *Power*, and *Quantize* "
+          "are guarded so a zero or negative operand can never produce NaN "
+          "(a zero step passes A through unquantized).")
       .selectField("op", OpAdd, state::PrimaryInput,
                    {{"Add", OpAdd}, {"Subtract", OpSubtract}, {"Multiply", OpMultiply},
                     {"Divide", OpDivide}, {"Min", OpMin}, {"Max", OpMax},
                     {"Average", OpAverage}, {"Difference", OpDifference},
                     {"Screen", OpScreen}, {"Power", OpPower}, {"Modulo", OpModulo},
                     {"Greater Than", OpGreater}, {"Less Than", OpLess},
-                    {"Hypot", OpHypot}}, /*wrap=*/true).label("Operation", "Op")
+                    {"Hypot", OpHypot}, {"Quantize", OpQuantize}},
+                   /*wrap=*/true).label("Operation", "Op")
       // --- Output: post scale / bias / clamp, then the published channel ---
       .group("output", "Output")
       // Post-processing applied to the op result: out = op * scale + bias.
