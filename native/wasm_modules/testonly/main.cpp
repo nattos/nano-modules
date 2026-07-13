@@ -49,6 +49,10 @@ NANO_DECLARE_INSTANCE_EFFECT(fuse_solid)
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 NANO_DECLARE_INSTANCE_EFFECT(mod_combine)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
+
+NANO_DECLARE_INSTANCE_EFFECT(mod_time)
+
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
@@ -213,6 +217,29 @@ void nano_module_main() {
         "modulation,combine,math,binary,add,multiply,mix,shaper",
         "la-calculator",
         NANO_INSTANCE_LIFECYCLE(mod_combine),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.flip",
+        "Flip",
+        "Trigger-flipped latch with pickup takeover (MIDI-fader soft-takeover as a modulation shaper)",
+        "mod",
+        "modulation,flip,toggle,latch,takeover,pickup,trigger,shaper",
+        "la-toggle-on",
+        NANO_INSTANCE_LIFECYCLE(mod_flip),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.source.time",
+        "Time",
+        "Transport time/beat-phase modulation source: looping phase fraction + raw beats/seconds value",
+        "mod",
+        "modulation,time,beats,clock,phase,loop,transport,bpm,source",
+        "la-clock",
+        NANO_INSTANCE_LIFECYCLE(mod_time),
+        nullptr, nullptr, nullptr, &mod_time::eval_visibility,
     });
 
     nano::registerEffect({

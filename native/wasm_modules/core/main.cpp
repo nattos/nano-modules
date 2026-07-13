@@ -125,6 +125,10 @@ namespace twitch_mask { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 NANO_DECLARE_INSTANCE_EFFECT(mod_combine)
 
+NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
+
+NANO_DECLARE_INSTANCE_EFFECT(mod_time)
+
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
@@ -664,6 +668,32 @@ void nano_module_main() {
         "modulation,combine,math,binary,add,multiply,mix,shaper",
         "la-calculator",
         NANO_INSTANCE_LIFECYCLE(mod_combine),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.flip",
+        "Flip",
+        "Trigger-flipped latch with pickup takeover: a trigger slams the output to the opposite rail (an exact 0 or 1) and unlatches it from the input; when the input catches up to the rail (or crosses it) it takes over and the output follows it again — MIDI-fader soft-takeover as a modulation shaper",
+        "mod",
+        "modulation,flip,toggle,latch,takeover,pickup,trigger,shaper",
+        "la-toggle-on",
+        NANO_INSTANCE_LIFECYCLE(mod_flip),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.source.time",
+        "Time",
+        "Transport time/beat-phase modulation source: outputs a looping phase fraction plus the raw beats/seconds value. Beats or Time domain; Locked (exact host beat/bar phase or host time, scrubs and all) or Free (integrates forward only, never backwards) sync; loop period in beats (default 4 = one bar) or seconds, with the Value output wrapped into the loop or absolute",
+        "mod",
+        "modulation,time,beats,clock,phase,loop,transport,bpm,source",
+        "la-clock",
+        NANO_INSTANCE_LIFECYCLE(mod_time),
+        nullptr,            // is_identity
+        nullptr,            // on_active
+        nullptr,            // seek
+        &mod_time::eval_visibility,  // static visibility evaluator (beats vs seconds period)
     });
 
     nano::registerEffect({

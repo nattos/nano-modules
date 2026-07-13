@@ -120,6 +120,8 @@ wasm_build \
   ../twitch_mask/main.cpp \
   ../mod_remap/main.cpp \
   ../mod_combine/main.cpp \
+  ../mod_flip/main.cpp \
+  ../mod_time/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_delay/main.cpp \
   ../mod_envelope/main.cpp \
