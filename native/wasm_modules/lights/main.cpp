@@ -24,6 +24,7 @@ NANO_DECLARE_INSTANCE_EFFECT(lights_sim)
 NANO_DECLARE_INSTANCE_EFFECT(block_dehance)
 NANO_DECLARE_INSTANCE_EFFECT(tingle_top)
 NANO_DECLARE_INSTANCE_EFFECT(chroma_wave)
+NANO_DECLARE_INSTANCE_EFFECT(flicker_grid)
 
 extern "C" {
 
@@ -165,6 +166,17 @@ void nano_module_main() {
         "la-water",
         NANO_INSTANCE_LIFECYCLE(chroma_wave),
         nullptr, nullptr, nullptr, &chroma_wave::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.light.flicker_grid",
+        "Flicker Grid",
+        "Per-column luma-to-flicker-rate LED grid. Reduces the input to a grid (default 4x10) of flat box-averaged cells; each column's luma (peak or average) sets a per-column pulse rate — brighter is faster, capped at on/off every frame, with optional overflow fill pouring beyond-cap rate into the off frames. Dimmer columns keep 1-frame pulses with growing gaps; below the low threshold a column is black, at/above the high threshold it holds solid. Cell colours can be pulled toward neutral HSL lightness (the flicker carries the brightness) and levelled up toward the column max on a curve that leaves near-black alone. Built for LEDs: dodges their low-brightness weakness and adds temporal contrast.",
+        "filter",
+        "flicker,grid,led,column,strobe,pulse,luma,temporal",
+        "la-th-large",
+        NANO_INSTANCE_LIFECYCLE(flicker_grid),
     });
 }
 

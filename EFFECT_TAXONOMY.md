@@ -55,7 +55,7 @@ All source effects now declare the `Generator` capability (separate from the
 | `color.tone.levels` | Levels | `video.levels` | core |  |  |
 | `color.vibrance` | Vibrance | `video.vibrance` | core |  |  |
 
-## filter  (9)
+## filter  (10)
 
 | new id | display | ← old id | bundle | gen.cap | note |
 |---|---|---|---|---|---|
@@ -65,6 +65,7 @@ All source effects now declare the `Generator` capability (separate from the
 | `filter.glitch.block_dehance` | Block Dehance | `fx.block_dehance` | lights |  |  |
 | `filter.glitch.twitch_mask` | Twitch Mask | `video.twitch_mask` | core |  |  |
 | `filter.height_from_gradient` | Height From Gradient | `video.height_from_gradient` | nano |  | JUDGMENT: GPU field utility |
+| `filter.light.flicker_grid` | Flicker Grid |  | lights |  | per-column luma→flicker-rate LED grid |
 | `filter.lights_sim` | Lights Sim | `fx.lights_sim` | lights |  | JUDGMENT: input->LED-bar sampler |
 | `filter.sharpen` | Sharpen | `video.sharpen` | core |  |  |
 | `filter.vignette` | Vignette | `video.vignette` | core |  |  |

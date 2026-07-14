@@ -57,6 +57,13 @@ compile_shaders_compute_var_spv chroma_wave motion
 _emit_spv_header_var chroma_wave render motion
 echo "  chroma_wave shaders compiled (SPV: render + motion)"
 
+# flicker_grid: per-cell reduce + persistent per-column sim + render.
+compile_shaders_compute_var_spv flicker_grid reduce
+compile_shaders_compute_var_spv flicker_grid sim
+compile_shaders_compute_var_spv flicker_grid render
+_emit_spv_header_var flicker_grid reduce sim render
+echo "  flicker_grid shaders compiled (SPV: reduce + sim + render)"
+
 compile_shaders_compute_var_spv tingle_top update
 compile_shaders_compute_var_spv tingle_top prefill
 compile_shaders_compute_var_spv tingle_top motion
@@ -94,6 +101,7 @@ wasm_build \
   ../lights_sim/main.cpp \
   ../block_dehance/main.cpp \
   ../tingle_top/main.cpp \
-  ../chroma_wave/main.cpp
+  ../chroma_wave/main.cpp \
+  ../flicker_grid/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
