@@ -55,4 +55,11 @@ for b in "${BUNDLES[@]}"; do
       || echo "  FAILED: $b -> $arch"
   done
 done
+
+# The barrel loads a COPY of these sidecars from NanoBarrel.bundle's Resources,
+# not build/wasm/ — refresh the deployed payload so Resolume sees this rebuild.
+# build_all.sh sets SKIP_BARREL_DEPLOY=1 and refreshes once itself at the end.
+if [ "${SKIP_BARREL_DEPLOY:-}" != "1" ]; then
+  ./refresh_barrel.sh || echo "WARNING: barrel payload refresh failed — run 'cmake --build native/build' before testing in Resolume"
+fi
 echo "Done."

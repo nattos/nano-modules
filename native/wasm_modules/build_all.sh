@@ -51,7 +51,7 @@ if [ "${SKIP_AOT:-}" = "1" ]; then
   echo "--- Skipping AOT sidecars (SKIP_AOT=1) ---"
 elif [ -x "$WAMRC" ] || command -v "$WAMRC" >/dev/null 2>&1; then
   echo "--- Regenerating AOT sidecars ---"
-  WAMRC="$WAMRC" ./build_aot.sh
+  WAMRC="$WAMRC" SKIP_BARREL_DEPLOY=1 ./build_aot.sh
 else
   stale=( ../../build/wasm/*.aot )
   echo "!!! ====================================================================== !!!"
@@ -68,3 +68,10 @@ else
   echo "!!! Install wamrc (native/tools/wamrc/README.md) to restore AOT speed.      !!!"
   echo "!!! ====================================================================== !!!"
 fi
+
+# The barrel loads a COPY of the bundles from NanoBarrel.bundle's Resources, not
+# build/wasm/ — refresh the deployed payload (deploy stamp + resign) so Resolume
+# sees this rebuild. Runs after EVERY AOT branch above (fresh sidecars, SKIP_AOT,
+# or deleted-stale), since the payload copy is stale in all of them. No-ops
+# until the barrel has been built once.
+./refresh_barrel.sh || echo "WARNING: barrel payload refresh failed — run 'cmake --build native/build' before testing in Resolume"
