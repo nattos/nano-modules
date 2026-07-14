@@ -130,6 +130,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
 NANO_DECLARE_INSTANCE_EFFECT(mod_time)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
+NANO_DECLARE_INSTANCE_EFFECT(mod_motion)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 
@@ -705,6 +706,21 @@ void nano_module_main() {
         "modulation,smooth,slew,ramp,glide,shaper,filter",
         "la-stream",
         NANO_INSTANCE_LIFECYCLE(mod_smooth),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.motion",
+        "Motion",
+        "Unary modulation shaper: reports how fast its input is moving — a normalized differentiator (full-scale rate in input ranges per second) with catch-fast/coast-slow momentum, plus an optional integrator: Activity charges a meter that drains over a decay (a 'how alive is this knob' envelope), Throw flings a center-resting position that leaks back home. Unsigned speed/level on output, signed live velocity as a secondary channel",
+        "mod",
+        "modulation,motion,velocity,speed,differentiator,derivative,momentum,inertia,coast,throw,fling,activity,shaper",
+        "la-tachometer-alt",
+        NANO_INSTANCE_LIFECYCLE(mod_motion),
+        nullptr,            // is_identity
+        nullptr,            // on_active
+        nullptr,            // seek
+        &mod_motion::eval_visibility,  // static visibility evaluator (integrate/mode gating)
     });
 
     nano::registerEffect({

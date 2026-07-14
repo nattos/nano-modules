@@ -123,6 +123,7 @@ wasm_build \
   ../mod_flip/main.cpp \
   ../mod_time/main.cpp \
   ../mod_smooth/main.cpp \
+  ../mod_motion/main.cpp \
   ../mod_delay/main.cpp \
   ../mod_envelope/main.cpp \
   ../mod_threshold/main.cpp \
