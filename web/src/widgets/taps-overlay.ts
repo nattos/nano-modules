@@ -351,18 +351,6 @@ export class TapsOverlay extends MobxLitElement {
     return cv?.shadowRoot ?? null;
   }
 
-  /** Screen X of the right edge of a column's gutter, or null. */
-  private columnGutterRight(colIdx: number): number | null {
-    const cvRoot = this.columnsRoot();
-    if (!cvRoot) return null;
-    for (const g of cvRoot.querySelectorAll('column-group')) {
-      const gut = (g as HTMLElement).shadowRoot?.querySelector(
-        `.column-gutter[data-col="${colIdx}"]`) as HTMLElement | null;
-      if (gut) return gut.getBoundingClientRect().right;
-    }
-    return null;
-  }
-
   /** The tap-port hit-box element for a field key `<sketch>/<col>/<chain>/<field>`. */
   private fieldHit(key: string): HTMLElement | null {
     const cvRoot = this.columnsRoot();
@@ -385,12 +373,23 @@ export class TapsOverlay extends MobxLitElement {
       if (hit) {
         const r = hit.getBoundingClientRect();
         const cw = card.offsetWidth, ch = card.offsetHeight;
-        // Anchor to the right of the column's gutter so the card never covers
-        // the gutter; fall back to the field's right edge.
-        const colIdx = parseInt(fieldKey.split('/')[1], 10);
-        const gutterRight = this.columnGutterRight(colIdx);
-        const leftEdge = gutterRight ?? r.right;
-        const ax = (leftEdge - overlayRect.left) + 12 + cw / 2;
+        // Anchor beside the COLUMN hosting the field, not beside the hit box
+        // itself: an output trace card is a narrow tile in a wide row, and a
+        // card anchored to the tile's edge sits on top of its siblings — and
+        // of the very port the user must click again for click-to-connect.
+        // Beside the column, the whole card (fields + trace row) stays
+        // clickable. Field-row hits span the column anyway, so this only
+        // changes where trace-tile popups land.
+        const colRect = (hit.closest('.column') as HTMLElement | null)
+          ?.getBoundingClientRect() ?? r;
+        // Prefer the right side; flip to the left when the right side hasn't
+        // room for the card (otherwise the bounds clamp would slide it back
+        // over the column).
+        const fitsRight = colRect.right + 12 + cw <= overlayRect.right;
+        const fitsLeft = colRect.left - 12 - cw >= overlayRect.left;
+        const ax = (fitsRight || !fitsLeft)
+          ? (colRect.right - overlayRect.left) + 12 + cw / 2
+          : (colRect.left - overlayRect.left) - 12 - cw / 2;
         const ay = (r.top + r.height / 2 - overlayRect.top);
         floaters.push({ id: '__card__', anchorX: ax, anchorY: ay,
           width: cw, height: ch, weightX: 2, weightY: 1 });
