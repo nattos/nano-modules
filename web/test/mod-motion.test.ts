@@ -258,6 +258,26 @@ describe('mod.shaper.motion shaper node E2E', () => {
     expect(rSharp).toBeGreaterThan(rPlain + 40);
   });
 
+  it('direction filters which way counts: Up ignores a falling input, Down a rising one', async () => {
+    // Full steps against the 0.3 s window rig: an ACCEPTED step pegs (capture
+    // 5 frames = 20-100 ms after it, inside the window at any dt); a REJECTED
+    // one must read as rest. The 150-frame settle (0.6-3 s) between the two
+    // steps is well past the window, so the second capture starts from 0.
+    const run = (id: string, direction: number) => runPhases(id,
+      { input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0, direction }, 'output', [
+        { key: 'input', value: 0, frames: 5 },   // falling step
+        { frames: 150 },                         // settle past the window
+        { key: 'input', value: 1, frames: 5 },   // rising step
+      ]);
+    const up = await run('mo_dir_up', 1);
+    const down = await run('mo_dir_down', 2);
+    expect(up.success && down.success).toBe(true);
+    expect(up.phases[1].trace('out').averageColor().r).toBeLessThan(15);      // fall rejected
+    expect(up.phases[3].trace('out').averageColor().r).toBeGreaterThan(200);  // rise accepted
+    expect(down.phases[1].trace('out').averageColor().r).toBeGreaterThan(200); // fall accepted
+    expect(down.phases[3].trace('out').averageColor().r).toBeLessThan(15);     // rise rejected
+  });
+
   it('the signed velocity output reads mid at rest, high moving up, low moving down', async () => {
     const r = await runPhases('mo_vel',
       { input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0 }, 'velocity', [

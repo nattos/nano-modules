@@ -4,6 +4,9 @@
  * A unary modulation shaper that reports the input's SPEED, not its position —
  * a normalized differentiator with performance dynamics on top:
  *
+ *   Direction — which way counts: Both (default), Up (rising input only) or
+ *              Down (falling only). Rejected-direction motion is zeroed BEFORE
+ *              momentum, so nothing coasts, charges or throws off it.
  *   Rate     — displacement over the last `smooth` seconds (a boxcar window,
  *              NOT a one-pole): rate = (x_now - x_then) / span. Accurate for
  *              stepped/quantized input (a dragged knob's per-frame patch steps
@@ -70,6 +73,12 @@ enum Mode : int {
   ModeThrow = 1,
 };
 
+enum Direction : int {
+  DirBoth = 0,
+  DirUp = 1,
+  DirDown = 2,
+};
+
 // Throw thrust-to-gravity ratio: upward acceleration is g*(ratio*|v| - 1), so
 // full-speed motion accelerates the ball at 3 g and the lift threshold is a
 // fixed 1/ratio of full scale regardless of `return_time`. A 0.3 s pegged
@@ -95,6 +104,7 @@ struct State {
   float smooth = 0.12f;      // rate measurement window, seconds (0 = per-frame)
   float curve = 1.4f;        // response gamma on the normalized speed
   float momentum = 0.0f;     // 0..1 -> coast tau = 2 * m^2 seconds
+  int   direction = DirBoth; // which motion counts: both / rising / falling
   bool  integrate = true;
   int   mode = ModeActivity;
   float decay = 0.02f;       // Activity release tau, seconds
@@ -191,7 +201,7 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.shaper.motion", {1, 4, 0},
+  state::init("mod.shaper.motion", {1, 5, 0},
     state::Schema()
       .helpField("intro",
         "## Motion\n"
@@ -229,13 +239,17 @@ void module_init() {
           "measured over — longer steadies stepped or jittery input, shorter "
           "is tighter. *Momentum* lets speed coast down after the motion "
           "stops (up to ~2 s) instead of cutting off; rising speed is always "
-          "caught instantly.")
+          "caught instantly. *Direction* filters which way counts — Up reacts "
+          "only to a rising input, Down only to a falling one; motion the "
+          "other way reads as rest.")
       .floatField("sense", 3.0f, 0.1f, 8.f, state::PrimaryInput,
                   nullptr, 0.f, "/s").label("Full Scale", "Scale")
       .floatField("curve", 1.4f, 0.25f, 4.f, state::PrimaryInput).label("Curve", "Crv")
       .floatField("smooth", 0.12f, 0.f, 0.5f, state::PrimaryInput,
                   nullptr, 0.f, "s").label("Window", "Win")
       .floatField("momentum", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Momentum", "Mom")
+      .selectField("direction", DirBoth, state::PrimaryInput,
+                   {{"Both", DirBoth}, {"Up", DirUp}, {"Down", DirDown}}).label("Direction", "Dir")
       // --- Integrate: accumulate the motion ---
       .group("integrate", "Integrate")
         .groupHelp(
@@ -363,6 +377,11 @@ void tick(void* self, double dt) {
     // pegged for seconds), then the response curve: a gamma on the speed —
     // curve < 1 lifts slow motion into visibility, > 1 gates it out.
     float v = rate / std::fmax(s->sense, 1e-4f);
+    // Direction filter: rejected-direction motion reads as rest. Ahead of
+    // momentum so it can't coast, and of the integrators so it can't charge
+    // the meter or loft the ball.
+    if ((s->direction == DirUp   && v < 0.0f) ||
+        (s->direction == DirDown && v > 0.0f)) v = 0.0f;
     v = std::fmax(-1.0f, std::fmin(1.0f, v));
     if (s->curve != 1.0f && v != 0.0f) {
       const float mag = std::pow(std::fabs(v), s->curve);
@@ -455,6 +474,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "curve"))       s->curve = state::patchFloat(i);
     else if (state::pathIs(p, l, "smooth"))      s->smooth = state::patchFloat(i);
     else if (state::pathIs(p, l, "momentum"))    s->momentum = state::patchFloat(i);
+    else if (state::pathIs(p, l, "direction"))   s->direction = state::patchInt(i);
     else if (state::pathIs(p, l, "decay"))       s->decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "return_time")) s->return_time = state::patchFloat(i);
     else if (state::pathIs(p, l, "sharpen"))     s->sharpen = state::patchFloat(i);
