@@ -1428,7 +1428,7 @@ export class ColumnGroup extends MobxLitElement {
           ${isCollapsed ? nothing : html`
             <div class="effect-card-divider"></div>
             <div class="effect-card-body" data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"
-              style=${bypass ? 'opacity:0.4;pointer-events:none' : ''}>
+              style=${bypass ? 'opacity:0.4' : ''}>
               ${this.renderFieldWidgets(chainIdx, entry)}
             </div>
             ${this.renderTraceCardRow(chainIdx, entry)}
