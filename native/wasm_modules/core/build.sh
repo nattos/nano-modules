@@ -122,6 +122,7 @@ wasm_build \
   ../mod_combine/main.cpp \
   ../mod_flip/main.cpp \
   ../mod_time/main.cpp \
+  ../mod_bpm/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_motion/main.cpp \
   ../mod_delay/main.cpp \

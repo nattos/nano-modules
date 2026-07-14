@@ -128,6 +128,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_combine)
 NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_time)
+NANO_DECLARE_INSTANCE_EFFECT(mod_bpm)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 NANO_DECLARE_INSTANCE_EFFECT(mod_motion)
@@ -695,6 +696,17 @@ void nano_module_main() {
         nullptr,            // on_active
         nullptr,            // seek
         &mod_time::eval_visibility,  // static visibility evaluator (beats vs seconds period)
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.source.bpm",
+        "BPM",
+        "Transport tempo modulation source: outputs the host BPM verbatim plus the duration of one beat in seconds (60/BPM) — a stateless per-frame host read, for tempo displays, math shapers, and tempo-synced delay/period inputs",
+        "mod",
+        "modulation,bpm,tempo,beat,duration,seconds,clock,transport,source",
+        "la-tachometer-alt",
+        NANO_INSTANCE_LIFECYCLE(mod_bpm),
     });
 
     nano::registerEffect({
