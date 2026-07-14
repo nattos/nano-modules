@@ -825,3 +825,136 @@ describe('schema metadata round-trip (groups / names / help)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Core mod effects: beat-clock behaviors, driven frame-exactly.
+//
+// Instantiates the real core bundle with the fake host clock (dt 0.016 s at
+// 120 BPM → 0.032 beats/frame, barPhase step 0.008) and reads the published
+// scalar at host.pluginState.output after each tick — exact assertions the
+// engine e2e's wall-clock rAF pacing can't make.
+// ---------------------------------------------------------------------------
+describe('core mod effects: beat-clock behaviors', () => {
+  const CORE_PATH = resolve(__dirname, '../public/wasm/core.wasm');
+
+  async function loadCore(effectId: string) {
+    let bytes: Buffer | null = null;
+    try { bytes = readFileSync(CORE_PATH); } catch {}
+    if (!bytes) return null;
+    const host = new WasmHost();
+    const imports = buildImports(host);
+    const result = await WebAssembly.instantiate(bytes as BufferSource, imports);
+    (host as any).instance = result.instance;
+    (host as any).memory = result.instance.exports.memory as WebAssembly.Memory;
+    (result.instance.exports._initialize as (() => void) | undefined)?.();
+    (result.instance.exports.nano_module_main as () => void)();
+    const module = host.activateEffect(effectId);
+    return { host, module };
+  }
+
+  const patch = (host: WasmHost, module: any, params: Record<string, number>) =>
+    host.notifyStatePatched(module, Object.entries(params).map(
+      ([path, value]) => ({ op: 'replace' as const, path, value })));
+
+  // Advance the fake transport `frames` frames, collecting the published
+  // output after each tick.
+  function drive(host: WasmHost, module: any, frames: number, bpm = 120): number[] {
+    const dt = 0.016;
+    const outs: number[] = [];
+    for (let i = 0; i < frames; i++) {
+      host.frameState.bpm = bpm;
+      host.frameState.deltaTime = dt;
+      host.frameState.elapsedTime += dt;
+      host.frameState.barPhase = (host.frameState.barPhase + dt * bpm / 60 / 4) % 1;
+      module.tick(dt);
+      outs.push(host.pluginState.output as number);
+    }
+    return outs;
+  }
+
+  const SAW = 3;  // env_lfo ShapeSaw: output = 2·phase − 1 at shape 0
+
+  it('LFO Beats+Locked rides the bar exactly, across the bar wrap', async () => {
+    const loaded = await loadCore('mod.source.lfo');
+    if (!loaded) { console.warn('no core.wasm — skipping'); return; }
+    const { host, module } = loaded;
+    // Start mid-bar: locked phase must equal the bar position (0.5 + i·0.008),
+    // where a free clock (which always starts its cycle at 0) would lag it by
+    // the 0.5 offset — this is what distinguishes Locked from Free.
+    host.frameState.barPhase = 0.5;
+    patch(host, module, { mode: 2, sync: 1, period_beats: 4, waveform: SAW });
+    const outs = drive(host, module, 50);
+    // Frame i: barPhase = 0.5 + (i+1)·0.008; phase == barPhase (period = 1 bar).
+    expect(outs[24]).toBeCloseTo(2 * 0.7 - 1, 3);
+    expect(outs[49]).toBeCloseTo(2 * 0.9 - 1, 3);
+    // 100 more frames crosses the bar wrap: 0.5 + 150·0.008 = 1.7 → phase 0.7.
+    const more = drive(host, module, 100);
+    expect(more[99]).toBeCloseTo(2 * 0.7 - 1, 3);
+  });
+
+  it('LFO Beats+Free integrates the tempo-derived rate, ignoring bar position', async () => {
+    const loaded = await loadCore('mod.source.lfo');
+    if (!loaded) { console.warn('no core.wasm — skipping'); return; }
+    const { host, module } = loaded;
+    host.frameState.barPhase = 0.77;   // free mode must ignore where the bar is
+    patch(host, module, { mode: 2, sync: 0, period_beats: 4, waveform: SAW });
+    const outs = drive(host, module, 50);
+    // 4 beats at 120 BPM = 0.5 Hz → phase = 50·0.016·0.5 = 0.4.
+    expect(outs[49]).toBeCloseTo(2 * 0.4 - 1, 3);
+    // Halve the tempo live: rate drops to 0.25 Hz → 50 more frames add 0.2.
+    const more = drive(host, module, 50, 60);
+    expect(more[49]).toBeCloseTo(2 * 0.6 - 1, 3);
+  });
+
+  it('LFO Period+Locked re-anchors to host time (backward scrubs follow)', async () => {
+    const loaded = await loadCore('mod.source.lfo');
+    if (!loaded) { console.warn('no core.wasm — skipping'); return; }
+    const { host, module } = loaded;
+    patch(host, module, { mode: 1, sync: 1, period: 2, waveform: SAW });
+    const outs = drive(host, module, 25);
+    // time = 25·0.016 = 0.4 s over a 2 s period → phase 0.2.
+    expect(outs[24]).toBeCloseTo(2 * 0.2 - 1, 3);
+    // Scrub the host clock backward: the locked phase follows it down.
+    host.frameState.elapsedTime = 0.1 - 0.016;
+    const after = drive(host, module, 1);
+    expect(after[0]).toBeCloseTo(2 * 0.05 - 1, 3);
+  });
+
+  it('LFO defaults (Freq+Free) are unchanged: rate 0.5 = 5 Hz free-running', async () => {
+    const loaded = await loadCore('mod.source.lfo');
+    if (!loaded) { console.warn('no core.wasm — skipping'); return; }
+    const { host, module } = loaded;
+    patch(host, module, { waveform: SAW });
+    const outs = drive(host, module, 5);
+    // phase = 5·0.016·5 = 0.4
+    expect(outs[4]).toBeCloseTo(2 * 0.4 - 1, 3);
+  });
+
+  it('Beat Trigger: decay tail by default; Single Frame is an exact 1-frame gate', async () => {
+    const loaded = await loadCore('mod.trigger.beat');
+    if (!loaded) { console.warn('no core.wasm — skipping'); return; }
+    const { host, module } = loaded;
+
+    // Decay mode: the tick frame is exactly 1, the next ≈ exp(-dt/0.12) ≈ 0.875.
+    const decay = drive(host, module, 80);
+    const i0 = decay.findIndex((v) => v === 1);
+    expect(i0).toBeGreaterThanOrEqual(0);
+    expect(decay[i0 + 1]).toBeGreaterThan(0.5);
+    expect(decay[i0 + 1]).toBeLessThan(1);
+
+    // Single-frame mode: output only ever exactly 0 or exactly 1, and every 1
+    // is isolated (the frames around it are exact 0s).
+    patch(host, module, { single_frame: 1 });
+    const gate = drive(host, module, 80);
+    expect(gate.every((v) => v === 0 || v === 1)).toBe(true);
+    const ones = gate.map((v, i) => (v === 1 ? i : -1)).filter((i) => i >= 0);
+    expect(ones.length).toBeGreaterThanOrEqual(2);   // every beat ≈ 31 frames
+    for (const i of ones) {
+      expect(gate[i - 1] ?? 0).toBe(0);
+      expect(gate[i + 1] ?? 0).toBe(0);
+    }
+    // The trigger EVENT ring still fires in single-frame mode.
+    const trig = (host.pluginState.triggers ?? []) as Array<{ on: boolean }>;
+    expect(trig.some((t) => t.on === true)).toBe(true);
+  });
+});

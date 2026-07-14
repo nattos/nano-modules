@@ -13,13 +13,17 @@
  *
  * A scalar `output` pulse (1 at the tick, exponential decay) doubles as an
  * ordinary single-channel modulation source, so the card has a visible trace
- * and the trigger can ALSO be wired like any mod output.
+ * and the trigger can ALSO be wired like any mod output. `single_frame`
+ * swaps the decay for a hard gate: exactly 1.0 on the frame a tick fires,
+ * 0.0 on every other frame — a clean edge for downstream edge/trigger
+ * detectors (e.g. Flip).
  *
  * Parameters:
- *   division (enum)     — ticks per bar: 4 bars .. 1/8 (default: every beat)
- *   phase    (0..1)     — tick phase offset within the division
- *   channel  (1..16)    — the trigger channel id carried on each event
- *   velocity (0..1)     — the velocity carried on each event (unclamped ok)
+ *   division     (enum)   — ticks per bar: 4 bars .. 1/8 (default: every beat)
+ *   phase        (0..1)   — tick phase offset within the division
+ *   channel      (1..16)  — the trigger channel id carried on each event
+ *   velocity     (0..1)   — the velocity carried on each event (unclamped ok)
+ *   single_frame (bool)   — output: one-frame 1.0 gate instead of the decay
  *
  * Pure data module — no GPU, no texture I/O.
  */
@@ -50,6 +54,7 @@ struct State {
   float phase = 0.0f;
   float channel = 1.0f;
   float velocity = 1.0f;
+  bool single_frame = false;
 
   fx::BeatTick tick;
   long long seq = 0;
@@ -95,7 +100,7 @@ static void publish(State* s, float pulse) {
 }
 
 void module_init() {
-  state::init("mod.trigger.beat", {1, 0, 1},
+  state::init("mod.trigger.beat", {1, 1, 0},
     state::Schema()
       .helpField("intro",
         "## Beat Trigger\n"
@@ -125,8 +130,17 @@ void module_init() {
       .floatField("channel", 1.0f, 1.f, 16.f, state::PrimaryInput,
                   nullptr, 1.f).label("Channel", "Ch")
       .floatField("velocity", 1.0f, 0.f, 1.f, state::PrimaryInput).label("Velocity", "Vel")
-      // The tick pulse (1 → exponential decay): a visible trace + an ordinary
-      // unsigned modulation output.
+      .group("out", "Output")
+        .groupHelp(
+          "The scalar trace of the trigger. By default each tick pulses to 1 "
+          "and decays over ~120 ms — a visible trace that doubles as a soft "
+          "modulation pulse. *Single Frame* instead holds 1.0 for exactly one "
+          "frame per tick and snaps back to 0 — a clean edge for shapers that "
+          "detect triggers (e.g. Flip).")
+      .boolField("single_frame", false, state::PrimaryInput)
+        .label("Single Frame", "1Frm")
+      // The tick pulse (1 → exponential decay, or the one-frame gate): a
+      // visible trace + an ordinary unsigned modulation output.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned")
       .capability(state::Capability::TriggerSource)
       .capability(state::Capability::ModulationSource)
@@ -173,9 +187,14 @@ void tick(void* self, double dt) {
   } else {
     s->sinceTickSec += dt > 0 ? dt : 0;
   }
-  // 1 → 0 pulse with a ~120 ms tail (visible at any frame rate).
-  const float pulse = static_cast<float>(std::exp(-s->sinceTickSec / 0.12));
-  publish(s, pulse < 0.001f ? 0.0f : pulse);
+  if (s->single_frame) {
+    // Hard gate: exactly 1.0 on a tick frame, 0.0 otherwise.
+    publish(s, crossings > 0 ? 1.0f : 0.0f);
+  } else {
+    // 1 → 0 pulse with a ~120 ms tail (visible at any frame rate).
+    const float pulse = static_cast<float>(std::exp(-s->sinceTickSec / 0.12));
+    publish(s, pulse < 0.001f ? 0.0f : pulse);
+  }
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -192,6 +211,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->channel = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "velocity"))
       s->velocity = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "single_frame"))
+      s->single_frame = state::patchFloat(i) != 0.0f;
   }
 }
 

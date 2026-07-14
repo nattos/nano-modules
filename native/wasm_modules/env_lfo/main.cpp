@@ -9,13 +9,28 @@
  * instance callbacks take `self`.
  *
  * Parameters:
- *   mode      (enum)             — Freq / Period. Selects how the speed knob is
- *                                  interpreted; a tab-bar selector. Freq exposes
- *                                  `rate`; Period exposes `period` (see below).
+ *   mode      (enum)             — Freq / Period / Beats. Selects how the speed
+ *                                  knob is interpreted; a tab-bar selector. Freq
+ *                                  exposes `rate`; Period exposes `period`; Beats
+ *                                  exposes `period_beats` (see below).
+ *   sync      (enum)             — Free / Locked (mod.source.time semantics).
+ *                                  Free integrates dt forward-only (the classic
+ *                                  LFO: knob edits never jump phase). Locked
+ *                                  re-anchors phase to the host clock every frame
+ *                                  — beat/scrub-exact, and two Locked instances
+ *                                  always agree; knob edits rescale elapsed time
+ *                                  (a phase jump — re-anchoring is the point).
+ *                                  The stochastic shapes keep their own walks
+ *                                  either way (they can't be replayed).
  *   rate      (0..1, default 0.5) — Freq mode: oscillation speed (maps to 0..10 Hz)
  *   period    (0.1..300s, def 1s) — Period mode: cycle length in seconds (up to
  *                                  5 min), so the LFO can run far slower than Freq
  *                                  mode's 0.1 Hz floor allows.
+ *   period_beats (0.25..64, def 4) — Beats mode: cycle length in beats of the
+ *                                  host transport (4 = one bar), tracking BPM
+ *                                  changes live. With Locked sync the cycle is
+ *                                  phase-locked to the downbeat; hosts with no
+ *                                  beat info leave a Locked-Beats LFO parked.
  *   amplitude (0..1, default 1.0) — output swing around 0.5
  *   waveform  (enum)             — Sine / Square / Triangle / Saw / Random Walk
  *                                  / Random FM
@@ -49,7 +64,18 @@ namespace env_lfo {
 enum Mode {
   ModeFreq = 0,    // `rate` knob → 0..10 Hz
   ModePeriod = 1,  // `period` knob → cycle length in seconds (0.1s..300s)
+  ModeBeats = 2,   // `period_beats` knob → cycle length in transport beats
 };
+
+// Phase anchoring (schema `sync` select field + State::sync) — the same
+// Free/Locked split as mod.source.time.
+enum Sync {
+  SyncFree = 0,    // integrate dt forward-only; never re-anchors
+  SyncLocked = 1,  // re-anchor phase to the host clock every frame
+};
+
+// The repo-wide transport assumption: host_get_bar_phase spans one 4-beat bar.
+constexpr double kBeatsPerBar = 4.0;
 
 // Waveform selector values (schema `waveform` select field + State::waveform).
 enum Shape {
@@ -64,8 +90,10 @@ enum Shape {
 // Per-instance state. One per chain entry.
 struct State {
   int mode = ModeFreq;
+  int sync = SyncFree;
   float rate = 0.5f;
-  float period = 1.0f;  // seconds (Period mode)
+  float period = 1.0f;        // seconds (Period mode)
+  float period_beats = 4.0f;  // transport beats (Beats mode; 4 = one bar)
   float amplitude = 1.0f;
   int waveform = ShapeSine;
   float shape = 0.0f;
@@ -73,7 +101,15 @@ struct State {
   // Phase accumulator in cycles [0,1). Advanced by dt*rate every tick (style
   // guide §2.1) so turning the rate knob changes only the FUTURE speed — it
   // never retro-scales elapsed time into a phase jump the way time()*rate does.
+  // (Locked sync deliberately overrides this every frame with the host-anchored
+  // phase — there re-anchoring IS the contract.)
   double phase = 0.0;
+  // Beats-mode bar tracker (mod_time pattern): barPhase wraps every bar, so
+  // count the wraps and reconstruct beats = (bars + barPhase) * 4 exactly.
+  // Always advanced (cheap), so switching into Beats mode lands on the live
+  // transport position instead of a stale one.
+  double prev_bar_phase = -1.0;  // sentinel: -1 = unseeded
+  long bars = 0;
 
   // Per-instance RNG for the stochastic shapes (LCG; deterministic per run).
   uint32_t rng = 0x9E3779B9u;
@@ -133,9 +169,9 @@ static float deterministicWave(int wf, float shape, double p) {
 // whenever `mode` changes — same code path either way. Touches the type-shared
 // schema, so it takes the active mode value as an argument.
 static void apply_mode_visibility(int mode) {
-  bool period = (mode == ModePeriod);
-  state::setFieldHidden("rate", period);
-  state::setFieldHidden("period", !period);
+  state::setFieldHidden("rate", mode != ModeFreq);
+  state::setFieldHidden("period", mode != ModePeriod);
+  state::setFieldHidden("period_beats", mode != ModeBeats);
 }
 
 // Static (self-less) visibility evaluator — pure over state (see crop).
@@ -152,7 +188,7 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type.
 void module_init() {
-  state::init("mod.source.lfo", {1, 0, 1},
+  state::init("mod.source.lfo", {1, 1, 0},
     state::Schema()
       .helpField("intro",
         "## LFO\n"
@@ -160,22 +196,34 @@ void module_init() {
         "source that rests at 0, so several stacked LFOs cancel and reinforce "
         "around the unmodulated value.\n\n"
         "**Try:** pick a *Waveform* and set the *Speed*, then wire the output into "
-        "any param. Bend *Shape* to morph the wave, and switch to **Period** mode "
-        "when you want very slow cycles (up to 5 minutes).")
-      // --- Speed: how fast the wave cycles, in Freq or Period terms ---
+        "any param. Bend *Shape* to morph the wave, switch to **Period** mode "
+        "for very slow cycles (up to 5 minutes), or **Beats** to sync the cycle "
+        "to the transport tempo.")
+      // --- Speed: how fast the wave cycles — Freq, Period, or Beats terms ---
       .group("speed", "Speed")
         .groupHelp(
           "Choose how the cycle rate is set. **Freq** exposes a 0–10 Hz *Rate* "
-          "knob; **Period** instead sets the cycle length directly in seconds — up "
-          "to 5 minutes — for far slower sweeps than Freq mode reaches. Only the "
-          "knob for the active mode is shown.")
+          "knob; **Period** sets the cycle length directly in seconds — up to 5 "
+          "minutes; **Beats** sets it in transport beats (4 = one bar), tracking "
+          "BPM changes live. Only the knob for the active mode is shown. *Sync* "
+          "— **Free** integrates forward only (knob edits never jump phase); "
+          "**Locked** re-anchors the phase to the host clock every frame, so the "
+          "cycle rides the beat/timeline exactly and scrubs track (the random "
+          "waveforms keep their own free-running walks either way).")
       // Tab-bar selector: how the speed knob below is interpreted.
       .selectField("mode", ModeFreq, state::PrimaryInput,
-                   {{"Freq", ModeFreq}, {"Period", ModePeriod}}).label("Mode", "Mode")
+                   {{"Freq", ModeFreq}, {"Period", ModePeriod},
+                    {"Beats", ModeBeats}}).label("Mode", "Mode")
+      .selectField("sync", SyncFree, state::PrimaryInput,
+                   {{"Free", SyncFree}, {"Locked", SyncLocked}}).label("Sync", "Sync")
       .floatField("rate", 0.5f, 0.f, 1.f, state::PrimaryInput).label("Rate", "Rate")
-      // Period mode: cycle length in seconds, up to 5 min. Hidden in Freq mode.
+      // Period mode: cycle length in seconds, up to 5 min. Hidden otherwise
+      // (each mode shows only its own speed knob).
       .floatField("period", 1.0f, 0.1f, 300.f, state::PrimaryInput,
                   nullptr, 0.f, "s").label("Period", "Period")
+      // Beats mode: cycle length in transport beats (4 = one bar).
+      .floatField("period_beats", 4.0f, 0.25f, 64.f, state::PrimaryInput,
+                  nullptr, 0.f, "beats").label("Period", "Period")
       // --- Waveform: the shape of the cycle + its output swing ---
       .group("waveform", "Waveform")
         .groupHelp(
@@ -233,8 +281,10 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->mode = ModeFreq;
+  s->sync = SyncFree;
   s->rate = 0.5f;
   s->period = 1.0f;
+  s->period_beats = 4.0f;
   s->amplitude = 1.0f;
   s->waveform = ShapeSine;
   s->shape = 0.0f;
@@ -248,15 +298,35 @@ void init(void* self) {
   s->fmWalkPhase = 0.0;
   s->fmMod = 0.0f;
   s->fmTarget = 0.0f;
+  s->prev_bar_phase = -1.0;
+  s->bars = 0;
 }
 
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
+  // Bar tracker: advanced every frame regardless of mode (trivially cheap), so
+  // switching into Beats mode lands on the live transport position.
+  {
+    const double bp = host::barPhase();
+    if (s->prev_bar_phase < 0.0) {
+      s->prev_bar_phase = bp;              // first frame: seed, bars stays 0
+    } else {
+      if (bp < s->prev_bar_phase - 0.5) s->bars++;   // bar wrap
+      s->prev_bar_phase = bp;
+    }
+  }
+
   // Cycles per second. Freq mode: 0..10 Hz. Period mode: the period knob is the
-  // cycle length in seconds directly (up to 5 min), so freq = 1/seconds.
+  // cycle length in seconds directly (up to 5 min), so freq = 1/seconds. Beats
+  // mode: the period is in transport beats, so freq = BPM/60/beats — tracking
+  // tempo changes live (the random shapes tempo-sync through this too).
+  double periodBeats = s->period_beats;
+  if (periodBeats < 0.01) periodBeats = 0.01;  // guard div-by-zero
   double rate;
-  if (s->mode == ModePeriod) {
+  if (s->mode == ModeBeats) {
+    rate = host::bpm() / 60.0 / periodBeats;
+  } else if (s->mode == ModePeriod) {
     double seconds = s->period;
     if (seconds < 0.01) seconds = 0.01;  // guard div-by-zero
     rate = 1.0 / seconds;
@@ -288,10 +358,26 @@ void tick(void* self, double dt) {
     s->phase -= std::floor(s->phase);
     w = static_cast<float>(std::sin(s->phase * 2.0 * M_PI));
   } else {
-    // Every other shape advances phase at the base rate.
-    s->phase += dt * rate;
-    bool wrapped = s->phase >= 1.0;
-    s->phase -= std::floor(s->phase);
+    // Every other shape advances phase at the base rate. Locked sync instead
+    // re-anchors the phase to the host clock every frame (mod.source.time
+    // semantics): Beats uses the bar-locked beat count over the period, the
+    // time-based modes use host time × rate. Knob edits rescale elapsed time
+    // (a phase jump) and backward scrubs run the phase backwards — locked
+    // follows the host; only Free is forward-only.
+    if (s->sync == SyncLocked) {
+      double t;
+      if (s->mode == ModeBeats) {
+        const double beats =
+            (static_cast<double>(s->bars) + s->prev_bar_phase) * kBeatsPerBar;
+        t = beats / periodBeats;
+      } else {
+        t = host::time() * rate;
+      }
+      s->phase = t - std::floor(t);
+    } else {
+      s->phase += dt * rate;
+      s->phase -= std::floor(s->phase);
+    }
     double p = s->phase;
 
     if (wf == ShapeRandomWalk) {
@@ -349,10 +435,14 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       int m = static_cast<int>(state::patchFloat(i));
       if (m != s->mode) { s->mode = m; mode_changed = true; }
     }
+    else if (state::pathIs(pb + off[i], len[i], "sync"))
+      s->sync = static_cast<int>(state::patchFloat(i));
     else if (state::pathIs(pb + off[i], len[i], "rate"))
       s->rate = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "period"))
       s->period = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "period_beats"))
+      s->period_beats = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "amplitude"))
       s->amplitude = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "waveform"))
@@ -380,10 +470,18 @@ void render(void* self, int vp_w, int vp_h) {
 void seek(void* self, double /*from*/, double to) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  double rate = (s->mode == ModePeriod) ? 1.0 / (s->period < 0.01 ? 0.01 : s->period)
-                                        : s->rate * 10.0;
+  const double periodBeats = s->period_beats < 0.01f ? 0.01 : s->period_beats;
+  double rate;
+  if (s->mode == ModeBeats)       rate = host::bpm() / 60.0 / periodBeats;
+  else if (s->mode == ModePeriod) rate = 1.0 / (s->period < 0.01 ? 0.01 : s->period);
+  else                            rate = s->rate * 10.0;
   double ph = to * rate;
   s->phase = ph - std::floor(ph);
+  // Re-seed the bar tracker at the new time: whole bars estimated from the
+  // current tempo (approximate across mid-timeline tempo changes), the
+  // fraction re-seeded from the next tick's barPhase.
+  s->bars = static_cast<long>(std::floor(to * host::bpm() / 60.0 / kBeatsPerBar));
+  s->prev_bar_phase = -1.0;
   s->fmWalkPhase = 0.0;
   s->rwPhase = 0.0;
   s->rwInit = false;
