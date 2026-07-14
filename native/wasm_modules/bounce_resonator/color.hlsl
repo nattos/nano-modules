@@ -1,9 +1,9 @@
 // source.light.bounce_resonator — color pass.
 //
 // Each bar IS its whole 1/4-width column: fill the entire vertical strip
-// with the bar's colour. Brightness = its diffusion value; HUE = its
-// diffused hue (band_color's saturation + value supply the rest). The
-// per-bar state is read from the GPU sim buffer (sim.hlsl).
+// with the bar's colour. Brightness = its diffusion value; hue AND
+// saturation = its diffused colour state (band_color's value supplies the
+// rest). The per-bar state is read from the GPU sim buffer (sim.hlsl).
 
 #include "nano_bars.hlsl"
 #include "nano_color.hlsl"
@@ -12,10 +12,10 @@ Texture2D<float4>   inputTex  : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
 
 cbuffer Uniforms : register(b2) {
-  float band_sat; float band_val; float intensity; float input_opacity;
+  float band_val; float intensity; float input_opacity; float upad0;
 };
 
-struct SimState { float v[4]; float h[4]; float env; float pad[3]; };
+struct SimState { float v[4]; float h[4]; float s[4]; float env; float pad[3]; };
 StructuredBuffer<SimState> simState : register(t3);
 
 [numthreads(8, 8, 1)]
@@ -31,7 +31,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   SimState st = simState[0];
   float vi = st.v[bar];
 
-  float3 col = nano_hsv_to_rgb(float3(st.h[bar], band_sat, band_val));
+  float3 col = nano_hsv_to_rgb(float3(st.h[bar], st.s[bar], band_val));
   float3 lin = col * (intensity * vi);
 
   // Warm bloom: channel energy beyond 1 (a saturated hue can't hold more)

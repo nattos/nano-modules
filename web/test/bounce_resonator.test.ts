@@ -159,6 +159,35 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     expect(maxG(banded)).toBeGreaterThan(maxG(sampled) + 40);
   });
 
+  it('tex_in mode takes on the input’s dominant hue; tex_in_color scales it', async () => {
+    // Saturated RED input with the DEFAULT near-white bar colour (sat ≈ 0.22).
+    // At tex_in_color 1 the sampled saturation rides the sim state, so the
+    // bars go strongly red; at 0 the injected colour is Bar Color's pastel
+    // (green channel nearly as bright as red). input_opacity 0 isolates the
+    // bars from the red passthrough.
+    const run = (strength: number) => runGpuEffectTest({
+      module: 'source.light.bounce_resonator', bundle: 'lights',
+      width: W, height: H, inputColor: [0.9, 0, 0, 1], renderEachTick: true,
+      ticks: 3,
+      params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0]]),
+               ['impulse_mode', 0], ['tex_in_boost', 3.0], ['input_opacity', 0.0],
+               ['tex_in_color', strength]],
+      dumpName: `bounce_resonator_texcolor_${Math.round(strength * 100)}`,
+    });
+    const full = await run(1.0);
+    const off = await run(0.0);
+    expect(full.success && off.success).toBe(true);
+    const lit = (f: Frame) =>
+      [0, 1, 2, 3].reduce((m, k) => barBrightness(f, k) > barBrightness(f, m) ? k : m, 0);
+    const lf = lit(full), lo = lit(off);
+    // Full strength: pure red bars — green stays dark.
+    expect(barChan(full, lf, 'r')).toBeGreaterThan(80);
+    expect(barChan(full, lf, 'g')).toBeLessThan(25);
+    // Strength 0: band-colour pastel — green nearly as bright as red.
+    expect(barChan(off, lo, 'g')).toBeGreaterThan(80);
+    expect(barChan(off, lo, 'g')).toBeGreaterThan(barChan(off, lo, 'r') * 0.7);
+  });
+
   it('input_opacity fades the passed-through input', async () => {
     // Grey input, no bars lit (engine off) → output tracks input_opacity.
     const run = (input_opacity: number) => runGpuEffectTest({

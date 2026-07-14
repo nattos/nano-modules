@@ -11,8 +11,9 @@
  * Impulse source (impulse_mode enum):
  *   one_bar / random_bar / all_bars → impulse at band_color's hue, amount =
  *     impulse_strength, into the chosen bar(s).
- *   tex_in → on trigger, each bar samples the average colour/intensity of its
- *     slice of tex_in (scaled by tex_in_boost) and uses that as its impulse.
+ *   tex_in → on trigger, each bar samples its slice of tex_in: impulse amount
+ *     = mean luminance (scaled by tex_in_boost), impulse colour = the slice's
+ *     dominant hue/saturation blended toward band_color by tex_in_color.
  *
  * Trigger semantics (style guide §8.1): gate (bool) + trigger (event) fire
  * on a 0→1 rising edge; `auto_mode` is the shared self-fire block (Off by
@@ -51,10 +52,11 @@ enum ImpulseMode { MODE_TEX_IN = 0, MODE_ONE_BAR = 1, MODE_RANDOM = 2, MODE_ALL 
 struct SimState {                         // persistent GPU sim state
   float v[4];
   float h[4];
+  float s[4];
   float env;
   float pad[3];
 };
-static_assert(sizeof(SimState) == 48, "SimState layout mismatch");
+static_assert(sizeof(SimState) == 64, "SimState layout mismatch");
 
 struct SimUniforms {
   float   feedback, decay_shaping, hue_converge, home_hue;
@@ -62,10 +64,11 @@ struct SimUniforms {
   float   pending0, pending1, pending2, pending3;
   float   band_hue, tex_in_boost; int32_t trigger_fired, do_reset;
   int32_t tex_w, tex_h, sample_nx, sample_ny;
+  float   band_sat, tex_in_color, upad0, upad1;
 };
-static_assert(sizeof(SimUniforms) == 80, "SimUniforms layout mismatch");
+static_assert(sizeof(SimUniforms) == 96, "SimUniforms layout mismatch");
 
-struct ColorUniforms { float band_sat, band_val, intensity, input_opacity; };
+struct ColorUniforms { float band_val, intensity, input_opacity, pad0; };
 static_assert(sizeof(ColorUniforms) == 16, "ColorUniforms layout mismatch");
 
 struct MatsBuf { float data[fx::DiffusionNetwork4::kMaxN * 48]; };
@@ -88,6 +91,7 @@ struct State {
   int   impulse_mode      = MODE_ONE_BAR;
   int   one_bar_target    = 0;     // only used when impulse_mode == one_bar
   float tex_in_boost      = 1.0f;  // only used when impulse_mode == tex_in
+  float tex_in_color      = 1.0f;  // only used when impulse_mode == tex_in
   float feedback          = 0.90f;
   float spread            = 0.30f;
   float spread_contrast   = 0.0f;
@@ -157,6 +161,7 @@ static void update_band_hsv(State& s) {
 static void apply_mode_visibility(int mode) {
   state::setFieldHidden("one_bar_target", mode != MODE_ONE_BAR);
   state::setFieldHidden("tex_in_boost",   mode != MODE_TEX_IN);
+  state::setFieldHidden("tex_in_color",   mode != MODE_TEX_IN);
 }
 
 // Static (self-less) visibility evaluator — pure over state (see crop). Covers
@@ -199,7 +204,7 @@ static void on_state_ready(void* self) {
 void module_init() {
   // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
   // into the Trigger group (it takes and returns the Schema&).
-  state::init("source.light.bounce_resonator", {1, 0, 1},
+  state::init("source.light.bounce_resonator", {1, 1, 0},
     fx::AutoTrigger::fields(
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
@@ -223,7 +228,8 @@ void module_init() {
           "**Random** (Poisson, at *Auto Rate*) so it lives on its own, or **Beats** "
           "to lock the impulses to the host transport. **Impulse Mode** chooses the "
           "target — a fixed bar, a random bar, all four at once, or sampling colour "
-          "straight from the incoming video. **Try:** hold a steady auto rate and "
+          "straight from the incoming video (**Input Color** sets how strongly the "
+          "sampled hue takes over from **Bar Color**). **Try:** hold a steady auto rate and "
           "modulate the mode for an evolving, hands-off light show.")
       .boolField ("gate",                false,                  state::PrimaryInput).label("Gate", "Gate")
       .eventField("trigger",                                     state::PrimaryInput).label("Trigger", "Trig")
@@ -233,6 +239,7 @@ void module_init() {
                     {"random_bar", MODE_RANDOM}, {"all_bars", MODE_ALL}}, /*wrap=*/true).label("Impulse Mode", "Mode")
       .intField  ("one_bar_target",      0, 0, 3,                state::PrimaryInput).label("Target Bar", "Bar")
       .floatField("tex_in_boost",        1.0f, 0.0f, 10.0f,      state::PrimaryInput).label("Input Boost", "Boost")
+      .floatField("tex_in_color",        1.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Input Color", "InCol")
       // --- Diffusion network ---
       .group("network", "Diffusion Network")
         .groupHelp(
@@ -408,6 +415,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
     }
     else if (state::pathIs(path, plen, "one_bar_target"))      s->one_bar_target     = (int)state::patchFloat(i);
     else if (state::pathIs(path, plen, "tex_in_boost"))        s->tex_in_boost       = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "tex_in_color"))        s->tex_in_color       = state::patchFloat(i);
     else if (state::pathIs(path, plen, "feedback"))            s->feedback           = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spread"))              s->spread             = state::patchFloat(i);
     else if (state::pathIs(path, plen, "spread_contrast"))     s->spread_contrast    = state::patchFloat(i);
@@ -463,6 +471,8 @@ void render(void* self, int vp_w, int vp_h) {
   su.tex_h            = vp_h;
   su.sample_nx        = SAMPLE_NX;
   su.sample_ny        = SAMPLE_NY;
+  su.band_sat         = s->band_sat;
+  su.tex_in_color     = clampf(s->tex_in_color, 0.0f, 1.0f);
   s->sim_uniform_buf.writeOne(su);
 
   // Pass 1 — sim (single-thread): step the hops + inject impulses.
@@ -478,8 +488,8 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   // Pass 2 — color: read the post-step state, fill each bar's column.
-  ColorUniforms cu = { s->band_sat, s->band_val, clampf(s->intensity, 0.0f, 10.0f),
-                       clampf(s->input_opacity, 0.0f, 1.0f) };
+  ColorUniforms cu = { s->band_val, clampf(s->intensity, 0.0f, 10.0f),
+                       clampf(s->input_opacity, 0.0f, 1.0f), 0.0f };
   s->color_uniform_buf.writeOne(cu);
   {
     auto cp = gpu::ComputePass::begin();

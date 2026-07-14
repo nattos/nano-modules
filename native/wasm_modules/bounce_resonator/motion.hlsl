@@ -9,7 +9,7 @@ Texture2D<float4>   upstreamTex : register(t0);    // upstream motion
 RWTexture2D<float4> motionTex   : register(u1);    // rgba16f
 
 cbuffer Uniforms : register(b2) {
-  float band_sat; float band_val; float intensity; float _pad;
+  float band_val; float intensity; float input_opacity; float _pad;
 };
 
 [numthreads(8, 8, 1)]
