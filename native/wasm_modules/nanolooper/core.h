@@ -28,9 +28,15 @@ typedef struct {
   /* Quantization is per-axis and independently optional (both default OFF — a
    * free looper that repeats exactly what you played). quantize_start snaps the
    * onset to the step grid; quantize_length snaps the gate duration to a whole
-   * number of steps (min 1). Grid spacing is one step (1.0). */
+   * number of steps (min 1). Grid spacing is one step (1.0).
+   *
+   * quantize_start_amount (0..1, default 1) makes the start snap PARTIAL: the
+   * onset moves that fraction of the way to its grid position. 1 = full snap
+   * (classic quantize); 0.5 = halfway there (tightened but still human); 0 =
+   * untouched. Only applies while quantize_start is on. */
   int quantize_start;
   int quantize_length;
+  double quantize_start_amount;
 
   /* Overwrite "grace period", in LOOP UNITS (steps). When a new note truncates
    * an existing one (its onset lands inside the old note's body), the old note
@@ -67,6 +73,8 @@ void looper_init(LooperCore* c, double loop_length);
  * (both are step-based; a step stays one 16th regardless of loop length). */
 void looper_set_loop_length(LooperCore* c, double loop_length);
 void looper_set_quantize(LooperCore* c, int q_start, int q_length);
+/* Set how far starts snap (0..1, clamped; see quantize_start_amount above). */
+void looper_set_quantize_start_amount(LooperCore* c, double amount);
 /* Set the overwrite grace period, in loop units (steps). Clamped to >= 0. */
 void looper_set_grace(LooperCore* c, double grace_units);
 

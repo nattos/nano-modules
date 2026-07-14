@@ -359,6 +359,7 @@ export class NanolooperInspector extends MobxLitElement {
         <field-toggle ?labelButton=${true} .fieldPath=${'quantize_start'} .label=${'Q Start'} .defaultValue=${0} .binding=${b}></field-toggle>
         <field-toggle ?labelButton=${true} .fieldPath=${'quantize_length'} .label=${'Q Length'} .defaultValue=${0} .binding=${b}></field-toggle>
       </div>
+      <scalar-slider style="width:100%;" .fieldPath=${'quantize_start_amount'} .label=${'Quantize Amount'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${1} .binding=${b}></scalar-slider>
       <scalar-slider style="width:100%;" .fieldPath=${'grace'} .label=${'Grace'} .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.0625} .binding=${b}></scalar-slider>
 
       <div class="section">Output</div>

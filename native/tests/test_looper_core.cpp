@@ -372,3 +372,37 @@ TEST_CASE("undo across a loop-length shrink folds restored notes into range",
   CHECK(c.events[0].start == 4.0);   // 20 mod 16 — folded, so it still plays
   CHECK(active_ch(c, 4.5, 0));
 }
+
+TEST_CASE("quantize_start_amount pulls the onset partway to the grid",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);
+  looper_set_quantize(&c, /*q_start=*/1, /*q_length=*/0);
+
+  // Full snap (default amount = 1): identical to classic quantize.
+  looper_begin_note(&c, 0, 2.7);
+  looper_end_note(&c, 0, 5.3);
+  REQUIRE(c.event_count == 1);
+  CHECK(c.events[0].start == Catch::Approx(2.0));
+
+  // Half snap: the onset moves half of the 0.7 it would have snapped.
+  looper_set_quantize_start_amount(&c, 0.5);
+  looper_begin_note(&c, 1, 2.7);
+  looper_end_note(&c, 1, 5.3);
+  REQUIRE(c.event_count == 2);
+  CHECK(c.events[1].start == Catch::Approx(2.35));
+  CHECK(c.events[1].length == Catch::Approx(2.6));  // real hold, unaffected
+
+  // Zero: quantize_start on but the onset is untouched.
+  looper_set_quantize_start_amount(&c, 0.0);
+  looper_begin_note(&c, 2, 2.7);
+  looper_end_note(&c, 2, 5.3);
+  REQUIRE(c.event_count == 3);
+  CHECK(c.events[2].start == Catch::Approx(2.7));
+
+  // Out-of-range amounts clamp.
+  looper_set_quantize_start_amount(&c, 1.7);
+  CHECK(c.quantize_start_amount == 1.0);
+  looper_set_quantize_start_amount(&c, -0.3);
+  CHECK(c.quantize_start_amount == 0.0);
+}

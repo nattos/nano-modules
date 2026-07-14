@@ -84,6 +84,7 @@ void looper_init(LooperCore* c, double loop_length) {
   c->loop_length = loop_length;
   c->quantize_start = 0;
   c->quantize_length = 0;
+  c->quantize_start_amount = 1.0;
   c->grace = loop_length / 64.0;   /* a 1/64 note (1 bar / 64) */
   c->event_count = 0;
   c->undo_count = 0;
@@ -110,6 +111,10 @@ void looper_set_loop_length(LooperCore* c, double loop_length) {
 void looper_set_quantize(LooperCore* c, int q_start, int q_length) {
   c->quantize_start = q_start ? 1 : 0;
   c->quantize_length = q_length ? 1 : 0;
+}
+
+void looper_set_quantize_start_amount(LooperCore* c, double amount) {
+  c->quantize_start_amount = amount < 0 ? 0 : (amount > 1 ? 1 : amount);
 }
 
 void looper_set_grace(LooperCore* c, double grace_units) {
@@ -177,7 +182,14 @@ int looper_begin_note(LooperCore* c, int channel, double current_time) {
     looper_end_note(c, channel, current_time);
 
   double raw = wrap(current_time, c->loop_length);
-  double start = c->quantize_start ? quantize_start_val(raw, c->loop_length) : raw;
+  double start = raw;
+  if (c->quantize_start) {
+    /* Partial snap: move the onset quantize_start_amount of the way to its
+     * grid position. The snap FLOORS within the onset's own step, so the lerp
+     * never crosses the loop seam — plain interpolation is wrap-safe here. */
+    double snapped = quantize_start_val(raw, c->loop_length);
+    start = raw + (snapped - raw) * c->quantize_start_amount;
+  }
 
   /* One undo checkpoint for the whole press action — the start-overwrite here,
    * the new note, and any release-time body-overwrite all share it. */

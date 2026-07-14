@@ -84,6 +84,7 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_LOOP_MODE       19
 #define PID_STRICT_DEADLINE 20
 #define PID_BARS            21
+#define PID_QUANTIZE_START_AMOUNT 22
 
 /* Loop length limits, in bars (4 beats of 4 steps each). */
 #define MAX_BARS 4
@@ -144,6 +145,7 @@ struct State {
   float overlay_opacity = 1.0f; /* overall overlay alpha multiplier */
   int quantize_start = 0;
   int quantize_length = 0;
+  float quantize_start_amount = 1.0f;  /* 0..1 partial start snap (1 = full) */
   float grace_beats = 0.0625f;   /* overwrite grace, in beats (1/64 note) */
 
   /* Latch mode: the first trigger clears the pattern and opens a 1-bar capture
@@ -605,6 +607,10 @@ static void on_param_change(State& s, int index, double value) {
   } else if (index == PID_QUANTIZE_LENGTH) {
     s.quantize_length = pressed;
     looper_set_quantize(&s.looper, s.quantize_start, s.quantize_length);
+  } else if (index == PID_QUANTIZE_START_AMOUNT) {
+    float a = (float)value;
+    s.quantize_start_amount = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    looper_set_quantize_start_amount(&s.looper, (double)s.quantize_start_amount);
   } else if (index == PID_GRACE) {
     /* Param is in fractions of a beat; core wants loop units. 4 beats / bar
      * (NUM_STEPS steps), so 1 beat == NUM_STEPS/4 units. */
@@ -715,6 +721,7 @@ static int field_to_pid(const char* path, int pathLen) {
     {"send_to_rail", PID_SEND_TO_RAIL},
     {"quantize_start", PID_QUANTIZE_START},
     {"quantize_length", PID_QUANTIZE_LENGTH},
+    {"quantize_start_amount", PID_QUANTIZE_START_AMOUNT},
     {"grace", PID_GRACE},
     {"strict_deadline", PID_STRICT_DEADLINE},
   };
@@ -807,12 +814,20 @@ void module_init() {
   // --- Quantize -------------------------------------------------------
   schema.group("quantize", "Quantize")
     .groupHelp(
-      "Snap recorded notes to the 16-step beat grid. **Start** aligns each note's "
-      "onset; **Length** aligns its duration. **Grace** sets how forgiving overwrite "
-      "and truncation are near a step boundary.");
+      "Snap recorded notes to the 16th-note step grid. **Start** aligns each note's "
+      "onset — fully, or partially via **Amount** (1 = hard snap, lower values pull "
+      "the onset only that fraction of the way to the grid, tightening the feel while "
+      "keeping it human). **Length** aligns its duration. **Grace** sets how forgiving "
+      "overwrite and truncation are near a step boundary.");
   schema.boolField("quantize_start", false, state::PrimaryInput,
-    "Snap each recorded note's start to the nearest step of the 16-step grid.")
+    "Snap each recorded note's start to the step grid (see Amount for partial snap).")
     .label("Quantize Start", "Q Start");
+  schema.floatField("quantize_start_amount", 1.0f, 0.0f, 1.0f, state::PrimaryInput,
+    /*magnitude=*/nullptr, /*step=*/0.f, /*units=*/nullptr,
+    "How far a quantized onset moves toward its grid position. 1 = full snap "
+    "(classic quantize); 0.5 = halfway there; 0 = untouched. Only applies while "
+    "Quantize Start is on.")
+    .label("Quantize Amount", "Q Amt");
   schema.boolField("quantize_length", false, state::PrimaryInput,
     "Snap each recorded note's length to whole grid steps.")
     .label("Quantize Length", "Q Len");
@@ -894,7 +909,7 @@ void module_init() {
         .capability(state::Capability::ModulationSource)
         .capability(state::Capability::ModulationSourceMulti);
 
-  state::init(id, {1, 1, 0}, schema);
+  state::init(id, {1, 2, 0}, schema);
 
   /* Compile the overlay toolbox's solid-quad shader up front (idempotent; also
    * retried lazily on first render if no GPU backend exists yet). */
@@ -944,7 +959,9 @@ void init(void* self) {
   }
   s->quantize_start = 0;
   s->quantize_length = 0;
+  s->quantize_start_amount = 1.0f;
   looper_set_quantize(&s->looper, 0, 0);
+  looper_set_quantize_start_amount(&s->looper, 1.0);
   s->grace_beats = 0.0625f;
   looper_set_grace(&s->looper, (double)s->grace_beats * (NUM_STEPS / 4.0));
   s->loop_mode = LOOP_OVERDUB;   /* default (see schema); on_state_patched syncs */
