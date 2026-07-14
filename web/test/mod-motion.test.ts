@@ -7,19 +7,22 @@ import type { Sketch } from '../src/sketch-types';
  * optional Activity/Throw integrator. `output` is unsigned speed (or the
  * integrator level); `velocity` is the signed post-momentum velocity.
  *
+ * Rate semantics: displacement over the last `smooth` seconds (a boxcar
+ * window). A one-frame step of Δ=1 reads ≥ Δ/window (clamped → pegged) for
+ * EXACTLY the window duration, then drops to an exact 0 — no exponential
+ * tail. Tests use window 0.3 s so peg captures a few frames after a step sit
+ * inside the window at any frame rate, and "decayed" captures sit past it.
+ *
  * Probe chain: white solid → motion → brightness_contrast, with the chosen
  * output wired into bc.brightness (combine:'replace'): with contrast -0.5 on
  * white input, display ≈ clamp01(raw)*255 for the unsigned output, and the
  * SIGNED velocity folds -1/0/+1 → 0/128/255 (tap_mod.h Replace fold).
  *
- * Timing lever: the harness runs real rAF dt, and headless rAF is NOT
- * vsync-locked — measured anywhere from ~4 to ~16 ms/frame. A one-frame
- * setParam step of Δ=1 with smooth 0.08 / sense 1 spikes the rate pole to
- * Δ/smooth ≈ 12× full scale REGARDLESS of dt (a·inst ≈ (dt/τ)·(Δ/dt)), so
- * "pegged" captures a few frames after a step are dt-invariant. Decay
- * captures are NOT: every wait below is sized so its assertion holds across
- * dt ∈ [4 ms, 20 ms] (worst case at both ends checked in comments). Params
- * are always set explicitly so retuning shipped defaults can't break the suite.
+ * Timing: the harness runs real rAF dt, and headless rAF is NOT vsync-locked
+ * — measured anywhere from ~4 to ~16 ms/frame. Every wait below is sized so
+ * its assertion holds across dt ∈ [4 ms, 20 ms] (worst cases checked in
+ * comments). Params are always set explicitly so retuning shipped defaults
+ * can't break the suite.
  */
 describe('mod.shaper.motion shaper node E2E', () => {
   jest.setTimeout(90000);
@@ -74,7 +77,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
       width: 64, height: 64,
       modules: ['com.nano.core'],
       commands: [{ type: 'createSketch', sketchId: 'mo_rest',
-        sketch: build({ input: 0.7, momentum: 1, smooth: 0.08, sense: 1 }, 'output') }],
+        sketch: build({ input: 0.7, momentum: 1, smooth: 0.3, curve: 1, sense: 1 }, 'output') }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'mo_rest' } }],
       captureTraceIds: ['out'],
       waitFrames: 20,
@@ -86,22 +89,24 @@ describe('mod.shaper.motion shaper node E2E', () => {
 
   it('an input step spikes the speed, which then decays (momentum 0)', async () => {
     const r = await runPhases('mo_spike',
-      { input: 0, momentum: 0, smooth: 0.08, sense: 1 }, 'output', [
-        { key: 'input', value: 1, frames: 5 },   // pegged: pole ≈12× at any dt
-        { frames: 120 },                         // ≥6 smoothing taus even at 4 ms frames
+      { input: 0, momentum: 0, smooth: 0.3, curve: 1, sense: 1 }, 'output', [
+        { key: 'input', value: 1, frames: 5 },   // ≤0.1 s: inside the 0.3 s window → pegged
+        { frames: 120 },                         // 0.48-2.4 s: well past the window → exact 0
       ]);
     expect(r.success).toBe(true);
     expect(r.phases[0].trace('out').averageColor().r).toBeLessThan(15);
     expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(200);
-    expect(r.phases[2].trace('out').averageColor().r).toBeLessThan(40);
+    // The boxcar releases to an EXACT zero (no exponential tail) — the
+    // tightness that motivated it.
+    expect(r.phases[2].trace('out').averageColor().r).toBeLessThan(10);
   });
 
   it('momentum holds the speed reading long after the flick', async () => {
     // Identical flick, captured 90 frames (0.36-1.8 s across dt range) later:
-    // momentum 0 has decayed through the 0.08 s pole (≤ 0.12 at 4 ms frames);
-    // momentum 1 (coast tau 2 s) still holds e^-0.18..e^-0.9 ≈ 0.41..0.84.
+    // momentum 0 is EXACTLY zero (the 0.3 s window has passed); momentum 1
+    // (coast tau 2 s) still holds e^-0.03..e^-0.75 ≈ 0.47..0.97 of pegged.
     const flick = (id: string, momentum: number) => runPhases(id,
-      { input: 0, momentum, smooth: 0.08, sense: 1 }, 'output', [
+      { input: 0, momentum, smooth: 0.3, curve: 1, sense: 1 }, 'output', [
         { key: 'input', value: 1, frames: 90 },
       ]);
     const m0 = await flick('mo_m0', 0);
@@ -109,50 +114,82 @@ describe('mod.shaper.motion shaper node E2E', () => {
     expect(m0.success && m1.success).toBe(true);
     const r0 = m0.phases[1].trace('out').averageColor().r;
     const r1 = m1.phases[1].trace('out').averageColor().r;
-    expect(r0).toBeLessThan(60);
+    expect(r0).toBeLessThan(30);
     expect(r1).toBeGreaterThan(90);
     expect(r1).toBeGreaterThan(r0 + 60);
   });
 
   it('Activity mode charges while wiggling and drains at rest', async () => {
     const r = await runPhases('mo_act',
-      { input: 0, momentum: 0, smooth: 0.08, sense: 1, integrate: true, mode: 0, decay: 0.6 },
+      { input: 0, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 0, decay: 0.6 },
       'output', [
         { key: 'input', value: 1, frames: 20 },
         { key: 'input', value: 0, frames: 20 },
         { key: 'input', value: 1, frames: 20 },
-        { key: 'input', value: 0, frames: 20 },  // 0.32-1.6 s of near-pegged |v|
-        { frames: 300 },                         // 1.2-6 s idle: ≥2 decay taus
+        { key: 'input', value: 0, frames: 20 },
+        { frames: 450 },  // 1.8-9 s idle: ≥2.5 decay taus past the 0.3 s window
       ]);
     expect(r.success).toBe(true);
     expect(r.phases[0].trace('out').averageColor().r).toBeLessThan(15);
-    // Charge: acc = 1.8(1-e^(-t/0.6)) ≈ 0.74 at the 4 ms worst case, clamped
-    // 1.0 at slower frames.
+    // Instant attack: the envelope snaps to the pegged |v| on any step.
     expect(r.phases[4].trace('out').averageColor().r).toBeGreaterThan(150);
     expect(r.phases[5].trace('out').averageColor().r).toBeLessThan(45);
   });
 
   it('Throw mode rests at center, gets flung by a flick, and leaks back home', async () => {
     const r = await runPhases('mo_throw',
-      { input: 0.5, momentum: 0.5, smooth: 0.08, sense: 1, integrate: true, mode: 1, return_time: 1.0 },
+      { input: 0.5, momentum: 0.2, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 1, return_time: 0.5 },
       'output', [
         { key: 'input', value: 1, frames: 30 },  // up-flick: 0.12-0.6 s of displacement
-        { frames: 600 },                         // 2.4-12 s idle: ≥2.4 return taus
+        { frames: 600 },                         // 2.4-12 s idle: ≥4 return taus past motion
       ]);
     expect(r.success).toBe(true);
     const rest = r.phases[0].trace('out').averageColor().r;
     expect(Math.abs(rest - 128)).toBeLessThanOrEqual(15);   // seeded at 0.5
-    // Displacement ≥ 0.5 + 1.5·0.12 ≈ 0.68 at the 4 ms worst case.
-    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(160);
+    // Displacement ≈ 0.5 + 1.5·0.12 − leak ≈ 0.64 at the 4 ms worst case.
+    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(150);
     const home = r.phases[2].trace('out').averageColor().r;
     expect(Math.abs(home - 128)).toBeLessThanOrEqual(18);
   });
 
+  it('slow motion reads a partial level, and curve < 1 lifts it (delicacy)', async () => {
+    // A small 0.1 step against a 0.3 s window reads rate 0.1/0.3 ≈ 0.33 for
+    // the window duration — dt-invariant ONCE the ring holds ≥ window of
+    // history, hence the long phase-1 wait (100 frames ≥ 0.4 s at 4 ms).
+    // curve 1 → 0.33 (~85); curve 0.5 → √0.33 ≈ 0.58 (~147). Neither pegs:
+    // this is the "any motion spikes to max" regression guard.
+    const slow = (id: string, curve: number) => runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: ['com.nano.core'],
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: id,
+              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve, sense: 1 }, 'output') },
+            { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 100, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1, paramKey: 'input', value: 0.6 }],
+          waitFrames: 5, captureTraceIds: ['out'] },
+      ],
+      dumpName: id,
+    });
+    const c1 = await slow('mo_crv1', 1);
+    const c05 = await slow('mo_crv05', 0.5);
+    expect(c1.success && c05.success).toBe(true);
+    const r1 = c1.phases[1].trace('out').averageColor().r;
+    const r05 = c05.phases[1].trace('out').averageColor().r;
+    expect(r1).toBeGreaterThan(50);
+    expect(r1).toBeLessThan(120);     // NOT pegged: true rate, not a patch spike
+    expect(r05).toBeGreaterThan(115);
+    expect(r05).toBeLessThan(180);
+    expect(r05).toBeGreaterThan(r1 + 30);
+  });
+
   it('the signed velocity output reads mid at rest, high moving up, low moving down', async () => {
     const r = await runPhases('mo_vel',
-      { input: 0.5, momentum: 0, smooth: 0.08, sense: 1 }, 'velocity', [
+      { input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1 }, 'velocity', [
         { key: 'input', value: 1, frames: 5 },   // clamped +1 → max
-        { frames: 150 },                         // ≥7 smoothing taus: settle to 0 → mid
+        { frames: 150 },                         // 0.6-3 s: past the window → exact 0 → mid
         { key: 'input', value: 0, frames: 5 },   // clamped -1 → min
       ]);
     expect(r.success).toBe(true);
