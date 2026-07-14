@@ -387,10 +387,31 @@ export class TapsOverlay extends MobxLitElement {
         // over the column).
         const fitsRight = colRect.right + 12 + cw <= overlayRect.right;
         const fitsLeft = colRect.left - 12 - cw >= overlayRect.left;
-        const ax = (fitsRight || !fitsLeft)
-          ? (colRect.right - overlayRect.left) + 12 + cw / 2
-          : (colRect.left - overlayRect.left) - 12 - cw / 2;
-        const ay = (r.top + r.height / 2 - overlayRect.top);
+        let ax: number;
+        let ay = (r.top + r.height / 2 - overlayRect.top);
+        if (fitsRight || fitsLeft) {
+          ax = fitsRight
+            ? (colRect.right - overlayRect.left) + 12 + cw / 2
+            : (colRect.left - overlayRect.left) - 12 - cw / 2;
+        } else {
+          // No room on EITHER side (wide column / narrow view — the arrangement
+          // panel's normal shape): the card must overlap the column, and the
+          // bounds clamp used to slide it back dead-center over the selected
+          // field. Dodge VERTICALLY instead: hug the right edge and sit just
+          // below (else above) the field's row, so the row being inspected —
+          // the very port a click-to-connect needs again — stays visible.
+          ax = overlayRect.width - 8 - cw / 2;
+          const below = (r.bottom - overlayRect.top) + 12 + ch / 2;
+          const above = (r.top - overlayRect.top) - 12 - ch / 2;
+          const fitsBelow = below + ch / 2 <= overlayRect.height;
+          const fitsAbove = above - ch / 2 >= 0;
+          if (fitsBelow) ay = below;
+          else if (fitsAbove) ay = above;
+          // Card taller than both gaps: overlap is unavoidable — take whichever
+          // side has more room and let the bounds clamp settle the rest.
+          else ay = (overlayRect.bottom - r.bottom) >= (r.top - overlayRect.top)
+            ? below : above;
+        }
         floaters.push({ id: '__card__', anchorX: ax, anchorY: ay,
           width: cw, height: ch, weightX: 2, weightY: 1 });
       }
