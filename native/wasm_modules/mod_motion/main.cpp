@@ -22,9 +22,16 @@
  *              Activity: an instant-attack speed envelope — the meter snaps to
  *              |v| and drains over `decay`. Full 0..1 range at ANY decay (the
  *              level is the peak speed, not charge*decay — a fixed charge rate
- *              would cap a 60 ms decay at ~0.2 of the range). Throw: signed v
- *              is flung into a position resting at 0.5 that leaks back over
- *              `return_time` — a throwable fader.
+ *              would cap a 60 ms decay at ~0.2 of the range). Throw: BALLISTIC
+ *              — the output is a thrown ball's height. Motion thrusts it
+ *              upward; when the motion stops the ball keeps its momentum,
+ *              decelerates under gravity, parabolas over, and falls back to
+ *              rest at 0. `return_time` is the gravity scale (a fall from the
+ *              top takes about that long). Thrust scales WITH gravity
+ *              (a = g*(kThrowRatio*|v| - 1)), so a tight Return gives snappy
+ *              punchy throws instead of an unliftable ball — and motion slower
+ *              than 1/kThrowRatio of full scale can't loft it at all (you
+ *              can't throw a ball by nudging it).
  *
  * Outputs: `output` is the unsigned speed (or the integrator level when
  * Integrate is on); `velocity` is always the live post-momentum SIGNED
@@ -53,9 +60,12 @@ enum Mode : int {
   ModeThrow = 1,
 };
 
-// Throw displacement per (velocity * second): a brisk flick (~0.2-0.35 v*s of
-// clamped velocity + coast) lands ~0.3-0.5 of the range away from rest.
-constexpr float kThrowGain = 1.5f;
+// Throw thrust-to-gravity ratio: upward acceleration is g*(ratio*|v| - 1), so
+// full-speed motion accelerates the ball at 3 g and the lift threshold is a
+// fixed 1/ratio of full scale regardless of `return_time`. A 0.3 s pegged
+// flick at the 1.5 s default Return apexes around half height; tighter Returns
+// throw proportionally harder (the whole trajectory time-scales with Return).
+constexpr float kThrowRatio = 4.0f;
 // Sign-flip catch threshold: a genuine reversal blows past 2% of full scale in
 // a frame or two; zero-crossing jitter from quantized input never does.
 constexpr float kReverseGate = 0.02f;
@@ -81,7 +91,8 @@ struct State {
   bool  reset_acc = false;   // integrate/mode changed this transaction
   float prev_input = 0.0f;   // input as of the previous tick
   float v_hold = 0.0f;       // post-curve post-momentum velocity, [-1, 1]
-  float acc = 0.0f;          // integrator: Activity level or Throw position
+  float acc = 0.0f;          // integrator: Activity level or Throw ball height
+  float u = 0.0f;            // Throw ball's vertical velocity, height-units/s
 
   // Boxcar window: (t, x) samples of the input, newest at (head - 1). `clock`
   // is a private accumulated-seconds timeline (only spans matter).
@@ -119,10 +130,6 @@ static float windowRate(State* s, float window, float x_now) {
   return rate;
 }
 
-static float accRest(int mode) {
-  return (mode == ModeThrow) ? 0.5f : 0.0f;
-}
-
 // Integrator fields only apply when Integrate is on, and decay/return swap
 // with the mode. Touches the type-shared schema, so it takes the values
 // (env_lfo pattern) — called from on_state_ready, from integrate/mode patches,
@@ -149,7 +156,7 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.shaper.motion", {1, 1, 0},
+  state::init("mod.shaper.motion", {1, 2, 0},
     state::Schema()
       .helpField("intro",
         "## Motion\n"
@@ -163,9 +170,10 @@ void module_init() {
         "lingers.\n\n"
         "Turn on *Integrate* for two more flavors — **Activity**: the meter "
         "snaps to the speed and drains over *Decay* (a \"how alive is this "
-        "knob\" envelope, full range at any decay); **Throw**: flicks fling a "
-        "value away from center and it leaks back over *Return* — a throwable "
-        "fader.\n\n"
+        "knob\" envelope, full range at any decay); **Throw**: the output is a "
+        "thrown ball's height — motion thrusts it up, and when you stop it "
+        "coasts on its momentum, arcs over, and falls back to rest. *Return* "
+        "sets the gravity (a fall from the top takes about that long).\n\n"
         "**Try:** link *Input* to a knob you perform on and wire *Output* into "
         "an effect amount — the effect blooms while you move and settles when "
         "you rest.")
@@ -198,9 +206,11 @@ void module_init() {
         .groupHelp(
           "Envelopes the motion instead of reporting it raw. **Activity** "
           "snaps to the speed while the input moves and drains over *Decay* "
-          "— full range at any decay. **Throw** integrates signed velocity "
-          "into a flingable position resting at 0.5 — flicks displace it, "
-          "*Return* pulls it home.")
+          "— full range at any decay. **Throw** is ballistic: motion thrusts "
+          "a ball upward, and when the motion stops it coasts, arcs over, and "
+          "falls home to 0. *Return* sets the gravity — a fall from the top "
+          "takes about that long, and tighter Returns throw punchier. Gentle "
+          "motion (below a quarter of full scale) won't loft it.")
       .boolField("integrate", false, state::PrimaryInput).label("Integrate", "Int")
       .selectField("mode", ModeActivity, state::PrimaryInput,
                    {{"Activity", ModeActivity}, {"Throw", ModeThrow}}).label("Mode", "Mode")
@@ -258,7 +268,8 @@ void tick(void* self, double dt) {
     // as a ghost velocity spike.
     s->prev_input = s->input;
     s->v_hold = 0.0f;
-    s->acc = accRest(s->mode);
+    s->acc = 0.0f;
+    s->u = 0.0f;
     s->reset_acc = false;
     s->clock = 0.0;
     s->ring_head = 0;
@@ -271,10 +282,11 @@ void tick(void* self, double dt) {
   }
   if (s->reset_acc) {
     // Integrate toggled / mode switched this transaction: re-seed the
-    // accumulator at the NEW mode's rest (deferred here, mod_flip style, so a
-    // transaction patching both fields resolves with the final values).
+    // accumulator at rest (deferred here, mod_flip style, so a transaction
+    // patching both fields resolves with the final values).
     s->reset_acc = false;
-    s->acc = accRest(s->mode);
+    s->acc = 0.0f;
+    s->u = 0.0f;
   }
   if (dt > 0.0 && std::isfinite(dt)) {
     s->clock += dt;
@@ -333,9 +345,22 @@ void tick(void* self, double dt) {
         s->acc = std::fmax(std::fabs(s->v_hold),
                            s->acc * std::exp(-(float)dt / std::fmax(s->decay, 1e-3f)));
       } else {
-        s->acc += s->v_hold * (float)dt * kThrowGain;
-        s->acc += (0.5f - s->acc) *
-                  (1.0f - std::exp(-(float)dt / std::fmax(s->return_time, 1e-3f)));
+        // Ballistic throw: acc is a ball's height, u its vertical velocity.
+        // Gravity g falls the full height in ~return_time (1 = g*T^2/2);
+        // motion thrusts upward at g*ratio*|v|, so the net acceleration is
+        // g*(ratio*|v| - 1). When the motion stops the ball coasts on its
+        // momentum, parabolas over, and falls home to 0.
+        const float rt = std::fmax(s->return_time, 1e-2f);
+        const float g = 2.0f / (rt * rt);
+        s->u += g * (kThrowRatio * std::fabs(s->v_hold) - 1.0f) * (float)dt;
+        s->acc += s->u * (float)dt;
+        if (s->acc <= 0.0f) {
+          s->acc = 0.0f;
+          if (s->u < 0.0f) s->u = 0.0f;   // resting on the floor
+        } else if (s->acc >= 1.0f) {
+          s->acc = 1.0f;
+          if (s->u > 0.0f) s->u = 0.0f;   // ceiling: falls as soon as thrust stops
+        }
       }
       s->acc = std::fmax(0.0f, std::fmin(1.0f, s->acc));
     }

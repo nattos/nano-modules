@@ -136,20 +136,27 @@ describe('mod.shaper.motion shaper node E2E', () => {
     expect(r.phases[5].trace('out').averageColor().r).toBeLessThan(45);
   });
 
-  it('Throw mode rests at center, gets flung by a flick, and leaks back home', async () => {
+  it('Throw mode rests at 0, arcs up ballistically on a flick, and falls back home', async () => {
+    // Ballistics with return_time 1 (g = 2): a flick thrusts at g*(4|v|-1) =
+    // 6/s² through the 0.3 s window → u ≈ 1.8, ceiling-clamped apex ≈ 1 held
+    // ~0.7-1.5 s after the step, then a ~1 s fall to an exact 0. The parabola
+    // peaks at a dt-dependent FRAME index, so capture three points spanning
+    // 0.16-5 s and assert the trajectory's max — at least one capture lands
+    // in the high arc at any dt in [4, 20] ms.
     const r = await runPhases('mo_throw',
-      { input: 0.5, momentum: 0.2, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 1, return_time: 0.5 },
+      { input: 0, momentum: 0.2, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 1, return_time: 1.0 },
       'output', [
-        { key: 'input', value: 1, frames: 30 },  // up-flick: 0.12-0.6 s of displacement
-        { frames: 600 },                         // 2.4-12 s idle: ≥4 return taus past motion
+        { key: 'input', value: 1, frames: 40 },
+        { frames: 70 },    // cumulative 110 frames: 0.44-2.2 s
+        { frames: 140 },   // cumulative 250 frames: 1.0-5 s
+        { frames: 750 },   // cumulative 1000 frames: 4-20 s — long past the fall
       ]);
     expect(r.success).toBe(true);
-    const rest = r.phases[0].trace('out').averageColor().r;
-    expect(Math.abs(rest - 128)).toBeLessThanOrEqual(15);   // seeded at 0.5
-    // Displacement ≈ 0.5 + 1.5·0.12 − leak ≈ 0.64 at the 4 ms worst case.
-    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(150);
-    const home = r.phases[2].trace('out').averageColor().r;
-    expect(Math.abs(home - 128)).toBeLessThanOrEqual(18);
+    expect(r.phases[0].trace('out').averageColor().r).toBeLessThan(15);  // rests at 0 now
+    const arc = [1, 2, 3].map(i => r.phases[i].trace('out').averageColor().r);
+    expect(Math.max(...arc)).toBeGreaterThan(180);
+    // ...and the ball comes all the way home (exact 0, not an offset).
+    expect(r.phases[4].trace('out').averageColor().r).toBeLessThan(15);
   });
 
   it('slow motion reads a partial level, and curve < 1 lifts it (delicacy)', async () => {
