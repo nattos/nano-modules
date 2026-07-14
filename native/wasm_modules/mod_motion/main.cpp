@@ -36,10 +36,16 @@
  * Outputs: `output` is the unsigned speed (or the integrator level when
  * Integrate is on); `velocity` is always the live post-momentum SIGNED
  * velocity (input moving down reads negative). Both pass through an output
- * stage: an overall `scale` gain, then `rolloff` — a soft ceiling that starts
+ * stage: `sharpen` (a temporal unsharp mask — the signal's departure from its
+ * own ~80 ms average is boosted, so transitions overshoot and edges harden),
+ * then an overall `scale` gain, then `rolloff` — a soft ceiling that starts
  * compressing at 1-rolloff and approaches 1 asymptotically (0 = hard clamp).
  * Scale + rolloff together are drive-into-saturation: boost weak readings
- * while fast ones roll into the top instead of flat-topping.
+ * while fast ones (and sharpen overshoots) roll into the top instead of
+ * flat-topping.
+ *
+ * Defaults are a tuned live preset: a tight, driven Activity meter (integrate
+ * ON, 20 ms decay, curve 1.4, scale 2.4 into rolloff 0.85).
  *
  * Velocity is displacement-based (net input delta per tick), so two patches
  * that wiggle up-then-down WITHIN one frame cancel to zero — correct for
@@ -76,21 +82,26 @@ constexpr float kReverseGate = 0.02f;
 // Boxcar ring capacity: max window (0.5 s) at ~2 ms headless-fast frames is
 // ~250 samples; when full the oldest drops and the window shrinks gracefully.
 constexpr int kRingCap = 512;
+// Sharpen reference lowpass tau: the overshoot a transition gets lasts about
+// this long — the "temporal unsharp mask" radius.
+constexpr float kSharpenTau = 0.08f;
 
 // Per-instance state. One per chain entry.
 struct State {
-  // Param mirrors (patched).
+  // Param mirrors (patched). Defaults MATCH the schema defaults (the tuned
+  // live-performance preset: a tight, driven Activity meter).
   float input = 0.0f;
-  float sense = 1.0f;        // full-scale rate, input ranges / second
-  float smooth = 0.05f;      // rate measurement window, seconds (0 = per-frame)
-  float curve = 1.0f;        // response gamma on the normalized speed
-  float momentum = 0.2f;     // 0..1 -> coast tau = 2 * m^2 seconds
-  bool  integrate = false;
+  float sense = 3.0f;        // full-scale rate, input ranges / second
+  float smooth = 0.12f;      // rate measurement window, seconds (0 = per-frame)
+  float curve = 1.4f;        // response gamma on the normalized speed
+  float momentum = 0.0f;     // 0..1 -> coast tau = 2 * m^2 seconds
+  bool  integrate = true;
   int   mode = ModeActivity;
-  float decay = 0.5f;        // Activity release tau, seconds
-  float return_time = 1.5f;  // Throw gravity scale (fall-from-top time), seconds
-  float scale = 1.0f;        // overall output gain
-  float rolloff = 0.0f;      // soft ceiling: knee at 1 - rolloff (0 = hard clamp)
+  float decay = 0.02f;       // Activity release tau, seconds
+  float return_time = 0.12f; // Throw gravity scale (fall-from-top time), seconds
+  float sharpen = 0.0f;      // temporal unsharp amount (0 = off)
+  float scale = 2.4f;        // overall output gain
+  float rolloff = 0.85f;     // soft ceiling: knee at 1 - rolloff (0 = hard clamp)
 
   // Dynamics.
   bool  initialized = false; // first tick seeds the window — no ghost spike
@@ -99,6 +110,8 @@ struct State {
   float v_hold = 0.0f;       // post-curve post-momentum velocity, [-1, 1]
   float acc = 0.0f;          // integrator: Activity level or Throw ball height
   float u = 0.0f;            // Throw ball's vertical velocity, height-units/s
+  float lp_out = 0.0f;       // sharpen reference lowpass, output channel
+  float lp_vel = 0.0f;       // sharpen reference lowpass, velocity channel
 
   // Boxcar window: (t, x) samples of the input, newest at (head - 1). `clock`
   // is a private accumulated-seconds timeline (only spans matter).
@@ -161,9 +174,10 @@ static void apply_visibility(bool integrate, int mode) {
   state::setFieldHidden("return_time", !(integrate && mode == ModeThrow));
 }
 
-// Static (self-less) visibility evaluator — pure over state.
+// Static (self-less) visibility evaluator — pure over state. Initial values
+// MUST mirror the schema defaults (integrate defaults ON in the tuned preset).
 void eval_visibility(int n, const char* pb, const int* off, const int* len, const int* ops) {
-  bool integrate = false;
+  bool integrate = true;
   int mode = ModeActivity;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
@@ -177,7 +191,7 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.shaper.motion", {1, 3, 0},
+  state::init("mod.shaper.motion", {1, 4, 0},
     state::Schema()
       .helpField("intro",
         "## Motion\n"
@@ -216,12 +230,12 @@ void module_init() {
           "is tighter. *Momentum* lets speed coast down after the motion "
           "stops (up to ~2 s) instead of cutting off; rising speed is always "
           "caught instantly.")
-      .floatField("sense", 1.0f, 0.1f, 8.f, state::PrimaryInput,
+      .floatField("sense", 3.0f, 0.1f, 8.f, state::PrimaryInput,
                   nullptr, 0.f, "/s").label("Full Scale", "Scale")
-      .floatField("curve", 1.0f, 0.25f, 4.f, state::PrimaryInput).label("Curve", "Crv")
-      .floatField("smooth", 0.05f, 0.f, 0.5f, state::PrimaryInput,
+      .floatField("curve", 1.4f, 0.25f, 4.f, state::PrimaryInput).label("Curve", "Crv")
+      .floatField("smooth", 0.12f, 0.f, 0.5f, state::PrimaryInput,
                   nullptr, 0.f, "s").label("Window", "Win")
-      .floatField("momentum", 0.2f, 0.f, 1.f, state::PrimaryInput).label("Momentum", "Mom")
+      .floatField("momentum", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Momentum", "Mom")
       // --- Integrate: accumulate the motion ---
       .group("integrate", "Integrate")
         .groupHelp(
@@ -232,24 +246,29 @@ void module_init() {
           "falls home to 0. *Return* sets the gravity — a fall from the top "
           "takes about that long, and tighter Returns throw punchier. Gentle "
           "motion (below a quarter of full scale) won't loft it.")
-      .boolField("integrate", false, state::PrimaryInput).label("Integrate", "Int")
+      .boolField("integrate", true, state::PrimaryInput).label("Integrate", "Int")
       .selectField("mode", ModeActivity, state::PrimaryInput,
                    {{"Activity", ModeActivity}, {"Throw", ModeThrow}}).label("Mode", "Mode")
-      .floatField("decay", 0.5f, 0.02f, 5.f, state::PrimaryInput,
+      // Tight is the sweet spot — the range lives down in the tens of ms.
+      .floatField("decay", 0.02f, 0.005f, 2.f, state::PrimaryInput,
                   nullptr, 0.f, "s").label("Decay", "Dec")
-      // Throw-mode leak time. Hidden in Activity (and vice versa).
-      .floatField("return_time", 1.5f, 0.1f, 10.f, state::PrimaryInput,
+      // Throw-mode gravity scale. Hidden in Activity (and vice versa).
+      .floatField("return_time", 0.12f, 0.02f, 3.f, state::PrimaryInput,
                   nullptr, 0.f, "s").label("Return", "Ret")
       // --- Output stage + outputs ---
       .group("output", "Output")
         .groupHelp(
+          "*Sharpen* temporally hardens the signal — an unsharp mask in time "
+          "that overshoots transitions, making attacks and releases snap. "
           "*Scale* is an overall gain on the outputs. *Rolloff* softens the "
           "ceiling: 0 clamps hard at 1, higher values start compressing at "
           "1−rolloff and ease into the top asymptotically. Together they "
           "drive-and-saturate — boost weak readings with *Scale* and let "
-          "fast ones roll into the ceiling instead of flat-topping.")
-      .floatField("scale", 1.0f, 0.f, 4.f, state::PrimaryInput).label("Scale", "Scl")
-      .floatField("rolloff", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Rolloff", "Roll")
+          "fast ones (and Sharpen's overshoots) roll into the ceiling "
+          "instead of flat-topping.")
+      .floatField("sharpen", 0.0f, 0.f, 3.f, state::PrimaryInput).label("Sharpen", "Shrp")
+      .floatField("scale", 2.4f, 0.f, 4.f, state::PrimaryInput).label("Scale", "Scl")
+      .floatField("rolloff", 0.85f, 0.f, 1.f, state::PrimaryInput).label("Rolloff", "Roll")
       // Unsigned speed — or the integrator level when Integrate is on.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned").label("Output", "Out")
       // Always the live post-momentum signed velocity; rest is 0 (mid).
@@ -299,6 +318,8 @@ void tick(void* self, double dt) {
     s->v_hold = 0.0f;
     s->acc = 0.0f;
     s->u = 0.0f;
+    s->lp_out = 0.0f;
+    s->lp_vel = 0.0f;
     s->reset_acc = false;
     s->clock = 0.0;
     s->ring_head = 0;
@@ -396,13 +417,27 @@ void tick(void* self, double dt) {
   }
 
   // Publish both channels every tick (a downstream wire always reads fresh),
-  // through the output stage (scale gain + rolloff soft ceiling).
-  const float out = shapeOut(s->integrate ? s->acc : std::fabs(s->v_hold),
-                             s->scale, s->rolloff);
-  auto oh = val::number(out);
+  // through the output stage: temporal sharpen, then scale + rolloff.
+  float rawOut = s->integrate ? s->acc : std::fabs(s->v_hold);
+  float rawVel = s->v_hold;
+  if (dt > 0.0 && std::isfinite(dt)) {
+    // Sharpen reference lowpass advances even at sharpen 0, so dialing the
+    // param up mid-performance doesn't fire a stale-reference transient.
+    const float a = 1.0f - std::exp(-(float)dt / kSharpenTau);
+    s->lp_out += (rawOut - s->lp_out) * a;
+    s->lp_vel += (rawVel - s->lp_vel) * a;
+  }
+  if (s->sharpen > 0.0f) {
+    // Temporal unsharp mask: boost the signal's departure from its own recent
+    // average — transitions overshoot, edges harden. Rolloff downstream tames
+    // the overshoot into the soft ceiling.
+    rawOut = std::fmax(0.0f, rawOut + s->sharpen * (rawOut - s->lp_out));
+    rawVel = rawVel + s->sharpen * (rawVel - s->lp_vel);
+  }
+  auto oh = val::number(shapeOut(rawOut, s->scale, s->rolloff));
   state::setValPath("output", oh);
   val::release(oh);
-  auto vh = val::number(shapeOut(s->v_hold, s->scale, s->rolloff));
+  auto vh = val::number(shapeOut(rawVel, s->scale, s->rolloff));
   state::setValPath("velocity", vh);
   val::release(vh);
 }
@@ -422,6 +457,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "momentum"))    s->momentum = state::patchFloat(i);
     else if (state::pathIs(p, l, "decay"))       s->decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "return_time")) s->return_time = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sharpen"))     s->sharpen = state::patchFloat(i);
     else if (state::pathIs(p, l, "scale"))       s->scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "rolloff"))     s->rolloff = state::patchFloat(i);
     else if (state::pathIs(p, l, "integrate")) {

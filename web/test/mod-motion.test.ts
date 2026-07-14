@@ -77,7 +77,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
       width: 64, height: 64,
       modules: ['com.nano.core'],
       commands: [{ type: 'createSketch', sketchId: 'mo_rest',
-        sketch: build({ input: 0.7, momentum: 1, smooth: 0.3, curve: 1, sense: 1 }, 'output') }],
+        sketch: build({ input: 0.7, momentum: 1, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0 }, 'output') }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'mo_rest' } }],
       captureTraceIds: ['out'],
       waitFrames: 20,
@@ -89,7 +89,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
 
   it('an input step spikes the speed, which then decays (momentum 0)', async () => {
     const r = await runPhases('mo_spike',
-      { input: 0, momentum: 0, smooth: 0.3, curve: 1, sense: 1 }, 'output', [
+      { input: 0, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0 }, 'output', [
         { key: 'input', value: 1, frames: 5 },   // ≤0.1 s: inside the 0.3 s window → pegged
         { frames: 120 },                         // 0.48-2.4 s: well past the window → exact 0
       ]);
@@ -106,7 +106,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
     // momentum 0 is EXACTLY zero (the 0.3 s window has passed); momentum 1
     // (coast tau 2 s) still holds e^-0.03..e^-0.75 ≈ 0.47..0.97 of pegged.
     const flick = (id: string, momentum: number) => runPhases(id,
-      { input: 0, momentum, smooth: 0.3, curve: 1, sense: 1 }, 'output', [
+      { input: 0, momentum, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0 }, 'output', [
         { key: 'input', value: 1, frames: 90 },
       ]);
     const m0 = await flick('mo_m0', 0);
@@ -121,7 +121,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
 
   it('Activity mode charges while wiggling and drains at rest', async () => {
     const r = await runPhases('mo_act',
-      { input: 0, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 0, decay: 0.6 },
+      { input: 0, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 0, decay: 0.6, sharpen: 0, scale: 1, rolloff: 0 },
       'output', [
         { key: 'input', value: 1, frames: 20 },
         { key: 'input', value: 0, frames: 20 },
@@ -144,7 +144,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
     // 0.16-5 s and assert the trajectory's max — at least one capture lands
     // in the high arc at any dt in [4, 20] ms.
     const r = await runPhases('mo_throw',
-      { input: 0, momentum: 0.2, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 1, return_time: 1.0 },
+      { input: 0, momentum: 0.2, smooth: 0.3, curve: 1, sense: 1, integrate: true, mode: 1, return_time: 1.0, sharpen: 0, scale: 1, rolloff: 0 },
       'output', [
         { key: 'input', value: 1, frames: 40 },
         { frames: 70 },    // cumulative 110 frames: 0.44-2.2 s
@@ -171,7 +171,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
       phases: [
         { commands: [
             { type: 'createSketch', sketchId: id,
-              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve, sense: 1 }, 'output') },
+              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0 }, 'output') },
             { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
           ],
           waitFrames: 100, captureTraceIds: ['out'] },
@@ -204,7 +204,7 @@ describe('mod.shaper.motion shaper node E2E', () => {
       phases: [
         { commands: [
             { type: 'createSketch', sketchId: id,
-              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, scale, rolloff }, 'output') },
+              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale, rolloff }, 'output') },
             { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
           ],
           waitFrames: 100, captureTraceIds: ['out'] },
@@ -227,9 +227,40 @@ describe('mod.shaper.motion shaper node E2E', () => {
     expect(rSoft).toBeLessThan(rHard - 15);       // ...but rolled off, not pinned
   });
 
+  it('sharpen overshoots a transition, hardening the attack', async () => {
+    // Slow 0.1-step rig (steady reading 0.33). Captured 3 frames (12-60 ms)
+    // after the step, the sharpen reference lowpass (tau 80 ms) still lags:
+    // sharpen 2 reads 0.33 + 2·(0.33 − lp) ≈ 0.64..0.90 (~163-229), vs the
+    // un-sharpened 0.33 (~85) — the transition overshoots well above its
+    // steady level.
+    const step = (id: string, sharpen: number) => runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: ['com.nano.core'],
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: id,
+              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen, scale: 1, rolloff: 0 }, 'output') },
+            { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 100, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1, paramKey: 'input', value: 0.6 }],
+          waitFrames: 3, captureTraceIds: ['out'] },
+      ],
+      dumpName: id,
+    });
+    const plain = await step('mo_shp0', 0);
+    const sharp = await step('mo_shp2', 2);
+    expect(plain.success && sharp.success).toBe(true);
+    const rPlain = plain.phases[1].trace('out').averageColor().r;
+    const rSharp = sharp.phases[1].trace('out').averageColor().r;
+    expect(rPlain).toBeLessThan(120);              // steady partial reading
+    expect(rSharp).toBeGreaterThan(140);           // overshot the steady level
+    expect(rSharp).toBeGreaterThan(rPlain + 40);
+  });
+
   it('the signed velocity output reads mid at rest, high moving up, low moving down', async () => {
     const r = await runPhases('mo_vel',
-      { input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1 }, 'velocity', [
+      { input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, integrate: false, sharpen: 0, scale: 1, rolloff: 0 }, 'velocity', [
         { key: 'input', value: 1, frames: 5 },   // clamped +1 → max
         { frames: 150 },                         // 0.6-3 s: past the window → exact 0 → mid
         { key: 'input', value: 0, frames: 5 },   // clamped -1 → min
