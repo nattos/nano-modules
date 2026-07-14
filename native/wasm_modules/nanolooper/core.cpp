@@ -56,8 +56,14 @@ static void save_snapshot(const LooperCore* c, EventSnapshot* s) {
 
 static void load_snapshot(LooperCore* c, const EventSnapshot* s) {
   c->event_count = s->count;
-  for (int i = 0; i < s->count; i++)
+  for (int i = 0; i < s->count; i++) {
     c->events[i] = s->events[i];
+    /* The snapshot may predate a loop-length change — fold it in like
+     * looper_set_loop_length so restored notes always play back. */
+    c->events[i].start = wrap(c->events[i].start, c->loop_length);
+    if (c->events[i].length > c->loop_length)
+      c->events[i].length = c->loop_length;
+  }
   /* Any snapshot restore invalidates in-flight recording. */
   for (int ch = 0; ch < NUM_CHANNELS; ch++) c->pending_index[ch] = -1;
 }
@@ -88,6 +94,17 @@ void looper_init(LooperCore* c, double loop_length) {
     c->pending_index[ch] = -1;
     c->pending_raw_start[ch] = 0.0;
   }
+}
+
+void looper_set_loop_length(LooperCore* c, double loop_length) {
+  if (!(loop_length > 0) || loop_length == c->loop_length) return;
+  c->loop_length = loop_length;
+  for (int i = 0; i < c->event_count; i++) {
+    c->events[i].start = wrap(c->events[i].start, loop_length);
+    if (c->events[i].length > loop_length) c->events[i].length = loop_length;
+  }
+  for (int ch = 0; ch < NUM_CHANNELS; ch++)
+    c->pending_raw_start[ch] = wrap(c->pending_raw_start[ch], loop_length);
 }
 
 void looper_set_quantize(LooperCore* c, int q_start, int q_length) {

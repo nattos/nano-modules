@@ -1,7 +1,11 @@
 /*
  * NanoLooper WASM Module
  *
- * A 4-channel, 16-step looper sequencer with visual overlay.
+ * A 4-channel looper sequencer with visual overlay. The loop spans 1, 2 or 4
+ * bars (`bars` param) of 16th-note steps — 16/32/64 steps. The host only
+ * reports a per-bar phase, so the module counts bar wraps locally to know
+ * which bar of the multi-bar loop it's in; changing `bars` folds/keeps the
+ * recorded pattern (see looper_set_loop_length).
  * Uses shared host API headers for all host function imports.
  *
  * Class-like instance model (v2 ABI): module_init() publishes the schema
@@ -79,6 +83,11 @@ static const float CH_B[4] = {0.33f, 0.33f, 0.33f, 1.0f};
 #define PID_OVERLAY_OPACITY 18
 #define PID_LOOP_MODE       19
 #define PID_STRICT_DEADLINE 20
+#define PID_BARS            21
+
+/* Loop length limits, in bars (4 beats of 4 steps each). */
+#define MAX_BARS 4
+#define MAX_LOOP_STEPS (MAX_BARS * NUM_STEPS)
 
 /* Loop mode (single enum replacing the old record/latch bools):
  *   Off     — the recorded pattern is DISABLED (kept in memory, not played);
@@ -100,6 +109,13 @@ struct State {
   double phase = 0.0;
   double prev_phase = 0.0;
   double elapsed = 0.0;
+
+  /* Loop length in bars (1/2/4). The host clock only gives a per-bar phase, so
+   * bar_in_loop tracks which bar of the loop we're in by counting bar wraps
+   * (prev_bar_phase detects them). phase = (bar_in_loop + bar_phase) * 16. */
+  int bars = 1;
+  int bar_in_loop = 0;
+  double prev_bar_phase = 0.0;
 
   /* Per-channel state. trigger_held = physical press; gate_state = the combined
    * (live press OR played-back window) on/off we've actually emitted, diffed each
@@ -219,10 +235,13 @@ static void publish_state(State& s) {
   /* Build a JSON string representing the grid and playback state.
    * Format: {"phase":N,"recording":B,"grid":[[steps],[steps],[steps],[steps]]}
    * Keep it compact since this runs every tick. */
+  const int loop_steps = s.bars * NUM_STEPS;
   auto state = val::object();
   val::set(state, "phase", val::number(s.phase));
   val::set(state, "recording", val::boolean(s.record_held != 0));
   val::set(state, "loop_mode", val::number(s.loop_mode));  /* 0=Off 1=Overdub 2=Latch */
+  /* Loop length in steps (16/32/64) — the web editor sizes its grid from this. */
+  val::set(state, "loop_steps", val::number(loop_steps));
   val::set(state, "event_count", val::number(s.looper.event_count));
 
   /* Latch capture progress (0..1 over the add-window) while a phrase is being
@@ -231,8 +250,8 @@ static void publish_state(State& s) {
   double latch_capture = -1.0;
   if (s.latch && s.latch_capturing) {
     double inv = (double)s.grace_beats * (NUM_STEPS / 4.0);
-    double add_window = (double)NUM_STEPS - inv;
-    if (add_window < 1e-4) add_window = (double)NUM_STEPS;
+    double add_window = (double)loop_steps - inv;
+    if (add_window < 1e-4) add_window = (double)loop_steps;
     double elapsed = s.abs_phase - s.latch_start_abs;
     if (elapsed >= 0 && elapsed < add_window) latch_capture = elapsed / add_window;
   }
@@ -241,7 +260,7 @@ static void publish_state(State& s) {
   auto grid = val::array();
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
     auto channel = val::array();
-    for (int st = 0; st < NUM_STEPS; st++) {
+    for (int st = 0; st < loop_steps; st++) {
       if (looper_has_event(&s.looper, ch, st)) {
         val::push(channel, val::number(st));
       }
@@ -411,10 +430,11 @@ static void recompute_gates(State& s) {
  * no live note. Wrap-aware. */
 static bool live_note_for(const State& s, int ch, Event& out) {
   if (!s.live_held[ch]) return false;
+  const double loop = (double)(s.bars * NUM_STEPS);
   double len = s.phase - s.live_start[ch];
-  if (len < 0) len += (double)NUM_STEPS;
+  if (len < 0) len += loop;
   if (len < 0.35) len = 0.35;
-  if (len > (double)NUM_STEPS) len = (double)NUM_STEPS;
+  if (len > loop) len = loop;
   out.channel = ch;
   out.start = s.live_start[ch];
   out.length = len;
@@ -461,19 +481,19 @@ static void on_param_change(State& s, int index, double value) {
       } else if (s.mute_held) {
         /* Muted press: silence only, no recording. */
       } else {
-        int step = (int)s.phase % NUM_STEPS;
+        int step = (int)s.phase % (s.bars * NUM_STEPS);
         s.last_action_was_clear = 0;
         /* Overdub/Latch RECORD the tap into the pattern; Off doesn't — but Off
          * still plays live (recompute_gates gates it) and shows a TRANSIENT
          * overlay note that vanishes on release. */
         bool recording = s.record_held || s.latch;
         if (recording) {
-          /* Latch: the first trigger (or one past the 1-bar window) clears the
-           * pattern and (re)opens a capture window before we record. */
+          /* Latch: the first trigger (or one past the one-LOOP window — 1, 2
+           * or 4 bars) clears the pattern and (re)opens a capture window. */
           if (s.latch) {
             double inv_grace = (double)s.grace_beats * (NUM_STEPS / 4.0);
             if (looper_latch_press(&s.latch_capturing, &s.latch_start_abs,
-                                   s.abs_phase, (double)NUM_STEPS, inv_grace))
+                                   s.abs_phase, (double)(s.bars * NUM_STEPS), inv_grace))
               looper_clear_all(&s.looper);
           }
           looper_begin_note(&s.looper, ch, s.phase);
@@ -550,6 +570,25 @@ static void on_param_change(State& s, int index, double value) {
       log_msg(LOG_INFO, m == LOOP_OFF ? "Loop: off (pattern disabled)"
                         : m == LOOP_LATCH ? "Loop: latch" : "Loop: overdub");
     }
+  } else if (index == PID_BARS) {
+    int nb = (int)(value + 0.5);
+    nb = nb >= 3 ? MAX_BARS : (nb == 2 ? 2 : 1);   /* select values: 1 / 2 / 4 */
+    if (nb != s.bars) {
+      /* Finalize/drop in-flight notes before the clock re-maps under them. */
+      for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        looper_end_note(&s.looper, ch, s.phase);   /* no-op if not pending */
+        s.live_held[ch] = 0;
+      }
+      s.bars = nb;
+      s.bar_in_loop %= nb;
+      looper_set_loop_length(&s.looper, (double)(nb * NUM_STEPS));
+      /* Keep phase inside the new loop this frame; tick() re-derives it. */
+      s.phase = std::fmod(s.phase, (double)(nb * NUM_STEPS));
+      s.prev_phase = s.phase;
+      s.latch_capturing = 0;                       /* re-arm against the new length */
+      log_msg(LOG_INFO, nb == 1 ? "Loop length: 1 bar"
+                        : nb == 2 ? "Loop length: 2 bars" : "Loop length: 4 bars");
+    }
   } else if (index == PID_SHOW_OVERLAY) {
     s.show_overlay = pressed;
   } else if (index == PID_ANCHOR) {
@@ -582,13 +621,14 @@ static void on_param_change(State& s, int index, double value) {
 
 /* --- State change handler (called by host when canonical state is modified) --- */
 
-/* Buffer layout for reading grid from state document */
+/* Buffer layout for reading grid from state document. Sized for the LONGEST
+ * loop (4 bars = 64 steps) so a saved multi-bar grid restores whole. */
 struct GridReadBuf {
-  /* 4 channels, each: [i32 count][i32 steps[16]] = 4 + 64 = 68 bytes */
-  int32_t ch0_count; int32_t ch0_steps[NUM_STEPS];
-  int32_t ch1_count; int32_t ch1_steps[NUM_STEPS];
-  int32_t ch2_count; int32_t ch2_steps[NUM_STEPS];
-  int32_t ch3_count; int32_t ch3_steps[NUM_STEPS];
+  /* 4 channels, each: [i32 count][i32 steps[64]] */
+  int32_t ch0_count; int32_t ch0_steps[MAX_LOOP_STEPS];
+  int32_t ch1_count; int32_t ch1_steps[MAX_LOOP_STEPS];
+  int32_t ch2_count; int32_t ch2_steps[MAX_LOOP_STEPS];
+  int32_t ch3_count; int32_t ch3_steps[MAX_LOOP_STEPS];
 };
 
 /* Paths for state.read layout (packed, null-separated) */
@@ -598,13 +638,13 @@ static const char grid_paths[] =
   "/grid/2\0"   /* 2: offset 16, len 7 */
   "/grid/3\0";  /* 3: offset 24, len 7 */
 
-#define GRID_CH_SIZE (4 + NUM_STEPS * 4)  /* i32 count + i32[16] */
+#define GRID_CH_SIZE (4 + MAX_LOOP_STEPS * 4)  /* i32 count + i32[64] */
 
 static JDocField grid_layout[NUM_CHANNELS] = {
-  { 0,  7, JDOC_TYPE_ARRAY_I32, 0 * GRID_CH_SIZE, NUM_STEPS },
-  { 8,  7, JDOC_TYPE_ARRAY_I32, 1 * GRID_CH_SIZE, NUM_STEPS },
-  { 16, 7, JDOC_TYPE_ARRAY_I32, 2 * GRID_CH_SIZE, NUM_STEPS },
-  { 24, 7, JDOC_TYPE_ARRAY_I32, 3 * GRID_CH_SIZE, NUM_STEPS },
+  { 0,  7, JDOC_TYPE_ARRAY_I32, 0 * GRID_CH_SIZE, MAX_LOOP_STEPS },
+  { 8,  7, JDOC_TYPE_ARRAY_I32, 1 * GRID_CH_SIZE, MAX_LOOP_STEPS },
+  { 16, 7, JDOC_TYPE_ARRAY_I32, 2 * GRID_CH_SIZE, MAX_LOOP_STEPS },
+  { 24, 7, JDOC_TYPE_ARRAY_I32, 3 * GRID_CH_SIZE, MAX_LOOP_STEPS },
 };
 
 static void load_grid_from_state(State& s) {
@@ -640,14 +680,18 @@ static void load_grid_from_state(State& s) {
   for (int ch = 0; ch < NUM_CHANNELS; ch++) {
     if (!results[ch].found) continue;
     int count = channel_counts[ch];
-    if (count > NUM_STEPS) count = NUM_STEPS;
+    if (count > MAX_LOOP_STEPS) count = MAX_LOOP_STEPS;
     for (int j = 0; j < count; j++) {
       int step = channel_data[ch][j];
-      if (step >= 0 && step < NUM_STEPS && s.looper.event_count < MAX_EVENTS) {
+      /* Accept up to the MAX loop; fold into the CURRENT loop length so a
+       * multi-bar grid restored into a shorter loop still plays (mirrors
+       * looper_set_loop_length — order-independent vs the `bars` patch). */
+      if (step >= 0 && step < MAX_LOOP_STEPS && s.looper.event_count < MAX_EVENTS) {
         /* The persisted grid only carries onsets; restore each as a one-step
          * gate. Live-recorded gate lengths have full fidelity — this is the
          * lossy reload path (host save/restore of the onset grid only). */
-        s.looper.events[s.looper.event_count].start = (double)step;
+        s.looper.events[s.looper.event_count].start =
+            std::fmod((double)step, s.looper.loop_length);
         s.looper.events[s.looper.event_count].length = 1.0;
         s.looper.events[s.looper.event_count].channel = ch;
         s.looper.event_count++;
@@ -665,7 +709,8 @@ static int field_to_pid(const char* path, int pathLen) {
     {"trigger_3", PID_TRIGGER_3}, {"trigger_4", PID_TRIGGER_4},
     {"delete", PID_DELETE}, {"mute", PID_MUTE},
     {"undo", PID_UNDO}, {"redo", PID_REDO},
-    {"loop_mode", PID_LOOP_MODE}, {"show_overlay", PID_SHOW_OVERLAY},
+    {"loop_mode", PID_LOOP_MODE}, {"bars", PID_BARS},
+    {"show_overlay", PID_SHOW_OVERLAY},
     {"anchor", PID_ANCHOR}, {"overlay_opacity", PID_OVERLAY_OPACITY},
     {"send_to_rail", PID_SEND_TO_RAIL},
     {"quantize_start", PID_QUANTIZE_START},
@@ -705,11 +750,11 @@ void module_init() {
 
   schema.helpField("intro",
     "## NanoLooper\n"
-    "A 4-channel / 16-step performance looper. Tap the **triggers** in time and it "
-    "records what you play, looping it against the host's beat clock. Each channel "
-    "can launch Resolume clips through the trigger rail and — in the dedicated "
-    "NanoLooper plugin — pluck a built-in synth. Everything is live; nothing is "
-    "saved between sessions.");
+    "A 4-channel performance looper — 1, 2 or 4 **Bars** of 16th-note steps. Tap "
+    "the **triggers** in time and it records what you play, looping it against "
+    "the host's beat clock. Each channel can launch Resolume clips through the "
+    "trigger rail and — in the dedicated NanoLooper plugin — pluck a built-in "
+    "synth. Everything is live; nothing is saved between sessions.");
 
   // --- Triggers -------------------------------------------------------
   schema.group("triggers", "Triggers")
@@ -739,16 +784,25 @@ void module_init() {
   // --- Loop -----------------------------------------------------------
   schema.group("loop", "Loop")
     .groupHelp(
-      "What your taps do to the loop. **Off** disables the recorded pattern (it stops "
-      "playing but is kept — switch back to restore it); triggers still play live. "
-      "**Overdub** plays the loop and records your taps into it. **Latch** turns the "
-      "first tap into a one-bar capture window for building a phrase hands-free.");
+      "What your taps do to the loop, and how long it is. **Off** disables the "
+      "recorded pattern (it stops playing but is kept — switch back to restore it); "
+      "triggers still play live. **Overdub** plays the loop and records your taps "
+      "into it. **Latch** turns the first tap into a one-loop capture window for "
+      "building a phrase hands-free. **Bars** sets the loop length — growing keeps "
+      "the pattern where it is; shrinking folds it back into the shorter loop.");
   schema.selectField("loop_mode", LOOP_OVERDUB, state::PrimaryInput,
     { {"Off", LOOP_OFF}, {"Overdub", LOOP_OVERDUB}, {"Latch", LOOP_LATCH} },
     /*wrap=*/false,
     "Off = pattern disabled (kept, live triggers only); Overdub = play + record; "
-    "Latch = one-bar capture.")
+    "Latch = one-loop capture.")
     .label("Loop", "Loop");
+  schema.selectField("bars", 1, state::PrimaryInput,
+    { {"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4} },
+    /*wrap=*/false,
+    "Loop length in bars (16/32/64 steps — the grid stays 16th notes). Growing "
+    "keeps the recorded pattern in place; shrinking folds notes back into the "
+    "shorter loop instead of dropping them.")
+    .label("Bars", "Bars");
 
   // --- Quantize -------------------------------------------------------
   schema.group("quantize", "Quantize")
@@ -840,7 +894,7 @@ void module_init() {
         .capability(state::Capability::ModulationSource)
         .capability(state::Capability::ModulationSourceMulti);
 
-  state::init(id, {1, 0, 0}, schema);
+  state::init(id, {1, 1, 0}, schema);
 
   /* Compile the overlay toolbox's solid-quad shader up front (idempotent; also
    * retried lazily on first render if no GPU backend exists yet). */
@@ -868,6 +922,9 @@ void init(void* self) {
   if (!s) return;
 
   looper_init(&s->looper, (double)NUM_STEPS);
+  s->bars = 1;          /* schema default; on_state_patched syncs */
+  s->bar_in_loop = 0;
+  s->prev_bar_phase = 0.0;
   s->phase = 0;
   s->prev_phase = 0;
   s->elapsed = 0;
@@ -931,15 +988,22 @@ void tick(void* self, double dt) {
 
   s->elapsed += dt;
 
-  /* Advance phase from host bar phase */
+  /* Advance phase from the host bar phase. The host clock wraps every BAR, so
+   * for multi-bar loops we count the wraps to know which bar of the loop we're
+   * in (backward jumps are wraps; the loop's bar-0 alignment is arbitrary —
+   * the host doesn't report a bar index). */
   double bar = host_get_bar_phase();
+  if (bar < s->prev_bar_phase - 0.5)
+    s->bar_in_loop = (s->bar_in_loop + 1) % s->bars;
+  s->prev_bar_phase = bar;
   s->prev_phase = s->phase;
-  s->phase = bar * NUM_STEPS;
+  s->phase = ((double)s->bar_in_loop + bar) * NUM_STEPS;
 
   /* Monotonic transport clock (never wraps) — the reference the latch capture
    * window is measured against. */
+  double loop_steps = (double)(s->bars * NUM_STEPS);
   double dphase = s->phase - s->prev_phase;
-  if (dphase < 0) dphase += (double)NUM_STEPS;   /* crossed the loop seam */
+  if (dphase < 0) dphase += loop_steps;          /* crossed the loop seam */
   s->abs_phase += dphase;
 
   /* Gate emission is fully driven by recompute_gates: as the phase sweeps
@@ -984,8 +1048,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 /* Is this note sounding at `phase`? True when phase falls in the note's
  * [start, start+length) window (wrap-aware). Per-NOTE, so only the step actually
  * under the playhead lights up — not every recorded note in the channel. */
-static bool note_active(const Event& e, double phase) {
-  const double loop = (double)NUM_STEPS;
+static bool note_active(const Event& e, double phase, double loop) {
   double len = e.length;
   if (len <= 0.0) return false;
   if (len > loop) len = loop;
@@ -1000,12 +1063,11 @@ static bool note_active(const Event& e, double phase) {
  * drawn as up to two segments. A bright leading edge marks the true onset.
  * `playing` is per-NOTE (this note is under the playhead); `op` is the overlay
  * opacity multiplier. */
-static void draw_note_bar(overlay::Canvas& ov, const Event& e,
+static void draw_note_bar(overlay::Canvas& ov, const Event& e, double loop,
                           float track_x, float track_w, float bar_y, float bar_h,
                           float cr, float cg, float cb,
                           bool muted, bool playing, float scale, float op,
                           bool disabled = false) {
-  const double loop = (double)NUM_STEPS;
   double s0 = e.start;
   if (s0 < 0) s0 = 0; else if (s0 >= loop) s0 -= loop;
   double rem = e.length;
@@ -1142,9 +1204,11 @@ void render(void* self, int vp_w, int vp_h) {
             C(0.60f, 0.72f, 1.0f, 0.80f));
   }
 
-  /* --- Beat gridlines behind the lanes (4 beats / bar) --- */
-  for (int beat = 0; beat <= 4; beat++) {
-    float gx = ox + track_x + (beat / 4.0f) * track_w;
+  /* --- Beat gridlines behind the lanes (4 beats / bar; bar lines brighter) --- */
+  const double loop = (double)(s->bars * NUM_STEPS);
+  const int n_beats = 4 * s->bars;
+  for (int beat = 0; beat <= n_beats; beat++) {
+    float gx = ox + track_x + ((float)beat / (float)n_beats) * track_w;
     float a = (beat % 4 == 0) ? 0.34f : 0.15f;
     ov.fillRect(gx, oy + lanes_top, 1.5f * scale, lanes_h, C(0.60f, 0.66f, 0.78f, a));
   }
@@ -1180,19 +1244,19 @@ void render(void* self, int vp_w, int vp_h) {
     for (int i = 0; i < s->looper.event_count; i++) {
       const Event& e = s->looper.events[i];
       if (e.channel != ch) continue;
-      bool note_playing = !disabled && note_active(e, s->phase);
-      draw_note_bar(ov, e, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
+      bool note_playing = !disabled && note_active(e, s->phase, loop);
+      draw_note_bar(ov, e, loop, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
                     cr, cg, cb, muted, note_playing, scale, op, disabled);
     }
     Event lv;
     if (live_note_for(*s, ch, lv))
-      draw_note_bar(ov, lv, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
+      draw_note_bar(ov, lv, loop, ox + track_x, track_w, ly + bar_pad, lane_h - 2.0f * bar_pad,
                     cr, cg, cb, /*muted=*/false, /*playing=*/true, scale, op, /*disabled=*/false);
   }
 
   /* --- Playhead: continuous position across all lanes --- */
   {
-    float ph = (float)s->phase / (float)NUM_STEPS;
+    float ph = (float)(s->phase / loop);
     if (ph < 0) ph = 0; else if (ph > 1) ph = 1;
     float px = ox + track_x + ph * track_w;
     ov.fillRect(px - 1.5f * scale, oy + lanes_top - 4.0f * scale, 3.0f * scale,
@@ -1226,8 +1290,8 @@ void render(void* self, int vp_w, int vp_h) {
    * direct "a press now adds / a press now wipes" cue. */
   if (s->latch && s->latch_capturing) {
     double inv = (double)s->grace_beats * (NUM_STEPS / 4.0);
-    double add_window = (double)NUM_STEPS - inv;
-    if (add_window < 1e-4) add_window = (double)NUM_STEPS;
+    double add_window = loop - inv;
+    if (add_window < 1e-4) add_window = loop;
     double elapsed = s->abs_phase - s->latch_start_abs;
     if (elapsed >= 0 && elapsed < add_window) {   /* a press right now ADDS */
       float prog = (float)(elapsed / add_window);

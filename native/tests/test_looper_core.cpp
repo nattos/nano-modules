@@ -327,3 +327,48 @@ TEST_CASE("clear and undo restore the pattern", "[looper_core]") {
   looper_undo(&c);
   CHECK(c.event_count == 2);
 }
+
+TEST_CASE("loop length change keeps the pattern: grow in place, shrink folds",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP);  // 1 bar (16)
+
+  looper_begin_note(&c, 0, 2.0);
+  looper_end_note(&c, 0, 5.0);
+
+  // Grow 1 → 4 bars: the note stays where it was, and does NOT repeat in the
+  // later bars (it plays once per 4-bar loop now).
+  looper_set_loop_length(&c, LOOP * 4);  // 64
+  CHECK(c.loop_length == LOOP * 4);
+  CHECK(c.events[0].start == 2.0);
+  CHECK(active_ch(c, 3.0, 0));
+  CHECK_FALSE(active_ch(c, 16.0 + 3.0, 0));   // bar 2 is empty
+
+  // Record into bar 3 of the long loop.
+  looper_begin_note(&c, 1, 34.0);
+  looper_end_note(&c, 1, 36.0);
+  CHECK(active_ch(c, 35.0, 1));
+
+  // Shrink back to 1 bar: the bar-3 note FOLDS to 34 mod 16 = 2, not dropped.
+  looper_set_loop_length(&c, LOOP);
+  CHECK(c.loop_length == LOOP);
+  REQUIRE(c.event_count == 2);
+  CHECK(active_ch(c, 2.5, 1));                // folded into the first bar
+  CHECK(active_ch(c, 3.0, 0));                // original note untouched
+}
+
+TEST_CASE("undo across a loop-length shrink folds restored notes into range",
+          "[looper_core]") {
+  LooperCore c;
+  looper_init(&c, LOOP * 2);  // 2 bars (32)
+
+  looper_begin_note(&c, 0, 20.0);  // bar 2
+  looper_end_note(&c, 0, 22.0);
+  looper_clear_all(&c);
+  looper_set_loop_length(&c, LOOP);  // shrink with an empty pattern
+
+  looper_undo(&c);  // restores the bar-2 note into a 1-bar loop
+  REQUIRE(c.event_count == 1);
+  CHECK(c.events[0].start == 4.0);   // 20 mod 16 — folded, so it still plays
+  CHECK(active_ch(c, 4.5, 0));
+}

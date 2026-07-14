@@ -1,5 +1,6 @@
 /**
- * Custom inspector for control.nanolooper — the 4-channel / 16-step looper.
+ * Custom inspector for control.nanolooper — the 4-channel looper (1/2/4 bars
+ * of 16th-note steps).
  *
  * The top half is a live <nanolooper-grid> canvas that mirrors the effect's own
  * on-video debug overlay: four lanes of continuous note bars (onset + gate
@@ -8,7 +9,8 @@
  * effect's live published state each frame via `binding.getValue(...)`:
  *   notes:      [{ch,start,length}, …]  recorded pattern (dim when loop_mode=Off)
  *   live_notes: [{ch,start,length}, …]  Off-mode transient live taps (bright)
- *   phase:      0..16                    playhead position (bar * NUM_STEPS)
+ *   phase:      0..loop_steps            playhead position in steps
+ *   loop_steps: 16/32/64                 loop length in steps (bars × 16)
  *   loop_mode:  0=Off 1=Overdub 2=Latch  header badge + disabled-pattern styling
  *   gates:      [g0,g1,g2,g3]            live per-channel gate (exact, no fade)
  * (published by nanolooper/main.cpp publish_state()).
@@ -55,6 +57,13 @@ const LOOP_OPTIONS = [
   { label: 'Latch', value: LOOP_LATCH },
 ];
 
+// Loop length in bars — values must match the native `bars` selectField.
+const BARS_OPTIONS = [
+  { label: '1 Bar', value: 1 },
+  { label: '2 Bars', value: 2 },
+  { label: '4 Bars', value: 4 },
+];
+
 const rgba = (c: [number, number, number], a: number) =>
   `rgba(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0},${a})`;
 
@@ -62,11 +71,11 @@ interface Note { ch: number; start: number; length: number; }
 
 // Wrap-aware "is this note sounding at `phase`?" — mirrors note_active() in the
 // native overlay so exactly the note(s) under the playhead light up.
-function noteActive(n: Note, phase: number): boolean {
+function noteActive(n: Note, phase: number, loop: number): boolean {
   if (!(n.length > 0)) return false;
-  const len = Math.min(n.length, NUM_STEPS);
-  let d = (phase - n.start) % NUM_STEPS;
-  if (d < 0) d += NUM_STEPS;
+  const len = Math.min(n.length, loop);
+  let d = (phase - n.start) % loop;
+  if (d < 0) d += loop;
   return d < len;
 }
 
@@ -155,6 +164,7 @@ export class NanolooperGrid extends MobxLitElement {
     ctx.clearRect(0, 0, cw, chh);
 
     const phase = this.num('phase', 0);
+    const loopSteps = Math.max(this.num('loop_steps', NUM_STEPS), 1);
     const loopMode = this.num('loop_mode', LOOP_OVERDUB);
     const disabled = loopMode === LOOP_OFF;   // pattern kept but not playing
     const gates = this.gates();
@@ -183,9 +193,10 @@ export class NanolooperGrid extends MobxLitElement {
     else if (loopMode === LOOP_LATCH) { ctx.fillStyle = 'rgba(115,255,153,0.95)'; ctx.fillText('◉ LATCH', pad + 74, pad + 2); }
     else { ctx.fillStyle = 'rgba(158,168,184,0.8)'; ctx.fillText('■ OFF', pad + 74, pad + 2); }
 
-    // --- Beat gridlines (4 beats / bar) ----------------------------------
-    for (let beat = 0; beat <= 4; beat++) {
-      const gx = trackX + (beat / 4) * trackW;
+    // --- Beat gridlines (4 beats / bar; bar lines brighter) --------------
+    const nBeats = Math.max(Math.round(loopSteps / 4), 1);
+    for (let beat = 0; beat <= nBeats; beat++) {
+      const gx = trackX + (beat / nBeats) * trackW;
       ctx.fillStyle = `rgba(153,168,199,${beat % 4 === 0 ? 0.32 : 0.13})`;
       ctx.fillRect(gx, lanesTop, 1, lanesH);
     }
@@ -213,12 +224,12 @@ export class NanolooperGrid extends MobxLitElement {
       const barPad = Math.min(4, laneH * 0.12);
       for (const n of notes) {
         if (n.ch !== ch) continue;
-        this.drawNoteBar(ctx, n, trackX, trackW, ly + barPad, laneH - 2 * barPad, col,
-          !disabled && noteActive(n, phase), disabled);
+        this.drawNoteBar(ctx, n, loopSteps, trackX, trackW, ly + barPad, laneH - 2 * barPad, col,
+          !disabled && noteActive(n, phase, loopSteps), disabled);
       }
       for (const n of liveNotes) {
         if (n.ch !== ch) continue;
-        this.drawNoteBar(ctx, n, trackX, trackW, ly + barPad, laneH - 2 * barPad, col, true, false);
+        this.drawNoteBar(ctx, n, loopSteps, trackX, trackW, ly + barPad, laneH - 2 * barPad, col, true, false);
       }
     }
 
@@ -235,7 +246,7 @@ export class NanolooperGrid extends MobxLitElement {
     }
 
     // --- Playhead ---------------------------------------------------------
-    let ph = phase / NUM_STEPS;
+    let ph = phase / loopSteps;
     ph = ph < 0 ? 0 : ph > 1 ? 1 : ph;
     const px = trackX + ph * trackW;
     ctx.fillStyle = 'rgba(255,255,255,0.88)';
@@ -255,11 +266,10 @@ export class NanolooperGrid extends MobxLitElement {
   // bright leading edge on the true onset — mirrors draw_note_bar(). `disabled`
   // (Off mode) draws the recorded pattern dim + desaturated.
   private drawNoteBar(
-    ctx: CanvasRenderingContext2D, n: Note, trackX: number, trackW: number,
+    ctx: CanvasRenderingContext2D, n: Note, loop: number, trackX: number, trackW: number,
     barY: number, barH: number, col: [number, number, number], playing: boolean,
     disabled = false,
   ) {
-    const loop = NUM_STEPS;
     let s0 = n.start % loop; if (s0 < 0) s0 += loop;
     let rem = Math.min(n.length, loop);
     const bodyA = disabled ? 0.26 : (playing ? 0.95 : 0.72);
@@ -340,6 +350,8 @@ export class NanolooperInspector extends MobxLitElement {
       <help-slot .binding=${b} .path=${'@group/loop'}></help-slot>
       <field-tab-bar .fieldPath=${'loop_mode'} .label=${''}
         .options=${LOOP_OPTIONS} .defaultValue=${1} .binding=${b}></field-tab-bar>
+      <field-tab-bar .fieldPath=${'bars'} .label=${'Bars'}
+        .options=${BARS_OPTIONS} .defaultValue=${1} .binding=${b}></field-tab-bar>
 
       <div class="section">Quantize</div>
       <help-slot .binding=${b} .path=${'@group/quantize'}></help-slot>

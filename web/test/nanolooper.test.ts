@@ -60,6 +60,49 @@ describe('NanoLooper Effect E2E (engine worker)', () => {
       expect(Array.isArray(channel)).toBe(true);
       expect(channel.length).toBe(0);
     }
+    // Default loop length: 1 bar of 16 steps.
+    expect(pluginState.loop_steps).toBe(16);
+  });
+
+  it('extends the loop to 4 bars via the bars param and publishes loop_steps', async () => {
+    const result = await runEngineTest({
+      width: 32, height: 32,
+      modules: ['com.nano.nano'],
+      commands: [
+        {
+          type: 'createSketch',
+          sketchId: 'nl_sketch',
+          sketch: {
+            anchor: null,
+            chain: [
+              {
+                type: 'module',
+                module_type: 'control.nanolooper',
+                instance_key: 'nl@0',
+                params: {},
+              },
+            ],
+          },
+        },
+        {
+          type: 'setParam',
+          sketchId: 'nl_sketch', colIdx: 0, chainIdx: 0,
+          paramKey: 'bars', value: 4,
+        },
+      ],
+      waitFrames: 10,
+      dumpName: 'nanolooper_bars',
+    });
+
+    expect(result.success).toBe(true);
+    const pluginState = result.state.pluginStates?.['nl@0']
+      ?? result.state.pluginStates?.['control.nanolooper@0'];
+    expect(pluginState).toBeDefined();
+    // The published loop length follows the param (4 bars × 16 steps)...
+    expect(pluginState.loop_steps).toBe(64);
+    // ...and the sequencer keeps ticking against the longer loop.
+    expect(pluginState.grid.length).toBe(4);
+    expect(pluginState.phase).toBeLessThan(64);
   });
 
   it('records a trigger into the grid via setParam', async () => {

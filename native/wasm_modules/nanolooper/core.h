@@ -60,6 +60,12 @@ typedef struct {
 } LooperCore;
 
 void looper_init(LooperCore* c, double loop_length);
+/* Change the loop length in place, keeping the recorded pattern: note onsets
+ * are FOLDED into the new loop (start mod length) and gate lengths clamped, so
+ * growing 1→4 bars keeps the pattern in bar 1 and shrinking folds everything
+ * back down instead of silently dropping notes. Grace/quantize are untouched
+ * (both are step-based; a step stays one 16th regardless of loop length). */
+void looper_set_loop_length(LooperCore* c, double loop_length);
 void looper_set_quantize(LooperCore* c, int q_start, int q_length);
 /* Set the overwrite grace period, in loop units (steps). Clamped to >= 0. */
 void looper_set_grace(LooperCore* c, double grace_units);
