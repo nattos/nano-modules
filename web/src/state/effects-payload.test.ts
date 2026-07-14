@@ -5,8 +5,9 @@ import {
 import type { Sketch } from '../sketch-types';
 import { UI_ONLY_KEY } from '../sketch-types';
 
-/** Three-module sketch: blur → lfo → tint, with an internal wire (lfo→tint)
- *  and an external one (blur→lfo — external once only [lfo, tint] is copied). */
+/** Three-module sketch: blur → lfo → tint, with an internal wire (lfo→tint),
+ *  an external one (blur→lfo — external once only [lfo, tint] is copied), and
+ *  a MIDI mapping into tint (external source that must still ride along). */
 function makeSketch(): Sketch {
   return {
     chain: [
@@ -28,6 +29,13 @@ function makeSketch(): Sketch {
         src: { instanceKey: 'lfo@1', field: 'value' },
         dest: { instanceKey: 'tint@1', field: 'amount' },
         combine: 'add',
+      },
+      {
+        id: 'w_midi',
+        src: { instanceKey: 'midi:devA', field: 'b0/e05/turn' },
+        dest: { instanceKey: 'tint@1', field: 'color' },
+        combine: 'replace',
+        mod: { scale: 0.5 },
       },
     ],
     instances: {
@@ -53,15 +61,21 @@ describe('effect paths', () => {
 });
 
 describe('buildEffectsPayload', () => {
-  it('captures items in chain order with internal wires only', () => {
+  it('captures items in chain order with internal + midi wires only', () => {
     // Keys deliberately in REVERSE chain order — items must come out in chain order.
     const p = buildEffectsPayload(makeSketch(), ['tint@1', 'lfo@1'])!;
     expect(p.kind).toBe('effects');
     expect(p.items.map(i => i.key)).toEqual(['lfo@1', 'tint@1']);
     expect(p.items.map(i => i.moduleType)).toEqual(['source.lfo', 'video.tint']);
-    // Internal wire (lfo→tint) captured; external (blur→lfo) dropped.
-    expect(p.wires.map(w => w.id)).toEqual(['w_int']);
+    // Internal wire (lfo→tint) + midi mapping (midi:devA→tint) captured;
+    // external (blur→lfo) dropped.
+    expect(p.wires.map(w => w.id)).toEqual(['w_int', 'w_midi']);
     expect(p.wires[0].combine).toBe('add');
+  });
+
+  it('drops a midi wire whose DEST is outside the group', () => {
+    const p = buildEffectsPayload(makeSketch(), ['lfo@1'])!;
+    expect(p.wires).toEqual([]);
   });
 
   it('strips UI-only state and keeps fieldOptions', () => {
@@ -88,10 +102,15 @@ describe('remapEffectsPayload', () => {
     const p = buildEffectsPayload(makeSketch(), ['lfo@1', 'tint@1'])!;
     const r = remapEffectsPayload(p, (mt, i) => `new_${mt}_${i}`, i => `wire_new_${i}`);
     expect(r.items.map(i => i.newKey)).toEqual(['new_source.lfo_0', 'new_video.tint_1']);
-    expect(r.wires).toHaveLength(1);
+    expect(r.wires).toHaveLength(2);
     expect(r.wires[0].id).toBe('wire_new_0');
     expect(r.wires[0].src).toEqual({ instanceKey: 'new_source.lfo_0', field: 'value' });
     expect(r.wires[0].dest).toEqual({ instanceKey: 'new_video.tint_1', field: 'amount' });
+    // The midi mapping keeps its app-level source verbatim; dest + id are fresh.
+    expect(r.wires[1].id).toBe('wire_new_1');
+    expect(r.wires[1].src).toEqual({ instanceKey: 'midi:devA', field: 'b0/e05/turn' });
+    expect(r.wires[1].dest).toEqual({ instanceKey: 'new_video.tint_1', field: 'color' });
+    expect(r.wires[1].mod).toEqual({ scale: 0.5 });
   });
 
   it('drops wires whose endpoints are missing from the items (hand-edited JSON)', () => {
@@ -102,7 +121,8 @@ describe('remapEffectsPayload', () => {
       dest: { instanceKey: 'tint@1', field: 'amount' },
     });
     const r = remapEffectsPayload(p, (_mt, i) => `k${i}`, i => `w${i}`);
-    expect(r.wires.map(w => w.id)).toEqual(['w0']);
+    // w_int + w_midi survive (fresh ids); the ghost-sourced wire is dropped.
+    expect(r.wires.map(w => w.id)).toEqual(['w0', 'w1']);
   });
 });
 
