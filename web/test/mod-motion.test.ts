@@ -192,6 +192,41 @@ describe('mod.shaper.motion shaper node E2E', () => {
     expect(r05).toBeGreaterThan(r1 + 30);
   });
 
+  it('scale boosts the output, and rolloff softens the ceiling under drive', async () => {
+    // Same slow 0.1-step rig as the delicacy test (raw reading 0.33). Three
+    // runs, varying only the output stage:
+    //   scale 2, rolloff 0 → 0.67 (~170): linear gain, no clipping yet.
+    //   scale 4, rolloff 0 → hard-clamped 1.0 (255).
+    //   scale 4, rolloff 1 → tanh(1.33) ≈ 0.87 (~222): driven but not pinned.
+    const slow = (id: string, scale: number, rolloff: number) => runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: ['com.nano.core'],
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: id,
+              sketch: build({ input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1, scale, rolloff }, 'output') },
+            { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 100, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1, paramKey: 'input', value: 0.6 }],
+          waitFrames: 5, captureTraceIds: ['out'] },
+      ],
+      dumpName: id,
+    });
+    const lin = await slow('mo_scl2', 2, 0);
+    const hard = await slow('mo_scl4h', 4, 0);
+    const soft = await slow('mo_scl4s', 4, 1);
+    expect(lin.success && hard.success && soft.success).toBe(true);
+    const rLin = lin.phases[1].trace('out').averageColor().r;
+    const rHard = hard.phases[1].trace('out').averageColor().r;
+    const rSoft = soft.phases[1].trace('out').averageColor().r;
+    expect(rLin).toBeGreaterThan(140);
+    expect(rLin).toBeLessThan(205);
+    expect(rHard).toBeGreaterThan(245);           // hard ceiling: pinned
+    expect(rSoft).toBeGreaterThan(195);           // driven...
+    expect(rSoft).toBeLessThan(rHard - 15);       // ...but rolled off, not pinned
+  });
+
   it('the signed velocity output reads mid at rest, high moving up, low moving down', async () => {
     const r = await runPhases('mo_vel',
       { input: 0.5, momentum: 0, smooth: 0.3, curve: 1, sense: 1 }, 'velocity', [

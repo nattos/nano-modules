@@ -35,7 +35,11 @@
  *
  * Outputs: `output` is the unsigned speed (or the integrator level when
  * Integrate is on); `velocity` is always the live post-momentum SIGNED
- * velocity (input moving down reads negative).
+ * velocity (input moving down reads negative). Both pass through an output
+ * stage: an overall `scale` gain, then `rolloff` — a soft ceiling that starts
+ * compressing at 1-rolloff and approaches 1 asymptotically (0 = hard clamp).
+ * Scale + rolloff together are drive-into-saturation: boost weak readings
+ * while fast ones roll into the top instead of flat-topping.
  *
  * Velocity is displacement-based (net input delta per tick), so two patches
  * that wiggle up-then-down WITHIN one frame cancel to zero — correct for
@@ -84,7 +88,9 @@ struct State {
   bool  integrate = false;
   int   mode = ModeActivity;
   float decay = 0.5f;        // Activity release tau, seconds
-  float return_time = 1.5f;  // Throw leak-to-rest tau, seconds
+  float return_time = 1.5f;  // Throw gravity scale (fall-from-top time), seconds
+  float scale = 1.0f;        // overall output gain
+  float rolloff = 0.0f;      // soft ceiling: knee at 1 - rolloff (0 = hard clamp)
 
   // Dynamics.
   bool  initialized = false; // first tick seeds the window — no ghost spike
@@ -102,6 +108,21 @@ struct State {
   int   ring_head = 0;   // next write slot
   int   ring_count = 0;
 };
+
+// Output stage: overall gain, then a soft ceiling. Magnitudes below the knee
+// (1 - rolloff) pass straight through; above it they compress along a tanh
+// that approaches 1 asymptotically. rolloff 0 is a plain hard clamp. Sign is
+// preserved (the signed velocity output saturates symmetrically).
+static float shapeOut(float x, float scale, float rolloff) {
+  float m = std::fabs(x) * scale;
+  const float k = 1.0f - std::fmin(std::fmax(rolloff, 0.0f), 1.0f);
+  if (m > k) {
+    const float soft = 1.0f - k;
+    m = (soft > 1e-4f) ? k + soft * std::tanh((m - k) / soft) : k;
+  }
+  m = std::fmin(m, 1.0f);
+  return (x < 0.0f) ? -m : m;
+}
 
 // Displacement over the ring window ending at (now, x_now): evict samples
 // older than `window` (always keeping one so the span covers the full window),
@@ -156,7 +177,7 @@ static void on_state_ready(void* self);
 
 // Type-level setup: schema. Runs once per type. No GPU work.
 void module_init() {
-  state::init("mod.shaper.motion", {1, 2, 0},
+  state::init("mod.shaper.motion", {1, 3, 0},
     state::Schema()
       .helpField("intro",
         "## Motion\n"
@@ -219,8 +240,16 @@ void module_init() {
       // Throw-mode leak time. Hidden in Activity (and vice versa).
       .floatField("return_time", 1.5f, 0.1f, 10.f, state::PrimaryInput,
                   nullptr, 0.f, "s").label("Return", "Ret")
-      // --- Outputs ---
+      // --- Output stage + outputs ---
       .group("output", "Output")
+        .groupHelp(
+          "*Scale* is an overall gain on the outputs. *Rolloff* softens the "
+          "ceiling: 0 clamps hard at 1, higher values start compressing at "
+          "1−rolloff and ease into the top asymptotically. Together they "
+          "drive-and-saturate — boost weak readings with *Scale* and let "
+          "fast ones roll into the ceiling instead of flat-topping.")
+      .floatField("scale", 1.0f, 0.f, 4.f, state::PrimaryInput).label("Scale", "Scl")
+      .floatField("rolloff", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Rolloff", "Roll")
       // Unsigned speed — or the integrator level when Integrate is on.
       .floatField("output", 0.0f, 0.f, 1.f, state::PrimaryOutput, "unsigned").label("Output", "Out")
       // Always the live post-momentum signed velocity; rest is 0 (mid).
@@ -366,12 +395,14 @@ void tick(void* self, double dt) {
     }
   }
 
-  // Publish both channels every tick (a downstream wire always reads fresh).
-  const float out = s->integrate ? s->acc : std::fabs(s->v_hold);
+  // Publish both channels every tick (a downstream wire always reads fresh),
+  // through the output stage (scale gain + rolloff soft ceiling).
+  const float out = shapeOut(s->integrate ? s->acc : std::fabs(s->v_hold),
+                             s->scale, s->rolloff);
   auto oh = val::number(out);
   state::setValPath("output", oh);
   val::release(oh);
-  auto vh = val::number(s->v_hold);
+  auto vh = val::number(shapeOut(s->v_hold, s->scale, s->rolloff));
   state::setValPath("velocity", vh);
   val::release(vh);
 }
@@ -391,6 +422,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "momentum"))    s->momentum = state::patchFloat(i);
     else if (state::pathIs(p, l, "decay"))       s->decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "return_time")) s->return_time = state::patchFloat(i);
+    else if (state::pathIs(p, l, "scale"))       s->scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "rolloff"))     s->rolloff = state::patchFloat(i);
     else if (state::pathIs(p, l, "integrate")) {
       bool v = state::patchBool(i);
       if (v != s->integrate) {
