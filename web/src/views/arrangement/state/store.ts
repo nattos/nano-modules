@@ -1651,33 +1651,48 @@ export class ArrangementStore {
    * you paste effect JSON copied — or hand-edited — outside the app, or
    * copied from the effect-IDE/sketch-IDE), falling back to the in-app
    * `effectClipboard` when the OS clipboard is empty, unreadable, or doesn't
-   * hold a recognizable effect JSON. A no-op if the pasted moduleType isn't in
-   * arrangement's own effect catalog (`insertClipDeviceAt`/`insertTrackDeviceAt`
-   * return null for an unknown type).
+   * hold a recognizable effect JSON. A `kind:'effects'` GROUP payload (what
+   * the IDE writes for any card selection, single included) pastes each card
+   * in order; its wires are dropped — clipboard wires are keyed by the IDE's
+   * instance keys, which don't map onto arrangement device ids. A no-op if a
+   * pasted moduleType isn't in arrangement's own effect catalog
+   * (`insertClipDeviceAt`/`insertTrackDeviceAt` return null for an unknown
+   * type).
    */
   async pasteAtChainFocus() {
     const target = this.resolveChainFocusEffect();
     if (!target) return;
-    const payload = await this.resolveEffectClipboardPayload();
-    if (!payload) return;
-    target.insertAfter(payload);
+    const payloads = await this.resolveEffectClipboardPayloads();
+    // insertAfter always lands right after the focus, so insert back-to-front
+    // to keep the block in payload order.
+    for (let i = payloads.length - 1; i >= 0; i--) target.insertAfter(payloads[i]);
   }
 
-  private async resolveEffectClipboardPayload(): Promise<EffectClipboardPayload | null> {
+  private async resolveEffectClipboardPayloads(): Promise<EffectClipboardPayload[]> {
     try {
       const text = await navigator.clipboard?.readText?.();
       if (text) {
         const parsed = JSON.parse(text);
         if (parsed && parsed.kind === 'effect' && typeof parsed.moduleType === 'string'
           && parsed.state && typeof parsed.state === 'object') {
-          return parsed as EffectClipboardPayload;
+          return [parsed as EffectClipboardPayload];
+        }
+        // The IDE's multi-card shape (state/effects-payload.ts) — matched
+        // structurally, same decoupling rationale as EffectClipboardPayload.
+        if (parsed && parsed.kind === 'effects' && Array.isArray(parsed.items)) {
+          const items = parsed.items.filter((it: any) =>
+            it && typeof it.moduleType === 'string' && it.state && typeof it.state === 'object');
+          if (items.length > 0) {
+            return items.map((it: any): EffectClipboardPayload =>
+              ({ kind: 'effect', moduleType: it.moduleType, state: it.state }));
+          }
         }
       }
     } catch {
       // Not JSON, no clipboard-read permission, or no OS clipboard access —
       // fall through to the in-app clipboard below.
     }
-    return this.effectClipboard;
+    return this.effectClipboard ? [this.effectClipboard] : [];
   }
 
   /** Rebuild the multi-edit reconciliation for the CURRENT selection, but only

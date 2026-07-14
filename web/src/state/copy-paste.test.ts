@@ -27,13 +27,20 @@ function seed() {
 }
 
 // Register an effect-card selectable the way column-group does: copy snapshots
-// its instance, paste drops the clipboard AFTER it (chainIdx + 1).
+// its instance, paste drops the clipboard AFTER it (chainIdx + 1). Note the
+// controller's copySelection short-circuits effect selections through the
+// GROUP snapshot before ever consulting `copy` — the closure here is the
+// fallback path only.
 function defineEffectSelectable(chainIdx: number, instanceKey: string) {
   appController.defineSelectable({
     path: `effect/sk/0/${chainIdx}`,
     label: instanceKey,
     copy: () => appController.snapshotEffect('sk', instanceKey),
     paste: (payload) => {
+      if (payload.kind === 'effects') {
+        appController.insertEffectsFromClipboard('sk', 0, chainIdx + 1, payload);
+        return;
+      }
       if (payload.kind !== 'effect') return;
       appController.insertEffectFromClipboard('sk', 0, chainIdx + 1, payload);
     },
@@ -61,11 +68,19 @@ afterEach(() => {
   runInAction(() => {
     appState.local.selection = null;
     appState.local.queuedSelectionPath = null;
+    appState.local.multiSelection = [];
     appState.local.clipboard = null;
     appState.database.sketches = {} as any;
     appState.local.userSettings.selectedProjectId = null;
   });
 });
+
+/** The moduleType(s) a clipboard payload holds, kind-agnostic. */
+const clipboardModuleTypes = () => {
+  const p = appState.local.clipboard;
+  if (!p) return [];
+  return p.kind === 'effects' ? p.items.map(i => i.moduleType) : [p.moduleType];
+};
 
 describe('effect copy / paste', () => {
   it('snapshotEffect captures type + state, stripping UI-only view state', () => {
@@ -94,7 +109,9 @@ describe('effect copy / paste', () => {
 
     appController.copySelection();
     expect(appController.canPaste).toBe(true);
-    expect(appState.local.clipboard?.moduleType).toBe('video.bc');
+    // A lone card copies as a group-of-one (the wire-carrying payload kind).
+    expect(appState.local.clipboard?.kind).toBe('effects');
+    expect(clipboardModuleTypes()).toEqual(['video.bc']);
   });
 
   it('pastes AFTER the selected effect card with a fresh, independent instance', async () => {
@@ -115,6 +132,36 @@ describe('effect copy / paste', () => {
     // The pasted card is auto-selected — queued until it renders + registers.
     expect(appState.local.selection?.path ?? appState.local.queuedSelectionPath)
       .toBe('effect/sk/0/1');
+  });
+
+  it('single-card copy carries its MIDI mapping wires, relinked on paste', async () => {
+    seed();
+    runInAction(() => {
+      (appState.database.sketches.sk as any).wires = [{
+        id: 'w_midi',
+        src: { instanceKey: 'midi:devA', field: 'b0/e05/turn' },
+        dest: { instanceKey: 'bc0', field: 'brightness' },
+        combine: 'add',
+      }];
+    });
+    defineEffectSelectable(0, 'bc0');
+    appController.select('effect/sk/0/0');
+    appController.copySelection();
+    const clip = appState.local.clipboard;
+    expect(clip?.kind).toBe('effects');
+    expect((clip as any).wires).toHaveLength(1);
+
+    await appController.pasteClipboard();
+    const keys = instanceKeys();
+    expect(keys).toHaveLength(2);
+    const wires = (appState.database.sketches.sk as any).wires;
+    expect(wires).toHaveLength(2);
+    // The pasted mapping: same app-level MIDI source, dest relinked onto the
+    // fresh instance, fresh wire id.
+    const pasted = wires.find((w: any) => w.id !== 'w_midi')!;
+    expect(pasted.src).toEqual({ instanceKey: 'midi:devA', field: 'b0/e05/turn' });
+    expect(pasted.dest).toEqual({ instanceKey: keys[1], field: 'brightness' });
+    expect(pasted.combine).toBe('add');
   });
 
   it('pastes AT the slot when an insert tab is selected', async () => {
@@ -156,7 +203,7 @@ describe('effect cut', () => {
     appController.cutSelection();
 
     expect(moduleTypes()).toEqual([]);
-    expect(appState.local.clipboard?.moduleType).toBe('video.bc');
+    expect(clipboardModuleTypes()).toEqual(['video.bc']);
     expect(appController.history.history.length).toBe(undo0 + 1);
     expect(appState.local.selection).toBeNull();
   });
@@ -193,8 +240,8 @@ describe('OS clipboard interop', () => {
 
     expect(written).not.toBeNull();
     const parsed = JSON.parse(written!);
-    expect(parsed.kind).toBe('effect');
-    expect(parsed.moduleType).toBe('video.bc');
+    expect(parsed.kind).toBe('effects');
+    expect(parsed.items.map((i: any) => i.moduleType)).toEqual(['video.bc']);
   });
 
   it('pasteClipboard prefers a valid effect JSON found on the OS clipboard', async () => {

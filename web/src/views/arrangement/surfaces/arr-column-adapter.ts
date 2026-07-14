@@ -21,7 +21,7 @@ import type {
 } from '../../../widgets/column-adapter';
 import type { Sketch, Wire } from '../../../sketch-types';
 import type { ParamValue } from '../../../engine-types';
-import type { Selectable, EffectClipboard, AvailableEffect } from '../../../state/types';
+import type { Selectable, EffectClipboard, EffectsClipboard, AvailableEffect } from '../../../state/types';
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Clip, Device } from '../model/composition';
 import { store } from '../state/store';
@@ -732,6 +732,16 @@ export class ArrColumnAdapter implements ColumnAdapter {
     insertEffectFromClipboard: (_s, _c, insertIdx, payload) => {
       const id = this.target.insertAt(insertIdx, payload.moduleType);
       if (id) this.target.replace(id, { state: JSON.parse(JSON.stringify(payload.state)) });
+    },
+    // Multi-card payloads (what the IDE writes for any card selection, single
+    // included): insert the cards in order. The payload's wires are dropped —
+    // they're keyed by IDE instance keys, which don't map onto arrangement
+    // device ids (same policy as store.pasteAtChainFocus).
+    insertEffectsFromClipboard: (_s, _c, insertIdx, payload: EffectsClipboard) => {
+      payload.items.forEach((item, i) => {
+        const id = this.target.insertAt(insertIdx + i, item.moduleType);
+        if (id) this.target.replace(id, { state: JSON.parse(JSON.stringify(item.state)) });
+      });
     },
     // Help text ("?" mode): local overrides ride a reserved __help__ key in the
     // device state (mirrors __ui_only__), so they round-trip with the clip. The

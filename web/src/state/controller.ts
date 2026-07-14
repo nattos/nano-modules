@@ -557,14 +557,17 @@ export class AppController {
 
   /**
    * The multi-selection resolved to parsed paths, when it's an actionable
-   * GROUP: 2+ effect paths, all in one sketch. Null otherwise (empty or
-   * single-card selections use the ordinary single paths).
+   * group of at least `minCount` effect paths, all in one sketch. Null
+   * otherwise. Group delete/cut require a real group (the default 2 — single
+   * cards use the ordinary single paths); copy passes 1 so a lone selected
+   * card also snapshots as a group-of-one (that's the payload kind that
+   * carries wires, so a single card's MIDI mappings ride along).
    */
-  private multiSelectedEffectParts(): { sketchId: string; parts: EffectPathParts[] } | null {
+  private multiSelectedEffectParts(minCount = 2): { sketchId: string; parts: EffectPathParts[] } | null {
     const paths = appState.local.multiSelection;
-    if (paths.length < 2) return null;
+    if (paths.length < minCount) return null;
     const parts = paths.map(parseEffectPath).filter((p): p is EffectPathParts => !!p);
-    if (parts.length < 2) return null;
+    if (parts.length < minCount) return null;
     const sketchId = parts[0].sketchId;
     if (!parts.every(p => p.sketchId === sketchId)) return null;
     return { sketchId, parts };
@@ -690,7 +693,10 @@ export class AppController {
       () => `wire_${Date.now().toString(36)}_${this.nextWireId++}`,
     );
     if (items.length === 0) return;
-    this.mutate(`Paste ${items.length} effects`, draft => {
+    const label = items.length === 1
+      ? `Paste ${shortName(items[0].moduleType)}`
+      : `Paste ${items.length} effects`;
+    this.mutate(label, draft => {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
       const chain = ensureChain(sk);
@@ -732,9 +738,11 @@ export class AppController {
    * in-app copy, which always succeeds independent of the OS clipboard.
    */
   copySelection() {
-    // A 2+ card multi-selection copies as a GROUP (with its internal wires) —
-    // straight off the resolved paths, no per-card Selectable involved.
-    const group = this.multiSelectedEffectParts();
+    // ANY all-effect-card selection — a lone card included — copies as a
+    // GROUP payload (with its internal + MIDI wires), straight off the
+    // resolved paths, no per-card Selectable involved. Falls through to the
+    // Selectable path when the snapshot fails (stale paths).
+    const group = this.multiSelectedEffectParts(1);
     if (group) {
       const sk = appState.database.sketches[group.sketchId];
       const chain = sk ? sketchChain(sk) : [];
@@ -743,10 +751,11 @@ export class AppController {
         .filter(e => e?.type === 'module')
         .map(e => (e as { instance_key: string }).instance_key);
       const payload = this.snapshotEffects(group.sketchId, keys);
-      if (!payload) return;
-      runInAction(() => { appState.local.clipboard = payload; });
-      void navigator.clipboard?.writeText?.(JSON.stringify(payload, null, 2)).catch(() => {});
-      return;
+      if (payload) {
+        runInAction(() => { appState.local.clipboard = payload; });
+        void navigator.clipboard?.writeText?.(JSON.stringify(payload, null, 2)).catch(() => {});
+        return;
+      }
     }
     const path = appState.local.selection?.path;
     const sel = path ? (this.selectableRegistry.get(path) ?? appState.local.selection) : null;

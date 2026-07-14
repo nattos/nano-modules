@@ -114,6 +114,34 @@ describe('effect clipboard OS interop', () => {
     expect(devices().map((d) => d.moduleType)).toEqual(['source.solid_color', 'color.saturate']);
   });
 
+  it('pasteAtChainFocus accepts the IDE\'s multi-card payload, inserting the cards in order', async () => {
+    // What the effect IDE writes for ANY card selection (single included) —
+    // its wires are keyed by IDE instance keys, so they're dropped here.
+    const external = {
+      kind: 'effects',
+      items: [
+        { moduleType: 'color.saturate', state: { amount: 0.5 }, key: 'sat@1' },
+        { moduleType: 'source.solid_color', state: {}, key: 'sol@1' },
+      ],
+      wires: [{
+        id: 'w_midi',
+        src: { instanceKey: 'midi:devA', field: 'b0/e05/turn' },
+        dest: { instanceKey: 'sat@1', field: 'amount' },
+      }],
+    };
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText: () => Promise.resolve(JSON.stringify(external)) },
+      configurable: true,
+    });
+    store.setChainFocus(`effect/clip/${trk}/${clip}/0/0`);
+
+    await store.pasteAtChainFocus();
+
+    expect(devices().map((d) => d.moduleType))
+      .toEqual(['source.solid_color', 'color.saturate', 'source.solid_color']);
+    expect(devices()[1].state?.amount).toBe(0.5);
+  });
+
   it('pasteAtChainFocus falls back to the in-app clipboard when the OS clipboard has non-JSON text', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       value: { readText: () => Promise.resolve('not json') },

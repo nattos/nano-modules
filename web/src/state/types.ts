@@ -110,7 +110,11 @@ export interface Selectable {
   paste?(payload: ClipboardPayload): void;
 }
 
-/** A single effect card captured to the in-app clipboard. */
+/** A single effect card captured to the in-app clipboard. The IDE surfaces
+ *  now copy even a lone card as a 1-item `EffectsClipboard` (so its MIDI
+ *  mapping wires ride along); this shape remains as the arrangement's copy
+ *  format and for hand-written / externally produced JSON — every paste path
+ *  still accepts it. */
 export interface EffectClipboard {
   kind: 'effect';
   moduleType: string;
@@ -137,9 +141,10 @@ export interface EffectClipboardItem {
   key: string;
 }
 
-/** A multi-selected group of effect cards, in chain order, WITH the wires
- *  internal to the group (both endpoints inside it). External wires are not
- *  captured — their far endpoint wouldn't exist at the paste site. */
+/** A selected group of effect cards (a single card copies as a group of one),
+ *  in chain order, WITH the wires internal to the group (both endpoints
+ *  inside it) plus any `midi:`-sourced mappings into it. Other external wires
+ *  are not captured — their far endpoint wouldn't exist at the paste site. */
 export interface EffectsClipboard {
   kind: 'effects';
   items: EffectClipboardItem[];
