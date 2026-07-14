@@ -28,6 +28,7 @@ NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 NANO_DECLARE_INSTANCE_EFFECT(pixel_ocean)
+NANO_DECLARE_INSTANCE_EFFECT(pixel_descent)
 NANO_DECLARE_INSTANCE_EFFECT(simulant)
 NANO_DECLARE_INSTANCE_EFFECT(smear)
 NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
@@ -227,6 +228,18 @@ void nano_module_main() {
         "generator,ocean,water,waves,sea,pixel,pixel-art,retro,map,monster-hunter,procedural",
         "la-water",
         NANO_INSTANCE_LIFECYCLE(pixel_ocean),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.pixel.descent",
+        "Pixel Descent",
+        "Beat-locked stepping grid: the screen splits into a coarse pixel grid (default 4 columns x 10 rows) with exactly one lit pixel per column, all starting at the top on the downbeat and stepping linearly to the bottom over an N-beat loop (default 8). Unjittered it reads as a solid line sweeping down; per-column timing jitter breaks it up — each cycle every column draws a random eagerness (the chance any given step rushes ahead of the clock by a Jitter-fraction of a step), and a per-step Skip Chance lets one random column near-double-step, a stutter that 'skips a beat'. Eager columns also pop back to the top slightly BEFORE the beat. Deterministic given the transport + seed; composites over black, transparent, a custom colour, or the input.",
+        "source",
+        "generator,pixel,grid,beat,step,sequencer,descent,line,jitter,skip,clock,loop",
+        "la-braille",
+        NANO_INSTANCE_LIFECYCLE(pixel_descent),
+        nullptr, nullptr, nullptr, &pixel_descent::eval_visibility,
     });
 
     nano::registerEffect({

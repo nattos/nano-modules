@@ -252,6 +252,11 @@ compile_shaders_compute_var_spv pixel_ocean compute
 _emit_spv_header_var pixel_ocean compute
 echo "  pixel_ocean shaders compiled (SPV: compute)"
 
+# pixel_descent — beat-locked stepping grid: one lit pixel per column marching
+# top→bottom over an N-beat loop, with per-column timing jitter. One trivial
+# compute pass; which row each column lights is computed CPU-side.
+compile_shaders_compute_spv pixel_descent render
+
 # simulant — faithful port of the Resolume Wire "Simulant" patch: a
 # difference-blend + blur-diffusion feedback loop thresholded into Sobel lines.
 #   inject — abs(fadedPrev - input) difference-blend feedback (rgba16f).
@@ -373,6 +378,7 @@ wasm_build \
   ../tri_shear/main.cpp \
   ../shape_burst/main.cpp \
   ../pixel_ocean/main.cpp \
+  ../pixel_descent/main.cpp \
   ../simulant/main.cpp \
   ../smear/main.cpp \
   ../line_reconstruct/main.cpp \
