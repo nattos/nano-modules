@@ -15,6 +15,7 @@
 
 #include <gpu.h>
 #include <host.h>
+#include <effect_utils.h>
 #include "block_dehance_shaders.h"
 
 #include <cmath>
@@ -37,9 +38,10 @@ struct UpdateUniforms {
   float    life_jitter, rect_width, rect_height, rect_size_jitter;
   float    mode_black_w, mode_mosaic_w, mode_noise_w, mosaic_cell_size;
   float    mosaic_cell_jitter; uint32_t mask_samples, seed; float move_chance;
-  float    move_amount, move_delay_max, _pad0, _pad1;
+  float    move_amount, move_delay_max, spawn_amount, spawn_radius;
+  float    spawn_softness, aspect_x, aspect_y, _pad0;
 };
-static_assert(sizeof(UpdateUniforms) == 96, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 112, "UpdateUniforms layout mismatch");
 
 struct RenderUniforms {
   uint32_t count, pool_max, tick_index, debug_show;
@@ -71,6 +73,9 @@ struct State {
   float move_amount          = 0.03f;
   float move_delay_max       = 0.3f;
   float mask_temperature     = 0.5f;
+  float spawn_amount         = 0.0f;
+  float spawn_radius         = 0.5f;
+  float spawn_softness       = 0.25f;
   float mode_black_weight    = 0.33f;
   float mode_mosaic_weight   = 0.33f;
   float mode_noise_weight    = 0.33f;
@@ -104,7 +109,7 @@ static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (
 static inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (v > hi ? hi : v); }
 
 void module_init() {
-  state::init("filter.glitch.block_dehance", {1, 0, 1},
+  state::init("filter.glitch.block_dehance", {1, 1, 0},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
@@ -115,8 +120,9 @@ void module_init() {
         "a wired mask), so they cluster on the brightest, most eye-catching regions.\n\n"
         "**Try:** balance the three *Mode Weights* to mix black / mosaic / noise "
         "blocks; raise *Count* and drop *Lifetime* for a frantic strobe; wire a *Mask* "
-        "input to steer the blocks onto specific areas; add *Flicker* for a "
-        "broken-signal stutter.")
+        "input to steer the blocks onto specific areas; bias the *Spawn Area* to pin "
+        "blocks to (or away from) the centre; add *Flicker* for a broken-signal "
+        "stutter.")
       // --- Rectangles ---
       .group("rects", "Rectangles")
         .groupHelp(
@@ -148,6 +154,18 @@ void module_init() {
           "greedy that search is — low values snap hard to the brightest spot, high "
           "values spread the placement out.")
       .floatField("mask_temperature",      0.5f, 0.0f, 4.0f,    state::PrimaryInput).label("Mask Temperature", "Temp")
+      // --- Spawn Area ---
+      .group("spawn", "Spawn Area")
+        .groupHelp(
+          "A vignette-like radial gate on where new rectangles may spawn. "
+          "*Spawn Bias* is bipolar: positive confines spawning to the centre, "
+          "negative pushes it out to the rim; 0 leaves the whole frame open. "
+          "*Radius* sets where the falloff starts (0 = the centre, 1 = the "
+          "frame edge) and *Softness* feathers it from a hard border into a "
+          "gradual probability fade.")
+      .floatField("spawn_amount",          0.0f, -1.0f, 1.0f,   state::PrimaryInput).label("Spawn Bias", "Bias")
+      .floatField("spawn_radius",          0.5f, 0.0f, 1.0f,    state::PrimaryInput).label("Spawn Radius", "Rad")
+      .floatField("spawn_softness",        0.25f, 0.0f, 1.0f,   state::PrimaryInput).label("Spawn Softness", "Soft")
       // --- Dehance Modes ---
       .group("modes", "Dehance Modes")
         .groupHelp(
@@ -277,6 +295,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "move_amount"))          s->move_amount = state::patchFloat(i);
     else if (state::pathIs(path, plen, "move_delay_max"))       s->move_delay_max = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mask_temperature"))     s->mask_temperature = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spawn_amount"))         s->spawn_amount = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spawn_radius"))         s->spawn_radius = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spawn_softness"))       s->spawn_softness = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mode_black_weight"))    s->mode_black_weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mode_mosaic_weight"))   s->mode_mosaic_weight = state::patchFloat(i);
     else if (state::pathIs(path, plen, "mode_noise_weight"))    s->mode_noise_weight = state::patchFloat(i);
@@ -341,6 +362,12 @@ void render(void* self, int vp_w, int vp_h) {
   uu.move_chance = clampf(s->move_chance, 0.0f, 1.0f);
   uu.move_amount = clampf(s->move_amount, 0.0f, 0.5f);
   uu.move_delay_max = clampf(s->move_delay_max, 0.0f, 5.0f);
+  uu.spawn_amount = clampf(s->spawn_amount, -1.0f, 1.0f);
+  uu.spawn_radius = clampf(s->spawn_radius, 0.0f, 1.0f);
+  uu.spawn_softness = clampf(s->spawn_softness, 0.0f, 1.0f);
+  auto [ax, ay] = fx::coverSquare(vp_w, vp_h);
+  uu.aspect_x = ax;
+  uu.aspect_y = ay;
   s->update_uniform_buf.writeOne(uu);
   {
     auto cp = gpu::ComputePass::begin();

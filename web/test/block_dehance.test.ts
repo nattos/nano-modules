@@ -84,6 +84,55 @@ describe('Block Dehance Effect E2E', () => {
     expect(dist).toBeGreaterThan(8);
   });
 
+  // Spawn-area gate geometry: 128×128 viewport → cover-square dist =
+  // pixel dist from (64,64) / 64. Rects are 0.1×0.1 uv (half-extent 6.4 px),
+  // so a rect reaches at most ~9.1 px (half diagonal) past its centre.
+  const spawnParams = (bias: number, radius: number, temp: number): [string, number][] => [
+    ['count', 60], ['pool_max', 64], ['life_s', 5.0], ['respawn_delay_s', 0.05],
+    ['rect_width', 0.1], ['rect_height', 0.1], ['rect_size_jitter', 0],
+    ['mask_temperature', temp], ['seed', 7],
+    ['mode_black_weight', 1], ['mode_mosaic_weight', 0], ['mode_noise_weight', 0],
+    ['spawn_amount', bias], ['spawn_radius', radius], ['spawn_softness', 0],
+  ];
+
+  it('spawn bias +1 confines rects to the centre', async () => {
+    // Hard gate at cover-square radius 0.4 → rect centres within 25.6 px of
+    // the viewport centre; with the half-diagonal, no dark pixel past ~35 px.
+    // Temperature 0 exercises the argmax/Bernoulli gate path.
+    const frame = await runGpuEffectTest({
+      module: 'filter.glitch.block_dehance', bundle: 'lights',
+      width: W, height: H, inputColor: [0.5, 0.5, 0.5, 1], renderEachTick: true,
+      ticks: 24, params: spawnParams(1.0, 0.4, 0.0),
+      dumpName: 'block_dehance_spawn_center',
+    });
+    expect(frame.success).toBe(true);
+    frame.expectCoverage(c => luma(c) < 30, { min: 0.02 });
+    let stray = 0;
+    frame.forEachPixel((c, x, y) => {
+      if (luma(c) < 30 && Math.hypot(x - 64, y - 64) > 40) stray++;
+    });
+    expect(stray).toBe(0);
+  });
+
+  it('spawn bias -1 keeps the centre clear', async () => {
+    // Hard gate at cover-square radius 0.5 → rect centres at least 32 px out;
+    // nearest dark pixel ≥ ~23 px from the centre. Temperature 1 exercises
+    // the softmax-weighting path.
+    const frame = await runGpuEffectTest({
+      module: 'filter.glitch.block_dehance', bundle: 'lights',
+      width: W, height: H, inputColor: [0.5, 0.5, 0.5, 1], renderEachTick: true,
+      ticks: 24, params: spawnParams(-1.0, 0.5, 1.0),
+      dumpName: 'block_dehance_spawn_rim',
+    });
+    expect(frame.success).toBe(true);
+    frame.expectCoverage(c => luma(c) < 30, { min: 0.03 });
+    let inner = 0;
+    frame.forEachPixel((c, x, y) => {
+      if (luma(c) < 30 && Math.hypot(x - 64, y - 64) < 20) inner++;
+    });
+    expect(inner).toBe(0);
+  });
+
   it('noise mode replaces covered pixels with varied colour', async () => {
     const frame = await runGpuEffectTest({
       module: 'filter.glitch.block_dehance', bundle: 'lights',

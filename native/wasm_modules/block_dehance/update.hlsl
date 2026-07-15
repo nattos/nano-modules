@@ -9,8 +9,13 @@
 //
 // On do_reset every slot (including i >= count, so growing `count` activates
 // pre-staggered slots) is seeded dead with a randomized respawn phase.
+//
+// A vignette-like radial spawn gate (spawn_amount/radius/softness, cover-square
+// coords) scales each candidate's probability; if no candidate survives the
+// gate the respawn simply defers to the next frame.
 
 #include "common.hlsl"
+#include "nano_coords.hlsl"
 
 RWStructuredBuffer<Rect> rects   : register(u0);
 Texture2D<float4>        maskTex  : register(t1);
@@ -22,8 +27,21 @@ cbuffer Uniforms : register(b3) {
   float life_jitter; float rect_width; float rect_height; float rect_size_jitter;
   float mode_black_w; float mode_mosaic_w; float mode_noise_w; float mosaic_cell_size;
   float mosaic_cell_jitter; uint mask_samples; uint seed; float move_chance;
-  float move_amount; float move_delay_max; float _pad0; float _pad1;
+  float move_amount; float move_delay_max; float spawn_amount; float spawn_radius;
+  float spawn_softness; float aspect_x; float aspect_y; float _pad0;
 };
+
+// Spawn-probability gate: a vignette-shaped radial mask over where respawns
+// may land. spawn_amount is bipolar — positive confines spawning toward the
+// centre (rim probability fades to 0 at +1), negative pushes it away from the
+// centre (centre probability fades to 0 at -1). 0 = fully open.
+float bd_spawn_prob(float2 uv) {
+  if (abs(spawn_amount) <= 1e-4) return 1.0;
+  float dist = length(nano_uv_to_cover_square(uv, float2(aspect_x, aspect_y)));
+  float t = smoothstep(spawn_radius, spawn_radius + max(spawn_softness, 1e-4), dist);
+  return (spawn_amount > 0.0) ? lerp(1.0, 1.0 - t, spawn_amount)
+                              : lerp(1.0, t, -spawn_amount);
+}
 
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -75,30 +93,44 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   // --- Respawn: bright-seek the mask (K candidates, softmax by T). ---
+  // Each candidate carries a spawn-gate probability; gated-out candidates
+  // never win, and if EVERY candidate is gated out the respawn defers (the
+  // slot stays dead and retries next frame with fresh candidates).
   uint K = clamp(mask_samples, 1u, 16u);
   float2 cand_uv[16];
   float  cand_lum[16];
+  float  cand_p[16];
   float  max_lum = -1e9;
   for (uint k = 0u; k < K; k++) {
     uint h = bd_pcg3(i + 0xA17F2B91u, frame_index, k + seed);
     float2 uv = float2(float(h & 0xFFFFu), float((h >> 16u) & 0xFFFFu)) * (1.0 / 65536.0);
     float lum = bd_luma(maskTex.SampleLevel(linSamp, uv, 0).rgb);
-    cand_uv[k] = uv; cand_lum[k] = lum;
+    cand_uv[k] = uv; cand_lum[k] = lum; cand_p[k] = bd_spawn_prob(uv);
     max_lum = max(max_lum, lum);
   }
-  float2 best_uv;
+  float2 best_uv = cand_uv[0];
+  bool   spawn_ok = false;
   if (mask_temperature <= 1e-4) {
-    float best = cand_lum[0]; best_uv = cand_uv[0];
-    for (uint k = 1u; k < K; k++) if (cand_lum[k] > best) { best = cand_lum[k]; best_uv = cand_uv[k]; }
+    // Argmax: brightest among candidates that individually pass a Bernoulli
+    // draw against their gate probability.
+    float best = -1e9;
+    for (uint k = 0u; k < K; k++) {
+      if (bd_unit(bd_pcg3(i + 0x5F356495u, frame_index, k + seed)) >= cand_p[k]) continue;
+      if (cand_lum[k] > best) { best = cand_lum[k]; best_uv = cand_uv[k]; spawn_ok = true; }
+    }
   } else {
     float inv_t = 1.0 / max(mask_temperature, 1e-4);
     float total = 0.0, w[16];
-    for (uint k = 0u; k < K; k++) { w[k] = exp((cand_lum[k] - max_lum) * inv_t); total += w[k]; }
-    float rsel = bd_unit(bd_pcg3(i + 0xBEEF1234u, frame_index, 0xC0FFEEu + seed)) * total;
-    best_uv = cand_uv[K - 1u];
-    float cum = 0.0;
-    for (uint k = 0u; k < K; k++) { cum += w[k]; if (rsel < cum) { best_uv = cand_uv[k]; break; } }
+    for (uint k = 0u; k < K; k++) { w[k] = exp((cand_lum[k] - max_lum) * inv_t) * cand_p[k]; total += w[k]; }
+    if (total > 1e-6) {
+      float rsel = bd_unit(bd_pcg3(i + 0xBEEF1234u, frame_index, 0xC0FFEEu + seed)) * total;
+      best_uv = cand_uv[K - 1u];
+      float cum = 0.0;
+      for (uint k = 0u; k < K; k++) { cum += w[k]; if (rsel < cum) { best_uv = cand_uv[k]; break; } }
+      spawn_ok = true;
+    }
   }
+  if (!spawn_ok) return;   // fully gated this frame — retry on the next
 
   // --- Capture geometry with jitter. ---
   float wj = bd_signed(bd_pcg2(i + 0xC2B2AE3Du, frame_index));
