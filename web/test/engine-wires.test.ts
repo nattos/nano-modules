@@ -14,6 +14,8 @@ describe('Wire routing E2E', () => {
     // Single column: red, blue, blend. No rails/taps. Wires fan the two solids
     // into blend's two texture inputs (0,1); both producers are above blend, so
     // the values are read same-frame. 50% blend of red+blue → purple.
+    // shape 0 pins the legacy linear crossfade (the default 0.5 is equal-power,
+    // which weights the mid-fader ~0.71/0.71 — not the 50/50 mix asserted here).
     const sketch: Sketch = {
       anchor: null,
       chain: [
@@ -22,7 +24,7 @@ describe('Wire routing E2E', () => {
         { type: 'module', module_type: 'source.solid_color', instance_key: 'blue@0',
         params: { color: [0.0, 0.0, 1.0] } },
         { type: 'module', module_type: 'composite.blend', instance_key: 'blend@0',
-        params: { opacity: 0.5 } },
+        params: { opacity: 0.5, shape: 0.0 } },
       ],
       wires: [
         { id: 'w0', src: { instanceKey: 'red@0',  field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: '0' } },
@@ -48,7 +50,8 @@ describe('Wire routing E2E', () => {
     // The IDE addresses a texture input by its schema NAME (tex_a/tex_b), but
     // composite.blend reads inputTexture(0)/(1) positionally. A named texture wire
     // must therefore also feed the positional slot (index = order among input-
-    // texture fields). Two solids above → blend; wired by name; opacity 0.5.
+    // texture fields). Two solids above → blend; wired by name; opacity 0.5
+    // (shape 0 = legacy linear crossfade, so the 50/50 purple stays exact).
     // Without the name→index mapping the wires are ignored and the output is just
     // the implicit chain flow (the stage above) — here it'd show solid blue.
     const sketch: Sketch = {
@@ -59,7 +62,7 @@ describe('Wire routing E2E', () => {
         { type: 'module', module_type: 'source.solid_color', instance_key: 'blue@0',
         params: { color: [0.0, 0.0, 1.0] } },
         { type: 'module', module_type: 'composite.blend', instance_key: 'blend@0',
-        params: { opacity: 0.5 } },
+        params: { opacity: 0.5, shape: 0.0 } },
       ],
       wires: [
         { id: 'wa', src: { instanceKey: 'red@0',  field: 'tex_out' }, dest: { instanceKey: 'blend@0', field: 'tex_a' } },
@@ -131,19 +134,24 @@ describe('Wire routing E2E', () => {
     // cleanest probe is a SELF-loop on the bottom (output) stage: acc@0.tex_out
     // → acc@0.'1' (src pos == dest pos → delayed). Chain top→bottom: src@0 (a dim
     // red, feeding acc's input A same-frame via the implicit texture flow), acc@0
-    // (composite.blend, the output). With opacity 0.9:
-    //     out = 0.1*src + 0.9*(acc's PREVIOUS out)
-    // so the red channel ramps UP frame-over-frame toward src (≈102), converging
-    // only because each frame folds in the last frame's result. A monotonic rise
-    // proves the delayed wire is delivering frame N-1 (a broken/empty feedback
-    // would pin the output at 0.1*src every frame instead).
+    // (composite.blend, the output). With opacity 0.97 at shape 0 (the legacy
+    // linear crossfade — the default 0.5 equal-power curve would change the
+    // convergence constants) the premultiplied crossfade folds
+    //     out = 0.03·src ⊕ 0.97·(acc's PREVIOUS out)
+    // The straight COLOR is exactly src from frame 1; what accumulates is the
+    // ALPHA: a_n = 1 − 0.97ⁿ (frame 0's feedback input is unbound ⇒
+    // transparent). Traces composite onto the checkerboard backdrop, so the
+    // probed red starts near the checker gray and DESCENDS frame-over-frame
+    // toward src (0.4 → ≈102) as the alpha builds — a descent that only
+    // happens if each frame folds in the last frame's result. Broken/empty
+    // feedback pins the alpha at 0.03 ⇒ the pixel stays at its frame-1 value.
     const sketch: Sketch = {
       anchor: null,
       chain: [
         { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
         params: { color: [0.4, 0.0, 0.0] } },
         { type: 'module', module_type: 'composite.blend', instance_key: 'acc@0',
-        params: { opacity: 0.97 } },
+        params: { opacity: 0.97, shape: 0.0 } },
       ],
       wires: [
         { id: 'fb', src: { instanceKey: 'acc@0', field: 'tex_out' },
@@ -174,14 +182,14 @@ describe('Wire routing E2E', () => {
     const r0 = r.phases[0].trace('out').pixelAt(32, 32).r;
     const r1 = r.phases[1].trace('out').pixelAt(32, 32).r;
     const r2 = r.phases[2].trace('out').pixelAt(32, 32).r;
-    // Accumulating toward src (~102), bounded by it. Without a working delayed
-    // wire the output would pin at the no-feedback floor (~0.03*src ≈ 3); a high
-    // floor + monotonic rise + clear net gain proves frame N-1 is fed back.
-    expect(r0).toBeGreaterThan(15);            // feedback present (>> ~3 floor)
-    expect(r1).toBeGreaterThanOrEqual(r0);     // non-decreasing
-    expect(r2).toBeGreaterThan(r1);            // still climbing at the end
-    expect(r2).toBeGreaterThan(r0 + 10);       // clear net accumulation
-    expect(r2).toBeLessThanOrEqual(110);       // never exceeds src
+    // Alpha accumulating toward 1 pulls the composited pixel from the checker
+    // gray (≥128) down toward src (~102), bounded below by it. Without a
+    // working delayed wire the alpha pins at 0.03 and all three phases read
+    // the same checker-dominated value.
+    expect(r0).toBeGreaterThan(r1);            // descending…
+    expect(r1).toBeGreaterThan(r2);            // …monotonically
+    expect(r0 - r2).toBeGreaterThan(10);       // clear net accumulation
+    expect(r2).toBeGreaterThanOrEqual(96);     // never undershoots src (~102)
   });
 
   it('util.dashboard knob is both a wire sink and source', async () => {
