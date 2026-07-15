@@ -30,10 +30,11 @@ cbuffer Uniforms : register(b2) {
 // Wave sprites, drawn TURNED ON THEIR SIDES: with only ~2 visible columns per
 // half-grid there's no room to read a shape horizontally, so the art's long
 // axis runs down the ROWS — on screen each sprite occupies a 2-wide × 3-tall
-// box, and the art's +x points UP (art-right = screen-up), its +y toward the
-// leading (travel) edge. The masks below are stored in art space: bit =
-// ay*3 + ax (ax=0 left, ay=0 top). 3 frames per type, ping-ponged 0,1,2,1 by
-// the CPU clock. Placeholder art in the pixel_ocean spirit — hand-tune freely.
+// box, with the art's +x pointing DOWN (art-right = screen-down) and its +y
+// toward the trailing (left) edge — so the omega's humps trail and its peak
+// leads. The masks below are stored in art space: bit = ay*3 + ax (ax=0 left,
+// ay=0 top). 3 frames per type, ping-ponged 0,1,2,1 by the CPU clock.
+// Placeholder art in the pixel_ocean spirit — hand-tune freely.
 static const uint PR_SPRITES[6] = {
   // type 0 — dot (the ocean's fleck): one · / pair ·· / split ·.·
   //   one ...   pair ...   split ...
@@ -73,13 +74,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     if (wv.w == 0) continue;
     // Torus-wrapped offsets from the sprite anchor, so a sprite crossing the
     // seam (or the top row while rising) stays contiguous. Screen box is
-    // 2 wide × 3 tall; rotate into art space (art-right = screen-up, art-down
-    // = screen-right): ax = 2 - dy, ay = dx.
+    // 2 wide × 3 tall; rotate into art space (art-right = screen-DOWN,
+    // art-down = screen-left): ax = dy, ay = 1 - dx.
     int dx = vcol - wv.x; if (dx < 0) dx += torus;
     int dy = row  - wv.y; if (dy < 0) dy += u_rows;
     if (dx >= 2 || dy >= 3) continue;
     uint bits = PR_SPRITES[(uint(wv.z) >> 2) * 3u + (uint(wv.z) & 3u)];
-    lit = ((bits >> uint(dx * 3 + (2 - dy))) & 1u) != 0u;
+    lit = ((bits >> uint((1 - dx) * 3 + dy)) & 1u) != 0u;
   }
   if (lit) {
     base.rgb = saturate(base.rgb + u_color.rgb * u_intensity);
