@@ -198,10 +198,10 @@ void nano_module_main() {
         2,
         "warp.legacy.wobble_master",
         "Wobble Master",
-        "Beat-pulsed radial-ripple wobble with chromatic dispersion. A "
-        "concentric sine ripple travels outward from a centre, displacing the "
-        "image radially and splitting the colour channels along the radius "
-        "(red out, blue in); the ripple pumps on a trigger/gate and decays. "
+        "Triggered shockwave wobble with chromatic afterglow. Each pulse "
+        "emanates from a centre and travels outward, distorting only what's "
+        "under the wave (a radial push with an oscillating shimmer); the "
+        "colour split lingers behind the front (red out, blue in). "
         "v2 of the Resolume Wire \"Wobble Master\" family.",
         "warp",
         "wobble,ripple,chroma,aberration,beat,pulse,radial,legacy",

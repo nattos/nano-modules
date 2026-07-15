@@ -1,27 +1,26 @@
 /*
  * warp.legacy.wobble_master — "Wobble Master" (v2 of the Resolume Wire family).
  *
- * Beat-pulsed radial-ripple wobble with chromatic dispersion: a concentric
- * sine ripple travels outward from a centre, displacing the image radially and
- * splitting the colour channels along the radius (prismatic fringing). The
- * ripple amplitude is gated by a pulse envelope so it pumps on a beat/trigger
- * and decays.
+ * A pulse clearly emanates from the centre and travels outward, distorting
+ * only what's under the wave: each trigger spawns a wave packet — a ring of
+ * radial push with a half-sine leading edge and an exponential tail — and the
+ * chroma split lingers as an afterglow where the wave has passed.
  *
- * Source: Wire/Patches/Wobble Master 2 (204 nodes) — beat-synced Ripple/Sin/Cos
- * UV field + the custom YIQ "ChromaOffset" ISF + a Pulse Retrigger/Gate/Pulse
- * Attack system. The team's guidance: the family "needs re-architecting — port
- * as a v2", and "the YIQ ChromaOffset shader is the keeper".
+ * Source: Wire/Patches/Wobble Master 2 (204 nodes). Its heart is a 1-D
+ * scrolling feedback buffer: every frame a half-sine bump (amplitude = the
+ * pulse envelope, width = Density) is injected at radius 0 and the previous
+ * buffer is advected outward by waveSpeed; the buffer is rendered as a radial
+ * gradient, multiplied by a conic direction field → the UV displacement, and
+ * its blurred magnitude (kept in a ~0.956/frame feedback trail) gates the
+ * custom YIQ "ChromaOffset" ISF. v2 keeps that character analytically: up to
+ * 4 concurrent pulses tracked as ages in State, evaluated as packets in
+ * wobble.hlsl (front = speed·age; tail = the release envelope mapped onto
+ * distance-behind-front; chroma trail = its own longer decay). The chroma
+ * split reuses the shared ChromaOffset helper (nano_chroma.hlsl) as a RADIAL
+ * dispersion. `amount` keeps a standing concentric sine (manual/wired mode).
  *
- * v2 RE-ARCHITECTURE (flagged per DNODE_MIGRATION_NOTES §3): the 204-node beat
- * plumbing collapses to one analytic radial ripple (wobble.hlsl) whose phase
- * drifts outward at `wave_speed` (style guide §2.1) and whose amplitude is the
- * standard gate/trigger AR envelope (shared with chroma_wobble/burn_out) plus a
- * manual `amount` floor. The chroma split reuses the shared ChromaOffset helper
- * (nano_chroma.hlsl), here as a RADIAL dispersion (R out / B in). The original
- * beat-clock is driven externally via a wire/tap into the trigger.
- *
- * Stateful trigger envelope → no temporal capability, no is_identity (a
- * triggerable stateful effect must keep ticking — see chroma_wobble).
+ * Stateful pulses → no temporal capability, no is_identity (a triggerable
+ * stateful effect must keep ticking — see chroma_wobble).
  */
 
 #include <gpu.h>
@@ -33,9 +32,13 @@
 
 namespace wobble_master {
 
-static constexpr float AMP_SCALE   = 0.06f; // amplitude=1,env=1 → ~6% short-axis displacement
-static constexpr float FREQ_SCALE  = 12.0f; // frequency=1 → 12 rings
-static constexpr float WAVE_SCALE  = 0.5f;  // wave_speed=1 → 0.5 ring/sec outward
+static constexpr float AMP_SCALE    = 0.06f;  // amplitude=1 → ~6% short-axis push
+static constexpr float CHROMA_SCALE = 0.025f; // chroma=1 → ~2.5% short-axis split
+static constexpr float FREQ_SCALE   = 12.0f;  // frequency=1 → 12 carrier rings
+static constexpr float WAVE_SCALE   = 5.0f;   // wave_speed=1 → front travels 5 r-units/s
+static constexpr float DRIFT_SCALE  = 0.5f;   // carrier drift (rings/s) at wave_speed=1
+static constexpr float CHROMA_TRAIL_SEC = 0.37f; // afterglow decay (Wire's 0.956/frame feedback)
+static constexpr int   MAX_PULSES = 4;
 
 struct Uniforms {
   float drift;
@@ -45,11 +48,17 @@ struct Uniforms {
   float hue_shift;
   float center_x;
   float center_y;
+  float ripple;
   float aspect_x;
   float aspect_y;
-  float _p0, _p1, _p2;
+  float floor_amt;
+  float width;
+  float fronts[MAX_PULSES];
+  float tail_len;
+  float chroma_len;
+  float _p0, _p1;
 };
-static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
 
 struct State {
   gpu::Buffer  uniform_buf;
@@ -58,8 +67,6 @@ struct State {
 
   // Schema-mirrored params.
   float amount    = 0.0f;
-  float attack    = 0.05f;
-  float release   = 0.8f;
   float amplitude = 0.5f;
   float frequency = 0.5f;
   float wave_speed = 0.5f;
@@ -67,44 +74,55 @@ struct State {
   float hue       = 0.0f;
   float center_x  = 0.0f; // cover-square (0 = centre)
   float center_y  = 0.0f;
+  float width     = 0.15f;
+  float release   = 0.4f;
+  float ripple    = 0.35f;
 
-  // Edge tracking + AR envelope + drift.
+  // Trigger edges + the traveling pulses (age in seconds; < 0 = free slot).
   bool   gate_prev = false, trigger_prev = false;
-  bool   gate = false, one_shot = false;
-  double env = 0.0;
+  bool   gate = false;
+  double retrig_t = 0.0;
+  double pulse_age[MAX_PULSES] = { -1.0, -1.0, -1.0, -1.0 };
+  int    pulse_next = 0;
   double drift = 0.0;
 };
 
 static gpu::ComputePSO s_pso;
 
-static inline float easeWave(float x) {
-  x = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
-  return x * x * (3.0f - 2.0f * x);
+static inline float clamp01(float x) {
+  return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+}
+
+static inline void spawnPulse(State* s) {
+  s->pulse_age[s->pulse_next] = 0.0;
+  s->pulse_next = (s->pulse_next + 1) % MAX_PULSES;
 }
 
 void module_init() {
-  state::init("warp.legacy.wobble_master", {1, 0, 0},
+  state::init("warp.legacy.wobble_master", {2, 0, 0},
     state::Schema()
       .eventField("trigger", state::PrimaryInput)
       .boolField ("gate", false, state::PrimaryInput,
-                  "Hold to sustain the ripple; release to decay.")
+                  "Hold to keep launching pulses; release to let the last one run out.")
       .floatField("amount", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Manual ripple level (combines with the pulse envelope).")
+                  nullptr, "Standing concentric wobble (manual mode; pulses ride on top).")
       .floatField("amplitude", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Radial ripple displacement strength.")
+                  nullptr, "Radial displacement strength under the wave.")
       .floatField("frequency", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Number of concentric rings.")
+                  nullptr, "Ring count of the shimmer carrier.")
       .floatField("wave_speed", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Outward travel speed of the ripple.")
+                  nullptr, "Outward travel speed of the pulse front.")
+      .floatField("width", 0.15f, 0.01f, 0.5f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Radial thickness of the pulse's leading edge.")
+      .floatField("release", 0.4f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
+                  "s", "How long the wobble tail lingers behind the front.")
+      .floatField("ripple", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Texture under the wave: clean push (0) → oscillating shimmer (1).")
       .floatField("chroma", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Radial chromatic dispersion (R out / B in).")
+                  nullptr, "Chromatic afterglow left behind the wave (R out / B in).")
       .floatField("hue", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Hue rotation of the colour split.")
       .vec2Field ("center", 0.0f, 0.0f, state::PrimaryInput)
-      .floatField("attack", 0.05f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  "s", "Pulse envelope ramp-up time.")
-      .floatField("release", 0.8f, 0.0f, 5.0f, state::PrimaryInput, nullptr, 0.01f,
-                  "s", "Pulse envelope decay time.")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
 
@@ -137,7 +155,10 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->env = 0.0; s->drift = 0.0; s->one_shot = false;
+  for (int i = 0; i < MAX_PULSES; i++) s->pulse_age[i] = -1.0;
+  s->pulse_next = 0;
+  s->drift = 0.0;
+  s->retrig_t = 0.0;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
 }
@@ -147,18 +168,30 @@ void tick(void* self, double dt) {
   if (!s) return;
   if (dt < 0.0) dt = 0.0;
 
-  const bool rising = s->gate || s->one_shot;
-  if (rising) {
-    if (s->attack <= 1e-4f) s->env = 1.0;
-    else s->env += dt / (double)s->attack;
-    if (s->env >= 1.0) { s->env = 1.0; s->one_shot = false; }
-  } else {
-    if (s->release <= 1e-4f) s->env = 0.0;
-    else s->env -= dt / (double)s->release;
-    if (s->env < 0.0) s->env = 0.0;
+  // Advance pulses; retire once the front AND both trails are past the far
+  // corner (r can reach ~2.3 with an off-centre origin).
+  const double v = (double)s->wave_speed * (double)WAVE_SCALE;
+  const double trail = 6.0 * v * ((double)s->release * 0.75 > (double)CHROMA_TRAIL_SEC
+                                   ? (double)s->release * 0.75 : (double)CHROMA_TRAIL_SEC);
+  for (int i = 0; i < MAX_PULSES; i++) {
+    if (s->pulse_age[i] < 0.0) continue;
+    s->pulse_age[i] += dt;
+    if (s->pulse_age[i] * v - trail > 2.3 || s->pulse_age[i] > 30.0)
+      s->pulse_age[i] = -1.0;
   }
 
-  s->drift += dt * (double)s->wave_speed * (double)WAVE_SCALE;
+  // Held gate auto-retriggers (the patch's beat-synced Pulse Retrigger loop).
+  if (s->gate) {
+    s->retrig_t -= dt;
+    if (s->retrig_t <= 0.0) {
+      spawnPulse(s);
+      s->retrig_t = s->release * 0.5 > 0.15 ? s->release * 0.5 : 0.15;
+    }
+  } else {
+    s->retrig_t = 0.0;
+  }
+
+  s->drift += dt * (double)s->wave_speed * (double)DRIFT_SCALE;
   if (s->drift > 1.0e6 || s->drift < -1.0e6) s->drift = std::fmod(s->drift, 1024.0);
 }
 
@@ -174,19 +207,20 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "amplitude"))  s->amplitude  = state::patchFloat(i);
     else if (state::pathIs(p, l, "frequency"))  s->frequency  = state::patchFloat(i);
     else if (state::pathIs(p, l, "wave_speed")) s->wave_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "width"))      s->width      = state::patchFloat(i);
+    else if (state::pathIs(p, l, "release"))    s->release    = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ripple"))     s->ripple     = state::patchFloat(i);
     else if (state::pathIs(p, l, "chroma"))     s->chroma     = state::patchFloat(i);
     else if (state::pathIs(p, l, "hue"))        s->hue        = state::patchFloat(i);
-    else if (state::pathIs(p, l, "attack"))     s->attack     = state::patchFloat(i);
-    else if (state::pathIs(p, l, "release"))    s->release    = state::patchFloat(i);
     else if (state::pathIs(p, l, "center"))     { auto v = state::patchVec2(i); s->center_x = v.x; s->center_y = v.y; }
     else if (state::pathIs(p, l, "gate")) {
       bool g = state::patchBool(i);
-      if (g && !s->gate_prev) s->one_shot = false;
+      if (g && !s->gate_prev) { spawnPulse(s); s->retrig_t = s->release * 0.5 > 0.15 ? s->release * 0.5 : 0.15; }
       s->gate = g; s->gate_prev = g;
     }
     else if (state::pathIs(p, l, "trigger")) {
       bool t = state::patchFloat(i) != 0.0f;
-      if (t && !s->trigger_prev) s->one_shot = true;
+      if (t && !s->trigger_prev) spawnPulse(s);
       s->trigger_prev = t;
     }
   }
@@ -201,22 +235,29 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  float m = easeWave((float)s->env);
-  float a = s->amount < 0.0f ? 0.0f : (s->amount > 1.0f ? 1.0f : s->amount);
-  float B = 1.0f - (1.0f - a) * (1.0f - m);
+  const float v = s->wave_speed * WAVE_SCALE;
+  const float w = s->width < 0.01f ? 0.01f : s->width;
 
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
   Uniforms u = {};
-  u.drift     = (float)s->drift;
-  u.freq      = s->frequency * FREQ_SCALE + 0.5f;
-  u.amp       = B * s->amplitude * AMP_SCALE;
-  u.chroma    = s->chroma;
-  u.hue_shift = s->hue * 6.28318530717958647692f;
+  u.drift      = (float)s->drift;
+  u.freq       = s->frequency * FREQ_SCALE + 0.5f;
+  u.amp        = s->amplitude * AMP_SCALE;
+  u.chroma     = clamp01(s->chroma) * CHROMA_SCALE;
+  u.hue_shift  = s->hue * 6.28318530717958647692f;
   // center is cover-square (0 = centre); map to uv (0.5 + 0.5*c on the short axis).
-  u.center_x  = 0.5f + 0.5f * s->center_x * ((float)min_dim / (float)vp_w);
-  u.center_y  = 0.5f + 0.5f * s->center_y * ((float)min_dim / (float)vp_h);
-  u.aspect_x  = (float)min_dim / (float)vp_w;
-  u.aspect_y  = (float)min_dim / (float)vp_h;
+  u.center_x   = 0.5f + 0.5f * s->center_x * ((float)min_dim / (float)vp_w);
+  u.center_y   = 0.5f + 0.5f * s->center_y * ((float)min_dim / (float)vp_h);
+  u.ripple     = clamp01(s->ripple);
+  u.aspect_x   = (float)min_dim / (float)vp_w;
+  u.aspect_y   = (float)min_dim / (float)vp_h;
+  u.floor_amt  = clamp01(s->amount);
+  u.width      = w;
+  for (int i = 0; i < MAX_PULSES; i++)
+    u.fronts[i] = s->pulse_age[i] >= 0.0 ? (float)(s->pulse_age[i] * (double)v) : -1000.0f;
+  u.tail_len   = v * s->release * 0.75f;
+  if (u.tail_len < 1e-3f) u.tail_len = 1e-3f;
+  u.chroma_len = v * CHROMA_TRAIL_SEC > w ? v * CHROMA_TRAIL_SEC : w;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

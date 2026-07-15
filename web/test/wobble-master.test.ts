@@ -4,9 +4,10 @@ import type { Sketch } from '../src/sketch-types';
 
 /**
  * E2E for warp.legacy.wobble_master — "Wobble Master", the v2 port of the
- * Resolume Wire "Wobble Master 2" family (beat-pulsed radial-ripple wobble +
- * chromatic dispersion). Warping a solid is invisible, so the transform is
- * exercised via a source.grid chain; `amount` drives the ripple manually.
+ * Resolume Wire "Wobble Master 2" family (triggered shockwave wobble +
+ * chromatic afterglow). Warping a solid is invisible, so the transform is
+ * exercised via a source.grid chain; `amount` drives the standing-wobble
+ * floor manually, `gate` launches the traveling pulses.
  */
 describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
   jest.setTimeout(60000);
@@ -23,7 +24,7 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
     expect(frame.metadata?.id).toBe('warp.legacy.wobble_master');
     const names = frame.params.map(p => p.name);
     for (const n of ['trigger', 'gate', 'amount', 'amplitude', 'frequency',
-                     'wave_speed', 'chroma', 'hue', 'attack', 'release']) {
+                     'wave_speed', 'width', 'ripple', 'chroma', 'hue', 'release']) {
       expect(names).toContain(n);
     }
   });
@@ -52,7 +53,7 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
     });
   };
 
-  const runGridOnly = (id: string, dump: string) => runEngineTest({
+  const runGridOnly = (id: string, dump: string, waitFrames = 8) => runEngineTest({
     width: 128, height: 128,
     modules: ['com.nano.core', 'com.nano.legacy'],
     commands: [
@@ -64,7 +65,7 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
         { id: 'out', target: { type: 'sketch_output', sketchId: id } },
       ]},
     ],
-    waitFrames: 8,
+    waitFrames,
     captureTraceIds: ['out'],
     dumpName: dump,
   });
@@ -87,6 +88,56 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
     expect(none.success).toBe(true);
     expect(split.success).toBe(true);
     split.trace('out').expectDifferentFrom(none.trace('out'), 100);
+  });
+
+  it('a gated pulse emanates from the centre — distorted inside, untouched corners', async () => {
+    // Slow, wide, long-tailed pulse so the front provably sits in r ∈ [~0.1,
+    // 0.6] across the whole headless rAF pacing range (4–20 ms/frame × 60):
+    // wave_speed 0.1 → 0.5 r-units/s. Corners (r > 0.65) must be untouched —
+    // the wave distorts ONLY what it has reached — while the interior behind
+    // the front (long 3 s tail) differs from the resting grid.
+    const grid = await runGridOnly('wm_pgrid', 'wm_pulse_grid', 60);
+    const pulsed = await runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.core', 'com.nano.legacy'],
+      commands: [
+        { type: 'createSketch', sketchId: 'wm_pulse', sketch: {
+          anchor: null, wires: [],
+          chain: [
+            { type: 'module', module_type: 'source.grid', instance_key: 'grid@0', params: {} },
+            { type: 'module', module_type: 'warp.legacy.wobble_master', instance_key: 'wm@0',
+              params: { amount: 0.0, amplitude: 1.0, wave_speed: 0.1, width: 0.3,
+                        release: 3.0, chroma: 1.0 } },
+          ],
+          instances: {
+            'wm@0': { module_type: 'warp.legacy.wobble_master', state: { gate: true } },
+          },
+        } as unknown as Sketch },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'wm_pulse' } },
+        ]},
+      ],
+      waitFrames: 60,
+      captureTraceIds: ['out'],
+      dumpName: 'wm_pulse',
+    });
+    expect(grid.success).toBe(true);
+    expect(pulsed.success).toBe(true);
+
+    const a = grid.trace('out');
+    const b = pulsed.trace('out');
+    let inner = 0, corner = 0;
+    for (let y = 0; y < 128; y++) {
+      for (let x = 0; x < 128; x++) {
+        const r = Math.hypot(x - 63.5, y - 63.5) / 64;
+        const p = a.pixelAt(x, y), q = b.pixelAt(x, y);
+        const diff = Math.abs(p.r - q.r) + Math.abs(p.g - q.g) + Math.abs(p.b - q.b) > 24;
+        if (diff && r < 0.6) inner++;
+        if (diff && r > 0.65) corner++;
+      }
+    }
+    expect(inner).toBeGreaterThan(10);   // the wave visibly warps the interior
+    expect(corner).toBeLessThan(15);     // ...and hasn't touched the corners yet
   });
 
   it('is a passthrough at rest (amount=0)', async () => {
