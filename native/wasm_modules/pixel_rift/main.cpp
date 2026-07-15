@@ -39,7 +39,7 @@ enum Composite { CompBlack = 0, CompTransparent = 1, CompCustom = 2, CompInput =
 
 static const int MAX_WAVES  = 12;
 static const int MAX_COLS   = 16;
-static const int TORUS_PAD  = 4;    // off-grid margin (sprite width + 1) — matches render.hlsl
+static const int TORUS_PAD  = 4;    // off-grid margin (> sprite width) — matches render.hlsl
 static const double LOOP_LEN = 4.0; // anim steps per sprite loop (ping-pong 0,1,2,1)
 
 // Uniform layout — MUST match render.hlsl's cbuffer byte-for-byte.
@@ -150,8 +150,9 @@ static int waveFrame(const Wave& w) {
 }
 
 // Try once to spawn a wave into a free slot: hashed position on the torus,
-// rejected if its 3×2 box would overlap a live wave (keeps the sea readable
-// with so few cells). Type / timing / lifespan latch here.
+// rejected if its 2×3 box (sprites are drawn turned on their sides — see
+// render.hlsl) would overlap a live wave (keeps the sea readable with so few
+// cells). Type / timing / lifespan latch here.
 static void trySpawnWave(State& s) {
   int slot = -1;
   for (int i = 0; i < MAX_WAVES; i++) if (!s.wave[i].active) { slot = i; break; }
@@ -172,7 +173,7 @@ static void trySpawnWave(State& s) {
       wavePos(s, s.wave[i], torus, rows, ox, oy);
       int dx = posmod((long)(x - ox), torus); if (dx > torus / 2) dx -= torus;
       int dy = posmod((long)(y - oy), rows);  if (dy > rows / 2)  dy -= rows;
-      overlap = dx > -3 && dx < 3 && dy > -2 && dy < 2;
+      overlap = dx > -2 && dx < 2 && dy > -3 && dy < 3;
     }
     if (overlap) continue;
 

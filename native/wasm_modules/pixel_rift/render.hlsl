@@ -27,9 +27,13 @@ cbuffer Uniforms : register(b2) {
   int4   u_waves[12];   // (torus col, row, type*4+frame, active)
 };
 
-// Wave sprites: 3×2 boxes, bit = y*3 + x (x=0 left, y=0 top), anchor =
-// top-left. 3 frames per type, ping-ponged 0,1,2,1 by the CPU clock.
-// Placeholder art in the pixel_ocean spirit — hand-tune freely.
+// Wave sprites, drawn TURNED ON THEIR SIDES: with only ~2 visible columns per
+// half-grid there's no room to read a shape horizontally, so the art's long
+// axis runs down the ROWS — on screen each sprite occupies a 2-wide × 3-tall
+// box, and the art's +x points UP (art-right = screen-up), its +y toward the
+// leading (travel) edge. The masks below are stored in art space: bit =
+// ay*3 + ax (ax=0 left, ay=0 top). 3 frames per type, ping-ponged 0,1,2,1 by
+// the CPU clock. Placeholder art in the pixel_ocean spirit — hand-tune freely.
 static const uint PR_SPRITES[6] = {
   // type 0 — dot (the ocean's fleck): one · / pair ·· / split ·.·
   //   one ...   pair ...   split ...
@@ -68,12 +72,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
     int4 wv = u_waves[i];
     if (wv.w == 0) continue;
     // Torus-wrapped offsets from the sprite anchor, so a sprite crossing the
-    // seam (or the top row while rising) stays contiguous.
+    // seam (or the top row while rising) stays contiguous. Screen box is
+    // 2 wide × 3 tall; rotate into art space (art-right = screen-up, art-down
+    // = screen-right): ax = 2 - dy, ay = dx.
     int dx = vcol - wv.x; if (dx < 0) dx += torus;
     int dy = row  - wv.y; if (dy < 0) dy += u_rows;
-    if (dx >= 3 || dy >= 2) continue;
+    if (dx >= 2 || dy >= 3) continue;
     uint bits = PR_SPRITES[(uint(wv.z) >> 2) * 3u + (uint(wv.z) & 3u)];
-    lit = ((bits >> uint(dy * 3 + dx)) & 1u) != 0u;
+    lit = ((bits >> uint(dx * 3 + (2 - dy))) & 1u) != 0u;
   }
   if (lit) {
     base.rgb = saturate(base.rgb + u_color.rgb * u_intensity);
