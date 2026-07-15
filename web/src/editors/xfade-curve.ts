@@ -3,10 +3,10 @@
  *
  * Draws the two fade weight curves wA/wB (blend-xfade-math.ts, the TS mirror
  * of native xfade_shape.h) over the fader domain, plus a playhead at the live
- * fader position. The curve itself IS the editor: dragging LEFT/RIGHT anywhere
- * on the canvas edits the bound `shape` field (full widget width = the full
- * 0..1 range), through the same beginContinuousEdit/update/accept protocol a
- * <scalar-slider> uses. Canvas redraws imperatively on a rAF loop (the
+ * fader position. The curve itself IS the editor: dragging anywhere on the
+ * canvas edits the bound `shape` field — right and up both increase, at one
+ * widget-width per full 0..1 range — through the same
+ * beginContinuousEdit/update/accept protocol a <scalar-slider> uses. Canvas redraws imperatively on a rAF loop (the
  * envelope-graph pattern) so live modulation of shape/opacity shows without
  * Lit re-renders.
  *
@@ -34,11 +34,15 @@ export class XfadeCurve extends MobxLitElement {
   private rafId = 0;
   private edit: ContinuousEditHandle | null = null;
   private dragStartX = 0;
+  private dragStartY = 0;
   private dragStartValue = 0;
   private dragValue: number | null = null;   // live value while dragging
 
   static styles = css`
-    :host { display: block; }
+    /* min-width 0 + max-width 100%: the canvas's hi-dpi backing store
+     * (clientWidth × dpr) must never feed back into a flex/grid parent's
+     * intrinsic size — that loop grows the container a few px per frame. */
+    :host { display: block; min-width: 0; }
     .row {
       display: flex; align-items: baseline; justify-content: space-between;
       font-size: var(--app-fs-xs); color: var(--app-text-color2, #b0b0b0);
@@ -46,7 +50,7 @@ export class XfadeCurve extends MobxLitElement {
     }
     .val { font-variant-numeric: tabular-nums; opacity: 0.85; }
     canvas {
-      width: 100%; height: 56px; display: block;
+      width: 100%; max-width: 100%; height: 56px; display: block;
       background: rgba(0,0,0,0.25);
       border: 1px solid var(--app-border-color, #3a3346); border-radius: 1px;
       touch-action: none; user-select: none; cursor: ew-resize;
@@ -88,6 +92,7 @@ export class XfadeCurve extends MobxLitElement {
     // Synthetic pointer events (tests) have no active pointer to capture.
     try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* noop */ }
     this.dragStartX = e.clientX;
+    this.dragStartY = e.clientY;
     this.dragStartValue = this.shapeValue();
     this.dragValue = this.dragStartValue;
     this.edit = this.binding.beginContinuousEdit(this.fieldPath, this.dragStartValue);
@@ -96,8 +101,12 @@ export class XfadeCurve extends MobxLitElement {
   };
   private onPointerMove = (e: PointerEvent) => {
     if (!this.edit) return;
+    // Right AND up both increase — both axes at the same px-per-unit rate
+    // (the canvas width), so a diagonal drag doesn't feel twice as fast on
+    // the short axis.
     const w = (this.canvas?.clientWidth ?? 200) || 200;
-    this.dragValue = clamp01(this.dragStartValue + (e.clientX - this.dragStartX) / w);
+    const dpx = (e.clientX - this.dragStartX) - (e.clientY - this.dragStartY);
+    this.dragValue = clamp01(this.dragStartValue + dpx / w);
     this.edit.update(this.dragValue);
   };
   private onPointerUp = () => {
@@ -189,7 +198,7 @@ export class XfadeCurve extends MobxLitElement {
         <span class="val">${this.shapeValue().toFixed(2)}</span>
       </div>
       <canvas
-        title="Drag left/right to edit; double-click to reset"
+        title="Drag right/up to increase; double-click to reset"
         @pointerdown=${this.onPointerDown}
         @pointermove=${this.onPointerMove}
         @pointerup=${this.onPointerUp}

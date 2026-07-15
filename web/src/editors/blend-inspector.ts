@@ -16,6 +16,7 @@ import { BLEND_MODE_NAMES } from '../sketch-types';
 import './xfade-curve';
 import '../widgets/scalar-slider';
 import '../widgets/field-tab-bar';
+import '../widgets/field-placeholder';
 import '../widgets/help-slot';
 
 /** Options mirror the schema's selectField list; index = the enum value. */
@@ -41,6 +42,10 @@ export class BlendInspector extends MobxLitElement {
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <xfade-curve .fieldPath=${'shape'} .opacityField=${'opacity'}
         .defaultValue=${0} .binding=${b}></xfade-curve>
+      <field-placeholder .fieldPath=${'tex_a'} .label=${'tex_a'}
+        .kind=${'texture'} .direction=${'input'} .binding=${b}></field-placeholder>
+      <field-placeholder .fieldPath=${'tex_b'} .label=${'tex_b'}
+        .kind=${'texture'} .direction=${'input'} .binding=${b}></field-placeholder>
     `;
   }
 }

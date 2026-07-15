@@ -609,18 +609,23 @@ export class ColumnGroup extends MobxLitElement {
     }
     .device-gear-btn:hover { color: var(--app-text-color1); }
     .device-gear-btn[data-active] { color: var(--app-text-color1); }
-    /* Per-effect options row (engine-reserved keys beyond bypass/opacity),
-     * slotted between the header and the body divider. */
+    /* Per-effect options rows (engine-reserved keys beyond bypass/opacity),
+     * slotted between the header and the body divider. A COLUMN: each option
+     * widget gets its own full-width row (blend tab bar, then the crossfade
+     * curve). Stretch also pins the curve canvas to the card width — in a row
+     * layout its hi-dpi backing store (clientWidth × dpr) fed back into the
+     * flex base size and grew the card a few px every frame, squeezing the
+     * tab bar to nothing. */
     .effect-card-options {
       display: flex;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
       gap: var(--app-sp-3);
       padding: 2px 10px 6px;
     }
     /* The blend segmented bar (same widget video.blend's mode field uses —
      * every mode one click away, wrapping onto extra rows as needed). */
     .effect-card-options field-tab-bar {
-      flex: 1;
       min-width: 0;
     }
     /* Horizontal divider under the card header. */
