@@ -106,11 +106,11 @@ export class XfadeCurve extends MobxLitElement {
   private onPointerMove = (e: PointerEvent) => {
     if (!this.edit) return;
     // Right AND up both increase — both axes at the same px-per-unit rate
-    // (the canvas width), so a diagonal drag doesn't feel twice as fast on
-    // the short axis.
+    // (a quarter of the canvas width, so a short flick covers the full range),
+    // so a diagonal drag doesn't feel twice as fast on the short axis.
     const w = (this.canvas?.clientWidth ?? 200) || 200;
     const dpx = (e.clientX - this.dragStartX) - (e.clientY - this.dragStartY);
-    this.dragValue = clamp01(this.dragStartValue + dpx / w);
+    this.dragValue = clamp01(this.dragStartValue + (4 * dpx) / w);
     this.edit.update(this.dragValue);
   };
   private onPointerUp = () => {
