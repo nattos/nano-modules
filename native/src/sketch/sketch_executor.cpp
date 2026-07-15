@@ -1372,6 +1372,33 @@ int32_t SketchExecutor::execute(
       inst.doSetActive(enabled);
       if (!enabled) {
         int32_t out = passthroughOutput(colInput);
+        // A texture wire from a bypassed effect's output still carries the
+        // image the bypass forwards (this stage's passthrough), so downstream
+        // consumers see exactly what the next chain stage sees — not a dormant
+        // (unbound → transparent) input. Only plain texture rails on declared
+        // output-texture fields are seeded; scalar/struct write taps stay
+        // dormant (a bypassed effect publishes no values).
+        if (out > 0 && entry.contains("taps") && entry["taps"].is_array()) {
+          for (const auto& tap : entry["taps"]) {
+            if (tap.value("direction", std::string()) != "write") continue;
+            // Main output only — the primary "tex_out" every effect exposes
+            // (it's excluded from reg->outputTexturePaths, which lists only
+            // SECONDARY texture outputs; those are undefined on a bypassed
+            // effect and stay dormant).
+            if (tap.value("fieldPath", std::string()) != "tex_out") continue;
+            const std::string railId = tap.value("railId", std::string());
+            auto railIt = railsById.find(railId);
+            if (railIt == railsById.end()) continue;
+            const auto& dataType = railIt->second.value("dataType", json());
+            if (!dataType.is_string() ||
+                dataType.get<std::string>() != "texture") continue;
+            if (tap.value("delayed", false)) {
+              pendingDelayRetain_.emplace_back(railId, std::string(), out);
+            } else {
+              railTextures[railId][std::string()] = out;
+            }
+          }
+        }
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
