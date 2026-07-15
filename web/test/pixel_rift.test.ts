@@ -110,6 +110,27 @@ describe('Pixel Rift', () => {
     expect(litMap(f1, 8)).toBe(litMap(f2, 8));
   });
 
+  it('drift jitter 0 locks every wave to the same global step instants', async () => {
+    // Two waves (density 0.2 → target 2; spawned at ticks ~32 and ~63), anim
+    // frozen, rise 0. Drift 0.5 ⇒ 0.780776 steps/s = 0.0124924 steps/tick, so
+    // the SHARED clock crosses step 1 between ticks 80→81 and step 2 between
+    // 160→161. Lock-step means motion happens ONLY at those crossings: both
+    // waves jump together at 80→81, then nothing moves through tick 155.
+    // (Discriminating: per-wave spawn-residue clocks would tick near ticks
+    // ~112 and ~143 instead — failing both assertions below.)
+    const p = [['columns', 8], ['rift_cols', 0], ['density', 0.2],
+      ['anim_rate', 0], ['drift_jitter', 0], ['rise', 0], ['drift_rate', 0.5]] as
+      [string, number][];
+    const before = await run(p, 80, 'pixel_rift_lockstep_before');
+    const after  = await run(p, 81, 'pixel_rift_lockstep_after');
+    const quiet  = await run(p, 155, 'pixel_rift_lockstep_quiet');
+    expect(before.countPixels(isLit)).toBeGreaterThan(0);
+    // The crossing moves the whole sea at once...
+    expect(litMap(before, 8)).not.toBe(litMap(after, 8));
+    // ...and between crossings every wave holds its cell.
+    expect(litMap(after, 8)).toBe(litMap(quiet, 8));
+  });
+
   it('rift smoke: max rift on a wide grid renders clean', async () => {
     const f = await run([['columns', 16], ['rift_cols', 16], ['density', 1]],
       120, 'pixel_rift_max_rift');

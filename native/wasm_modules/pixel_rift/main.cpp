@@ -15,12 +15,14 @@
  *
  * Unlike pixel_ocean there is no procedural lattice: on a grid this coarse a
  * handful of waves is plenty, so a small CPU pool (the ocean's sparkle
- * pattern) owns all state. Motion uses two live global step accumulators
- * (§2.1 — rigid translation, all waves glide together; per-wave sub-step
- * stagger scaled by Drift Jitter breaks up the tick instants). Anim rate,
- * timing spread, shape type and lifespan are CAPTURED AT SPAWN, and density
- * only gates births (never culls) — the ocean's latching feel: changes land
- * at each wave's next respawn, not mid-animation.
+ * pattern) owns all state. Motion and animation run on three live global step
+ * accumulators (§2.1 — rigid translation, all waves glide together). Each
+ * wave carries raw stagger draws that the LIVE jitter params scale at use
+ * (ocean semantics): at jitter 0 every offset is whole-step, so the whole sea
+ * ticks on the same global instants — lock-step — while each wave is still at
+ * its own point in its animation; at 1 ticks spread onto per-wave instants.
+ * Shape type and lifespan are CAPTURED AT SPAWN, and density only gates
+ * births (never culls) — the ocean's latching feel.
  *
  * Class-like instance model: module_init() sets up the type-shared compute
  * PSO + schema once; each chain entry gets its own State via create().
@@ -54,21 +56,26 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 256, "Uniforms layout mismatch");
 
-// One pooled wave. Everything but position is latched at spawn; position is
-// derived per frame from the global accumulators (rigid translation).
+// One pooled wave. Shape/lifespan and the raw stagger draws are latched at
+// spawn; position and frame are derived per frame from the global clocks
+// (rigid translation). The staggers are stored RAW in [0,1) and scaled by the
+// LIVE jitter params at use, so jitter changes take hold immediately: at 0
+// every offset is whole-step and the entire sea ticks on the same global
+// instants (lock-step); at 1 each wave ticks on its own staggered instants.
 struct Wave {
   bool   active = false;
   int    type = 0;                 // 0 dot, 1 omega
   int    spawn_col = 0;            // torus X at spawn
   int    spawn_row = 0;
-  float  stagger_x = 0.0f;         // sub-step stagger [0,1), scaled by drift_jitter
-  float  stagger_y = 0.0f;
+  float  stag_x = 0.0f;            // raw sub-step stagger draws [0,1)
+  float  stag_y = 0.0f;
+  float  stag_anim = 0.0f;
+  int    anim_whole = 0;           // whole-step anim offset — the PHASE is always
+                                   // staggered, jitter only spreads the instants
   double drift_at_spawn = 0.0;
   double rise_at_spawn = 0.0;
-  double anim_phase = 0.0;         // in anim steps; dies at life_loops * LOOP_LEN
-  double anim_rate_capt = 0.0;     // steps/sec latched at spawn
-  float  anim_jfac = 1.0f;         // per-wave timing spread
-  int    life_loops = 4;
+  double anim_at_spawn = 0.0;
+  int    life_steps = 16;          // lifespan in anim steps (loops × LOOP_LEN)
 };
 
 struct State {
@@ -93,6 +100,7 @@ struct State {
   // Live global step clocks (§2.1 — never time×rate).
   double drift_acc = 0.0;
   double rise_acc = 0.0;
+  double anim_acc = 0.0;   // sprite-frame clock, shared by every wave
 
   // Wave pool + its deterministic PRNG (seeded on first tick).
   Wave wave[MAX_WAVES];
@@ -132,19 +140,37 @@ static inline double driftStepsPerSec(float p) {
 }
 static inline double riseStepsPerSec(float p) { return driftStepsPerSec(p) * 0.25; }
 
-// A wave's current torus position from the global clocks. floor(Δclock +
-// stagger) keeps each wave's whole-cell steps staggered but rigid; rising is
-// −row (up), both axes wrap (the shader draws sprites torus-wrapped too).
+// Whole steps a global clock has ticked for a wave since its spawn, with the
+// wave's offset `off` deciding WHERE in the accumulator the tick instants sit.
+// A whole-number off (jitter 0) puts every wave's ticks on the same global
+// integer crossings — lock-step; a fractional off staggers them.
+static long stepsSince(double acc, double at_spawn, double off) {
+  return (long)std::floor(acc + off) - (long)std::floor(at_spawn + off);
+}
+
+// A wave's current torus position from the global clocks. Rising is −row
+// (up); both axes wrap (the shader draws sprites torus-wrapped too). The raw
+// stagger draws are scaled by the LIVE drift_jitter.
 static void wavePos(const State& s, const Wave& w, int torus, int rows, int& x, int& y) {
-  long sx = (long)std::floor(s.drift_acc - w.drift_at_spawn + (double)w.stagger_x);
-  long sy = (long)std::floor(s.rise_acc  - w.rise_at_spawn  + (double)w.stagger_y);
+  double jit = (double)clampf(s.drift_jitter, 0.0f, 1.0f);
+  long sx = stepsSince(s.drift_acc, w.drift_at_spawn, (double)w.stag_x * jit);
+  long sy = stepsSince(s.rise_acc,  w.rise_at_spawn,  (double)w.stag_y * jit);
   x = posmod((long)w.spawn_col + sx, torus);
   y = posmod((long)w.spawn_row - sy, rows);
 }
 
-// Sprite frame from the wave's anim phase: 4-step loop, ping-pong 0,1,2,1.
-static int waveFrame(const Wave& w) {
-  int m = (int)std::fmod(w.anim_phase, LOOP_LEN);
+// Anim steps this wave has lived (drives both its frame and its death). The
+// whole-step part of the offset always staggers the phase; anim_jitter only
+// scales the sub-step part — whether ticks land on shared or per-wave instants.
+static long waveAnimSteps(const State& s, const Wave& w) {
+  double off = (double)w.anim_whole
+             + (double)w.stag_anim * (double)clampf(s.anim_jitter, 0.0f, 1.0f);
+  return stepsSince(s.anim_acc, w.anim_at_spawn, off);
+}
+
+// Sprite frame from the wave's lived steps: 4-step loop, ping-pong 0,1,2,1.
+static int waveFrame(const State& s, const Wave& w) {
+  int m = (int)(waveAnimSteps(s, w) % (long)LOOP_LEN);
   m = clampi(m, 0, 3);
   return m == 3 ? 1 : m;
 }
@@ -186,15 +212,14 @@ static void trySpawnWave(State& s) {
     w.type = rnd01(s.rng) < thr ? 0 : 1;
     w.spawn_col = x;
     w.spawn_row = y;
-    w.stagger_x = rnd01(s.rng) * clampf(s.drift_jitter, 0.f, 1.f);
-    w.stagger_y = rnd01(s.rng) * clampf(s.drift_jitter, 0.f, 1.f);
+    w.stag_x = rnd01(s.rng);        // raw draws; scaled by the live jitters at use
+    w.stag_y = rnd01(s.rng);
+    w.stag_anim = rnd01(s.rng);
+    w.anim_whole = (int)(xorshift(s.rng) % 4u);
     w.drift_at_spawn = s.drift_acc;
     w.rise_at_spawn = s.rise_acc;
-    w.anim_phase = 0.0;   // waves are born at the start of their animation
-    w.anim_rate_capt = animStepsPerSec(s.anim_rate);
-    float j = 1.0f + (rnd01(s.rng) - 0.5f) * 1.2f * clampf(s.anim_jitter, 0.f, 1.f);
-    w.anim_jfac = j < 0.2f ? 0.2f : j;
-    w.life_loops = 3 + (int)(xorshift(s.rng) % 4u);   // 3..6 loops
+    w.anim_at_spawn = s.anim_acc;   // steps count from 0 — born at frame 0
+    w.life_steps = (3 + (int)(xorshift(s.rng) % 4u)) * (int)LOOP_LEN;   // 3..6 loops
     return;
   }
 }
@@ -246,13 +271,15 @@ void module_init() {
       .group("motion", "Motion")
         .groupHelp(
           "*Drift Rate* slides every wave rightward in whole-cell steps; "
-          "*Rise* carries them gently upward on its own (quarter-speed) clock. "
-          "Both speeds stay LIVE — the sea glides as one. *Drift Jitter* "
-          "staggers each wave's step instants (0 = the whole grid ticks "
-          "together). *Anim Rate* ticks each sprite through its frames — dots "
-          "blink and split, omegas breathe — and, with *Anim Jitter* (the "
-          "per-wave timing spread), is CAPTURED AT SPAWN: changes land at each "
-          "wave's next respawn, never mid-animation.")
+          "*Rise* carries them gently upward on its own (quarter-speed) clock; "
+          "*Anim Rate* ticks each sprite through its frames — dots blink and "
+          "split, omegas breathe. All three run LIVE on shared clocks — the "
+          "sea moves as one. The jitters set WHEN each wave's ticks land: at "
+          "0 every step in the sea snaps to the same instants (lock-step, "
+          "game-boot-screen style); at 1 each wave ticks on its own staggered "
+          "instants. *Drift Jitter* staggers the motion clocks, *Anim Jitter* "
+          "the frame clock — waves are always at their own point in their "
+          "animation either way.")
       .floatField("drift_rate", 0.4f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Rate", "Drift")
       .floatField("rise", 0.3f, 0.0f, 1.0f, state::PrimaryInput).label("Rise", "Rise")
       .floatField("drift_jitter", 1.0f, 0.0f, 1.0f, state::PrimaryInput).label("Drift Jitter", "DJit")
@@ -336,20 +363,18 @@ void tick(void* self, double dt) {
     s->rng_init = true;
   }
 
-  // Live global step clocks: the whole sea shares one rigid translation.
+  // Live global step clocks: the whole sea shares one rigid translation and
+  // one sprite-frame clock (per-wave offsets stagger the phases; the jitters
+  // decide whether tick INSTANTS are shared or spread — see stepsSince).
   s->drift_acc += dt * driftStepsPerSec(s->drift_rate);
   s->rise_acc  += dt * riseStepsPerSec(s->rise);
+  s->anim_acc  += dt * animStepsPerSec(s->anim_rate);
 
-  // Each wave's anim clock runs at the rate captured when it was born. If it
-  // was captured frozen (rate 0), follow the live rate instead so raising the
-  // slider from 0 unfreezes rather than latching the pool out forever.
   int live = 0;
   for (int i = 0; i < MAX_WAVES; i++) {
     Wave& w = s->wave[i];
     if (!w.active) continue;
-    double rate = w.anim_rate_capt > 0.0 ? w.anim_rate_capt : animStepsPerSec(s->anim_rate);
-    w.anim_phase += dt * rate * (double)w.anim_jfac;
-    if (w.anim_phase >= (double)w.life_loops * LOOP_LEN) w.active = false;
+    if (waveAnimSteps(*s, w) >= (long)w.life_steps) w.active = false;
     else live++;
   }
 
@@ -436,7 +461,7 @@ void render(void* self, int vp_w, int vp_h) {
     wavePos(*s, w, torus, rows, x, y);
     u.waves[i][0] = x;
     u.waves[i][1] = y;
-    u.waves[i][2] = w.type * 4 + waveFrame(w);
+    u.waves[i][2] = w.type * 4 + waveFrame(*s, w);
     u.waves[i][3] = 1;
   }
   s->uniform_buf.writeOne(u);
