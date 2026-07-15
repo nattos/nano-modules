@@ -194,15 +194,20 @@ TEST_CASE("WASM slot-based input ABI blends two textures (composite.blend)", "[e
   INFO("opacity=0 mean " << mean_rgb(allA) << " (expect ~40)");
   CHECK(mean_rgb(allA) < 60.0);
 
-  // opacity = 0.5 → midpoint of the two slots.
+  // opacity = 0.5, shape = 0 (hard linear crossfade) → exact midpoint.
   inst->setParamFloat("opacity", 0.5f);
+  inst->setParamFloat("shape", 0.0f);
   inst->doRender(W, H);
   auto mid = backend->readbackTexture(outTex, W, H);
   INFO("opacity=0.5 mean " << mean_rgb(mid) << " (expect ~120)");
   CHECK(std::abs(mean_rgb(mid) - 120.0) < 25.0);
 
-  // --- Blend modes (mode select drives the shader switch). A=40, B=200 ---
-  inst->setParamFloat("opacity", 1.0f);
+  // --- Blend modes (mode select drives the shader switch). Crossfader
+  // semantics: the fader lands on pure B, so the blend math is probed at
+  // MID-fade with shape 1 (full overlap → the full-strength blend state).
+  // A=40, B=200 ---
+  inst->setParamFloat("opacity", 0.5f);
+  inst->setParamFloat("shape", 1.0f);
 
   // Multiply (mode 2): (40/255)*(200/255)*255 ≈ 31 — darker than EITHER input.
   inst->setParamFloat("mode", 2.0f);
@@ -217,6 +222,13 @@ TEST_CASE("WASM slot-based input ABI blends two textures (composite.blend)", "[e
   auto add = backend->readbackTexture(outTex, W, H);
   INFO("Add mean " << mean_rgb(add) << " (expect ~240)");
   CHECK(mean_rgb(add) > 220.0);
+
+  // Crossfader endpoint: any mode at opacity 1 passes B through as-is.
+  inst->setParamFloat("opacity", 1.0f);
+  inst->doRender(W, H);
+  auto endB = backend->readbackTexture(outTex, W, H);
+  INFO("Add @ fader 1 mean " << mean_rgb(endB) << " (expect ~200 — pure B)");
+  CHECK(std::abs(mean_rgb(endB) - 200.0) < 10.0);
 
   host.shutdown();
 }
