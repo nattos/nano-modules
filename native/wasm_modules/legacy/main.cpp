@@ -214,9 +214,10 @@ void nano_module_main() {
         "warp.legacy.stutter_scale",
         "Stutter Scale",
         "Beat-stutter scale glitch. A phase is quantized into discrete steps; "
-        "each step holds a fresh random transform — a zoom, a jitter shift, an "
-        "optional flip and colour inversion, plus a hue and contrast push — "
-        "crossfaded with the input. Great for stuttering overlays and logos. "
+        "the zoom sweeps progressively min to max across them while each step "
+        "re-rolls a jitter shift, an optional flip and colour inversion, plus "
+        "a hue and contrast push — crossfaded with the input. Great for "
+        "stuttering overlays and logos. "
         "v2 of the Resolume Wire \"Stutter Scale 2\" patch.",
         "warp",
         "stutter,scale,zoom,glitch,beat,jitter,flip,legacy",

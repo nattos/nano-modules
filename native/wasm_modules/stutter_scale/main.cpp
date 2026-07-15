@@ -2,10 +2,11 @@
  * warp.legacy.stutter_scale — "Stutter Scale 2" (v2 of the Resolume Wire patch).
  *
  * A beat-stutter scale/zoom glitch: a phase is quantized into `levels` discrete
- * steps, and on each step boundary a seeded random transform is re-rolled and
- * HELD for that step — a random scale ∈ [min, max], a jitter translation, an
- * optional Y-flip and colour inversion, plus a hue rotation and a
- * contrast/brightness boost. The result crossfades with the untouched input by
+ * steps. The zoom sweeps PROGRESSIVELY from `min_scale` to `max_scale` across
+ * the steps (quantized to the step grid, so it still stutters), while each
+ * step boundary re-rolls a seeded random jitter translation, optional Y-flip
+ * and colour inversion, and a hue rotation, plus a contrast/brightness boost —
+ * all HELD for that step. The result crossfades with the untouched input by
  * `intensity`. Very useful for stuttering overlays and logos.
  *
  * Source patch (Wire/Patches/Stutter Scale 2, 96 nodes): a Sweep drives a phase
@@ -17,9 +18,11 @@
  * This is a MANUALLY-driven effect: `sweep` ∈ [0,1] (a knob or an automation
  * curve) is the sole time source. It stutters through `levels` steps as you
  * sweep — full strength immediately (no ease-in; it's meant to be stuttery).
- * Each step's transform is seeded by the step index (deterministic). A start/end
- * `deadzone` band at the endpoints makes the output go fully TRANSPARENT (off),
- * NOT the input — so the effect cleanly disappears at the ends of the sweep.
+ * Each step's randoms are seeded by the step index (deterministic). A
+ * `deadzone` band at either endpoint makes the output go fully TRANSPARENT
+ * (off), NOT the input — so the effect cleanly disappears at the ends of the
+ * sweep; the bands toggle independently (`start_deadzone` default OFF,
+ * `end_deadzone` default on).
  *
  * v2 RE-ARCHITECTURE (flagged per DNODE_MIGRATION_NOTES §3): DROPPED for v2
  * (recoverable later): the 22 Alpha blend modes (we crossfade), the optical-flow
@@ -72,19 +75,20 @@ struct State {
   float boost      = 0.25f;
   float intensity  = 1.0f;
   float deadzone   = 0.05f;
+  bool  start_deadzone = false;
   bool  end_deadzone = true;
   bool  do_flip    = true;
   bool  do_invert  = false;
   int   seed       = 1234;
 };
 
-// HARD endpoint deadzone: true when the sweep sits in the start band [0, dz)
-// (or the end band (1-dz, 1] if end_deadzone). In the deadzone the effect goes
-// fully TRANSPARENT — no ease-in, the stutter is hard. Outside, full strength.
+// HARD endpoint deadzone: true when the sweep sits in an ENABLED endpoint band
+// ([0, dz] / [1-dz, 1]). In the deadzone the effect goes fully TRANSPARENT —
+// no ease-in, the stutter is hard. Outside, full strength.
 static inline bool inDeadzone(const State* s) {
   float sw = s->sweep < 0.0f ? 0.0f : (s->sweep > 1.0f ? 1.0f : s->sweep);
   float dz = s->deadzone;
-  if (sw <= dz) return true;
+  if (s->start_deadzone && sw <= dz) return true;
   if (s->end_deadzone && sw >= 1.0f - dz) return true;
   return false;
 }
@@ -98,16 +102,17 @@ static inline uint32_t hash_u32(uint32_t x) {
 static inline float rand01(uint32_t h) { return (h >> 8) * (1.0f / 16777216.0f); }
 
 void module_init() {
-  state::init("warp.legacy.stutter_scale", {1, 0, 0},
+  state::init("warp.legacy.stutter_scale", {2, 0, 0},
     state::Schema()
       .floatField("sweep", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "The stutter playhead (knob / automation). 0 = identity.")
+                  nullptr, "The stutter playhead (knob / automation); the zoom "
+                  "sweeps min → max as it advances.")
       .intField  ("levels", 10, 1, 25, state::PrimaryInput, 0, nullptr,
                   "Number of discrete stutter steps per phase unit.")
       .floatField("min_scale", 1.0f, 1.0f, 16.0f, state::PrimaryInput, nullptr, 0.05f,
-                  nullptr, "Minimum per-step zoom factor.")
+                  nullptr, "Zoom at the start of the sweep.")
       .floatField("max_scale", 6.0f, 1.0f, 16.0f, state::PrimaryInput, nullptr, 0.05f,
-                  nullptr, "Maximum per-step zoom factor.")
+                  nullptr, "Zoom at the end of the sweep.")
       .floatField("jitter", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Per-step random translation amount.")
       .floatField("hue", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -118,7 +123,8 @@ void module_init() {
                   nullptr, "Crossfade with the untouched input.")
       .floatField("deadzone", 0.05f, 0.0f, 0.5f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Endpoint band where the output goes transparent (off).")
-      .boolField ("end_deadzone", true, state::PrimaryInput, "Also go transparent near sweep=1.")
+      .boolField ("start_deadzone", false, state::PrimaryInput, "Go transparent near sweep=0.")
+      .boolField ("end_deadzone", true, state::PrimaryInput, "Go transparent near sweep=1.")
       .boolField ("flip", true, state::PrimaryInput, "Allow random Y-flips per step.")
       .boolField ("color_invert", false, state::PrimaryInput, "Allow random colour inversion per step.")
       .intField  ("seed", 1234, 0, 65535, state::PrimaryInput, 0, nullptr, "Random seed.")
@@ -178,6 +184,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "boost"))        s->boost     = state::patchFloat(i);
     else if (state::pathIs(p, l, "intensity"))    s->intensity = state::patchFloat(i);
     else if (state::pathIs(p, l, "deadzone"))     s->deadzone  = state::patchFloat(i);
+    else if (state::pathIs(p, l, "start_deadzone")) s->start_deadzone = state::patchBool(i);
     else if (state::pathIs(p, l, "end_deadzone")) s->end_deadzone = state::patchBool(i);
     else if (state::pathIs(p, l, "flip"))         s->do_flip   = state::patchBool(i);
     else if (state::pathIs(p, l, "color_invert")) s->do_invert = state::patchBool(i);
@@ -202,23 +209,26 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  // Quantize the sweep into the current step, then seed this step's transform.
+  // Quantize the sweep into the current step, then seed this step's randoms.
   int levels = s->levels < 1 ? 1 : s->levels;
   float sweep = s->sweep < 0.0f ? 0.0f : (s->sweep > 1.0f ? 1.0f : s->sweep);
   long step = (long)std::floor((double)sweep * (double)levels);
+  if (step > levels - 1) step = levels - 1;
   bool dead = inDeadzone(s);
   uint32_t h = hash_u32((uint32_t)(step * 2654435761u) ^ (uint32_t)s->seed);
 
-  float r0 = rand01(h);              h = hash_u32(h);
   float r1 = rand01(h);              h = hash_u32(h);
   float r2 = rand01(h);              h = hash_u32(h);
   float r3 = rand01(h);              h = hash_u32(h);
   float r4 = rand01(h);              h = hash_u32(h);
   float r5 = rand01(h);
 
+  // The zoom is PROGRESSIVE: it walks min → max across the step grid (held
+  // per step, so it still stutters); the randoms only drive jitter/flip/hue.
+  float q = levels > 1 ? (float)step / (float)(levels - 1) : 0.0f;
   float lo = s->min_scale, hi = s->max_scale;
   Uniforms u = {};
-  u.scale     = lo + (hi - lo) * r0;
+  u.scale     = lo + (hi - lo) * q;
   u.trans_x   = (r1 * 2.0f - 1.0f) * s->jitter * JITTER_SCALE;
   u.trans_y   = (r2 * 2.0f - 1.0f) * s->jitter * JITTER_SCALE;
   u.flip_y    = (s->do_flip   && r3 < 0.5f) ? 1.0f : 0.0f;
