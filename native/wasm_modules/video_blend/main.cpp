@@ -1,28 +1,28 @@
 /*
- * composite.blend — Blends two texture inputs with a selectable blend mode.
+ * composite.blend — an A/B CROSSFADER with a blend-mode transition flavor
+ * (Resolume-crossfader semantics; see compute.hlsl for the exact fold).
  *
- *   blended = mode(A.rgb, B.rgb)    (per the chosen Photoshop-style mode)
- *   output  = (blended) OVER A, by B.alpha * opacity   (Porter-Duff source-over)
+ *   opacity 0 → A as-is;  opacity 1 → B as-is (alpha included).
+ *   In between, A and B fade by their shaped curve weights and the blend
+ *   math shows in the curves' OVERLAP.
  *
- * Opacity stays meaningful for every mode (it scales the top's coverage), and
- * ALPHA IS PRESERVED — a transparent B reveals A and the composite carries real
- * transparency downstream. For opaque inputs this reduces to the old
- * lerp(A, blended, opacity) with alpha 1 (backward compatible).
+ * NOT a layer compositor: the fader always lands on pure B, so e.g.
+ * Multiply-at-1.0 is B, not A×B. (The executor's per-effect wet/dry blend,
+ * host_blend.h, keeps compositor semantics — the two intentionally diverged.)
  *
  * Parameters:
  *   mode    (select, default Normal) — see the BlendMode enum / shader switch
- *   opacity (Standard, default 0.5)
- *   shape   (Standard, default 0) — crossfade curve: the fader maps to the
- *           top's coverage through xfade::weightB (sketch/xfade_shape.h,
- *           computed CPU-side): 0 = the legacy linear ramp (half-strength
- *           middle), 0.5 = equal-power, 1 = full coverage by mid-fade, so the
- *           middle shows the full-strength blend math (Normal: B over A at
- *           full alpha — visible when B carries transparency).
+ *   opacity (Standard, default 0.5) — the crossfader position, A → B
+ *   shape   (Standard, default 0.5) — fade curve + blend presence
+ *           (xfade::weightA/weightB, sketch/xfade_shape.h, computed CPU-side):
+ *           0 = hard linear crossfade, NO overlap — the mode is inert;
+ *           0.5 = equal-power fade, the blend flavors the middle;
+ *           1 = full three-anchor transition A → blend(A,B) → B.
  *
  * Texture I/O:
- *   Input 0: Texture A (base)
- *   Input 1: Texture B (blend)
- *   Output 0: Blended result
+ *   Input 0: Texture A
+ *   Input 1: Texture B
+ *   Output 0: Crossfade result
  *
  * Class-like instance model: module_init() sets up the type-shared
  * compute PSO + schema once; each chain entry gets its own State (params
@@ -45,15 +45,16 @@ enum BlendMode {
 };
 
 struct Uniforms {
-  float w_b;   // top coverage weight = xfade::weightB(opacity, shape)
+  float w_a;   // A-side fade weight = xfade::weightA(opacity, shape)
+  float w_b;   // B-side fade weight = xfade::weightB(opacity, shape)
   int mode;
-  float _pad1, _pad2;
+  float _pad1;
 };
 
 // Per-instance state. One per chain entry.
 struct State {
   float opacity = 0.5f;
-  float shape = 0.0f;
+  float shape = 0.5f;
   int mode = Normal;
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -64,26 +65,24 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("composite.blend", {1, 1, 0},
+  state::init("composite.blend", {2, 0, 0},
     state::Schema()
       .helpField("intro",
         "## Blend\n"
-        "Composites two images with a selectable **blend mode**. Input A is the "
-        "base; input B is layered on top using a Photoshop-style formula, then "
-        "composited *over* A by B's alpha × *Opacity*.\n\n"
-        "**Try:** *Add* or *Screen* for glow and light stacking, *Multiply* for "
-        "shadows and tint, *Difference* for psychedelic edges. Alpha is preserved, "
-        "so a transparent B reveals A and the result stays composable downstream. "
-        "Modulate *Opacity* from a wire to fade the layer in and out.")
+        "An A/B **crossfader** with a blend-mode transition flavor: *Opacity* 0 "
+        "shows A as-is, 1 shows B as-is, and in between the fade passes "
+        "*through* the chosen Photoshop-style blend of the two.\n\n"
+        "**Try:** *Add* or *Screen* for a light-stacking transition, *Multiply* "
+        "for a darkening one, *Difference* for psychedelic edges mid-fade. "
+        "Modulate *Opacity* from a wire to run the crossfade.")
       .group("blend", "Blend")
         .groupHelp(
-          "*Mode* picks the blend math applied to B before it's laid over A. "
-          "*Opacity* crossfades — 0 shows A untouched, 1 shows the fully "
-          "blended result — by scaling the top layer's coverage in every mode. "
-          "*Crossfade Shape* bends that fade curve: 0 is the hard linear ramp "
-          "(both sides at half strength mid-fade), 0.5 is equal-power, and 1 "
-          "reaches full coverage by mid-fade — the middle of the fade shows "
-          "the blend math at full strength.")
+          "*Mode* picks the blend math the fade passes through. *Opacity* is "
+          "the crossfader — 0 is pure A, 1 is pure B at every shape. "
+          "*Crossfade Shape* sets the fade curves and how much the blend shows: "
+          "0 is a hard linear crossfade (no blend at all), 0.5 an equal-power "
+          "fade with the blend flavoring the middle, 1 a full transition — "
+          "A into the full-strength blend by mid-fade, then out to B.")
       .selectField("mode", Normal, state::PrimaryInput, {
         {"Normal", Normal}, {"Add", Add}, {"Multiply", Multiply},
         {"Screen", Screen}, {"Overlay", Overlay}, {"Darken", Darken},
@@ -91,16 +90,16 @@ void module_init() {
         {"Hard Light", HardLight}, {"Soft Light", SoftLight},
         {"Difference", Difference}, {"Exclusion", Exclusion},
         {"Subtract", Subtract}, {"Divide", Divide}, {"Linear Burn", LinearBurn},
-      }, /*wrap=*/true, /*description=*/"Photoshop-style blend math applied before opacity")
+      }, /*wrap=*/true, /*description=*/"Photoshop-style blend math the crossfade passes through")
         .label("Blend Mode", "Mode")
       .floatField("opacity", 0.5f, 0.f, 1.f, state::PrimaryInput,
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
-                  /*description=*/"Crossfade: A (0) → fully blended result (1)")
+                  /*description=*/"Crossfader: A as-is (0) → B as-is (1)")
         .label("Opacity", "Opac")
-      .floatField("shape", 0.f, 0.f, 1.f, state::PrimaryInput,
+      .floatField("shape", 0.5f, 0.f, 1.f, state::PrimaryInput,
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   /*description=*/
-                  "Fade curve: linear (0) → equal-power (0.5) → full-strength middle (1)")
+                  "Fade curve + blend presence: linear/no blend (0) → equal-power (0.5) → full transition (1)")
         .label("Crossfade Shape", "Shape")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_a", state::PrimaryInput)
@@ -138,7 +137,7 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->opacity = 0.5f;
-  s->shape = 0.0f;
+  s->shape = 0.5f;
   s->mode = Normal;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
@@ -176,7 +175,8 @@ void render(void* self, int vp_w, int vp_h) {
 
   if (!inputA.valid() || !inputB.valid()) return;
 
-  Uniforms u = { xfade::weightB(s->opacity, s->shape), s->mode, 0, 0 };
+  Uniforms u = { xfade::weightA(s->opacity, s->shape),
+                 xfade::weightB(s->opacity, s->shape), s->mode, 0 };
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

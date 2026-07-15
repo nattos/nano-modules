@@ -16,9 +16,12 @@
  *     so existing sketches are bit-identical and copyToOutput (mode 0,
  *     opacity 1) remains an exact copy for any alpha.
  *   mode 1..15: Photoshop-style blend math on rgb, then Porter-Duff
- *     source-over by fx.a × wB — the SAME math as composite.blend's
- *     kernel (video_blend/compute.hlsl), so a per-effect blend mode and a
- *     composite.blend stage agree pixel-for-pixel.
+ *     source-over by fx.a × wB. This is LAYER-COMPOSITOR semantics (opacity 1
+ *     = the full-strength blend, e.g. identity-at-Multiply squares the image).
+ *     The composite.blend NODE diverged deliberately: it is an A/B CROSSFADER
+ *     (opacity 1 = pure B; the blend rides the fade's overlap — see
+ *     video_blend/compute.hlsl). Only the blend_mode() switch itself stays in
+ *     lock-step across the two.
  *
  * The crossfade `shape` param (`__xfade_shape__`) bends the fade curve: the
  * fader maps to the fold weights through xfade::weightA/weightB

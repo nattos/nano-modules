@@ -41,7 +41,7 @@ export class BlendInspector extends MobxLitElement {
       <scalar-slider style="width: 100%;" .fieldPath=${'opacity'} .label=${'Opacity'}
         .min=${0} .max=${1} .step=${0.01} .defaultValue=${0.5} .binding=${b}></scalar-slider>
       <xfade-curve .fieldPath=${'shape'} .opacityField=${'opacity'}
-        .defaultValue=${0} .binding=${b}></xfade-curve>
+        .defaultValue=${0.5} ?showOverlap=${true} .binding=${b}></xfade-curve>
       <field-placeholder .fieldPath=${'tex_a'} .label=${'tex_a'}
         .kind=${'texture'} .direction=${'input'} .binding=${b}></field-placeholder>
       <field-placeholder .fieldPath=${'tex_b'} .label=${'tex_b'}

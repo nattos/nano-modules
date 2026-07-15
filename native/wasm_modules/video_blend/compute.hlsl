@@ -1,25 +1,27 @@
-// Video Blend — composites two input textures with a selectable blend mode.
-//   blended = mode(A.rgb, B.rgb)
-//   output  = (blended) OVER A, using B's alpha × w_b  (Porter-Duff source-over)
-// Alpha is PRESERVED (not forced to 1), so a transparent B reveals A and the
-// composite carries real transparency downstream. For opaque inputs this reduces
-// to lerp(A, blended, w_b) with alpha 1.
-// `w_b` is the top layer's fade weight, computed CPU-SIDE in main.cpp from the
-// opacity fader + the crossfade `shape` curve (sketch/xfade_shape.h) — at
-// shape 0 it IS the raw opacity (backward compatible); at shape 1 it reaches
-// full coverage mid-fade, so the middle shows the full-strength blend math
-// (Normal: B over A at full alpha).
-// Modes mirror the BlendMode enum in main.cpp (keep in lock-step).
+// Video Blend — an A/B CROSSFADER with a blend-mode transition flavor
+// (Resolume-crossfader semantics, NOT a layer compositor):
+//   opacity 0 → A as-is;  opacity 1 → B as-is (alpha included);
+//   in between, A and B each fade by their shaped curve weight and the blend
+//   math rides the OVERLAP where both curves are up:
+//     C    = blended-over-A at full coverage   (the "blend state")
+//     out  = A·(1-w_b) + C·(w_a+w_b-1) + B·(1-w_a)     (premultiplied fold)
+// w_a/w_b come CPU-SIDE from main.cpp (sketch/xfade_shape.h): at shape 0 the
+// curves don't overlap → a pure linear crossfade (the mode is inert); at
+// shape 0.5 (the default) an equal-power fade with the blend flavor in the
+// middle; at shape 1 the full three-anchor transition A → blend(A,B) → B.
+// The executor's per-effect wet/dry pass (host_blend.h) intentionally KEEPS
+// layer-compositor semantics — the two diverged when this node became a
+// crossfader. Modes mirror the BlendMode enum in main.cpp (keep in lock-step).
 
 Texture2D<float4> inputA : register(t0);   // base
 Texture2D<float4> inputB : register(t1);   // blend
 RWTexture2D<float4> outputTex : register(u2);
 
 cbuffer Uniforms : register(b3) {
-  float w_b;     // top coverage weight: xfade::weightB(opacity, shape)
+  float w_a;     // A-side fade weight: xfade::weightA(opacity, shape)
+  float w_b;     // B-side fade weight: xfade::weightB(opacity, shape)
   int mode;
   float _pad1;
-  float _pad2;
 };
 
 // --- per-channel blend primitives (componentwise on float3) ---
@@ -56,16 +58,23 @@ float3 blendMode(int m, float3 a, float3 b) {
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
-  float4 a = inputA[gid.xy];   // base (the layers below / accumulator)
-  float4 b = inputB[gid.xy];   // top layer
+  float4 a = inputA[gid.xy];   // side A
+  float4 b = inputB[gid.xy];   // side B
   float3 blended = saturate(blendMode(mode, a.rgb, b.rgb));
-  // Source-over: composite the blended top over the base by the top's coverage
-  // (its alpha × the shaped fade weight). Straight-alpha in/out. Opaque inputs →
-  // lerp(a, blended, w_b) with alpha 1; a transparent top reveals the base.
-  float topA = saturate(b.a * w_b);
-  float outA = topA + a.a * (1.0 - topA);
+  // The full-coverage blend state C: blended over A by B's alpha (straight
+  // alpha in/out) — what the crossfade middle shows at shape 1.
+  float ca = b.a + a.a * (1.0 - b.a);
+  float3 crgb = (ca > 1e-5)
+      ? (blended * b.a + a.rgb * a.a * (1.0 - b.a)) / ca
+      : float3(0.0, 0.0, 0.0);
+  // Three-way transition fold (premultiplied, then unpremultiply). The family
+  // guarantees w_a + w_b >= 1, so all three weights are >= 0 and sum to 1.
+  float aw = 1.0 - w_b;
+  float bw = 1.0 - w_a;
+  float cw = w_a + w_b - 1.0;
+  float outA = a.a * aw + ca * cw + b.a * bw;
   float3 outc = (outA > 1e-5)
-      ? (blended * topA + a.rgb * a.a * (1.0 - topA)) / outA
+      ? (a.rgb * a.a * aw + crgb * ca * cw + b.rgb * b.a * bw) / outA
       : float3(0.0, 0.0, 0.0);
   outputTex[gid.xy] = float4(outc, outA);
 }

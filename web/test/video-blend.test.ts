@@ -2,8 +2,10 @@ import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 // Per-effect tests for `composite.blend` against the shipping `core` bundle.
-// composite.blend takes two texture inputs (tex_a, tex_b) and outputs
-// `tex_a * (1 - opacity) + tex_b * opacity`. The runner can't feed two
+// composite.blend is an A/B CROSSFADER: opacity 0 → tex_a as-is, 1 → tex_b
+// as-is (every mode), and the blend-mode math shows in the fade-curve overlap
+// (shape 0 = pure linear crossfade with NO blend; shape 1 = full transition
+// A → blend(A,B) → B; default shape 0.5). The runner can't feed two
 // independent inputs through the chain ping-pong, so tests build a sketch with
 // two solid_color sources WIRED into the blend's tex_a / tex_b inputs (named
 // texture wires resolve to inputTexture(0/1) positionally).
@@ -145,7 +147,7 @@ describe('Blend Effect E2E', () => {
     result.trace('out').expectUniformColor({ r: 0, g: 0, b: 255, a: 255 }, 4);
   });
 
-  it('opacity=0.5 produces an even mix', async () => {
+  it('opacity=0.5 at shape 0 produces an even linear mix', async () => {
     const result = await runEngineTest({
       width: 32, height: 32,
       modules: ['com.nano.core'],
@@ -158,6 +160,7 @@ describe('Blend Effect E2E', () => {
             colorA: { r: 1.0, g: 0.0, b: 0.0 },
             colorB: { r: 0.0, g: 0.0, b: 1.0 },
             opacity: 0.5,
+            shape: 0,   // hard linear crossfade — the exact-lerp anchor
           }),
         },
       ],
@@ -175,7 +178,7 @@ describe('Blend Effect E2E', () => {
   });
 
   it('blends three colour channels independently', async () => {
-    // A = (1.0, 0.4, 0.0), B = (0.0, 0.0, 0.8), opacity = 0.25
+    // A = (1.0, 0.4, 0.0), B = (0.0, 0.0, 0.8), opacity = 0.25, shape 0 (linear)
     // Expected: (0.75 * 1.0 + 0.25 * 0.0, 0.75 * 0.4 + 0.25 * 0.0, 0.75 * 0.0 + 0.25 * 0.8)
     //        = (0.75, 0.30, 0.20) → (191, 76, 51)
     const result = await runEngineTest({
@@ -190,6 +193,7 @@ describe('Blend Effect E2E', () => {
             colorA: { r: 1.0, g: 0.4, b: 0.0 },
             colorB: { r: 0.0, g: 0.0, b: 0.8 },
             opacity: 0.25,
+            shape: 0,
           }),
         },
       ],
@@ -205,11 +209,10 @@ describe('Blend Effect E2E', () => {
     result.trace('out').expectPixelAt(16, 16, { r: 191, g: 76, b: 51 }, 6);
   });
 
-  it('crossfade shape=1 at mid-fade shows B at full coverage (Normal)', async () => {
-    // shape bends the fader→coverage curve (xfade_shape.h): at shape 1 the
-    // trapezoid reaches full coverage by mid-fade, so opacity 0.5 shows pure B
-    // instead of the linear half-mix. (shape 0 keeps the legacy ramp — covered
-    // by the unchanged tests above.)
+  it('crossfade shape=1 at mid-fade shows the full blend state (Normal → B)', async () => {
+    // At shape 1 the curves fully overlap mid-fade, so opacity 0.5 shows the
+    // full-coverage blend state C = blended-over-A; for Normal with opaque
+    // inputs that is pure B.
     const result = await runEngineTest({
       width: 32, height: 32,
       modules: ['com.nano.core'],
@@ -238,9 +241,10 @@ describe('Blend Effect E2E', () => {
     result.trace('out').expectUniformColor({ r: 0, g: 0, b: 255, a: 255 }, 4);
   });
 
-  it('crossfade shape=0.5 at mid-fade is equal-power (~0.707 B coverage)', async () => {
-    // wB(0.5, 0.5) = sin(π/4) ≈ 0.7071 → out = 0.7071·B + 0.2929·A
-    //             = (0.2929, 0, 0.7071) → (75, 0, 180).
+  it('crossfade shape=0.5 at mid-fade is equal-power (~0.707 B for Normal)', async () => {
+    // Weights at mid, shape 0.5: A gets 1−wB ≈ 0.2929, the overlap ≈ 0.4142,
+    // B gets 1−wA ≈ 0.2929. For Normal the overlap state is B itself, so
+    // out = 0.2929·A + 0.7071·B = (75, 0, 180).
     const result = await runEngineTest({
       width: 32, height: 32,
       modules: ['com.nano.core'],
@@ -270,8 +274,8 @@ describe('Blend Effect E2E', () => {
   });
 
   it('Add mode with shape=1 shows the full-strength blend at mid-fade', async () => {
-    // Discriminating: at shape 0 the mid-fade Add is half-diluted with A
-    // (out ≈ (255, 0, 128)); at shape 1 coverage is full → pure blended
+    // Discriminating: at shape 0 the mode is inert (plain mix, (128, 0, 128));
+    // at shape 1 the mid-fade is the full overlap → pure blended
     // red + blue = magenta.
     const result = await runEngineTest({
       width: 32, height: 32,
@@ -348,9 +352,9 @@ describe('Blend Effect E2E', () => {
     }
   });
 
-  it('Add mode (mode=1) sums the channels: red + blue = magenta', async () => {
-    // Locks the shader-switch path through naga/WGSL on the web backend.
-    // A = red (1,0,0), B = blue (0,0,1), opacity = 1, Add → (1,0,1) = magenta.
+  it('crossfader endpoint: any mode at opacity 1 passes B through as-is', async () => {
+    // The transition semantics: the fader always lands on pure B — Add at
+    // 1.0 is blue, NOT red+blue.
     const result = await runEngineTest({
       width: 32, height: 32,
       modules: ['com.nano.core'],
@@ -376,6 +380,71 @@ describe('Blend Effect E2E', () => {
     });
 
     expect(result.success).toBe(true);
-    result.trace('out').expectUniformColor({ r: 255, g: 0, b: 255, a: 255 }, 4);
+    result.trace('out').expectUniformColor({ r: 0, g: 0, b: 255, a: 255 }, 4);
+  });
+
+  it('shape=0 makes the mode inert: Difference mid-fade is a plain mix', async () => {
+    // No curve overlap at shape 0 → pure linear crossfade. Discriminating:
+    // any blend-math presence would push red toward (255, 0, 128)-ish
+    // (0.5·|A−B| + … has full red), the plain mix gives (128, 0, 128).
+    const result = await runEngineTest({
+      width: 32, height: 32,
+      modules: ['com.nano.core'],
+      commands: [
+        {
+          type: 'createSketch',
+          sketchId: 'blend_diff_inert',
+          sketch: buildBlendSketch({
+            sketchId: 'blend_diff_inert',
+            colorA: { r: 1.0, g: 0.0, b: 0.0 },
+            colorB: { r: 0.0, g: 0.0, b: 1.0 },
+            opacity: 0.5,
+            mode: 11, // Difference
+            shape: 0,
+          }),
+        },
+      ],
+      tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId: 'blend_diff_inert' } },
+      ],
+      captureTraceIds: ['out'],
+      waitFrames: 5,
+      dumpName: 'blend_diff_inert',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(16, 16, { r: 128, g: 0, b: 128 }, 8);
+  });
+
+  it('Difference with shape=1 shows the full blend mid-fade, then lands on B', async () => {
+    // Mid-fade: full overlap → |red − blue| = magenta. Fader 1: pure B.
+    const mk = (id: string, opacity: number) => buildBlendSketch({
+      sketchId: id,
+      colorA: { r: 1.0, g: 0.0, b: 0.0 },
+      colorB: { r: 0.0, g: 0.0, b: 1.0 },
+      opacity,
+      mode: 11, // Difference
+      shape: 1.0,
+    });
+    for (const [id, opacity, expected] of [
+      ['blend_diff_mid', 0.5, { r: 255, g: 0, b: 255 }],
+      ['blend_diff_end', 1.0, { r: 0, g: 0, b: 255 }],
+    ] as const) {
+      const result = await runEngineTest({
+        width: 32, height: 32,
+        modules: ['com.nano.core'],
+        commands: [
+          { type: 'createSketch', sketchId: id, sketch: mk(id, opacity) },
+        ],
+        tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ],
+        captureTraceIds: ['out'],
+        waitFrames: 5,
+        dumpName: id,
+      });
+      expect(result.success).toBe(true);
+      result.trace('out').expectPixelAt(16, 16, expected, 8);
+    }
   });
 });

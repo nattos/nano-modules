@@ -30,6 +30,10 @@ export class XfadeCurve extends MobxLitElement {
   @property() opacityField = 'opacity';
   @property() label = 'Crossfade Shape';
   @property({ type: Number }) defaultValue = 0;
+  /** Shade the curves' overlap (wA+wB−1) — the region where the blend mode
+   *  shows under composite.blend's crossfader semantics. Off for the layer
+   *  (gear) surface, whose wet/dry blend uses wB as a plain coverage curve. */
+  @property({ type: Boolean }) showOverlap = false;
 
   private rafId = 0;
   private edit: ContinuousEditHandle | null = null;
@@ -160,8 +164,24 @@ export class XfadeCurve extends MobxLitElement {
       ctx.beginPath(); ctx.moveTo(0, toY(q / 4)); ctx.lineTo(cw, toY(q / 4)); ctx.stroke();
     }
 
-    // The two fade curves: A (dim) fading out, B (accent) fading in.
     const N = 64;
+
+    // Blend-presence region: fill under ov(t) = wA + wB − 1 (≥ 0 for the whole
+    // family) — where the crossfade shows the blend math.
+    if (this.showOverlap) {
+      ctx.beginPath();
+      ctx.moveTo(toX(0), toY(0));
+      for (let i = 0; i <= N; i++) {
+        const t = i / N;
+        ctx.lineTo(toX(t), toY(Math.max(0, xfadeWeightA(t, s) + xfadeWeightB(t, s) - 1)));
+      }
+      ctx.lineTo(toX(1), toY(0));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.fill();
+    }
+
+    // The two fade curves: A (dim) fading out, B (accent) fading in.
     const trace = (weight: (t: number, s: number) => number) => {
       ctx.beginPath();
       for (let i = 0; i <= N; i++) {
