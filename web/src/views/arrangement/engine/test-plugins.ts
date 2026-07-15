@@ -64,6 +64,8 @@ export const TEST_PLUGINS: PluginInfo[] = [
     { key: 'lightness', min: -1, max: 1 },
   ], ['time_independent']),
   plugin('composite.blend', false, [{ key: 'opacity', def: 0.5 }]),
+  // The comp builder's per-layer compositor (sketch_build.h kBlend).
+  plugin('composite.layer', false, [{ key: 'opacity', def: 1 }], ['time_independent']),
   // Signed [-1,1] modulation source — the rail tests assert srcMin/srcMax = -1/1.
   plugin('mod.source.lfo', false, [
     { key: 'rate', def: 0.5 }, { key: 'amplitude', def: 1 }, { key: 'shape' },

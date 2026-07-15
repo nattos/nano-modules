@@ -157,7 +157,7 @@
    ]
   },
   {
-   "id": "composite.blend",
+   "id": "composite.layer",
    "schema": {
     "opacity": {
      "type": "float",
@@ -512,7 +512,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        }
       ],
@@ -559,7 +559,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 5,
          "opacity": 1
@@ -592,7 +592,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        },
        {
@@ -603,7 +603,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c3_blend"
        }
       ],
@@ -672,7 +672,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 5,
          "opacity": 1
@@ -689,7 +689,7 @@
         }
        },
        "clip_c3_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 3,
          "opacity": 0.5
@@ -717,7 +717,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c3_blend"
        }
       ],
@@ -767,7 +767,7 @@
         }
        },
        "clip_c3_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 3,
          "opacity": 0.5
@@ -968,7 +968,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        },
        {
@@ -1046,7 +1046,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -1549,7 +1549,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_ca_blend"
        },
        {
@@ -1571,7 +1571,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G1_blend"
        },
        {
@@ -1582,7 +1582,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_cd_blend"
        },
        {
@@ -1603,12 +1603,12 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_ce_blend"
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G3_blend"
        },
        {
@@ -1624,12 +1624,12 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_ch_blend"
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G4_blend"
        },
        {
@@ -1645,7 +1645,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G5_blend"
        }
       ],
@@ -1843,7 +1843,7 @@
         "state": {}
        },
        "clip_ca_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -1868,7 +1868,7 @@
         "state": {}
        },
        "group_G1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 2,
          "opacity": 0.7
@@ -1882,7 +1882,7 @@
         }
        },
        "clip_cd_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -1911,14 +1911,14 @@
         "state": {}
        },
        "clip_ce_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
         }
        },
        "group_G3_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 0.4
@@ -1942,14 +1942,14 @@
         }
        },
        "clip_ch_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
         }
        },
        "group_G4_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -1966,7 +1966,7 @@
         "state": {}
        },
        "group_G5_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 0.5
@@ -2463,7 +2463,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G1_blend"
        }
       ],
@@ -2514,7 +2514,7 @@
         "state": {}
        },
        "group_G1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 2,
          "opacity": 0.7
@@ -3006,7 +3006,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_ca_blend"
        },
        {
@@ -3028,7 +3028,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G1_blend"
        },
        {
@@ -3039,7 +3039,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_cd_blend"
        },
        {
@@ -3060,12 +3060,12 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_ce_blend"
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G3_blend"
        },
        {
@@ -3081,12 +3081,12 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_ch_blend"
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G4_blend"
        },
        {
@@ -3102,7 +3102,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "group_G5_blend"
        }
       ],
@@ -3300,7 +3300,7 @@
         "state": {}
        },
        "clip_ca_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -3325,7 +3325,7 @@
         "state": {}
        },
        "group_G1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 2,
          "opacity": 0.7
@@ -3339,7 +3339,7 @@
         }
        },
        "clip_cd_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -3368,14 +3368,14 @@
         "state": {}
        },
        "clip_ce_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
         }
        },
        "group_G3_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 0.4
@@ -3399,14 +3399,14 @@
         }
        },
        "clip_ch_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
         }
        },
        "group_G4_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -3423,7 +3423,7 @@
         "state": {}
        },
        "group_G5_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 0.5
@@ -3784,7 +3784,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_w1_blend"
        },
        {
@@ -3979,7 +3979,7 @@
         }
        },
        "clip_w1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -4072,7 +4072,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_w1_blend"
        },
        {
@@ -4267,7 +4267,7 @@
         }
        },
        "clip_w1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -4521,7 +4521,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        },
        {
@@ -4599,7 +4599,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -4667,7 +4667,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        },
        {
@@ -4745,7 +4745,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -4813,7 +4813,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        },
        {
@@ -4891,7 +4891,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -5124,7 +5124,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_c1_blend"
        }
       ],
@@ -5197,7 +5197,7 @@
         }
        },
        "clip_c1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -5359,7 +5359,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_src1_blend"
        }
       ],
@@ -5402,7 +5402,7 @@
         }
        },
        "clip_src1_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -5553,7 +5553,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_cw_blend"
        }
       ],
@@ -5600,7 +5600,7 @@
         }
        },
        "clip_cw_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -5628,7 +5628,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_cw_blend"
        },
        {
@@ -5639,7 +5639,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_cl_blend"
        }
       ],
@@ -5708,7 +5708,7 @@
         }
        },
        "clip_cw_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -5719,7 +5719,7 @@
         "state": {}
        },
        "clip_cl_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1
@@ -5842,7 +5842,7 @@
        },
        {
         "type": "module",
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "instance_key": "clip_vc_blend"
        }
       ],
@@ -5890,7 +5890,7 @@
         "state": {}
        },
        "clip_vc_blend": {
-        "module_type": "composite.blend",
+        "module_type": "composite.layer",
         "state": {
          "mode": 0,
          "opacity": 1

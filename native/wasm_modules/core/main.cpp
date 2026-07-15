@@ -21,6 +21,7 @@ NANO_DECLARE_INSTANCE_EFFECT(solid_color)
 NANO_DECLARE_INSTANCE_EFFECT(video_file)
 
 NANO_DECLARE_INSTANCE_EFFECT(video_blend)
+NANO_DECLARE_INSTANCE_EFFECT(video_layer)
 
 NANO_DECLARE_INSTANCE_EFFECT(paramlinker)
 
@@ -201,11 +202,22 @@ void nano_module_main() {
         2,
         "composite.blend",
         "Blend",
-        "Blends two texture inputs with opacity control",
+        "A/B crossfader with a blend-mode transition flavor",
         "composite",
         "blend,mix,composite,opacity",
         "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(video_blend),
+    });
+
+    nano::registerEffect({
+        2,
+        "composite.layer",
+        "Layer",
+        "Lays B over A with a blend mode — full-strength blend at opacity 1",
+        "composite",
+        "blend,layer,mix,composite,opacity,multiply,screen",
+        "la-layer-group",
+        NANO_INSTANCE_LIFECYCLE(video_layer),
     });
 
     nano::registerEffect({

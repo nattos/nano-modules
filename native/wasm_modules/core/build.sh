@@ -11,6 +11,7 @@ source ../wasm_build_env.sh
 compile_shaders_compute_fused_spv brightness_contrast
 compile_shaders_compute_fused_spv solid_color
 compile_shaders_compute_spv video_blend
+compile_shaders_compute_spv video_layer
 compile_shaders_compute_spv video_file
 compile_shaders_compute_fused_spv bake_alpha
 compile_shaders_compute_fused_spv curve
@@ -81,6 +82,7 @@ wasm_build \
   ../solid_color/main.cpp \
   ../video_file/main.cpp \
   ../video_blend/main.cpp \
+  ../video_layer/main.cpp \
   ../paramlinker/main.cpp \
   ../barrel_macros/main.cpp \
   ../dashboard/main.cpp \

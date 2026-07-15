@@ -41,7 +41,7 @@ export interface CompositeClipNode {
   /** Own composite opacity (relative to the immediate parent — NOT ancestor-multiplied;
    *  the recursion folds in ancestor group opacity via each group's own blend-up). */
   opacity: number;
-  /** composite.blend mode for a source clip (0 = Normal/over). */
+  /** composite.layer mode for a source clip (0 = Normal/over). */
   blendMode?: number;
   /** The owning track — its `sketch` effect chain runs over the clip output (a
    *  per-track FX bus), keyed `track_<id>_<dev>` so track automation can target it. */

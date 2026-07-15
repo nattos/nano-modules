@@ -489,7 +489,7 @@ export interface Clip {
   warps: WarpBinding[];
   /**
    * Composite blend mode for a SOURCE clip (a clip with a generator at the top
-   * of its chain) when it's layered over the tracks above it — the `composite.blend`
+   * of its chain) when it's layered over the tracks above it — the `composite.layer`
    * mode index (0 = Normal/over). Omitted ⇒ Normal. Effect-only clips ignore it
    * (they process the composite below them inline).
    */

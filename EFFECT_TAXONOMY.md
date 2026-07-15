@@ -6,7 +6,7 @@ This remap is live: all effect ids, display names, and categories below are the
 current registrations. The `← old id` column is kept as a historical record of
 the pre-rename ids.
 
-Total: 80 effects.
+Total: 81 effects.
 
 
 ## source  (22)
@@ -81,12 +81,13 @@ All source effects now declare the `Generator` capability (separate from the
 | `warp.dispersion` | Dispersion | `fx.dispersion` | lights |  |  |
 | `warp.transform` | Transform | `video.transform` | core |  |  |
 
-## composite  (2)
+## composite  (3)
 
 | new id | display | ← old id | bundle | gen.cap | note |
 |---|---|---|---|---|---|
 | `composite.bake_alpha` | Bake Alpha | `video.bake_alpha` | core |  |  |
-| `composite.blend` | Blend | `video.blend` | core,testonly |  | drop "Video" |
+| `composite.blend` | Blend | `video.blend` | core,testonly |  | A/B crossfader (fader 1 = pure B; blend rides the overlap) |
+| `composite.layer` | Layer | *(new)* | core,testonly |  | layer compositor (full-strength blend at opacity 1); comp builder's kBlend |
 
 ## motion  (3)
 

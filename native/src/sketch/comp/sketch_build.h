@@ -83,7 +83,10 @@ struct SketchBuild {
 
 namespace build_detail {
 
-inline constexpr const char* kBlend = "composite.blend";
+// The LAYER COMPOSITOR effect (full-strength blend at opacity 1). NOT
+// composite.blend — that node became an A/B crossfader (fader 1 = pure B),
+// which would gut per-layer blend modes here.
+inline constexpr const char* kBlend = "composite.layer";
 /** effect-catalog.ts IMPLICIT_ANCHOR — solid stand-in for generator-less chains. */
 inline constexpr const char* kImplicitAnchor = "source.solid_color";
 

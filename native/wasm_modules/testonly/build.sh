@@ -11,6 +11,7 @@ source ../wasm_build_env.sh
 compile_shaders_compute_fused_spv brightness_contrast
 compile_shaders_compute_fused_spv solid_color
 compile_shaders_compute_spv video_blend
+compile_shaders_compute_spv video_layer
 # Test-only fusion-aware mappers + generator — back the multi-stage
 # fusion tests (mapper + mapper) and the strict-output top tests
 # (generator + mapper).
@@ -115,6 +116,7 @@ wasm_build \
   ../brightness_contrast/main.cpp \
   ../solid_color/main.cpp \
   ../video_blend/main.cpp \
+  ../video_layer/main.cpp \
   ../fuse_add/main.cpp \
   ../fuse_mul/main.cpp \
   ../fuse_solid/main.cpp \
