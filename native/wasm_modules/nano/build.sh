@@ -257,6 +257,11 @@ echo "  pixel_ocean shaders compiled (SPV: compute)"
 # compute pass; which row each column lights is computed CPU-side.
 compile_shaders_compute_spv pixel_descent render
 
+# pixel_rift — coarse-grid ocean waves crossing a hidden mid-rift: tiny
+# dot/omega sprites drifting right (and slightly up) across a virtual grid with
+# invisible middle columns. One trivial compute pass; all motion is CPU-side.
+compile_shaders_compute_spv pixel_rift render
+
 # simulant — faithful port of the Resolume Wire "Simulant" patch: a
 # difference-blend + blur-diffusion feedback loop thresholded into Sobel lines.
 #   inject — abs(fadedPrev - input) difference-blend feedback (rgba16f).
@@ -379,6 +384,7 @@ wasm_build \
   ../shape_burst/main.cpp \
   ../pixel_ocean/main.cpp \
   ../pixel_descent/main.cpp \
+  ../pixel_rift/main.cpp \
   ../simulant/main.cpp \
   ../smear/main.cpp \
   ../line_reconstruct/main.cpp \

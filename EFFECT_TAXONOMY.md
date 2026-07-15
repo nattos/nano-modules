@@ -6,10 +6,10 @@ This remap is live: all effect ids, display names, and categories below are the
 current registrations. The `← old id` column is kept as a historical record of
 the pre-rename ids.
 
-Total: 77 effects.
+Total: 80 effects.
 
 
-## source  (19)
+## source  (22)
 
 All source effects now declare the `Generator` capability (separate from the
 `source` taxonomy domain). Some also sample an optional input to composite over.
@@ -31,6 +31,9 @@ All source effects now declare the `Generator` capability (separate from the
 | `source.particles.flash_particles` | Flash Particles | `video.flash_particles` | nano | Y | JUDGMENT: mask-driven compositor |
 | `source.particles.flow_swarm` | Flow Swarm | `video.flow_swarm` | nano | Y | JUDGMENT: consumes flow_field rail |
 | `source.phase_fold` | Phase Fold | `video.phase_fold` | nano | Y | was video.* |
+| `source.pixel.descent` | Pixel Descent | *(new)* | nano | Y | beat-locked stepping grid |
+| `source.pixel.ocean` | Pixel Ocean | *(new)* | nano | Y | pixel-art wave sprites |
+| `source.pixel.rift` | Pixel Rift | *(new)* | nano | Y | ocean waves crossing a hidden mid-rift |
 | `source.shape_fold` | Shape Fold | `video.shape_fold` | nano | Y | was video.* |
 | `source.solid_color` | Solid Color | `generator.solid_color` | core,testonly | Y |  |
 | `source.text.plain` | Text | `gen.text` | text | Y |  |

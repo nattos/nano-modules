@@ -29,6 +29,7 @@ NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 NANO_DECLARE_INSTANCE_EFFECT(pixel_ocean)
 NANO_DECLARE_INSTANCE_EFFECT(pixel_descent)
+NANO_DECLARE_INSTANCE_EFFECT(pixel_rift)
 NANO_DECLARE_INSTANCE_EFFECT(simulant)
 NANO_DECLARE_INSTANCE_EFFECT(smear)
 NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
@@ -240,6 +241,18 @@ void nano_module_main() {
         "la-braille",
         NANO_INSTANCE_LIFECYCLE(pixel_descent),
         nullptr, nullptr, nullptr, &pixel_descent::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "source.pixel.rift",
+        "Pixel Rift",
+        "Coarse-grid ocean waves crossing a hidden mid-rift. The pixel_descent look (a hard cols x rows cell grid, default 4 x 10) hosting pixel_ocean-style wave life: tiny dot and omega sprites (1-3 cells) drift left to right and slightly up in whole-cell steps, spawning and dying on staggered per-wave animation clocks (rate/type/lifespan captured at spawn; density latches like the ocean's — it gates births, never culls). The signature feature is the RIFT: extra virtual columns spliced between the left and right halves of the grid that waves cross at full speed but that never render — a wave slides in from the left, vanishes into the middle, and re-emerges on the right. Free-running dt clocks (not beat-locked); composites over black, transparent, a custom colour, or the input.",
+        "source",
+        "generator,pixel,grid,waves,ocean,rift,drift,rise,retro,pixel-art,led,dot,omega",
+        "la-water",
+        NANO_INSTANCE_LIFECYCLE(pixel_rift),
+        nullptr, nullptr, nullptr, &pixel_rift::eval_visibility,
     });
 
     nano::registerEffect({
