@@ -19,10 +19,12 @@
  * curve) is the sole time source. It stutters through `levels` steps as you
  * sweep — full strength immediately (no ease-in; it's meant to be stuttery).
  * Each step's randoms are seeded by the step index (deterministic). A
- * `deadzone` band at either endpoint makes the output go fully TRANSPARENT
- * (off), NOT the input — so the effect cleanly disappears at the ends of the
- * sweep; the bands toggle independently (`start_deadzone` default OFF,
- * `end_deadzone` default on).
+ * `deadzone` band at either endpoint turns the effect OFF — showing the
+ * `fill`, NOT the input — so it cleanly disappears at the ends of the sweep;
+ * the bands toggle independently (`start_deadzone` default OFF,
+ * `end_deadzone` default on). `fill` picks what shows both past the scaled
+ * image's border and in the deadzones: black, transparent, or edge-smear
+ * (the legacy clamp look; deadzones stay transparent).
  *
  * v2 RE-ARCHITECTURE (flagged per DNODE_MIGRATION_NOTES §3): DROPPED for v2
  * (recoverable later): the 22 Alpha blend modes (we crossfade), the optical-flow
@@ -45,6 +47,11 @@ namespace stutter_scale {
 static constexpr float TAU          = 6.28318530717958647692f;
 static constexpr float JITTER_SCALE = 0.5f;  // jitter=1 → up to 0.5 uv translation
 
+// Fill styles: what shows where the transform samples past the source bounds
+// AND what the endpoint deadzones show. Lock-step with the branches in
+// stutter.hlsl.
+enum FillStyle { FillBlack = 0, FillTransparent = 1, FillEdge = 2 };
+
 struct Uniforms {
   float scale;
   float trans_x;
@@ -55,8 +62,9 @@ struct Uniforms {
   float bright;
   float contrast;
   float intensity;
-  float alpha_scale;
-  float _p0, _p1;
+  float fill;
+  float dead;
+  float _p0;
 };
 static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch");
 
@@ -77,6 +85,7 @@ struct State {
   float deadzone   = 0.05f;
   bool  start_deadzone = false;
   bool  end_deadzone = true;
+  int   fill       = FillEdge;
   bool  do_flip    = true;
   bool  do_invert  = false;
   int   seed       = 1234;
@@ -102,7 +111,7 @@ static inline uint32_t hash_u32(uint32_t x) {
 static inline float rand01(uint32_t h) { return (h >> 8) * (1.0f / 16777216.0f); }
 
 void module_init() {
-  state::init("warp.legacy.stutter_scale", {2, 0, 1},
+  state::init("warp.legacy.stutter_scale", {2, 1, 0},
     state::Schema()
       .floatField("sweep", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "The stutter playhead (knob / automation); the zoom "
@@ -124,8 +133,13 @@ void module_init() {
                   nullptr, "Crossfade with the untouched input.")
       .floatField("deadzone", 0.05f, 0.0f, 0.5f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Endpoint band where the output goes transparent (off).")
-      .boolField ("start_deadzone", false, state::PrimaryInput, "Go transparent near sweep=0.")
-      .boolField ("end_deadzone", true, state::PrimaryInput, "Go transparent near sweep=1.")
+      .boolField ("start_deadzone", false, state::PrimaryInput, "Turn off near sweep=0 (shows the fill).")
+      .boolField ("end_deadzone", true, state::PrimaryInput, "Turn off near sweep=1 (shows the fill).")
+      .selectField("fill", FillEdge, state::PrimaryInput, {
+        {"Black", FillBlack}, {"Transparent", FillTransparent}, {"Edge", FillEdge},
+      }, false,
+        "What shows past the scaled image's border and in the endpoint "
+        "deadzones (Edge smears the border; deadzones stay transparent).")
       .boolField ("flip", true, state::PrimaryInput, "Allow random Y-flips per step.")
       .boolField ("color_invert", false, state::PrimaryInput, "Allow random colour inversion per step.")
       .intField  ("seed", 1234, 0, 65535, state::PrimaryInput, 0, nullptr, "Random seed.")
@@ -187,6 +201,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "deadzone"))     s->deadzone  = state::patchFloat(i);
     else if (state::pathIs(p, l, "start_deadzone")) s->start_deadzone = state::patchBool(i);
     else if (state::pathIs(p, l, "end_deadzone")) s->end_deadzone = state::patchBool(i);
+    else if (state::pathIs(p, l, "fill"))         s->fill      = state::patchInt(i);
     else if (state::pathIs(p, l, "flip"))         s->do_flip   = state::patchBool(i);
     else if (state::pathIs(p, l, "color_invert")) s->do_invert = state::patchBool(i);
     else if (state::pathIs(p, l, "seed"))         s->seed      = state::patchInt(i);
@@ -195,12 +210,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
 void on_resolume_param(void* self, long long, double) { (void)self; }
 
-// Config-only identity: only when intensity is 0. (The deadzone produces a
-// TRANSPARENT output, which is NOT a passthrough, so it can't claim identity.)
+// Config-only identity: only when intensity is 0 AND the sweep is outside any
+// deadzone — the deadzone produces the FILL (transparent/black), which is
+// never a passthrough.
 int32_t is_identity(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return 0;
-  return (s->intensity <= 1e-3f) ? 1 : 0;
+  return (s->intensity <= 1e-3f && !inDeadzone(s)) ? 1 : 0;
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -241,9 +257,10 @@ void render(void* self, int vp_w, int vp_h) {
   u.hue_shift = (r5 * 2.0f - 1.0f) * s->hue * TAU;
   u.bright    = 0.0f;
   u.contrast  = s->boost;
-  // Hard stutter outside the deadzone; fully transparent inside it.
-  u.intensity = dead ? 0.0f : s->intensity;
-  u.alpha_scale = dead ? 0.0f : 1.0f;
+  u.intensity = s->intensity;
+  u.fill      = (float)s->fill;
+  // Hard stutter outside the deadzone; the fill (hard off) inside it.
+  u.dead      = dead ? 1.0f : 0.0f;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

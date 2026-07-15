@@ -23,8 +23,9 @@ cbuffer Uniforms : register(b3) {
   float bright;      // brightness add
   float contrast;    // contrast add (around mid-grey)
   float intensity;   // crossfade with the untouched input
-  float alpha_scale; // output alpha multiplier (transparent endpoints)
-  float _p0, _p1;
+  float fill;        // 0 = black, 1 = transparent, 2 = edge (clamp smear)
+  float dead;        // 0/1 — sweep sits in an endpoint deadzone
+  float _p0;
 };
 
 [numthreads(8, 8, 1)]
@@ -34,6 +35,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= W || gid.y >= H) return;
 
   float2 uv = (float2(gid.xy) + 0.5) / float2(W, H);
+  float4 base = inputTex.SampleLevel(linearSampler, uv, 0.0);
+
+  // Endpoint deadzone: the effect is OFF — show the fill, not the stutter.
+  // (Edge fill has no meaning for a whole-frame band; it stays transparent,
+  // the legacy behaviour.)
+  if (dead > 0.5) {
+    outputTex[gid.xy] = (fill < 0.5) ? float4(0.0, 0.0, 0.0, 1.0)
+                                     : float4(base.rgb, 0.0);
+    return;
+  }
 
   // Centred scale + jitter translation.
   float inv = (scale > 1e-4) ? (1.0 / scale) : 1.0;
@@ -50,10 +61,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (invert > 0.5) col.rgb = 1.0 - col.rgb;
   col.rgb = saturate(col.rgb);
 
-  // Crossfade with the untouched input, then scale alpha (transparent
-  // endpoints fade the whole output toward 0 alpha).
-  float4 base = inputTex.SampleLevel(linearSampler, uv, 0.0);
-  float4 outc = lerp(base, col, saturate(intensity));
-  outc.a *= saturate(alpha_scale);
-  outputTex[gid.xy] = outc;
+  // Where the transform sampled past the source bounds, apply the fill: black
+  // or transparent replace the (graded) clamp smear; edge keeps it.
+  bool oob = any(src != saturate(src));
+  if (oob && fill < 0.5)                  col = float4(0.0, 0.0, 0.0, 1.0);
+  else if (oob && fill < 1.5)             col = float4(0.0, 0.0, 0.0, 0.0);
+
+  // Crossfade with the untouched input.
+  outputTex[gid.xy] = lerp(base, col, saturate(intensity));
 }

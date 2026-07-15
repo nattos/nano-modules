@@ -24,7 +24,7 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
     const names = frame.params.map(p => p.name);
     for (const n of ['sweep', 'levels', 'min_scale', 'max_scale', 'jitter',
                      'hue', 'boost', 'intensity', 'deadzone', 'start_deadzone',
-                     'end_deadzone', 'flip', 'color_invert', 'seed']) {
+                     'end_deadzone', 'fill', 'flip', 'color_invert', 'seed']) {
       expect(names).toContain(n);
     }
   });
@@ -139,6 +139,36 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
     expect(dead.success).toBe(true);
     expect(active.success).toBe(true);
     active.trace('out').expectDifferentFrom(dead.trace('out'), 100);
+  });
+
+  it('the fill style picks the deadzone and out-of-bounds look', async () => {
+    // Deadzone: fill=Black (0) → an opaque black frame; the default Edge (2)
+    // stays transparent (renders as the checkerboard backdrop in traces).
+    const deadBlack = await runChain('ss_f_db',
+      { intensity: 1.0, sweep: 1.0, fill: 0 }, 'ss_fill_dead_black');
+    const deadEdge = await runChain('ss_f_de',
+      { intensity: 1.0, sweep: 1.0 }, 'ss_fill_dead_edge');
+    expect(deadBlack.success).toBe(true);
+    expect(deadEdge.success).toBe(true);
+    let dark = 0;
+    deadBlack.trace('out').forEachPixel((c) => { if (c.r + c.g + c.b < 30) dark++; });
+    expect(dark).toBe(128 * 128);
+    deadBlack.trace('out').expectDifferentFrom(deadEdge.trace('out'), 100);
+
+    // Out-of-bounds: a jittered step samples past the border; black fill vs
+    // the edge clamp-smear must differ on at least one of two probed steps
+    // (the per-step jitter is seeded, so both being ~zero is implausible).
+    const probe = (id: string, sweep: number, fill: number, dump: string) => runChain(id,
+      { intensity: 1.0, sweep, min_scale: 1.0, max_scale: 1.0, jitter: 1.0,
+        flip: 0, fill }, dump);
+    const eA = await probe('ss_f_ea', 0.35, 2, 'ss_fill_edge_a');
+    const bA = await probe('ss_f_ba', 0.35, 0, 'ss_fill_black_a');
+    const eB = await probe('ss_f_eb', 0.55, 2, 'ss_fill_edge_b');
+    const bB = await probe('ss_f_bb', 0.55, 0, 'ss_fill_black_b');
+    for (const r of [eA, bA, eB, bB]) expect(r.success).toBe(true);
+    const diffs = bA.trace('out').diffCount(eA.trace('out'))
+                + bB.trace('out').diffCount(eB.trace('out'));
+    expect(diffs).toBeGreaterThan(50);
   });
 
   it('the start deadzone is off by default and toggles on', async () => {
