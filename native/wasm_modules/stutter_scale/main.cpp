@@ -102,7 +102,7 @@ static inline uint32_t hash_u32(uint32_t x) {
 static inline float rand01(uint32_t h) { return (h >> 8) * (1.0f / 16777216.0f); }
 
 void module_init() {
-  state::init("warp.legacy.stutter_scale", {2, 0, 0},
+  state::init("warp.legacy.stutter_scale", {2, 0, 1},
     state::Schema()
       .floatField("sweep", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "The stutter playhead (knob / automation); the zoom "
@@ -114,7 +114,8 @@ void module_init() {
       .floatField("max_scale", 6.0f, 1.0f, 16.0f, state::PrimaryInput, nullptr, 0.05f,
                   nullptr, "Zoom at the end of the sweep.")
       .floatField("jitter", 0.3f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Per-step random translation amount.")
+                  nullptr, "Per-step random translation amount (zero at the "
+                  "very start of the sweep).")
       .floatField("hue", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Per-step random hue rotation range.")
       .floatField("boost", 0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
@@ -226,11 +227,15 @@ void render(void* self, int vp_w, int vp_h) {
   // The zoom is PROGRESSIVE: it walks min → max across the step grid (held
   // per step, so it still stutters); the randoms only drive jitter/flip/hue.
   float q = levels > 1 ? (float)step / (float)(levels - 1) : 0.0f;
+  // The Wire patch gates the jitter by the quantized phase^0.1 (its Power
+  // node): exactly ZERO at the start endpoint, near-full almost immediately
+  // after — so the sweep's start stays clean.
+  float qj = std::pow((float)step / (float)levels, 0.1f);
   float lo = s->min_scale, hi = s->max_scale;
   Uniforms u = {};
   u.scale     = lo + (hi - lo) * q;
-  u.trans_x   = (r1 * 2.0f - 1.0f) * s->jitter * JITTER_SCALE;
-  u.trans_y   = (r2 * 2.0f - 1.0f) * s->jitter * JITTER_SCALE;
+  u.trans_x   = (r1 * 2.0f - 1.0f) * s->jitter * JITTER_SCALE * qj;
+  u.trans_y   = (r2 * 2.0f - 1.0f) * s->jitter * JITTER_SCALE * qj;
   u.flip_y    = (s->do_flip   && r3 < 0.5f) ? 1.0f : 0.0f;
   u.invert    = (s->do_invert && r4 < 0.5f) ? 1.0f : 0.0f;
   u.hue_shift = (r5 * 2.0f - 1.0f) * s->hue * TAU;

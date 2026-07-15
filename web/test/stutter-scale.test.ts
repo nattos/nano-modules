@@ -114,6 +114,19 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
     atEnd.trace('out').expectDifferentFrom(atStart.trace('out'), 100);
   });
 
+  it('jitter does not touch the start endpoint', async () => {
+    // The Wire patch gates the jitter by phase^0.1 — exactly zero at sweep=0.
+    // With everything else neutral (scale range collapsed to 1, flip/hue/boost
+    // off), full jitter at sweep=0 must be a clean passthrough of the grid.
+    const grid = await runGridOnly('ss_jgrid', 'ss_jitter_grid');
+    const start = await runChain('ss_jstart',
+      { intensity: 1.0, sweep: 0.0, jitter: 1.0, min_scale: 1.0, max_scale: 1.0,
+        flip: 0, hue: 0.0, boost: 0.0 }, 'ss_jitter_start');
+    expect(grid.success).toBe(true);
+    expect(start.success).toBe(true);
+    start.trace('out').expectSameAs(grid.trace('out'), 2);
+  });
+
   it('the end deadzone turns the stutter off (≠ the active stutter)', async () => {
     // sweep=1 sits in the end deadzone (default on) → output goes transparent/
     // off, which differs from the active stutter mid-sweep. (Transparency
