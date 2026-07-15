@@ -364,6 +364,18 @@ int readBlendMode(const json& instances, const std::string& instKey) {
   return (m > 0 && m <= 15) ? m : 0;
 }
 
+// Crossfade shape (`__xfade_shape__`): bends the wet/dry fade curve — 0
+// (default) is the legacy linear ramp, 1 reaches full coverage mid-fade (see
+// host_blend.h / xfade_shape.h). Missing/invalid → 0.
+float readXfadeShape(const json& instances, const std::string& instKey) {
+  const json* st = findState(instances, instKey);
+  if (!st) return 0.0f;
+  auto it = st->find("__xfade_shape__");
+  if (it == st->end() || !it->is_number()) return 0.0f;
+  const float s = (float)it->get<double>();
+  return s > 0.0f ? (s < 1.0f ? s : 1.0f) : 0.0f;
+}
+
 // Engine-reserved field paths (`__opacity__`, `__enable__`, ...): consumed by
 // the executor, stripped before the plugin (see applyState). Wires/automation
 // targeting them fold through foldReservedOverrides, never setParamFloat.
@@ -1634,7 +1646,7 @@ int32_t SketchExecutor::execute(
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
         if (!blend_->encode(colInput, fxHandle, outHandle, opacity, W, H,
-                            blendMode)) {
+                            blendMode, readXfadeShape(instances, instKey))) {
           // Couldn't build the blend pass — show the effect at full strength
           // rather than nothing.
           gpu_copy_texture(fxHandle, outHandle);

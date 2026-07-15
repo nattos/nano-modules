@@ -16,9 +16,20 @@
  *     so existing sketches are bit-identical and copyToOutput (mode 0,
  *     opacity 1) remains an exact copy for any alpha.
  *   mode 1..15: Photoshop-style blend math on rgb, then Porter-Duff
- *     source-over by fx.a × opacity — the SAME math as composite.blend's
+ *     source-over by fx.a × wB — the SAME math as composite.blend's
  *     kernel (video_blend/compute.hlsl), so a per-effect blend mode and a
  *     composite.blend stage agree pixel-for-pixel.
+ *
+ * The crossfade `shape` param (`__xfade_shape__`) bends the fade curve: the
+ * fader maps to the fold weights through xfade::weightA/weightB
+ * (sketch/xfade_shape.h — computed CPU-SIDE in encode(); the kernels receive
+ * plain floats). shape 0 → wB == opacity, bit-identical legacy behavior.
+ * shape 1 → full coverage mid-fade (the blend math at full strength). Mode 0
+ * additionally morphs, by shape, from the legacy lerp toward a weighted
+ * straight-alpha over — fx(alpha·wB) over dry(alpha·wA) — so at shape 1 both
+ * sides hold full alpha mid-fade (visible when the wet side carries
+ * transparency); its endpoints stay exact (t=0 → dry, t=1 → fx) at every
+ * shape, preserving the copyToOutput invariant.
  *
  * The executor runs as executor.wasm on BOTH backends, so the blend ships in
  * two languages and picks one from gpu_get_backend() at PSO-build time: MSL on
@@ -34,6 +45,7 @@
 
 #include "sketch/exec_gpu.h"
 #include "sketch/host_wgsl_fmt.h"
+#include "sketch/xfade_shape.h"
 
 #include <cstdint>
 #include <string>
@@ -41,13 +53,15 @@
 
 namespace sketch_executor {
 
-// MSL kernel. mode 0: out = mix(dry, fx, opacity) full RGBA. mode 1..15:
-// blend math + source-over (lock-step with video_blend/compute.hlsl).
-// Out-of-range reads are gated by the canvas dims in the uniform.
+// MSL kernel. mode 0: out = mix(dry, fx, opacity) full RGBA, morphed toward a
+// weighted over by `shape`. mode 1..15: blend math + source-over by wB
+// (lock-step with video_blend/compute.hlsl). The fade weights wA/wB are
+// CPU-computed (xfade_shape.h). Out-of-range reads are gated by the canvas
+// dims in the uniform.
 inline constexpr const char* kWetDryBlendMSL = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
-struct U { uint w; uint h; float opacity; uint mode; };
+struct U { uint w; uint h; float opacity; uint mode; float wA; float wB; float shape; float pad; };
 static float3 b_screen(float3 a, float3 b)    { return 1.0f - (1.0f - a) * (1.0f - b); }
 static float3 b_overlay(float3 a, float3 b)   { return mix(2.0f*a*b, 1.0f - 2.0f*(1.0f-a)*(1.0f-b), step(float3(0.5f), a)); }
 static float3 b_dodge(float3 a, float3 b)     { return min(float3(1.0f), a / max(1.0f - b, float3(1e-4f))); }
@@ -84,11 +98,24 @@ kernel void wet_dry_blend(
   float4 a = dry_tex.read(gid);
   float4 b = fx_tex.read(gid);
   if (u.mode == 0u) {
-    out_tex.write(mix(a, b, u.opacity), gid);
+    float4 m = mix(a, b, u.opacity);
+    if (u.shape <= 0.0f) {          // legacy lerp, bit-exact (incl. copyToOutput)
+      out_tex.write(m, gid);
+      return;
+    }
+    // Weighted straight-alpha over: b(alpha*wB) over a(alpha*wA), morphed in
+    // by shape (see the header comment).
+    float topA = saturate(b.a * u.wB);
+    float baseA = a.a * u.wA;
+    float overA = topA + baseA * (1.0f - topA);
+    float3 overc = (overA > 1e-5f)
+        ? (b.rgb * topA + a.rgb * baseA * (1.0f - topA)) / overA
+        : float3(0.0f);
+    out_tex.write(mix(m, float4(overc, overA), u.shape), gid);
     return;
   }
   float3 blended = saturate(blend_mode(u.mode, a.rgb, b.rgb));
-  float topA = saturate(b.a * u.opacity);
+  float topA = saturate(b.a * u.wB);
   float outA = topA + a.a * (1.0f - topA);
   float3 outc = (outA > 1e-5f)
       ? (blended * topA + a.rgb * a.a * (1.0f - topA)) / outA
@@ -104,7 +131,7 @@ kernel void wet_dry_blend(
 // concrete output format via host_wgsl_fmt.h (16F sketches write rgba16float
 // intermediates).
 inline constexpr const char* kWetDryBlendWGSL = R"WGSL(
-struct U { w: u32, h: u32, opacity: f32, mode: u32 };
+struct U { w: u32, h: u32, opacity: f32, mode: u32, wA: f32, wB: f32, shape: f32, pad: f32 };
 @group(0) @binding(0) var dry_tex: texture_2d<f32>;
 @group(0) @binding(1) var fx_tex:  texture_2d<f32>;
 @group(0) @binding(2) var out_tex: texture_storage_2d<rgba8unorm, write>;
@@ -142,11 +169,25 @@ fn wet_dry_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
   let a = textureLoad(dry_tex, p, 0);
   let b = textureLoad(fx_tex,  p, 0);
   if (u.mode == 0u) {
-    textureStore(out_tex, p, mix(a, b, u.opacity));
+    let m = mix(a, b, u.opacity);
+    if (u.shape <= 0.0) {           // legacy lerp, bit-exact (incl. copyToOutput)
+      textureStore(out_tex, p, m);
+      return;
+    }
+    // Weighted straight-alpha over: b(alpha*wB) over a(alpha*wA), morphed in
+    // by shape (see the header comment).
+    let topA0 = clamp(b.a * u.wB, 0.0, 1.0);
+    let baseA = a.a * u.wA;
+    let overA = topA0 + baseA * (1.0 - topA0);
+    var overc = vec3<f32>(0.0);
+    if (overA > 1e-5) {
+      overc = (b.rgb * topA0 + a.rgb * baseA * (1.0 - topA0)) / overA;
+    }
+    textureStore(out_tex, p, mix(m, vec4<f32>(overc, overA), u.shape));
     return;
   }
   let blended = clamp(blend_mode(u.mode, a.rgb, b.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
-  let topA = clamp(b.a * u.opacity, 0.0, 1.0);
+  let topA = clamp(b.a * u.wB, 0.0, 1.0);
   let outA = topA + a.a * (1.0 - topA);
   var outc = vec3<f32>(0.0);
   if (outA > 1e-5) {
@@ -174,10 +215,13 @@ class WetDryBlend {
   // executor submits once per frame), via the gpu ABI. `dryTex` is the
   // pre-effect image; pass <0 to fade against transparent black. `mode` is the
   // BlendMode enum value (0 = Normal crossfade; see the header comment).
+  // `shape` bends the fade curve (0 = legacy linear — the weights are computed
+  // here on the CPU via xfade_shape.h; the kernels just fold them in).
   // Returns false if resources couldn't be created (caller should fall back to
   // using `fxTex`).
   bool encode(int32_t dryTex, int32_t fxTex,
-              int32_t outTex, float opacity, int W, int H, int mode = 0) {
+              int32_t outTex, float opacity, int W, int H, int mode = 0,
+              float shape = 0.0f) {
     if (outTex < 0 || fxTex < 0 || W <= 0 || H <= 0) return false;
     const int32_t pso = ensurePso(outTex);
     if (pso < 0) return false;
@@ -185,9 +229,14 @@ class WetDryBlend {
     if (uni < 0) return false;
     const int32_t dry = dryTex >= 0 ? dryTex : blackTex(W, H);
     if (dry < 0) return false;
-    struct U { uint32_t w, h; float opacity; uint32_t mode; } u{
-        (uint32_t)W, (uint32_t)H, opacity,
-        (uint32_t)(mode > 0 && mode <= 15 ? mode : 0)};
+    shape = shape > 0.0f ? (shape < 1.0f ? shape : 1.0f) : 0.0f;
+    struct U {
+      uint32_t w, h; float opacity; uint32_t mode;
+      float wA, wB, shape, pad;
+    } u{(uint32_t)W, (uint32_t)H, opacity,
+        (uint32_t)(mode > 0 && mode <= 15 ? mode : 0),
+        xfade::weightA(opacity, shape), xfade::weightB(opacity, shape),
+        shape, 0.0f};
     gpu_write_buffer(uni, 0, reinterpret_cast<const void*>(&u), (int32_t)sizeof(u));
     int32_t pass = gpu_begin_compute_pass();
     gpu_compute_set_pso(pass, pso);
@@ -235,7 +284,7 @@ class WetDryBlend {
   // var<uniform> binding (Metal ignores buffer usage flags).
   int32_t nextUniform() {
     if (uniCursor_ >= (int)uniforms_.size()) {
-      int32_t b = gpu_create_buffer(16, /*Uniform*/ 2);
+      int32_t b = gpu_create_buffer(32, /*Uniform*/ 2);
       if (b < 0) return -1;
       uniforms_.push_back(b);
     }

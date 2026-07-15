@@ -14,8 +14,12 @@ function buildBlendSketch(opts: {
   colorB: { r: number; g: number; b: number };
   opacity: number;
   mode?: number;
+  shape?: number;
 }): Sketch {
   const a = `${opts.sketchId}_a`, b = `${opts.sketchId}_b`, blend = `${opts.sketchId}_blend`;
+  const params: Record<string, unknown> = { opacity: opts.opacity };
+  if (opts.mode !== undefined) params.mode = opts.mode;
+  if (opts.shape !== undefined) params.shape = opts.shape;
   return {
     anchor: null,
     wires: [
@@ -39,9 +43,7 @@ function buildBlendSketch(opts: {
         type: 'module',
         module_type: 'composite.blend',
         instance_key: blend,
-        params: opts.mode !== undefined
-          ? { opacity: opts.opacity, mode: opts.mode }
-          : { opacity: opts.opacity },
+        params,
       },
     ],
   } as Sketch;
@@ -201,6 +203,149 @@ describe('Blend Effect E2E', () => {
 
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(16, 16, { r: 191, g: 76, b: 51 }, 6);
+  });
+
+  it('crossfade shape=1 at mid-fade shows B at full coverage (Normal)', async () => {
+    // shape bends the fader→coverage curve (xfade_shape.h): at shape 1 the
+    // trapezoid reaches full coverage by mid-fade, so opacity 0.5 shows pure B
+    // instead of the linear half-mix. (shape 0 keeps the legacy ramp — covered
+    // by the unchanged tests above.)
+    const result = await runEngineTest({
+      width: 32, height: 32,
+      modules: ['com.nano.core'],
+      commands: [
+        {
+          type: 'createSketch',
+          sketchId: 'blend_shape1',
+          sketch: buildBlendSketch({
+            sketchId: 'blend_shape1',
+            colorA: { r: 1.0, g: 0.0, b: 0.0 },
+            colorB: { r: 0.0, g: 0.0, b: 1.0 },
+            opacity: 0.5,
+            shape: 1.0,
+          }),
+        },
+      ],
+      tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId: 'blend_shape1' } },
+      ],
+      captureTraceIds: ['out'],
+      waitFrames: 5,
+      dumpName: 'blend_shape1',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectUniformColor({ r: 0, g: 0, b: 255, a: 255 }, 4);
+  });
+
+  it('crossfade shape=0.5 at mid-fade is equal-power (~0.707 B coverage)', async () => {
+    // wB(0.5, 0.5) = sin(π/4) ≈ 0.7071 → out = 0.7071·B + 0.2929·A
+    //             = (0.2929, 0, 0.7071) → (75, 0, 180).
+    const result = await runEngineTest({
+      width: 32, height: 32,
+      modules: ['com.nano.core'],
+      commands: [
+        {
+          type: 'createSketch',
+          sketchId: 'blend_eqp',
+          sketch: buildBlendSketch({
+            sketchId: 'blend_eqp',
+            colorA: { r: 1.0, g: 0.0, b: 0.0 },
+            colorB: { r: 0.0, g: 0.0, b: 1.0 },
+            opacity: 0.5,
+            shape: 0.5,
+          }),
+        },
+      ],
+      tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId: 'blend_eqp' } },
+      ],
+      captureTraceIds: ['out'],
+      waitFrames: 5,
+      dumpName: 'blend_eqp',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(16, 16, { r: 75, g: 0, b: 180 }, 8);
+  });
+
+  it('Add mode with shape=1 shows the full-strength blend at mid-fade', async () => {
+    // Discriminating: at shape 0 the mid-fade Add is half-diluted with A
+    // (out ≈ (255, 0, 128)); at shape 1 coverage is full → pure blended
+    // red + blue = magenta.
+    const result = await runEngineTest({
+      width: 32, height: 32,
+      modules: ['com.nano.core'],
+      commands: [
+        {
+          type: 'createSketch',
+          sketchId: 'blend_add_shape',
+          sketch: buildBlendSketch({
+            sketchId: 'blend_add_shape',
+            colorA: { r: 1.0, g: 0.0, b: 0.0 },
+            colorB: { r: 0.0, g: 0.0, b: 1.0 },
+            opacity: 0.5,
+            mode: 1, // Add
+            shape: 1.0,
+          }),
+        },
+      ],
+      tracePoints: [
+        { id: 'out', target: { type: 'sketch_output', sketchId: 'blend_add_shape' } },
+      ],
+      captureTraceIds: ['out'],
+      waitFrames: 5,
+      dumpName: 'blend_add_shape',
+    });
+
+    expect(result.success).toBe(true);
+    result.trace('out').expectUniformColor({ r: 255, g: 0, b: 255, a: 255 }, 4);
+  });
+
+  it('per-effect layer crossfade honors __xfade_shape__ (executor wet/dry path)', async () => {
+    // Not composite.blend: this exercises the EXECUTOR's WetDryBlend
+    // (host_blend.h) via the reserved instance-state keys. A red generator
+    // followed by a blue generator at __opacity__ 0.5: the legacy Normal
+    // wet/dry is mix → (128, 0, 128); with __xfade_shape__ 1 the weighted
+    // over at full alpha shows the (opaque) wet side → pure blue.
+    const mkSketch = (id: string, shape?: number): Sketch => ({
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: `${id}_red`,
+          params: { color: [1, 0, 0] } },
+        { type: 'module', module_type: 'source.solid_color', instance_key: `${id}_blue`,
+          params: { color: [0, 0, 1] } },
+      ],
+      instances: {
+        [`${id}_blue`]: {
+          module_type: 'source.solid_color',
+          state: shape !== undefined
+            ? { __opacity__: 0.5, __xfade_shape__: shape }
+            : { __opacity__: 0.5 },
+        },
+      },
+    } as unknown as Sketch);
+
+    for (const [id, shape, expected] of [
+      ['layer_lin', undefined, { r: 128, g: 0, b: 128 }],
+      ['layer_trap', 1.0, { r: 0, g: 0, b: 255 }],
+    ] as const) {
+      const result = await runEngineTest({
+        width: 32, height: 32,
+        modules: ['com.nano.core'],
+        commands: [
+          { type: 'createSketch', sketchId: id, sketch: mkSketch(id, shape) },
+        ],
+        tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ],
+        captureTraceIds: ['out'],
+        waitFrames: 5,
+        dumpName: id,
+      });
+      expect(result.success).toBe(true);
+      result.trace('out').expectPixelAt(16, 16, expected, 8);
+    }
   });
 
   it('Add mode (mode=1) sums the channels: red + blue = magenta', async () => {

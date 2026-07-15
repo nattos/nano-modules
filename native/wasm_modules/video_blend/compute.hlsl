@@ -1,9 +1,14 @@
 // Video Blend — composites two input textures with a selectable blend mode.
 //   blended = mode(A.rgb, B.rgb)
-//   output  = (blended) OVER A, using B's alpha × opacity  (Porter-Duff source-over)
+//   output  = (blended) OVER A, using B's alpha × w_b  (Porter-Duff source-over)
 // Alpha is PRESERVED (not forced to 1), so a transparent B reveals A and the
 // composite carries real transparency downstream. For opaque inputs this reduces
-// to the old lerp(A, blended, opacity) with alpha 1 (backward compatible).
+// to lerp(A, blended, w_b) with alpha 1.
+// `w_b` is the top layer's fade weight, computed CPU-SIDE in main.cpp from the
+// opacity fader + the crossfade `shape` curve (sketch/xfade_shape.h) — at
+// shape 0 it IS the raw opacity (backward compatible); at shape 1 it reaches
+// full coverage mid-fade, so the middle shows the full-strength blend math
+// (Normal: B over A at full alpha).
 // Modes mirror the BlendMode enum in main.cpp (keep in lock-step).
 
 Texture2D<float4> inputA : register(t0);   // base
@@ -11,7 +16,7 @@ Texture2D<float4> inputB : register(t1);   // blend
 RWTexture2D<float4> outputTex : register(u2);
 
 cbuffer Uniforms : register(b3) {
-  float opacity;
+  float w_b;     // top coverage weight: xfade::weightB(opacity, shape)
   int mode;
   float _pad1;
   float _pad2;
@@ -55,9 +60,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float4 b = inputB[gid.xy];   // top layer
   float3 blended = saturate(blendMode(mode, a.rgb, b.rgb));
   // Source-over: composite the blended top over the base by the top's coverage
-  // (its alpha × opacity). Straight-alpha in/out. Opaque inputs → lerp(a, blended,
-  // opacity) with alpha 1 (unchanged); a transparent top reveals the base.
-  float topA = saturate(b.a * opacity);
+  // (its alpha × the shaped fade weight). Straight-alpha in/out. Opaque inputs →
+  // lerp(a, blended, w_b) with alpha 1; a transparent top reveals the base.
+  float topA = saturate(b.a * w_b);
   float outA = topA + a.a * (1.0 - topA);
   float3 outc = (outA > 1e-5)
       ? (blended * topA + a.rgb * a.a * (1.0 - topA)) / outA

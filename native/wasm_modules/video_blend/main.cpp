@@ -12,6 +12,12 @@
  * Parameters:
  *   mode    (select, default Normal) — see the BlendMode enum / shader switch
  *   opacity (Standard, default 0.5)
+ *   shape   (Standard, default 0) — crossfade curve: the fader maps to the
+ *           top's coverage through xfade::weightB (sketch/xfade_shape.h,
+ *           computed CPU-side): 0 = the legacy linear ramp (half-strength
+ *           middle), 0.5 = equal-power, 1 = full coverage by mid-fade, so the
+ *           middle shows the full-strength blend math (Normal: B over A at
+ *           full alpha — visible when B carries transparency).
  *
  * Texture I/O:
  *   Input 0: Texture A (base)
@@ -26,6 +32,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <val.h>
+#include <sketch/xfade_shape.h>
 #include "video_blend_shaders.h"
 
 namespace video_blend {
@@ -38,7 +45,7 @@ enum BlendMode {
 };
 
 struct Uniforms {
-  float opacity;
+  float w_b;   // top coverage weight = xfade::weightB(opacity, shape)
   int mode;
   float _pad1, _pad2;
 };
@@ -46,6 +53,7 @@ struct Uniforms {
 // Per-instance state. One per chain entry.
 struct State {
   float opacity = 0.5f;
+  float shape = 0.0f;
   int mode = Normal;
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -56,7 +64,7 @@ static gpu::ComputePSO s_pso;
 
 // Type-level setup: schema + shared compute PSO. Runs once per type.
 void module_init() {
-  state::init("composite.blend", {1, 0, 1},
+  state::init("composite.blend", {1, 1, 0},
     state::Schema()
       .helpField("intro",
         "## Blend\n"
@@ -70,9 +78,12 @@ void module_init() {
       .group("blend", "Blend")
         .groupHelp(
           "*Mode* picks the blend math applied to B before it's laid over A. "
-          "*Opacity* is a straight crossfade — 0 shows A untouched, 1 shows the "
-          "fully blended result — and it scales the top layer's coverage in every "
-          "mode.")
+          "*Opacity* crossfades — 0 shows A untouched, 1 shows the fully "
+          "blended result — by scaling the top layer's coverage in every mode. "
+          "*Crossfade Shape* bends that fade curve: 0 is the hard linear ramp "
+          "(both sides at half strength mid-fade), 0.5 is equal-power, and 1 "
+          "reaches full coverage by mid-fade — the middle of the fade shows "
+          "the blend math at full strength.")
       .selectField("mode", Normal, state::PrimaryInput, {
         {"Normal", Normal}, {"Add", Add}, {"Multiply", Multiply},
         {"Screen", Screen}, {"Overlay", Overlay}, {"Darken", Darken},
@@ -86,6 +97,11 @@ void module_init() {
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   /*description=*/"Crossfade: A (0) → fully blended result (1)")
         .label("Opacity", "Opac")
+      .floatField("shape", 0.f, 0.f, 1.f, state::PrimaryInput,
+                  /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
+                  /*description=*/
+                  "Fade curve: linear (0) → equal-power (0.5) → full-strength middle (1)")
+        .label("Crossfade Shape", "Shape")
       .capability(state::Capability::TimeIndependent)
       .textureField("tex_a", state::PrimaryInput)
       .textureField("tex_b", state::PrimaryInput)
@@ -122,6 +138,7 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->opacity = 0.5f;
+  s->shape = 0.0f;
   s->mode = Normal;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
@@ -142,6 +159,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     if (state::pathIs(pb + off[i], len[i], "opacity"))
       s->opacity = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "shape"))
+      s->shape = state::patchFloat(i);
     else if (state::pathIs(pb + off[i], len[i], "mode"))
       s->mode = state::patchInt(i);  // typed select/int reader
   }
@@ -157,7 +176,7 @@ void render(void* self, int vp_w, int vp_h) {
 
   if (!inputA.valid() || !inputB.valid()) return;
 
-  Uniforms u = { s->opacity, s->mode, 0, 0 };
+  Uniforms u = { xfade::weightB(s->opacity, s->shape), s->mode, 0, 0 };
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();

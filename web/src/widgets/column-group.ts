@@ -43,6 +43,7 @@ import './texture-drop-zone';
 import './global-input-control';
 import { wireModBinding, renderWireModInspector } from './wire-mod-inspector';
 import './ui-icon';
+import '../editors/xfade-curve';
 
 import type { Selectable } from '../state/types';
 import { categoryColor, effectDomain, CATEGORY_DOMAINS } from './category-color';
@@ -1423,6 +1424,13 @@ export class ColumnGroup extends MobxLitElement {
                 ?wrap=${true}
                 .binding=${this.deviceBinding(chainIdx, entry)}
               ></field-tab-bar>
+              <xfade-curve compact
+                .fieldPath=${'__xfade_shape__'}
+                .opacityField=${'__opacity__'}
+                .label=${'Crossfade Shape'}
+                .defaultValue=${0}
+                .binding=${this.deviceBinding(chainIdx, entry)}
+              ></xfade-curve>
             </div>
           ` : nothing}
           ${isCollapsed ? nothing : html`

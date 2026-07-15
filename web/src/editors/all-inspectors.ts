@@ -10,6 +10,7 @@
  * makes that impossible.
  */
 
+import './blend-inspector';
 import './shape-fold-inspector';
 import './brutal-fold-inspector';
 import './phase-fold-inspector';

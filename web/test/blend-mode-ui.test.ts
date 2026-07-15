@@ -2,8 +2,9 @@
  * Per-effect blend mode E2E (resolume shell, playground mode).
  *
  * The effect-card header gains a gear toggle right of the opacity slider; it
- * reveals an options row below the header with the `__blend__` selector (the
- * composite.blend mode vocabulary). Selecting a mode writes the reserved key
+ * reveals an options row below the header with the `__blend__` tab bar (the
+ * composite.blend mode vocabulary) and the `__xfade_shape__` crossfade-shape
+ * curve widget. Selecting a mode writes the reserved key
  * into instance state, and the executor routes the stage through the wet/dry
  * blend's mode math — asserted here by pixels: a red generator followed by a
  * blue generator at Multiply must go BLACK (red × blue), while Normal shows
@@ -62,36 +63,41 @@ describe('per-effect blend mode (gear options row)', () => {
     expect(normal!.b).toBeGreaterThan(200);
     expect(normal!.r).toBeLessThan(30);
 
-    // Find the SECOND effect card's gear button and click it.
+    // Find the SECOND effect card's (chain idx 1 = blue@0) gear button and
+    // click it. Match through the owning .effect-card — a bare index over all
+    // device-gear-btn elements would also count the column-level gear.
     const gearClicked = await page.evaluate(`(() => {
       function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
-      const gears = [];
+      let gear = null;
       for (const el of walk(document)) {
-        if (el.classList && el.classList.contains('device-gear-btn')) gears.push(el);
+        if (el.classList && el.classList.contains('device-gear-btn')
+            && el.closest('.effect-card')?.dataset?.chainIdx === '1') { gear = el; break; }
       }
-      if (gears.length < 2) return { ok: false, count: gears.length };
-      gears[1].click();
-      return { ok: true, count: gears.length };
-    })()`) as { ok: boolean; count: number };
+      if (!gear) return { ok: false };
+      gear.click();
+      return { ok: true };
+    })()`) as { ok: boolean };
     expect(gearClicked.ok).toBe(true);
     await new Promise(r => setTimeout(r, 400));
 
-    // The options row is revealed — pick Multiply (mode 2) in its field-select.
+    // The options row is revealed — it holds the `__blend__` tab bar and the
+    // `__xfade_shape__` crossfade-shape curve. Pick Multiply (mode 2) by
+    // clicking its tab segment.
     const modeSet = await page.evaluate(`(() => {
       function* walk(root) { for (const el of root.querySelectorAll('*')) { yield el; if (el.shadowRoot) yield* walk(el.shadowRoot); } }
-      let select = null;
+      let bar = null, curve = null;
       for (const el of walk(document)) {
-        if (el.tagName === 'FIELD-SELECT' && el.fieldPath === '__blend__') {
-          select = el.shadowRoot?.querySelector('select') ?? null;
-          if (select) break;
-        }
+        if (el.tagName === 'FIELD-TAB-BAR' && el.fieldPath === '__blend__') bar = el;
+        if (el.tagName === 'XFADE-CURVE' && el.fieldPath === '__xfade_shape__') curve = el;
       }
-      if (!select) return false;
-      select.value = '2';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`) as boolean;
-    expect(modeSet).toBe(true);
+      if (!bar || !curve) return { ok: false, bar: !!bar, curve: !!curve };
+      const btn = [...bar.shadowRoot.querySelectorAll('button')]
+        .find(b => b.textContent.trim() === 'Multiply');
+      if (!btn) return { ok: false, bar: true, curve: true };
+      btn.click();
+      return { ok: true, bar: true, curve: true };
+    })()`) as { ok: boolean; bar: boolean; curve: boolean };
+    expect(modeSet).toEqual({ ok: true, bar: true, curve: true });
     await new Promise(r => setTimeout(r, 1500));
 
     // The reserved key landed in instance state...
