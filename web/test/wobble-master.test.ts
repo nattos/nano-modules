@@ -24,7 +24,8 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
     expect(frame.metadata?.id).toBe('warp.legacy.wobble_master');
     const names = frame.params.map(p => p.name);
     for (const n of ['trigger', 'gate', 'amount', 'amplitude', 'frequency',
-                     'wave_speed', 'width', 'ripple', 'chroma', 'hue', 'release']) {
+                     'wave_speed', 'width', 'ripple', 'ripple_speed', 'chroma',
+                     'hue', 'release']) {
       expect(names).toContain(n);
     }
   });

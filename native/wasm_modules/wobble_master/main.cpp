@@ -47,7 +47,7 @@ static constexpr float CHROMA_GAIN  = 0.4f;
 static constexpr float CHROMA_SCALE = 0.17f;
 static constexpr float FREQ_SCALE   = 12.0f;  // frequency=1 → 12 carrier rings
 static constexpr float WAVE_SCALE   = 5.0f;   // wave_speed=1 → front travels 5 r-units/s
-static constexpr float DRIFT_SCALE  = 0.5f;   // carrier drift (rings/s) at wave_speed=1
+static constexpr float DRIFT_SCALE  = 4.0f;   // carrier drift (rings/s) at ripple_speed=1
 static constexpr float CHROMA_TRAIL_SEC = 0.37f; // afterglow decay (Wire's 0.956/frame feedback)
 static constexpr int   MAX_PULSES = 4;
 
@@ -87,6 +87,7 @@ struct State {
   float width     = 0.15f;
   float release   = 0.4f;
   float ripple    = 0.35f;
+  float ripple_speed = 0.25f;
 
   // Trigger edges + the traveling pulses (age in seconds; < 0 = free slot).
   bool   gate_prev = false, trigger_prev = false;
@@ -109,7 +110,7 @@ static inline void spawnPulse(State* s) {
 }
 
 void module_init() {
-  state::init("warp.legacy.wobble_master", {2, 0, 0},
+  state::init("warp.legacy.wobble_master", {2, 1, 0},
     state::Schema()
       .eventField("trigger", state::PrimaryInput)
       .boolField ("gate", false, state::PrimaryInput,
@@ -128,6 +129,8 @@ void module_init() {
                   "s", "How long the wobble tail lingers behind the front.")
       .floatField("ripple", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Texture under the wave: clean push (0) → oscillating shimmer (1).")
+      .floatField("ripple_speed", 0.25f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Oscillation speed of the shimmer (independent of the front).")
       .floatField("chroma", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Chromatic afterglow left behind the wave (the Wire "
                   "patch's per-channel split directions).")
@@ -202,7 +205,7 @@ void tick(void* self, double dt) {
     s->retrig_t = 0.0;
   }
 
-  s->drift += dt * (double)s->wave_speed * (double)DRIFT_SCALE;
+  s->drift += dt * (double)s->ripple_speed * (double)DRIFT_SCALE;
   if (s->drift > 1.0e6 || s->drift < -1.0e6) s->drift = std::fmod(s->drift, 1024.0);
 }
 
@@ -221,6 +224,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "width"))      s->width      = state::patchFloat(i);
     else if (state::pathIs(p, l, "release"))    s->release    = state::patchFloat(i);
     else if (state::pathIs(p, l, "ripple"))     s->ripple     = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ripple_speed")) s->ripple_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "chroma"))     s->chroma     = state::patchFloat(i);
     else if (state::pathIs(p, l, "hue"))        s->hue        = state::patchFloat(i);
     else if (state::pathIs(p, l, "center"))     { auto v = state::patchVec2(i); s->center_x = v.x; s->center_y = v.y; }
