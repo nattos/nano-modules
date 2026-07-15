@@ -94,7 +94,8 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
   it('a gated pulse emanates from the centre — distorted inside, untouched corners', async () => {
     // Slow, wide, long-tailed pulse so the front provably sits in r ∈ [~0.1,
     // 0.6] across the whole headless rAF pacing range (4–20 ms/frame × 60):
-    // wave_speed 0.1 → 0.5 r-units/s. Corners (r > 0.65) must be untouched —
+    // wave_speed 0.18 → 15·0.18² ≈ 0.5 r-units/s. Corners (r > 0.65) must be
+    // untouched —
     // the wave distorts ONLY what it has reached — while the interior behind
     // the front (long 3 s tail) differs from the resting grid.
     const grid = await runGridOnly('wm_pgrid', 'wm_pulse_grid', 60);
@@ -107,7 +108,7 @@ describe('Wobble Master (warp.legacy.wobble_master) E2E', () => {
           chain: [
             { type: 'module', module_type: 'source.grid', instance_key: 'grid@0', params: {} },
             { type: 'module', module_type: 'warp.legacy.wobble_master', instance_key: 'wm@0',
-              params: { amount: 0.0, amplitude: 1.0, wave_speed: 0.1, width: 0.3,
+              params: { amount: 0.0, amplitude: 1.0, wave_speed: 0.18, width: 0.3,
                         release: 3.0, chroma: 1.0 } },
           ],
           instances: {

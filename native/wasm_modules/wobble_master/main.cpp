@@ -13,9 +13,9 @@
  * gradient, multiplied by a conic direction field → the UV displacement, and
  * its blurred magnitude (kept in a ~0.956/frame feedback trail) gates the
  * custom YIQ "ChromaOffset" ISF. v2 keeps that character analytically: up to
- * 4 concurrent pulses tracked as ages in State, evaluated as packets in
- * wobble.hlsl (front = speed·age; tail = the release envelope mapped onto
- * distance-behind-front; chroma trail = its own longer decay). The chroma
+ * 4 concurrent pulses tracked as integrated front positions in State,
+ * evaluated as packets in wobble.hlsl (tail = the release envelope mapped
+ * onto distance-behind-front; chroma trail = its own longer decay). The chroma
  * split reuses the shared ChromaOffset helper (nano_chroma.hlsl) with the
  * Wire graph's snapshotted per-channel shift directions, and the wobble
  * carrier is biased outward (the wave inflates more than it pulls).
@@ -46,7 +46,8 @@ static constexpr float BSHIFT[2] = { -0.43f,  0.24f };
 static constexpr float CHROMA_GAIN  = 0.4f;
 static constexpr float CHROMA_SCALE = 0.17f;
 static constexpr float FREQ_SCALE   = 12.0f;  // frequency=1 → 12 carrier rings
-static constexpr float WAVE_SCALE   = 5.0f;   // wave_speed=1 → front travels 5 r-units/s
+static constexpr float WAVE_SCALE   = 15.0f;  // wave_speed=1 → front travels 15 r-units/s
+                                              // (quadratic response: v = SCALE·speed²)
 static constexpr float DRIFT_SCALE  = 4.0f;   // carrier drift (rings/s) at ripple_speed=1
 static constexpr float CHROMA_TRAIL_SEC = 0.37f; // afterglow decay (Wire's 0.956/frame feedback)
 static constexpr int   MAX_PULSES = 4;
@@ -89,13 +90,16 @@ struct State {
   float ripple    = 0.35f;
   float ripple_speed = 0.25f;
 
-  // Trigger edges + the traveling pulses (age in seconds; < 0 = free slot).
+  // Trigger edges + the traveling pulses. Fronts are INTEGRATED (front +=
+  // v·dt per tick), not derived from age — a wave_speed change accelerates
+  // in-flight pulses instead of teleporting them. front < 0 = free slot.
   bool   gate_prev = false, trigger_prev = false;
   bool   gate = false;
   double retrig_t = 0.0;
-  double pulse_age[MAX_PULSES] = { -1.0, -1.0, -1.0, -1.0 };
+  double pulse_front[MAX_PULSES] = { -1.0, -1.0, -1.0, -1.0 };
   int    pulse_next = 0;
   double drift = 0.0;
+  double last_step = 0.0;  // front travel last tick (r units) — smears the edge
 };
 
 static gpu::ComputePSO s_pso;
@@ -104,13 +108,18 @@ static inline float clamp01(float x) {
   return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
 }
 
+static inline float waveVelocity(const State* s) {
+  float x = clamp01(s->wave_speed);
+  return x * x * WAVE_SCALE;   // r-units/s
+}
+
 static inline void spawnPulse(State* s) {
-  s->pulse_age[s->pulse_next] = 0.0;
+  s->pulse_front[s->pulse_next] = 0.0;
   s->pulse_next = (s->pulse_next + 1) % MAX_PULSES;
 }
 
 void module_init() {
-  state::init("warp.legacy.wobble_master", {2, 1, 0},
+  state::init("warp.legacy.wobble_master", {2, 2, 0},
     state::Schema()
       .eventField("trigger", state::PrimaryInput)
       .boolField ("gate", false, state::PrimaryInput,
@@ -169,10 +178,11 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  for (int i = 0; i < MAX_PULSES; i++) s->pulse_age[i] = -1.0;
+  for (int i = 0; i < MAX_PULSES; i++) s->pulse_front[i] = -1.0;
   s->pulse_next = 0;
   s->drift = 0.0;
   s->retrig_t = 0.0;
+  s->last_step = 0.0;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
 }
@@ -182,16 +192,17 @@ void tick(void* self, double dt) {
   if (!s) return;
   if (dt < 0.0) dt = 0.0;
 
-  // Advance pulses; retire once the front AND both trails are past the far
+  // Advance the fronts; retire once a front AND both trails are past the far
   // corner (r can reach ~2.3 with an off-centre origin).
-  const double v = (double)s->wave_speed * (double)WAVE_SCALE;
+  const double v = (double)waveVelocity(s);
   const double trail = 6.0 * v * ((double)s->release * 0.75 > (double)CHROMA_TRAIL_SEC
                                    ? (double)s->release * 0.75 : (double)CHROMA_TRAIL_SEC);
+  s->last_step = v * dt;
   for (int i = 0; i < MAX_PULSES; i++) {
-    if (s->pulse_age[i] < 0.0) continue;
-    s->pulse_age[i] += dt;
-    if (s->pulse_age[i] * v - trail > 2.3 || s->pulse_age[i] > 30.0)
-      s->pulse_age[i] = -1.0;
+    if (s->pulse_front[i] < 0.0) continue;
+    s->pulse_front[i] += s->last_step;
+    if (s->pulse_front[i] - trail > 2.3 || s->pulse_front[i] > 500.0)
+      s->pulse_front[i] = -1.0;
   }
 
   // Held gate auto-retriggers (the patch's beat-synced Pulse Retrigger loop).
@@ -250,8 +261,11 @@ void render(void* self, int vp_w, int vp_h) {
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
 
-  const float v = s->wave_speed * WAVE_SCALE;
-  const float w = s->width < 0.01f ? 0.01f : s->width;
+  const float v = waveVelocity(s);
+  // Smear the leading edge over the last frame's travel so a fast front stays
+  // continuous frame-to-frame instead of strobing in disconnected bands.
+  float w = s->width < 0.01f ? 0.01f : s->width;
+  w += (float)s->last_step;
 
   int min_dim = vp_w < vp_h ? vp_w : vp_h;
   Uniforms u = {};
@@ -270,7 +284,7 @@ void render(void* self, int vp_w, int vp_h) {
   u.tail_len   = v * s->release * 0.75f;
   if (u.tail_len < 1e-3f) u.tail_len = 1e-3f;
   for (int i = 0; i < MAX_PULSES; i++)
-    u.fronts[i] = s->pulse_age[i] >= 0.0 ? (float)(s->pulse_age[i] * (double)v) : -1000.0f;
+    u.fronts[i] = s->pulse_front[i] >= 0.0 ? (float)s->pulse_front[i] : -1000.0f;
   // chroma 0.5 = the patch's snapshot strength (Shift·Gain at typical field).
   const float cs = clamp01(s->chroma) * 2.0f * CHROMA_GAIN * CHROMA_SCALE;
   u.shift_rg[0] = RSHIFT[0] * cs; u.shift_rg[1] = RSHIFT[1] * cs;
