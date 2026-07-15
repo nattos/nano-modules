@@ -22,19 +22,19 @@ cbuffer Uniforms : register(b3) {
   float drift;      // carrier phase (accumulated, rings)
   float freq;       // carrier spatial frequency (# rings)
   float amp;        // resolved displacement amplitude (uv, short-axis fraction)
-  float chroma;     // resolved chroma split reach (uv, short-axis fraction)
   float hue_shift;  // YIQ hue rotation of the split (radians)
   float center_x;   // pulse centre (uv)
   float center_y;
   float ripple;     // texture under the wave: clean push (0) → oscillation (1)
+  float floor_amt;  // standing concentric-sine floor (legacy manual mode)
   float aspect_x;   // min(W,H)/W
   float aspect_y;   // min(W,H)/H
-  float floor_amt;  // standing concentric-sine floor (legacy manual mode)
   float width;      // packet leading-edge width (r units, > 0)
-  float4 fronts;    // per-pulse front radius (r units); large negative = inactive
   float tail_len;   // displacement decay length behind a front (r units, > 0)
-  float chroma_len; // chroma afterglow decay length (r units, > 0)
-  float _p0, _p1;
+  float4 fronts;    // per-pulse front radius (r units); large negative = inactive
+  float4 shift_rg;  // resolved R (.xy) and G (.zw) channel uv shifts at full field
+  float4 shift_b;   // resolved B channel uv shift (.xy); .z = chroma afterglow
+                    // decay length (r units, > 0); .w unused
 };
 
 static const float TAU     = 6.28318530717958647692;
@@ -66,23 +66,25 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float x  = max(xr, 0.0);
     float edge = sin(min(x / width, 1.0) * HALF_PI);
     push += on * edge * exp(-x / tail_len);
-    glow += on * edge * exp(-x / chroma_len);
+    glow += on * edge * exp(-x / shift_b.z);
   }
 
+  // Outward bias: negative carrier lobes are damped so the wave "inflates"
+  // more than it pulls back in.
   float carrier = sin(r * freq * TAU - drift * TAU);
+  float wob = carrier >= 0.0 ? carrier : carrier * 0.35;
   float fade = smoothstep(0.0, 0.06, r);   // singularity guard at the centre
-  float m = fade * (push * (1.0 - ripple + ripple * carrier) + floor_amt * carrier);
-  float2 disp = dir * m * amp;             // in circular units
+  float m = fade * (push * (1.0 - ripple + ripple * wob) + floor_amt * wob);
+  float2 disp = dir * m * amp * asp;       // circular units → uv via `asp`
 
   // Chroma split rides its own field so the fringe survives behind the wave
-  // (independent of the instantaneous displacement).
-  float cf = fade * saturate(glow + floor_amt * abs(carrier)) * chroma;
-  float2 cvec = dir * cf;
-
-  // Convert back to uv via `asp` (round → uv). Red pushed out, blue pulled in.
-  float2 sR = (disp + cvec) * asp;
-  float2 sG = disp * asp;
-  float2 sB = (disp - cvec) * asp;
+  // (independent of the instantaneous displacement). Directions are the Wire
+  // graph's snapshotted per-channel shift vectors, applied in uv space like
+  // the ChromaOffset ISF.
+  float cf = fade * saturate(glow + floor_amt * abs(carrier));
+  float2 sR = disp + shift_rg.xy * cf;
+  float2 sG = disp + shift_rg.zw * cf;
+  float2 sB = disp + shift_b.xy * cf;
 
   float4 col = nano_chroma_offset(inputTex, linearSampler, uv, sR, sG, sB, hue_shift);
   outputTex[gid.xy] = col;

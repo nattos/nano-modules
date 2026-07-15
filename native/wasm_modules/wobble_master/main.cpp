@@ -16,8 +16,10 @@
  * 4 concurrent pulses tracked as ages in State, evaluated as packets in
  * wobble.hlsl (front = speed·age; tail = the release envelope mapped onto
  * distance-behind-front; chroma trail = its own longer decay). The chroma
- * split reuses the shared ChromaOffset helper (nano_chroma.hlsl) as a RADIAL
- * dispersion. `amount` keeps a standing concentric sine (manual/wired mode).
+ * split reuses the shared ChromaOffset helper (nano_chroma.hlsl) with the
+ * Wire graph's snapshotted per-channel shift directions, and the wobble
+ * carrier is biased outward (the wave inflates more than it pulls).
+ * `amount` keeps a standing concentric sine (manual/wired mode).
  *
  * Stateful pulses → no temporal capability, no is_identity (a triggerable
  * stateful effect must keep ticking — see chroma_wobble).
@@ -33,7 +35,16 @@
 namespace wobble_master {
 
 static constexpr float AMP_SCALE    = 0.06f;  // amplitude=1 → ~6% short-axis push
-static constexpr float CHROMA_SCALE = 0.025f; // chroma=1 → ~2.5% short-axis split
+// Per-channel split directions: the Wire graph's snapshotted RShift/GShift/
+// BShift constants (ISF node 357; the patch re-rolls them per trigger, these
+// are the saved values). Y negated: ISF uv is y-up, ours is y-down. GAIN is
+// the patch's Gain constant; CHROMA_SCALE stands in for the offsetMap's
+// typical magnitude so chroma=0.5 lands at the patch's snapshot strength.
+static constexpr float RSHIFT[2] = {  0.21f,  0.33f };
+static constexpr float GSHIFT[2] = {  0.03f, -0.57f };
+static constexpr float BSHIFT[2] = { -0.43f,  0.24f };
+static constexpr float CHROMA_GAIN  = 0.4f;
+static constexpr float CHROMA_SCALE = 0.17f;
 static constexpr float FREQ_SCALE   = 12.0f;  // frequency=1 → 12 carrier rings
 static constexpr float WAVE_SCALE   = 5.0f;   // wave_speed=1 → front travels 5 r-units/s
 static constexpr float DRIFT_SCALE  = 0.5f;   // carrier drift (rings/s) at wave_speed=1
@@ -44,21 +55,20 @@ struct Uniforms {
   float drift;
   float freq;
   float amp;
-  float chroma;
   float hue_shift;
   float center_x;
   float center_y;
   float ripple;
+  float floor_amt;
   float aspect_x;
   float aspect_y;
-  float floor_amt;
   float width;
-  float fronts[MAX_PULSES];
   float tail_len;
-  float chroma_len;
-  float _p0, _p1;
+  float fronts[MAX_PULSES];
+  float shift_rg[4];  // R.xy, G.xy
+  float shift_b[4];   // B.xy, chroma_len, unused
 };
-static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 96, "Uniforms layout mismatch");
 
 struct State {
   gpu::Buffer  uniform_buf;
@@ -119,7 +129,8 @@ void module_init() {
       .floatField("ripple", 0.35f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Texture under the wave: clean push (0) → oscillating shimmer (1).")
       .floatField("chroma", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Chromatic afterglow left behind the wave (R out / B in).")
+                  nullptr, "Chromatic afterglow left behind the wave (the Wire "
+                  "patch's per-channel split directions).")
       .floatField("hue", 0.0f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
                   nullptr, "Hue rotation of the colour split.")
       .vec2Field ("center", 0.0f, 0.0f, state::PrimaryInput)
@@ -243,21 +254,26 @@ void render(void* self, int vp_w, int vp_h) {
   u.drift      = (float)s->drift;
   u.freq       = s->frequency * FREQ_SCALE + 0.5f;
   u.amp        = s->amplitude * AMP_SCALE;
-  u.chroma     = clamp01(s->chroma) * CHROMA_SCALE;
   u.hue_shift  = s->hue * 6.28318530717958647692f;
   // center is cover-square (0 = centre); map to uv (0.5 + 0.5*c on the short axis).
   u.center_x   = 0.5f + 0.5f * s->center_x * ((float)min_dim / (float)vp_w);
   u.center_y   = 0.5f + 0.5f * s->center_y * ((float)min_dim / (float)vp_h);
   u.ripple     = clamp01(s->ripple);
+  u.floor_amt  = clamp01(s->amount);
   u.aspect_x   = (float)min_dim / (float)vp_w;
   u.aspect_y   = (float)min_dim / (float)vp_h;
-  u.floor_amt  = clamp01(s->amount);
   u.width      = w;
-  for (int i = 0; i < MAX_PULSES; i++)
-    u.fronts[i] = s->pulse_age[i] >= 0.0 ? (float)(s->pulse_age[i] * (double)v) : -1000.0f;
   u.tail_len   = v * s->release * 0.75f;
   if (u.tail_len < 1e-3f) u.tail_len = 1e-3f;
-  u.chroma_len = v * CHROMA_TRAIL_SEC > w ? v * CHROMA_TRAIL_SEC : w;
+  for (int i = 0; i < MAX_PULSES; i++)
+    u.fronts[i] = s->pulse_age[i] >= 0.0 ? (float)(s->pulse_age[i] * (double)v) : -1000.0f;
+  // chroma 0.5 = the patch's snapshot strength (Shift·Gain at typical field).
+  const float cs = clamp01(s->chroma) * 2.0f * CHROMA_GAIN * CHROMA_SCALE;
+  u.shift_rg[0] = RSHIFT[0] * cs; u.shift_rg[1] = RSHIFT[1] * cs;
+  u.shift_rg[2] = GSHIFT[0] * cs; u.shift_rg[3] = GSHIFT[1] * cs;
+  u.shift_b[0]  = BSHIFT[0] * cs; u.shift_b[1]  = BSHIFT[1] * cs;
+  u.shift_b[2]  = v * CHROMA_TRAIL_SEC > w ? v * CHROMA_TRAIL_SEC : w;
+  u.shift_b[3]  = 0.0f;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
