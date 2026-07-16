@@ -107,14 +107,16 @@ static inline V3 m3Apply(const M3& r, V3 v) {
 // ---------------------------------------------------------------------------
 
 // Equilateral triangular prism: cross-section in XZ (radius 0.52 at angles
-// 90/210/330 deg), axis vertical, rings at y = +-0.575.
+// 30/150/270 deg — a long edge LEADS toward the camera at rest, so the
+// frontal view shows two differently-lit faces meeting at a center edge
+// instead of one flat rectangle), axis vertical, rings at y = +-0.575.
 static const V3 kPrismVerts[6] = {
-    {0.000000f, -0.575f, 0.520f},   // b0
-    {-0.450333f, -0.575f, -0.260f}, // b1
-    {0.450333f, -0.575f, -0.260f},  // b2
-    {0.000000f, 0.575f, 0.520f},    // t0
-    {-0.450333f, 0.575f, -0.260f},  // t1
-    {0.450333f, 0.575f, -0.260f},   // t2
+    {0.450333f, -0.575f, 0.260f},   // b0
+    {-0.450333f, -0.575f, 0.260f},  // b1
+    {0.000000f, -0.575f, -0.520f},  // b2 (leading edge)
+    {0.450333f, 0.575f, 0.260f},    // t0
+    {-0.450333f, 0.575f, 0.260f},   // t1
+    {0.000000f, 0.575f, -0.520f},   // t2 (leading edge)
 };
 static uint8_t kPrismTris[8][3] = {
     {0, 1, 4}, {0, 4, 3},   // side b0-b1
@@ -454,7 +456,9 @@ void render(void* self, int vp_w, int vp_h) {
   if (!out.valid()) return;
 
   // --- Pose ---
-  const float pitch = ((s->tilt - 0.5f) * 80.0f) * (kPi / 180.0f);
+  // Tilt above 0.5 pitches the shape's top edge TOWARD the camera (you look
+  // down onto the lit top face); below 0.5 reveals the underside.
+  const float pitch = ((0.5f - s->tilt) * 80.0f) * (kPi / 180.0f);
   M3 rot;
   if (s->motion == MOTION_ARC) {
     const float arc_half = (20.0f + 140.0f * s->arc) * (kPi / 180.0f);
