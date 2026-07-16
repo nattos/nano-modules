@@ -60,6 +60,21 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var flash_particles update prefill vs fs_color fs_motion
 echo "  flash_particles shaders compiled (SPV: update + prefill + vs + fs_color + fs_motion)"
 
+# monolith — glassy convex-primitive generator (CPU transform + painter sort).
+#   prefill (compute) — copies tex_in into tex_out for the raster pass
+#                       to alpha-blend over.
+#   vs / fs           — vertex-pull passthrough + flat color; all 3D math
+#                       happens on the CPU (no z-buffer on the platform).
+compile_shaders_compute_var_spv monolith prefill
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../monolith/vs.hlsl -Fo "$TMP_DIR/monolith_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../monolith/fs.hlsl -Fo "$TMP_DIR/monolith_fs.spv"
+_emit_spv_header_var monolith prefill vs fs
+echo "  monolith shaders compiled (SPV: prefill + vs + fs)"
+
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update
 compile_shaders_compute_var_spv flow_swarm prefill
@@ -390,6 +405,7 @@ wasm_build \
   ../smear/main.cpp \
   ../line_reconstruct/main.cpp \
   ../lens/main.cpp \
-  ../envelope_warp/main.cpp
+  ../envelope_warp/main.cpp \
+  ../monolith/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

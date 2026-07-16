@@ -36,6 +36,7 @@ NANO_DECLARE_INSTANCE_EFFECT(smear)
 NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
 NANO_DECLARE_INSTANCE_EFFECT(lens)
 NANO_DECLARE_INSTANCE_EFFECT(envelope_warp)
+NANO_DECLARE_INSTANCE_EFFECT(monolith)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
@@ -325,6 +326,26 @@ void nano_module_main() {
         "la-camera",
         NANO_INSTANCE_LIFECYCLE(lens),
         &lens::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "source.mesh.monolith",
+        "Monolith",
+        "Glassy 3D primitive generator — the 1:4:9 monolith slab from 2001 or "
+        "an equilateral triangular prism — alpha-composited over the input "
+        "with up to three concentric echo shells at growing scale and fading "
+        "opacity. The whole 3D pipeline (rotation, perspective, back-face "
+        "shading, painter's depth sort) runs on the CPU per frame, so "
+        "semi-transparent solids read as true tinted glass: far faces and "
+        "inner shells show through near ones. Motion is an eased yaw Arc, a "
+        "two-axis incommensurate Tumble, or an Arcing Tumble whose angular "
+        "speed swells and relaxes; Sync locks one motion cycle to N bars of "
+        "the host transport.",
+        "source",
+        "generator,3d,mesh,monolith,prism,cube,glass,transparent,rotate,tumble,concentric,2001",
+        "la-cube",
+        NANO_INSTANCE_LIFECYCLE(monolith),
     });
 }
 
