@@ -2,9 +2,11 @@
 // rings (circle / square / triangle) over a background, one compute dispatch.
 //
 // Each active "voice" contributes a ring at its own scale (cover-square units).
-// Rings are hard-cut solid (no fade); antialiased with a fixed-width smoothstep
-// band (house style — no fwidth in this tree). Composited alpha-over onto a
-// background chosen by composite_mode (black / transparent / custom / input).
+// Strokes have sharp corners (see sb_ring_cov) and are either hard-cut solid
+// or shaded by a smooth across-stroke bell (sb_shade, tiltable inner<->outer);
+// antialiased with a fixed-width smoothstep band (house style — no fwidth in
+// this tree). Composited alpha-over onto a background chosen by
+// composite_mode (black / transparent / custom / input).
 
 #include "common.hlsl"
 
@@ -37,9 +39,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float2 dir = (dot(p, p) > 1e-12) ? normalize(p) : float2(1.0, 0.0);
     float disp = sb_distort(dir * s, u_dist_seeds[i / 4u][i % 4u]);
     float2 pr = sb_unrotate(p, u_rotations[i / 4u][i % 4u]);
-    float d   = sd_shape(pr / s, u_shape_kind) * s - disp;  // push/pull the boundary
-    float cov = smoothstep(half_t + aa, half_t - aa, abs(d));
+    float se  = s + disp;
+    float cov = sb_ring_cov(pr, se, half_t, aa, u_shape_kind);
     if (cov <= 0.0) continue;
+    cov *= sb_shade(sb_ring_band(pr, se, half_t, u_shape_kind));
     float a = u_color.a * cov;                        // alpha-over
     acc.rgb = lerp(acc.rgb, u_color.rgb, a);
     acc.a   = a + acc.a * (1.0 - a);

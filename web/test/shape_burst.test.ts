@@ -113,11 +113,73 @@ describe('source.shape_burst E2E', () => {
     r.trace('out').expectCoverage((c) => c.r > 200 && c.g > 200 && c.b > 200, { min: 0.001 });
   });
 
+  it('square corners are sharp (no rounding from the stroke offset)', async () => {
+    // Fixed square: min=max=0.55, thickness 0.2 → outer boundary 0.65. At
+    // 256×256, 1 cover unit = 128 px, centre (128,128). The corner-tip region
+    // beyond the old SDF-offset rounding arc is cover (0.628..0.65) on both
+    // axes → pixels 208..210. Sharp corners fill it; rounded left it black.
+    const r = await runEngineTest({
+      width: 256, height: 256,
+      modules: ['com.nano.testonly', 'com.nano.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: 'burst_corner', sketch: buildSketch({
+          shape: 1, min_scale: 0.55, max_scale: 0.55, thickness: 0.2,
+          color: [1, 1, 1, 1], manual: 0.5, composite: 0,
+        }) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'burst_corner' } },
+        ]},
+      ],
+      waitFrames: 4,
+      captureTraceIds: ['out'],
+      dumpName: 'burst_corner',
+    });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    let bright = 0;
+    for (let y = 208; y <= 210; y++)
+      for (let x = 208; x <= 210; x++)
+        if (f.pixelAt(x, y).r > 150) bright++;
+    expect(bright).toBeGreaterThanOrEqual(6);
+  });
+
+  it('gradient shading dims the stroke edges but keeps a bright core', async () => {
+    const thick = { ...RING, thickness: 0.2, shape: 0, composite: 0 };
+    const solid = await render('burst_shade_solid', { ...thick, shading: 0 }, 'burst_shade_solid');
+    const grad = await render('burst_shade_grad', { ...thick, shading: 1 }, 'burst_shade_grad');
+    const white = (f: any) => { let n = 0; f.forEachPixel((c: any) => { if (c.r > 240) n++; }); return n; };
+    const solidWhite = white(solid.trace('out'));
+    const gradWhite = white(grad.trace('out'));
+    expect(gradWhite).toBeGreaterThan(0);                 // the bell peak still hits full alpha
+    expect(gradWhite).toBeLessThan(solidWhite * 0.6);     // ...but the flanks fall off
+    grad.trace('out').expectDifferentFrom(solid.trace('out'), 20);
+  });
+
+  it('shade tilt slides the bright core inner <-> outer', async () => {
+    // Circle, centre (48,48), scale 0.55 → mid radius ~26 px, half-thickness
+    // ~5 px. The mean radius of bright pixels must move with the tilt sign
+    // (positive = inner, matching Motion's Tilt convention).
+    const thick = { ...RING, thickness: 0.2, shape: 0, composite: 0, shading: 1 };
+    const inner = await render('burst_stilt_in', { ...thick, shade_tilt: 1.0 }, 'burst_stilt_in');
+    const outer = await render('burst_stilt_out', { ...thick, shade_tilt: -1.0 }, 'burst_stilt_out');
+    const meanRadius = (f: any) => {
+      let sum = 0, n = 0;
+      f.forEachPixel((c: any, x: number, y: number) => {
+        if (c.r > 200) { sum += Math.hypot(x - 48, y - 48); n++; }
+      });
+      expect(n).toBeGreaterThan(0);
+      return sum / n;
+    };
+    const rIn = meanRadius(inner.trace('out'));
+    const rOut = meanRadius(outer.trace('out'));
+    expect(rIn).toBeLessThan(rOut - 2);
+  });
+
   it('auto_rate self-fires and produces output', async () => {
     // No manual voice; rely on Poisson auto-trigger over several frames.
     const r = await render('burst_auto',
       { thickness: 0.1, min_scale: 0.1, max_scale: 1.0, color: [1, 1, 1, 1],
-        manual: 0, auto_rate: 1.0, composite: 0 },
+        manual: 0, auto_mode: 1 /* Random */, auto_rate: 1.0, composite: 0 },
       'burst_auto', /*withInput=*/false, /*waitFrames=*/16);
     r.trace('out').expectNotSolidColor({ r: 0, g: 0, b: 0 }, 5);
   });
@@ -138,7 +200,8 @@ describe('source.shape_burst E2E', () => {
           instance_key: 'burst@0',
           params: {
             thickness, min_scale: 0.1, max_scale: 1.3, color: [1, 1, 1, 1],
-            manual: 0, auto_rate: 1.0, duration: 0.2, composite: 0, motion_strength, tilt,
+            manual: 0, auto_mode: 1 /* Random */, auto_rate: 1.0, duration: 0.2,
+            composite: 0, motion_strength, tilt,
           },
         },
         {

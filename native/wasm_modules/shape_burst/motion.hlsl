@@ -41,12 +41,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float2 dir = (dot(p, p) > 1e-12) ? normalize(p) : float2(1.0, 0.0);
     float disp = sb_distort(dir * s, u_dist_seeds[i / 4u][i % 4u]);
     float2 pr = sb_unrotate(p, u_rotations[i / 4u][i % 4u]);
-    float d   = sd_shape(pr / s, u_shape_kind) * s - disp;
-    float cov = smoothstep(half_t + aa, half_t - aa, abs(d));
+    float se  = s + disp;
+    float cov = sb_ring_cov(pr, se, half_t, aa, u_shape_kind);
     if (cov <= best_cov) continue;                 // keep the nearest/strongest ring
 
     // Signed position across the stroke: -1 inner edge, +1 outer edge.
-    float band  = clamp(d / half_t, -1.0, 1.0);
+    float band = sb_ring_band(pr, se, half_t, u_shape_kind);
     float tiltf = max(1.0 - u_tilt * band, 0.0);   // tilt>0 → inner stronger
 
     // Radial velocity of the scaling boundary, in cover-square units/frame,

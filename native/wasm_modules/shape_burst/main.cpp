@@ -5,7 +5,8 @@
  * trigger surface), but instead of a scalar it RENDERS a shape. Each trigger
  * fires a "voice": a ring (circle / square / triangle) whose scale ramps from
  * min_scale → max_scale over `duration`, shaped by an easing curve, drawn hard-
- * cut solid (no fade) then gone. All bursts are concentric about `center`.
+ * cut (solid or gradient-shaded across the stroke) then gone. All bursts are
+ * concentric about `center`.
  *
  * Trigger surface (shared with env_adsr, style guide §8.1 / §8.2):
  *   auto_mode (select)— the shared self-fire block (effect_auto_trigger.h):
@@ -39,6 +40,7 @@
 namespace shape_burst {
 
 enum Shape { ShapeCircle = 0, ShapeSquare = 1, ShapeTriangle = 2 };
+enum Shading { ShadeSolid = 0, ShadeGradient = 1 };
 enum Retrigger { RetrigReset = 0, RetrigLegato = 1, RetrigPoly = 2 };
 enum Composite { CompBlack = 0, CompTransparent = 1, CompCustom = 2, CompInput = 3 };
 
@@ -66,14 +68,14 @@ struct Uniforms {
   uint32_t count;             // u_count
   float tilt;                 // u_tilt
   float motion_strength;      // u_motion_strength
-  uint32_t _p0;
+  uint32_t shading;           // u_shading
   float dist_amount;          // u_dist_amount
   float dist_freq;            // u_dist_freq
   float dist_radius;          // u_dist_radius
   float dist_soft;            // u_dist_soft
   float anchor_x, anchor_y;   // u_anchor
   float twitch_strength;      // u_twitch_strength
-  float _p1;
+  float shade_tilt;           // u_shade_tilt
   float scales[kMaxVoices];    // u_scales (== float4[4])
   float speeds[kMaxVoices];    // u_speeds (== float4[4])
   float rotations[kMaxVoices]; // u_rotations (== float4[4])
@@ -85,6 +87,8 @@ struct State {
   int shape = ShapeCircle;
   float min_scale = 0.05f, max_scale = 1.20f;
   float thickness = 0.03f;
+  int   shading = ShadeSolid;
+  float shade_tilt = 0.0f;
   float center[2] = { 0.0f, 0.0f };
   float curve = 0.0f;
   float rotation = 0.0f;         // base shape rotation (-1..1 → ±π)
@@ -206,7 +210,7 @@ static void on_state_ready(void* self) {
 void module_init() {
   // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
   // into the Trigger group (it takes and returns the Schema&).
-  state::init("source.shape_burst", {1, 0, 3},
+  state::init("source.shape_burst", {1, 1, 0},
     fx::AutoTrigger::fields(
     state::Schema()
       .helpField("intro",
@@ -224,16 +228,22 @@ void module_init() {
           "The ring geometry. *Shape* picks circle / square / triangle; *Min* and "
           "*Max Scale* are the start/end radii in aspect-correct screen units "
           "(1 ≈ the viewport edge). *Thickness* is the stroke width and *Curve* "
-          "bends the growth (positive = fast-out / snappier). *Center* moves the "
-          "origin all bursts emanate from. *Rotation* spins squares/triangles "
-          "(circles are symmetric); *Rotation Jitter* gives each triggered burst "
-          "a random spin captured when it fires.")
+          "bends the growth (positive = fast-out / snappier). *Shading* draws "
+          "the stroke **Solid** or as a smooth **Gradient** across its width (a "
+          "soft bell of transparency); *Shade Tilt* slides the bright core "
+          "toward the inner (+) or outer (-) edge, like Motion's *Tilt*. "
+          "*Center* moves the origin all bursts emanate from. *Rotation* spins "
+          "squares/triangles (circles are symmetric); *Rotation Jitter* gives "
+          "each triggered burst a random spin captured when it fires.")
       .selectField("shape", ShapeCircle, state::PrimaryInput,
                    {{"Circle", ShapeCircle}, {"Square", ShapeSquare},
                     {"Triangle", ShapeTriangle}}).label("Shape", "Shape")
       .floatField("min_scale", 0.05f, 0.f, 2.f, state::PrimaryInput).label("Min Scale", "Min")
       .floatField("max_scale", 1.20f, 0.f, 2.f, state::PrimaryInput).label("Max Scale", "Max")
       .floatField("thickness", 0.03f, 0.f, 0.5f, state::PrimaryInput).label("Thickness", "Thick")
+      .selectField("shading", ShadeSolid, state::PrimaryInput,
+                   {{"Solid", ShadeSolid}, {"Gradient", ShadeGradient}}).label("Shading", "Shade")
+      .floatField("shade_tilt", 0.0f, -1.f, 1.f, state::SecondaryInput).label("Shade Tilt", "STilt")
       .floatField("curve", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Curve", "Curve")
       .floatField("rotation", 0.0f, -1.f, 1.f, state::PrimaryInput).label("Rotation", "Rot")
       .floatField("rotation_jitter", 0.0f, 0.f, 1.f, state::PrimaryInput).label("Rotation Jitter", "RotJit")
@@ -411,6 +421,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "min_scale"))  s->min_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "max_scale"))  s->max_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "thickness"))  s->thickness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "shading"))    s->shading = state::patchInt(i);
+    else if (state::pathIs(p, l, "shade_tilt")) s->shade_tilt = state::patchFloat(i);
     else if (state::pathIs(p, l, "curve"))      s->curve = state::patchFloat(i);
     else if (state::pathIs(p, l, "rotation"))   s->rotation = state::patchFloat(i);
     else if (state::pathIs(p, l, "rotation_jitter")) s->rotation_jitter = state::patchFloat(i);
@@ -465,14 +477,14 @@ static void fillUniforms(State* s, int vp_w, int vp_h, Uniforms& u) {
   u.px = maxDim > 0 ? 2.0f / (float)maxDim : 0.002f;   // one pixel in cover-square units
   u.tilt = s->tilt;
   u.motion_strength = s->motion_strength;
-  u._p0 = 0;
+  u.shading = (uint32_t)s->shading;
   u.dist_amount = s->distort * 0.4f;   // map [0,1] → up to 0.4 cover-square push
   u.dist_freq = s->distort_freq;
   u.dist_radius = s->distort_radius;
   u.dist_soft = s->distort_softness;
   u.anchor_x = s->anchor[0]; u.anchor_y = s->anchor[1];
   u.twitch_strength = s->twitch_strength;
-  u._p1 = 0.0f;
+  u.shade_tilt = s->shade_tilt < -1.0f ? -1.0f : (s->shade_tilt > 1.0f ? 1.0f : s->shade_tilt);
   for (int i = 0; i < kMaxVoices; i++) {
     u.scales[i] = -1.0f; u.speeds[i] = 0.0f; u.rotations[i] = 0.0f; u.dist_seeds[i] = 0.0f;
   }
