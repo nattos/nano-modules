@@ -644,5 +644,36 @@ TEST_CASE("mod.source.adsr auto-trigger: Off default / Random / Beats", "[effect
   CHECK(countFires("beats_bar",     Div1Bar,  0.0f, 1.0, 4.0) == 4);  // 1 bar → 1/bar × 4 bars
   CHECK(countFires("beats_custom",  DivCustom, 3.0f, 3.0, 2.0) == 6); // Custom 3/bar × 2 bars
 
+  // D — GRID LOCK: arming mid-bar must not offset the grid. Seeded at phase
+  // 0.3 with a 1/4 division, the fires land ON the transport's beat lines
+  // (0.5, 0.75, 0.0, 0.25...), not a quarter-bar after the arm point (0.55).
+  {
+    EffectInstance* inst = rt.instanceFor("mod.source.adsr", "beats_locked");
+    REQUIRE(inst != nullptr);
+    inst->setParamFloat("auto_mode", static_cast<float>(AutoBeats));
+    inst->setParamFloat("auto_beats", static_cast<float>(DivBeat));
+    inst->setParamFloat("mode", 0.0f);       // Decay: instant attack → a 1-frame spike
+    inst->setParamFloat("decay", 0.0f);
+
+    fs.bar_phase = 0.3;
+    inst->doTick(kDt);                       // seed BeatTick at an OFF-grid phase
+
+    const int steps = 1000;                  // one full bar in 0.001 increments
+    std::vector<double> fire_bp;
+    bool high = false;
+    for (int i = 1; i <= steps; i++) {
+      fs.bar_phase = std::fmod(0.3 + (double)i / steps, 1.0);
+      inst->doTick(kDt);
+      const bool now = out() > 0.5;
+      if (now && !high) fire_bp.push_back(fs.bar_phase);
+      high = now;
+    }
+    REQUIRE(fire_bp.size() == 4);
+    CHECK(fire_bp[0] == Catch::Approx(0.5).margin(0.005));
+    CHECK(fire_bp[1] == Catch::Approx(0.75).margin(0.005));
+    CHECK(fire_bp[2] == Catch::Approx(0.0).margin(0.005));   // the bar line itself
+    CHECK(fire_bp[3] == Catch::Approx(0.25).margin(0.005));
+  }
+
   host.shutdown();
 }

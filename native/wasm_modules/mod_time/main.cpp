@@ -53,8 +53,8 @@ struct State {
   double beats_free = 0.0;
   // Beats+Locked bar tracker: barPhase wraps every bar, so count the wraps and
   // reconstruct t = (bars + barPhase) * 4 exactly — drift-free and phase-locked
-  // to the host (fx::BeatTick isn't usable here: it seeds its accumulator at 0,
-  // giving an offset clock, and we need the bar-aligned one).
+  // to the host (same reconstruction fx::BeatTick::effectiveBeats now does;
+  // this predates the grid-locked BeatTick and stays self-contained).
   double prev_bar_phase = -1.0;  // sentinel: -1 = unseeded
   long   bars = 0;
 };
