@@ -51,6 +51,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 NANO_DECLARE_INSTANCE_EFFECT(mod_combine)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
+NANO_DECLARE_INSTANCE_EFFECT(mod_latch)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_time)
 
@@ -242,6 +243,17 @@ void nano_module_main() {
         "modulation,flip,toggle,latch,takeover,pickup,trigger,shaper",
         "la-toggle-on",
         NANO_INSTANCE_LIFECYCLE(mod_flip),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.latch",
+        "Latch",
+        "Sample-and-hold latch: a trigger snapshots the input into a held value; a reset drops it back to Initial Value",
+        "mod",
+        "modulation,latch,sample,hold,snapshot,freeze,step,trigger,reset,shaper",
+        "la-thumbtack",
+        NANO_INSTANCE_LIFECYCLE(mod_latch),
     });
 
     nano::registerEffect({
