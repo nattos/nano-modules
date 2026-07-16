@@ -2,18 +2,22 @@
 // transient sharpener core (sketch/transient_shaper.h) backing
 // mod.shaper.transient_shaper.
 //
-// The synthetic signal models real Resolume FFT bass captures (trance,
-// four-on-the-floor): the level rides an ELEVATED floor (~0.4 — the rolling
-// bassline never lets it fall to zero), each kick steps the peak-hold up by
-// only ~0.2 of full scale, the hold falls LINEARLY (Resolume's "Fall"), and a
-// one-pole rise smear stands in for the analyzer's smoothing (20 ms crisp,
-// 50 ms for the laggy configuration the shaper exists to fix).
+// The synthetic signal is the SHARED Resolume-FFT low-band model
+// (sketch/fft_bass_sim.h — also wrapped by the mod.source.bass_sim effect,
+// so these goldens pin the effect's signal too), modeled on real Arena
+// captures (trance, four-on-the-floor): the level rides an ELEVATED floor
+// (~0.4 — the rolling bassline never lets it fall to zero), each kick steps
+// the peak-hold up by only ~0.2 of full scale, the hold falls LINEARLY
+// (Resolume's "Fall"), and a one-pole rise smear stands in for the
+// analyzer's smoothing (20 ms crisp, 50 ms for the laggy configuration the
+// shaper exists to fix).
 //
 // Everything runs at a deterministic dt — fixed 240 fps for the timing
 // goldens, plus a seeded-LCG 4..20 ms jitter variant where robustness is the
 // point. Hundreds of bars simulate in milliseconds; this is where the
 // algorithm is validated (the web e2e is only a wiring smoke).
 
+#include "sketch/fft_bass_sim.h"
 #include "sketch/transient_shaper.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -27,43 +31,29 @@ using transient_shaper::Shaper;
 
 namespace {
 
-// Resolume-flavored bass generator: kick impulses -> exp tail -> linear-fall
-// peak hold riding an elevated floor -> one-pole rise smear.
+// Test clock around the shared bass generator: keeps its own seconds
+// timeline, converts to the 16th-note grid position the sim consumes.
 struct KickSim {
   double bpm = 128.0;
-  float base = 0.40f;       // sustained bass floor
-  float kick_gain = 0.22f;  // kick step above the floor
-  float fall = 0.8f;        // peak-hold linear fall, level/s
-  float rise_tau = 0.020f;  // analyzer rise smear (0.050 = "laggy")
-  bool pattern[16] = {};    // which 16th slots carry a kick
+  fft_bass_sim::Params p;        // base 0.40, kick 0.22, fall 0.8, rise 0.020
+  fft_bass_sim::Sim core;
+  bool pattern[16] = {};         // which 16th slots carry a kick
 
   double t = 0.0;
-  float kick = 0.0f;   // kick energy envelope
-  float ph = 0.0f;     // peak hold
-  float sm = 0.0f;     // smoothed output (feed this to the shaper)
-  bool kicked_this_step = false;
-
-  KickSim() { ph = sm = base; }
 
   double barSeconds() const { return 240.0 / bpm; }
   double barPhase() const { return std::fmod(t / barSeconds(), 1.0); }
+  float sm() const { return core.sm; }
+  bool kicked() const { return core.kicked; }
 
   void step(double dt) {
-    kicked_this_step = false;
-    const double slot_sec = barSeconds() / 16.0;
-    const long k0 = (long)std::floor(t / slot_sec);
-    const long k1 = (long)std::floor((t + dt) / slot_sec);
-    for (long k = k0 + 1; k <= k1; ++k) {
-      if (pattern[k % 16]) {
-        kick = kick_gain;
-        kicked_this_step = true;
-      }
+    unsigned mask = 0;
+    for (int i = 0; i < 16; i++) {
+      if (pattern[i]) mask |= 1u << i;
     }
-    kick *= (float)std::exp(-dt / 0.120);
-    const float raw = base + kick;
-    ph = std::fmax(raw, ph - fall * (float)dt);
-    sm += (ph - sm) * (1.0f - (float)std::exp(-dt / rise_tau));
+    p.pattern = mask;
     t += dt;
+    core.step(std::fmod(t / (barSeconds() / 16.0), 16.0), dt, p);
   }
 };
 
@@ -92,9 +82,9 @@ struct Harness {
     while (sim.t < t_end) {
       const double dt = dts.next();
       sim.step(dt);
-      const Result r = sh.tick(sim.sm, sim.barPhase(), sim.bpm, dt, p);
+      const Result r = sh.tick(sim.sm(), sim.barPhase(), sim.bpm, dt, p);
       if (r.fired) fires++;
-      fn(sim.sm, r, dt);
+      fn(sim.sm(), r, dt);
     }
   }
   void run(double seconds) {
@@ -129,11 +119,16 @@ TEST_CASE("four-on-the-floor converges: kick slots confident, others silent",
     Harness h;
     h.dts.jitter = jitter;
     h.fourOnFloor(true);
-    h.runBars(8);
+    float conf_out = 0.0f;
+    h.run(8 * h.sim.barSeconds(), [&](float, const Result& r, double) {
+      conf_out = r.confidence;
+    });
+    // The confidence telemetry tracks the most recently fired (kick) slot.
+    CHECK(conf_out > 0.8f);
     for (int s = 0; s < 16; s++) {
       if (s % 4 == 0) {
         CHECK(h.sh.slots[s].conf > 0.8f);
-        CHECK(h.sh.slots[s].peak > h.sim.base + 0.5f * h.sim.kick_gain);
+        CHECK(h.sh.slots[s].peak > h.sim.p.base + 0.5f * h.sim.p.kick_gain);
       } else {
         CHECK(h.sh.slots[s].conf < 0.1f);
       }
@@ -145,7 +140,7 @@ TEST_CASE("four-on-the-floor converges: kick slots confident, others silent",
 TEST_CASE("converged output rises to 80% of its swing earlier than the laggy input",
           "[transient_shaper]") {
   Harness h;
-  h.sim.rise_tau = 0.050f;   // the laggy configuration the shaper exists for
+  h.sim.p.rise_tau = 0.050f;   // the laggy configuration the shaper exists for
   h.p.amount = 1.0f;
   h.fourOnFloor(true);
   h.runBars(12);
@@ -162,13 +157,13 @@ TEST_CASE("converged output rises to 80% of its swing earlier than the laggy inp
   } w;
   double worst_gain = 1e9;   // min (t80_in - t80_out) across kicks
   int measured = 0;
-  float prev_x = h.sim.sm;
-  float prev_out = h.sim.sm;
+  float prev_x = h.sim.sm();
+  float prev_out = h.sim.sm();
   // Two passes over the same window set: first find maxima, then thresholds.
   // Simpler online version: record traces per window.
   std::vector<std::pair<double, std::pair<float, float>>> trace;
   h.run(4 * h.sim.barSeconds(), [&](float x, const Result& r, double dt) {
-    if (h.sim.kicked_this_step && !w.active) {
+    if (h.sim.kicked() && !w.active) {
       w.active = true;
       w.elapsed = 0;
       w.floor_in = prev_x;
@@ -215,7 +210,7 @@ TEST_CASE("detection-first: a breakdown fires no ghost boosts", "[transient_shap
 
   // Kill the kicks; give the tail one bar to settle to the flat floor.
   h.fourOnFloor(false);
-  h.sim.kick = 0.0f;
+  h.sim.core.kick = 0.0f;
   h.runBars(1);
 
   h.fires = 0;
@@ -233,7 +228,7 @@ TEST_CASE("misses decay confidence within a few bars", "[transient_shaper]") {
   h.runBars(8);
   REQUIRE(h.sh.slots[4].conf > 0.8f);
   h.fourOnFloor(false);
-  h.sim.kick = 0.0f;
+  h.sim.core.kick = 0.0f;
   h.runBars(4);
   for (int s = 0; s < 16; s += 4) CHECK(h.sh.slots[s].conf < 0.3f);
 }
@@ -293,7 +288,7 @@ TEST_CASE("seek: bar-phase jump reseeds runtime, keeps learning, no ghost fire",
 
   // Flatten the signal, settle, snapshot the learned layer.
   h.fourOnFloor(false);
-  h.sim.kick = 0.0f;
+  h.sim.core.kick = 0.0f;
   h.runBars(1);
   float conf_before[16];
   for (int s = 0; s < 16; s++) conf_before[s] = h.sh.slots[s].conf;
@@ -303,7 +298,7 @@ TEST_CASE("seek: bar-phase jump reseeds runtime, keeps learning, no ghost fire",
   h.fires = 0;
   const double dt = 1.0 / 240.0;
   h.sim.step(dt);
-  h.sh.tick(h.sim.sm, h.sim.barPhase(), h.sim.bpm, dt, h.p);
+  h.sh.tick(h.sim.sm(), h.sim.barPhase(), h.sim.bpm, dt, h.p);
   // Immediately after the reseed tick: learned layer untouched.
   for (int s = 0; s < 16; s++) CHECK(h.sh.slots[s].conf == conf_before[s]);
   // And no fire materializes out of the reseed for the next 100 ms.

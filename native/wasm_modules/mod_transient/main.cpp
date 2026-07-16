@@ -55,7 +55,8 @@ void module_init() {
         "*Pluck* is a second output: the same detected transient as a short "
         "percussive envelope (fast attack, *Release* decay) without the bass "
         "tail — a \"pluck\" where the main output is the \"woof\". "
-        "*Confidence* exposes how learned the current grid slot is.\n\n"
+        "*Confidence* exposes how learned the most recent onset's slot is — "
+        "it climbs as the pattern locks in and decays through a breakdown.\n\n"
         "**Try:** turn Resolume's FFT smoothing (\"Fall\") down as far as "
         "tolerable, wire the bass band in, and wire *Output* into a size or "
         "brightness — kicks land harder; wire *Pluck* into something snappy.")

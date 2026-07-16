@@ -23,6 +23,7 @@ NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
 NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
 NANO_DECLARE_INSTANCE_EFFECT(mod_spectral)
+NANO_DECLARE_INSTANCE_EFFECT(mod_bass_sim)
 NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
@@ -172,6 +173,17 @@ void nano_module_main() {
         "modulation,spectral,morph,remap,curve,shaper,envelope",
         "la-chart-area",
         NANO_INSTANCE_LIFECYCLE(mod_spectral),
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.source.bass_sim",
+        "Bass Sim",
+        "Synthetic Resolume-FFT low-band source, locked to the host beat grid: kicks on a selectable 16th-slot pattern step a peak hold up from a sustained floor, fall back linearly (Resolume 'Fall'), get smeared by an analyzer-lag rise smooth, and wiggle with an optional 8th-note bass groove. Build and test beat-reactive patches (the transient shaper!) without routing audio. Same signal model as the transient shaper's native goldens (sketch/fft_bass_sim.h). Pure data module.",
+        "mod",
+        "modulation,bass,fft,audio,band,kick,beat,simulator,test,source",
+        "la-drum",
+        NANO_INSTANCE_LIFECYCLE(mod_bass_sim),
     });
 
     nano::registerEffect({

@@ -378,6 +378,7 @@ wasm_build \
   ../spectral_lfo/main.cpp \
   ../spectral_lfo/spectral_curve.cpp \
   ../mod_spectral/main.cpp \
+  ../mod_bass_sim/main.cpp \
   ../triangulate/main.cpp \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \

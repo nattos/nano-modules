@@ -95,7 +95,9 @@ struct Slot {
 struct Result {
   float output = 0.0f;      // enhanced primary
   float pluck = 0.0f;       // percussive AD of the detected transient
-  float confidence = 0.0f;  // current slot's learned confidence (telemetry)
+  float confidence = 0.0f;  // live conf of the most recently FIRED slot —
+                            // steady between kicks, climbs as the pattern
+                            // locks in, decays through a breakdown
   bool fired = false;       // an onset fired THIS tick (test hook)
   int fired_slot = -1;      // attributed slot of that fire (test hook)
 };
@@ -128,6 +130,7 @@ struct Shaper {
   // Grid tracking. prev_phase < 0 = first-tick sentinel (forces a reseed).
   double prev_phase = -1.0;
   float prev_u = 0.0f;
+  int last_fired = -1;   // slot of the most recent fire (telemetry anchor)
 
   void reset() { *this = Shaper{}; }
 
@@ -267,6 +270,7 @@ struct Shaper {
 
         r.fired = true;
         r.fired_slot = s_idx;
+        last_fired = s_idx;
       }
 
       // --- Window bookkeeping: opening clears the cycle, closing scores it.
@@ -332,7 +336,7 @@ struct Shaper {
     out = out < 0.0f ? 0.0f : (out > 1.0f ? 1.0f : out);
     r.output = out;
     r.pluck = pluck;
-    r.confidence = slots[(int)u % S].conf;
+    r.confidence = last_fired >= 0 ? slots[last_fired % S].conf : 0.0f;
     return r;
   }
 };
