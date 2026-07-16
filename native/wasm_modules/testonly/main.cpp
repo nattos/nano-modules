@@ -56,6 +56,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_latch)
 NANO_DECLARE_INSTANCE_EFFECT(mod_time)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
+NANO_DECLARE_INSTANCE_EFFECT(mod_transient)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_motion)
 
@@ -292,6 +293,17 @@ void nano_module_main() {
         nullptr,            // on_active
         nullptr,            // seek
         &mod_motion::eval_visibility,  // static visibility evaluator (integrate/mode gating)
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.transient_shaper",
+        "Transient Shaper",
+        "Adaptive beat-grid transient sharpener: learns onset slots on the bar grid, snaps confident attacks toward the learned peak; pluck + confidence secondary outputs",
+        "mod",
+        "modulation,transient,attack,punch,kick,bass,beat,grid,adaptive,sharpen,pluck,shaper",
+        "la-bolt",
+        NANO_INSTANCE_LIFECYCLE(mod_transient),
     });
 
     nano::registerEffect({

@@ -134,6 +134,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_bpm)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
 NANO_DECLARE_INSTANCE_EFFECT(mod_motion)
+NANO_DECLARE_INSTANCE_EFFECT(mod_transient)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_delay)
 
@@ -757,6 +758,17 @@ void nano_module_main() {
         nullptr,            // on_active
         nullptr,            // seek
         &mod_motion::eval_visibility,  // static visibility evaluator (integrate/mode gating)
+    });
+
+    nano::registerEffect({
+        2,
+        "mod.shaper.transient_shaper",
+        "Transient Shaper",
+        "Adaptive beat-grid transient sharpener: learns which grid slots of the bar carry a real onset in a smoothed band level (FFT bass) and snaps those attacks up toward the learned peak — earlier triggering and a fast synthetic rise, gated by per-slot confidence that eases in over bars of hits and back out on misses. A boost only ever fires on a rise that actually happened. Secondary pluck output renders the transient as a short percussive envelope; confidence output exposes the learning live",
+        "mod",
+        "modulation,transient,attack,punch,kick,bass,beat,grid,adaptive,sharpen,pluck,shaper",
+        "la-bolt",
+        NANO_INSTANCE_LIFECYCLE(mod_transient),
     });
 
     nano::registerEffect({
