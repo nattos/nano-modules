@@ -2702,6 +2702,55 @@ TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][s
   CHECK(meanCh(bOut, W, H, 1) > 250.0);
   CHECK(meanCh(bOut, W, H, 2) < 4.0);
 
+  // 10) Reader wet/dry (`__opacity__`): the per-effect blend wraps the REPLACE
+  //     result like any other stage — 0.5 mixes the chain input (white) with
+  //     the channel (red) instead of discarding the input outright.
+  writeSolid(inA, 200, 40, 40);
+  sketchA["instances"]["so"]["state"] = {{"channel", 3}};   // undo section 6's "aux"
+  sketchB["instances"]["si"]["state"] = {{"channel", 3}, {"__opacity__", 0.5}};
+  runA(true);
+  bOut = runB(true);
+  CHECK(std::abs(meanCh(bOut, W, H, 0) - 227.5) < 8.0);   // (255+200)/2
+  CHECK(std::abs(meanCh(bOut, W, H, 1) - 147.5) < 8.0);   // (255+40)/2
+
+  // 11) Reader blend MODE at full opacity (`__blend__` 2 = Multiply): must
+  //     still route through the host blend — gray(100) × red(200) ≈ 78, which
+  //     is neither the plain REPLACE (200) nor the passthrough (100).
+  writeSolid(inB, 100, 100, 100);
+  sketchB["instances"]["si"]["state"] = {{"channel", 3}, {"__blend__", 2}};
+  runA(false);
+  bOut = runB(true);
+  CHECK(std::abs(meanCh(bOut, W, H, 0) - 78.0) < 8.0);    // 100 × 200/255
+  CHECK(meanCh(bOut, W, H, 1) < 24.0);                    // 100 × 40/255
+
+  // 12) tex_out WIRE off the reader: the received channel must ride the rail.
+  //     Chain green -> si(ch 3) -> blend(opacity 1 = pure B), wires green ->
+  //     tex_a and si.tex_out -> tex_b. Output = the red channel; a dormant
+  //     rail would leave tex_b unbound and the blend undispatched.
+  auto sketchWire = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "module_type": "source.solid_color", "instance_key": "g" },
+      { "module_type": "util.sidechannel_in", "instance_key": "si" },
+      { "module_type": "composite.blend", "instance_key": "bl" }
+    ],
+    "instances": {
+      "g":  { "module_type": "source.solid_color", "state": { "color": [0.0, 1.0, 0.0, 1.0] } },
+      "si": { "module_type": "util.sidechannel_in", "state": { "channel": 3 } },
+      "bl": { "module_type": "composite.blend", "state": { "mode": 0, "opacity": 1, "shape": 0 } }
+    },
+    "wires": [
+      { "id": "wa", "src": { "instanceKey": "g",  "field": "tex_out" },
+                    "dest": { "instanceKey": "bl", "field": "tex_a" } },
+      { "id": "wb", "src": { "instanceKey": "si", "field": "tex_out" },
+                    "dest": { "instanceKey": "bl", "field": "tex_b" } }
+    ]
+  })JSON");
+  runA(false);
+  bOut = B.execute(sketchWire, inB, outB, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+  CHECK(std::abs(meanCh(bOut, W, H, 0) - 200.0) < 6.0);   // channel red via the wire
+  CHECK(meanCh(bOut, W, H, 1) < 45.0);                    // not the chain green
+
   sidechannel_bus::resetForTest();  // release bus textures while backend lives
 }
 

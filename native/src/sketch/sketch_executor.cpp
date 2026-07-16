@@ -1446,7 +1446,11 @@ int32_t SketchExecutor::execute(
       // READ: REPLACE semantics — the stage output IS the channel texture
       // (scaled to this chain's size) when fresh, transparent black when the
       // channel is stale/unbound/unwritten. The chain input is discarded; the
-      // effect's own render never runs (fully host-serviced).
+      // effect's own render never runs (fully host-serviced). Host-serviced
+      // does NOT mean exempt from the per-stage contract: the wet/dry blend
+      // (`__opacity__`/`__blend__`) wraps the REPLACE result like any rendered
+      // effect's output, and tex_out write taps publish the received channel
+      // so wires off this stage carry signal.
       if (mt == sidechannel_bus::kInModuleType) {
         const std::string ch = sidechannelName(instances, instKey);
         const std::string readerId =
@@ -1455,15 +1459,40 @@ int32_t SketchExecutor::execute(
             ? sidechannel_bus::Read{}
             : sidechannel_bus::acquire(ch.c_str(), readerId.c_str(),
                                        sidechannelSeq);
+        // Wet/dry + blend mode, same consumption as the standalone path below:
+        // dry = chain input, wet = the received channel.
+        const float opacity = resOv.opacity
+            ? std::max(0.0f, std::min(1.0f, *resOv.opacity))
+            : readOpacity(instances, instKey);
+        const int scBlendMode = readBlendMode(instances, instKey);
+        const bool partial = opacity < 1.0f || scBlendMode != 0;
         int32_t out = isFinalStage ? chainTarget : nextIntermediate(W, H);
+        int32_t fx = partial ? nextIntermediate(W, H) : out;
         bool blitted = false;
         if (r.fresh && r.tex > 0) {
           if (!sidechannelBlit_) {
             sidechannelBlit_ = std::make_unique<SidechannelBlit>();
           }
-          blitted = sidechannelBlit_->encode(r.tex, r.w, r.h, out, W, H);
+          blitted = sidechannelBlit_->encode(r.tex, r.w, r.h, fx, W, H);
         }
-        if (!blitted) gpu_clear_texture(out, 0.0f, 0.0f, 0.0f, 0.0f);
+        if (!blitted) gpu_clear_texture(fx, 0.0f, 0.0f, 0.0f, 0.0f);
+        if (partial) {
+          if (!blend_) blend_ = std::make_unique<WetDryBlend>();
+          if (!blend_->encode(colInput, fx, out, opacity, W, H, scBlendMode,
+                              readXfadeShape(instances, instKey))) {
+            // Couldn't build the blend pass — show the channel at full
+            // strength rather than nothing.
+            gpu_copy_texture(fx, out);
+          }
+        }
+        // Publish the channel on any tex_out wires. The wire carries the wet
+        // image (pre-blend), matching what captureWriteTaps records for a
+        // rendered effect (its tex_out is the pre-blend fxHandle).
+        inst.setTextureField("tex_out", fx);
+        markWriteTapOutputsConnected(inst.h, entry);
+        captureWriteTaps(inst.h, entry, instKey, instances,
+                         railsById, railTextures, railFloats, railBuffers,
+                         nullptr);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
