@@ -41,3 +41,46 @@ describe('WireConnect.completeOnRail', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+/**
+ * Retarget ("reconnect") mode: the commit routes the clicked endpoint to the
+ * caller's onCommit — patching an existing wire — and must NOT go through
+ * connectWire (which would create a brand-new wire and drop its settings).
+ */
+describe('WireConnect.beginRetarget', () => {
+  const anchor: FieldConnectInfo = {
+    sketchId: 's', colIdx: 0, chainIdx: 1, fieldPath: 'intensity',
+    isOutput: false, viewportY: 5, schemaDef: null,
+  };
+  const clicked: FieldConnectInfo = {
+    sketchId: 's', colIdx: 0, chainIdx: 2, fieldPath: 'hue',
+    isOutput: false, viewportY: 9, schemaDef: null,
+  };
+
+  it('routes the clicked endpoint to onCommit instead of connectWire', () => {
+    const connects: unknown[] = [];
+    const commits: FieldConnectInfo[] = [];
+    const wc = new WireConnect({
+      getSketch: () => undefined, getPlugin: () => undefined, connectWire: () => connects.push(1),
+    });
+    wc.beginRetarget('s', 's/0/1/intensity', anchor, t => commits.push(t));
+    expect(WireConnect.active).toBe(wc);
+
+    wc.completeOnField('s/0/2/hue', clicked);
+    expect(connects).toHaveLength(0);
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toEqual(clicked);
+    expect(WireConnect.active).toBe(null);   // gesture ended
+  });
+
+  it('cancel drops the pending retarget without committing', () => {
+    const commits: unknown[] = [];
+    const wc = new WireConnect({
+      getSketch: () => undefined, getPlugin: () => undefined, connectWire: () => {},
+    });
+    wc.beginRetarget('s', 's/0/1/intensity', anchor, t => commits.push(t));
+    wc.cancel();
+    wc.completeOnField('s/0/2/hue', clicked);   // nothing picked up anymore
+    expect(commits).toHaveLength(0);
+  });
+});

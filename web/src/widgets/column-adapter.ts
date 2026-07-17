@@ -106,6 +106,9 @@ export interface ColumnDataSource {
   /** Multi-edit only: distinct values in use across the targets (enum multi-
    *  highlight). Absent on single-target adapters. */
   fieldInUse?(instanceKey: string, fieldPath: string): unknown[];
+  /** Display name for a MIDI device-library instance (`midi:<id>` wire sources
+   *  live outside any chain). Absent / undefined → the UI omits the name. */
+  getMidiDeviceName?(deviceInstanceId: string): string | undefined;
 }
 
 /** Mutations. Signatures mirror AppController so the IDE adapter forwards 1:1. */
@@ -184,6 +187,10 @@ export interface ColumnTaps {
   readonly state: unknown | null;
   beginFromFieldDrag(e: PointerEvent, sourceEl: HTMLElement, sketchId: string, key: string, info: FieldConnectInfo): void;
   beginFromFieldClick(sketchId: string, key: string, info: FieldConnectInfo): void;
+  /** CLICK-mode pickup that re-targets an EXISTING wire: the clicked endpoint
+   *  goes to `onCommit` (which patches the wire) instead of connectWire. */
+  beginRetarget?(sketchId: string, key: string, info: FieldConnectInfo,
+                 onCommit: (target: FieldConnectInfo) => void): void;
   completeOnField(key: string, info?: FieldConnectInfo): void;
   consumeClickSuppression(): boolean;
 }

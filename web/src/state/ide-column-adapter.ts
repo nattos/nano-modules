@@ -48,6 +48,9 @@ const data: ColumnDataSource = {
   modulation(instanceKey: string): Record<string, FieldModulation> | undefined {
     return appState.local.engine.modulationData[instanceKey];
   },
+  getMidiDeviceName(deviceInstanceId: string): string | undefined {
+    return appState.local.midi.library.find((i) => i.id === deviceInstanceId)?.name;
+  },
 };
 
 // The IDE's edit handles are real LongEdits; update*/cancel* hand the same
@@ -115,6 +118,8 @@ const taps: ColumnTaps = {
     tapsConnect.beginFromFieldDrag(e, sourceEl, sketchId, key, info),
   beginFromFieldClick: (sketchId, key, info) =>
     tapsConnect.beginFromFieldClick(sketchId, key, info),
+  beginRetarget: (sketchId, key, info, onCommit) =>
+    tapsConnect.beginRetarget(sketchId, key, info, onCommit),
   completeOnField: (key, info) => tapsConnect.completeOnField(key, info),
   consumeClickSuppression: () => tapsConnect.consumeClickSuppression(),
 };

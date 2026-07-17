@@ -40,6 +40,10 @@ interface ConnectState {
   info: FieldConnectInfo;
   pointerX: number;
   pointerY: number;
+  /** Set by `beginRetarget`: the commit hands the clicked endpoint to this
+   *  callback (which patches an EXISTING wire) instead of creating a new wire
+   *  through `host.connectWire`. */
+  onCommit?: (target: FieldConnectInfo) => void;
 }
 
 interface Target { key: string; info: FieldConnectInfo }
@@ -204,6 +208,20 @@ export class WireConnect implements ColumnTaps {
     this.installClickListeners();
   }
 
+  /**
+   * CLICK-mode pickup that RE-TARGETS an existing wire ("reconnect"): the next
+   * endpoint clicked is handed to `onCommit` — which patches the wire in place,
+   * keeping its settings — instead of `connectWire` creating a fresh one.
+   * `key`/`info` anchor the rubber band (the field the wire is being picked up
+   * from); Esc / a background click cancels as usual.
+   */
+  beginRetarget(sketchId: string, key: string, info: FieldConnectInfo,
+                onCommit: (target: FieldConnectInfo) => void) {
+    this.start({ sourceId: key, sketchId, info,
+      pointerX: info.viewportY, pointerY: info.viewportY, onCommit });
+    this.installClickListeners();
+  }
+
   /** Start a DRAG-to-connect from a field hit-box. */
   beginFromFieldDrag(e: PointerEvent, srcEl: HTMLElement, sketchId: string, key: string, info: FieldConnectInfo) {
     this.beginDrag(e, srcEl, { sourceId: key, sketchId, info,
@@ -317,7 +335,8 @@ export class WireConnect implements ColumnTaps {
   private commit(target: Target) {
     const s = this.state;
     if (!s) return;
-    this.host.connectWire(s.info, target.info);
+    if (s.onCommit) s.onCommit(target.info);
+    else this.host.connectWire(s.info, target.info);
   }
 
   cancel() { this.end(); }

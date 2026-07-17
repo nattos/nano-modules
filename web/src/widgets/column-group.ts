@@ -42,6 +42,7 @@ import './output-trace-card';
 import './texture-drop-zone';
 import './global-input-control';
 import { wireModBinding, renderWireModInspector } from './wire-mod-inspector';
+import { isMidiInstanceKey, midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
 import './ui-icon';
 import '../editors/xfade-curve';
 
@@ -2967,14 +2968,29 @@ export class ColumnGroup extends MobxLitElement {
         : wires.map(w => {
             const isSrc = w.src.instanceKey === myKey && w.src.field === fieldPath;
             const other = isSrc ? w.dest : w.src;
-            const otherEntry = (sketch ? sketchChain(sketch) : [])
-              .find(e => e.type === 'module' && e.instance_key === other.instanceKey) as ModuleEntry | undefined;
-            const otherName = otherEntry ? shortName(otherEntry.module_type) : other.instanceKey;
+            // MIDI sources live outside the chain (`midi:<uuid>` + endpoint):
+            // show `midi:<endpoint> [device name]` instead of the raw uuid key.
+            let otherLabel: string;
+            if (isMidiInstanceKey(other.instanceKey)) {
+              const devName = this.ds.getMidiDeviceName?.(midiInstanceIdFromKey(other.instanceKey)!);
+              otherLabel = `midi:${other.field}${devName ? ` [${devName}]` : ''}`;
+            } else {
+              const otherEntry = (sketch ? sketchChain(sketch) : [])
+                .find(e => e.type === 'module' && e.instance_key === other.instanceKey) as ModuleEntry | undefined;
+              otherLabel = `${otherEntry ? shortName(otherEntry.module_type) : other.instanceKey}.${other.field}`;
+            }
+            const iconBtn = 'background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1';
             return html`
               <div class="tap-row">
                 <span class="tap-row-name" title="${other.instanceKey}.${other.field}">
-                  ${isSrc ? '→' : '←'} ${otherName}.${other.field}</span>
-                <button style="background:none;border:none;color:var(--app-text-color2);cursor:pointer;font-size:14px;padding:0 4px;line-height:1"
+                  ${isSrc ? '→' : '←'} ${otherLabel}</span>
+                ${this.taps.beginRetarget ? html`
+                  <button style=${iconBtn}
+                    title="Reconnect — click another field to move this wire's end there"
+                    @click=${() => this.beginWireReconnect(chainIdx, fieldPath, w.id, isSrc ? 'src' : 'dest')}>
+                    <ui-icon icon="la-exchange-alt" style="--icon-size:12px"></ui-icon>
+                  </button>` : nothing}
+                <button style=${iconBtn}
                   title="Remove wire"
                   @click=${() => this.ctl.removeWire(sId, w.id)}>×</button>
               </div>
@@ -3005,6 +3021,74 @@ export class ColumnGroup extends MobxLitElement {
       updateUpdateWire: (edit, patch) => this.ctl.updateUpdateWire(edit, sId, wireId, patch),
     });
     return renderWireModInspector(wire, binding);
+  }
+
+  /**
+   * "Reconnect": pick the wire up off THIS field (CLICK-mode connect) and
+   * re-point that end at the next field clicked. The far endpoint and all
+   * modulation settings survive — the wire is patched in place, not recreated.
+   * `movingEnd` is the role of the inspected field's end (src stays src, dest
+   * stays dest, so wire direction never flips).
+   */
+  private beginWireReconnect(chainIdx: number, fieldPath: string, wireId: string,
+                             movingEnd: 'src' | 'dest') {
+    if (!this.taps.beginRetarget) return;
+    const sId = this.sketchId;
+    const key = `${sId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
+    // Anchor the rubber band at this field's port (the far endpoint may be
+    // off-surface entirely, e.g. a MIDI control on the Devices tab).
+    const hit = this.renderRoot.querySelector(
+      `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"],
+       .field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
+    const r = hit?.getBoundingClientRect();
+    const info: FieldConnectInfo = {
+      sketchId: sId, colIdx: this.colIdx, chainIdx, fieldPath,
+      isOutput: movingEnd === 'src', viewportY: r ? r.top + r.height / 2 : 0, schemaDef: null,
+    };
+    this.taps.beginRetarget(sId, key, info,
+      target => this.commitWireRetarget(wireId, movingEnd, target));
+  }
+
+  /** Land a reconnect gesture: validate the clicked endpoint and patch the wire. */
+  private commitWireRetarget(wireId: string, movingEnd: 'src' | 'dest', target: FieldConnectInfo) {
+    const sId = this.sketchId;
+    const sketch = this.ds.getSketch(sId);
+    const wire = sketch?.wires?.find(w => w.id === wireId);
+    if (!sketch || !wire) return;
+
+    // Resolve the clicked endpoint to {instanceKey, field}. A MIDI device
+    // control can only take over the SRC end (devices are always writers);
+    // rail / trigger / layer endpoints aren't retarget targets (yet).
+    let end: { instanceKey: string; field: string };
+    if (target.deviceControl) {
+      if (movingEnd !== 'src') return;
+      end = { instanceKey: midiInstanceKey(target.deviceControl.deviceInstanceId),
+              field: target.deviceControl.controlId };
+    } else {
+      if (target.sketchId !== sId) return;   // wires are per-sketch
+      const entry = chainEntryAt(sketch, target.chainIdx);
+      if (entry?.type !== 'module' || !entry.instance_key) return;
+      // The moved end keeps its role, so a new dest needs the input bit and a
+      // new src the output bit (schema-less legacy fields pass unchecked).
+      const io = (target.schemaDef as { io?: number } | null)?.io;
+      if (io !== undefined && !(io & (movingEnd === 'src' ? 2 : 1))) return;
+      end = { instanceKey: entry.instance_key, field: target.fieldPath };
+    }
+
+    const farEnd = movingEnd === 'src' ? wire.dest : wire.src;
+    if (end.instanceKey === farEnd.instanceKey && end.field === farEnd.field) return;  // no self-wire
+    const cur = wire[movingEnd];
+    if (end.instanceKey === cur.instanceKey && end.field === cur.field) return;        // unchanged
+
+    // Edge-level dedupe (matches connectWire): if the retargeted edge already
+    // exists as another wire, drop that one — the settings-carrying wire wins.
+    const src = movingEnd === 'src' ? end : wire.src;
+    const dest = movingEnd === 'dest' ? end : wire.dest;
+    const dup = sketch.wires?.find(w => w.id !== wireId
+      && w.src.instanceKey === src.instanceKey && w.src.field === src.field
+      && w.dest.instanceKey === dest.instanceKey && w.dest.field === dest.field);
+    if (dup) this.ctl.removeWire(sId, dup.id);
+    this.ctl.updateWire(sId, wireId, movingEnd === 'src' ? { src: end } : { dest: end });
   }
 
   /**
