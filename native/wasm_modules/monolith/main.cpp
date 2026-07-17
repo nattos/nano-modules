@@ -278,7 +278,9 @@ void module_init() {
   // 1.2.0: deferred rework — `alpha` renamed to `opacity`, `back_dim`
   // removed (back faces are gone; glass is refraction now), env_in added.
   // 1.2.1: water caustics (rays banding + surface dapple), additive fields.
-  state::init("source.mesh.monolith", {1, 2, 1},
+  // 1.2.2: dapple = projected irradiance (cosine from above, grazing
+  //        spill on walls, zero on undersides); rays shimmer top-anchored.
+  state::init("source.mesh.monolith", {1, 2, 2},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"

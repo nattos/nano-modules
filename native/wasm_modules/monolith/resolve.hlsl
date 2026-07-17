@@ -109,14 +109,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // independent of the sun (which may well sit "underwater"). The field
   // lives on the world XZ plane with a small fixed refraction slant (the
   // y shear — also keeps vertical faces from reading as flat stripes).
-  // Weighted by world up-facing-ness: tops catch the full web, walls get
-  // the scattered remainder, undersides stay dark. Rebalanced around 1.0
-  // so the amount knob doesn't shift mean brightness.
+  // Weighted like projected irradiance: cosine falloff from above (tops
+  // full, oblique faces attenuated), a faint grazing spill on near-
+  // vertical walls, and NOTHING below horizontal — undersides are in
+  // their own shadow. Rebalanced around 1.0 so the amount knob doesn't
+  // shift mean brightness.
   if (caustic.x > 0.0) {
     float2 cp = float2(B.z + 0.35 * world_y, B.w - 0.27 * world_y) * caustic.y;
     float c = nano_caustic2(cp, caustic.z);
     float nw_y = cphi * N.y + sphi * N.z;   // world-space normal y
-    float dap = 1.0 + caustic.x * (c * 2.2 - 0.45) * saturate(nw_y * 0.6 + 0.55);
+    float up = saturate(nw_y);
+    float w_c = up * (0.45 + 0.55 * up);                       // cosine, mid-lifted
+    w_c += 0.08 * saturate(nw_y * 5.0 + 1.0) * (1.0 - up);     // grazing spill, 0 by -0.2
+    float dap = 1.0 + caustic.x * (c * 2.2 - 0.45) * w_c;
     diffuse *= dap;
     glint *= dap;
     env *= 1.0 + 0.35 * (dap - 1.0);

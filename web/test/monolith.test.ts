@@ -172,16 +172,35 @@ describe('source.mesh.monolith E2E', () => {
     lit.trace('out').expectDifferentFrom(dark.trace('out'), 4);
   });
 
-  it('caustics dapple the lit body', async () => {
-    // Gray body, front-lit, no rays: the surface dapple is the only change.
+  it('caustics dapple up-facing surfaces', async () => {
+    // Gray body leaning BACK (tilt -0.6 → the big front face points up
+    // toward the water surface), no rays: dapple is the only change.
     const base = { ...STATIC, color: [0.5, 0.5, 0.5], reflect: 0.2,
-                   azimuth: -30, elevation: 30 };
+                   tilt: -0.6, azimuth: -30, elevation: 30 };
     const still = await render('mono_caust_off', base);
     const dappled = await render('mono_caust_on', { ...base, caustics: 1.0 });
     dappled.trace('out').expectDifferentFrom(still.trace('out'), 6);
     // Dapple is a lit-surface term — the background never ripples.
     dappled.trace('out').expectPixelAt(3, 3, BG, 8);
     dappled.trace('out').expectPixelAt(92, 92, BG, 8);
+  });
+
+  it('caustics never reach downward-facing surfaces', async () => {
+    // Same body leaning FORWARD (tilt 0.6): the big front face points
+    // below horizontal → projected-irradiance weight is zero, so cranking
+    // caustics changes nothing on its pixels (probes sit mid-face, away
+    // from the up-facing top-cap strip and the vertical side face).
+    const base = { ...STATIC, color: [0.5, 0.5, 0.5], reflect: 0.2,
+                   tilt: 0.6, azimuth: -30, elevation: 30 };
+    const off = await render('mono_caust_down_off', base);
+    const on = await render('mono_caust_down_on', { ...base, caustics: 1.0 });
+    for (const [x, y] of [[44, 40], [44, 56], [48, 48]]) {
+      const a = off.trace('out').pixelAt(x, y);
+      const b = on.trace('out').pixelAt(x, y);
+      expect(Math.abs(a.r - b.r)).toBeLessThanOrEqual(3);
+      expect(Math.abs(a.g - b.g)).toBeLessThanOrEqual(3);
+      expect(Math.abs(a.b - b.b)).toBeLessThanOrEqual(3);
+    }
   });
 
   it('caustics band the god rays', async () => {
