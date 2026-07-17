@@ -4,7 +4,7 @@
  * Renders a simple convex solid — the 1:4:9 "monolith" slab or a regular
  * triangular pyramid (tetrahedron) — over the input, with up to three
  * concentric echo shells, environment reflections, fresnel, screen-space
- * refraction "glass", height/depth fog, god rays and bloom. Built for the
+ * refraction "glass", height/depth fog and god rays. Built for the
  * massive-towering-space-structure look: the default material is a near
  * void-black slab that reads entirely through its specular response.
  *
@@ -20,8 +20,8 @@
  *   reflection from `env_in` [equirect] or tex_in [screen-space
  *   fallback], diffuse, refraction of the background, fog) and
  *   composites into an RGBA16F ping-pong. Then god rays (radial scatter
- *   occluded by the accumulated silhouette), bloom (FastBlur), and a
- *   final shoulder-tonemap combine into tex_out.
+ *   occluded by the accumulated silhouette) and a final shoulder-tonemap
+ *   combine into tex_out.
  *
  * Draw-order correctness is CLOSED FORM, not sorted: front faces of one
  * convex solid never overlap on screen, and rounds composite inner ->
@@ -204,15 +204,13 @@ struct RaysUniforms {
   float sun_env[4];         // sun sample uv.xy, mode (1 = from env), 0
 };
 
-struct ExtractUniforms { float p[4]; };   // inv_range, has_rays, 0, 0
-struct FinalUniforms { float p[4]; };     // bloom_gain, has_rays, has_bloom, 0
+struct FinalUniforms { float p[4]; };     // has_rays, 0, 0, 0
 
 // Type-shared PSOs.
 static gpu::ComputePSO s_pso_prefill;
 static gpu::RenderPSO s_pso_gbuf;
 static gpu::ComputePSO s_pso_resolve;
 static gpu::ComputePSO s_pso_rays;
-static gpu::ComputePSO s_pso_extract;
 static gpu::ComputePSO s_pso_final;
 
 // Per-instance state.
@@ -222,9 +220,9 @@ struct State {
   // GPU resources.
   gpu::Buffer vtx_bufs[kMaxCopies];
   gpu::Buffer ub_resolve[kMaxCopies];
-  gpu::Buffer ub_rays, ub_extract, ub_final;
+  gpu::Buffer ub_rays, ub_final;
   gpu::Texture gbufA, gbufB, compA, compB, rays_tex;   // RGBA16F, vp-sized
-  gpu::Texture env_blur, bloom_src, bloom_tex;         // SketchDefault, vp-sized
+  gpu::Texture env_blur;                               // SketchDefault, vp-sized
   gpu::Texture zero_tex;                               // 1x1 RGBA16F zeros
   gpu::Sampler samp_clamp, samp_wrap;
   fx::FastBlur blur;
@@ -254,7 +252,6 @@ struct State {
   float fog_r = 1.0f, fog_g = 1.0f, fog_b = 1.0f;
   float fog_scale = 0.0f;   // 0 = 1:1 with the scene, 1 = 4x zoomed sample
   float rays = 0.3f;
-  float bloom = 0.25f;
   float caustics = 0.35f;
   float caustic_scale = 0.5f;
   float arc = 0.5f;
@@ -306,7 +303,8 @@ void module_init() {
   // 1.2.9: fog_color - tints the medium, white = previous look.
   // 1.2.10: fog_scale - spatial zoom on the fog's blurred-scene sample,
   //         decoupling the haze from the backdrop behind each pixel.
-  state::init("source.mesh.monolith", {1, 2, 10},
+  // 1.3.0: bloom REMOVED (field deleted - use downstream post instead).
+  state::init("source.mesh.monolith", {1, 3, 0},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -424,8 +422,7 @@ void module_init() {
           "the light through a moving water surface: the shafts band and "
           "flicker by angle, and the structure's lit faces catch drifting "
           "dapple webs — the underwater look. The water clock is free-"
-          "running (it ignores Sync). *Bloom* lets the hot highlights "
-          "bleed.")
+          "running (it ignores Sync).")
       .floatField("fog", 0.2f, 0.f, 1.f, state::PrimaryInput)
           .label("Fog", "Fog")
       .rgbField("fog_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
@@ -434,8 +431,6 @@ void module_init() {
           .label("God Rays", "Rays")
       .floatField("caustics", 0.35f, 0.f, 1.f, state::PrimaryInput)
           .label("Caustics", "Caust")
-      .floatField("bloom", 0.25f, 0.f, 1.f, state::PrimaryInput)
-          .label("Bloom", "Bloom")
       // --- Tuning ---
       .group("tuning", "Tuning")
       .floatField("arc", 0.5f, 0.f, 1.f, state::SecondaryInput)
@@ -473,7 +468,6 @@ void module_init() {
                            "rgba16float", "write");
   state::registerShaderSPV("monolith_rays", RAYS_SPV, RAYS_SPV_SIZE,
                            "rgba16float", "write");
-  state::registerShaderSPV("monolith_extract", EXTRACT_SPV, EXTRACT_SPV_SIZE);
   state::registerShaderSPV("monolith_final", FINAL_SPV, FINAL_SPV_SIZE);
 
   auto cs_prefill = gpu::Device::createShaderModuleByName("monolith_prefill");
@@ -481,10 +475,9 @@ void module_init() {
   auto fs_gbuf = gpu::Device::createShaderModuleByName("monolith_gbuf_fs");
   auto cs_resolve = gpu::Device::createShaderModuleByName("monolith_resolve");
   auto cs_rays = gpu::Device::createShaderModuleByName("monolith_rays");
-  auto cs_extract = gpu::Device::createShaderModuleByName("monolith_extract");
   auto cs_final = gpu::Device::createShaderModuleByName("monolith_final");
   if (!cs_prefill || !vs_gbuf || !fs_gbuf || !cs_resolve || !cs_rays ||
-      !cs_extract || !cs_final) return;
+      !cs_final) return;
 
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
@@ -510,18 +503,12 @@ void module_init() {
       .sampler(2)
       .uniform(3)
       .tex2d(4));   // env source (sun-color sample)
-  s_pso_extract = gpu::Device::createComputePSO(cs_extract, "main", gpu::Bindings()
-      .tex2d(0)
-      .tex2d(1)
-      .storageTex2d(2)
-      .uniform(3));
   s_pso_final = gpu::Device::createComputePSO(cs_final, "main", gpu::Bindings()
       .tex2d(0)
       .tex2d(1)
       .tex2d(2)
-      .tex2d(3)
-      .storageTex2d(4)
-      .uniform(5));
+      .storageTex2d(3)
+      .uniform(4));
 
   state::log("monolith: module initialized (deferred)");
 }
@@ -535,7 +522,6 @@ void* create() {
         sizeof(ResolveUniforms), gpu::BufferUsage::Uniform);
   }
   s->ub_rays = gpu::Device::createBuffer(sizeof(RaysUniforms), gpu::BufferUsage::Uniform);
-  s->ub_extract = gpu::Device::createBuffer(sizeof(ExtractUniforms), gpu::BufferUsage::Uniform);
   s->ub_final = gpu::Device::createBuffer(sizeof(FinalUniforms), gpu::BufferUsage::Uniform);
   s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
   s->samp_clamp = gpu::Device::createSampler(gpu::FilterMode::Linear,
@@ -553,7 +539,6 @@ void destroy(void* self) {
     s->ub_resolve[i].release();
   }
   s->ub_rays.release();
-  s->ub_extract.release();
   s->ub_final.release();
   s->gbufA.release();
   s->gbufB.release();
@@ -561,8 +546,6 @@ void destroy(void* self) {
   s->compB.release();
   s->rays_tex.release();
   s->env_blur.release();
-  s->bloom_src.release();
-  s->bloom_tex.release();
   s->zero_tex.release();
   s->samp_clamp.release();
   s->samp_wrap.release();
@@ -679,7 +662,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     }
     else if (state::pathIs(p, l, "fog_scale")) s->fog_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
     else if (state::pathIs(p, l, "caustics"))  s->caustics = state::patchFloat(i);
     else if (state::pathIs(p, l, "caustic_scale")) s->caustic_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "arc"))       s->arc = state::patchFloat(i);
@@ -1015,48 +997,18 @@ void render(void* self, int vp_w, int vp_h) {
     }
   }
 
-  // --- Bloom: extract HDR highlights, FastBlur, add in final ---
-  bool has_bloom = false;
-  if (s->bloom > 1e-3f && s_pso_extract.valid() && s->blur.valid()) {
-    const auto fmt = gpu::Device::defaultTextureFormat();
-    ensureTex(s->bloom_src, vp_w, vp_h, fmt, resized);
-    ensureTex(s->bloom_tex, vp_w, vp_h, fmt, resized);
-    if (s->bloom_src.valid() && s->bloom_tex.valid()) {
-      ExtractUniforms eu = {};
-      eu.p[0] = 0.25f;                       // range-compress x4 for 8-bit scratch
-      eu.p[1] = has_rays ? 1.0f : 0.0f;
-      s->ub_extract.writeOne(eu);
-
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_extract);
-      cp.setTexture(comp_final, 0, 0);
-      cp.setTexture(has_rays ? s->rays_tex : s->zero_tex, 1, 0);
-      cp.setTexture(s->bloom_src, 2, 1);
-      cp.setBuffer(s->ub_extract, 3);
-      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
-      cp.end();
-
-      s->blur.apply(s->bloom_src, s->bloom_tex, vp_w, vp_h,
-                    2 + (int)(s->bloom * 3.0f + 0.5f));
-      has_bloom = true;
-    }
-  }
-
   // --- Final combine + tonemap -> tex_out ---
   FinalUniforms fu = {};
-  fu.p[0] = 4.0f * s->bloom;   // re-expand the extract's /4 range, scaled
-  fu.p[1] = has_rays ? 1.0f : 0.0f;
-  fu.p[2] = has_bloom ? 1.0f : 0.0f;
+  fu.p[0] = has_rays ? 1.0f : 0.0f;
   s->ub_final.writeOne(fu);
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_final);
     cp.setTexture(comp_final, 0, 0);
     cp.setTexture(has_rays ? s->rays_tex : s->zero_tex, 1, 0);
-    cp.setTexture(has_bloom ? s->bloom_tex : s->zero_tex, 2, 0);
-    cp.setTexture(in, 3, 0);
-    cp.setTexture(out, 4, 1);
-    cp.setBuffer(s->ub_final, 5);
+    cp.setTexture(in, 2, 0);
+    cp.setTexture(out, 3, 1);
+    cp.setBuffer(s->ub_final, 4);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

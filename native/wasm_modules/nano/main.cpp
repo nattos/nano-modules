@@ -338,13 +338,13 @@ void nano_module_main() {
         "black obsidian that reads entirely through fresnel reflections of "
         "the environment (wire any texture into Env, or it reflects the "
         "input itself), a movable sun with a specular glint, height/depth "
-        "fog that swallows the top, god rays carving around the silhouette, "
-        "and bloom. Opacity runs solid to clear refracting glass. Vantage "
+        "fog that swallows the top, and god rays carving around the "
+        "silhouette. Opacity runs solid to clear refracting glass. Vantage "
         "and Loom give the worm's-eye towering camera. Motion is an eased "
         "one-way yaw Arc that snaps back, a two-axis incommensurate Tumble, "
         "or an Arcing Tumble; Sync locks one cycle to N bars.",
         "source",
-        "generator,3d,mesh,monolith,pyramid,tetrahedron,glass,reflection,env,fresnel,fog,godrays,bloom,rotate,tumble,concentric,2001,massive",
+        "generator,3d,mesh,monolith,pyramid,tetrahedron,glass,reflection,env,fresnel,fog,godrays,rotate,tumble,concentric,2001,massive",
         "la-cube",
         NANO_INSTANCE_LIFECYCLE(monolith),
     });

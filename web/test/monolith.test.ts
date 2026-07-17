@@ -4,7 +4,7 @@ import type { Sketch } from '../src/sketch-types';
 /**
  * E2E coverage for source.mesh.monolith (nano bundle) — the deferred env-lit
  * 3D primitive generator (1:4:9 slab / regular pyramid, ≤3 concentric
- * shells, fresnel env reflections, refraction glass, fog, god rays, bloom).
+ * shells, fresnel env reflections, refraction glass, fog, god rays).
  *
  * Determinism trick: `motion: Arc` with `arc: 0` pins the pose to a slow
  * eased sweep start (yaw ≈ -20°, drift far below a pixel over test spans).
@@ -24,7 +24,7 @@ const lum = (c: { r: number, g: number, b: number }) => (c.r + c.g + c.b) / 3;
 // Frozen pose + neutral camera + no atmosphere: the baseline for A/B tests.
 const STATIC = {
   motion: 0 /* Arc */, arc: 0.0, tilt: 0.2, size: 0.8, opacity: 1.0,
-  vantage: 0.0, loom: 0.0, fog: 0.0, rays: 0.0, bloom: 0.0,
+  vantage: 0.0, loom: 0.0, fog: 0.0, rays: 0.0,
   // The caustic water clock is free-running, so A/B comparisons pin it off.
   caustics: 0.0,
 };
@@ -100,7 +100,7 @@ describe('source.mesh.monolith E2E', () => {
 
   it('opacity 0 is a bit-exact passthrough even with atmosphere cranked', async () => {
     const r = await render('mono_passthrough',
-      { ...STATIC, opacity: 0, fog: 1, rays: 1, bloom: 1 });
+      { ...STATIC, opacity: 0, fog: 1, rays: 1 });
     for (const [x, y] of [[48, 48], [30, 30], [66, 66], [48, 20], [3, 3]]) {
       r.trace('out').expectPixelAt(x, y, BG, 4);
     }
@@ -304,14 +304,6 @@ describe('source.mesh.monolith E2E', () => {
     // The core slab still reads at center regardless of shell scale.
     const c = huge.trace('out').pixelAt(48, 48);
     expect(lum(c)).toBeLessThan(lum(BG) - 20);
-  });
-
-  it('bloom bleeds the hot highlights', async () => {
-    const base = { ...STATIC, reflect: 1.0, sun: 1.0, azimuth: -40,
-                   color: [0.5, 0.5, 0.55] };
-    const off = await render('mono_bloom_off', base);
-    const on = await render('mono_bloom_on', { ...base, bloom: 1.0 });
-    on.trace('out').expectDifferentFrom(off.trace('out'), 4);
   });
 
   it('tumble animates across frames', async () => {

@@ -73,12 +73,10 @@ echo "  fast_blur shaders compiled (down + up, SPV)"
 #                         view_z); all geometry math happens on the CPU.
 #   resolve (compute)   — per-copy deferred shade (env/fresnel/refraction/
 #                         fog) into the RGBA16F composite ping-pong.
-#   rays / extract /
-#   final (compute)     — god rays, bloom extract, combine + tonemap.
+#   rays / final        — god rays, combine + tonemap.
 compile_shaders_compute_var_spv monolith prefill
 compile_shaders_compute_var_spv monolith resolve
 compile_shaders_compute_var_spv monolith rays
-compile_shaders_compute_var_spv monolith extract
 compile_shaders_compute_var_spv monolith final
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
@@ -86,8 +84,8 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../monolith/gbuf_fs.hlsl -Fo "$TMP_DIR/monolith_gbuf_fs.spv"
-_emit_spv_header_var monolith prefill resolve rays extract final gbuf_vs gbuf_fs
-echo "  monolith shaders compiled (SPV: prefill + resolve + rays + extract + final + gbuf)"
+_emit_spv_header_var monolith prefill resolve rays final gbuf_vs gbuf_fs
+echo "  monolith shaders compiled (SPV: prefill + resolve + rays + final + gbuf)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update

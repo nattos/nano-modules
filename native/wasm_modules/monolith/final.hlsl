@@ -1,19 +1,18 @@
 // source.mesh.monolith — final combine + tonemap.
 //
-// hdr = composite + rays + bloom, shoulder tonemap (identity below 1.0,
-// C1 shoulder above), written to tex_out. Pixels with no shape coverage
-// AND no ray/bloom contribution copy the input VERBATIM — the
-// passthrough guarantee. Rays/bloom slots are bound to a 1x1 zero
-// texture when their passes are skipped (OOB Loads return zero).
+// hdr = composite + rays (screen-style blend), shoulder tonemap
+// (identity below 1.0, C1 shoulder above), written to tex_out. Pixels
+// with no shape coverage AND no ray contribution copy the input
+// VERBATIM — the passthrough guarantee. The rays slot is bound to a
+// 1x1 zero texture when the pass is skipped (OOB Loads return zero).
 
-Texture2D<float4>   compTex  : register(t0);
-Texture2D<float4>   raysTex  : register(t1);
-Texture2D<float4>   bloomTex : register(t2);
-Texture2D<float4>   inTex    : register(t3);
-RWTexture2D<float4> outTex   : register(u4);
+Texture2D<float4>   compTex : register(t0);
+Texture2D<float4>   raysTex : register(t1);
+Texture2D<float4>   inTex   : register(t2);
+RWTexture2D<float4> outTex  : register(u3);
 
-cbuffer Uniforms : register(b5) {
-  float4 p;   // x = bloom gain (range-expanded), y = has_rays, z = has_bloom
+cbuffer Uniforms : register(b4) {
+  float4 p;   // x = has_rays, yzw unused
 };
 
 float shoulder(float x) {
@@ -30,8 +29,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float4 c = compTex.Load(ip);
   // Rays land via a screen-style blend: strong shafts over dark water,
   // never a white-out over an already-bright backdrop.
-  float3 rays = raysTex.Load(ip).rgb * p.y * saturate(1.0 - c.rgb);
-  float3 add = rays + bloomTex.Load(ip).rgb * p.x * p.z;
+  float3 add = raysTex.Load(ip).rgb * p.x * saturate(1.0 - c.rgb);
   float4 inp = inTex.Load(ip);
   if (c.a <= 0.0 && (add.x + add.y + add.z) < 1e-5) {
     outTex[gid.xy] = inp;   // bit-exact passthrough
