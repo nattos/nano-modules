@@ -109,6 +109,7 @@ echo "  flow_swarm shaders compiled (SPV: update + prefill + vs + fs + density +
 # sweep_chamber — swept-luma capture/release particle+line sim (double_chamber
 # successor). Compute: field_b (curl noise + swept-image gradient), p_update
 # (substepped particle advection), prefill. Raster: instanced point quads.
+compile_shaders_compute_var_spv sweep_chamber field_a
 compile_shaders_compute_var_spv sweep_chamber field_b
 compile_shaders_compute_var_spv sweep_chamber p_update
 compile_shaders_compute_var_spv sweep_chamber prefill
@@ -118,8 +119,8 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../sweep_chamber/fs.hlsl -Fo "$TMP_DIR/sweep_chamber_fs.spv"
-_emit_spv_header_var sweep_chamber field_b p_update prefill vs fs
-echo "  sweep_chamber shaders compiled (SPV: field_b + p_update + prefill + vs + fs)"
+_emit_spv_header_var sweep_chamber field_a field_b p_update prefill vs fs
+echo "  sweep_chamber shaders compiled (SPV: field_a + field_b + p_update + prefill + vs + fs)"
 
 # local_delay — stylized motion-driven local delay. Pyramidal Lucas-Kanade
 # flow + forward-advection lookup, sharing common.hlsl:

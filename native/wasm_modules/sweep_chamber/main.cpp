@@ -50,6 +50,14 @@ struct GpuParticle {
 };
 static_assert(sizeof(GpuParticle) == 32, "Particle GPU struct must be 32 bytes");
 
+struct FieldAUniforms {
+  uint32_t field_res;
+  float    sweep_center;
+  float    sweep_width;
+  float    sweep_soft;
+};
+static_assert(sizeof(FieldAUniforms) == 16, "FieldAUniforms layout mismatch");
+
 struct FieldUniforms {
   uint32_t field_res;
   float    aspect_x;
@@ -137,6 +145,7 @@ enum ShapeKind : int { SHAPE_POINT = 0, SHAPE_GAUSSIAN = 1, SHAPE_CIRCLE = 2, SH
 enum Mode      : int { MODE_VELOCITY = 0, MODE_FORCE = 1 };
 
 // Type-shared: compiled once in module_init().
+static gpu::ComputePSO s_pso_field_a;
 static gpu::ComputePSO s_pso_field_b;
 static gpu::ComputePSO s_pso_update;
 static gpu::ComputePSO s_pso_prefill;
@@ -145,14 +154,15 @@ static gpu::RenderPSO  s_pso_render_add;
 
 struct State {
   gpu::Buffer  particle_buf;
+  gpu::Buffer  field_a_uniforms;
   gpu::Buffer  field_uniforms;
   gpu::Buffer  update_uniforms;
   gpu::Buffer  prefill_uniforms;
   gpu::Buffer  vs_uniforms;
   gpu::Buffer  color_uniforms;
   gpu::Sampler sampler;
+  gpu::Texture field_a_tex;     // FIELD_RES² swept luma + peak offsets (lazy)
   gpu::Texture field_b_tex;     // FIELD_RES² velocity field (lazy)
-  gpu::Texture zero_field_a;    // 1×1 stand-in until the sweep pass lands (M2)
   gpu::Texture black_tex;       // 1×1 opaque black — generator fallback input
 
   bool initialized = false;
@@ -392,6 +402,8 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
+  state::registerShaderSPV("sweep_chamber_field_a",  FIELD_A_SPV,  FIELD_A_SPV_SIZE,
+                           "rgba16float", "write");
   state::registerShaderSPV("sweep_chamber_field_b",  FIELD_B_SPV,  FIELD_B_SPV_SIZE,
                            "rgba16float", "write");
   state::registerShaderSPV("sweep_chamber_p_update", P_UPDATE_SPV, P_UPDATE_SPV_SIZE);
@@ -399,12 +411,19 @@ void module_init() {
   state::registerShaderSPV("sweep_chamber_vs",       VS_SPV,       VS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_fs",       FS_SPV,       FS_SPV_SIZE);
 
+  auto cs_field_a = gpu::Device::createShaderModuleByName("sweep_chamber_field_a");
   auto cs_field_b = gpu::Device::createShaderModuleByName("sweep_chamber_field_b");
   auto cs_update  = gpu::Device::createShaderModuleByName("sweep_chamber_p_update");
   auto cs_prefill = gpu::Device::createShaderModuleByName("sweep_chamber_prefill");
   auto vs_module  = gpu::Device::createShaderModuleByName("sweep_chamber_vs");
   auto fs_module  = gpu::Device::createShaderModuleByName("sweep_chamber_fs");
-  if (!cs_field_b || !cs_update || !cs_prefill || !vs_module || !fs_module) return;
+  if (!cs_field_a || !cs_field_b || !cs_update || !cs_prefill || !vs_module || !fs_module) return;
+
+  s_pso_field_a = gpu::Device::createComputePSO(cs_field_a, "main", gpu::Bindings()
+      .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_a out
+      .tex2d(1)                                       // full-res input
+      .sampler(2)
+      .uniform(3));
 
   s_pso_field_b = gpu::Device::createComputePSO(cs_field_b, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_b out
@@ -440,6 +459,7 @@ void* create() {
   auto* s = new State();
   s->particle_buf = gpu::Device::createBuffer(
       sizeof(GpuParticle) * MAX_PARTICLES, gpu::BufferUsage::Storage);
+  s->field_a_uniforms = gpu::Device::createBuffer(sizeof(FieldAUniforms),  gpu::BufferUsage::Uniform);
   s->field_uniforms   = gpu::Device::createBuffer(sizeof(FieldUniforms),   gpu::BufferUsage::Uniform);
   s->update_uniforms  = gpu::Device::createBuffer(sizeof(UpdateUniforms),  gpu::BufferUsage::Uniform);
   s->prefill_uniforms = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
@@ -453,14 +473,15 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->particle_buf.release();
+  s->field_a_uniforms.release();
   s->field_uniforms.release();
   s->update_uniforms.release();
   s->prefill_uniforms.release();
   s->vs_uniforms.release();
   s->color_uniforms.release();
   s->sampler.release();
+  s->field_a_tex.release();
   s->field_b_tex.release();
-  s->zero_field_a.release();
   s->black_tex.release();
   delete s;
 }
@@ -468,7 +489,8 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  if (!s_pso_field_b.valid() || !s_pso_update.valid() || !s_pso_prefill.valid() ||
+  if (!s_pso_field_a.valid() || !s_pso_field_b.valid() ||
+      !s_pso_update.valid() || !s_pso_prefill.valid() ||
       !s_pso_render_alpha.valid() || !s_pso_render_add.valid()) return;
   if (!s->particle_buf.valid()) return;
 
@@ -560,17 +582,18 @@ void render(void* self, int vp_w, int vp_h) {
     in = s->black_tex;
   }
 
-  // Lazy field textures. field_a is a 1×1 zero until the sweep pass (M2).
+  // Lazy field textures.
+  if (!s->field_a_tex.valid()) {
+    s->field_a_tex = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
+                                                gpu::TextureFormat::RGBA16F);
+    gpu::Device::clear(s->field_a_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  }
   if (!s->field_b_tex.valid()) {
     s->field_b_tex = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
                                                 gpu::TextureFormat::RGBA16F);
     gpu::Device::clear(s->field_b_tex, 0.0f, 0.0f, 0.0f, 0.0f);
   }
-  if (!s->zero_field_a.valid()) {
-    s->zero_field_a = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
-    gpu::Device::clear(s->zero_field_a, 0.0f, 0.0f, 0.0f, 0.0f);
-  }
-  if (!s->field_b_tex.valid()) return;
+  if (!s->field_a_tex.valid() || !s->field_b_tex.valid()) return;
 
   s->frame_index++;
   float dt = (float)host::deltaTime();
@@ -587,6 +610,13 @@ void render(void* self, int vp_w, int vp_h) {
   s->drift_phase += s->eddy_drift * dt;
   if (s->spin_phase  > 4096.0f) s->spin_phase  -= 4096.0f;
   if (s->drift_phase > 4096.0f) s->drift_phase -= 4096.0f;
+
+  FieldAUniforms fau = {};
+  fau.field_res    = (uint32_t)FIELD_RES;
+  fau.sweep_center = s->sweep_center;
+  fau.sweep_width  = s->sweep_width;
+  fau.sweep_soft   = s->sweep_soft;
+  s->field_a_uniforms.writeOne(fau);
 
   FieldUniforms fu = {};
   fu.field_res       = (uint32_t)FIELD_RES;
@@ -657,12 +687,26 @@ void render(void* self, int vp_w, int vp_h) {
   cu.exposure     = s->exposure;
   s->color_uniforms.writeOne(cu);
 
-  // ---- Pass 1: build the velocity field ----
+  // ---- Pass 1a: sweep + downsample the input into field_a ----
+  // Always runs (with no input it reduces the 1×1 black fallback → all-zero
+  // L', i.e. the free-flow state) so field_a is never stale.
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_field_a);
+    cp.setTexture(s->field_a_tex, 0, 1);
+    cp.setTexture(in, 1, 0);
+    cp.setSampler(s->sampler, 2);
+    cp.setBuffer(s->field_a_uniforms, 3);
+    cp.dispatch((FIELD_RES + 7) / 8, (FIELD_RES + 7) / 8);
+    cp.end();
+  }
+
+  // ---- Pass 1b: build the velocity field (curl noise + ∇L') ----
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_field_b);
     cp.setTexture(s->field_b_tex, 0, 1);
-    cp.setTexture(s->zero_field_a, 1, 0);
+    cp.setTexture(s->field_a_tex, 1, 0);
     cp.setSampler(s->sampler, 2);
     cp.setBuffer(s->field_uniforms, 3);
     cp.dispatch((FIELD_RES + 7) / 8, (FIELD_RES + 7) / 8);
