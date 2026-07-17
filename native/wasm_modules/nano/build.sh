@@ -122,6 +122,7 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 compile_shaders_compute_var_spv sweep_chamber trace
 compile_shaders_compute_var_spv sweep_chamber stats
 compile_shaders_compute_var_spv sweep_chamber density_debug
+compile_shaders_compute_var_spv sweep_chamber field_debug
 compile_shaders_compute_var_spv sweep_chamber motion_prefill
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
@@ -148,7 +149,7 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../sweep_chamber/line_fs.hlsl -Fo "$TMP_DIR/sweep_chamber_line_fs.spv"
 _emit_spv_header_var sweep_chamber field_a field_b p_update trace stats prefill vs fs \
-  line_vs line_fs density_vs density_fs density_debug \
+  line_vs line_fs density_vs density_fs density_debug field_debug \
   motion_prefill motion_vs motion_fs line_motion_vs line_motion_fs
 echo "  sweep_chamber shaders compiled (SPV: field_a + field_b + p_update + trace + stats + prefill + vs + fs + lines + density + motion)"
 

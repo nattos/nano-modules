@@ -154,6 +154,9 @@ static_assert(sizeof(UpdateUniforms) == 192, "UpdateUniforms layout mismatch");
 struct DensityUniforms { float radius, aspect_x, aspect_y, _pad; };
 static_assert(sizeof(DensityUniforms) == 16, "DensityUniforms layout mismatch");
 
+struct FieldDebugUniforms { float to_image, to_image_curl, _p0, _p1; };
+static_assert(sizeof(FieldDebugUniforms) == 16, "FieldDebugUniforms layout mismatch");
+
 struct MotionVsUniforms {
   float aspect_x, aspect_y, point_size, dt;
   float scale, _m0, _m1, _m2;
@@ -264,6 +267,7 @@ static gpu::RenderPSO  s_pso_line_alpha;
 static gpu::RenderPSO  s_pso_line_add;
 static gpu::RenderPSO  s_pso_density;        // soft-halo additive splat
 static gpu::ComputePSO s_pso_density_debug;  // heat-map blit
+static gpu::ComputePSO s_pso_field_debug;    // field readout blit
 static gpu::ComputePSO s_pso_motion_prefill;
 static gpu::RenderPSO  s_pso_motion_point;   // particle velocity → motion (RGBA16F)
 static gpu::RenderPSO  s_pso_motion_line;    // line tangent → motion (RGBA16F)
@@ -284,6 +288,7 @@ struct State {
   gpu::Buffer  line_vs_uniforms;
   gpu::Buffer  line_fs_uniforms;
   gpu::Buffer  density_uniforms;
+  gpu::Buffer  field_debug_uniforms;
   gpu::Buffer  motion_vs_uniforms;
   gpu::Buffer  motion_fs_uniforms;
   gpu::Buffer  lm_vs_uniforms;
@@ -361,6 +366,7 @@ struct State {
   float stream             = 0.0f;
   float stream_density     = 3.0f;
   bool  debug_density      = false;
+  bool  debug_field        = false;
   // Motion rail (render_outputs/motion) — only produced when a sink reads it.
   float motion_line_speed     = 0.3f;
   float motion_particle_scale = 1.0f;
@@ -530,6 +536,9 @@ void module_init() {
       .floatField("sweep_width",     0.25f, 0.02f, 1.0f, state::PrimaryInput).label("Sweep Width", "Width")
       .floatField("sweep_soft",      0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Sweep Softness", "Soft")
       .floatField("image_smoothing", 0.25f, 0.0f, 1.0f, state::PrimaryInput).label("Image Smoothing", "Smooth")
+      // Debug: render the coarse field itself (velocity hue + swept luma +
+      // ridge detector) instead of the sim — the tuning window.
+      .boolField ("debug_field",     false,             state::PrimaryInput).label("Debug Field", "DbgFld")
       // ---- Field ----
       .group("field", "Field")
         .groupHelp(
@@ -709,6 +718,7 @@ void module_init() {
   state::registerShaderSPV("sweep_chamber_density_vs", DENSITY_VS_SPV, DENSITY_VS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_density_fs", DENSITY_FS_SPV, DENSITY_FS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_density_debug", DENSITY_DEBUG_SPV, DENSITY_DEBUG_SPV_SIZE);
+  state::registerShaderSPV("sweep_chamber_field_debug", FIELD_DEBUG_SPV, FIELD_DEBUG_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_motion_prefill", MOTION_PREFILL_SPV, MOTION_PREFILL_SPV_SIZE,
                            "rgba16float", "write");
   state::registerShaderSPV("sweep_chamber_motion_vs",      MOTION_VS_SPV,      MOTION_VS_SPV_SIZE);
@@ -729,6 +739,7 @@ void module_init() {
   auto vs_density = gpu::Device::createShaderModuleByName("sweep_chamber_density_vs");
   auto fs_density = gpu::Device::createShaderModuleByName("sweep_chamber_density_fs");
   auto cs_dbg     = gpu::Device::createShaderModuleByName("sweep_chamber_density_debug");
+  auto cs_fdbg    = gpu::Device::createShaderModuleByName("sweep_chamber_field_debug");
   auto cs_mpf     = gpu::Device::createShaderModuleByName("sweep_chamber_motion_prefill");
   auto mvs        = gpu::Device::createShaderModuleByName("sweep_chamber_motion_vs");
   auto mfs        = gpu::Device::createShaderModuleByName("sweep_chamber_motion_fs");
@@ -736,7 +747,7 @@ void module_init() {
   auto lmfs       = gpu::Device::createShaderModuleByName("sweep_chamber_line_motion_fs");
   if (!cs_field_a || !cs_field_b || !cs_update || !cs_trace || !cs_stats ||
       !cs_prefill || !vs_module || !fs_module || !line_vs || !line_fs ||
-      !vs_density || !fs_density || !cs_dbg ||
+      !vs_density || !fs_density || !cs_dbg || !cs_fdbg ||
       !cs_mpf || !mvs || !mfs || !lmvs || !lmfs) return;
 
   s_pso_field_a = gpu::Device::createComputePSO(cs_field_a, "main", gpu::Bindings()
@@ -811,6 +822,13 @@ void module_init() {
       .sampler(1)
       .storageTex2d(2));
 
+  s_pso_field_debug = gpu::Device::createComputePSO(cs_fdbg, "main", gpu::Bindings()
+      .tex2d(0)       // field_a
+      .tex2d(1)       // field_b
+      .sampler(2)
+      .storageTex2d(3)
+      .uniform(4));
+
   // Motion-vector PSOs: RGBA16F targets, AlphaOver composes each footprint's
   // velocity over the (upstream-seeded) motion field by coverage.
   s_pso_motion_prefill = gpu::Device::createComputePSO(cs_mpf, "main", gpu::Bindings()
@@ -847,6 +865,7 @@ void* create() {
   s->line_vs_uniforms = gpu::Device::createBuffer(sizeof(LineVsUniforms),  gpu::BufferUsage::Uniform);
   s->line_fs_uniforms = gpu::Device::createBuffer(sizeof(LineFsUniforms),  gpu::BufferUsage::Uniform);
   s->density_uniforms = gpu::Device::createBuffer(sizeof(DensityUniforms), gpu::BufferUsage::Uniform);
+  s->field_debug_uniforms = gpu::Device::createBuffer(sizeof(FieldDebugUniforms), gpu::BufferUsage::Uniform);
   s->motion_vs_uniforms = gpu::Device::createBuffer(sizeof(MotionVsUniforms), gpu::BufferUsage::Uniform);
   s->motion_fs_uniforms = gpu::Device::createBuffer(sizeof(MotionFsUniforms), gpu::BufferUsage::Uniform);
   s->lm_vs_uniforms     = gpu::Device::createBuffer(sizeof(LineMotionVsUniforms), gpu::BufferUsage::Uniform);
@@ -872,6 +891,7 @@ void destroy(void* self) {
   s->line_vs_uniforms.release();
   s->line_fs_uniforms.release();
   s->density_uniforms.release();
+  s->field_debug_uniforms.release();
   s->motion_vs_uniforms.release();
   s->motion_fs_uniforms.release();
   s->lm_vs_uniforms.release();
@@ -895,6 +915,7 @@ void init(void* self) {
       !s_pso_render_alpha.valid() || !s_pso_render_add.valid() ||
       !s_pso_line_alpha.valid() || !s_pso_line_add.valid() ||
       !s_pso_density.valid() || !s_pso_density_debug.valid() ||
+      !s_pso_field_debug.valid() ||
       !s_pso_motion_prefill.valid() || !s_pso_motion_point.valid() ||
       !s_pso_motion_line.valid()) return;
   if (!s->particle_buf.valid() || !s->tracer_buf.valid() || !s->seg_buf.valid()) return;
@@ -977,6 +998,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "stream"))             s->stream = state::patchFloat(i);
     else if (state::pathIs(path, plen, "stream_density"))     s->stream_density = state::patchFloat(i);
     else if (state::pathIs(path, plen, "debug_density"))      s->debug_density = state::patchFloat(i) != 0.0f;
+    else if (state::pathIs(path, plen, "debug_field"))        s->debug_field = state::patchFloat(i) != 0.0f;
     else if (state::pathIs(path, plen, "motion_line_speed"))     s->motion_line_speed = state::patchFloat(i);
     else if (state::pathIs(path, plen, "motion_particle_scale")) s->motion_particle_scale = state::patchFloat(i);
     else if (state::pathIs(path, plen, "intensity_sens"))     s->intensity_sens = state::patchFloat(i);
@@ -1309,7 +1331,7 @@ void render(void* self, int vp_w, int vp_h) {
     gpu::Device::clear(out, 0.0f, 0.0f, 0.0f, 1.0f);
   }
 
-  bool debug = ix && s->debug_density;
+  bool debug = (ix && s->debug_density) || s->debug_field;
   // The density splat is the most expensive interaction pass; only run it
   // when something actually reads the buffer this frame (flow_swarm parity).
   bool need_density = ix && (s->density_death > 0.0f || s->avoid > 0.0f ||
@@ -1355,8 +1377,20 @@ void render(void* self, int vp_w, int vp_h) {
     rp.end();
   }
 
-  // ---- Pass 7 (debug): heat-map the density buffer into tex_out. ----
-  if (debug) {
+  // ---- Pass 7 (debug): field readout or density heat map into tex_out. ----
+  if (s->debug_field) {
+    FieldDebugUniforms fdu = { s->to_image, s->to_image_curl, 0.f, 0.f };
+    s->field_debug_uniforms.writeOne(fdu);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_field_debug);
+    cp.setTexture(s->field_a_tex, 0, 0);
+    cp.setTexture(s->field_b_tex, 1, 0);
+    cp.setSampler(s->sampler, 2);
+    cp.setTexture(out, 3, 1);
+    cp.setBuffer(s->field_debug_uniforms, 4);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  } else if (debug) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_density_debug);
     cp.setTexture(s->density_tex, 0, 0);

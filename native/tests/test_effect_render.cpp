@@ -3532,6 +3532,92 @@ TEST_CASE("motion rail: double_chamber drives motion.blur natively",
 }
 #endif  // LEGACY_WASM_PATH
 
+#if defined(NANO_WASM_PATH) && defined(CORE_WASM_PATH)
+// sweep_chamber (double_chamber's successor, nano bundle) native smoke: all
+// of its PSOs must build on Metal (storage-texture formats, threadgroup
+// carry-through), the sim must run on a real luma-gradient input with the
+// sweep mid-band (image coupling + tracers + spawn-on-line live), and the
+// motion rail must drive motion.blur exactly like the double_chamber twin
+// above. Two byte-identical runs apart from blur strength → a difference can
+// only be real velocity over the rail.
+TEST_CASE("sweep_chamber renders and drives motion.blur natively",
+          "[effect_render][motion_rail][sweep_chamber]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 128, H = 128;
+  const int RGBA8 = 1;
+
+  auto renderChain = [&](double strength) {
+    sketch_executor::SketchExecutor ex(&rt, &registry, backend.get());
+    int in = backend->createTexture(W, H, RGBA8);
+    int out = backend->createTexture(W, H, RGBA8);
+    // Horizontal luma ramp: every brightness present, so the mid-sweep
+    // window captures a clean vertical band for the tracers to grip.
+    std::vector<uint8_t> ramp((size_t)W * H * 4, 0);
+    for (uint32_t y = 0; y < H; ++y) {
+      for (uint32_t x = 0; x < W; ++x) {
+        size_t i = ((size_t)y * W + x) * 4;
+        uint8_t v = (uint8_t)((x * 255u) / (W - 1u));
+        ramp[i] = ramp[i + 1] = ramp[i + 2] = v;
+        ramp[i + 3] = 255;
+      }
+    }
+    backend->writeTexture(in, W, H, ramp.data(), (uint32_t)ramp.size());
+
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "wires": [],
+      "chain": [
+        { "type": "module", "module_type": "source.particles.sweep_chamber", "instance_key": "sc" },
+        { "type": "module", "module_type": "motion.blur",                    "instance_key": "mb" }
+      ],
+      "instances": {
+        "sc": { "module_type": "source.particles.sweep_chamber", "state": {
+          "count": 6000, "shape_kind": 1, "size": 0.8, "opacity": 1.0,
+          "exposure": 2.0, "color_blend": 1.0, "speed": 3.0, "noise_speed": 1.0,
+          "sweep_center": 0.5, "to_image": 2.0, "input_alpha": 0.0,
+          "l_count": 8, "l_opacity": 1.0, "motion_line_speed": 0.6 } },
+        "mb": { "module_type": "motion.blur", "state": {
+          "strength": 0.0, "samples": 16, "quality": 1 } }
+      }
+    })JSON");
+    sketch["instances"]["mb"]["state"]["strength"] = strength;
+
+    for (int f = 0; f < 24; ++f) {
+      REQUIRE(ex.execute(sketch, in, out, (int)W, (int)H, 1.0 / 60.0, /*dirty=*/f == 0) > 0);
+      backend->submit();
+    }
+    return backend->readbackTexture(out, W, H);
+  };
+
+  auto sharp   = renderChain(0.0);
+  auto blurred = renderChain(32.0);
+  REQUIRE(sharp.size() == (size_t)W * H * 4);
+  REQUIRE(blurred.size() == (size_t)W * H * 4);
+
+  int lit = 0;
+  for (size_t i = 0; i < sharp.size(); i += 4)
+    if ((int)sharp[i] + sharp[i + 1] + sharp[i + 2] > 24) lit++;
+  INFO("lit pixels " << lit);
+  CHECK(lit > 100);
+
+  long diff = 0;
+  for (size_t i = 0; i < sharp.size(); i += 4)
+    diff += std::abs((int)sharp[i] - (int)blurred[i])
+          + std::abs((int)sharp[i + 1] - (int)blurred[i + 1])
+          + std::abs((int)sharp[i + 2] - (int)blurred[i + 2]);
+  INFO("total rgb delta blurred vs sharp " << diff);
+  CHECK(diff > 1000);
+}
+#endif  // NANO_WASM_PATH && CORE_WASM_PATH
+
 // A wire from a WASM modulation source must work WITHOUT the host pre-mirroring
 // the producer's output into instance state.
 //
