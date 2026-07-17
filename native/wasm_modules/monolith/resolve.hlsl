@@ -35,7 +35,7 @@ cbuffer Uniforms : register(b8) {
   float4 vp;           // w, h, 1/w, 1/h
   float4 caustic;      // amount, world scale, water_t, 0
   float4 sun_env;      // sun sample uv.xy, mode (1 = hue from env), 0
-  float4 fog_color;    // medium tint rgb (white = neutral)
+  float4 fog_color;    // medium tint rgb (white = neutral), w = inv zoom
 };
 
 static const float INV_TAU = 0.15915494309;
@@ -180,13 +180,20 @@ void main(uint3 gid : SV_DispatchThreadID) {
     fh = fh * fh * (3.0 - 2.0 * fh);
     float fd = 1.0 - exp(-max(0.0, view_z - round_p.w) * fog_p.w);
     float f = fog_p.x * saturate(fh + 0.6 * fd);
+    // The scene sample feeding the medium is spatially ZOOMED about the
+    // center (fog_color.w = inverse zoom): at 1 it aligns with the
+    // backdrop, zoomed in it draws from the scene's middle — decoupling
+    // the haze from whatever sits directly behind each pixel.
     float3 fogc;
     if (round_p.z > 0.5) {
       float3 Vw = float3(V.x, cphi * V.y + sphi * V.z,
                          -sphi * V.y + cphi * V.z);
-      fogc = envBlur.SampleLevel(wrapS, equirectUV(Vw), 0).rgb;
+      float2 uvF = 0.5 + (equirectUV(Vw) - 0.5) * fog_color.w;
+      uvF.y = clamp(uvF.y, 0.004, 0.996);
+      fogc = envBlur.SampleLevel(wrapS, uvF, 0).rgb;
     } else {
-      fogc = envBlur.SampleLevel(clampS, uv, 0).rgb;
+      float2 uvF = 0.5 + (uv - 0.5) * fog_color.w;
+      fogc = envBlur.SampleLevel(clampS, uvF, 0).rgb;
     }
     float fl = dot(fogc, float3(0.299, 0.587, 0.114));
     fogc = lerp(fogc, float3(fl, fl, fl), 0.45);

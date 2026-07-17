@@ -194,7 +194,7 @@ struct ResolveUniforms {
   float vp[4];              // w, h, 1/w, 1/h
   float caustic[4];         // amount, world scale, water_t, 0
   float sun_env[4];         // sun sample uv.xy, mode (1 = from env), 0
-  float fog_color[4];       // medium tint rgb, 0
+  float fog_color[4];       // medium tint rgb, w = inverse spatial zoom
 };
 
 struct RaysUniforms {
@@ -252,6 +252,7 @@ struct State {
   int sun_source = 0;       // 0 = Color, 1 = From Input (env chroma)
   float fog = 0.2f;
   float fog_r = 1.0f, fog_g = 1.0f, fog_b = 1.0f;
+  float fog_scale = 0.0f;   // 0 = 1:1 with the scene, 1 = 4x zoomed sample
   float rays = 0.3f;
   float bloom = 0.25f;
   float caustics = 0.35f;
@@ -303,7 +304,9 @@ void module_init() {
   // 1.2.8: sun_source From Tint Tex + tint_in texture input (bound only
   //        when active; the rays pass reuses its sun-sample slot).
   // 1.2.9: fog_color - tints the medium, white = previous look.
-  state::init("source.mesh.monolith", {1, 2, 9},
+  // 1.2.10: fog_scale - spatial zoom on the fog's blurred-scene sample,
+  //         decoupling the haze from the backdrop behind each pixel.
+  state::init("source.mesh.monolith", {1, 2, 10},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -447,6 +450,8 @@ void module_init() {
           .label("Loom", "Loom")
       .floatField("caustic_scale", 0.5f, 0.f, 1.f, state::SecondaryInput)
           .label("Caustic Scale", "CScl")
+      .floatField("fog_scale", 0.0f, 0.f, 1.f, state::SecondaryInput)
+          .label("Fog Scale", "FogScl")
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
       .textureField("env_in", state::SecondaryInput)
@@ -672,6 +677,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       auto v = state::patchVec3(i);
       s->fog_r = v.x; s->fog_g = v.y; s->fog_b = v.z;
     }
+    else if (state::pathIs(p, l, "fog_scale")) s->fog_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
     else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
     else if (state::pathIs(p, l, "caustics"))  s->caustics = state::patchFloat(i);
@@ -932,6 +938,7 @@ void render(void* self, int vp_w, int vp_h) {
     u.sun_env[2] = sun_env_mode;
     u.fog_color[0] = s->fog_r; u.fog_color[1] = s->fog_g;
     u.fog_color[2] = s->fog_b;
+    u.fog_color[3] = 1.0f / (1.0f + 3.0f * s->fog_scale);   // inverse zoom
     s->ub_resolve[ci].writeOne(u);
 
     {

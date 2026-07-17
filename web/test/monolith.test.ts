@@ -167,6 +167,22 @@ describe('source.mesh.monolith E2E', () => {
     red.trace('out').expectPixelAt(3, 3, BG, 8);
   });
 
+  it('fog scale decouples the haze from the backdrop', async () => {
+    // Gradient input (fog color sample varies spatially): zooming the
+    // sample must change the fogged body off-center; corners untouched.
+    const base = { ...STATIC, size: 1.0, fog: 1.0 };
+    const aligned = await render('mono_fogscale_0', base, { gradientInput: true });
+    const zoomed = await render('mono_fogscale_1',
+      { ...base, fog_scale: 1.0 }, { gradientInput: true });
+    const pa = aligned.trace('out').pixelAt(40, 26);
+    const pz = zoomed.trace('out').pixelAt(40, 26);
+    expect(Math.abs(lum(pz) - lum(pa))).toBeGreaterThan(5);
+    // Uncovered pixels identical between the two runs.
+    const ca = aligned.trace('out').pixelAt(3, 3);
+    const cz = zoomed.trace('out').pixelAt(3, 3);
+    expect(Math.abs(ca.r - cz.r)).toBeLessThanOrEqual(4);
+  });
+
   it('vantage makes the verticals converge (towering)', async () => {
     const width = (r: any, y: number) => {
       let n = 0;
