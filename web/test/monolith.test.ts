@@ -243,6 +243,45 @@ describe('source.mesh.monolith E2E', () => {
     }
   });
 
+  it('caustic speed 0 freezes the water; default speed evolves it', async () => {
+    // Multi-phase on ONE instance: frozen pose (STATIC) + caustics on.
+    const phased = async (id: string, caustic_speed: number) => {
+      const r = await runEngineMultiPhaseTest({
+        width: 96, height: 96,
+        modules: ['com.nano.core', 'com.nano.nano'],
+        dumpName: id,
+        phases: [
+          {
+            commands: [
+              { type: 'createSketch', sketchId: id,
+                sketch: buildSketch({ ...STATIC, color: [0.5, 0.5, 0.5],
+                                      tilt: -0.6, caustics: 1.0, caustic_speed }) },
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+              ]},
+            ],
+            waitFrames: 3, captureTraceIds: ['out'],
+          },
+          { waitFrames: 40, captureTraceIds: ['out'] },
+        ],
+      });
+      expect(r.success).toBe(true);
+      return r;
+    };
+    // Frozen: mid-face probes identical (edges excluded — the eased Arc
+    // start still drifts the pose sub-degree between phases).
+    const frozen = await phased('mono_cspd_frozen', 0.0);
+    for (const [x, y] of [[48, 40], [44, 52], [52, 60]]) {
+      const a = frozen.phases[0].trace('out').pixelAt(x, y);
+      const b = frozen.phases[1].trace('out').pixelAt(x, y);
+      expect(Math.abs(a.r - b.r)).toBeLessThanOrEqual(3);
+      expect(Math.abs(a.g - b.g)).toBeLessThanOrEqual(3);
+      expect(Math.abs(a.b - b.b)).toBeLessThanOrEqual(3);
+    }
+    const flowing = await phased('mono_cspd_flow', 0.9);
+    flowing.phases[1].trace('out').expectDifferentFrom(flowing.phases[0].trace('out'), 4);
+  });
+
   it('caustics band the god rays', async () => {
     // Backlit with rays on: caustics modulate the shafts by angle, so the
     // region outside the silhouette changes; without rays or coverage the

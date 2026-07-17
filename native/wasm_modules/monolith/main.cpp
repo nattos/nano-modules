@@ -254,6 +254,7 @@ struct State {
   float rays = 0.3f;
   float caustics = 0.35f;
   float caustic_scale = 0.5f;
+  float caustic_speed = 0.5f;   // 0 = frozen water; 0.5 = classic rate
   float arc = 0.5f;
   float tilt = 0.0f;        // signed: + looks down at the top face
   float shading = 0.7f;
@@ -304,7 +305,9 @@ void module_init() {
   // 1.2.10: fog_scale - spatial zoom on the fog's blurred-scene sample,
   //         decoupling the haze from the backdrop behind each pixel.
   // 1.3.0: bloom REMOVED (field deleted - use downstream post instead).
-  state::init("source.mesh.monolith", {1, 3, 0},
+  // 1.3.1: caustic_speed - water clock rate, exp around the classic 0.35
+  //        units/s at 0.5; exactly 0 freezes the surface.
+  state::init("source.mesh.monolith", {1, 3, 1},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -445,6 +448,8 @@ void module_init() {
           .label("Loom", "Loom")
       .floatField("caustic_scale", 0.5f, 0.f, 1.f, state::SecondaryInput)
           .label("Caustic Scale", "CScl")
+      .floatField("caustic_speed", 0.5f, 0.f, 1.f, state::SecondaryInput)
+          .label("Caustic Speed", "CSpd")
       .floatField("fog_scale", 0.0f, 0.f, 1.f, state::SecondaryInput)
           .label("Fog Scale", "FogScl")
       // --- I/O ---
@@ -583,9 +588,13 @@ void tick(void* self, double dt) {
   if (!(dt > 0.0)) dt = 0.0;
   if (dt > 0.050) dt = 0.050;   // stall guard: never jump the pose
 
-  // The water never stops (even in Bars sync with a halted transport).
-  s->water_t += dt * 0.35;
-  if (s->water_t > 512.0) s->water_t -= 512.0;
+  // The water runs on its own clock (even in Bars sync with a halted
+  // transport). Accumulator: rate changes never jump the pattern (§2.1).
+  // Exponential around the classic 0.35 units/s; exactly 0 freezes it.
+  if (s->caustic_speed > 0.001f) {
+    s->water_t += dt * 0.35 * std::pow(2.0, ((double)s->caustic_speed - 0.5) * 4.0);
+    if (s->water_t > 512.0) s->water_t -= 512.0;
+  }
 
   double d;   // cycles this frame
   if (s->sync == SYNC_FREE) {
@@ -664,6 +673,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
     else if (state::pathIs(p, l, "caustics"))  s->caustics = state::patchFloat(i);
     else if (state::pathIs(p, l, "caustic_scale")) s->caustic_scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "caustic_speed")) s->caustic_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "arc"))       s->arc = state::patchFloat(i);
     else if (state::pathIs(p, l, "tilt"))      s->tilt = state::patchFloat(i);
     else if (state::pathIs(p, l, "shading"))   s->shading = state::patchFloat(i);
