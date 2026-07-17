@@ -2,9 +2,10 @@
  * Wire panel QoL E2E (resolume shell, playground mode).
  *
  * 1. Reconnect: the field inspector's wire rows carry a "reconnect" button that
- *    re-arms click-to-connect; the next field clicked takes over that wire END
- *    in place (same wire id, mod settings survive) instead of a new wire being
- *    created.
+ *    re-arms click-to-connect; the next field clicked takes over the wire's FAR
+ *    end (the endpoint the row displays) in place — same wire id, mod settings
+ *    survive — instead of a new wire being created. Inspecting the dest
+ *    re-picks the source, and vice versa.
  * 2. MIDI labels: a `midi:<uuid>` wire source renders as
  *    `midi:<endpoint> [Device Name]`, not the raw uuid key.
  */
@@ -27,11 +28,13 @@ describe('wire panel: reconnect + midi labels', () => {
           anchor: null,
           chain: [
             { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@0' },
+            { type: 'module', module_type: 'mod.source.lfo', instance_key: 'lfo@1' },
             { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0' },
           ],
           wires: ${wires},
           instances: {
             'lfo@0': { module_type: 'mod.source.lfo', state: {} },
+            'lfo@1': { module_type: 'mod.source.lfo', state: {} },
             'bc@0': { module_type: 'color.tone.brightness_contrast', state: { brightness: 1, contrast: 0.25 } },
           },
         };
@@ -39,7 +42,7 @@ describe('wire panel: reconnect + midi labels', () => {
       ac.setActiveTab('edit');
       ac.editSketch('sk_rc');
       ac.setTappingMode(true);   // field ports only render in wires mode
-      ac.selectField('sk_rc/0/1/brightness');
+      ac.selectField('sk_rc/0/2/brightness');
     })()`);
     await new Promise(r => setTimeout(r, 1500));
   }
@@ -56,7 +59,7 @@ describe('wire panel: reconnect + midi labels', () => {
     return null;
   })()`);
 
-  it('reconnect re-points a wire end in place, keeping id + mod settings', async () => {
+  it('reconnect re-points the FAR endpoint in place, keeping id + mod settings', async () => {
     await boot(`[{ id: 'w0', src: { instanceKey: 'lfo@0', field: 'output' },
                    dest: { instanceKey: 'bc@0', field: 'brightness' },
                    combine: 'add', mod: { scale: 0.5 } }]`);
@@ -76,11 +79,12 @@ describe('wire panel: reconnect + midi labels', () => {
     expect(clickedReconnect).toBe(true);
     await new Promise(r => setTimeout(r, 300));
 
-    // Click-to-connect is armed: land it on bc@0.contrast's field port.
+    // Click-to-connect is armed. Inspecting the DEST re-picks the SOURCE:
+    // land it on lfo@1's output port (chain idx 1).
     const clickedTarget = await page.evaluate(`(() => {
       ${WALK}
       for (const el of walk(document)) {
-        if (el.matches?.('.tap-overlay-hit[data-field-path="contrast"]')) {
+        if (el.matches?.('.tap-overlay-hit[data-chain-idx="1"][data-field-path="output"]')) {
           el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           return true;
         }
@@ -90,13 +94,13 @@ describe('wire panel: reconnect + midi labels', () => {
     expect(clickedTarget).toBe(true);
     await new Promise(r => setTimeout(r, 400));
 
-    // Same wire, patched in place: dest moved, id/mod/combine survive.
+    // Same wire, patched in place: src moved, dest kept, id/mod/combine survive.
     const wires = await page.evaluate(
       `JSON.parse(JSON.stringify(window.appState.database.sketches['sk_rc'].wires))`);
     expect(wires).toHaveLength(1);
     expect(wires[0].id).toBe('w0');
-    expect(wires[0].src).toEqual({ instanceKey: 'lfo@0', field: 'output' });
-    expect(wires[0].dest).toEqual({ instanceKey: 'bc@0', field: 'contrast' });
+    expect(wires[0].src).toEqual({ instanceKey: 'lfo@1', field: 'output' });
+    expect(wires[0].dest).toEqual({ instanceKey: 'bc@0', field: 'brightness' });
     expect(wires[0].mod).toEqual({ scale: 0.5 });
     expect(wires[0].combine).toBe('add');
   });
@@ -118,7 +122,7 @@ describe('wire panel: reconnect + midi labels', () => {
     })()`) as { id: string; name: string };
     // Re-select to make sure the card re-renders with the wire present.
     await page.evaluate(`window.appController.selectField(null),
-      window.appController.selectField('sk_rc/0/1/brightness')`);
+      window.appController.selectField('sk_rc/0/2/brightness')`);
     await new Promise(r => setTimeout(r, 500));
 
     const text = await fieldCardText();

@@ -2986,8 +2986,10 @@ export class ColumnGroup extends MobxLitElement {
                   ${isSrc ? '→' : '←'} ${otherLabel}</span>
                 ${this.taps.beginRetarget ? html`
                   <button style=${iconBtn}
-                    title="Reconnect — click another field to move this wire's end there"
-                    @click=${() => this.beginWireReconnect(chainIdx, fieldPath, w.id, isSrc ? 'src' : 'dest')}>
+                    title=${isSrc
+                      ? 'Reconnect — click a new destination field for this wire'
+                      : 'Reconnect — click a new source for this wire'}
+                    @click=${() => this.beginWireReconnect(chainIdx, fieldPath, w.id, isSrc ? 'dest' : 'src')}>
                     <ui-icon icon="la-exchange-alt" style="--icon-size:12px"></ui-icon>
                   </button>` : nothing}
                 <button style=${iconBtn}
@@ -3024,26 +3026,26 @@ export class ColumnGroup extends MobxLitElement {
   }
 
   /**
-   * "Reconnect": pick the wire up off THIS field (CLICK-mode connect) and
-   * re-point that end at the next field clicked. The far endpoint and all
-   * modulation settings survive — the wire is patched in place, not recreated.
-   * `movingEnd` is the role of the inspected field's end (src stays src, dest
-   * stays dest, so wire direction never flips).
+   * "Reconnect": the wire KEEPS its end on the inspected field and the FAR
+   * endpoint (the one the row displays) is re-pointed at the next field
+   * clicked. All modulation settings survive — the wire is patched in place,
+   * not recreated. `movingEnd` is the far end's role (src stays src, dest
+   * stays dest, so wire direction never flips): inspecting the dest re-picks
+   * the source, inspecting the source re-picks the destination.
    */
   private beginWireReconnect(chainIdx: number, fieldPath: string, wireId: string,
                              movingEnd: 'src' | 'dest') {
     if (!this.taps.beginRetarget) return;
     const sId = this.sketchId;
     const key = `${sId}/${this.colIdx}/${chainIdx}/${fieldPath}`;
-    // Anchor the rubber band at this field's port (the far endpoint may be
-    // off-surface entirely, e.g. a MIDI control on the Devices tab).
+    // Anchor the rubber band at this field's port — it's the end that stays.
     const hit = this.renderRoot.querySelector(
       `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"],
        .field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
     const r = hit?.getBoundingClientRect();
     const info: FieldConnectInfo = {
       sketchId: sId, colIdx: this.colIdx, chainIdx, fieldPath,
-      isOutput: movingEnd === 'src', viewportY: r ? r.top + r.height / 2 : 0, schemaDef: null,
+      isOutput: movingEnd === 'dest', viewportY: r ? r.top + r.height / 2 : 0, schemaDef: null,
     };
     this.taps.beginRetarget(sId, key, info,
       target => this.commitWireRetarget(wireId, movingEnd, target));
