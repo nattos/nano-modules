@@ -12,11 +12,12 @@ import type { Sketch } from '../src/sketch-types';
 
 // Solid white particles at a visible size over a black generator backdrop so
 // assertions key on the particles themselves (no input → captured color is
-// black; color_blend=1 renders the solid color instead).
+// black; color_blend=1 renders the solid color instead). Lines off by
+// default so the core-motion tests stay line-free.
 const BASE: Record<string, unknown> = {
   count: 3000, mode: 0 /* Velocity */, shape_kind: 1 /* Gaussian */, size: 0.8,
   speed: 2.0, momentum: 0.0, jitter: 0.0, drag: 0.0, life: 6.0, life_jitter: 0.2,
-  noise_speed: 0.5, eddy_evolve: 0.5,
+  noise_speed: 0.5, eddy_evolve: 0.5, l_count: 0, spawn_on_line: 0.0,
   boundary_death: 0.0, color_blend: 1.0, solid_color: [1, 1, 1],
   blend_mode: 0 /* Add */, opacity: 1.0, input_alpha: 0.0, seed: 1,
 };
@@ -172,5 +173,35 @@ describe('source.particles.sweep_chamber E2E', () => {
     expect(hiActive).toBeGreaterThan(100);
     // Similar spread: neither endpoint collapsed into a tight captured band.
     expect(Math.abs(loActive - hiActive)).toBeLessThan(Math.max(loActive, hiActive) * 0.5);
+  });
+
+  // ---- Lines (tracers) ----
+
+  it('lines render (l_count on vs off differ, and add coverage)', async () => {
+    const params = { ...COUPLED, sweep_center: 0.5, opacity: 0.0 };  // lines only
+    const off = await runGrad('sc_lines_off', { ...params, l_count: 0 }, 24);
+    const on  = await runGrad('sc_lines_on',
+      { ...params, l_count: 24, l_opacity: 1.0, l_width: 0.4, l_grip_alpha: 0.0 }, 24);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    // Particles are invisible (opacity 0): everything lit is a line.
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 60);
+  });
+
+  it('spawn-on-line concentrates fresh particles (short life, on vs off differ)', async () => {
+    // Short-lived particles respawn constantly; with spawn_on_line they land
+    // on the (gripped, mid-sweep) tracer lines instead of the central disc.
+    const params = {
+      ...COUPLED, sweep_center: 0.5, life: 0.5, life_jitter: 0.2,
+      l_count: 24, l_opacity: 0.0,  // lines invisible — only their pull shows
+      momentum: 0.9, speed: 0.5,
+    };
+    const off = await runGrad('sc_sol_off', { ...params, spawn_on_line: 0.0 }, 30);
+    const on  = await runGrad('sc_sol_on',  { ...params, spawn_on_line: 1.0 }, 30);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(60);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 50);
   });
 });

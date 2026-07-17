@@ -119,8 +119,15 @@ dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../sweep_chamber/fs.hlsl -Fo "$TMP_DIR/sweep_chamber_fs.spv"
-_emit_spv_header_var sweep_chamber field_a field_b p_update prefill vs fs
-echo "  sweep_chamber shaders compiled (SPV: field_a + field_b + p_update + prefill + vs + fs)"
+compile_shaders_compute_var_spv sweep_chamber trace
+dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../sweep_chamber/line_vs.hlsl -Fo "$TMP_DIR/sweep_chamber_line_vs.spv"
+dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
+  -I "$SHADERS_COMMON_DIR" \
+  ../sweep_chamber/line_fs.hlsl -Fo "$TMP_DIR/sweep_chamber_line_fs.spv"
+_emit_spv_header_var sweep_chamber field_a field_b p_update trace prefill vs fs line_vs line_fs
+echo "  sweep_chamber shaders compiled (SPV: field_a + field_b + p_update + trace + prefill + vs + fs + lines)"
 
 # local_delay — stylized motion-driven local delay. Pyramidal Lucas-Kanade
 # flow + forward-advection lookup, sharing common.hlsl:

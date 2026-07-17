@@ -25,6 +25,8 @@ RWStructuredBuffer<Particle> particles    : register(u0);
 Texture2D<float4>            fieldTexB    : register(t1);
 Texture2D<float4>            inputTex     : register(t2);
 SamplerState                 linearSampler : register(s3);
+StructuredBuffer<Seg>        segs          : register(t6);   // tracer segments (spawn-on-line)
+StructuredBuffer<TracerState> tracers      : register(t7);   // per-tracer grip (spawn weighting)
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -60,6 +62,11 @@ cbuffer Uniforms : register(b4) {
   float boundary_stiffness;
   float boundary_death;  // P(die+respawn) past the boundary, ∝ overshoot
   float spawn_size;      // respawn disc radius (s-space)
+  float to_line_rate;    // P(respawn onto a tracer line), pre-grip
+
+  float l_count_f;       // tracer count
+  float seg_stride;      // segment slots per tracer (its private block size)
+  float seg_live;        // slots per tracer actually written (rest zeroed)
   float _pad0;
 }
 
@@ -181,6 +188,27 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float theta = 6.28318530718 * swc_unit(swc_hash(h ^ 0xA17Fu));
     float2 sp = rad * float2(cos(theta), sin(theta));
     float2 nuv = 0.5 + sp * aspect;
+
+    // Spawn-on-line, GRIP-WEIGHTED: with prob to_line_rate pick a random
+    // tracer, accept it with probability = its grip (how hard the image
+    // currently holds it), then land at a UNIFORM point along a random live
+    // segment of its block (vertex-snapping would quantize the cloud into
+    // hard rails — dc parity). The single-trial rejection keeps O(1) cost and
+    // makes the net line-attraction scale with mean grip: as the sweep
+    // releases, lines keep drawing (arcing away) but stop pulling particles —
+    // the direct replacement for dc's death-based bunching control.
+    uint lc   = (uint)l_count_f;
+    uint live = (uint)seg_live;
+    if (to_line_rate > 0.0 && lc > 0u && live > 0u
+        && swc_unit(swc_hash(h ^ 0x0777u)) < to_line_rate) {
+      uint li = min(lc - 1u, (uint)(swc_unit(swc_hash(h ^ 0x0999u)) * (float)lc));
+      float grip_w = saturate(tracers[li].b.z);
+      if (swc_unit(swc_hash(h ^ 0x0F31u)) < grip_w) {
+        uint sk = min(live - 1u, (uint)(swc_unit(swc_hash(h ^ 0x0BB5u)) * (float)live));
+        Seg sg = segs[li * (uint)seg_stride + sk];
+        if (sg.b.w > 0.0) nuv = lerp(sg.a.xy, sg.a.zw, swc_unit(swc_hash(h ^ 0x0CCDu)));
+      }
+    }
 
     // Capture the input color at the spawn point (ClampToEdge tolerates
     // out-of-range uv) + roll a fresh z phase / life / size.

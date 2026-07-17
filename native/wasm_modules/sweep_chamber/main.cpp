@@ -43,6 +43,12 @@ static constexpr float POINT_PX = 1.5f;
 // viewport (like the interaction density buffer).
 static constexpr int FIELD_RES = 256;
 
+// Tracers ("lines"): fixed slot ranges in the segment buffer, no atomics.
+static constexpr int MAX_TRACERS = 96;
+static constexpr int MAX_SEG     = 96;   // segment slots per tracer
+// l_width slider [0,1] → uv line width.
+static constexpr float LINE_WIDTH_SCALE = 0.02f;
+
 // 2 vec4 = 32 bytes. Mirror of `Particle` in common.hlsl.
 struct GpuParticle {
   float a[4];   // a.xy=pos, a.z=life_remain, a.w=life_total
@@ -110,9 +116,58 @@ struct UpdateUniforms {
   float    boundary_stiffness;
   float    boundary_death;
   float    spawn_size;
+  float    to_line_rate;
+
+  float    l_count_f;
+  float    seg_stride;
+  float    seg_live;
   float    _pad0;
 };
-static_assert(sizeof(UpdateUniforms) == 112, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 128, "UpdateUniforms layout mismatch");
+
+struct TraceUniforms {
+  uint32_t count;
+  uint32_t max_seg;
+  uint32_t frame_index;
+  float    dt;
+
+  float    aspect_x;
+  float    aspect_y;
+  float    field_res;
+  float    to_image;
+
+  float    to_image_curl;
+  float    step_len;
+  float    length01;
+  float    momentum;
+
+  float    gradient_descent;
+  float    snap;
+  float    arc;
+  float    adv;
+
+  float    grip_attack;
+  float    grip_decay;
+  float    grip_alpha;
+  float    fling_boost;
+
+  float    time_decay;
+  float    reseed_spread;
+  float    color_contrib;
+  float    l_opacity;
+
+  float    tint_r;
+  float    tint_g;
+  float    tint_b;
+  float    seed_rng;
+};
+static_assert(sizeof(TraceUniforms) == 112, "TraceUniforms layout mismatch");
+
+struct LineVsUniforms { float aspect_x, aspect_y, width, _pad; };
+static_assert(sizeof(LineVsUniforms) == 16, "LineVsUniforms layout mismatch");
+
+struct LineFsUniforms { float soft, _a, _b, _c; };
+static_assert(sizeof(LineFsUniforms) == 16, "LineFsUniforms layout mismatch");
 
 struct PrefillUniforms { float scale_r, scale_g, scale_b, scale_a; };
 static_assert(sizeof(PrefillUniforms) == 16, "PrefillUniforms layout mismatch");
@@ -148,18 +203,26 @@ enum Mode      : int { MODE_VELOCITY = 0, MODE_FORCE = 1 };
 static gpu::ComputePSO s_pso_field_a;
 static gpu::ComputePSO s_pso_field_b;
 static gpu::ComputePSO s_pso_update;
+static gpu::ComputePSO s_pso_trace;
 static gpu::ComputePSO s_pso_prefill;
 static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_render_add;
+static gpu::RenderPSO  s_pso_line_alpha;
+static gpu::RenderPSO  s_pso_line_add;
 
 struct State {
   gpu::Buffer  particle_buf;
+  gpu::Buffer  tracer_buf;      // MAX_TRACERS × TracerState (32 B)
+  gpu::Buffer  seg_buf;         // MAX_TRACERS × MAX_SEG × Seg (32 B)
   gpu::Buffer  field_a_uniforms;
   gpu::Buffer  field_uniforms;
   gpu::Buffer  update_uniforms;
+  gpu::Buffer  trace_uniforms;
   gpu::Buffer  prefill_uniforms;
   gpu::Buffer  vs_uniforms;
   gpu::Buffer  color_uniforms;
+  gpu::Buffer  line_vs_uniforms;
+  gpu::Buffer  line_fs_uniforms;
   gpu::Sampler sampler;
   gpu::Texture field_a_tex;     // FIELD_RES² swept luma + peak offsets (lazy)
   gpu::Texture field_b_tex;     // FIELD_RES² velocity field (lazy)
@@ -198,6 +261,26 @@ struct State {
   float eddy_evolve     = 0.6f;
   float eddy_drift      = 0.05f;
   float eddy_drift_dir  = 0.0f;
+  // Lines.
+  int   l_count            = 24;
+  float spawn_on_line      = 0.35f;
+  float l_length           = 0.6f;
+  float l_step             = 0.006f;
+  float l_momentum         = 0.5f;
+  float l_gradient_descent = 0.0f;
+  float l_snap             = 0.5f;
+  float l_arc              = 0.4f;
+  float l_adv              = 1.0f;
+  float l_grip_attack      = 0.15f;
+  float l_grip_decay       = 0.6f;
+  float l_grip_alpha       = 0.6f;
+  float l_fling_boost      = 3.0f;
+  float l_time_decay       = 0.1f;
+  float l_reseed_spread    = 0.4f;
+  float l_color_contrib    = 0.5f;
+  float l_width            = 0.2f;
+  float l_soft             = 1.0f;
+  float l_opacity          = 0.5f;
   // Containment.
   float boundary           = 0.4f;
   float boundary_size      = 0.62f;
@@ -265,6 +348,24 @@ static void seed_initial_slots(State& s, int from, int to) {
     }
     s.particle_buf.writeBytes(entries, int(sizeof(GpuParticle)) * n,
                               int(sizeof(GpuParticle)) * chunk_start);
+  }
+}
+
+// Zero the tracer + segment buffers: a zeroed TracerState has time = 0 so
+// every tracer self-seeds on its first trace; zeroed segs are degenerate.
+static void zero_tracer_buffers(State& s) {
+  float zeros[512] = {};   // 2 KB chunks
+  int tracer_bytes = 32 * MAX_TRACERS;
+  for (int off = 0; off < tracer_bytes; off += (int)sizeof(zeros)) {
+    int n = tracer_bytes - off;
+    if (n > (int)sizeof(zeros)) n = (int)sizeof(zeros);
+    s.tracer_buf.writeBytes(zeros, n, off);
+  }
+  int seg_bytes = 32 * MAX_TRACERS * MAX_SEG;
+  for (int off = 0; off < seg_bytes; off += (int)sizeof(zeros)) {
+    int n = seg_bytes - off;
+    if (n > (int)sizeof(zeros)) n = (int)sizeof(zeros);
+    s.seg_buf.writeBytes(zeros, n, off);
   }
 }
 
@@ -344,6 +445,36 @@ void module_init() {
       .floatField("eddy_evolve",     0.6f,  0.0f, 4.0f, state::PrimaryInput).label("Eddy Evolve", "Evolve")
       .floatField("eddy_drift",      0.05f, 0.0f, 0.5f, state::PrimaryInput).label("Eddy Drift", "Drift")
       .floatField("eddy_drift_dir",  0.0f,  0.0f, 1.0f, state::PrimaryInput).label("Drift Direction", "DriftDir")
+      // ---- Lines (tracers) ----
+      .group("lines", "Lines")
+        .groupHelp(
+          "Streamline tracers that get **trapped along the ridges** of the "
+          "captured band. Lines never die in black: in free space they keep "
+          "propagating on a per-line ballistic **Arc**, and instead carry a "
+          "**grip** weight (how hard the image holds them) that scales how "
+          "strongly particles spawn onto them (*Spawn On Line*) — as the "
+          "sweep releases, lines stop attracting and get **flung**, arcing "
+          "away. *Descent* 0 follows level curves (trapped), 1 descends the "
+          "gradient; *Ridge Snap* locks lines onto sub-cell ridge peaks.")
+      .intField  ("l_count",            24,     0,     MAX_TRACERS, state::PrimaryInput).label("Line Count", "Lines")
+      .floatField("spawn_on_line",      0.35f,  0.0f,  1.0f,  state::PrimaryInput).label("Spawn On Line", "OnLine")
+      .floatField("l_length",           0.6f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Length", "LLen")
+      .floatField("l_step",             0.006f, 0.001f, 0.02f, state::PrimaryInput).label("Line Step", "LStep")
+      .floatField("l_momentum",         0.5f,   0.0f,  0.95f, state::PrimaryInput).label("Line Momentum", "LMom")
+      .floatField("l_gradient_descent", 0.0f,   0.0f,  1.0f,  state::PrimaryInput).label("Gradient Descent", "Descent")
+      .floatField("l_snap",             0.5f,   0.0f,  1.0f,  state::PrimaryInput).label("Ridge Snap", "Snap")
+      .floatField("l_arc",              0.4f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Arc", "Arc")
+      .floatField("l_adv",              1.0f,   0.0f,  4.0f,  state::PrimaryInput).label("Seed Advection", "LAdv")
+      .floatField("l_grip_attack",      0.15f,  0.02f, 2.0f,  state::PrimaryInput).label("Grip Attack", "GripAtk")
+      .floatField("l_grip_decay",       0.6f,   0.05f, 5.0f,  state::PrimaryInput).label("Grip Decay", "GripDec")
+      .floatField("l_grip_alpha",       0.6f,   0.0f,  1.0f,  state::PrimaryInput).label("Grip Alpha", "GripA")
+      .floatField("l_fling_boost",      3.0f,   0.0f,  8.0f,  state::PrimaryInput).label("Line Fling", "LFling")
+      .floatField("l_time_decay",       0.1f,   0.0f,  2.0f,  state::PrimaryInput).label("Line Life Decay", "LDecay")
+      .floatField("l_reseed_spread",    0.4f,   0.0f,  1.0f,  state::PrimaryInput).label("Reseed Spread", "Reseed")
+      .floatField("l_color_contrib",    0.5f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Colour", "LCol")
+      .floatField("l_width",            0.2f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Width", "LWidth")
+      .floatField("l_soft",             1.0f,   0.1f,  4.0f,  state::PrimaryInput).label("Line Softness", "LSoft")
+      .floatField("l_opacity",          0.5f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Opacity", "LOpac")
       // ---- Pool / advection ----
       .group("advection", "Pool & Advection")
       .intField  ("count",     150000, 1, MAX_PARTICLES, state::PrimaryInput).label("Count", "Count")
@@ -407,17 +538,24 @@ void module_init() {
   state::registerShaderSPV("sweep_chamber_field_b",  FIELD_B_SPV,  FIELD_B_SPV_SIZE,
                            "rgba16float", "write");
   state::registerShaderSPV("sweep_chamber_p_update", P_UPDATE_SPV, P_UPDATE_SPV_SIZE);
+  state::registerShaderSPV("sweep_chamber_trace",    TRACE_SPV,    TRACE_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_prefill",  PREFILL_SPV,  PREFILL_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_vs",       VS_SPV,       VS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_fs",       FS_SPV,       FS_SPV_SIZE);
+  state::registerShaderSPV("sweep_chamber_line_vs",  LINE_VS_SPV,  LINE_VS_SPV_SIZE);
+  state::registerShaderSPV("sweep_chamber_line_fs",  LINE_FS_SPV,  LINE_FS_SPV_SIZE);
 
   auto cs_field_a = gpu::Device::createShaderModuleByName("sweep_chamber_field_a");
   auto cs_field_b = gpu::Device::createShaderModuleByName("sweep_chamber_field_b");
   auto cs_update  = gpu::Device::createShaderModuleByName("sweep_chamber_p_update");
+  auto cs_trace   = gpu::Device::createShaderModuleByName("sweep_chamber_trace");
   auto cs_prefill = gpu::Device::createShaderModuleByName("sweep_chamber_prefill");
   auto vs_module  = gpu::Device::createShaderModuleByName("sweep_chamber_vs");
   auto fs_module  = gpu::Device::createShaderModuleByName("sweep_chamber_fs");
-  if (!cs_field_a || !cs_field_b || !cs_update || !cs_prefill || !vs_module || !fs_module) return;
+  auto line_vs    = gpu::Device::createShaderModuleByName("sweep_chamber_line_vs");
+  auto line_fs    = gpu::Device::createShaderModuleByName("sweep_chamber_line_fs");
+  if (!cs_field_a || !cs_field_b || !cs_update || !cs_trace || !cs_prefill ||
+      !vs_module || !fs_module || !line_vs || !line_fs) return;
 
   s_pso_field_a = gpu::Device::createComputePSO(cs_field_a, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_a out
@@ -436,7 +574,18 @@ void module_init() {
       .tex2d(1)       // field_b
       .tex2d(2)       // input (color capture)
       .sampler(3)
-      .uniform(4));
+      .uniform(4)
+      .storage(6)     // tracer segments (spawn-on-line)
+      .storage(7));   // tracer states (grip weighting)
+
+  s_pso_trace = gpu::Device::createComputePSO(cs_trace, "main", gpu::Bindings()
+      .storageRW(0)   // tracers[]
+      .storageRW(1)   // segs[]
+      .tex2d(2)       // field_a
+      .tex2d(3)       // field_b
+      .sampler(4)
+      .uniform(5)
+      .tex2d(6));     // input (line color)
 
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
@@ -452,6 +601,15 @@ void module_init() {
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::Additive);
 
+  s_pso_line_alpha = gpu::Device::createInstancedRenderPSO(
+      line_vs, "main", line_fs, "main", gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::AlphaOver);
+  s_pso_line_add = gpu::Device::createInstancedRenderPSO(
+      line_vs, "main", line_fs, "main", gpu::TextureFormat::Surface,
+      gpu::Bindings().storage(0).uniform(1).uniform(2),
+      gpu::Device::BlendMode::Additive);
+
   state::log("sweep_chamber: module initialized");
 }
 
@@ -459,12 +617,19 @@ void* create() {
   auto* s = new State();
   s->particle_buf = gpu::Device::createBuffer(
       sizeof(GpuParticle) * MAX_PARTICLES, gpu::BufferUsage::Storage);
+  s->tracer_buf = gpu::Device::createBuffer(
+      32 * MAX_TRACERS, gpu::BufferUsage::Storage);
+  s->seg_buf = gpu::Device::createBuffer(
+      32 * MAX_TRACERS * MAX_SEG, gpu::BufferUsage::Storage);
   s->field_a_uniforms = gpu::Device::createBuffer(sizeof(FieldAUniforms),  gpu::BufferUsage::Uniform);
   s->field_uniforms   = gpu::Device::createBuffer(sizeof(FieldUniforms),   gpu::BufferUsage::Uniform);
   s->update_uniforms  = gpu::Device::createBuffer(sizeof(UpdateUniforms),  gpu::BufferUsage::Uniform);
+  s->trace_uniforms   = gpu::Device::createBuffer(sizeof(TraceUniforms),   gpu::BufferUsage::Uniform);
   s->prefill_uniforms = gpu::Device::createBuffer(sizeof(PrefillUniforms), gpu::BufferUsage::Uniform);
   s->vs_uniforms      = gpu::Device::createBuffer(sizeof(VsUniforms),      gpu::BufferUsage::Uniform);
   s->color_uniforms   = gpu::Device::createBuffer(sizeof(ColorUniforms),   gpu::BufferUsage::Uniform);
+  s->line_vs_uniforms = gpu::Device::createBuffer(sizeof(LineVsUniforms),  gpu::BufferUsage::Uniform);
+  s->line_fs_uniforms = gpu::Device::createBuffer(sizeof(LineFsUniforms),  gpu::BufferUsage::Uniform);
   s->sampler = gpu::Device::createSampler(gpu::FilterMode::Linear, gpu::AddressMode::ClampToEdge);
   return s;
 }
@@ -473,12 +638,17 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->particle_buf.release();
+  s->tracer_buf.release();
+  s->seg_buf.release();
   s->field_a_uniforms.release();
   s->field_uniforms.release();
   s->update_uniforms.release();
+  s->trace_uniforms.release();
   s->prefill_uniforms.release();
   s->vs_uniforms.release();
   s->color_uniforms.release();
+  s->line_vs_uniforms.release();
+  s->line_fs_uniforms.release();
   s->sampler.release();
   s->field_a_tex.release();
   s->field_b_tex.release();
@@ -490,15 +660,17 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   if (!s_pso_field_a.valid() || !s_pso_field_b.valid() ||
-      !s_pso_update.valid() || !s_pso_prefill.valid() ||
-      !s_pso_render_alpha.valid() || !s_pso_render_add.valid()) return;
-  if (!s->particle_buf.valid()) return;
+      !s_pso_update.valid() || !s_pso_trace.valid() || !s_pso_prefill.valid() ||
+      !s_pso_render_alpha.valid() || !s_pso_render_add.valid() ||
+      !s_pso_line_alpha.valid() || !s_pso_line_add.valid()) return;
+  if (!s->particle_buf.valid() || !s->tracer_buf.valid() || !s->seg_buf.valid()) return;
 
   s->inited_count = 0;
   s->frame_index  = 0;
   s->init_lcg     = 0x51EEB0CDu;
   s->initialized  = true;
   apply_count_change(*s);   // seed the initial pool
+  zero_tracer_buffers(*s);  // tracers self-seed on first trace
   state::setOnStateReady(&on_state_ready);
 }
 
@@ -540,6 +712,25 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "eddy_evolve"))     s->eddy_evolve = state::patchFloat(i);
     else if (state::pathIs(path, plen, "eddy_drift"))      s->eddy_drift = state::patchFloat(i);
     else if (state::pathIs(path, plen, "eddy_drift_dir"))  s->eddy_drift_dir = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_count"))            s->l_count = (int)state::patchFloat(i);
+    else if (state::pathIs(path, plen, "spawn_on_line"))      s->spawn_on_line = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_length"))           s->l_length = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_step"))             s->l_step = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_momentum"))         s->l_momentum = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_gradient_descent")) s->l_gradient_descent = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_snap"))             s->l_snap = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_arc"))              s->l_arc = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_adv"))              s->l_adv = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_grip_attack"))      s->l_grip_attack = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_grip_decay"))       s->l_grip_decay = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_grip_alpha"))       s->l_grip_alpha = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_fling_boost"))      s->l_fling_boost = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_time_decay"))       s->l_time_decay = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_reseed_spread"))    s->l_reseed_spread = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_color_contrib"))    s->l_color_contrib = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_width"))            s->l_width = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_soft"))             s->l_soft = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "l_opacity"))          s->l_opacity = state::patchFloat(i);
     else if (state::pathIs(path, plen, "boundary"))           s->boundary = state::patchFloat(i);
     else if (state::pathIs(path, plen, "boundary_size"))      s->boundary_size = state::patchFloat(i);
     else if (state::pathIs(path, plen, "boundary_stiffness")) s->boundary_stiffness = state::patchFloat(i);
@@ -662,7 +853,47 @@ void render(void* self, int vp_w, int vp_h) {
   uu.boundary_stiffness = s->boundary_stiffness;
   uu.boundary_death     = s->boundary_death;
   uu.spawn_size         = s->spawn_size;
+  // Live segment slots per tracer this frame (2 passes × steps, dc parity).
+  int steps = s->l_length <= 0.0f ? 2 : (int)(s->l_length * (MAX_SEG / 2));
+  if (steps < 2) steps = 2;
+  int seg_live = steps * 2;
+  if (seg_live > MAX_SEG) seg_live = MAX_SEG;
+  uu.to_line_rate       = (s->l_count > 0) ? s->spawn_on_line : 0.0f;
+  uu.l_count_f          = (float)s->l_count;
+  uu.seg_stride         = (float)MAX_SEG;
+  uu.seg_live           = (float)seg_live;
   s->update_uniforms.writeOne(uu);
+
+  TraceUniforms tu = {};
+  tu.count            = (uint32_t)s->l_count;
+  tu.max_seg          = (uint32_t)MAX_SEG;
+  tu.frame_index      = s->frame_index;
+  tu.dt               = dt;
+  tu.aspect_x         = aspect_x;
+  tu.aspect_y         = aspect_y;
+  tu.field_res        = (float)FIELD_RES;
+  tu.to_image         = s->to_image;
+  tu.to_image_curl    = s->to_image_curl;
+  tu.step_len         = s->l_step;
+  tu.length01         = s->l_length;
+  tu.momentum         = s->l_momentum;
+  tu.gradient_descent = s->l_gradient_descent;
+  tu.snap             = s->l_snap;
+  tu.arc              = s->l_arc;
+  tu.adv              = s->l_adv;
+  tu.grip_attack      = s->l_grip_attack;
+  tu.grip_decay       = s->l_grip_decay;
+  tu.grip_alpha       = s->l_grip_alpha;
+  tu.fling_boost      = s->l_fling_boost;
+  tu.time_decay       = s->l_time_decay;
+  tu.reseed_spread    = s->l_reseed_spread;
+  tu.color_contrib    = s->l_color_contrib;
+  tu.l_opacity        = s->l_opacity;
+  tu.tint_r           = s->solid_r;
+  tu.tint_g           = s->solid_g;
+  tu.tint_b           = s->solid_b;
+  tu.seed_rng         = (float)s->seed;
+  s->trace_uniforms.writeOne(tu);
 
   PrefillUniforms pu = { s->input_alpha, s->input_alpha, s->input_alpha, 1.0f };
   s->prefill_uniforms.writeOne(pu);
@@ -713,7 +944,23 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // ---- Pass 2: update particles ----
+  // ---- Pass 2a: tracers (BEFORE p_update so spawn-on-line sees this
+  // frame's segments) ----
+  if (s->l_count > 0) {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_trace);
+    cp.setBuffer(s->tracer_buf, 0);
+    cp.setBuffer(s->seg_buf, 1);
+    cp.setTexture(s->field_a_tex, 2, 0);
+    cp.setTexture(s->field_b_tex, 3, 0);
+    cp.setSampler(s->sampler, 4);
+    cp.setBuffer(s->trace_uniforms, 5);
+    cp.setTexture(in, 6, 0);
+    cp.dispatch((s->l_count + 63) / 64, 1, 1);
+    cp.end();
+  }
+
+  // ---- Pass 2b: update particles ----
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_update);
@@ -722,6 +969,8 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(in, 2, 0);
     cp.setSampler(s->sampler, 3);
     cp.setBuffer(s->update_uniforms, 4);
+    cp.setBuffer(s->seg_buf, 6);
+    cp.setBuffer(s->tracer_buf, 7);
     int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();
@@ -749,6 +998,22 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->vs_uniforms,  1);
     rp.setBuffer(s->color_uniforms, 2);
     rp.draw(6, s->count);
+    rp.end();
+  }
+
+  // ---- Pass 5: instanced line raster ----
+  if (s->l_count > 0 && s->l_opacity > 0.0f) {
+    LineVsUniforms lvu = { aspect_x, aspect_y, s->l_width * LINE_WIDTH_SCALE, 0.0f };
+    s->line_vs_uniforms.writeOne(lvu);
+    LineFsUniforms lfu = { s->l_soft, 0.0f, 0.0f, 0.0f };
+    s->line_fs_uniforms.writeOne(lfu);
+    auto rp = gpu::RenderPass::beginLoad(out);
+    auto pso = (s->blend_mode == BLEND_ADD) ? s_pso_line_add : s_pso_line_alpha;
+    rp.setPSO(pso);
+    rp.setBuffer(s->seg_buf, 0);
+    rp.setBuffer(s->line_vs_uniforms, 1);
+    rp.setBuffer(s->line_fs_uniforms, 2);
+    rp.draw(6, s->l_count * MAX_SEG);
     rp.end();
   }
 
