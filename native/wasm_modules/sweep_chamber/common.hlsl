@@ -47,6 +47,25 @@ float swc_unpack_z(uint p) { return float((p >> 24u) & 0xFFu) * (1.0 / 255.0); }
 float swc_lum(float3 c) { return max(c.r, max(c.g, c.b)); }
 float2 swc_perp(float2 v) { return float2(v.y, -v.x); }
 
+// ---- along-ridge undertow (shared by p_update / trace / field_debug) ----
+// The undertow (to_image_curl term) is a soft-NORMALIZED level-curve tangent
+// gated by RIDGE PRESENCE (field_a's L'max), not by |∇L'|: the gradient is
+// exactly zero on a ridge crest — which is where the captured population
+// sits — so a |∇L'|-scaled undertow (dc parity) dies there and the whole
+// swarm freezes into a static stipple. Constant-speed transport keeps the
+// captured particles/seeds streaming along the lines.
+static const float SWC_UNDERTOW_VEL = 1.5;   // iso uv/s at to_image_curl=1, cf=1
+float2 swc_undertow(float2 g, float ridge) {
+  float gl = length(g);
+  float2 tang = swc_perp(g) / (gl + 0.05);
+  // Two gates, take the stronger: ridge presence covers the crest itself
+  // (where every centered gradient vanishes by symmetry); |G| covers the
+  // wide multi-scale basin AROUND features, so the contour-following swirl
+  // is felt at a distance, not only when already sitting on the line.
+  float gate = max(smoothstep(0.02, 0.25, ridge), smoothstep(0.1, 0.5, gl));
+  return tang * (SWC_UNDERTOW_VEL * gate);
+}
+
 // ---- HSV → RGB (flow-direction tint) ----
 float3 swc_hsv_to_rgb(float3 hsv) {
   float h = frac(hsv.x);
@@ -145,11 +164,13 @@ float2 swc_gnoise_grad(float2 p, float t, uint oseed) {
 //            .a = MAX swept luma over the cell        (ridge detector: stays high
 //                  on a crest where the gradient vanishes)
 //   field_b: .rg = curl-noise background velocity    (uv/s)
-//            .ba = image gradient G = ∇L'·GAIN·edgeFade, in ISO space
+//            .ba = MULTI-SCALE image gradient G = ∇L'·GAIN·edgeFade, ISO
+//                  space, 3 stencil scales (wide attraction basin)
 //                  (to_image / to_image_curl are composed per-consumer so the
 //                  per-particle z-phase curl factor survives a single tap)
-// A consumer composes, given its own curl factor cf:
-//   vel_uv = fb.rg + (fb.ba·to_image + perp(fb.ba)·to_image_curl·cf) · aspect
+// A consumer composes, given its curl factor cf and ridge = field_a.a there:
+//   vel_uv = fb.rg + (fb.ba·to_image
+//                     + swc_undertow(fb.ba, ridge)·to_image_curl·cf) · aspect
 // ===========================================================
 
 // ---- particle layout — 2 vec4 = 32 bytes ----

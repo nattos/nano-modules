@@ -771,7 +771,8 @@ void module_init() {
       .tex2d(5)       // density (last frame's crowding)
       .storage(6)     // tracer segments (spawn-on-line)
       .storage(7)     // tracer states (grip weighting)
-      .storage(8));   // stats/response (calm↔intense)
+      .storage(8)     // stats/response (calm↔intense)
+      .tex2d(9));     // field_a (ridge presence — undertow gate)
 
   s_pso_trace = gpu::Device::createComputePSO(cs_trace, "main", gpu::Bindings()
       .storageRW(0)   // tracers[]
@@ -1313,6 +1314,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->seg_buf, 6);
     cp.setBuffer(s->tracer_buf, 7);
     cp.setBuffer(s->stats_buf, 8);
+    cp.setTexture(s->field_a_tex, 9, 0);
     int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();

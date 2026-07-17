@@ -104,9 +104,10 @@ float2 swc_safe_norm(float2 v, float2 fallback) {
   return (l > 1e-5) ? v / l : fallback;
 }
 
-// Composed field velocity (uv/s) for the tracer (curl factor 1).
-float2 swc_trace_field_vel(float4 fb) {
-  float2 iso = fb.zw * to_image + swc_perp(fb.zw) * to_image_curl;
+// Composed field velocity (uv/s) for the tracer (curl factor 1). Ridge is
+// field_a's L'max at the same point (gates the along-ridge undertow).
+float2 swc_trace_field_vel(float4 fb, float ridge) {
+  float2 iso = fb.zw * to_image + swc_undertow(fb.zw, ridge) * to_image_curl;
   return fb.xy + iso * float2(aspect_x, aspect_y);
 }
 
@@ -139,13 +140,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
     time = lerp(0.15, 1.0, swc_unit(swc_hash(h ^ 0x0033u)));
     kap  = swc_kap_home(i, ang, seed_rng, arc);
     grip = 0.0;
-    vel  = swc_trace_field_vel(fieldB.SampleLevel(lin, saturate(pos), 0));
+    vel  = swc_trace_field_vel(fieldB.SampleLevel(lin, saturate(pos), 0),
+                               fieldA.SampleLevel(lin, saturate(pos), 0).a);
   } else {
     // --- Seed dynamics: gripped → chase the field; free → ballistic arc ---
     float4 fbS = fieldB.SampleLevel(lin, saturate(pos), 0);
     float4 faS = fieldA.SampleLevel(lin, saturate(pos), 0);
     float  trapS = swc_trap(faS.a);
-    float2 vf  = swc_trace_field_vel(fbS);
+    float2 vf  = swc_trace_field_vel(fbS, faS.a);
     // Even free lines (grip≈0) weakly chase the field so they ride the
     // ambient flow instead of orbiting their own tail; gripped lines chase
     // hard. Momentum still dominates short-term.

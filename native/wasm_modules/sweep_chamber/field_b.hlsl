@@ -8,7 +8,8 @@
 //         noise): smooth (C1), seam-free, and time-churning eddies. The
 //         velocity is the noise gradient rotated by noise_curl·90°: at ±1 it
 //         is exactly curl(ψ) → divergence-free eddies; at 0 it's ∇ψ.
-//   .ba — swept-image gradient G = ∇L'·GAIN·edgeFade in iso space, taken from
+//   .ba — swept-image MULTI-SCALE gradient G = ∇L'·GAIN·edgeFade in iso
+//         space (3 stencil scales — wide attraction basin), taken from
 //         field_a's coarse L' (the 4×4 box downsample already smoothed it;
 //         image_smoothing widens the sample step on top, replacing the old
 //         full-res Gaussian pre-blur). Stored RAW — to_image/to_image_curl
@@ -74,18 +75,33 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // Swept-luma gradient from field_a's coarse L' (.r), sampled over equal
   // SCREEN distances (aspect-corrected step) → an iso-space gradient.
-  float e = lerp(1.0, 3.0, saturate(image_smoothing)) * inv_res;
-  float2 du = e * aspect;
-  float vl = fieldA.SampleLevel(lin, saturate(uv - float2(du.x, 0.0)), 0).r;
-  float vr = fieldA.SampleLevel(lin, saturate(uv + float2(du.x, 0.0)), 0).r;
-  float vd = fieldA.SampleLevel(lin, saturate(uv - float2(0.0, du.y)), 0).r;
-  float vu = fieldA.SampleLevel(lin, saturate(uv + float2(0.0, du.y)), 0).r;
+  // MULTI-SCALE (e, 4e, 16e): a single fine stencil only exerts force within
+  // a couple of field texels of a feature — particles a short distance away
+  // felt nothing and the image's reach read as "super short". The coarse
+  // stencils extend the attraction basin to ~15% of the screen while the
+  // fine one still localizes ridges up close. 12 taps, but this is the
+  // once-per-frame 256² field-gen pass — per-particle cost is unchanged.
+  float e0 = lerp(1.0, 3.0, saturate(image_smoothing)) * inv_res;
+  float2 G = float2(0.0, 0.0);
+  {
+    float e = e0, w = 1.0;
+    [unroll] for (uint sc = 0u; sc < 3u; sc++) {
+      float2 du = e * aspect;
+      float vl = fieldA.SampleLevel(lin, saturate(uv - float2(du.x, 0.0)), 0).r;
+      float vr = fieldA.SampleLevel(lin, saturate(uv + float2(du.x, 0.0)), 0).r;
+      float vd = fieldA.SampleLevel(lin, saturate(uv - float2(0.0, du.y)), 0).r;
+      float vu = fieldA.SampleLevel(lin, saturate(uv + float2(0.0, du.y)), 0).r;
+      G += float2(vr - vl, vu - vd) * w;
+      e *= 4.0;
+      w *= 0.55;
+    }
+  }
   // Taper the image force to zero at the frame edge (ClampToEdge sampling
   // makes the gradient vanish past the border — without the fade particles
   // pile up right at the viewport edge). dc parity.
   float2 ed = min(uv, 1.0 - uv);
   float edgeFade = smoothstep(0.0, 0.05, min(ed.x, ed.y));
-  float2 G = float2(vr - vl, vu - vd) * SWC_IMG_GAIN * edgeFade;
+  G *= SWC_IMG_GAIN * edgeFade;
 
   float2 s = (uv - 0.5) / max(aspect, 1e-4);
   float2 vn = swc_noise_vel(s);

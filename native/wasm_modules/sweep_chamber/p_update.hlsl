@@ -16,7 +16,7 @@
 // input color captured at the spawn point. All timing dt-accumulated.
 //
 // Register map (final; later passes add t5 density, t6 segs, t7 tracers,
-// t8 response — reserved):
+// t8 response, t9 field_a):
 //   u0 particles · t1 field_b · t2 input · s3 sampler · b4 uniforms
 
 #include "common.hlsl"
@@ -30,6 +30,7 @@ Texture2D<float4>            densityTex    : register(t5);   // last frame's cro
 StructuredBuffer<Seg>        segs          : register(t6);   // tracer segments (spawn-on-line)
 StructuredBuffer<TracerState> tracers      : register(t7);   // per-tracer grip (spawn weighting)
 StructuredBuffer<float4>     respBuf       : register(t8);   // [1] = calm↔intense response
+Texture2D<float4>            fieldTexA     : register(t9);   // ridge presence (undertow gate)
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -106,9 +107,11 @@ static const float SWC_ESCAPE_R       = 1.5;   // s-radius past which a particle
 static const float SWC_BDEATH_REF     = 0.25;
 
 // Compose the field velocity (uv/s) at one field_b sample for a particle
-// with curl factor `cf` (see the channel contract in common.hlsl).
-float2 swc_field_vel(float4 fb, float cf) {
-  float2 iso = fb.zw * to_image + swc_perp(fb.zw) * (to_image_curl * cf);
+// with curl factor `cf` and ridge presence `ridge` (field_a's L'max — see
+// swc_undertow in common.hlsl for why the undertow is ridge-gated).
+float2 swc_field_vel(float4 fb, float ridge, float cf) {
+  float2 iso = fb.zw * to_image
+             + swc_undertow(fb.zw, ridge) * (to_image_curl * cf);
   return fb.xy + iso * float2(aspect_x, aspect_y);
 }
 
@@ -203,10 +206,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     for (uint sub = 0u; sub < nsub; sub++) {
       uint fi = frame_index + sub * 0x9E3779B9u;
 
-      // Field velocity, re-sampled every substep (one bilinear tap). The
-      // frozen avoidance rides on top.
+      // Field velocity, re-sampled every substep (two bilinear taps: field_b
+      // for the flow, field_a for ridge presence). Frozen avoidance on top.
       float4 fb = fieldTexB.SampleLevel(linearSampler, saturate(pos), 0);
-      float2 eff = swc_field_vel(fb, cf) * speed + avoid_vec;
+      float ridge = fieldTexA.SampleLevel(linearSampler, saturate(pos), 0).a;
+      float2 eff = swc_field_vel(fb, ridge, cf) * speed + avoid_vec;
 
       // Acceleration mode.
       if (mode == 1u) {
@@ -365,8 +369,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     pos = nuv;
     // Newborns stream along the field immediately.
     float4 fb0 = fieldTexB.SampleLevel(linearSampler, saturate(nuv), 0);
+    float ridge0 = fieldTexA.SampleLevel(linearSampler, saturate(nuv), 0).a;
     float cf0 = (zr - undertow_skew) * undertow_squash;
-    vel = swc_field_vel(fb0, cf0) * speed;
+    vel = swc_field_vel(fb0, ridge0, cf0) * speed;
   }
 
   p.a = float4(pos, life_remain, life_total);
