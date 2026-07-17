@@ -12,8 +12,10 @@
 // PASSTHROUGH PURITY: uncovered pixels are copied VERBATIM (Load, no
 // filtering, no fog) so an idle region round-trips the input exactly.
 
+#include "caustics.hlsl"
+
 Texture2D<float4>   gbufA    : register(t0);  // n.xyz, coverage
-Texture2D<float4>   gbufB    : register(t1);  // world_y, view_z
+Texture2D<float4>   gbufB    : register(t1);  // world_y, view_z, world_x, world_z
 Texture2D<float4>   bgTex    : register(t2);  // tex_in (seed) or comp[prev]
 Texture2D<float4>   envSharp : register(t3);
 Texture2D<float4>   envBlur  : register(t4);  // = envSharp when blur skipped
@@ -29,6 +31,7 @@ cbuffer Uniforms : register(b8) {
   float4 fog_p;        // fog_amount, fog_y0, inv_fog_h, fog_depth_k
   float4 round_p;      // copy_weight, is_seed, env_mode (1 = equirect), fog_z0
   float4 vp;           // w, h, 1/w, 1/h
+  float4 caustic;      // amount, world scale, water_t, 0
 };
 
 static const float INV_TAU = 0.15915494309;
@@ -101,6 +104,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
                envBlur.SampleLevel(clampS, uvE, 0), material.y).rgb;
   }
   float glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i;
+
+  // Water caustics: dapple the lit terms. Sampled on a sun-slanted world
+  // plane (the y shear keeps vertical faces from reading as flat stripes);
+  // rebalanced around 1.0 so the amount knob doesn't shift mean brightness.
+  if (caustic.x > 0.0) {
+    float2 cp = float2(B.z + 0.35 * world_y, B.w - 0.27 * world_y) * caustic.y;
+    float c = nano_caustic2(cp, caustic.z);
+    float dap = 1.0 + caustic.x * (c * 2.2 - 0.45) * saturate(lam + 0.25);
+    diffuse *= dap;
+    glint *= dap;
+    env *= 1.0 + 0.35 * (dap - 1.0);
+  }
 
   // Screen-space refraction: the background seen through the surface.
   float2 uvR = uv + float2(-N.x, N.y) * material.z * 0.12;

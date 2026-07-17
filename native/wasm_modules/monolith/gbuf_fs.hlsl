@@ -1,7 +1,7 @@
 // source.mesh.monolith — G-buffer fragment (MRT, Replace semantics).
 //
 //   target 0 (gbufA): view-space normal xyz, coverage (1 = covered)
-//   target 1 (gbufB): world_y, view_z, spare, spare
+//   target 1 (gbufB): world_y, view_z, world_x, world_z (for caustics)
 //
 // Both targets are cleared to zero each round; front faces of one convex
 // solid never overlap on screen, so plain Replace writes are exact.
@@ -21,6 +21,6 @@ struct PsOut {
 PsOut main(VsOut i) {
   PsOut o;
   o.a = float4(i.nrm.xyz, 1.0);
-  o.b = float4(i.misc.x, i.misc.y, 0.0, 0.0);
+  o.b = i.misc;
   return o;
 }

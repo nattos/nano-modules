@@ -191,11 +191,12 @@ struct ResolveUniforms {
   float fog_p[4];           // fog, fog_y0, inv_fog_h, fog_depth_k
   float round_p[4];         // copy_weight, is_seed, env_mode, fog_z0
   float vp[4];              // w, h, 1/w, 1/h
+  float caustic[4];         // amount, world scale, water_t, 0
 };
 
 struct RaysUniforms {
-  float sun_screen[4];      // sun px, py, unused, gain (rays*1.5*fade)
-  float march[4];           // taps, decay, max_step_px, 0
+  float sun_screen[4];      // sun px, py, water_t, gain (rays*1.5*fade)
+  float march[4];           // taps, decay, max_step_px, caustics amount
 };
 
 struct ExtractUniforms { float p[4]; };   // inv_range, has_rays, 0, 0
@@ -245,6 +246,8 @@ struct State {
   float fog = 0.2f;
   float rays = 0.3f;
   float bloom = 0.25f;
+  float caustics = 0.35f;
+  float caustic_scale = 0.5f;
   float arc = 0.5f;
   float tilt = 0.0f;        // signed: + looks down at the top face
   float shading = 0.7f;
@@ -256,6 +259,7 @@ struct State {
   double phase_b = 0.0;
   double env_phase = 0.0;
   double last_bar_phase = -1.0;
+  double water_t = 0.0;     // free-running caustic clock (ignores Sync)
 };
 
 static void apply_visibility(State* s) {
@@ -273,7 +277,8 @@ static void on_state_ready(void* self) {
 void module_init() {
   // 1.2.0: deferred rework — `alpha` renamed to `opacity`, `back_dim`
   // removed (back faces are gone; glass is refraction now), env_in added.
-  state::init("source.mesh.monolith", {1, 2, 0},
+  // 1.2.1: water caustics (rays banding + surface dapple), additive fields.
+  state::init("source.mesh.monolith", {1, 2, 1},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -370,12 +375,18 @@ void module_init() {
           "*Fog* melts the structure's top into haze and thickens with "
           "distance — the scale cue. *Rays* scatter the bright environment "
           "radially from the sun, carved by the silhouette (needs the sun "
-          "in front of the camera: azimuth toward ±180). *Bloom* lets the "
-          "hot highlights bleed.")
+          "in front of the camera: azimuth toward ±180). *Caustics* folds "
+          "the light through a moving water surface: the shafts band and "
+          "flicker by angle, and the structure's lit faces catch drifting "
+          "dapple webs — the underwater look. The water clock is free-"
+          "running (it ignores Sync). *Bloom* lets the hot highlights "
+          "bleed.")
       .floatField("fog", 0.2f, 0.f, 1.f, state::PrimaryInput)
           .label("Fog", "Fog")
       .floatField("rays", 0.3f, 0.f, 1.f, state::PrimaryInput)
           .label("God Rays", "Rays")
+      .floatField("caustics", 0.35f, 0.f, 1.f, state::PrimaryInput)
+          .label("Caustics", "Caust")
       .floatField("bloom", 0.25f, 0.f, 1.f, state::PrimaryInput)
           .label("Bloom", "Bloom")
       // --- Tuning ---
@@ -390,6 +401,8 @@ void module_init() {
           .label("Vantage", "Vant")
       .floatField("loom", 0.2f, 0.f, 1.f, state::SecondaryInput)
           .label("Loom", "Loom")
+      .floatField("caustic_scale", 0.5f, 0.f, 1.f, state::SecondaryInput)
+          .label("Caustic Scale", "CScl")
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
       .textureField("env_in", state::SecondaryInput)
@@ -511,6 +524,7 @@ void init(void* self) {
   s->phase_b = 0.0;
   s->env_phase = 0.0;
   s->last_bar_phase = -1.0;
+  s->water_t = 0.0;
   state::setOnStateReady(&on_state_ready);
   s->blur.init();
   bool bufs_ok = true;
@@ -533,6 +547,10 @@ void tick(void* self, double dt) {
   if (!s) return;
   if (!(dt > 0.0)) dt = 0.0;
   if (dt > 0.050) dt = 0.050;   // stall guard: never jump the pose
+
+  // The water never stops (even in Bars sync with a halted transport).
+  s->water_t += dt * 0.35;
+  if (s->water_t > 512.0) s->water_t -= 512.0;
 
   double d;   // cycles this frame
   if (s->sync == SYNC_FREE) {
@@ -600,6 +618,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "fog"))       s->fog = state::patchFloat(i);
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
     else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
+    else if (state::pathIs(p, l, "caustics"))  s->caustics = state::patchFloat(i);
+    else if (state::pathIs(p, l, "caustic_scale")) s->caustic_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "arc"))       s->arc = state::patchFloat(i);
     else if (state::pathIs(p, l, "tilt"))      s->tilt = state::patchFloat(i);
     else if (state::pathIs(p, l, "shading"))   s->shading = state::patchFloat(i);
@@ -759,8 +779,8 @@ void render(void* self, int vp_w, int vp_h) {
         v.nrm[0] = nrm.x; v.nrm[1] = nrm.y; v.nrm[2] = nrm.z; v.nrm[3] = 1.0f;
         v.misc[0] = world[idx[k]].y;
         v.misc[1] = z;
-        v.misc[2] = 0.0f;
-        v.misc[3] = 0.0f;
+        v.misc[2] = world[idx[k]].x;   // caustic dapple plane
+        v.misc[3] = world[idx[k]].z;
       }
       tri_count++;
     }
@@ -794,6 +814,9 @@ void render(void* self, int vp_w, int vp_h) {
     u.round_p[2] = env_wired ? 1.0f : 0.0f; u.round_p[3] = cam_d;
     u.vp[0] = (float)vp_w; u.vp[1] = (float)vp_h;
     u.vp[2] = 1.0f / vp_w; u.vp[3] = 1.0f / vp_h;
+    u.caustic[0] = s->caustics;
+    u.caustic[1] = 9.0f * std::pow(2.0f, (s->caustic_scale - 0.5f) * 2.0f);
+    u.caustic[2] = (float)s->water_t;
     s->ub_resolve[ci].writeOne(u);
 
     {
@@ -845,9 +868,11 @@ void render(void* self, int vp_w, int vp_h) {
       RaysUniforms ru = {};
       ru.sun_screen[0] = (sun_sq_x * 2.0f * cs.ax + 1.0f) * 0.5f * vp_w;
       ru.sun_screen[1] = (1.0f - (sun_sq_y * 2.0f * cs.ay + 1.0f) * 0.5f) * vp_h;
+      ru.sun_screen[2] = (float)s->water_t;
       ru.sun_screen[3] = rays_gain;
       ru.march[0] = 32.0f; ru.march[1] = 0.93f;
       ru.march[2] = (float)vp_w / 48.0f;
+      ru.march[3] = s->caustics;
       s->ub_rays.writeOne(ru);
 
       auto cp = gpu::ComputePass::begin();

@@ -25,6 +25,8 @@ const lum = (c: { r: number, g: number, b: number }) => (c.r + c.g + c.b) / 3;
 const STATIC = {
   motion: 0 /* Arc */, arc: 0.0, tilt: 0.2, size: 0.8, opacity: 1.0,
   vantage: 0.0, loom: 0.0, fog: 0.0, rays: 0.0, bloom: 0.0,
+  // The caustic water clock is free-running, so A/B comparisons pin it off.
+  caustics: 0.0,
 };
 
 function buildSketch(params: Record<string, unknown>, opts?: {
@@ -168,6 +170,30 @@ describe('source.mesh.monolith E2E', () => {
     const dDark = lum(dark.trace('out').pixelAt(probe.x, probe.y));
     expect(dLit).toBeGreaterThan(dDark + 3);
     lit.trace('out').expectDifferentFrom(dark.trace('out'), 4);
+  });
+
+  it('caustics dapple the lit body', async () => {
+    // Gray body, front-lit, no rays: the surface dapple is the only change.
+    const base = { ...STATIC, color: [0.5, 0.5, 0.5], reflect: 0.2,
+                   azimuth: -30, elevation: 30 };
+    const still = await render('mono_caust_off', base);
+    const dappled = await render('mono_caust_on', { ...base, caustics: 1.0 });
+    dappled.trace('out').expectDifferentFrom(still.trace('out'), 6);
+    // Dapple is a lit-surface term — the background never ripples.
+    dappled.trace('out').expectPixelAt(3, 3, BG, 8);
+    dappled.trace('out').expectPixelAt(92, 92, BG, 8);
+  });
+
+  it('caustics band the god rays', async () => {
+    // Backlit with rays on: caustics modulate the shafts by angle, so the
+    // region outside the silhouette changes; without rays or coverage the
+    // pixel is untouched.
+    const base = { ...STATIC, azimuth: 180, elevation: 5, sun: 1.0, rays: 1.0 };
+    const smooth = await render('mono_caust_rays_off', base);
+    const banded = await render('mono_caust_rays_on', { ...base, caustics: 1.0 });
+    banded.trace('out').expectDifferentFrom(smooth.trace('out'), 3);
+    // Rays (banded or not) only ADD light over the background.
+    expect(lum(banded.trace('out').pixelAt(3, 3))).toBeGreaterThan(lum(BG) - 4);
   });
 
   it('bloom bleeds the hot highlights', async () => {

@@ -6,15 +6,15 @@
 // slab carves dark shafts; the bright env bleeds around its edges. Output
 // is an additive RGBA16F layer consumed by the final combine.
 
-#include "nano_hash.hlsl"
+#include "caustics.hlsl"
 
 Texture2D<float4>   compTex : register(t0);
 RWTexture2D<float4> raysTex : register(u1);
 SamplerState        clampS  : register(s2);
 
 cbuffer Uniforms : register(b3) {
-  float4 sun_screen;   // sun px, py, unused, gain (rays * fade * sun)
-  float4 march;        // taps, decay, max_step_px, 0
+  float4 sun_screen;   // sun px, py, water_t, gain (rays * fade * sun)
+  float4 march;        // taps, decay, max_step_px, caustics amount
 };
 
 [numthreads(8, 8, 1)]
@@ -50,5 +50,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
     w *= march.y;
   }
   float3 r = (wsum > 1e-4 ? accum / wsum : float3(0.0, 0.0, 0.0)) * sun_screen.w;
+
+  // Water caustics: the shafts band and flicker by ANGLE from the sun,
+  // like light folded through a moving surface. Sampling the field on the
+  // unit direction vector keeps it seamless around the full circle; the
+  // pure-angular field stays coherent along each shaft. Rebalanced ~1.
+  float ca = march.w;
+  if (ca > 0.0) {
+    float r_px = length(delta);
+    if (r_px > 1.0) {
+      float2 dir = delta / r_px;
+      float c = nano_caustic2(dir * 2.6, sun_screen.z);
+      r *= max(1.0 + ca * (c * 2.8 - 0.6), 0.0);
+    }
+  }
   raysTex[gid.xy] = float4(r, 0.0);
 }
