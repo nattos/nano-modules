@@ -55,20 +55,25 @@ float2 swc_perp(float2 v) { return float2(v.y, -v.x); }
 // swarm freezes into a static stipple. Constant-speed transport keeps the
 // captured particles/seeds streaming along the lines.
 static const float SWC_UNDERTOW_VEL = 1.5;   // iso uv/s at to_image_curl=1, cf=1
-float2 swc_undertow(float2 g, float ridge) {
-  float gl = length(g);
-  // Soft normalization: weak gradients get proportionally weak undertow.
-  // A near-unit normalization (tiny epsilon) turns texel-level wiggle in
-  // flat regions of a 256² lattice into full-speed pseudo-random directions
-  // — read as grid-quantized flow. 0.2 keeps real ridges (|G| ≳ 1) at ~full
-  // transport while noise-floor gradients barely move anything.
-  float2 tang = swc_perp(g) / (gl + 0.2);
-  // Two gates, take the stronger: ridge presence covers the crest itself
-  // (where every centered gradient vanishes by symmetry); |G| covers the
-  // wide multi-scale basin AROUND features, so the contour-following swirl
-  // is felt at a distance, not only when already sitting on the line.
-  // Wide smoothsteps — hard thresholds also imprint the field lattice.
-  float gate = max(smoothstep(0.05, 0.5, ridge), smoothstep(0.15, 0.6, gl));
+// DIRECTION comes from the PLAIN luma gradient (g_luma, field_c.rg), and
+// MAGNITUDE from swept presence (g_swept = grad L' + the ridge detector) —
+// split on purpose. grad L' = W'(luma)·grad luma collapses to zero at the
+// sweep window's flat top even after fixing W's sign flip, which put a
+// travelling stop-start null through every captured region. The plain-luma
+// tangent doesn't know where the band is, so as the sweep passes a region
+// its motion is ONE smooth hump: up to max, back down — never through zero.
+float2 swc_undertow(float2 g_swept, float2 g_luma, float ridge) {
+  // Soft normalization: weak/noise-floor luma gradients get proportionally
+  // weak undertow (a near-unit normalization turns texel wiggle in flat
+  // regions into full-speed pseudo-random directions — grid-quantized flow).
+  float2 tang = swc_perp(g_luma) / (length(g_luma) + 0.2);
+  // Two sweep-gates, take the stronger: ridge presence covers the band
+  // itself (including the window plateau where the swept gradient is zero);
+  // |grad L'| covers the wide multi-scale basin AROUND the band, so the
+  // contour-following swirl is felt at a distance. Wide smoothsteps — hard
+  // thresholds imprint the field lattice.
+  float gate = max(smoothstep(0.05, 0.5, ridge),
+                   smoothstep(0.15, 0.6, length(g_swept)));
   return tang * (SWC_UNDERTOW_VEL * gate);
 }
 

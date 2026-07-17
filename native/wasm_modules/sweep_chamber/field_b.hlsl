@@ -21,9 +21,13 @@
 
 #include "common.hlsl"
 
-RWTexture2D<float4> fieldB   : register(u0);
-Texture2D<float4>   fieldA   : register(t1);
-SamplerState        lin      : register(s2);
+RWTexture2D<float4> fieldB     : register(u0);
+Texture2D<float4>   fieldA     : register(t1);
+SamplerState        lin        : register(s2);
+Texture2D<float4>   fieldOr    : register(t4);   // .r σ, .g plain luma (fresh)
+RWTexture2D<float4> fieldC     : register(u5);   // out: .rg ∇luma (multi-scale,
+                                                 // EMA'd), .b σ — curl direction
+Texture2D<float4>   fieldCPrev : register(t6);   // last frame's field_c (EMA)
 
 cbuffer Uniforms : register(b3) {
   uint  field_res;
@@ -39,7 +43,7 @@ cbuffer Uniforms : register(b3) {
   float drift_phase;     // ∫ eddy_drift dt, wrapped (CPU-accumulated)
   float drift_dir;       // eddy advection direction (turns)
   float image_smoothing; // gradient step 1→3 field texels
-  float _pad0;
+  float blend_k;         // field_c temporal EMA factor (matches field_a's)
 }
 
 static const float SWC_IMG_GAIN = 6.0;   // image gradients are small; amplify (dc parity)
@@ -88,8 +92,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // ×0.5 matches the 2e·∇L scale of a plain central difference. 24 taps,
   // but this is the once-per-frame 256² field-gen pass — per-particle cost
   // is unchanged.
+  // Two gradients in one sweep of the ring stencils:
+  //   G  — swept L' (attraction: pulls particles toward the band)
+  //   Gl — PLAIN luma (curl direction: sweep-independent, so passing the
+  //        band never nulls/reverses the along-contour flow)
   float e0 = lerp(1.0, 3.0, saturate(image_smoothing)) * inv_res;
-  float2 G = float2(0.0, 0.0);
+  float2 G  = float2(0.0, 0.0);
+  float2 Gl = float2(0.0, 0.0);
   {
     static const float2 RING[8] = {
       float2( 1.0, 0.0), float2( 0.70710678,  0.70710678),
@@ -99,12 +108,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
     };
     float e = e0, w = 1.0;
     for (uint sc = 0u; sc < 3u; sc++) {
-      float2 acc = float2(0.0, 0.0);
+      float2 accA = float2(0.0, 0.0);
+      float2 accL = float2(0.0, 0.0);
       [unroll] for (uint d = 0u; d < 8u; d++) {
-        float2 du = RING[d] * (e * aspect);
-        acc += RING[d] * fieldA.SampleLevel(lin, saturate(uv + du), 0).r;
+        float2 p = saturate(uv + RING[d] * (e * aspect));
+        accA += RING[d] * fieldA.SampleLevel(lin, p, 0).r;
+        accL += RING[d] * fieldOr.SampleLevel(lin, p, 0).g;
       }
-      G += acc * (0.5 * w);
+      G  += accA * (0.5 * w);
+      Gl += accL * (0.5 * w);
       e *= 4.0;
       w *= 0.55;
     }
@@ -114,10 +126,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // pile up right at the viewport edge). dc parity.
   float2 ed = min(uv, 1.0 - uv);
   float edgeFade = smoothstep(0.0, 0.05, min(ed.x, ed.y));
-  G *= SWC_IMG_GAIN * edgeFade;
+  G  *= SWC_IMG_GAIN * edgeFade;
+  Gl *= SWC_IMG_GAIN * edgeFade;
 
   float2 s = (uv - 0.5) / max(aspect, 1e-4);
   float2 vn = swc_noise_vel(s);
 
   fieldB[gid.xy] = float4(vn, G);
+  // field_c gets its own EMA here (field_or is fresh — rgba16f storage is
+  // write-only on web, so its pass can't blend in place).
+  float  sigma = fieldOr.Load(int3(gid.xy, 0)).r;
+  float4 prevC = fieldCPrev.Load(int3(gid.xy, 0));
+  fieldC[gid.xy] = lerp(prevC, float4(Gl, sigma, 0.0), saturate(blend_k));
 }

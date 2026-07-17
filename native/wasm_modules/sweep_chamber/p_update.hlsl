@@ -31,7 +31,7 @@ StructuredBuffer<Seg>        segs          : register(t6);   // tracer segments 
 StructuredBuffer<TracerState> tracers      : register(t7);   // per-tracer grip (spawn weighting)
 StructuredBuffer<float4>     respBuf       : register(t8);   // [1] = calm↔intense response
 Texture2D<float4>            fieldTexA     : register(t9);   // ridge presence (undertow gate)
-Texture2D<float4>            fieldTexOr    : register(t10);  // .r band-side σ (curl orientation)
+Texture2D<float4>            fieldTexC     : register(t10);  // .rg ∇luma (curl direction)
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -118,14 +118,14 @@ static const float SWC_BDEATH_REF     = 0.25;
 // particle's OWN current heading (`vel_prev`), falling back to the signed
 // depth phase `cf` at spawn (which keeps the undertow_skew/squash
 // population split: half the swarm streams each way).
-// `side` (field_or.r) cancels the sweep window's W' sign flip so the curl
-// keeps ONE orientation on both edges of the band (see swc_sweep_side);
-// the attraction term keeps the raw swept gradient — its reversal IS the
-// trapping well.
-float2 swc_field_vel(float4 fb, float ridge, float side, float cf,
+// The undertow's direction comes from the PLAIN luma gradient `gl`
+// (field_c.rg) and its magnitude from swept presence — one smooth hump per
+// region as the sweep passes (see swc_undertow); the attraction term keeps
+// the raw swept gradient — its reversal IS the trapping well.
+float2 swc_field_vel(float4 fb, float ridge, float2 gl, float cf,
                      float2 vel_prev) {
   float2 aspect = float2(aspect_x, aspect_y);
-  float2 und = swc_undertow(fb.zw * side, ridge);
+  float2 und = swc_undertow(fb.zw, gl, ridge);
   float aln = dot(und, vel_prev / max(aspect, 1e-4));
   float sgn = (abs(aln) > 1e-6) ? (aln > 0.0 ? 1.0 : -1.0)
                                 : (cf >= 0.0 ? 1.0 : -1.0);
@@ -230,8 +230,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
       // avoidance on top.
       float4 fb = swc_sample_bspline(fieldTexB, linearSampler, saturate(pos), field_res);
       float ridge = swc_sample_bspline(fieldTexA, linearSampler, saturate(pos), field_res).a;
-      float side = fieldTexOr.SampleLevel(linearSampler, saturate(pos), 0).r;
-      float2 eff = swc_field_vel(fb, ridge, side, cf, vel) * speed + avoid_vec;
+      float2 gl = swc_sample_bspline(fieldTexC, linearSampler, saturate(pos), field_res).rg;
+      float2 eff = swc_field_vel(fb, ridge, gl, cf, vel) * speed + avoid_vec;
 
       // Acceleration mode.
       if (mode == 1u) {
@@ -391,9 +391,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // Newborns stream along the field immediately.
     float4 fb0 = swc_sample_bspline(fieldTexB, linearSampler, saturate(nuv), field_res);
     float ridge0 = swc_sample_bspline(fieldTexA, linearSampler, saturate(nuv), field_res).a;
-    float side0 = fieldTexOr.SampleLevel(linearSampler, saturate(nuv), 0).r;
+    float2 gl0 = swc_sample_bspline(fieldTexC, linearSampler, saturate(nuv), field_res).rg;
     float cf0 = (zr - undertow_skew) * undertow_squash;
-    vel = swc_field_vel(fb0, ridge0, side0, cf0, float2(0.0, 0.0)) * speed;
+    vel = swc_field_vel(fb0, ridge0, gl0, cf0, float2(0.0, 0.0)) * speed;
   }
 
   p.a = float4(pos, life_remain, life_total);

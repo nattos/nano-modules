@@ -87,7 +87,7 @@ struct FieldUniforms {
   float    drift_phase;
   float    drift_dir;
   float    image_smoothing;
-  float    _pad0;
+  float    blend_k;      // field_c temporal EMA factor (matches field_a's)
 };
 static_assert(sizeof(FieldUniforms) == 48, "FieldUniforms layout mismatch");
 
@@ -298,8 +298,10 @@ struct State {
   gpu::Sampler sampler;
   gpu::Texture field_a_tex;     // FIELD_RES² swept luma + peak offsets (lazy)
   gpu::Texture field_a_tex2;    // ping-pong partner (temporal EMA reads prev)
-  gpu::Texture field_or_tex;    // band-side σ + plain luma (curl orientation)
-  bool         field_a_flip = false;
+  gpu::Texture field_or_tex;    // band-side σ + plain luma (field_c's source)
+  gpu::Texture field_c_tex;     // ∇luma + σ, EMA'd (curl direction) — ping-pong
+  gpu::Texture field_c_tex2;
+  bool         field_a_flip = false;   // flips field_a AND field_c pairs
   gpu::Texture field_b_tex;     // FIELD_RES² velocity field (lazy)
   gpu::Texture black_tex;       // 1×1 opaque black — generator fallback input
   gpu::Texture density_tex;     // persistent crowding buffer (1-frame delayed)
@@ -770,7 +772,10 @@ void module_init() {
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_b out
       .tex2d(1)                                       // field_a (swept luma)
       .sampler(2)
-      .uniform(3));
+      .uniform(3)
+      .tex2d(4)                                       // field_or (σ + plain luma)
+      .storageTex2d(5, gpu::TextureFormat::RGBA16F)   // field_c out (∇luma, EMA)
+      .tex2d(6));                                     // last frame's field_c
 
   s_pso_update = gpu::Device::createComputePSO(cs_update, "main", gpu::Bindings()
       .storageRW(0)   // particles[]
@@ -913,6 +918,8 @@ void destroy(void* self) {
   s->field_a_tex.release();
   s->field_a_tex2.release();
   s->field_or_tex.release();
+  s->field_c_tex.release();
+  s->field_c_tex2.release();
   s->field_b_tex.release();
   s->black_tex.release();
   s->density_tex.release();
@@ -1093,11 +1100,24 @@ void render(void* self, int vp_w, int vp_h) {
                                                  gpu::TextureFormat::RGBA16F);
     gpu::Device::clear(s->field_or_tex, 0.0f, 0.0f, 0.0f, 0.0f);
   }
+  if (!s->field_c_tex.valid()) {
+    s->field_c_tex = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
+                                                gpu::TextureFormat::RGBA16F);
+    gpu::Device::clear(s->field_c_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  if (!s->field_c_tex2.valid()) {
+    s->field_c_tex2 = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
+                                                 gpu::TextureFormat::RGBA16F);
+    gpu::Device::clear(s->field_c_tex2, 0.0f, 0.0f, 0.0f, 0.0f);
+  }
   if (!s->field_a_tex.valid() || !s->field_a_tex2.valid() ||
-      !s->field_b_tex.valid() || !s->field_or_tex.valid()) return;
+      !s->field_b_tex.valid() || !s->field_or_tex.valid() ||
+      !s->field_c_tex.valid() || !s->field_c_tex2.valid()) return;
   s->field_a_flip = !s->field_a_flip;
   gpu::Texture fa_cur  = s->field_a_flip ? s->field_a_tex2 : s->field_a_tex;
   gpu::Texture fa_prev = s->field_a_flip ? s->field_a_tex  : s->field_a_tex2;
+  gpu::Texture fc_cur  = s->field_a_flip ? s->field_c_tex2 : s->field_c_tex;
+  gpu::Texture fc_prev = s->field_a_flip ? s->field_c_tex  : s->field_c_tex2;
 
   // Interactions: persistent density buffer read by the update pass (built
   // from LAST frame's particles → 1-frame delay). 1×1 zero when off.
@@ -1137,16 +1157,18 @@ void render(void* self, int vp_w, int vp_h) {
   if (s->spin_phase  > 4096.0f) s->spin_phase  -= 4096.0f;
   if (s->drift_phase > 4096.0f) s->drift_phase -= 4096.0f;
 
+  // Temporal EMA: replace outright when smoothing is off OR paused (dt 0 —
+  // a paused drag should still show its result immediately).
+  float blend_k = (s->sweep_smooth <= 1e-4f || dt <= 0.0f)
+                      ? 1.0f
+                      : 1.0f - std::exp(-dt / s->sweep_smooth);
+
   FieldAUniforms fau = {};
   fau.field_res    = (uint32_t)FIELD_RES;
   fau.sweep_center = s->sweep_center;
   fau.sweep_width  = s->sweep_width;
   fau.sweep_soft   = s->sweep_soft;
-  // Temporal EMA: replace outright when smoothing is off OR paused (dt 0 —
-  // a paused drag should still show its result immediately).
-  fau.blend_k = (s->sweep_smooth <= 1e-4f || dt <= 0.0f)
-                    ? 1.0f
-                    : 1.0f - std::exp(-dt / s->sweep_smooth);
+  fau.blend_k      = blend_k;
   s->field_a_uniforms.writeOne(fau);
 
   FieldUniforms fu = {};
@@ -1161,6 +1183,7 @@ void render(void* self, int vp_w, int vp_h) {
   fu.drift_phase     = s->drift_phase;
   fu.drift_dir       = s->eddy_drift_dir;
   fu.image_smoothing = s->image_smoothing;
+  fu.blend_k         = blend_k;
   s->field_uniforms.writeOne(fu);
 
   float size_uv = SIZE_SCALE * s->size * s->size;
@@ -1310,6 +1333,9 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(fa_cur, 1, 0);
     cp.setSampler(s->sampler, 2);
     cp.setBuffer(s->field_uniforms, 3);
+    cp.setTexture(s->field_or_tex, 4, 0);
+    cp.setTexture(fc_cur, 5, 1);
+    cp.setTexture(fc_prev, 6, 0);
     cp.dispatch((FIELD_RES + 7) / 8, (FIELD_RES + 7) / 8);
     cp.end();
   }
@@ -1338,7 +1364,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setSampler(s->sampler, 4);
     cp.setBuffer(s->trace_uniforms, 5);
     cp.setTexture(in, 6, 0);
-    cp.setTexture(s->field_or_tex, 7, 0);
+    cp.setTexture(fc_cur, 7, 0);
     cp.dispatch((s->l_count + 63) / 64, 1, 1);
     cp.end();
   }
@@ -1357,7 +1383,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->tracer_buf, 7);
     cp.setBuffer(s->stats_buf, 8);
     cp.setTexture(fa_cur, 9, 0);
-    cp.setTexture(s->field_or_tex, 10, 0);
+    cp.setTexture(fc_cur, 10, 0);
     int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();
@@ -1433,7 +1459,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setSampler(s->sampler, 2);
     cp.setTexture(out, 3, 1);
     cp.setBuffer(s->field_debug_uniforms, 4);
-    cp.setTexture(s->field_or_tex, 5, 0);
+    cp.setTexture(fc_cur, 5, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   } else if (debug) {
