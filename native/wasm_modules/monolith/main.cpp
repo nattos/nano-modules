@@ -194,6 +194,7 @@ struct ResolveUniforms {
   float vp[4];              // w, h, 1/w, 1/h
   float caustic[4];         // amount, world scale, water_t, 0
   float sun_env[4];         // sun sample uv.xy, mode (1 = from env), 0
+  float fog_color[4];       // medium tint rgb, 0
 };
 
 struct RaysUniforms {
@@ -250,6 +251,7 @@ struct State {
   float sun_r = 1.0f, sun_g = 1.0f, sun_b = 1.0f;
   int sun_source = 0;       // 0 = Color, 1 = From Input (env chroma)
   float fog = 0.2f;
+  float fog_r = 1.0f, fog_g = 1.0f, fog_b = 1.0f;
   float rays = 0.3f;
   float bloom = 0.25f;
   float caustics = 0.35f;
@@ -300,7 +302,8 @@ void module_init() {
   //        the sun's position (chroma-only, single point, no readback).
   // 1.2.8: sun_source From Tint Tex + tint_in texture input (bound only
   //        when active; the rays pass reuses its sun-sample slot).
-  state::init("source.mesh.monolith", {1, 2, 8},
+  // 1.2.9: fog_color - tints the medium, white = previous look.
+  state::init("source.mesh.monolith", {1, 2, 9},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -411,7 +414,8 @@ void module_init() {
       .group("atmosphere", "Atmosphere")
         .groupHelp(
           "*Fog* melts the structure's top into haze and thickens with "
-          "distance — the scale cue. *Rays* scatter the bright environment "
+          "distance — the scale cue; *Fog Color* tints the medium (the "
+          "haze still inherits its brightness from the scene). *Rays* scatter the bright environment "
           "radially from the sun, carved by the silhouette (needs the sun "
           "in front of the camera: azimuth toward ±180). *Caustics* folds "
           "the light through a moving water surface: the shafts band and "
@@ -421,6 +425,8 @@ void module_init() {
           "bleed.")
       .floatField("fog", 0.2f, 0.f, 1.f, state::PrimaryInput)
           .label("Fog", "Fog")
+      .rgbField("fog_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
+          .label("Fog Color", "FogCol")
       .floatField("rays", 0.3f, 0.f, 1.f, state::PrimaryInput)
           .label("God Rays", "Rays")
       .floatField("caustics", 0.35f, 0.f, 1.f, state::PrimaryInput)
@@ -662,6 +668,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     }
     else if (state::pathIs(p, l, "sun_source")) s->sun_source = state::patchInt(i);
     else if (state::pathIs(p, l, "fog"))       s->fog = state::patchFloat(i);
+    else if (state::pathIs(p, l, "fog_color")) {
+      auto v = state::patchVec3(i);
+      s->fog_r = v.x; s->fog_g = v.y; s->fog_b = v.z;
+    }
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
     else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
     else if (state::pathIs(p, l, "caustics"))  s->caustics = state::patchFloat(i);
@@ -920,6 +930,8 @@ void render(void* self, int vp_w, int vp_h) {
     u.caustic[2] = (float)s->water_t;
     u.sun_env[0] = sun_uv_x; u.sun_env[1] = sun_uv_y;
     u.sun_env[2] = sun_env_mode;
+    u.fog_color[0] = s->fog_r; u.fog_color[1] = s->fog_g;
+    u.fog_color[2] = s->fog_b;
     s->ub_resolve[ci].writeOne(u);
 
     {

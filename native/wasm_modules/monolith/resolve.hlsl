@@ -35,6 +35,7 @@ cbuffer Uniforms : register(b8) {
   float4 vp;           // w, h, 1/w, 1/h
   float4 caustic;      // amount, world scale, water_t, 0
   float4 sun_env;      // sun sample uv.xy, mode (1 = hue from env), 0
+  float4 fog_color;    // medium tint rgb (white = neutral)
 };
 
 static const float INV_TAU = 0.15915494309;
@@ -191,6 +192,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     fogc = lerp(fogc, float3(fl, fl, fl), 0.45);
     fogc = fogc * 0.85 + 0.10 * (0.4 + 0.6 * sun_i) *
            lerp(float3(1.0, 1.0, 1.0), sun_col, 0.5);
+    fogc *= fog_color.rgb;   // authored medium tint (white = neutral)
     surf = lerp(surf, fogc, f);
   }
 

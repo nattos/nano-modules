@@ -155,6 +155,18 @@ describe('source.mesh.monolith E2E', () => {
     foggy.trace('out').expectPixelAt(92, 92, BG, 8);
   });
 
+  it('fog color tints the medium', async () => {
+    const base = { ...STATIC, size: 1.0, fog: 1.0 };
+    const white = await render('mono_fogcol_white', base);
+    const red = await render('mono_fogcol_red', { ...base, fog_color: [1.0, 0.15, 0.1] });
+    // Upper body (heavily fogged): the red medium shows a clear red excess.
+    const pw = white.trace('out').pixelAt(48, 26);
+    const pr = red.trace('out').pixelAt(48, 26);
+    expect(pr.r - pr.b).toBeGreaterThan(pw.r - pw.b + 8);
+    // Uncovered pixels never fog, tinted or not.
+    red.trace('out').expectPixelAt(3, 3, BG, 8);
+  });
+
   it('vantage makes the verticals converge (towering)', async () => {
     const width = (r: any, y: number) => {
       let n = 0;
