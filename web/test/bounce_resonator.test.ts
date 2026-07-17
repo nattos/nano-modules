@@ -208,6 +208,32 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     expect(mid(black)).toBeLessThan(15);
   });
 
+  it('chroma_hold keeps overdriven bars saturated instead of washing to white', async () => {
+    // Pure red bars driven hot (all_bars strength 2 × intensity 6 → lin.r ≈ 12).
+    // At chroma_hold 0 the overflow spills as warm white (green nearly pegs);
+    // at 1 the peak-mapped rolloff keeps the r:g:b ratio — red pegs, green and
+    // blue stay dark.
+    const run = (hold: number) => runGpuEffectTest({
+      module: 'source.light.bounce_resonator', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 3,
+      params: [...kickBar0([['feedback', 1.0], ['spread', 0.0], ['hue_spread', 0.0],
+                            ['impulse_mode', 3], ['impulse_strength', 2.0],
+                            ['intensity', 6.0], ['chroma_hold', hold]]),
+               ['band_color', [1, 0, 0]]],
+      dumpName: `bounce_resonator_chroma_${Math.round(hold * 100)}`,
+    });
+    const washed = await run(0.0);
+    const held = await run(1.0);
+    expect(washed.success && held.success).toBe(true);
+    // Both drives peg red; only the washed one drags green/blue up with it.
+    expect(barChan(washed, 0, 'r')).toBeGreaterThan(200);
+    expect(barChan(washed, 0, 'g')).toBeGreaterThan(150);
+    expect(barChan(held, 0, 'r')).toBeGreaterThan(200);
+    expect(barChan(held, 0, 'g')).toBeLessThan(20);
+    expect(barChan(held, 0, 'b')).toBeLessThan(20);
+  });
+
   it('feedback conserves vs decays total energy', async () => {
     const after = (feedback: number) => runGpuEffectTest({
       module: 'source.light.bounce_resonator', bundle: 'lights',

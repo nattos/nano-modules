@@ -92,7 +92,7 @@ void nano_module_main() {
         2,
         "source.light.bounce_resonator",
         "Bounce Resonator",
-        "4 coupled per-bar mass-on-spring oscillators with seeded cross-bar diffusion and per-bar non-linear send filters. Trigger kicks one (or all) bars; energy bleeds into others via a randomized coupling matrix, each cross-send passing through a tanh-saturated biquad. Q knob ranges from heavy damping to long ring; top 5% engages soft-limited self-resonance. Renders as gaussian bands with motion-vector output.",
+        "4-bar scalar diffusion network: fire an impulse into one bar (or all, or sampled from the input video) and its energy bounces between the bars through a seeded cycling exchange matrix, ringing out per feedback. Hops carry colour — hue spread/converge let it wander or home in on the bar colour. Each bar fills its 1/4 column; chroma hold trades the white-hot overdrive bloom for a hue-preserving limiter. Motion-vector passthrough.",
         "source",
         "resonator,bounce,coupled,trigger,physics,bar",
         "la-broadcast-tower",

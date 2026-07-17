@@ -68,7 +68,7 @@ struct SimUniforms {
 };
 static_assert(sizeof(SimUniforms) == 96, "SimUniforms layout mismatch");
 
-struct ColorUniforms { float band_val, intensity, input_opacity, pad0; };
+struct ColorUniforms { float band_val, intensity, input_opacity, chroma_hold; };
 static_assert(sizeof(ColorUniforms) == 16, "ColorUniforms layout mismatch");
 
 struct MatsBuf { float data[fx::DiffusionNetwork4::kMaxN * 48]; };
@@ -109,6 +109,7 @@ struct State {
   float band_sat          = 0.0f;
   float band_val          = 1.0f;
   float intensity         = 1.0f;
+  float chroma_hold       = 0.0f;  // 0 = white-hot spill, 1 = hue-preserving limit
   float input_opacity     = 1.0f;
   fx::AutoTrigger auto_trig;   // Off / Random (Poisson) / Beats — see effect_auto_trigger.h
 
@@ -204,7 +205,7 @@ static void on_state_ready(void* self) {
 void module_init() {
   // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
   // into the Trigger group (it takes and returns the Schema&).
-  state::init("source.light.bounce_resonator", {1, 1, 0},
+  state::init("source.light.bounce_resonator", {1, 1, 1},
     fx::AutoTrigger::fields(
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
@@ -249,7 +250,8 @@ void module_init() {
           "**Pattern Count** drive how fast and how variedly the exchange matrix "
           "shuffles, while the **Hue** knobs let colour wander or converge on the "
           "bar colour. **Bar Color**, **Intensity** and **Input Opacity** set the "
-          "final look.")
+          "final look; **Chroma Hold** keeps overdriven bars saturated at their "
+          "hue instead of blooming white-hot.")
       .floatField("feedback",            0.90f, 0.0f, 1.2f,      state::PrimaryInput).label("Feedback", "Fbk")
       .floatField("spread",              0.30f, 0.0f, 1.0f,      state::PrimaryInput).label("Spread", "Sprd")
       .floatField("spread_contrast",     0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Spread Contrast", "SprCon")
@@ -262,6 +264,7 @@ void module_init() {
       .floatField("impulse_strength",    1.0f,  0.0f, 2.0f,      state::PrimaryInput).label("Impulse Strength", "Impls")
       .rgbField  ("band_color",          1.0f, 0.92f, 0.78f,     state::PrimaryInput).label("Bar Color", "Color")
       .floatField("intensity",           1.0f, 0.0f, 10.0f,      state::PrimaryInput).label("Intensity", "Int")
+      .floatField("chroma_hold",         0.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Chroma Hold", "Chroma")
       .floatField("input_opacity",       1.0f, 0.0f, 1.0f,       state::PrimaryInput).label("Input Opacity", "Opac")
       // --- I/O ---
       .textureField("tex_in",  state::PrimaryInput)
@@ -432,6 +435,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off, const i
       update_band_hsv(*s);
     }
     else if (state::pathIs(path, plen, "intensity"))           s->intensity          = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "chroma_hold"))         s->chroma_hold        = state::patchFloat(i);
     else if (state::pathIs(path, plen, "input_opacity"))       s->input_opacity      = state::patchFloat(i);
   }
   if (vis_changed)
@@ -489,7 +493,8 @@ void render(void* self, int vp_w, int vp_h) {
 
   // Pass 2 — color: read the post-step state, fill each bar's column.
   ColorUniforms cu = { s->band_val, clampf(s->intensity, 0.0f, 10.0f),
-                       clampf(s->input_opacity, 0.0f, 1.0f), 0.0f };
+                       clampf(s->input_opacity, 0.0f, 1.0f),
+                       clampf(s->chroma_hold, 0.0f, 1.0f) };
   s->color_uniform_buf.writeOne(cu);
   {
     auto cp = gpu::ComputePass::begin();
