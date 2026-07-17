@@ -11,10 +11,15 @@
 //         is discontinuous frame-to-frame (scintillating lines), while the
 //         peak-biased centroid is continuous in the input and hugs the peak.
 //         Exactly 0 in black cells, so free-space consumers never read junk.
-//   .a  — MAX swept luma over the cell: the RIDGE DETECTOR. A ridge thinner
-//         than a cell still reads ~full strength here — and unlike |∇L'|,
-//         it stays high ON the crest (where the gradient vanishes), which is
-//         what line trapping and grip must key on.
+//   .a  — SOFT-MAX swept luma over the cell (quartic power mean): the RIDGE
+//         DETECTOR. A ridge thinner than a cell still reads strong here — and
+//         unlike |∇L'|, it stays high ON the crest (where the gradient
+//         vanishes), which is what line trapping and grip must key on. The
+//         power mean (not a hard max) matters: a per-cell hard max is
+//         piecewise-quantized, and bilinear interpolation of it imprints the
+//         FIELD_RES lattice on everything gated by it (visible as grid
+//         patterns in the particle flow). The quartic mean tracks the max
+//         closely but varies smoothly across cells.
 
 #include "common.hlsl"
 
@@ -34,7 +39,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (gid.x >= field_res || gid.y >= field_res) return;
   float inv_res = 1.0 / float(field_res);
 
-  float Lsum = 0.0, Lmax = 0.0, wsum = 0.0;
+  float Lsum = 0.0, wsum = 0.0;
   float2 cw = float2(0.0, 0.0);
   [unroll] for (int j = 0; j < 4; j++) {
     [unroll] for (int k = 0; k < 4; k++) {
@@ -43,12 +48,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float3 c  = inputTex.SampleLevel(lin, uv, 0).rgb;
       float  Lp = swc_sweep(swc_lum(c), sweep_center, sweep_width, sweep_soft);
       Lsum += Lp;
-      Lmax  = max(Lmax, Lp);
       float w = Lp * Lp; w *= w;                             // L'^4 — peak-biased
       cw   += (o - 0.5) * w;
       wsum += w;
     }
   }
   float2 off = (wsum > 1e-5) ? cw / wsum : float2(0.0, 0.0); // texel units, |off| ≤ 0.5
-  fieldA[gid.xy] = float4(Lsum * (1.0 / 16.0), off.x, off.y, Lmax);
+  float Lsoftmax = pow(wsum * (1.0 / 16.0), 0.25);           // quartic power mean ≈ smooth max
+  fieldA[gid.xy] = float4(Lsum * (1.0 / 16.0), off.x, off.y, Lsoftmax);
 }

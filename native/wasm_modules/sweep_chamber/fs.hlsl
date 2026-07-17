@@ -8,7 +8,8 @@
 #include "common.hlsl"
 
 cbuffer Uniforms : register(b2) {
-  float color_blend;     // 0 = captured input color, 1 = solid_color
+  float color_blend;     // 0 = solid_color, 1 = captured input color (dc parity:
+                         // dc points were ALWAYS input-colored; 1 = that look)
   float solid_r;
   float solid_g;
   float solid_b;
@@ -33,7 +34,7 @@ float4 main(VsOut i) : SV_Target0 {
   float alpha = pow(saturate(life_norm), max(alpha_curve, 1e-3)) * saturate(opacity) * mask;
   if (alpha <= 0.0) discard;
 
-  float3 base = lerp(i.col_life.rgb, float3(solid_r, solid_g, solid_b),
+  float3 base = lerp(float3(solid_r, solid_g, solid_b), i.col_life.rgb,
                      saturate(color_blend));
 
   // Optional flow tint: hue from velocity direction, brightness from speed.

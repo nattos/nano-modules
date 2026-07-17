@@ -389,7 +389,7 @@ struct State {
   float boundary_death     = 0.25f;
   float spawn_size         = 0.6f;
   // Render.
-  float color_blend  = 0.5f;
+  float color_blend  = 1.0f;   // 1 = captured input colour (dc parity)
   float solid_r      = 1.0f;
   float solid_g      = 1.0f;
   float solid_b      = 1.0f;
@@ -668,7 +668,7 @@ void module_init() {
       .floatField("boundary_death",     0.25f, 0.0f, 1.0f,  state::PrimaryInput).label("Boundary Death", "BDeath")
       // ---- Color ----
       .group("color", "Colour")
-      .floatField("color_blend",  0.5f, 0.0f, 1.0f, state::PrimaryInput).label("Colour Blend", "Blend")
+      .floatField("color_blend",  1.0f, 0.0f, 1.0f, state::PrimaryInput).label("Image Colour", "ImCol")
       .rgbField  ("solid_color",  1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Solid Colour", "Colour")
       .floatField("tint_by_flow", 0.0f, 0.0f, 1.0f, state::PrimaryInput).label("Tint By Flow", "Tint")
       // ---- Composite ----
@@ -1235,7 +1235,9 @@ void render(void* self, int vp_w, int vp_h) {
   s->vs_uniforms.writeOne(vu);
 
   ColorUniforms cu = {};
-  cu.color_blend  = s->color_blend;
+  // Generator mode has no input to capture — captured colour is black, so
+  // force the solid colour or the swarm silently vanishes.
+  cu.color_blend  = has_in ? s->color_blend : 0.0f;
   cu.solid_r      = s->solid_r;
   cu.solid_g      = s->solid_g;
   cu.solid_b      = s->solid_b;
