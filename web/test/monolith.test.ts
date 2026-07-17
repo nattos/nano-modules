@@ -2,14 +2,15 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for source.mesh.monolith (nano bundle) — the glassy CPU-sorted
- * 3D primitive generator (1:4:9 monolith slab / equilateral prism, up to 3
- * concentric shells, painter-sorted alpha over the input).
+ * E2E coverage for source.mesh.monolith (nano bundle) — the glassy 3D
+ * primitive generator (1:4:9 monolith slab / regular triangular pyramid, up
+ * to 3 concentric shells, exact analytic painter's order, alpha over input).
  *
- * Determinism trick: `motion: Arc` with `arc: 0` collapses the yaw swing to a
- * fixed pose regardless of accumulated phase, so static comparisons are fully
- * rAF-jitter-proof. Animation is asserted structurally (phases differ), never
- * pixel-exact — headless frame pacing varies 4–20 ms.
+ * Determinism trick: `motion: Arc` with `arc: 0` pins the pose to a slow
+ * eased sweep start (yaw ≈ -20°, drift far below a pixel over test spans),
+ * so static comparisons are rAF-jitter-proof. Animation is asserted
+ * structurally (phases differ), never pixel-exact — headless frame pacing
+ * varies 4–20 ms.
  *
  * Probe rig: solid dark-blue input → monolith. bg (0.05, 0.05, 0.25) reads as
  * ~(13, 13, 64); the near-white default shape reads far brighter. Note engine
@@ -18,8 +19,9 @@ import type { Sketch } from '../src/sketch-types';
 
 const BG = { r: 13, g: 13, b: 64 };
 
-// Static pose: yaw arc of width zero + a slight tilt so several faces show.
-const STATIC = { motion: 0 /* Arc */, arc: 0.0, tilt: 0.6, alpha: 1.0, size: 0.8 };
+// Static pose: zero arc width (yaw pinned ≈ -20°) + a slight signed tilt so
+// several faces show.
+const STATIC = { motion: 0 /* Arc */, arc: 0.0, tilt: 0.2, alpha: 1.0, size: 0.8 };
 
 function buildSketch(params: Record<string, unknown>): Sketch {
   return {
@@ -90,7 +92,7 @@ describe('source.mesh.monolith E2E', () => {
           commands: [
             { type: 'createSketch', sketchId: 'mono_anim',
               sketch: buildSketch({ motion: 1 /* Tumble */, speed: 0.9,
-                                    alpha: 1.0, size: 0.8, tilt: 0.6 }) },
+                                    alpha: 1.0, size: 0.8, tilt: 0.2 }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'mono_anim' } },
             ]},
@@ -111,11 +113,21 @@ describe('source.mesh.monolith E2E', () => {
     three.trace('out').expectDifferentFrom(one.trace('out'), 15);
   });
 
-  it('prism and monolith silhouettes differ', async () => {
+  it('pyramid and monolith silhouettes differ', async () => {
     const slab = await render('mono_shape_slab', { ...STATIC, shape: 0 });
-    const prism = await render('mono_shape_prism', { ...STATIC, shape: 1 });
-    prism.trace('out').expectNotSolidColor(BG, 5);
-    prism.trace('out').expectDifferentFrom(slab.trace('out'), 20);
+    const pyramid = await render('mono_shape_pyramid', { ...STATIC, shape: 1 });
+    pyramid.trace('out').expectNotSolidColor(BG, 5);
+    pyramid.trace('out').expectDifferentFrom(slab.trace('out'), 20);
+  });
+
+  it('opaque solids never leak back faces (analytic draw order)', async () => {
+    // The old centroid depth sort let a far-face triangle of the rotated
+    // thin slab draw on top of the near face (a dark wedge on the front).
+    // With the exact onion order and alpha 1, back faces are fully occluded:
+    // cranking back_dim must change NOTHING on screen.
+    const dim = await render('mono_opaque_dim', { ...STATIC, back_dim: 1.0 });
+    const undim = await render('mono_opaque_undim', { ...STATIC, back_dim: 0.0 });
+    dim.trace('out').expectSameAs(undim.trace('out'), 2);
   });
 
   it('glassy: back-face dimming shows through a semi-transparent shape', async () => {

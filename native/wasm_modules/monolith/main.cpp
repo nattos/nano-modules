@@ -1,18 +1,26 @@
 /*
  * source.mesh.monolith — Glassy 3D primitive generator.
  *
- * Renders a simple convex solid — the 1:4:9 "monolith" slab or an
- * equilateral triangular prism — alpha-composited over the input, with up
- * to three concentric echo shells at growing scale and fading opacity.
+ * Renders a simple convex solid — the 1:4:9 "monolith" slab or a regular
+ * triangular pyramid (tetrahedron) — alpha-composited over the input, with
+ * up to three concentric echo shells at growing scale and fading opacity.
  *
  * The platform has NO z-buffer and blending only exists on the instanced
  * render-PSO path, so the whole 3D pipeline runs on the CPU each frame
  * (<= 36 triangles): rotate -> project -> facing classification -> flat
- * lambert shade (back faces kept and dimmed: "glassy") -> painter's
- * back-to-front sort across ALL copies (shells interleave with the core,
- * so a per-copy sort would be wrong) -> write final clip-space verts +
- * colors into a storage buffer -> one AlphaOver draw over the compute-
- * prefilled copy of tex_in.
+ * lambert shade (back faces kept and dimmed: "glassy") -> ANALYTIC painter's
+ * order -> write final clip-space verts + colors into a storage buffer ->
+ * one AlphaOver draw over the compute-prefilled copy of tex_in.
+ *
+ * Draw order is exact, not sorted. Depth-sorting triangle centroids fails
+ * for thin slabs (a far-face centroid can sit nearer than a near-face
+ * centroid once rotated), but nested convex scaled copies admit a closed-
+ * form order: along any eye ray the hit sequence is front(outer) ...
+ * front(inner), back(inner) ... back(outer), so painting back faces
+ * outermost->innermost then front faces innermost->outermost is correct
+ * from every viewpoint outside the outermost shell. Within one convex
+ * solid, back faces never overlap each other on screen (nor do front
+ * faces), so order inside each group is irrelevant.
  *
  * Facing convention: triangle winding is normalized once at module_init so
  * the right-handed cross of each tri's edges points INWARD. Under the
@@ -44,7 +52,7 @@ constexpr float kTau = 2.0f * kPi;
 
 // --- Selects ---
 constexpr int SHAPE_MONOLITH = 0;
-constexpr int SHAPE_PRISM = 1;
+constexpr int SHAPE_PYRAMID = 1;
 constexpr int MOTION_ARC = 0;
 constexpr int MOTION_TUMBLE = 1;
 constexpr int MOTION_ARCING = 2;
@@ -106,24 +114,22 @@ static inline V3 m3Apply(const M3& r, V3 v) {
 // the tables themselves don't need hand-verified orientation.
 // ---------------------------------------------------------------------------
 
-// Equilateral triangular prism: cross-section in XZ (radius 0.52 at angles
-// 30/150/270 deg — a long edge LEADS toward the camera at rest, so the
-// frontal view shows two differently-lit faces meeting at a center edge
-// instead of one flat rectangle), axis vertical, rings at y = +-0.575.
-static const V3 kPrismVerts[6] = {
-    {0.450333f, -0.575f, 0.260f},   // b0
-    {-0.450333f, -0.575f, 0.260f},  // b1
-    {0.000000f, -0.575f, -0.520f},  // b2 (leading edge)
-    {0.450333f, 0.575f, 0.260f},    // t0
-    {-0.450333f, 0.575f, 0.260f},   // t1
-    {0.000000f, 0.575f, -0.520f},   // t2 (leading edge)
+// Regular triangular pyramid (tetrahedron), centroid at origin, apex up.
+// Circumradius R = 0.70: apex (0, R, 0); base ring at y = -R/3 with
+// horizontal radius 2*sqrt(2)/3 * R, one base vertex LEADING toward the
+// camera (angle 270 deg) so the frontal view shows two differently-lit
+// faces meeting at a slanted center edge. Edge length ~1.143 (regular).
+static const V3 kPyrVerts[4] = {
+    {0.000000f, 0.700000f, 0.000000f},    // apex
+    {0.571577f, -0.233333f, 0.330000f},   // b0 (30 deg)
+    {-0.571577f, -0.233333f, 0.330000f},  // b1 (150 deg)
+    {0.000000f, -0.233333f, -0.660000f},  // b2 (leading vertex)
 };
-static uint8_t kPrismTris[8][3] = {
-    {0, 1, 4}, {0, 4, 3},   // side b0-b1
-    {1, 2, 5}, {1, 5, 4},   // side b1-b2
-    {2, 0, 3}, {2, 3, 5},   // side b2-b0
-    {3, 4, 5},              // top cap
-    {0, 2, 1},              // bottom cap
+static uint8_t kPyrTris[4][3] = {
+    {1, 2, 3},              // base
+    {0, 1, 2},              // side b0-b1
+    {0, 2, 3},              // side b1-b2
+    {0, 3, 1},              // side b2-b0
 };
 
 // The 1:4:9 monolith (depth : width : height), height-normalized.
@@ -152,8 +158,8 @@ struct ShapeDef {
   int tri_count;
 };
 static const ShapeDef kShapes[2] = {
-    {kMonoVerts, 8, kMonoTris, 12},   // SHAPE_MONOLITH
-    {kPrismVerts, 6, kPrismTris, 8},  // SHAPE_PRISM
+    {kMonoVerts, 8, kMonoTris, 12},  // SHAPE_MONOLITH
+    {kPyrVerts, 4, kPyrTris, 4},     // SHAPE_PYRAMID
 };
 
 constexpr int kMaxCopies = 3;
@@ -209,7 +215,7 @@ struct State {
   float falloff = 0.6f;
   float color_r = 0.88f, color_g = 0.88f, color_b = 0.92f;
   float arc = 0.5f;
-  float tilt = 0.35f;
+  float tilt = 0.0f;   // signed: + looks down at the top face, 0 neutral
   float shading = 0.7f;
   float back_dim = 0.6f;
 
@@ -233,15 +239,17 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  state::init("source.mesh.monolith", {1, 0, 0},
+  // 1.1.0: tilt became signed (-1..1, 0 neutral); the prism became a regular
+  // triangular pyramid; Arc sweeps one way and snaps back (was ping-pong).
+  state::init("source.mesh.monolith", {1, 1, 0},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
-        "A floating 3D solid — the 1:4:9 slab from *2001* or an equilateral "
-        "triangular prism — rendered as tinted glass over the input. Up to "
-        "three concentric echo shells grow outward at fading opacity, and "
-        "because the faces are truly depth-sorted you see the far side of "
-        "each shell through the near side.\n\n"
+        "A floating 3D solid — the 1:4:9 slab from *2001* or a regular "
+        "triangular pyramid — rendered as tinted glass over the input. Up "
+        "to three concentric echo shells grow outward at fading opacity, "
+        "and because the faces draw in exact depth order you see the far "
+        "side of each shell through the near side.\n\n"
         "**Try:** *Motion* → Tumble with *Copies* 3 and a low *Opacity* for "
         "slow nested glass; *Sync* → Bars to lock one full motion cycle to "
         "the beat grid; *Color* black with *Shading* high for the film's "
@@ -249,7 +257,7 @@ void module_init() {
       // --- Shape ---
       .group("shape", "Shape")
       .selectField("shape", SHAPE_MONOLITH, state::PrimaryInput,
-                   {{"Monolith", SHAPE_MONOLITH}, {"Prism", SHAPE_PRISM}})
+                   {{"Monolith", SHAPE_MONOLITH}, {"Pyramid", SHAPE_PYRAMID}})
           .label("Shape", "Shape")
       .floatField("size", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Size", "Size")
@@ -260,13 +268,15 @@ void module_init() {
       // --- Motion ---
       .group("motion", "Motion")
         .groupHelp(
-          "*Arc* sways the shape back and forth through a yaw arc with an "
-          "eased turn-around. *Tumble* is constant angular momentum about "
-          "two incommensurate axes — the corners trace curves that never "
-          "repeat. *Arcing Tumble* is the same tumble but its speed swells "
-          "and relaxes, so it seems to arc through its curves. *Free* runs "
-          "on the Speed knob; *Bars* locks one motion cycle to N bars of "
-          "the host transport (and freezes when no transport is running).")
+          "*Arc* sweeps the shape one way through a yaw arc — easing in "
+          "and out of the sweep — then snaps back to the start instantly. "
+          "*Tumble* is constant angular momentum about two incommensurate "
+          "axes — the corners trace curves that never repeat. *Arcing "
+          "Tumble* is the same tumble but its speed swells and relaxes, so "
+          "it seems to arc through its curves. *Free* runs on the Speed "
+          "knob; *Bars* locks one motion cycle to N bars of the host "
+          "transport (and freezes when no transport is running) — with "
+          "Arc, the snap-back lands exactly on the bar line.")
       .selectField("motion", MOTION_ARC, state::PrimaryInput,
                    {{"Arc", MOTION_ARC},
                     {"Tumble", MOTION_TUMBLE},
@@ -297,7 +307,7 @@ void module_init() {
       .group("tuning", "Tuning")
       .floatField("arc", 0.5f, 0.f, 1.f, state::SecondaryInput)
           .label("Arc Width", "Arc")
-      .floatField("tilt", 0.35f, 0.f, 1.f, state::SecondaryInput)
+      .floatField("tilt", 0.0f, -1.f, 1.f, state::SecondaryInput)
           .label("Tilt", "Tilt")
       .floatField("shading", 0.7f, 0.f, 1.f, state::SecondaryInput)
           .label("Shading", "Shade")
@@ -440,9 +450,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   if (vis_dirty) apply_visibility(s);
 }
 
-// Per-tri record for the painter's sort.
+// Per-tri record for the analytic painter's order (see the header comment):
+// order = copies-1-ci for back faces, copies+ci for front faces.
 struct TriRecord {
-  float depth;       // view-space centroid z (bigger = farther)
+  int order;
   float clip[3][2];  // projected clip xy per corner
   float r, g, b, a;
 };
@@ -456,13 +467,16 @@ void render(void* self, int vp_w, int vp_h) {
   if (!out.valid()) return;
 
   // --- Pose ---
-  // Tilt above 0.5 pitches the shape's top edge TOWARD the camera (you look
-  // down onto the lit top face); below 0.5 reveals the underside.
-  const float pitch = ((0.5f - s->tilt) * 80.0f) * (kPi / 180.0f);
+  // Tilt is signed: positive pitches the shape's top edge TOWARD the camera
+  // (you look down onto the lit top face); negative reveals the underside.
+  const float pitch = (-s->tilt * 40.0f) * (kPi / 180.0f);
   M3 rot;
   if (s->motion == MOTION_ARC) {
+    // One-directional eased sweep across the arc, then an instant snap back
+    // to the start when the phase wraps (the cosine ease has zero slope at
+    // both ends, so the sweep settles into and out of its endpoints).
     const float arc_half = (20.0f + 140.0f * s->arc) * (kPi / 180.0f);
-    const float yaw = arc_half * std::sin(kTau * (float)s->phase_a);
+    const float yaw = arc_half * -std::cos(kPi * (float)s->phase_a);
     rot = m3Mul(m3RotY(yaw), m3RotX(pitch));
   } else {
     // Tumble / Arcing Tumble share the matrix; only the phase advance
@@ -471,7 +485,7 @@ void render(void* self, int vp_w, int vp_h) {
                 m3RotX(kTau * (float)s->phase_b + pitch));
   }
 
-  const ShapeDef& shape = kShapes[s->shape == SHAPE_PRISM ? 1 : 0];
+  const ShapeDef& shape = kShapes[s->shape == SHAPE_PYRAMID ? 1 : 0];
   const auto cs = fx::coverSquare(vp_w, vp_h);
   const V3 light = v3Norm({kLightX, kLightY, kLightZ});
   const float size_world = 0.55f * std::pow(2.0f, (s->size - 0.5f) * 2.0f);
@@ -526,7 +540,7 @@ void render(void* self, int vp_w, int vp_h) {
       if (!front) shade *= 1.0f - 0.75f * s->back_dim;
 
       TriRecord& tr = tris[tri_count++];
-      tr.depth = (va.z + vb.z + vc.z) / 3.0f;
+      tr.order = front ? (copies + ci) : (copies - 1 - ci);
       for (int k = 0; k < 3; k++) {
         // Cover-square -> Vulkan clip. THE single y-flip of the pipeline
         // (y-up square NDC -> y-down Vulkan NDC); see vs.hlsl.
@@ -554,11 +568,13 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   if (tri_count > 0) {
-    // Painter's sort: far first, across ALL copies (shells interleave with
-    // the core). Stable so coplanar quad halves keep frame-consistent order.
+    // Analytic painter's order for nested convex copies (exact, not a depth
+    // heuristic): back faces outermost->innermost, then front faces
+    // innermost->outermost. See the header comment for why this is correct
+    // from every exterior viewpoint.
     std::stable_sort(tris, tris + tri_count,
                      [](const TriRecord& a, const TriRecord& b) {
-                       return a.depth > b.depth;
+                       return a.order < b.order;
                      });
 
     GpuVertex verts[kMaxVerts];

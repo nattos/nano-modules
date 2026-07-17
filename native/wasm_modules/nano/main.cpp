@@ -333,17 +333,18 @@ void nano_module_main() {
         "source.mesh.monolith",
         "Monolith",
         "Glassy 3D primitive generator — the 1:4:9 monolith slab from 2001 or "
-        "an equilateral triangular prism — alpha-composited over the input "
-        "with up to three concentric echo shells at growing scale and fading "
+        "a regular triangular pyramid — alpha-composited over the input with "
+        "up to three concentric echo shells at growing scale and fading "
         "opacity. The whole 3D pipeline (rotation, perspective, back-face "
-        "shading, painter's depth sort) runs on the CPU per frame, so "
-        "semi-transparent solids read as true tinted glass: far faces and "
-        "inner shells show through near ones. Motion is an eased yaw Arc, a "
-        "two-axis incommensurate Tumble, or an Arcing Tumble whose angular "
-        "speed swells and relaxes; Sync locks one motion cycle to N bars of "
-        "the host transport.",
+        "shading, exact analytic painter's order for the nested convex "
+        "shells) runs on the CPU per frame, so semi-transparent solids read "
+        "as true tinted glass: far faces and inner shells show through near "
+        "ones. Motion is an eased one-way yaw Arc that snaps back to its "
+        "start, a two-axis incommensurate Tumble, or an Arcing Tumble whose "
+        "angular speed swells and relaxes; Sync locks one motion cycle to N "
+        "bars of the host transport.",
         "source",
-        "generator,3d,mesh,monolith,prism,cube,glass,transparent,rotate,tumble,concentric,2001",
+        "generator,3d,mesh,monolith,pyramid,tetrahedron,cube,glass,transparent,rotate,tumble,concentric,2001",
         "la-cube",
         NANO_INSTANCE_LIFECYCLE(monolith),
     });
