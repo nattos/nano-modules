@@ -25,6 +25,7 @@
 #include <host.h>
 #include "sweep_chamber_shaders.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -67,8 +68,10 @@ struct FieldAUniforms {
   float    sweep_center;
   float    sweep_width;
   float    sweep_soft;
+  float    blend_k;      // temporal EMA factor (1 = replace outright)
+  float    _p0, _p1, _p2;
 };
-static_assert(sizeof(FieldAUniforms) == 16, "FieldAUniforms layout mismatch");
+static_assert(sizeof(FieldAUniforms) == 32, "FieldAUniforms layout mismatch");
 
 struct FieldUniforms {
   uint32_t field_res;
@@ -146,7 +149,7 @@ struct UpdateUniforms {
 
   float    stream;
   float    stream_density;
-  float    _pad1;
+  float    field_res;
   float    _pad2;
 };
 static_assert(sizeof(UpdateUniforms) == 192, "UpdateUniforms layout mismatch");
@@ -294,6 +297,9 @@ struct State {
   gpu::Buffer  lm_vs_uniforms;
   gpu::Sampler sampler;
   gpu::Texture field_a_tex;     // FIELD_RES² swept luma + peak offsets (lazy)
+  gpu::Texture field_a_tex2;    // ping-pong partner (temporal EMA reads prev)
+  gpu::Texture field_or_tex;    // band-side σ + plain luma (curl orientation)
+  bool         field_a_flip = false;
   gpu::Texture field_b_tex;     // FIELD_RES² velocity field (lazy)
   gpu::Texture black_tex;       // 1×1 opaque black — generator fallback input
   gpu::Texture density_tex;     // persistent crowding buffer (1-frame delayed)
@@ -322,6 +328,7 @@ struct State {
   float sweep_center    = 0.5f;
   float sweep_width     = 0.25f;
   float sweep_soft      = 0.3f;
+  float sweep_smooth    = 0.12f;  // field temporal EMA time constant (s)
   float image_smoothing = 0.25f;
   // Field.
   float to_image        = 1.2f;
@@ -535,6 +542,7 @@ void module_init() {
       .floatField("sweep_center",    0.5f,  0.0f, 1.0f, state::PrimaryInput).label("Sweep Center", "Sweep")
       .floatField("sweep_width",     0.25f, 0.02f, 1.0f, state::PrimaryInput).label("Sweep Width", "Width")
       .floatField("sweep_soft",      0.3f,  0.0f, 1.0f, state::PrimaryInput).label("Sweep Softness", "Soft")
+      .floatField("sweep_smooth",    0.12f, 0.0f, 0.5f, state::PrimaryInput).label("Temporal Smooth", "TSmth")
       .floatField("image_smoothing", 0.25f, 0.0f, 1.0f, state::PrimaryInput).label("Image Smoothing", "Smooth")
       // Debug: render the coarse field itself (velocity hue + swept luma +
       // ridge detector) instead of the sim — the tuning window.
@@ -751,10 +759,12 @@ void module_init() {
       !cs_mpf || !mvs || !mfs || !lmvs || !lmfs) return;
 
   s_pso_field_a = gpu::Device::createComputePSO(cs_field_a, "main", gpu::Bindings()
-      .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_a out
+      .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_a out (EMA-blended)
       .tex2d(1)                                       // full-res input
       .sampler(2)
-      .uniform(3));
+      .uniform(3)
+      .tex2d(4)                                       // last frame's field_a
+      .storageTex2d(5, gpu::TextureFormat::RGBA16F)); // field_or (band-side σ)
 
   s_pso_field_b = gpu::Device::createComputePSO(cs_field_b, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_b out
@@ -772,7 +782,8 @@ void module_init() {
       .storage(6)     // tracer segments (spawn-on-line)
       .storage(7)     // tracer states (grip weighting)
       .storage(8)     // stats/response (calm↔intense)
-      .tex2d(9));     // field_a (ridge presence — undertow gate)
+      .tex2d(9)       // field_a (ridge presence — undertow gate)
+      .tex2d(10));    // field_or (band-side σ — curl orientation)
 
   s_pso_trace = gpu::Device::createComputePSO(cs_trace, "main", gpu::Bindings()
       .storageRW(0)   // tracers[]
@@ -781,7 +792,8 @@ void module_init() {
       .tex2d(3)       // field_b
       .sampler(4)
       .uniform(5)
-      .tex2d(6));     // input (line color)
+      .tex2d(6)       // input (line color)
+      .tex2d(7));     // field_or (band-side σ)
 
   s_pso_stats = gpu::Device::createComputePSO(cs_stats, "main", gpu::Bindings()
       .tex2d(0)       // field_a
@@ -828,7 +840,8 @@ void module_init() {
       .tex2d(1)       // field_b
       .sampler(2)
       .storageTex2d(3)
-      .uniform(4));
+      .uniform(4)
+      .tex2d(5));     // field_or (band-side σ)
 
   // Motion-vector PSOs: RGBA16F targets, AlphaOver composes each footprint's
   // velocity over the (upstream-seeded) motion field by coverage.
@@ -898,6 +911,8 @@ void destroy(void* self) {
   s->lm_vs_uniforms.release();
   s->sampler.release();
   s->field_a_tex.release();
+  s->field_a_tex2.release();
+  s->field_or_tex.release();
   s->field_b_tex.release();
   s->black_tex.release();
   s->density_tex.release();
@@ -958,6 +973,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "sweep_center"))    s->sweep_center = state::patchFloat(i);
     else if (state::pathIs(path, plen, "sweep_width"))     s->sweep_width = state::patchFloat(i);
     else if (state::pathIs(path, plen, "sweep_soft"))      s->sweep_soft = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "sweep_smooth"))    s->sweep_smooth = state::patchFloat(i);
     else if (state::pathIs(path, plen, "image_smoothing")) s->image_smoothing = state::patchFloat(i);
     else if (state::pathIs(path, plen, "to_image"))        s->to_image = state::patchFloat(i);
     else if (state::pathIs(path, plen, "to_image_curl"))   s->to_image_curl = state::patchFloat(i);
@@ -1055,18 +1071,33 @@ void render(void* self, int vp_w, int vp_h) {
     in = s->black_tex;
   }
 
-  // Lazy field textures.
+  // Lazy field textures. field_a is a ping-pong pair: the gen pass reads
+  // last frame's field and writes an EMA blend (temporal smoothing).
   if (!s->field_a_tex.valid()) {
     s->field_a_tex = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
                                                 gpu::TextureFormat::RGBA16F);
     gpu::Device::clear(s->field_a_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  if (!s->field_a_tex2.valid()) {
+    s->field_a_tex2 = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
+                                                 gpu::TextureFormat::RGBA16F);
+    gpu::Device::clear(s->field_a_tex2, 0.0f, 0.0f, 0.0f, 0.0f);
   }
   if (!s->field_b_tex.valid()) {
     s->field_b_tex = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
                                                 gpu::TextureFormat::RGBA16F);
     gpu::Device::clear(s->field_b_tex, 0.0f, 0.0f, 0.0f, 0.0f);
   }
-  if (!s->field_a_tex.valid() || !s->field_b_tex.valid()) return;
+  if (!s->field_or_tex.valid()) {
+    s->field_or_tex = gpu::Device::createTexture(FIELD_RES, FIELD_RES,
+                                                 gpu::TextureFormat::RGBA16F);
+    gpu::Device::clear(s->field_or_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  }
+  if (!s->field_a_tex.valid() || !s->field_a_tex2.valid() ||
+      !s->field_b_tex.valid() || !s->field_or_tex.valid()) return;
+  s->field_a_flip = !s->field_a_flip;
+  gpu::Texture fa_cur  = s->field_a_flip ? s->field_a_tex2 : s->field_a_tex;
+  gpu::Texture fa_prev = s->field_a_flip ? s->field_a_tex  : s->field_a_tex2;
 
   // Interactions: persistent density buffer read by the update pass (built
   // from LAST frame's particles → 1-frame delay). 1×1 zero when off.
@@ -1111,6 +1142,11 @@ void render(void* self, int vp_w, int vp_h) {
   fau.sweep_center = s->sweep_center;
   fau.sweep_width  = s->sweep_width;
   fau.sweep_soft   = s->sweep_soft;
+  // Temporal EMA: replace outright when smoothing is off OR paused (dt 0 —
+  // a paused drag should still show its result immediately).
+  fau.blend_k = (s->sweep_smooth <= 1e-4f || dt <= 0.0f)
+                    ? 1.0f
+                    : 1.0f - std::exp(-dt / s->sweep_smooth);
   s->field_a_uniforms.writeOne(fau);
 
   FieldUniforms fu = {};
@@ -1181,6 +1217,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.density_res        = (float)DENSITY_RES;
   uu.stream             = s->stream;
   uu.stream_density     = s->stream_density;
+  uu.field_res          = (float)FIELD_RES;
   s->update_uniforms.writeOne(uu);
 
   StatsUniforms su = {};
@@ -1255,10 +1292,12 @@ void render(void* self, int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_field_a);
-    cp.setTexture(s->field_a_tex, 0, 1);
+    cp.setTexture(fa_cur, 0, 1);
     cp.setTexture(in, 1, 0);
     cp.setSampler(s->sampler, 2);
     cp.setBuffer(s->field_a_uniforms, 3);
+    cp.setTexture(fa_prev, 4, 0);
+    cp.setTexture(s->field_or_tex, 5, 1);
     cp.dispatch((FIELD_RES + 7) / 8, (FIELD_RES + 7) / 8);
     cp.end();
   }
@@ -1268,7 +1307,7 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_field_b);
     cp.setTexture(s->field_b_tex, 0, 1);
-    cp.setTexture(s->field_a_tex, 1, 0);
+    cp.setTexture(fa_cur, 1, 0);
     cp.setSampler(s->sampler, 2);
     cp.setBuffer(s->field_uniforms, 3);
     cp.dispatch((FIELD_RES + 7) / 8, (FIELD_RES + 7) / 8);
@@ -1279,7 +1318,7 @@ void render(void* self, int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_stats);
-    cp.setTexture(s->field_a_tex, 0, 0);
+    cp.setTexture(fa_cur, 0, 0);
     cp.setTexture(s->field_b_tex, 1, 0);
     cp.setBuffer(s->stats_buf, 2);
     cp.setBuffer(s->stats_uniforms, 3);
@@ -1294,11 +1333,12 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_trace);
     cp.setBuffer(s->tracer_buf, 0);
     cp.setBuffer(s->seg_buf, 1);
-    cp.setTexture(s->field_a_tex, 2, 0);
+    cp.setTexture(fa_cur, 2, 0);
     cp.setTexture(s->field_b_tex, 3, 0);
     cp.setSampler(s->sampler, 4);
     cp.setBuffer(s->trace_uniforms, 5);
     cp.setTexture(in, 6, 0);
+    cp.setTexture(s->field_or_tex, 7, 0);
     cp.dispatch((s->l_count + 63) / 64, 1, 1);
     cp.end();
   }
@@ -1316,7 +1356,8 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->seg_buf, 6);
     cp.setBuffer(s->tracer_buf, 7);
     cp.setBuffer(s->stats_buf, 8);
-    cp.setTexture(s->field_a_tex, 9, 0);
+    cp.setTexture(fa_cur, 9, 0);
+    cp.setTexture(s->field_or_tex, 10, 0);
     int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();
@@ -1387,11 +1428,12 @@ void render(void* self, int vp_w, int vp_h) {
     s->field_debug_uniforms.writeOne(fdu);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_field_debug);
-    cp.setTexture(s->field_a_tex, 0, 0);
+    cp.setTexture(fa_cur, 0, 0);
     cp.setTexture(s->field_b_tex, 1, 0);
     cp.setSampler(s->sampler, 2);
     cp.setTexture(out, 3, 1);
     cp.setBuffer(s->field_debug_uniforms, 4);
+    cp.setTexture(s->field_or_tex, 5, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   } else if (debug) {

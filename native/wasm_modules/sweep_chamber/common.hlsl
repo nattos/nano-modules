@@ -72,6 +72,32 @@ float2 swc_undertow(float2 g, float ridge) {
   return tang * (SWC_UNDERTOW_VEL * gate);
 }
 
+// ---- C1-smooth cubic B-spline texture sample (4 bilinear taps) ----
+// Bilinear field sampling is only C0 — its direction kinks at every texel
+// boundary, and slow particles trace those kinks out as visibly quantized
+// little stop/turn steps. The B-spline approximates rather than
+// interpolates (slight blur) — fine for a force field.
+float4 swc_sample_bspline(Texture2D<float4> tex, SamplerState sst,
+                          float2 uv, float res) {
+  float2 x  = uv * res - 0.5;
+  float2 ip = floor(x);
+  float2 f  = x - ip;
+  float2 f2 = f * f;
+  float2 f3 = f2 * f;
+  float2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) * (1.0 / 6.0);
+  float2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3)     * (1.0 / 6.0);
+  float2 w2 = (1.0 + 3.0 * (f + f2 - f3))     * (1.0 / 6.0);
+  float2 w3 = f3 * (1.0 / 6.0);
+  float2 g0 = w0 + w1;
+  float2 g1 = w2 + w3;
+  float2 uv0 = (ip - 0.5 + w1 / g0) / res;
+  float2 uv1 = (ip + 1.5 + w3 / g1) / res;
+  return (tex.SampleLevel(sst, float2(uv0.x, uv0.y), 0) * g0.x
+        + tex.SampleLevel(sst, float2(uv1.x, uv0.y), 0) * g1.x) * g0.y
+       + (tex.SampleLevel(sst, float2(uv0.x, uv1.y), 0) * g0.x
+        + tex.SampleLevel(sst, float2(uv1.x, uv1.y), 0) * g1.x) * g1.y;
+}
+
 // ---- HSV → RGB (flow-direction tint) ----
 float3 swc_hsv_to_rgb(float3 hsv) {
   float h = frac(hsv.x);
@@ -127,6 +153,25 @@ float swc_sweep(float luma, float center01, float width, float softness) {
   float c    = lerp(lo, hi, saturate(center01));
   return smoothstep(c - hw - soft, c - hw, luma)
        * (1.0 - smoothstep(c + hw, c + hw + soft, luma));
+}
+
+// Signed "side of the band": +1 below the sweep window's centre, -1 above,
+// smooth ramp across the band (same centre remap as swc_sweep). The swept
+// gradient is grad L' = W'(luma)·grad luma and W' changes sign between the
+// window's rising and falling edges — so the curl direction REVERSED from
+// one side of the band to the other, with a zero travelling along the band
+// centre ("stops, then switches direction" as the sweep moves). Multiplying
+// the gradient by this side sign cancels W's sign flip for the TANGENT
+// (curl follows the plain luma contours in one consistent orientation);
+// the attraction keeps the raw swept gradient — its reversal IS the
+// trapping well.
+float swc_sweep_side(float luma, float center01, float width, float softness) {
+  float hw   = width * 0.5;
+  float soft = max(lerp(0.01, 0.5, saturate(softness)), 1e-3);
+  float lo   = -(hw + soft) - 0.001;
+  float hi   = 1.0 + (hw + soft) + 0.001;
+  float c    = lerp(lo, hi, saturate(center01));
+  return 1.0 - 2.0 * smoothstep(c - hw - soft, c + hw + soft, luma);
 }
 
 // ===========================================================

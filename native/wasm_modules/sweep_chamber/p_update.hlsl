@@ -31,6 +31,7 @@ StructuredBuffer<Seg>        segs          : register(t6);   // tracer segments 
 StructuredBuffer<TracerState> tracers      : register(t7);   // per-tracer grip (spawn weighting)
 StructuredBuffer<float4>     respBuf       : register(t8);   // [1] = calm↔intense response
 Texture2D<float4>            fieldTexA     : register(t9);   // ridge presence (undertow gate)
+Texture2D<float4>            fieldTexOr    : register(t10);  // .r band-side σ (curl orientation)
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -90,7 +91,7 @@ cbuffer Uniforms : register(b4) {
 
   float stream;          // +align / -diverge velocity vs the group
   float stream_density;  // neighbour density for ~max stream effect
-  float _pad1;
+  float field_res;       // field texture resolution (B-spline sampling)
   float _pad2;
 }
 
@@ -117,9 +118,14 @@ static const float SWC_BDEATH_REF     = 0.25;
 // particle's OWN current heading (`vel_prev`), falling back to the signed
 // depth phase `cf` at spawn (which keeps the undertow_skew/squash
 // population split: half the swarm streams each way).
-float2 swc_field_vel(float4 fb, float ridge, float cf, float2 vel_prev) {
+// `side` (field_or.r) cancels the sweep window's W' sign flip so the curl
+// keeps ONE orientation on both edges of the band (see swc_sweep_side);
+// the attraction term keeps the raw swept gradient — its reversal IS the
+// trapping well.
+float2 swc_field_vel(float4 fb, float ridge, float side, float cf,
+                     float2 vel_prev) {
   float2 aspect = float2(aspect_x, aspect_y);
-  float2 und = swc_undertow(fb.zw, ridge);
+  float2 und = swc_undertow(fb.zw * side, ridge);
   float aln = dot(und, vel_prev / max(aspect, 1e-4));
   float sgn = (abs(aln) > 1e-6) ? (aln > 0.0 ? 1.0 : -1.0)
                                 : (cf >= 0.0 ? 1.0 : -1.0);
@@ -218,11 +224,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
     for (uint sub = 0u; sub < nsub; sub++) {
       uint fi = frame_index + sub * 0x9E3779B9u;
 
-      // Field velocity, re-sampled every substep (two bilinear taps: field_b
-      // for the flow, field_a for ridge presence). Frozen avoidance on top.
-      float4 fb = fieldTexB.SampleLevel(linearSampler, saturate(pos), 0);
-      float ridge = fieldTexA.SampleLevel(linearSampler, saturate(pos), 0).a;
-      float2 eff = swc_field_vel(fb, ridge, cf, vel) * speed + avoid_vec;
+      // Field velocity, re-sampled every substep. C1 B-spline taps (4
+      // bilinear each): plain bilinear is C0 and slow particles trace its
+      // per-texel direction kinks as quantized little steps. Frozen
+      // avoidance on top.
+      float4 fb = swc_sample_bspline(fieldTexB, linearSampler, saturate(pos), field_res);
+      float ridge = swc_sample_bspline(fieldTexA, linearSampler, saturate(pos), field_res).a;
+      float side = fieldTexOr.SampleLevel(linearSampler, saturate(pos), 0).r;
+      float2 eff = swc_field_vel(fb, ridge, side, cf, vel) * speed + avoid_vec;
 
       // Acceleration mode.
       if (mode == 1u) {
@@ -380,10 +389,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
     pos = nuv;
     // Newborns stream along the field immediately.
-    float4 fb0 = fieldTexB.SampleLevel(linearSampler, saturate(nuv), 0);
-    float ridge0 = fieldTexA.SampleLevel(linearSampler, saturate(nuv), 0).a;
+    float4 fb0 = swc_sample_bspline(fieldTexB, linearSampler, saturate(nuv), field_res);
+    float ridge0 = swc_sample_bspline(fieldTexA, linearSampler, saturate(nuv), field_res).a;
+    float side0 = fieldTexOr.SampleLevel(linearSampler, saturate(nuv), 0).r;
     float cf0 = (zr - undertow_skew) * undertow_squash;
-    vel = swc_field_vel(fb0, ridge0, cf0, float2(0.0, 0.0)) * speed;
+    vel = swc_field_vel(fb0, ridge0, side0, cf0, float2(0.0, 0.0)) * speed;
   }
 
   p.a = float4(pos, life_remain, life_total);

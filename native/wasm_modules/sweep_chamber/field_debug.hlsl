@@ -8,10 +8,11 @@
 
 #include "common.hlsl"
 
-Texture2D<float4>   fieldA : register(t0);
-Texture2D<float4>   fieldB : register(t1);
-SamplerState        lin    : register(s2);
-RWTexture2D<float4> outTex : register(u3);
+Texture2D<float4>   fieldA  : register(t0);
+Texture2D<float4>   fieldB  : register(t1);
+SamplerState        lin     : register(s2);
+RWTexture2D<float4> outTex  : register(u3);
+Texture2D<float4>   fieldOr : register(t5);   // .r band-side σ
 
 cbuffer Uniforms : register(b4) {
   float to_image;
@@ -29,8 +30,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float4 fa = fieldA.SampleLevel(lin, uv, 0);
   float4 fb = fieldB.SampleLevel(lin, uv, 0);
 
+  float side = fieldOr.SampleLevel(lin, uv, 0).r;
   float2 v = fb.xy + fb.zw * to_image
-           + swc_undertow(fb.zw, fa.a) * to_image_curl;
+           + swc_undertow(fb.zw * side, fa.a) * to_image_curl;
   float mag = length(v);
   float hue = frac(atan2(v.y, v.x) / 6.28318530718 + 0.5);
   float3 flow = swc_hsv_to_rgb(float3(hue, saturate(mag * 2.0), saturate(0.2 + mag)));
