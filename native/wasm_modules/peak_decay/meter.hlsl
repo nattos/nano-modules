@@ -1,11 +1,21 @@
 // motion.peak_decay — pass 1: the meter. Per-pixel staleness tracking.
 //
 // State ping-pong (RGBA16F): rgb = the HELD reference colour (what the pixel
-// is compared against), a = age in seconds since it last moved. A pixel
-// "moves" when it differs from the held reference — not from last frame — so
-// a slow drift still accumulates and eventually trips the threshold. On a
-// trip the reference re-latches and the age snaps to 0 (instant peak-meter
-// attack; the gain is applied in pass 2).
+// is compared against), a = age in seconds since it last moved. On a catch
+// the reference re-latches and the age snaps to 0 (instant peak-meter
+// attack; the gain is applied in pass 2). Two catch modes:
+//
+//  - Any Change: the pixel differs from the held reference — not from last
+//    frame, so a slow drift still accumulates and eventually trips. The
+//    metric is full-RGB balanced against luma by `rgb_balance`.
+//  - Rise Only: only an UPWARD luma edge catches — the live luma rising past
+//    the held reference. The reference follows the input DOWN silently (the
+//    age keeps running), so a dip-then-recovery measures its rise from the
+//    bottom of the dip, while darker or chroma-only changes never reset the
+//    fall. (Comparing against the decaying displayed level instead would
+//    let a static bright input perpetually re-catch itself.)
+
+#include "common.hlsl"
 
 Texture2D<float4>   inTex     : register(t0);
 Texture2D<float4>   statePrev : register(t1);
@@ -15,16 +25,15 @@ Texture2D<float4>   statePrev : register(t1);
 RWTexture2D<float4> stateNext : register(u2);
 
 cbuffer Uniforms : register(b3) {
-  float dt;         // seconds this frame (CPU-clamped against hitches)
-  float amount;     // pass 2
-  float hold;       // seconds a pixel may sit still before the fall starts
-  float fall;       // pass 2 (the cap below tracks it)
-  float threshold;  // change needed to count as motion (luma-weighted)
-  float reset;      // 1 = seed the state from the input (first frame / resize)
-  float _p0, _p1;
+  float dt;           // seconds this frame (CPU-clamped against hitches)
+  float amount;       // decay depth (Rise Only compares against the live gain)
+  float hold;         // seconds a pixel may sit still before the fall starts
+  float fall;         // sigmoid fall duration
+  float threshold;    // change needed to count as motion / rise margin
+  float reset;        // 1 = seed the state from the input (first frame / resize)
+  float rgb_balance;  // Any Change: 0 = luma-only metering, 1 = full RGB
+  float catch_mode;   // 0 = Any Change, 1 = Rise Only
 };
-
-float lum(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -39,13 +48,21 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   float4 st = statePrev[gid.xy];
-  // Change metric: full-RGB metering weighted toward luma — a luma step
-  // counts at face value; a pure chroma swap must be twice as large.
-  float dl = abs(lum(c) - lum(st.rgb));
-  float3 dv = abs(c - st.rgb);
-  float d = max(dl, 0.5 * max(dv.x, max(dv.y, dv.z)));
+  bool caught;
+  if (catch_mode < 0.5) {
+    // Any Change: luma steps count at face value; a pure chroma swap is
+    // weighed by rgb_balance (0.5 = the classic half-weight metering).
+    float dl = abs(pd_lum(c) - pd_lum(st.rgb));
+    float3 dv = abs(c - st.rgb);
+    float d = max(dl, rgb_balance * max(dv.x, max(dv.y, dv.z)));
+    caught = d > threshold;
+  } else {
+    float lc = pd_lum(c), lr = pd_lum(st.rgb);
+    caught = lc > lr + threshold;
+    if (!caught && lc < lr) st.rgb = c;   // follow down, keep the age
+  }
 
-  if (d > threshold) {
+  if (caught) {
     stateNext[gid.xy] = float4(c, 0.0);   // re-latch + instant snap back
   } else {
     // Cap just past the end of the fall: half precision stays sharp (dt

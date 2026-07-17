@@ -5,11 +5,14 @@
  * `hold` starts to fall — its luma eases down a smoothstep sigmoid over
  * `fall` seconds, dimming toward black by `amount`. The instant the pixel
  * moves again it snaps back to full brightness (classic meter ballistics:
- * instant up, smooth down). Change metering is full-RGB weighted toward
- * luma — a chroma-only swap must be about twice as large as a luma step to
- * count as motion — and the comparison is against the HELD reference
+ * instant up, smooth down). Change metering is full-RGB balanced against
+ * luma by `rgb_balance`, and the comparison is against the HELD reference
  * (latched when the pixel last moved), so slow drifts accumulate and
- * eventually trip the threshold too.
+ * eventually trip the threshold too. The `catch` select switches to Rise
+ * Only: only an upward luma edge (the live luma rising past the held
+ * reference) resets the fall — the reference follows the input down
+ * silently, so darker or chroma-only changes can't keep pixels awake and a
+ * dip-then-recovery measures its rise from the bottom of the dip.
  *
  * Two compute passes over an RGBA16F state ping-pong (rgb = held reference,
  * a = age in seconds): meter (update state) then apply (gain the input).
@@ -39,7 +42,8 @@ struct Uniforms {
   float fall;
   float threshold;
   float reset;
-  float _p0, _p1;
+  float rgb_balance;
+  float catch_mode;
 };
 static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch");
 
@@ -52,10 +56,12 @@ struct State {
   bool initialized = false;
 
   // Schema-mirrored params.
-  float amount    = 1.0f;
-  float hold      = 0.5f;   // seconds
-  float fall      = 1.0f;   // seconds
-  float threshold = 0.05f;
+  float amount      = 1.0f;
+  float hold        = 0.5f;   // seconds
+  float fall        = 1.0f;   // seconds
+  float threshold   = 0.05f;
+  float rgb_balance = 0.5f;   // 0 = luma-only metering, 1 = full RGB
+  int   catch_mode  = 0;      // 0 = Any Change, 1 = Rise Only
 
   // This frame's dt (tick → render).
   float frame_dt = 0.0f;
@@ -66,7 +72,7 @@ static gpu::ComputePSO s_pso_meter;
 static gpu::ComputePSO s_pso_apply;
 
 void module_init() {
-  state::init("motion.peak_decay", {1, 0, 0},
+  state::init("motion.peak_decay", {1, 0, 1},
     state::Schema()
       .helpField("intro",
         "## Peak Decay\n"
@@ -76,8 +82,10 @@ void module_init() {
         "snaps back to full brightness — moving material stays vivid while "
         "static regions sink away.\n\n"
         "**Try:** a short *Hold* and a long *Fall* over mostly-still footage "
-        "so only the motion survives; or raise *Threshold* until noisy video "
-        "reads as static and whole regions breathe down between hits.")
+        "so only the motion survives; raise *Threshold* until noisy video "
+        "reads as static and whole regions breathe down between hits; or "
+        "switch *Catch* to Rise Only so only rising luma wakes a pixel — "
+        "fades and darkening drift keep falling undisturbed.")
       .group("decay", "Decay")
         .groupHelp(
           "The envelope every stale pixel rides: full brightness through "
@@ -94,13 +102,30 @@ void module_init() {
           .label("Fall", "Fall")
       .group("meter", "Metering")
         .groupHelp(
-          "What counts as \"the pixel changed\". Metering is full-RGB but "
-          "weighted toward luma, and compares against the value latched when "
-          "the pixel last moved — so slow drifts eventually count too.")
+          "What counts as \"the pixel changed\". Metering compares against "
+          "the value latched when the pixel last moved — so slow drifts "
+          "eventually count too. *Catch* picks the ballistics: Any Change "
+          "resets on any sufficient move (balanced luma↔RGB by *RGB "
+          "Balance*); Rise Only resets only on an upward luma edge — the "
+          "reference follows the input down silently, so fades and darkening "
+          "can't keep pixels awake.")
       .floatField("threshold", 0.05f, 0.0f, 0.5f, state::PrimaryInput, nullptr, 0.01f,
-                  nullptr, "Minimum change that counts as motion. Raise it so "
-                           "sensor noise or dithering doesn't hold pixels awake.")
+                  nullptr, "Minimum change that counts as motion (in Rise Only: "
+                           "the margin the input must rise above the decaying "
+                           "peak). Raise it so sensor noise or dithering "
+                           "doesn't hold pixels awake.")
           .label("Threshold", "Thr")
+      .floatField("rgb_balance", 0.5f, 0.0f, 1.0f, state::PrimaryInput, nullptr, 0.01f,
+                  nullptr, "Luma↔RGB balance of the change meter: 0 hears only "
+                           "luma steps, 1 hears any channel move at full "
+                           "weight. (Rise Only catches on luma by nature.)")
+          .label("RGB Balance", "RGB")
+      .selectField("catch", 0, state::PrimaryInput,
+                   {{"Any Change", 0}, {"Rise Only", 1}}, false,
+                   "Any Change: any sufficient move resets a pixel to full "
+                   "brightness. Rise Only: only an upward luma edge resets — "
+                   "darker or chroma-only changes let the fall continue.")
+          .label("Catch", "Ctch")
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput));
 
@@ -164,6 +189,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "hold"))      s->hold      = state::patchFloat(i);
     else if (state::pathIs(p, l, "fall"))      s->fall      = state::patchFloat(i);
     else if (state::pathIs(p, l, "threshold")) s->threshold = state::patchFloat(i);
+    else if (state::pathIs(p, l, "rgb_balance")) s->rgb_balance = state::patchFloat(i);
+    else if (state::pathIs(p, l, "catch"))     s->catch_mode = state::patchInt(i);
   }
 }
 
@@ -194,6 +221,8 @@ void render(void* self, int vp_w, int vp_h) {
   u.fall      = s->fall;
   u.threshold = s->threshold;
   u.reset     = s->need_seed ? 1.0f : 0.0f;
+  u.rgb_balance = s->rgb_balance;
+  u.catch_mode  = (float)s->catch_mode;
   s->uniform_buf.writeOne(u);
 
   const int prev = s->ping, next = 1 - s->ping;

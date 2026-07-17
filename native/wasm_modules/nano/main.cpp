@@ -98,7 +98,7 @@ void nano_module_main() {
         2,
         "motion.peak_decay",
         "Peak Decay",
-        "Per-pixel peak meter. Any pixel that holds still for longer than the hold time starts to fall: its brightness eases down a smoothstep sigmoid over the fall time, dimming toward black by the amount. The instant a pixel changes it snaps back to full brightness (meter ballistics: instant up, smooth down), so moving material stays vivid while static regions sink away. Change metering is full-RGB weighted toward luma and compares against the reference latched when the pixel last moved, so slow drifts eventually count as motion too; the threshold keeps sensor noise from holding pixels awake.",
+        "Per-pixel peak meter. Any pixel that holds still for longer than the hold time starts to fall: its brightness eases down a smoothstep sigmoid over the fall time, dimming toward black by the amount. The instant a pixel changes it snaps back to full brightness (meter ballistics: instant up, smooth down), so moving material stays vivid while static regions sink away. Change metering compares against the reference latched when the pixel last moved (slow drifts eventually count), balanced luma-to-RGB by rgb_balance, gated by the threshold. The catch select switches to Rise Only: only an upward luma edge (the live luma rising past the held reference) resets the fall — the reference follows the input down silently, so fades, darkening drift and chroma-only changes can't keep pixels awake.",
         "motion",
         "decay,peak,meter,luma,fade,static,motion,temporal,stale",
         "la-chart-bar",

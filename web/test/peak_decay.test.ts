@@ -157,6 +157,130 @@ describe('motion.peak_decay E2E', () => {
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 20);
   });
 
+  it('rgb_balance picks what the meter hears: chroma swap trips at 1, not at 0', async () => {
+    // Stimulus: an HSL hue rotation of a low-saturation red along the
+    // luma-quiet red↔blue axis — a chroma-heavy, near-luma-neutral change.
+    // hue_shift -0.667 (measured: → 240°) takes (0.625,0.375,0.375) to
+    // (0.375,0.375,0.625): Δluma ≈ 0.035, max channel Δ = 0.25. threshold
+    // 0.1 sits cleanly between: balance 0 meters max(0.035, 0) → stays
+    // decayed; balance 1 meters 0.25 → catches and snaps back. (A rotation
+    // toward GREEN would NOT do: Δluma 0.124 trips even luma-only metering.)
+    const phased = async (id: string, rgb_balance: number) => {
+      const chain: any[] = [
+        { type: 'module', module_type: 'source.solid_color',
+          instance_key: 'bg@0', params: { color: [0.625, 0.375, 0.375] } },
+        { type: 'module', module_type: 'color.hsl',
+          instance_key: 'hsl@0', params: {} },
+        { type: 'module', module_type: 'motion.peak_decay',
+          instance_key: 'pd@0',
+          params: { hold: 0.3, fall: 0.15, threshold: 0.1, amount: 1.0,
+                    rgb_balance } },
+      ];
+      const r = await runEngineMultiPhaseTest({
+        width: 96, height: 96,
+        modules: ['com.nano.core', 'com.nano.nano'],
+        dumpName: id,
+        phases: [
+          {
+            commands: [
+              { type: 'createSketch', sketchId: id,
+                sketch: { anchor: null, chain, wires: [] } as Sketch },
+              { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+              ]},
+            ],
+            waitFrames: 150, captureTraceIds: ['out'],
+          },
+          {
+            commands: [
+              { type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
+                paramKey: 'hue_shift', value: -0.667 },
+            ],
+            waitFrames: 6, captureTraceIds: ['out'],
+          },
+        ],
+      });
+      expect(r.success).toBe(true);
+      expect(r.phases[0].trace('out').pixelAt(48, 48).r).toBeLessThan(12);
+      return r.phases[1].trace('out').pixelAt(48, 48);
+    };
+    const lumaOnly = await phased('pd_bal0', 0.0);
+    expect(lumaOnly.r).toBeLessThan(12);       // deaf to the chroma swap
+    const fullRgb = await phased('pd_bal1', 1.0);
+    expect(fullRgb.b).toBeGreaterThan(100);    // caught: rotated blue at gain 1
+  });
+
+  it('Rise Only: an upward luma step takes over the decayed peak', async () => {
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.core', 'com.nano.nano'],
+      dumpName: 'pd_rise_up',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'pd_rise_up',
+              sketch: buildSketch({ hold: 0.3, fall: 0.15, threshold: 0.05,
+                                    amount: 1.0, catch: 1 },
+                                  [0.4, 0.4, 0.4]) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'pd_rise_up' } },
+            ]},
+          ],
+          waitFrames: 150, captureTraceIds: ['out'],
+        },
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'pd_rise_up', colIdx: 0, chainIdx: 1,
+              paramKey: 'brightness', value: 0.4 },
+          ],
+          waitFrames: 6, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    expect(r.phases[0].trace('out').pixelAt(48, 48).r).toBeLessThan(12);
+    // 0.4 + 0.4 → ≈ 204 at the snapped-back gain of 1.
+    expect(r.phases[1].trace('out').pixelAt(48, 48).r).toBeGreaterThan(150);
+  });
+
+  it('Rise Only: a downward step does not catch — the fall continues', async () => {
+    // amount 0.6 → the decayed gain floor is 0.4 (solid 0.7 → ≈ 71).
+    // Dropping the input to 0.2 must NOT reset the gain: the display shows
+    // the darker input still at floor gain (0.2·0.4 → ≈ 20), where an Any
+    // Change reset would show it at gain 1 (≈ 51). Nothing resets after the
+    // step, so the phase-2 capture timing is unconstrained.
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.core', 'com.nano.nano'],
+      dumpName: 'pd_rise_down',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'pd_rise_down',
+              sketch: buildSketch({ hold: 0.05, fall: 0.1, threshold: 0.05,
+                                    amount: 0.6, catch: 1 }) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'pd_rise_down' } },
+            ]},
+          ],
+          waitFrames: 60, captureTraceIds: ['out'],
+        },
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'pd_rise_down', colIdx: 0, chainIdx: 1,
+              paramKey: 'brightness', value: -0.5 },
+          ],
+          waitFrames: 10, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    const floor = r.phases[0].trace('out').pixelAt(48, 48);
+    expect(Math.abs(floor.r - 71)).toBeLessThanOrEqual(8);
+    const held = r.phases[1].trace('out').pixelAt(48, 48);
+    expect(Math.abs(held.r - 20)).toBeLessThanOrEqual(7);   // floor gain, no reset
+  });
+
   it('sub-threshold changes do not reset the decay', async () => {
     // Stimulus is a small brightness nudge (~0.02 luma step) against a high
     // threshold: pixels must STAY dark. Guards against over-eager metering.
