@@ -298,7 +298,9 @@ void module_init() {
   //        can end up inside them - per-tri near-plane guard).
   // 1.2.7: sun_source select - light hue sampled from the env/input at
   //        the sun's position (chroma-only, single point, no readback).
-  state::init("source.mesh.monolith", {1, 2, 7},
+  // 1.2.8: sun_source From Tint Tex + tint_in texture input (bound only
+  //        when active; the rays pass reuses its sun-sample slot).
+  state::init("source.mesh.monolith", {1, 2, 8},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -390,7 +392,10 @@ void module_init() {
           "subtle per-column warm/cool dispersion around it). *Sun "
           "Source* → From Input steals the light's HUE from the env (or "
           "the input) sampled around the sun's position — intensity stays "
-          "on the Sun knob, and Sun Color still filters on top.")
+          "on the Sun knob, and Sun Color still filters on top. From Tint "
+          "Tex reads the hue from the dedicated *Tint* texture input "
+          "instead (falls back to From Input when nothing is wired) — "
+          "feed it a palette strip or a slow color wash.")
       .floatField("azimuth", 160.0f, -180.f, 180.f, state::PrimaryInput,
                   nullptr, 0.f, "deg").label("Azimuth", "Azim")
       .floatField("elevation", 25.0f, -10.f, 80.f, state::PrimaryInput,
@@ -400,7 +405,7 @@ void module_init() {
       .rgbField("sun_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
           .label("Sun Color", "SunCol")
       .selectField("sun_source", 0, state::PrimaryInput,
-                   {{"Color", 0}, {"From Input", 1}})
+                   {{"Color", 0}, {"From Input", 1}, {"From Tint Tex", 2}})
           .label("Sun Source", "SunSrc")
       // --- Atmosphere ---
       .group("atmosphere", "Atmosphere")
@@ -439,6 +444,7 @@ void module_init() {
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
       .textureField("env_in", state::SecondaryInput)
+      .textureField("tint_in", state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::SeekableApproximate)
@@ -485,7 +491,8 @@ void module_init() {
       .storageTex2d(5, gpu::TextureFormat::RGBA16F)
       .sampler(6)
       .sampler(7)
-      .uniform(8));
+      .uniform(8)
+      .tex2d(9));   // tint_in (sun-color sample; 1x1 zero when inactive)
   s_pso_rays = gpu::Device::createComputePSO(cs_rays, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
@@ -759,20 +766,26 @@ void render(void* self, int vp_w, int vp_h) {
                        * 0.5f * vp_w;
   const float sun_py = (1.0f - ((focal * sun_view.y / sun_pz) * 2.0f * cs.ay
                                 + 1.0f) * 0.5f) * vp_h;
+  // Effective mode: From Tint Tex degrades to From Input when nothing is
+  // wired. The tint texture is sampled at the sun's SCREEN position;
+  // From Input samples the env (equirect when wired, screen otherwise).
+  auto tint = gpu::Device::textureForField("tint_in");
+  int sun_mode = s->sun_source;
+  if (sun_mode == 2 && !tint.valid()) sun_mode = 1;
+  auto clampf = [](float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+  };
   float sun_uv_x, sun_uv_y;
-  if (env_wired) {
+  if (sun_mode == 1 && env_wired) {
     sun_uv_x = std::atan2(sun_world.x, sun_world.z) * 0.15915494f + 0.5f;
     float sy = sun_world.y < -1.f ? -1.f : (sun_world.y > 1.f ? 1.f : sun_world.y);
     sun_uv_y = std::acos(sy) * 0.31830989f;
     sun_uv_y = sun_uv_y < 0.004f ? 0.004f : (sun_uv_y > 0.996f ? 0.996f : sun_uv_y);
   } else {
-    auto clampf = [](float v, float lo, float hi) {
-      return v < lo ? lo : (v > hi ? hi : v);
-    };
     sun_uv_x = clampf(sun_px / (float)vp_w, 0.03f, 0.97f);
     sun_uv_y = clampf(sun_py / (float)vp_h, 0.03f, 0.97f);
   }
-  const float sun_env_mode = s->sun_source == 1 ? 1.0f : 0.0f;
+  const float sun_env_mode = (float)sun_mode;
 
   // --- Scratch textures (lazy, vp-sized) ---
   const bool resized = (s->scratch_w != vp_w || s->scratch_h != vp_h);
@@ -921,6 +934,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setSampler(s->samp_clamp, 6);
       cp.setSampler(s->samp_wrap, 7);
       cp.setBuffer(s->ub_resolve[ci], 8);
+      cp.setTexture(sun_mode == 2 ? tint : s->zero_tex, 9, 0);
       cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
       cp.end();
     }
@@ -972,7 +986,10 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setTexture(s->rays_tex, 1, 1);
       cp.setSampler(s->samp_clamp, 2);
       cp.setBuffer(s->ub_rays, 3);
-      cp.setTexture(env_blurred, 4, 0);
+      // One slot serves the sun-color sample: tint tex, env, or the 1x1
+      // zero when the mode is plain Color (nothing real bound).
+      cp.setTexture(sun_mode == 2 ? tint
+                    : (sun_mode == 1 ? env_blurred : s->zero_tex), 4, 0);
       cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
       cp.end();
       has_rays = true;

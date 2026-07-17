@@ -22,6 +22,7 @@ Texture2D<float4>   envBlur  : register(t4);  // = envSharp when blur skipped
 RWTexture2D<float4> outTex   : register(u5);  // comp[next], rgba16float
 SamplerState        clampS   : register(s6);
 SamplerState        wrapS    : register(s7);  // equirect u wrap
+Texture2D<float4>   tintTex  : register(t9);  // sun tint source (1x1 zero when off)
 
 cbuffer Uniforms : register(b8) {
   float4 sun_view;     // xyz dir toward light (view space, unit), w = sun intensity
@@ -85,10 +86,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float3 sunD = sun_view.xyz;
   float sun_i = sun_view.w;
   // Effective sun tint: the authored color, optionally multiplied by the
-  // env's hue at the sun's position (Sun Source = From Input; 5-tap
-  // cross for stability — every pixel samples the same point, cache-hot).
+  // hue of a texture at the sun's position (Sun Source: 1 = env/input,
+  // 2 = the dedicated tint tex; 5-tap cross for stability — every pixel
+  // samples the same point, cache-hot).
   float3 sun_col = sun_color.rgb;
-  if (sun_env.z > 0.5) {
+  if (sun_env.z > 1.5) {
+    float2 su = sun_env.xy;
+    float3 e = tintTex.SampleLevel(clampS, su, 0).rgb
+             + tintTex.SampleLevel(clampS, su + float2(0.02, 0.0), 0).rgb
+             + tintTex.SampleLevel(clampS, su - float2(0.02, 0.0), 0).rgb
+             + tintTex.SampleLevel(clampS, su + float2(0.0, 0.02), 0).rgb
+             + tintTex.SampleLevel(clampS, su - float2(0.0, 0.02), 0).rgb;
+    sun_col *= nano_sun_chroma(e * 0.2);
+  } else if (sun_env.z > 0.5) {
     float2 su = sun_env.xy;
     float3 e;
     if (round_p.z > 0.5) {

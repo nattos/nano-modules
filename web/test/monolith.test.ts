@@ -33,12 +33,21 @@ function buildSketch(params: Record<string, unknown>, opts?: {
   gradientInput?: boolean,   // insert a gradient as mono's tex_in
   envWire?: boolean,         // wire the SOLID bg into mono's env_in
   bgColor?: number[],        // override the solid input color
+  tintColor?: number[],      // add a solid producer wired into tint_in
 }): Sketch {
-  const chain: any[] = [
-    { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
-      params: { color: opts?.bgColor ?? [0.7, 0.7, 0.75] } },
-  ];
+  const chain: any[] = [];
   const wires: any[] = [];
+  if (opts?.tintColor) {
+    // First in the chain so it does NOT become mono's tex_in (adjacency
+    // picks the entry directly above).
+    chain.push({ type: 'module', module_type: 'source.solid_color',
+                 instance_key: 'tint@0', params: { color: opts.tintColor } });
+    wires.push({ id: 'wt', src: { instanceKey: 'tint@0', field: 'tex_out' },
+                 dest: { instanceKey: 'mono@0', field: 'tint_in' } });
+  }
+  chain.push({ type: 'module', module_type: 'source.solid_color',
+               instance_key: 'bg@0',
+               params: { color: opts?.bgColor ?? [0.7, 0.7, 0.75] } });
   if (opts?.gradientInput) {
     // Chain adjacency makes the LAST entry above mono its tex_in.
     chain.push({ type: 'module', module_type: 'source.gradient',
@@ -55,7 +64,8 @@ function buildSketch(params: Record<string, unknown>, opts?: {
 
 async function render(sketchId: string, params: Record<string, unknown>,
                       opts?: { gradientInput?: boolean, envWire?: boolean,
-                               bgColor?: number[], waitFrames?: number }) {
+                               bgColor?: number[], tintColor?: number[],
+                               waitFrames?: number }) {
   const result = await runEngineTest({
     width: 96, height: 96,
     modules: ['com.nano.core', 'com.nano.nano'],
@@ -242,6 +252,19 @@ describe('source.mesh.monolith E2E', () => {
     const pm = manual.trace('out').pixelAt(72, 48);
     const pe = fromEnv.trace('out').pixelAt(72, 48);
     expect(pe.b - pe.r).toBeGreaterThan(pm.b - pm.r + 5);
+  });
+
+  it('sun source From Tint Tex reads the wired tint, not the input', async () => {
+    // Blue input + RED tint tex: From Input rays go blue-heavy, From Tint
+    // Tex rays go red-heavy — opposite signs at the same ray probe.
+    const base = { ...STATIC, azimuth: 180, elevation: 5, sun: 1.0, rays: 1.0 };
+    const opts = { bgColor: [0.15, 0.3, 0.85], tintColor: [0.9, 0.12, 0.1] };
+    const fromInput = await render('mono_tint_input', { ...base, sun_source: 1 }, opts);
+    const fromTint = await render('mono_tint_tex', { ...base, sun_source: 2 }, opts);
+    const pi = fromInput.trace('out').pixelAt(72, 48);
+    const pt = fromTint.trace('out').pixelAt(72, 48);
+    expect(pi.b - pi.r).toBeGreaterThan(5);    // input hue: blue excess
+    expect(pt.r - pt.b).toBeGreaterThan(5);    // tint hue: red excess
   });
 
   it('extended spread grows colossal shells without breaking the core', async () => {
