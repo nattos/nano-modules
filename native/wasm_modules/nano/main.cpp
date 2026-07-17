@@ -332,19 +332,19 @@ void nano_module_main() {
         2,
         "source.mesh.monolith",
         "Monolith",
-        "Glassy 3D primitive generator — the 1:4:9 monolith slab from 2001 or "
-        "a regular triangular pyramid — alpha-composited over the input with "
-        "up to three concentric echo shells at growing scale and fading "
-        "opacity. The whole 3D pipeline (rotation, perspective, back-face "
-        "shading, exact analytic painter's order for the nested convex "
-        "shells) runs on the CPU per frame, so semi-transparent solids read "
-        "as true tinted glass: far faces and inner shells show through near "
-        "ones. Motion is an eased one-way yaw Arc that snaps back to its "
-        "start, a two-axis incommensurate Tumble, or an Arcing Tumble whose "
-        "angular speed swells and relaxes; Sync locks one motion cycle to N "
-        "bars of the host transport.",
+        "Massive env-lit 3D structure — the 1:4:9 monolith slab from 2001 or "
+        "a regular triangular pyramid — deferred-shaded over the input with "
+        "up to three concentric echo shells. The default material is void-"
+        "black obsidian that reads entirely through fresnel reflections of "
+        "the environment (wire any texture into Env, or it reflects the "
+        "input itself), a movable sun with a specular glint, height/depth "
+        "fog that swallows the top, god rays carving around the silhouette, "
+        "and bloom. Opacity runs solid to clear refracting glass. Vantage "
+        "and Loom give the worm's-eye towering camera. Motion is an eased "
+        "one-way yaw Arc that snaps back, a two-axis incommensurate Tumble, "
+        "or an Arcing Tumble; Sync locks one cycle to N bars.",
         "source",
-        "generator,3d,mesh,monolith,pyramid,tetrahedron,cube,glass,transparent,rotate,tumble,concentric,2001",
+        "generator,3d,mesh,monolith,pyramid,tetrahedron,glass,reflection,env,fresnel,fog,godrays,bloom,rotate,tumble,concentric,2001,massive",
         "la-cube",
         NANO_INSTANCE_LIFECYCLE(monolith),
     });

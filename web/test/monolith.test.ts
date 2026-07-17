@@ -2,51 +2,66 @@ import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
- * E2E coverage for source.mesh.monolith (nano bundle) — the glassy 3D
- * primitive generator (1:4:9 monolith slab / regular triangular pyramid, up
- * to 3 concentric shells, exact analytic painter's order, alpha over input).
+ * E2E coverage for source.mesh.monolith (nano bundle) — the deferred env-lit
+ * 3D primitive generator (1:4:9 slab / regular pyramid, ≤3 concentric
+ * shells, fresnel env reflections, refraction glass, fog, god rays, bloom).
  *
  * Determinism trick: `motion: Arc` with `arc: 0` pins the pose to a slow
- * eased sweep start (yaw ≈ -20°, drift far below a pixel over test spans),
- * so static comparisons are rAF-jitter-proof. Animation is asserted
+ * eased sweep start (yaw ≈ -20°, drift far below a pixel over test spans).
+ * Static comparisons also pin `vantage: 0, loom: 0` (neutral camera) and
+ * zero the atmosphere unless it is under test. Animation is asserted
  * structurally (phases differ), never pixel-exact — headless frame pacing
  * varies 4–20 ms.
  *
- * Probe rig: solid dark-blue input → monolith. bg (0.05, 0.05, 0.25) reads as
- * ~(13, 13, 64); the near-white default shape reads far brighter. Note engine
- * traces are checkerboard-composited (alpha always 255) — assert by color.
+ * Probe rig: bright solid input (0.7, 0.7, 0.75) ≈ (178, 178, 191) so the
+ * default VOID-BLACK slab reads against it. Engine traces are
+ * checkerboard-composited (alpha always 255) — assert by color.
  */
 
-const BG = { r: 13, g: 13, b: 64 };
+const BG = { r: 178, g: 178, b: 191 };
+const lum = (c: { r: number, g: number, b: number }) => (c.r + c.g + c.b) / 3;
 
-// Static pose: zero arc width (yaw pinned ≈ -20°) + a slight signed tilt so
-// several faces show.
-const STATIC = { motion: 0 /* Arc */, arc: 0.0, tilt: 0.2, alpha: 1.0, size: 0.8 };
+// Frozen pose + neutral camera + no atmosphere: the baseline for A/B tests.
+const STATIC = {
+  motion: 0 /* Arc */, arc: 0.0, tilt: 0.2, size: 0.8, opacity: 1.0,
+  vantage: 0.0, loom: 0.0, fog: 0.0, rays: 0.0, bloom: 0.0,
+};
 
-function buildSketch(params: Record<string, unknown>): Sketch {
-  return {
-    anchor: null,
-    chain: [
-      { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
-        params: { color: [0.05, 0.05, 0.25] } },
-      { type: 'module', module_type: 'source.mesh.monolith', instance_key: 'mono@0',
-        params },
-    ],
-  } as Sketch;
+function buildSketch(params: Record<string, unknown>, opts?: {
+  gradientInput?: boolean,   // insert a gradient as mono's tex_in
+  envWire?: boolean,         // wire the SOLID bg into mono's env_in
+}): Sketch {
+  const chain: any[] = [
+    { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
+      params: { color: [0.7, 0.7, 0.75] } },
+  ];
+  const wires: any[] = [];
+  if (opts?.gradientInput) {
+    // Chain adjacency makes the LAST entry above mono its tex_in.
+    chain.push({ type: 'module', module_type: 'source.gradient',
+                 instance_key: 'grad@0', params: {} });
+  }
+  if (opts?.envWire) {
+    wires.push({ id: 'we', src: { instanceKey: 'bg@0', field: 'tex_out' },
+                 dest: { instanceKey: 'mono@0', field: 'env_in' } });
+  }
+  chain.push({ type: 'module', module_type: 'source.mesh.monolith',
+               instance_key: 'mono@0', params });
+  return { anchor: null, chain, wires } as Sketch;
 }
 
 async function render(sketchId: string, params: Record<string, unknown>,
-                      waitFrames = 4) {
+                      opts?: { envWire?: boolean, waitFrames?: number }) {
   const result = await runEngineTest({
     width: 96, height: 96,
-    modules: ['com.nano.testonly', 'com.nano.nano'],
+    modules: ['com.nano.core', 'com.nano.nano'],
     commands: [
-      { type: 'createSketch', sketchId, sketch: buildSketch(params) },
+      { type: 'createSketch', sketchId, sketch: buildSketch(params, opts) },
       { type: 'setTracePoints', tracePoints: [
         { id: 'out', target: { type: 'sketch_output', sketchId } },
       ]},
     ],
-    waitFrames,
+    waitFrames: opts?.waitFrames ?? 4,
     captureTraceIds: ['out'],
     dumpName: sketchId,
   });
@@ -55,44 +70,124 @@ async function render(sketchId: string, params: Record<string, unknown>,
 }
 
 describe('source.mesh.monolith E2E', () => {
-  jest.setTimeout(90000);
+  jest.setTimeout(120000);
 
-  it('registers and renders the slab over the input', async () => {
+  it('void-black default slab reads against a bright input', async () => {
+    // Default near-black color: the body must sit clearly darker than the
+    // input while the corners stay untouched.
     const r = await render('mono_smoke', { ...STATIC });
-    r.trace('out').expectNotSolidColor(BG, 5);
+    const center = r.trace('out').pixelAt(48, 48);
+    expect(lum(center)).toBeLessThan(lum(BG) - 40);
+    r.trace('out').expectPixelAt(3, 3, BG, 8);
+    r.trace('out').expectPixelAt(92, 92, BG, 8);
     const plugin = r.state.plugins.find((p: any) => p.id === 'source.mesh.monolith');
     expect(plugin).toBeTruthy();
   });
 
-  it('composites: bright shape at center, untouched input at the corners', async () => {
-    const r = await render('mono_composite', { ...STATIC });
-    // At size 0.8 the slab spans roughly x∈[35,61], y∈[19,77] on the 96×96
-    // frame — the center is deep inside it, the corners far outside.
-    const center = r.trace('out').pixelAt(48, 48);
-    expect(center.r).toBeGreaterThan(120);   // near-white shaded face
-    expect(center.b).toBeGreaterThan(120);
-    r.trace('out').expectPixelAt(3, 3, BG, 8);
-    r.trace('out').expectPixelAt(92, 92, BG, 8);
-  });
-
-  it('alpha 0 is a pure passthrough (draw pass skipped)', async () => {
-    const r = await render('mono_alpha0', { ...STATIC, alpha: 0.0 });
+  it('opacity 0 is a bit-exact passthrough even with atmosphere cranked', async () => {
+    const r = await render('mono_passthrough',
+      { ...STATIC, opacity: 0, fog: 1, rays: 1, bloom: 1 });
     for (const [x, y] of [[48, 48], [30, 30], [66, 66], [48, 20], [3, 3]]) {
       r.trace('out').expectPixelAt(x, y, BG, 4);
     }
   });
 
+  it('a wired env_in switches the reflection source', async () => {
+    // Same chain both runs: gradient is mono's tex_in (adjacency). Run A
+    // reflects the gradient via the screen-space fallback; run B wires the
+    // SOLID bg into env_in (equirect). Reflections change ON the shape;
+    // the untouched corners (the gradient) stay identical across runs.
+    const base = { ...STATIC, color: [0.3, 0.3, 0.3], reflect: 1.0, roughness: 0 };
+    const fallback = await render('mono_env_off', base, { gradientInput: true });
+    const wired = await render('mono_env_on', base,
+      { gradientInput: true, envWire: true });
+    wired.trace('out').expectDifferentFrom(fallback.trace('out'), 8);
+    const cA = fallback.trace('out').pixelAt(3, 3);
+    const cB = wired.trace('out').pixelAt(3, 3);
+    expect(Math.abs(cA.r - cB.r)).toBeLessThanOrEqual(4);
+    expect(Math.abs(cA.g - cB.g)).toBeLessThanOrEqual(4);
+    expect(Math.abs(cA.b - cB.b)).toBeLessThanOrEqual(4);
+  });
+
+  it('glass (low opacity + refract) differs from the solid slab', async () => {
+    const solid = await render('mono_solid', { ...STATIC });
+    const glass = await render('mono_glass',
+      { ...STATIC, opacity: 0.15, refract: 0.9 });
+    glass.trace('out').expectDifferentFrom(solid.trace('out'), 15);
+    glass.trace('out').expectPixelAt(3, 3, BG, 8);
+    // Glass over a uniform input is BRIGHTER than the black solid at center.
+    const gc = glass.trace('out').pixelAt(48, 48);
+    const sc = solid.trace('out').pixelAt(48, 48);
+    expect(lum(gc)).toBeGreaterThan(lum(sc) + 20);
+  });
+
+  it('sun azimuth moves the shading', async () => {
+    const base = { ...STATIC, color: [0.5, 0.5, 0.5], reflect: 0.3 };
+    const left = await render('mono_sun_l', { ...base, azimuth: -60, elevation: 20 });
+    const right = await render('mono_sun_r', { ...base, azimuth: 60, elevation: 20 });
+    left.trace('out').expectDifferentFrom(right.trace('out'), 8);
+  });
+
+  it('fog melts the structure, strongest at the top', async () => {
+    const base = { ...STATIC, size: 1.0 };
+    const clear = await render('mono_fog_off', base);
+    const foggy = await render('mono_fog_on', { ...base, fog: 1.0 });
+    // Upper body pixel pulls toward the haze (backdrop) — a real change.
+    const upperDelta = Math.abs(lum(foggy.trace('out').pixelAt(48, 26)) -
+                                lum(clear.trace('out').pixelAt(48, 26)));
+    expect(upperDelta).toBeGreaterThan(6);
+    // Uncovered pixels never fog.
+    foggy.trace('out').expectPixelAt(3, 3, BG, 8);
+    foggy.trace('out').expectPixelAt(92, 92, BG, 8);
+  });
+
+  it('vantage makes the verticals converge (towering)', async () => {
+    const width = (r: any, y: number) => {
+      let n = 0;
+      for (let x = 0; x < 96; x++) {
+        if (lum(r.trace('out').pixelAt(x, y)) < lum(BG) - 40) n++;
+      }
+      return n;
+    };
+    const flat = await render('mono_vant0', { ...STATIC, size: 1.0 });
+    const worm = await render('mono_vant1', { ...STATIC, size: 1.0, vantage: 1.0 });
+    const flatRatio = width(flat, 22) / Math.max(1, width(flat, 74));
+    const wormRatio = width(worm, 22) / Math.max(1, width(worm, 74));
+    expect(width(worm, 74)).toBeGreaterThan(0);
+    expect(wormRatio).toBeLessThan(flatRatio - 0.05);
+  });
+
+  it('god rays bleed around the silhouette when the sun is behind', async () => {
+    // Sun dead behind the shape (azimuth 180): rays radiate from center.
+    const base = { ...STATIC, azimuth: 180, elevation: 5, sun: 1.0 };
+    const dark = await render('mono_rays_off', base);
+    const lit = await render('mono_rays_on', { ...base, rays: 1.0 });
+    // Just outside the slab's right edge: scattered light raises brightness.
+    const probe = { x: 72, y: 48 };
+    const dLit = lum(lit.trace('out').pixelAt(probe.x, probe.y));
+    const dDark = lum(dark.trace('out').pixelAt(probe.x, probe.y));
+    expect(dLit).toBeGreaterThan(dDark + 3);
+    lit.trace('out').expectDifferentFrom(dark.trace('out'), 4);
+  });
+
+  it('bloom bleeds the hot highlights', async () => {
+    const base = { ...STATIC, reflect: 1.0, sun: 1.0, azimuth: -40,
+                   color: [0.5, 0.5, 0.55] };
+    const off = await render('mono_bloom_off', base);
+    const on = await render('mono_bloom_on', { ...base, bloom: 1.0 });
+    on.trace('out').expectDifferentFrom(off.trace('out'), 4);
+  });
+
   it('tumble animates across frames', async () => {
     const moving = await runEngineMultiPhaseTest({
       width: 96, height: 96,
-      modules: ['com.nano.testonly', 'com.nano.nano'],
+      modules: ['com.nano.core', 'com.nano.nano'],
       dumpName: 'mono_anim',
       phases: [
         {
           commands: [
             { type: 'createSketch', sketchId: 'mono_anim',
-              sketch: buildSketch({ motion: 1 /* Tumble */, speed: 0.9,
-                                    alpha: 1.0, size: 0.8, tilt: 0.2 }) },
+              sketch: buildSketch({ ...STATIC, motion: 1 /* Tumble */, speed: 0.9 }) },
             { type: 'setTracePoints', tracePoints: [
               { id: 'out', target: { type: 'sketch_output', sketchId: 'mono_anim' } },
             ]},
@@ -107,9 +202,9 @@ describe('source.mesh.monolith E2E', () => {
   });
 
   it('concentric copies add shells around the core', async () => {
-    const one = await render('mono_copies1', { ...STATIC, alpha: 0.7, copies: 1 });
+    const one = await render('mono_copies1', { ...STATIC, copies: 1 });
     const three = await render('mono_copies3',
-      { ...STATIC, alpha: 0.7, copies: 3, spread: 1.0, falloff: 0.2 });
+      { ...STATIC, copies: 3, spread: 1.0, falloff: 0.2 });
     three.trace('out').expectDifferentFrom(one.trace('out'), 15);
   });
 
@@ -118,23 +213,5 @@ describe('source.mesh.monolith E2E', () => {
     const pyramid = await render('mono_shape_pyramid', { ...STATIC, shape: 1 });
     pyramid.trace('out').expectNotSolidColor(BG, 5);
     pyramid.trace('out').expectDifferentFrom(slab.trace('out'), 20);
-  });
-
-  it('opaque solids never leak back faces (analytic draw order)', async () => {
-    // The old centroid depth sort let a far-face triangle of the rotated
-    // thin slab draw on top of the near face (a dark wedge on the front).
-    // With the exact onion order and alpha 1, back faces are fully occluded:
-    // cranking back_dim must change NOTHING on screen.
-    const dim = await render('mono_opaque_dim', { ...STATIC, back_dim: 1.0 });
-    const undim = await render('mono_opaque_undim', { ...STATIC, back_dim: 0.0 });
-    dim.trace('out').expectSameAs(undim.trace('out'), 2);
-  });
-
-  it('glassy: back-face dimming shows through a semi-transparent shape', async () => {
-    // At alpha 0.5 the far faces are visible through the near ones, so the
-    // back-face dim level must change on-screen pixels.
-    const dimmed = await render('mono_glass_dim', { ...STATIC, alpha: 0.5, back_dim: 1.0 });
-    const undimmed = await render('mono_glass_undim', { ...STATIC, alpha: 0.5, back_dim: 0.0 });
-    dimmed.trace('out').expectDifferentFrom(undimmed.trace('out'), 10);
   });
 });

@@ -1,0 +1,130 @@
+// source.mesh.monolith — deferred resolve (one dispatch per copy round).
+//
+// Reads the round's G-buffer and shades the covered pixels: Schlick
+// fresnel env reflection (equirect env_in or screen-space tex_in
+// fallback), diffuse lambert (black diffuse still reads via the spec
+// terms), screen-space refraction of the background, height + depth fog.
+// Composites over `bgTex` (round 0: tex_in; later rounds: the previous
+// composite — outer shells refract/blend over inner ones) into the
+// RGBA16F ping-pong target. Alpha channel accumulates occlusion for the
+// god-ray pass.
+//
+// PASSTHROUGH PURITY: uncovered pixels are copied VERBATIM (Load, no
+// filtering, no fog) so an idle region round-trips the input exactly.
+
+Texture2D<float4>   gbufA    : register(t0);  // n.xyz, coverage
+Texture2D<float4>   gbufB    : register(t1);  // world_y, view_z
+Texture2D<float4>   bgTex    : register(t2);  // tex_in (seed) or comp[prev]
+Texture2D<float4>   envSharp : register(t3);
+Texture2D<float4>   envBlur  : register(t4);  // = envSharp when blur skipped
+RWTexture2D<float4> outTex   : register(u5);  // comp[next], rgba16float
+SamplerState        clampS   : register(s6);
+SamplerState        wrapS    : register(s7);  // equirect u wrap
+
+cbuffer Uniforms : register(b8) {
+  float4 sun_view;     // xyz dir toward light (view space, unit), w = sun intensity
+  float4 cam;          // focal, cover_ax, cover_ay, phi (camera pitch)
+  float4 material;     // reflect, roughness, refract, opacity
+  float4 color_shade;  // diffuse rgb, shading amount
+  float4 fog_p;        // fog_amount, fog_y0, inv_fog_h, fog_depth_k
+  float4 round_p;      // copy_weight, is_seed, env_mode (1 = equirect), fog_z0
+  float4 vp;           // w, h, 1/w, 1/h
+};
+
+static const float INV_TAU = 0.15915494309;
+static const float INV_PI = 0.31830988618;
+
+float2 equirectUV(float3 d) {
+  float u = atan2(d.x, d.z) * INV_TAU + 0.5;
+  float v = acos(clamp(d.y, -1.0, 1.0)) * INV_PI;
+  return float2(u, clamp(v, 0.004, 0.996));
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 gid : SV_DispatchThreadID) {
+  uint W = (uint)vp.x, H = (uint)vp.y;
+  if (gid.x >= W || gid.y >= H) return;
+  int3 ip = int3(int(gid.x), int(gid.y), 0);
+
+  float4 A = gbufA.Load(ip);
+  float4 bg4 = bgTex.Load(ip);
+  // Seed round: tex_in's own alpha is content, not occlusion.
+  float occ = round_p.y > 0.5 ? 0.0 : bg4.a;
+  float3 bg = bg4.rgb;
+  if (A.a < 0.5) {
+    outTex[gid.xy] = float4(bg, occ);
+    return;
+  }
+
+  float4 B = gbufB.Load(ip);
+  float world_y = B.x;
+  float view_z = max(B.y, 0.1);
+  float3 N = A.xyz;
+  float nl = sqrt(dot(N, N));
+  if (nl < 1e-5) {
+    outTex[gid.xy] = float4(bg, occ);
+    return;
+  }
+  N /= nl;
+
+  const float focal = cam.x, ax = cam.y, ay = cam.z, phi = cam.w;
+  float2 uv = (float2(gid.xy) + 0.5) * vp.zw;
+  // Pixel -> y-up square NDC -> view ray (inverse of the CPU projection).
+  float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  float3 V = normalize(float3(ndc.x / (2.0 * ax * focal),
+                              ndc.y / (2.0 * ay * focal), 1.0));
+
+  float ndv = saturate(dot(N, -V));
+  float F = material.x * (0.06 + 0.94 * pow(1.0 - ndv, 5.0));
+
+  float3 sunD = sun_view.xyz;
+  float sun_i = sun_view.w;
+  float lam = saturate(dot(N, sunD));
+  float shade = 1.0 + color_shade.w * ((0.30 + 0.70 * lam) - 1.0);
+  float3 diffuse = color_shade.rgb * shade * sun_i;
+
+  // Environment reflection.
+  float3 Rv = reflect(V, N);
+  float cphi = cos(phi), sphi = sin(phi);
+  float3 env;
+  if (round_p.z > 0.5) {
+    // Equirect env_in: rotate the reflected ray view -> world (Rx(-phi)).
+    float3 Rw = float3(Rv.x, cphi * Rv.y + sphi * Rv.z,
+                       -sphi * Rv.y + cphi * Rv.z);
+    float2 uvE = equirectUV(Rw);
+    env = lerp(envSharp.SampleLevel(wrapS, uvE, 0),
+               envBlur.SampleLevel(wrapS, uvE, 0), material.y).rgb;
+  } else {
+    // Screen-space fallback: project the reflection into the input.
+    float2 uvE = uv + float2(Rv.x, -Rv.y) * 0.35;
+    env = lerp(envSharp.SampleLevel(clampS, uvE, 0),
+               envBlur.SampleLevel(clampS, uvE, 0), material.y).rgb;
+  }
+  float glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i;
+
+  // Screen-space refraction: the background seen through the surface.
+  float2 uvR = uv + float2(-N.x, N.y) * material.z * 0.12;
+  float3 refr = bgTex.SampleLevel(clampS, uvR, 0).rgb;
+  refr *= lerp(float3(1.0, 1.0, 1.0), color_shade.rgb, 0.35);
+
+  float3 surf = lerp(refr, diffuse, material.w) + (env + glint.xxx) * F;
+
+  // Atmosphere: the top melts into haze, distance accumulates it.
+  if (fog_p.x > 0.0) {
+    float fh = saturate((world_y - fog_p.y) * fog_p.z);
+    float fd = 1.0 - exp(-max(0.0, view_z - round_p.w) * fog_p.w);
+    float f = fog_p.x * saturate(fh + 0.6 * fd);
+    float3 fogc;
+    if (round_p.z > 0.5) {
+      float3 Vw = float3(V.x, cphi * V.y + sphi * V.z,
+                         -sphi * V.y + cphi * V.z);
+      fogc = envBlur.SampleLevel(wrapS, equirectUV(Vw), 0).rgb;
+    } else {
+      fogc = envBlur.SampleLevel(clampS, uv, 0).rgb;
+    }
+    surf = lerp(surf, fogc, f);
+  }
+
+  float w = round_p.x;
+  outTex[gid.xy] = float4(lerp(bg, surf, w), max(occ, w));
+}

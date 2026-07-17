@@ -60,20 +60,34 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var flash_particles update prefill vs fs_color fs_motion
 echo "  flash_particles shaders compiled (SPV: update + prefill + vs + fs_color + fs_motion)"
 
-# monolith — glassy convex-primitive generator (CPU transform + painter sort).
-#   prefill (compute) — copies tex_in into tex_out for the raster pass
-#                       to alpha-blend over.
-#   vs / fs           — vertex-pull passthrough + flat color; all 3D math
-#                       happens on the CPU (no z-buffer on the platform).
+# fast_blur — shared fx::FastBlur kernels (used by monolith's roughness
+# env pre-blur + bloom chain). Same lines as core/build.sh.
+compile_shaders_compute_var_spv fast_blur down
+compile_shaders_compute_var_spv fast_blur up
+_emit_spv_header_var fast_blur down up
+echo "  fast_blur shaders compiled (down + up, SPV)"
+
+# monolith — deferred env-lit convex-primitive generator.
+#   prefill (compute)   — idle passthrough copy tex_in -> tex_out.
+#   gbuf_vs / gbuf_fs   — MRT G-buffer raster (normal+coverage, world_y+
+#                         view_z); all geometry math happens on the CPU.
+#   resolve (compute)   — per-copy deferred shade (env/fresnel/refraction/
+#                         fog) into the RGBA16F composite ping-pong.
+#   rays / extract /
+#   final (compute)     — god rays, bloom extract, combine + tonemap.
 compile_shaders_compute_var_spv monolith prefill
+compile_shaders_compute_var_spv monolith resolve
+compile_shaders_compute_var_spv monolith rays
+compile_shaders_compute_var_spv monolith extract
+compile_shaders_compute_var_spv monolith final
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
-  ../monolith/vs.hlsl -Fo "$TMP_DIR/monolith_vs.spv"
+  ../monolith/gbuf_vs.hlsl -Fo "$TMP_DIR/monolith_gbuf_vs.spv"
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
-  ../monolith/fs.hlsl -Fo "$TMP_DIR/monolith_fs.spv"
-_emit_spv_header_var monolith prefill vs fs
-echo "  monolith shaders compiled (SPV: prefill + vs + fs)"
+  ../monolith/gbuf_fs.hlsl -Fo "$TMP_DIR/monolith_gbuf_fs.spv"
+_emit_spv_header_var monolith prefill resolve rays extract final gbuf_vs gbuf_fs
+echo "  monolith shaders compiled (SPV: prefill + resolve + rays + extract + final + gbuf)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update

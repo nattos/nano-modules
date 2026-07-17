@@ -1,46 +1,44 @@
 /*
- * source.mesh.monolith — Glassy 3D primitive generator.
+ * source.mesh.monolith — Deferred, env-lit 3D primitive generator.
  *
  * Renders a simple convex solid — the 1:4:9 "monolith" slab or a regular
- * triangular pyramid (tetrahedron) — alpha-composited over the input, with
- * up to three concentric echo shells at growing scale and fading opacity.
+ * triangular pyramid (tetrahedron) — over the input, with up to three
+ * concentric echo shells, environment reflections, fresnel, screen-space
+ * refraction "glass", height/depth fog, god rays and bloom. Built for the
+ * massive-towering-space-structure look: the default material is a near
+ * void-black slab that reads entirely through its specular response.
  *
- * The platform has NO z-buffer and blending only exists on the instanced
- * render-PSO path, so the whole 3D pipeline runs on the CPU each frame
- * (<= 36 triangles): rotate -> project -> facing classification -> flat
- * lambert shade (back faces kept and dimmed: "glassy") -> ANALYTIC painter's
- * order -> write final clip-space verts + colors into a storage buffer ->
- * one AlphaOver draw over the compute-prefilled copy of tex_in.
+ * Architecture (the platform has NO z-buffer and raster fragment shaders
+ * CANNOT sample textures, so all texture-dependent shading is compute):
  *
- * Draw order is exact, not sorted. Depth-sorting triangle centroids fails
- * for thin slabs (a far-face centroid can sit nearer than a near-face
- * centroid once rotated), but nested convex scaled copies admit a closed-
- * form order: along any eye ray the hit sequence is front(outer) ...
- * front(inner), back(inner) ... back(outer), so painting back faces
- * outermost->innermost then front faces innermost->outermost is correct
- * from every viewpoint outside the outermost shell. Within one convex
- * solid, back faces never overlap each other on screen (nor do front
- * faces), so order inside each group is irrelevant.
+ *   CPU (per frame): rotate -> camera (vantage/loom) -> project; emit
+ *   FRONT faces only into per-copy vertex buffers (true homogeneous clip
+ *   coords so world_y/view_z interpolate perspective-correct).
+ *   Per copy round (core -> outermost): raster a tiny MRT G-buffer
+ *   (normal+coverage, world_y+view_z; beginMRT clears, MRT PSO writes
+ *   Replace) -> compute resolve shades covered pixels (fresnel env
+ *   reflection from `env_in` [equirect] or tex_in [screen-space
+ *   fallback], diffuse, refraction of the background, fog) and
+ *   composites into an RGBA16F ping-pong. Then god rays (radial scatter
+ *   occluded by the accumulated silhouette), bloom (FastBlur), and a
+ *   final shoulder-tonemap combine into tex_out.
  *
- * Facing convention: triangle winding is normalized once at module_init so
- * the right-handed cross of each tri's edges points INWARD. Under the
- * perspective projection below, sign(projected signed area) then equals
- * sign(m . a) exactly, so `area2 > 0` <=> the face's outside is toward the
- * eye (front face). This is computed in the pre-flip y-up square-NDC space
- * the GPU never sees, so it is identical across WebGPU/Metal.
+ * Draw-order correctness is CLOSED FORM, not sorted: front faces of one
+ * convex solid never overlap on screen, and rounds composite inner ->
+ * outer, which matches the eye-ray hit order for nested convex scaled
+ * copies from any exterior viewpoint.
  *
- * Motion is accumulator-driven (style guide §2.1 — never time*rate): an
- * eased yaw Arc (sine ping-pong), a two-axis Tumble at golden-ratio-
- * incommensurate rates, or an Arcing Tumble whose angular speed swells and
- * relaxes. Sync = Free (speed knob, exponential Hz mapping) or Bars
- * (host::barPhase() deltas per §2.2 — frozen without a running transport).
+ * Passthrough purity: uncovered pixels are copied verbatim through every
+ * pass; at opacity 0 the whole pipeline is skipped for a prefill copy.
+ * Motion is accumulator-driven (style guide §2.1); Sync = Free (speed
+ * knob) or Bars (host::barPhase() deltas — frozen without a transport).
  */
 
 #include <gpu.h>
 #include <host.h>
 #include <effect_utils.h>
+#include <effect_fast_blur.h>
 
-#include <algorithm>
 #include <cmath>
 
 #include "monolith_shaders.h"
@@ -49,6 +47,7 @@ namespace monolith {
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTau = 2.0f * kPi;
+constexpr float kDeg = kPi / 180.0f;
 
 // --- Selects ---
 constexpr int SHAPE_MONOLITH = 0;
@@ -59,15 +58,10 @@ constexpr int MOTION_ARCING = 2;
 constexpr int SYNC_FREE = 0;
 constexpr int SYNC_BARS = 1;
 
-// --- Camera (fixed; tuning cut deliberately — keep the surface tight) ---
-constexpr float kCamDist = 3.0f;              // object center on the view axis
-constexpr float kFocal = 3.7320508f;          // 1/tan(30deg/2)
-// Direction from surface toward the light (upper-left, toward camera).
-constexpr float kLightX = -0.45f, kLightY = 0.65f, kLightZ = -0.6f;
-
 // ---------------------------------------------------------------------------
-// Tiny 3D helpers (no shared mat lib exists; precedent: effects roll local).
-// View space: x right, y up, z INTO the screen; camera at origin looking +z.
+// Tiny 3D helpers. View space: x right, y up, z INTO the screen; camera
+// looks +z. "World" space = rotated/scaled object space, origin at the
+// object center (the camera transform is applied on top of it).
 // ---------------------------------------------------------------------------
 
 struct V3 { float x, y, z; };
@@ -109,16 +103,13 @@ static inline V3 m3Apply(const M3& r, V3 v) {
 }
 
 // ---------------------------------------------------------------------------
-// Geometry tables. Winding is normalized programmatically in module_init()
-// (right-handed edge cross pointed INWARD, i.e. against the centroid ray) so
-// the tables themselves don't need hand-verified orientation.
+// Geometry tables. Winding normalized programmatically in module_init()
+// (right-handed edge cross pointed INWARD) so sign(projected area) ==
+// front-facing exactly under perspective.
 // ---------------------------------------------------------------------------
 
-// Regular triangular pyramid (tetrahedron), centroid at origin, apex up.
-// Circumradius R = 0.70: apex (0, R, 0); base ring at y = -R/3 with
-// horizontal radius 2*sqrt(2)/3 * R, one base vertex LEADING toward the
-// camera (angle 270 deg) so the frontal view shows two differently-lit
-// faces meeting at a slanted center edge. Edge length ~1.143 (regular).
+// Regular triangular pyramid (tetrahedron), centroid at origin, apex up,
+// one base vertex leading toward the camera. Circumradius 0.70.
 static const V3 kPyrVerts[4] = {
     {0.000000f, 0.700000f, 0.000000f},    // apex
     {0.571577f, -0.233333f, 0.330000f},   // b0 (30 deg)
@@ -163,12 +154,9 @@ static const ShapeDef kShapes[2] = {
 };
 
 constexpr int kMaxCopies = 3;
-constexpr int kMaxTris = 12 * kMaxCopies;      // 36
-constexpr int kMaxVerts = kMaxTris * 3;        // 108
+constexpr int kMaxTrisPerCopy = 12;
+constexpr int kMaxVertsPerCopy = kMaxTrisPerCopy * 3;   // 36
 
-// Normalize winding: right-handed cross of the tri's edges must point
-// INWARD (opposite the origin->centroid ray — valid because both solids are
-// convex and origin-centered). See the facing-convention note up top.
 static void normalizeWinding(const ShapeDef& shape) {
   for (int t = 0; t < shape.tri_count; t++) {
     V3 a = shape.verts[shape.tris[t][0]];
@@ -186,21 +174,55 @@ static void normalizeWinding(const ShapeDef& shape) {
 }
 
 // ---------------------------------------------------------------------------
-// GPU-side vertex (mirrors Vtx in vs.hlsl): 8 floats, 16-byte aligned.
+// GPU-side structs (16-byte rows).
 // ---------------------------------------------------------------------------
-struct GpuVertex {
-  float pos[4];   // clip xyzw (z = 0.5 cosmetic, w = 1)
-  float rgba[4];  // straight alpha
+
+struct GbufVertex {         // mirrors Vtx in gbuf_vs.hlsl — 48 B
+  float pos[4];             // homogeneous clip: (clip.x*z, clip.y*z, 0.5*z, z)
+  float nrm[4];             // view-space outward face normal, w = 1
+  float misc[4];            // world_y, view_z, 0, 0
 };
 
-// Type-shared PSOs (immutable post-compile — file-static per the ABI).
+struct ResolveUniforms {
+  float sun_view[4];        // xyz toward light (view, unit), w = intensity
+  float cam[4];             // focal, cover_ax, cover_ay, phi
+  float material[4];        // reflect, roughness, refract, opacity
+  float color_shade[4];     // rgb, shading
+  float fog_p[4];           // fog, fog_y0, inv_fog_h, fog_depth_k
+  float round_p[4];         // copy_weight, is_seed, env_mode, fog_z0
+  float vp[4];              // w, h, 1/w, 1/h
+};
+
+struct RaysUniforms {
+  float sun_screen[4];      // sun px, py, unused, gain (rays*1.5*fade)
+  float march[4];           // taps, decay, max_step_px, 0
+};
+
+struct ExtractUniforms { float p[4]; };   // inv_range, has_rays, 0, 0
+struct FinalUniforms { float p[4]; };     // bloom_gain, has_rays, has_bloom, 0
+
+// Type-shared PSOs.
 static gpu::ComputePSO s_pso_prefill;
-static gpu::RenderPSO s_pso_render;
+static gpu::RenderPSO s_pso_gbuf;
+static gpu::ComputePSO s_pso_resolve;
+static gpu::ComputePSO s_pso_rays;
+static gpu::ComputePSO s_pso_extract;
+static gpu::ComputePSO s_pso_final;
 
 // Per-instance state.
 struct State {
   bool initialized = false;
-  gpu::Buffer vertex_buf;   // kMaxVerts * 32 B, rewritten each frame
+
+  // GPU resources.
+  gpu::Buffer vtx_bufs[kMaxCopies];
+  gpu::Buffer ub_resolve[kMaxCopies];
+  gpu::Buffer ub_rays, ub_extract, ub_final;
+  gpu::Texture gbufA, gbufB, compA, compB, rays_tex;   // RGBA16F, vp-sized
+  gpu::Texture env_blur, bloom_src, bloom_tex;         // SketchDefault, vp-sized
+  gpu::Texture zero_tex;                               // 1x1 RGBA16F zeros
+  gpu::Sampler samp_clamp, samp_wrap;
+  fx::FastBlur blur;
+  int scratch_w = 0, scratch_h = 0;
 
   // Param mirrors.
   int shape = SHAPE_MONOLITH;
@@ -209,21 +231,31 @@ struct State {
   int copies = 1;
   int bars = 4;
   float size = 0.5f;
-  float alpha = 0.85f;
+  float opacity = 1.0f;
   float speed = 0.5f;
   float spread = 0.35f;
   float falloff = 0.6f;
-  float color_r = 0.88f, color_g = 0.88f, color_b = 0.92f;
+  float color_r = 0.04f, color_g = 0.04f, color_b = 0.05f;
+  float reflect_k = 0.5f;
+  float roughness = 0.15f;
+  float refract_k = 0.35f;
+  float azimuth = 160.0f;
+  float elevation = 25.0f;
+  float sun = 0.6f;
+  float fog = 0.2f;
+  float rays = 0.3f;
+  float bloom = 0.25f;
   float arc = 0.5f;
-  float tilt = 0.0f;   // signed: + looks down at the top face, 0 neutral
+  float tilt = 0.0f;        // signed: + looks down at the top face
   float shading = 0.7f;
-  float back_dim = 0.6f;
+  float vantage = 0.3f;     // signed: + worm's-eye (camera low, looking up)
+  float loom = 0.2f;        // dolly-in + fov widen
 
   // Accumulators (§2.1) — cycles in [0,1).
-  double phase_a = 0.0;         // primary rotation
-  double phase_b = 0.0;         // secondary tumble axis (rate x golden conj.)
-  double env_phase = 0.0;       // arcing-tumble speed envelope
-  double last_bar_phase = -1.0; // §2.2 tracker; -1 = unseeded
+  double phase_a = 0.0;
+  double phase_b = 0.0;
+  double env_phase = 0.0;
+  double last_bar_phase = -1.0;
 };
 
 static void apply_visibility(State* s) {
@@ -239,21 +271,22 @@ static void on_state_ready(void* self) {
 }
 
 void module_init() {
-  // 1.1.0: tilt became signed (-1..1, 0 neutral); the prism became a regular
-  // triangular pyramid; Arc sweeps one way and snaps back (was ping-pong).
-  state::init("source.mesh.monolith", {1, 1, 0},
+  // 1.2.0: deferred rework — `alpha` renamed to `opacity`, `back_dim`
+  // removed (back faces are gone; glass is refraction now), env_in added.
+  state::init("source.mesh.monolith", {1, 2, 0},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
-        "A floating 3D solid — the 1:4:9 slab from *2001* or a regular "
-        "triangular pyramid — rendered as tinted glass over the input. Up "
-        "to three concentric echo shells grow outward at fading opacity, "
-        "and because the faces draw in exact depth order you see the far "
-        "side of each shell through the near side.\n\n"
-        "**Try:** *Motion* → Tumble with *Copies* 3 and a low *Opacity* for "
-        "slow nested glass; *Sync* → Bars to lock one full motion cycle to "
-        "the beat grid; *Color* black with *Shading* high for the film's "
-        "void-black slab (it reads by its shaded edges alone).")
+        "A massive 3D structure — the 1:4:9 slab from *2001* or a regular "
+        "triangular pyramid — lit by its environment. The default material "
+        "is void-black: the shape reads through fresnel reflections of the "
+        "input (or a wired *Env* texture), a sun glint sliding along its "
+        "edges, haze swallowing its top, and god rays bleeding around its "
+        "silhouette.\n\n"
+        "**Try:** *Vantage* up with *Loom* for a worm's-eye tower; wire a "
+        "starfield into *Env*; *Opacity* low with *Refract* high for dark "
+        "glass; *Azimuth* near ±180 puts the sun behind the shape — full "
+        "eclipse mode with the rays carving around it.")
       // --- Shape ---
       .group("shape", "Shape")
       .selectField("shape", SHAPE_MONOLITH, state::PrimaryInput,
@@ -261,10 +294,26 @@ void module_init() {
           .label("Shape", "Shape")
       .floatField("size", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Size", "Size")
-      .rgbField("color", 0.88f, 0.88f, 0.92f, state::PrimaryInput)
+      // --- Material ---
+      .group("material", "Material")
+        .groupHelp(
+          "*Color* is the diffuse body — black is the intended default; "
+          "the shape still reads through its reflections. *Opacity* runs "
+          "solid (1) to clear glass (0): glass shows the scene refracted "
+          "through the surface (*Refract* sets how strongly it bends). "
+          "*Reflect* scales the fresnel environment reflection and "
+          "*Roughness* blurs it — polished obsidian at 0, brushed metal "
+          "up high.")
+      .rgbField("color", 0.04f, 0.04f, 0.05f, state::PrimaryInput)
           .label("Color", "Color")
-      .floatField("alpha", 0.85f, 0.f, 1.f, state::PrimaryInput)
-          .label("Opacity", "Alpha")
+      .floatField("opacity", 1.0f, 0.f, 1.f, state::PrimaryInput)
+          .label("Opacity", "Opac")
+      .floatField("reflect", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Reflect", "Refl")
+      .floatField("roughness", 0.15f, 0.f, 1.f, state::PrimaryInput)
+          .label("Roughness", "Rough")
+      .floatField("refract", 0.35f, 0.f, 1.f, state::PrimaryInput)
+          .label("Refract", "Refr")
       // --- Motion ---
       .group("motion", "Motion")
         .groupHelp(
@@ -294,15 +343,41 @@ void module_init() {
       .group("copies", "Concentric Copies")
         .groupHelp(
           "Echo shells of the same solid at growing scale and fading "
-          "opacity, all sharing the core's rotation. *Spread* sets how far "
-          "apart the shells sit; *Alpha Falloff* how much fainter each "
-          "shell is than the one inside it.")
+          "presence, all sharing the core's rotation. Outer shells "
+          "refract and reflect over the ones inside them.")
       .intField("copies", 1, 1, kMaxCopies, state::PrimaryInput)
           .label("Copies", "Copies")
       .floatField("spread", 0.35f, 0.f, 1.f, state::PrimaryInput)
           .label("Spread", "Spread")
       .floatField("falloff", 0.6f, 0.f, 1.f, state::PrimaryInput)
           .label("Alpha Falloff", "Falloff")
+      // --- Light ---
+      .group("light", "Light")
+        .groupHelp(
+          "One sun drives everything coherently: diffuse shading, the "
+          "specular glint, and the god-ray origin. *Azimuth* 0 lights "
+          "from the camera; ±180 puts the sun BEHIND the shape — that's "
+          "where the rays live. *Sun* is overall light intensity.")
+      .floatField("azimuth", 160.0f, -180.f, 180.f, state::PrimaryInput,
+                  nullptr, 0.f, "deg").label("Azimuth", "Azim")
+      .floatField("elevation", 25.0f, -10.f, 80.f, state::PrimaryInput,
+                  nullptr, 0.f, "deg").label("Elevation", "Elev")
+      .floatField("sun", 0.6f, 0.f, 1.f, state::PrimaryInput)
+          .label("Sun", "Sun")
+      // --- Atmosphere ---
+      .group("atmosphere", "Atmosphere")
+        .groupHelp(
+          "*Fog* melts the structure's top into haze and thickens with "
+          "distance — the scale cue. *Rays* scatter the bright environment "
+          "radially from the sun, carved by the silhouette (needs the sun "
+          "in front of the camera: azimuth toward ±180). *Bloom* lets the "
+          "hot highlights bleed.")
+      .floatField("fog", 0.2f, 0.f, 1.f, state::PrimaryInput)
+          .label("Fog", "Fog")
+      .floatField("rays", 0.3f, 0.f, 1.f, state::PrimaryInput)
+          .label("God Rays", "Rays")
+      .floatField("bloom", 0.25f, 0.f, 1.f, state::PrimaryInput)
+          .label("Bloom", "Bloom")
       // --- Tuning ---
       .group("tuning", "Tuning")
       .floatField("arc", 0.5f, 0.f, 1.f, state::SecondaryInput)
@@ -311,10 +386,13 @@ void module_init() {
           .label("Tilt", "Tilt")
       .floatField("shading", 0.7f, 0.f, 1.f, state::SecondaryInput)
           .label("Shading", "Shade")
-      .floatField("back_dim", 0.6f, 0.f, 1.f, state::SecondaryInput)
-          .label("Back Face Dim", "BkDim")
+      .floatField("vantage", 0.3f, -1.f, 1.f, state::SecondaryInput)
+          .label("Vantage", "Vant")
+      .floatField("loom", 0.2f, 0.f, 1.f, state::SecondaryInput)
+          .label("Loom", "Loom")
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
+      .textureField("env_in", state::SecondaryInput)
       .textureField("tex_out", state::PrimaryOutput)
       .capability(state::Capability::Generator)
       .capability(state::Capability::SeekableApproximate)
@@ -326,37 +404,103 @@ void module_init() {
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
   state::registerShaderSPV("monolith_prefill", PREFILL_SPV, PREFILL_SPV_SIZE);
-  state::registerShaderSPV("monolith_vs", VS_SPV, VS_SPV_SIZE);
-  state::registerShaderSPV("monolith_fs", FS_SPV, FS_SPV_SIZE);
+  state::registerShaderSPV("monolith_gbuf_vs", GBUF_VS_SPV, GBUF_VS_SPV_SIZE);
+  state::registerShaderSPV("monolith_gbuf_fs", GBUF_FS_SPV, GBUF_FS_SPV_SIZE);
+  state::registerShaderSPV("monolith_resolve", RESOLVE_SPV, RESOLVE_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("monolith_rays", RAYS_SPV, RAYS_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("monolith_extract", EXTRACT_SPV, EXTRACT_SPV_SIZE);
+  state::registerShaderSPV("monolith_final", FINAL_SPV, FINAL_SPV_SIZE);
 
   auto cs_prefill = gpu::Device::createShaderModuleByName("monolith_prefill");
-  auto vs_module = gpu::Device::createShaderModuleByName("monolith_vs");
-  auto fs_module = gpu::Device::createShaderModuleByName("monolith_fs");
-  if (!cs_prefill || !vs_module || !fs_module) return;
+  auto vs_gbuf = gpu::Device::createShaderModuleByName("monolith_gbuf_vs");
+  auto fs_gbuf = gpu::Device::createShaderModuleByName("monolith_gbuf_fs");
+  auto cs_resolve = gpu::Device::createShaderModuleByName("monolith_resolve");
+  auto cs_rays = gpu::Device::createShaderModuleByName("monolith_rays");
+  auto cs_extract = gpu::Device::createShaderModuleByName("monolith_extract");
+  auto cs_final = gpu::Device::createShaderModuleByName("monolith_final");
+  if (!cs_prefill || !vs_gbuf || !fs_gbuf || !cs_resolve || !cs_rays ||
+      !cs_extract || !cs_final) return;
 
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1));
-  s_pso_render = gpu::Device::createInstancedRenderPSO(
-      vs_module, "main", fs_module, "main",
-      gpu::TextureFormat::Surface,
-      gpu::Bindings().storage(0),   // verts[] (vertex stage pulls)
-      gpu::Device::BlendMode::AlphaOver);
+  s_pso_gbuf = gpu::Device::createInstancedRenderPSOMRT(
+      vs_gbuf, "main", fs_gbuf, "main",
+      {gpu::TextureFormat::RGBA16F, gpu::TextureFormat::RGBA16F},
+      gpu::Bindings().storage(0));
+  s_pso_resolve = gpu::Device::createComputePSO(cs_resolve, "main", gpu::Bindings()
+      .tex2d(0)   // gbufA
+      .tex2d(1)   // gbufB
+      .tex2d(2)   // bg (tex_in or comp[prev])
+      .tex2d(3)   // env sharp
+      .tex2d(4)   // env blurred (or sharp again)
+      .storageTex2d(5, gpu::TextureFormat::RGBA16F)
+      .sampler(6)
+      .sampler(7)
+      .uniform(8));
+  s_pso_rays = gpu::Device::createComputePSO(cs_rays, "main", gpu::Bindings()
+      .tex2d(0)
+      .storageTex2d(1, gpu::TextureFormat::RGBA16F)
+      .sampler(2)
+      .uniform(3));
+  s_pso_extract = gpu::Device::createComputePSO(cs_extract, "main", gpu::Bindings()
+      .tex2d(0)
+      .tex2d(1)
+      .storageTex2d(2)
+      .uniform(3));
+  s_pso_final = gpu::Device::createComputePSO(cs_final, "main", gpu::Bindings()
+      .tex2d(0)
+      .tex2d(1)
+      .tex2d(2)
+      .tex2d(3)
+      .storageTex2d(4)
+      .uniform(5));
 
-  state::log("monolith: module initialized");
+  state::log("monolith: module initialized (deferred)");
 }
 
 void* create() {
   auto* s = new State();
-  s->vertex_buf = gpu::Device::createBuffer(
-      sizeof(GpuVertex) * kMaxVerts, gpu::BufferUsage::Storage);
+  for (int i = 0; i < kMaxCopies; i++) {
+    s->vtx_bufs[i] = gpu::Device::createBuffer(
+        sizeof(GbufVertex) * kMaxVertsPerCopy, gpu::BufferUsage::Storage);
+    s->ub_resolve[i] = gpu::Device::createBuffer(
+        sizeof(ResolveUniforms), gpu::BufferUsage::Uniform);
+  }
+  s->ub_rays = gpu::Device::createBuffer(sizeof(RaysUniforms), gpu::BufferUsage::Uniform);
+  s->ub_extract = gpu::Device::createBuffer(sizeof(ExtractUniforms), gpu::BufferUsage::Uniform);
+  s->ub_final = gpu::Device::createBuffer(sizeof(FinalUniforms), gpu::BufferUsage::Uniform);
+  s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+  s->samp_clamp = gpu::Device::createSampler(gpu::FilterMode::Linear,
+                                             gpu::AddressMode::ClampToEdge);
+  s->samp_wrap = gpu::Device::createSampler(gpu::FilterMode::Linear,
+                                            gpu::AddressMode::Repeat);
   return s;
 }
 
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->vertex_buf.release();
+  for (int i = 0; i < kMaxCopies; i++) {
+    s->vtx_bufs[i].release();
+    s->ub_resolve[i].release();
+  }
+  s->ub_rays.release();
+  s->ub_extract.release();
+  s->ub_final.release();
+  s->gbufA.release();
+  s->gbufB.release();
+  s->compA.release();
+  s->compB.release();
+  s->rays_tex.release();
+  s->env_blur.release();
+  s->bloom_src.release();
+  s->bloom_tex.release();
+  s->zero_tex.release();
+  s->samp_clamp.release();
+  s->samp_wrap.release();
   delete s;
 }
 
@@ -368,8 +512,13 @@ void init(void* self) {
   s->env_phase = 0.0;
   s->last_bar_phase = -1.0;
   state::setOnStateReady(&on_state_ready);
-  s->initialized = s_pso_prefill.valid() && s_pso_render.valid() &&
-                   s->vertex_buf.valid();
+  s->blur.init();
+  bool bufs_ok = true;
+  for (int i = 0; i < kMaxCopies; i++) {
+    bufs_ok = bufs_ok && s->vtx_bufs[i].valid() && s->ub_resolve[i].valid();
+  }
+  s->initialized = bufs_ok && s_pso_prefill.valid() && s_pso_gbuf.valid() &&
+                   s_pso_resolve.valid() && s_pso_final.valid();
 }
 
 static inline double wrap01(double v) { return v - std::floor(v); }
@@ -418,13 +567,16 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
     int l = len[i];
-    if      (state::pathIs(p, l, "shape"))   s->shape = state::patchInt(i);
-    else if (state::pathIs(p, l, "size"))    s->size = state::patchFloat(i);
+    if      (state::pathIs(p, l, "shape"))     s->shape = state::patchInt(i);
+    else if (state::pathIs(p, l, "size"))      s->size = state::patchFloat(i);
     else if (state::pathIs(p, l, "color")) {
       auto v = state::patchVec3(i);
       s->color_r = v.x; s->color_g = v.y; s->color_b = v.z;
     }
-    else if (state::pathIs(p, l, "alpha"))   s->alpha = state::patchFloat(i);
+    else if (state::pathIs(p, l, "opacity"))   s->opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "reflect"))   s->reflect_k = state::patchFloat(i);
+    else if (state::pathIs(p, l, "roughness")) s->roughness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "refract"))   s->refract_k = state::patchFloat(i);
     else if (state::pathIs(p, l, "motion")) {
       int m = state::patchInt(i);
       if (m != s->motion) { s->motion = m; vis_dirty = true; }
@@ -437,26 +589,34 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
         vis_dirty = true;
       }
     }
-    else if (state::pathIs(p, l, "speed"))    s->speed = state::patchFloat(i);
-    else if (state::pathIs(p, l, "bars"))     s->bars = state::patchInt(i);
-    else if (state::pathIs(p, l, "copies"))   s->copies = state::patchInt(i);
-    else if (state::pathIs(p, l, "spread"))   s->spread = state::patchFloat(i);
-    else if (state::pathIs(p, l, "falloff"))  s->falloff = state::patchFloat(i);
-    else if (state::pathIs(p, l, "arc"))      s->arc = state::patchFloat(i);
-    else if (state::pathIs(p, l, "tilt"))     s->tilt = state::patchFloat(i);
-    else if (state::pathIs(p, l, "shading"))  s->shading = state::patchFloat(i);
-    else if (state::pathIs(p, l, "back_dim")) s->back_dim = state::patchFloat(i);
+    else if (state::pathIs(p, l, "speed"))     s->speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bars"))      s->bars = state::patchInt(i);
+    else if (state::pathIs(p, l, "copies"))    s->copies = state::patchInt(i);
+    else if (state::pathIs(p, l, "spread"))    s->spread = state::patchFloat(i);
+    else if (state::pathIs(p, l, "falloff"))   s->falloff = state::patchFloat(i);
+    else if (state::pathIs(p, l, "azimuth"))   s->azimuth = state::patchFloat(i);
+    else if (state::pathIs(p, l, "elevation")) s->elevation = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sun"))       s->sun = state::patchFloat(i);
+    else if (state::pathIs(p, l, "fog"))       s->fog = state::patchFloat(i);
+    else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
+    else if (state::pathIs(p, l, "arc"))       s->arc = state::patchFloat(i);
+    else if (state::pathIs(p, l, "tilt"))      s->tilt = state::patchFloat(i);
+    else if (state::pathIs(p, l, "shading"))   s->shading = state::patchFloat(i);
+    else if (state::pathIs(p, l, "vantage"))   s->vantage = state::patchFloat(i);
+    else if (state::pathIs(p, l, "loom"))      s->loom = state::patchFloat(i);
   }
   if (vis_dirty) apply_visibility(s);
 }
 
-// Per-tri record for the analytic painter's order (see the header comment):
-// order = copies-1-ci for back faces, copies+ci for front faces.
-struct TriRecord {
-  int order;
-  float clip[3][2];  // projected clip xy per corner
-  float r, g, b, a;
-};
+static gpu::Texture ensureTex(gpu::Texture& t, int w, int h,
+                              gpu::TextureFormat fmt, bool size_changed) {
+  if (!t.valid() || size_changed) {
+    t.release();
+    t = gpu::Device::createTexture(w, h, fmt);
+  }
+  return t;
+}
 
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
@@ -465,139 +625,287 @@ void render(void* self, int vp_w, int vp_h) {
   auto in = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!out.valid()) return;
+  auto env_field = gpu::Device::textureForField("env_in");
+  const bool env_wired = env_field.valid();
+  gpu::Texture env_src = env_wired ? env_field : in;
+
+  const float vis_fade = std::fmin(1.0f, std::fmax(0.0f, s->opacity / 0.1f));
+
+  // --- Idle: pure passthrough, bit-exact, regardless of atmosphere ---
+  if (vis_fade < 1.0f / 255.0f || !in.valid()) {
+    if (in.valid()) {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_prefill);
+      cp.setTexture(in, 0, 0);
+      cp.setTexture(out, 1, 1);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+    } else {
+      gpu::Device::clear(out, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    gpu::Device::submit();
+    return;
+  }
 
   // --- Pose ---
-  // Tilt is signed: positive pitches the shape's top edge TOWARD the camera
-  // (you look down onto the lit top face); negative reveals the underside.
-  const float pitch = (-s->tilt * 40.0f) * (kPi / 180.0f);
+  const float pitch = (-s->tilt * 40.0f) * kDeg;
   M3 rot;
   if (s->motion == MOTION_ARC) {
-    // One-directional eased sweep across the arc, then an instant snap back
-    // to the start when the phase wraps (the cosine ease has zero slope at
-    // both ends, so the sweep settles into and out of its endpoints).
-    const float arc_half = (20.0f + 140.0f * s->arc) * (kPi / 180.0f);
+    // One-directional eased sweep, instant snap back on phase wrap.
+    const float arc_half = (20.0f + 140.0f * s->arc) * kDeg;
     const float yaw = arc_half * -std::cos(kPi * (float)s->phase_a);
     rot = m3Mul(m3RotY(yaw), m3RotX(pitch));
   } else {
-    // Tumble / Arcing Tumble share the matrix; only the phase advance
-    // differs (tick modulates it for Arcing).
     rot = m3Mul(m3RotY(kTau * (float)s->phase_a),
                 m3RotX(kTau * (float)s->phase_b + pitch));
   }
 
+  // --- Camera: loom (fov/dolly) + vantage (low camera, pitched up) ---
   const ShapeDef& shape = kShapes[s->shape == SHAPE_PYRAMID ? 1 : 0];
   const auto cs = fx::coverSquare(vp_w, vp_h);
-  const V3 light = v3Norm({kLightX, kLightY, kLightZ});
   const float size_world = 0.55f * std::pow(2.0f, (s->size - 0.5f) * 2.0f);
   const float spread_step = 0.15f + 0.85f * s->spread;
   const float falloff_mult = 1.0f - 0.8f * s->falloff;
   const int copies = s->copies < 1 ? 1 : (s->copies > kMaxCopies ? kMaxCopies : s->copies);
+  const float outer_scale = size_world * (1.0f + (float)(copies - 1) * spread_step);
 
-  TriRecord tris[kMaxTris];
-  int tri_count = 0;
+  const float fov = (30.0f + 45.0f * s->loom) * kDeg;
+  const float focal = 1.0f / std::tan(fov * 0.5f);
+  float cam_d = 3.0f * focal / 3.7320508f;             // dolly holds framing
+  cam_d = std::fmax(cam_d, outer_scale * 0.72f + 0.4f); // never enter the shape
+  const float cam_y = -s->vantage * 1.5f * std::fmax(0.8f, size_world);
+  const float phi = std::atan2(-cam_y, cam_d);          // re-center the object
+  const M3 cam_rot = m3RotX(phi);
+
+  // --- Sun (world = rotated-object space; azimuth 0 lights from camera) ---
+  const float az = s->azimuth * kDeg, el = s->elevation * kDeg;
+  const V3 sun_world = {std::sin(az) * std::cos(el), std::sin(el),
+                        -std::cos(az) * std::cos(el)};
+  const V3 sun_view = v3Norm(m3Apply(cam_rot, sun_world));
+  const float sun_i = std::pow(2.0f, (s->sun - 0.5f) * 3.0f);
+
+  // --- Scratch textures (lazy, vp-sized) ---
+  const bool resized = (s->scratch_w != vp_w || s->scratch_h != vp_h);
+  ensureTex(s->gbufA, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
+  ensureTex(s->gbufB, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
+  ensureTex(s->compA, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
+  ensureTex(s->compB, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
+  s->scratch_w = vp_w;
+  s->scratch_h = vp_h;
+  if (!s->gbufA.valid() || !s->gbufB.valid() || !s->compA.valid() || !s->compB.valid())
+    return;
+
+  // --- Env pre-blur for roughness ---
+  gpu::Texture env_blurred = env_src;
+  if (s->roughness > 0.01f && s->blur.valid()) {
+    ensureTex(s->env_blur, vp_w, vp_h, gpu::Device::defaultTextureFormat(), resized);
+    if (s->env_blur.valid()) {
+      int iters = 1 + (int)(s->roughness * 4.0f);
+      s->blur.apply(env_src, s->env_blur, vp_w, vp_h, iters);
+      env_blurred = s->env_blur;
+    }
+  }
+
+  // --- Per-copy rounds: raster G-buffer + resolve, inner -> outer ---
+  const float fog_h = std::fmax(0.72f * outer_scale, 1e-3f);
+  gpu::Texture comp_prev;   // invalid on round 0
+  gpu::Texture comp_next = s->compA;
+  int rounds_done = 0;
 
   for (int ci = 0; ci < copies; ci++) {
     const float scale = size_world * (1.0f + (float)ci * spread_step);
-    const float alpha_i = s->alpha * std::pow(falloff_mult, (float)ci);
-    if (alpha_i < 1.0f / 255.0f) continue;
+    const float w_i = vis_fade * std::pow(falloff_mult, (float)ci);
+    if (w_i < 1.0f / 255.0f) continue;
 
-    // Transform + project this copy's vertex ring once.
-    V3 view[8];
+    // Transform + project this copy's vertex ring.
+    V3 world[8], view[8];
     float sq[8][2];
     bool depth_ok = true;
     for (int vi = 0; vi < shape.vert_count; vi++) {
       V3 p = shape.verts[vi];
       p = {p.x * scale, p.y * scale, p.z * scale};
       p = m3Apply(rot, p);
-      p.z += kCamDist;
-      view[vi] = p;
-      if (p.z < 0.1f) { depth_ok = false; break; }
-      // y-up square NDC; the GPU never sees this space.
-      sq[vi][0] = kFocal * p.x / p.z;
-      sq[vi][1] = kFocal * p.y / p.z;
+      world[vi] = p;
+      V3 pv = m3Apply(cam_rot, V3{p.x, p.y - cam_y, p.z + cam_d});
+      view[vi] = pv;
+      if (pv.z < 0.1f) { depth_ok = false; break; }
+      sq[vi][0] = focal * pv.x / pv.z;
+      sq[vi][1] = focal * pv.y / pv.z;
     }
-    if (!depth_ok) continue;   // degenerate config; skip the copy
+    if (!depth_ok) continue;
 
+    GbufVertex verts[kMaxVertsPerCopy];
+    int tri_count = 0;
     for (int t = 0; t < shape.tri_count; t++) {
       const uint8_t* idx = shape.tris[t];
-      const float ax = sq[idx[0]][0], ay = sq[idx[0]][1];
+      const float ax0 = sq[idx[0]][0], ay0 = sq[idx[0]][1];
       const float bx = sq[idx[1]][0], by = sq[idx[1]][1];
       const float cx = sq[idx[2]][0], cy = sq[idx[2]][1];
-      // Signed area in the y-up pre-flip space: > 0 <=> front face
-      // (winding normalized inward-cross at module_init).
-      const float area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-      if (std::fabs(area2) < 1e-7f) continue;   // edge-on sliver
-      const bool front = area2 > 0.0f;
+      const float area2 = (bx - ax0) * (cy - ay0) - (by - ay0) * (cx - ax0);
+      if (area2 <= 1e-7f) continue;   // back face or sliver: dropped
 
       const V3 va = view[idx[0]], vb = view[idx[1]], vc = view[idx[2]];
-      // Visible-side unit normal: m points inward, so the front face's
-      // outward normal is -m and a back face's eye-side normal is +m.
+      // Inward-cross winding => outward normal is the NEGATED cross.
       V3 nrm = v3Norm(v3Cross(v3Sub(vb, va), v3Sub(vc, va)));
-      if (front) nrm = {-nrm.x, -nrm.y, -nrm.z};
+      nrm = {-nrm.x, -nrm.y, -nrm.z};
 
-      const float lambert = std::fmax(0.0f, v3Dot(nrm, light));
-      float shade = 1.0f + s->shading * ((0.30f + 0.70f * lambert) - 1.0f);
-      if (!front) shade *= 1.0f - 0.75f * s->back_dim;
-
-      TriRecord& tr = tris[tri_count++];
-      tr.order = front ? (copies + ci) : (copies - 1 - ci);
       for (int k = 0; k < 3; k++) {
-        // Cover-square -> Vulkan clip. THE single y-flip of the pipeline
-        // (y-up square NDC -> y-down Vulkan NDC); see vs.hlsl.
-        tr.clip[k][0] = sq[idx[k]][0] * 2.0f * cs.ax;
-        tr.clip[k][1] = -sq[idx[k]][1] * 2.0f * cs.ay;
+        GbufVertex& v = verts[tri_count * 3 + k];
+        const float z = view[idx[k]].z;
+        v.pos[0] = sq[idx[k]][0] * 2.0f * cs.ax * z;
+        v.pos[1] = -sq[idx[k]][1] * 2.0f * cs.ay * z;   // THE single y-flip
+        v.pos[2] = 0.5f * z;
+        v.pos[3] = z;
+        v.nrm[0] = nrm.x; v.nrm[1] = nrm.y; v.nrm[2] = nrm.z; v.nrm[3] = 1.0f;
+        v.misc[0] = world[idx[k]].y;
+        v.misc[1] = z;
+        v.misc[2] = 0.0f;
+        v.misc[3] = 0.0f;
       }
-      auto clamp01 = [](float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); };
-      tr.r = clamp01(s->color_r * shade);
-      tr.g = clamp01(s->color_g * shade);
-      tr.b = clamp01(s->color_b * shade);
-      tr.a = alpha_i;
+      tri_count++;
     }
+    if (tri_count == 0) continue;
+    s->vtx_bufs[ci].write<GbufVertex>(verts, tri_count * 3);
+
+    // Raster the round's G-buffer (cleared; Replace writes).
+    {
+      auto rp = gpu::RenderPass::beginMRT({
+          {s->gbufA, 0.0f, 0.0f, 0.0f, 0.0f},
+          {s->gbufB, 0.0f, 0.0f, 0.0f, 0.0f},
+      });
+      rp.setPSO(s_pso_gbuf);
+      rp.setBuffer(s->vtx_bufs[ci], 0);
+      rp.draw(tri_count * 3, 1);
+      rp.end();
+    }
+
+    // Resolve: shade + composite into the ping-pong.
+    ResolveUniforms u = {};
+    u.sun_view[0] = sun_view.x; u.sun_view[1] = sun_view.y;
+    u.sun_view[2] = sun_view.z; u.sun_view[3] = sun_i;
+    u.cam[0] = focal; u.cam[1] = cs.ax; u.cam[2] = cs.ay; u.cam[3] = phi;
+    u.material[0] = s->reflect_k; u.material[1] = s->roughness;
+    u.material[2] = s->refract_k; u.material[3] = s->opacity;
+    u.color_shade[0] = s->color_r; u.color_shade[1] = s->color_g;
+    u.color_shade[2] = s->color_b; u.color_shade[3] = s->shading;
+    u.fog_p[0] = s->fog; u.fog_p[1] = 0.1f * fog_h;
+    u.fog_p[2] = 1.0f / (0.9f * fog_h); u.fog_p[3] = 0.45f / size_world;
+    u.round_p[0] = w_i; u.round_p[1] = rounds_done == 0 ? 1.0f : 0.0f;
+    u.round_p[2] = env_wired ? 1.0f : 0.0f; u.round_p[3] = cam_d;
+    u.vp[0] = (float)vp_w; u.vp[1] = (float)vp_h;
+    u.vp[2] = 1.0f / vp_w; u.vp[3] = 1.0f / vp_h;
+    s->ub_resolve[ci].writeOne(u);
+
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_resolve);
+      cp.setTexture(s->gbufA, 0, 0);
+      cp.setTexture(s->gbufB, 1, 0);
+      cp.setTexture(rounds_done == 0 ? in : comp_prev, 2, 0);
+      cp.setTexture(env_src, 3, 0);
+      cp.setTexture(env_blurred, 4, 0);
+      cp.setTexture(comp_next, 5, 1);
+      cp.setSampler(s->samp_clamp, 6);
+      cp.setSampler(s->samp_wrap, 7);
+      cp.setBuffer(s->ub_resolve[ci], 8);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+    }
+
+    comp_prev = comp_next;
+    comp_next = (comp_prev.id == s->compA.id) ? s->compB : s->compA;
+    rounds_done++;
   }
 
-  // --- Prefill: tex_in -> tex_out (passthrough base layer) ---
-  if (in.valid()) {
+  if (rounds_done == 0) {
+    // Everything skipped (degenerate camera): passthrough.
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_prefill);
     cp.setTexture(in, 0, 0);
     cp.setTexture(out, 1, 1);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
-  } else {
-    gpu::Device::clear(out, 0.0f, 0.0f, 0.0f, 0.0f);
+    gpu::Device::submit();
+    return;
+  }
+  gpu::Texture comp_final = comp_prev;
+
+  // --- God rays: radial scatter from the sun, carved by the silhouette ---
+  // Rays need the sun IN FRONT of the camera (sun_view.z > 0 — i.e. behind
+  // the object). Fold the fade into the gain and skip the pass at zero.
+  const float sun_fade = std::fmin(1.0f, std::fmax(0.0f, (sun_view.z - 0.02f) / 0.13f));
+  const float rays_gain = s->rays * 1.5f * sun_fade * sun_i;
+  bool has_rays = false;
+  if (rays_gain > 1e-4f && s_pso_rays.valid()) {
+    ensureTex(s->rays_tex, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
+    if (s->rays_tex.valid()) {
+      const float sz = std::fmax(sun_view.z, 0.05f);
+      const float sun_sq_x = focal * sun_view.x / sz;
+      const float sun_sq_y = focal * sun_view.y / sz;
+      RaysUniforms ru = {};
+      ru.sun_screen[0] = (sun_sq_x * 2.0f * cs.ax + 1.0f) * 0.5f * vp_w;
+      ru.sun_screen[1] = (1.0f - (sun_sq_y * 2.0f * cs.ay + 1.0f) * 0.5f) * vp_h;
+      ru.sun_screen[3] = rays_gain;
+      ru.march[0] = 32.0f; ru.march[1] = 0.93f;
+      ru.march[2] = (float)vp_w / 48.0f;
+      s->ub_rays.writeOne(ru);
+
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_rays);
+      cp.setTexture(comp_final, 0, 0);
+      cp.setTexture(s->rays_tex, 1, 1);
+      cp.setSampler(s->samp_clamp, 2);
+      cp.setBuffer(s->ub_rays, 3);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+      has_rays = true;
+    }
   }
 
-  if (tri_count > 0) {
-    // Analytic painter's order for nested convex copies (exact, not a depth
-    // heuristic): back faces outermost->innermost, then front faces
-    // innermost->outermost. See the header comment for why this is correct
-    // from every exterior viewpoint.
-    std::stable_sort(tris, tris + tri_count,
-                     [](const TriRecord& a, const TriRecord& b) {
-                       return a.order < b.order;
-                     });
+  // --- Bloom: extract HDR highlights, FastBlur, add in final ---
+  bool has_bloom = false;
+  if (s->bloom > 1e-3f && s_pso_extract.valid() && s->blur.valid()) {
+    const auto fmt = gpu::Device::defaultTextureFormat();
+    ensureTex(s->bloom_src, vp_w, vp_h, fmt, resized);
+    ensureTex(s->bloom_tex, vp_w, vp_h, fmt, resized);
+    if (s->bloom_src.valid() && s->bloom_tex.valid()) {
+      ExtractUniforms eu = {};
+      eu.p[0] = 0.25f;                       // range-compress x4 for 8-bit scratch
+      eu.p[1] = has_rays ? 1.0f : 0.0f;
+      s->ub_extract.writeOne(eu);
 
-    GpuVertex verts[kMaxVerts];
-    for (int t = 0; t < tri_count; t++) {
-      for (int k = 0; k < 3; k++) {
-        GpuVertex& v = verts[t * 3 + k];
-        v.pos[0] = tris[t].clip[k][0];
-        v.pos[1] = tris[t].clip[k][1];
-        v.pos[2] = 0.5f;
-        v.pos[3] = 1.0f;
-        v.rgba[0] = tris[t].r;
-        v.rgba[1] = tris[t].g;
-        v.rgba[2] = tris[t].b;
-        v.rgba[3] = tris[t].a;
-      }
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_extract);
+      cp.setTexture(comp_final, 0, 0);
+      cp.setTexture(has_rays ? s->rays_tex : s->zero_tex, 1, 0);
+      cp.setTexture(s->bloom_src, 2, 1);
+      cp.setBuffer(s->ub_extract, 3);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+
+      s->blur.apply(s->bloom_src, s->bloom_tex, vp_w, vp_h,
+                    2 + (int)(s->bloom * 3.0f + 0.5f));
+      has_bloom = true;
     }
-    s->vertex_buf.write<GpuVertex>(verts, tri_count * 3);
+  }
 
-    auto rp = gpu::RenderPass::beginLoad(out);
-    rp.setPSO(s_pso_render);
-    rp.setBuffer(s->vertex_buf, 0);
-    rp.draw(tri_count * 3, 1);
-    rp.end();
+  // --- Final combine + tonemap -> tex_out ---
+  FinalUniforms fu = {};
+  fu.p[0] = 4.0f * s->bloom;   // re-expand the extract's /4 range, scaled
+  fu.p[1] = has_rays ? 1.0f : 0.0f;
+  fu.p[2] = has_bloom ? 1.0f : 0.0f;
+  s->ub_final.writeOne(fu);
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_final);
+    cp.setTexture(comp_final, 0, 0);
+    cp.setTexture(has_rays ? s->rays_tex : s->zero_tex, 1, 0);
+    cp.setTexture(has_bloom ? s->bloom_tex : s->zero_tex, 2, 0);
+    cp.setTexture(in, 3, 0);
+    cp.setTexture(out, 4, 1);
+    cp.setBuffer(s->ub_final, 5);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
   }
 
   gpu::Device::submit();
