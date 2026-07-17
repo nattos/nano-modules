@@ -51,9 +51,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     if (sp.x >= 0.0 && sp.x <= 1.0 && sp.y >= 0.0 && sp.y <= 1.0) {
       occ_t = compTex.SampleLevel(clampS, sp, 0).a;
     }
-    // Synthetic surface light: a broad glow centered on the sun point.
+    // Synthetic surface light: the WHOLE surface emits (floor), brightest
+    // toward the sun point — an off-screen sun must not extinguish the
+    // shafts, only bias them.
     float d = length(sp_px - sun_screen.xy) * glow.x;
-    float g = 1.0 / (1.0 + d * d);
+    float g = 0.30 + 0.70 / (1.0 + d * d);
     accum += (1.0 - saturate(occ_t)) * g * w;
     wsum += w;
     w *= march.y;

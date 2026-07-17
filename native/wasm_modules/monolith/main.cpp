@@ -284,7 +284,9 @@ void module_init() {
   // 1.2.3: fog is a real medium (blurred/desat/milk-lifted color, smooth
   //        full-body ramp); rays radiance is synthetic surface light, not
   //        gathered composite color.
-  state::init("source.mesh.monolith", {1, 2, 3},
+  // 1.2.4: rays recalibrated - surface glow gets a floor (whole surface
+  //        emits; off-screen sun only biases) and the gain restored.
+  state::init("source.mesh.monolith", {1, 2, 4},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -872,7 +874,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Rays need the sun IN FRONT of the camera (sun_view.z > 0 — i.e. behind
   // the object). Fold the fade into the gain and skip the pass at zero.
   const float sun_fade = std::fmin(1.0f, std::fmax(0.0f, (sun_view.z - 0.02f) / 0.13f));
-  const float rays_gain = s->rays * 0.4f * sun_fade * sun_i;
+  const float rays_gain = s->rays * 0.9f * sun_fade * sun_i;
   bool has_rays = false;
   if (rays_gain > 1e-4f && s_pso_rays.valid()) {
     ensureTex(s->rays_tex, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
@@ -888,7 +890,7 @@ void render(void* self, int vp_w, int vp_h) {
       ru.march[0] = 32.0f; ru.march[1] = 0.93f;
       ru.march[2] = (float)vp_w / 48.0f;
       ru.march[3] = s->caustics;
-      ru.glow[0] = 1.0f / (0.28f * (float)vp_w);
+      ru.glow[0] = 1.0f / (0.5f * (float)vp_w);
       s->ub_rays.writeOne(ru);
 
       auto cp = gpu::ComputePass::begin();
