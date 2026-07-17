@@ -286,7 +286,9 @@ void module_init() {
   //        gathered composite color.
   // 1.2.4: rays recalibrated - surface glow gets a floor (whole surface
   //        emits; off-screen sun only biases) and the gain restored.
-  state::init("source.mesh.monolith", {1, 2, 4},
+  // 1.2.5: ray caustics are per-shaft density columns (constant along
+  //        each shaft, varying across the fan), not a screen overlay.
+  state::init("source.mesh.monolith", {1, 2, 5},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"

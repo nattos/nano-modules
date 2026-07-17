@@ -62,19 +62,31 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
   float3 r = ((wsum > 1e-4 ? accum / wsum : 0.0) * sun_screen.w).xxx;
 
-  // Water caustics: approximate shimmer IN the volume. The water surface
-  // is conceptually UP — not sun-anchored (the sun may sit "underwater"),
-  // so the rays aren't truly projected through the caustic layer. Instead
-  // the gathered light is modulated by a screen-space field with
-  // vertically stretched features drifting slowly down the frame: light
-  // columns falling from a surface above. Rebalanced ~1.
+  // Water caustics: COLUMNS of differing density, not a pasted overlay.
+  // The modulation is (nearly) constant ALONG each shaft and varies only
+  // ACROSS the fan: it samples the caustic field on the shaft's unit
+  // direction from the sun point (seamless around the full circle). With
+  // the usual overhead/off-screen sun the in-frame fan is near-parallel,
+  // so this reads as vertical light columns; with a centered eclipse sun
+  // it becomes radial spokes. A faint along-shaft term keeps the columns
+  // from being laser-uniform, and the water clock swings the whole fan.
   float ca = march.w;
   if (ca > 0.0) {
-    float2 cp = float2(p.x, p.y * 0.3) * (3.5 / float(W));
-    cp.y -= sun_screen.z * 0.22;   // surface motion sinks through the frame
-    cp.x += sun_screen.z * 0.05;
-    float c = nano_caustic2(cp, sun_screen.z);
-    r *= max(1.0 + ca * (c * 2.8 - 0.6), 0.0);
+    float2 d_sun = p - sun_screen.xy;
+    float r_px = length(d_sun);
+    if (r_px > 1.0) {
+      float2 dirs = d_sun / r_px;
+      float along = r_px * glow.x;
+      float c = nano_caustic2(dirs * 3.4 + float2(0.0, along * 0.15),
+                              sun_screen.z);
+      r *= max(1.0 + ca * (c * 3.2 - 0.75), 0.0);
+      // Mild 2D breakup (+-22%) so the columns never go laser-uniform,
+      // especially near the sun point where the fan converges.
+      float b = nano_value_noise2(p * (2.2 / float(W)) +
+                                  float2(sun_screen.z * 0.15,
+                                         -sun_screen.z * 0.10));
+      r *= 1.0 + ca * (0.44 * b - 0.22);
+    }
   }
   raysTex[gid.xy] = float4(r, 0.0);
 }
