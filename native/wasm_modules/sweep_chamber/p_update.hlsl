@@ -308,14 +308,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float2 sp = rad * float2(cos(theta), sin(theta));
     float2 nuv = 0.5 + sp * aspect;
 
-    // Spawn-on-line, GRIP-WEIGHTED: with prob to_line_rate pick a random
-    // tracer, accept it with probability = its grip (how hard the image
-    // currently holds it), then land at a UNIFORM point along a random live
-    // segment of its block (vertex-snapping would quantize the cloud into
-    // hard rails — dc parity). The single-trial rejection keeps O(1) cost and
-    // makes the net line-attraction scale with mean grip: as the sweep
-    // releases, lines keep drawing (arcing away) but stop pulling particles —
-    // the direct replacement for dc's death-based bunching control.
+    // Spawn-on-line, GRIP-WEIGHTED: with prob to_line_rate run a few
+    // independent trials — each picks a random tracer and accepts it with
+    // probability = its grip (how hard the image currently holds it) — then
+    // land at a UNIFORM point along a random live segment of its block
+    // (vertex-snapping would quantize the cloud into hard rails — dc parity).
+    // Multi-trial rejection keeps O(1) cost but makes the slider honest:
+    // acceptance is 1-(1-mean grip)^4, so at rate 1.0 nearly every spawn
+    // lands on a line once any decent fraction of lines actually grips —
+    // while free tracers drifting through black still pull nothing, and a
+    // releasing sweep still lets go smoothly (the direct replacement for
+    // dc's death-based bunching control).
     // (Skipped for density kills: those are a redistribution, and the lines
     // are exactly where particles bunch — landing them back on one would
     // just re-feed the pile they were culled from.)
@@ -324,12 +327,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float p_line = saturate(to_line_rate * lerp(1.0, line_boost, inten));
     if (!dens_kill && p_line > 0.0 && lc > 0u && live > 0u
         && swc_unit(swc_hash(h ^ 0x0777u)) < p_line) {
-      uint li = min(lc - 1u, (uint)(swc_unit(swc_hash(h ^ 0x0999u)) * (float)lc));
-      float grip_w = saturate(tracers[li].b.z);
-      if (swc_unit(swc_hash(h ^ 0x0F31u)) < grip_w) {
-        uint sk = min(live - 1u, (uint)(swc_unit(swc_hash(h ^ 0x0BB5u)) * (float)live));
-        Seg sg = segs[li * (uint)seg_stride + sk];
-        if (sg.b.w > 0.0) nuv = lerp(sg.a.xy, sg.a.zw, swc_unit(swc_hash(h ^ 0x0CCDu)));
+      [unroll]
+      for (uint trial = 0u; trial < 4u; ++trial) {
+        uint ht = swc_hash(h ^ (0x0999u + trial * 0x9E37u));
+        uint li = min(lc - 1u, (uint)(swc_unit(ht) * (float)lc));
+        float grip_w = saturate(tracers[li].b.z);
+        if (swc_unit(swc_hash(ht ^ 0x0F31u)) < grip_w) {
+          uint sk = min(live - 1u, (uint)(swc_unit(swc_hash(ht ^ 0x0BB5u)) * (float)live));
+          Seg sg = segs[li * (uint)seg_stride + sk];
+          // Geometric liveness (a real segment always advances) — gating on
+          // the segment's ALPHA would silently kill spawn-on-line whenever
+          // the lines are drawn invisible (l_opacity 0).
+          float2 sd = sg.a.zw - sg.a.xy;
+          if (dot(sd, sd) > 0.0) {
+            nuv = lerp(sg.a.xy, sg.a.zw, swc_unit(swc_hash(ht ^ 0x0CCDu)));
+            break;
+          }
+        }
       }
     }
 

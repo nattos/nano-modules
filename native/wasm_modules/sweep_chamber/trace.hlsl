@@ -12,8 +12,9 @@
 //     lines don't die in black — they keep propagating through free space on
 //     a ballistic ARC whose signed curvature κ is a spendable turn budget
 //     (recharged while gripped, spent along free flight), while a
-//     GRIP weight ∈[0,1] (attack/decay EMA of the trace-mean ridge strength
-//     L'max) carries what death used to signal: how strongly this line
+//     GRIP weight ∈[0,1] (attack/decay EMA of the trace-mean TRAP GATE —
+//     the fraction of the trace on a ridge) carries what death used to
+//     signal: how strongly this line
 //     attracts particle spawns (and, optionally, its alpha).
 //   · Trapping gates on field_a's L'max (the ridge detector), NEVER on |∇L'|
 //     — the gradient vanishes exactly ON a ridge crest, so any gradient-
@@ -220,7 +221,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float2 D_iso = (fa2.gb / max(field_res, 1.0)) / max(aspect, 1e-4);
       D_iso -= dir * dot(D_iso, dir);
       nextP += D_iso * aspect * (snap * trap2 * 0.5);
-      Lacc += fa2.a;
+      // Accumulate the TRAP GATE, not raw L'max: grip should read "fraction
+      // of this trace that is on a ridge" and saturate to 1 for a fully
+      // trapped line — raw luma tops out well below 1 on real content, which
+      // starved grip-weighted spawn-on-line.
+      Lacc += trap2;
       totalSteps++;
 
       if (segIdx < max_seg) {
