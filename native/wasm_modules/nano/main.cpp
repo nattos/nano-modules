@@ -16,6 +16,7 @@ NANO_DECLARE_INSTANCE_EFFECT(nanolooper)
 NANO_DECLARE_INSTANCE_EFFECT(motion_field)
 NANO_DECLARE_INSTANCE_EFFECT(flash_particles)
 NANO_DECLARE_INSTANCE_EFFECT(local_delay)
+NANO_DECLARE_INSTANCE_EFFECT(peak_decay)
 NANO_DECLARE_INSTANCE_EFFECT(height_from_gradient)
 NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
 NANO_DECLARE_INSTANCE_EFFECT(brutal_fold)
@@ -91,6 +92,17 @@ void nano_module_main() {
         "delay,echo,motion,vectors,flow,render-outputs,producer,stylized",
         "la-history",
         NANO_INSTANCE_LIFECYCLE(local_delay),
+    });
+
+    nano::registerEffect({
+        2,
+        "motion.peak_decay",
+        "Peak Decay",
+        "Per-pixel peak meter. Any pixel that holds still for longer than the hold time starts to fall: its brightness eases down a smoothstep sigmoid over the fall time, dimming toward black by the amount. The instant a pixel changes it snaps back to full brightness (meter ballistics: instant up, smooth down), so moving material stays vivid while static regions sink away. Change metering is full-RGB weighted toward luma and compares against the reference latched when the pixel last moved, so slow drifts eventually count as motion too; the threshold keeps sensor noise from holding pixels awake.",
+        "motion",
+        "decay,peak,meter,luma,fade,static,motion,temporal,stale",
+        "la-chart-bar",
+        NANO_INSTANCE_LIFECYCLE(peak_decay),
     });
 
     nano::registerEffect({

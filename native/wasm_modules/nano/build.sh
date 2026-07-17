@@ -279,6 +279,15 @@ compile_shaders_compute_var_spv pixel_ocean compute
 _emit_spv_header_var pixel_ocean compute
 echo "  pixel_ocean shaders compiled (SPV: compute)"
 
+# peak_decay — per-pixel "peak meter": static pixels' luma falls down a
+# sigmoid after a hold; any change snaps back instantly. Two passes over an
+# RGBA16F state ping-pong (meter updates held-ref + age, apply gains the
+# input) — split because the storage-format hint is per-shader.
+compile_shaders_compute_var_spv peak_decay meter
+compile_shaders_compute_var_spv peak_decay apply
+_emit_spv_header_var peak_decay meter apply
+echo "  peak_decay shaders compiled (SPV: meter + apply)"
+
 # pixel_descent — beat-locked stepping grid: one lit pixel per column marching
 # top→bottom over an N-beat loop, with per-column timing jitter. One trivial
 # compute pass; which row each column lights is computed CPU-side.
@@ -410,6 +419,7 @@ wasm_build \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \
   ../shape_burst/main.cpp \
+  ../peak_decay/main.cpp \
   ../pixel_ocean/main.cpp \
   ../pixel_descent/main.cpp \
   ../pixel_rift/main.cpp \
