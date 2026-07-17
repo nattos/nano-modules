@@ -1,10 +1,14 @@
-// source.mesh.monolith — god rays (crepuscular radial scatter).
+// source.mesh.monolith — god rays (light shafts from the surface above).
 //
-// For each pixel, march toward the sun's screen position gathering the
-// bright environment where it is NOT occluded (composite alpha carries
-// the accumulated silhouette), with exponential decay per tap. The black
-// slab carves dark shafts; the bright env bleeds around its edges. Output
-// is an additive RGBA16F layer consumed by the final combine.
+// For each pixel, march toward the sun's screen position accumulating a
+// SYNTHETIC radiance — a sun-centered glow standing in for light entering
+// through the water surface — gated by (1 - occlusion) from the composite
+// alpha, with exponential decay per tap. The composite's COLOR is never
+// gathered: scattering the 2D input radially reads as a camera-facing
+// billboard being smeared, not a volume. Taps that leave the frame count
+// as unoccluded (open water), so shafts don't truncate at the edges. The
+// black slab carves dark shafts; the top-anchored caustic field (below)
+// does the surface modulation. Output is an additive RGBA16F layer.
 
 #include "caustics.hlsl"
 
@@ -15,6 +19,7 @@ SamplerState        clampS  : register(s2);
 cbuffer Uniforms : register(b3) {
   float4 sun_screen;   // sun px, py, water_t, gain (rays * fade * sun)
   float4 march;        // taps, decay, max_step_px, caustics amount
+  float4 glow;         // inv glow radius (px^-1), 0, 0, 0
 };
 
 [numthreads(8, 8, 1)]
@@ -36,20 +41,24 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // temporal shimmer).
   float jitter = nano_hash21(float2(gid.xy));
 
-  float3 accum = float3(0.0, 0.0, 0.0);
+  float accum = 0.0;
   float wsum = 0.0;
   float w = 1.0;
   for (int i = 1; i <= taps; i++) {
-    float2 sp = (p + step_px * (float(i) - 1.0 + jitter)) * inv_dims;
-    if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0) break;
-    float4 c = compTex.SampleLevel(clampS, sp, 0);
-    // Soft threshold: only the bright part of the scene scatters.
-    float3 bright = max(c.rgb - 0.35, 0.0) * 1.54;
-    accum += bright * (1.0 - saturate(c.a)) * w;
+    float2 sp_px = p + step_px * (float(i) - 1.0 + jitter);
+    float2 sp = sp_px * inv_dims;
+    float occ_t = 0.0;
+    if (sp.x >= 0.0 && sp.x <= 1.0 && sp.y >= 0.0 && sp.y <= 1.0) {
+      occ_t = compTex.SampleLevel(clampS, sp, 0).a;
+    }
+    // Synthetic surface light: a broad glow centered on the sun point.
+    float d = length(sp_px - sun_screen.xy) * glow.x;
+    float g = 1.0 / (1.0 + d * d);
+    accum += (1.0 - saturate(occ_t)) * g * w;
     wsum += w;
     w *= march.y;
   }
-  float3 r = (wsum > 1e-4 ? accum / wsum : float3(0.0, 0.0, 0.0)) * sun_screen.w;
+  float3 r = ((wsum > 1e-4 ? accum / wsum : 0.0) * sun_screen.w).xxx;
 
   // Water caustics: approximate shimmer IN the volume. The water surface
   // is conceptually UP — not sun-anchored (the sun may sit "underwater"),

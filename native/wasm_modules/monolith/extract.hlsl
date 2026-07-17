@@ -19,7 +19,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   dstTex.GetDimensions(W, H);
   if (gid.x >= W || gid.y >= H) return;
   int3 ip = int3(int(gid.x), int(gid.y), 0);
-  float3 hdr = compTex.Load(ip).rgb + raysTex.Load(ip).rgb * p.y;
+  float3 c = compTex.Load(ip).rgb;
+  // Match final.hlsl's screen-style ray blend so bloom sees the same hdr.
+  float3 hdr = c + raysTex.Load(ip).rgb * p.y * saturate(1.0 - c);
   float3 e = saturate(max(hdr - 1.0, 0.0) * p.x);
   dstTex[gid.xy] = float4(e, 1.0);
 }

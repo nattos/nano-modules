@@ -134,9 +134,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float3 surf = lerp(refr, diffuse, material.w) + (env + glint.xxx) * F;
 
-  // Atmosphere: the top melts into haze, distance accumulates it.
+  // Atmosphere: a smooth bottom-to-top gradient (smoothstep spanning past
+  // both ends of the body — no plateau, no knee) plus mild depth haze.
+  // Fog color is the HEAVILY BLURRED env (guaranteed blurred whenever fog
+  // is on), desaturated and milk-lifted: it must read as a scattering
+  // medium, never as transparency toward the backdrop.
   if (fog_p.x > 0.0) {
     float fh = saturate((world_y - fog_p.y) * fog_p.z);
+    fh = fh * fh * (3.0 - 2.0 * fh);
     float fd = 1.0 - exp(-max(0.0, view_z - round_p.w) * fog_p.w);
     float f = fog_p.x * saturate(fh + 0.6 * fd);
     float3 fogc;
@@ -147,6 +152,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     } else {
       fogc = envBlur.SampleLevel(clampS, uv, 0).rgb;
     }
+    float fl = dot(fogc, float3(0.299, 0.587, 0.114));
+    fogc = lerp(fogc, float3(fl, fl, fl), 0.45);
+    fogc = fogc * 0.85 + 0.10 * (0.4 + 0.6 * sun_i);
     surf = lerp(surf, fogc, f);
   }
 

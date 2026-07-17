@@ -28,7 +28,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   int3 ip = int3(int(gid.x), int(gid.y), 0);
 
   float4 c = compTex.Load(ip);
-  float3 add = raysTex.Load(ip).rgb * p.y + bloomTex.Load(ip).rgb * p.x * p.z;
+  // Rays land via a screen-style blend: strong shafts over dark water,
+  // never a white-out over an already-bright backdrop.
+  float3 rays = raysTex.Load(ip).rgb * p.y * saturate(1.0 - c.rgb);
+  float3 add = rays + bloomTex.Load(ip).rgb * p.x * p.z;
   float4 inp = inTex.Load(ip);
   if (c.a <= 0.0 && (add.x + add.y + add.z) < 1e-5) {
     outTex[gid.xy] = inp;   // bit-exact passthrough

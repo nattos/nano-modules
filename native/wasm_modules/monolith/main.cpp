@@ -197,6 +197,7 @@ struct ResolveUniforms {
 struct RaysUniforms {
   float sun_screen[4];      // sun px, py, water_t, gain (rays*1.5*fade)
   float march[4];           // taps, decay, max_step_px, caustics amount
+  float glow[4];            // inv glow radius (px^-1), 0, 0, 0
 };
 
 struct ExtractUniforms { float p[4]; };   // inv_range, has_rays, 0, 0
@@ -280,7 +281,10 @@ void module_init() {
   // 1.2.1: water caustics (rays banding + surface dapple), additive fields.
   // 1.2.2: dapple = projected irradiance (cosine from above, grazing
   //        spill on walls, zero on undersides); rays shimmer top-anchored.
-  state::init("source.mesh.monolith", {1, 2, 2},
+  // 1.2.3: fog is a real medium (blurred/desat/milk-lifted color, smooth
+  //        full-body ramp); rays radiance is synthetic surface light, not
+  //        gathered composite color.
+  state::init("source.mesh.monolith", {1, 2, 3},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -717,19 +721,28 @@ void render(void* self, int vp_w, int vp_h) {
   if (!s->gbufA.valid() || !s->gbufB.valid() || !s->compA.valid() || !s->compB.valid())
     return;
 
-  // --- Env pre-blur for roughness ---
+  // --- Env pre-blur: roughness reflections AND the fog medium color.
+  // Fog must never sample a sharp backdrop (that reads as transparency),
+  // so fog alone forces a heavy blur even at roughness 0.
   gpu::Texture env_blurred = env_src;
-  if (s->roughness > 0.01f && s->blur.valid()) {
+  const bool want_blur = s->roughness > 0.01f || s->fog > 0.01f;
+  if (want_blur && s->blur.valid()) {
     ensureTex(s->env_blur, vp_w, vp_h, gpu::Device::defaultTextureFormat(), resized);
     if (s->env_blur.valid()) {
-      int iters = 1 + (int)(s->roughness * 4.0f);
+      int iters = s->roughness > 0.01f ? 1 + (int)(s->roughness * 4.0f) : 0;
+      if (s->fog > 0.01f && iters < 4) iters = 4;
       s->blur.apply(env_src, s->env_blur, vp_w, vp_h, iters);
       env_blurred = s->env_blur;
     }
   }
 
   // --- Per-copy rounds: raster G-buffer + resolve, inner -> outer ---
-  const float fog_h = std::fmax(0.72f * outer_scale, 1e-3f);
+  // Height-fog ramp: smoothstep spanning past both ends of the body
+  // (bottom ~1/4 strength, top ~0.9) — a gradient, not a plateau+knee.
+  const float fog_h = std::fmax(0.62f * outer_scale, 1e-3f);   // ~apex height
+  const float fog_y0 = -0.45f * fog_h;
+  const float fog_inv_h = 1.0f / (1.6f * fog_h);
+  const float fog_z0 = cam_d - 0.6f * outer_scale;             // haze starts before the body
   gpu::Texture comp_prev;   // invalid on round 0
   gpu::Texture comp_next = s->compA;
   int rounds_done = 0;
@@ -810,10 +823,10 @@ void render(void* self, int vp_w, int vp_h) {
     u.material[2] = s->refract_k; u.material[3] = s->opacity;
     u.color_shade[0] = s->color_r; u.color_shade[1] = s->color_g;
     u.color_shade[2] = s->color_b; u.color_shade[3] = s->shading;
-    u.fog_p[0] = s->fog; u.fog_p[1] = 0.1f * fog_h;
-    u.fog_p[2] = 1.0f / (0.9f * fog_h); u.fog_p[3] = 0.45f / size_world;
+    u.fog_p[0] = s->fog; u.fog_p[1] = fog_y0;
+    u.fog_p[2] = fog_inv_h; u.fog_p[3] = 0.45f / size_world;
     u.round_p[0] = w_i; u.round_p[1] = rounds_done == 0 ? 1.0f : 0.0f;
-    u.round_p[2] = env_wired ? 1.0f : 0.0f; u.round_p[3] = cam_d;
+    u.round_p[2] = env_wired ? 1.0f : 0.0f; u.round_p[3] = fog_z0;
     u.vp[0] = (float)vp_w; u.vp[1] = (float)vp_h;
     u.vp[2] = 1.0f / vp_w; u.vp[3] = 1.0f / vp_h;
     u.caustic[0] = s->caustics;
@@ -859,7 +872,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Rays need the sun IN FRONT of the camera (sun_view.z > 0 — i.e. behind
   // the object). Fold the fade into the gain and skip the pass at zero.
   const float sun_fade = std::fmin(1.0f, std::fmax(0.0f, (sun_view.z - 0.02f) / 0.13f));
-  const float rays_gain = s->rays * 1.5f * sun_fade * sun_i;
+  const float rays_gain = s->rays * 0.4f * sun_fade * sun_i;
   bool has_rays = false;
   if (rays_gain > 1e-4f && s_pso_rays.valid()) {
     ensureTex(s->rays_tex, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
@@ -875,6 +888,7 @@ void render(void* self, int vp_w, int vp_h) {
       ru.march[0] = 32.0f; ru.march[1] = 0.93f;
       ru.march[2] = (float)vp_w / 48.0f;
       ru.march[3] = s->caustics;
+      ru.glow[0] = 1.0f / (0.28f * (float)vp_w);
       s->ub_rays.writeOne(ru);
 
       auto cp = gpu::ComputePass::begin();
