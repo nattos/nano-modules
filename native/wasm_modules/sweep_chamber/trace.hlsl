@@ -10,7 +10,8 @@
 //     field_b), not 4-5 full-res luma taps. ~18K coarse taps/frame total.
 //   · NO stop conditions. value_stop / grad_stop / time_stop_decay are gone:
 //     lines don't die in black — they keep propagating through free space on
-//     a deterministic constant-curvature ARC (per-tracer signed κ), while a
+//     a ballistic ARC whose signed curvature κ is a spendable turn budget
+//     (recharged while gripped, spent along free flight), while a
 //     GRIP weight ∈[0,1] (attack/decay EMA of the trace-mean ridge strength
 //     L'max) carries what death used to signal: how strongly this line
 //     attracts particle spawns (and, optionally, its alpha).
@@ -77,6 +78,18 @@ cbuffer Uniforms : register(b5) {
 // Ridge-trap gate from field_a's L'max.
 float swc_trap(float lmax) { return smoothstep(0.03, 0.25, lmax); }
 
+// Free-flight arc: κ is a spendable TURN BUDGET, not a constant curvature.
+// Constant κ makes a released seed orbit a fixed 1/κ-radius circle — flinging
+// harder just laps it faster ("twirling on the spot"). Instead κ recharges
+// toward a per-life home value while the line is gripped and decays along
+// free flight (path + a little time), so a flung line arcs away, straightens
+// out, and travels forward. Total free-flight turn ≈ arc·3 rad.
+#define SWC_ARC_DECAY 3.0   // κ half-life scale, per iso unit of free travel
+float swc_kap_home(uint i, float ang, float rng, float arc) {
+  uint h0 = swc_hash3(i, asuint(ang), asuint(rng));   // stable per seed life
+  return swc_signed(swc_hash(h0)) * arc * 3.0 * SWC_ARC_DECAY;
+}
+
 // Rotate an iso-space vector by `ang` radians.
 float2 swc_rot(float2 v, float ang) {
   float c = cos(ang), s = sin(ang);
@@ -123,24 +136,29 @@ void main(uint3 gid : SV_DispatchThreadID) {
     pos  = 0.5 + sp * aspect;
     ang  = swc_unit(swc_hash(h ^ 0x55u)) * 6.28318530718;
     time = lerp(0.15, 1.0, swc_unit(swc_hash(h ^ 0x0033u)));
-    kap  = swc_signed(swc_hash(h ^ 0x7A7Au)) * arc * 20.0;
+    kap  = swc_kap_home(i, ang, seed_rng, arc);
     grip = 0.0;
     vel  = swc_trace_field_vel(fieldB.SampleLevel(lin, saturate(pos), 0));
   } else {
     // --- Seed dynamics: gripped → chase the field; free → ballistic arc ---
     float4 fbS = fieldB.SampleLevel(lin, saturate(pos), 0);
     float4 faS = fieldA.SampleLevel(lin, saturate(pos), 0);
+    float  trapS = swc_trap(faS.a);
     float2 vf  = swc_trace_field_vel(fbS);
-    float  k   = 1.0 - exp(-dt * 8.0 * grip * adv);
+    // Even free lines (grip≈0) weakly chase the field so they ride the
+    // ambient flow instead of orbiting their own tail; gripped lines chase
+    // hard. Momentum still dominates short-term.
+    float  k   = 1.0 - exp(-dt * 8.0 * adv * lerp(0.06, 1.0, grip));
     vel += (vf - vel) * k;
-    // Constant-curvature bend (always on; negligible when the field-chase
-    // dominates). The turn angle scales with the ISO path length so the arc
-    // shape is speed- and framerate-independent.
+    // κ turn budget: recharge while gripped, spend along free flight.
     float2 vel_iso = vel / max(aspect, 1e-4);
+    float kap_home = swc_kap_home(i, ang, seed_rng, arc);
+    kap += (kap_home - kap) * (1.0 - exp(-dt * 3.0 * trapS));
+    kap *= exp(-dt * (0.5 + SWC_ARC_DECAY * length(vel_iso)) * (1.0 - trapS));
+    // Bend by κ·(iso path length): speed- and framerate-independent arc.
     float turn = kap * length(vel_iso) * dt;
     vel = swc_rot(vel_iso, turn) * aspect;
     // Sub-cell ridge snap for the seed itself (fractional, dt-scaled).
-    float trapS = swc_trap(faS.a);
     float2 D_uv = faS.gb / max(field_res, 1.0);
     pos += D_uv * (1.0 - exp(-dt * 10.0 * trapS * snap));
 
@@ -171,17 +189,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 own = swc_safe_norm(vel_iso0, aim);
   float2 dir0 = swc_safe_norm(lerp(own, t0, trap0), aim);
 
+  float arc_fade = exp(-step_len * SWC_ARC_DECAY);
   [unroll(1)]
   for (int pass = 0; pass < 2; ++pass) {
     float2 p = pos;
     float2 dir = dir0 * (pass == 0 ? 1.0 : -1.0);
+    // Walking the same geometric arc in reverse turns the OPPOSITE signed
+    // way — same-sign κ on both passes draws an S-coil through the seed that
+    // reads as a pinwheel. κ also fades along the trace (matching the seed's
+    // budget decay) so free-space tails straighten instead of coiling.
+    float kloc = kap * (pass == 0 ? 1.0 : -1.0);
     for (int k2 = 0; k2 < steps; ++k2) {
       float4 fb = fieldB.SampleLevel(lin, saturate(p), 0);
       float2 gs = fb.zw / (length(fb.zw) + 0.02);
       float2 tangent = swc_perp(gs);
       if (dot(tangent, dir) < 0.0) tangent = -tangent;
       float2 ridge = swc_safe_norm(lerp(tangent, gs, saturate(gradient_descent)), dir);
-      float2 arcd  = swc_rot(dir, kap * step_len);          // free-space bend
+      float2 arcd  = swc_rot(dir, kloc * step_len);         // free-space bend
       float4 faP = fieldA.SampleLevel(lin, saturate(p), 0);
       float trap = swc_trap(faP.a);
       float2 target = swc_safe_norm(lerp(arcd, ridge, trap), dir);
@@ -210,6 +234,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
         segIdx++;
       }
       p = nextP;
+      kloc *= arc_fade;
     }
   }
 
