@@ -181,4 +181,18 @@ struct LineVsOut {
   nointerpolation float4 col : TEXCOORD1;
 };
 
+// ---- motion-vector output (render_outputs/motion) varyings ----
+// Per-pixel screen-space velocity (uv/frame) for downstream motion blur.
+// Points carry their integrated velocity; lines carry their tangent.
+struct MotionVsOut {
+  float4 pos    : SV_Position;
+  float2 corner : TEXCOORD0;                  // point-local corner ∈ [-1,1]²
+  nointerpolation float2 motion : TEXCOORD1;  // uv/frame
+};
+struct LineMotionVsOut {
+  float4 pos   : SV_Position;
+  float2 local : TEXCOORD0;                   // .x along [0,1], .y across [-1,1]
+  nointerpolation float2 motion : TEXCOORD1;  // uv/frame, along the segment
+};
+
 #endif // SWEEP_CHAMBER_COMMON_HLSL

@@ -290,4 +290,44 @@ describe('source.particles.sweep_chamber E2E', () => {
     expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);
     on.trace('out').expectDifferentFrom(off.trace('out'), 40);
   });
+
+  // ---- Motion rail (render_outputs/motion) ----
+
+  it('drives downstream motion blur from per-particle velocity', async () => {
+    // sweep_chamber → motion.blur (struct auto-connect). The sweep_chamber
+    // stage is identical in both runs; the only difference is the blur
+    // strength — a visible difference proves the rail end-to-end:
+    // produced → published → auto-connected → consumed.
+    const sc = {
+      ...BASE, count: 6000, speed: 3.0, noise_speed: 1.0, exposure: 2.0,
+      l_count: 8, l_opacity: 1.0, motion_line_speed: 0.6,
+    };
+    const build = (strength: number): Sketch => ({
+      anchor: null,
+      wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.particles.sweep_chamber',
+          instance_key: 'sc@0', params: sc },
+        { type: 'module', module_type: 'motion.blur',
+          instance_key: 'blur@0', params: { strength, samples: 16, quality: 1 } },
+      ],
+    });
+    const run2 = (id: string, strength: number) => runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.testonly', 'com.nano.legacy', 'com.nano.nano'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: build(strength) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 16, captureTraceIds: ['out'], dumpName: id,
+    });
+    const sharp   = await run2('sc_motion_sharp', 0.0);
+    const blurred = await run2('sc_motion_blur', 32.0);
+    expect(sharp.success).toBe(true);
+    expect(blurred.success).toBe(true);
+    expect(blurred.trace('out').countPixels(isActive)).toBeGreaterThan(100);
+    blurred.trace('out').expectDifferentFrom(sharp.trace('out'), 60);
+  });
 });
