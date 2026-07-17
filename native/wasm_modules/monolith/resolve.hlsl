@@ -25,6 +25,7 @@ SamplerState        wrapS    : register(s7);  // equirect u wrap
 
 cbuffer Uniforms : register(b8) {
   float4 sun_view;     // xyz dir toward light (view space, unit), w = sun intensity
+  float4 sun_color;    // light tint rgb
   float4 cam;          // focal, cover_ax, cover_ay, phi (camera pitch)
   float4 material;     // reflect, roughness, refract, opacity
   float4 color_shade;  // diffuse rgb, shading amount
@@ -84,7 +85,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float sun_i = sun_view.w;
   float lam = saturate(dot(N, sunD));
   float shade = 1.0 + color_shade.w * ((0.30 + 0.70 * lam) - 1.0);
-  float3 diffuse = color_shade.rgb * shade * sun_i;
+  float3 diffuse = color_shade.rgb * shade * sun_i * sun_color.rgb;
 
   // Environment reflection.
   float3 Rv = reflect(V, N);
@@ -103,7 +104,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     env = lerp(envSharp.SampleLevel(clampS, uvE, 0),
                envBlur.SampleLevel(clampS, uvE, 0), material.y).rgb;
   }
-  float glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i;
+  float3 glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i * sun_color.rgb;
 
   // Water caustics: dapple projected from the SURFACE ABOVE — world-top,
   // independent of the sun (which may well sit "underwater"). The field
@@ -132,7 +133,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float3 refr = bgTex.SampleLevel(clampS, uvR, 0).rgb;
   refr *= lerp(float3(1.0, 1.0, 1.0), color_shade.rgb, 0.35);
 
-  float3 surf = lerp(refr, diffuse, material.w) + (env + glint.xxx) * F;
+  float3 surf = lerp(refr, diffuse, material.w) + (env + glint) * F;
 
   // Atmosphere: a smooth bottom-to-top gradient (smoothstep spanning past
   // both ends of the body — no plateau, no knee) plus mild depth haze.
@@ -154,7 +155,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
     }
     float fl = dot(fogc, float3(0.299, 0.587, 0.114));
     fogc = lerp(fogc, float3(fl, fl, fl), 0.45);
-    fogc = fogc * 0.85 + 0.10 * (0.4 + 0.6 * sun_i);
+    fogc = fogc * 0.85 + 0.10 * (0.4 + 0.6 * sun_i) *
+           lerp(float3(1.0, 1.0, 1.0), sun_color.rgb, 0.5);
     surf = lerp(surf, fogc, f);
   }
 

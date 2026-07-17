@@ -215,6 +215,30 @@ describe('source.mesh.monolith E2E', () => {
     expect(lum(banded.trace('out').pixelAt(3, 3))).toBeGreaterThan(lum(BG) - 4);
   });
 
+  it('sun color tints the light and the rays', async () => {
+    // Red sun over the backlit ray field: the shafts outside the shape
+    // must carry the tint (r >> b at a ray-lit probe).
+    const base = { ...STATIC, azimuth: 180, elevation: 5, sun: 1.0, rays: 1.0,
+                   sun_color: [1.0, 0.25, 0.15] };
+    const red = await render('mono_suncol_red', base);
+    const white = await render('mono_suncol_white',
+      { ...base, sun_color: [1, 1, 1] });
+    red.trace('out').expectDifferentFrom(white.trace('out'), 5);
+    const p = red.trace('out').pixelAt(72, 48);
+    expect(p.r).toBeGreaterThan(p.b + 8);
+  });
+
+  it('extended spread grows colossal shells without breaking the core', async () => {
+    const near = await render('mono_spread_mid',
+      { ...STATIC, copies: 3, spread: 0.5, falloff: 0.3 });
+    const huge = await render('mono_spread_max',
+      { ...STATIC, copies: 3, spread: 1.0, falloff: 0.3 });
+    huge.trace('out').expectDifferentFrom(near.trace('out'), 10);
+    // The core slab still reads at center regardless of shell scale.
+    const c = huge.trace('out').pixelAt(48, 48);
+    expect(lum(c)).toBeLessThan(lum(BG) - 20);
+  });
+
   it('bloom bleeds the hot highlights', async () => {
     const base = { ...STATIC, reflect: 1.0, sun: 1.0, azimuth: -40,
                    color: [0.5, 0.5, 0.55] };

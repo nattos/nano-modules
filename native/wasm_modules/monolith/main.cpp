@@ -185,6 +185,7 @@ struct GbufVertex {         // mirrors Vtx in gbuf_vs.hlsl — 48 B
 
 struct ResolveUniforms {
   float sun_view[4];        // xyz toward light (view, unit), w = intensity
+  float sun_color[4];       // light tint rgb, 0
   float cam[4];             // focal, cover_ax, cover_ay, phi
   float material[4];        // reflect, roughness, refract, opacity
   float color_shade[4];     // rgb, shading
@@ -197,7 +198,7 @@ struct ResolveUniforms {
 struct RaysUniforms {
   float sun_screen[4];      // sun px, py, water_t, gain (rays*1.5*fade)
   float march[4];           // taps, decay, max_step_px, caustics amount
-  float glow[4];            // inv glow radius (px^-1), 0, 0, 0
+  float glow[4];            // inv glow radius (px^-1), sun_color rgb
 };
 
 struct ExtractUniforms { float p[4]; };   // inv_range, has_rays, 0, 0
@@ -244,6 +245,7 @@ struct State {
   float azimuth = 160.0f;
   float elevation = 25.0f;
   float sun = 0.6f;
+  float sun_r = 1.0f, sun_g = 1.0f, sun_b = 1.0f;
   float fog = 0.2f;
   float rays = 0.3f;
   float bloom = 0.25f;
@@ -288,7 +290,10 @@ void module_init() {
   //        emits; off-screen sun only biases) and the gain restored.
   // 1.2.5: ray caustics are per-shaft density columns (constant along
   //        each shaft, varying across the fan), not a screen overlay.
-  state::init("source.mesh.monolith", {1, 2, 5},
+  // 1.2.6: sun_color tint (light + rays w/ per-column dispersion);
+  //        spread goes exponential above 0.5 (shells up to 9x, camera
+  //        can end up inside them - per-tri near-plane guard).
+  state::init("source.mesh.monolith", {1, 2, 6},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -359,7 +364,10 @@ void module_init() {
         .groupHelp(
           "Echo shells of the same solid at growing scale and fading "
           "presence, all sharing the core's rotation. Outer shells "
-          "refract and reflect over the ones inside them.")
+          "refract and reflect over the ones inside them. *Spread* is "
+          "exponential in its top half — cranked, the outer shells grow "
+          "colossal and can swallow the camera entirely (they fade out "
+          "gracefully as you end up inside them).")
       .intField("copies", 1, 1, kMaxCopies, state::PrimaryInput)
           .label("Copies", "Copies")
       .floatField("spread", 0.35f, 0.f, 1.f, state::PrimaryInput)
@@ -370,15 +378,19 @@ void module_init() {
       .group("light", "Light")
         .groupHelp(
           "One sun drives everything coherently: diffuse shading, the "
-          "specular glint, and the god-ray origin. *Azimuth* 0 lights "
-          "from the camera; ±180 puts the sun BEHIND the shape — that's "
-          "where the rays live. *Sun* is overall light intensity.")
+          "specular glint, the god rays and their tint. *Azimuth* 0 "
+          "lights from the camera; ±180 puts the sun BEHIND the shape — "
+          "that's where the rays live. *Sun* is overall light intensity; "
+          "*Sun Color* tints all of it (the ray columns also pick up a "
+          "subtle per-column warm/cool dispersion around it).")
       .floatField("azimuth", 160.0f, -180.f, 180.f, state::PrimaryInput,
                   nullptr, 0.f, "deg").label("Azimuth", "Azim")
       .floatField("elevation", 25.0f, -10.f, 80.f, state::PrimaryInput,
                   nullptr, 0.f, "deg").label("Elevation", "Elev")
       .floatField("sun", 0.6f, 0.f, 1.f, state::PrimaryInput)
           .label("Sun", "Sun")
+      .rgbField("sun_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
+          .label("Sun Color", "SunCol")
       // --- Atmosphere ---
       .group("atmosphere", "Atmosphere")
         .groupHelp(
@@ -625,6 +637,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "azimuth"))   s->azimuth = state::patchFloat(i);
     else if (state::pathIs(p, l, "elevation")) s->elevation = state::patchFloat(i);
     else if (state::pathIs(p, l, "sun"))       s->sun = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sun_color")) {
+      auto v = state::patchVec3(i);
+      s->sun_r = v.x; s->sun_g = v.y; s->sun_b = v.z;
+    }
     else if (state::pathIs(p, l, "fog"))       s->fog = state::patchFloat(i);
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
     else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
@@ -694,15 +710,22 @@ void render(void* self, int vp_w, int vp_h) {
   const ShapeDef& shape = kShapes[s->shape == SHAPE_PYRAMID ? 1 : 0];
   const auto cs = fx::coverSquare(vp_w, vp_h);
   const float size_world = 0.55f * std::pow(2.0f, (s->size - 0.5f) * 2.0f);
-  const float spread_step = 0.15f + 0.85f * s->spread;
+  // Spread: linear below the midpoint (matches the classic look), then
+  // exponential — cranked, shells reach ~4x steps (9x outer scale) and
+  // can grow right past the camera.
+  const float spread_step = (0.15f + 0.85f * s->spread) *
+      std::pow(2.0f, std::fmax(0.0f, s->spread - 0.5f) * 4.0f);
   const float falloff_mult = 1.0f - 0.8f * s->falloff;
   const int copies = s->copies < 1 ? 1 : (s->copies > kMaxCopies ? kMaxCopies : s->copies);
   const float outer_scale = size_world * (1.0f + (float)(copies - 1) * spread_step);
 
   const float fov = (30.0f + 45.0f * s->loom) * kDeg;
   const float focal = 1.0f / std::tan(fov * 0.5f);
-  float cam_d = 3.0f * focal / 3.7320508f;             // dolly holds framing
-  cam_d = std::fmax(cam_d, outer_scale * 0.72f + 0.4f); // never enter the shape
+  // Dolly holds framing; the CORE stays framed even when giant shells
+  // engulf the camera (a shell you are inside shows only back faces,
+  // which are culled — it fades out via the per-tri near guard below).
+  float cam_d = std::fmax(3.0f * focal / 3.7320508f,
+                          size_world * 0.72f + 0.4f);
   const float cam_y = -s->vantage * 1.5f * std::fmax(0.8f, size_world);
   const float phi = std::atan2(-cam_y, cam_d);          // re-center the object
   const M3 cam_rot = m3RotX(phi);
@@ -756,10 +779,12 @@ void render(void* self, int vp_w, int vp_h) {
     const float w_i = vis_fade * std::pow(falloff_mult, (float)ci);
     if (w_i < 1.0f / 255.0f) continue;
 
-    // Transform + project this copy's vertex ring.
+    // Transform + project this copy's vertex ring. Verts at/behind the
+    // near plane are flagged rather than failing the whole copy — a
+    // giant shell straddling the camera keeps its valid triangles.
     V3 world[8], view[8];
     float sq[8][2];
-    bool depth_ok = true;
+    bool valid[8];
     for (int vi = 0; vi < shape.vert_count; vi++) {
       V3 p = shape.verts[vi];
       p = {p.x * scale, p.y * scale, p.z * scale};
@@ -767,16 +792,21 @@ void render(void* self, int vp_w, int vp_h) {
       world[vi] = p;
       V3 pv = m3Apply(cam_rot, V3{p.x, p.y - cam_y, p.z + cam_d});
       view[vi] = pv;
-      if (pv.z < 0.1f) { depth_ok = false; break; }
-      sq[vi][0] = focal * pv.x / pv.z;
-      sq[vi][1] = focal * pv.y / pv.z;
+      valid[vi] = pv.z >= 0.1f;
+      if (valid[vi]) {
+        sq[vi][0] = focal * pv.x / pv.z;
+        sq[vi][1] = focal * pv.y / pv.z;
+      } else {
+        sq[vi][0] = 0.0f;
+        sq[vi][1] = 0.0f;
+      }
     }
-    if (!depth_ok) continue;
 
     GbufVertex verts[kMaxVertsPerCopy];
     int tri_count = 0;
     for (int t = 0; t < shape.tri_count; t++) {
       const uint8_t* idx = shape.tris[t];
+      if (!valid[idx[0]] || !valid[idx[1]] || !valid[idx[2]]) continue;
       const float ax0 = sq[idx[0]][0], ay0 = sq[idx[0]][1];
       const float bx = sq[idx[1]][0], by = sq[idx[1]][1];
       const float cx = sq[idx[2]][0], cy = sq[idx[2]][1];
@@ -822,6 +852,8 @@ void render(void* self, int vp_w, int vp_h) {
     ResolveUniforms u = {};
     u.sun_view[0] = sun_view.x; u.sun_view[1] = sun_view.y;
     u.sun_view[2] = sun_view.z; u.sun_view[3] = sun_i;
+    u.sun_color[0] = s->sun_r; u.sun_color[1] = s->sun_g;
+    u.sun_color[2] = s->sun_b;
     u.cam[0] = focal; u.cam[1] = cs.ax; u.cam[2] = cs.ay; u.cam[3] = phi;
     u.material[0] = s->reflect_k; u.material[1] = s->roughness;
     u.material[2] = s->refract_k; u.material[3] = s->opacity;
@@ -893,6 +925,7 @@ void render(void* self, int vp_w, int vp_h) {
       ru.march[2] = (float)vp_w / 48.0f;
       ru.march[3] = s->caustics;
       ru.glow[0] = 1.0f / (0.5f * (float)vp_w);
+      ru.glow[1] = s->sun_r; ru.glow[2] = s->sun_g; ru.glow[3] = s->sun_b;
       s->ub_rays.writeOne(ru);
 
       auto cp = gpu::ComputePass::begin();

@@ -60,7 +60,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
     wsum += w;
     w *= march.y;
   }
-  float3 r = ((wsum > 1e-4 ? accum / wsum : 0.0) * sun_screen.w).xxx;
+  float rs = (wsum > 1e-4 ? accum / wsum : 0.0) * sun_screen.w;
+  float3 tint = glow.yzw;   // sun color
 
   // Water caustics: COLUMNS of differing density, not a pasted overlay.
   // The modulation is (nearly) constant ALONG each shaft and varies only
@@ -79,14 +80,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float along = r_px * glow.x;
       float c = nano_caustic2(dirs * 3.4 + float2(0.0, along * 0.15),
                               sun_screen.z);
-      r *= max(1.0 + ca * (c * 3.2 - 0.75), 0.0);
+      rs *= max(1.0 + ca * (c * 3.2 - 0.75), 0.0);
       // Mild 2D breakup (+-22%) so the columns never go laser-uniform,
-      // especially near the sun point where the fan converges.
+      // especially near the sun point where the fan converges — and a
+      // subtle per-column warm/cool dispersion around the sun color.
       float b = nano_value_noise2(p * (2.2 / float(W)) +
                                   float2(sun_screen.z * 0.15,
                                          -sun_screen.z * 0.10));
-      r *= 1.0 + ca * (0.44 * b - 0.22);
+      rs *= 1.0 + ca * (0.44 * b - 0.22);
+      tint *= 1.0 + ca * (b - 0.5) * float3(0.4, 0.0, -0.4);
     }
   }
-  raysTex[gid.xy] = float4(r, 0.0);
+  raysTex[gid.xy] = float4(max(rs * tint, 0.0), 0.0);
 }
