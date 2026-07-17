@@ -260,4 +260,34 @@ describe('source.particles.sweep_chamber E2E', () => {
     expect(r.phases[1].trace('out').countPixels(isActive)).toBeGreaterThan(40);
     r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 80);
   });
+
+  // ---- Interactions (density buffer, flow_swarm parity) ----
+
+  // Crowd the swarm onto the captured band so the buffer has structure.
+  const CROWD: Record<string, unknown> = {
+    ...COUPLED, sweep_center: 0.5, count: 4000, momentum: 0.8,
+    interactions: true, interaction_radius: 0.03,
+  };
+
+  it('debug view renders the density buffer and reflects interaction_radius', async () => {
+    const base = { ...CROWD, debug_density: true };
+    const small = await runGrad('sc_dbg_small', { ...base, interaction_radius: 0.008 }, 20);
+    const large = await runGrad('sc_dbg_large', { ...base, interaction_radius: 0.06 }, 20);
+    expect(small.success).toBe(true);
+    expect(large.success).toBe(true);
+    const smallActive = small.trace('out').countPixels(isActive);
+    const largeActive = large.trace('out').countPixels(isActive);
+    expect(largeActive).toBeGreaterThan(200);
+    expect(largeActive).toBeGreaterThan(smallActive + 100);
+  });
+
+  it('density death + avoidance change the swarm (interactions)', async () => {
+    const off = await runGrad('sc_ix_off', { ...CROWD }, 28);
+    const on  = await runGrad('sc_ix_on',
+      { ...CROWD, density_death: 1.0, density_threshold: 1.0, avoid: 1.0, avoid_curl: 0.5 }, 28);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(80);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 40);
+  });
 });

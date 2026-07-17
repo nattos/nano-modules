@@ -26,6 +26,7 @@ RWStructuredBuffer<Particle> particles    : register(u0);
 Texture2D<float4>            fieldTexB    : register(t1);
 Texture2D<float4>            inputTex     : register(t2);
 SamplerState                 linearSampler : register(s3);
+Texture2D<float4>            densityTex    : register(t5);   // last frame's crowding
 StructuredBuffer<Seg>        segs          : register(t6);   // tracer segments (spawn-on-line)
 StructuredBuffer<TracerState> tracers      : register(t7);   // per-tracer grip (spawn weighting)
 StructuredBuffer<float4>     respBuf       : register(t8);   // [1] = calm↔intense response
@@ -77,7 +78,17 @@ cbuffer Uniforms : register(b4) {
   float jitter_boost;    // jitter multiplier gain at intensity 1
 
   float fling_boost;     // velocity kick × release envelope
-  float _pad0;
+  uint  interactions;    // 0 = off (skip density reads entirely), 1 = on
+  float density_threshold;
+  float density_death;
+
+  float avoid;           // push away from neighbours (velocity, × speed)
+  float avoid_curl;      // -1/+1 rotate the avoidance ±90° (swirl)
+  float avoid_noise;     // random jitter on the avoidance (breaks flat clumps)
+  float density_res;     // density buffer resolution (texels per axis)
+
+  float stream;          // +align / -diverge velocity vs the group
+  float stream_density;  // neighbour density for ~max stream effect
   float _pad1;
   float _pad2;
 }
@@ -85,6 +96,10 @@ cbuffer Uniforms : register(b4) {
 // Max settle rate (1/s) at pull = 1 (flow_swarm parity).
 static const float SWC_PULL_RATE      = 20.0;
 static const float SWC_NOISE_CIRC     = 0.2;   // slight isotropic part of jitter
+// Interaction tuning scales (flow_swarm parity).
+static const float SWC_DEATH_RATE     = 4.0;   // MAX death rate (1/s) at density_death=1
+static const float SWC_AVOID_VEL      = 1.5;   // avoidance velocity scale (× speed)
+static const float SWC_STREAM_RATE    = 10.0;  // MAX align/diverge rate (1/s) at |stream|=1
 static const float SWC_BOUNDARY_ACCEL = 3.0;   // boundary impulse scale (uv/s²·rad)
 static const float SWC_ESCAPE_R       = 1.5;   // s-radius past which a particle dies
 // s-space overshoot at which boundary-death probability saturates (dc parity).
@@ -128,14 +143,70 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float msub        = (momentum < 1e-6) ? 0.0 : pow(momentum, 1.0 / float(nsub));
 
   bool respawn = (life_remain <= 0.0);
+  bool dens_kill = false;
+
+  // --- Density interactions, frozen at the START position (flow_swarm) ---
+  // The density map is a 1-frame-delayed snapshot and a particle's own halo
+  // sits at its previous position; evaluating once here keeps each particle
+  // on its own "shadow" so the gradient it feels is its NEIGHBOURS', not its
+  // own (re-sampling per substep would self-propel it off its halo).
+  float2 avoid_vec  = float2(0.0, 0.0);
+  float2 stream_dir = float2(0.0, 0.0);
+  float  stream_rate = 0.0;
+  float  stream_sign = (stream >= 0.0) ? 1.0 : -1.0;
+  if (interactions != 0u && !respawn) {
+    if (density_death > 1e-5) {
+      float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
+      float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
+      float knee = max(density_threshold * 0.5, 1.0);
+      float factor = smoothstep(0.0, knee, others - density_threshold);
+      float lambda = density_death * SWC_DEATH_RATE * factor;   // 1/s
+      float pdie = 1.0 - exp(-lambda * dt);
+      float rr = swc_unit(swc_hash3(i + 0xDEAD0001u, frame_index, seed));
+      if (rr < pdie) { respawn = true; dens_kill = true; }
+    }
+    if (avoid > 1e-5 && !respawn) {
+      // Gradient over equal PIXEL distances → round avoidance on screen.
+      float e = 2.0 / max(density_res, 1.0);
+      float ex = e * aspect_x, ey = e * aspect_y;
+      float dl = densityTex.SampleLevel(linearSampler, saturate(pos - float2(ex, 0.0)), 0).r;
+      float dr = densityTex.SampleLevel(linearSampler, saturate(pos + float2(ex, 0.0)), 0).r;
+      float dd = densityTex.SampleLevel(linearSampler, saturate(pos - float2(0.0, ey)), 0).r;
+      float du = densityTex.SampleLevel(linearSampler, saturate(pos + float2(0.0, ey)), 0).r;
+      float2 away = -float2(dr - dl, du - dd);            // away from crowding
+      float2 awayhat = away / (length(away) + 0.5);       // soft-normalised
+      float ang2 = avoid_curl * 1.5707963;
+      float ca2 = cos(ang2), sa2 = sin(ang2);
+      float2 av = float2(awayhat.x * ca2 - awayhat.y * sa2,
+                         awayhat.x * sa2 + awayhat.y * ca2);
+      float2 vec_iso = av * avoid * SWC_AVOID_VEL * speed;
+      if (avoid_noise > 1e-6) {
+        uint nh = swc_hash3(i + 0x51ED2701u, frame_index, seed);
+        float mag  = swc_unit(swc_hash(nh));
+        float2 cir = float2(swc_signed(swc_hash(nh ^ 0x9E3779B1u)),
+                            swc_signed(swc_hash(nh ^ 0x85EBCA77u)));
+        vec_iso += (av * mag + cir * SWC_NOISE_CIRC) * avoid_noise * SWC_AVOID_VEL * speed;
+      }
+      avoid_vec = vec_iso * float2(aspect_x, aspect_y);   // pixel push → uv
+    }
+    if (abs(stream) > 1e-4 && !respawn) {
+      float3 dv = densityTex.SampleLevel(linearSampler, saturate(pos), 0).rgb;
+      float2 gmean = dv.gb / max(dv.r, 1e-4);             // halo-weighted mean vel
+      stream_dir = gmean / (length(gmean) + 1e-4);
+      float others = max(dv.r - 1.0, 0.0);
+      float dfac = saturate(others / max(stream_density, 1e-3));
+      stream_rate = abs(stream) * SWC_STREAM_RATE * dfac;
+    }
+  }
 
   if (!respawn) {
     for (uint sub = 0u; sub < nsub; sub++) {
       uint fi = frame_index + sub * 0x9E3779B9u;
 
-      // Field velocity, re-sampled every substep (one bilinear tap).
+      // Field velocity, re-sampled every substep (one bilinear tap). The
+      // frozen avoidance rides on top.
       float4 fb = fieldTexB.SampleLevel(linearSampler, saturate(pos), 0);
-      float2 eff = swc_field_vel(fb, cf) * speed;
+      float2 eff = swc_field_vel(fb, cf) * speed + avoid_vec;
 
       // Acceleration mode.
       if (mode == 1u) {
@@ -148,6 +219,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
       if (pull > 1e-5) {
         float a = 1.0 - exp(-pull * SWC_PULL_RATE * dt_sub);
         vel = lerp(vel, eff, a);
+      }
+
+      // Stream: steer toward (align) / away from (diverge) the frozen group
+      // direction, preserving own speed (flow_swarm parity).
+      if (stream_rate > 1e-5) {
+        float2 target = stream_dir * length(vel);
+        float a = 1.0 - exp(-stream_rate * dt_sub);
+        vel += stream_sign * (target - vel) * a;
       }
 
       // Soft circular boundary: inward impulse past boundary_size. A force
@@ -219,7 +298,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // unit area, round on screen, concentric with the boundary). NO clamp —
     // an oversized disc must place particles at their true position.
     uint h = swc_hash3(i + 0x85EBCA77u, frame_index, seed + 0x55u);
-    float rad = spawn_size * sqrt(swc_unit(swc_hash(h)));
+    // A DENSITY kill REDISTRIBUTES across the whole chamber rather than
+    // respawning on the (small, central) spawn disc — otherwise thinning a
+    // pile-up merely teleports it to the source and the pool collapses onto
+    // the spawn point (dc parity; see double_chamber/p_update.hlsl).
+    float disc = dens_kill ? max(boundary_size, spawn_size) : spawn_size;
+    float rad = disc * sqrt(swc_unit(swc_hash(h)));
     float theta = 6.28318530718 * swc_unit(swc_hash(h ^ 0xA17Fu));
     float2 sp = rad * float2(cos(theta), sin(theta));
     float2 nuv = 0.5 + sp * aspect;
@@ -232,10 +316,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // makes the net line-attraction scale with mean grip: as the sweep
     // releases, lines keep drawing (arcing away) but stop pulling particles —
     // the direct replacement for dc's death-based bunching control.
+    // (Skipped for density kills: those are a redistribution, and the lines
+    // are exactly where particles bunch — landing them back on one would
+    // just re-feed the pile they were culled from.)
     uint lc   = (uint)l_count_f;
     uint live = (uint)seg_live;
     float p_line = saturate(to_line_rate * lerp(1.0, line_boost, inten));
-    if (p_line > 0.0 && lc > 0u && live > 0u
+    if (!dens_kill && p_line > 0.0 && lc > 0u && live > 0u
         && swc_unit(swc_hash(h ^ 0x0777u)) < p_line) {
       uint li = min(lc - 1u, (uint)(swc_unit(swc_hash(h ^ 0x0999u)) * (float)lc));
       float grip_w = saturate(tracers[li].b.z);
