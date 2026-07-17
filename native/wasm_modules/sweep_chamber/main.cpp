@@ -339,7 +339,7 @@ struct State {
   int   l_count            = 24;
   float spawn_on_line      = 0.35f;
   float l_length           = 0.6f;
-  float l_step             = 0.006f;
+  float l_step             = 0.6f;   // ×0.01 → iso units at use site
   float l_momentum         = 0.5f;
   float l_gradient_descent = 0.0f;
   float l_snap             = 0.5f;
@@ -574,7 +574,7 @@ void module_init() {
       .intField  ("l_count",            24,     0,     MAX_TRACERS, state::PrimaryInput).label("Line Count", "Lines")
       .floatField("spawn_on_line",      0.35f,  0.0f,  1.0f,  state::PrimaryInput).label("Spawn On Line", "OnLine")
       .floatField("l_length",           0.6f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Length", "LLen")
-      .floatField("l_step",             0.006f, 0.001f, 0.02f, state::PrimaryInput).label("Line Step", "LStep")
+      .floatField("l_step",             0.6f,   0.1f,   2.0f,  state::PrimaryInput).label("Line Step", "LStep")
       .floatField("l_momentum",         0.5f,   0.0f,  0.95f, state::PrimaryInput).label("Line Momentum", "LMom")
       .floatField("l_gradient_descent", 0.0f,   0.0f,  1.0f,  state::PrimaryInput).label("Gradient Descent", "Descent")
       .floatField("l_snap",             0.5f,   0.0f,  1.0f,  state::PrimaryInput).label("Ridge Snap", "Snap")
@@ -1202,7 +1202,7 @@ void render(void* self, int vp_w, int vp_h) {
   tu.field_res        = (float)FIELD_RES;
   tu.to_image         = s->to_image;
   tu.to_image_curl    = s->to_image_curl;
-  tu.step_len         = s->l_step;
+  tu.step_len         = s->l_step * 0.01f;  // UI unit = 0.01 iso (survives 0.01 quantize)
   tu.length01         = s->l_length;
   tu.momentum         = s->l_momentum;
   tu.gradient_descent = s->l_gradient_descent;
