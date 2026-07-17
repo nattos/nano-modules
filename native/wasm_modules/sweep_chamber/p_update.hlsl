@@ -109,10 +109,22 @@ static const float SWC_BDEATH_REF     = 0.25;
 // Compose the field velocity (uv/s) at one field_b sample for a particle
 // with curl factor `cf` and ridge presence `ridge` (field_a's L'max — see
 // swc_undertow in common.hlsl for why the undertow is ridge-gated).
-float2 swc_field_vel(float4 fb, float ridge, float cf) {
-  float2 iso = fb.zw * to_image
-             + swc_undertow(fb.zw, ridge) * (to_image_curl * cf);
-  return fb.xy + iso * float2(aspect_x, aspect_y);
+//
+// Orientation continuity: a tangent field's sign is inherently ambiguous,
+// and perp(∇L') flips 180° across a ridge crest — a particle oscillating
+// across the line would reverse its along-ridge stream every frame (jerky
+// single-frame direction switches). So the tangent sign follows the
+// particle's OWN current heading (`vel_prev`), falling back to the signed
+// depth phase `cf` at spawn (which keeps the undertow_skew/squash
+// population split: half the swarm streams each way).
+float2 swc_field_vel(float4 fb, float ridge, float cf, float2 vel_prev) {
+  float2 aspect = float2(aspect_x, aspect_y);
+  float2 und = swc_undertow(fb.zw, ridge);
+  float aln = dot(und, vel_prev / max(aspect, 1e-4));
+  float sgn = (abs(aln) > 1e-6) ? (aln > 0.0 ? 1.0 : -1.0)
+                                : (cf >= 0.0 ? 1.0 : -1.0);
+  float2 iso = fb.zw * to_image + und * (to_image_curl * abs(cf) * sgn);
+  return fb.xy + iso * aspect;
 }
 
 [numthreads(64, 1, 1)]
@@ -210,7 +222,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
       // for the flow, field_a for ridge presence). Frozen avoidance on top.
       float4 fb = fieldTexB.SampleLevel(linearSampler, saturate(pos), 0);
       float ridge = fieldTexA.SampleLevel(linearSampler, saturate(pos), 0).a;
-      float2 eff = swc_field_vel(fb, ridge, cf) * speed + avoid_vec;
+      float2 eff = swc_field_vel(fb, ridge, cf, vel) * speed + avoid_vec;
 
       // Acceleration mode.
       if (mode == 1u) {
@@ -371,7 +383,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float4 fb0 = fieldTexB.SampleLevel(linearSampler, saturate(nuv), 0);
     float ridge0 = fieldTexA.SampleLevel(linearSampler, saturate(nuv), 0).a;
     float cf0 = (zr - undertow_skew) * undertow_squash;
-    vel = swc_field_vel(fb0, ridge0, cf0) * speed;
+    vel = swc_field_vel(fb0, ridge0, cf0, float2(0.0, 0.0)) * speed;
   }
 
   p.a = float4(pos, life_remain, life_total);

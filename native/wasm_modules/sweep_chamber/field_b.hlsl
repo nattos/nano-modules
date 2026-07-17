@@ -74,24 +74,37 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 uv = (float2(gid.xy) + 0.5) * inv_res;
 
   // Swept-luma gradient from field_a's coarse L' (.r), sampled over equal
-  // SCREEN distances (aspect-corrected step) → an iso-space gradient.
+  // SCREEN distances (aspect-corrected steps) → an iso-space gradient.
   // MULTI-SCALE (e, 4e, 16e): a single fine stencil only exerts force within
   // a couple of field texels of a feature — particles a short distance away
   // felt nothing and the image's reach read as "super short". The coarse
   // stencils extend the attraction basin to ~15% of the screen while the
-  // fine one still localizes ridges up close. 12 taps, but this is the
-  // once-per-frame 256² field-gen pass — per-particle cost is unchanged.
+  // fine one still localizes ridges up close.
+  //
+  // Each scale is an 8-direction RING stencil, not a 4-tap axis cross: at
+  // the coarse radii a cross imprints axis-aligned SQUARES around every
+  // large feature (a bright centre region projects a visible rectangle into
+  // the particle flow). Σ dir·L over 8 unit dirs at radius e ≈ 4e·∇L, so
+  // ×0.5 matches the 2e·∇L scale of a plain central difference. 24 taps,
+  // but this is the once-per-frame 256² field-gen pass — per-particle cost
+  // is unchanged.
   float e0 = lerp(1.0, 3.0, saturate(image_smoothing)) * inv_res;
   float2 G = float2(0.0, 0.0);
   {
+    static const float2 RING[8] = {
+      float2( 1.0, 0.0), float2( 0.70710678,  0.70710678),
+      float2( 0.0, 1.0), float2(-0.70710678,  0.70710678),
+      float2(-1.0, 0.0), float2(-0.70710678, -0.70710678),
+      float2( 0.0,-1.0), float2( 0.70710678, -0.70710678),
+    };
     float e = e0, w = 1.0;
-    [unroll] for (uint sc = 0u; sc < 3u; sc++) {
-      float2 du = e * aspect;
-      float vl = fieldA.SampleLevel(lin, saturate(uv - float2(du.x, 0.0)), 0).r;
-      float vr = fieldA.SampleLevel(lin, saturate(uv + float2(du.x, 0.0)), 0).r;
-      float vd = fieldA.SampleLevel(lin, saturate(uv - float2(0.0, du.y)), 0).r;
-      float vu = fieldA.SampleLevel(lin, saturate(uv + float2(0.0, du.y)), 0).r;
-      G += float2(vr - vl, vu - vd) * w;
+    for (uint sc = 0u; sc < 3u; sc++) {
+      float2 acc = float2(0.0, 0.0);
+      [unroll] for (uint d = 0u; d < 8u; d++) {
+        float2 du = RING[d] * (e * aspect);
+        acc += RING[d] * fieldA.SampleLevel(lin, saturate(uv + du), 0).r;
+      }
+      G += acc * (0.5 * w);
       e *= 4.0;
       w *= 0.55;
     }
