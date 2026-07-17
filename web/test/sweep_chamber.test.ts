@@ -204,4 +204,60 @@ describe('source.particles.sweep_chamber E2E', () => {
     expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(60);
     on.trace('out').expectDifferentFrom(off.trace('out'), 50);
   });
+
+  // ---- Intensity & response (derived from the swept image) ----
+
+  it('forced respawn churns the pool while the sweep is capturing', async () => {
+    // Mid-sweep the derived intensity is high; respawn_rate hazards the whole
+    // pool through fresh (spawn-on-line-eligible) respawns → the swarm's
+    // distribution visibly reorganizes vs respawn off.
+    const params = {
+      ...COUPLED, sweep_center: 0.5, life: 8.0,
+      l_count: 24, l_opacity: 0.0, spawn_on_line: 1.0, line_boost: 1.0,
+      intensity_sens: 6.0,
+    };
+    const off = await runGrad('sc_force_off', { ...params, respawn_rate: 0.0 }, 30);
+    const on  = await runGrad('sc_force_on',  { ...params, respawn_rate: 4.0 }, 30);
+    expect(off.success).toBe(true);
+    expect(on.success).toBe(true);
+    expect(on.trace('out').countPixels(isActive)).toBeGreaterThan(60);
+    on.trace('out').expectDifferentFrom(off.trace('out'), 50);
+  });
+
+  it('sweep release fires the fling (capture → release smoke)', async () => {
+    // Capture a band, then yank the sweep to the off endpoint: the release
+    // envelope fires and everything gets flung. Exercises the stats/response
+    // path end-to-end; asserts the post-release frame breaks away hard.
+    const params = {
+      ...COUPLED, sweep_center: 0.5, momentum: 0.9, drag: 0.3,
+      l_count: 24, l_opacity: 0.0, spawn_on_line: 1.0,
+      fling_boost: 6.0, release_gain: 4.0, intensity_sens: 6.0,
+    };
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.testonly', 'com.nano.core', 'com.nano.nano'],
+      dumpName: 'sc_release',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'sc_rel', sketch: buildGradientChain(params) },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'sc_rel' } },
+            ]},
+          ],
+          waitFrames: 30, captureTraceIds: ['out'],
+        },
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'sc_rel', colIdx: 0, chainIdx: 1,
+              paramKey: 'sweep_center', value: 0.0 },
+          ],
+          waitFrames: 8, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    expect(r.phases[1].trace('out').countPixels(isActive)).toBeGreaterThan(40);
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 80);
+  });
 });

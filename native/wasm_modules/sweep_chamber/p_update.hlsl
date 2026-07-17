@@ -20,6 +20,7 @@
 //   u0 particles · t1 field_b · t2 input · s3 sampler · b4 uniforms
 
 #include "common.hlsl"
+#include "nano_sanitize.hlsl"
 
 RWStructuredBuffer<Particle> particles    : register(u0);
 Texture2D<float4>            fieldTexB    : register(t1);
@@ -27,6 +28,7 @@ Texture2D<float4>            inputTex     : register(t2);
 SamplerState                 linearSampler : register(s3);
 StructuredBuffer<Seg>        segs          : register(t6);   // tracer segments (spawn-on-line)
 StructuredBuffer<TracerState> tracers      : register(t7);   // per-tracer grip (spawn weighting)
+StructuredBuffer<float4>     respBuf       : register(t8);   // [1] = calm↔intense response
 
 cbuffer Uniforms : register(b4) {
   uint  count;
@@ -67,7 +69,17 @@ cbuffer Uniforms : register(b4) {
   float l_count_f;       // tracer count
   float seg_stride;      // segment slots per tracer (its private block size)
   float seg_live;        // slots per tracer actually written (rest zeroed)
+  float calm_stretch;    // TTL ×(1 + this) at intensity 0
+
+  float intense_shrink;  // TTL × this at intensity 1
+  float respawn_rate;    // forced-respawn hazard (fraction of pool/s at inten 1)
+  float line_boost;      // spawn-on-line multiplier at intensity 1
+  float jitter_boost;    // jitter multiplier gain at intensity 1
+
+  float fling_boost;     // velocity kick × release envelope
   float _pad0;
+  float _pad1;
+  float _pad2;
 }
 
 // Max settle rate (1/s) at pull = 1 (flow_swarm parity).
@@ -100,6 +112,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   uint   packed      = asuint(p.b.w);
 
   float cf = (swc_unpack_z(packed) - undertow_skew) * undertow_squash;
+
+  // Calm↔intense response, derived from the swept image (see stats.hlsl).
+  float4 resp = respBuf[1];
+  float inten = nano_sanitize(resp.z, 0.0, 0.0, 1.0);
+  float env   = nano_sanitize(resp.w, 0.0, 0.0, 64.0);
+  float jitter_eff = jitter * (1.0 + jitter_boost * inten);
 
   // Substepping (flow_swarm parity): dt-scaled everywhere, noise variance
   // preserved by 1/√nsub, momentum as a per-substep blend. nsub=1 reproduces
@@ -145,8 +163,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
         }
       }
 
-      // Forward-spray jitter (flow_swarm parity).
-      if (jitter > 1e-6) {
+      // Forward-spray jitter (flow_swarm parity), boosted by intensity.
+      if (jitter_eff > 1e-6) {
         float vmag = length(vel);
         float2 fwd = vel / (vmag + 1e-4);
         uint h = swc_hash3(i + 0x9E3779B1u, fi, seed);
@@ -154,7 +172,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
         float2 cir = float2(swc_signed(swc_hash(h ^ 0x68BC21EBu)),
                             swc_signed(swc_hash(h ^ 0xA17F2B91u)));
         float2 kick = fwd * mag + cir * SWC_NOISE_CIRC;
-        vel += kick * jitter * vmag * noise_scale;
+        vel += kick * jitter_eff * vmag * noise_scale;
+      }
+
+      // Release FLING: while the release envelope rings (the sweep just let
+      // go of a band), kick every particle along its current motion. The
+      // dt-scaled sum over the envelope is framerate-independent.
+      if (env > 1e-4 && fling_boost > 0.0) {
+        float2 fdir = vel / (length(vel) + 0.05);
+        vel += fdir * fling_boost * env * dt_sub;
       }
 
       // Drag, then integrate.
@@ -175,6 +201,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
         uint hd = swc_hash3(i + 0x5151BEEFu, frame_index, 0xD1u);
         if (swc_unit(swc_hash(hd)) < prob) respawn = true;
       }
+    }
+    // Forced respawn ("intense" bursts): when the sweep is capturing a lot,
+    // churn the pool onto the lines fast — the "jumble-ey" bunching. Calm
+    // moments leave particles to their long graceful lifetimes.
+    if (!respawn && respawn_rate > 0.0 && inten > 1e-4) {
+      float lambda = respawn_rate * inten;                 // 1/s
+      float pforce = 1.0 - exp(-lambda * dt);
+      uint hf = swc_hash3(i + 0x0F0CE001u, frame_index, 0xF1u);
+      if (swc_unit(swc_hash(hf)) < pforce) respawn = true;
     }
     if (life_remain <= 0.0) respawn = true;
   }
@@ -199,8 +234,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // the direct replacement for dc's death-based bunching control.
     uint lc   = (uint)l_count_f;
     uint live = (uint)seg_live;
-    if (to_line_rate > 0.0 && lc > 0u && live > 0u
-        && swc_unit(swc_hash(h ^ 0x0777u)) < to_line_rate) {
+    float p_line = saturate(to_line_rate * lerp(1.0, line_boost, inten));
+    if (p_line > 0.0 && lc > 0u && live > 0u
+        && swc_unit(swc_hash(h ^ 0x0777u)) < p_line) {
       uint li = min(lc - 1u, (uint)(swc_unit(swc_hash(h ^ 0x0999u)) * (float)lc));
       float grip_w = saturate(tracers[li].b.z);
       if (swc_unit(swc_hash(h ^ 0x0F31u)) < grip_w) {
@@ -216,8 +252,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float zr = swc_unit(swc_hash2(i + 0x27D4EB2Fu, frame_index));
     packed = swc_pack_rgbz(capt.rgb, zr);
 
+    // Intensity-scaled lifetime: calm = long lingering trails, intense =
+    // short bursty churn.
     float lj = swc_signed(swc_hash2(i + 0xC2B2AE3Du, frame_index));
-    life_remain = max(life * (1.0 + life_jitter * lj), 1e-3);
+    float life_eff = life * lerp(1.0 + calm_stretch, intense_shrink, inten);
+    life_remain = max(life_eff * (1.0 + life_jitter * lj), 1e-3);
     life_total  = life_remain;
     float sj = swc_signed(swc_hash2(i + 0x1B873593u, frame_index));
     size_cur = max(size * (1.0 + size_jitter * sj), 1e-6);

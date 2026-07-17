@@ -121,9 +121,32 @@ struct UpdateUniforms {
   float    l_count_f;
   float    seg_stride;
   float    seg_live;
+  float    calm_stretch;
+
+  float    intense_shrink;
+  float    respawn_rate;
+  float    line_boost;
+  float    jitter_boost;
+
+  float    fling_boost;
   float    _pad0;
+  float    _pad1;
+  float    _pad2;
 };
-static_assert(sizeof(UpdateUniforms) == 128, "UpdateUniforms layout mismatch");
+static_assert(sizeof(UpdateUniforms) == 160, "UpdateUniforms layout mismatch");
+
+struct StatsUniforms {
+  float field_res;
+  float dt;
+  float intensity_attack;
+  float intensity_decay;
+
+  float intensity_sens;
+  float release_gain;
+  float release_decay;
+  float _pad0;
+};
+static_assert(sizeof(StatsUniforms) == 32, "StatsUniforms layout mismatch");
 
 struct TraceUniforms {
   uint32_t count;
@@ -204,6 +227,7 @@ static gpu::ComputePSO s_pso_field_a;
 static gpu::ComputePSO s_pso_field_b;
 static gpu::ComputePSO s_pso_update;
 static gpu::ComputePSO s_pso_trace;
+static gpu::ComputePSO s_pso_stats;
 static gpu::ComputePSO s_pso_prefill;
 static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_render_add;
@@ -214,6 +238,8 @@ struct State {
   gpu::Buffer  particle_buf;
   gpu::Buffer  tracer_buf;      // MAX_TRACERS × TracerState (32 B)
   gpu::Buffer  seg_buf;         // MAX_TRACERS × MAX_SEG × Seg (32 B)
+  gpu::Buffer  stats_buf;       // 2 × float4: raw stats + calm↔intense response
+  gpu::Buffer  stats_uniforms;
   gpu::Buffer  field_a_uniforms;
   gpu::Buffer  field_uniforms;
   gpu::Buffer  update_uniforms;
@@ -281,6 +307,18 @@ struct State {
   float l_width            = 0.2f;
   float l_soft             = 1.0f;
   float l_opacity          = 0.5f;
+  // Intensity & response (shaping only — the axis itself is derived).
+  float intensity_sens   = 2.0f;
+  float intensity_attack = 0.15f;
+  float intensity_decay  = 1.2f;
+  float calm_stretch     = 0.75f;
+  float intense_shrink   = 0.25f;
+  float respawn_rate     = 1.0f;
+  float line_boost       = 2.5f;
+  float jitter_boost     = 0.5f;
+  float fling_boost      = 2.0f;
+  float release_gain     = 2.0f;
+  float release_decay    = 0.4f;
   // Containment.
   float boundary           = 0.4f;
   float boundary_size      = 0.62f;
@@ -475,6 +513,28 @@ void module_init() {
       .floatField("l_width",            0.2f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Width", "LWidth")
       .floatField("l_soft",             1.0f,   0.1f,  4.0f,  state::PrimaryInput).label("Line Softness", "LSoft")
       .floatField("l_opacity",          0.5f,   0.0f,  1.0f,  state::PrimaryInput).label("Line Opacity", "LOpac")
+      // ---- Intensity & response ----
+      .group("response", "Intensity & Response")
+        .groupHelp(
+          "The calm↔intense axis is **derived from the swept image itself** — "
+          "how much captured energy the sweep window is currently holding. "
+          "Calm (nothing captured): long lingering lifetimes, gentle motion. "
+          "Intense (a band captured): shorter bursty lifetimes, forced "
+          "respawn churn onto the lines, boosted spawn-on-line and jitter. "
+          "When the sweep RELEASES a band, a release envelope fires and "
+          "**flings** everything along its current motion. These knobs shape "
+          "the response; none of them IS the axis.")
+      .floatField("intensity_sens",   2.0f,  0.0f,  8.0f, state::PrimaryInput).label("Intensity Sensitivity", "ISens")
+      .floatField("intensity_attack", 0.15f, 0.02f, 2.0f, state::PrimaryInput).label("Intensity Attack", "IAtk")
+      .floatField("intensity_decay",  1.2f,  0.1f,  8.0f, state::PrimaryInput).label("Intensity Decay", "IDec")
+      .floatField("calm_stretch",     0.75f, 0.0f,  3.0f, state::PrimaryInput).label("Calm Life Stretch", "Calm")
+      .floatField("intense_shrink",   0.25f, 0.05f, 1.0f, state::PrimaryInput).label("Intense Life Shrink", "Intense")
+      .floatField("respawn_rate",     1.0f,  0.0f,  4.0f, state::PrimaryInput).label("Forced Respawn", "Respawn")
+      .floatField("line_boost",       2.5f,  1.0f,  6.0f, state::PrimaryInput).label("Line Spawn Boost", "LBoost")
+      .floatField("jitter_boost",     0.5f,  0.0f,  3.0f, state::PrimaryInput).label("Jitter Boost", "JBoost")
+      .floatField("fling_boost",      2.0f,  0.0f,  8.0f, state::PrimaryInput).label("Release Fling", "Fling")
+      .floatField("release_gain",     2.0f,  0.0f,  8.0f, state::PrimaryInput).label("Release Gain", "RGain")
+      .floatField("release_decay",    0.4f,  0.05f, 2.0f, state::PrimaryInput).label("Release Hold", "RHold")
       // ---- Pool / advection ----
       .group("advection", "Pool & Advection")
       .intField  ("count",     150000, 1, MAX_PARTICLES, state::PrimaryInput).label("Count", "Count")
@@ -539,6 +599,7 @@ void module_init() {
                            "rgba16float", "write");
   state::registerShaderSPV("sweep_chamber_p_update", P_UPDATE_SPV, P_UPDATE_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_trace",    TRACE_SPV,    TRACE_SPV_SIZE);
+  state::registerShaderSPV("sweep_chamber_stats",    STATS_SPV,    STATS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_prefill",  PREFILL_SPV,  PREFILL_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_vs",       VS_SPV,       VS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_fs",       FS_SPV,       FS_SPV_SIZE);
@@ -549,13 +610,14 @@ void module_init() {
   auto cs_field_b = gpu::Device::createShaderModuleByName("sweep_chamber_field_b");
   auto cs_update  = gpu::Device::createShaderModuleByName("sweep_chamber_p_update");
   auto cs_trace   = gpu::Device::createShaderModuleByName("sweep_chamber_trace");
+  auto cs_stats   = gpu::Device::createShaderModuleByName("sweep_chamber_stats");
   auto cs_prefill = gpu::Device::createShaderModuleByName("sweep_chamber_prefill");
   auto vs_module  = gpu::Device::createShaderModuleByName("sweep_chamber_vs");
   auto fs_module  = gpu::Device::createShaderModuleByName("sweep_chamber_fs");
   auto line_vs    = gpu::Device::createShaderModuleByName("sweep_chamber_line_vs");
   auto line_fs    = gpu::Device::createShaderModuleByName("sweep_chamber_line_fs");
-  if (!cs_field_a || !cs_field_b || !cs_update || !cs_trace || !cs_prefill ||
-      !vs_module || !fs_module || !line_vs || !line_fs) return;
+  if (!cs_field_a || !cs_field_b || !cs_update || !cs_trace || !cs_stats ||
+      !cs_prefill || !vs_module || !fs_module || !line_vs || !line_fs) return;
 
   s_pso_field_a = gpu::Device::createComputePSO(cs_field_a, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)   // field_a out
@@ -576,7 +638,8 @@ void module_init() {
       .sampler(3)
       .uniform(4)
       .storage(6)     // tracer segments (spawn-on-line)
-      .storage(7));   // tracer states (grip weighting)
+      .storage(7)     // tracer states (grip weighting)
+      .storage(8));   // stats/response (calm↔intense)
 
   s_pso_trace = gpu::Device::createComputePSO(cs_trace, "main", gpu::Bindings()
       .storageRW(0)   // tracers[]
@@ -586,6 +649,12 @@ void module_init() {
       .sampler(4)
       .uniform(5)
       .tex2d(6));     // input (line color)
+
+  s_pso_stats = gpu::Device::createComputePSO(cs_stats, "main", gpu::Bindings()
+      .tex2d(0)       // field_a
+      .tex2d(1)       // field_b
+      .storageRW(2)   // stats/response buffer
+      .uniform(3));
 
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
@@ -621,6 +690,8 @@ void* create() {
       32 * MAX_TRACERS, gpu::BufferUsage::Storage);
   s->seg_buf = gpu::Device::createBuffer(
       32 * MAX_TRACERS * MAX_SEG, gpu::BufferUsage::Storage);
+  s->stats_buf = gpu::Device::createBuffer(32, gpu::BufferUsage::Storage);
+  s->stats_uniforms = gpu::Device::createBuffer(sizeof(StatsUniforms), gpu::BufferUsage::Uniform);
   s->field_a_uniforms = gpu::Device::createBuffer(sizeof(FieldAUniforms),  gpu::BufferUsage::Uniform);
   s->field_uniforms   = gpu::Device::createBuffer(sizeof(FieldUniforms),   gpu::BufferUsage::Uniform);
   s->update_uniforms  = gpu::Device::createBuffer(sizeof(UpdateUniforms),  gpu::BufferUsage::Uniform);
@@ -640,6 +711,8 @@ void destroy(void* self) {
   s->particle_buf.release();
   s->tracer_buf.release();
   s->seg_buf.release();
+  s->stats_buf.release();
+  s->stats_uniforms.release();
   s->field_a_uniforms.release();
   s->field_uniforms.release();
   s->update_uniforms.release();
@@ -660,7 +733,8 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   if (!s_pso_field_a.valid() || !s_pso_field_b.valid() ||
-      !s_pso_update.valid() || !s_pso_trace.valid() || !s_pso_prefill.valid() ||
+      !s_pso_update.valid() || !s_pso_trace.valid() || !s_pso_stats.valid() ||
+      !s_pso_prefill.valid() ||
       !s_pso_render_alpha.valid() || !s_pso_render_add.valid() ||
       !s_pso_line_alpha.valid() || !s_pso_line_add.valid()) return;
   if (!s->particle_buf.valid() || !s->tracer_buf.valid() || !s->seg_buf.valid()) return;
@@ -671,6 +745,8 @@ void init(void* self) {
   s->initialized  = true;
   apply_count_change(*s);   // seed the initial pool
   zero_tracer_buffers(*s);  // tracers self-seed on first trace
+  float stats_zero[8] = {};
+  s->stats_buf.writeBytes(stats_zero, sizeof(stats_zero), 0);
   state::setOnStateReady(&on_state_ready);
 }
 
@@ -731,6 +807,17 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(path, plen, "l_width"))            s->l_width = state::patchFloat(i);
     else if (state::pathIs(path, plen, "l_soft"))             s->l_soft = state::patchFloat(i);
     else if (state::pathIs(path, plen, "l_opacity"))          s->l_opacity = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity_sens"))     s->intensity_sens = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity_attack"))   s->intensity_attack = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intensity_decay"))    s->intensity_decay = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "calm_stretch"))       s->calm_stretch = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "intense_shrink"))     s->intense_shrink = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "respawn_rate"))       s->respawn_rate = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "line_boost"))         s->line_boost = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "jitter_boost"))       s->jitter_boost = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "fling_boost"))        s->fling_boost = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "release_gain"))       s->release_gain = state::patchFloat(i);
+    else if (state::pathIs(path, plen, "release_decay"))      s->release_decay = state::patchFloat(i);
     else if (state::pathIs(path, plen, "boundary"))           s->boundary = state::patchFloat(i);
     else if (state::pathIs(path, plen, "boundary_size"))      s->boundary_size = state::patchFloat(i);
     else if (state::pathIs(path, plen, "boundary_stiffness")) s->boundary_stiffness = state::patchFloat(i);
@@ -862,7 +949,23 @@ void render(void* self, int vp_w, int vp_h) {
   uu.l_count_f          = (float)s->l_count;
   uu.seg_stride         = (float)MAX_SEG;
   uu.seg_live           = (float)seg_live;
+  uu.calm_stretch       = s->calm_stretch;
+  uu.intense_shrink     = s->intense_shrink;
+  uu.respawn_rate       = s->respawn_rate;
+  uu.line_boost         = s->line_boost;
+  uu.jitter_boost       = s->jitter_boost;
+  uu.fling_boost        = s->fling_boost;
   s->update_uniforms.writeOne(uu);
+
+  StatsUniforms su = {};
+  su.field_res        = (float)FIELD_RES;
+  su.dt               = dt;
+  su.intensity_attack = s->intensity_attack;
+  su.intensity_decay  = s->intensity_decay;
+  su.intensity_sens   = s->intensity_sens;
+  su.release_gain     = s->release_gain;
+  su.release_decay    = s->release_decay;
+  s->stats_uniforms.writeOne(su);
 
   TraceUniforms tu = {};
   tu.count            = (uint32_t)s->l_count;
@@ -944,6 +1047,18 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
+  // ---- Pass 1c: swept-image stats → calm↔intense response (one group) ----
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_stats);
+    cp.setTexture(s->field_a_tex, 0, 0);
+    cp.setTexture(s->field_b_tex, 1, 0);
+    cp.setBuffer(s->stats_buf, 2);
+    cp.setBuffer(s->stats_uniforms, 3);
+    cp.dispatch(1, 1, 1);
+    cp.end();
+  }
+
   // ---- Pass 2a: tracers (BEFORE p_update so spawn-on-line sees this
   // frame's segments) ----
   if (s->l_count > 0) {
@@ -971,6 +1086,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setBuffer(s->update_uniforms, 4);
     cp.setBuffer(s->seg_buf, 6);
     cp.setBuffer(s->tracer_buf, 7);
+    cp.setBuffer(s->stats_buf, 8);
     int groups = (s->count + 63) / 64;
     cp.dispatch(groups, 1, 1);
     cp.end();
