@@ -32,10 +32,11 @@ const STATIC = {
 function buildSketch(params: Record<string, unknown>, opts?: {
   gradientInput?: boolean,   // insert a gradient as mono's tex_in
   envWire?: boolean,         // wire the SOLID bg into mono's env_in
+  bgColor?: number[],        // override the solid input color
 }): Sketch {
   const chain: any[] = [
     { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
-      params: { color: [0.7, 0.7, 0.75] } },
+      params: { color: opts?.bgColor ?? [0.7, 0.7, 0.75] } },
   ];
   const wires: any[] = [];
   if (opts?.gradientInput) {
@@ -53,7 +54,8 @@ function buildSketch(params: Record<string, unknown>, opts?: {
 }
 
 async function render(sketchId: string, params: Record<string, unknown>,
-                      opts?: { envWire?: boolean, waitFrames?: number }) {
+                      opts?: { gradientInput?: boolean, envWire?: boolean,
+                               bgColor?: number[], waitFrames?: number }) {
   const result = await runEngineTest({
     width: 96, height: 96,
     modules: ['com.nano.core', 'com.nano.nano'],
@@ -226,6 +228,20 @@ describe('source.mesh.monolith E2E', () => {
     red.trace('out').expectDifferentFrom(white.trace('out'), 5);
     const p = red.trace('out').pixelAt(72, 48);
     expect(p.r).toBeGreaterThan(p.b + 8);
+  });
+
+  it('sun source From Input steals the ray hue from the input', async () => {
+    // Deep-blue input; the sun sample point lands on it (solid color, so
+    // anywhere works). From Input rays carry blue chroma; manual white
+    // rays stay neutral — compare the blue-minus-red excess at a ray-lit
+    // probe between the two modes.
+    const base = { ...STATIC, azimuth: 180, elevation: 5, sun: 1.0, rays: 1.0 };
+    const bg = { bgColor: [0.15, 0.3, 0.85] };
+    const manual = await render('mono_sunsrc_col', { ...base, sun_source: 0 }, bg);
+    const fromEnv = await render('mono_sunsrc_env', { ...base, sun_source: 1 }, bg);
+    const pm = manual.trace('out').pixelAt(72, 48);
+    const pe = fromEnv.trace('out').pixelAt(72, 48);
+    expect(pe.b - pe.r).toBeGreaterThan(pm.b - pm.r + 5);
   });
 
   it('extended spread grows colossal shells without breaking the core', async () => {

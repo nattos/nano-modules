@@ -19,8 +19,11 @@ SamplerState        clampS  : register(s2);
 cbuffer Uniforms : register(b3) {
   float4 sun_screen;   // sun px, py, water_t, gain (rays * fade * sun)
   float4 march;        // taps, decay, max_step_px, caustics amount
-  float4 glow;         // inv glow radius (px^-1), 0, 0, 0
+  float4 glow;         // inv glow radius (px^-1), sun_color rgb
+  float4 sun_env;      // sun sample uv.xy, mode (1 = hue from env), 0
 };
+
+Texture2D<float4> envTex : register(t4);   // sun-color sample source
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -62,6 +65,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
   float rs = (wsum > 1e-4 ? accum / wsum : 0.0) * sun_screen.w;
   float3 tint = glow.yzw;   // sun color
+  if (sun_env.z > 0.5) {
+    float2 su = sun_env.xy;
+    float3 e = envTex.SampleLevel(clampS, su, 0).rgb
+             + envTex.SampleLevel(clampS, su + float2(0.02, 0.0), 0).rgb
+             + envTex.SampleLevel(clampS, su - float2(0.02, 0.0), 0).rgb
+             + envTex.SampleLevel(clampS, su + float2(0.0, 0.02), 0).rgb
+             + envTex.SampleLevel(clampS, su - float2(0.0, 0.02), 0).rgb;
+    tint *= nano_sun_chroma(e * 0.2);
+  }
 
   // Water caustics: COLUMNS of differing density, not a pasted overlay.
   // The modulation is (nearly) constant ALONG each shaft and varies only

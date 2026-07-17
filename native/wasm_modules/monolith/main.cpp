@@ -193,12 +193,14 @@ struct ResolveUniforms {
   float round_p[4];         // copy_weight, is_seed, env_mode, fog_z0
   float vp[4];              // w, h, 1/w, 1/h
   float caustic[4];         // amount, world scale, water_t, 0
+  float sun_env[4];         // sun sample uv.xy, mode (1 = from env), 0
 };
 
 struct RaysUniforms {
   float sun_screen[4];      // sun px, py, water_t, gain (rays*1.5*fade)
   float march[4];           // taps, decay, max_step_px, caustics amount
   float glow[4];            // inv glow radius (px^-1), sun_color rgb
+  float sun_env[4];         // sun sample uv.xy, mode (1 = from env), 0
 };
 
 struct ExtractUniforms { float p[4]; };   // inv_range, has_rays, 0, 0
@@ -246,6 +248,7 @@ struct State {
   float elevation = 25.0f;
   float sun = 0.6f;
   float sun_r = 1.0f, sun_g = 1.0f, sun_b = 1.0f;
+  int sun_source = 0;       // 0 = Color, 1 = From Input (env chroma)
   float fog = 0.2f;
   float rays = 0.3f;
   float bloom = 0.25f;
@@ -293,7 +296,9 @@ void module_init() {
   // 1.2.6: sun_color tint (light + rays w/ per-column dispersion);
   //        spread goes exponential above 0.5 (shells up to 9x, camera
   //        can end up inside them - per-tri near-plane guard).
-  state::init("source.mesh.monolith", {1, 2, 6},
+  // 1.2.7: sun_source select - light hue sampled from the env/input at
+  //        the sun's position (chroma-only, single point, no readback).
+  state::init("source.mesh.monolith", {1, 2, 7},
     state::Schema()
       .helpField("intro",
         "## Monolith\n"
@@ -382,7 +387,10 @@ void module_init() {
           "lights from the camera; ±180 puts the sun BEHIND the shape — "
           "that's where the rays live. *Sun* is overall light intensity; "
           "*Sun Color* tints all of it (the ray columns also pick up a "
-          "subtle per-column warm/cool dispersion around it).")
+          "subtle per-column warm/cool dispersion around it). *Sun "
+          "Source* → From Input steals the light's HUE from the env (or "
+          "the input) sampled around the sun's position — intensity stays "
+          "on the Sun knob, and Sun Color still filters on top.")
       .floatField("azimuth", 160.0f, -180.f, 180.f, state::PrimaryInput,
                   nullptr, 0.f, "deg").label("Azimuth", "Azim")
       .floatField("elevation", 25.0f, -10.f, 80.f, state::PrimaryInput,
@@ -391,6 +399,9 @@ void module_init() {
           .label("Sun", "Sun")
       .rgbField("sun_color", 1.0f, 1.0f, 1.0f, state::PrimaryInput)
           .label("Sun Color", "SunCol")
+      .selectField("sun_source", 0, state::PrimaryInput,
+                   {{"Color", 0}, {"From Input", 1}})
+          .label("Sun Source", "SunSrc")
       // --- Atmosphere ---
       .group("atmosphere", "Atmosphere")
         .groupHelp(
@@ -479,7 +490,8 @@ void module_init() {
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
       .sampler(2)
-      .uniform(3));
+      .uniform(3)
+      .tex2d(4));   // env source (sun-color sample)
   s_pso_extract = gpu::Device::createComputePSO(cs_extract, "main", gpu::Bindings()
       .tex2d(0)
       .tex2d(1)
@@ -641,6 +653,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       auto v = state::patchVec3(i);
       s->sun_r = v.x; s->sun_g = v.y; s->sun_b = v.z;
     }
+    else if (state::pathIs(p, l, "sun_source")) s->sun_source = state::patchInt(i);
     else if (state::pathIs(p, l, "fog"))       s->fog = state::patchFloat(i);
     else if (state::pathIs(p, l, "rays"))      s->rays = state::patchFloat(i);
     else if (state::pathIs(p, l, "bloom"))     s->bloom = state::patchFloat(i);
@@ -736,6 +749,30 @@ void render(void* self, int vp_w, int vp_h) {
                         -std::cos(az) * std::cos(el)};
   const V3 sun_view = v3Norm(m3Apply(cam_rot, sun_world));
   const float sun_i = std::pow(2.0f, (s->sun - 0.5f) * 3.0f);
+
+  // Sun screen position (shared by the rays march and the env sun-color
+  // sample; may be off-frame) + the single sample point for Sun Source =
+  // From Input: the sun's equirect coordinate on env_in, or its clamped
+  // screen position on tex_in.
+  const float sun_pz = std::fmax(sun_view.z, 0.05f);
+  const float sun_px = ((focal * sun_view.x / sun_pz) * 2.0f * cs.ax + 1.0f)
+                       * 0.5f * vp_w;
+  const float sun_py = (1.0f - ((focal * sun_view.y / sun_pz) * 2.0f * cs.ay
+                                + 1.0f) * 0.5f) * vp_h;
+  float sun_uv_x, sun_uv_y;
+  if (env_wired) {
+    sun_uv_x = std::atan2(sun_world.x, sun_world.z) * 0.15915494f + 0.5f;
+    float sy = sun_world.y < -1.f ? -1.f : (sun_world.y > 1.f ? 1.f : sun_world.y);
+    sun_uv_y = std::acos(sy) * 0.31830989f;
+    sun_uv_y = sun_uv_y < 0.004f ? 0.004f : (sun_uv_y > 0.996f ? 0.996f : sun_uv_y);
+  } else {
+    auto clampf = [](float v, float lo, float hi) {
+      return v < lo ? lo : (v > hi ? hi : v);
+    };
+    sun_uv_x = clampf(sun_px / (float)vp_w, 0.03f, 0.97f);
+    sun_uv_y = clampf(sun_py / (float)vp_h, 0.03f, 0.97f);
+  }
+  const float sun_env_mode = s->sun_source == 1 ? 1.0f : 0.0f;
 
   // --- Scratch textures (lazy, vp-sized) ---
   const bool resized = (s->scratch_w != vp_w || s->scratch_h != vp_h);
@@ -868,6 +905,8 @@ void render(void* self, int vp_w, int vp_h) {
     u.caustic[0] = s->caustics;
     u.caustic[1] = 9.0f * std::pow(2.0f, (s->caustic_scale - 0.5f) * 2.0f);
     u.caustic[2] = (float)s->water_t;
+    u.sun_env[0] = sun_uv_x; u.sun_env[1] = sun_uv_y;
+    u.sun_env[2] = sun_env_mode;
     s->ub_resolve[ci].writeOne(u);
 
     {
@@ -913,12 +952,9 @@ void render(void* self, int vp_w, int vp_h) {
   if (rays_gain > 1e-4f && s_pso_rays.valid()) {
     ensureTex(s->rays_tex, vp_w, vp_h, gpu::TextureFormat::RGBA16F, resized);
     if (s->rays_tex.valid()) {
-      const float sz = std::fmax(sun_view.z, 0.05f);
-      const float sun_sq_x = focal * sun_view.x / sz;
-      const float sun_sq_y = focal * sun_view.y / sz;
       RaysUniforms ru = {};
-      ru.sun_screen[0] = (sun_sq_x * 2.0f * cs.ax + 1.0f) * 0.5f * vp_w;
-      ru.sun_screen[1] = (1.0f - (sun_sq_y * 2.0f * cs.ay + 1.0f) * 0.5f) * vp_h;
+      ru.sun_screen[0] = sun_px;
+      ru.sun_screen[1] = sun_py;
       ru.sun_screen[2] = (float)s->water_t;
       ru.sun_screen[3] = rays_gain;
       ru.march[0] = 32.0f; ru.march[1] = 0.93f;
@@ -926,6 +962,8 @@ void render(void* self, int vp_w, int vp_h) {
       ru.march[3] = s->caustics;
       ru.glow[0] = 1.0f / (0.5f * (float)vp_w);
       ru.glow[1] = s->sun_r; ru.glow[2] = s->sun_g; ru.glow[3] = s->sun_b;
+      ru.sun_env[0] = sun_uv_x; ru.sun_env[1] = sun_uv_y;
+      ru.sun_env[2] = sun_env_mode;
       s->ub_rays.writeOne(ru);
 
       auto cp = gpu::ComputePass::begin();
@@ -934,6 +972,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setTexture(s->rays_tex, 1, 1);
       cp.setSampler(s->samp_clamp, 2);
       cp.setBuffer(s->ub_rays, 3);
+      cp.setTexture(env_blurred, 4, 0);
       cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
       cp.end();
       has_rays = true;

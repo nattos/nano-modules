@@ -8,6 +8,17 @@
 
 #include "nano_hash.hlsl"
 
+// Chroma-only transfer for Sun Source = From Input: given the env color
+// averaged around the sun point (callers do a stabilized 5-tap cross),
+// normalize by its own luminance so the env contributes HUE while the
+// Sun knob keeps owning intensity. Fades to neutral when the sampled
+// spot is near-black (no chroma noise from dark video).
+float3 nano_sun_chroma(float3 e) {
+  float l = dot(e, float3(0.299, 0.587, 0.114));
+  float3 chroma = e / max(l, 0.12);
+  return lerp(float3(1.0, 1.0, 1.0), chroma, smoothstep(0.02, 0.08, l));
+}
+
 float nano_caustic2(float2 p, float t) {
   // Broad interference layer: the big swaying bands.
   float n1 = nano_value_noise2(p + float2(t * 0.70, t * 0.40));

@@ -33,6 +33,7 @@ cbuffer Uniforms : register(b8) {
   float4 round_p;      // copy_weight, is_seed, env_mode (1 = equirect), fog_z0
   float4 vp;           // w, h, 1/w, 1/h
   float4 caustic;      // amount, world scale, water_t, 0
+  float4 sun_env;      // sun sample uv.xy, mode (1 = hue from env), 0
 };
 
 static const float INV_TAU = 0.15915494309;
@@ -83,9 +84,32 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float3 sunD = sun_view.xyz;
   float sun_i = sun_view.w;
+  // Effective sun tint: the authored color, optionally multiplied by the
+  // env's hue at the sun's position (Sun Source = From Input; 5-tap
+  // cross for stability — every pixel samples the same point, cache-hot).
+  float3 sun_col = sun_color.rgb;
+  if (sun_env.z > 0.5) {
+    float2 su = sun_env.xy;
+    float3 e;
+    if (round_p.z > 0.5) {
+      e = envBlur.SampleLevel(wrapS, su, 0).rgb
+        + envBlur.SampleLevel(wrapS, su + float2(0.02, 0.0), 0).rgb
+        + envBlur.SampleLevel(wrapS, su - float2(0.02, 0.0), 0).rgb
+        + envBlur.SampleLevel(wrapS, su + float2(0.0, 0.02), 0).rgb
+        + envBlur.SampleLevel(wrapS, su - float2(0.0, 0.02), 0).rgb;
+    } else {
+      e = envBlur.SampleLevel(clampS, su, 0).rgb
+        + envBlur.SampleLevel(clampS, su + float2(0.02, 0.0), 0).rgb
+        + envBlur.SampleLevel(clampS, su - float2(0.02, 0.0), 0).rgb
+        + envBlur.SampleLevel(clampS, su + float2(0.0, 0.02), 0).rgb
+        + envBlur.SampleLevel(clampS, su - float2(0.0, 0.02), 0).rgb;
+    }
+    sun_col *= nano_sun_chroma(e * 0.2);
+  }
+
   float lam = saturate(dot(N, sunD));
   float shade = 1.0 + color_shade.w * ((0.30 + 0.70 * lam) - 1.0);
-  float3 diffuse = color_shade.rgb * shade * sun_i * sun_color.rgb;
+  float3 diffuse = color_shade.rgb * shade * sun_i * sun_col;
 
   // Environment reflection.
   float3 Rv = reflect(V, N);
@@ -104,7 +128,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     env = lerp(envSharp.SampleLevel(clampS, uvE, 0),
                envBlur.SampleLevel(clampS, uvE, 0), material.y).rgb;
   }
-  float3 glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i * sun_color.rgb;
+  float3 glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i * sun_col;
 
   // Water caustics: dapple projected from the SURFACE ABOVE — world-top,
   // independent of the sun (which may well sit "underwater"). The field
@@ -156,7 +180,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float fl = dot(fogc, float3(0.299, 0.587, 0.114));
     fogc = lerp(fogc, float3(fl, fl, fl), 0.45);
     fogc = fogc * 0.85 + 0.10 * (0.4 + 0.6 * sun_i) *
-           lerp(float3(1.0, 1.0, 1.0), sun_color.rgb, 0.5);
+           lerp(float3(1.0, 1.0, 1.0), sun_col, 0.5);
     surf = lerp(surf, fogc, f);
   }
 
