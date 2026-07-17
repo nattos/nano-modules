@@ -105,13 +105,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
   float glint = pow(saturate(dot(Rv, sunD)), 48.0) * sun_i;
 
-  // Water caustics: dapple the lit terms. Sampled on a sun-slanted world
-  // plane (the y shear keeps vertical faces from reading as flat stripes);
-  // rebalanced around 1.0 so the amount knob doesn't shift mean brightness.
+  // Water caustics: dapple projected from the SURFACE ABOVE — world-top,
+  // independent of the sun (which may well sit "underwater"). The field
+  // lives on the world XZ plane with a small fixed refraction slant (the
+  // y shear — also keeps vertical faces from reading as flat stripes).
+  // Weighted by world up-facing-ness: tops catch the full web, walls get
+  // the scattered remainder, undersides stay dark. Rebalanced around 1.0
+  // so the amount knob doesn't shift mean brightness.
   if (caustic.x > 0.0) {
     float2 cp = float2(B.z + 0.35 * world_y, B.w - 0.27 * world_y) * caustic.y;
     float c = nano_caustic2(cp, caustic.z);
-    float dap = 1.0 + caustic.x * (c * 2.2 - 0.45) * saturate(lam + 0.25);
+    float nw_y = cphi * N.y + sphi * N.z;   // world-space normal y
+    float dap = 1.0 + caustic.x * (c * 2.2 - 0.45) * saturate(nw_y * 0.6 + 0.55);
     diffuse *= dap;
     glint *= dap;
     env *= 1.0 + 0.35 * (dap - 1.0);

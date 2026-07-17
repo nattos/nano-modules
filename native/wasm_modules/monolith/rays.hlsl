@@ -51,18 +51,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
   float3 r = (wsum > 1e-4 ? accum / wsum : float3(0.0, 0.0, 0.0)) * sun_screen.w;
 
-  // Water caustics: the shafts band and flicker by ANGLE from the sun,
-  // like light folded through a moving surface. Sampling the field on the
-  // unit direction vector keeps it seamless around the full circle; the
-  // pure-angular field stays coherent along each shaft. Rebalanced ~1.
+  // Water caustics: approximate shimmer IN the volume. The water surface
+  // is conceptually UP — not sun-anchored (the sun may sit "underwater"),
+  // so the rays aren't truly projected through the caustic layer. Instead
+  // the gathered light is modulated by a screen-space field with
+  // vertically stretched features drifting slowly down the frame: light
+  // columns falling from a surface above. Rebalanced ~1.
   float ca = march.w;
   if (ca > 0.0) {
-    float r_px = length(delta);
-    if (r_px > 1.0) {
-      float2 dir = delta / r_px;
-      float c = nano_caustic2(dir * 2.6, sun_screen.z);
-      r *= max(1.0 + ca * (c * 2.8 - 0.6), 0.0);
-    }
+    float2 cp = float2(p.x, p.y * 0.3) * (3.5 / float(W));
+    cp.y -= sun_screen.z * 0.22;   // surface motion sinks through the frame
+    cp.x += sun_screen.z * 0.05;
+    float c = nano_caustic2(cp, sun_screen.z);
+    r *= max(1.0 + ca * (c * 2.8 - 0.6), 0.0);
   }
   raysTex[gid.xy] = float4(r, 0.0);
 }
