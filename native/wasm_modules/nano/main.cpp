@@ -22,6 +22,7 @@ NANO_DECLARE_INSTANCE_EFFECT(shape_fold)
 NANO_DECLARE_INSTANCE_EFFECT(brutal_fold)
 NANO_DECLARE_INSTANCE_EFFECT(phase_fold)
 NANO_DECLARE_INSTANCE_EFFECT(flow_swarm)
+NANO_DECLARE_INSTANCE_EFFECT(sweep_chamber)
 NANO_DECLARE_INSTANCE_EFFECT(spectral_lfo)
 NANO_DECLARE_INSTANCE_EFFECT(mod_spectral)
 NANO_DECLARE_INSTANCE_EFFECT(mod_bass_sim)
@@ -163,6 +164,18 @@ void nano_module_main() {
         "la-atom",
         NANO_INSTANCE_LIFECYCLE(flow_swarm),
         nullptr, nullptr, nullptr, &flow_swarm::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "source.particles.sweep_chamber",
+        "Sweep Chamber",
+        "Swept-luma capture/release particle + line sim (successor to Double Chamber). A built-in band-pass SWEEP window travels the input's luma range, capturing one brightness layer at a time into a coarse per-frame field: particles and streamline tracers catch onto the captured detail's ridges, bunch up along them, then get FLUNG when the sweep releases — at either sweep endpoint nothing is captured and everything free-flows on a smooth, seam-free curl-noise eddy field. Single-pixel additive points capture the input colour where they spawn; the whole sim samples one coarse field texture (no per-particle convolutions), so it runs far lighter than its ancestor.",
+        "source",
+        "particles,sweep,luma,lines,tracers,curl,eddy,flow,advection,gpu,generator",
+        "la-meteor",
+        NANO_INSTANCE_LIFECYCLE(sweep_chamber),
+        nullptr, nullptr, nullptr, &sweep_chamber::eval_visibility,
     });
 
     nano::registerEffect({
