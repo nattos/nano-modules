@@ -2840,7 +2840,7 @@ export class AppController {
     runInAction(() => {
       const ps = appState.local.engine.pluginStates;
       for (const k of diff.removed) mobxRemove(ps as object, k);
-      for (const k of changedKeys) mobxSet(ps as object, k, diff.changed[k]);
+      for (const k of changedKeys) mergeEngineStateEntry(ps as object, k, diff.changed[k]);
     });
   }
 
@@ -2851,7 +2851,7 @@ export class AppController {
     runInAction(() => {
       const md = appState.local.engine.modulationData;
       for (const k of diff.removed) mobxRemove(md as object, k);
-      for (const k of changedKeys) mobxSet(md as object, k, diff.changed[k]);
+      for (const k of changedKeys) mergeEngineStateEntry(md as object, k, diff.changed[k]);
     });
   }
 
@@ -3130,6 +3130,35 @@ export class AppController {
 
 function shortName(moduleId: string): string {
   return moduleId.split('.').pop() ?? moduleId;
+}
+
+/**
+ * Merge an engine state-diff entry per FIELD instead of replacing the whole
+ * per-instance object. The engine diffs at instance granularity, so an
+ * instance with one live field (e.g. a mod source's `output`) arrives every
+ * frame — a wholesale `mobxSet(target, key, next)` then invalidates every
+ * widget bound to ANY field of that instance, re-rendering whole cards at
+ * display rate. Per-field writes keep the invalidation scoped to the fields
+ * that actually changed. Structured values that are deep-equal but freshly
+ * cloned (postMessage) are skipped so they don't notify either.
+ */
+function mergeEngineStateEntry(target: object, key: string, next: any) {
+  const prev = (target as any)[key];
+  if (!prev || !next || typeof prev !== 'object' || typeof next !== 'object'
+      || Array.isArray(prev) || Array.isArray(next)) {
+    mobxSet(target, key, next);
+    return;
+  }
+  for (const f of Object.keys(prev)) {
+    if (!(f in next)) mobxRemove(prev, f);
+  }
+  for (const [f, v] of Object.entries(next)) {
+    const pv = prev[f];
+    if (pv === v) continue;
+    if (pv !== null && v !== null && typeof pv === 'object' && typeof v === 'object'
+        && JSON.stringify(pv) === JSON.stringify(v)) continue;
+    mobxSet(prev, f, v);
+  }
 }
 
 export const appController = new AppController();

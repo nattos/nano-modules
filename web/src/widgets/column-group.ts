@@ -2739,36 +2739,44 @@ export class ColumnGroup extends MobxLitElement {
     requestAnimationFrame(() => {
       if (!this.sketchId) return;
 
-      const seenKeys = new Set<string>();
+      // Collect the whole scan FIRST (last writer wins — an inner slider
+      // overrides a composite inspector that also claims its field via
+      // `controlledFields`), then register once per key. Registering inline
+      // flip-flopped such twice-claimed keys between the two elements on
+      // every scan, which reset their cached rects → recalculate reported a
+      // change → generation bump → full re-render → rescan: a perpetual
+      // display-rate re-render loop of the whole column.
+      const found = new Map<string, HTMLElement>();
       const cardBodies = this.renderRoot.querySelectorAll('[data-card-key]');
       for (const body of cardBodies) {
         const cardKey = (body as HTMLElement).dataset.cardKey!;
-        this.scanFieldEditorsIn(body, cardKey, seenKeys);
+        this.scanFieldEditorsIn(body, cardKey, found);
+      }
+      for (const [key, el] of found) {
+        this.layoutManager.register(key, el);
       }
 
       for (const key of this.layoutManager.entries.keys()) {
-        if (!seenKeys.has(key)) {
+        if (!found.has(key)) {
           this.layoutManager.unregister(key);
         }
       }
     });
   }
 
-  private scanFieldEditorsIn(root: ParentNode, cardKey: string, seenKeys: Set<string>) {
+  private scanFieldEditorsIn(root: ParentNode, cardKey: string, found: Map<string, HTMLElement>) {
     for (const child of root.children) {
       if (isFieldEditor(child)) {
         const fieldEditor = child as unknown as FieldEditorElement;
         for (const fieldPath of fieldEditor.controlledFields) {
-          const key = `${cardKey}/${fieldPath}`;
-          this.layoutManager.register(key, fieldEditor);
-          seenKeys.add(key);
+          found.set(`${cardKey}/${fieldPath}`, child as HTMLElement);
         }
       }
       if ((child as Element).shadowRoot) {
-        this.scanFieldEditorsIn((child as Element).shadowRoot!, cardKey, seenKeys);
+        this.scanFieldEditorsIn((child as Element).shadowRoot!, cardKey, found);
       }
       if (child.children.length > 0) {
-        this.scanFieldEditorsIn(child, cardKey, seenKeys);
+        this.scanFieldEditorsIn(child, cardKey, found);
       }
     }
   }
