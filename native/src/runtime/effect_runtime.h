@@ -318,6 +318,12 @@ class EffectInstance : public wasm::EffectHostSink {
   // state::getPatch / patchFloat / patchVec* can walk patch values.
   // Implementation lives in effect_runtime.cpp.
   std::vector<std::string> val_strings_;       // for asString
+  // Persistent on_state_patched scratch in the module's linear memory
+  // (firePatched): one grow-only allocation reused across calls so a patch
+  // fire costs ONE wasm call, not 4×malloc + call + 4×free. Freed on destroy.
+  uint32_t patchBuf_ = 0;
+  uint32_t patchBufCap_ = 0;
+  int32_t patchBufMid_ = -1;
   std::vector<std::string> val_blobs_;         // owned JSON serializations
   int val_alloc(std::string_view jsonValue);
 };

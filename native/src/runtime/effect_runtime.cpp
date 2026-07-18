@@ -34,6 +34,10 @@ EffectInstance::EffectInstance(EffectRuntime* rt, EffectDesc desc)
 EffectInstance::~EffectInstance() {
   // Per-key instances own their user_state; the prototype never has one.
   if (user_state_) doDestroy();
+  // Release the persistent patch scratch (no-op if the module is already
+  // gone — app_free resolves the module id and bails when unloaded).
+  if (patchBuf_ && desc_.wasm_host)
+    desc_.wasm_host->app_free(patchBufMid_, patchBuf_);
 }
 
 uint32_t EffectInstance::driveWasm(uint32_t fnIdx, uint32_t argc, uint32_t argv[]) {
@@ -402,31 +406,39 @@ void EffectInstance::firePatched(const std::vector<PendingPatch>& patches) {
     }
     h->set_pending_patches(mid, std::move(pend));
 
-    // Copy the buffers into the module's linear memory; pass their offsets.
+    // Copy the buffers into the module's linear memory as ONE persistent
+    // scratch allocation, reused (grow-only) across calls: [paths][off][len]
+    // [ops], int arrays 4-aligned. The previous 4×malloc + 4×free per call
+    // meant 9 wasm entries per patch fire — each paying WAMR's per-call
+    // setjmp/sigprocmask guard — on the per-wire per-frame path. Steady
+    // state is now exactly ONE wasm call (on_state_patched itself).
     const uint32_t n = static_cast<uint32_t>(patches.size());
     const uint32_t bytes = n * sizeof(int32_t);
-    void* nb = nullptr;
-    void* no = nullptr;
-    void* nl = nullptr;
-    void* np = nullptr;
-    uint32_t pb_off  = h->app_malloc(mid, static_cast<uint32_t>(pb.size()), &nb);
-    uint32_t off_off = h->app_malloc(mid, bytes, &no);
-    uint32_t len_off = h->app_malloc(mid, bytes, &nl);
-    uint32_t ops_off = h->app_malloc(mid, bytes, &np);
-    if (nb) std::memcpy(nb, pb.data(), pb.size());
-    if (no) std::memcpy(no, off.data(), bytes);
-    if (nl) std::memcpy(nl, len.data(), bytes);
-    if (np) std::memcpy(np, ops.data(), bytes);
+    const uint32_t pbAligned = (static_cast<uint32_t>(pb.size()) + 3u) & ~3u;
+    const uint32_t need = pbAligned + 3u * bytes;
+    if (patchBufCap_ < need || patchBufMid_ != mid) {
+      if (patchBuf_) h->app_free(patchBufMid_, patchBuf_);
+      patchBufCap_ = need < 256u ? 256u : (need + need / 2u);
+      patchBuf_ = h->app_malloc(mid, patchBufCap_, nullptr);
+      patchBufMid_ = mid;
+      if (!patchBuf_) { patchBufCap_ = 0; h->set_pending_patches(mid, {}); return; }
+    }
+    // Re-resolve the native pointer every call (memory.grow moves the base).
+    uint8_t* base = static_cast<uint8_t*>(h->app_to_native(mid, patchBuf_, need));
+    if (!base) { h->set_pending_patches(mid, {}); return; }
+    const uint32_t pb_off  = patchBuf_;
+    const uint32_t off_off = patchBuf_ + pbAligned;
+    const uint32_t len_off = off_off + bytes;
+    const uint32_t ops_off = len_off + bytes;
+    std::memcpy(base, pb.data(), pb.size());
+    std::memcpy(base + pbAligned, off.data(), bytes);
+    std::memcpy(base + pbAligned + bytes, len.data(), bytes);
+    std::memcpy(base + pbAligned + 2u * bytes, ops.data(), bytes);
 
     uint32_t argv[6] = {wasmSelf(), n, pb_off, off_off, len_off, ops_off};
     h->set_effect_instance(mid, this);
     h->call_indirect(mid, on_patched, 6, argv);
     h->set_effect_instance(mid, nullptr);
-
-    h->app_free(mid, pb_off);
-    h->app_free(mid, off_off);
-    h->app_free(mid, len_off);
-    h->app_free(mid, ops_off);
     h->set_pending_patches(mid, {});
     return;
   }

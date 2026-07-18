@@ -135,6 +135,10 @@ int32_t WasmHost::load_module(const uint8_t* bytecode, uint32_t len) {
 
   m.context.host = this;
 
+  // One-time lookup of the bundle's exported allocator (see LoadedModule doc).
+  m.malloc_fn = wasm_runtime_lookup_function(m.instance, "malloc");
+  m.free_fn = wasm_runtime_lookup_function(m.instance, "free");
+
   int32_t id = next_id_++;
   modules_[id] = std::move(m);
 
@@ -355,6 +359,30 @@ uint32_t WasmHost::app_malloc(int32_t module_id, uint32_t size, void** out_nativ
   if (out_native) *out_native = nullptr;
   auto* m = find_module(module_id);
   if (!m || size == 0) return 0;
+  // Call the bundle's exported malloc through the CACHED exec_env.
+  // wasm_runtime_module_malloc(instance, …) with no live env makes WAMR
+  // create + mmap + destroy a temporary exec env per call — one syscall-heavy
+  // round trip per patch per frame on the wire path (measured ~half the
+  // frame cost of wire-heavy sketches).
+  if (m->malloc_fn) {
+    wasm_val_t args[1] = {};
+    args[0].kind = WASM_I32;
+    args[0].of.i32 = static_cast<int32_t>(size);
+    wasm_val_t results[1] = {};
+    NestedCallScope scope(m->exec_env);
+    if (wasm_runtime_call_wasm_a(m->exec_env, m->malloc_fn, 1, results, 1, args)) {
+      const uint32_t off = static_cast<uint32_t>(results[0].of.i32);
+      if (off && wasm_runtime_validate_app_addr(m->instance, off, size)) {
+        if (out_native)
+          *out_native = wasm_runtime_addr_app_to_native(m->instance, off);
+        return off;
+      }
+      return 0;
+    }
+    wasm_runtime_clear_exception(m->instance);
+    return 0;
+  }
+  // Legacy bundle without an exported malloc: the slow runtime path.
   void* native = nullptr;
   uint64_t off = wasm_runtime_module_malloc(m->instance, size, &native);
   if (out_native) *out_native = native;
@@ -364,7 +392,17 @@ uint32_t WasmHost::app_malloc(int32_t module_id, uint32_t size, void** out_nativ
 void WasmHost::app_free(int32_t module_id, uint32_t app_offset) {
   if (app_offset == 0) return;
   auto* m = find_module(module_id);
-  if (m) wasm_runtime_module_free(m->instance, app_offset);
+  if (!m) return;
+  if (m->free_fn) {
+    wasm_val_t args[1] = {};
+    args[0].kind = WASM_I32;
+    args[0].of.i32 = static_cast<int32_t>(app_offset);
+    NestedCallScope scope(m->exec_env);
+    if (!wasm_runtime_call_wasm_a(m->exec_env, m->free_fn, 0, nullptr, 1, args))
+      wasm_runtime_clear_exception(m->instance);
+    return;
+  }
+  wasm_runtime_module_free(m->instance, app_offset);
 }
 
 void WasmHost::set_pending_patches(int32_t module_id,

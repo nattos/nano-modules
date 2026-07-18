@@ -155,6 +155,13 @@ private:
     wasm_module_t module = nullptr;
     wasm_module_inst_t instance = nullptr;
     wasm_exec_env_t exec_env = nullptr;
+    // The bundle's exported malloc/free, looked up once at load. app_malloc
+    // calls these through the CACHED exec_env: wasm_runtime_module_malloc
+    // with no live env makes WAMR create + mmap + destroy a temporary exec
+    // env PER CALL — measured as ~half the per-frame cost of wire-heavy
+    // sketches (one host-side alloc per patch per frame).
+    wasm_function_inst_t malloc_fn = nullptr;
+    wasm_function_inst_t free_fn = nullptr;
     WasmContext context;
   };
 
