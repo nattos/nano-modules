@@ -26,3 +26,4 @@ tmp/
 
 web/public/test-videos
 
+.composition-pull-*/

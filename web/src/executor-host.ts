@@ -154,6 +154,9 @@ export class WasmSketchExecutor {
    *  check would destroy + respawn it every frame (1000s of instances) before it
    *  ever finishes. Used to dedup concurrent creates AND to exempt it from revive. */
   private inflight = new Map<string, Promise<WebEffectInstance | null>>();
+  /** Per-key create-failure backoff (see ensureInstance) — a key here is
+   *  skipped (renders as passthrough) until its retry deadline passes. */
+  private createFailures = new Map<string, { until: number; backoffMs: number }>();
   // Frame-local handle table the effrt imports resolve against. Cleared each
   // executeAllColumns; effrt_instance_for assigns indices as the executor asks.
   private byHandle: WebEffectInstance[] = [];
@@ -254,20 +257,37 @@ export class WasmSketchExecutor {
       this.instances.delete(key);  // module type changed (smart-input) — rebuild
     }
     if (!found) return null;
+    // Failed create (most commonly WebAssembly OOM — Chrome caps live wasm
+    // memories at ~100/process, so a huge chain can exhaust the budget):
+    // back off instead of re-attempting every frame. The per-frame retry
+    // loop instantiated + threw + GC'd continuously, collapsing the whole
+    // engine to <20 fps; with the backoff the sketch renders WITHOUT the
+    // failed entries (passthrough) and retries occasionally.
+    const failed = this.createFailures.get(key);
+    if (failed && performance.now() < failed.until) return null;
     // Dedup concurrent creates: WASM instantiation is async (>1 frame), and the
     // per-frame drive re-enters here before it finishes — return the same promise.
     const pending = this.inflight.get(key);
     if (pending) return pending;
     const promise = (async () => {
-      const host = new WasmHost();
-      host.bridgeCore = this.bridgeCore;
-      host.gpuHost = this.gpuHost;
-      host.onSchemaChanged = this.onHostSchemaChanged;
-      await host.load(found.compiled);
-      const module = host.activateEffect(found.resolvedId);
-      const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
-      this.instances.set(key, inst);
-      return inst;
+      try {
+        const host = new WasmHost();
+        host.bridgeCore = this.bridgeCore;
+        host.gpuHost = this.gpuHost;
+        host.onSchemaChanged = this.onHostSchemaChanged;
+        await host.load(found.compiled);
+        const module = host.activateEffect(found.resolvedId);
+        const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
+        this.instances.set(key, inst);
+        this.createFailures.delete(key);
+        return inst;
+      } catch (err) {
+        const backoffMs = Math.min((this.createFailures.get(key)?.backoffMs ?? 1000) * 2, 30000);
+        this.createFailures.set(key, { until: performance.now() + backoffMs, backoffMs });
+        console.error(
+          `[executor] instance create failed (${mt} ${key}), backing off ${backoffMs}ms:`, err);
+        return null;
+      }
     })();
     this.inflight.set(key, promise);
     try {
