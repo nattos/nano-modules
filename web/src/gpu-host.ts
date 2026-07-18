@@ -228,6 +228,27 @@ export class GPUHost {
   private encodeSeq_ = 1;
   private versionLogCount_ = 0;
 
+  // Frame batching (the executor's begin/end_submit_batch bracket). While a
+  // batch is open, effect-called gpu::Device::submit() is a NO-OP — matching
+  // the native backends, where per-stage submits coalesce into one command
+  // buffer committed at endSubmitBatch (gpu_backend.h). Splitting the frame
+  // into a command buffer per effect here made queue overhead scale with
+  // chain length. One batch at a time (not nested), same as native.
+  private inFrameBatch_ = false;
+
+  beginBatch() { this.inFrameBatch_ = true; }
+
+  endBatch() {
+    this.inFrameBatch_ = false;
+    this.flush();
+  }
+
+  /** gpu::Device::submit() as called by effects / the fused dispatcher: a
+   *  real flush only OUTSIDE a frame batch (standalone/test paths). */
+  effectSubmit() {
+    if (!this.inFrameBatch_) this.flush();
+  }
+
   /** Record that `handle` was bound into work encoded this submit cycle. */
   private markBound(handle: number) {
     const entry = this.handles.get(handle);
@@ -1375,7 +1396,7 @@ export class GPUHost {
       render_draw: (pass: number, vertexCount: number, instanceCount: number) =>
         this.renderDraw(pass, vertexCount, instanceCount),
       end_render_pass: (pass: number) => this.endRenderPass(pass),
-      submit: () => this.flush(),
+      submit: () => this.effectSubmit(),
       get_render_target: () => this.getSurfaceTexture(),
       get_render_target_width: () => this.getSurfaceWidth(),
       get_render_target_height: () => this.getSurfaceHeight(),

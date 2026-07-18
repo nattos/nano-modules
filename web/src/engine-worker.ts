@@ -205,6 +205,16 @@ let fps = 0;
 // the readout doesn't churn the UI at frame rate. The headroom % itself is
 // computed main-side against the user's target framerate. When real timestamp
 // queries land, replace the `sample` source and keep the same reported field.
+//
+// KNOWN OVERSTATEMENT: the fence resolution is IPC delivered on this worker's
+// event loop, so once per-frame JS costs a couple of ms the callback lands a
+// scheduler tick late and the readout saturates toward one frame period even
+// with a near-idle GPU (measured: a 31-effect mod chain with 5 tiny dispatches
+// reads ~8.5 ms at 120 Hz, resolution-invariant from 640p to 4K — i.e. mostly
+// CPU/event-loop latency, not GPU). A local paired probe task can't correct
+// this (it's delivered at a different priority than the fence IPC); only real
+// timestamp queries can. Treat mid-range values as "frame pipeline latency",
+// not GPU cost.
 let gpuTimeEma = 0;
 let gpuTimeReported = 0;
 let gpuTimeTick = 0;

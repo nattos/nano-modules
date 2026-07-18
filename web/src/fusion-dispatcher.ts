@@ -143,11 +143,12 @@ export class FusionDispatcher {
     this.gpuHost.computeDispatch(
       COMPUTE_PASS_HANDLE, Math.ceil(vpW / 8), Math.ceil(vpH / 8), 1);
     this.gpuHost.endComputePass(COMPUTE_PASS_HANDLE);
-    // Mirror the standalone path: each effect's render() submits its
-    // encoder via gpu::Device::submit() (gpuHost.flush). Tests read
-    // pixels right after the chain completes, so the fused dispatch
-    // must submit too.
-    this.gpuHost.flush();
+    // Mirror the standalone path: each effect's render() ends in
+    // gpu::Device::submit(). Batch-aware — inside the executor's frame
+    // batch this is a no-op and the frame's endBatch flush covers it;
+    // standalone/test paths (no batch) still get their real submit so
+    // pixels are readable right after the chain completes.
+    this.gpuHost.effectSubmit();
   }
 
   private ensurePipeline(stages: FusionStage[], traceMask: number,

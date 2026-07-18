@@ -1260,10 +1260,10 @@ export class WasmSketchExecutor {
       // WGSL vs MSL from this — without it the blend would feed MSL to WebGPU.
       get_backend: (): number => g.getBackend(),
       // The executor batches the whole frame between begin/end_submit_batch.
-      // GPUHost accumulates into one lazily-created encoder and never flushes
-      // mid-frame on its own, so begin is a no-op and end flushes once.
-      begin_submit_batch: () => { /* no-op: encoder accumulates */ },
-      end_submit_batch: () => g.flush(),
+      // While the batch is open, effect-called gpu::Device::submit() is a
+      // no-op (matching native); the one real flush happens at endBatch.
+      begin_submit_batch: () => g.beginBatch(),
+      end_submit_batch: () => g.endBatch(),
       create_shader_module: (srcPtr: number, srcLen: number): number =>
         g.createShaderModule(this.readString(srcPtr, srcLen)),
       create_compute_pso: (shader: number, entryPtr: number, entryLen: number): number =>
