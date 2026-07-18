@@ -999,9 +999,12 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // Only do telemetry/preview work when an editor actually observes THIS key.
   const bool watched = server.key_observed(key);
 
-  // Route the live macro knobs into any control.barrel_macros instance's state
-  // (on the cached sketch copy — the persisted sketch is untouched) and, when
-  // watched, publish them so the editor's output-trace cards show live values.
+  // Route the live macro knobs into any control.barrel_macros instance via the
+  // executor's injected-scalar table (NOT by mutating the cached sketch doc —
+  // captureWriteTaps reads injected scalars ahead of doc state, and a per-frame
+  // doc write would freeze under the executor's clean-frame exec-doc cache).
+  // When watched, also publish them so the editor's output-trace cards show
+  // live values.
   if (macros && n_macros > 0 && pe.sketch.contains("instances") &&
       pe.sketch["instances"].is_object()) {
     nlohmann::json macroOut = nlohmann::json::object();
@@ -1009,12 +1012,11 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     for (auto& [ikey, inst] : pe.sketch["instances"].items()) {
       if (!inst.is_object()) continue;
       if (inst.value("module_type", std::string()) != "control.barrel_macros") continue;
-      auto& st = inst["state"];
-      if (!st.is_object()) st = nlohmann::json::object();
       nlohmann::json fields = nlohmann::json::object();
       for (int i = 0; i < nm; ++i) {
         double v = (double)macros[i];
-        st["macro_" + std::to_string(i)] = v;
+        pe.executor->setInjectedScalar(ikey, "macro_" + std::to_string(i),
+                                       (float)v);
         fields["macro_" + std::to_string(i)] = v;
       }
       macroOut[ikey] = std::move(fields);

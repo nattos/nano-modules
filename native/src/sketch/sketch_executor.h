@@ -148,6 +148,31 @@ class SketchExecutor {
   void setExternalScalars(const nlohmann::json& values);
 
   /**
+   * Host-injected live scalar for an IN-CHAIN instance's field (e.g. the
+   * barrel routing Resolume's macro knobs into a control.barrel_macros
+   * instance). captureWriteTaps reads these ahead of the doc's instance
+   * state, so the values flow into wires every frame WITHOUT mutating the
+   * sketch doc — per-frame doc mutation would defeat the clean-frame
+   * exec-doc cache (values would freeze at the last dirty frame).
+   */
+  void setInjectedScalar(const std::string& instanceKey,
+                         const std::string& field, float value) {
+    injectedScalars_[instanceKey][field] = value;
+  }
+  void clearInjectedScalars() { injectedScalars_.clear(); }
+
+  /**
+   * Clean-frame fast path (executor_execute with sketch_len == 0): run from
+   * the cached exec doc without any host-passed JSON — the wasm host skips
+   * the stringify → copy → parse round-trip entirely on clean frames.
+   * Passthrough when nothing is cached yet (host misuse guard).
+   */
+  int32_t executeCached(int32_t inTex, int32_t outTex, int W, int H, double dt) {
+    if (!cachedExecDocValid_) return inTex;
+    return execute(cachedExecDoc_, inTex, outTex, W, H, dt, /*sketchDirty=*/false);
+  }
+
+  /**
    * Forget the per-instance applied-state cache so every instance's authored
    * state re-fires on the next frame (as if freshly dirty). Hosts call this at
    * EDIT rate (e.g. on a composition document reload) to fix the pinned-param
@@ -359,6 +384,23 @@ class SketchExecutor {
   // Seeds the `external`-tagged float rails at the top of execute().
   std::unordered_map<std::string, std::unordered_map<std::string, float>>
       externalScalars_;
+
+  // Host-injected live scalars for IN-chain instances (setInjectedScalar):
+  // instance key → field → value. Read by captureWriteTaps ahead of the doc's
+  // instance state so hosts can drive wire sources without doc mutation.
+  std::unordered_map<std::string, std::unordered_map<std::string, float>>
+      injectedScalars_;
+
+  // --- Clean-frame exec-doc cache -----------------------------------------
+  // The final execution doc (columns-normalized, wires lowered to taps,
+  // modulation auto-connects synthesised, struct rails augmented) rebuilt on
+  // DIRTY frames only and reused verbatim while the sketch is clean. The
+  // whole product is structural: per-frame values flow via live published
+  // state / external / injected scalars, never through this doc. Before this
+  // cache the pipeline deep-copied + re-lowered the entire sketch EVERY
+  // frame — the dominant per-frame CPU for long chains on both platforms.
+  nlohmann::json cachedExecDoc_;
+  bool cachedExecDocValid_ = false;
 
   // Per-(instance, field+wire) modulation DELAY lines (the wire's continuous-time
   // `mod.shaper.delay`, seconds), persisted across frames. A wire shaper stage parallel

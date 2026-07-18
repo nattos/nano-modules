@@ -127,11 +127,18 @@ void executor_set_time(SketchExecutor* ex, double sec) {
 // Render one frame. `sketch` is the {chain|columns, instances, wires} JSON.
 // Returns the output texture handle (or `inTex` for a passthrough). `dirty`
 // signals the sketch changed since last frame (rebuild the plan).
+// `sketch_len == 0` is the clean-frame fast path: the host already sent this
+// sketch on a previous (dirty) frame, so skip the parse entirely and run from
+// the executor's cached exec doc — the host must only do this after at least
+// one successful non-empty call, and with dirty == 0.
 EXEC_EXPORT("executor_execute")
 int32_t executor_execute(SketchExecutor* ex, const char* sketch, int32_t sketch_len,
                          int32_t inTex, int32_t outTex, int32_t W, int32_t H,
                          double dt, int32_t dirty) {
   if (!ex) return inTex;
+  if (sketch_len == 0) {
+    return ex->executeCached(inTex, outTex, W, H, dt);
+  }
   auto j = nlohmann::json::parse(std::string(sketch, sketch_len), nullptr, false);
   if (j.is_discarded()) return inTex;
   return ex->execute(j, inTex, outTex, W, H, dt, dirty != 0);

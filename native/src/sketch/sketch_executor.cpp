@@ -530,6 +530,8 @@ void SketchExecutor::registerModuleSchema(const std::string& moduleType,
   moduleSchemas_[moduleType] = std::move(rm);
   // The augmenter's {module_type: schemaFields} projection is now stale.
   cachedSchemasValid_ = false;
+  // Wire lowering + augmentation consumed the old schema — relower next frame.
+  cachedExecDocValid_ = false;
   // Force a plan rebuild on the next frame. A (re-)registered schema can change
   // fusion eligibility (kind/fragment/prepare) for an existing module_type — e.g.
   // an effect HMR-reloaded under the same type — and that's NOT reflected in the
@@ -656,6 +658,7 @@ int32_t SketchExecutor::execute(
     lastAppliedState_.clear();
     ++stateEpoch_;   // applied-state stamps refer to the cleared cache
     knownKeys_.clear();
+    cachedExecDocValid_ = false;   // relower under the new format namespace
   }
   nsPrefix_ = keyNamespace_ + (internalFmt_ == 3 ? "f16!" : "");
   // Resolve TextureFormat::SketchDefault (6) to the working format for every
@@ -752,6 +755,16 @@ int32_t SketchExecutor::execute(
   // unchanged. NOTE: the new `wires` array is NOT translated yet — a linear
   // chain renders (each module feeds the next), but field-to-field wires are
   // dropped until the executor is unified onto the wire model (Phase 2).
+  // --- Clean-frame exec-doc cache -------------------------------------------
+  // Everything from here down to `const json& sketch = ...` (columns
+  // normalization, wire→tap lowering, modulation auto-connect, struct-rail
+  // augmentation) is purely STRUCTURAL — per-frame values reach the chain walk
+  // via live published state, external scalars, and injected scalars, never
+  // via this doc. So on a clean frame the finished product is byte-identical
+  // to last frame's; rebuilding it deep-copied + re-lowered the whole sketch
+  // EVERY frame — the dominant per-frame CPU for long chains on both
+  // platforms. Rebuild on dirty frames only; reuse the cached doc otherwise.
+  if (sketchDirty || !cachedExecDocValid_) {
   json normalizedStorage;
   const json* rawPtr = &rawSketch;
   if (!rawSketch.contains("columns") &&
@@ -1074,14 +1087,19 @@ int32_t SketchExecutor::execute(
   }
   const json& rawNorm = *rawPtr;
 
-  json augmentedStorage;
-  const json* sketchPtr = &rawNorm;
   if (sketch_augment::sketchNeedsAugmentation(rawNorm, cachedSchemas_)) {
-    augmentedStorage = sketch_augment::augmentSketchWithImplicitConnections(
+    cachedExecDoc_ = sketch_augment::augmentSketchWithImplicitConnections(
         rawNorm, cachedSchemas_);
-    sketchPtr = &augmentedStorage;
+  } else if (rawPtr == &normalizedStorage) {
+    cachedExecDoc_ = std::move(normalizedStorage);
+  } else {
+    // Already columns-shaped and augmentation-free: cache a copy (dirty
+    // frames only — clean frames skip this whole block).
+    cachedExecDoc_ = rawSketch;
   }
-  const json& sketch = *sketchPtr;
+  cachedExecDocValid_ = true;
+  }  // dirty rebuild
+  const json& sketch = cachedExecDoc_;
 
   const json& columns      = refOr(sketch, "columns",   kEmptyArr, true);
   if (columns.empty()) return inputHandle;
@@ -2619,12 +2637,21 @@ void SketchExecutor::captureWriteTaps(
         auto mit = modulatedScalars->find(fieldPath);
         if (mit != modulatedScalars->end()) { raw = mit->second; hasScalar = true; }
       }
+      // Host-injected live scalar (setInjectedScalar — e.g. the barrel's
+      // Resolume macro knobs): rides OUTSIDE the doc so per-frame knob motion
+      // never dirties (or is frozen by) the cached exec doc.
+      if (!hasScalar) {
+        auto ii = injectedScalars_.find(producerInstanceKey);
+        if (ii != injectedScalars_.end()) {
+          auto fi = ii->second.find(fieldPath);
+          if (fi != ii->second.end()) { raw = fi->second; hasScalar = true; }
+        }
+      }
       // Otherwise the producer's current scalar lives in the sketch's instance
-      // state — the editor mirrors it there each frame. The runtime doesn't
-      // expose a getParamFloat, so we read the canonical source. This is also
-      // how a HOST injects a value it owns (the barrel writes the live macro
-      // knobs into control.barrel_macros' state), so it stays ahead of the
-      // published-state fallback below.
+      // state (authored values, host-restored state). Wire PRODUCER OUTPUTS are
+      // NOT mirrored here anymore — the published-state fallback below reads
+      // them live, which is what keeps wires flowing on clean frames now that
+      // the exec doc is cached.
       if (!hasScalar && sketchInstances.is_object() &&
           sketchInstances.contains(producerInstanceKey)) {
         const auto& st = sketchInstances[producerInstanceKey]

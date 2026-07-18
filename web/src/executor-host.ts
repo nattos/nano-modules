@@ -138,6 +138,9 @@ interface SketchSlot {
    *  instances were built under. A bitDepth change rebuilds the slot AND its
    *  chain's WasmHosts so per-format WGSL (storage decls) retranslates. */
   fmtCode: number;
+  /** True once a non-empty sketch doc reached executor_execute — the guard
+   *  for the clean-frame sketch_len=0 fast path (cache seeded C++-side). */
+  execSentOnce: boolean;
 }
 
 const decoder = new TextDecoder();
@@ -468,7 +471,7 @@ export class WasmSketchExecutor {
       this.exports.free(tagPtr);
       slot = { exPtr, lastJson: '',
                registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0,
-               appliedKeys: new Set(), fmtCode: 1 };
+               appliedKeys: new Set(), fmtCode: 1, execSentOnce: false };
       this.slots.set(sketchId, slot);
     }
     return slot;
@@ -724,41 +727,13 @@ export class WasmSketchExecutor {
     this.byHandle = [];
     this.handleByKey.clear();
 
-    // 3. Mirror each instance's live published OUTPUT scalars (written via
-    //    state::set_val during last frame's tick) into the sketch state the
-    //    executor reads. Float write-taps (captureWriteTaps) source a producer's
-    //    scalar from instances[key].state[field], NOT the live runtime — so a
-    //    scalar wire (e.g. mod.source.lfo.output → param) is invisible unless the
-    //    output is present here. 1-frame latency, matching the native barrel's
-    //    sketch-state mirroring. Built on a shallow copy; the input sketch and
-    //    the structural dirty check below are untouched.
-    let execInstances = sketch.instances;
-    let mirrored = false;
-    for (const entry of chain) {
-      const inst = this.instances.get(entry.instance_key);
-      const ps = inst?.host.pluginState;
-      const schema = inst?.host.schema;
-      if (!inst || !ps || typeof ps !== 'object' || !schema) continue;
-      const outs: Record<string, number> = {};
-      for (const fname in schema) {
-        const def: any = schema[fname];
-        const io = def?.io ?? 0;
-        // PURE output fields only. A field that is ALSO an input (a "relay" —
-        // both io bits, e.g. a util.dashboard knob) is AUTHORED, not engine-
-        // published; mirroring the effect's (uncomputed) output over it would
-        // clobber the user's value and break its output wire.
-        if (!((io & 2) && !(io & 1))) continue;
-        if (def?.type === 'object' || def?.type === 'array' || def?.type === 'texture') continue;
-        const v = ps[fname];
-        if (typeof v === 'number') outs[fname] = v;
-        else if (typeof v === 'boolean') outs[fname] = v ? 1 : 0;
-      }
-      if (Object.keys(outs).length === 0) continue;
-      if (!mirrored) { execInstances = { ...(sketch.instances ?? {}) }; mirrored = true; }
-      const orig: any = (sketch.instances as any)?.[entry.instance_key] ?? { module_type: inst.moduleType };
-      execInstances![entry.instance_key] = { ...orig, state: { ...(orig.state ?? {}), ...outs } };
-    }
-    const execSketch = mirrored ? { ...sketch, instances: execInstances } : sketch;
+    // 3. (Removed) Live published OUTPUT scalars are no longer mirrored into
+    //    the sketch doc: captureWriteTaps reads them straight from the
+    //    producer's published state (its barrel-path fallback), so the doc
+    //    stays purely structural. That's what lets the executor cache the
+    //    lowered exec doc across clean frames — a per-frame mirror both
+    //    defeated the cache and froze wire values at the last dirty frame.
+    const execSketch = sketch;
 
     // 4. Marshal the sketch JSON + drive. dirty rebuilds the plan; detect via a
     //    STRUCTURAL diff (the input sketch, not the mirrored outputs) so an
@@ -771,21 +746,31 @@ export class WasmSketchExecutor {
     if (dirty) for (const e of chain) if (e.type === 'module') slot.appliedKeys.add(e.instance_key);
     const outTex = this.ensureOutputTexture(slot, width, height);
 
-    const json = JSON.stringify(execSketch);
-    const jbytes = encoder.encode(json);
-    const jptr = this.exports.malloc(jbytes.length);
-    new Uint8Array(this.memory.buffer, jptr, jbytes.length).set(jbytes);
+    // Clean-frame fast path: the executor caches its lowered exec doc across
+    // clean frames, so once a dirty frame has delivered this sketch there is
+    // nothing to marshal — sketch_len 0 skips the encode → copy → wasm-side
+    // JSON parse round-trip (the dominant per-frame cost for long chains).
+    // `execSentOnce` guards the very first frame (cache not seeded yet).
+    const sendDoc = dirty || !slot.execSentOnce;
+    let jptr = 0, jlen = 0;
+    if (sendDoc) {
+      const jbytes = encoder.encode(structuralJson);
+      jlen = jbytes.length;
+      jptr = this.exports.malloc(jlen);
+      new Uint8Array(this.memory.buffer, jptr, jlen).set(jbytes);
+    }
     let outHandle = inputHandle;
     try {
       // Push the absolute transport time so the executor can seek effects on a backward
       // jump OR a clip activation (to clip-relative time). Optional export — guard it.
       this.exports.executor_set_time?.(slot.exPtr, frameState.elapsedTime);
       outHandle = this.exports.executor_execute(
-        slot.exPtr, jptr, jbytes.length, inputHandle, outTex,
+        slot.exPtr, jptr, jlen, inputHandle, outTex,
         // Signed delta: a backward scrub seeks seekable effects instead of freezing.
         width, height, frameState.execDeltaTime ?? frameState.deltaTime, dirty ? 1 : 0);
+      if (sendDoc) slot.execSentOnce = true;
     } finally {
-      this.exports.free(jptr);
+      if (jptr) this.exports.free(jptr);
     }
     this.accumulateDebugStats(slot.exPtr);
 
