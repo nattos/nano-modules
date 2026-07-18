@@ -1588,10 +1588,47 @@ int32_t SketchExecutor::execute(
       // an identity effect at Multiply squares the image — the classic
       // duplicate-layer trick), so it disables the alias skip like a tap does.
       const int blendMode = readBlendMode(instances, instKey);
-      if (!hasTaps && !hasAuto && blendMode == 0 && !entryHasSmoothing(entry) &&
-          inst.isIdentity()) {
+      // SCALAR-write-only taps don't need the render either: the values come
+      // from published/injected/doc state (or the sidechannel fold above),
+      // not from the dispatch — the placeholder pattern (a wired
+      // sidechannel_scalar_in / barrel_macros / neutral utility stage that
+      // exists only as a scalar wire endpoint) was paying a full-res copy per
+      // frame for nothing. READ taps still force the standalone path (they
+      // mutate params, so identity is value-dependent and applied below), and
+      // TEXTURE write-taps still force a render: the published texture must
+      // be the instance's own (a pooled-intermediate alias could be recycled
+      // as a later stage's render target before the wire consumer reads it).
+      bool tapsAllowSkip = true;
+      if (hasTaps) {
+        for (const auto& t : entry["taps"]) {
+          if (!t.is_object() ||
+              t.value("direction", std::string()) != "write") {
+            tapsAllowSkip = false;
+            break;
+          }
+          auto railIt = railsById.find(t.value("railId", std::string()));
+          if (railIt == railsById.end()) continue;
+          const auto& dt = railIt->second.value("dataType", json());
+          if (!(dt.is_string() && dt.get<std::string>() == "float")) {
+            tapsAllowSkip = false;
+            break;
+          }
+        }
+      }
+      if (tapsAllowSkip && !hasAuto && blendMode == 0 &&
+          !entryHasSmoothing(entry) && inst.isIdentity()) {
         ++stats_.identitySkipped;
         int32_t out = passthroughOutput(colInput);
+        if (hasTaps) {
+          // No modulated relays here: read-tapped entries never reach this
+          // skip, and the skippable producers' values come from doc state /
+          // injected scalars / published state (sidechannel scalar effects
+          // export no is_identity, so they always take the standalone path
+          // where serviceScalarBus folds into modScalars).
+          captureWriteTaps(inst.h, entry, instKey, instances,
+                           railsById, railTextures, railFloats, railBuffers,
+                           nullptr);
+        }
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
         }
@@ -2609,7 +2646,8 @@ void SketchExecutor::captureWriteTaps(
     std::unordered_map<std::string, float>& railFloats,
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railBuffers,
-    const std::unordered_map<std::string, float>* modulatedScalars) {
+    const std::unordered_map<std::string, float>* modulatedScalars,
+    int32_t aliasedTexOut) {
   const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   for (const auto& tap : entry["taps"]) {
@@ -2702,7 +2740,8 @@ void SketchExecutor::captureWriteTaps(
       forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
         const std::string source = leaf.empty() ? fieldPath
                                                 : (fieldPath + "/" + leaf);
-        int32_t h = inst.textureField(source);
+        int32_t h = (aliasedTexOut > 0 && source == "tex_out")
+            ? aliasedTexOut : inst.textureField(source);
         if (h > 0) pendingDelayRetain_.emplace_back(railId, leaf, h);
       });
       inst.setFieldConnected(fieldPath, false, true);
@@ -2713,7 +2752,8 @@ void SketchExecutor::captureWriteTaps(
     forEachRailLeafTexture(dataType, [&](const std::string& leaf) {
       const std::string source = leaf.empty() ? fieldPath
                                               : (fieldPath + "/" + leaf);
-      int32_t h = inst.textureField(source);
+      int32_t h = (aliasedTexOut > 0 && source == "tex_out")
+          ? aliasedTexOut : inst.textureField(source);
       if (h > 0) texMap[leaf] = h;
     });
 

@@ -716,7 +716,11 @@ class SketchExecutor {
       // is BOTH read-tapped and write-tapped (a "relay" field, e.g. a dashboard
       // knob driven by an LFO) publishes this modulated value instead of its
       // canonical serialized state. nullptr → no relay (publish state as usual).
-      const std::unordered_map<std::string, float>* modulatedScalars = nullptr);
+      const std::unordered_map<std::string, float>* modulatedScalars = nullptr,
+      // Identity-skipped stage: the aliased passthrough handle standing in for
+      // this stage's `tex_out` (the stage never rendered, so textureField is
+      // stale/absent). Only consulted for bare-texture rails on "tex_out".
+      int32_t aliasedTexOut = -1);
 
   void markWriteTapOutputsConnected(
       int32_t inst,
