@@ -86,6 +86,17 @@ int32_t w_build_fused_source(wasm_exec_env_t env, int32_t insts, int32_t count,
                                   o, o ? cap : 0, out_fmt);
 }
 
+int32_t w_published_scalar(wasm_exec_env_t env, int32_t h, int32_t f, int32_t fl,
+                           int32_t outOff) {
+  char* field = appBuf(env, f, fl);
+  char* out = appBuf(env, outOff, 8);
+  if (!field || !out) return 0;
+  double v = 0.0;
+  const int32_t has = effrt_published_scalar(h, field, fl, &v);
+  if (has) std::memcpy(out, &v, sizeof(v));
+  return has;
+}
+
 // --- non-pointer wrappers (just drop env, forward the ints/double) ---
 void    w_set_will_render(wasm_exec_env_t, int32_t h, int32_t v) { effrt_set_will_render(h, v); }
 void    w_tick(wasm_exec_env_t, int32_t h, double dt)            { effrt_tick(h, dt); }
@@ -125,6 +136,7 @@ NativeSymbol g_effrt_symbols[] = {
     {"set_input_texture_slots", reinterpret_cast<void*>(w_set_input_texture_slots), "(iii)", nullptr},
     {"set_field_connected", reinterpret_cast<void*>(w_set_field_connected), "(iiiii)", nullptr},
     {"set_will_render", reinterpret_cast<void*>(w_set_will_render), "(ii)", nullptr},
+    {"published_scalar", reinterpret_cast<void*>(w_published_scalar), "(iiii)i", nullptr},
     {"tick", reinterpret_cast<void*>(w_tick), "(iF)", nullptr},
     {"render", reinterpret_cast<void*>(w_render), "(iii)", nullptr},
     {"prepare", reinterpret_cast<void*>(w_prepare), "(iii)", nullptr},

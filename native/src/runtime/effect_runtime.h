@@ -222,6 +222,10 @@ class EffectInstance : public wasm::EffectHostSink {
   // effect has published nothing). Backs effrt_published_state_json and the
   // barrel's per-frame plugin_states publish.
   std::string publishedStateJson() const;
+  // Numeric fast path for ONE published scalar (backs effrt_published_scalar):
+  // no JSON assembly/parse on the per-frame wire path. Returns false when the
+  // field was never published or isn't scalar.
+  bool publishedScalar(const char* field, int len, double* out) const;
   void hostRegisterShaderSpv(std::string_view name,
                              const unsigned char* spv, int spv_len,
                              std::string_view format,

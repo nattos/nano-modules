@@ -2671,13 +2671,11 @@ void SketchExecutor::captureWriteTaps(
       // this is the CURRENT frame's value (CompExecutor::foldPublishedOutputs
       // does the same thing one frame earlier).
       if (!hasScalar) {
-        const json ps = publishedStateFor(inst_handle);
-        if (ps.is_object()) {
-          auto pit = ps.find(fieldPath);
-          if (pit != ps.end()) {
-            if (pit->is_number())       { raw = (float)pit->get<double>(); hasScalar = true; }
-            else if (pit->is_boolean()) { raw = pit->get<bool>() ? 1.0f : 0.0f; hasScalar = true; }
-          }
+        double live = 0.0;
+        if (effrt_published_scalar(inst_handle, fieldPath.data(),
+                                   (int32_t)fieldPath.size(), &live)) {
+          raw = (float)live;
+          hasScalar = true;
         }
       }
       if (hasScalar) {

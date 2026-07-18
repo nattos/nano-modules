@@ -283,6 +283,18 @@ std::string EffectInstance::publishedStateJson() const {
   out += '}';
   return out;
 }
+bool EffectInstance::publishedScalar(const char* field, int len, double* out) const {
+  auto it = published_.find(std::string(field, (size_t)len));
+  if (it == published_.end() || !out) return false;
+  const std::string& v = it->second;   // a JSON serialization from set_val
+  if (v == "true")  { *out = 1.0; return true; }
+  if (v == "false") { *out = 0.0; return true; }
+  char* end = nullptr;
+  const double d = std::strtod(v.c_str(), &end);
+  if (end == v.c_str()) return false;  // non-numeric (object/array/string)
+  *out = d;
+  return true;
+}
 void EffectInstance::hostRegisterShaderSpv(std::string_view name,
                                             const unsigned char* spv,
                                             int spv_len,

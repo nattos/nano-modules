@@ -1158,6 +1158,18 @@ export class WasmSketchExecutor {
       set_will_render: (h: number, v: number) => {
         const i = this.resolve(h); if (i) i.host.willRender = v !== 0;
       },
+      // Numeric fast path: one published scalar, NO JSON — the per-frame wire
+      // path (captureWriteTaps). Writes the f64 at `outPtr`, returns 1/0.
+      published_scalar: (h: number, fieldPtr: number, fieldLen: number, outPtr: number): number => {
+        const i = this.resolve(h);
+        const ps = i?.host.pluginState;
+        if (!ps || typeof ps !== 'object') return 0;
+        const v = (ps as Record<string, unknown>)[this.readString(fieldPtr, fieldLen)];
+        const num = typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : null;
+        if (num === null) return 0;
+        new DataView(this.memory.buffer).setFloat64(outPtr, num, true);
+        return 1;
+      },
       // The instance's LIVE plugin state (state::set_val publishes) as JSON —
       // the composition executor folds PURE-OUTPUT scalars from this into its
       // cached sketch each frame (the in-module twin of step 3 below).

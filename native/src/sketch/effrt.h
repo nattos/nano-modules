@@ -73,6 +73,13 @@ void effrt_set_will_render(int32_t inst, int32_t v);
 EFFRT_IMPORT("published_state_json")
 int32_t effrt_published_state_json(int32_t inst, char* out, int32_t cap);
 
+// Numeric fast path: ONE published scalar, no JSON. Returns 1 and writes
+// `*out` when the field has a published number/bool; 0 otherwise. This is the
+// per-frame wire path (captureWriteTaps) — keep it string-free.
+EFFRT_IMPORT("published_scalar")
+int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_len,
+                               double* out);
+
 // --- Lifecycle drive ---
 EFFRT_IMPORT("tick")       void effrt_tick(int32_t inst, double dt);
 EFFRT_IMPORT("render")     void effrt_render(int32_t inst, int32_t w, int32_t h);

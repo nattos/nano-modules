@@ -13,6 +13,8 @@
 
 #include "sketch/effrt.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -121,6 +123,23 @@ int32_t effrt_published_state_json(int32_t inst, char* out, int32_t cap) {
     std::memcpy(out, s.data(), static_cast<size_t>(copy));
   }
   return len;
+}
+
+int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_len,
+                               double* out) {
+  auto* i = resolve(inst);
+  if (!i || !field || field_len <= 0 || !out) return 0;
+  if (g_publishedStateFn) {
+    // Test provider (JSON) — cold path, parity with published_state_json.
+    auto j = nlohmann::json::parse(g_publishedStateFn(i), nullptr, false);
+    if (!j.is_object()) return 0;
+    auto it = j.find(std::string(field, (size_t)field_len));
+    if (it == j.end()) return 0;
+    if (it->is_number())  { *out = it->get<double>(); return 1; }
+    if (it->is_boolean()) { *out = it->get<bool>() ? 1.0 : 0.0; return 1; }
+    return 0;
+  }
+  return i->publishedScalar(field, field_len, out) ? 1 : 0;
 }
 
 void effrt_tick(int32_t inst, double dt) {
