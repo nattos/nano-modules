@@ -24,6 +24,10 @@
  * (replay-safe); `auto_mode` is the shared self-fire block (Off by default —
  * Random is Poisson, Beats locks to the host transport). The blob's colour is
  * GENERATED from the density grade, composited additively over tex_in.
+ *
+ * Secondary `wave_out` texture output: the wave's additive contribution alone,
+ * on opaque black — written by the same render dispatch, produced only while
+ * a wire is attached (same gating as the motion-vector output).
  */
 
 #include <gpu.h>
@@ -67,8 +71,13 @@ struct Uniforms {
   float    hue_warp_a;   // shift(h) = a + b·cos(2πh) + c·sin(2πh)
   float    hue_warp_b;
   float    hue_warp_c;
+  // row 4
+  float    write_wave;   // 1 = also write the isolated wave layer (wave_out)
+  float    _pw0;
+  float    _pw1;
+  float    _pw2;
 };
-static_assert(sizeof(Uniforms) == 64, "Uniforms layout mismatch");
+static_assert(sizeof(Uniforms) == 80, "Uniforms layout mismatch");
 
 // Per-voice blob geometry + grade, packed as 4 float4 (matches render.hlsl).
 struct VoiceGpu {
@@ -118,6 +127,10 @@ struct State {
   gpu::Texture zero_motion_tex;
   int          motion_w = 0;
   int          motion_h = 0;
+  gpu::Texture wave_tex;        // wave_out — the isolated wave layer, when wired
+  gpu::Texture dummy_wave_tex;  // 1x1 stand-in bound at u4 when wave_out is idle
+  int          wave_w = 0;
+  int          wave_h = 0;
   bool         initialized = false;
 
   // --- Standard trigger surface ---
@@ -399,7 +412,7 @@ static void on_state_ready(void* self) {
 void module_init() {
   // fx::AutoTrigger::fields() wraps the chain to splice the auto-fire block
   // into the Trigger group (it takes and returns the Schema&).
-  state::init("source.light.chroma_wave", {1, 0, 1},
+  state::init("source.light.chroma_wave", {1, 1, 0},
     fx::AutoTrigger::fields(
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
@@ -522,6 +535,9 @@ void module_init() {
 
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+      // The wave's own additive contribution on opaque black — rendered only
+      // while a wire is attached (same gating as the motion output).
+      .textureField("wave_out", state::SecondaryOutput)
       .renderOutputs(state::PrimaryOutput)
       .renderOutputs(state::PrimaryInput,  "render_outputs_in")
         .capability(state::Capability::Generator)
@@ -540,7 +556,8 @@ void module_init() {
       .tex2d(0)
       .storageTex2d(1)
       .uniform(2)
-      .storage(3));
+      .storage(3)
+      .storageTex2d(4));
   s_pso_motion = gpu::Device::createComputePSO(cs_motion, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1, gpu::TextureFormat::RGBA16F)
@@ -567,6 +584,8 @@ void destroy(void* self) {
   s->motion_uniform_buf.release();
   s->motion_tex.release();
   s->zero_motion_tex.release();
+  s->wave_tex.release();
+  s->dummy_wave_tex.release();
   delete s;
 }
 
@@ -582,6 +601,8 @@ void init(void* self) {
   s->spawn_counter = 0;
   s->motion_w = 0;
   s->motion_h = 0;
+  s->wave_w = 0;
+  s->wave_h = 0;
   if (!s_pso.valid() || !s_pso_motion.valid() ||
       !s->uniform_buf.valid() || !s->voice_buf.valid() || !s->motion_uniform_buf.valid()) return;
   s->initialized = true;
@@ -713,7 +734,24 @@ void render(void* self, int vp_w, int vp_h) {
   }
   s->voice_buf.writeBytes(vg, (int)sizeof(vg));
 
+  // Isolated wave layer (wave_out) — the additive contribution on opaque
+  // black, written by the same render dispatch. Only produced when a wire is
+  // attached; otherwise a 1x1 dummy fills the binding and the shader skips
+  // the write.
+  bool want_wave = state::isOutputConnected("wave_out");
+  if (want_wave &&
+      (!s->wave_tex.valid() || s->wave_w != vp_w || s->wave_h != vp_h)) {
+    s->wave_tex = gpu::Device::createTexture(vp_w, vp_h);
+    s->wave_w = vp_w;
+    s->wave_h = vp_h;
+    if (s->wave_tex.valid()) state::setGpuTexture("wave_out", s->wave_tex.id);
+  }
+  bool write_wave = want_wave && s->wave_tex.valid();
+  if (!write_wave && !s->dummy_wave_tex.valid())
+    s->dummy_wave_tex = gpu::Device::createTexture(1, 1);
+
   Uniforms u = {};
+  u.write_wave = write_wave ? 1.0f : 0.0f;
   u.cres_off = s->crescent_offset;
   u.band_tilt = s->band_tilt;
   u.hue_span = s->hue_span;
@@ -742,6 +780,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(out, 1, 1);
     cp.setBuffer(s->uniform_buf, 2);
     cp.setBuffer(s->voice_buf,   3);
+    cp.setTexture(write_wave ? s->wave_tex : s->dummy_wave_tex, 4, 1);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

@@ -19,6 +19,9 @@ StructuredBuffer<float4> voices : register(t3);   // 4 float4 per voice
 
 Texture2D<float4>   inputTex  : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
+// Isolated wave layer (rgb on opaque black) — only written when write_wave is
+// set (a sink is wired to `wave_out`); a 1x1 dummy is bound otherwise.
+RWTexture2D<float4> waveTex   : register(u4);
 
 cbuffer Uniforms : register(b2) {
   // row 0
@@ -41,6 +44,11 @@ cbuffer Uniforms : register(b2) {
   float hue_warp_a;     // hue twist: shift(h) = a + b·cos(2πh) + c·sin(2πh)
   float hue_warp_b;
   float hue_warp_c;
+  // row 4
+  float write_wave;     // 1 = also write the isolated wave layer to waveTex
+  float _pw0;
+  float _pw1;
+  float _pw2;
 };
 
 static const float TAU = 6.28318530717958647692;
@@ -101,6 +109,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   if (debug_field != 0.0) {
+    if (write_wave != 0.0) waveTex[gid.xy] = float4(dbg.xxx, 1.0);
     outputTex[gid.xy] = float4(base.rgb * 0.15 + dbg.xxx, base.a);
     return;
   }
@@ -124,5 +133,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float3 col = nano_hsv_to_rgb(float3(hue, saturation, 1.0))
              * float3(color_r, color_g, color_b);
   float3 bloom = 1.0 - exp(-col * (sum_bright * band_w) * intensity);
+  // The isolated layer is exactly the additive contribution on opaque black —
+  // composite it over the input downstream and you reconstruct tex_out.
+  if (write_wave != 0.0) waveTex[gid.xy] = float4(saturate(bloom), 1.0);
   outputTex[gid.xy] = float4(saturate(base.rgb + bloom), base.a);
 }

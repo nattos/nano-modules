@@ -226,12 +226,14 @@ describe('Chroma Wave Effect E2E', () => {
   });
 
   it('auto_rate fires one-shots on its own (silent at 0)', async () => {
-    // auto_rate > 0 self-animates with no gate wired; each Poisson event is a
-    // one-shot that fully charges then bursts. At 0 it stays dark.
+    // auto_mode Random + auto_rate > 0 self-animates with no gate wired; each
+    // Poisson event is a one-shot that fully charges then bursts. The shared
+    // auto-trigger block defaults to Off, so Random must be selected too.
     const on = await runGpuEffectTest({
       module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
-      ticks: 40, params: params([['auto_rate', 0.6], ['charge_s', 0.15],
+      ticks: 40, params: params([['auto_mode', 1], ['auto_rate', 0.6],
+                                  ['charge_s', 0.15],
                                   ['min_sustain_s', 0.1], ['release_s', 0.5]]),
       dumpName: 'chroma_wave_auto_on',
     });
@@ -261,7 +263,8 @@ describe('Chroma Wave Effect E2E', () => {
     const run = (limit: number) => runGpuEffectTest({
       module: 'source.light.chroma_wave', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
-      ticks: 45, params: params([['auto_rate', 0.9], ['charge_s', 0.1],
+      ticks: 45, params: params([['auto_mode', 1], ['auto_rate', 0.9],
+                                  ['charge_s', 0.1],
                                   ['min_sustain_s', 0.05], ['release_s', 0.6],
                                   ['voice_limit', limit], ['voice_pos_jitter', 0.7],
                                   ['base_radius', 0.1]]),
@@ -311,7 +314,8 @@ describe('Chroma Wave Effect E2E', () => {
         params: { color: [0.0, 0.0, 0.0] } },
         ...(withProducer ? [{ type: 'module', module_type: 'source.light.chroma_wave', instance_key: 'cw@0',
           params: {
-            auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05, release_s: 0.5,
+            auto_mode: 1, auto_rate: 0.9, charge_s: 0.1, min_sustain_s: 0.05,
+            release_s: 0.5,
             release_expand: 4.0, base_radius: 0.15, intensity: 2.0,
             voice_pos_jitter: 0.3, voice_hue_jitter: 0.0, motion_scale: 1.0, seed: 3,
           },
@@ -340,6 +344,66 @@ describe('Chroma Wave Effect E2E', () => {
     const noProducer = await run('cw_motion_without', false);
     expect(withProducer.success && noProducer.success).toBe(true);
     withProducer.trace('out').expectDifferentFrom(noProducer.trace('out'), 100);
+  });
+
+  it('wave_out publishes the wave alone on opaque black (only when wired)', async () => {
+    // Chain: gray solid → chroma_wave (held charge) → sidechannel send →
+    // sidechannel receive. Wiring cw@0.wave_out into the send's `send_in`
+    // override makes the bus carry the isolated wave layer, and the receive
+    // REPLACES the stage output with it — so the sketch output IS wave_out.
+    // Without the wire the send publishes its chain input instead (the
+    // composite over gray). Wired: corners are opaque BLACK (the wave layer's
+    // background — alpha 1, so no checkerboard) with a bloom up top. Unwired:
+    // corners show the gray input — proving both the isolation ("on black")
+    // and the connection gating.
+    const buildChain = (wired: boolean): Sketch => ({
+      anchor: null,
+      wires: wired ? [{ id: 'ww', src: { instanceKey: 'cw@0', field: 'wave_out' },
+                        dest: { instanceKey: 'send@0', field: 'send_in' } }] : [],
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
+          params: { color: [0.45, 0.45, 0.45] } },
+        { type: 'module', module_type: 'source.light.chroma_wave', instance_key: 'cw@0',
+          params: { default_gate_state: 1, charge_s: 0.15, intensity: 2.0,
+                    auto_rate: 0, voice_pos_jitter: 0, voice_hue_jitter: 0 } },
+        { type: 'module', module_type: 'util.sidechannel_out', instance_key: 'send@0',
+          params: { channel: 3 } },
+        { type: 'module', module_type: 'util.sidechannel_in', instance_key: 'recv@0',
+          params: { channel: 3 } },
+      ],
+    } as Sketch);
+
+    const run = (id: string, wired: boolean) => runEngineTest({
+      width: 128, height: 128,
+      modules: ['com.nano.lights', 'com.nano.core'],
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: buildChain(wired) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } },
+        ]},
+      ],
+      waitFrames: 30,
+      captureTraceIds: ['out'],
+      dumpName: `chroma_wave_waveout_${wired ? 'wired' : 'unwired'}`,
+    });
+
+    const wired = await run('cw_wave_wired', true);
+    const unwired = await run('cw_wave_unwired', false);
+    expect(wired.success && unwired.success).toBe(true);
+
+    // Wired: the isolated layer — black corners, bloom near the top-center.
+    wired.trace('out').expectPixelAt(3, 3, { r: 0, g: 0, b: 0 }, 6);
+    wired.trace('out').expectPixelAt(124, 124, { r: 0, g: 0, b: 0 }, 6);
+    let peak = 0;
+    for (let y = 4; y < 48; y += 4) for (let x = 32; x < 96; x += 4) {
+      peak = Math.max(peak, luma(wired.trace('out').pixelAt(x, y)));
+    }
+    expect(peak).toBeGreaterThan(30);
+
+    // Unwired: the bus falls back to the chain image — gray corners (the
+    // composite over the input), so the gate demonstrably decided the content.
+    const bgCorner = unwired.trace('out').pixelAt(3, 3);
+    expect(bgCorner.r).toBeGreaterThan(60);
   });
 
   it('hue twist shifts the hue where it lands on a primary', async () => {

@@ -160,7 +160,7 @@ void nano_module_main() {
         2,
         "source.light.chroma_wave",
         "Chroma Wave",
-        "Charge-and-burst prismatic wave bloom. A soft super-gaussian blob grows from the top-center while gated; as pressure builds the top flattens into a plateau, the blob elongates in X and hollows out at the top so the mass piles into a downward crescent (max pressure). On release it bursts — rapidly expanding while the colour-grade transfer folds, sending prismatic bands travelling down the density gradient (dominant) and washing back up the inner edge (secondary). Additive bloom composited over the input.",
+        "Charge-and-burst prismatic wave bloom. A soft super-gaussian blob grows from the top-center while gated; as pressure builds the top flattens into a plateau, the blob elongates in X and hollows out at the top so the mass piles into a downward crescent (max pressure). On release it bursts — rapidly expanding while the colour-grade transfer folds, sending prismatic bands travelling down the density gradient (dominant) and washing back up the inner edge (secondary). Additive bloom composited over the input; a secondary wave_out texture output carries the wave alone on black when wired.",
         "source",
         "chroma,prismatic,wave,bloom,trigger,charge,burst,beat",
         "la-water",
