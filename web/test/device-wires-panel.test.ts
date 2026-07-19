@@ -127,4 +127,90 @@ describe('device wires panel', () => {
     expect(cardPanel).not.toBeNull();
     expect(cardPanel.rows.length).toBe(3);
   });
+
+  it('remaps dead midi wires (missing device uuid) to the selected device', async () => {
+    page.removeAllListeners('console');
+    await page.setViewport({ width: 1600, height: 1000 });
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Two instances whose midi wires reference a GHOST device uuid (the
+    // library re-created the device under a new id — the user's dead-mapping
+    // scenario), plus one LIVE wire on the real device that must be
+    // untouched. Selecting the real device's card offers the remap.
+    const setup = await page.evaluate(`(async () => {
+      const ac = window.appController, mc = window.midiController;
+      const dev = mc.ensureInstanceForEdit('com.nano.midi.mft');
+      const idA = ac.createPlaygroundInstance();
+      const idB = ac.createPlaygroundInstance();
+      const chain = (key) => ([{ type: 'module', module_type: 'util.dashboard', instance_key: key }]);
+      ac.mutate('seed', d => {
+        d.sketches[idA].chain = chain('da@0');
+        d.sketches[idA].instances = { 'da@0': { module_type: 'util.dashboard', state: {} } };
+        d.sketches[idA].wires = [
+          { id: 'dead1', src: { instanceKey: 'midi:ghost-uuid-1', field: 'b0/e05/turn' },
+            dest: { instanceKey: 'da@0', field: 'knob_3' }, combine: 'add', mod: { scale: 0.5 } },
+          { id: 'live1', src: { instanceKey: 'midi:' + dev.id, field: 'b0/e01/turn' },
+            dest: { instanceKey: 'da@0', field: 'knob_1' }, combine: 'add' },
+        ];
+        d.sketches[idB].chain = chain('db@0');
+        d.sketches[idB].instances = { 'db@0': { module_type: 'util.dashboard', state: {} } };
+        d.sketches[idB].wires = [
+          { id: 'dead2', src: { instanceKey: 'midi:ghost-uuid-1', field: 'b1/e08/press' },
+            dest: { instanceKey: 'db@0', field: 'knob_7' }, combine: 'add' },
+        ];
+      });
+      ac.editSketch(idA);
+      ac.setActiveTab('devices');
+      return { devId: dev.id, idA, idB };
+    })()`) as { devId: string; idA: string; idB: string };
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Select the device CARD → whole-device panel with the remap banner.
+    await page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      for (const el of walk(document)) {
+        if (el.tagName === 'DEVICE-SURFACE' && el.deviceId === ${JSON.stringify(setup.devId)}) {
+          el.closest('device-card').click();
+          return;
+        }
+      }
+    })()`);
+    await new Promise(r => setTimeout(r, 600));
+
+    const clicked = await page.evaluate(`(() => {
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      for (const el of walk(document)) {
+        if (el.tagName !== 'DEVICE-WIRES-PANEL') continue;
+        const banner = el.shadowRoot.querySelector('.remap-banner');
+        if (!banner) return { found: false };
+        const msg = banner.querySelector('.msg').textContent;
+        banner.querySelector('button').click();
+        return { found: true, msg };
+      }
+      return null;
+    })()`) as { found: boolean; msg?: string } | null;
+    expect(clicked?.found).toBe(true);
+    expect(clicked!.msg).toContain('2 wires point');
+    await new Promise(r => setTimeout(r, 500));
+
+    // Both dead wires re-pointed (fields + mod kept); the live wire untouched;
+    // the banner is gone.
+    const after = await page.evaluate(`(() => {
+      const s = window.appState.database.sketches;
+      const a = s[${JSON.stringify(setup.idA)}].wires, b = s[${JSON.stringify(setup.idB)}].wires;
+      function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}
+      let bannerLeft = false;
+      for (const el of walk(document)) {
+        if (el.tagName === 'DEVICE-WIRES-PANEL' && el.shadowRoot.querySelector('.remap-banner')) bannerLeft = true;
+      }
+      return JSON.parse(JSON.stringify({ a, b, bannerLeft }));
+    })()`) as any;
+    const dev = `midi:${setup.devId}`;
+    expect(after.a.find((w: any) => w.id === 'dead1').src).toEqual({ instanceKey: dev, field: 'b0/e05/turn' });
+    expect(after.a.find((w: any) => w.id === 'dead1').mod).toEqual({ scale: 0.5 });
+    expect(after.a.find((w: any) => w.id === 'live1').src.instanceKey).toBe(dev);
+    expect(after.b.find((w: any) => w.id === 'dead2').src).toEqual({ instanceKey: dev, field: 'b1/e08/press' });
+    expect(after.bannerLeft).toBe(false);
+  });
 });

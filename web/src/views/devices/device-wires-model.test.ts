@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Sketch, Wire } from '../../sketch-types';
-import { collectDeviceWires } from './device-wires-model';
+import { collectDeadMidiWires, collectDeviceWires } from './device-wires-model';
 
 const DEV = 'dev-1';
 
@@ -82,5 +82,37 @@ describe('collectDeviceWires', () => {
     };
     const groups = collectDeviceWires(sketches, ['b', 'a'], DEV, null);
     expect(groups.map(g => g.sketchId)).toEqual(['a']);
+  });
+});
+
+describe('collectDeadMidiWires', () => {
+  it('collects only midi: wires whose device uuid is unknown', () => {
+    const sketches: Record<string, Sketch | undefined> = {
+      a: sketch([
+        wire('w1', 'b0/e00/turn', 'bc', 'brightness'),                    // live (DEV known)
+        wire('w2', 'b0/e01/turn', 'bc', 'contrast', 'midi:ghost-dev'),    // dead
+        wire('w3', 'output', 'bc', 'saturation', 'lfo'),                  // module wire — never dead
+      ]),
+      b: sketch([
+        wire('w4', 'b1/e05/press', 'bc', 'hue', 'midi:ghost-dev'),        // dead
+        wire('w5', 'b0/e02/turn', 'bc', 'gain', 'midi:other-ghost'),      // dead, second uuid
+      ]),
+    };
+    const dead = collectDeadMidiWires(sketches, ['a', 'b'], new Set([DEV]));
+    expect(dead.total).toBe(3);
+    expect(dead.groups).toEqual([
+      { sketchId: 'a', wireIds: ['w2'] },
+      { sketchId: 'b', wireIds: ['w4', 'w5'] },
+    ]);
+    expect([...dead.deadIds].sort()).toEqual(['ghost-dev', 'other-ghost']);
+  });
+
+  it('reports nothing when every midi wire matches a known device', () => {
+    const sketches: Record<string, Sketch | undefined> = {
+      a: sketch([wire('w1', 'b0/e00/turn', 'bc', 'brightness')]),
+    };
+    const dead = collectDeadMidiWires(sketches, ['a', 'a', 'missing'], new Set([DEV]));
+    expect(dead.total).toBe(0);
+    expect(dead.groups).toEqual([]);
   });
 });

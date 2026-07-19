@@ -8,7 +8,7 @@
 import type { ModuleEntry, Sketch, Wire } from '../../sketch-types';
 import { sketchChain } from '../../sketch-types';
 import {
-  midiInstanceKey, parseControlId, type ControlGesture,
+  midiInstanceIdFromKey, midiInstanceKey, parseControlId, type ControlGesture,
 } from '../../midi/midi-types';
 
 /** One device→field wire, resolved against its sketch's chain. */
@@ -73,4 +73,52 @@ export function collectDeviceWires(
     if (rows.length > 0) groups.push({ sketchId, rows });
   }
   return groups;
+}
+
+/** Per-sketch group of DEAD `midi:` wires (see collectDeadMidiWires). */
+export interface DeadMidiWireGroup {
+  sketchId: string;
+  wireIds: string[];
+}
+
+export interface DeadMidiWires {
+  groups: DeadMidiWireGroup[];
+  /** The distinct missing device uuids the dead wires reference. */
+  deadIds: Set<string>;
+  total: number;
+}
+
+/**
+ * Collect every wire sourced from a `midi:<uuid>` whose uuid matches NO
+ * device in `knownDeviceIds` — dead mappings. The classic cause: the device
+ * library re-created an instance under a fresh uuid (new browser profile,
+ * cleared storage, a fork replacing the original), stranding every wire
+ * serialized against the old id. Feeds the wires panel's "remap to this
+ * device" repair (appController.remapMidiWires).
+ */
+export function collectDeadMidiWires(
+  sketches: Record<string, Sketch | undefined>,
+  sketchIds: Iterable<string>,
+  knownDeviceIds: ReadonlySet<string>,
+): DeadMidiWires {
+  const groups: DeadMidiWireGroup[] = [];
+  const deadIds = new Set<string>();
+  let total = 0;
+  const seen = new Set<string>();
+  for (const sketchId of sketchIds) {
+    if (seen.has(sketchId)) continue;
+    seen.add(sketchId);
+    const sketch = sketches[sketchId];
+    if (!sketch?.wires?.length) continue;
+    const wireIds: string[] = [];
+    for (const wire of sketch.wires) {
+      const devId = midiInstanceIdFromKey(wire.src.instanceKey);
+      if (!devId || knownDeviceIds.has(devId)) continue;
+      wireIds.push(wire.id);
+      deadIds.add(devId);
+      total++;
+    }
+    if (wireIds.length > 0) groups.push({ sketchId, wireIds });
+  }
+  return { groups, deadIds, total };
 }

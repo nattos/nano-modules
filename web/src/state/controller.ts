@@ -2114,6 +2114,30 @@ export class AppController {
     this.mutate('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));
   }
 
+  /**
+   * Re-point DEAD `midi:` wires (their device uuid no longer exists in the
+   * library — e.g. the instance was re-created under a fresh id) at
+   * `toInstanceKey` (`midi:<current uuid>`), keeping the endpoint field and
+   * all mod settings. One mutate across every affected sketch = one undo
+   * step. Only wires in `groups` (from collectDeadMidiWires) are touched, so
+   * live wires to OTHER devices are never captured.
+   */
+  remapMidiWires(
+    groups: { sketchId: string; wireIds: string[] }[],
+    toInstanceKey: string,
+  ) {
+    this.mutate('Remap MIDI wires', d => {
+      for (const g of groups) {
+        const sketch = d.sketches[g.sketchId];
+        if (!sketch?.wires) continue;
+        const ids = new Set(g.wireIds);
+        for (const w of sketch.wires) {
+          if (ids.has(w.id)) w.src = { ...w.src, instanceKey: toInstanceKey };
+        }
+      }
+    });
+  }
+
   /** Begin a continuous wire-mod edit (slider drag). No undo points during drag. */
   beginUpdateWire(sketchId: string, wireId: string, patch: Partial<Wire>): LongEdit {
     const edit = this.history.beginLongEdit('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));

@@ -23,7 +23,8 @@ import { getDeviceTemplate } from '../../midi/device-registry';
 import { DASHBOARD_MODULE_TYPE, type Wire } from '../../sketch-types';
 import { wireModBinding, renderWireModInspector } from '../../widgets/wire-mod-inspector';
 import { scrollToAndFlashField } from '../../widgets/field-anchor-lookup';
-import { collectDeviceWires, type DeviceWireRow } from './device-wires-model';
+import { midiInstanceKey } from '../../midi/midi-types';
+import { collectDeadMidiWires, collectDeviceWires, type DeviceWireRow } from './device-wires-model';
 import '../../widgets/ui-icon';
 
 @customElement('device-wires-panel')
@@ -88,6 +89,30 @@ export class DeviceWiresPanel extends MobxLitElement {
       font-size: var(--app-fs-xs);
       padding: 4px 0 2px;
     }
+    .remap-banner {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 0 6px;
+      padding: 4px 6px;
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color1);
+      background: color-mix(in srgb, var(--app-hi-color1) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--app-hi-color1) 40%, transparent);
+      border-radius: 2px;
+    }
+    .remap-banner .msg { flex: 1; min-width: 0; }
+    .remap-banner button {
+      flex: none;
+      background: var(--app-hi-color1);
+      color: #0a0a0a;
+      border: none;
+      border-radius: 2px;
+      padding: 2px 8px;
+      font-size: var(--app-fs-xs);
+      cursor: pointer;
+    }
+    .remap-banner button:hover { filter: brightness(1.15); }
   `;
 
   /**
@@ -150,18 +175,50 @@ export class DeviceWiresPanel extends MobxLitElement {
     };
   }
 
+  /**
+   * Dead-mapping repair: wires sourced from a `midi:<uuid>` that matches NO
+   * library device (the instance was re-created under a fresh id — new
+   * browser profile, cleared storage — stranding every serialized mapping).
+   * Offered on the whole-device view only, and re-points ALL dead wires at
+   * THIS device in one undo step, keeping fields + mod settings.
+   */
+  private renderRemapBanner() {
+    if (this.controlIds) return nothing;   // whole-device card view only
+    const known = new Set(appState.local.midi.library.map(i => i.id));
+    const dead = collectDeadMidiWires(
+      appState.database.sketches, this.scanIds(), known);
+    if (dead.total === 0) return nothing;
+    const name = midiController.instance(this.deviceId)?.name ?? 'this device';
+    return html`
+      <div class="remap-banner">
+        <span class="msg">
+          ${dead.total} wire${dead.total === 1 ? '' : 's'} point${dead.total === 1 ? 's' : ''}
+          at a missing device (${[...dead.deadIds].map(id => id.slice(0, 8)).join(', ')}…)
+        </span>
+        <button title="Re-point every dead midi: wire at ${name}, keeping fields and mod settings"
+          @click=${() => appController.remapMidiWires(
+            dead.groups, midiInstanceKey(this.deviceId))}>
+          Remap to ${name}
+        </button>
+      </div>
+    `;
+  }
+
   render() {
     if (!this.deviceId) return nothing;
     const groups = collectDeviceWires(
       appState.database.sketches, this.scanIds(), this.deviceId, this.controlIds);
     if (groups.length === 0) {
-      return html`<div class="empty">
-        No wires — drag ${this.controlIds ? 'this control' : 'a control'} onto a field in W wire mode.
-      </div>`;
+      return html`
+        ${this.renderRemapBanner()}
+        <div class="empty">
+          No wires — drag ${this.controlIds ? 'this control' : 'a control'} onto a field in W wire mode.
+        </div>`;
     }
     const editing = appState.local.editingSketchId;
     const showControl = !this.controlIds || this.controlIds.length > 1;
     return html`
+      ${this.renderRemapBanner()}
       ${groups.map(g => html`
         <div class="group-head">
           <span>${instanceDisplayLabel(g.sketchId)}</span>
