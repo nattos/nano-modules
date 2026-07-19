@@ -22,7 +22,7 @@ import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
-import { midiInstanceKey } from '../midi/midi-types';
+import { midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
 import { midiController } from './midi-controller';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
@@ -2114,28 +2114,86 @@ export class AppController {
     this.mutate('Edit wire', this.wirePatchRecipe(sketchId, wireId, patch));
   }
 
+  /** Barrel-mode sketch access for composition-wide repairs (wired by
+   *  connectBarrel): fetch/push an arbitrary LIVE instance's sketch over the
+   *  bridge, independent of which instance is wired for editing. */
+  private barrelSketchOps: {
+    fetch: (key: string) => Promise<Sketch | null>;
+    push: (key: string, sketch: Sketch) => void;
+  } | null = null;
+
+  setBarrelSketchOps(ops: AppController['barrelSketchOps']) {
+    this.barrelSketchOps = ops;
+  }
+
   /**
-   * Re-point DEAD `midi:` wires (their device uuid no longer exists in the
-   * library — e.g. the instance was re-created under a fresh id) at
-   * `toInstanceKey` (`midi:<current uuid>`), keeping the endpoint field and
-   * all mod settings. One mutate across every affected sketch = one undo
-   * step. Only wires in `groups` (from collectDeadMidiWires) are touched, so
-   * live wires to OTHER devices are never captured.
+   * Re-point every DEAD `midi:` wire — one whose device uuid matches no
+   * library device (the instance was re-created under a fresh id) — at
+   * `toInstanceKey` (`midi:<current uuid>`), across the WHOLE composition:
+   * (1) every editor-loaded sketch in one mutate (one undo step), and
+   * (2) in Live mode, every OTHER live barrel instance via a bridge
+   * fetch → rewrite → patch (those aren't in the editor DB at all — the
+   * original DB-only remap silently missed them). Endpoint fields and mod
+   * settings are kept; wires to known devices are never touched.
    */
-  remapMidiWires(
-    groups: { sketchId: string; wireIds: string[] }[],
+  async remapDeadMidiWires(
+    knownDeviceIds: ReadonlySet<string>,
     toInstanceKey: string,
-  ) {
-    this.mutate('Remap MIDI wires', d => {
-      for (const g of groups) {
-        const sketch = d.sketches[g.sketchId];
-        if (!sketch?.wires) continue;
-        const ids = new Set(g.wireIds);
-        for (const w of sketch.wires) {
-          if (ids.has(w.id)) w.src = { ...w.src, instanceKey: toInstanceKey };
-        }
+  ): Promise<{ wires: number; sketches: number }> {
+    const deadWireIds = (sketch: Sketch | undefined): string[] => {
+      const ids: string[] = [];
+      for (const w of sketch?.wires ?? []) {
+        const devId = midiInstanceIdFromKey(w.src.instanceKey);
+        if (devId && !knownDeviceIds.has(devId)) ids.push(w.id);
       }
-    });
+      return ids;
+    };
+    let wires = 0;
+    let sketches = 0;
+
+    // 1. Editor-loaded sketches (the edited instance in Live; everything in
+    //    Playground) — one mutate, one undo step.
+    const loaded = Object.keys(appState.database.sketches)
+      .map(id => ({ id, ids: deadWireIds(appState.database.sketches[id]) }))
+      .filter(e => e.ids.length > 0);
+    if (loaded.length > 0) {
+      this.mutate('Remap MIDI wires', d => {
+        for (const e of loaded) {
+          const sketch = d.sketches[e.id];
+          if (!sketch?.wires) continue;
+          const ids = new Set(e.ids);
+          for (const w of sketch.wires) {
+            if (ids.has(w.id)) w.src = { ...w.src, instanceKey: toInstanceKey };
+          }
+        }
+      });
+      for (const e of loaded) wires += e.ids.length;
+      sketches += loaded.length;
+    }
+
+    // 2. Live barrel instances the editor hasn't loaded: fetch each sketch
+    //    over the bridge, rewrite, patch back. Offline placeholders resolve
+    //    null from fetch (timeout) and are skipped — they'll pick up the fix
+    //    when their persisted copy is next opened + remapped.
+    if (this.barrelSketchOps) {
+      const inDb = new Set(Object.keys(appState.database.sketches));
+      for (const inst of appState.local.barrelInstances) {
+        if (inDb.has(inst.key)) continue;
+        let sk: Sketch | null = null;
+        try { sk = await this.barrelSketchOps.fetch(inst.key); } catch { continue; }
+        const ids = new Set(deadWireIds(sk ?? undefined));
+        if (!sk || ids.size === 0) continue;
+        const fixed: Sketch = {
+          ...sk,
+          wires: (sk.wires ?? []).map(w =>
+            ids.has(w.id) ? { ...w, src: { ...w.src, instanceKey: toInstanceKey } } : w),
+        };
+        this.barrelSketchOps.push(inst.key, fixed);
+        wires += ids.size;
+        sketches++;
+      }
+    }
+    return { wires, sketches };
   }
 
   /** Begin a continuous wire-mod edit (slider drag). No undo points during drag. */

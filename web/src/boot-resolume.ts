@@ -327,6 +327,45 @@ function connectBarrel(url: string) {
     });
   };
 
+  // Composition-wide sketch access for repairs (e.g. the Devices tab's
+  // dead-midi-wire remap): fetch/push ANY live instance's sketch over the
+  // bridge, independent of the wired-for-editing key. Fetch is one-shot with
+  // a timeout so offline placeholder instances (registered in the
+  // composition but not launched) resolve null instead of hanging.
+  {
+    const waiters = new Map<string, ((s: Sketch | null) => void)[]>();
+    const wired = new Set<string>();
+    appController.setBarrelSketchOps({
+      fetch: (key: string) => new Promise<Sketch | null>((resolve) => {
+        const statePath = `/plugins/${key}/state`;
+        if (!wired.has(statePath)) {
+          wired.add(statePath);
+          barrel.onSnapshot(statePath, (state) => {
+            const ws = waiters.get(statePath);
+            if (!ws?.length) return;   // passive-cache / reconcile traffic
+            waiters.delete(statePath);
+            const sketch = coerceSketch(state?.sketch ?? {});
+            for (const w of ws) w(sketch);
+          });
+        }
+        const ws = waiters.get(statePath) ?? [];
+        ws.push(resolve);
+        waiters.set(statePath, ws);
+        barrel.get(statePath);
+        setTimeout(() => {
+          const cur = waiters.get(statePath);
+          if (!cur?.includes(resolve)) return;
+          waiters.set(statePath, cur.filter(r => r !== resolve));
+          resolve(null);
+        }, 3000);
+      }),
+      push: (key: string, sketch: Sketch) => {
+        barrel.patch(`/plugins/${key}/state`,
+                     [{ op: 'replace', path: '/sketch', value: sketch }]);
+      },
+    });
+  }
+
   // Every barrel instance — not just the one actively wired for editing —
   // gets a one-shot, non-continuous cache mirror so the offline fallback
   // (`bootLiveOffline`) has something for ALL of them, not only whichever one

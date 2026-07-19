@@ -13,7 +13,7 @@
  */
 
 import { html, css, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
@@ -175,19 +175,41 @@ export class DeviceWiresPanel extends MobxLitElement {
     };
   }
 
+  /** Result line from the last remap ('Remapped 47 wires across 12 sketches'). */
+  @state() private remapResult = '';
+  @state() private remapBusy = false;
+
+  private async doRemap() {
+    const known = new Set(appState.local.midi.library.map(i => i.id));
+    this.remapBusy = true;
+    try {
+      const res = await appController.remapDeadMidiWires(
+        known, midiInstanceKey(this.deviceId));
+      this.remapResult = `Remapped ${res.wires} wire${res.wires === 1 ? '' : 's'}`
+        + ` across ${res.sketches} sketch${res.sketches === 1 ? '' : 'es'}.`;
+    } finally {
+      this.remapBusy = false;
+    }
+  }
+
   /**
    * Dead-mapping repair: wires sourced from a `midi:<uuid>` that matches NO
    * library device (the instance was re-created under a fresh id — new
    * browser profile, cleared storage — stranding every serialized mapping).
-   * Offered on the whole-device view only, and re-points ALL dead wires at
-   * THIS device in one undo step, keeping fields + mod settings.
+   * Offered on the whole-device view only. The remap covers the WHOLE
+   * composition: loaded sketches in one undo step, plus (Live mode) every
+   * other live barrel instance patched over the bridge — so the local count
+   * shown here is a floor, not the total.
    */
   private renderRemapBanner() {
     if (this.controlIds) return nothing;   // whole-device card view only
     const known = new Set(appState.local.midi.library.map(i => i.id));
     const dead = collectDeadMidiWires(
       appState.database.sketches, this.scanIds(), known);
-    if (dead.total === 0) return nothing;
+    if (dead.total === 0) {
+      return this.remapResult
+        ? html`<div class="empty remap-result">${this.remapResult}</div>` : nothing;
+    }
     const name = midiController.instance(this.deviceId)?.name ?? 'this device';
     return html`
       <div class="remap-banner">
@@ -195,10 +217,10 @@ export class DeviceWiresPanel extends MobxLitElement {
           ${dead.total} wire${dead.total === 1 ? '' : 's'} point${dead.total === 1 ? 's' : ''}
           at a missing device (${[...dead.deadIds].map(id => id.slice(0, 8)).join(', ')}…)
         </span>
-        <button title="Re-point every dead midi: wire at ${name}, keeping fields and mod settings"
-          @click=${() => appController.remapMidiWires(
-            dead.groups, midiInstanceKey(this.deviceId))}>
-          Remap to ${name}
+        <button ?disabled=${this.remapBusy}
+          title="Re-point every dead midi: wire in the composition at ${name}, keeping fields and mod settings"
+          @click=${() => this.doRemap()}>
+          ${this.remapBusy ? 'Remapping…' : `Remap all to ${name}`}
         </button>
       </div>
     `;
