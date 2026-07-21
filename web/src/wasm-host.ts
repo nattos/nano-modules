@@ -646,6 +646,15 @@ export class WasmHost {
         duration_sec: (h: bigint): number => this.streams?.find(h)?.durationSec ?? -1,
         bpm: (h: bigint): number => this.streams?.find(h)?.bpm ?? this.frameState.bpm,
         fps: (h: bigint): number => this.streams?.find(h)?.fps ?? 0,
+        anchor: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          return s && (s.kind === 5 || s.kind === 6) ? s.anchorBeat : NaN;
+        },
+        anchor_sec: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          if (!s || (s.kind !== 5 && s.kind !== 6)) return NaN;
+          return this.streams!.secondsAt(s.anchorBeat);
+        },
         event_count: (h: bigint): number => {
           const s = this.streams?.find(h);
           if (!s) return !this.streams && h === 1n ? 0 : -1;

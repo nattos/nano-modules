@@ -10,6 +10,7 @@ import {
   clipTransportDevice,
   clipTransportDriven,
   deviceIsTransportController,
+  loopViewOf,
   type Clip,
   type Device,
 } from './composition';
@@ -54,5 +55,28 @@ describe('clip transport-section precedence (lock-step truth table)', () => {
   it('deviceIsTransportController reads the capability tag', () => {
     expect(deviceIsTransportController(dev('t', ['transport_controller']))).toBe(true);
     expect(deviceIsTransportController(dev('m', ['modulation_source']))).toBe(false);
+  });
+
+  it('loopViewOf: clip.loop when undriven; synthesized config for core effects; null for third-party', () => {
+    // Undriven → the clip's own loop.
+    expect(loopViewOf(clip())).toEqual(clip().loop);
+    // A recognized core effect synthesizes the exact ClipLoopConfig view
+    // (sentinels resolved: endSec<=0 = source end, playStartSec<0 = unset).
+    const core: Device = {
+      id: 't1', moduleType: 'core.transport.time', name: 'T',
+      capabilities: ['transport_controller'],
+      state: { startSec: 1, endSec: 4, playStartSec: -1, speed: 2, direction: 1, pingpong: true },
+    };
+    const view = loopViewOf(clip({ devices: [core] }))!;
+    expect(view).toEqual({
+      mode: 'time', startSec: 1, endSec: 4, speed: 2,
+      direction: 'reverse', pingpong: true,
+    });
+    // endSec 0 sentinel drops the field (= source end).
+    const full: Device = { ...core, state: { startSec: 0, endSec: 0 } };
+    expect(loopViewOf(clip({ devices: [full] }))!.endSec).toBeUndefined();
+    // Third-party controller → no analytic view.
+    const other = dev('x', ['transport_controller']);
+    expect(loopViewOf(clip({ devices: [other] }))).toBe(null);
   });
 });

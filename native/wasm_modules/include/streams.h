@@ -95,6 +95,15 @@ extern "C" {
   // Native frame rate for video content streams; 0 when N/A.
   __attribute__((import_module("streams"), import_name("fps")))
   double streams_fps(int64_t h);
+  // CONTENT streams: where this content sits on its PARENT's primary axis
+  // (the clip's start beat; a scene's launch beat). NaN for non-content
+  // streams. anchor_sec = the same instant in warp-correct parent seconds —
+  // `parent posSec − anchor_sec` is the clip-local elapsed time the built-in
+  // play modes integrate (clip_time.h elapsedSec).
+  __attribute__((import_module("streams"), import_name("anchor")))
+  double streams_anchor(int64_t h);
+  __attribute__((import_module("streams"), import_name("anchor_sec")))
+  double streams_anchor_sec(int64_t h);
 
   // ── Events (static per rev(); index-based bulk copy) ──
   __attribute__((import_module("streams"), import_name("event_count")))
@@ -207,6 +216,8 @@ inline double duration(Stream h) { return streams_duration(h); }
 inline double durationSec(Stream h) { return streams_duration_sec(h); }
 inline double bpm(Stream h) { return streams_bpm(h); }
 inline double fps(Stream h) { return streams_fps(h); }
+inline double anchor(Stream h) { return streams_anchor(h); }
+inline double anchorSec(Stream h) { return streams_anchor_sec(h); }
 
 inline int eventCount(Stream h) { return streams_event_count(h); }
 inline int readEvents(Stream h, int first, Event* out, int maxCount) {

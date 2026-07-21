@@ -291,6 +291,56 @@ export function clipTransportDriven(clip: Clip): boolean {
   return clipTransportDevice(clip) !== null;
 }
 
+/** Core transport effects ↔ the play mode each one is the plugin form of. */
+export const CORE_TRANSPORT_BY_MODE: Record<ClipPlayMode, string> = {
+  'time': 'core.transport.time',
+  'beat-sync': 'core.transport.beat_sync',
+  'one-shot': 'core.transport.one_shot',
+  'random': 'core.transport.random',
+};
+
+/**
+ * The ClipLoopConfig VIEW of a clip's effective timing — what film strips and
+ * other loop-shaped readers should render:
+ *   - not transport-driven → clip.loop (the built-in play modes);
+ *   - driven by a RECOGNIZED core transport effect → a ClipLoopConfig
+ *     synthesized from its state (field names match 1:1 — this is the exact
+ *     inverse of the future loop→effect migration);
+ *   - driven by a third-party controller → null (no analytic view; render a
+ *     plain linear reel).
+ */
+export function loopViewOf(clip: Clip): ClipLoopConfig | null {
+  const dev = clipTransportDevice(clip);
+  if (!dev) return clip.loop;
+  const mode = (Object.entries(CORE_TRANSPORT_BY_MODE)
+    .find(([, mt]) => mt === dev.moduleType)?.[0]) as ClipPlayMode | undefined;
+  if (!mode) return null;
+  const s = (dev.state ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+  const loop: ClipLoopConfig = {
+    mode,
+    startSec: num(s.startSec) ?? 0,
+    speed: num(s.speed) ?? 1,
+    // The effect's `direction` select stores an index (0 fwd / 1 rev).
+    direction: s.direction === 1 || s.direction === 'reverse' ? 'reverse' : 'forward',
+  };
+  const end = num(s.endSec);
+  if (end !== undefined && end > 0) loop.endSec = end;  // <=0 = source end
+  const ps = num(s.playStartSec);
+  if (ps !== undefined && ps >= 0) loop.playStartSec = ps;  // <0 = loop start
+  if (s.pingpong) loop.pingpong = true;
+  if (num(s.syncBeats) !== undefined) loop.syncBeats = num(s.syncBeats);
+  if (num(s.syncBpm) !== undefined) loop.syncBpm = num(s.syncBpm);
+  if (s.syncUseBpm) loop.syncUseBpm = true;
+  if (num(s.dwell) !== undefined) loop.dwell = num(s.dwell);
+  if (s.dwellUnit === 1 || s.dwellUnit === 'sec') loop.dwellUnit = 'sec';
+  if (num(s.dwellJitter) !== undefined) loop.dwellJitter = num(s.dwellJitter);
+  if (num(s.jumpDistanceMin) !== undefined) loop.jumpDistanceMin = num(s.jumpDistanceMin);
+  if (num(s.jumpDistanceMax) !== undefined) loop.jumpDistanceMax = num(s.jumpDistanceMax);
+  if (s.jumpDistanceUnit === 1 || s.jumpDistanceUnit === 'sec') loop.jumpDistanceUnit = 'sec';
+  return loop;
+}
+
 /** Lightweight sketch (device list + intra-sketch modulation wires) hosted by a
  *  clip or track. Wires connect a producer field (`src`) to a destination param
  *  (`dest`) by device id; the same `Wire` shape as the engine sketch so the

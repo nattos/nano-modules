@@ -480,6 +480,24 @@ static double streams_fps_fn(wasm_exec_env_t env, int64_t h) {
   return s ? s->fps : 0.0;
 }
 
+static double streams_anchor_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* s = resolve_stream(env, h);
+  if (!s || (s->kind != comp::kStreamKindVideoContent &&
+             s->kind != comp::kStreamKindSequenceContent))
+    return std::nan("");
+  return s->anchorBeat;
+}
+
+static double streams_anchor_sec_fn(wasm_exec_env_t env, int64_t h) {
+  auto* ctx = get_ctx(env);
+  const auto* s = resolve_stream(env, h);
+  if (!s || !ctx->streams_clock ||
+      (s->kind != comp::kStreamKindVideoContent &&
+       s->kind != comp::kStreamKindSequenceContent))
+    return std::nan("");
+  return ctx->streams_clock->secondsAt(s->anchorBeat);
+}
+
 static int32_t streams_event_count_fn(wasm_exec_env_t env, int64_t h) {
   const auto* s = resolve_stream(env, h);
   if (!s) {
@@ -541,6 +559,8 @@ static NativeSymbol streams_symbols[] = {
     {"duration_sec", reinterpret_cast<void*>(streams_duration_sec_fn), "(I)F", nullptr},
     {"bpm", reinterpret_cast<void*>(streams_bpm_fn), "(I)F", nullptr},
     {"fps", reinterpret_cast<void*>(streams_fps_fn), "(I)F", nullptr},
+    {"anchor", reinterpret_cast<void*>(streams_anchor_fn), "(I)F", nullptr},
+    {"anchor_sec", reinterpret_cast<void*>(streams_anchor_sec_fn), "(I)F", nullptr},
     {"event_count", reinterpret_cast<void*>(streams_event_count_fn), "(I)i", nullptr},
     {"read_events", reinterpret_cast<void*>(streams_read_events_fn), "(Iiii)i", nullptr},
     {"event_lower_bound", reinterpret_cast<void*>(streams_event_lb_fn), "(IF)i", nullptr},

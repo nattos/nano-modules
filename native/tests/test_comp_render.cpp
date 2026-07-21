@@ -1864,3 +1864,80 @@ TEST_CASE("transport_ended stops a driven scene (Metal)",
   CHECK(!json::parse(cx.sceneStatesJson()).contains("st"));
   CHECK((flags & comp::kCompScenesChanged) != 0);
 }
+
+TEST_CASE("core.transport.time matches clipSourceTimeAt (Metal)",
+          "[comp_transport][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // A 10 s source (300f @ 30fps); slice [1,4] at 2x — the 'time' arm with a
+  // non-trivial wrap. The effect's params are the ClipLoopConfig field names.
+  json clip = mkVideoClip("v1", 0, 64);
+  clip["transport"] = {
+      {"devices", json::array({mkDevice("tc", "core.transport.time",
+                                        {{"startSec", 1.0}, {"endSec", 4.0},
+                                         {"speed", 2.0}})})},
+      {"wires", json::array()}};
+  cx.loadDocument(mkComposition(json::array({mkTrack("t1", json::array({clip}))})));
+  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+  cx.setTransportMode(false);
+  cx.play();
+
+  comp::ClipLoopConfig loop;
+  loop.mode = comp::ClipPlayMode::Time;
+  loop.startSec = 1.0;
+  loop.endSec = 4.0;
+  loop.speed = 2.0;
+  comp::ClipTimeCtx ctx;
+  ctx.startBeat = 0;
+  ctx.lengthBeat = 64;
+  ctx.videoDurSec = 10.0;
+  ctx.clock = &cx.warpClock();
+
+  for (int i = 0; i < 8; i++) {
+    cx.update(0.4);
+    cx.transportResolve(0.4);
+    const auto& rows = cx.transportResolved();
+    REQUIRE(rows.size() == 1);
+    REQUIRE(rows[0].valid);
+    const auto expected = comp::clipSourceTimeAt(loop, ctx, cx.positionBeat());
+    REQUIRE(expected.has_value());
+    CHECK(rows[0].timeSec == Catch::Approx(*expected).margin(1e-6));
+    CHECK(rows[0].loopStartSec == Catch::Approx(1.0).margin(1e-9));
+    CHECK(rows[0].loopEndSec == Catch::Approx(4.0).margin(1e-9));
+    // The applied content time reroutes streams pos(content) 1:1.
+    const auto ch = cx.streamsTable().contentByClipId.find("v1");
+    REQUIRE(ch != cx.streamsTable().contentByClipId.end());
+    const comp::StreamInfo* cs = cx.streamsTable().find(ch->second);
+    REQUIRE(cs != nullptr);
+    CHECK(comp::contentPosSec(*cs, cx.streamsTable(), cx.warpClock()) ==
+          Catch::Approx(rows[0].timeSec).margin(1e-9));
+  }
+}
+
+TEST_CASE("core.transport.beat_sync consumes per-beat, BPM-locked (Metal)",
+          "[comp_transport][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // Slice [0,8] over 4 beats: at beat 2 the mapping sits at 8*(2/4) = 4 s.
+  json clip = mkVideoClip("v1", 0, 64);
+  clip["source"]["durationFrames"] = 300;  // 10 s
+  clip["transport"] = {
+      {"devices", json::array({mkDevice("tc", "core.transport.beat_sync",
+                                        {{"endSec", 8.0}, {"syncBeats", 4.0}})})},
+      {"wires", json::array()}};
+  cx.loadDocument(mkComposition(json::array({mkTrack("t1", json::array({clip}))})));
+  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+  cx.setTransportMode(false);
+  cx.play();
+  cx.update(1.0);  // 120 BPM: +2 beats
+  cx.transportResolve(1.0);
+  const auto& rows = cx.transportResolved();
+  REQUIRE(rows.size() == 1);
+  REQUIRE(rows[0].valid);
+  CHECK(rows[0].timeSec == Catch::Approx(4.0).margin(1e-6));
+}

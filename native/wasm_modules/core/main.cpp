@@ -130,6 +130,16 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
 NANO_DECLARE_INSTANCE_EFFECT(mod_latch)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_time)
+
+// The built-in play modes as transport-controller effects (transport_core/).
+NANO_DECLARE_INSTANCE_EFFECT(transport_time)
+namespace transport_time { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(transport_beat_sync)
+namespace transport_beat_sync { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(transport_one_shot)
+namespace transport_one_shot { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(transport_random)
+namespace transport_random { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(mod_bpm)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
@@ -854,6 +864,55 @@ void nano_module_main() {
         "trigger,scene,launch,beat,clock,modulation,event",
         "la-bolt",
         NANO_INSTANCE_LIFECYCLE(trigger_beat),
+    });
+
+    // ── Transport controllers (the built-in play modes as plugins) ──
+    nano::registerEffect({
+        2,
+        "core.transport.time",
+        "Transport: Time",
+        "Loops the source slice at a real-time speed — the plugin form of the 'time' play mode. Hosted in a clip's transport section it drives WHICH source frame plays (identity on pixels); slice, speed, direction and ping-pong match the built-in mode exactly.",
+        "transport",
+        "transport,time,loop,speed,play,clip",
+        "la-clock",
+        NANO_INSTANCE_LIFECYCLE(transport_time),
+        &transport_time::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "core.transport.beat_sync",
+        "Transport: Beat Sync",
+        "Locks one loop of the source slice to a beat count (BPM-independent) — the plugin form of the 'beat-sync' play mode. Identity on pixels; drives the clip's content time from its transport section.",
+        "transport",
+        "transport,beats,sync,loop,bpm,clip",
+        "la-music",
+        NANO_INSTANCE_LIFECYCLE(transport_beat_sync),
+        &transport_beat_sync::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "core.transport.one_shot",
+        "Transport: One-Shot",
+        "Plays the source once from the slice start and latches transport_ended off the end (auto-stops a launched scene) — the plugin form of the 'one-shot' play mode. Re-arms when the transport rewinds past its start.",
+        "transport",
+        "transport,one-shot,once,play,clip,scene",
+        "la-step-forward",
+        NANO_INSTANCE_LIFECYCLE(transport_one_shot),
+        &transport_one_shot::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "core.transport.random",
+        "Transport: Random",
+        "A deterministic seeded dwell-jump walk over the source slice — the plugin (and export-stable) form of the 'random' play mode: drifts at a speed between jumps, jumps a random distance every dwell interval, and publishes the next jump target so the decode pump can pre-warm it.",
+        "transport",
+        "transport,random,jump,dwell,walk,clip",
+        "la-random",
+        NANO_INSTANCE_LIFECYCLE(transport_random),
+        &transport_random::is_identity,
     });
 
     nano::registerEffect({
