@@ -24,7 +24,7 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
   @property({ attribute: false }) defaultValue: number[] = [];
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
-  private alphaEdit: ContinuousEditHandle | null = null;
+  private swatchEdit: ContinuousEditHandle | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
   getControlElements(): HTMLElement[] {
@@ -100,8 +100,27 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
     next[0] = r;
     next[1] = g;
     next[2] = b;
-    this.binding?.setValue(this.fieldPath, next);
+    // The OS picker fires `input` per movement; coalesce the whole interaction
+    // into one long-edit so it lands as a single undo point on `change`.
+    if (this.swatchEdit) {
+      this.swatchEdit.update(next);
+    } else if (this.binding?.beginContinuousEdit) {
+      this.swatchEdit = this.binding.beginContinuousEdit(this.fieldPath, next);
+    } else {
+      this.binding?.setValue(this.fieldPath, next);
+    }
   };
+
+  private onColorChange = () => {
+    this.swatchEdit?.accept();
+    this.swatchEdit = null;
+  };
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.swatchEdit?.accept();
+    this.swatchEdit = null;
+  }
 
   render() {
     const v = this.vec;
@@ -115,11 +134,16 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
         getValue: () => this.vec[3] ?? 1,
         setValue: (_p: string, val: any) => {
           if (typeof val !== 'number') return;
+          this.onColorChange();  // settle any pending swatch long-edit first
           const next = this.vec.slice();
           next[3] = val;
           this.binding?.setValue(this.fieldPath, next);
         },
         beginContinuousEdit: (_p: string, val: any): ContinuousEditHandle => {
+          // Only one long-edit may be active (history contract) — beginning the
+          // alpha edit while the swatch panel is still open would cancel-and-
+          // revert the RGB edit, so commit it first.
+          this.onColorChange();
           const next = this.vec.slice();
           if (typeof val === 'number') next[3] = val;
           const edit = this.binding?.beginContinuousEdit?.(this.fieldPath, next);
@@ -152,7 +176,7 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
 
     return html`
       ${labelEl}
-      <input type="color" .value=${this.hex} @input=${this.onColorInput}>
+      <input type="color" .value=${this.hex} @input=${this.onColorInput} @change=${this.onColorChange}>
       ${alphaEl}
     `;
   }
