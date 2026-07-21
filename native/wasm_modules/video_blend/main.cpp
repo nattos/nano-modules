@@ -13,7 +13,7 @@
  * Parameters:
  *   mode    (select, default Normal) — see the BlendMode enum / shader switch
  *   opacity (Standard, default 0.5) — the crossfader position, A → B
- *   shape   (Standard, default 0.5) — fade curve + blend presence
+ *   shape   (Standard, default 0.0) — fade curve + blend presence
  *           (xfade::weightA/weightB, sketch/xfade_shape.h, computed CPU-side):
  *           0 = hard linear crossfade, NO overlap — the mode is inert;
  *           0.5 = equal-power fade, the blend flavors the middle;
@@ -54,7 +54,7 @@ struct Uniforms {
 // Per-instance state. One per chain entry.
 struct State {
   float opacity = 0.5f;
-  float shape = 0.5f;
+  float shape = 0.0f;
   int mode = Normal;
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -96,7 +96,7 @@ void module_init() {
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   /*description=*/"Crossfader: A as-is (0) → B as-is (1)")
         .label("Opacity", "Opac")
-      .floatField("shape", 0.5f, 0.f, 1.f, state::PrimaryInput,
+      .floatField("shape", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   /*magnitude=*/nullptr, /*step=*/0.01f, /*units=*/nullptr,
                   /*description=*/
                   "Fade curve + blend presence: linear/no blend (0) → equal-power (0.5) → full transition (1)")
@@ -137,7 +137,7 @@ void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->opacity = 0.5f;
-  s->shape = 0.5f;
+  s->shape = 0.0f;
   s->mode = Normal;
   if (!s_pso.valid() || !s->uniform_buf.valid()) return;
   s->initialized = true;
