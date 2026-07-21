@@ -83,3 +83,37 @@ describe('buildExternalScalars alias resolution', () => {
     expect(JSON.parse(resolved)).toEqual({ 'midi:ghost-x': { 'b0/e05/turn': 0.42 } });
   });
 });
+
+describe('adopt-don\'t-clobber connect guard (importLibrary)', () => {
+  it('imports server rows when strictly empty, then mirrors THEM, not nothing', () => {
+    const server = [
+      { id: 'srv-dev', templateId: MFT_TEMPLATE_ID, parentId: MFT_TEMPLATE_ID,
+        forkedAt: 1, name: 'Show MFT', config: {}, identities: [], updatedAt: 1,
+        knownAs: ['old-uuid'] },
+    ];
+    expect(midiController.libraryIsEmpty()).toBe(true);
+    expect(midiController.importLibrary(server)).toBe(1);
+    expect(midiController.libraryIsEmpty()).toBe(false);
+    // The guard's payoff: binding the bridge now pushes the ADOPTED library.
+    const pushes: unknown[] = [];
+    midiController.bindBridge({ library: l => pushes.push(l), sim: () => {} });
+    expect(pushes).toHaveLength(1);
+    expect((pushes[0] as any[]).map(i => i.id)).toEqual(['srv-dev']);
+    expect((pushes[0] as any[])[0].knownAs).toEqual(['old-uuid']);
+    midiController.bindBridge(null);
+  });
+
+  it('never imports over existing state — even deleted-only rows win', () => {
+    seedFork('mine', { deleted: true });
+    expect(midiController.libraryIsEmpty()).toBe(false);
+    expect(midiController.importLibrary(
+      [{ id: 'srv', templateId: MFT_TEMPLATE_ID }])).toBe(0);
+    expect(appState.local.midi.library.map(i => i.id)).toEqual(['mine']);
+  });
+
+  it('rejects malformed rows', () => {
+    expect(midiController.importLibrary('nope')).toBe(0);
+    expect(midiController.importLibrary([{ noId: true }, null])).toBe(0);
+    expect(midiController.libraryIsEmpty()).toBe(true);
+  });
+});

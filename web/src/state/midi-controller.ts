@@ -276,6 +276,34 @@ export class MidiController {
     return libraryKnownIds(appState.local.midi.library);
   }
 
+  /** Strictly empty — not even deleted rows. The adopt-don't-clobber connect
+   *  guard's precondition (deleted-only is deliberate state and still wins). */
+  libraryIsEmpty(): boolean {
+    return appState.local.midi.library.length === 0;
+  }
+
+  /**
+   * Adopt a library read back from the barrel's /global/midi_devices (pushed
+   * there by ANOTHER editor/profile) when ours is strictly empty — the
+   * adopt-don't-clobber connect guard. Persists every row; matching re-runs
+   * so already-plugged hardware pairs immediately. Returns rows imported.
+   */
+  importLibrary(rows: unknown): number {
+    if (!Array.isArray(rows) || !this.libraryIsEmpty()) return 0;
+    const valid = rows.filter((r): r is DeviceInstance =>
+      !!r && typeof r === 'object' &&
+      typeof (r as { id?: unknown }).id === 'string' &&
+      typeof (r as { templateId?: unknown }).templateId === 'string');
+    if (valid.length === 0) return 0;
+    runInAction(() => {
+      appState.local.midi.library.push(
+        ...valid.map(v => ({ ...v, identities: v.identities ?? [], config: v.config ?? {} })));
+    });
+    for (const inst of appState.local.midi.library) this.schedulePersist(inst);
+    this.manager.refreshMatching();
+    return valid.length;
+  }
+
   /**
    * Adopt a ghost device: create a library instance whose id IS the ghost
    * uuid, so every wire referencing it goes live with ZERO sketch edits.

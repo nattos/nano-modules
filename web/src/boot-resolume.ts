@@ -1109,16 +1109,47 @@ function connectBarrel(url: string) {
   // flow to the native CoreMIDI host over whitelisted /global/midi_* writes.
   // bindBridge re-pushes the library, so re-binding on every (re)open keeps
   // a restarted barrel seeded.
-  const bindMidiBridge = () => midiController.bindBridge({
-    library: instances => barrel.setGlobal('/global/midi_devices', instances),
-    sim: table => barrel.setGlobal('/global/midi_sim', table),
+  //
+  // ADOPT-DON'T-CLOBBER guard: binding pushes the WHOLE library, replacing
+  // the server copy — an editor opened in a fresh browser profile (empty
+  // IndexedDB) would wipe /global/midi_devices, the barrel rekeys hardware
+  // within ~1s AND persists the empty library to its sidecar, and every
+  // midi: wire in the composition goes dead (the show-night failure). So an
+  // editor with a strictly EMPTY library first reads the server copy and
+  // IMPORTS it instead of pushing. (A library holding only deleted rows is
+  // deliberate user state — it still pushes; ghost cards cover repair.)
+  const midiLibWaiters: ((v: unknown) => void)[] = [];
+  barrel.onSnapshot('/global/midi_devices', (data) => {
+    const ws = midiLibWaiters.splice(0);
+    for (const w of ws) w(data);
   });
-  bindMidiBridge();
+  const fetchServerMidiLibrary = () => new Promise<unknown>((resolve) => {
+    midiLibWaiters.push(resolve);
+    barrel.get('/global/midi_devices');
+    setTimeout(() => {
+      const i = midiLibWaiters.indexOf(resolve);
+      if (i >= 0) { midiLibWaiters.splice(i, 1); resolve(null); }
+    }, 3000);
+  });
+  const bindMidiBridge = async () => {
+    if (midiController.libraryIsEmpty()) {
+      const server = await fetchServerMidiLibrary();
+      const imported = midiController.importLibrary(server);
+      if (imported > 0) {
+        console.log(`[midi] adopted ${imported} device(s) from the barrel — local library was empty`);
+      }
+    }
+    midiController.bindBridge({
+      library: instances => barrel.setGlobal('/global/midi_devices', instances),
+      sim: table => barrel.setGlobal('/global/midi_sim', table),
+    });
+  };
+  void bindMidiBridge();
 
   barrel.onOpen = () => {
     appController.setBarrelConnectionState('open');
     subscribe();
-    bindMidiBridge();
+    void bindMidiBridge();
   };
   barrel.onClose = () => appController.setBarrelConnectionState('closed');
   if (barrel.isOpen) {
