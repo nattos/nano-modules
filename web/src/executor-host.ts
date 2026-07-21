@@ -1306,7 +1306,9 @@ export class WasmSketchExecutor {
         g.createShaderModule(this.readString(srcPtr, srcLen)),
       create_compute_pso: (shader: number, entryPtr: number, entryLen: number): number =>
         g.createComputePipelineAuto(shader, this.readString(entryPtr, entryLen)),
-      create_buffer: (size: number, usage: number): number => g.createBuffer(size, usage),
+      // exec_gpu.h create_buffer carries an i64 size → BigInt here.
+      create_buffer: (size: bigint, usage: number): number =>
+        g.createBuffer(Number(size), usage),
       write_buffer: (buf: number, offset: number, dataPtr: number, dataLen: number) => {
         const data = new Uint8Array(this.memory.buffer, dataPtr, dataLen).slice();
         g.writeBuffer(buf, offset, data);

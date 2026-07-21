@@ -50,7 +50,7 @@ EXEC_GPU_IMPORT("create_shader_module") int32_t gpu_create_shader_module(const c
 EXEC_GPU_IMPORT("create_compute_pso")   int32_t gpu_create_compute_pso(int32_t shader, const char* entry, int32_t entry_len);
 
 // Small uniform buffers (the wet/dry opacity blend pass).
-EXEC_GPU_IMPORT("create_buffer") int32_t gpu_create_buffer(int32_t size, int32_t usage);
+EXEC_GPU_IMPORT("create_buffer") int32_t gpu_create_buffer(int64_t size, int32_t usage);
 EXEC_GPU_IMPORT("write_buffer")  void    gpu_write_buffer(int32_t buf, int32_t offset, const void* data, int32_t data_len);
 
 // Compute pass dispatch.

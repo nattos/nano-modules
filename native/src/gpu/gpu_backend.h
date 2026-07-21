@@ -18,7 +18,7 @@ public:
 
   // Resource creation
   virtual int32_t createShaderModule(const std::string& source) = 0;
-  virtual int32_t createBuffer(uint32_t size, int32_t usage) = 0;
+  virtual int32_t createBuffer(uint64_t size, int32_t usage) = 0;
   virtual int32_t createTexture(uint32_t w, uint32_t h, int32_t format) = 0;
   virtual int32_t createComputePSO(int32_t shaderHandle, const std::string& entryPoint) = 0;
   virtual int32_t createRenderPSO(int32_t vsHandle, const std::string& vsEntry,
@@ -126,11 +126,44 @@ public:
     computeSetTexture(pass, textureHandle, slot, access);
   }
 
-  // Sampler support — filter + addressing mode → MTLSamplerState (or
-  // backend equivalent). Slot-bound via computeSetSampler.
-  virtual int32_t createSampler(int32_t filterMode, int32_t addressMode) {
-    (void)filterMode; (void)addressMode;
+  // Sampler support → MTLSamplerState (or backend equivalent), slot-bound
+  // via computeSetSampler. Mirrors the effect-facing gpu.h SamplerDesc
+  // (already defaulted/validated by the host-import layer): filter/address
+  // fields are the FilterMode/AddressMode enum ints.
+  struct SamplerDesc {
+    int32_t minFilter = 1, magFilter = 1, mipFilter = 1;  // 0=nearest 1=linear
+    int32_t addressU = 0, addressV = 0, addressW = 0;     // 0=clamp 1=repeat 2=mirror
+    int32_t maxAnisotropy = 1;
+    float lodMinClamp = 0.0f, lodMaxClamp = 32.0f;
+  };
+  virtual int32_t createSampler(const SamplerDesc& desc) {
+    (void)desc;
     return -1;
+  }
+
+  // Decode the effect-facing sized SamplerDesc wire layout (gpu.h): 10 × 4
+  // bytes — struct_size, min/mag/mip filter, address u/v/w, max_anisotropy,
+  // lod_min(f32), lod_max(f32). `avail` is the caller-validated byte count
+  // (min of the sent struct_size and the buffer); fields beyond it keep the
+  // defaults — the sized-struct growth contract.
+  static SamplerDesc decodeSamplerDesc(const uint8_t* p, int32_t avail) {
+    SamplerDesc d;
+    const auto i32 = [&](int idx, int32_t* out) {
+      if (avail >= (idx + 1) * 4) std::memcpy(out, p + idx * 4, 4);
+    };
+    const auto f32 = [&](int idx, float* out) {
+      if (avail >= (idx + 1) * 4) std::memcpy(out, p + idx * 4, 4);
+    };
+    i32(1, &d.minFilter);
+    i32(2, &d.magFilter);
+    i32(3, &d.mipFilter);
+    i32(4, &d.addressU);
+    i32(5, &d.addressV);
+    i32(6, &d.addressW);
+    i32(7, &d.maxAnisotropy);
+    f32(8, &d.lodMinClamp);
+    f32(9, &d.lodMaxClamp);
+    return d;
   }
   virtual void computeSetSampler(int32_t pass, int32_t samplerHandle,
                                  int32_t slot) {

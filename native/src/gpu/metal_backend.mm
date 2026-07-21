@@ -59,9 +59,9 @@ public:
     }
   }
 
-  int32_t createBuffer(uint32_t size, int32_t usage) override {
+  int32_t createBuffer(uint64_t size, int32_t usage) override {
     (void)usage; // Metal doesn't need usage hints at creation
-    id<MTLBuffer> buf = [device_ newBufferWithLength:size
+    id<MTLBuffer> buf = [device_ newBufferWithLength:(NSUInteger)size
                                              options:MTLResourceStorageModeShared];
     if (!buf) return -1;
     return alloc(ResourceType::Buffer, buf);
@@ -302,22 +302,30 @@ public:
     [computeEncoder_ setTexture:view atIndex:slot];
   }
 
-  int32_t createSampler(int32_t filterMode, int32_t addressMode) override {
+  int32_t createSampler(const SamplerDesc& sd) override {
     MTLSamplerDescriptor* desc = [[MTLSamplerDescriptor alloc] init];
-    desc.minFilter = (filterMode == 1) ? MTLSamplerMinMagFilterLinear
-                                        : MTLSamplerMinMagFilterNearest;
-    desc.magFilter = desc.minFilter;
-    MTLSamplerAddressMode am;
-    switch (addressMode) {
-      case 0:  am = MTLSamplerAddressModeClampToEdge;     break;
-      case 1:  am = MTLSamplerAddressModeRepeat;          break;
-      case 2:  am = MTLSamplerAddressModeMirrorRepeat;    break;
-      default: am = MTLSamplerAddressModeClampToEdge;     break;
-    }
-    desc.sAddressMode = am;
-    desc.tAddressMode = am;
-    desc.rAddressMode = am;
-    desc.mipFilter = MTLSamplerMipFilterLinear;  // for pyramid sampling
+    const auto minMag = [](int32_t f) {
+      return f == 1 ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+    };
+    const auto addr = [](int32_t a) {
+      switch (a) {
+        case 1:  return MTLSamplerAddressModeRepeat;
+        case 2:  return MTLSamplerAddressModeMirrorRepeat;
+        default: return MTLSamplerAddressModeClampToEdge;
+      }
+    };
+    desc.minFilter = minMag(sd.minFilter);
+    desc.magFilter = minMag(sd.magFilter);
+    // Explicit — was hardcoded Linear here while web followed mag_filter
+    // (the mip-filter divergence the SamplerDesc contract closes).
+    desc.mipFilter = sd.mipFilter == 1 ? MTLSamplerMipFilterLinear
+                                       : MTLSamplerMipFilterNearest;
+    desc.sAddressMode = addr(sd.addressU);
+    desc.tAddressMode = addr(sd.addressV);
+    desc.rAddressMode = addr(sd.addressW);
+    desc.maxAnisotropy = (NSUInteger)std::min(std::max(sd.maxAnisotropy, 1), 16);
+    desc.lodMinClamp = sd.lodMinClamp;
+    desc.lodMaxClamp = sd.lodMaxClamp;
     id<MTLSamplerState> sampler = [device_ newSamplerStateWithDescriptor:desc];
     if (!sampler) return -1;
     return alloc(ResourceType::Sampler, sampler);
@@ -912,12 +920,18 @@ public:
     id<MTLTexture> tex = getAs<id<MTLTexture>>(textureHandle);
     if (!tex) return -1;
     switch ([tex pixelFormat]) {
-      case MTLPixelFormatBGRA8Unorm:  return 0;
-      case MTLPixelFormatRGBA8Unorm:  return 1;
-      case MTLPixelFormatRGBA16Float: return 3;
-      case MTLPixelFormatR32Float:    return 4;
-      case MTLPixelFormatRGBA32Float: return 5;
-      default:                        return 1;
+      case MTLPixelFormatBGRA8Unorm:      return 0;
+      case MTLPixelFormatRGBA8Unorm:      return 1;
+      case MTLPixelFormatRGBA16Float:     return 3;
+      case MTLPixelFormatR32Float:        return 4;
+      case MTLPixelFormatRGBA32Float:     return 5;
+      // sRGB variants report code 7 like the web host — a missing case here
+      // made Device::textureFormat() call an sRGB texture plain RGBA8 on
+      // native only (a decode/encode-skipping divergence for any effect that
+      // branches on precision/encoding).
+      case MTLPixelFormatRGBA8Unorm_sRGB: return 7;
+      case MTLPixelFormatBGRA8Unorm_sRGB: return 7;
+      default:                            return 1;
     }
   }
 
@@ -1442,7 +1456,20 @@ private:
     MTLSize tg = MTLSizeMake(8, 8, 1);
     const std::string tag = "// nano_threadgroup:";
     auto p = msl.find(tag);
-    if (p == std::string::npos) return tg;
+    if (p == std::string::npos) {
+      // SPV-translated kernels always carry the hint (spvToMsl prepends it).
+      // A raw-MSL kernel authored with a non-8×8 layout that lands here runs
+      // with the WRONG threadgroup shape on Metal only — silently, since
+      // WebGPU reads @workgroup_size from the shader itself. Be loud so the
+      // divergence is diagnosable; the 8×8 fallback still applies.
+      if (msl.find("kernel ") != std::string::npos) {
+        fprintf(stderr,
+                "[gpu/metal] compute MSL lacks the '// nano_threadgroup:' hint;"
+                " dispatching with the 8x8x1 fallback — a non-8x8 kernel will"
+                " run WRONG on Metal only\n");
+      }
+      return tg;
+    }
     unsigned x = 0, y = 0, z = 0;
     if (std::sscanf(msl.c_str() + p + tag.size(), "%u %u %u", &x, &y, &z) == 3
         && x && y && z) {

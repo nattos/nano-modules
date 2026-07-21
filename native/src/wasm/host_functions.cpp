@@ -873,9 +873,10 @@ static int32_t gpu_get_backend(wasm_exec_env_t env) {
   return g ? g->getBackend() : -1;
 }
 
-static int32_t gpu_create_buffer(wasm_exec_env_t env, int32_t size, int32_t usage) {
+static int32_t gpu_create_buffer(wasm_exec_env_t env, int64_t size, int32_t usage) {
   auto* g = get_gpu(env);
-  return g ? g->createBuffer(size, usage) : -1;
+  if (!g || size <= 0) return -1;
+  return g->createBuffer((uint64_t)size, usage);
 }
 
 static int32_t gpu_create_texture(wasm_exec_env_t env, int32_t w, int32_t h, int32_t fmt) {
@@ -1122,8 +1123,18 @@ static int32_t gpu_create_compute_pso_v2(wasm_exec_env_t env,
 // Remaining resource/pass ops — thin pass-throughs to the GPUBackend (which
 // provides Metal implementations / sensible defaults). Needed so a full effect
 // bundle's effects (samplers, mip pyramids, copies) load without trapping.
-static int32_t gpu_create_sampler(wasm_exec_env_t env, int32_t filter, int32_t address) {
-  auto* g = get_gpu(env); return g ? g->createSampler(filter, address) : -1;
+static int32_t gpu_create_sampler(wasm_exec_env_t env, int32_t desc_ptr) {
+  auto* g = get_gpu(env);
+  if (!g) return -1;
+  // Sized-descriptor read (gpu.h SamplerDesc): first i32 is the sent size.
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, 4)) return -1;
+  int32_t sent = 0;
+  std::memcpy(&sent, wasm_runtime_addr_app_to_native(inst, desc_ptr), 4);
+  if (sent < 4 || !wasm_runtime_validate_app_addr(inst, desc_ptr, sent)) return -1;
+  auto* p = static_cast<const uint8_t*>(
+      wasm_runtime_addr_app_to_native(inst, desc_ptr));
+  return g->createSampler(gpu::GPUBackend::decodeSamplerDesc(p, sent));
 }
 static int32_t gpu_create_texture_mips(wasm_exec_env_t env, int32_t w, int32_t h,
     int32_t fmt, int32_t mips) {
@@ -1250,7 +1261,7 @@ static int32_t gpu_begin_render_pass_mrt(wasm_exec_env_t env, int32_t count,
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
     {"create_shader_module_named", reinterpret_cast<void*>(gpu_create_shader_module_named), "(ii)i", nullptr},
-    {"create_sampler", reinterpret_cast<void*>(gpu_create_sampler), "(ii)i", nullptr},
+    {"create_sampler", reinterpret_cast<void*>(gpu_create_sampler), "(i)i", nullptr},
     {"create_texture_mips", reinterpret_cast<void*>(gpu_create_texture_mips), "(iiii)i", nullptr},
     {"create_texture_3d", reinterpret_cast<void*>(gpu_create_texture_3d), "(iiii)i", nullptr},
     {"compute_set_sampler", reinterpret_cast<void*>(gpu_compute_set_sampler), "(iii)", nullptr},
@@ -1265,7 +1276,7 @@ static NativeSymbol gpu_symbols[] = {
     {"begin_render_pass_load", reinterpret_cast<void*>(gpu_begin_render_pass_load), "(i)i", nullptr},
     {"render_set_buffer", reinterpret_cast<void*>(gpu_render_set_buffer), "(iii)", nullptr},
     {"create_compute_pso_v2", reinterpret_cast<void*>(gpu_create_compute_pso_v2), "(iiiiiii)i", nullptr},
-    {"create_buffer", reinterpret_cast<void*>(gpu_create_buffer), "(ii)i", nullptr},
+    {"create_buffer", reinterpret_cast<void*>(gpu_create_buffer), "(Ii)i", nullptr},
     {"create_texture", reinterpret_cast<void*>(gpu_create_texture), "(iii)i", nullptr},
     {"create_compute_pso", reinterpret_cast<void*>(gpu_create_compute_pso), "(iii)i", nullptr},
     {"create_render_pso", reinterpret_cast<void*>(gpu_create_render_pso), "(iiiiiii)i", nullptr},

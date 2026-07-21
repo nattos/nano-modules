@@ -33,15 +33,22 @@ extern "C" {
   __attribute__((import_module("gpu"), import_name("create_shader_module_named")))
   int gpu_create_shader_module_named(const char* name, int name_len);
   __attribute__((import_module("gpu"), import_name("create_buffer")))
-  int gpu_create_buffer(int size, int usage);
+  int gpu_create_buffer(long long size, int usage);
   __attribute__((import_module("gpu"), import_name("create_texture")))
   int gpu_create_texture(int w, int h, int format);
   __attribute__((import_module("gpu"), import_name("create_texture_mips")))
   int gpu_create_texture_mips(int w, int h, int format, int mip_count);
   __attribute__((import_module("gpu"), import_name("create_texture_3d")))
   int gpu_create_texture_3d(int w, int h, int d, int format);
+  // Sized-descriptor creation (see SamplerDesc below): `desc` points at a
+  // struct whose FIRST field is its own byte size. The host reads
+  // min(desc->struct_size, its known size) and defaults the rest, so
+  // APPENDING fields later is non-destructive — no new import name, no
+  // version bump. This is the convention for setup-time calls whose options
+  // accumulate; hot-path calls stay flat scalars (see module_api.h §ABI
+  // evolution).
   __attribute__((import_module("gpu"), import_name("create_sampler")))
-  int gpu_create_sampler(int filter_mode, int address_mode);
+  int gpu_create_sampler(const void* desc);
   /// Compute PSO creation: explicit bind-group layout plus a packed buffer
   /// of pipeline-creation-time constants (specialization constant
   /// overrides; pass len 0 for none). Constants buffer layout:
@@ -193,6 +200,31 @@ enum class TextureFormat : int {
 enum class FilterMode : int { Nearest = 0, Linear = 1 };
 
 enum class AddressMode : int { ClampToEdge = 0, Repeat = 1, Mirror = 2 };
+
+/// Sampler creation descriptor (sized struct — see the create_sampler import
+/// doc). All fields are 4 bytes, in declaration order, no padding; the
+/// defaults reproduce the classic `createSampler(filter, address)` sampler
+/// (linear everything, clamp-to-edge, no aniso). Appending a field: add it
+/// here with its default, bump nothing — hosts default what older effects
+/// don't send, and older hosts ignore what newer effects do.
+struct SamplerDesc {
+  int struct_size = sizeof(SamplerDesc);
+  FilterMode min_filter = FilterMode::Linear;
+  FilterMode mag_filter = FilterMode::Linear;
+  /// Filtering BETWEEN mip levels (textureSampleLevel lod blending). Both
+  /// backends honor this explicitly (historically Metal forced Linear while
+  /// web followed mag_filter — this field is the portable contract).
+  FilterMode mip_filter = FilterMode::Linear;
+  AddressMode address_u = AddressMode::ClampToEdge;
+  AddressMode address_v = AddressMode::ClampToEdge;
+  AddressMode address_w = AddressMode::ClampToEdge;
+  /// 1 = isotropic (off). >1 enables anisotropic filtering up to the value
+  /// (both backends clamp to hardware limits; requires min/mag/mip Linear
+  /// per WebGPU validation — the host forces them Linear when aniso > 1).
+  int max_anisotropy = 1;
+  float lod_min_clamp = 0.0f;
+  float lod_max_clamp = 32.0f;
+};
 
 // How a compute pass binds a (storage) texture slot. Names the bare 0/1/2
 // `access` ints at setTexture/setTextureMip; the int overloads stay for
@@ -588,7 +620,9 @@ struct Device {
     return ShaderModule(gpu_create_shader_module_named(name, std::strlen(name)));
   }
 
-  static Buffer createBuffer(int size, BufferUsage usage) {
+  /// `size` is 64-bit on the wire (the old int cap topped out at 2GB and
+  /// overflowed negative past it).
+  static Buffer createBuffer(long long size, BufferUsage usage) {
     return Buffer(gpu_create_buffer(size, static_cast<int>(usage)));
   }
 
@@ -620,9 +654,19 @@ struct Device {
     return Texture(gpu_create_texture_3d(w, h, d, static_cast<int>(format)));
   }
 
+  /// Full-control sampler creation (per-axis address, explicit mip filter,
+  /// anisotropy, lod clamps). See SamplerDesc for defaults + the sized-struct
+  /// growth convention.
+  static Sampler createSampler(const SamplerDesc& desc) {
+    return Sampler(gpu_create_sampler(&desc));
+  }
+  /// Convenience: uniform filter + address (the overwhelmingly common case).
   static Sampler createSampler(FilterMode filter = FilterMode::Linear,
                                 AddressMode address = AddressMode::ClampToEdge) {
-    return Sampler(gpu_create_sampler(static_cast<int>(filter), static_cast<int>(address)));
+    SamplerDesc d;
+    d.min_filter = d.mag_filter = d.mip_filter = filter;
+    d.address_u = d.address_v = d.address_w = address;
+    return createSampler(d);
   }
 
   /// Compute PSO with an explicit bind group layout. The `bindings`

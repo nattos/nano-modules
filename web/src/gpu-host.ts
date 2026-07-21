@@ -282,24 +282,31 @@ export class GPUHost {
   // --- Sampler creation ---
 
   /**
-   * Create a sampler resource for use in compute / render passes.
-   * `filterMode`: 0 = nearest, 1 = linear. `addressMode`: 0 = clamp-to-edge,
-   * 1 = repeat, 2 = mirror-repeat. Mip filtering follows the magnification
-   * filter mode.
+   * Create a sampler resource for use in compute / render passes. Field
+   * semantics mirror the effect-facing gpu.h SamplerDesc (filters:
+   * 0 = nearest, 1 = linear; address: 0 = clamp, 1 = repeat, 2 = mirror).
+   * WebGPU validation requires all-linear filtering when anisotropy > 1 —
+   * the host forces that, matching the native backend's behavior.
    */
-  createSampler(filterMode: number, addressMode: number): number {
-    const filter: GPUFilterMode = filterMode === 1 ? 'linear' : 'nearest';
-    const addr: GPUAddressMode =
-      addressMode === 1 ? 'repeat'
-      : addressMode === 2 ? 'mirror-repeat'
-      : 'clamp-to-edge';
+  createSampler(desc: {
+    minFilter: number; magFilter: number; mipFilter: number;
+    addressU: number; addressV: number; addressW: number;
+    maxAnisotropy: number; lodMinClamp: number; lodMaxClamp: number;
+  }): number {
+    const filt = (f: number): GPUFilterMode => f === 1 ? 'linear' : 'nearest';
+    const addr = (a: number): GPUAddressMode =>
+      a === 1 ? 'repeat' : a === 2 ? 'mirror-repeat' : 'clamp-to-edge';
+    const aniso = Math.min(Math.max(desc.maxAnisotropy | 0, 1), 16);
     const sampler = this.device.createSampler({
-      magFilter: filter,
-      minFilter: filter,
-      mipmapFilter: filter,
-      addressModeU: addr,
-      addressModeV: addr,
-      addressModeW: addr,
+      minFilter: aniso > 1 ? 'linear' : filt(desc.minFilter),
+      magFilter: aniso > 1 ? 'linear' : filt(desc.magFilter),
+      mipmapFilter: aniso > 1 ? 'linear' : filt(desc.mipFilter),
+      addressModeU: addr(desc.addressU),
+      addressModeV: addr(desc.addressV),
+      addressModeW: addr(desc.addressW),
+      maxAnisotropy: aniso,
+      lodMinClamp: desc.lodMinClamp,
+      lodMaxClamp: desc.lodMaxClamp,
     });
     return this.alloc('sampler', sampler);
   }
@@ -1398,16 +1405,34 @@ export class GPUHost {
       // create_shader_module_named (overridden on the WasmHost). The raw
       // create_shader_module import was retired; the createShaderModule method
       // remains as the internal SPV→WGSL→module primitive.
-      create_buffer: (size: number, usage: number) =>
-        this.createBuffer(size, usage),
+      // i64 size on the wire → arrives as BigInt.
+      create_buffer: (size: bigint, usage: number) =>
+        this.createBuffer(Number(size), usage),
       create_texture: (w: number, h: number, format: number) =>
         this.createTexture(w, h, format),
       create_texture_mips: (w: number, h: number, format: number, mipCount: number) =>
         this.createTextureWithMips(w, h, format, mipCount),
       create_texture_3d: (w: number, h: number, d: number, format: number) =>
         this.createTexture3D(w, h, d, format),
-      create_sampler: (filterMode: number, addressMode: number) =>
-        this.createSampler(filterMode, addressMode),
+      // Sized SamplerDesc (gpu.h): first i32 is the sent byte size; fields
+      // beyond what was sent keep their defaults (the growth contract).
+      create_sampler: (descPtr: number) => {
+        const head = memorySlice(descPtr, 4);
+        const sent = new DataView(head.buffer, head.byteOffset, 4).getInt32(0, true);
+        if (sent < 4) return -1;
+        const raw = memorySlice(descPtr, sent);
+        const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        const i32 = (idx: number, dflt: number) =>
+            sent >= (idx + 1) * 4 ? dv.getInt32(idx * 4, true) : dflt;
+        const f32 = (idx: number, dflt: number) =>
+            sent >= (idx + 1) * 4 ? dv.getFloat32(idx * 4, true) : dflt;
+        return this.createSampler({
+          minFilter: i32(1, 1), magFilter: i32(2, 1), mipFilter: i32(3, 1),
+          addressU: i32(4, 0), addressV: i32(5, 0), addressW: i32(6, 0),
+          maxAnisotropy: i32(7, 1),
+          lodMinClamp: f32(8, 0), lodMaxClamp: f32(9, 32),
+        });
+      },
       create_compute_pso_layout: (shader: number, entryPtr: number, entryLen: number,
                                    bindCount: number, bindPtr: number) => {
         const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);

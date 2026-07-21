@@ -37,6 +37,26 @@
 // one. A bundle built before this existed exports no `nano_abi_version()`; the
 // host reads that absence as version 0.
 //
+// ── ABI evolution conventions (how to grow WITHOUT bumping) ──────────────
+// Pick the mechanism by call class:
+//   • Effect exports (host → effect): name-keyed via register_effect_fn.
+//     New hook = new name; absent name = "not provided". A signature change
+//     is a NEW name, never a mutation of an existing one.
+//   • Hot-path host imports (per-frame: effrt drive, param/texture set,
+//     dispatch/draw): FLAT scalar args only — never descriptor-ify these.
+//     Signature evolution = a new import name (the `_v2` pattern, e.g.
+//     gpu.create_compute_pso_v2).
+//   • Setup-time host imports whose OPTIONS accumulate (samplers, pass
+//     descriptors, PSO creation): a SIZED DESCRIPTOR STRUCT — first field is
+//     the struct's own byte size; the host reads min(sent, known) and
+//     defaults the rest. Appending a field is then non-destructive with no
+//     new name (see gpu.h SamplerDesc for the canonical example). Fields are
+//     4-byte scalars in declaration order (no padding surprises across the
+//     wasm boundary).
+//   • Binary blobs with hard-coded layouts (state.read's Field[]/PODs, the
+//     effrt read_triggers event layout, packed spec constants) are covered by
+//     THIS version number — changing one is a breaking change and bumps it.
+//
 //   1 — name-keyed effect registration + the effrt + state/gpu/host/canvas/
 //       resolume/text/module/io/val import surface as of 2026-06.
 //   2 — V1-gate cleanup (2026-07): the `canvas` import module, the
@@ -45,6 +65,8 @@
 //       gpu.create_instanced_render_pso (non-layout) are REMOVED — hosts no
 //       longer register them, so a bundle built against ABI 1 that imported
 //       any of them fails to instantiate. Rebuild against current headers.
+//       Also: gpu.create_buffer takes an i64 size, and gpu.create_sampler
+//       takes a sized SamplerDesc pointer (was two flat ints).
 #define NANO_ABI_VERSION 2
 
 // Emit the exported `nano_abi_version()` accessor. Each bundle's aggregator

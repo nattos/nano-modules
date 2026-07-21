@@ -264,7 +264,8 @@ const QuadPSOs* ensurePipeline(gpu::GPUBackend* b, int fmt) {
     g_gpu.quadShader = b->createShaderModule(kTextCompositeQuadMSL);
     if (g_gpu.quadShader < 0) return nullptr;
   }
-  if (g_gpu.sampler < 0) g_gpu.sampler = b->createSampler(/*linear*/1, /*clamp*/0);
+  if (g_gpu.sampler < 0)
+    g_gpu.sampler = b->createSampler(gpu::GPUBackend::SamplerDesc{});  // linear/clamp defaults
   if (g_gpu.bg < 0) {
     g_gpu.bg = b->createTexture(1, 1, kFmtRGBA8);
     const uint8_t black[4] = {0, 0, 0, 255};

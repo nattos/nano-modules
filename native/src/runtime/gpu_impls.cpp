@@ -64,10 +64,10 @@ int gpu_create_shader_module_named(const char* name, int name_len) {
   return b->createShaderModule(msl);
 }
 
-int gpu_create_buffer(int size, int usage) {
+int gpu_create_buffer(long long size, int usage) {
   auto* b = backend();
-  if (!b) return -1;
-  return b->createBuffer((uint32_t)size, usage);
+  if (!b || size <= 0) return -1;
+  return b->createBuffer((uint64_t)size, usage);
 }
 
 int gpu_create_texture(int w, int h, int format) {
@@ -88,10 +88,15 @@ int gpu_create_texture_3d(int w, int h, int d, int format) {
   return b->createTexture3D((uint32_t)w, (uint32_t)h, (uint32_t)d, format);
 }
 
-int gpu_create_sampler(int filterMode, int addressMode) {
+int gpu_create_sampler(const void* desc) {
   auto* b = backend();
-  if (!b) return -1;
-  return b->createSampler(filterMode, addressMode);
+  if (!b || !desc) return -1;
+  // In-process sized-descriptor read (gpu.h SamplerDesc).
+  int32_t sent = 0;
+  std::memcpy(&sent, desc, 4);
+  if (sent < 4) return -1;
+  return b->createSampler(gpu::GPUBackend::decodeSamplerDesc(
+      static_cast<const uint8_t*>(desc), sent));
 }
 
 // Decode a packed Constants buffer (see gpu.h Constants::pack) into a
