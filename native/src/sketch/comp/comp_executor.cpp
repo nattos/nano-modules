@@ -201,7 +201,10 @@ void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string&
   for (auto& t : doc_.tracks) {
     if (t.id == ownerId && patch(t.sketch)) return;
     for (auto& c : t.clips) {
-      if (c.id == ownerId && patch(c.sketch)) return;
+      if (c.id != ownerId) continue;
+      if (patch(c.sketch)) return;
+      // Transport-section devices are param targets too (same cheap-op path).
+      if (c.hasTransport && patch(c.transport)) return;
     }
   }
 }

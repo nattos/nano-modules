@@ -225,6 +225,12 @@ struct ClipM {
   /** Raw clip.loop object — shipped verbatim on VideoClipDesc.loop. */
   nlohmann::json loopJson;
   SketchSpecM sketch;
+  /** The clip's TRANSPORT section (composition.ts Clip.transport): a separate
+   *  mini-sketch whose transport-controller devices drive the clip's content
+   *  time, overriding `loop` when present (see sketch_build.h
+   *  transportDeviceOf). Wires never cross into `sketch`. */
+  SketchSpecM transport;
+  bool hasTransport = false;
   std::vector<LaneM> automation;
   std::vector<RailExportM> exports;
   std::vector<RailReadM> reads;
@@ -397,6 +403,10 @@ inline ClipM parseClip(const nlohmann::json& j) {
   }
   if (j.contains("loop") && j["loop"].is_object()) c.loopJson = j["loop"];
   c.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());
+  if (j.contains("transport") && j["transport"].is_object()) {
+    c.hasTransport = true;
+    c.transport = parseSketchSpec(j["transport"]);
+  }
   c.automation = parseLanes(j.contains("automation") ? j["automation"] : nlohmann::json());
   if (j.contains("exports") && j["exports"].is_array()) {
     for (const auto& e : j["exports"]) {

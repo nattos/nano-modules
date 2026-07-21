@@ -405,6 +405,13 @@ target_compile_definitions(test_streams_abi PRIVATE
 target_link_libraries(test_streams_abi PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_streams_abi)
 
+# Transport-controller section model: ClipM.transport parse + the driving-
+# device precedence rule (sketch_build.h transportDeviceOf).
+add_executable(test_comp_transport_fx tests/test_comp_transport_fx.cpp)
+target_include_directories(test_comp_transport_fx PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_comp_transport_fx PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_comp_transport_fx)
+
 # Composition-executor document/tree-eval/sketch-build ports — deep-equal JSON
 # parity against the TS-generated build.json golden.
 add_executable(test_comp_build tests/test_comp_build.cpp)

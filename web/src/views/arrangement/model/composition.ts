@@ -217,7 +217,8 @@ export type DeviceCapability =
   | 'modulation_shaper_unary'
   | 'modulation_shaper_binary'
   | 'trigger_source'
-  | 'offline_renderable';
+  | 'offline_renderable'
+  | 'transport_controller';
 
 /** One effect in a clip/track sketch (maps to a ChainEntry in M2+). */
 export interface Device {
@@ -262,6 +263,32 @@ export function deviceIsSource(device: Device): boolean {
     device.capabilities.includes('source') ||
     device.capabilities.includes('generator')
   );
+}
+
+/** Identity on video; its transport_* outputs drive the clip's content-local
+ *  time when hosted in the clip's transport section (host.h Capability). */
+export function deviceIsTransportController(device: Device): boolean {
+  return device.capabilities.includes('transport_controller');
+}
+
+/**
+ * The device DRIVING a clip's content time: the LAST transport-controller
+ * device in the clip's transport section (chain-order convention), or null —
+ * in which case {@link Clip.loop} (the built-in play modes) drives. UI-side
+ * truth reads the doc's device capabilities; the engine twin resolves the
+ * same rule through its catalog (sketch_build.h transportDeviceOf), the same
+ * split trigger routing already has.
+ */
+export function clipTransportDevice(clip: Clip): Device | null {
+  const devs = clip.transport?.devices ?? [];
+  for (let i = devs.length - 1; i >= 0; i--) {
+    if (deviceIsTransportController(devs[i])) return devs[i];
+  }
+  return null;
+}
+
+export function clipTransportDriven(clip: Clip): boolean {
+  return clipTransportDevice(clip) !== null;
 }
 
 /** Lightweight sketch (device list + intra-sketch modulation wires) hosted by a
@@ -458,6 +485,14 @@ export interface Clip {
   /** Promoted from 'effect' to 'video' when a source/generator device is added. */
   kind: ClipKind;
   sketch: ClipSketch;
+  /**
+   * The clip's TRANSPORT section: a separate mini-sketch whose devices drive
+   * the clip's CONTENT-local time (which source frame plays). Wires never
+   * cross between this section and `sketch`. Holding a transport-controller
+   * device ⇒ it overrides {@link Clip.loop}; absent/empty ⇒ the built-in play
+   * modes drive (see {@link clipTransportDriven}).
+   */
+  transport?: ClipSketch;
   /**
    * Present iff kind === 'video'. `label` + `durationFrames` are display-only;
    * the optional media ref (`sourceKey` + `url` + `fps`) links real on-disk

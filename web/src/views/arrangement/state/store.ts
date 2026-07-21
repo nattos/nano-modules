@@ -3825,6 +3825,62 @@ export class ArrangementStore {
     );
   }
 
+  // ── Transport section (clip.transport — the mini-sketch driving the clip's
+  // content time; overrides the built-in play modes while it holds a
+  // transport-controller device) ──────────────────────────────────────────────
+
+  /** Add a transport-controller device to a clip's transport section. */
+  addClipTransportDevice(trackId: string, clipId: string, moduleType: string, name?: string) {
+    const dev: Device = {
+      id: uid('dev'),
+      moduleType,
+      name: name ?? moduleType,
+      capabilities: ['transport_controller'],
+      state: defaultStateFor(moduleType),
+    };
+    this.mutate('add transport effect', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c) return;
+      c.transport ??= { devices: [], wires: [] };
+      c.transport.devices.push(dev);
+    });
+  }
+
+  /** Remove a transport-section device; an emptied section is deleted so the
+   *  clip cleanly reverts to its ClipLoopConfig play mode. */
+  removeClipTransportDevice(trackId: string, clipId: string, deviceId: string) {
+    this.mutate('remove transport effect', (d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      if (!c?.transport) return;
+      c.transport.devices = c.transport.devices.filter((x) => x.id !== deviceId);
+      if (c.transport.wires) {
+        c.transport.wires = c.transport.wires.filter(
+          (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
+      }
+      if (c.transport.devices.length === 0) delete c.transport;
+    });
+  }
+
+  /** Set one field on a transport-section device. Same cheap `param` op as
+   *  setClipDeviceField — the engine's setDeviceParam scans the transport
+   *  section too. */
+  setClipTransportDeviceField(
+    trackId: string, clipId: string, deviceId: string, key: string, value: unknown,
+  ) {
+    this.mutateCheap(
+      'set param',
+      (d) => {
+        const dev = d.tracks
+          .find((t) => t.id === trackId)
+          ?.clips.find((x) => x.id === clipId)
+          ?.transport?.devices.find((x) => x.id === deviceId);
+        if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
+      },
+      `transport:${trackId}:${clipId}:${deviceId}:${key}`,
+      [{ op: 'param', ownerId: clipId, deviceId, field: key, valueJson: JSON.stringify(value) ?? 'null' }],
+    );
+  }
+
   // ── Multi-clip fan-out (edit several selected clips as one undo step) ──────
   // Each action wraps a SINGLE `mutate`, so touching N clips records exactly one
   // undo point. The per-clip recipes mirror the single-clip bodies above.

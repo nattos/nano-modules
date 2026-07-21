@@ -39,6 +39,28 @@ inline std::string trackInstanceKey(const std::string& trackId, const std::strin
   return "track_" + trackId + "_" + suffix;
 }
 
+/** clip-sketch.ts transportInstanceKey — `clip_<clipId>_transport_<devId>`.
+ *  The `transport_` infix keeps section devices disjoint from pixel-sketch
+ *  device keys (still `clip_`-prefixed, so streams self-scoping resolves). */
+inline std::string transportInstanceKey(const std::string& clipId, const std::string& devId) {
+  return "clip_" + clipId + "_transport_" + devId;
+}
+
+/**
+ * The device DRIVING a clip's content time: the LAST catalog-known
+ * transport-controller device in the clip's transport section, or nullptr —
+ * in which case ClipLoopConfig (the built-in play modes) drives. Engine-side
+ * twin of composition.ts clipTransportDevice (which reads the doc's device
+ * capabilities; this reads the catalog — the same split trigger routing has).
+ */
+inline const DeviceM* transportDeviceOf(const ClipM& clip, const Catalog& catalog) {
+  if (!clip.hasTransport) return nullptr;
+  for (auto it = clip.transport.devices.rbegin(); it != clip.transport.devices.rend(); ++it) {
+    if (catalog.hasCapability(it->moduleType, "transport_controller")) return &*it;
+  }
+  return nullptr;
+}
+
 /** One node of the active composite tree (clip-sketch.ts CompositeNode). */
 struct CompNode {
   bool isGroup = false;
