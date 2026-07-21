@@ -254,3 +254,43 @@ TEST_CASE("multiple plugin types coexist", "[state_document]") {
   auto d = doc.document();
   REQUIRE(d["global"]["plugins"].size() == 2);
 }
+
+TEST_CASE("set_plugin_state preserves editor-owned preview_requests",
+          "[state_document]") {
+  StateDocument doc;
+  auto key = doc.register_plugin({"com.test.foo", 1, 0, 0});
+  // Editor pushed capture requests into the live doc...
+  doc.set_plugin_state(key, {
+    {"x", 1},
+    {"preview_requests", {{"inst_thumb", {{"w", 64}, {"h", 36}}}}},
+  });
+  doc.drain_patches();
+
+  // ...then the plugin replaces the whole state with its launch skeleton
+  // (empty preview_requests) — the populated subtree must survive.
+  doc.set_plugin_state(key, {
+    {"x", 2},
+    {"preview_requests", nlohmann::json::object()},
+  });
+  auto state = doc.get_plugin_state(key);
+  CHECK(state["x"] == 2);
+  REQUIRE(state["preview_requests"].is_object());
+  CHECK(state["preview_requests"].contains("inst_thumb"));
+
+  // The emitted diff must agree with the doc (no phantom remove op).
+  for (auto& p : doc.drain_patches()) {
+    CHECK(p.path.find("preview_requests") == std::string::npos);
+  }
+
+  // An EDITOR-driven clear (explicit empty over empty-or-populated) still
+  // works via the client-patch path; set_plugin_state only guards the
+  // plugin's full-state replace... but a plugin sending a POPULATED
+  // preview_requests keeps its own value.
+  doc.set_plugin_state(key, {
+    {"x", 3},
+    {"preview_requests", {{"other", {{"w", 8}, {"h", 8}}}}},
+  });
+  state = doc.get_plugin_state(key);
+  CHECK(state["preview_requests"].contains("other"));
+  CHECK(!state["preview_requests"].contains("inst_thumb"));
+}

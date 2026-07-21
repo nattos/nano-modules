@@ -815,6 +815,7 @@ function connectBarrel(url: string) {
   // closing) it exists to protect against. Stale rows just sit in IndexedDB
   // unused; a future manual "forget this instance" action would be a safer
   // place for cleanup than an automatic one keyed off this snapshot.
+  let prevLiveKeys = new Set<string>();
   barrel.onSnapshot('/global/plugins', (arr) => {
     (window as any).__barrelInstances = arr;
     const instances = parseInstances(arr);
@@ -822,6 +823,17 @@ function connectBarrel(url: string) {
     latestLivePlugins = instances;
     recomputeInstanceList();
     const liveKeys = new Set(instances.map((inst) => inst.key));
+    // Placeholder→live graduation: pushes made while the instance was
+    // unlaunched were silently dropped server-side, and launch replaces the
+    // state doc with a skeleton (empty preview_requests) — but the dedup map
+    // recorded them as sent. Invalidate newly-live keys and re-flush so their
+    // thumbnails start immediately instead of after a tab switch.
+    let graduated = false;
+    for (const key of liveKeys) {
+      if (!prevLiveKeys.has(key) && lastPushedRequests.delete(key)) graduated = true;
+    }
+    prevLiveKeys = liveKeys;
+    if (graduated) traceController.requestFlush();
     cancelPendingPassiveCache(liveKeys);
     for (const inst of instances) cachePassiveInstanceOnceDebounced(inst.key);
   });
@@ -1150,6 +1162,13 @@ function connectBarrel(url: string) {
     appController.setBarrelConnectionState('open');
     subscribe();
     void bindMidiBridge();
+    // A (re)connected barrel may have restarted since our last pushes — its
+    // preview_requests docs are skeleton-empty while our per-key dedup map
+    // still holds the pre-disconnect JSON, which would suppress every re-push
+    // and leave thumbnails dark until a tab switch. Forget what we "know" was
+    // pushed and re-send everything.
+    lastPushedRequests.clear();
+    traceController.requestFlush();
   };
   barrel.onClose = () => appController.setBarrelConnectionState('closed');
   if (barrel.isOpen) {

@@ -383,6 +383,19 @@ void StateDocument::set_plugin_state(const std::string& key, const json& state) 
   auto* target = json_patch::resolve_pointer(doc_, path);
   if (!target) return;
 
+  // preview_requests is EDITOR-owned (the web client pushes capture requests
+  // into it); a plugin-driven full-state replace (publishInitialState on
+  // launch/adopt) must not clobber a populated subtree with its skeleton —
+  // that left thumbnails dark until the editor happened to re-register.
+  json incoming = state;
+  if (target->is_object() && target->contains("preview_requests") &&
+      (*target)["preview_requests"].is_object() && !(*target)["preview_requests"].empty()) {
+    auto it = incoming.find("preview_requests");
+    if (it == incoming.end() || !it->is_object() || it->empty()) {
+      incoming["preview_requests"] = (*target)["preview_requests"];
+    }
+  }
+
   // Strip GPU-array leaves from both sides before diffing, so that
   // transient handle changes don't produce spurious patches.
   auto schema_it = plugin_schemas_.find(key);
@@ -390,8 +403,8 @@ void StateDocument::set_plugin_state(const std::string& key, const json& state) 
                   ? strip_gpu_fields(*target, schema_it->second)
                   : *target;
   json after  = schema_it != plugin_schemas_.end()
-                  ? strip_gpu_fields(state, schema_it->second)
-                  : state;
+                  ? strip_gpu_fields(incoming, schema_it->second)
+                  : incoming;
 
   auto ops = json_patch::diff(before, after);
   for (auto& op : ops) {
@@ -402,7 +415,7 @@ void StateDocument::set_plugin_state(const std::string& key, const json& state) 
   // Commit: preserve GPU handles currently live in the document so a
   // client-driven "replace state" doesn't wipe them.
   if (schema_it != plugin_schemas_.end()) {
-    json merged = state;
+    json merged = incoming;
     // Copy GPU handles from *target into merged at the same paths.
     std::function<void(json&, const json&, const json&)> restore_gpu =
       [&](json& dst, const json& src, const json& fields) {
@@ -420,7 +433,7 @@ void StateDocument::set_plugin_state(const std::string& key, const json& state) 
     restore_gpu(merged, *target, schema_it->second);
     *target = merged;
   } else {
-    *target = state;
+    *target = incoming;
   }
 }
 
