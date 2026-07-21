@@ -1562,8 +1562,10 @@ export class ArrGrid extends MobxLitElement {
         store.copyTimeBoxContent(shiftBeat, td, d.baseSel);
       } else {
         store.moveTimeBoxContent(shiftBeat, td, d.baseSel);
-        // Caret + (paused) playhead slide with the box by the same beat shift.
-        store.slideCaret(d.baseCaret, shiftBeat);
+        // Caret + (paused) playhead slide with the box by the same beat shift —
+        // but NOT for scene drags: scene grid position is layout-only, so the
+        // transport must stay put while a scene cell is rearranged.
+        if (!this.isSceneTrack(d.trackId)) store.slideCaret(d.baseCaret, shiftBeat);
       }
       return;
     }
@@ -1582,10 +1584,15 @@ export class ArrGrid extends MobxLitElement {
       // Always pass the ORIGINAL source track: coalescing reverts to the gesture's
       // base each frame (clip back on its source), then re-applies the move.
       store.moveClipToTrack(d.trackId, d.clipId, dest, beat);
-      // Caret + (paused) playhead follow by the ACTUAL applied shift (post-snap).
-      store.slideCaret(d.baseCaret, beat - d.startBeat);
+      // Caret + (paused) playhead follow by the ACTUAL applied shift (post-snap)
+      // — except scene drags, where the transport must stay put (layout-only).
+      if (!this.isSceneTrack(d.trackId)) store.slideCaret(d.baseCaret, beat - d.startBeat);
     }
   };
+
+  private isSceneTrack(trackId: string): boolean {
+    return store.composition.tracks.find((t) => t.id === trackId)?.kind === 'scene';
+  }
 
   /**
    * Delta-based target track: shift the SOURCE track's row center by `dy` px and

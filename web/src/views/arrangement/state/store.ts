@@ -1294,7 +1294,21 @@ export class ArrangementStore {
       // Selecting a clip syncs the time region to the clip's extent;
       // selecting a track selects a time box spanning the whole track.
       const found = this.clipByPath(path);
-      if (found) {
+      if (found && found.track.kind === 'scene') {
+        // Scene cells are layout-only: playback anchors at LAUNCH beat, never
+        // at the grid position — so selecting (or launch-clicking, or grabbing
+        // to drag) one must NOT move the play-from caret or the paused
+        // playhead. Teleporting the transport here made the whole composition
+        // re-resolve on a scene's first trigger. Keep the vertical scope on
+        // the scene track and collapse any prior time box; header drags take
+        // the moveClipToTrack path (no caret-box needed).
+        this.timeBoxSpan = null;
+        this.caretAnchorBeat = this.playFromBeat;
+        this.caretAnchorTrackId = found.track.id;
+        this.caretHeadTrackId = found.track.id;
+        this.caretAnchorLaneId = '';
+        this.caretHeadLaneId = '';
+      } else if (found) {
         // Caret-box form (anchor at the clip END, head at its START): the
         // play-from caret lands at the clip start (Space plays the clip), and
         // the box RIDES the caret — so a header drag's box-follow works (an
@@ -4718,6 +4732,33 @@ export class ArrangementStore {
       },
       `move:${clipId}`,
     );
+    // A cross-track move changes the clip's selection path — remap any stale
+    // selection to wherever the clip ACTUALLY landed so the inspector keeps
+    // resolving it (a dangling path made channel edits silently no-op after a
+    // scene changed tracks). Resolved post-mutate rather than from the args:
+    // coalesced drag frames re-pass the ORIGINAL source track every frame.
+    const landed = this.composition.tracks.find((t) => t.clips.some((c) => c.id === clipId));
+    if (landed) {
+      const newPath = paths.clip(landed.id, clipId);
+      const stale = [...this.selection].filter(
+        (p) => p.startsWith('clip/') && p.endsWith(`/${clipId}`) && p !== newPath);
+      const staleWithPrimary = stale.length > 0 ||
+        (this.primaryPath?.startsWith('clip/') && this.primaryPath?.endsWith(`/${clipId}`) &&
+         this.primaryPath !== newPath);
+      if (staleWithPrimary) {
+        runInAction(() => {
+          if (stale.length > 0) {
+            const next = new Set(this.selection);
+            for (const p of stale) next.delete(p);
+            next.add(newPath);
+            this.selection = next;
+          }
+          if (this.primaryPath?.startsWith('clip/') && this.primaryPath.endsWith(`/${clipId}`)) {
+            this.primaryPath = newPath;
+          }
+        });
+      }
+    }
   }
 
   /** True if clips may be dropped onto this track (playable lanes: plain

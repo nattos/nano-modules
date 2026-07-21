@@ -941,8 +941,15 @@ export class ArrInspector extends MobxLitElement {
           style="width:56px"
           .value=${String(effective)}
           @change=${(e: Event) => {
-            const v = Number((e.target as HTMLInputElement).value);
-            if (Number.isFinite(v) && v >= 1) store.setSceneChannel(track.id, clip.id, v);
+            const input = e.target as HTMLInputElement;
+            const v = Number(input.value);
+            if (Number.isFinite(v) && v >= 1) {
+              store.setSceneChannel(track.id, clip.id, Math.round(v));
+            } else {
+              // Rejected input: Lit's .value dirty-check won't re-assert the
+              // old value into the DOM, so reset it explicitly.
+              input.value = String(effective);
+            }
           }}
         />
       </span>
