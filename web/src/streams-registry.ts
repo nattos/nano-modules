@@ -256,8 +256,10 @@ export class StreamsRegistry {
         if (Number.isNaN(s.liveOrdinal)) return s.liveOrdinal;
         const len = Math.max(1e-9, s.liveLengthBeat);
         // Strictly < 1 (lock-step with streams_table.h): a long-playing scene
-        // must floor() to ITS ordinal, never the next cell's.
-        const frac = Math.min(1 - Number.EPSILON,
+        // must floor() to ITS ordinal, never the next cell's. 1e-9, not an
+        // ulp: the margin must survive `ordinal + frac` (a 1-ulp margin
+        // rounds away for ordinal >= 2).
+        const frac = Math.min(1 - 1e-9,
                               Math.max(0, (this.frame.posBeat - s.liveAnchorBeat) / len));
         return s.liveOrdinal + frac;
       }

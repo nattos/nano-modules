@@ -140,6 +140,8 @@ NANO_DECLARE_INSTANCE_EFFECT(transport_one_shot)
 namespace transport_one_shot { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(transport_random)
 namespace transport_random { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(transport_follow)
+namespace transport_follow { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(mod_bpm)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
@@ -913,6 +915,21 @@ void nano_module_main() {
         "la-random",
         NANO_INSTANCE_LIFECYCLE(transport_random),
         &transport_random::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "core.transport.follow",
+        "Transport: Follow",
+        "Follow actions / autopilot for scene tracks: when this scene's duration elapses (the standard clip duration, or a Beats/Seconds override), launch another scene on the same track — Next/Previous/First/Last/Random/Other/Again/Stop, scoped to the whole track or the Group of contiguous grid cells. Never drives content time; the scene's own play mode keeps running underneath, and the engine's automatic one-shot stop defers to it.",
+        "transport",
+        "transport,follow,autopilot,scene,launch,next,random,live",
+        "la-forward",
+        NANO_INSTANCE_LIFECYCLE(transport_follow),
+        &transport_follow::is_identity,
+        nullptr,            // on_active
+        nullptr,            // seek
+        &transport_follow::eval_visibility,
     });
 
     nano::registerEffect({

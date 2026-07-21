@@ -239,6 +239,11 @@ TEST_CASE("scene-track pos() clamps strictly below the next ordinal", "[streams]
   CHECK(std::floor(pos) == 1.0);  // still THIS scene's ordinal
   t.frame.posBeat = 10;           // launch instant: fraction exactly 0
   CHECK_THAT(comp::streamPos(*s, t, b.clock, 0), WithinAbs(1.0, kTol));
+  // Ordinal 2 is the round-to-even trap: 2 + (1 - one ulp) rounds to 3.0 —
+  // the clamp margin must survive the addition at every ordinal magnitude.
+  s->liveOrdinal = 2;
+  t.frame.posBeat = 100;
+  CHECK(std::floor(comp::streamPos(*s, t, b.clock, 0)) == 2.0);
 }
 
 TEST_CASE("streamsTableJson matches the committed golden (web twin replays it)",

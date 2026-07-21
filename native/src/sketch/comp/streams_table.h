@@ -459,8 +459,12 @@ inline double streamPos(const StreamInfo& s, const StreamsTable& t, const WarpCl
       const double len = std::max(1e-9, s.liveLengthBeat);
       // Clamp STRICTLY below 1: a scene playing past its grid cell (the
       // normal long-playing state) must still floor() to ITS ordinal — the
-      // documented contract (streams.h) — never the next cell's.
-      const double frac = std::min(1.0 - 0x1p-52,
+      // documented contract (streams.h) — never the next cell's. The margin
+      // must SURVIVE the addition below: 1 - 2^-52 rounds away in
+      // `ordinal + frac` for ordinal >= 2 (round-to-even lands on the next
+      // integer), so use a margin comfortably above one ulp at any plausible
+      // ordinal magnitude.
+      const double frac = std::min(1.0 - 1e-9,
                                    std::max(0.0, (t.frame.posBeat - s.liveAnchorBeat) / len));
       return s.liveOrdinal + frac;
     }

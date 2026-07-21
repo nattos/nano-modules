@@ -126,6 +126,7 @@ wasm_build \
   ../mod_latch/main.cpp \
   ../mod_time/main.cpp \
   ../transport_core/main.cpp \
+  ../transport_follow/main.cpp \
   ../mod_bpm/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_motion/main.cpp \

@@ -154,6 +154,11 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(Math.floor(pos)).toBe(1); // still THIS scene's ordinal
     reg.frame.posBeat = 10;
     expect(reg.pos(sc, 0)).toBeCloseTo(1, 12);
+    // Ordinal 2 is the round-to-even trap: 2 + (1 - one ulp) rounds to 3.0 —
+    // the clamp margin must survive the addition.
+    sc.liveOrdinal = 2;
+    reg.frame.posBeat = 100;
+    expect(Math.floor(reg.pos(sc, 0))).toBe(2);
   });
 
   it('write verbs queue with validation (seek needs TriggerOnSeek; stop needs a scene track)', () => {

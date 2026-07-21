@@ -2025,3 +2025,102 @@ TEST_CASE("drainStreamOps: queued seek launches a launchable scene; validation d
   h.cx.update(0.0);
   CHECK(!json::parse(h.cx.sceneStatesJson()).contains("st"));
 }
+
+namespace {
+
+/** A solid-color scene at grid `startBeat` carrying core.transport.follow. */
+json mkFollowScene(const std::string& id, double startBeat, json followState) {
+  json c = mkClip(id, startBeat, 4,
+                  json::array({mkDevice(id + "_g", "source.solid_color")}),
+                  {{"loop", {{"mode", "time"}, {"startSec", 0}, {"speed", 1}}}});
+  c["transport"] = {
+      {"devices", json::array({mkDevice(id + "_f", "core.transport.follow",
+                                        std::move(followState))})},
+      {"wires", json::array()}};
+  return c;
+}
+
+/** The playing scene id on track `st`, or "" when the track is silent. */
+std::string playingScene(comp::CompExecutor& cx) {
+  const json s = json::parse(cx.sceneStatesJson());
+  return s.contains("st") ? s["st"].value("sceneId", std::string()) : std::string();
+}
+
+/** Step update+resolve until the playing scene changes (or frames run out). */
+std::string stepUntilChange(comp::CompExecutor& cx, const std::string& from,
+                            int maxFrames, double dt = 0.1) {
+  for (int i = 0; i < maxFrames; i++) {
+    cx.update(dt);
+    cx.transportResolve(dt);
+    const std::string now = playingScene(cx);
+    if (now != from) return now;
+  }
+  return from;
+}
+
+}  // namespace
+
+TEST_CASE("follow: Next wraps within the contiguous group; gaps excluded (Metal)",
+          "[comp_follow][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // Grid: red(bar 0) + green(bar 1) contiguous; blue at bar 3 across a gap —
+  // a separate group. Effect-only scenes, lengthBeat 4 @120 BPM ⇒ standard
+  // duration 2 s. All three carry Follow(Next, Group).
+  const json follow = {{"mode", 0 /*Next*/}, {"scope", 0 /*Group*/}};
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("st", json::array({mkFollowScene("red", 0, follow),
+                                 mkFollowScene("green", 4, follow),
+                                 mkFollowScene("blue", 12, follow)}),
+              {{"kind", "scene"}}),
+  })));
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+  cx.setTransportMode(false);
+  cx.play();
+
+  cx.launchScene("st", "red");
+  cx.update(0.0);
+  cx.transportResolve(0.0);
+  REQUIRE(playingScene(cx) == "red");
+
+  // red's 2 s elapse → green (Next within the group).
+  CHECK(stepUntilChange(cx, "red", 40) == "green");
+  // green is the group's END → Next wraps to red, never to blue (the gap).
+  CHECK(stepUntilChange(cx, "green", 40) == "red");
+  // ...and the cycle keeps going (the relaunch re-armed the follower).
+  CHECK(stepUntilChange(cx, "red", 40) == "green");
+}
+
+TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
+          "[comp_follow][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // green(bar 1) follows with Track scope → its Next is blue ACROSS the gap;
+  // blue follows with Stop → the track goes silent after blue's duration.
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("st",
+              json::array({mkFollowScene("red", 0, {{"mode", 0}, {"scope", 1}}),
+                           mkFollowScene("green", 4, {{"mode", 0}, {"scope", 1 /*Track*/}}),
+                           mkFollowScene("blue", 12, {{"mode", 7 /*Stop*/}})}),
+              {{"kind", "scene"}}),
+  })));
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+  cx.setTransportMode(false);
+  cx.play();
+
+  cx.launchScene("st", "green");
+  cx.update(0.0);
+  cx.transportResolve(0.0);
+  REQUIRE(playingScene(cx) == "green");
+
+  CHECK(stepUntilChange(cx, "green", 40) == "blue");
+  // blue's Stop: the launch map empties (heal deferred to the follower all
+  // along — the one-shot config math never stopped anyone here).
+  CHECK(stepUntilChange(cx, "blue", 40) == "");
+}
