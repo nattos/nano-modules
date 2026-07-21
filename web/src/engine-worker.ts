@@ -954,7 +954,6 @@ async function simulateTick(dt: number, execDt: number = dt) {
 
     const rt = ensureRenderTarget(key, w, h);
     gpuHost.setSurface(rt.tex, w, h);
-    host.drawList = [];
     mod.render(w, h);
     realOutputs.set(key, rt.handle);
   }
@@ -1041,7 +1040,6 @@ async function simulateTick(dt: number, execDt: number = dt) {
 
     const rt = ensureRenderTarget(key, w, h);
     gpuHost.setSurface(rt.tex, w, h);
-    host.drawList = [];
     mod.render(w, h);
     realOutputs.set(key, rt.handle);
   }

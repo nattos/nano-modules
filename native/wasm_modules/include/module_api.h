@@ -39,7 +39,13 @@
 //
 //   1 — name-keyed effect registration + the effrt + state/gpu/host/canvas/
 //       resolume/text/module/io/val import surface as of 2026-06.
-#define NANO_ABI_VERSION 1
+//   2 — V1-gate cleanup (2026-07): the `canvas` import module, the
+//       state.set / state.declare_param / state.register_fusion (dual-source)
+//       imports, and gpu.create_compute_pso_layout /
+//       gpu.create_instanced_render_pso (non-layout) are REMOVED — hosts no
+//       longer register them, so a bundle built against ABI 1 that imported
+//       any of them fails to instantiate. Rebuild against current headers.
+#define NANO_ABI_VERSION 2
 
 // Emit the exported `nano_abi_version()` accessor. Each bundle's aggregator
 // TU (the one that defines nano_module_main) invokes this ONCE at file scope.
@@ -110,9 +116,11 @@ struct EffectDesc_v2 {
     // cooperative warm lifecycle below.
     void  (*module_init)();
 
-    // PROPOSED (design only — not yet wired): the cooperative WARM lifecycle for
-    // heavy, TYPE-shared resources. See EFFECTS_STYLE_GUIDE.md §"Heavy one-time
-    // resources — the cooperative warm lifecycle".
+    // RESERVED (design only — not yet wired; a post-V1 growth point). The
+    // cooperative WARM lifecycle for heavy, TYPE-shared resources. See
+    // EFFECTS_STYLE_GUIDE.md §"Heavy one-time resources — the cooperative
+    // warm lifecycle". Name-keyed registration means wiring this later is
+    // non-breaking.
     //   void module_warm();     // async, idempotent, type-level: acquire heavy
     //                           // SHARED resources (atlas/LUT/data) into module-
     //                           // static storage. Host calls ONCE per type during
@@ -169,7 +177,10 @@ struct EffectDesc_v2 {
     // capability (see Capability in host.h). Trailing + optional: nullptr means
     // "not seekable via prefill" (the conservative default — the host must
     // replay frame-by-frame, or skip seeking, per the effect's other temporal
-    // capabilities). NOTE: declared as ABI; no effect implements it yet.
+    // capabilities). RESERVED: declared as ABI; no effect implements it and
+    // no executor calls it yet — an intended post-V1 growth point (kept, not
+    // deleted, because the whole seek path — effrt_seek → doSeek → this — is
+    // already plumbed end to end).
     void (*seek)(void* self, double from_seconds, double to_seconds);
 
     // Optional: STATIC (self-less) inspector-visibility evaluator. A pure

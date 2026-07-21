@@ -42,12 +42,9 @@ extern "C" {
   int gpu_create_texture_3d(int w, int h, int d, int format);
   __attribute__((import_module("gpu"), import_name("create_sampler")))
   int gpu_create_sampler(int filter_mode, int address_mode);
-  __attribute__((import_module("gpu"), import_name("create_compute_pso_layout")))
-  int gpu_create_compute_pso_layout(int shader, const char* entry, int entry_len,
-                                     int binding_count, const int* bindings);
-  /// V2 of compute PSO creation: same as `create_compute_pso_layout`
-  /// plus a packed buffer of pipeline-creation-time constants
-  /// (specialization constant overrides). Constants buffer layout:
+  /// Compute PSO creation: explicit bind-group layout plus a packed buffer
+  /// of pipeline-creation-time constants (specialization constant
+  /// overrides; pass len 0 for none). Constants buffer layout:
   ///   u32 count
   ///   per entry:
   ///     u32 name_len
@@ -105,9 +102,6 @@ extern "C" {
   void gpu_render_draw(int pass, int vertex_count, int instance_count);
   __attribute__((import_module("gpu"), import_name("end_render_pass")))
   void gpu_end_render_pass(int pass);
-  __attribute__((import_module("gpu"), import_name("create_instanced_render_pso")))
-  int gpu_create_instanced_render_pso(int vs_shader, const char* vs, int vs_len,
-                                       int fs_shader, const char* fs, int fs_len, int format);
   __attribute__((import_module("gpu"), import_name("render_set_buffer")))
   void gpu_render_set_buffer(int pass, int buf, int slot);
   __attribute__((import_module("gpu"), import_name("submit")))
@@ -644,8 +638,8 @@ struct Device {
                                       const Bindings& bindings) {
     int packed[Bindings::MAX_ENTRIES * 4];
     int n = detail::packBindings(bindings, packed);
-    return ComputePSO(gpu_create_compute_pso_layout(
-        shader.id, entryPoint, std::strlen(entryPoint), n, packed));
+    return ComputePSO(gpu_create_compute_pso_v2(
+        shader.id, entryPoint, std::strlen(entryPoint), n, packed, nullptr, 0));
   }
 
   /// Compute PSO with pipeline-creation-time specialization constants.
@@ -761,7 +755,12 @@ struct Device {
     return Buffer(gpu_buffer_for_field(fieldPath, std::strlen(fieldPath)));
   }
 
-  // Legacy — kept during migration
+  // --- Positional input slots ---
+  // The executor binds each chain stage's input textures to numbered slots
+  // (effrt_set_input_texture_slots) every frame. Slot 0 is the chain feed;
+  // multi-input composites (video_blend, video_layer) read 1..N. This is the
+  // canonical access for CHAIN inputs; schema-declared texture fields resolve
+  // via textureForField instead.
   static Texture inputTexture(int index) { return Texture(gpu_get_input_texture(index)); }
   static int inputTextureCount() { return gpu_get_input_texture_count(); }
   static Texture renderTarget() { return Texture(gpu_get_render_target()); }

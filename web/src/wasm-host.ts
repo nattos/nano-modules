@@ -1,4 +1,3 @@
-import type { DrawCmd } from './gpu-renderer';
 import type { GPUHost } from './gpu-host';
 import type { BridgeCore } from './bridge-core';
 import { createWasiShim } from './wasi-shim';
@@ -217,7 +216,6 @@ export class WasmHost {
   /** The compiled WebAssembly.Module (for reuse across instances). */
   compiledModule: WebAssembly.Module | null = null;
 
-  drawList: DrawCmd[] = [];
   frameState: FrameState = {
     elapsedTime: 0, deltaTime: 0, barPhase: 0, bpm: 120,
     viewportW: 0, viewportH: 0, params: new Array(16).fill(0),
@@ -396,19 +394,11 @@ export class WasmHost {
   // Fusion metadata — populated when an effect calls
   // `state::registerFusion(...)` during init(). `fusionKind === 0`
   // (Freeform) means the effect opted out (or never registered) and the
-  // engine will never fuse it.
-  //
-  // Two registration paths:
-  //   1. Legacy: registerFusion(kind, wgsl, msl, ...) — fragment text
-  //      passed inline. fusionFragmentWgsl is the WGSL string.
-  //   2. New (post SPV-only build): registerFusionByName(kind, name, ...)
-  //      — name resolves to a SPV blob (registered via
-  //      state::registerShaderSPV). The runtime fetches WGSL via the
-  //      naga endpoint and runs the strip pass on demand. Lazily
-  //      cached in fusionFragmentWgslCached.
+  // engine will never fuse it. The fragment name resolves to a SPV blob
+  // (registered via state::registerShaderSPV); the runtime fetches WGSL
+  // via the naga endpoint and runs the strip pass on demand, lazily
+  // cached in fusionFragmentWgslCached.
   fusionKind: number = 0;
-  fusionFragmentWgsl: string = '';
-  fusionFragmentMsl: string = '';
   fusionFragmentName: string = '';
   private fusionFragmentWgslCached: string | null = null;
   fusionUniformBufferHandle: number = 0;
@@ -522,20 +512,6 @@ export class WasmHost {
           return len;
         },
       },
-      canvas: {
-        fill_rect: (x: number, y: number, w: number, h: number,
-                     r: number, g: number, b: number, a: number) => {
-          this.drawList.push({ type: 'fill_rect', x, y, w, h, r, g, b, a });
-        },
-        draw_image: (texId: number, x: number, y: number, w: number, h: number) => {
-          this.drawList.push({ type: 'draw_image', x, y, w, h, r: 1, g: 1, b: 1, a: 1, texId });
-        },
-        draw_text: (ptr: number, len: number, x: number, y: number, size: number,
-                     r: number, g: number, b: number, a: number) => {
-          const text = this.readString(ptr, len);
-          this.drawList.push({ type: 'draw_text', x, y, w: 0, h: 0, r, g, b, a, text, fontSize: size });
-        },
-      },
       host: {
         get_time: () => this.frameState.elapsedTime,
         get_delta_time: () => this.frameState.deltaTime,
@@ -583,10 +559,6 @@ export class WasmHost {
         load_thumbnail: (_clipIndex: number) => -1,
       },
       state: {
-        // Legacy: no module uses this anymore (all use set_schema), but the import
-        // must exist so old WASM modules don't fail to instantiate.
-        declare_param: (_index: number, _namePtr: number, _nameLen: number,
-                        _type: number, _defaultValue: number) => {},
         get_key: (bufPtr: number, bufLen: number): number => {
           const key = this.pluginKey || (this.metadata?.id
             ? `${this.metadata.id}@0`
@@ -759,9 +731,6 @@ export class WasmHost {
             bc.logStructured(this.pluginKey, entry.timestamp, level, message, jsonStr);
           }
         },
-        // Legacy: no module uses state::set() anymore (all use set_val).
-        // Import must exist so old WASM modules don't fail to instantiate.
-        set: (_pathPtr: number, _pathLen: number, _jsonPtr: number, _jsonLen: number) => {},
         set_val: (pathPtr: number, pathLen: number, valHandle: number) => {
           if (bc && this.pluginKey) {
             // Direct commit — no JSON serialization round-trip
@@ -886,26 +855,7 @@ export class WasmHost {
           // the naga endpoint by getFusionFragmentWgsl().
           this.fusionKind = kind | 0;
           this.fusionFragmentName = nameLen > 0 ? this.readString(namePtr, nameLen) : '';
-          this.fusionFragmentWgsl = '';
-          this.fusionFragmentMsl  = '';
           this.fusionFragmentWgslCached = null;
-          this.fusionUniformBufferHandle = uniformBufHandle | 0;
-          this.fusionUniformSize = uniformSize | 0;
-          this.fusionPrepareIdx = prepareIdx | 0;
-        },
-        register_fusion: (kind: number,
-                          wgslPtr: number, wgslLen: number,
-                          mslPtr: number,  mslLen: number,
-                          uniformBufHandle: number,
-                          uniformSize: number,
-                          prepareIdx: number) => {
-          // Effect's `init()` declares its fusion class + per-pixel
-          // fragment so the executor can splice it into a fused dispatch.
-          // Effects that don't call this stay Freeform (kind=0) and run
-          // on the standalone path. See state::registerFusion in host.h.
-          this.fusionKind = kind | 0;
-          this.fusionFragmentWgsl = wgslLen > 0 ? this.readString(wgslPtr, wgslLen) : '';
-          this.fusionFragmentMsl  = mslLen  > 0 ? this.readString(mslPtr,  mslLen)  : '';
           this.fusionUniformBufferHandle = uniformBufHandle | 0;
           this.fusionUniformSize = uniformSize | 0;
           this.fusionPrepareIdx = prepareIdx | 0;
@@ -1207,7 +1157,6 @@ export class WasmHost {
               create_texture_mips: () => -1,
               compute_set_texture_mip: () => {},
               create_sampler: () => -1,
-              create_compute_pso_layout: () => -1,
               create_compute_pso_v2: () => -1,
               create_render_pso_layout: () => -1,
               create_instanced_render_pso_layout: () => -1,
@@ -1568,18 +1517,12 @@ export class WasmHost {
 
   /**
    * Resolve the fusion fragment WGSL for this host. Used by the
-   * fusion dispatcher when composing a fused shader. Handles both
-   * legacy (registerFusion stored an inline WGSL string) and new
-   * (registerFusionByName stored a SPV name) registration paths.
-   * Lazily caches the result of the new path.
+   * fusion dispatcher when composing a fused shader: the registered
+   * fragment name resolves to SPV → WGSL via the naga endpoint, with
+   * the result lazily cached.
    */
   getFusionFragmentWgsl(): string {
     if (this.fusionFragmentWgslCached !== null) return this.fusionFragmentWgslCached;
-    if (this.fusionFragmentWgsl) {
-      // Legacy: WGSL is already the stripped fragment.
-      this.fusionFragmentWgslCached = this.fusionFragmentWgsl;
-      return this.fusionFragmentWgslCached;
-    }
     if (this.fusionFragmentName) {
       const wgsl = this.fetchShaderWgsl(this.fusionFragmentName, 'pixel');
       this.fusionFragmentWgslCached = wgsl ?? '';

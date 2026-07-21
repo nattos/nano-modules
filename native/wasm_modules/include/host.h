@@ -13,14 +13,6 @@
 
 // --- Raw C imports ---
 extern "C" {
-  // canvas
-  __attribute__((import_module("canvas"), import_name("fill_rect")))
-  void canvas_fill_rect(float x, float y, float w, float h, float r, float g, float b, float a);
-  __attribute__((import_module("canvas"), import_name("draw_image")))
-  void canvas_draw_image(int tex_id, float x, float y, float w, float h);
-  __attribute__((import_module("canvas"), import_name("draw_text")))
-  void canvas_draw_text(const char* text, int len, float x, float y, float size, float r, float g, float b, float a);
-
   // host
   __attribute__((import_module("host"), import_name("get_time")))
   double host_get_time(void);
@@ -45,9 +37,6 @@ extern "C" {
   __attribute__((import_module("state"), import_name("set_schema")))
   void state_set_schema(const char* id, int id_len, int version_packed,
                         const char* schema_json, int schema_json_len);
-  // Legacy stub — no-op on the host side, but import must exist for old modules
-  __attribute__((import_module("state"), import_name("declare_param")))
-  void state_declare_param(int index, const char* name, int name_len, int type, float default_value);
   __attribute__((import_module("state"), import_name("get_key")))
   int state_get_key(char* buf, int buf_len);
   __attribute__((import_module("state"), import_name("console_log")))
@@ -55,9 +44,6 @@ extern "C" {
   __attribute__((import_module("state"), import_name("console_log_structured")))
   void state_console_log_structured(int level, const char* msg, int msg_len,
                                      const char* json, int json_len);
-  // Legacy stub — no-op on the host side
-  __attribute__((import_module("state"), import_name("set")))
-  void state_set(const char* path, int path_len, const char* json, int json_len);
   __attribute__((import_module("state"), import_name("set_val")))
   void state_set_val(const char* path, int path_len, int val_handle);
   __attribute__((import_module("state"), import_name("mark_gpu_dirty")))
@@ -101,18 +87,10 @@ extern "C" {
                                   const unsigned char* spv, int spv_len,
                                   const char* format, int format_len,
                                   const char* access, int access_len);
-  // Register fusion metadata. See state::registerFusion below.
-  __attribute__((import_module("state"), import_name("register_fusion")))
-  void state_register_fusion(int kind,
-                              const char* wgsl, int wgsl_len,
-                              const char* msl,  int msl_len,
-                              int uniform_buf_handle,
-                              int uniform_size_bytes,
-                              void (*prepare)(void* self, int vp_w, int vp_h));
   // Register fusion metadata, with the per-pixel kernel sourced by
-  // NAME (registered earlier via state::registerShaderSPV) instead
-  // of inline WGSL/MSL text. The runtime fetches SPV → WGSL via the
-  // dev server's naga endpoint and runs the strip pass on demand.
+  // NAME (registered earlier via state::registerShaderSPV). The runtime
+  // fetches SPV → WGSL via the dev server's naga endpoint and runs the
+  // strip pass on demand.
   __attribute__((import_module("state"), import_name("register_fusion_by_name")))
   void state_register_fusion_by_name(int kind,
                                       const char* fragment_name, int fragment_name_len,
@@ -184,22 +162,6 @@ inline int viewportHeight() { return host_get_viewport_h(); }
 inline void triggerAudio(int channel) { host_trigger_audio(channel); }
 
 } // namespace host
-
-namespace canvas {
-
-inline void fillRect(float x, float y, float w, float h,
-                     float r, float g, float b, float a = 1.0f) {
-  canvas_fill_rect(x, y, w, h, r, g, b, a);
-}
-inline void drawImage(int texId, float x, float y, float w, float h) {
-  canvas_draw_image(texId, x, y, w, h);
-}
-inline void drawText(const char* text, float x, float y, float size,
-                     float r, float g, float b, float a = 1.0f) {
-  canvas_draw_text(text, std::strlen(text), x, y, size, r, g, b, a);
-}
-
-} // namespace canvas
 
 // ---------------------------------------------------------------------------
 // text — host text shaping/rendering service.
@@ -308,16 +270,6 @@ enum IOFlags : int {
   PrimaryOutput   = Output | Primary,     // 6
   SecondaryInput  = Input | Secondary,    // 9
   SecondaryOutput = Output | Secondary,   // 10
-};
-
-// --- Parameter types (matching FFGL, kept for legacy compat) ---
-enum class ParamType : int {
-  Boolean = 0,
-  Event = 1,
-  Standard = 10,
-  Option = 11,
-  Integer = 13,
-  Text = 100,
 };
 
 // --- Log levels ---
@@ -856,8 +808,6 @@ private:
   // Per-depth field count: index 0 = top-level fields, 1+ = nested objects.
   int objectFieldCounts_[8] = {0,0,0,0,0,0,0,0};
   int objectDepth_ = 0;
-  // Convenience alias preserved for reference; no longer load-bearing.
-  int fieldCount_ = 0;
 
   void beginField(const char* name) {
     int& cnt = objectFieldCounts_[objectDepth_];
@@ -866,7 +816,6 @@ private:
     appendRaw(name);
     appendRaw("\":{");
     cnt++;
-    fieldCount_ = objectFieldCounts_[0];
   }
 
   // Append the "order" field based on declaration order at the current depth,
@@ -1293,13 +1242,14 @@ enum class FusionKind : int {
 /// from inside `init()`, after `state::init(...)`. Effects that don't
 /// call this stay `Freeform` — the engine never fuses them.
 ///
+/// The fragment SPV must have been registered earlier via
+/// `state::registerShaderSPV(fragment_name, ...)` — the fragment defines
+/// `fuse_transform` and `FuseUniforms` (built by the
+/// compile_shaders_compute_fused helper). The runtime resolves the
+/// platform source (SPV → WGSL via naga on web; baked MSL natively) and
+/// strips the synthetic wrapper main automatically.
+///
 /// Parameters:
-///   kind             — fusion class, see FusionKind.
-///   fragment_wgsl    — WGSL fragment defining `fuse_transform` and
-///                      `FuseUniforms` (built by the
-///                      compile_shaders_compute_fused build helper into
-///                      `<effect>_shaders.h` as PIXEL_WGSL[]).
-///   fragment_msl     — MSL counterpart (PIXEL_MSL[]).
 ///   uniform_buf_handle — current handle of the effect's uniform
 ///                      buffer (typically `s_uniform_buf.handle()`).
 ///                      The engine binds this directly into the fused
@@ -1311,26 +1261,6 @@ enum class FusionKind : int {
 ///                      For non-fused execution `render` runs as today;
 ///                      most effects implement `render` as
 ///                      `prepare(); dispatch();` so behavior is shared.
-///
-/// Note: WGSL and MSL strings are passed explicitly because every effect
-/// already picks its backend at createShaderModule time. Folding that
-/// into the host is a separate refactor.
-inline void registerFusion(FusionKind kind,
-                           const char* fragment_wgsl,
-                           const char* fragment_msl,
-                           int uniform_buf_handle,
-                           int uniform_size_bytes,
-                           void (*prepare)(void* self, int vp_w, int vp_h)) {
-  state_register_fusion(static_cast<int>(kind),
-                        fragment_wgsl, fragment_wgsl ? (int)std::strlen(fragment_wgsl) : 0,
-                        fragment_msl,  fragment_msl  ? (int)std::strlen(fragment_msl)  : 0,
-                        uniform_buf_handle, uniform_size_bytes, prepare);
-}
-
-/// Newer, name-based variant. The fragment SPV must have been
-/// registered earlier via `state::registerShaderSPV(fragment_name, ...)`.
-/// The runtime translates SPV → WGSL via naga and strips the
-/// synthetic wrapper main automatically.
 inline void registerFusionByName(FusionKind kind,
                                  const char* fragment_name,
                                  int uniform_buf_handle,

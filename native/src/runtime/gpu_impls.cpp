@@ -127,16 +127,9 @@ static std::string mapEntryName(const char* entry, int len) {
   return e;
 }
 
-int gpu_create_compute_pso_layout(int shader, const char* entry, int entry_len,
-                                   int /*binding_count*/, const int* /*bindings*/) {
-  // Metal doesn't need pre-declared binding layouts — the per-dispatch
-  // setBuffer/setTexture/setSampler calls determine the actual binding.
-  // We accept and discard the bindings array.
-  auto* b = backend();
-  if (!b) return -1;
-  return b->createComputePSO(shader, mapEntryName(entry, entry_len));
-}
-
+// Metal doesn't need pre-declared binding layouts — the per-dispatch
+// setBuffer/setTexture/setSampler calls determine the actual binding.
+// The bindings array is accepted and discarded.
 int gpu_create_compute_pso_v2(int shader, const char* entry, int entry_len,
                                int /*binding_count*/, const int* /*bindings*/,
                                const unsigned char* constants, int constants_len) {
@@ -162,13 +155,6 @@ int gpu_create_render_pso_layout(int vs, const char* vse, int vsl,
 int gpu_create_instanced_render_pso_layout(int vs, const char* vse, int vsl,
                                             int fs, const char* fse, int fsl,
                                             int fmt, int /*bcount*/, const int* /*bindings*/) {
-  auto* b = backend();
-  if (!b) return -1;
-  return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
-                                     fs, mapEntryName(fse, fsl), fmt, /*blend=*/0);
-}
-int gpu_create_instanced_render_pso(int vs, const char* vse, int vsl,
-                                     int fs, const char* fse, int fsl, int fmt) {
   auto* b = backend();
   if (!b) return -1;
   return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),

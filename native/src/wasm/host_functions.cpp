@@ -5,7 +5,6 @@
 #include "wasm/effect_host_sink.h"
 #include "bridge/param_cache.h"
 #include "bridge/state_document.h"
-#include "canvas/draw_list.h"
 #include "gpu/gpu_backend.h"
 #include "json/json_doc.h"
 
@@ -24,11 +23,6 @@ static WasmContext* get_ctx(wasm_exec_env_t env) {
 static WasmHost* get_host(wasm_exec_env_t env) {
   auto* ctx = get_ctx(env);
   return ctx ? ctx->host : nullptr;
-}
-
-static canvas::DrawList* get_draw_list(wasm_exec_env_t env) {
-  auto* ctx = get_ctx(env);
-  return ctx ? ctx->draw_list : nullptr;
 }
 
 static FrameState* get_frame(wasm_exec_env_t env) {
@@ -107,42 +101,6 @@ static NativeSymbol env_symbols[] = {
     {"floor", reinterpret_cast<void*>(env_floor), "(F)F", nullptr},
     {"fabs", reinterpret_cast<void*>(env_fabs), "(F)F", nullptr},
     {"strlen", reinterpret_cast<void*>(env_strlen), "(i)i", nullptr},
-};
-
-// ========================================================================
-// Module "canvas" — drawing primitives
-// ========================================================================
-
-static void canvas_fill_rect(wasm_exec_env_t env,
-    float x, float y, float w, float h,
-    float r, float g, float b, float a) {
-  auto* dl = get_draw_list(env);
-  if (dl) dl->fill_rect(x, y, w, h, r, g, b, a);
-}
-
-static void canvas_draw_image(wasm_exec_env_t env,
-    int32_t tex_id, float x, float y, float w, float h) {
-  auto* dl = get_draw_list(env);
-  if (dl) dl->draw_image(tex_id, x, y, w, h);
-}
-
-static void canvas_draw_text(wasm_exec_env_t env,
-    int32_t text_ptr, int32_t text_len,
-    float x, float y, float size,
-    float r, float g, float b, float a) {
-  auto* dl = get_draw_list(env);
-  if (!dl) return;
-  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
-  if (!wasm_runtime_validate_app_addr(inst, text_ptr, text_len)) return;
-  char* native_ptr = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, text_ptr));
-  if (!native_ptr) return;
-  dl->draw_text(std::string(native_ptr, text_len), x, y, size, r, g, b, a);
-}
-
-static NativeSymbol canvas_symbols[] = {
-    {"fill_rect", reinterpret_cast<void*>(canvas_fill_rect), "(ffffffff)", nullptr},
-    {"draw_image", reinterpret_cast<void*>(canvas_draw_image), "(iffff)", nullptr},
-    {"draw_text", reinterpret_cast<void*>(canvas_draw_text), "(iifffffff)", nullptr},
 };
 
 // ========================================================================
@@ -408,26 +366,6 @@ static void state_set_schema(wasm_exec_env_t env,
   }
 }
 
-static void state_declare_param(wasm_exec_env_t env,
-    int32_t index, int32_t name_ptr, int32_t name_len,
-    int32_t type, float default_value) {
-  auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
-
-  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
-  if (!wasm_runtime_validate_app_addr(inst, name_ptr, name_len)) return;
-  char* name = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, name_ptr));
-  if (!name) return;
-
-  bridge::ParamDecl param;
-  param.index = index;
-  param.name = std::string(name, name_len);
-  param.type = static_cast<bridge::ParamType>(type);
-  param.default_value = default_value;
-
-  ctx->state_doc->declare_param(ctx->plugin_key, param);
-}
-
 static int32_t state_get_key(wasm_exec_env_t env, int32_t buf_ptr, int32_t buf_len) {
   auto* ctx = get_ctx(env);
   if (!ctx) return 0;
@@ -461,33 +399,6 @@ static void state_console_log(wasm_exec_env_t env,
 
   ctx->state_doc->log(ctx->plugin_key,
       {ts, lvl, std::string(msg, msg_len)});
-}
-
-static void state_set(wasm_exec_env_t env,
-    int32_t path_ptr, int32_t path_len,
-    int32_t json_ptr, int32_t json_len) {
-  auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
-
-  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
-  if (!wasm_runtime_validate_app_addr(inst, path_ptr, path_len)) return;
-  if (!wasm_runtime_validate_app_addr(inst, json_ptr, json_len)) return;
-
-  char* path = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, path_ptr));
-  char* json_str = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, json_ptr));
-  if (!path || !json_str) return;
-
-  std::string path_s(path, path_len);
-  std::string json_s(json_str, json_len);
-
-  try {
-    auto val = nlohmann::json::parse(json_s);
-    // Apply as a replace patch on the plugin's state
-    std::vector<json_patch::PatchOp> ops = {{"replace", path_s, val, {}}};
-    ctx->state_doc->apply_client_patch(ctx->plugin_key, ops);
-  } catch (...) {
-    // Invalid JSON, ignore
-  }
 }
 
 static int32_t state_read(wasm_exec_env_t env,
@@ -608,11 +519,6 @@ static void state_register_fusion_by_name(wasm_exec_env_t env,
       static_cast<uint32_t>(prepare_fn));
 }
 
-// Inline-WGSL/MSL fusion variant: effects use register_fusion_by_name (above)
-// almost universally. Accept as a no-op so the rare caller doesn't trap.
-static void state_register_fusion(wasm_exec_env_t, int32_t, int32_t, int32_t,
-    int32_t, int32_t, int32_t, int32_t, int32_t) {}
-
 static int32_t state_is_field_connected(wasm_exec_env_t env,
     int32_t path_ptr, int32_t path_len, int32_t direction) {
   auto* ctx = get_ctx(env);
@@ -680,7 +586,6 @@ static void state_set_on_state_ready(wasm_exec_env_t, int32_t) {}
 static NativeSymbol state_symbols[] = {
     {"set_metadata", reinterpret_cast<void*>(state_set_metadata), "(iii)", nullptr},
     {"register_shader_spv", reinterpret_cast<void*>(state_register_shader_spv), "(iiiiiiii)", nullptr},
-    {"register_fusion", reinterpret_cast<void*>(state_register_fusion), "(iiiiiiii)", nullptr},
     {"register_fusion_by_name", reinterpret_cast<void*>(state_register_fusion_by_name), "(iiiiii)", nullptr},
     {"is_field_connected", reinterpret_cast<void*>(state_is_field_connected), "(iii)i", nullptr},
     {"will_render", reinterpret_cast<void*>(state_will_render), "()i", nullptr},
@@ -690,11 +595,9 @@ static NativeSymbol state_symbols[] = {
     {"mark_gpu_dirty", reinterpret_cast<void*>(state_mark_gpu_dirty), "(ii)", nullptr},
     {"set_on_state_ready", reinterpret_cast<void*>(state_set_on_state_ready), "(i)", nullptr},
     {"set_schema", reinterpret_cast<void*>(state_set_schema), "(iiiii)", nullptr},
-    {"declare_param", reinterpret_cast<void*>(state_declare_param), "(iiiif)", nullptr},
     {"get_key", reinterpret_cast<void*>(state_get_key), "(ii)i", nullptr},
     {"console_log", reinterpret_cast<void*>(state_console_log), "(iii)", nullptr},
     {"console_log_structured", reinterpret_cast<void*>(state_console_log_structured), "(iiiii)", nullptr},
-    {"set", reinterpret_cast<void*>(state_set), "(iiii)", nullptr},
     {"set_val", reinterpret_cast<void*>(+[](wasm_exec_env_t env, int32_t path_ptr, int32_t path_len, int32_t val_h) {
       auto* ctx = get_ctx(env);
       if (!ctx) return;
@@ -1170,23 +1073,10 @@ static int32_t gpu_create_shader_module_named(wasm_exec_env_t env,
       std::string(name, name_len), ctx->gpu_backend);
 }
 
-// gpu.create_compute_pso_layout — the binding layout is for WebGPU's explicit
-// bind groups; Metal binds by [[texture(n)]]/[[buffer(n)]] in the MSL, so it's
-// ignored here. Entry name is mapped for Metal (main→main0).
-static int32_t gpu_create_compute_pso_layout(wasm_exec_env_t env,
-    int32_t shader, int32_t entry_ptr, int32_t entry_len,
-    int32_t binding_count, int32_t bindings_ptr) {
-  (void)binding_count; (void)bindings_ptr;
-  auto* g = get_gpu(env);
-  if (!g) return -1;
-  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
-  if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
-  char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
-  if (!e) return -1;
-  return g->createComputePSO(shader, map_entry_name(g, e, entry_len));
-}
-
-// gpu.create_compute_pso_v2 — layout + packed spec constants. The constants
+// gpu.create_compute_pso_v2 — layout + packed spec constants. The binding
+// layout is for WebGPU's explicit bind groups; Metal binds by
+// [[texture(n)]]/[[buffer(n)]] in the MSL, so it's ignored here. Entry name
+// is mapped for Metal (main→main0). The constants
 // payload (u32 count; per entry: u32 name_len, name bytes, f64 value) MUST be
 // decoded and applied: shaders with [[function_constant(N)]] (e.g. motion_blur)
 // fail Metal PSO validation without their values set. Mirrors gpu_impls.
@@ -1320,21 +1210,6 @@ static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
                                      fs, map_entry_name(g, fse, fs_len),
                                      format, /*blend=*/0);
 }
-static int32_t gpu_create_instanced_render_pso(wasm_exec_env_t env,
-    int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
-    int32_t fs_len, int32_t format) {
-  auto* g = get_gpu(env);
-  if (!g) return -1;
-  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
-  if (!wasm_runtime_validate_app_addr(inst, vs_ptr, vs_len)) return -1;
-  if (!wasm_runtime_validate_app_addr(inst, fs_ptr, fs_len)) return -1;
-  char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
-  char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
-  if (!vse || !fse) return -1;
-  return g->createInstancedRenderPSO(vs, map_entry_name(g, vse, vs_len),
-                                     fs, map_entry_name(g, fse, fs_len),
-                                     format, /*blend=*/0);
-}
 static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
     int32_t fs_len, int32_t target_count, int32_t target_formats_ptr,
@@ -1385,12 +1260,10 @@ static NativeSymbol gpu_symbols[] = {
     {"create_instanced_render_pso_blend_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_blend_layout), "(iiiiiiiiii)i", nullptr},
     {"create_render_pso_layout", reinterpret_cast<void*>(gpu_create_render_pso_layout), "(iiiiiiiii)i", nullptr},
     {"create_instanced_render_pso_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_layout), "(iiiiiiiii)i", nullptr},
-    {"create_instanced_render_pso", reinterpret_cast<void*>(gpu_create_instanced_render_pso), "(iiiiiii)i", nullptr},
     {"create_instanced_render_pso_mrt_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_mrt_layout), "(iiiiiiiiii)i", nullptr},
     {"begin_render_pass_mrt", reinterpret_cast<void*>(gpu_begin_render_pass_mrt), "(iii)i", nullptr},
     {"begin_render_pass_load", reinterpret_cast<void*>(gpu_begin_render_pass_load), "(i)i", nullptr},
     {"render_set_buffer", reinterpret_cast<void*>(gpu_render_set_buffer), "(iii)", nullptr},
-    {"create_compute_pso_layout", reinterpret_cast<void*>(gpu_create_compute_pso_layout), "(iiiii)i", nullptr},
     {"create_compute_pso_v2", reinterpret_cast<void*>(gpu_create_compute_pso_v2), "(iiiiiii)i", nullptr},
     {"create_buffer", reinterpret_cast<void*>(gpu_create_buffer), "(ii)i", nullptr},
     {"create_texture", reinterpret_cast<void*>(gpu_create_texture), "(iii)i", nullptr},
@@ -1519,10 +1392,6 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "env", env_symbols,
       sizeof(env_symbols) / sizeof(NativeSymbol));
-
-  ok = ok && wasm_runtime_register_natives(
-      "canvas", canvas_symbols,
-      sizeof(canvas_symbols) / sizeof(NativeSymbol));
 
   ok = ok && wasm_runtime_register_natives(
       "host", host_symbols,

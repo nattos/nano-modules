@@ -80,9 +80,17 @@ static int str_len(const char* s) {
   return n;
 }
 
+// HUD stubs. The host-side canvas_* ABI is gone (it was already a no-op on
+// every render path); the learn-state HUD below needs a port to the
+// overlay.h primitives (instanced quads + rich-text labels) to become
+// visible again. The render() logic is kept so the port is a drop-in.
 static void text(const char* s, float x, float y, float size,
                  float r, float g, float b, float a) {
-  canvas_draw_text(s, str_len(s), x, y, size, r, g, b, a);
+  (void)s; (void)x; (void)y; (void)size; (void)r; (void)g; (void)b; (void)a;
+}
+static void rect(float x, float y, float w, float h,
+                 float r, float g, float b, float a) {
+  (void)x; (void)y; (void)w; (void)h; (void)r; (void)g; (void)b; (void)a;
 }
 
 static void log_msg(int level, const char* msg) {
@@ -432,7 +440,7 @@ void render(void* self, int vp_w, int vp_h) {
 
         /* Draw indicator bar */
         float bar_w = 4.0f * scale;
-        canvas_fill_rect(margin, y + 2*scale, bar_w, lh - 4*scale, r, g, b, a);
+        rect(margin, y + 2*scale, bar_w, lh - 4*scale, r, g, b, a);
 
         /* Draw path text */
         text(s->seen[i].path, margin + bar_w + gw * 0.5f, y, small_font, r, g, b, a);

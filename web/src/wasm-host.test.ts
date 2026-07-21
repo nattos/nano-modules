@@ -108,20 +108,6 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
         return len;
       },
     },
-    canvas: {
-      fill_rect: (x: number, y: number, w: number, h: number,
-                   r: number, g: number, b: number, a: number) => {
-        host.drawList.push({ type: 'fill_rect', x, y, w, h, r, g, b, a });
-      },
-      draw_image: (texId: number, x: number, y: number, w: number, h: number) => {
-        host.drawList.push({ type: 'draw_image', x, y, w, h, r: 1, g: 1, b: 1, a: 1, texId });
-      },
-      draw_text: (ptr: number, len: number, x: number, y: number, size: number,
-                   r: number, g: number, b: number, a: number) => {
-        const text = readString(ptr, len);
-        host.drawList.push({ type: 'draw_text', x, y, w: 0, h: 0, r, g, b, a, text, fontSize: size });
-      },
-    },
     host: {
       get_time: () => host.frameState.elapsedTime,
       get_delta_time: () => host.frameState.deltaTime,
@@ -156,8 +142,6 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       load_thumbnail: (_index: number) => -1,
     },
     state: {
-      declare_param: (_index: number, _namePtr: number, _nameLen: number,
-                      _type: number, _defaultValue: number) => {},
       set_schema: (_idPtr: number, _idLen: number, _versionPacked: number,
                     _schemaPtr: number, _schemaLen: number) => {},
       get_key: (bufPtr: number, bufLen: number): number => {
@@ -172,19 +156,12 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       // flash_particles which reference these). nanolooper never calls
       // them, but they must exist for the bundle to instantiate.
       register_shader_spv: () => {},
-      register_fusion: () => {},
       register_fusion_by_name: () => {},
       set_on_state_ready: () => {},
       set_field_hidden: () => {},
       console_log: (_level: number, _msgPtr: number, _msgLen: number) => {},
       console_log_structured: (_level: number, _msgPtr: number, _msgLen: number,
                                 _jsonPtr: number, _jsonLen: number) => {},
-      set: (_pathPtr: number, _pathLen: number, _jsonPtr: number, _jsonLen: number) => {
-        try {
-          host.pluginState = JSON.parse(new TextDecoder().decode(
-            new Uint8Array(getMemory().buffer, _jsonPtr, _jsonLen)));
-        } catch {}
-      },
       set_val: (_pathPtr: number, _pathLen: number, valHandle: number) => {
         const v = valStore.get(valHandle);
         if (v !== undefined) {
@@ -269,58 +246,13 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       glyphs: () => 0,
       release: () => {},
     },
-    gpu: {
-      get_backend: () => -1,
-      create_shader_module: () => -1,
-      create_buffer: () => -1,
-      create_texture: () => -1,
-      create_compute_pso: () => -1,
-      create_render_pso: () => -1,
-      write_buffer: () => {},
-      request_readback: () => {},
-      poll_readback: () => 0,
-      begin_compute_pass: () => -1,
-      compute_set_pso: () => {},
-      compute_set_buffer: () => {},
-      compute_set_texture: () => {},
-      compute_dispatch: () => {},
-      end_compute_pass: () => {},
-      begin_render_pass: () => -1,
-      render_set_pso: () => {},
-      render_set_vertex_buffer: () => {},
-      render_draw: () => {},
-      end_render_pass: () => {},
-      submit: () => {},
-      get_render_target: () => -1,
-      get_render_target_width: () => 0,
-      get_render_target_height: () => 0,
-      release: () => {},
-      get_input_texture: () => -1,
-      get_input_texture_count: () => 0,
-      texture_for_field: () => -1,
-      buffer_for_field: () => 0,
-      create_instanced_render_pso: () => -1,
-      render_set_buffer: () => {},
-      // Additional gpu imports referenced by the bundle's GPU effects
-      // (motion_field / flash_particles). Unused by nanolooper; present
-      // only so instantiation links.
-      create_shader_module_named: () => -1,
-      create_compute_pso_layout: () => -1,
-      create_compute_pso_v2: () => -1,
-      create_render_pso_layout: () => -1,
-      create_instanced_render_pso_layout: () => -1,
-      create_instanced_render_pso_mrt_layout: () => -1,
-      create_instanced_render_pso_blend_layout: () => -1,
-      create_texture_mips: () => -1,
-      create_texture_3d: () => -1,
-      create_sampler: () => -1,
-      compute_set_texture_mip: () => {},
-      compute_set_sampler: () => {},
-      clear_texture: () => {},
-      copy_texture: () => {},
-      begin_render_pass_load: () => -1,
-      begin_render_pass_mrt: () => -1,
-    },
+    // GPU-less harness: EVERY gpu import resolves to a no-op returning -1
+    // via the Proxy fallback (same shape as wasm-host.ts's schema-only
+    // hosts). A hand-kept stub list silently rotted every time the gpu ABI
+    // grew, LinkError'ing the whole suite.
+    gpu: new Proxy({} as Record<string, () => number>, {
+      get: () => () => -1,
+    }),
     // Name-keyed effect registration — mirrors the production
     // module.register_effect_* builder imports in wasm-host.ts load().
     module: (() => {
@@ -451,7 +383,6 @@ describe('WasmHost', () => {
     // Tick to publish updated state — the module should now reflect the edited grid
     host.frameState.viewportW = 1920;
     host.frameState.viewportH = 1080;
-    host.drawList = [];
     module.tick(0.016);
 
     // After tick, the module publishes its internal state which should match the edit

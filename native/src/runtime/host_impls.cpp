@@ -83,8 +83,6 @@ void state_set_schema(const char* id, int id_len, int version_packed,
   inst->hostSetSchema(std::string(schema_json, schema_json_len));
 }
 
-void state_declare_param(int, const char*, int, int, float) { /* legacy no-op */ }
-
 int  state_get_key(char* /*buf*/, int /*buf_len*/) { return 0; }
 
 void state_console_log(int /*level*/, const char* msg, int msg_len) {
@@ -97,8 +95,6 @@ void state_console_log_structured(int /*level*/, const char* msg, int msg_len,
   if (rt) rt->log("log", std::string_view(msg, msg_len));
 }
 
-void state_set(const char* /*path*/, int /*path_len*/,
-                const char* /*json*/, int /*json_len*/) { /* legacy no-op */ }
 void state_set_val(const char* path, int path_len, int val_h) {
   // Accumulate live output broadcasts on the instance (mirrors the WASM
   // path's host_functions.cpp set_val → EffectHostSink::hostSetVal). The
@@ -154,24 +150,6 @@ void state_register_shader_spv(const char* name, int name_len,
                               std::string_view(access, access_len));
 }
 
-void state_register_fusion(int kind,
-                            const char* /*frag_wgsl*/, int /*frag_wgsl_len*/,
-                            const char* /*frag_msl*/, int /*frag_msl_len*/,
-                            int uniform_buf_handle, int uniform_size_bytes,
-                            void(*prepare)(void*, int, int)) {
-  // Older variant — the explicit-source form isn't what the modern
-  // effects use, but we still wire it to the same path with no
-  // fragment name. The native executor's fusion planner skips groups
-  // whose fragmentName is empty.
-  if (auto* inst = active()) {
-    effect_runtime::EffectInstance::FusionInfo info;
-    info.kind = kind;
-    info.uniformBufferHandle = uniform_buf_handle;
-    info.uniformSizeBytes = uniform_size_bytes;
-    info.prepare = prepare;
-    inst->setFusionInfo(std::move(info));
-  }
-}
 void state_register_fusion_by_name(int kind,
                                     const char* fragment_name, int fragment_name_len,
                                     int uniform_buf_handle, int uniform_size_bytes,
@@ -242,15 +220,6 @@ void setHostBarPhase(double p)   { g_host_bar_phase = p; }
 void setHostBpm(double bpm)      { g_host_bpm = bpm; }
 void setHostViewport(int w, int h) { g_host_vp_w = w; g_host_vp_h = h; }
 }  // namespace effect_runtime
-
-// ============================================================================
-// canvas.* imports — UI canvas (not used by lights effects)
-// ============================================================================
-extern "C" {
-void canvas_fill_rect(float, float, float, float, float, float, float, float) {}
-void canvas_draw_image(int, float, float, float, float) {}
-void canvas_draw_text(const char*, int, float, float, float, float, float, float, float) {}
-}
 
 // ============================================================================
 // resolume.* imports — Resolume host bindings (not used by lights)

@@ -462,16 +462,7 @@ async function main() {
         host.gpuHost.setSurface(surfaceTex, vpW, vpH);
       }
 
-      host.drawList = [];
       wasmModule.render(vpW, vpH);
-
-      // If draw list has commands, render via canvas path
-      // If empty, module used gpu.* calls directly (GPU mode)
-      if (host.drawList.length > 0) {
-        renderer.beginFrame(vpW, vpH);
-        renderer.execute(host.drawList);
-        renderer.endFrame();
-      }
 
       const step = Math.floor(barPhase * 16);
       statusEl.textContent = `${fps} FPS | ${bpm} BPM | Step ${step + 1}/16`;
