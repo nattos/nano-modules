@@ -141,6 +141,29 @@ void CompExecutor::loadDocument(const nlohmann::json& doc) {
   // playing scene stops it.
   healSceneLaunches();
   rebuildTriggerRoutes();
+  rebuildStreamsTable();
+}
+
+void CompExecutor::rebuildStreamsTable() {
+  streamsTable_ = buildStreamsTable(doc_, clock_, docEpoch_);
+  // Launched scenes keep their live content anchor across the rebuild (the
+  // launch map survives doc reloads; the table is doc-shaped and must follow).
+  for (const auto& [trackId, l] : sceneLaunch_) {
+    auto it = streamsTable_.contentByClipId.find(l.sceneId);
+    if (it == streamsTable_.contentByClipId.end()) continue;
+    if (StreamInfo* s = streamsTable_.findMutable(it->second)) s->anchorBeat = l.launchBeat;
+  }
+  sampleStreamsFrame();
+}
+
+void CompExecutor::sampleStreamsFrame() {
+  auto& f = streamsTable_.frame;
+  f.posBeat = state_.positionBeat;
+  f.posSec = transportSec_;
+  f.playing = state_.playing ? 1 : 0;
+  f.loopEnabled = state_.loopEnabled ? 1 : 0;
+  f.loopStartBeat = state_.loopStartBeat;
+  f.loopEndBeat = state_.loopEndBeat;
 }
 
 void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string& deviceId,
@@ -265,6 +288,12 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
   l.sceneId = sceneId;
   l.launchBeat = state_.positionBeat;  // immediate: anchor at the current beat
   l.launchSec = clock_.secondsAt(l.launchBeat);
+  // The scene's content stream re-anchors too: its lazy position mapping runs
+  // from the launch beat, exactly like the tree's anchorBeat.
+  auto it = streamsTable_.contentByClipId.find(sceneId);
+  if (it != streamsTable_.contentByClipId.end()) {
+    if (StreamInfo* s = streamsTable_.findMutable(it->second)) s->anchorBeat = l.launchBeat;
+  }
   scenesDirty_ = true;
   invalidateEval();
 }
@@ -542,6 +571,7 @@ uint32_t CompExecutor::update(double dtSec) {
     automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_,
                                          &layerTargets_);
     transportSec_ = transport_.secondsAt(state_, clock_);
+    sampleStreamsFrame();
     return flags;
   }
   holdClock_ = 0;
@@ -570,6 +600,7 @@ uint32_t CompExecutor::update(double dtSec) {
   // span's cached tree (no per-frame tree rebuild).
   automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_,
                                          &layerTargets_);
+  sampleStreamsFrame();
   return flags;
 }
 
@@ -803,6 +834,11 @@ const std::string& CompExecutor::videoDescsJson() {
 const std::string& CompExecutor::layerTargetsJson() {
   layerTargetsScratch_ = layerTargets_.dump();
   return layerTargetsScratch_;
+}
+
+const std::string& CompExecutor::streamsJson() {
+  streamsScratch_ = streamsTableJson(streamsTable_);
+  return streamsScratch_;
 }
 
 const std::string& CompExecutor::sceneStatesJson() {

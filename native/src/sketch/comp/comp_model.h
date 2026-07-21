@@ -212,6 +212,7 @@ struct WarpBindingM {
 
 struct ClipM {
   std::string id;
+  std::string name;
   double startBeat = 0;
   double lengthBeat = 0;
   bool bypassed = false;
@@ -249,6 +250,7 @@ struct GroupInputM {
 
 struct TrackM {
   std::string id;
+  std::string name;
   TrackKind kind = TrackKind::Track;
   /** Empty string = null (root). */
   std::string parentId;
@@ -381,6 +383,7 @@ inline ClipM parseClip(const nlohmann::json& j) {
   ClipM c;
   if (!j.is_object()) return c;
   c.id = j.value("id", std::string());
+  c.name = j.value("name", std::string());
   c.startBeat = j.value("startBeat", 0.0);
   c.lengthBeat = j.value("lengthBeat", 0.0);
   c.bypassed = j.value("bypassed", false);
@@ -441,6 +444,7 @@ inline TrackM parseTrack(const nlohmann::json& j) {
   TrackM t;
   if (!j.is_object()) return t;
   t.id = j.value("id", std::string());
+  t.name = j.value("name", std::string());
   const std::string kind = j.value("kind", std::string("track"));
   t.kind = kind == "group"   ? TrackKind::Group
            : kind == "rail"  ? TrackKind::Rail

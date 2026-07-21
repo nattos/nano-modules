@@ -37,6 +37,7 @@
 #include "comp_model.h"
 #include "comp_transport.h"
 #include "sketch_build.h"
+#include "streams_table.h"
 #include "warp_curve.h"
 
 namespace effect_runtime { class EffectRuntime; }
@@ -188,9 +189,26 @@ class CompExecutor {
   const std::string& layerTargetsJson();
   /** Launched scenes: {trackId: {sceneId, launchBeat}} (UI playing highlight). */
   const std::string& sceneStatesJson();
+  /** The STATIC seekable-streams registry (streams_table.h) — the web engine
+   *  worker mirrors it into its StreamsRegistry on doc-epoch change only. */
+  const std::string& streamsJson();
+
+  /** The live streams registry — the effect-facing `streams` import module
+   *  reads it (natively via WasmContext.streams_table; the table's `frame`
+   *  sample is mutated in place per update()). */
+  const StreamsTable& streamsTable() const { return streamsTable_; }
+  StreamsTable& streamsTableMutable() { return streamsTable_; }
+  /** The beat→seconds clock the lazy content-position eval needs. */
+  const WarpClock& warpClock() const { return clock_; }
 
  private:
   void rebuildClock();
+  /** Rebuild the seekable-streams registry (doc-shaped; loadDocument only).
+   *  Live scene anchors survive: re-applied from sceneLaunch_ after a build. */
+  void rebuildStreamsTable();
+  /** Refresh streamsTable_.frame from the current transport state (both
+   *  update() exits — the import handlers read it directly). */
+  void sampleStreamsFrame();
   /** Drop launch entries whose track/scene vanished from the (re)loaded doc —
    *  a delete lands as a doc reload, so this IS delete-playing-scene-stops-it.
    *  Also auto-stops elapsed one-shot scenes when called per frame. Sets
@@ -311,12 +329,17 @@ class CompExecutor {
   nlohmann::json pumpDescs_ = nlohmann::json::array();      // what the pump should keep alive
   nlohmann::json displayedDescs_ = nlohmann::json::array(); // active set of the COMMITTED composite
 
+  /** Seekable-streams registry (streams_table.h): rebuilt on loadDocument;
+   *  frame sample + scene anchors mutated in place between rebuilds. */
+  StreamsTable streamsTable_;
+
   // Persistent readback scratch (member strings, never inline-static).
   std::string requiredScratch_;
   std::string chainKeysScratch_;
   std::string videoDescsScratch_;
   std::string layerTargetsScratch_;
   std::string sceneStatesScratch_;
+  std::string streamsScratch_;
 };
 
 }  // namespace comp

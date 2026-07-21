@@ -395,6 +395,16 @@ target_compile_definitions(test_comp_time PRIVATE
 target_link_libraries(test_comp_time PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_comp_time)
 
+# Seekable-streams registry (src/sketch/comp/streams_table.h, header-only) —
+# handles, event derivation/ordering, lazy content positions; the fixture is
+# shared with the web StreamsRegistry twin.
+add_executable(test_streams_abi tests/test_streams_abi.cpp)
+target_include_directories(test_streams_abi PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(test_streams_abi PRIVATE
+  COMP_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/comp")
+target_link_libraries(test_streams_abi PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_streams_abi)
+
 # Composition-executor document/tree-eval/sketch-build ports — deep-equal JSON
 # parity against the TS-generated build.json golden.
 add_executable(test_comp_build tests/test_comp_build.cpp)

@@ -1,0 +1,62 @@
+{
+  "meta": { "baseBPM": 120 },
+  "tracks": [
+    {
+      "id": "trackA",
+      "name": "Video A",
+      "kind": "track",
+      "clips": [
+        {
+          "id": "clipB",
+          "name": "B",
+          "startBeat": 8,
+          "lengthBeat": 4,
+          "source": { "url": "b.mov", "durationFrames": 120, "fps": 30 },
+          "sketch": { "devices": [{ "id": "vid", "moduleType": "source.video.file" }] },
+          "loop": { "mode": "time", "startSec": 0, "speed": 1 }
+        },
+        {
+          "id": "clipA",
+          "name": "A",
+          "startBeat": 0,
+          "lengthBeat": 8,
+          "source": { "url": "a.png", "durationFrames": 1 },
+          "sketch": { "devices": [{ "id": "img", "moduleType": "source.video.file" }] }
+        },
+        {
+          "id": "clipC",
+          "name": "C",
+          "startBeat": 12,
+          "lengthBeat": 4,
+          "bypassed": true,
+          "sketch": { "devices": [{ "id": "fx", "moduleType": "filter.blur" }] }
+        }
+      ]
+    },
+    { "id": "grp", "name": "Group", "kind": "group", "clips": [] },
+    {
+      "id": "scenes",
+      "name": "Scenes",
+      "kind": "scene",
+      "clips": [
+        {
+          "id": "s1",
+          "name": "S1",
+          "startBeat": 0,
+          "lengthBeat": 4,
+          "triggerChannel": 3,
+          "sketch": { "devices": [{ "id": "g", "moduleType": "debug.spinningtris" }] }
+        },
+        {
+          "id": "s2",
+          "name": "S2",
+          "startBeat": 4,
+          "lengthBeat": 4,
+          "source": { "url": "s2.mov", "durationFrames": 60, "fps": 30 },
+          "sketch": { "devices": [{ "id": "v", "moduleType": "source.video.file" }] }
+        },
+        { "id": "s3", "name": "S3", "startBeat": 8, "lengthBeat": 4 }
+      ]
+    }
+  ]
+}

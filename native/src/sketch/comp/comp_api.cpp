@@ -262,4 +262,11 @@ int32_t comp_scene_states_json(CompExecutor* c, char* out, int32_t cap) {
   return c ? writeOut(c->sceneStatesJson(), out, cap) : 0;
 }
 
+// The STATIC seekable-streams registry (streams_table.h). Doc-shaped — the web
+// host fetches it on doc-epoch change only, never per frame.
+EXEC_EXPORT("comp_streams_json")
+int32_t comp_streams_json(CompExecutor* c, char* out, int32_t cap) {
+  return c ? writeOut(c->streamsJson(), out, cap) : 0;
+}
+
 }  // extern "C"
