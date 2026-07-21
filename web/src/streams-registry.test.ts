@@ -129,6 +129,43 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(Number.isNaN(reg.pos(sc, 0))).toBe(true);
   });
 
+  it('clip refs: standard duration, grid slots, ordinal lookup (golden values)', () => {
+    const sc = reg.find(scenes)!;
+    expect(sc.byOrdinalClipId).toEqual(['s1', 's2', 's3']);
+    expect(reg.clipGrid(sc, 0)).toBe(0);
+    expect(reg.clipGrid(sc, 1)).toBe(1);
+    expect(reg.clipGrid(sc, 2)).toBe(2);
+    // s2 video: 60f@30 → 2 s; s1 effect-only: 4 beats @120 → 2 s.
+    expect(reg.clipDuration(sc, 1)).toBeCloseTo(2, 9);
+    expect(reg.clipDuration(sc, 0)).toBeCloseTo(2, 9);
+    expect(Number.isNaN(reg.clipDuration(sc, 99))).toBe(true);
+    const tA = reg.find(trackA)!;
+    expect(reg.clipDuration(tA, tA.clipsById.get('clipB')![0])).toBeCloseTo(4, 9);
+  });
+
+  it('scene-track pos() clamps strictly below the next ordinal', () => {
+    const sc = reg.find(scenes)!;
+    sc.liveOrdinal = 1;
+    sc.liveAnchorBeat = 10;
+    sc.liveLengthBeat = 4;
+    reg.frame.posBeat = 100; // long-playing: way past the grid cell
+    const pos = reg.pos(sc, 0);
+    expect(pos).toBeLessThan(2);
+    expect(Math.floor(pos)).toBe(1); // still THIS scene's ordinal
+    reg.frame.posBeat = 10;
+    expect(reg.pos(sc, 0)).toBeCloseTo(1, 12);
+  });
+
+  it('write verbs queue with validation (seek needs TriggerOnSeek; stop needs a scene track)', () => {
+    expect(reg.queueSeek(scenes, 1.0)).toBe(true);       // scene track: trigger-on-seek
+    expect(reg.queueSeek(trackA, 1.0)).toBe(true);       // timeline track carries the flag too
+    expect(reg.queueSeek(reg.contentByClipId.get('clipB')!, 0)).toBe(false); // content: no
+    expect(reg.queueStop(scenes)).toBe(true);
+    expect(reg.queueStop(trackA)).toBe(false);           // stop is scene-only
+    expect(reg.pendingOps.map((o) => o.kind)).toEqual(['seek', 'seek', 'stop']);
+    expect(reg.pendingOps[0].handle).toBe(scenes);
+  });
+
   it('reports loop regions per kind', () => {
     // Timeline loop brace rides the frame sample.
     reg.frame.loopEnabled = 1;

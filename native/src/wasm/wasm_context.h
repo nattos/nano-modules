@@ -89,7 +89,9 @@ struct WasmContext {
   // the imports then answer as the session-clock-only world (frame_state).
   // The table's frame sample is mutated in place by the comp executor; the
   // clock is its warp-aware beat→seconds map (lazy content positions).
-  const comp::StreamsTable* streams_table = nullptr;
+  // NON-const: the write verbs (streams.seek/stop) queue into the table's
+  // pendingOps — single-threaded on the render path, drained by the executor.
+  comp::StreamsTable* streams_table = nullptr;
   const comp::WarpClock* streams_clock = nullptr;
 
   // State system

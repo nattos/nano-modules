@@ -88,7 +88,7 @@ int WasmEffectBundles::loadBundle(const uint8_t* bytecode, uint32_t len,
   return registry.registerWasmBundle(host_, id);
 }
 
-void WasmEffectBundles::setStreamsTable(const comp::StreamsTable* table,
+void WasmEffectBundles::setStreamsTable(comp::StreamsTable* table,
                                         const comp::WarpClock* clock) {
   streams_table_ = table;
   streams_clock_ = clock;

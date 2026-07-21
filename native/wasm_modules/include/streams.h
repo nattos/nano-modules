@@ -105,6 +105,33 @@ extern "C" {
   __attribute__((import_module("streams"), import_name("anchor_sec")))
   double streams_anchor_sec(int64_t h);
 
+  // ── Per-clip queries on TRACK streams (ordinal = grid position) ──
+  // STANDARD clip duration in seconds: what the engine's one-shot auto-stop
+  // waits — a video scene's source slice ÷ |speed|; an effect-only scene's
+  // lengthBeat at the base tempo (warp-approximate — scenes are launch-
+  // anchored, warp segments are timeline-derived). NaN for a bad ordinal /
+  // non-track stream. Transport-section effects may override it (a looping
+  // controller effectively makes it infinite; a follower substitutes its own).
+  __attribute__((import_module("streams"), import_name("clip_duration")))
+  double streams_clip_duration(int64_t h, int32_t ordinal);
+  // The clip's GRID slot (scene tracks: startBeat / bar length — contiguous
+  // integers form a Live-style follow GROUP). NaN for bad ordinal/stream.
+  __attribute__((import_module("streams"), import_name("clip_grid")))
+  double streams_clip_grid(int64_t h, int32_t ordinal);
+
+  // ── Write verbs (queued; applied by the host after the transport pre-pass,
+  // landing next frame — the same latency as trigger-ring launches) ──
+  // On a kTriggerOnSeek stream: trigger the clip whose start event covers
+  // time t (scene tracks: ordinal floor(t) — launches it, evicting the
+  // track's current scene). Returns 1 when queued, 0 for an invalid handle /
+  // non-seek-triggerable stream. Bypassed/empty targets are dropped at apply
+  // time (same matcher as trigger launches).
+  __attribute__((import_module("streams"), import_name("seek")))
+  int32_t streams_seek(int64_t h, double t);
+  // Stop the playing clip on a scene track (the track leaves the composite).
+  __attribute__((import_module("streams"), import_name("stop")))
+  int32_t streams_stop(int64_t h);
+
   // ── Events (static per rev(); index-based bulk copy) ──
   __attribute__((import_module("streams"), import_name("event_count")))
   int32_t streams_event_count(int64_t h);
@@ -218,6 +245,10 @@ inline double bpm(Stream h) { return streams_bpm(h); }
 inline double fps(Stream h) { return streams_fps(h); }
 inline double anchor(Stream h) { return streams_anchor(h); }
 inline double anchorSec(Stream h) { return streams_anchor_sec(h); }
+inline double clipDuration(Stream h, int ordinal) { return streams_clip_duration(h, ordinal); }
+inline double clipGrid(Stream h, int ordinal) { return streams_clip_grid(h, ordinal); }
+inline bool seek(Stream h, double t) { return streams_seek(h, t) != 0; }
+inline bool stop(Stream h) { return streams_stop(h) != 0; }
 
 inline int eventCount(Stream h) { return streams_event_count(h); }
 inline int readEvents(Stream h, int first, Event* out, int maxCount) {

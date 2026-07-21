@@ -421,7 +421,7 @@ void WasmHost::set_frame_state(int32_t module_id, FrameState* fs) {
   if (m) m->context.frame_state = fs;
 }
 
-void WasmHost::set_streams_table(int32_t module_id, const comp::StreamsTable* table,
+void WasmHost::set_streams_table(int32_t module_id, comp::StreamsTable* table,
                                  const comp::WarpClock* clock) {
   auto* m = find_module(module_id);
   if (m) {

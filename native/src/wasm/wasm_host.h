@@ -142,7 +142,8 @@ public:
 
   /// Set the seekable-streams registry + its beat→seconds clock for streams.*
   /// host functions (both null outside comp mode → session-clock-only world).
-  void set_streams_table(int32_t module_id, const comp::StreamsTable* table,
+  /// The table is non-const: the write verbs queue into its pendingOps.
+  void set_streams_table(int32_t module_id, comp::StreamsTable* table,
                          const comp::WarpClock* clock);
 
   /// Set the audio trigger callback.

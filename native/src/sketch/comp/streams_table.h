@@ -115,7 +115,41 @@ struct StreamEvent {
 struct StreamClipRef {
   int32_t ordinal = 0;
   double lengthBeat = 0;
+  /** The STANDARD clip duration in seconds (streams.clip_duration): exactly
+   *  the engine one-shot auto-stop's math — video: slice ÷ |speed|;
+   *  effect-only: lengthBeat at base tempo (warp-approximate; scenes are
+   *  launch-anchored while warp segments are timeline-derived). */
+  double stdDurationSec = 0;
+  /** Grid slot (startBeat ÷ bar length) — contiguous integers form a
+   *  Live-style follow GROUP (streams.clip_grid). */
+  double gridSlot = 0;
 };
+
+/**
+ * The standard clip duration (seconds) — LOCK-STEP with healSceneLaunches'
+ * one-shot auto-stop math: keep byte-identical or Auto-follow timing diverges
+ * from the auto-stop it replaces. Video: (endSec−startSec | frames/fps@30) ÷
+ * max(1e-6,|speed|); effect-only: lengthBeat · 60/bpm.
+ */
+inline double standardClipDurationSec(const ClipM& clip, double baseBPM) {
+  if (clip.hasSourceUrl) {
+    double sliceSec = -1;
+    if (clip.loop.endSec) {
+      sliceSec = *clip.loop.endSec - clip.loop.startSec;
+    } else if (clip.sourceJson.is_object() && clip.sourceJson.contains("durationFrames") &&
+               clip.sourceJson["durationFrames"].is_number()) {
+      const double fps = clip.sourceJson.contains("fps") &&
+                                 clip.sourceJson["fps"].is_number() &&
+                                 clip.sourceJson["fps"].get<double>() > 0
+                             ? clip.sourceJson["fps"].get<double>()
+                             : 30.0;
+      sliceSec = clip.sourceJson["durationFrames"].get<double>() / fps;
+    }
+    if (sliceSec >= 0) return sliceSec / std::max(1e-6, std::abs(clip.loop.speed));
+    return 0;
+  }
+  return clip.lengthBeat * 60.0 / (baseBPM > 1 ? baseBPM : 120.0);
+}
 
 struct StreamInfo {
   int64_t handle = kStreamInvalid;
@@ -135,8 +169,11 @@ struct StreamInfo {
   /** trackId for track streams; clipId for content streams; "" for clocks. */
   std::string ownerId;
   std::vector<StreamEvent> events;
-  /** Track streams: clipId → {grid ordinal, lengthBeat} (scene sync + M2). */
+  /** Track streams: clipId → {grid ordinal, lengthBeat, ...} (scene sync,
+   *  clip_duration/clip_grid queries, seek translation). */
   std::unordered_map<std::string, StreamClipRef> clipsById;
+  /** Track streams: ordinal → clipId (the streams.seek target lookup). */
+  std::vector<std::string> byOrdinalClipId;
   // ── Scene tracks only: launched-scene state, synced per frame from the
   // executor's launch map (sampleStreamsFrame). NaN ordinal = nothing playing.
   double liveOrdinal = std::numeric_limits<double>::quiet_NaN();
@@ -178,6 +215,17 @@ struct StreamsTable {
   /** Content-time overrides applied by transport-controller effects (clipId →
    *  content seconds); wins over the lazy clip-time mapping. */
   std::unordered_map<std::string, double> appliedContentSec;
+
+  /** Queued streams.seek/stop write verbs (raw, translated at drain time by
+   *  CompExecutor::drainStreamOps — the single-threaded render path). A doc
+   *  reload rebuilds the table and clobbers queued ops (edit-rate; ops are
+   *  one-frame — acceptable). */
+  struct StreamOp {
+    int32_t kind = 0;  // 0 = seek, 1 = stop
+    int64_t handle = 0;
+    double t = 0;
+  };
+  std::vector<StreamOp> pendingOps;
 
   const StreamInfo* find(int64_t h) const {
     auto it = byHandle.find(h);
@@ -297,10 +345,17 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
     const std::vector<int> channels = scene ? sceneChannelAssignments(track)
                                             : std::vector<int>();
     double extent = 0;
+    s.byOrdinalClipId.reserve(order.size());
     for (size_t ord = 0; ord < order.size(); ++ord) {
       const ClipM& clip = track.clips[order[ord]];
       t.parentByClipId[clip.id] = s.handle;
-      s.clipsById[clip.id] = {static_cast<int32_t>(ord), clip.lengthBeat};
+      StreamClipRef ref;
+      ref.ordinal = static_cast<int32_t>(ord);
+      ref.lengthBeat = clip.lengthBeat;
+      ref.stdDurationSec = standardClipDurationSec(clip, doc.baseBPM);
+      ref.gridSlot = clip.startBeat / doc.timeSignatureNum;
+      s.clipsById[clip.id] = ref;
+      s.byOrdinalClipId.push_back(clip.id);
       extent = std::max(extent, clip.startBeat + clip.lengthBeat);
       if (clip.bypassed) continue;
       if (scene && !clip.hasSourceUrl && clip.sketch.devices.empty()) continue;  // empty
@@ -402,8 +457,11 @@ inline double streamPos(const StreamInfo& s, const StreamsTable& t, const WarpCl
     case kStreamKindSceneTrack: {
       if (std::isnan(s.liveOrdinal)) return s.liveOrdinal;
       const double len = std::max(1e-9, s.liveLengthBeat);
-      const double frac =
-          std::min(1.0, std::max(0.0, (t.frame.posBeat - s.liveAnchorBeat) / len));
+      // Clamp STRICTLY below 1: a scene playing past its grid cell (the
+      // normal long-playing state) must still floor() to ITS ordinal — the
+      // documented contract (streams.h) — never the next cell's.
+      const double frac = std::min(1.0 - 0x1p-52,
+                                   std::max(0.0, (t.frame.posBeat - s.liveAnchorBeat) / len));
       return s.liveOrdinal + frac;
     }
     case kStreamKindVideoContent:
@@ -527,7 +585,7 @@ inline std::string streamsTableJson(const StreamsTable& t) {
     if (!s.clipsById.empty()) {
       nlohmann::json clips = nlohmann::json::object();
       for (const auto& [clipId, ref] : s.clipsById)
-        clips[clipId] = {ref.ordinal, ref.lengthBeat};
+        clips[clipId] = {ref.ordinal, ref.lengthBeat, ref.stdDurationSec, ref.gridSlot};
       j["clipsById"] = std::move(clips);
     }
     out["streams"].push_back(std::move(j));

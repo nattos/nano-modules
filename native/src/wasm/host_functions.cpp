@@ -304,7 +304,7 @@ static NativeSymbol resolume_symbols[] = {
 // — no JSON anywhere on this path.
 // ========================================================================
 
-static const comp::StreamsTable* get_streams(wasm_exec_env_t env) {
+static comp::StreamsTable* get_streams(wasm_exec_env_t env) {
   auto* ctx = get_ctx(env);
   return ctx ? ctx->streams_table : nullptr;
 }
@@ -498,6 +498,41 @@ static double streams_anchor_sec_fn(wasm_exec_env_t env, int64_t h) {
   return ctx->streams_clock->secondsAt(s->anchorBeat);
 }
 
+static const comp::StreamClipRef* resolve_clip_ref(wasm_exec_env_t env, int64_t h,
+                                                   int32_t ordinal) {
+  const comp::StreamInfo* s = resolve_stream(env, h);
+  if (!s || ordinal < 0 || ordinal >= static_cast<int32_t>(s->byOrdinalClipId.size()))
+    return nullptr;
+  auto it = s->clipsById.find(s->byOrdinalClipId[static_cast<size_t>(ordinal)]);
+  return it == s->clipsById.end() ? nullptr : &it->second;
+}
+
+static double streams_clip_duration_fn(wasm_exec_env_t env, int64_t h, int32_t ordinal) {
+  const auto* ref = resolve_clip_ref(env, h, ordinal);
+  return ref ? ref->stdDurationSec : std::nan("");
+}
+
+static double streams_clip_grid_fn(wasm_exec_env_t env, int64_t h, int32_t ordinal) {
+  const auto* ref = resolve_clip_ref(env, h, ordinal);
+  return ref ? ref->gridSlot : std::nan("");
+}
+
+static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t) {
+  auto* table = get_streams(env);
+  const comp::StreamInfo* s = table ? table->find(h) : nullptr;
+  if (!s || !(s->flags & comp::kStreamTriggerOnSeek)) return 0;
+  table->pendingOps.push_back({0, h, t});
+  return 1;
+}
+
+static int32_t streams_stop_fn(wasm_exec_env_t env, int64_t h) {
+  auto* table = get_streams(env);
+  const comp::StreamInfo* s = table ? table->find(h) : nullptr;
+  if (!s || s->kind != comp::kStreamKindSceneTrack) return 0;
+  table->pendingOps.push_back({1, h, 0.0});
+  return 1;
+}
+
 static int32_t streams_event_count_fn(wasm_exec_env_t env, int64_t h) {
   const auto* s = resolve_stream(env, h);
   if (!s) {
@@ -561,6 +596,10 @@ static NativeSymbol streams_symbols[] = {
     {"fps", reinterpret_cast<void*>(streams_fps_fn), "(I)F", nullptr},
     {"anchor", reinterpret_cast<void*>(streams_anchor_fn), "(I)F", nullptr},
     {"anchor_sec", reinterpret_cast<void*>(streams_anchor_sec_fn), "(I)F", nullptr},
+    {"clip_duration", reinterpret_cast<void*>(streams_clip_duration_fn), "(Ii)F", nullptr},
+    {"clip_grid", reinterpret_cast<void*>(streams_clip_grid_fn), "(Ii)F", nullptr},
+    {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IF)i", nullptr},
+    {"stop", reinterpret_cast<void*>(streams_stop_fn), "(I)i", nullptr},
     {"event_count", reinterpret_cast<void*>(streams_event_count_fn), "(I)i", nullptr},
     {"read_events", reinterpret_cast<void*>(streams_read_events_fn), "(Iiii)i", nullptr},
     {"event_lower_bound", reinterpret_cast<void*>(streams_event_lb_fn), "(IF)i", nullptr},

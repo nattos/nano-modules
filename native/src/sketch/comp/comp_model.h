@@ -301,6 +301,8 @@ struct BackgroundM {
 
 struct CompositionM {
   double baseBPM = 120;
+  /** meta.timeSignature[0] (beats per bar; scene grid cell width). */
+  double timeSignatureNum = 4;
   BackgroundM background;
   std::vector<TrackM> tracks;
 };
@@ -496,6 +498,11 @@ inline CompositionM parseComposition(const nlohmann::json& j) {
   if (j.contains("meta") && j["meta"].is_object()) {
     const auto& meta = j["meta"];
     comp.baseBPM = meta.value("baseBPM", 120.0);
+    if (meta.contains("timeSignature") && meta["timeSignature"].is_array() &&
+        !meta["timeSignature"].empty() && meta["timeSignature"][0].is_number()) {
+      const double n = meta["timeSignature"][0].get<double>();
+      if (n > 0) comp.timeSignatureNum = n;
+    }
     if (meta.contains("background") && meta["background"].is_object()) {
       comp.background.mode = meta["background"].value("mode", std::string("black"));
       if (meta["background"].contains("color") && meta["background"]["color"].is_string())

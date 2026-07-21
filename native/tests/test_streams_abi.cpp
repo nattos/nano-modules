@@ -203,6 +203,44 @@ TEST_CASE("content position: lazy clip-time mapping, override wins, NaN off-ends
   CHECK_THAT(comp::contentPosSec(still, t, b.clock), WithinAbs(0.0, kTol));
 }
 
+TEST_CASE("clip refs: standard duration, grid slots, ordinal lookup", "[streams]") {
+  Built b = build();
+  const auto& scenes = streamOf(b.table, comp::streamHandleOf("track:scenes"));
+  // byOrdinal inverts the grid order: s1(0), s2(4), s3(8) at 4 beats/bar.
+  REQUIRE(scenes.byOrdinalClipId.size() == 3);
+  CHECK(scenes.byOrdinalClipId[0] == "s1");
+  CHECK(scenes.byOrdinalClipId[1] == "s2");
+  CHECK(scenes.byOrdinalClipId[2] == "s3");
+  // Grid slots = startBeat / timeSignature numerator (default 4).
+  CHECK_THAT(scenes.clipsById.at("s1").gridSlot, WithinAbs(0.0, kTol));
+  CHECK_THAT(scenes.clipsById.at("s2").gridSlot, WithinAbs(1.0, kTol));
+  CHECK_THAT(scenes.clipsById.at("s3").gridSlot, WithinAbs(2.0, kTol));
+  // Standard duration: s2 is video (60f @ 30fps → 2 s slice at speed 1);
+  // s1/s3 are effect-only (lengthBeat 4 at 120 BPM → 2 s).
+  CHECK_THAT(scenes.clipsById.at("s2").stdDurationSec, WithinAbs(2.0, kTol));
+  CHECK_THAT(scenes.clipsById.at("s1").stdDurationSec, WithinAbs(2.0, kTol));
+  // The video slice honors endSec−startSec ÷ |speed| when present: clipB has
+  // no endSec → 120f/30 = 4 s at speed 1.
+  const auto& trackA = streamOf(b.table, comp::streamHandleOf("track:trackA"));
+  CHECK_THAT(trackA.clipsById.at("clipB").stdDurationSec, WithinAbs(4.0, kTol));
+}
+
+TEST_CASE("scene-track pos() clamps strictly below the next ordinal", "[streams]") {
+  Built b = build();
+  auto& t = b.table;
+  comp::StreamInfo* s = t.findMutable(comp::streamHandleOf("track:scenes"));
+  REQUIRE(s != nullptr);
+  s->liveOrdinal = 1;         // s2 playing
+  s->liveAnchorBeat = 10;
+  s->liveLengthBeat = 4;
+  t.frame.posBeat = 100;      // way past the grid cell — the NORMAL state
+  const double pos = comp::streamPos(*s, t, b.clock, 0);
+  CHECK(pos < 2.0);
+  CHECK(std::floor(pos) == 1.0);  // still THIS scene's ordinal
+  t.frame.posBeat = 10;           // launch instant: fraction exactly 0
+  CHECK_THAT(comp::streamPos(*s, t, b.clock, 0), WithinAbs(1.0, kTol));
+}
+
 TEST_CASE("streamsTableJson matches the committed golden (web twin replays it)",
           "[streams]") {
   // NATIVE is the reference implementation for the streams registry (the

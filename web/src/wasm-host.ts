@@ -655,6 +655,17 @@ export class WasmHost {
           if (!s || (s.kind !== 5 && s.kind !== 6)) return NaN;
           return this.streams!.secondsAt(s.anchorBeat);
         },
+        clip_duration: (h: bigint, ordinal: number): number => {
+          const s = this.streams?.find(h);
+          return s ? this.streams!.clipDuration(s, ordinal) : NaN;
+        },
+        clip_grid: (h: bigint, ordinal: number): number => {
+          const s = this.streams?.find(h);
+          return s ? this.streams!.clipGrid(s, ordinal) : NaN;
+        },
+        seek: (h: bigint, t: number): number =>
+          this.streams?.queueSeek(h, t) ? 1 : 0,
+        stop: (h: bigint): number => (this.streams?.queueStop(h) ? 1 : 0),
         event_count: (h: bigint): number => {
           const s = this.streams?.find(h);
           if (!s) return !this.streams && h === 1n ? 0 : -1;

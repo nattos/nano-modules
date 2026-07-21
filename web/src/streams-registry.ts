@@ -68,8 +68,11 @@ export interface StreamRec {
   name: string;
   ownerId: string;
   events: StreamEventRec[];
-  /** Track streams: clipId → [grid ordinal, lengthBeat]. */
-  clipsById: Map<string, [number, number]>;
+  /** Track streams: clipId → [ordinal, lengthBeat, stdDurationSec, gridSlot]
+   *  (older payloads may carry only the first two — read defensively). */
+  clipsById: Map<string, number[]>;
+  /** Track streams: ordinal → clipId (seek translation; inverted at load). */
+  byOrdinalClipId: string[];
   // Content streams: the lazy position-eval context.
   loop: ClipLoopConfig | null;
   anchorBeat: number;
@@ -99,6 +102,11 @@ export class StreamsRegistry {
 
   /** Transport-controller content-time overrides (clipId → content seconds). */
   appliedContentSec = new Map<string, number>();
+
+  /** Queued streams.seek/stop write verbs from effect imports; drained by
+   *  executor-host after the transport pre-pass (translated to
+   *  comp_launch_scene/comp_stop_scene). One-frame-latency, like triggers. */
+  pendingOps: { kind: 'seek' | 'stop'; handle: bigint; t: number }[] = [];
 
   /** Warp-aware beat→seconds map, rebuilt with the document (makeWarpClock). */
   secondsAt: (beat: number) => number = (beat) => beat * 0.5;
@@ -133,7 +141,8 @@ export class StreamsRegistry {
           channel: e[4] === null || e[4] === undefined ? NaN : e[4],
         })),
         clipsById: new Map(Object.entries(s.clipsById ?? {}).map(
-          ([clipId, ref]) => [clipId, ref as [number, number]])),
+          ([clipId, ref]) => [clipId, ref as number[]])),
+        byOrdinalClipId: [],
         loop: s.loop ?? null,
         anchorBeat: s.anchorBeat ?? 0,
         lengthBeat: s.lengthBeat ?? 0,
@@ -143,6 +152,7 @@ export class StreamsRegistry {
         liveAnchorBeat: 0,
         liveLengthBeat: 0,
       };
+      for (const [clipId, ref] of rec.clipsById) rec.byOrdinalClipId[ref[0]] = clipId;
       this.byHandle.set(rec.handle, rec);
       this.streams.push(rec);
     }
@@ -245,7 +255,10 @@ export class StreamsRegistry {
       case StreamKind.SceneTrack: {
         if (Number.isNaN(s.liveOrdinal)) return s.liveOrdinal;
         const len = Math.max(1e-9, s.liveLengthBeat);
-        const frac = Math.min(1, Math.max(0, (this.frame.posBeat - s.liveAnchorBeat) / len));
+        // Strictly < 1 (lock-step with streams_table.h): a long-playing scene
+        // must floor() to ITS ordinal, never the next cell's.
+        const frac = Math.min(1 - Number.EPSILON,
+                              Math.max(0, (this.frame.posBeat - s.liveAnchorBeat) / len));
         return s.liveOrdinal + frac;
       }
       case StreamKind.VideoContent:
@@ -298,6 +311,37 @@ export class StreamsRegistry {
       default:
         return null;
     }
+  }
+
+  /** streams.clip_duration: the standard clip duration (seconds) of ordinal N
+   *  on a track stream (precomputed native-side; see streams_table.h). */
+  clipDuration(s: StreamRec, ordinal: number): number {
+    const clipId = s.byOrdinalClipId[ordinal];
+    const ref = clipId !== undefined ? s.clipsById.get(clipId) : undefined;
+    return ref?.[2] ?? NaN;
+  }
+
+  /** streams.clip_grid: the grid slot of ordinal N (group contiguity). */
+  clipGrid(s: StreamRec, ordinal: number): number {
+    const clipId = s.byOrdinalClipId[ordinal];
+    const ref = clipId !== undefined ? s.clipsById.get(clipId) : undefined;
+    return ref?.[3] ?? NaN;
+  }
+
+  /** streams.seek/stop: queue a write verb (validated per the same rules as
+   *  the native import — seek needs TriggerOnSeek, stop a scene track). */
+  queueSeek(h: bigint, t: number): boolean {
+    const s = this.find(h);
+    if (!s || !(s.flags & StreamFlags.TriggerOnSeek)) return false;
+    this.pendingOps.push({ kind: 'seek', handle: BigInt.asUintN(64, h), t });
+    return true;
+  }
+
+  queueStop(h: bigint): boolean {
+    const s = this.find(h);
+    if (!s || s.kind !== StreamKind.SceneTrack) return false;
+    this.pendingOps.push({ kind: 'stop', handle: BigInt.asUintN(64, h), t: 0 });
+    return true;
   }
 
   /** First event index with time >= t (event_lower_bound). */

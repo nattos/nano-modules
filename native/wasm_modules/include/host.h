@@ -346,6 +346,12 @@ enum class Capability {
                            //   frame plays). Lives in the clip's separate transport
                            //   section, executed in a pre-pass BEFORE video decode;
                            //   reads its input clock via streams::parent() (streams.h)
+  TransportSection,        // belongs in the transport section WITHOUT driving content
+                           //   time (followers/autopilots: read streams, launch/stop
+                           //   scenes via streams.seek/stop). A section holding one
+                           //   OWNS its clip's end-of-life (the engine's config
+                           //   auto-stop defers to it); the clip's own play mode
+                           //   keeps driving underneath
 };
 
 inline const char* capabilityName(Capability c) {
@@ -364,6 +370,7 @@ inline const char* capabilityName(Capability c) {
     case Capability::SketchInputSource:      return "sketch_input_source";
     case Capability::SketchOutputSource:     return "sketch_output_source";
     case Capability::TransportController:    return "transport_controller";
+    case Capability::TransportSection:       return "transport_section";
   }
   return "";
 }

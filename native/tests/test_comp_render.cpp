@@ -1766,7 +1766,7 @@ TEST_CASE("transport pre-pass: probe publishes same-frame resolved rows (Metal)"
   })));
   // The probe reads its parent stream through the streams.* imports — point
   // the loaded bundles at this executor's live registry + clock.
-  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
 
   cx.play();
   cx.update(0.5);  // 120 BPM: +1 beat → transport at 0.5 s
@@ -1846,7 +1846,7 @@ TEST_CASE("transport_ended stops a driven scene (Metal)",
   cx.loadDocument(mkComposition(json::array({
       mkTrack("st", json::array({std::move(scene)}), {{"kind", "scene"}}),
   })));
-  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
 
   cx.play();
   cx.launchScene("st", "s1");
@@ -1881,7 +1881,7 @@ TEST_CASE("core.transport.time matches clipSourceTimeAt (Metal)",
                                          {"speed", 2.0}})})},
       {"wires", json::array()}};
   cx.loadDocument(mkComposition(json::array({mkTrack("t1", json::array({clip}))})));
-  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
   cx.setTransportMode(false);
   cx.play();
 
@@ -1931,7 +1931,7 @@ TEST_CASE("core.transport.beat_sync consumes per-beat, BPM-locked (Metal)",
                                         {{"endSec", 8.0}, {"syncBeats", 4.0}})})},
       {"wires", json::array()}};
   cx.loadDocument(mkComposition(json::array({mkTrack("t1", json::array({clip}))})));
-  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
   cx.setTransportMode(false);
   cx.play();
   cx.update(1.0);  // 120 BPM: +2 beats
