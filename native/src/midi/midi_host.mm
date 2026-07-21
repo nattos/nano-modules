@@ -199,6 +199,24 @@ struct MidiHost::Impl {
         }
       }
     }
+    // `knownAs` alias fan-out: a wire may reference an alias uuid of a device
+    // (a ghost adopted from another profile/composition — see the web's
+    // DeviceInstance.knownAs). Duplicate the canonical entry under each alias
+    // so those rails read the same values. Canonical entries never lose.
+    if (library.is_array()) {
+      for (const auto& inst : library) {
+        if (!inst.is_object()) continue;
+        auto ka = inst.find("knownAs");
+        if (ka == inst.end() || !ka->is_array() || ka->empty()) continue;
+        auto src = out.find("midi:" + inst.value("id", std::string()));
+        if (src == out.end()) continue;
+        for (const auto& alias : *ka) {
+          if (!alias.is_string()) continue;
+          const std::string key = "midi:" + alias.get<std::string>();
+          if (out.find(key) == out.end()) out[key] = *src;
+        }
+      }
+    }
     return out;
   }
 };

@@ -943,6 +943,19 @@ if(APPLE)
   set_source_files_properties(src/bridge/barrel_runtime.mm src/midi/midi_host.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
+  # Headless MidiHost goldens (library/alias/sim table logic; never start()s
+  # CoreMIDI). Compiles midi_host.mm directly — it lives in bridge_server,
+  # which a test can't link (process-global executor state).
+  if(TARGET Catch2::Catch2WithMain)
+    add_executable(test_midi_host tests/test_midi_host.cpp src/midi/midi_host.mm)
+    target_include_directories(test_midi_host PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_midi_host PRIVATE
+      nlohmann_json::nlohmann_json Catch2::Catch2WithMain
+      "-framework CoreMIDI" "-framework CoreFoundation" "-framework Foundation")
+    set_source_files_properties(src/midi/midi_host.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    catch_discover_tests(test_midi_host)
+  endif()
+
   # Config-driven CLI test runner — JSON config on stdin, JSON pixel
   # result on stdout. Mirrors web/public/gpu-test-runner.html for the
   # dual-backend tests.

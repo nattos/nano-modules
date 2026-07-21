@@ -20,6 +20,7 @@ import { runInAction, toJS } from 'mobx';
 import { getDeviceTemplate } from '../midi/device-registry';
 import { forkInstance } from '../midi/matching';
 import { MidiManager } from '../midi/midi-manager';
+import { libraryKnownIds } from '../midi/midi-types';
 import type { ControlMapping, DeviceInstance, PhysicalIdentity } from '../midi/midi-types';
 import { buildExternalScalars } from '../midi/wire-lowering';
 import { appState } from './app-state';
@@ -255,11 +256,56 @@ export class MidiController {
    */
   pushExternalScalars(): void {
     if (!this.enginePush) return;
+    // Alias resolution: a wire referencing a `knownAs` uuid reads the
+    // canonical device's values while the rail keeps the wire's own key.
+    const aliasToCanonical = new Map<string, string>();
+    for (const inst of appState.local.midi.library) {
+      for (const a of inst.knownAs ?? []) aliasToCanonical.set(a, inst.id);
+    }
     const json = buildExternalScalars(
-      appState.database.sketches, id => this.manager.getValues(id));
+      appState.database.sketches, id => this.manager.getValues(id),
+      aliasToCanonical.size ? (id => aliasToCanonical.get(id) ?? id) : undefined);
     if (json === this.lastPushedJson) return;
     this.lastPushedJson = json;
     this.enginePush(json);
+  }
+
+  /** Every uuid the library answers to (ids + knownAs aliases, deleted
+   *  included) — the "known" set ghost-device detection tests against. */
+  knownDeviceIds(): Set<string> {
+    return libraryKnownIds(appState.local.midi.library);
+  }
+
+  /**
+   * Adopt a ghost device: create a library instance whose id IS the ghost
+   * uuid, so every wire referencing it goes live with ZERO sketch edits.
+   * The instance starts unbound — claim hardware via the normal define flow.
+   */
+  adoptGhost(ghostUuid: string, templateId: string): DeviceInstance {
+    const existing = this.instance(ghostUuid);
+    if (existing) return existing;
+    const template = getDeviceTemplate(templateId);
+    if (!template) throw new Error(`[midi] unknown template id: ${templateId}`);
+    const fork = forkInstance(template, this.libraryNames());
+    fork.id = ghostUuid;
+    return this.addFork(fork);
+  }
+
+  /**
+   * "This is my X": record that `instanceId` also answers to `ghostUuid`
+   * (see DeviceInstance.knownAs). Sketch wires stay untouched; both hosts'
+   * external-scalar tables fan out to the alias on the next push/mirror.
+   */
+  addKnownAs(instanceId: string, ghostUuid: string): void {
+    const instance = this.instance(instanceId);
+    if (!instance || instance.id === ghostUuid) return;
+    if ((instance.knownAs ?? []).includes(ghostUuid)) return;
+    runInAction(() => {
+      instance.knownAs = [...(instance.knownAs ?? []), ghostUuid];
+      instance.updatedAt = Date.now();
+    });
+    this.schedulePersist(instance);   // persists + re-mirrors the library
+    this.pushExternalScalars();       // web engine rails pick up the alias now
   }
 
   // --- Internals ---

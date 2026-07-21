@@ -75,6 +75,73 @@ export function collectDeviceWires(
   return groups;
 }
 
+/** One MISSING device reconstructed from the wires that reference it. */
+export interface GhostDevice {
+  /** The uuid the wires reference — no library device answers to it. */
+  deviceId: string;
+  wireCount: number;
+  sketchCount: number;
+  perSketch: { sketchId: string; wireIds: string[] }[];
+  /** Distinct physical controls used, with the gesture set seen per control. */
+  controls: { controlId: string; gestures: ControlGesture[] }[];
+}
+
+/**
+ * Group every wire referencing an UNKNOWN `midi:<uuid>` into per-device
+ * "ghosts" — one per missing uuid, with control/wire/sketch tallies. The
+ * Devices tab renders these as placeholder cards whose adopt/alias actions
+ * revive the mappings WITHOUT rewriting any sketch wires (the uuid either
+ * becomes a real instance id, or a `knownAs` alias of one).
+ * `knownDeviceIds` should be `libraryKnownIds(library)` — ids ∪ aliases,
+ * deleted included (a wire to a deleted device is restorable, not a ghost).
+ */
+export function collectGhostDevices(
+  sketches: Record<string, Sketch | undefined>,
+  sketchIds: Iterable<string>,
+  knownDeviceIds: ReadonlySet<string>,
+): GhostDevice[] {
+  const byDevice = new Map<string, {
+    perSketch: Map<string, string[]>;
+    gestures: Map<string, Set<ControlGesture>>;
+    wireCount: number;
+  }>();
+  const seen = new Set<string>();
+  for (const sketchId of sketchIds) {
+    if (seen.has(sketchId)) continue;
+    seen.add(sketchId);
+    const sketch = sketches[sketchId];
+    if (!sketch?.wires?.length) continue;
+    for (const wire of sketch.wires) {
+      const devId = midiInstanceIdFromKey(wire.src.instanceKey);
+      if (!devId || knownDeviceIds.has(devId)) continue;
+      let g = byDevice.get(devId);
+      if (!g) {
+        g = { perSketch: new Map(), gestures: new Map(), wireCount: 0 };
+        byDevice.set(devId, g);
+      }
+      g.wireCount++;
+      const ids = g.perSketch.get(sketchId) ?? [];
+      ids.push(wire.id);
+      g.perSketch.set(sketchId, ids);
+      const parsed = parseControlId(wire.src.field);
+      if (parsed) {
+        const gs = g.gestures.get(parsed.controlId) ?? new Set<ControlGesture>();
+        gs.add(parsed.gesture);
+        g.gestures.set(parsed.controlId, gs);
+      }
+    }
+  }
+  return [...byDevice.entries()].map(([deviceId, g]) => ({
+    deviceId,
+    wireCount: g.wireCount,
+    sketchCount: g.perSketch.size,
+    perSketch: [...g.perSketch.entries()].map(([sketchId, wireIds]) => ({ sketchId, wireIds })),
+    controls: [...g.gestures.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([controlId, gestures]) => ({ controlId, gestures: [...gestures] })),
+  }));
+}
+
 /** Per-sketch group of DEAD `midi:` wires (see collectDeadMidiWires). */
 export interface DeadMidiWireGroup {
   sketchId: string;

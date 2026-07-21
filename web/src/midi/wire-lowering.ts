@@ -37,15 +37,21 @@ export function collectDeviceWireRefs(
  * The external-scalar JSON (`{"midi:<uuid>": {"b0/e05/turn": 0.42}}`).
  * `values` resolves an instance's current merged live+sim table
  * (`MidiManager.getValues`). Returns '{}' when nothing is wired/valued.
+ *
+ * `resolveId` maps a wire-referenced uuid to the CANONICAL instance that
+ * answers for it (`knownAs` aliases): the output entry keeps the WIRE's uuid
+ * (that's the rail key the executor looks up) while the values come from the
+ * aliased device. Omitted → identity.
  */
 export function buildExternalScalars(
   sketches: Record<string, Sketch | undefined>,
   values: (deviceInstanceId: string) => ReadonlyMap<string, number>,
+  resolveId?: (referencedId: string) => string,
 ): string {
   const refs = collectDeviceWireRefs(sketches);
   const out: Record<string, Record<string, number>> = {};
   for (const id of [...refs.keys()].sort()) {
-    const table = values(id);
+    const table = values(resolveId ? resolveId(id) : id);
     let entry: Record<string, number> | null = null;
     for (const field of [...refs.get(id)!].sort()) {
       const v = table.get(field);

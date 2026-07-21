@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Sketch, Wire } from '../../sketch-types';
-import { collectDeadMidiWires, collectDeviceWires } from './device-wires-model';
+import { collectDeadMidiWires, collectDeviceWires, collectGhostDevices } from './device-wires-model';
 
 const DEV = 'dev-1';
 
@@ -114,5 +114,45 @@ describe('collectDeadMidiWires', () => {
     const dead = collectDeadMidiWires(sketches, ['a', 'a', 'missing'], new Set([DEV]));
     expect(dead.total).toBe(0);
     expect(dead.groups).toEqual([]);
+  });
+});
+
+describe('collectGhostDevices', () => {
+  it('groups dead wires per missing uuid with control/gesture/sketch tallies', () => {
+    const sketches: Record<string, Sketch | undefined> = {
+      a: sketch([
+        wire('w1', 'b0/e05/turn', 'bc', 'brightness', 'midi:ghost-1'),
+        wire('w2', 'b0/e05/press', 'bc', 'contrast', 'midi:ghost-1'),
+        wire('w3', 'b1/e08/turn', 'bc', 'saturation', 'midi:ghost-2'),
+        wire('w4', 'b0/e00/turn', 'bc', 'hue'),                  // live (DEV)
+        wire('w5', 'output', 'bc', 'gain', 'lfo'),               // module wire
+      ]),
+      b: sketch([
+        wire('w6', 'b0/e05/shift', 'bc', 'mix', 'midi:ghost-1'),
+      ]),
+    };
+    const ghosts = collectGhostDevices(sketches, ['a', 'b'], new Set([DEV]));
+    expect(ghosts.map(g => g.deviceId).sort()).toEqual(['ghost-1', 'ghost-2']);
+    const g1 = ghosts.find(g => g.deviceId === 'ghost-1')!;
+    expect(g1.wireCount).toBe(3);
+    expect(g1.sketchCount).toBe(2);
+    expect(g1.perSketch).toEqual([
+      { sketchId: 'a', wireIds: ['w1', 'w2'] },
+      { sketchId: 'b', wireIds: ['w6'] },
+    ]);
+    expect(g1.controls).toEqual([
+      { controlId: 'b0/e05', gestures: ['turn', 'press', 'shift'] },
+    ]);
+    const g2 = ghosts.find(g => g.deviceId === 'ghost-2')!;
+    expect(g2.wireCount).toBe(1);
+    expect(g2.controls).toEqual([{ controlId: 'b1/e08', gestures: ['turn'] }]);
+  });
+
+  it('treats knownAs aliases as known (no ghost)', () => {
+    const sketches: Record<string, Sketch | undefined> = {
+      a: sketch([wire('w1', 'b0/e05/turn', 'bc', 'brightness', 'midi:aliased-uuid')]),
+    };
+    const ghosts = collectGhostDevices(sketches, ['a'], new Set([DEV, 'aliased-uuid']));
+    expect(ghosts).toEqual([]);
   });
 });

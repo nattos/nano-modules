@@ -160,9 +160,34 @@ export interface DeviceInstance<C = unknown> {
   config: C;
   /** Physical units claimed by this instance. */
   identities: PhysicalIdentity[];
+  /**
+   * Alias uuids this device also answers to. Pure resolution keys — a wire
+   * whose `midi:<uuid>` matches an alias resolves to THIS instance (external
+   * scalar tables fan out per alias on both hosts), the canonical `id` never
+   * changes, and the list stays flat (an alias is never itself aliased).
+   * Populated by the ghost-device "this is my X" claim, so compositions from
+   * another profile/person keep working without rewriting their wires.
+   */
+  knownAs?: string[];
   /** Soft delete — kept around for wire provenance + restore. */
   deleted?: boolean;
   updatedAt: number;
+}
+
+/**
+ * Every uuid the library answers to: each instance's canonical `id` plus all
+ * `knownAs` aliases. DELETED instances included — a wire to a deleted device
+ * is restorable, not a ghost.
+ */
+export function libraryKnownIds(
+  library: readonly Pick<DeviceInstance, 'id' | 'knownAs'>[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const inst of library) {
+    ids.add(inst.id);
+    for (const a of inst.knownAs ?? []) ids.add(a);
+  }
+  return ids;
 }
 
 // --- Endpoint identity helpers ---
