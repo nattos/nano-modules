@@ -22,6 +22,10 @@ namespace streams_probe {
 
 struct State {
   float rate = 1.0f;
+  /** Latch transport_ended once transport_time_sec reaches this; 0 = never.
+   *  (The scene auto-stop test's scripted "content finished" trigger.) */
+  float endAfterSec = 0.0f;
+  bool ended = false;
 };
 
 int32_t is_identity(void* self) {
@@ -33,6 +37,8 @@ void module_init() {
   state::init("testonly.streams_probe", {1, 0, 0},
     state::Schema()
       .floatField("rate", 1.0f, -4.f, 4.f, state::PrimaryInput).label("Rate", "Rate")
+      .floatField("endAfterSec", 0.0f, 0.f, 600.f, state::PrimaryInput, nullptr, 0.f, "s")
+        .label("End After", "End")
       // ── The seen_* mirror of the streams surface ──
       .floatField("seen_parent_kind", -1.f, -1.f, 8.f, state::SecondaryOutput, "unsigned")
         .label("Parent Kind", "PKi")
@@ -57,6 +63,8 @@ void module_init() {
       // ── The reserved transport-controller output contract ──
       .floatField("transport_time_sec", 0.f, -1e6f, 1e6f, state::SecondaryOutput, "unsigned")
         .label("Time", "T")
+      .floatField("transport_ended", 0.f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
+        .label("Ended", "End")
       .capability(state::Capability::TransportController)
   );
 }
@@ -109,7 +117,10 @@ void tick(void* self, double dt) {
   pub("seen_stream_count", streams::count());
 
   const double parentSec = streams::posSec(parent);
-  pub("transport_time_sec", std::isnan(parentSec) ? 0.0 : s->rate * parentSec);
+  const double timeSec = std::isnan(parentSec) ? 0.0 : s->rate * parentSec;
+  pub("transport_time_sec", timeSec);
+  if (s->endAfterSec > 0.0f && timeSec >= s->endAfterSec) s->ended = true;
+  pub("transport_ended", s->ended ? 1.0 : 0.0);
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -119,6 +130,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     if (state::pathIs(pb + off[i], len[i], "rate")) s->rate = state::patchFloat(i);
+    else if (state::pathIs(pb + off[i], len[i], "endAfterSec")) {
+      s->endAfterSec = state::patchFloat(i);
+      s->ended = false;  // re-arm on edit
+    }
   }
 }
 

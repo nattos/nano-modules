@@ -1824,3 +1824,43 @@ TEST_CASE("videoDescFor: a driven clip ships transport:true and no loop",
   // Row order json matches the driven set.
   CHECK(json::parse(h.cx.transportOrderJson()) == json::array({"v1"}));
 }
+
+TEST_CASE("transport_ended stops a driven scene (Metal)",
+          "[comp_transport][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+  REQUIRE(hx.bundles.loadBundleFile(TESTONLY_WASM_PATH, *hx.registry,
+                                    hx.backend.get(), nullptr) > 0);
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // A scene track whose only scene is transport-driven; the probe latches
+  // transport_ended once its published time reaches 1 second.
+  json scene = mkClip("s1", 0, 4,
+                      json::array({mkDevice("g", "source.solid_color",
+                                            {{"color", {1.0, 0.0, 0.0}}})}));
+  scene["transport"] = {
+      {"devices", json::array({mkDevice("tc", "testonly.streams_probe",
+                                        {{"endAfterSec", 1.0}})})},
+      {"wires", json::array()}};
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("st", json::array({std::move(scene)}), {{"kind", "scene"}}),
+  })));
+  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+
+  cx.play();
+  cx.launchScene("st", "s1");
+  cx.update(0.0);
+  cx.transportResolve(0.0);
+  CHECK(json::parse(cx.sceneStatesJson()).contains("st"));  // playing
+
+  // Advance past 1 s of transport: the probe latches ended, the NEXT heal
+  // (top of update) stops the launch — the 1-frame readback loop.
+  uint32_t flags = 0;
+  for (int i = 0; i < 5 && json::parse(cx.sceneStatesJson()).contains("st"); i++) {
+    flags |= cx.update(0.6);
+    cx.transportResolve(0.6);
+  }
+  CHECK(!json::parse(cx.sceneStatesJson()).contains("st"));
+  CHECK((flags & comp::kCompScenesChanged) != 0);
+}

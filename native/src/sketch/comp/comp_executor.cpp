@@ -357,10 +357,17 @@ void CompExecutor::healSceneLaunches() {
       }
     }
     bool stop = !scene;
+    // Transport-DRIVEN scenes: the controller decides "content finished" —
+    // its latched transport_ended (read by the last pre-pass) replaces the
+    // config-derived slice math below. 1-frame latency, same class as the
+    // trigger readback.
+    if (scene && transportDeviceOf(*scene, catalog_)) {
+      if (transportEnded_.count(it->second.sceneId)) stop = true;
+    }
     // One-shot scenes auto-stop once their content elapses (the track goes
     // empty). Video: the source slice at its speed; effect-only: the scene's
     // nominal lengthBeat. Loop-mode scenes play until replaced/stopped.
-    if (scene && scene->loop.mode == ClipPlayMode::OneShot) {
+    else if (scene && scene->loop.mode == ClipPlayMode::OneShot) {
       if (scene->hasSourceUrl) {
         double sliceSec = -1;
         if (scene->loop.endSec) {
