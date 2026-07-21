@@ -179,6 +179,15 @@ bool CompositionCache::find_by_marker(const std::string& uuid, CachedClip& out) 
   return false;
 }
 
+bool CompositionCache::set_channel_by_marker(const std::string& uuid, int channel) {
+  if (uuid.empty()) return false;
+  platform::LockGuard<platform::Mutex> lock(mutex_);
+  for (auto& cc : clips_) {
+    if (cc.marker_uuid == uuid) { cc.channel = channel; return true; }
+  }
+  return false;
+}
+
 bool CompositionCache::find_by_placement(int layer, int clip, CachedClip& out) const {
   platform::LockGuard<platform::Mutex> lock(mutex_);
   for (const auto& cc : clips_) {

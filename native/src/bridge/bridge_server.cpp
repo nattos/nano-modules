@@ -527,6 +527,12 @@ bool BridgeServer::handle_client_command(int /*client_id*/, const std::string& m
     // Channel is now an FF_TYPE_TEXT param — write the integer as a string.
     resolume_client_->set("/parameter/by-id/" + std::to_string(cc.channel_param_id),
                           cc.channel_param_id, std::to_string(channel));
+    // Optimistically move the clip in the cache so /global/channels updates on
+    // THIS tick (publish_trigger_channels runs later in the same pump
+    // iteration) — the UI otherwise showed nothing until Resolume's next full
+    // composition rebroadcast, which still reconciles/overrides this.
+    core_.composition_cache().set_channel_by_marker(
+        j["key"].get<std::string>(), channel - 1);
     trig_log("reassign_channel key=%s -> ch=%d (param %lld)",
              j["key"].get<std::string>().c_str(), channel,
              (long long)cc.channel_param_id);

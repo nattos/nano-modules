@@ -58,6 +58,11 @@ public:
   /// Look up a cached clip by its NanoLooper Ch marker uuid (the web's clip
   /// `key`). Returns false with `out` untouched when no clip carries it.
   bool find_by_marker(const std::string& uuid, CachedClip& out) const;
+  /// Optimistically move a marker's clip to a new 0-based channel (web-driven
+  /// reassignment): keeps the cache — and therefore /global/channels — honest
+  /// immediately, instead of waiting for Resolume's next full composition
+  /// rebroadcast (which reconciles/overrides this either way).
+  bool set_channel_by_marker(const std::string& uuid, int channel);
   /// Look up a cached clip by its 0-based composition layer + clip index.
   bool find_by_placement(int layer, int clip, CachedClip& out) const;
 
