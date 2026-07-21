@@ -61,6 +61,10 @@ export class DashboardEditor extends MobxLitElement {
         const v = st?.[fp];
         return typeof v === 'number' ? v : 0;
       },
+      getModulation: (fp: string) => {
+        const m = appState.local.engine.modulationData[key]?.[fp];
+        return m && typeof m.value === 'number' ? m : null;
+      },
       setValue: (fp: string, v: any) =>
         appController.setDashboardKnob(sId, key, knobIndex(fp), v as number),
       beginContinuousEdit: (fp: string, v: any): ContinuousEditHandle => {

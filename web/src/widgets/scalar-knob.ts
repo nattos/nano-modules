@@ -20,6 +20,7 @@
 import { LitElement, html, css, nothing, svg } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { CancelReason, PointerDragOp } from '../utils/pointer-drag-op';
+import { modBandGeometry } from './scalar-slider';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
 
 /** Degrees of rotation spanning the whole [min,max] range (gap at the bottom). */
@@ -85,6 +86,17 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
     :host([muted]) { opacity: 0.4; }
     :host([muted]) .fill { stroke: var(--app-text-color2, #888); filter: none; }
     :host([muted]) .pointer { stroke: var(--app-text-color2, #888); }
+    /* Modulation overlay — outer arc twin of scalar-slider's bottom strip:
+       .mod-band is the dim range a wire can drive the knob through; .mod-fill
+       is the bright neutral→live-value arc. Warm highlight, distinct from the
+       blue base-value arc. */
+    .mod-band { stroke: var(--app-mod-color, #e0a32a); opacity: 0.28; }
+    .mod-fill { stroke: var(--app-mod-color, #e0a32a); }
+    /* A modulated knob is actively relaying a wire even when its AUTHORED value
+       is inert (muted) — keep the live band readable, only the blue parts dim. */
+    :host([muted][modulated]) { opacity: 0.85; }
+    :host([muted][modulated]) .fill,
+    :host([muted][modulated]) .pointer { opacity: 0.4; }
     .knob-hub { fill: rgba(0,0,0,0.35); stroke: var(--app-tint-5); }
     .dial:hover .knob-hub { stroke: var(--app-hi-color2, #4169E1); }
     .label { color: var(--app-text-color2, #b0b0b0); overflow: hidden; text-overflow: ellipsis;
@@ -103,12 +115,38 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
     super.connectedCallback();
     if (!this.hasAttribute('tabindex')) this.setAttribute('tabindex', '0');
     this.addEventListener('keydown', this.handleHostKeyDown);
+    this.startModPoll();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener('keydown', this.handleHostKeyDown);
     this.dragOp?.dispose();
+    if (this.modRaf !== 0) {
+      cancelAnimationFrame(this.modRaf);
+      this.modRaf = 0;
+    }
+  }
+
+  // Same scheme as scalar-slider: modulation moves every frame but the knob is
+  // not a MobX reactive element, so poll the binding per animation frame and
+  // only re-render when the band actually changes. One cheap lookup per frame
+  // when idle; no churn for unmodulated knobs.
+  private modRaf = 0;
+  private lastModKey = '';
+  private startModPoll() {
+    if (typeof requestAnimationFrame !== 'function' || this.modRaf !== 0) return;
+    const tick = () => {
+      this.modRaf = requestAnimationFrame(tick);
+      const m = this.binding?.getModulation?.(this.fieldPath) ?? null;
+      const key = m ? `${m.value}|${m.min}|${m.max}|${m.neutral}` : '';
+      if (key !== this.lastModKey) {
+        this.lastModKey = key;
+        this.toggleAttribute('modulated', !!m);
+        this.requestUpdate();
+      }
+    };
+    this.modRaf = requestAnimationFrame(tick);
   }
 
   private get effectiveValue(): number {
@@ -164,6 +202,7 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
             d=${this.arc(cx, cy, r, a0, a0 + SWEEP)}></path>
           ${t > 0 ? svg`<path class="fill" fill="none" stroke-width="3" stroke-linecap="round"
             d=${this.arc(cx, cy, r, a0, a1)}></path>` : nothing}
+          ${this.renderModArcs(cx, cy, a0)}
           <circle class="knob-hub" cx=${cx} cy=${cy} r="8" stroke-width="1"></circle>
           <line class="pointer" x1=${cx} y1=${cy} x2=${px} y2=${py}
             stroke-width="2" stroke-linecap="round"></line>
@@ -171,6 +210,27 @@ export class ScalarKnob extends LitElement implements FieldEditorElement {
       </div>
       <div class="val">${this.formatValue(val)}</div>
       ${this.renderLabel()}
+    `;
+  }
+
+  /** Modulation band + neutral→live-value fill as thin arcs just OUTSIDE the
+   *  main ring (rotary twin of scalar-slider's renderModStrip; shares its
+   *  band-geometry math via percent-space → sweep angles). */
+  private renderModArcs(cx: number, cy: number, a0: number) {
+    const mod = this.binding?.getModulation?.(this.fieldPath) ?? null;
+    if (!mod) return nothing;
+    const g = modBandGeometry(this.min, this.max, mod);
+    const angle = (pct: number) => a0 + (pct / 100) * SWEEP;
+    const r = 16;
+    // A static modulated value has zero fill width — show a small tick so the
+    // wire still reads as live.
+    const fillA0 = angle(g.fillLo);
+    const fillA1 = Math.max(angle(g.fillLo + g.fillWidth), fillA0 + 2);
+    return svg`
+      ${g.width > 0 ? svg`<path class="mod-band" fill="none" stroke-width="2"
+        stroke-linecap="round" d=${this.arc(cx, cy, r, angle(g.lo), angle(g.lo + g.width))}></path>` : nothing}
+      <path class="mod-fill" fill="none" stroke-width="2" stroke-linecap="round"
+        d=${this.arc(cx, cy, r, fillA0, fillA1)}></path>
     `;
   }
 

@@ -80,11 +80,11 @@ describe('<field-color> swatch drag coalescing', () => {
 
   it('falls back to one-shot setValue when the binding lacks long edits', async () => {
     const value = [0, 0, 0];
-    const binding: FieldBinding = {
+    const binding = {
       instanceKey: 'k',
       getValue: () => value,
       setValue: vi.fn(),
-    };
+    } as unknown as FieldBinding;   // no beginContinuousEdit → one-shot path
     el = await mount(binding);
     fire(el, 'input', '#ff0000');
     expect(binding.setValue).toHaveBeenCalledTimes(1);
