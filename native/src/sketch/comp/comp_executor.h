@@ -243,10 +243,15 @@ class CompExecutor {
    *  Live scene anchors survive: re-applied from sceneLaunch_ after a build. */
   void rebuildStreamsTable();
   /** (Re)build the merged transport-section sketch + row list for the current
-   *  eval (driven active leaves + the lookahead window). Called from
-   *  ensureEvalAt; a chain-sig change raises kCompStructureChanged +
-   *  kCompTransportSetChanged. */
+   *  eval (sectioned active leaves + the lookahead window; ROWS stay
+   *  driven-only). Called from ensureEvalAt; a chain-sig change raises
+   *  kCompStructureChanged + kCompTransportSetChanged. */
   void rebuildTransportSketch(double beat, uint32_t& flags);
+  /** Apply queued streams.seek/stop write verbs (validated: scene tracks
+   *  only, bypassed/empty targets dropped — the trigger matcher's rules).
+   *  Runs at transportResolve entry (render-fired ops from last frame; works
+   *  with no section at all) AND exit (section fires apply same-frame). */
+  void drainStreamOps();
   /** Refresh streamsTable_.frame from the current transport state (both
    *  update() exits — the import handlers read it directly). */
   void sampleStreamsFrame();

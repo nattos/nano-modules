@@ -1142,6 +1142,30 @@ export class WasmSketchExecutor {
     // registry sample + live instances, so its published timing drives the
     // pump/render SAME-frame (Phase 1.5 — see CompExecutor::transportResolve).
     this.exports.comp_transport_resolve(c, execDt);
+    // Drain queued streams.seek/stop write verbs the section (or any effect)
+    // fired — translated registry-side (handle→trackId, ordinal→clipId) into
+    // scene ops, exactly the native drainStreamOps contract. The launch lands
+    // next update (trigger-launch latency); the scenes channel mirrors back.
+    if (this.streamsRegistry && this.streamsRegistry.pendingOps.length > 0) {
+      const ops = this.streamsRegistry.pendingOps.splice(0);
+      for (const op of ops) {
+        const s = this.streamsRegistry.find(op.handle);
+        if (!s || s.kind !== 4 /* SceneTrack */) continue;
+        if (op.kind === 'stop') {
+          this.withBytes(s.ownerId, (p, l) => this.exports.comp_stop_scene(c, p, l));
+          continue;
+        }
+        const ord = Math.floor(op.t);
+        const sceneId = s.byOrdinalClipId[ord];
+        if (sceneId === undefined) continue;
+        // Launchable = has a START event (excludes bypassed/empty scenes) —
+        // LOCK-STEP with the native drainStreamOps validation.
+        if (!s.events.some((e) => e.kind === 0 && e.clipOrdinal === ord)) continue;
+        this.withBytes(s.ownerId, (tp, tl) =>
+          this.withBytes(sceneId, (sp, sl) =>
+            this.exports.comp_launch_scene(c, tp, tl, sp, sl)));
+      }
+    }
     // Times channel: resolved rows as a fresh transferable (stride 8; NaN
     // timeSec = invalid row → pump fallback). Row ORDER ships only when the
     // driven set changed (kCompTransportSetChanged). Zero JSON per frame.

@@ -1941,3 +1941,87 @@ TEST_CASE("core.transport.beat_sync consumes per-beat, BPM-locked (Metal)",
   REQUIRE(rows[0].valid);
   CHECK(rows[0].timeSec == Catch::Approx(4.0).margin(1e-6));
 }
+
+// ── Follow actions (transport_section: non-driving section members) ─────────
+
+TEST_CASE("follower-only section: executes but never drives; heal defers",
+          "[comp_follow]") {
+  EvalHarness h;
+  h.cx.registerSchema("core.transport.follow", json::object());
+  h.cx.registerCapabilities("core.transport.follow",
+                            json::array({"transport_section"}));
+  // A ONE-SHOT video scene carrying only a follower: without the section the
+  // heal would auto-stop it after its 2 s slice; with it, the follower owns
+  // the end — the scene must outlive its standard duration (the follower
+  // never fires here because transportResolve is never called: GPU-less).
+  json scene = mkClip("s1", 0, 4,
+                      json::array({mkDevice("v", "source.video.file")}),
+                      {{"kind", "video"},
+                       {"loop", {{"mode", "one-shot"}, {"startSec", 0}, {"speed", 1}}},
+                       {"source", {{"label", "s1.mp4"}, {"durationFrames", 60},
+                                   {"fps", 30}, {"url", "blob:media/s1"}}}});
+  scene["transport"] = {
+      {"devices", json::array({mkDevice("f", "core.transport.follow")})},
+      {"wires", json::array()}};
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("st", json::array({std::move(scene)}), {{"kind", "scene"}}),
+  })));
+  h.cx.setTransportMode(false);
+
+  h.cx.launchScene("st", "s1");
+  uint32_t flags = h.cx.update(0.0);
+  // The section EXECUTES: its instance is required (web ensure/prune) and the
+  // set-changed flag fired for the sketch...
+  CHECK((flags & comp::kCompStructureChanged) != 0);
+  CHECK(h.cx.requiredJson().find("clip_s1_transport_f") != std::string::npos);
+  // ...but nothing DRIVES: no times rows, and the video desc keeps its loop.
+  CHECK(h.cx.transportOrder().empty());
+  const json descs = json::parse(h.cx.videoDescsJson());
+  REQUIRE(descs.size() == 1);
+  CHECK(!descs[0].contains("transport"));
+  CHECK(descs[0].contains("loop"));
+
+  // Play 3 s of transport (past the 2 s one-shot slice): heal must NOT stop
+  // the scene — the follower owns its end.
+  h.cx.play();
+  for (int i = 0; i < 30; i++) h.cx.update(0.1);
+  CHECK(json::parse(h.cx.sceneStatesJson()).contains("st"));
+}
+
+TEST_CASE("drainStreamOps: queued seek launches a launchable scene; validation drops the rest",
+          "[comp_follow]") {
+  EvalHarness h;
+  json red = mkClip("red", 0, 4, json::array({mkDevice("r", "source.solid_color")}));
+  json green = mkClip("green", 4, 4, json::array({mkDevice("g", "source.solid_color")}));
+  json ghost = mkClip("ghost", 8, 4, json::array());  // EMPTY: no event, unlaunchable
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("st", json::array({red, green, ghost}), {{"kind", "scene"}}),
+  })));
+  h.cx.update(0.0);
+
+  auto& table = h.cx.streamsTableMutable();
+  const auto th = table.trackByTrackId.find("st");
+  REQUIRE(th != table.trackByTrackId.end());
+  const int64_t handle = th->second;
+
+  // Seek to ordinal 1 (green) — applied by the entry drain even though NO
+  // transport section exists (F4: render-fired ops must not strand).
+  table.pendingOps.push_back({0, handle, 1.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(0.0);
+  json states = json::parse(h.cx.sceneStatesJson());
+  REQUIRE(states.contains("st"));
+  CHECK(states["st"]["sceneId"] == "green");
+
+  // The empty scene (ordinal 2) has no start event → the seek is dropped.
+  table.pendingOps.push_back({0, handle, 2.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(0.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "green");
+
+  // Stop.
+  table.pendingOps.push_back({1, handle, 0.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(0.0);
+  CHECK(!json::parse(h.cx.sceneStatesJson()).contains("st"));
+}

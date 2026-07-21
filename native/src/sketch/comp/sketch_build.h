@@ -62,12 +62,30 @@ inline const DeviceM* transportDeviceOf(const ClipM& clip, const Catalog& catalo
 }
 
 /**
+ * Does the clip's transport section hold ANY member the engine must execute —
+ * a driving controller OR a non-driving section effect (follower/autopilot)?
+ * CATALOG-KNOWN only: an unloaded module must never claim the section (it
+ * would disable the scene auto-stop without anyone owning the end). A section
+ * member (either kind) OWNS its clip's end-of-life — healSceneLaunches defers
+ * to it.
+ */
+inline bool clipHasTransportSection(const ClipM& clip, const Catalog& catalog) {
+  if (!clip.hasTransport) return false;
+  for (const auto& d : clip.transport.devices) {
+    if (catalog.hasCapability(d.moduleType, "transport_controller") ||
+        catalog.hasCapability(d.moduleType, "transport_section"))
+      return true;
+  }
+  return false;
+}
+
+/**
  * Build the merged TRANSPORT sketch over the given clips: one chain entry per
  * catalog-known transport-SECTION device (keyed transportInstanceKey), plus
  * the section's intra-clip wires (ids remapped `xw<n>`). Deliberately tiny —
  * no blend/rail/layer machinery; sections never see the pixel chain. Clips
- * WITHOUT a driving controller contribute nothing (an inert section's mod
- * devices have no consumer). Returns null JSON when nothing drives.
+ * whose section holds NO catalog-known member (controller or section effect)
+ * contribute nothing. Returns null JSON when no section executes.
  * LOCK-STEP: clip-sketch.ts buildTransportSketch (deep-equal, golden-tested).
  */
 inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clips,
@@ -77,7 +95,8 @@ inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clip
   nlohmann::json instances = nlohmann::json::object();
   int wid = 0;
   for (const ClipM* clip : clips) {
-    if (!clip || !transportDeviceOf(*clip, catalog)) continue;
+    // SECTIONED, not just driven: a follower-only section must execute too.
+    if (!clip || !clipHasTransportSection(*clip, catalog)) continue;
     std::set<std::string> pushed;
     for (const auto& d : clip->transport.devices) {
       if (!catalog.has(d.moduleType)) continue;

@@ -1630,15 +1630,19 @@ int32_t SketchExecutor::execute(
           }
         }
       }
-      // Transport controllers are identity on PIXELS but alive on TIME: their
-      // tick publishes the transport_* outputs the comp pre-pass consumes, so
-      // the alias skip (which returns before tick) would silence them. They
-      // take the standalone path — the render itself is still a no-op.
+      // Transport-section effects (controllers AND followers) are identity on
+      // PIXELS but alive on TIME: their tick publishes/observes what the comp
+      // pre-pass consumes, so the alias skip (which returns before tick)
+      // would silence them. They take the standalone path — the render itself
+      // is still a no-op.
       const RegisteredModule* skipReg = findSchema(mt);
-      const bool transportController =
-          skipReg && std::find(skipReg->capabilities.begin(), skipReg->capabilities.end(),
-                               "transport_controller") != skipReg->capabilities.end();
-      if (tapsAllowSkip && !hasAuto && blendMode == 0 && !transportController &&
+      const bool transportSection = skipReg && [&] {
+        for (const auto& cap : skipReg->capabilities) {
+          if (cap == "transport_controller" || cap == "transport_section") return true;
+        }
+        return false;
+      }();
+      if (tapsAllowSkip && !hasAuto && blendMode == 0 && !transportSection &&
           !entryHasSmoothing(entry) && inst.isIdentity()) {
         ++stats_.identitySkipped;
         int32_t out = passthroughOutput(colInput);

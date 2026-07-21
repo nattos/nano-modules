@@ -321,6 +321,10 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
   l.sceneId = sceneId;
   l.launchBeat = state_.positionBeat;  // immediate: anchor at the current beat
   l.launchSec = clock_.secondsAt(l.launchBeat);
+  // A (re)launch clears any latched transport_ended for this scene — else a
+  // controller's stale latch (still live in the effect instance) would let
+  // the next heal kill the relaunch before the effect re-arms.
+  transportEnded_.erase(sceneId);
   // The scene's content stream re-anchors too: its lazy position mapping runs
   // from the launch beat, exactly like the tree's anchorBeat.
   auto it = streamsTable_.contentByClipId.find(sceneId);
@@ -357,11 +361,23 @@ void CompExecutor::healSceneLaunches() {
       }
     }
     bool stop = !scene;
-    // Transport-DRIVEN scenes: the controller decides "content finished" —
-    // its latched transport_ended (read by the last pre-pass) replaces the
-    // config-derived slice math below. 1-frame latency, same class as the
-    // trigger readback.
-    if (scene && transportDeviceOf(*scene, catalog_)) {
+    // A transport SECTION owns its scene's end-of-life. A follower present ⇒
+    // heal never stops the scene (the follower evicts-by-launch or calls
+    // streams.stop) — heal runs BEFORE the pre-pass each frame, so any
+    // heal-side stop would consistently win the same-frame race and silence
+    // the follower. A driven (controller, no follower) scene stops on the
+    // controller's latched transport_ended (read by the last pre-pass;
+    // 1-frame, same class as the trigger readback).
+    const bool sectioned = scene && clipHasTransportSection(*scene, catalog_);
+    const bool hasFollower = sectioned && [&] {
+      for (const auto& d : scene->transport.devices) {
+        if (catalog_.hasCapability(d.moduleType, "transport_section")) return true;
+      }
+      return false;
+    }();
+    if (hasFollower) {
+      // Follower owns the end — no config or ended stop.
+    } else if (scene && transportDeviceOf(*scene, catalog_)) {
       if (transportEnded_.count(it->second.sceneId)) stop = true;
     }
     // One-shot scenes auto-stop once their content elapses (the track goes
@@ -581,11 +597,11 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
 }
 
 void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
-  // Row basis = DRIVEN clips among the active tree leaves (DFS order), then
-  // the lookahead window (warmVideoDescs' criteria, but for ANY driven clip —
-  // effect-only clips can be transport-driven too once sequences land). A
-  // warming clip's controller publishes its entry target before the playhead
-  // arrives (the pre-seek parity path).
+  // Sketch basis = SECTIONED clips among the active tree leaves (DFS order),
+  // then the lookahead window (warmVideoDescs' criteria, but for ANY
+  // sectioned clip — effect-only clips can carry sections too). Follower-only
+  // sections execute without driving; a warming clip's controller publishes
+  // its entry target before the playhead arrives (pre-seek parity).
   std::vector<const ClipM*> clips;
   std::set<std::string> seen;
   std::function<void(const std::vector<CompNode>&)> walk =
@@ -596,7 +612,7 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
             continue;
           }
           if (!n.clip || seen.count(n.clip->id)) continue;
-          if (!transportDeviceOf(*n.clip, catalog_)) continue;
+          if (!clipHasTransportSection(*n.clip, catalog_)) continue;
           seen.insert(n.clip->id);
           clips.push_back(n.clip);
         }
@@ -608,7 +624,7 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
     for (const auto& c : t.clips) {
       if (seen.count(c.id)) continue;
       if (!(c.startBeat < beatEnd && c.startBeat + c.lengthBeat > beat)) continue;
-      if (!transportDeviceOf(c, catalog_)) continue;
+      if (!clipHasTransportSection(c, catalog_)) continue;
       seen.insert(c.id);
       clips.push_back(&c);
     }
@@ -621,10 +637,13 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
     transportCleanSketch_ = std::move(built);
     transportDirty_ = true;
   }
+  // Times-channel ROWS stay DRIVEN-only — a follower never flags its clip as
+  // transport-driven (desc keeps loop; ended-heal keeps needing a controller).
   transportRows_.clear();
   transportRows_.reserve(clips.size());
   for (const ClipM* c : clips) {
     const DeviceM* dev = transportDeviceOf(*c, catalog_);
+    if (!dev) continue;  // sectioned but not driven (follower-only)
     TransportRow row;
     row.clip = c;
     row.clipId = c->id;
@@ -651,8 +670,14 @@ std::vector<std::string> CompExecutor::transportOrder() const {
 }
 
 void CompExecutor::transportResolve(double dtSec) {
+  // Drain FIRST and unconditionally: pixel-chain effects can queue seeks
+  // during render(), landing after last frame's drain — they must not strand
+  // when no transport section exists.
+  drainStreamOps();
   transportResolved_.assign(transportRows_.size(), TransportResolved{});
-  if (transportRows_.empty() || transportCleanSketch_.is_null()) {
+  // Gate on the SKETCH, not the rows: a follower-only section has zero driven
+  // rows but must still execute (its whole job is watching + launching).
+  if (transportCleanSketch_.is_null()) {
     streamsTable_.appliedContentSec.clear();
     transportEnded_.clear();
     return;
@@ -716,6 +741,39 @@ void CompExecutor::transportResolve(double dtSec) {
   for (auto it = transportEnded_.begin(); it != transportEnded_.end();) {
     if (!liveIds.count(*it)) it = transportEnded_.erase(it);
     else ++it;
+  }
+
+  // Second drain: ops the section fired DURING this execute apply same-frame
+  // (a follower's launch evicts the current scene at the very next update —
+  // ahead of the heal that would otherwise race it).
+  drainStreamOps();
+}
+
+void CompExecutor::drainStreamOps() {
+  if (streamsTable_.pendingOps.empty()) return;
+  // Move-out first: launchScene/stopScene mutate the table's scene anchors,
+  // and a re-entrant push mid-drain must not invalidate iteration.
+  std::vector<StreamsTable::StreamOp> ops = std::move(streamsTable_.pendingOps);
+  streamsTable_.pendingOps.clear();
+  for (const auto& op : ops) {
+    const StreamInfo* s = streamsTable_.find(op.handle);
+    if (!s || s->kind != kStreamKindSceneTrack) continue;  // seekable timelines: future
+    if (op.kind == 1) {
+      stopScene(s->ownerId);
+      continue;
+    }
+    const int32_t ord = static_cast<int32_t>(std::floor(op.t));
+    if (ord < 0 || ord >= static_cast<int32_t>(s->byOrdinalClipId.size())) continue;
+    // Launchable = has a START event (the event list already excludes
+    // bypassed/empty scenes — the trigger matcher's rules; a raw seek must
+    // not create a phantom playing state). LOCK-STEP: the web drain applies
+    // the same events-based check.
+    bool launchable = false;
+    for (const auto& e : s->events) {
+      if (e.kind == 0 && e.clipOrdinal == ord) { launchable = true; break; }
+    }
+    if (!launchable) continue;
+    launchScene(s->ownerId, s->byOrdinalClipId[static_cast<size_t>(ord)]);
   }
 }
 
