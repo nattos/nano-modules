@@ -1035,6 +1035,8 @@ async function simulateTick(dt: number, execDt: number = dt) {
         ...(r.videoDescs !== undefined ? { videoDescs: r.videoDescs } : {}),
         ...(r.layerTargets !== undefined ? { layerTargets: r.layerTargets } : {}),
         ...(r.scenes !== undefined ? { scenes: r.scenes } : {}),
+        ...(r.transportOrder ? { transportOrder: r.transportOrder } : {}),
+        ...(r.transportTimes ? { transportTimes: r.transportTimes } : {}),
       };
       // (The streams registry's per-frame sample + scene sync happen INSIDE
       // compFrame, before the transport pre-pass; the static mirror rebuilds
@@ -1254,7 +1256,8 @@ function captureAndSendFrame() {
   }
 
   if (tracePoints.length === 0 || traceHandles.size === 0) {
-    post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog, ...(compFrameInfo ? { comp: compFrameInfo } : {}) }, []);
+    post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog, ...(compFrameInfo ? { comp: compFrameInfo } : {}) },
+         compFrameInfo?.transportTimes ? [compFrameInfo.transportTimes.buffer] : []);
     return;
   }
 
@@ -1274,6 +1277,7 @@ function captureAndSendFrame() {
     }
   }
 
+  if (compFrameInfo?.transportTimes) transfers.push(compFrameInfo.transportTimes.buffer);
   post({ type: 'frame', fps, gpuTimeMs: gpuTimeReported, tracedFrames, sketchStateDiff, pluginStatesDiff, modulationDataDiff, debugStats, debugConsoleLog, ...(compFrameInfo ? { comp: compFrameInfo } : {}) }, transfers);
 }
 

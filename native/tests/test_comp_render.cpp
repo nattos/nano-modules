@@ -1794,3 +1794,33 @@ TEST_CASE("transport pre-pass: probe publishes same-frame resolved rows (Metal)"
   cx.transportResolve(0.5);
   CHECK(cx.transportResolved()[0].timeSec == Catch::Approx(3.0).margin(1e-9));
 }
+
+TEST_CASE("videoDescFor: a driven clip ships transport:true and no loop",
+          "[comp_transport]") {
+  EvalHarness h;
+  h.cx.registerSchema("testonly.streams_probe", json::object());
+  h.cx.registerCapabilities("testonly.streams_probe",
+                            json::array({"transport_controller"}));
+  json driven = mkVideoClip("v1", 0, 8);
+  driven["transport"] = {
+      {"devices", json::array({mkDevice("tc", "testonly.streams_probe")})},
+      {"wires", json::array()}};
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({driven})),
+      mkTrack("t2", json::array({mkVideoClip("v2", 0, 8)})),
+  })));
+  h.cx.setTransportMode(false);
+  h.cx.update(0.0);
+  const json descs = json::parse(h.cx.videoDescsJson());
+  REQUIRE(descs.size() == 2);
+  const json& d1 = descs[0]["clipId"] == "v1" ? descs[0] : descs[1];
+  const json& d2 = descs[0]["clipId"] == "v1" ? descs[1] : descs[0];
+  CHECK(d1.value("transport", false) == true);
+  CHECK(!d1.contains("loop"));
+  CHECK(!d1.contains("speed"));
+  // The undriven clip's desc is untouched (the legacy path byte-for-byte).
+  CHECK(!d2.contains("transport"));
+  CHECK(d2.contains("loop"));
+  // Row order json matches the driven set.
+  CHECK(json::parse(h.cx.transportOrderJson()) == json::array({"v1"}));
+}

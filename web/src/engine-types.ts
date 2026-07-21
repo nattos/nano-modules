@@ -267,6 +267,14 @@ export interface CompFrameInfo {
   scenes?: string;
   /** The last compControl `seq` processed before this frame (echo guard). */
   controlSeq?: number;
+  /** Times-channel row order (driven clip ids) — present only when the driven
+   *  set changed (kCompTransportSetChanged). */
+  transportOrder?: string[];
+  /** This frame's resolved transport rows, stride 8 per clip [timeSec, active,
+   *  rate, nextJumpSec, jumpTargetSec, loopStartSec, loopEndSec, ended] in
+   *  transportOrder order; NaN timeSec = invalid row (pump falls back to
+   *  ClipLoopConfig). A TRANSFERABLE — absent when nothing is driven. */
+  transportTimes?: Float64Array;
 }
 
 // --- Worker events (worker → main) ---

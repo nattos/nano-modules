@@ -7,8 +7,10 @@
 //   comp_update(dt) → flags; on structureChanged: comp_required_json → ensure
 //   instances host-side; then comp_render(...). See comp_executor.h.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -235,6 +237,37 @@ int32_t comp_update(CompExecutor* c, double dtSec) {
 EXEC_EXPORT("comp_transport_resolve")
 void comp_transport_resolve(CompExecutor* c, double dtSec) {
   if (c) c->transportResolve(dtSec);
+}
+
+// The times channel: this frame's resolved transport rows as flat doubles,
+// stride 8 per row [timeSec, active, rate, nextJumpSec, jumpTargetSec,
+// loopStartSec, loopEndSec, ended], rows in comp_transport_order_json order.
+// An INVALID row (instance not yet live) writes NaN timeSec — consumers fall
+// back to ClipLoopConfig. Returns the row count. Zero JSON.
+EXEC_EXPORT("comp_transport_times")
+int32_t comp_transport_times(CompExecutor* c, double* out, int32_t capRows) {
+  if (!c || !out) return 0;
+  const auto& rows = c->transportResolved();
+  const int32_t n = std::min<int32_t>(static_cast<int32_t>(rows.size()), capRows);
+  for (int32_t i = 0; i < n; ++i) {
+    const auto& r = rows[static_cast<size_t>(i)];
+    double* o = out + i * 8;
+    o[0] = r.valid ? r.timeSec : std::numeric_limits<double>::quiet_NaN();
+    o[1] = r.active;
+    o[2] = r.rate;
+    o[3] = r.nextJumpSec;
+    o[4] = r.jumpTargetSec;
+    o[5] = r.loopStartSec;
+    o[6] = r.loopEndSec;
+    o[7] = r.ended;
+  }
+  return static_cast<int32_t>(rows.size());
+}
+
+// Driven clip ids in row order — fetched only on kCompTransportSetChanged.
+EXEC_EXPORT("comp_transport_order_json")
+int32_t comp_transport_order_json(CompExecutor* c, char* out, int32_t cap) {
+  return c ? writeOut(c->transportOrderJson(), out, cap) : 0;
 }
 
 EXEC_EXPORT("comp_render")

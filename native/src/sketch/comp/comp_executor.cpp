@@ -406,6 +406,7 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat,
   }
   if (!dev) return nullptr;
   const auto& src = clip.sourceJson;
+  const bool driven = transportDeviceOf(clip, catalog_) != nullptr;
   nlohmann::json d = {
       {"clipId", clip.id},
       {"instanceKey", clipInstanceKey(clip.id, dev->id)},
@@ -423,14 +424,21 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat,
       {"scaleMode", src.value("scaleMode", std::string("fit"))},
       {"transform",
        resolveSourceTransform(src.contains("transform") ? src["transform"] : nlohmann::json())},
-      {"loop", clip.loopJson.is_object() ? clip.loopJson : nlohmann::json::object()},
   };
+  // Transport-DRIVEN clips: the pump follows the per-frame times channel — the
+  // desc stays structural (loop/speed omitted; the pump's ClipLoopConfig math
+  // is bypassed, but survives untouched as the invalid-row fallback default).
+  if (driven) {
+    d["transport"] = true;
+  } else {
+    d["loop"] = clip.loopJson.is_object() ? clip.loopJson : nlohmann::json::object();
+    if (clip.loopJson.is_object() && clip.loopJson.contains("speed") &&
+        clip.loopJson["speed"].is_number()) {
+      d["speed"] = clip.loopJson["speed"];
+    }
+  }
   // Optionals: JS drops undefined keys — mirror by omitting absent fields.
   if (src.contains("fps") && src["fps"].is_number()) d["fps"] = src["fps"];
-  if (clip.loopJson.is_object() && clip.loopJson.contains("speed") &&
-      clip.loopJson["speed"].is_number()) {
-    d["speed"] = clip.loopJson["speed"];
-  }
   return d;
 }
 
@@ -1021,6 +1029,13 @@ const std::string& CompExecutor::layerTargetsJson() {
 const std::string& CompExecutor::streamsJson() {
   streamsScratch_ = streamsTableJson(streamsTable_);
   return streamsScratch_;
+}
+
+const std::string& CompExecutor::transportOrderJson() {
+  nlohmann::json order = nlohmann::json::array();
+  for (const auto& r : transportRows_) order.push_back(r.clipId);
+  transportOrderScratch_ = order.dump();
+  return transportOrderScratch_;
 }
 
 const std::string& CompExecutor::sceneStatesJson() {

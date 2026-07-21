@@ -111,6 +111,8 @@ interface ExecutorExports {
   comp_set_video_ready(c: number, clipId: number, len: number, ready: number): void;
   comp_update(c: number, dtSec: number): number;
   comp_transport_resolve(c: number, dtSec: number): void;
+  comp_transport_times(c: number, out: number, capRows: number): number;
+  comp_transport_order_json(c: number, out: number, cap: number): number;
   comp_render(c: number, inTex: number, outTex: number, w: number, h: number, dt: number): number;
   comp_required_json(c: number, out: number, cap: number): number;
   comp_chain_keys_json(c: number, out: number, cap: number): number;
@@ -844,6 +846,10 @@ export class WasmSketchExecutor {
   private compScratchCap = 0;
   /** 48-byte wasm scratch for comp_streams_frame's 6 flat doubles. */
   private compStreamsFramePtr = 0;
+  /** Times-channel scratch: stride-8 rows for comp_transport_times. */
+  private compTransportPtr = 0;
+  private compTransportCap = 0;   // rows
+  private compTransportRows = 0;  // current row count (from the order json)
   /** The seekable-streams registry stamped onto every effect host (streams.*
    *  imports). Owned by the engine worker; null = comp inactive. */
   private streamsRegistry: StreamsRegistry | null = null;
@@ -1011,7 +1017,8 @@ export class WasmSketchExecutor {
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-               scenes?: string; controlSeq: number }> {
+               scenes?: string; controlSeq: number;
+               transportOrder?: string[]; transportTimes?: Float64Array }> {
     const c = this.ensureComp();
     // Frame-local effrt handle table (repopulated by effrt_instance_for).
     // Reset BEFORE comp_update: the frame's first effrt caller is now the
@@ -1135,13 +1142,37 @@ export class WasmSketchExecutor {
     // registry sample + live instances, so its published timing drives the
     // pump/render SAME-frame (Phase 1.5 — see CompExecutor::transportResolve).
     this.exports.comp_transport_resolve(c, execDt);
+    // Times channel: resolved rows as a fresh transferable (stride 8; NaN
+    // timeSec = invalid row → pump fallback). Row ORDER ships only when the
+    // driven set changed (kCompTransportSetChanged). Zero JSON per frame.
+    let transportOrder: string[] | undefined;
+    if (flags & 32) {
+      const orderJson =
+          this.compRead((o, n) => this.exports.comp_transport_order_json(c, o, n));
+      transportOrder = orderJson ? JSON.parse(orderJson) : [];
+      this.compTransportRows = transportOrder!.length;
+    }
+    let transportTimes: Float64Array | undefined;
+    if (this.compTransportRows > 0) {
+      if (this.compTransportCap < this.compTransportRows) {
+        if (this.compTransportPtr) this.exports.free(this.compTransportPtr);
+        this.compTransportCap = this.compTransportRows + 4;
+        this.compTransportPtr = this.exports.malloc(this.compTransportCap * 64);
+      }
+      const n = Math.min(
+          this.exports.comp_transport_times(c, this.compTransportPtr, this.compTransportCap),
+          this.compTransportCap);
+      transportTimes = new Float64Array(n * 8);
+      transportTimes.set(new Float64Array(this.memory.buffer, this.compTransportPtr, n * 8));
+    }
     const handle = this.exports.comp_render(c, -1, this.compOutTex, width, height, execDt);
     this.accumulateDebugStats(this.exports.comp_sketch_executor(c));
 
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
                  chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-                 scenes?: string; controlSeq: number } = {
+                 scenes?: string; controlSeq: number;
+                 transportOrder?: string[]; transportTimes?: Float64Array } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
       positionSec: this.exports.comp_position_sec(c),
@@ -1153,6 +1184,8 @@ export class WasmSketchExecutor {
       out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
     }
     if (scenes !== undefined) out.scenes = scenes;
+    if (transportOrder) out.transportOrder = transportOrder;
+    if (transportTimes) out.transportTimes = transportTimes;
     return out;
   }
 

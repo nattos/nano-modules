@@ -195,8 +195,39 @@ export class EngineBridge {
       // Backfill authoritative source dimensions as clips decode (fixes the
       // placement widget's aspect for clips with no stored width/height).
       this.video.onClipInfo = (clipId, w, h) => store.noteClipSourceDims(clipId, w, h);
+      // Times-channel resolver: transport-driven clips read this frame's
+      // resolved row (a REUSED scratch object — consumers never retain it).
+      this.video.setTransportResolver((clipId) => this.resolveTransport(clipId));
     }
     return this.video;
+  }
+
+  // ── Times channel (transport-driven clips) ────────────────────────────────
+  private transportTimes: Float64Array | null = null;
+  private transportRowByClip = new Map<string, number>();
+  private transportScratch = {
+    timeSec: 0, active: 1, rate: NaN, nextJumpSec: NaN, jumpTargetSec: NaN,
+    loopStartSec: NaN, loopEndSec: NaN, ended: 0,
+  };
+
+  /** Decode a driven clip's stride-8 row into the reused scratch, or null for
+   *  unknown clips / invalid (NaN-timeSec) rows — the pump then falls back. */
+  private resolveTransport(clipId: string) {
+    const row = this.transportRowByClip.get(clipId);
+    const t = this.transportTimes;
+    if (row === undefined || !t) return null;
+    const o = row * 8;
+    if (o + 8 > t.length || Number.isNaN(t[o])) return null;
+    const s = this.transportScratch;
+    s.timeSec = t[o];
+    s.active = t[o + 1];
+    s.rate = t[o + 2];
+    s.nextJumpSec = t[o + 3];
+    s.jumpTargetSec = t[o + 4];
+    s.loopStartSec = t[o + 5];
+    s.loopEndSec = t[o + 6];
+    s.ended = t[o + 7];
+    return s;
   }
 
   /** Count of active video decode pumps (diagnostic / tests). */
@@ -276,6 +307,14 @@ export class EngineBridge {
   private handleCompInfo(info: CompFrameInfo) {
     this.lastCompInfo = info;
     this.hasContent = info.hasContent;
+    // Times channel: retain this frame's rows (a transferred Float64Array) +
+    // the row order when the driven set changed. Absent times with an order
+    // means "nothing driven" — clear so resolvers fall back.
+    if (info.transportOrder) {
+      this.transportRowByClip.clear();
+      info.transportOrder.forEach((clipId, i) => this.transportRowByClip.set(clipId, i));
+    }
+    this.transportTimes = info.transportTimes ?? (info.transportOrder ? null : this.transportTimes);
     if (info.chainKeys) {
       this.compositeKeys = info.chainKeys;
       this.refreshDeviceTraces();

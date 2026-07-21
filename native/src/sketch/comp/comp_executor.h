@@ -226,6 +226,8 @@ class CompExecutor {
   /** The STATIC seekable-streams registry (streams_table.h) — the web engine
    *  worker mirrors it into its StreamsRegistry on doc-epoch change only. */
   const std::string& streamsJson();
+  /** Driven clip ids in times-channel row order (kCompTransportSetChanged). */
+  const std::string& transportOrderJson();
 
   /** The live streams registry — the effect-facing `streams` import module
    *  reads it (natively via WasmContext.streams_table; the table's `frame`
@@ -404,6 +406,7 @@ class CompExecutor {
   std::string layerTargetsScratch_;
   std::string sceneStatesScratch_;
   std::string streamsScratch_;
+  std::string transportOrderScratch_;
 };
 
 }  // namespace comp

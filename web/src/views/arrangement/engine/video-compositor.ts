@@ -24,7 +24,7 @@ import { clipSourceTimeAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import { clipInstanceKey } from './instance-keys';
 import { VIDEO_SOURCE_TYPE } from './effect-catalog';
 import type { Clip, ClipLoopConfig } from '../model/composition';
-import { RANDOM_DEFAULTS, resolveSourceTransform } from '../model/composition';
+import { RANDOM_DEFAULTS, clipTransportDriven, resolveSourceTransform } from '../model/composition';
 import { debugPerf, type ClipPerf } from '../state/debug-perf';
 
 /**
@@ -62,9 +62,32 @@ export interface VideoClipDesc {
   scaleMode?: BlitFit;
   /** Placement transform (anchor / scale / rotation / flip) over the scale mode. */
   transform?: BlitTransform;
-  /** Play-mode timing (slice + mode); drives the beat→source-frame mapping. */
+  /** Play-mode timing (slice + mode); drives the beat→source-frame mapping.
+   *  OMITTED (with `transport` set) when a transport-controller effect drives
+   *  the clip — the pump then follows the per-frame times channel. */
   loop?: ClipLoopConfig;
+  /** Transport-DRIVEN: target times arrive via the installed
+   *  {@link TransportResolver}; the ClipLoopConfig math is bypassed (but
+   *  remains the invalid-row fallback via DEFAULT_LOOP). */
+  transport?: boolean;
 }
+
+/** One resolved transport row (the comp pre-pass's published transport_*
+ *  scalars) — the times-channel record the pump consumes for a driven clip.
+ *  Resolver implementations may return a REUSED scratch object; consumers
+ *  read fields immediately and never retain it. */
+export interface TransportSnapshot {
+  timeSec: number;
+  active: number;
+  rate: number;          // NaN ⇒ unknown (derive/hold 1)
+  nextJumpSec: number;   // NaN/-1 ⇒ none
+  jumpTargetSec: number;
+  loopStartSec: number;  // NaN ⇒ no steady loop window
+  loopEndSec: number;
+  ended: number;
+}
+
+export type TransportResolver = (clipId: string) => TransportSnapshot | null;
 
 /** Build the decode-pump descriptor for a video-backed clip (or null if it isn't
  *  one). The `instanceKey` MUST match the clip's `source.video.file` entry in the
@@ -74,6 +97,7 @@ export function videoDescFor(clip: Clip): VideoClipDesc | null {
   if (!src?.url) return null;
   const dev = clip.sketch.devices.find((d) => d.moduleType === VIDEO_SOURCE_TYPE);
   if (!dev) return null;
+  const driven = clipTransportDriven(clip);
   return {
     clipId: clip.id,
     instanceKey: clipInstanceKey(clip.id, dev.id),
@@ -83,10 +107,13 @@ export function videoDescFor(clip: Clip): VideoClipDesc | null {
     lengthBeat: clip.lengthBeat,
     durationFrames: src.durationFrames,
     fps: src.fps,
-    speed: clip.loop?.speed,
+    // Transport-driven: structural desc only — timing rides the times channel
+    // (LOCK-STEP: comp_executor.cpp videoDescFor omits loop/speed the same way).
+    speed: driven ? undefined : clip.loop?.speed,
     scaleMode: src.scaleMode ?? 'fit',
     transform: resolveSourceTransform(src.transform),
-    loop: clip.loop,
+    loop: driven ? undefined : clip.loop,
+    ...(driven ? { transport: true } : {}),
   };
 }
 
@@ -176,6 +203,7 @@ export class VideoCompositor {
   /** Warp-aware beat→seconds. Defaults to the un-warped base-BPM clock; the bridge
    *  pushes a WarpClock-backed resolver (engine-bridge.ts) when the composition changes. */
   private secondsAt: TimeResolver | null = null;
+  private transportResolver: TransportResolver | null = null;
 
   // ── Diagnostics (read via the bridge) ──
   /** Count of decoded frames pushed to the executor. */
@@ -201,6 +229,12 @@ export class VideoCompositor {
   /** Install the warp-aware beat→seconds resolver (shared with the visual grid). */
   setTimeResolver(fn: TimeResolver | null) {
     this.secondsAt = fn;
+  }
+
+  /** Install the transport times-channel resolver (engine-bridge decodes the
+   *  per-frame Float64Array; null row / no resolver ⇒ ClipLoopConfig fallback). */
+  setTransportResolver(fn: TransportResolver | null) {
+    this.transportResolver = fn;
   }
 
   /** Update the blit render (preview) size + the composition resolution. */
@@ -415,6 +449,13 @@ export class VideoCompositor {
    */
   private targetSecFor(p: Pump, beat: number, bpm: number): number | null {
     const d = p.desc;
+    // Transport-DRIVEN: the pre-pass's published time IS the target. An
+    // invalid row (NaN — the effect instance isn't live yet) falls through to
+    // the ClipLoopConfig fallback for that frame; inactive ⇒ transparent.
+    if (d.transport) {
+      const s = this.transportResolver?.(d.clipId);
+      if (s && Number.isFinite(s.timeSec)) return s.active >= 0.5 ? s.timeSec : null;
+    }
     const secondsAt = this.secondsAt ?? ((b: number) => b * (60 / Math.max(1, bpm)));
     const ctx: ClipTimeCtx = {
       startBeat: d.startBeat,
@@ -537,6 +578,13 @@ export class VideoCompositor {
    */
   private nominalSpeed(p: Pump, beat: number, bpm: number): number {
     const d = p.desc;
+    // Transport-DRIVEN: the controller publishes its analytic rate (the
+    // cursor's steady playbackRate). NaN/≤0 ⇒ 1 (the cursor still tracks).
+    if (d.transport) {
+      const s = this.transportResolver?.(d.clipId);
+      if (s && Number.isFinite(s.rate) && s.rate > 0) return Math.min(8, s.rate);
+      return 1;
+    }
     const loop = d.loop ?? DEFAULT_LOOP;
     if (loop.mode === 'random') return 1;
     const secondsAt = this.secondsAt ?? ((b: number) => b * (60 / Math.max(1, bpm)));
@@ -577,14 +625,24 @@ export class VideoCompositor {
       if (p.cursor) {
         const rate = this.trackRate(p, targetSec); // play/seek/hold DECISION (0 ⇒ paused)
         const speed = this.nominalSpeed(p, ahead ? d.startBeat : beat, bpm); // clean playbackRate
-        const loop = d.loop ?? DEFAULT_LOOP;
-        const fullFile = (loop.startSec ?? 0) <= 0.05 && (loop.endSec ?? p.durationSec) >= p.durationSec - 0.05;
-        const looping = loop.mode === 'time' || loop.mode === 'beat-sync';
-        const fwd = (loop.direction ?? 'forward') === 'forward';
-        p.cursor.setNativeLoop(looping && fullFile && fwd ? p.durationSec : 0);
-        // Sub-slice loop: PIN the slice in the cursor's cache so the wrap hits it (no seek
-        // freeze) instead of evicting it as the just-played tail. Full-file uses native loop.
-        p.cursor.setLoopSlice(looping && !fullFile && fwd ? loop.startSec ?? 0 : null, loop.endSec ?? p.durationSec);
+        const snap = d.transport ? this.transportResolver?.(d.clipId) : null;
+        if (snap && Number.isFinite(snap.loopStartSec) && Number.isFinite(snap.loopEndSec)) {
+          // Transport-driven with a published steady loop window: same
+          // pin/native-loop fast paths as the built-in looping modes.
+          const fullFile =
+              snap.loopStartSec <= 0.05 && snap.loopEndSec >= p.durationSec - 0.05;
+          p.cursor.setNativeLoop(fullFile ? p.durationSec : 0);
+          p.cursor.setLoopSlice(!fullFile ? snap.loopStartSec : null, snap.loopEndSec);
+        } else {
+          const loop = d.loop ?? DEFAULT_LOOP;
+          const fullFile = (loop.startSec ?? 0) <= 0.05 && (loop.endSec ?? p.durationSec) >= p.durationSec - 0.05;
+          const looping = !snap && (loop.mode === 'time' || loop.mode === 'beat-sync');
+          const fwd = (loop.direction ?? 'forward') === 'forward';
+          p.cursor.setNativeLoop(looping && fullFile && fwd ? p.durationSec : 0);
+          // Sub-slice loop: PIN the slice in the cursor's cache so the wrap hits it (no seek
+          // freeze) instead of evicting it as the just-played tail. Full-file uses native loop.
+          p.cursor.setLoopSlice(looping && !fullFile && fwd ? loop.startSec ?? 0 : null, loop.endSec ?? p.durationSec);
+        }
         if (!active) {
           if (targetSec == null) return;
           const key = `warm:${Math.floor(targetSec * p.fps)}`;
