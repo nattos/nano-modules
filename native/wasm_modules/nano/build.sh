@@ -234,13 +234,14 @@ compile_shaders_compute_var_spv triangulate takeover
 compile_shaders_compute_var_spv triangulate present
 compile_shaders_compute_var_spv triangulate edge_clear
 compile_shaders_compute_var_spv triangulate edges
+compile_shaders_compute_var_spv triangulate edge_args
 dxc -T vs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../triangulate/line_vs.hlsl -Fo "$TMP_DIR/triangulate_line_vs.spv"
 dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   -I "$SHADERS_COMMON_DIR" \
   ../triangulate/line_fs.hlsl -Fo "$TMP_DIR/triangulate_line_fs.spv"
-_emit_spv_header_var triangulate downsample feature hist cdf remap jfa_init jfa_splat jfa_step score_clear score seed_prep takeover present edge_clear edges line_vs line_fs
+_emit_spv_header_var triangulate downsample feature hist cdf remap jfa_init jfa_splat jfa_step score_clear score seed_prep takeover present edge_clear edges edge_args line_vs line_fs
 echo "  triangulate shaders compiled (SPV: downsample+feature+jfa+score+takeover+present+edges+lines; blur)"
 
 # plane_shear — analysis-driven shear / rift. Sharing common.hlsl:

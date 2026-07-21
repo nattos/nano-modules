@@ -83,6 +83,7 @@ struct State {
   gpu::Buffer accum_buf;     // uint[MAX_SEEDS * 4]
   gpu::Buffer edge_buf;      // uint[MAX_EDGES] packed (a<<16)|b
   gpu::Buffer edge_count_buf;// uint append counter
+  gpu::Buffer edge_args_buf; // uint[4] indirect draw args (edge_args kernel)
   gpu::Buffer seen_buf;      // uint[SEEN_WORDS] per-pair edge dedup bitmask
   gpu::Buffer hist_buf;      // uint[HIST_WORDS] ridge+corner histogram
   gpu::Buffer pct_buf;       // float[4] percentile divisors
@@ -123,7 +124,8 @@ struct State {
 static gpu::ComputePSO s_pso_downsample, s_pso_feature, s_pso_jfa_init,
                        s_pso_jfa_splat, s_pso_jfa_step, s_pso_score_clear,
                        s_pso_score, s_pso_seed_prep, s_pso_takeover, s_pso_present,
-                       s_pso_edge_clear, s_pso_edges, s_pso_hist, s_pso_cdf, s_pso_remap;
+                       s_pso_edge_clear, s_pso_edges, s_pso_edge_args,
+                       s_pso_hist, s_pso_cdf, s_pso_remap;
 static gpu::RenderPSO s_pso_lines;
 static fx::GaussianBlur s_blur;
 
@@ -240,6 +242,7 @@ void module_init() {
   state::registerShaderSPV("triangulate_present",    PRESENT_SPV,    PRESENT_SPV_SIZE);
   state::registerShaderSPV("triangulate_edge_clear", EDGE_CLEAR_SPV, EDGE_CLEAR_SPV_SIZE);
   state::registerShaderSPV("triangulate_edges",      EDGES_SPV,      EDGES_SPV_SIZE);
+  state::registerShaderSPV("triangulate_edge_args",  EDGE_ARGS_SPV,  EDGE_ARGS_SPV_SIZE);
   state::registerShaderSPV("triangulate_line_vs",    LINE_VS_SPV,    LINE_VS_SPV_SIZE);
   state::registerShaderSPV("triangulate_line_fs",    LINE_FS_SPV,    LINE_FS_SPV_SIZE);
 
@@ -258,10 +261,11 @@ void module_init() {
   auto cs_pr  = gpu::Device::createShaderModuleByName("triangulate_present");
   auto cs_ec  = gpu::Device::createShaderModuleByName("triangulate_edge_clear");
   auto cs_ed  = gpu::Device::createShaderModuleByName("triangulate_edges");
+  auto cs_ea  = gpu::Device::createShaderModuleByName("triangulate_edge_args");
   auto vs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_vs");
   auto fs_ln  = gpu::Device::createShaderModuleByName("triangulate_line_fs");
   if (!cs_ds || !cs_ft || !cs_ji || !cs_jp || !cs_js || !cs_sc || !cs_s || !cs_sp || !cs_tk || !cs_pr
-      || !cs_ec || !cs_ed || !vs_ln || !fs_ln || !cs_hi || !cs_cd || !cs_rm) return;
+      || !cs_ec || !cs_ed || !cs_ea || !vs_ln || !fs_ln || !cs_hi || !cs_cd || !cs_rm) return;
 
   s_pso_downsample = gpu::Device::createComputePSO(cs_ds, "main", gpu::Bindings()
       .tex2d(0).sampler(1).storageTex2d(2, gpu::TextureFormat::RGBA8));
@@ -296,6 +300,8 @@ void module_init() {
   s_pso_edges = gpu::Device::createComputePSO(cs_ed, "main", gpu::Bindings()
       .storageTex2dRW(0, gpu::TextureFormat::R32F).storageRW(1).storageRW(2)
       .storageRW(3).uniform(4));
+  s_pso_edge_args = gpu::Device::createComputePSO(cs_ea, "main", gpu::Bindings()
+      .storageRW(0).storageRW(1).uniform(2));
   s_pso_lines = gpu::Device::createInstancedRenderPSO(
       vs_ln, "main", fs_ln, "main", gpu::TextureFormat::Surface,
       gpu::Bindings().uniform(0).storage(1).storage(2),
@@ -311,6 +317,7 @@ void* create() {
   s->accum_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4 * MAX_SEEDS, gpu::BufferUsage::Storage);
   s->edge_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * MAX_EDGES, gpu::BufferUsage::Storage);
   s->edge_count_buf = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
+  s->edge_args_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * 4, gpu::BufferUsage::Storage);
   s->seen_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * SEEN_WORDS, gpu::BufferUsage::Storage);
   s->hist_buf  = gpu::Device::createBuffer(sizeof(uint32_t) * HIST_WORDS, gpu::BufferUsage::Storage);
   s->pct_buf   = gpu::Device::createBuffer(sizeof(float) * 4, gpu::BufferUsage::Storage);
@@ -337,7 +344,8 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->seed_buf.release(); s->accum_buf.release();
-  s->edge_buf.release(); s->edge_count_buf.release(); s->seen_buf.release();
+  s->edge_buf.release(); s->edge_count_buf.release(); s->edge_args_buf.release();
+  s->seen_buf.release();
   s->hist_buf.release(); s->pct_buf.release();
   s->feature_buf.release(); s->splat_buf.release(); s->clear_buf.release();
   s->score_buf.release(); s->takeover_buf.release(); s->present_buf.release();
@@ -664,6 +672,18 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch(pgx, pgy);
       cp.end();
     }
+    // Fold the append counter into indirect draw args so the mesh pass draws
+    // the REAL edge count (typically ~3×seeds) instead of MAX_EDGES worst-case
+    // instances. Binds edge_clear_buf: its layout carries u_max_edges.
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_edge_args);
+      cp.setBuffer(s->edge_count_buf, 0);
+      cp.setBuffer(s->edge_args_buf, 1);
+      cp.setBuffer(s->edge_clear_buf, 2);
+      cp.dispatch(1, 1);
+      cp.end();
+    }
   }
 
   // 5. Present (uses this frame's consistent pre-takeover state).
@@ -701,7 +721,8 @@ void render(void* self, int vp_w, int vp_h) {
     rp.setBuffer(s->line_buf, 0);
     rp.setBuffer(s->edge_buf, 1);
     rp.setBuffer(s->seed_buf, 2);
-    rp.draw(6, MAX_EDGES);
+    // GPU-fed instance count (edge_args kernel) — was draw(6, MAX_EDGES).
+    rp.drawIndirect(s->edge_args_buf);
     rp.end();
   }
 
