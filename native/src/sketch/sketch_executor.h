@@ -582,21 +582,14 @@ class SketchExecutor {
   // re-entering instance never replays history; mirrors the compositor's
   // triggerSeqSeen_.
   std::unordered_map<std::string, long long> triggerSeqSeen_;
-  std::vector<char> triggerScratch_;  // reused buffer for effrt_published_state_json
 
   // Drain a TriggerSource stage's published "triggers" ring (post-tick) onto
-  // the process-global trigger_bus: parse {seq,on,channel,velocity}, seq-dedup
+  // the process-global trigger_bus: numeric effrt_read_triggers read, seq-dedup
   // against triggerSeqSeen_, emit new events. No-op for non-TriggerSource
   // stages. The shared server (native) drains the bus to launch clips; the
   // editor mirrors it into the Trigger Rails cards.
   void drainTriggerRing(const RegisteredModule* reg, int32_t instHandle,
                         const std::string& instKey);
-
-  // An instance's live published state (its accumulated set_val outputs), or a
-  // discarded json when it publishes nothing. The authoritative value of a
-  // producer's output field when no host mirrored it into the sketch JSON.
-  nlohmann::json publishedStateFor(int32_t instHandle);
-  std::vector<char> publishedScratch_;
 
   // Copy each delayed texture wire's producer output (gathered this frame in
   // pendingDelayRetain_) into a persistent retained texture matching its format,

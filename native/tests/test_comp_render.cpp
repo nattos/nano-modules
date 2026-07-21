@@ -8,8 +8,8 @@
 //   2. A param cheap-op re-renders WITHOUT a plan rebuild; a clip-boundary
 //      crossing flags structureChanged and DOES rebuild.
 //   3. An automation lane drives a param (readback differs across beats).
-//   4. A live LFO→param wire folds through effrt_published_state_json (the
-//      producer-output mirror running in-process).
+//   4. A live LFO→param wire folds through effrt_published_scalar (the
+//      numeric producer-output mirror running in-process).
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -287,7 +287,7 @@ TEST_CASE("automation lane drives a param across beats", "[comp_render]") {
   CHECK(late > early + 30.0);
 }
 
-TEST_CASE("live LFO→param wire folds via effrt_published_state_json", "[comp_render]") {
+TEST_CASE("live LFO→param wire folds via effrt_published_scalar", "[comp_render]") {
   Harness hx;
   if (!hx.init()) SKIP("No Metal device available");
 

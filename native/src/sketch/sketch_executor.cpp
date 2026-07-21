@@ -2368,29 +2368,20 @@ void SketchExecutor::drainTriggerRing(const RegisteredModule* reg,
   }
   if (!isTrigger || instHandle < 0) return;
 
-  // Read the instance's published state (its accumulated set_val outputs).
-  if (triggerScratch_.size() < 256) triggerScratch_.resize(256);
-  int32_t len = effrt_published_state_json(instHandle, triggerScratch_.data(),
-                                           (int32_t)triggerScratch_.size());
-  if (len > (int32_t)triggerScratch_.size()) {
-    triggerScratch_.resize((size_t)len);
-    len = effrt_published_state_json(instHandle, triggerScratch_.data(),
-                                     (int32_t)triggerScratch_.size());
-  }
-  if (len <= 0) return;
-  json ps = json::parse(triggerScratch_.data(), triggerScratch_.data() + len,
-                        nullptr, /*allow_exceptions=*/false);
-  if (!ps.is_object()) return;
-  auto trig = ps.find("triggers");
-  if (trig == ps.end() || !trig->is_array()) return;
+  // Numeric ring read (effrt.h layout: seq/on/channel/velocity/deadline per
+  // event) — no JSON on this per-frame path. Ring caps are ≤16; 32 = headroom.
+  // -1 = no ring published yet (defer watermarking); 0 = ring exists but empty
+  // (still baselines the watermark below, so the FIRST event isn't swallowed
+  // as "first sight").
+  double buf[32 * 5];
+  const int32_t n = effrt_read_triggers(instHandle, buf, 32);
+  if (n < 0) return;
 
   // seq-dedup, mirroring CompExecutor::readTriggerSignals: baseline at the
   // ring max on first sight (never replay history), resync on instance reset.
   long long maxSeq = 0;
-  for (const auto& e : *trig) {
-    if (e.is_object() && e.contains("seq") && e["seq"].is_number())
-      maxSeq = std::max(maxSeq, e["seq"].get<long long>());
-  }
+  for (int32_t k = 0; k < n; ++k)
+    maxSeq = std::max(maxSeq, (long long)buf[k * 5]);
   auto seen = triggerSeqSeen_.find(instKey);
   if (seen == triggerSeqSeen_.end()) {
     triggerSeqSeen_[instKey] = maxSeq;
@@ -2398,32 +2389,19 @@ void SketchExecutor::drainTriggerRing(const RegisteredModule* reg,
   }
   if (maxSeq < seen->second) seen->second = 0;  // instance reset → resync
   long long last = seen->second;
-  for (const auto& e : *trig) {
-    if (!e.is_object()) continue;
-    const long long seq =
-        e.contains("seq") && e["seq"].is_number() ? e["seq"].get<long long>() : 0;
+  for (int32_t k = 0; k < n; ++k) {
+    const double* ev = buf + k * 5;
+    const long long seq = (long long)ev[0];
     if (seq <= last) continue;
     seen->second = std::max(seen->second, seq);
-    if (!e.contains("channel") || !e["channel"].is_number()) continue;
-    const int channel = (int)std::lround(e["channel"].get<double>());
-    const bool on = e.contains("on") &&
-        (e["on"].is_boolean() ? e["on"].get<bool>()
-                              : e["on"].is_number() && e["on"].get<double>() != 0);
-    const float velocity = e.contains("velocity") && e["velocity"].is_number()
-        ? (float)e["velocity"].get<double>() : 1.0f;
-    // Optional precision subtree: {"mode":"any"|"strict","deadline":<ms>}.
-    // Absent → "any" (immediate). "strict" with no deadline → 100ms default.
-    bool strict = false;
-    uint32_t deadlineMs = 0;
-    if (auto p = e.find("precision"); p != e.end() && p->is_object()) {
-      auto m = p->find("mode");
-      strict = m != p->end() && m->is_string() && m->get<std::string>() == "strict";
-      if (strict) {
-        auto d = p->find("deadline");
-        deadlineMs = (d != p->end() && d->is_number() && d->get<double>() > 0)
-            ? (uint32_t)std::lround(d->get<double>()) : 100u;
-      }
-    }
+    if (std::isnan(ev[2])) continue;  // channel unpublished — watermark advanced
+    const int channel = (int)std::lround(ev[2]);
+    const bool on = ev[1] != 0.0;
+    const float velocity = (float)ev[3];
+    // deadline_ms: 0 = precision "any" (immediate); >0 = strict with that
+    // deadline (the host already folded strict-no-deadline to 100ms).
+    const bool strict = ev[4] > 0.0;
+    const uint32_t deadlineMs = strict ? (uint32_t)std::lround(ev[4]) : 0u;
     // v1: every sketch trigger source writes the default global rail (there is
     // no per-node rail-wiring UI in the barrel sketch yet — unwired sources go
     // global, matching the compositor's default).
@@ -2618,21 +2596,6 @@ void SketchExecutor::applySmoothing(
         param_smoothing::advanceSmooth(sit->second, target, duration, (float)dt);
     inst.setParamFloat(field, v);
   }
-}
-
-nlohmann::json SketchExecutor::publishedStateFor(int32_t instHandle) {
-  if (instHandle < 0) return json(nullptr);
-  if (publishedScratch_.size() < 256) publishedScratch_.resize(256);
-  int32_t len = effrt_published_state_json(instHandle, publishedScratch_.data(),
-                                           (int32_t)publishedScratch_.size());
-  if (len > (int32_t)publishedScratch_.size()) {
-    publishedScratch_.resize((size_t)len);
-    len = effrt_published_state_json(instHandle, publishedScratch_.data(),
-                                     (int32_t)publishedScratch_.size());
-  }
-  if (len <= 0) return json(nullptr);
-  return json::parse(publishedScratch_.data(), publishedScratch_.data() + len,
-                     nullptr, /*allow_exceptions=*/false);
 }
 
 void SketchExecutor::captureWriteTaps(

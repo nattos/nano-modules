@@ -1170,14 +1170,29 @@ export class WasmSketchExecutor {
         new DataView(this.memory.buffer).setFloat64(outPtr, num, true);
         return 1;
       },
-      // The instance's LIVE plugin state (state::set_val publishes) as JSON —
-      // the composition executor folds PURE-OUTPUT scalars from this into its
-      // cached sketch each frame (the in-module twin of step 3 below).
-      published_state_json: (h: number, out: number, cap: number): number => {
-        const i = this.resolve(h);
-        const ps = i?.host.pluginState;
-        if (!ps || typeof ps !== 'object') return 0;
-        return this.writeStringInto(out, cap, JSON.stringify(ps));
+      // Numeric trigger-ring read (mirror effrt_read_triggers): 5 doubles per
+      // event — seq, on(0/1), channel(NaN=unpublished), velocity(default 1),
+      // deadline_ms(0=any; >0=strict; strict-no-deadline→100). Returns the
+      // event count; -1 when no ring is published (empty-ring vs no-ring
+      // drives the callers' seq-watermark baselining — see effrt.h).
+      read_triggers: (h: number, outPtr: number, cap: number): number => {
+        const ring = (this.resolve(h)?.host.pluginState as
+            { triggers?: unknown } | undefined)?.triggers;
+        if (!Array.isArray(ring) || cap <= 0) return -1;
+        const n = Math.min(ring.length, cap);
+        const out = new Float64Array(this.memory.buffer, outPtr, n * 5);
+        for (let k = 0; k < n; k++) {
+          const e = (ring[k] ?? {}) as Record<string, unknown>;
+          out[k * 5] = typeof e.seq === 'number' ? e.seq : 0;
+          out[k * 5 + 1] = e.on === true ? 1 : 0;
+          out[k * 5 + 2] = typeof e.channel === 'number' ? e.channel : NaN;
+          out[k * 5 + 3] = typeof e.velocity === 'number' ? e.velocity : 1;
+          const p = e.precision as { mode?: unknown; deadline?: unknown } | undefined;
+          out[k * 5 + 4] = p?.mode === 'strict'
+              ? (typeof p.deadline === 'number' && p.deadline > 0 ? p.deadline : 100)
+              : 0;
+        }
+        return n;
       },
       tick: (h: number, dt: number) => {
         const i = this.resolve(h); if (i) i.module.tick(dt);

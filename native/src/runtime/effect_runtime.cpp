@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 
 #include "gpu/gpu_backend.h"
@@ -258,23 +259,23 @@ void EffectInstance::hostSetMetadata(std::string id, std::string version) {
 void EffectInstance::hostSetSchema(std::string schemaJson) {
   schema_json_ = std::move(schemaJson);
 }
-void EffectInstance::hostSetVal(std::string_view path, std::string_view valueJson) {
+void EffectInstance::hostSetVal(std::string_view path, const nlohmann::json& value) {
   if (path.empty()) {
     // Whole-state replace (state::setVal with no path).
     published_.clear();
-    auto j = nlohmann::json::parse(valueJson, nullptr, false);
-    if (j.is_object())
-      for (auto& [k, v] : j.items()) published_[k] = v.dump();
+    if (value.is_object())
+      for (const auto& [k, v] : value.items()) published_[k] = v;
     return;
   }
   std::string key(path);
   if (key.front() == '/') key.erase(0, 1);
-  published_[key] = std::string(valueJson);
+  published_[key] = value;
 }
 std::string EffectInstance::publishedStateJson() const {
   if (published_.empty()) return std::string();
-  // Values are already JSON serializations — assemble the object directly
-  // (per-tick hot path for broadcasting effects; no parse round-trip).
+  // Telemetry-only assembly (barrel plugin_states publish). std::map keeps the
+  // serialization byte-stable across frames so downstream dedup-by-compare
+  // still works.
   std::string out = "{";
   bool first = true;
   for (const auto& [k, v] : published_) {
@@ -282,7 +283,7 @@ std::string EffectInstance::publishedStateJson() const {
     first = false;
     out += nlohmann::json(k).dump();
     out += ':';
-    out += v;
+    out += v.dump();
   }
   out += '}';
   return out;
@@ -290,14 +291,50 @@ std::string EffectInstance::publishedStateJson() const {
 bool EffectInstance::publishedScalar(const char* field, int len, double* out) const {
   auto it = published_.find(std::string(field, (size_t)len));
   if (it == published_.end() || !out) return false;
-  const std::string& v = it->second;   // a JSON serialization from set_val
-  if (v == "true")  { *out = 1.0; return true; }
-  if (v == "false") { *out = 0.0; return true; }
-  char* end = nullptr;
-  const double d = std::strtod(v.c_str(), &end);
-  if (end == v.c_str()) return false;  // non-numeric (object/array/string)
-  *out = d;
-  return true;
+  const nlohmann::json& v = it->second;
+  if (v.is_boolean()) { *out = v.get<bool>() ? 1.0 : 0.0; return true; }
+  if (v.is_number())  { *out = v.get<double>(); return true; }
+  return false;  // non-scalar (object/array/string/null)
+}
+int readTriggersFromRing(const nlohmann::json& ring, double* out, int cap) {
+  if (!ring.is_array() || !out || cap <= 0) return 0;
+  int n = 0;
+  for (const auto& e : ring) {
+    if (n >= cap) break;
+    if (!e.is_object()) continue;
+    double* ev = out + n * 5;
+    const auto num = [&e](const char* k, double dflt) {
+      auto f = e.find(k);
+      return (f != e.end() && f->is_number()) ? f->get<double>() : dflt;
+    };
+    ev[0] = num("seq", 0.0);
+    {
+      auto f = e.find("on");
+      ev[1] = (f != e.end() && f->is_boolean() && f->get<bool>()) ? 1.0 : 0.0;
+    }
+    ev[2] = num("channel", std::numeric_limits<double>::quiet_NaN());
+    ev[3] = num("velocity", 1.0);
+    // precision: absent/mode!="strict" → 0 (any); strict → deadline ms
+    // (strict-with-no-deadline folds to the 100ms default here).
+    ev[4] = 0.0;
+    auto p = e.find("precision");
+    if (p != e.end() && p->is_object()) {
+      auto m = p->find("mode");
+      if (m != p->end() && m->is_string() && m->get<std::string>() == "strict") {
+        auto d = p->find("deadline");
+        const double dl =
+            (d != p->end() && d->is_number()) ? d->get<double>() : 0.0;
+        ev[4] = dl > 0.0 ? dl : 100.0;
+      }
+    }
+    ++n;
+  }
+  return n;
+}
+int EffectInstance::readTriggers(double* out, int cap) const {
+  auto it = published_.find("triggers");
+  if (it == published_.end() || !it->second.is_array()) return -1;
+  return readTriggersFromRing(it->second, out, cap);
 }
 void EffectInstance::hostRegisterShaderSpv(std::string_view name,
                                             const unsigned char* spv,

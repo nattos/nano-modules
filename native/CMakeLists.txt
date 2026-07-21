@@ -976,6 +976,14 @@ if(APPLE)
   target_compile_definitions(native_test_runner PRIVATE
     NANO_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 
+  # Structured published-state store + numeric readers (publishedScalar /
+  # readTriggers): the per-frame paths that replaced the JSON round-trips.
+  add_executable(test_published_state tests/test_published_state.cpp)
+  target_link_libraries(test_published_state PRIVATE
+    effect_runtime Catch2::Catch2WithMain)
+  target_compile_options(test_published_state PRIVATE -Wno-attributes)
+  catch_discover_tests(test_published_state)
+
   # WASM effect driver (barrel-loads-WASM): drive a WASM-backed EffectDesc
   # through the EffectInstance/EffectRuntime path. Uses mod.source.lfo (no GPU).
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")

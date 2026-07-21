@@ -707,7 +707,7 @@ static NativeSymbol state_symbols[] = {
       // host can surface output broadcasts (autopilot_x etc.) to the editor.
       if (ctx->effect_instance)
         ctx->effect_instance->hostSetVal(
-            std::string_view(path ? path : "", path ? (size_t)path_len : 0), v->dump());
+            std::string_view(path ? path : "", path ? (size_t)path_len : 0), *v);
       // bridge_server (standalone plugin) path: write into the state doc.
       if (!ctx->state_doc || ctx->plugin_key.empty()) return;
       if (path_len == 0) {

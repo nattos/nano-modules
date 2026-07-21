@@ -17,6 +17,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace gpu { class GPUBackend; }
 
 namespace wasm {
@@ -31,10 +33,11 @@ class EffectHostSink {
 
   // Live published values (state.set_val) — effects broadcast output fields
   // during tick/render (e.g. shape_fold's autopilot_x). The instance
-  // accumulates them so the host can surface them to the editor
-  // (effrt_published_state_json / the barrel's plugin_states publish).
+  // accumulates them STRUCTURED (no per-publish stringify) so the per-frame
+  // readers (effrt_published_scalar / effrt_read_triggers) stay string-free;
+  // JSON is assembled only for the barrel's telemetry publish.
   // Default: dropped (hosts that don't surface telemetry).
-  virtual void hostSetVal(std::string_view path, std::string_view valueJson) {}
+  virtual void hostSetVal(std::string_view path, const nlohmann::json& value) {}
 
   // SPV shader registration (resolved later by createShaderModuleByName).
   virtual void hostRegisterShaderSpv(std::string_view name,

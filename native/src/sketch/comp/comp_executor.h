@@ -213,9 +213,6 @@ class CompExecutor {
   bool ensureEvalAt(double beat, uint32_t& flags);
   bool videoReady(const nlohmann::json& descs) const;
   void foldPublishedOutputs(nlohmann::json& sketch);
-  /** An instance's live published state via effrt (grow-and-retry into
-   *  publishedScratch_); a discarded json on failure. */
-  nlohmann::json publishedStateFor(int32_t inst);
   /** Rebuild the trigger routing map (instanceKey → {moduleType, railId}) from
    *  the document: every device whose type declares `trigger_source`, routed to
    *  its clip's matching triggerExport or the global trigger rail. Doc-shaped
@@ -320,7 +317,6 @@ class CompExecutor {
   std::string videoDescsScratch_;
   std::string layerTargetsScratch_;
   std::string sceneStatesScratch_;
-  std::string publishedScratch_;
 };
 
 }  // namespace comp

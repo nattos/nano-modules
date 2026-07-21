@@ -23,12 +23,19 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "wasm/effect_host_sink.h"
 
 namespace gpu { class GPUBackend; }
 namespace wasm { class WasmHost; }
 
 namespace effect_runtime {
+
+// Shared triggers-ring → 5-doubles-per-event extraction (the effrt.h
+// read_triggers layout contract). Used by EffectInstance::readTriggers and
+// the effrt test-provider cold path so the contract has one implementation.
+int readTriggersFromRing(const nlohmann::json& ring, double* out, int cap);
 
 // Mirrors nano::EffectDesc_v2 — the canonical class-like effect ABI.
 // `module_init` runs once per effect TYPE (shaders, shared PSO, schema
@@ -217,15 +224,22 @@ class EffectInstance : public wasm::EffectHostSink {
   // extern-C symbols route here.
   void hostSetMetadata(std::string id, std::string version) override;
   void hostSetSchema(std::string schemaJson) override;
-  void hostSetVal(std::string_view path, std::string_view valueJson) override;
+  void hostSetVal(std::string_view path, const nlohmann::json& value) override;
   // The accumulated set_val outputs as a JSON object string ("" when the
-  // effect has published nothing). Backs effrt_published_state_json and the
-  // barrel's per-frame plugin_states publish.
+  // effect has published nothing). TELEMETRY-ONLY (barrel plugin_states
+  // publish, watched-gated + deduped) — per-frame readers use the numeric
+  // accessors below.
   std::string publishedStateJson() const;
   // Numeric fast path for ONE published scalar (backs effrt_published_scalar):
   // no JSON assembly/parse on the per-frame wire path. Returns false when the
   // field was never published or isn't scalar.
   bool publishedScalar(const char* field, int len, double* out) const;
+  // Numeric trigger-ring read (backs effrt_read_triggers): copies up to `cap`
+  // events from the published "triggers" array into out[], oldest-first,
+  // 5 doubles per event — see effrt.h for the layout contract. Returns the
+  // event count, or -1 when no trigger ring has been published (the empty-ring
+  // vs no-ring distinction drives callers' watermark baselining — effrt.h).
+  int readTriggers(double* out, int cap) const;
   void hostRegisterShaderSpv(std::string_view name,
                              const unsigned char* spv, int spv_len,
                              std::string_view format,
@@ -291,9 +305,10 @@ class EffectInstance : public wasm::EffectHostSink {
   bool module_init_trapped_ = false;
   void (*on_state_ready_)(void* self) = nullptr;
 
-  // Live set_val outputs: field → JSON value serialization. Ordered so the
-  // serialized object is byte-stable across frames (dedup by comparison).
-  std::map<std::string, std::string> published_;
+  // Live set_val outputs: field → structured value (no per-publish stringify —
+  // the frame-rate readers are numeric). Ordered so the telemetry
+  // serialization is byte-stable across frames (dedup by comparison).
+  std::map<std::string, nlohmann::json> published_;
 
   std::unordered_map<std::string, int> texture_fields_;
   std::unordered_map<std::string, int> buffer_fields_;

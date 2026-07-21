@@ -47,8 +47,8 @@ void effrtSetRuntime(EffectRuntime* rt) {
   g_handleByInst.clear();
 }
 
-// See effrt.h — backs effrt_published_state_json (the barrel wires its state
-// document here; tests can synthesize values). Default: none → 0/absent.
+// See effrt.h — test seam behind effrt_published_scalar / effrt_read_triggers
+// (tests synthesize published state as JSON). Default: none → absent.
 void effrtSetPublishedStateProvider(std::function<std::string(EffectInstance*)> fn) {
   g_publishedStateFn = std::move(fn);
 }
@@ -110,21 +110,6 @@ void effrt_set_field_connected(int32_t inst, const char* path, int32_t path_len,
 void effrt_set_will_render(int32_t inst, int32_t v) {
   if (auto* i = resolve(inst)) i->setWillRender(v != 0);
 }
-int32_t effrt_published_state_json(int32_t inst, char* out, int32_t cap) {
-  auto* i = resolve(inst);
-  if (!i) return 0;
-  // Provider (tests) overrides; otherwise the instance's own accumulated
-  // set_val outputs — the production path (comp fold, barrel publish).
-  const std::string s = g_publishedStateFn ? g_publishedStateFn(i)
-                                           : i->publishedStateJson();
-  const int32_t len = static_cast<int32_t>(s.size());
-  if (out && cap > 0 && len > 0) {
-    const int32_t copy = len < cap ? len : cap;
-    std::memcpy(out, s.data(), static_cast<size_t>(copy));
-  }
-  return len;
-}
-
 int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_len,
                                double* out) {
   auto* i = resolve(inst);
@@ -140,6 +125,20 @@ int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_le
     return 0;
   }
   return i->publishedScalar(field, field_len, out) ? 1 : 0;
+}
+
+int32_t effrt_read_triggers(int32_t inst, double* out, int32_t cap) {
+  auto* i = resolve(inst);
+  if (!i || !out || cap <= 0) return -1;
+  if (g_publishedStateFn) {
+    // Test provider (JSON) — cold path, parity with published_scalar.
+    auto j = nlohmann::json::parse(g_publishedStateFn(i), nullptr, false);
+    if (!j.is_object()) return -1;
+    auto ring = j.find("triggers");
+    if (ring == j.end() || !ring->is_array()) return -1;
+    return effect_runtime::readTriggersFromRing(*ring, out, cap);
+  }
+  return i->readTriggers(out, cap);
 }
 
 void effrt_tick(int32_t inst, double dt) {

@@ -97,6 +97,11 @@ int32_t w_published_scalar(wasm_exec_env_t env, int32_t h, int32_t f, int32_t fl
   return has;
 }
 
+int32_t w_read_triggers(wasm_exec_env_t env, int32_t h, int32_t outOff, int32_t cap) {
+  char* out = appBuf(env, outOff, cap * 5 * (int32_t)sizeof(double));
+  return out ? effrt_read_triggers(h, reinterpret_cast<double*>(out), cap) : -1;
+}
+
 // --- non-pointer wrappers (just drop env, forward the ints/double) ---
 void    w_set_will_render(wasm_exec_env_t, int32_t h, int32_t v) { effrt_set_will_render(h, v); }
 void    w_tick(wasm_exec_env_t, int32_t h, double dt)            { effrt_tick(h, dt); }
@@ -137,6 +142,7 @@ NativeSymbol g_effrt_symbols[] = {
     {"set_field_connected", reinterpret_cast<void*>(w_set_field_connected), "(iiiii)", nullptr},
     {"set_will_render", reinterpret_cast<void*>(w_set_will_render), "(ii)", nullptr},
     {"published_scalar", reinterpret_cast<void*>(w_published_scalar), "(iiii)i", nullptr},
+    {"read_triggers", reinterpret_cast<void*>(w_read_triggers), "(iii)i", nullptr},
     {"tick", reinterpret_cast<void*>(w_tick), "(iF)", nullptr},
     {"render", reinterpret_cast<void*>(w_render), "(iii)", nullptr},
     {"prepare", reinterpret_cast<void*>(w_prepare), "(iii)", nullptr},

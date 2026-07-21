@@ -101,10 +101,13 @@ void state_set(const char* /*path*/, int /*path_len*/,
                 const char* /*json*/, int /*json_len*/) { /* legacy no-op */ }
 void state_set_val(const char* path, int path_len, int val_h) {
   // Accumulate live output broadcasts on the instance (mirrors the WASM
-  // path's host_functions.cpp set_val → EffectHostSink::hostSetVal).
+  // path's host_functions.cpp set_val → EffectHostSink::hostSetVal). The
+  // handle lives in g_vals (the val_* construction store) — NOT the
+  // instance's patch-blob store.
   auto* inst = active();
   if (!inst) return;
-  inst->hostSetVal(std::string_view(path, path_len), inst->val_to_json(val_h));
+  auto* v = val_lookup(val_h);
+  if (v) inst->hostSetVal(std::string_view(path, path_len), *v);
 }
 
 void state_mark_gpu_dirty(const char* /*path*/, int /*path_len*/) {}
