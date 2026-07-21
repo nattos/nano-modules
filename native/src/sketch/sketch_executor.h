@@ -501,6 +501,18 @@ class SketchExecutor {
   // the plan is rebuilt only when this changes, so param-only slider/knob drags
   // (which set the coarse value-dirty flag every frame) skip the rebuild.
   std::string planStructSig_;
+  // Builds the structural signature compared against planStructSig_. Member
+  // (not a free helper) for railsSigCache_: the rails-dump block is the only
+  // JSON serialize in the sig and is invariant across a knob drag, so it's
+  // cached keyed on structural equality of the rails themselves.
+  std::string computeStructSig(const nlohmann::json& columns,
+                               const nlohmann::json& instances,
+                               const nlohmann::json& sketchRails);
+  struct RailsSigCache {
+    nlohmann::json src;  // [sketchRails, col0.rails, col1.rails, ...]
+    std::string dump;
+  };
+  RailsSigCache railsSigCache_;
   // Test-only: counts buildPlan() invocations so a unit test can assert that a
   // param-only dirty frame reuses the cached plan while a topology change forces
   // a rebuild. Has no effect on rendering.

@@ -249,6 +249,16 @@ function post(event: WorkerEvent, transfer?: Transferable[]) {
 
 function markDirty() { stateGeneration++; }
 
+// Per-sketch structural revision — the executor slot's dirty signal.
+// executeAllColumns compares this rev against the slot's last-seen rev instead
+// of JSON.stringify'ing the whole sketch every frame (the old steady-state
+// cost). Every site that mutates a sketch's JSON (in place OR by replacing the
+// map entry) must touchSketch — including setParam, which mutates without
+// markDirty and whose dirty the exec-doc cache depends on. A missed site shows
+// up as "knob does nothing" (param-drag e2e coverage).
+const sketchRevs = new Map<string, number>();
+function touchSketch(id: string) { sketchRevs.set(id, (sketchRevs.get(id) ?? 0) + 1); }
+
 async function processQueue() {
   if (processing) return;
   processing = true;
@@ -301,6 +311,7 @@ async function handleCommand(cmd: WorkerCommand) {
           }
           // Invalidate the executor's cached instance so it reloads with the new type
           executor.invalidateInstance(entry.instance_key);
+          touchSketch(cmd.sketchId);
           markDirty();
         }
       }
@@ -311,14 +322,18 @@ async function handleCommand(cmd: WorkerCommand) {
       // single `chain` the executor runs.
       const s = normalizeSketchChains(cmd.sketch);
       sketches.set(cmd.sketchId, s);
-      removeInstancesFromBucket(s);
+      removeInstancesFromBucket(s);      // mutates the bucket sketch too
+      touchSketch(cmd.sketchId);
+      touchSketch(BUCKET_SKETCH_ID);
       markDirty();
       break;
     }
     case 'updateSketch': {
       const s = normalizeSketchChains(cmd.sketch);
       sketches.set(cmd.sketchId, s);
-      removeInstancesFromBucket(s);
+      removeInstancesFromBucket(s);      // mutates the bucket sketch too
+      touchSketch(cmd.sketchId);
+      touchSketch(BUCKET_SKETCH_ID);
       markDirty();
       break;
     }
@@ -332,6 +347,7 @@ async function handleCommand(cmd: WorkerCommand) {
       sketchInputTextures.delete(cmd.sketchId);
       // Trace points referencing this sketch are unregistered by the UI
       // (texture-monitor.disconnectedCallback) and don't need cleanup here.
+      sketchRevs.delete(cmd.sketchId);
       markDirty();
       break;
     }
@@ -347,6 +363,9 @@ async function handleCommand(cmd: WorkerCommand) {
           // Update the instance state in the sketch (if instances map exists)
           if (sketch.instances?.[entry.instance_key]) {
             sketch.instances[entry.instance_key].state[cmd.paramKey] = cmd.value;
+            // The executor MUST see this edit as dirty: the exec-doc cache
+            // serves authored producer state from the last dirty frame.
+            touchSketch(cmd.sketchId);
           }
           // Update the live instance immediately (direct-poke fast path: fire the
           // patch + commit to bridge core now rather than waiting for the next
@@ -962,7 +981,8 @@ async function simulateTick(dt: number, execDt: number = dt) {
       // has empty textureFields, so binding only beforehand leaves slot 0 unbound and
       // source.video.file renders transparent (a 1-frame flash of the layers beneath).
       const outputHandle = await exec.executeAllColumns(
-        sketchId, sketch, inputHandle, frameState, w, h, applyInstanceTextures);
+        sketchId, sketch, sketchRevs.get(sketchId) ?? 0, inputHandle,
+        frameState, w, h, applyInstanceTextures);
       // (debug) if (frameCount < 3) console.log(`[worker] sketch ${sketchId}: anchor=${sketch.anchor} outputHandle=${outputHandle}`);
       sketchOutputs.set(sketchId, outputHandle);
     } catch (err) {
@@ -1405,6 +1425,8 @@ async function reloadWasmModule(wasmUrl: string) {
       icon: e.icon, thumbnail: e.thumbnail,
     })),
   });
+  // Instances recreate on the next frame — every sketch must re-apply state.
+  for (const id of sketches.keys()) touchSketch(id);
   markDirty();
   const totalMs = (performance.now() - t0).toFixed(1);
   console.log(`[wasm-hmr] ✔ reloaded ${wasmUrl} in ${totalMs}ms (fetch+instantiate ${fetchMs}ms, ${effects.length} effects: ${effects.map(e => e.id).join(', ')})`);
@@ -1660,6 +1682,7 @@ async function instantiateEffect(effectId: string) {
       };
     }
 
+    touchSketch(BUCKET_SKETCH_ID);
     markDirty();
   } catch (e) {
     post({ type: 'error', message: `Failed to instantiate ${effectId}: ${e}` });

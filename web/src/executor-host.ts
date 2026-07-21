@@ -125,7 +125,10 @@ interface ExecutorExports {
 // state / fused-PSO cache / schema set, so concurrent sketches don't collide.
 interface SketchSlot {
   exPtr: number;
-  lastJson: string;
+  /** Last-seen per-sketch structural revision (engine-worker touchSketch).
+   *  undefined on a fresh slot ⇒ the first frame is dirty. Replaces the old
+   *  whole-sketch JSON.stringify compare that ran every frame. */
+  lastRev?: number;
   registeredSchemas: Set<string>;
   outputTex: number;   // GPUHost handle of the RGBA8 destination texture
   outW: number;
@@ -310,7 +313,7 @@ export class WasmSketchExecutor {
    * a sketch re-issued later with an IDENTICAL structure still runs from scratch.
    * Without this, deleting + recreating the same sketch (e.g. the arrangement's
    * composite as the playhead leaves and re-enters a clip) leaves the cached
-   * `lastJson` matching → `dirty=0` → a time-independent effect's stale instance
+   * `lastRev` matching → `dirty=0` → a time-independent effect's stale instance
    * reports identity → renders as passthrough.
    */
   deleteSketch(sketchId: string): void {
@@ -469,7 +472,7 @@ export class WasmSketchExecutor {
       new Uint8Array(this.memory.buffer, tagPtr, tagBytes.length).set(tagBytes);
       this.exports.executor_set_bus_tag(exPtr, tagPtr, tagBytes.length);
       this.exports.free(tagPtr);
-      slot = { exPtr, lastJson: '',
+      slot = { exPtr,
                registeredSchemas: new Set(), outputTex: 0, outW: 0, outH: 0,
                appliedKeys: new Set(), fmtCode: 1, execSentOnce: false };
       this.slots.set(sketchId, slot);
@@ -630,7 +633,10 @@ export class WasmSketchExecutor {
    * SketchExecutor.executeAllColumns.
    */
   async executeAllColumns(
-    sketchId: string, sketch: Sketch, inputHandle: number,
+    sketchId: string, sketch: Sketch,
+    /** Per-sketch structural revision from the caller (who owns every mutation
+     *  site). A changed rev = dirty frame (plan rebuild + full state apply). */
+    sketchRev: number, inputHandle: number,
     frameState: FrameState, width: number, height: number,
     /** Called once this frame's instances are ensured (created/revived) but BEFORE the
      *  native drive — so the host can (re)bind per-instance input textures onto the
@@ -735,12 +741,12 @@ export class WasmSketchExecutor {
     //    defeated the cache and froze wire values at the last dirty frame.
     const execSketch = sketch;
 
-    // 4. Marshal the sketch JSON + drive. dirty rebuilds the plan; detect via a
-    //    STRUCTURAL diff (the input sketch, not the mirrored outputs) so an
-    //    animating producer doesn't force a plan rebuild every frame.
-    const structuralJson = JSON.stringify(sketch);
-    const dirty = structuralJson !== slot.lastJson;
-    slot.lastJson = structuralJson;
+    // 4. Dirty = the caller-owned structural revision moved (engine-worker
+    //    bumps it at every sketch mutation site). Replaces the old per-frame
+    //    JSON.stringify(sketch) compare — steady-state frames now do ZERO
+    //    sketch serialization.
+    const dirty = slot.lastRev !== sketchRev;
+    slot.lastRev = sketchRev;
     // On a dirty frame the native executor (re)applies state for every chain
     // entry — remember those keys so we can detect a later prune+revive.
     if (dirty) for (const e of chain) if (e.type === 'module') slot.appliedKeys.add(e.instance_key);
@@ -754,7 +760,7 @@ export class WasmSketchExecutor {
     const sendDoc = dirty || !slot.execSentOnce;
     let jptr = 0, jlen = 0;
     if (sendDoc) {
-      const jbytes = encoder.encode(structuralJson);
+      const jbytes = encoder.encode(JSON.stringify(sketch));
       jlen = jbytes.length;
       jptr = this.exports.malloc(jlen);
       new Uint8Array(this.memory.buffer, jptr, jlen).set(jbytes);

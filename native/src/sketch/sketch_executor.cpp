@@ -452,18 +452,35 @@ bool entryHasSmoothing(const json& entry) {
   return false;
 }
 
-std::string computeStructSig(const json& columns, const json& instances,
-                             const json& sketchRails) {
+}  // namespace
+
+std::string SketchExecutor::computeStructSig(const json& columns,
+                                             const json& instances,
+                                             const json& sketchRails) {
   std::string sig;
   sig.reserve(256);
-  sig += "R:";
-  sig += sketchRails.dump();
-  sig.push_back('\n');
+  // Rails block — the only part that costs a JSON serialize. It's invariant
+  // across a knob drag (every drag frame is sketchDirty and recomputes the
+  // sig), so cache the dump keyed on structural equality of the rails
+  // themselves. The signature layout groups all rails up front to keep the
+  // cacheable part contiguous; the layout is opaque (compare-only).
+  {
+    json rails = json::array();
+    rails.push_back(sketchRails);
+    for (size_t c = 0; c < columns.size(); ++c)
+      rails.push_back(refOr(columns[c], "rails", kEmptyArr, true));
+    if (railsSigCache_.src != rails) {
+      std::string dump = "R:";
+      dump += rails.dump();
+      dump.push_back('\n');
+      railsSigCache_.src = std::move(rails);
+      railsSigCache_.dump = std::move(dump);
+    }
+    sig += railsSigCache_.dump;
+  }
   for (size_t c = 0; c < columns.size(); ++c) {
     const json& col = columns[c];
-    sig += "r:";
-    sig += refOr(col, "rails", kEmptyArr, true).dump();
-    sig.push_back('\n');
+    sig += "c\n";  // column delimiter — a moved column boundary is structural
     const json& chain = refOr(col, "chain", kEmptyArr, true);
     for (size_t i = 0; i < chain.size(); ++i) {
       const auto& e = chain[i];
@@ -492,8 +509,6 @@ std::string computeStructSig(const json& columns, const json& instances,
   }
   return sig;
 }
-
-}  // namespace
 
 SketchExecutor::SketchExecutor(effect_runtime::EffectRuntime* rt,
                                ModuleRegistry* registry,
