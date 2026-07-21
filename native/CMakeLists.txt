@@ -445,6 +445,16 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm"
   )
   catch_discover_tests(test_effect_abi)
+
+  # Seekable-streams ABI end-to-end through WAMR: testonly.streams_probe reads
+  # streams.* against a fixture StreamsTable and republishes what it saw.
+  add_executable(test_streams_probe tests/test_streams_probe.cpp)
+  target_link_libraries(test_streams_probe PRIVATE wasm_host Catch2::Catch2WithMain)
+  target_compile_definitions(test_streams_probe PRIVATE
+    TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm"
+    COMP_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/comp"
+  )
+  catch_discover_tests(test_streams_probe)
 endif()
 
 # NanoLooper sequencer core — pure logic (records gate duration + optional

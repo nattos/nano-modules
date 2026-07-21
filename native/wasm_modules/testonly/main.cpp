@@ -97,6 +97,11 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_static)
 // Deliberately traps in module_init — verifies aux-stack trap containment.
 NANO_DECLARE_INSTANCE_EFFECT(trap_test)
 
+// Seekable-streams ABI probe: republishes what streams.* answered as seen_*
+// outputs + the reserved transport_* controller contract. No GPU.
+NANO_DECLARE_INSTANCE_EFFECT(streams_probe)
+namespace streams_probe { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
 extern "C" {
@@ -483,6 +488,20 @@ void nano_module_main() {
         "la-running",
         NANO_INSTANCE_LIFECYCLE(motion_blur),
         nullptr, nullptr, nullptr, &motion_blur::eval_visibility,
+    });
+
+    // Seekable-streams ABI probe (streams.h) — republishes the surface's
+    // answers as seen_* outputs + the reserved transport_* contract.
+    nano::registerEffect({
+        2,
+        "testonly.streams_probe",
+        "Streams Probe",
+        "Republishes the seekable-streams surface as outputs (test only)",
+        "debug",
+        "test,streams,transport",
+        "la-stream",
+        NANO_INSTANCE_LIFECYCLE(streams_probe),
+        &streams_probe::is_identity,
     });
 
     // Registered LAST: trap_test's module_init deliberately traps. A trapped

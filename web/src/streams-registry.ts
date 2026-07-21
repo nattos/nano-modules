@@ -178,7 +178,10 @@ export class StreamsRegistry {
   }
 
   find(h: bigint): StreamRec | undefined {
-    return this.byHandle.get(h);
+    // Handles cross the wasm boundary as SIGNED i64 bigints (MSB-tagged ⇒
+    // negative), while the registry keys the unsigned decimal the native
+    // serializer emitted — normalize at the lookup.
+    return this.byHandle.get(BigInt.asUintN(64, h));
   }
 
   /** streams_table.h clipIdForInstanceKey: resolve the clip that owns an
