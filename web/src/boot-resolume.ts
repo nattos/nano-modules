@@ -328,7 +328,7 @@ function connectBarrel(url: string) {
   };
 
   // Composition-wide sketch access for repairs (e.g. the Devices tab's
-  // dead-midi-wire remap): fetch/push ANY live instance's sketch over the
+  // ghost-device scan): fetch ANY live instance's sketch over the
   // bridge, independent of the wired-for-editing key. Fetch is one-shot with
   // a timeout so offline placeholder instances (registered in the
   // composition but not launched) resolve null instead of hanging.
@@ -359,10 +359,6 @@ function connectBarrel(url: string) {
           resolve(null);
         }, 3000);
       }),
-      push: (key: string, sketch: Sketch) => {
-        barrel.patch(`/plugins/${key}/state`,
-                     [{ op: 'replace', path: '/sketch', value: sketch }]);
-      },
     });
   }
 

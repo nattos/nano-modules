@@ -10,7 +10,8 @@ import { html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 
-export type DeviceCardStatus = 'connected' | 'disconnected' | 'template' | 'deleted' | 'ghost';
+export type DeviceCardStatus =
+  'connected' | 'disconnected' | 'template' | 'deleted' | 'ghost' | 'missing';
 
 @customElement('device-card')
 export class DeviceCard extends MobxLitElement {
@@ -60,6 +61,14 @@ export class DeviceCard extends MobxLitElement {
       border-color: var(--app-tint-4);
       opacity: 0.55;
       cursor: default;
+    }
+    /* Missing: referenced by composition wires but absent from the library —
+       dashed like a ghost, but clickable (details panel offers adopt/alias)
+       and warm-tinted so it reads as "needs attention", not "inert". */
+    :host([status='missing']) {
+      border-style: dashed;
+      border-color: color-mix(in srgb, var(--app-hi-color1) 55%, transparent);
+      opacity: 0.85;
     }
     :host([status='deleted']) { opacity: 0.45; }
     :host([status='deleted']) .name { text-decoration: line-through; }
@@ -143,6 +152,7 @@ export class DeviceCard extends MobxLitElement {
     const badge =
       this.status === 'template' ? 'template'
       : this.status === 'ghost' ? 'unrecognized'
+      : this.status === 'missing' ? 'missing'
       : this.status === 'deleted' ? 'deleted'
       : null;
     return html`

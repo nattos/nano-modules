@@ -24,6 +24,8 @@ import { midiController } from '../../state/midi-controller';
 import { allDeviceTemplates } from '../../midi/device-registry';
 import type { DeviceInstance, DeviceTemplate, PhysicalIdentity } from '../../midi/midi-types';
 import { devicesUi } from './devices-ui';
+import { ghostScan } from './ghost-scan';
+import type { GhostDevice } from './device-wires-model';
 
 import './device-card';
 import './device-surface';
@@ -123,6 +125,16 @@ export class DevicesTab extends MobxLitElement {
       gap: var(--app-sp-4);
       align-items: flex-start;
     }
+    .group-label .chip {
+      margin-left: 8px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .missing-body {
+      padding: 10px 6px;
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color2);
+    }
     .empty-note {
       font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
@@ -158,6 +170,10 @@ export class DevicesTab extends MobxLitElement {
     // First visit is the permission-prompt moment when the library is empty
     // (boot already initialized when devices exist).
     void midiController.initMidi();
+    // Composition-wide ghost scan: in Live mode this prefetches every live
+    // instance's sketch so missing-device counts cover ALL 14 instances, not
+    // just the one loaded in the editor. No-op in playground (no bridge).
+    void ghostScan.refresh();
   }
 
   disconnectedCallback() {
@@ -235,6 +251,36 @@ export class DevicesTab extends MobxLitElement {
     `;
   }
 
+  /**
+   * A device the composition's wires reference but the library doesn't know:
+   * a re-created profile, or a composition from someone else. Selecting it
+   * opens the details panel with the adopt/alias repair actions — the wires
+   * themselves are never rewritten.
+   */
+  private renderMissingCard(ghost: GhostDevice) {
+    const subtitle = [
+      `${ghost.deviceId.slice(0, 8)}…`,
+      `${ghost.wireCount} wire${ghost.wireCount === 1 ? '' : 's'}`,
+      `${ghost.controls.length} control${ghost.controls.length === 1 ? '' : 's'}`,
+      `${ghost.sketchCount} sketch${ghost.sketchCount === 1 ? '' : 'es'}`,
+    ].join(' · ');
+    return html`
+      <device-card
+        .name=${'Unknown device'}
+        .subtitle=${subtitle}
+        .status=${'missing'}
+        ?selected=${devicesUi.selectedCardId === ghost.deviceId}
+        ?dimmed=${devicesUi.defineMode !== null}
+        @click=${() => devicesUi.selectCard(ghost.deviceId)}
+      >
+        <div class="missing-body">
+          mapped in ${ghost.sketchCount} sketch${ghost.sketchCount === 1 ? '' : 'es'} —
+          select to adopt
+        </div>
+      </device-card>
+    `;
+  }
+
   private renderGhostCard(port: PhysicalIdentity) {
     // Plugged in but unknown — a placeholder, never forkable (you fork a
     // template/instance FOR it in define mode). Its define button is the
@@ -257,6 +303,7 @@ export class DevicesTab extends MobxLitElement {
     const midi = appState.local.midi;
     const filters = appState.local.userSettings.deviceFilters;
     const define = devicesUi.defineMode;
+    const ghosts = ghostScan.ghosts();
 
     const live = midi.library.filter(i => !i.deleted);
     const connected = live.filter(i => midi.connected[i.id]);
@@ -293,6 +340,17 @@ export class DevicesTab extends MobxLitElement {
         <div>
           <div class="group-label">Deleted</div>
           <div class="cards">${deleted.map(i => this.renderInstanceCard(i, 'deleted'))}</div>
+        </div>` : nothing,
+      ghosts.length > 0 ? html`
+        <div>
+          <div class="group-label">Missing devices — wired in the composition
+            <button class="chip" ?disabled=${ghostScan.scanning}
+              title="Re-scan every live instance's sketch for wires to unknown devices"
+              @click=${() => ghostScan.refresh()}>
+              ${ghostScan.scanning ? 'scanning…' : 'rescan'}
+            </button>
+          </div>
+          <div class="cards">${ghosts.map(g => this.renderMissingCard(g))}</div>
         </div>` : nothing,
     ];
 

@@ -21,10 +21,11 @@ import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { midiController } from '../../state/midi-controller';
-import { getDeviceTemplate } from '../../midi/device-registry';
+import { allDeviceTemplates, getDeviceTemplate } from '../../midi/device-registry';
 import type { ControlGesture, ControlMapping } from '../../midi/midi-types';
 import { devicesUi } from './devices-ui';
 import { deviceColorCss } from './device-surface';
+import { ghostScan } from './ghost-scan';
 import './device-wires-panel';
 
 @customElement('device-control-details')
@@ -129,6 +130,46 @@ export class DeviceControlDetails extends MobxLitElement {
       min-height: 0;
       padding: 0 10px 8px;
     }
+    /* Ghost (missing-device) branch. */
+    .ghost-hint {
+      padding: 6px 10px 0;
+      color: var(--app-text-color2);
+      font-size: var(--app-fs-xs);
+      line-height: 1.4;
+    }
+    .ghost-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 10px;
+    }
+    .ghost-btn {
+      font: inherit;
+      font-size: var(--app-fs-sm);
+      text-align: left;
+      color: var(--app-text-color1);
+      background: color-mix(in srgb, var(--app-hi-color1) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--app-hi-color1) 45%, transparent);
+      border-radius: 1px;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+    .ghost-btn:hover { background: color-mix(in srgb, var(--app-hi-color1) 22%, transparent); }
+    .ghost-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 0 10px 8px;
+      border-bottom: 1px solid var(--app-tint-2);
+    }
+    .ghost-control {
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color1);
+      border: 1px solid var(--app-tint-3);
+      border-radius: 1px;
+      padding: 1px 5px;
+    }
+    .ghost-gestures { color: var(--app-text-color2); }
   `;
 
   /** Selections grouped per device (edits apply per device group). */
@@ -261,11 +302,12 @@ export class DeviceControlDetails extends MobxLitElement {
   }
 
   /** Card selection (no controls): the device's whole wire fan-out. Only
-   *  library instances — a template can't own wires (wiring lazy-forks). */
+   *  library instances — a template can't own wires (wiring lazy-forks) —
+   *  plus GHOST cards (missing devices reconstructed from composition wires). */
   private renderDeviceCard() {
     const id = devicesUi.selectedCardId;
     const instance = id ? midiController.instance(id) : undefined;
-    if (!instance) return nothing;
+    if (!instance) return id ? this.renderGhostCard(id) : nothing;
     this.anchorAboveMonitor();
     return html`
       <div class="head">
@@ -273,6 +315,60 @@ export class DeviceControlDetails extends MobxLitElement {
         <span class="count">wires</span>
       </div>
       <device-wires-panel .deviceId=${instance.id} .controlIds=${null}></device-wires-panel>
+    `;
+  }
+
+  /**
+   * Missing-device details: what the composition maps on it (controls +
+   * gesture sets, wire fan-out — the wires panel keys on the raw uuid and
+   * works for ghosts as-is) and the two repair actions. NEITHER rewrites any
+   * sketch wire:
+   *   - adopt: new library instance whose id IS this uuid (then claim
+   *     hardware via the normal define flow);
+   *   - alias: an existing device additionally answers to this uuid
+   *     (DeviceInstance.knownAs).
+   */
+  private renderGhostCard(deviceId: string) {
+    const ghost = ghostScan.ghost(deviceId);
+    if (!ghost) return nothing;
+    this.anchorAboveMonitor();
+    const candidates = appState.local.midi.library.filter(i => !i.deleted);
+    return html`
+      <div class="head">
+        <span class="title">Unknown device · ${deviceId.slice(0, 8)}…</span>
+        <span class="count">${ghost.wireCount} wires · ${ghost.sketchCount}
+          sketch${ghost.sketchCount === 1 ? '' : 'es'}</span>
+      </div>
+      <div class="ghost-hint">
+        Wires in this composition map ${ghost.controls.length}
+        control${ghost.controls.length === 1 ? '' : 's'} of a device this
+        library doesn't know. Adopt it (no wires are modified):
+      </div>
+      <div class="ghost-actions">
+        ${allDeviceTemplates().map(t => html`
+          <button class="ghost-btn"
+            title="Create a new ${t.name} whose id is this device's uuid — its wires go live once you define hardware for it"
+            @click=${() => {
+              const inst = midiController.adoptGhost(deviceId, t.templateId);
+              devicesUi.selectCard(inst.id);
+            }}>Adopt as new ${t.name}</button>
+        `)}
+        ${candidates.map(i => html`
+          <button class="ghost-btn"
+            title="Add this uuid to ${i.name}'s known-as aliases — its wires read ${i.name}'s values from now on"
+            @click=${() => {
+              midiController.addKnownAs(i.id, deviceId);
+              devicesUi.selectCard(i.id);
+            }}>This is my «${i.name}»</button>
+        `)}
+      </div>
+      <div class="ghost-controls">
+        ${ghost.controls.map(c => html`
+          <span class="ghost-control">${c.controlId}
+            <span class="ghost-gestures">${c.gestures.join('/')}</span></span>
+        `)}
+      </div>
+      <device-wires-panel .deviceId=${deviceId} .controlIds=${null}></device-wires-panel>
     `;
   }
 
