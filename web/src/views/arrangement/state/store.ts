@@ -3829,20 +3829,65 @@ export class ArrangementStore {
   // content time; overrides the built-in play modes while it holds a
   // transport-controller device) ──────────────────────────────────────────────
 
-  /** Add a transport-controller device to a clip's transport section. */
-  addClipTransportDevice(trackId: string, clipId: string, moduleType: string, name?: string) {
-    const dev: Device = {
+  /** Build a transport-section device: real capability tags from the engine's
+   *  schema (the doc-side precedence helper reads them), catalog defaults. */
+  private makeTransportDevice(moduleType: string): Device {
+    const cat = catalogEffect(moduleType);
+    const caps = (this.enginePlugins[moduleType]?.capabilities ??
+                  ['transport_controller']) as Device['capabilities'];
+    return {
       id: uid('dev'),
       moduleType,
-      name: name ?? moduleType,
-      capabilities: ['transport_controller'],
+      name: cat?.name ?? moduleType,
+      capabilities: caps,
       state: defaultStateFor(moduleType),
     };
+  }
+
+  /** Add a transport-controller device to a clip's transport section. */
+  addClipTransportDevice(trackId: string, clipId: string, moduleType: string) {
+    this.insertClipTransportDeviceAt(trackId, clipId, Number.MAX_SAFE_INTEGER, moduleType);
+  }
+
+  insertClipTransportDeviceAt(
+    trackId: string, clipId: string, index: number, moduleType: string, coalesceKey?: string,
+  ): string | null {
+    const dev = this.makeTransportDevice(moduleType);
     this.mutate('add transport effect', (d) => {
       const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
       if (!c) return;
       c.transport ??= { devices: [], wires: [] };
-      c.transport.devices.push(dev);
+      const i = Math.max(0, Math.min(index, c.transport.devices.length));
+      c.transport.devices.splice(i, 0, dev);
+    }, coalesceKey);
+    return dev.id;
+  }
+
+  replaceClipTransportDevice(
+    trackId: string, clipId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string,
+  ) {
+    this.mutate('change transport effect', (d) => {
+      const dev = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId)
+        ?.transport?.devices.find((x) => x.id === deviceId);
+      if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
+    }, coalesceKey);
+  }
+
+  setClipTransportDeviceType(
+    trackId: string, clipId: string, deviceId: string, moduleType: string, coalesceKey?: string,
+  ) {
+    const next = this.makeTransportDevice(moduleType);
+    this.replaceClipTransportDevice(trackId, clipId, deviceId, {
+      moduleType: next.moduleType, name: next.name,
+      capabilities: next.capabilities, state: next.state,
+    }, coalesceKey);
+  }
+
+  moveClipTransportDevice(trackId: string, clipId: string, from: number, to: number) {
+    this.mutate('reorder transport effect', (d) => {
+      const devs = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId)
+        ?.transport?.devices;
+      if (devs) moveInArray(devs, from, to);
     });
   }
 

@@ -12,11 +12,11 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
+import { clipProcessesTexture, clipTransportDriven, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
-import { ArrColumnAdapter, clipTarget, trackTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
+import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
 import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
@@ -347,6 +347,11 @@ export class ArrInspector extends MobxLitElement {
       letter-spacing: 0.02em;
     }
     /* Let the chain scroll past its last card (the inspector is the scroller). */
+    .transport-head { margin-top: 4px; }
+    .transport-chain { margin-bottom: 6px; }
+    /* The play-mode block is the FALLBACK while a transport controller drives —
+       visible but visually secondary. */
+    .transport-overridden .dimmed { opacity: 0.45; }
     column-group.chain {
       display: block;
       margin-bottom: 40vh;
@@ -792,6 +797,35 @@ export class ArrInspector extends MobxLitElement {
     `;
   }
 
+  /** The clip's TRANSPORT section: the section's own effect card (palette
+   *  restricted to transport controllers). Overrides the play mode below
+   *  while it holds a controller; an empty card is the add affordance. */
+  private renderTransportSection(trackId: string, clip: Clip) {
+    const driven = clipTransportDriven(clip);
+    const has = (clip.transport?.devices.length ?? 0) > 0;
+    const target = transportTarget(trackId, clip.id);
+    return html`
+      <div class="row transport-head">
+        <label>Transport</label>
+        <span class="val">
+          ${driven
+            ? html`<span class="tag">drives content time</span>`
+            : has
+              ? html`<span class="tag">inert (no controller)</span>`
+              : html`<span class="tag" style="opacity:0.6">play mode below</span>`}
+        </span>
+      </div>
+      <column-group
+        class="chain transport-chain"
+        .colIdx=${0}
+        .sketchId=${target.id}
+        .columnWidth=${280}
+        .adapter=${this.adapterFor(target)}
+        .callbacks=${this.columnCallbacks}
+      ></column-group>
+    `;
+  }
+
   private onDashPip(e: PointerEvent, wire: any) {
     e.stopPropagation();
     store.selectWire(wire.wireId, wire.clipPath, wire.target);
@@ -996,12 +1030,25 @@ export class ArrInspector extends MobxLitElement {
           </span>
         </div>
         ${isScene ? this.renderSceneChannelRow(found.track, clip) : ''}
-        ${renderPlayModeControls(
-          clip.loop,
-          clip.source && clip.source.fps ? clip.source.durationFrames / clip.source.fps : 0,
-          (patch) => store.updateClipLoop(found.track.id, clip.id, patch),
-          store.composition.meta.timeSignature[0],
-        )}
+        ${this.renderTransportSection(found.track.id, clip)}
+        ${clipTransportDriven(clip)
+          ? html`<div class="transport-overridden"
+              title="A transport-controller effect drives this clip's content time; the play mode below is the fallback if the section empties.">
+              <div class="dimmed">
+                ${renderPlayModeControls(
+                  clip.loop,
+                  clip.source && clip.source.fps ? clip.source.durationFrames / clip.source.fps : 0,
+                  (patch) => store.updateClipLoop(found.track.id, clip.id, patch),
+                  store.composition.meta.timeSignature[0],
+                )}
+              </div>
+            </div>`
+          : renderPlayModeControls(
+              clip.loop,
+              clip.source && clip.source.fps ? clip.source.durationFrames / clip.source.fps : 0,
+              (patch) => store.updateClipLoop(found.track.id, clip.id, patch),
+              store.composition.meta.timeSignature[0],
+            )}
         ${clip.source
           ? html`<div class="row">
               <label>Source</label>

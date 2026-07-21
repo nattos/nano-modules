@@ -29,7 +29,7 @@ import { buildMultiEditModel, clipInsertIndex, aggregateField, multiSketchId, ty
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
-import { clipInstanceKey, trackInstanceKey } from '../engine/instance-keys';
+import { clipInstanceKey, trackInstanceKey, transportInstanceKey } from '../engine/instance-keys';
 
 /**
  * Stable fingerprint of a candidate device state for the static-visibility
@@ -174,6 +174,10 @@ export interface DeviceTarget {
    */
   engineKeyFor?(deviceId: string): string | undefined;
 
+  /** Override the add-effect palette (e.g. the transport section restricts it
+   *  to transport controllers). Absent = the full catalog. */
+  availableEffects?(): AvailableEffect[];
+
   /** Multi-edit only: whether the edited clips disagree on a field (→ "many"). */
   isFieldMixed?(deviceId: string, field: string): boolean;
   /** Multi-edit only: distinct values used across the clips (enum highlight). */
@@ -209,6 +213,32 @@ export interface DeviceTarget {
   /** Optional capability overrides merged over the defaults (e.g. multi disables
    *  reorder/wiring/tracing in early phases). */
   capsOverride?: Partial<ColumnCapabilities>;
+}
+
+/** The clip's TRANSPORT section (clip.transport): the same effect card over
+ *  the section's device list, palette restricted to transport controllers,
+ *  telemetry keyed by transportInstanceKey. */
+export function transportTarget(trackId: string, clipId: string): DeviceTarget {
+  return {
+    id: `transport/${trackId}/${clipId}`,
+    getDevices: () =>
+      store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.transport?.devices,
+    setField: (d, k, v) => store.setClipTransportDeviceField(trackId, clipId, d, k, v),
+    setType: (d, t, ck) => store.setClipTransportDeviceType(trackId, clipId, d, t, ck),
+    replace: (d, s, ck) => store.replaceClipTransportDevice(trackId, clipId, d, s, ck),
+    insertAt: (i, t, ck) => store.insertClipTransportDeviceAt(trackId, clipId, i, t, ck),
+    remove: (d) => store.removeClipTransportDevice(trackId, clipId, d),
+    move: (from, to) => store.moveClipTransportDevice(trackId, clipId, from, to),
+    engineKeyFor: (d) => transportInstanceKey(clipId, d),
+    availableEffects: () =>
+      effectCatalog()
+        .filter((c) => (store.enginePlugins[c.type]?.capabilities ?? [])
+            .includes('transport_controller'))
+        .map((c) => ({
+          id: c.type, name: c.name, description: '',
+          category: 'transport', keywords: [],
+        })),
+  };
 }
 
 export function clipTarget(trackId: string, clipId: string): DeviceTarget {
@@ -521,7 +551,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
     },
     get tappingMode() { return store.wiresMode; },
     get helpMode() { return store.helpMode; },
-    get availableEffects() { return availableEffects(); },
+    get availableEffects() { return self.target.availableEffects?.() ?? availableEffects(); },
     get barrelMode() { return false; },   // arrangement editor is never barrel-bound
     getSketch: (sketchId: string): Sketch | undefined => {
       const devices = this.target.getDevices();
