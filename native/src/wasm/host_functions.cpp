@@ -1224,7 +1224,7 @@ static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
 static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
     int32_t fs_len, int32_t target_count, int32_t target_formats_ptr,
-    int32_t binding_count, int32_t bindings_ptr) {
+    int32_t binding_count, int32_t bindings_ptr, int32_t target_blends_ptr) {
   (void)binding_count; (void)bindings_ptr;
   auto* g = get_gpu(env);
   if (!g || target_count < 0) return -1;
@@ -1234,16 +1234,20 @@ static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
   if (!wasm_runtime_validate_app_addr(inst, target_formats_ptr,
                                       target_count * (int32_t)sizeof(int32_t)))
     return -1;
+  if (!wasm_runtime_validate_app_addr(inst, target_blends_ptr,
+                                      target_count * (int32_t)sizeof(int32_t)))
+    return -1;
   char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
   char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
   int* fmts = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, target_formats_ptr));
-  if (!vse || !fse || !fmts) return -1;
+  int* blends = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, target_blends_ptr));
+  if (!vse || !fse || !fmts || !blends) return -1;
   return g->createInstancedRenderPSOMRT(vs, map_entry_name(g, vse, vs_len),
                                         fs, map_entry_name(g, fse, fs_len),
-                                        target_count, fmts);
+                                        target_count, fmts, blends);
 }
 static int32_t gpu_begin_render_pass_mrt(wasm_exec_env_t env, int32_t count,
-    int32_t texs_ptr, int32_t clears_ptr) {
+    int32_t texs_ptr, int32_t clears_ptr, int32_t loads_ptr) {
   auto* g = get_gpu(env);
   if (!g || count < 0) return -1;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
@@ -1252,10 +1256,23 @@ static int32_t gpu_begin_render_pass_mrt(wasm_exec_env_t env, int32_t count,
   if (!wasm_runtime_validate_app_addr(inst, clears_ptr,
                                       count * 4 * (int32_t)sizeof(float)))
     return -1;
+  if (!wasm_runtime_validate_app_addr(inst, loads_ptr, count * (int32_t)sizeof(int32_t)))
+    return -1;
   int* texs = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, texs_ptr));
   float* clears = static_cast<float*>(wasm_runtime_addr_app_to_native(inst, clears_ptr));
-  if (!texs || !clears) return -1;
-  return g->beginRenderPassMRT(count, texs, clears);
+  int* loads = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, loads_ptr));
+  if (!texs || !clears || !loads) return -1;
+  return g->beginRenderPassMRT(count, texs, clears, loads);
+}
+static void gpu_compute_dispatch_indirect(wasm_exec_env_t env, int32_t pass,
+    int32_t buf, int64_t offset) {
+  auto* g = get_gpu(env);
+  if (g && offset >= 0) g->computeDispatchIndirect(pass, buf, (uint64_t)offset);
+}
+static void gpu_render_draw_indirect(wasm_exec_env_t env, int32_t pass,
+    int32_t buf, int64_t offset) {
+  auto* g = get_gpu(env);
+  if (g && offset >= 0) g->renderDrawIndirect(pass, buf, (uint64_t)offset);
 }
 
 static NativeSymbol gpu_symbols[] = {
@@ -1271,8 +1288,10 @@ static NativeSymbol gpu_symbols[] = {
     {"create_instanced_render_pso_blend_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_blend_layout), "(iiiiiiiiii)i", nullptr},
     {"create_render_pso_layout", reinterpret_cast<void*>(gpu_create_render_pso_layout), "(iiiiiiiii)i", nullptr},
     {"create_instanced_render_pso_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_layout), "(iiiiiiiii)i", nullptr},
-    {"create_instanced_render_pso_mrt_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_mrt_layout), "(iiiiiiiiii)i", nullptr},
-    {"begin_render_pass_mrt", reinterpret_cast<void*>(gpu_begin_render_pass_mrt), "(iii)i", nullptr},
+    {"create_instanced_render_pso_mrt_layout", reinterpret_cast<void*>(gpu_create_instanced_render_pso_mrt_layout), "(iiiiiiiiiii)i", nullptr},
+    {"begin_render_pass_mrt", reinterpret_cast<void*>(gpu_begin_render_pass_mrt), "(iiii)i", nullptr},
+    {"compute_dispatch_indirect", reinterpret_cast<void*>(gpu_compute_dispatch_indirect), "(iiI)", nullptr},
+    {"render_draw_indirect", reinterpret_cast<void*>(gpu_render_draw_indirect), "(iiI)", nullptr},
     {"begin_render_pass_load", reinterpret_cast<void*>(gpu_begin_render_pass_load), "(i)i", nullptr},
     {"render_set_buffer", reinterpret_cast<void*>(gpu_render_set_buffer), "(iii)", nullptr},
     {"create_compute_pso_v2", reinterpret_cast<void*>(gpu_create_compute_pso_v2), "(iiiiiii)i", nullptr},

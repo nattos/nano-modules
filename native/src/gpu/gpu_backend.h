@@ -42,13 +42,15 @@ public:
 
   // Multi-render-target instanced pipeline: fragment @location(i) writes
   // color attachment i. `targetFormats` is `targetCount` TextureFormat
-  // enum values; alpha-over blend on each. Default unimplemented.
+  // enum values; `targetBlends` a parallel per-target BlendMode array
+  // (0 alpha-over / 1 additive / 2 replace). Default unimplemented.
   virtual int32_t createInstancedRenderPSOMRT(
       int32_t vsHandle, const std::string& vsEntry,
       int32_t fsHandle, const std::string& fsEntry,
-      int32_t targetCount, const int32_t* targetFormats) {
+      int32_t targetCount, const int32_t* targetFormats,
+      const int32_t* targetBlends) {
     (void)vsHandle; (void)vsEntry; (void)fsHandle; (void)fsEntry;
-    (void)targetCount; (void)targetFormats;
+    (void)targetCount; (void)targetFormats; (void)targetBlends;
     return -1;
   }
 
@@ -209,6 +211,14 @@ public:
   virtual void computeSetBuffer(int32_t pass, int32_t buf, uint32_t offset, int32_t slot) = 0;
   virtual void computeSetTexture(int32_t pass, int32_t textureHandle, int32_t slot, int32_t access) = 0;
   virtual void computeDispatch(int32_t pass, uint32_t x, uint32_t y, uint32_t z) = 0;
+  // Indirect dispatch: workgroup counts read from `argsBuf` at `offset`
+  // (3 × u32 {x,y,z} — WebGPU dispatchWorkgroupsIndirect layout, which
+  // matches MTLDispatchThreadgroupsIndirectArguments). Default no-op keeps
+  // non-GPU test backends linking.
+  virtual void computeDispatchIndirect(int32_t pass, int32_t argsBuf,
+                                       uint64_t offset) {
+    (void)pass; (void)argsBuf; (void)offset;
+  }
   virtual void endComputePass(int32_t pass) = 0;
 
   // Render pass
@@ -222,9 +232,11 @@ public:
   }
   // Begin an MRT render pass — clears each of `count` targets to its
   // clears[i*4 .. i*4+3] RGBA color. Default unimplemented (returns -1).
+  // `loads` is per-attachment: 0 = clear (with `clears`), 1 = load existing
+  // content.
   virtual int32_t beginRenderPassMRT(int32_t count, const int32_t* texHandles,
-                                     const float* clears) {
-    (void)count; (void)texHandles; (void)clears; return -1;
+                                     const float* clears, const int32_t* loads) {
+    (void)count; (void)texHandles; (void)clears; (void)loads; return -1;
   }
   virtual void renderSetPSO(int32_t pass, int32_t pso) = 0;
   virtual void renderSetVertexBuffer(int32_t pass, int32_t buf,
@@ -248,6 +260,12 @@ public:
     (void)pass; (void)samplerHandle; (void)slot;
   }
   virtual void renderDraw(int32_t pass, uint32_t vertexCount, uint32_t instanceCount) = 0;
+  // Indirect draw: args read from `argsBuf` at `offset` (4 × u32
+  // {vertex_count, instance_count, first_vertex, first_instance} — WebGPU
+  // drawIndirect layout == MTLDrawPrimitivesIndirectArguments).
+  virtual void renderDrawIndirect(int32_t pass, int32_t argsBuf, uint64_t offset) {
+    (void)pass; (void)argsBuf; (void)offset;
+  }
   virtual void endRenderPass(int32_t pass) = 0;
 
   // Submit + present

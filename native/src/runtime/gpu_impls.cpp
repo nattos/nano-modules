@@ -168,12 +168,13 @@ int gpu_create_instanced_render_pso_layout(int vs, const char* vse, int vsl,
 int gpu_create_instanced_render_pso_mrt_layout(int vs, const char* vse, int vsl,
                                                 int fs, const char* fse, int fsl,
                                                 int target_count, const int* target_formats,
-                                                int /*bcount*/, const int* /*bindings*/) {
+                                                int /*bcount*/, const int* /*bindings*/,
+                                                const int* target_blends) {
   auto* b = backend();
   if (!b) return -1;
   return b->createInstancedRenderPSOMRT(vs, mapEntryName(vse, vsl),
                                         fs, mapEntryName(fse, fsl),
-                                        target_count, target_formats);
+                                        target_count, target_formats, target_blends);
 }
 int gpu_create_instanced_render_pso_blend_layout(int vs, const char* vse, int vsl,
                                                   int fs, const char* fse, int fsl,
@@ -221,6 +222,10 @@ void gpu_compute_dispatch(int pass, int x, int y, int z) {
   auto* b = backend();
   if (b) b->computeDispatch(pass, (uint32_t)x, (uint32_t)y, (uint32_t)z);
 }
+void gpu_compute_dispatch_indirect(int pass, int buf, long long offset) {
+  auto* b = backend();
+  if (b && offset >= 0) b->computeDispatchIndirect(pass, buf, (uint64_t)offset);
+}
 void gpu_end_compute_pass(int pass) {
   auto* b = backend();
   if (b) b->endComputePass(pass);
@@ -234,9 +239,10 @@ int gpu_begin_render_pass_load(int tex) {
   auto* b = backend();
   return b ? b->beginRenderPassLoad(tex) : -1;
 }
-int gpu_begin_render_pass_mrt(int count, const int* texs, const float* clears) {
+int gpu_begin_render_pass_mrt(int count, const int* texs, const float* clears,
+                              const int* loads) {
   auto* b = backend();
-  return b ? b->beginRenderPassMRT(count, texs, clears) : -1;
+  return b ? b->beginRenderPassMRT(count, texs, clears, loads) : -1;
 }
 void gpu_render_set_pso(int pass, int pso) {
   auto* b = backend();
@@ -253,6 +259,10 @@ void gpu_render_set_buffer(int pass, int buf, int slot) {
 void gpu_render_draw(int pass, int vc, int ic) {
   auto* b = backend();
   if (b) b->renderDraw(pass, (uint32_t)vc, (uint32_t)ic);
+}
+void gpu_render_draw_indirect(int pass, int buf, long long offset) {
+  auto* b = backend();
+  if (b && offset >= 0) b->renderDrawIndirect(pass, buf, (uint64_t)offset);
 }
 void gpu_end_render_pass(int pass) {
   auto* b = backend();

@@ -422,9 +422,13 @@ export class GPUHost {
     if (usage === USAGE_VERTEX) gpuUsage |= GPUBufferUsage.VERTEX;
     if (usage === USAGE_STORAGE) gpuUsage |= GPUBufferUsage.STORAGE;
     if (usage === USAGE_UNIFORM) gpuUsage |= GPUBufferUsage.UNIFORM;
-    // Storage buffers also need VERTEX for reading as vertex in render pass, and
-    // COPY_SRC so they can be copied into a MAP_READ staging buffer for readback.
-    if (usage === USAGE_STORAGE) gpuUsage |= GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC;
+    // Storage buffers also need VERTEX for reading as vertex in render pass,
+    // COPY_SRC so they can be copied into a MAP_READ staging buffer for
+    // readback, and INDIRECT so a compute-written buffer can feed
+    // dispatchWorkgroupsIndirect / drawIndirect (the gpu.h contract: any
+    // Storage buffer is indirect-args capable).
+    if (usage === USAGE_STORAGE)
+      gpuUsage |= GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC | GPUBufferUsage.INDIRECT;
 
     const buffer = this.device.createBuffer({ size, usage: gpuUsage });
     return this.alloc('buffer', buffer);
@@ -653,22 +657,40 @@ export class GPUHost {
     return { pipelineLayout, bindGroupLayout };
   }
 
-  /// MRT render pipeline (no vertex buffer). `formats[i]` is the
-  /// format code for fragment output `@location(i)`. Bindings (visible
-  /// to vertex+fragment) are explicit. No blend — MRT pipelines are
-  /// typically opaque writes; callers can extend if they need blend.
+  /** Blend state for a BlendMode code (gpu.h): 0 alpha-over, 1 additive,
+   *  2 replace (undefined = no blending). Shared by the single-target and
+   *  MRT pipeline factories so the equations can't drift. */
+  private blendFor(mode: number): GPUBlendState | undefined {
+    if (mode === 2) return undefined;
+    if (mode === 1) {
+      return {
+        color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+        alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' },
+      };
+    }
+    return {
+      color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    };
+  }
+
+  /// MRT render pipeline (no vertex buffer). `formats[i]` is the format
+  /// code for fragment output `@location(i)`; `blends[i]` its BlendMode
+  /// (0 alpha-over / 1 additive / 2 replace) — per-target, matching the
+  /// native backend. Bindings (visible to vertex+fragment) are explicit.
   createInstancedRenderPipelineMRTWithLayout(
       vsShaderHandle: number, vsEntry: string,
       fsShaderHandle: number, fsEntry: string,
       count: number, formats: Int32Array,
-      bindings: BindingDecl[]): number {
+      bindings: BindingDecl[], blends: Int32Array): number {
     const vsModule = this.get(vsShaderHandle) as GPUShaderModule;
     const fsModule = this.get(fsShaderHandle) as GPUShaderModule;
     if (!vsModule || !fsModule) return -1;
 
     const targets: GPUColorTargetState[] = [];
     for (let i = 0; i < count; i++) {
-      targets.push({ format: this.resolveFormat(formats[i]) });
+      targets.push({ format: this.resolveFormat(formats[i]),
+                     blend: this.blendFor(blends[i] ?? 0) });
     }
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
@@ -747,17 +769,7 @@ export class GPUHost {
     const fmt: GPUTextureFormat = this.resolveFormat(format);
     const { pipelineLayout, bindGroupLayout } = this.buildLayouts(
       bindings, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT);
-    const blend: GPUBlendState | undefined = blendMode === 2
-      ? undefined
-      : blendMode === 1
-      ? {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
-          alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' },
-        }
-      : {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
-        };
+    const blend = this.blendFor(blendMode);
     const pipeline = this.device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: { module: vsModule, entryPoint: vsEntry, buffers: [] },
@@ -877,8 +889,11 @@ export class GPUHost {
     this.computePassSamplers.set(slot, sampler);
   }
 
-  computeDispatch(_pass: number, x: number, y: number, z: number) {
-    if (!this.computePassEncoder || !this.computePassEntry) return;
+  /** Build + set the compute bind group for the pending dispatch. Shared by
+   *  the direct and indirect dispatch paths. Returns false when no pass /
+   *  pipeline is open. */
+  private bindComputeGroup(): boolean {
+    if (!this.computePassEncoder || !this.computePassEntry) return false;
     // Auto-layout pipelines (executor.wasm fused kernels) build the bind group
     // from whatever slots were set, against the pipeline's derived layout.
     if (this.computePassEntry.autoBindings) {
@@ -902,9 +917,7 @@ export class GPUHost {
         entries: autoEntries,
       });
       this.computePassEncoder.setBindGroup(0, bindGroup);
-      this.computePassEncoder.dispatchWorkgroups(x, y, z);
-      for (const h of this.passBinds_) this.markBound(h);
-      return;
+      return true;
     }
     const entries = this.buildBindGroupEntries(this.computePassEntry, /*forCompute=*/true);
     if (entries && this.computePassEntry.bindGroupLayout) {
@@ -914,7 +927,22 @@ export class GPUHost {
       });
       this.computePassEncoder.setBindGroup(0, bindGroup);
     }
-    this.computePassEncoder.dispatchWorkgroups(x, y, z);
+    return true;
+  }
+
+  computeDispatch(_pass: number, x: number, y: number, z: number) {
+    if (!this.bindComputeGroup()) return;
+    this.computePassEncoder!.dispatchWorkgroups(x, y, z);
+    for (const h of this.passBinds_) this.markBound(h);
+  }
+
+  /** Indirect dispatch: workgroup counts read from `argsHandle` at
+   *  `byteOffset` (3 × u32 {x,y,z} — the layout both backends share). */
+  computeDispatchIndirect(_pass: number, argsHandle: number, byteOffset: number) {
+    const args = this.get(argsHandle) as GPUBuffer;
+    if (!args || !this.bindComputeGroup()) return;
+    this.computePassEncoder!.dispatchWorkgroupsIndirect(args, byteOffset);
+    this.markBound(argsHandle);
     for (const h of this.passBinds_) this.markBound(h);
   }
 
@@ -1047,11 +1075,13 @@ export class GPUHost {
   /**
    * Begin a render pass with multiple color attachments (MRT). Each
    * fragment-shader output `@location(i)` writes into `tex_handles[i]`,
-   * cleared to `clear_values[i*4..i*4+4]` (rgba). The matching pipeline
-   * must have been created via createRenderPipelineMRT with the same
-   * number and order of target formats.
+   * cleared to `clear_values[i*4..i*4+4]` (rgba) — or, when `loadOps[i]`
+   * is nonzero, LOADED (existing content kept, clear color ignored). The
+   * matching pipeline must have been created via createRenderPipelineMRT
+   * with the same number and order of target formats.
    */
-  beginRenderPassMRT(count: number, texHandles: Int32Array, clearValues: Float32Array): number {
+  beginRenderPassMRT(count: number, texHandles: Int32Array,
+                     clearValues: Float32Array, loadOps: Int32Array): number {
     const encoder = this.ensureEncoder();
     const attachments: GPURenderPassColorAttachment[] = [];
     for (let i = 0; i < count; i++) {
@@ -1065,7 +1095,7 @@ export class GPUHost {
           b: clearValues[i * 4 + 2],
           a: clearValues[i * 4 + 3],
         },
-        loadOp: 'clear',
+        loadOp: loadOps[i] ? 'load' : 'clear',
         storeOp: 'store',
       });
     }
@@ -1111,6 +1141,27 @@ export class GPUHost {
       }
     }
     this.renderPassEncoder.draw(vertexCount, instanceCount);
+    for (const h of this.passBinds_) this.markBound(h);
+  }
+
+  /** Indirect draw: args read from `argsHandle` at `byteOffset` (4 × u32
+   *  {vertex_count, instance_count, first_vertex, first_instance} — the
+   *  layout both backends share). */
+  renderDrawIndirect(_pass: number, argsHandle: number, byteOffset: number) {
+    const args = this.get(argsHandle) as GPUBuffer;
+    if (!args || !this.renderPassEncoder) return;
+    if (this.renderPassEntry) {
+      const entries = this.buildBindGroupEntries(this.renderPassEntry, /*forCompute=*/false);
+      if (entries && this.renderPassEntry.bindGroupLayout) {
+        const bindGroup = this.device.createBindGroup({
+          layout: this.renderPassEntry.bindGroupLayout,
+          entries,
+        });
+        this.renderPassEncoder.setBindGroup(0, bindGroup);
+      }
+    }
+    this.renderPassEncoder.drawIndirect(args, byteOffset);
+    this.markBound(argsHandle);
     for (const h of this.passBinds_) this.markBound(h);
   }
 
@@ -1494,6 +1545,9 @@ export class GPUHost {
         this.computeSetSampler(pass, sampler, slot),
       compute_dispatch: (pass: number, x: number, y: number, z: number) =>
         this.computeDispatch(pass, x, y, z),
+      // i64 offset on the wire → BigInt.
+      compute_dispatch_indirect: (pass: number, buf: number, offset: bigint) =>
+        this.computeDispatchIndirect(pass, buf, Number(offset)),
       end_compute_pass: (pass: number) => this.endComputePass(pass),
       begin_render_pass: (texture: number, cr: number, cg: number, cb: number, ca: number) =>
         this.beginRenderPass(texture, cr, cg, cb, ca),
@@ -1507,6 +1561,8 @@ export class GPUHost {
         this.renderSetBuffer(pass, buf, slot),
       render_draw: (pass: number, vertexCount: number, instanceCount: number) =>
         this.renderDraw(pass, vertexCount, instanceCount),
+      render_draw_indirect: (pass: number, buf: number, offset: bigint) =>
+        this.renderDrawIndirect(pass, buf, Number(offset)),
       end_render_pass: (pass: number) => this.endRenderPass(pass),
       submit: () => this.effectSubmit(),
       get_render_target: () => this.getSurfaceTexture(),
@@ -1525,18 +1581,21 @@ export class GPUHost {
         vsShader: number, vsPtr: number, vsLen: number,
         fsShader: number, fsPtr: number, fsLen: number,
         count: number, fmtsPtr: number,
-        bindCount: number, bindPtr: number) => {
+        bindCount: number, bindPtr: number, blendsPtr: number) => {
         const fmts = new Int32Array(memorySlice(fmtsPtr, count * 4).buffer);
         const bindings = readBindingDecls(memorySlice(bindPtr, bindCount * 16), bindCount);
+        const blends = new Int32Array(memorySlice(blendsPtr, count * 4).buffer);
         return this.createInstancedRenderPipelineMRTWithLayout(
           vsShader, readString(vsPtr, vsLen),
           fsShader, readString(fsPtr, fsLen),
-          count, fmts, bindings);
+          count, fmts, bindings, blends);
       },
-      begin_render_pass_mrt: (count: number, texPtr: number, clearPtr: number) => {
+      begin_render_pass_mrt: (count: number, texPtr: number, clearPtr: number,
+                              loadsPtr: number) => {
         const tex = new Int32Array(memorySlice(texPtr, count * 4).buffer);
         const cv = new Float32Array(memorySlice(clearPtr, count * 16).buffer);
-        return this.beginRenderPassMRT(count, tex, cv);
+        const loads = new Int32Array(memorySlice(loadsPtr, count * 4).buffer);
+        return this.beginRenderPassMRT(count, tex, cv, loads);
       },
     };
   }

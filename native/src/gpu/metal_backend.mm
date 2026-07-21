@@ -522,7 +522,8 @@ public:
 
   int32_t createInstancedRenderPSOMRT(int32_t vsHandle, const std::string& vsEntry,
                                        int32_t fsHandle, const std::string& fsEntry,
-                                       int32_t targetCount, const int32_t* targetFormats) override {
+                                       int32_t targetCount, const int32_t* targetFormats,
+                                       const int32_t* targetBlends) override {
     @autoreleasepool {
       id<MTLLibrary> vsLib = getAs<id<MTLLibrary>>(vsHandle);
       id<MTLLibrary> fsLib = getAs<id<MTLLibrary>>(fsHandle);
@@ -538,14 +539,25 @@ public:
       desc.vertexFunction = vsFunc;
       desc.fragmentFunction = fsFunc;
       // One color attachment per target; fragment @location(i) → target i.
+      // Per-target blend equation (same 3-mode set as the single-target PSO).
       for (int i = 0; i < targetCount && i < 8; ++i) {
         MTLPixelFormat fmt = pixelFormatFromCode(targetFormats[i]);
+        const int32_t blend = targetBlends ? targetBlends[i] : 0;
         desc.colorAttachments[i].pixelFormat = fmt;
+        if (blend == 2) {  // replace: fragment output overwrites dst
+          desc.colorAttachments[i].blendingEnabled = NO;
+          continue;
+        }
         desc.colorAttachments[i].blendingEnabled = YES;
         desc.colorAttachments[i].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-        desc.colorAttachments[i].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
         desc.colorAttachments[i].sourceAlphaBlendFactor = MTLBlendFactorOne;
-        desc.colorAttachments[i].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        if (blend == 1) {  // additive: src*src.a + dst
+          desc.colorAttachments[i].destinationRGBBlendFactor = MTLBlendFactorOne;
+          desc.colorAttachments[i].destinationAlphaBlendFactor = MTLBlendFactorOne;
+        } else {           // alpha-over
+          desc.colorAttachments[i].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+          desc.colorAttachments[i].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        }
       }
 
       NSError* error = nil;
@@ -689,6 +701,20 @@ public:
     for (int32_t h : passBinds_) markBound(h);
   }
 
+  void computeDispatchIndirect(int32_t pass, int32_t argsBuf,
+                               uint64_t offset) override {
+    (void)pass;
+    id<MTLBuffer> args = getAs<id<MTLBuffer>>(argsBuf);
+    if (!computeEncoder_ || !currentComputePSO_ || !args) return;
+    // Args layout = MTLDispatchThreadgroupsIndirectArguments (3 × u32
+    // threadgroup counts) — identical to WebGPU's dispatchWorkgroupsIndirect.
+    [computeEncoder_ dispatchThreadgroupsWithIndirectBuffer:args
+                                       indirectBufferOffset:(NSUInteger)offset
+                                      threadsPerThreadgroup:currentComputeThreadgroup_];
+    markBound(argsBuf);
+    for (int32_t h : passBinds_) markBound(h);
+  }
+
   void endComputePass(int32_t pass) override {
     (void)pass;
     if (computeEncoder_) {
@@ -737,7 +763,7 @@ public:
   }
 
   int32_t beginRenderPassMRT(int32_t count, const int32_t* texHandles,
-                             const float* clears) override {
+                             const float* clears, const int32_t* loads) override {
     if (count <= 0) return -1;
     if (!cmdBuffer_) cmdBuffer_ = [queue_ commandBuffer];
     MTLRenderPassDescriptor* desc = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -745,7 +771,8 @@ public:
       id<MTLTexture> tex = getAs<id<MTLTexture>>(texHandles[i]);
       if (!tex) return -1;
       desc.colorAttachments[i].texture = tex;
-      desc.colorAttachments[i].loadAction = MTLLoadActionClear;
+      desc.colorAttachments[i].loadAction =
+          (loads && loads[i]) ? MTLLoadActionLoad : MTLLoadActionClear;
       desc.colorAttachments[i].storeAction = MTLStoreActionStore;
       desc.colorAttachments[i].clearColor = MTLClearColorMake(
           clears[i * 4 + 0], clears[i * 4 + 1],
@@ -807,6 +834,20 @@ public:
                        vertexCount:vertexCount
                      instanceCount:instanceCount];
     for (int32_t h : passBinds_) markBound(h);   // see computeDispatch
+  }
+
+  void renderDrawIndirect(int32_t pass, int32_t argsBuf, uint64_t offset) override {
+    (void)pass;
+    id<MTLBuffer> args = getAs<id<MTLBuffer>>(argsBuf);
+    if (!renderEncoder_ || !args) return;
+    // Args layout = MTLDrawPrimitivesIndirectArguments (4 × u32: vertexCount,
+    // instanceCount, vertexStart, baseInstance) — identical to WebGPU's
+    // drawIndirect.
+    [renderEncoder_ drawPrimitives:MTLPrimitiveTypeTriangle
+                    indirectBuffer:args
+              indirectBufferOffset:(NSUInteger)offset];
+    markBound(argsBuf);
+    for (int32_t h : passBinds_) markBound(h);
   }
 
   void endRenderPass(int32_t pass) override {

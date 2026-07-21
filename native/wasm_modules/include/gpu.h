@@ -97,6 +97,14 @@ extern "C" {
   void gpu_compute_set_sampler(int pass, int sampler, int slot);
   __attribute__((import_module("gpu"), import_name("compute_dispatch")))
   void gpu_compute_dispatch(int pass, int x, int y, int z);
+  // Indirect dispatch: workgroup counts come from `buf` at `offset` — three
+  // consecutive u32 {x, y, z}, the layout BOTH backends share (WebGPU
+  // dispatchWorkgroupsIndirect == Metal MTLDispatchThreadgroupsIndirectArguments).
+  // Any Storage-usage buffer qualifies (the web host allocates storage
+  // buffers with INDIRECT usage), so a compute pass can write the counts and
+  // the next dispatch can consume them without CPU readback.
+  __attribute__((import_module("gpu"), import_name("compute_dispatch_indirect")))
+  void gpu_compute_dispatch_indirect(int pass, int buf, long long offset);
   __attribute__((import_module("gpu"), import_name("end_compute_pass")))
   void gpu_end_compute_pass(int pass);
   __attribute__((import_module("gpu"), import_name("begin_render_pass")))
@@ -107,6 +115,12 @@ extern "C" {
   void gpu_render_set_vertex_buffer(int pass, int buf, int offset, int slot);
   __attribute__((import_module("gpu"), import_name("render_draw")))
   void gpu_render_draw(int pass, int vertex_count, int instance_count);
+  // Indirect draw: args come from `buf` at `offset` — four consecutive u32
+  // {vertex_count, instance_count, first_vertex, first_instance}, the layout
+  // BOTH backends share (WebGPU drawIndirect == Metal
+  // MTLDrawPrimitivesIndirectArguments). Any Storage-usage buffer qualifies.
+  __attribute__((import_module("gpu"), import_name("render_draw_indirect")))
+  void gpu_render_draw_indirect(int pass, int buf, long long offset);
   __attribute__((import_module("gpu"), import_name("end_render_pass")))
   void gpu_end_render_pass(int pass);
   __attribute__((import_module("gpu"), import_name("render_set_buffer")))
@@ -139,14 +153,20 @@ extern "C" {
   void gpu_clear_texture(int tex, float r, float g, float b, float a);
   __attribute__((import_module("gpu"), import_name("copy_texture")))
   void gpu_copy_texture(int src, int dst);
+  // `target_blends` is a per-target BlendMode array parallel to
+  // `target_formats` (0 alpha-over / 1 additive / 2 replace).
   __attribute__((import_module("gpu"), import_name("create_instanced_render_pso_mrt_layout")))
   int gpu_create_instanced_render_pso_mrt_layout(
       int vs_shader, const char* vs, int vs_len,
       int fs_shader, const char* fs, int fs_len,
       int target_count, const int* target_formats,
-      int binding_count, const int* bindings);
+      int binding_count, const int* bindings,
+      const int* target_blends);
+  // `load_ops` is per-attachment: 0 = clear (with clear_values), 1 = load
+  // the existing texture content.
   __attribute__((import_module("gpu"), import_name("begin_render_pass_mrt")))
-  int gpu_begin_render_pass_mrt(int count, const int* tex_handles, const float* clear_values);
+  int gpu_begin_render_pass_mrt(int count, const int* tex_handles,
+                                const float* clear_values, const int* load_ops);
   // Instanced render pipeline factory variant that accepts a blend
   // mode int. 0 = standard alpha-over, 1 = additive
   // (src*src.a + dst). Anything else falls back to alpha-over.
@@ -539,18 +559,30 @@ struct ComputePass {
     gpu_compute_dispatch(id, x, y, z);
   }
 
+  /// Indirect dispatch: workgroup counts come from a GPU-written buffer at
+  /// `byteOffset` — three consecutive u32 {x, y, z} (identical layout on
+  /// both backends). The canonical shape for data-dependent work: a
+  /// reduction writes ceil(count / groupsize) into the args buffer, and the
+  /// consumer dispatches exactly that many groups instead of a worst case.
+  void dispatchIndirect(Buffer args, long long byteOffset = 0) {
+    gpu_compute_dispatch_indirect(id, args.id, byteOffset);
+  }
+
   void end() { gpu_end_compute_pass(id); }
 };
 
 // --- Render pass ---
 
 /// One color-attachment binding for a multi-render-target render pass.
+/// `load = true` keeps the texture's existing content (the clear color is
+/// ignored); false clears to (r,g,b,a).
 struct ColorAttachment {
   Texture texture;
   float r = 0;
   float g = 0;
   float b = 0;
   float a = 1;
+  bool load = false;
 };
 
 struct RenderPass {
@@ -576,6 +608,7 @@ struct RenderPass {
     int n = static_cast<int>(atts.size());
     int tex[8];
     float clears[8 * 4];
+    int loads[8];
     int i = 0;
     for (const auto& a : atts) {
       tex[i] = a.texture.id;
@@ -583,9 +616,10 @@ struct RenderPass {
       clears[i * 4 + 1] = a.g;
       clears[i * 4 + 2] = a.b;
       clears[i * 4 + 3] = a.a;
+      loads[i] = a.load ? 1 : 0;
       i++;
     }
-    return { gpu_begin_render_pass_mrt(n, tex, clears) };
+    return { gpu_begin_render_pass_mrt(n, tex, clears, loads) };
   }
 
   void setPSO(RenderPSO pso) { gpu_render_set_pso(id, pso.id); }
@@ -603,6 +637,15 @@ struct RenderPass {
 
   void draw(int vertexCount, int instanceCount = 1) {
     gpu_render_draw(id, vertexCount, instanceCount);
+  }
+
+  /// Indirect draw: args come from a GPU-written buffer at `byteOffset` —
+  /// four consecutive u32 {vertex_count, instance_count, first_vertex,
+  /// first_instance} (identical layout on both backends). Lets a compute
+  /// pass decide the draw size with no CPU readback: compact visible
+  /// instances, write the count, draw exactly that many.
+  void drawIndirect(Buffer args, long long byteOffset = 0) {
+    gpu_render_draw_indirect(id, args.id, byteOffset);
   }
 
   void end() { gpu_end_render_pass(id); }
@@ -769,22 +812,30 @@ struct Device {
   /// Multi-render-target render pipeline. Fragment outputs at
   /// `@location(i)` write to target i; `formats` declares each target
   /// format. Bindings (visible to vertex+fragment) are explicit; pass
-  /// `Bindings()` for MRT shaders with no bind group.
+  /// `Bindings()` for MRT shaders with no bind group. `blends` (optional,
+  /// parallel to `formats`; missing entries default AlphaOver) picks each
+  /// target's blend equation independently — e.g. additive color into
+  /// target 0 while target 1 replaces a data attachment.
   static RenderPSO createInstancedRenderPSOMRT(
       ShaderModule vs, const char* vsEntry,
       ShaderModule fs, const char* fsEntry,
       std::initializer_list<TextureFormat> formats,
-      const Bindings& bindings) {
+      const Bindings& bindings,
+      std::initializer_list<BlendMode> blends = {}) {
     int n = static_cast<int>(formats.size());
     int fmts[8];
+    int blnd[8];
     int i = 0;
     for (auto f : formats) fmts[i++] = static_cast<int>(f);
+    for (i = 0; i < 8; ++i) blnd[i] = static_cast<int>(BlendMode::AlphaOver);
+    i = 0;
+    for (auto b : blends) { if (i < 8) blnd[i] = static_cast<int>(b); ++i; }
     int packed[Bindings::MAX_ENTRIES * 4];
     int bn = detail::packBindings(bindings, packed);
     return RenderPSO(gpu_create_instanced_render_pso_mrt_layout(
         vs.id, vsEntry, std::strlen(vsEntry),
         fs.id, fsEntry, std::strlen(fsEntry),
-        n, fmts, bn, packed));
+        n, fmts, bn, packed, blnd));
   }
 
   /// Get texture handle for a named field path (unified texture access).
