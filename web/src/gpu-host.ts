@@ -464,8 +464,13 @@ export class GPUHost {
                         || fmt === 'r32float' || fmt === 'rgba32float'
                         || fmt === 'rgba8unorm-srgb');
     // WebGPU forbids STORAGE_BINDING on sRGB formats — they're render+sample
-    // only (gpu.h documents the same contract for RGBA8_SRGB).
-    const storable = !fmt.endsWith('-srgb');
+    // only (gpu.h documents the same contract for RGBA8_SRGB) — and on
+    // bgra8unorm unless the device has the optional bgra8unorm-storage
+    // feature (we request a bare device, so in practice: not storable).
+    // Setting it anyway makes the whole texture invalid and every pass that
+    // touches it silently drops.
+    const storable = !fmt.endsWith('-srgb')
+      && (fmt !== 'bgra8unorm' || this.device.features.has('bgra8unorm-storage'));
     const usage =
       GPUTextureUsage.TEXTURE_BINDING
       | (storable ? GPUTextureUsage.STORAGE_BINDING : 0)
@@ -1212,9 +1217,12 @@ export class GPUHost {
   }
 
   /**
-   * Copy one texture to another. Both must have COPY_SRC/COPY_DST usage
-   * (createTexture sets these by default), identical formats, and the same
-   * size — this is a 1:1 byte-level copy, not a reformatting blit.
+   * Copy one texture to another. Same format → 1:1 byte-level copy (both
+   * textures carry COPY_SRC/COPY_DST from createTexture). Different formats →
+   * a render blit that reads THROUGH the source format and writes THROUGH the
+   * destination format, matching the native backend's compute format-copy
+   * (channel-order and value correct — a byte copy of BGRA8→RGBA8 would swap
+   * R and B, and WebGPU forbids it anyway). Copies the min(w,h) region.
    */
   copyTexture(srcHandle: number, dstHandle: number) {
     const src = this.get(srcHandle) as GPUTexture;
@@ -1222,12 +1230,91 @@ export class GPUHost {
     if (!src || !dst) return;
     const w = Math.min(src.width, dst.width);
     const h = Math.min(src.height, dst.height);
+    if (src.format !== dst.format) {
+      this.formatCopyBlit(src, dst, w, h);
+      return;
+    }
     const encoder = this.ensureEncoder();
     encoder.copyTextureToTexture(
       { texture: src },
       { texture: dst },
       [w, h, 1],
     );
+  }
+
+  // Cross-format copy path. sRGB pairs deliberately take this path too (they
+  // ARE copy-compatible byte-wise, but native converts through the formats
+  // there — decode on read, encode on write — and lock-step beats fast).
+  private formatCopyModule_: GPUShaderModule | null = null;
+  private formatCopyBGL_: GPUBindGroupLayout | null = null;
+  private formatCopyPipelines_ = new Map<GPUTextureFormat, GPURenderPipeline>();
+
+  private formatCopyPipeline(dstFormat: GPUTextureFormat): GPURenderPipeline | null {
+    const cached = this.formatCopyPipelines_.get(dstFormat);
+    if (cached) return cached;
+    try {
+      if (!this.formatCopyModule_) {
+        this.formatCopyModule_ = this.device.createShaderModule({
+          code: `
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+  var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  return vec4f(p[vi], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  return textureLoad(src_tex, vec2i(pos.xy), 0);
+}`,
+        });
+        // unfilterable-float accepts every float-sampleable source, including
+        // r32float/rgba32float (textureLoad never filters).
+        this.formatCopyBGL_ = this.device.createBindGroupLayout({
+          entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: 'unfilterable-float' },
+          }],
+        });
+      }
+      const pipeline = this.device.createRenderPipeline({
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.formatCopyBGL_] }),
+        vertex: { module: this.formatCopyModule_, entryPoint: 'vs' },
+        fragment: { module: this.formatCopyModule_, entryPoint: 'fs', targets: [{ format: dstFormat }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      this.formatCopyPipelines_.set(dstFormat, pipeline);
+      return pipeline;
+    } catch (e) {
+      console.error('[gpu] format-copy pipeline error:', e);
+      return null;
+    }
+  }
+
+  private formatCopyBlit(src: GPUTexture, dst: GPUTexture, w: number, h: number) {
+    if (!(dst.usage & GPUTextureUsage.RENDER_ATTACHMENT)) {
+      // Encoding anyway would validation-fail and poison the whole frame's
+      // command buffer — dropping just this copy is the lesser failure.
+      console.error('[gpu] cross-format copyTexture needs RENDER_ATTACHMENT on the destination; copy dropped');
+      return;
+    }
+    const pipeline = this.formatCopyPipeline(dst.format);
+    if (!pipeline) return;
+    const bindGroup = this.device.createBindGroup({
+      layout: this.formatCopyBGL_!,
+      entries: [{ binding: 0, resource: src.createView({ baseMipLevel: 0, mipLevelCount: 1 }) }],
+    });
+    const encoder = this.ensureEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: dst.createView({ baseMipLevel: 0, mipLevelCount: 1 }),
+        loadOp: 'load',   // preserve dst outside the copied region
+        storeOp: 'store',
+      }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.setScissorRect(0, 0, w, h);
+    pass.draw(3);
+    pass.end();
   }
 
   // --- Readback (for testing) ---

@@ -800,13 +800,16 @@ struct Device {
     gpu_clear_texture(texture.id, r, g, b, a);
   }
 
-  /// 1:1 copy between two textures of identical format and size. Both
-  /// textures carry COPY_SRC and COPY_DST usage: `createTexture` textures,
-  /// and the executor's field textures (tex_in / tex_out, render targets)
-  /// all allocate the superset, so a stage can copy(in, out) to skip a
-  /// passthrough dispatch. Also useful for ping-pong "rebroadcast" without
-  /// re-running a compute shader. (Native blits regardless of usage; the
-  /// superset is what satisfies WebGPU's strict copy validation.)
+  /// Copy between two textures (the min(w,h) region). Both platforms allow
+  /// this everywhere: `createTexture` textures and the executor's field
+  /// textures (tex_in / tex_out, render targets) all allocate the
+  /// COPY_SRC|COPY_DST superset WebGPU's copy validation wants (native blits
+  /// regardless of usage). So a stage can copy(in, out) to skip a passthrough
+  /// dispatch, or ping-pong "rebroadcast" without re-running a compute
+  /// shader. Same format → byte-level copy (the fast path on both backends).
+  /// Different formats → the hosts convert THROUGH the pixel formats (native:
+  /// compute copy; web: render blit), so values and channel order survive —
+  /// e.g. BGRA8→RGBA8 stays red-is-red, sRGB pairs decode/encode.
   static void copy(Texture src, Texture dst) {
     gpu_copy_texture(src.id, dst.id);
   }
