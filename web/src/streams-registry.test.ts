@@ -171,6 +171,20 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(reg.pendingOps[0].handle).toBe(scenes);
   });
 
+  it('live scene state survives a static reload (doc reloads are routine)', () => {
+    const sc = reg.find(scenes)!;
+    reg.frame.posBeat = 42;
+    reg.syncSceneLaunches({ scenes: { sceneId: 's2', launchBeat: 40 } } as any);
+    expect(Math.floor(reg.pos(sc, 0))).toBe(1);
+    // A doc reload rebuilds every StreamRec — the launch map must re-apply
+    // (the engine's launches survive reloads; the scenes channel only ships
+    // on change, so a reload would otherwise strand live positions at NaN).
+    reg.loadStatic(JSON.parse(fs.readFileSync(GOLDEN, 'utf8')), secondsAt);
+    const sc2 = reg.find(scenes)!;
+    expect(Math.floor(reg.pos(sc2, 0))).toBe(1);
+    expect(reg.find(reg.contentByClipId.get('s2')!)!.anchorBeat).toBe(40);
+  });
+
   it('reports loop regions per kind', () => {
     // Timeline loop brace rides the frame sample.
     reg.frame.loopEnabled = 1;

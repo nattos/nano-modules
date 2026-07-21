@@ -162,13 +162,23 @@ export class StreamsRegistry {
       this.contentByClipId.set(clipId, BigInt(h as string));
     for (const [trackId, h] of Object.entries(json?.trackByTrackId ?? {}))
       this.trackByTrackId.set(trackId, BigInt(h as string));
+    // A doc reload rebuilds every StreamRec (live scene state resets to NaN),
+    // but the ENGINE's launch map survives reloads (healed, not cleared) and
+    // the scenes channel only re-ships ON CHANGE — re-apply the last-known
+    // launches so live-scene positions survive routine doc reloads exactly
+    // like the native table (rebuildStreamsTable re-anchors + per-frame sync).
+    this.syncSceneLaunches(this.lastLaunches);
   }
+
+  /** The last launch map applied (re-applied after loadStatic — see above). */
+  private lastLaunches: Record<string, { sceneId: string; launchBeat: number }> = {};
 
   /** Mirror the launch map (comp_scene_states_json: {trackId: {sceneId,
    *  launchBeat}}) into the scene-track streams — the twin of the native
    *  sampleStreamsFrame sync. Also re-anchors launched scenes' content
    *  streams (launchScene's anchor rebase). */
   syncSceneLaunches(launches: Record<string, { sceneId: string; launchBeat: number }>): void {
+    this.lastLaunches = launches ?? {};
     for (const s of this.streams) {
       if (s.kind === StreamKind.SceneTrack) s.liveOrdinal = NaN;
     }

@@ -218,7 +218,8 @@ export type DeviceCapability =
   | 'modulation_shaper_binary'
   | 'trigger_source'
   | 'offline_renderable'
-  | 'transport_controller';
+  | 'transport_controller'
+  | 'transport_section';
 
 /** One effect in a clip/track sketch (maps to a ChainEntry in M2+). */
 export interface Device {
@@ -289,6 +290,19 @@ export function clipTransportDevice(clip: Clip): Device | null {
 
 export function clipTransportDriven(clip: Clip): boolean {
   return clipTransportDevice(clip) !== null;
+}
+
+/**
+ * Does the clip's transport section hold ANY member the engine executes — a
+ * driving controller OR a non-driving section effect (follower/autopilot)?
+ * A section member of either kind OWNS the clip's end-of-life (the engine's
+ * one-shot auto-stop defers to it). UI truth from doc capabilities; the
+ * engine twin (sketch_build.h clipHasTransportSection) reads its catalog.
+ */
+export function clipHasTransportSection(clip: Clip): boolean {
+  return (clip.transport?.devices ?? []).some(
+    (d) => d.capabilities.includes('transport_controller') ||
+           d.capabilities.includes('transport_section'));
 }
 
 /** Core transport effects ↔ the play mode each one is the plugin form of. */

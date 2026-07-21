@@ -3833,8 +3833,11 @@ export class ArrangementStore {
    *  schema (the doc-side precedence helper reads them), catalog defaults. */
   private makeTransportDevice(moduleType: string): Device {
     const cat = catalogEffect(moduleType);
+    // No fallback tag: an undiscovered module must stamp NOTHING — a guessed
+    // 'transport_controller' would desync the doc-side helpers
+    // (clipTransportDriven/loopViewOf) from the engine catalog's truth.
     const caps = (this.enginePlugins[moduleType]?.capabilities ??
-                  ['transport_controller']) as Device['capabilities'];
+                  []) as Device['capabilities'];
     return {
       id: uid('dev'),
       moduleType,

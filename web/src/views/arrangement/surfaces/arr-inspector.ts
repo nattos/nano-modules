@@ -12,7 +12,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, clipTransportDriven, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
+import { clipProcessesTexture, clipTransportDriven, clipHasTransportSection, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
@@ -802,6 +802,7 @@ export class ArrInspector extends MobxLitElement {
    *  while it holds a controller; an empty card is the add affordance. */
   private renderTransportSection(trackId: string, clip: Clip) {
     const driven = clipTransportDriven(clip);
+    const sectioned = clipHasTransportSection(clip);
     const has = (clip.transport?.devices.length ?? 0) > 0;
     const target = transportTarget(trackId, clip.id);
     return html`
@@ -810,9 +811,11 @@ export class ArrInspector extends MobxLitElement {
         <span class="val">
           ${driven
             ? html`<span class="tag">drives content time</span>`
-            : has
-              ? html`<span class="tag">inert (no controller)</span>`
-              : html`<span class="tag" style="opacity:0.6">play mode below</span>`}
+            : sectioned
+              ? html`<span class="tag">follow actions</span>`
+              : has
+                ? html`<span class="tag">inert (no controller)</span>`
+                : html`<span class="tag" style="opacity:0.6">play mode below</span>`}
         </span>
       </div>
       <column-group

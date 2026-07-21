@@ -232,8 +232,10 @@ export function transportTarget(trackId: string, clipId: string): DeviceTarget {
     engineKeyFor: (d) => transportInstanceKey(clipId, d),
     availableEffects: () =>
       effectCatalog()
-        .filter((c) => (store.enginePlugins[c.type]?.capabilities ?? [])
-            .includes('transport_controller'))
+        .filter((c) => {
+          const caps = store.enginePlugins[c.type]?.capabilities ?? [];
+          return caps.includes('transport_controller') || caps.includes('transport_section');
+        })
         .map((c) => ({
           id: c.type, name: c.name, description: '',
           category: 'transport', keywords: [],
