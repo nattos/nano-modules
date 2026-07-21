@@ -24,6 +24,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -58,6 +59,9 @@ enum CompUpdateFlags : uint32_t {
   kCompVideoSetChanged = 1u << 3,
   /** Launched-scene state changed (comp_scene_states_json). */
   kCompScenesChanged = 1u << 4,
+  /** The transport pre-pass's driven-clip row set changed
+   *  (comp_transport_order_json). */
+  kCompTransportSetChanged = 1u << 5,
 };
 
 class CompExecutor {
@@ -171,9 +175,39 @@ class CompExecutor {
   /** Phase 1: advance + evaluate + (re)build. No effrt calls. Returns
    *  CompUpdateFlags. */
   uint32_t update(double dtSec);
+  /**
+   * Phase 1.5 — the transport PRE-PASS: execute the merged transport-section
+   * sketch (its own tiny internal executor, 1x1 dummy textures, all-identity)
+   * and read each driven clip's published transport_* scalars into the
+   * per-clip resolved rows. Call between update() and render(), AFTER the
+   * host has ensured this frame's instances (the web seam) — so plugin timing
+   * lands SAME-FRAME in the video pump and the streams content positions.
+   * While Precise-holding it runs on the frozen beat (targets stay live).
+   * Rows whose instance doesn't exist yet resolve invalid → consumers fall
+   * back to ClipLoopConfig for that frame.
+   */
+  void transportResolve(double dtSec);
   /** Phase 2: fold producer outputs + drive the internal executor. Returns the
    *  output texture handle (or inTex when there is nothing to render). */
   int32_t render(int32_t inTex, int32_t outTex, int32_t W, int32_t H, double dt);
+
+  /** One resolved transport row (the 8 published transport_* scalars). */
+  struct TransportResolved {
+    double timeSec = 0;
+    double active = 1;
+    double rate = std::numeric_limits<double>::quiet_NaN();
+    double nextJumpSec = std::numeric_limits<double>::quiet_NaN();
+    double jumpTargetSec = std::numeric_limits<double>::quiet_NaN();
+    double loopStartSec = std::numeric_limits<double>::quiet_NaN();
+    double loopEndSec = std::numeric_limits<double>::quiet_NaN();
+    double ended = 0;
+    /** False until the effect instance exists AND published transport_time_sec. */
+    bool valid = false;
+  };
+  /** Resolved rows, index-aligned with transportOrder(). */
+  const std::vector<TransportResolved>& transportResolved() const { return transportResolved_; }
+  /** Driven clip ids in row order (the times-channel key list). */
+  std::vector<std::string> transportOrder() const;
 
   // ── Readbacks (epoch-gated; each returns a persistent scratch string) ──
   /** Ordered (moduleType, instanceKey) pairs of the active chain. */
@@ -206,6 +240,11 @@ class CompExecutor {
   /** Rebuild the seekable-streams registry (doc-shaped; loadDocument only).
    *  Live scene anchors survive: re-applied from sceneLaunch_ after a build. */
   void rebuildStreamsTable();
+  /** (Re)build the merged transport-section sketch + row list for the current
+   *  eval (driven active leaves + the lookahead window). Called from
+   *  ensureEvalAt; a chain-sig change raises kCompStructureChanged +
+   *  kCompTransportSetChanged. */
+  void rebuildTransportSketch(double beat, uint32_t& flags);
   /** Refresh streamsTable_.frame from the current transport state (both
    *  update() exits — the import handlers read it directly). */
   void sampleStreamsFrame();
@@ -332,6 +371,31 @@ class CompExecutor {
   /** Seekable-streams registry (streams_table.h): rebuilt on loadDocument;
    *  frame sample + scene anchors mutated in place between rebuilds. */
   StreamsTable streamsTable_;
+
+  // ── Transport pre-pass (transportResolve) ──
+  /** Its own internal executor: the section sketch must run BEFORE render()'s
+   *  executor sees the frame, and shares nothing with the pixel chain. */
+  std::unique_ptr<sketch_executor::SketchExecutor> transportEx_;
+  /** One row per DRIVEN warm clip; strings precomputed at rebuild so the
+   *  per-frame resolve allocates nothing. Clip pointers live in doc_ —
+   *  cleared with the eval tree on loadDocument. */
+  struct TransportRow {
+    const ClipM* clip = nullptr;
+    std::string clipId;
+    std::string moduleType;   // the winning controller device's type
+    std::string instanceKey;  // transportInstanceKey(clip, device)
+  };
+  std::vector<TransportRow> transportRows_;
+  std::vector<TransportResolved> transportResolved_;
+  nlohmann::json transportCleanSketch_;
+  nlohmann::json transportExecSketch_;
+  std::string transportSig_;
+  bool transportDirty_ = false;
+  /** Clips whose controller latched transport_ended=1 (scene auto-stop input;
+   *  pruned to the current row set every resolve). */
+  std::set<std::string> transportEnded_;
+  int32_t transportInTex_ = -1;
+  int32_t transportOutTex_ = -1;
 
   // Persistent readback scratch (member strings, never inline-static).
   std::string requiredScratch_;

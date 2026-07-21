@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "../effrt.h"
+#include "../exec_gpu.h"
 #include "comp_eval.h"
 #include "precise_gate.h"
 
@@ -64,7 +65,8 @@ CompExecutor::CompExecutor(effect_runtime::EffectRuntime* rt,
     : rt_(rt),
       registry_(registry),
       gpu_(gpuBackend),
-      ex_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)) {}
+      ex_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)),
+      transportEx_(std::make_unique<sketch_executor::SketchExecutor>(rt, registry, gpuBackend)) {}
 
 CompExecutor::~CompExecutor() = default;
 
@@ -84,17 +86,24 @@ void CompExecutor::resetInternalExecutor() {
   ex_->setChainEntryHook(chainEntryHook_);
   ex_->setSketchOutputHook(outputHook_);
   ex_->setBarrierPredicate(barrierHook_);
+  // The transport executor shares the revive contract: a pruned-then-revived
+  // web instance holds DEFAULT params while lastAppliedState_ still matches.
+  transportEx_ = std::make_unique<sketch_executor::SketchExecutor>(rt_, registry_, gpu_);
   catalog_.forEach([&](const std::string& type, const nlohmann::json& schema,
                        const std::vector<std::string>& caps) {
     ex_->registerModuleSchema(type, schema);
     ex_->registerModuleCapabilities(type, std::vector<std::string>(caps));
+    transportEx_->registerModuleSchema(type, schema);
+    transportEx_->registerModuleCapabilities(type, std::vector<std::string>(caps));
   });
   dirty_ = true;  // the fresh executor must re-apply every instance's state
+  transportDirty_ = true;
 }
 
 void CompExecutor::registerSchema(const std::string& moduleType, const nlohmann::json& fields) {
   catalog_.registerSchema(moduleType, fields);
   ex_->registerModuleSchema(moduleType, fields);
+  transportEx_->registerModuleSchema(moduleType, fields);
 }
 
 void CompExecutor::registerCapabilities(const std::string& moduleType,
@@ -106,6 +115,7 @@ void CompExecutor::registerCapabilities(const std::string& moduleType,
       if (c.is_string()) tags.push_back(c.get<std::string>());
     }
   }
+  transportEx_->registerModuleCapabilities(moduleType, std::vector<std::string>(tags));
   ex_->registerModuleCapabilities(moduleType, std::move(tags));
 }
 
@@ -117,7 +127,10 @@ void CompExecutor::rebuildClock() {
 
 void CompExecutor::loadDocument(const nlohmann::json& doc) {
   // The cached eval tree points INTO the old doc_ — clear before replacing.
+  // Transport rows hold clip pointers from the same doc — clear with it.
   evalTree_.clear();
+  transportRows_.clear();
+  transportResolved_.clear();
   invalidateEval();
   doc_ = parseComposition(doc);
   docLoaded_ = true;
@@ -545,10 +558,150 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   }
   evalActiveDescs_ = videoDescsForTree(evalTree_);
   evalWarmDescs_ = warmVideoDescs(evalTree_, beat);
+  rebuildTransportSketch(beat, flags);
   evalBeat_ = beat;
   evalNextBoundary_ = nextEvalBoundary(doc_, beat, kLookaheadBeats);
   evalValid_ = true;
   return true;
+}
+
+void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
+  // Row basis = DRIVEN clips among the active tree leaves (DFS order), then
+  // the lookahead window (warmVideoDescs' criteria, but for ANY driven clip —
+  // effect-only clips can be transport-driven too once sequences land). A
+  // warming clip's controller publishes its entry target before the playhead
+  // arrives (the pre-seek parity path).
+  std::vector<const ClipM*> clips;
+  std::set<std::string> seen;
+  std::function<void(const std::vector<CompNode>&)> walk =
+      [&](const std::vector<CompNode>& nodes) {
+        for (const auto& n : nodes) {
+          if (n.isGroup) {
+            walk(n.children);
+            continue;
+          }
+          if (!n.clip || seen.count(n.clip->id)) continue;
+          if (!transportDeviceOf(*n.clip, catalog_)) continue;
+          seen.insert(n.clip->id);
+          clips.push_back(n.clip);
+        }
+      };
+  walk(evalTree_);
+  const double beatEnd = beat + kLookaheadBeats;
+  for (const auto& t : doc_.tracks) {
+    if (t.kind != TrackKind::Track || t.bypassed) continue;
+    for (const auto& c : t.clips) {
+      if (seen.count(c.id)) continue;
+      if (!(c.startBeat < beatEnd && c.startBeat + c.lengthBeat > beat)) continue;
+      if (!transportDeviceOf(c, catalog_)) continue;
+      seen.insert(c.id);
+      clips.push_back(&c);
+    }
+  }
+
+  nlohmann::json built = buildTransportSketch(clips, catalog_);
+  // Same contract as the main sketch: ANY JSON difference (a param edit baked
+  // into an instance state, not just topology) must re-apply state.
+  if (built != transportCleanSketch_) {
+    transportCleanSketch_ = std::move(built);
+    transportDirty_ = true;
+  }
+  transportRows_.clear();
+  transportRows_.reserve(clips.size());
+  for (const ClipM* c : clips) {
+    const DeviceM* dev = transportDeviceOf(*c, catalog_);
+    TransportRow row;
+    row.clip = c;
+    row.clipId = c->id;
+    row.moduleType = dev->moduleType;
+    row.instanceKey = transportInstanceKey(c->id, dev->id);
+    transportRows_.push_back(std::move(row));
+  }
+  transportResolved_.assign(transportRows_.size(), TransportResolved{});
+  std::string sig = chainSigOf(transportCleanSketch_);
+  if (sig != transportSig_) {
+    transportSig_ = std::move(sig);
+    // Structure so the host ensures the section instances; set-changed so it
+    // refreshes the times-channel row order. (Dirty already followed the JSON
+    // diff above — a sig change is always a JSON change.)
+    flags |= kCompStructureChanged | kCompTransportSetChanged;
+  }
+}
+
+std::vector<std::string> CompExecutor::transportOrder() const {
+  std::vector<std::string> order;
+  order.reserve(transportRows_.size());
+  for (const auto& r : transportRows_) order.push_back(r.clipId);
+  return order;
+}
+
+void CompExecutor::transportResolve(double dtSec) {
+  transportResolved_.assign(transportRows_.size(), TransportResolved{});
+  if (transportRows_.empty() || transportCleanSketch_.is_null()) {
+    streamsTable_.appliedContentSec.clear();
+    transportEnded_.clear();
+    return;
+  }
+#ifndef __wasm__
+  // Same rebind render() does — the fold + execute below use effrt.
+  sketch_executor::effrtSetRuntime(rt_);
+  effect_runtime::setHostBarPhase(std::fmod(std::max(0.0, state_.positionBeat) / 4.0, 1.0));
+  effect_runtime::setHostBpm(doc_.baseBPM);
+#endif
+  if (transportInTex_ < 0) {
+    // All section effects are identity and never tap textures — two cached 1x1
+    // dummies satisfy the executor's surface contract with zero dispatches.
+    transportInTex_ = gpu_create_texture(1, 1, 1);
+    transportOutTex_ = gpu_create_texture(1, 1, 1);
+  }
+  transportExecSketch_ = transportCleanSketch_;
+  foldPublishedOutputs(transportExecSketch_);  // intra-section wires, 1-frame
+  transportEx_->setFrameTime(transportSec_);
+  transportEx_->execute(transportExecSketch_, transportInTex_, transportOutTex_, 1, 1, dtSec,
+                        transportDirty_);
+  transportDirty_ = false;
+
+  static constexpr const char* kFields[8] = {
+      "transport_time_sec",      "transport_active",
+      "transport_rate",          "transport_next_jump_sec",
+      "transport_jump_target_sec", "transport_loop_start_sec",
+      "transport_loop_end_sec",  "transport_ended"};
+  for (size_t i = 0; i < transportRows_.size(); ++i) {
+    const TransportRow& row = transportRows_[i];
+    const int32_t inst =
+        effrt_instance_for(row.moduleType.data(), static_cast<int32_t>(row.moduleType.size()),
+                           row.instanceKey.data(), static_cast<int32_t>(row.instanceKey.size()));
+    if (inst < 0) continue;  // pre-instance frame → invalid row → fallback
+    TransportResolved r;
+    double* slots[8] = {&r.timeSec,       &r.active,       &r.rate,       &r.nextJumpSec,
+                        &r.jumpTargetSec, &r.loopStartSec, &r.loopEndSec, &r.ended};
+    for (int f = 0; f < 8; ++f) {
+      double v = 0.0;
+      if (effrt_published_scalar(inst, kFields[f],
+                                 static_cast<int32_t>(std::strlen(kFields[f])), &v)) {
+        *slots[f] = v;
+        if (f == 0) r.valid = true;  // transport_time_sec is the required field
+      }
+    }
+    transportResolved_[i] = r;
+  }
+
+  // Applied content time (streams pos(content) + the pump's target): valid +
+  // active rows override the built-in mapping; everything else falls back.
+  // Ended latches feed the scene auto-stop; both prune to the live row set.
+  streamsTable_.appliedContentSec.clear();
+  std::set<std::string> liveIds;
+  for (size_t i = 0; i < transportRows_.size(); ++i) {
+    liveIds.insert(transportRows_[i].clipId);
+    const TransportResolved& r = transportResolved_[i];
+    if (!r.valid) continue;
+    if (r.active >= 0.5) streamsTable_.appliedContentSec[transportRows_[i].clipId] = r.timeSec;
+    if (r.ended >= 0.5) transportEnded_.insert(transportRows_[i].clipId);
+  }
+  for (auto it = transportEnded_.begin(); it != transportEnded_.end();) {
+    if (!liveIds.count(*it)) it = transportEnded_.erase(it);
+    else ++it;
+  }
 }
 
 uint32_t CompExecutor::update(double dtSec) {
@@ -827,6 +980,15 @@ const std::string& CompExecutor::requiredJson() {
   nlohmann::json req = nlohmann::json::array();
   if (cleanSketch_.is_object() && cleanSketch_.contains("chain")) {
     for (const auto& e : cleanSketch_["chain"]) {
+      req.push_back({{"moduleType", e.value("module_type", std::string())},
+                     {"instanceKey", e.value("instance_key", std::string())}});
+    }
+  }
+  // Transport-section instances ride the same ensure/prune contract (the web
+  // creates them + compRequiredKeys protects them). chainKeysJson (trace
+  // remap) deliberately stays pixel-only.
+  if (transportCleanSketch_.is_object() && transportCleanSketch_.contains("chain")) {
+    for (const auto& e : transportCleanSketch_["chain"]) {
       req.push_back({{"moduleType", e.value("module_type", std::string())},
                      {"instanceKey", e.value("instance_key", std::string())}});
     }

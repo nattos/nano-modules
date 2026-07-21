@@ -110,6 +110,7 @@ interface ExecutorExports {
   comp_bpm(c: number): number;
   comp_set_video_ready(c: number, clipId: number, len: number, ready: number): void;
   comp_update(c: number, dtSec: number): number;
+  comp_transport_resolve(c: number, dtSec: number): void;
   comp_render(c: number, inTex: number, outTex: number, w: number, h: number, dt: number): number;
   comp_required_json(c: number, out: number, cap: number): number;
   comp_chain_keys_json(c: number, out: number, cap: number): number;
@@ -832,8 +833,10 @@ export class WasmSketchExecutor {
   // Composition executor (comp mode) — the arrangement compositor running
   // IN-WASM (comp_* ABI). The worker toggles it on via compEnable and drives
   // compFrame once per tick; edits/transport arrive as comp* calls. Mirrors
-  // executeAllColumns' async-instance seam: comp_update never touches effrt,
-  // instances are ensured host-side, then comp_render drives synchronously.
+  // executeAllColumns' async-instance seam: comp_update never touches effrt;
+  // instances are ensured host-side, then the transport pre-pass
+  // (comp_transport_resolve) + comp_render drive effrt synchronously over one
+  // frame-spanning handle table (reset before comp_update).
   // ══════════════════════════════════════════════════════════════════════
 
   private compPtr = 0;
@@ -995,10 +998,12 @@ export class WasmSketchExecutor {
   }
 
   /**
-   * Drive one comp frame: comp_update (advance/eval/rebuild, no effrt), then
-   * ensure this frame's instances host-side (the SAME pre-await + revive seam
-   * as executeAllColumns), then comp_render. Returns the output handle plus the
-   * per-frame report the worker ships to the main thread.
+   * Drive one comp frame: comp_update (advance/eval/rebuild, no effrt) →
+   * refresh the streams registry's live sample → ensure this frame's instances
+   * host-side (the SAME pre-await + revive seam as executeAllColumns) →
+   * comp_transport_resolve (the transport pre-pass; plugin timing lands
+   * same-frame) → comp_render. Returns the output handle plus the per-frame
+   * report the worker ships to the main thread.
    */
   async compFrame(
     dt: number, frameState: FrameState, width: number, height: number,
@@ -1006,9 +1011,14 @@ export class WasmSketchExecutor {
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-               scenes?: string; controlSeq: number; docEpoch: number;
-               streamsFrame: [number, number, number, number, number, number] }> {
+               scenes?: string; controlSeq: number }> {
     const c = this.ensureComp();
+    // Frame-local effrt handle table (repopulated by effrt_instance_for).
+    // Reset BEFORE comp_update: the frame's first effrt caller is now the
+    // transport pre-pass (comp_transport_resolve below), and one table spans
+    // the whole comp frame through comp_render.
+    this.byHandle = [];
+    this.handleByKey.clear();
     // The effect clock advances by the COMP transport's motion, not wall time:
     // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
     // prevSec persists ACROSS frames (not read fresh here): a seek lands between
@@ -1021,6 +1031,32 @@ export class WasmSketchExecutor {
     const holding = !!(flags & 4);
     const videoSetChanged = !!(flags & 8);
     const scenesChanged = !!(flags & 16);
+
+    // Refresh the streams registry's live state BEFORE the transport pre-pass
+    // below — section effects read pos()/playing() through it and must see
+    // THIS frame's (post-advance) transport. Scenes read early for the same
+    // reason (launch anchors re-anchor content streams).
+    let scenes: string | undefined;
+    if (scenesChanged) {
+      scenes = this.compRead((o, n) => this.exports.comp_scene_states_json(c, o, n)) || '{}';
+    }
+    if (this.streamsRegistry) {
+      if (!this.compStreamsFramePtr) this.compStreamsFramePtr = this.exports.malloc(48);
+      this.exports.comp_streams_frame(c, this.compStreamsFramePtr);
+      const sf = new Float64Array(this.memory.buffer, this.compStreamsFramePtr, 6);
+      const f = this.streamsRegistry.frame;
+      f.posBeat = sf[0];
+      f.posSec = sf[1];
+      f.playing = sf[2];
+      f.loopEnabled = sf[3];
+      f.loopStartBeat = sf[4];
+      f.loopEndBeat = sf[5];
+      if (scenes !== undefined) {
+        try {
+          this.streamsRegistry.syncSceneLaunches(JSON.parse(scenes));
+        } catch { /* malformed scene states: keep the last sync */ }
+      }
+    }
 
     let chainKeys: string[] | undefined;
     let layerTargets: string | undefined;
@@ -1084,10 +1120,6 @@ export class WasmSketchExecutor {
     }
     onInstancesReady?.();
 
-    // Frame-local effrt handle table (repopulated by effrt_instance_for).
-    this.byHandle = [];
-    this.handleByKey.clear();
-
     if (!this.compOutTex || this.compOutW !== width || this.compOutH !== height) {
       if (this.compOutTex) this.gpuHost.release(this.compOutTex);
       this.compOutTex = this.gpuHost.createTexture(width, height, /*RGBA8*/ 1);
@@ -1099,36 +1131,28 @@ export class WasmSketchExecutor {
     const nowSec = this.exports.comp_position_sec(c);
     const execDt = nowSec - prevSec;
     this.compPrevSec = nowSec;
+    // ── Transport pre-pass: the section sketch executes with this frame's
+    // registry sample + live instances, so its published timing drives the
+    // pump/render SAME-frame (Phase 1.5 — see CompExecutor::transportResolve).
+    this.exports.comp_transport_resolve(c, execDt);
     const handle = this.exports.comp_render(c, -1, this.compOutTex, width, height, execDt);
     this.accumulateDebugStats(this.exports.comp_sketch_executor(c));
-
-    // The registry's per-frame transport sample: 6 flat doubles into a
-    // persistent scratch — the worker mirrors them into StreamsRegistry.frame.
-    if (!this.compStreamsFramePtr) this.compStreamsFramePtr = this.exports.malloc(48);
-    this.exports.comp_streams_frame(c, this.compStreamsFramePtr);
-    const sf = new Float64Array(this.memory.buffer, this.compStreamsFramePtr, 6);
 
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
                  chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-                 scenes?: string; controlSeq: number; docEpoch: number;
-                 streamsFrame: [number, number, number, number, number, number] } = {
+                 scenes?: string; controlSeq: number } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
       positionSec: this.exports.comp_position_sec(c),
       controlSeq: this.compControlSeq,
-      docEpoch: this.exports.comp_doc_epoch(c),
-      streamsFrame: [sf[0], sf[1], sf[2], sf[3], sf[4], sf[5]],
     };
     if (chainKeys) out.chainKeys = chainKeys;
     if (layerTargets !== undefined) out.layerTargets = layerTargets;
     if (videoSetChanged) {
       out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
     }
-    if (scenesChanged) {
-      out.scenes =
-          this.compRead((o, n) => this.exports.comp_scene_states_json(c, o, n)) || '{}';
-    }
+    if (scenes !== undefined) out.scenes = scenes;
     return out;
   }
 

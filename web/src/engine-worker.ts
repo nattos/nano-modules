@@ -139,11 +139,9 @@ let compFrameInfo: import('./engine-types').CompFrameInfo | null = null;
 
 // Seekable-streams registry (streams-registry.ts): the web mirror of the comp
 // executor's StreamsTable, stamped onto every effect host's streams.* imports.
-// Static registry re-mirrored on docEpoch change only; the per-frame sample
-// rides compFrame's 6 flat doubles.
+// Static mirror rebuilds in the compLoadDoc handler (edit-rate); the per-frame
+// sample + scene sync happen inside compFrame before the transport pre-pass.
 let streamsRegistry: StreamsRegistry | null = null;
-let streamsEpoch = -1;
-let lastCompDocJson: string | null = null;
 
 /** Seed the comp catalog from every discovered plugin (schema + capabilities),
  *  the same source broadcastState wraps into PluginInfo. Free when the
@@ -469,10 +467,25 @@ async function handleCommand(cmd: WorkerCommand) {
         compSeededSchemaSig.clear(); // (a fresh comp executor has an empty catalog)
       }
       break;
-    case 'compLoadDoc':
-      lastCompDocJson = cmd.json; // the streams registry's warp-clock source
+    case 'compLoadDoc': {
       executor?.compLoadDocument(cmd.json);
+      // Rebuild the streams registry's STATIC mirror in the same handler —
+      // comp_load_document bumped the doc epoch synchronously, so the very
+      // next compFrame's transport pre-pass sees current streams. Edit-rate,
+      // never per frame.
+      if (executor) {
+        try {
+          const staticJson = JSON.parse(executor.compStreamsJson());
+          const clock = makeWarpClock(JSON.parse(cmd.json));
+          streamsRegistry ??= new StreamsRegistry();
+          streamsRegistry.loadStatic(staticJson, (b: number) => clock.secondsAt(b));
+          executor.setStreamsRegistry(streamsRegistry);
+        } catch (err) {
+          console.error('[streams]', err);
+        }
+      }
       break;
+    }
     case 'compControl':
       executor?.compControl(cmd);
       break;
@@ -1023,39 +1036,9 @@ async function simulateTick(dt: number, execDt: number = dt) {
         ...(r.layerTargets !== undefined ? { layerTargets: r.layerTargets } : {}),
         ...(r.scenes !== undefined ? { scenes: r.scenes } : {}),
       };
-      // ── Seekable-streams registry (effects' streams.* imports). Static
-      // mirror re-fetched on docEpoch change ONLY; the per-frame transport
-      // sample + launched-scene sync are flat/dedup'd — zero steady-state JSON.
-      if (r.docEpoch !== streamsEpoch) {
-        streamsEpoch = r.docEpoch;
-        try {
-          const staticJson = JSON.parse(exec.compStreamsJson());
-          const doc = lastCompDocJson ? JSON.parse(lastCompDocJson) : null;
-          const clock = doc ? makeWarpClock(doc) : null;
-          const bpm = staticJson?.streams?.[0]?.bpm ?? 120;
-          streamsRegistry ??= new StreamsRegistry();
-          streamsRegistry.loadStatic(
-            staticJson, clock ? (b: number) => clock.secondsAt(b) : (b: number) => b * 60 / bpm);
-          exec.setStreamsRegistry(streamsRegistry);
-        } catch (err) {
-          console.error('[streams]', err);
-        }
-      }
-      if (streamsRegistry) {
-        const sf = r.streamsFrame;
-        const f = streamsRegistry.frame;
-        f.posBeat = sf[0];
-        f.posSec = sf[1];
-        f.playing = sf[2];
-        f.loopEnabled = sf[3];
-        f.loopStartBeat = sf[4];
-        f.loopEndBeat = sf[5];
-        if (r.scenes !== undefined) {
-          try {
-            streamsRegistry.syncSceneLaunches(JSON.parse(r.scenes || '{}'));
-          } catch { /* malformed scene states: keep the last sync */ }
-        }
-      }
+      // (The streams registry's per-frame sample + scene sync happen INSIDE
+      // compFrame, before the transport pre-pass; the static mirror rebuilds
+      // in the compLoadDoc handler.)
     } catch (err) {
       console.error('[comp]', err);
     }

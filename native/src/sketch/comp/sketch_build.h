@@ -61,6 +61,57 @@ inline const DeviceM* transportDeviceOf(const ClipM& clip, const Catalog& catalo
   return nullptr;
 }
 
+/**
+ * Build the merged TRANSPORT sketch over the given clips: one chain entry per
+ * catalog-known transport-SECTION device (keyed transportInstanceKey), plus
+ * the section's intra-clip wires (ids remapped `xw<n>`). Deliberately tiny —
+ * no blend/rail/layer machinery; sections never see the pixel chain. Clips
+ * WITHOUT a driving controller contribute nothing (an inert section's mod
+ * devices have no consumer). Returns null JSON when nothing drives.
+ * LOCK-STEP: clip-sketch.ts buildTransportSketch (deep-equal, golden-tested).
+ */
+inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clips,
+                                           const Catalog& catalog) {
+  nlohmann::json chain = nlohmann::json::array();
+  nlohmann::json wires = nlohmann::json::array();
+  nlohmann::json instances = nlohmann::json::object();
+  int wid = 0;
+  for (const ClipM* clip : clips) {
+    if (!clip || !transportDeviceOf(*clip, catalog)) continue;
+    std::set<std::string> pushed;
+    for (const auto& d : clip->transport.devices) {
+      if (!catalog.has(d.moduleType)) continue;
+      const std::string key = transportInstanceKey(clip->id, d.id);
+      if (instances.contains(key)) continue;  // duplicate device id: keep first
+      nlohmann::json s = catalog.defaultStateFor(d.moduleType);
+      if (d.state.is_object()) s.update(d.state);
+      chain.push_back({{"type", "module"},
+                       {"module_type", d.moduleType},
+                       {"instance_key", key}});
+      instances[key] = {{"module_type", d.moduleType}, {"state", std::move(s)}};
+      pushed.insert(d.id);
+    }
+    for (const auto& w : clip->transport.wires) {
+      if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
+      const std::string srcKey = w["src"].value("instanceKey", std::string());
+      const std::string destKey = w["dest"].value("instanceKey", std::string());
+      if (!pushed.count(srcKey) || !pushed.count(destKey)) continue;
+      nlohmann::json w2 = w;  // {...w} — spread keeps mod/combine/magnitude/...
+      w2["id"] = "xw" + std::to_string(wid++);
+      w2["src"] = {{"instanceKey", transportInstanceKey(clip->id, srcKey)},
+                   {"field", w["src"].value("field", std::string())}};
+      w2["dest"] = {{"instanceKey", transportInstanceKey(clip->id, destKey)},
+                    {"field", w["dest"].value("field", std::string())}};
+      wires.push_back(std::move(w2));
+    }
+  }
+  if (chain.empty()) return nlohmann::json();
+  return {{"anchor", nullptr},
+          {"chain", std::move(chain)},
+          {"wires", std::move(wires)},
+          {"instances", std::move(instances)}};
+}
+
 /** One node of the active composite tree (clip-sketch.ts CompositeNode). */
 struct CompNode {
   bool isGroup = false;

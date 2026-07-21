@@ -32,6 +32,16 @@ export function trackInstanceKey(trackId: string, suffix: string): string {
   return `track_${trackId}_${suffix}`;
 }
 
+/**
+ * The engine instance key a clip's TRANSPORT-SECTION device runs under
+ * (sketch_build.h transportInstanceKey twin). The `transport_` infix keeps
+ * section devices disjoint from the same clip's pixel-sketch keys while
+ * staying `clip_`-prefixed (streams self-scoping resolves the owning clip).
+ */
+export function transportInstanceKey(clipId: string, deviceId: string): string {
+  return `clip_${clipId}_transport_${deviceId}`;
+}
+
 /** One clip LEAF to fold into the composite (clip + own opacity + blend). A plain
  *  object with no `type` (the legacy flat-layer shape) IS a clip leaf, so callers
  *  that pass a flat array of these still composite exactly as before. */

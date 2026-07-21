@@ -12,6 +12,7 @@
 //      numeric producer-output mirror running in-process).
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -1682,4 +1683,114 @@ TEST_CASE("cheap op: comp_set_source_transform reaches the pump descs", "[comp_e
   CHECK(d["transform"]["scale"].get<double>() == 0.5);
   CHECK(d["transform"]["rotation"].get<double>() == 0.25);
   CHECK(d["transform"]["anchorX"].get<double>() == 0.5);  // defaults resolved
+}
+
+// ── Transport pre-pass (CompExecutor::transportResolve) ─────────────────────
+
+namespace {
+
+/** A clip whose transport section hosts the streams probe (rate = 1 default). */
+json mkTransportClip(const std::string& id, double startBeat, double lengthBeat) {
+  json c = mkClip(id, startBeat, lengthBeat,
+                  json::array({mkDevice(id + "_d", "source.solid_color",
+                                        {{"color", {1.0, 1.0, 1.0}}})}));
+  c["transport"] = {
+      {"devices", json::array({mkDevice(id + "_tc", "testonly.streams_probe")})},
+      {"wires", json::array()}};
+  return c;
+}
+
+}  // namespace
+
+TEST_CASE("transport pre-pass: rows/flags/required/eval-skip without GPU",
+          "[comp_transport]") {
+  EvalHarness h;
+  h.cx.registerSchema("testonly.streams_probe", json::object());
+  h.cx.registerCapabilities("testonly.streams_probe",
+                            json::array({"transport_controller"}));
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkTransportClip("c1", 0, 8)})),
+  })));
+
+  uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompTransportSetChanged) != 0);
+  const auto order = h.cx.transportOrder();
+  REQUIRE(order.size() == 1);
+  CHECK(order[0] == "c1");
+  // The section instance rides the ensure/prune contract.
+  CHECK(h.cx.requiredJson().find("clip_c1_transport_c1_tc") != std::string::npos);
+
+  // Eval-skip guard: a transport section must not break the span (steady
+  // playback inside one clip still evaluates once).
+  h.cx.play();
+  const int64_t evals = h.cx.evalCount();
+  uint32_t later = 0;
+  for (int i = 0; i < 60; i++) later |= h.cx.update(1.0 / 60.0);
+  CHECK(h.cx.evalCount() == evals);
+  CHECK((later & comp::kCompTransportSetChanged) == 0);
+
+  // An undriven doc reload clears the rows and edges the flag once.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("c1", 0, 8,
+          json::array({mkDevice("d1", "source.solid_color")}))})),
+  })));
+  flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompTransportSetChanged) != 0);
+  CHECK(h.cx.transportOrder().empty());
+}
+
+TEST_CASE("transport pre-pass: an inert section (no controller) never drives",
+          "[comp_transport]") {
+  EvalHarness h;  // solid_color/video.file registered; NO transport capability
+  json c = mkClip("c1", 0, 8, json::array({mkDevice("d1", "source.solid_color")}));
+  c["transport"] = {{"devices", json::array({mkDevice("m1", "source.solid_color")})},
+                    {"wires", json::array()}};
+  h.cx.loadDocument(mkComposition(json::array({mkTrack("t1", json::array({c}))})));
+  const uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompTransportSetChanged) == 0);
+  CHECK(h.cx.transportOrder().empty());
+  CHECK(h.cx.requiredJson().find("transport") == std::string::npos);
+}
+
+TEST_CASE("transport pre-pass: probe publishes same-frame resolved rows (Metal)",
+          "[comp_transport][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+  REQUIRE(hx.bundles.loadBundleFile(TESTONLY_WASM_PATH, *hx.registry,
+                                    hx.backend.get(), nullptr) > 0);
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkTransportClip("c1", 0, 64)})),
+  })));
+  // The probe reads its parent stream through the streams.* imports — point
+  // the loaded bundles at this executor's live registry + clock.
+  hx.bundles.setStreamsTable(&cx.streamsTable(), &cx.warpClock());
+
+  cx.play();
+  cx.update(0.5);  // 120 BPM: +1 beat → transport at 0.5 s
+  cx.transportResolve(0.5);
+  {
+    const auto& rows = cx.transportResolved();
+    REQUIRE(rows.size() == 1);
+    // Same-frame: the row reflects THIS frame's transport (rate 1 x 0.5 s) —
+    // the executor created + ticked the instance inside this very resolve.
+    CHECK(rows[0].valid);
+    CHECK(rows[0].timeSec == Catch::Approx(0.5).margin(1e-9));
+    CHECK(rows[0].active == 1.0);
+    CHECK(rows[0].ended == 0.0);
+  }
+
+  cx.update(0.5);
+  cx.transportResolve(0.5);
+  CHECK(cx.transportResolved()[0].timeSec == Catch::Approx(1.0).margin(1e-9));
+
+  // The applied override reroutes the streams content position... this clip
+  // has no video source, so instead assert the cheap-op path: a rate edit on
+  // the SECTION device lands without a doc reload and scales the next row.
+  cx.setDeviceParam("c1", "c1_tc", "rate", 2.0);
+  cx.update(0.5);
+  cx.transportResolve(0.5);
+  CHECK(cx.transportResolved()[0].timeSec == Catch::Approx(3.0).margin(1e-9));
 }

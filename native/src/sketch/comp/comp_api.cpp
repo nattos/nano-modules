@@ -229,6 +229,14 @@ int32_t comp_update(CompExecutor* c, double dtSec) {
   return c ? static_cast<int32_t>(c->update(dtSec)) : 0;
 }
 
+// Phase 1.5 — the transport pre-pass. Call between comp_update and
+// comp_render, AFTER instances are ensured host-side (see
+// CompExecutor::transportResolve).
+EXEC_EXPORT("comp_transport_resolve")
+void comp_transport_resolve(CompExecutor* c, double dtSec) {
+  if (c) c->transportResolve(dtSec);
+}
+
 EXEC_EXPORT("comp_render")
 int32_t comp_render(CompExecutor* c, int32_t inTex, int32_t outTex, int32_t W, int32_t H,
                     double dt) {
