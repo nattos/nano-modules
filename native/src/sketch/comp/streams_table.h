@@ -111,6 +111,12 @@ struct StreamEvent {
   double channel = std::numeric_limits<double>::quiet_NaN();
 };
 
+/** A track stream's per-clip lookup row (ordinal pairing + scene progress). */
+struct StreamClipRef {
+  int32_t ordinal = 0;
+  double lengthBeat = 0;
+};
+
 struct StreamInfo {
   int64_t handle = kStreamInvalid;
   int32_t kind = kStreamKindInvalid;
@@ -129,6 +135,13 @@ struct StreamInfo {
   /** trackId for track streams; clipId for content streams; "" for clocks. */
   std::string ownerId;
   std::vector<StreamEvent> events;
+  /** Track streams: clipId → {grid ordinal, lengthBeat} (scene sync + M2). */
+  std::unordered_map<std::string, StreamClipRef> clipsById;
+  // ── Scene tracks only: launched-scene state, synced per frame from the
+  // executor's launch map (sampleStreamsFrame). NaN ordinal = nothing playing.
+  double liveOrdinal = std::numeric_limits<double>::quiet_NaN();
+  double liveAnchorBeat = 0;
+  double liveLengthBeat = 0;
   // ── Content streams only: everything the lazy position eval needs ──
   ClipLoopConfig loop;
   nlohmann::json loopJson;  // raw, for the web registry twin
@@ -148,6 +161,8 @@ struct StreamsTable {
   std::unordered_map<int64_t, int32_t> byHandle;
   std::unordered_map<std::string, int64_t> parentByClipId;
   std::unordered_map<std::string, int64_t> contentByClipId;
+  /** trackId → track stream handle (no-alloc per-frame scene sync). */
+  std::unordered_map<std::string, int64_t> trackByTrackId;
 
   /** Per-frame transport sample — mutated in place by CompExecutor::update();
    *  the import handlers read it directly (no copies, no messages). */
@@ -285,6 +300,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
     for (size_t ord = 0; ord < order.size(); ++ord) {
       const ClipM& clip = track.clips[order[ord]];
       t.parentByClipId[clip.id] = s.handle;
+      s.clipsById[clip.id] = {static_cast<int32_t>(ord), clip.lengthBeat};
       extent = std::max(extent, clip.startBeat + clip.lengthBeat);
       if (clip.bypassed) continue;
       if (scene && !clip.hasSourceUrl && clip.sketch.devices.empty()) continue;  // empty
@@ -309,6 +325,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       s.durationPrimary = extent;
       s.durationSec = clock.secondsAt(extent);
     }
+    t.trackByTrackId[track.id] = s.handle;
     push(std::move(s));
   }
   t.enumCount = nextIndex;
@@ -368,6 +385,106 @@ inline double contentPosSec(const StreamInfo& s, const StreamsTable& t, const Wa
   return vt ? *vt : std::numeric_limits<double>::quiet_NaN();
 }
 
+// ── Import-handler evaluators (LOCK-STEP: web/src/streams-registry.ts) ──────
+// Shared by the native host functions and (as TS ports) the web importObject,
+// so both hosts answer identically. `sessionSec` = the calling host's frame
+// clock (FrameState.elapsed_time) — the only per-host input.
+
+/** Position on the stream's PRIMARY axis (streams.h streams_pos). */
+inline double streamPos(const StreamInfo& s, const StreamsTable& t, const WarpClock& clock,
+                        double sessionSec) {
+  switch (s.kind) {
+    case kStreamKindSessionClock:
+      return sessionSec;
+    case kStreamKindTimeline:
+    case kStreamKindTimelineTrack:
+      return t.frame.posBeat;
+    case kStreamKindSceneTrack: {
+      if (std::isnan(s.liveOrdinal)) return s.liveOrdinal;
+      const double len = std::max(1e-9, s.liveLengthBeat);
+      const double frac =
+          std::min(1.0, std::max(0.0, (t.frame.posBeat - s.liveAnchorBeat) / len));
+      return s.liveOrdinal + frac;
+    }
+    case kStreamKindVideoContent:
+      return contentPosSec(s, t, clock);
+    default:
+      return std::numeric_limits<double>::quiet_NaN();
+  }
+}
+
+/** Position in seconds regardless of axis (streams.h streams_pos_sec). */
+inline double streamPosSec(const StreamInfo& s, const StreamsTable& t, const WarpClock& clock,
+                           double sessionSec) {
+  switch (s.kind) {
+    case kStreamKindSessionClock:
+      return sessionSec;
+    case kStreamKindTimeline:
+    case kStreamKindTimelineTrack:
+      return t.frame.posSec;
+    case kStreamKindSceneTrack:
+      if (std::isnan(s.liveOrdinal)) return s.liveOrdinal;
+      return t.frame.posSec - clock.secondsAt(s.liveAnchorBeat);
+    case kStreamKindVideoContent:
+      return contentPosSec(s, t, clock);
+    default:
+      return std::numeric_limits<double>::quiet_NaN();
+  }
+}
+
+inline int32_t streamPlaying(const StreamInfo& s, const StreamsTable& t) {
+  switch (s.kind) {
+    case kStreamKindSessionClock:
+      return 1;
+    case kStreamKindSceneTrack:
+      return std::isnan(s.liveOrdinal) ? 0 : t.frame.playing;
+    default:
+      return t.frame.playing;
+  }
+}
+
+/** Active loop region on the primary axis → 1 + out2 filled, else 0. */
+inline int32_t streamLoop(const StreamInfo& s, const StreamsTable& t, double* out2) {
+  switch (s.kind) {
+    case kStreamKindTimeline:
+    case kStreamKindTimelineTrack:
+      if (!t.frame.loopEnabled) return 0;
+      out2[0] = t.frame.loopStartBeat;
+      out2[1] = t.frame.loopEndBeat;
+      return 1;
+    case kStreamKindVideoContent:
+      // The looping play modes expose their source slice; one-shot/random
+      // wander freely (no steady window).
+      if (s.loop.mode != ClipPlayMode::Time && s.loop.mode != ClipPlayMode::BeatSync) return 0;
+      out2[0] = s.loop.startSec;
+      out2[1] = s.loop.endSec.value_or(s.videoDurSec);
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Resolve the clip that owns an executing effect from its instance key
+ * ("clip_<clipId>_<suffix>", sketch_build.h). Clip ids may themselves contain
+ * '_', so match against the known id set (longest match wins) instead of
+ * splitting. Returns nullptr for non-clip keys (track FX, standalone).
+ */
+inline const std::string* clipIdForInstanceKey(const StreamsTable& t, const std::string& key) {
+  constexpr size_t kPrefix = 5;  // "clip_"
+  if (key.compare(0, kPrefix, "clip_") != 0) return nullptr;
+  const std::string* best = nullptr;
+  for (const auto& kv : t.parentByClipId) {
+    const std::string& clipId = kv.first;
+    if (key.size() <= kPrefix + clipId.size() ||
+        key[kPrefix + clipId.size()] != '_' ||
+        key.compare(kPrefix, clipId.size(), clipId) != 0)
+      continue;
+    if (!best || clipId.size() > best->size()) best = &clipId;
+  }
+  return best;
+}
+
 /**
  * Serialize the STATIC registry for the web engine worker's StreamsRegistry
  * twin. Fetched on doc-epoch change only — never per frame. Handles are
@@ -407,10 +524,17 @@ inline std::string streamsTableJson(const StreamsTable& t) {
       j["videoDurSec"] = s.videoDurSec;
       j["seed"] = s.seed;
     }
+    if (!s.clipsById.empty()) {
+      nlohmann::json clips = nlohmann::json::object();
+      for (const auto& [clipId, ref] : s.clipsById)
+        clips[clipId] = {ref.ordinal, ref.lengthBeat};
+      j["clipsById"] = std::move(clips);
+    }
     out["streams"].push_back(std::move(j));
   }
   for (const auto& [clipId, h] : t.parentByClipId) out["parentByClipId"][clipId] = handleStr(h);
   for (const auto& [clipId, h] : t.contentByClipId) out["contentByClipId"][clipId] = handleStr(h);
+  for (const auto& [trackId, h] : t.trackByTrackId) out["trackByTrackId"][trackId] = handleStr(h);
   return out.dump();
 }
 

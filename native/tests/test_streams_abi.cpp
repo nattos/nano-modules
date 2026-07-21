@@ -203,6 +203,26 @@ TEST_CASE("content position: lazy clip-time mapping, override wins, NaN off-ends
   CHECK_THAT(comp::contentPosSec(still, t, b.clock), WithinAbs(0.0, kTol));
 }
 
+TEST_CASE("streamsTableJson matches the committed golden (web twin replays it)",
+          "[streams]") {
+  // NATIVE is the reference implementation for the streams registry (the
+  // inverse of the comp-goldens direction): NANO_UPDATE_GOLDENS=1 regenerates
+  // fixtures/comp/streams-golden.json; the web StreamsRegistry test
+  // (streams-registry.test.ts) replays the SAME file.
+  Built b = build();
+  const std::string path = std::string(COMP_FIXTURES_DIR) + "/streams-golden.json";
+  const json produced = json::parse(comp::streamsTableJson(b.table), nullptr, false);
+  if (std::getenv("NANO_UPDATE_GOLDENS")) {
+    std::ofstream out(path);
+    out << produced.dump(2) << "\n";
+  }
+  std::ifstream f(path);
+  REQUIRE(f.good());  // missing ⇒ run NANO_UPDATE_GOLDENS=1 ./test_streams_abi
+  const json stored = json::parse(f, nullptr, false);
+  REQUIRE(!stored.is_discarded());
+  CHECK(produced == stored);
+}
+
 TEST_CASE("streamsTableJson: static registry round-trips for the web twin", "[streams]") {
   Built b = build();
   const json j = json::parse(comp::streamsTableJson(b.table), nullptr, false);

@@ -7,7 +7,9 @@
 #include "bridge/state_document.h"
 #include "gpu/gpu_backend.h"
 #include "json/json_doc.h"
+#include "sketch/comp/streams_table.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -292,6 +294,256 @@ static NativeSymbol resolume_symbols[] = {
     {"load_thumbnail", reinterpret_cast<void*>(resolume_load_thumbnail), "(i)i", nullptr},
     {"subscribe_query", reinterpret_cast<void*>(resolume_subscribe_query), "(ii)", nullptr},
     {"get_param_path", reinterpret_cast<void*>(resolume_get_param_path), "(Iii)i", nullptr},
+};
+
+// ========================================================================
+// Module "streams" — the seekable-streams surface (streams_table.h registry;
+// effect-side header wasm_modules/include/streams.h). Null registry (plugin
+// shell, tests, standalone sketch) ⇒ the session-clock-only world backed by
+// frame_state. All per-frame answers are flat scalars or fixed-layout copies
+// — no JSON anywhere on this path.
+// ========================================================================
+
+static const comp::StreamsTable* get_streams(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  return ctx ? ctx->streams_table : nullptr;
+}
+
+static const comp::StreamInfo* resolve_stream(wasm_exec_env_t env, int64_t h) {
+  const auto* t = get_streams(env);
+  return t ? t->find(h) : nullptr;
+}
+
+static double session_sec(wasm_exec_env_t env) {
+  auto* f = get_frame(env);
+  return f ? f->elapsed_time : 0.0;
+}
+
+static int64_t streams_parent_fn(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  const auto* t = get_streams(env);
+  if (t && ctx && ctx->effect_instance) {
+    const std::string& key = ctx->effect_instance->instanceKey();
+    if (const std::string* clipId = comp::clipIdForInstanceKey(*t, key)) {
+      auto it = t->parentByClipId.find(*clipId);
+      if (it != t->parentByClipId.end()) return it->second;
+    }
+  }
+  return comp::kStreamSessionClock;
+}
+
+static int64_t streams_content_fn(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  const auto* t = get_streams(env);
+  if (t && ctx && ctx->effect_instance) {
+    const std::string& key = ctx->effect_instance->instanceKey();
+    if (const std::string* clipId = comp::clipIdForInstanceKey(*t, key)) {
+      auto it = t->contentByClipId.find(*clipId);
+      if (it != t->contentByClipId.end()) return it->second;
+    }
+  }
+  return comp::kStreamInvalid;
+}
+
+static int64_t streams_timeline_fn(wasm_exec_env_t env) {
+  return get_streams(env) ? comp::kStreamTimeline : comp::kStreamInvalid;
+}
+
+static int32_t streams_count_fn(wasm_exec_env_t env) {
+  const auto* t = get_streams(env);
+  return t ? t->enumCount : 1;
+}
+
+static int64_t streams_at_fn(wasm_exec_env_t env, int32_t index) {
+  const auto* t = get_streams(env);
+  if (!t) return index == 0 ? comp::kStreamSessionClock : comp::kStreamInvalid;
+  if (index < 0 || index >= t->enumCount) return comp::kStreamInvalid;
+  return t->streams[static_cast<size_t>(index)].handle;
+}
+
+static int32_t streams_name_fn(wasm_exec_env_t env, int64_t h, int32_t buf_ptr,
+                               int32_t buf_len) {
+  const auto* s = resolve_stream(env, h);
+  if (!s) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (buf_len > 0 && wasm_runtime_validate_app_addr(inst, buf_ptr, buf_len)) {
+    char* buf = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, buf_ptr));
+    if (buf) {
+      const int32_t copy = std::min(static_cast<int32_t>(s->name.size()), buf_len);
+      memcpy(buf, s->name.data(), static_cast<size_t>(copy));
+    }
+  }
+  return static_cast<int32_t>(s->name.size());  // full length (grow-and-retry)
+}
+
+static int32_t streams_describe_fn(wasm_exec_env_t env, int64_t h, int32_t desc_ptr) {
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, 4)) return 0;
+  int32_t* head = static_cast<int32_t*>(wasm_runtime_addr_app_to_native(inst, desc_ptr));
+  if (!head) return 0;
+  constexpr int32_t kKnown = 48;  // sizeof(StreamDesc) fields the host fills
+  const int32_t sent = *head;
+  const int32_t fill = std::min(sent, kKnown);
+  if (fill < 4 || !wasm_runtime_validate_app_addr(inst, desc_ptr, fill)) return 0;
+  int32_t* out = head;
+
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  int32_t fields[12] = {sent, comp::kStreamKindInvalid, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0};
+  if (s) {
+    fields[1] = s->kind;
+    fields[2] = s->flags;
+    fields[3] = s->axis;
+    fields[4] = s->frameCount;
+    fields[5] = static_cast<int32_t>(s->events.size());
+    fields[6] = t->docRev;
+    fields[7] = s->index;
+    fields[8] = s->clipCount;
+  } else if (!t && h == comp::kStreamSessionClock) {
+    fields[1] = comp::kStreamKindSessionClock;
+    fields[2] = comp::kStreamLiveOnly;
+    fields[3] = comp::kStreamAxisSeconds;
+    fields[7] = 0;
+  }
+  const int32_t nWords = fill / 4;
+  for (int32_t k = 1; k < nWords; ++k) out[k] = fields[k];
+  return fields[1] != comp::kStreamKindInvalid ? 1 : 0;
+}
+
+static int32_t streams_rev_fn(wasm_exec_env_t env, int64_t h) {
+  (void)h;
+  const auto* t = get_streams(env);
+  return t ? t->docRev : 0;
+}
+
+// Shared per-kind evaluators live in streams_table.h (lock-step with the web
+// registry) — these thunks only marshal.
+static double streams_pos_fn(wasm_exec_env_t env, int64_t h) {
+  auto* ctx = get_ctx(env);
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  if (!s || !ctx->streams_clock) {
+    if (h == comp::kStreamSessionClock) return session_sec(env);
+    return std::nan("");
+  }
+  return comp::streamPos(*s, *t, *ctx->streams_clock, session_sec(env));
+}
+
+static double streams_pos_sec_fn(wasm_exec_env_t env, int64_t h) {
+  auto* ctx = get_ctx(env);
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  if (!s || !ctx->streams_clock) {
+    if (h == comp::kStreamSessionClock) return session_sec(env);
+    return std::nan("");
+  }
+  return comp::streamPosSec(*s, *t, *ctx->streams_clock, session_sec(env));
+}
+
+static int32_t streams_playing_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  if (!s) return h == comp::kStreamSessionClock ? 1 : 0;
+  return comp::streamPlaying(*s, *t);
+}
+
+static int32_t streams_loop_fn(wasm_exec_env_t env, int64_t h, int32_t out_ptr) {
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  if (!s) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, out_ptr, 16)) return 0;
+  double* out = static_cast<double*>(wasm_runtime_addr_app_to_native(inst, out_ptr));
+  if (!out) return 0;
+  return comp::streamLoop(*s, *t, out);
+}
+
+static double streams_duration_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* s = resolve_stream(env, h);
+  return s ? s->durationPrimary : -1.0;
+}
+
+static double streams_duration_sec_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* s = resolve_stream(env, h);
+  return s ? s->durationSec : -1.0;
+}
+
+static double streams_bpm_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* s = resolve_stream(env, h);
+  if (s) return s->bpm;
+  auto* f = get_frame(env);
+  return f ? f->bpm : 120.0;
+}
+
+static double streams_fps_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* s = resolve_stream(env, h);
+  return s ? s->fps : 0.0;
+}
+
+static int32_t streams_event_count_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* s = resolve_stream(env, h);
+  if (!s) {
+    return !get_streams(env) && h == comp::kStreamSessionClock ? 0 : -1;
+  }
+  return static_cast<int32_t>(s->events.size());
+}
+
+static int32_t streams_read_events_fn(wasm_exec_env_t env, int64_t h, int32_t first,
+                                      int32_t out_ptr, int32_t cap_events) {
+  const auto* s = resolve_stream(env, h);
+  if (!s) return !get_streams(env) && h == comp::kStreamSessionClock ? 0 : -1;
+  if (first < 0 || cap_events <= 0) return 0;
+  const int32_t total = static_cast<int32_t>(s->events.size());
+  const int32_t n = std::max(0, std::min(total - first, cap_events));
+  if (n == 0) return 0;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, out_ptr, n * 40)) return 0;
+  double* out = static_cast<double*>(wasm_runtime_addr_app_to_native(inst, out_ptr));
+  if (!out) return 0;
+  for (int32_t k = 0; k < n; ++k) {
+    const auto& e = s->events[static_cast<size_t>(first + k)];
+    out[k * 5 + 0] = e.time;
+    out[k * 5 + 1] = static_cast<double>(e.kind);
+    out[k * 5 + 2] = static_cast<double>(e.clipOrdinal);
+    out[k * 5 + 3] = e.idHash48;
+    out[k * 5 + 4] = e.channel;
+  }
+  return n;
+}
+
+static int32_t streams_event_lb_fn(wasm_exec_env_t env, int64_t h, double time) {
+  const auto* s = resolve_stream(env, h);
+  if (!s) return 0;
+  // First event with time >= t, by TIME only (kind ties don't matter here).
+  int32_t lo = 0, hi = static_cast<int32_t>(s->events.size());
+  while (lo < hi) {
+    const int32_t mid = lo + (hi - lo) / 2;
+    if (s->events[static_cast<size_t>(mid)].time < time) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+static NativeSymbol streams_symbols[] = {
+    {"parent", reinterpret_cast<void*>(streams_parent_fn), "()I", nullptr},
+    {"content", reinterpret_cast<void*>(streams_content_fn), "()I", nullptr},
+    {"timeline", reinterpret_cast<void*>(streams_timeline_fn), "()I", nullptr},
+    {"count", reinterpret_cast<void*>(streams_count_fn), "()i", nullptr},
+    {"at", reinterpret_cast<void*>(streams_at_fn), "(i)I", nullptr},
+    {"name", reinterpret_cast<void*>(streams_name_fn), "(Iii)i", nullptr},
+    {"describe", reinterpret_cast<void*>(streams_describe_fn), "(Ii)i", nullptr},
+    {"rev", reinterpret_cast<void*>(streams_rev_fn), "(I)i", nullptr},
+    {"pos", reinterpret_cast<void*>(streams_pos_fn), "(I)F", nullptr},
+    {"pos_sec", reinterpret_cast<void*>(streams_pos_sec_fn), "(I)F", nullptr},
+    {"playing", reinterpret_cast<void*>(streams_playing_fn), "(I)i", nullptr},
+    {"loop", reinterpret_cast<void*>(streams_loop_fn), "(Ii)i", nullptr},
+    {"duration", reinterpret_cast<void*>(streams_duration_fn), "(I)F", nullptr},
+    {"duration_sec", reinterpret_cast<void*>(streams_duration_sec_fn), "(I)F", nullptr},
+    {"bpm", reinterpret_cast<void*>(streams_bpm_fn), "(I)F", nullptr},
+    {"fps", reinterpret_cast<void*>(streams_fps_fn), "(I)F", nullptr},
+    {"event_count", reinterpret_cast<void*>(streams_event_count_fn), "(I)i", nullptr},
+    {"read_events", reinterpret_cast<void*>(streams_read_events_fn), "(Iiii)i", nullptr},
+    {"event_lower_bound", reinterpret_cast<void*>(streams_event_lb_fn), "(IF)i", nullptr},
 };
 
 // ========================================================================
@@ -1430,6 +1682,10 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "resolume", resolume_symbols,
       sizeof(resolume_symbols) / sizeof(NativeSymbol));
+
+  ok = ok && wasm_runtime_register_natives(
+      "streams", streams_symbols,
+      sizeof(streams_symbols) / sizeof(NativeSymbol));
 
   ok = ok && wasm_runtime_register_natives(
       "state", state_symbols,

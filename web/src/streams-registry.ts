@@ -1,0 +1,310 @@
+// streams-registry.ts — the web twin of the native seekable-streams registry
+// (native/src/sketch/comp/streams_table.h — LOCK-STEP: enum values, event
+// tuples, and the per-kind evaluators must answer identically on both hosts).
+//
+// The STATIC registry is mirrored from executor.wasm's `comp_streams_json`
+// readback on doc-epoch change ONLY; the per-frame transport sample arrives as
+// 6 flat doubles (`comp_streams_frame`); content positions evaluate lazily
+// through the shared clip-time math. Nothing stream-shaped crosses any
+// boundary per frame.
+//
+// Effects (WasmHost instances) read this through the `streams.*` import module
+// (wasm-host.ts); a null registry there answers as the session-clock-only
+// world.
+
+import { clipSourceTimeAt } from './views/arrangement/engine/clip-time';
+import type { ClipLoopConfig } from './views/arrangement/model/composition';
+
+// ── Enum twins (values are ABI — streams.h / streams_table.h) ──────────────
+
+export const StreamKind = {
+  Invalid: 0,
+  SessionClock: 1,
+  Timeline: 2,
+  TimelineTrack: 3,
+  SceneTrack: 4,
+  VideoContent: 5,
+  SequenceContent: 6,
+  LiveInput: 7,
+} as const;
+
+export const StreamAxis = { Seconds: 0, Beats: 1, Ordinal: 2 } as const;
+
+export const StreamFlags = {
+  SeekInstant: 1 << 0,
+  SeekSlow: 1 << 1,
+  LiveOnly: 1 << 2,
+  HasEvents: 1 << 3,
+  Finite: 1 << 4,
+  TriggerOnSeek: 1 << 5,
+  Driven: 1 << 6,
+} as const;
+
+export const STREAM_INVALID = 0n;
+export const STREAM_SESSION_CLOCK = 1n;
+export const STREAM_TIMELINE = 2n;
+
+/** One start/stop event — the 5-double wire record, parsed. */
+export interface StreamEventRec {
+  time: number;
+  kind: number; // 0 = start, 1 = stop
+  clipOrdinal: number;
+  idHash48: number;
+  channel: number; // NaN for non-scene streams
+}
+
+export interface StreamRec {
+  handle: bigint;
+  kind: number;
+  flags: number;
+  axis: number;
+  frameCount: number;
+  index: number;
+  clipCount: number;
+  durationPrimary: number;
+  durationSec: number;
+  bpm: number;
+  fps: number;
+  name: string;
+  ownerId: string;
+  events: StreamEventRec[];
+  /** Track streams: clipId → [grid ordinal, lengthBeat]. */
+  clipsById: Map<string, [number, number]>;
+  // Content streams: the lazy position-eval context.
+  loop: ClipLoopConfig | null;
+  anchorBeat: number;
+  lengthBeat: number;
+  videoDurSec: number;
+  seed: number;
+  // Scene tracks: launched-scene state (synced from comp_scene_states_json).
+  liveOrdinal: number; // NaN = nothing playing
+  liveAnchorBeat: number;
+  liveLengthBeat: number;
+}
+
+export class StreamsRegistry {
+  docRev = 0;
+  enumCount = 0;
+  streams: StreamRec[] = [];
+  byHandle = new Map<bigint, StreamRec>();
+  parentByClipId = new Map<string, bigint>();
+  contentByClipId = new Map<string, bigint>();
+  trackByTrackId = new Map<string, bigint>();
+
+  /** Per-frame transport sample (comp_streams_frame's 6 doubles). */
+  frame = {
+    posBeat: 0, posSec: 0, playing: 0,
+    loopEnabled: 0, loopStartBeat: 0, loopEndBeat: 0,
+  };
+
+  /** Transport-controller content-time overrides (clipId → content seconds). */
+  appliedContentSec = new Map<string, number>();
+
+  /** Warp-aware beat→seconds map, rebuilt with the document (makeWarpClock). */
+  secondsAt: (beat: number) => number = (beat) => beat * 0.5;
+
+  /** Replace the static registry from a parsed comp_streams_json payload. */
+  loadStatic(json: any, secondsAt: (beat: number) => number): void {
+    this.secondsAt = secondsAt;
+    this.docRev = json?.docRev ?? 0;
+    this.enumCount = json?.enumCount ?? 0;
+    this.streams = [];
+    this.byHandle.clear();
+    this.parentByClipId.clear();
+    this.contentByClipId.clear();
+    this.trackByTrackId.clear();
+    for (const s of json?.streams ?? []) {
+      const rec: StreamRec = {
+        handle: BigInt(s.handle ?? '0'),
+        kind: s.kind ?? 0,
+        flags: s.flags ?? 0,
+        axis: s.axis ?? 0,
+        frameCount: s.frameCount ?? 0,
+        index: s.index ?? -1,
+        clipCount: s.clipCount ?? 0,
+        durationPrimary: s.durationPrimary ?? -1,
+        durationSec: s.durationSec ?? -1,
+        bpm: s.bpm ?? 120,
+        fps: s.fps ?? 0,
+        name: s.name ?? '',
+        ownerId: s.ownerId ?? '',
+        events: (s.events ?? []).map((e: any[]): StreamEventRec => ({
+          time: e[0], kind: e[1], clipOrdinal: e[2], idHash48: e[3],
+          channel: e[4] === null || e[4] === undefined ? NaN : e[4],
+        })),
+        clipsById: new Map(Object.entries(s.clipsById ?? {}).map(
+          ([clipId, ref]) => [clipId, ref as [number, number]])),
+        loop: s.loop ?? null,
+        anchorBeat: s.anchorBeat ?? 0,
+        lengthBeat: s.lengthBeat ?? 0,
+        videoDurSec: s.videoDurSec ?? 0,
+        seed: s.seed ?? 0,
+        liveOrdinal: NaN,
+        liveAnchorBeat: 0,
+        liveLengthBeat: 0,
+      };
+      this.byHandle.set(rec.handle, rec);
+      this.streams.push(rec);
+    }
+    for (const [clipId, h] of Object.entries(json?.parentByClipId ?? {}))
+      this.parentByClipId.set(clipId, BigInt(h as string));
+    for (const [clipId, h] of Object.entries(json?.contentByClipId ?? {}))
+      this.contentByClipId.set(clipId, BigInt(h as string));
+    for (const [trackId, h] of Object.entries(json?.trackByTrackId ?? {}))
+      this.trackByTrackId.set(trackId, BigInt(h as string));
+  }
+
+  /** Mirror the launch map (comp_scene_states_json: {trackId: {sceneId,
+   *  launchBeat}}) into the scene-track streams — the twin of the native
+   *  sampleStreamsFrame sync. Also re-anchors launched scenes' content
+   *  streams (launchScene's anchor rebase). */
+  syncSceneLaunches(launches: Record<string, { sceneId: string; launchBeat: number }>): void {
+    for (const s of this.streams) {
+      if (s.kind === StreamKind.SceneTrack) s.liveOrdinal = NaN;
+    }
+    for (const [trackId, l] of Object.entries(launches ?? {})) {
+      const th = this.trackByTrackId.get(trackId);
+      const s = th !== undefined ? this.byHandle.get(th) : undefined;
+      if (!s || s.kind !== StreamKind.SceneTrack) continue;
+      const ref = s.clipsById.get(l.sceneId);
+      if (!ref) continue;
+      s.liveOrdinal = ref[0];
+      s.liveAnchorBeat = l.launchBeat;
+      s.liveLengthBeat = ref[1];
+      const ch = this.contentByClipId.get(l.sceneId);
+      const content = ch !== undefined ? this.byHandle.get(ch) : undefined;
+      if (content) content.anchorBeat = l.launchBeat;
+    }
+  }
+
+  find(h: bigint): StreamRec | undefined {
+    return this.byHandle.get(h);
+  }
+
+  /** streams_table.h clipIdForInstanceKey: resolve the clip that owns an
+   *  executing effect from its "clip_<clipId>_<suffix>" instance key. Clip ids
+   *  may contain '_', so match the known id set (longest wins). */
+  clipIdForInstanceKey(key: string): string | null {
+    if (!key.startsWith('clip_')) return null;
+    let best: string | null = null;
+    for (const clipId of this.parentByClipId.keys()) {
+      if (key.length <= 5 + clipId.length + 1) continue;
+      if (key[5 + clipId.length] !== '_') continue;
+      if (!key.startsWith(clipId, 5)) continue;
+      if (!best || clipId.length > best.length) best = clipId;
+    }
+    return best;
+  }
+
+  parentOf(instanceKey: string): bigint {
+    const clipId = this.clipIdForInstanceKey(instanceKey);
+    if (clipId !== null) {
+      const h = this.parentByClipId.get(clipId);
+      if (h !== undefined) return h;
+    }
+    return STREAM_SESSION_CLOCK;
+  }
+
+  contentOf(instanceKey: string): bigint {
+    const clipId = this.clipIdForInstanceKey(instanceKey);
+    if (clipId !== null) {
+      const h = this.contentByClipId.get(clipId);
+      if (h !== undefined) return h;
+    }
+    return STREAM_INVALID;
+  }
+
+  // ── Per-kind evaluators (LOCK-STEP: streams_table.h streamPos/PosSec/
+  // Playing/Loop + contentPosSec) ──
+
+  /** Content-stream position: the applied override, else the lazy clip-time
+   *  mapping. NaN = transparent/undefined. */
+  contentPosSec(s: StreamRec): number {
+    const applied = this.appliedContentSec.get(s.ownerId);
+    if (applied !== undefined) return applied;
+    const vt = clipSourceTimeAt(s.loop ?? ({} as ClipLoopConfig), {
+      startBeat: s.anchorBeat,
+      lengthBeat: s.lengthBeat,
+      videoDurSec: s.videoDurSec,
+      secondsAt: this.secondsAt,
+      seed: s.seed,
+    }, this.frame.posBeat);
+    return vt === null ? NaN : vt;
+  }
+
+  pos(s: StreamRec, sessionSec: number): number {
+    switch (s.kind) {
+      case StreamKind.SessionClock:
+        return sessionSec;
+      case StreamKind.Timeline:
+      case StreamKind.TimelineTrack:
+        return this.frame.posBeat;
+      case StreamKind.SceneTrack: {
+        if (Number.isNaN(s.liveOrdinal)) return s.liveOrdinal;
+        const len = Math.max(1e-9, s.liveLengthBeat);
+        const frac = Math.min(1, Math.max(0, (this.frame.posBeat - s.liveAnchorBeat) / len));
+        return s.liveOrdinal + frac;
+      }
+      case StreamKind.VideoContent:
+        return this.contentPosSec(s);
+      default:
+        return NaN;
+    }
+  }
+
+  posSec(s: StreamRec, sessionSec: number): number {
+    switch (s.kind) {
+      case StreamKind.SessionClock:
+        return sessionSec;
+      case StreamKind.Timeline:
+      case StreamKind.TimelineTrack:
+        return this.frame.posSec;
+      case StreamKind.SceneTrack:
+        if (Number.isNaN(s.liveOrdinal)) return s.liveOrdinal;
+        return this.frame.posSec - this.secondsAt(s.liveAnchorBeat);
+      case StreamKind.VideoContent:
+        return this.contentPosSec(s);
+      default:
+        return NaN;
+    }
+  }
+
+  playing(s: StreamRec): number {
+    switch (s.kind) {
+      case StreamKind.SessionClock:
+        return 1;
+      case StreamKind.SceneTrack:
+        return Number.isNaN(s.liveOrdinal) ? 0 : this.frame.playing;
+      default:
+        return this.frame.playing;
+    }
+  }
+
+  /** Active loop region on the primary axis, or null. */
+  loopRegion(s: StreamRec): [number, number] | null {
+    switch (s.kind) {
+      case StreamKind.Timeline:
+      case StreamKind.TimelineTrack:
+        if (!this.frame.loopEnabled) return null;
+        return [this.frame.loopStartBeat, this.frame.loopEndBeat];
+      case StreamKind.VideoContent: {
+        const mode = s.loop?.mode ?? 'time';
+        if (mode !== 'time' && mode !== 'beat-sync') return null;
+        return [s.loop?.startSec ?? 0, s.loop?.endSec ?? s.videoDurSec];
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** First event index with time >= t (event_lower_bound). */
+  eventLowerBound(s: StreamRec, t: number): number {
+    let lo = 0, hi = s.events.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (s.events[mid].time < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+}

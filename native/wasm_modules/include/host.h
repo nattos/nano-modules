@@ -341,6 +341,11 @@ enum class Capability {
   SeekableApproximate,     // stateful; seeking differs only at noise level (non-deterministic)
   SketchInputSource,       // exports sketch-level input parameters (for the dashboard)
   SketchOutputSource,      // exports sketch-level OUTPUT channels — wires write into them (for a future video-editor)
+  TransportController,     // identity on video; publishes transport_* output fields
+                           //   that DRIVE its clip's content-local time (which source
+                           //   frame plays). Lives in the clip's separate transport
+                           //   section, executed in a pre-pass BEFORE video decode;
+                           //   reads its input clock via streams::parent() (streams.h)
 };
 
 inline const char* capabilityName(Capability c) {
@@ -358,6 +363,7 @@ inline const char* capabilityName(Capability c) {
     case Capability::SeekableApproximate:    return "seekable_approximate";
     case Capability::SketchInputSource:      return "sketch_input_source";
     case Capability::SketchOutputSource:     return "sketch_output_source";
+    case Capability::TransportController:    return "transport_controller";
   }
   return "";
 }

@@ -67,7 +67,15 @@
 //       any of them fails to instantiate. Rebuild against current headers.
 //       Also: gpu.create_buffer takes an i64 size, and gpu.create_sampler
 //       takes a sized SamplerDesc pointer (was two flat ints).
-#define NANO_ABI_VERSION 2
+//   3 — streams surface (2026-07): the `streams` import module (streams.h) —
+//       identity-derived i64 handles, the sized StreamDesc (grows by APPEND,
+//       no bump), flat f64 position/duration calls, and the FIXED 5-double
+//       event record [time, kind, clipOrdinal, clipIdHash48, channel]. The
+//       event record's layout is covered by this version; new import names
+//       (streams.seek, streams.frame_at), new Kind/Flags values, and new
+//       reserved transport_* published-output field names stay name-keyed
+//       (no bump).
+#define NANO_ABI_VERSION 3
 
 // Emit the exported `nano_abi_version()` accessor. Each bundle's aggregator
 // TU (the one that defines nano_module_main) invokes this ONCE at file scope.

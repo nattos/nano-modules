@@ -269,4 +269,19 @@ int32_t comp_streams_json(CompExecutor* c, char* out, int32_t cap) {
   return c ? writeOut(c->streamsJson(), out, cap) : 0;
 }
 
+// The registry's per-frame transport sample, as 6 flat doubles [posBeat,
+// posSec, playing, loopEnabled, loopStartBeat, loopEndBeat] — the web host
+// mirrors it into its StreamsRegistry.frame each frame (zero JSON).
+EXEC_EXPORT("comp_streams_frame")
+void comp_streams_frame(CompExecutor* c, double* out6) {
+  if (!c || !out6) return;
+  const auto& f = c->streamsTable().frame;
+  out6[0] = f.posBeat;
+  out6[1] = f.posSec;
+  out6[2] = static_cast<double>(f.playing);
+  out6[3] = static_cast<double>(f.loopEnabled);
+  out6[4] = f.loopStartBeat;
+  out6[5] = f.loopEndBeat;
+}
+
 }  // extern "C"

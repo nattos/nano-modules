@@ -13,6 +13,11 @@ namespace canvas {
 struct DrawList;
 }
 
+namespace comp {
+struct StreamsTable;
+class WarpClock;
+}
+
 namespace bridge {
 class StateDocument;
 }
@@ -79,6 +84,13 @@ struct WasmContext {
   FrameState* frame_state = nullptr;
   AudioTriggerCallback audio_callback = nullptr;
   void* audio_userdata = nullptr;
+
+  // Seekable-streams registry (streams.* imports). Null outside comp mode —
+  // the imports then answer as the session-clock-only world (frame_state).
+  // The table's frame sample is mutated in place by the comp executor; the
+  // clock is its warp-aware beat→seconds map (lazy content positions).
+  const comp::StreamsTable* streams_table = nullptr;
+  const comp::WarpClock* streams_clock = nullptr;
 
   // State system
   bridge::StateDocument* state_doc = nullptr;

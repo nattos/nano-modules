@@ -29,6 +29,7 @@ import { composeWgsl, FusionStage } from './fusion-dispatcher';
 import { sketchChain, Sketch } from './sketch-types';
 import { createWasiShim } from './wasi-shim';
 import type { BridgeCore } from './bridge-core';
+import type { StreamsRegistry } from './streams-registry';
 
 interface FrameState {
   elapsedTime: number;
@@ -118,6 +119,8 @@ interface ExecutorExports {
   comp_stop_scene(c: number, track: number, len: number): void;
   comp_stop_all_scenes(c: number): void;
   comp_scene_states_json(c: number, out: number, cap: number): number;
+  comp_streams_json(c: number, out: number, cap: number): number;
+  comp_streams_frame(c: number, out6: number): void;
   comp_reset_executor(c: number): void;
 }
 
@@ -281,6 +284,10 @@ export class WasmSketchExecutor {
         host.bridgeCore = this.bridgeCore;
         host.gpuHost = this.gpuHost;
         host.onSchemaChanged = this.onHostSchemaChanged;
+        // streams.* self-scoping: the imports resolve this host's owning clip
+        // from its engine instance key against the live registry.
+        host.instanceKey = key;
+        host.streams = this.streamsRegistry;
         await host.load(found.compiled);
         const module = host.activateEffect(found.resolvedId);
         const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
@@ -358,7 +365,17 @@ export class WasmSketchExecutor {
   registerInstance(instanceKey: string, host: WasmHost, module: WasmModule): void {
     if (this.instances.has(instanceKey)) return;
     const mt = host.metadata?.id ?? '';
+    host.instanceKey = instanceKey;
+    host.streams = this.streamsRegistry;
     this.instances.set(instanceKey, { host, module, moduleType: mt, resolvedId: mt });
+  }
+
+  /** Attach the seekable-streams registry every effect host's streams.*
+   *  imports read (null = comp inactive → session-clock-only answers).
+   *  Re-stamps live instances so a registry created after them still lands. */
+  setStreamsRegistry(reg: StreamsRegistry | null): void {
+    this.streamsRegistry = reg;
+    for (const { host } of this.instances.values()) host.streams = reg;
   }
 
   invalidateFusionCacheFor(_effectId: string): void {
@@ -822,6 +839,11 @@ export class WasmSketchExecutor {
   private compPtr = 0;
   private compScratch = 0;
   private compScratchCap = 0;
+  /** 48-byte wasm scratch for comp_streams_frame's 6 flat doubles. */
+  private compStreamsFramePtr = 0;
+  /** The seekable-streams registry stamped onto every effect host (streams.*
+   *  imports). Owned by the engine worker; null = comp inactive. */
+  private streamsRegistry: StreamsRegistry | null = null;
   private compRequired: Array<{ moduleType: string; instanceKey: string }> = [];
   /** Chain instance keys the comp executor currently needs — the worker's
    *  pruneInstancesExcept must union these or comp instances churn every frame. */
@@ -883,6 +905,13 @@ export class WasmSketchExecutor {
   compLoadDocument(json: string): void {
     const c = this.ensureComp();
     this.withBytes(json, (p, l) => this.exports.comp_load_document(c, p, l));
+  }
+
+  /** The STATIC seekable-streams registry (streams_table.h serialization) —
+   *  fetch on docEpoch change only, never per frame. */
+  compStreamsJson(): string {
+    const c = this.ensureComp();
+    return this.compRead((o, n) => this.exports.comp_streams_json(c, o, n)) || '{}';
   }
 
   /** The last compControl `seq` applied — echoed on every compFrame report so
@@ -977,7 +1006,8 @@ export class WasmSketchExecutor {
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-               scenes?: string; controlSeq: number }> {
+               scenes?: string; controlSeq: number; docEpoch: number;
+               streamsFrame: [number, number, number, number, number, number] }> {
     const c = this.ensureComp();
     // The effect clock advances by the COMP transport's motion, not wall time:
     // paused → 0 (static frame), scrub → a signed jump (executor effect seeks).
@@ -1072,14 +1102,23 @@ export class WasmSketchExecutor {
     const handle = this.exports.comp_render(c, -1, this.compOutTex, width, height, execDt);
     this.accumulateDebugStats(this.exports.comp_sketch_executor(c));
 
+    // The registry's per-frame transport sample: 6 flat doubles into a
+    // persistent scratch — the worker mirrors them into StreamsRegistry.frame.
+    if (!this.compStreamsFramePtr) this.compStreamsFramePtr = this.exports.malloc(48);
+    this.exports.comp_streams_frame(c, this.compStreamsFramePtr);
+    const sf = new Float64Array(this.memory.buffer, this.compStreamsFramePtr, 6);
+
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
                  chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-                 scenes?: string; controlSeq: number } = {
+                 scenes?: string; controlSeq: number; docEpoch: number;
+                 streamsFrame: [number, number, number, number, number, number] } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
       positionSec: this.exports.comp_position_sec(c),
       controlSeq: this.compControlSeq,
+      docEpoch: this.exports.comp_doc_epoch(c),
+      streamsFrame: [sf[0], sf[1], sf[2], sf[3], sf[4], sf[5]],
     };
     if (chainKeys) out.chainKeys = chainKeys;
     if (layerTargets !== undefined) out.layerTargets = layerTargets;

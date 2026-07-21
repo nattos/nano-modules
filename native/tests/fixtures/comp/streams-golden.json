@@ -1,0 +1,226 @@
+{
+  "contentByClipId": {
+    "clipA": "17659253693460755677",
+    "clipB": "17659250394925871044",
+    "s2": "10020721931943541321"
+  },
+  "docRev": 7,
+  "enumCount": 4,
+  "parentByClipId": {
+    "clipA": "9545220569434466752",
+    "clipB": "9545220569434466752",
+    "clipC": "9545220569434466752",
+    "s1": "16891505844459616675",
+    "s2": "16891505844459616675",
+    "s3": "16891505844459616675"
+  },
+  "streams": [
+    {
+      "axis": 0,
+      "bpm": 120.0,
+      "clipCount": 0,
+      "durationPrimary": -1.0,
+      "durationSec": -1.0,
+      "events": [],
+      "flags": 4,
+      "fps": 0.0,
+      "frameCount": 0,
+      "handle": "1",
+      "index": 0,
+      "kind": 1,
+      "name": "",
+      "ownerId": ""
+    },
+    {
+      "axis": 1,
+      "bpm": 120.0,
+      "clipCount": 0,
+      "durationPrimary": 64.0,
+      "durationSec": 32.0,
+      "events": [],
+      "flags": 17,
+      "fps": 0.0,
+      "frameCount": 0,
+      "handle": "2",
+      "index": 1,
+      "kind": 2,
+      "name": "",
+      "ownerId": ""
+    },
+    {
+      "axis": 1,
+      "bpm": 120.0,
+      "clipCount": 3,
+      "clipsById": {
+        "clipA": [
+          0,
+          8.0
+        ],
+        "clipB": [
+          1,
+          4.0
+        ],
+        "clipC": [
+          2,
+          4.0
+        ]
+      },
+      "durationPrimary": 16.0,
+      "durationSec": 8.0,
+      "events": [
+        [
+          0.0,
+          0,
+          0,
+          8336686753966.0,
+          null
+        ],
+        [
+          8.0,
+          1,
+          0,
+          8336686753966.0,
+          null
+        ],
+        [
+          8.0,
+          0,
+          1,
+          7237175125755.0,
+          null
+        ],
+        [
+          12.0,
+          1,
+          1,
+          7237175125755.0,
+          null
+        ]
+      ],
+      "flags": 57,
+      "fps": 0.0,
+      "frameCount": 0,
+      "handle": "9545220569434466752",
+      "index": 2,
+      "kind": 3,
+      "name": "Video A",
+      "ownerId": "trackA"
+    },
+    {
+      "axis": 2,
+      "bpm": 120.0,
+      "clipCount": 3,
+      "clipsById": {
+        "s1": [
+          0,
+          4.0
+        ],
+        "s2": [
+          1,
+          4.0
+        ],
+        "s3": [
+          2,
+          4.0
+        ]
+      },
+      "durationPrimary": 3.0,
+      "durationSec": -1.0,
+      "events": [
+        [
+          0.0,
+          0,
+          0,
+          280408574447945.0,
+          3.0
+        ],
+        [
+          1.0,
+          0,
+          1,
+          277110039563312.0,
+          1.0
+        ]
+      ],
+      "flags": 40,
+      "fps": 0.0,
+      "frameCount": 0,
+      "handle": "16891505844459616675",
+      "index": 3,
+      "kind": 4,
+      "name": "Scenes",
+      "ownerId": "scenes"
+    },
+    {
+      "anchorBeat": 8.0,
+      "axis": 0,
+      "bpm": 120.0,
+      "clipCount": 0,
+      "durationPrimary": 4.0,
+      "durationSec": 4.0,
+      "events": [],
+      "flags": 18,
+      "fps": 30.0,
+      "frameCount": 120,
+      "handle": "17659250394925871044",
+      "index": -1,
+      "kind": 5,
+      "lengthBeat": 4.0,
+      "loop": {
+        "mode": "time",
+        "speed": 1,
+        "startSec": 0
+      },
+      "name": "B",
+      "ownerId": "clipB",
+      "seed": 0.41710802438293193,
+      "videoDurSec": 4.0
+    },
+    {
+      "anchorBeat": 0.0,
+      "axis": 0,
+      "bpm": 120.0,
+      "clipCount": 0,
+      "durationPrimary": 0.03333333333333333,
+      "durationSec": 0.03333333333333333,
+      "events": [],
+      "flags": 17,
+      "fps": 30.0,
+      "frameCount": 1,
+      "handle": "17659253693460755677",
+      "index": -1,
+      "kind": 5,
+      "lengthBeat": 8.0,
+      "loop": {},
+      "name": "A",
+      "ownerId": "clipA",
+      "seed": 0.41700809433396624,
+      "videoDurSec": 0.03333333333333333
+    },
+    {
+      "anchorBeat": 4.0,
+      "axis": 0,
+      "bpm": 120.0,
+      "clipCount": 0,
+      "durationPrimary": 2.0,
+      "durationSec": 2.0,
+      "events": [],
+      "flags": 18,
+      "fps": 30.0,
+      "frameCount": 60,
+      "handle": "10020721931943541321",
+      "index": -1,
+      "kind": 5,
+      "lengthBeat": 4.0,
+      "loop": {},
+      "name": "S2",
+      "ownerId": "s2",
+      "seed": 0.36124712701109224,
+      "videoDurSec": 2.0
+    }
+  ],
+  "trackByTrackId": {
+    "scenes": "16891505844459616675",
+    "trackA": "9545220569434466752"
+  }
+}

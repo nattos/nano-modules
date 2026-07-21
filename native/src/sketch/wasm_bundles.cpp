@@ -78,12 +78,21 @@ int WasmEffectBundles::loadBundle(const uint8_t* bytecode, uint32_t len,
   // address is stable (a member); setHostClock mutates the struct in place, so
   // this one registration keeps working every frame.
   host_.set_frame_state(id, &frame_state_);
+  if (streams_table_) host_.set_streams_table(id, streams_table_, streams_clock_);
+  module_ids_.push_back(id);
 
   // Bundles register their effects from nano_module_main. A non-effect module
   // (no such export) fails here and contributes nothing.
   if (host_.call_function(id, "nano_module_main") != 0) return 0;
 
   return registry.registerWasmBundle(host_, id);
+}
+
+void WasmEffectBundles::setStreamsTable(const comp::StreamsTable* table,
+                                        const comp::WarpClock* clock) {
+  streams_table_ = table;
+  streams_clock_ = clock;
+  for (const int32_t id : module_ids_) host_.set_streams_table(id, table, clock);
 }
 
 void WasmEffectBundles::setHostClock(double elapsedTime, double deltaTime,

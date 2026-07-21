@@ -140,6 +140,11 @@ public:
   /// Set the FrameState for host timing/parameter functions.
   void set_frame_state(int32_t module_id, FrameState* fs);
 
+  /// Set the seekable-streams registry + its beat→seconds clock for streams.*
+  /// host functions (both null outside comp mode → session-clock-only world).
+  void set_streams_table(int32_t module_id, const comp::StreamsTable* table,
+                         const comp::WarpClock* clock);
+
   /// Set the audio trigger callback.
   void set_audio_callback(int32_t module_id, AudioTriggerCallback cb, void* userdata);
 

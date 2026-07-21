@@ -164,6 +164,23 @@ void CompExecutor::sampleStreamsFrame() {
   f.loopEnabled = state_.loopEnabled ? 1 : 0;
   f.loopStartBeat = state_.loopStartBeat;
   f.loopEndBeat = state_.loopEndBeat;
+  // Scene-track live state (ordinal-axis pos): reset, then mirror the launch
+  // map. All lookups are by pre-built maps — no allocation on this path.
+  for (auto& s : streamsTable_.streams) {
+    if (s.kind == kStreamKindSceneTrack)
+      s.liveOrdinal = std::numeric_limits<double>::quiet_NaN();
+  }
+  for (const auto& [trackId, l] : sceneLaunch_) {
+    auto th = streamsTable_.trackByTrackId.find(trackId);
+    if (th == streamsTable_.trackByTrackId.end()) continue;
+    StreamInfo* s = streamsTable_.findMutable(th->second);
+    if (!s || s->kind != kStreamKindSceneTrack) continue;
+    auto ref = s->clipsById.find(l.sceneId);
+    if (ref == s->clipsById.end()) continue;
+    s->liveOrdinal = static_cast<double>(ref->second.ordinal);
+    s->liveAnchorBeat = l.launchBeat;
+    s->liveLengthBeat = ref->second.lengthBeat;
+  }
 }
 
 void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string& deviceId,

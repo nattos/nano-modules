@@ -1,5 +1,6 @@
 import type { GPUHost } from './gpu-host';
 import type { BridgeCore } from './bridge-core';
+import type { StreamsRegistry } from './streams-registry';
 import { createWasiShim } from './wasi-shim';
 import * as fakeResolume from './fake-resolume';
 import { TextEngine } from './text-engine';
@@ -220,6 +221,15 @@ export class WasmHost {
     elapsedTime: 0, deltaTime: 0, barPhase: 0, bpm: 120,
     viewportW: 0, viewportH: 0, params: new Array(16).fill(0),
   };
+
+  // Seekable-streams registry backing the streams.* imports (streams-registry
+  // .ts — the web twin of the native StreamsTable). Null outside comp mode:
+  // the imports then answer as the session-clock-only world (frameState).
+  streams: StreamsRegistry | null = null;
+  // This host's engine instance key ("clip_<clipId>_<devId>", instance-keys
+  // .ts) — the streams.* self-scoping input (parent()/content() resolve the
+  // owning clip from it). '' for hosts outside the engine chain.
+  instanceKey = '';
 
   // Bridge core (shared protocol engine)
   bridgeCore: BridgeCore | null = null;
@@ -557,6 +567,111 @@ export class WasmHost {
         get_clip_connected: (index: number) => fakeResolume.getClipConnected(index),
         get_bpm: () => fakeResolume.getBpm(),
         load_thumbnail: (_clipIndex: number) => -1,
+      },
+      // Seekable-streams surface — the web twin of the native "streams" host
+      // module (host_functions.cpp; effect header streams.h). Backed by
+      // this.streams (StreamsRegistry) or, when null, the session-clock-only
+      // fallback. All per-frame answers are flat scalars or fixed-layout
+      // copies — never JSON.
+      streams: {
+        parent: (): bigint =>
+          this.streams ? this.streams.parentOf(this.instanceKey) : 1n,
+        content: (): bigint =>
+          this.streams ? this.streams.contentOf(this.instanceKey) : 0n,
+        timeline: (): bigint => (this.streams ? 2n : 0n),
+        count: (): number => this.streams?.enumCount ?? 1,
+        at: (i: number): bigint => {
+          if (!this.streams) return i === 0 ? 1n : 0n;
+          if (i < 0 || i >= this.streams.enumCount) return 0n;
+          return this.streams.streams[i].handle;
+        },
+        name: (h: bigint, bufPtr: number, bufLen: number): number => {
+          const s = this.streams?.find(h);
+          if (!s) return 0;
+          const bytes = new TextEncoder().encode(s.name);
+          if (bufLen > 0 && bytes.length > 0) {
+            const copy = Math.min(bytes.length, bufLen);
+            new Uint8Array(this.memory.buffer, bufPtr, copy).set(bytes.subarray(0, copy));
+          }
+          return bytes.length; // full length (grow-and-retry)
+        },
+        describe: (h: bigint, descPtr: number): number => {
+          const dv = new DataView(this.memory.buffer);
+          const sent = dv.getInt32(descPtr, true);
+          const fill = Math.min(sent, 48);
+          if (fill < 4) return 0;
+          const reg = this.streams;
+          const s = reg?.find(h);
+          // [struct_size, kind, flags, axis, frame_count, event_count,
+          //  doc_rev, index, clip_count, r0, r1, r2] — streams.h StreamDesc.
+          let fields = [sent, 0, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0];
+          if (s && reg) {
+            fields = [sent, s.kind, s.flags, s.axis, s.frameCount, s.events.length,
+                      reg.docRev, s.index, s.clipCount, 0, 0, 0];
+          } else if (!reg && h === 1n) {
+            // Session clock (kind 1, kLiveOnly, seconds axis).
+            fields = [sent, 1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+          }
+          const words = (fill / 4) | 0;
+          for (let k = 1; k < words; k++) dv.setInt32(descPtr + 4 * k, fields[k], true);
+          return fields[1] !== 0 ? 1 : 0;
+        },
+        rev: (_h: bigint): number => this.streams?.docRev ?? 0,
+        pos: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
+          return this.streams!.pos(s, this.frameState.elapsedTime);
+        },
+        pos_sec: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
+          return this.streams!.posSec(s, this.frameState.elapsedTime);
+        },
+        playing: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          if (!s) return h === 1n ? 1 : 0;
+          return this.streams!.playing(s);
+        },
+        loop: (h: bigint, outPtr: number): number => {
+          const s = this.streams?.find(h);
+          if (!s) return 0;
+          const region = this.streams!.loopRegion(s);
+          if (!region) return 0;
+          const out = new Float64Array(this.memory.buffer, outPtr, 2);
+          out[0] = region[0];
+          out[1] = region[1];
+          return 1;
+        },
+        duration: (h: bigint): number => this.streams?.find(h)?.durationPrimary ?? -1,
+        duration_sec: (h: bigint): number => this.streams?.find(h)?.durationSec ?? -1,
+        bpm: (h: bigint): number => this.streams?.find(h)?.bpm ?? this.frameState.bpm,
+        fps: (h: bigint): number => this.streams?.find(h)?.fps ?? 0,
+        event_count: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          if (!s) return !this.streams && h === 1n ? 0 : -1;
+          return s.events.length;
+        },
+        read_events: (h: bigint, first: number, outPtr: number, capEvents: number): number => {
+          const s = this.streams?.find(h);
+          if (!s) return !this.streams && h === 1n ? 0 : -1;
+          if (first < 0 || capEvents <= 0) return 0;
+          const n = Math.max(0, Math.min(s.events.length - first, capEvents));
+          if (n === 0) return 0;
+          const out = new Float64Array(this.memory.buffer, outPtr, n * 5);
+          for (let k = 0; k < n; k++) {
+            const e = s.events[first + k];
+            out[k * 5 + 0] = e.time;
+            out[k * 5 + 1] = e.kind;
+            out[k * 5 + 2] = e.clipOrdinal;
+            out[k * 5 + 3] = e.idHash48;
+            out[k * 5 + 4] = e.channel;
+          }
+          return n;
+        },
+        event_lower_bound: (h: bigint, t: number): number => {
+          const s = this.streams?.find(h);
+          return s ? this.streams!.eventLowerBound(s, t) : 0;
+        },
       },
       state: {
         get_key: (bufPtr: number, bufLen: number): number => {

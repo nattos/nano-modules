@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "bridge/param_cache.h"
 #include "wasm/wasm_host.h"
@@ -50,12 +51,22 @@ class WasmEffectBundles {
   void setHostClock(double elapsedTime, double deltaTime, double barPhase,
                     double bpm, int viewportW, int viewportH);
 
+  // Publish the seekable-streams registry (+ its warp clock) to every loaded
+  // bundle's streams.* imports. A pointer store — the comp executor mutates the
+  // table/clock in place; call again only when the executor is recreated.
+  // Applied automatically to bundles loaded afterwards. Null = comp inactive
+  // (the imports answer as the session-clock-only world).
+  void setStreamsTable(const comp::StreamsTable* table, const comp::WarpClock* clock);
+
  private:
   bridge::ParamCache cache_;  // declared before host_ (host_ binds to it)
   wasm::WasmHost host_;
   // One frame clock shared by all bundles. Its address is registered with each
   // module at load; setHostClock mutates it in place (no re-registration).
   wasm::FrameState frame_state_{};
+  const comp::StreamsTable* streams_table_ = nullptr;
+  const comp::WarpClock* streams_clock_ = nullptr;
+  std::vector<int32_t> module_ids_;
   bool initialized_ = false;
 };
 
