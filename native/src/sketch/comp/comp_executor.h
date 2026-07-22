@@ -201,6 +201,12 @@ class CompExecutor {
     double loopStartSec = std::numeric_limits<double>::quiet_NaN();
     double loopEndSec = std::numeric_limits<double>::quiet_NaN();
     double ended = 0;
+    /** Declared future (streams events): REMAINING seconds until content end,
+     *  -1 = none declared. The default must stay -1 — a missing field means
+     *  "no prediction", never "ends now". */
+    double nextEndSec = -1;
+    /** Declared completed-pass count (integer; increments append 'looped'). */
+    double loopCount = 0;
     /** False until the effect instance exists AND published transport_time_sec. */
     bool valid = false;
   };

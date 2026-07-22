@@ -264,6 +264,30 @@ int32_t comp_transport_times(CompExecutor* c, double* out, int32_t capRows) {
   return static_cast<int32_t>(rows.size());
 }
 
+// The declarations channel: per driven row [nextEndSec (REMAINING; -1 none),
+// loopCount], rows in comp_transport_order_json order — the worker registry's
+// foldDecl input (streams content events for driven clips). Kept SEPARATE from
+// comp_transport_times so its stride-8 consumers stay untouched; the _ver
+// export is the stale-wasm handshake (a mismatched executor.wasm is detected,
+// not silently misread).
+inline constexpr int32_t kCompTransportDeclsVer = 1;
+EXEC_EXPORT("comp_transport_decls_ver")
+int32_t comp_transport_decls_ver() { return kCompTransportDeclsVer; }
+
+EXEC_EXPORT("comp_transport_decls")
+int32_t comp_transport_decls(CompExecutor* c, double* out, int32_t capRows) {
+  if (!c || !out) return 0;
+  const auto& rows = c->transportResolved();
+  const int32_t n = std::min<int32_t>(static_cast<int32_t>(rows.size()), capRows);
+  for (int32_t i = 0; i < n; ++i) {
+    const auto& r = rows[static_cast<size_t>(i)];
+    double* o = out + i * 2;
+    o[0] = r.valid ? r.nextEndSec : -1;
+    o[1] = r.valid ? r.loopCount : 0;
+  }
+  return static_cast<int32_t>(rows.size());
+}
+
 // Driven clip ids in row order — fetched only on kCompTransportSetChanged.
 EXEC_EXPORT("comp_transport_order_json")
 int32_t comp_transport_order_json(CompExecutor* c, char* out, int32_t cap) {

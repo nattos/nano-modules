@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { StreamsRegistry, StreamKind, StreamFlags } from './streams-registry';
+import { StreamsRegistry, StreamKind, StreamFlags, CONTENT_EVENT_HORIZON } from './streams-registry';
 
 const GOLDEN = path.resolve(
   __dirname, '../../native/tests/fixtures/comp/streams-golden.json');
@@ -183,6 +183,111 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     const sc2 = reg.find(scenes)!;
     expect(Math.floor(reg.pos(sc2, 0))).toBe(1);
     expect(reg.find(reg.contentByClipId.get('s2')!)!.anchorBeat).toBe(40);
+  });
+
+  it('content event timeline: analytic looped/ended, elapsed axis, growth (lock-step)', () => {
+    // clipB: 'time' loop, full 4 s slice, speed 1, anchored at beat 8
+    // (anchorSec 4 shipped). Mirrors test_streams_abi's content-event case.
+    const vid = reg.find(reg.contentByClipId.get('clipB')!)!;
+    expect(vid.flags & StreamFlags.HasEvents).toBeTruthy();
+    expect(vid.eventRev).toBe(7);
+    expect(vid.anchorSec).toBeCloseTo(4, 9);
+
+    reg.frame.posBeat = 8;
+    reg.frame.posSec = 4; // elapsed 0
+    expect(reg.elapsed(vid, 0)).toBeCloseTo(0, 9);
+    expect(reg.contentEventCount(vid, 0)).toBe(CONTENT_EVENT_HORIZON);
+    const e0 = reg.contentEventAt(vid, 0);
+    expect(e0.time).toBeCloseTo(4, 9);
+    expect(e0.kind).toBe(2);
+    expect(e0.clipOrdinal).toBe(1);
+
+    expect(reg.contentEventCount(vid, 9.5)).toBe(2 + CONTENT_EVENT_HORIZON);
+    expect(reg.contentEventAt(vid, 1).time).toBeCloseTo(8, 9);
+    expect(reg.contentEventAt(vid, 1).clipOrdinal).toBe(2);
+    // BOUNDARY-EXACT: elapsed exactly on a boundary counts it as past.
+    expect(reg.contentEventCount(vid, 8.0)).toBe(2 + CONTENT_EVENT_HORIZON);
+    reg.frame.posSec = 12; // elapsed 8 — lower_bound reads "now" itself
+    expect(reg.contentEventLowerBound(vid, 8.0)).toBe(1);
+    reg.frame.posSec = 4;
+
+    // s2 (no loop config → 'time' default): full 2 s slice, period 2.
+    const s2c = reg.find(reg.contentByClipId.get('s2')!)!;
+    expect(reg.contentEventAt(s2c, 0).time).toBeCloseTo(2, 9);
+
+    // One-shot: a single 'ended' EXACTLY at standardClipDurationSec.
+    const one = { ...vid, loop: { ...(vid.loop as any), mode: 'one-shot', endSec: 3, speed: 2 } };
+    expect(reg.contentEventCount(one, 100)).toBe(1);
+    expect(reg.contentEventAt(one, 0).kind).toBe(3);
+    expect(reg.contentEventAt(one, 0).time).toBeCloseTo(1.5, 9);
+
+    // playStartSec pre-roll / reverse / pingpong (clip_time.h semantics).
+    const pre = { ...vid, loop: { ...(vid.loop as any), playStartSec: 1 } };
+    expect(reg.contentEventAt(pre, 0).time).toBeCloseTo(3, 9);
+    expect(reg.contentEventAt(pre, 1).time).toBeCloseTo(7, 9);
+    const rev = { ...pre, loop: { ...(pre.loop as any), direction: 'reverse' } };
+    expect(reg.contentEventAt(rev, 0).time).toBeCloseTo(1, 9);
+    const pp = { ...pre, loop: { ...(pre.loop as any), pingpong: true } };
+    expect(reg.contentEventAt(pp, 1).time).toBeCloseTo(7, 9);
+
+    // Beat-sync: boundaries in BEATS (the elapsed axis for beat-sync clips).
+    const bs = { ...vid, loop: { ...(vid.loop as any), mode: 'beat-sync', syncBeats: 4 } };
+    reg.frame.posBeat = 14; // 6 beats past anchor 8
+    expect(reg.elapsed(bs, 0)).toBeCloseTo(6, 9);
+    expect(reg.contentEventAt(bs, 0).time).toBeCloseTo(4, 9);
+    expect(reg.contentEventCount(bs, 6)).toBe(1 + CONTENT_EVENT_HORIZON);
+
+    // Random: NO boundaries — readers fall back to clip_duration.
+    const rnd = { ...vid, loop: { ...(vid.loop as any), mode: 'random' } };
+    expect(reg.contentEventCount(rnd, 100)).toBe(0);
+  });
+
+  it('declared future replaces the analytics; foldDecl quantizes + appends', () => {
+    const vid = reg.find(reg.contentByClipId.get('clipB')!)!;
+    reg.frame.posBeat = 8;
+    reg.frame.posSec = 4; // elapsed 0
+    const rev0 = vid.eventRev;
+    reg.foldDecl('clipB', 3.5, 0);
+    expect(vid.declared).toBe(true);
+    expect(vid.declNextEnd).toBeCloseTo(3.5, 9);
+    expect(vid.eventRev).toBeGreaterThan(rev0);
+    expect(reg.contentEventCount(vid, 0)).toBe(1);
+    expect(reg.contentEventAt(vid, 0).kind).toBe(3);
+    // Sub-10ms jitter does NOT churn the rev (quantized absolute end).
+    const rev1 = vid.eventRev;
+    reg.foldDecl('clipB', 3.504, 0);
+    expect(vid.eventRev).toBe(rev1);
+    // Integer loop-count increments append 'looped' edges at observed elapsed.
+    reg.frame.posSec = 6; // elapsed 2
+    reg.foldDecl('clipB', 1.5, 2);
+    expect(vid.dynEvents.length).toBe(2);
+    expect(vid.dynEvents[1]).toMatchObject({ kind: 2, clipOrdinal: 2 });
+    expect(vid.dynEvents[1].time).toBeCloseTo(2, 9);
+    // Controller vanished → back to the analytics, rev bumped.
+    const rev2 = vid.eventRev;
+    reg.pruneDecls(new Set());
+    expect(vid.declared).toBe(false);
+    expect(vid.eventRev).toBeGreaterThan(rev2);
+    expect(reg.contentEventCount(vid, 0)).toBe(CONTENT_EVENT_HORIZON);
+  });
+
+  it('a scene (re)launch re-anchors content with SHIPPED seconds + bumps revs', () => {
+    const sc = reg.find(scenes)!;
+    const content = reg.find(reg.contentByClipId.get('s2')!)!;
+    const revT0 = sc.eventRev;
+    const revC0 = content.eventRev;
+    reg.syncSceneLaunches({ scenes: { sceneId: 's2', launchBeat: 40, launchSec: 20.25 } } as any);
+    expect(content.anchorBeat).toBe(40);
+    expect(content.anchorSec).toBe(20.25); // the shipped double, NOT secondsAt(40)
+    expect(sc.eventRev).toBeGreaterThan(revT0);
+    expect(content.eventRev).toBeGreaterThan(revC0);
+    // The SAME map again (per-frame re-sync) must NOT bump.
+    const revT1 = sc.eventRev;
+    reg.syncSceneLaunches({ scenes: { sceneId: 's2', launchBeat: 40, launchSec: 20.25 } } as any);
+    expect(sc.eventRev).toBe(revT1);
+    // Stop bumps both.
+    reg.syncSceneLaunches({});
+    expect(sc.eventRev).toBeGreaterThan(revT1);
   });
 
   it('reports loop regions per kind', () => {

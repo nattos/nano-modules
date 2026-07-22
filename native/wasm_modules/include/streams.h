@@ -11,13 +11,25 @@
  * re-read descriptors/events only on change (the zero-per-frame-JSON pattern).
  *
  * Time axes: every stream declares a PRIMARY axis (seconds / beats / ordinal).
- * pos()/duration() and event times are in primary-axis units; pos_sec()/
- * duration_sec() are always additionally available.
+ * pos()/duration() are in primary-axis units; pos_sec()/duration_sec() are
+ * always additionally available.
  *
- * Events (tracks only): the ordered clip start/stop list. On a stream flagged
- * TriggerOnSeek, moving the transport onto a start event's time triggers that
- * clip — literally for scene tracks, effectively for timeline (and later
- * sequence) clips.
+ * Events. TRACK streams: the ordered clip start/stop list in primary-axis
+ * units, static per rev(). On a stream flagged TriggerOnSeek, moving the
+ * transport onto a start event's time triggers that clip — literally for
+ * scene tracks, effectively for timeline (and later sequence) clips.
+ * CONTENT streams: the semantic transport TIMELINE — 'looped' (one full pass
+ * of the source slice; record carries the 1-based pass count) and 'ended'
+ * (exactly the standard clip duration — when the engine's one-shot auto-stop
+ * fires). Times are on the ELAPSED axis (streams_elapsed: seconds since the
+ * clip's anchor; BEATS for beat-sync clips), the list holds past edges AND
+ * predicted future ones: entries with time > elapsed(h) are upcoming hints
+ * ("clip will end in 1s" = next 'ended' minus elapsed). The list is VIRTUAL
+ * and index-stable — event_count may grow as time passes at a FIXED rev();
+ * rev bumps only when the generator changes (relaunch, config edit, a
+ * controller revising its declared future). Random play mode has no
+ * boundaries — fall back to clip_duration. A driven clip's events come from
+ * its controller's declarations instead of the built-in analytics.
  *
  * Host-side twin: native/src/sketch/comp/streams_table.h — enum VALUES and the
  * event record layout are shared ABI; the record layout is version-gated
@@ -59,8 +71,11 @@ extern "C" {
   // kind = KindInvalid) when the handle resolves to nothing.
   __attribute__((import_module("streams"), import_name("describe")))
   int32_t streams_describe(int64_t h, void* desc);
-  // Static-data revision (descriptor fields, events, durations). Bumps exactly
-  // when the composition document (re)loads. THE per-frame poll.
+  // PER-STREAM revision of this stream's static data / event GENERATOR
+  // (descriptor fields, event timeline shape, declared future). Bumps on doc
+  // (re)load, scene (re)launch/stop, and declaration revisions — never merely
+  // because time passed. A per-host change token: compare for inequality,
+  // don't interpret the value. THE per-frame poll.
   __attribute__((import_module("streams"), import_name("rev")))
   int32_t streams_rev(int64_t h);
 
@@ -104,6 +119,12 @@ extern "C" {
   double streams_anchor(int64_t h);
   __attribute__((import_module("streams"), import_name("anchor_sec")))
   double streams_anchor_sec(int64_t h);
+  // "Now" on the stream's EVENT axis: elapsed since anchor for content streams
+  // (seconds; BEATS for beat-sync clips — always the unit content event times
+  // use), posSec for track/timeline streams, session seconds for the clock.
+  // NaN when undefined (idle scene track). Compare directly with event times.
+  __attribute__((import_module("streams"), import_name("elapsed")))
+  double streams_elapsed(int64_t h);
 
   // ── Per-clip queries on TRACK streams (ordinal = grid position) ──
   // STANDARD clip duration in seconds: what the engine's one-shot auto-stop
@@ -132,16 +153,18 @@ extern "C" {
   __attribute__((import_module("streams"), import_name("stop")))
   int32_t streams_stop(int64_t h);
 
-  // ── Events (static per rev(); index-based bulk copy) ──
+  // ── Events (index-stable; tracks static per rev(), content may GROW) ──
   __attribute__((import_module("streams"), import_name("event_count")))
   int32_t streams_event_count(int64_t h);
   // Copy up to cap_events records starting at `first` (0-based) into out[],
   // 5 doubles per event. Returns records written; 0 when first >= count; -1 on
   // an invalid handle. Record layout (VERSION-GATED, ABI 3):
-  //   [0] time         — primary-axis units
-  //   [1] kind         — 0 = start, 1 = stop
-  //   [2] clipOrdinal  — index into the stream's grid-ordered clip list
-  //                      (pairs a start with its stop)
+  //   [0] time         — track streams: primary-axis units;
+  //                      content streams: the ELAPSED axis (streams_elapsed)
+  //   [1] kind         — 0 = start, 1 = stop, 2 = looped, 3 = ended
+  //   [2] clipOrdinal  — start/stop: index into the grid-ordered clip list
+  //                      (pairs a start with its stop); looped: 1-based pass
+  //                      count
   //   [3] clipIdHash48 — low 48 bits of FNV-1a64(clip.id), exact in f64
   //   [4] channel      — scene trigger channel; NaN for non-scene streams
   __attribute__((import_module("streams"), import_name("read_events")))
@@ -206,14 +229,23 @@ struct StreamDesc {
 };
 static_assert(sizeof(StreamDesc) == 48, "StreamDesc grows by append only");
 
+enum EventKind : int32_t {
+  EvStart = 0,
+  EvStop = 1,
+  EvLooped = 2,  // one full pass of the source slice; clipOrdinal = pass count
+  EvEnded = 3,   // the standard clip duration elapsed (one-shot auto-stop time)
+};
+
 /** One event, overlaying the 5-double wire record exactly (all doubles). */
 struct Event {
   double time = 0;
-  double kind = 0;         // 0 = start, 1 = stop
+  double kind = 0;         // EventKind
   double clipOrdinal = 0;
   double clipIdHash48 = 0;
   double channel = 0;      // NaN for non-scene streams
-  bool isStart() const { return kind == 0; }
+  bool isStart() const { return kind == EvStart; }
+  bool isLooped() const { return kind == EvLooped; }
+  bool isEnded() const { return kind == EvEnded; }
 };
 static_assert(sizeof(Event) == 40, "event record is 5 doubles");
 
@@ -245,6 +277,7 @@ inline double bpm(Stream h) { return streams_bpm(h); }
 inline double fps(Stream h) { return streams_fps(h); }
 inline double anchor(Stream h) { return streams_anchor(h); }
 inline double anchorSec(Stream h) { return streams_anchor_sec(h); }
+inline double elapsed(Stream h) { return streams_elapsed(h); }
 inline double clipDuration(Stream h, int ordinal) { return streams_clip_duration(h, ordinal); }
 inline double clipGrid(Stream h, int ordinal) { return streams_clip_grid(h, ordinal); }
 inline bool seek(Stream h, double t) { return streams_seek(h, t) != 0; }

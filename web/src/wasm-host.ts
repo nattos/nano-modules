@@ -606,8 +606,13 @@ export class WasmHost {
           //  doc_rev, index, clip_count, r0, r1, r2] — streams.h StreamDesc.
           let fields = [sent, 0, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0];
           if (s && reg) {
-            fields = [sent, s.kind, s.flags, s.axis, s.frameCount, s.events.length,
-                      reg.docRev, s.index, s.clipCount, 0, 0, 0];
+            const isContent = s.kind === 5 || s.kind === 6;
+            const evCount = isContent
+              ? reg.contentEventCount(s, reg.elapsed(s, this.frameState.elapsedTime))
+              : s.events.length;
+            const flags = s.flags | (s.declared ? 64 : 0); // kDriven
+            fields = [sent, s.kind, flags, s.axis, s.frameCount, evCount,
+                      s.eventRev, s.index, s.clipCount, 0, 0, 0];
           } else if (!reg && h === 1n) {
             // Session clock (kind 1, kLiveOnly, seconds axis).
             fields = [sent, 1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -616,7 +621,10 @@ export class WasmHost {
           for (let k = 1; k < words; k++) dv.setInt32(descPtr + 4 * k, fields[k], true);
           return fields[1] !== 0 ? 1 : 0;
         },
-        rev: (_h: bigint): number => this.streams?.docRev ?? 0,
+        rev: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          return s ? s.eventRev : this.streams?.docRev ?? 0;
+        },
         pos: (h: bigint): number => {
           const s = this.streams?.find(h);
           if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
@@ -653,7 +661,12 @@ export class WasmHost {
         anchor_sec: (h: bigint): number => {
           const s = this.streams?.find(h);
           if (!s || (s.kind !== 5 && s.kind !== 6)) return NaN;
-          return this.streams!.secondsAt(s.anchorBeat);
+          return s.anchorSec;
+        },
+        elapsed: (h: bigint): number => {
+          const s = this.streams?.find(h);
+          if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
+          return this.streams!.elapsed(s, this.frameState.elapsedTime);
         },
         clip_duration: (h: bigint, ordinal: number): number => {
           const s = this.streams?.find(h);
@@ -669,17 +682,27 @@ export class WasmHost {
         event_count: (h: bigint): number => {
           const s = this.streams?.find(h);
           if (!s) return !this.streams && h === 1n ? 0 : -1;
+          if (s.kind === 5 || s.kind === 6) {
+            return this.streams!.contentEventCount(
+              s, this.streams!.elapsed(s, this.frameState.elapsedTime));
+          }
           return s.events.length;
         },
         read_events: (h: bigint, first: number, outPtr: number, capEvents: number): number => {
           const s = this.streams?.find(h);
           if (!s) return !this.streams && h === 1n ? 0 : -1;
           if (first < 0 || capEvents <= 0) return 0;
-          const n = Math.max(0, Math.min(s.events.length - first, capEvents));
+          const content = s.kind === 5 || s.kind === 6;
+          const total = content
+            ? this.streams!.contentEventCount(
+                s, this.streams!.elapsed(s, this.frameState.elapsedTime))
+            : s.events.length;
+          const n = Math.max(0, Math.min(total - first, capEvents));
           if (n === 0) return 0;
           const out = new Float64Array(this.memory.buffer, outPtr, n * 5);
           for (let k = 0; k < n; k++) {
-            const e = s.events[first + k];
+            const e = content ? this.streams!.contentEventAt(s, first + k)
+                              : s.events[first + k];
             out[k * 5 + 0] = e.time;
             out[k * 5 + 1] = e.kind;
             out[k * 5 + 2] = e.clipOrdinal;

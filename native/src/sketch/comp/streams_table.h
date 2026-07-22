@@ -99,12 +99,14 @@ inline double clipIdHash48(const std::string& clipId) {
  * channel] — see streams.h read_events.
  */
 struct StreamEvent {
-  /** Stream primary-axis units (beats for tracks, ordinal for scene tracks). */
+  /** Track streams: primary-axis units (beats / ordinal). CONTENT streams: the
+   *  ELAPSED axis — units of streams_elapsed (seconds since anchor; BEATS for
+   *  beat-sync clips, whose boundaries are beat-locked). */
   double time = 0;
-  int32_t kind = 0;  // 0 = start, 1 = stop
-  /** Index into the stream's GRID-ordered clip list (startBeat, then array
-   *  index — the sceneChannelAssignments order); pairs a start with its stop
-   *  and stays meaningful for clips that emit no events (bypassed). */
+  int32_t kind = 0;  // 0 = start, 1 = stop, 2 = looped, 3 = ended
+  /** Track streams: index into the GRID-ordered clip list (pairs a start with
+   *  its stop; stable regardless of bypass state). Content 'looped' events:
+   *  the LOOP COUNT (1-based pass number). */
   int32_t clipOrdinal = 0;
   double idHash48 = 0;
   /** Scene trigger channel (lock-step assignment); NaN for non-scene streams. */
@@ -184,9 +186,29 @@ struct StreamInfo {
   nlohmann::json loopJson;  // raw, for the web registry twin
   /** clip.startBeat; scenes re-anchor to the launch beat on launchScene. */
   double anchorBeat = 0;
+  /** secondsAt(anchorBeat) CAPTURED ONCE (build / launch) and SHIPPED to the
+   *  web twin — never recomputed per host. Both hosts subtract the identical
+   *  double when deriving elapsed, so event-boundary floor()s can't diverge
+   *  by a warp-sin ulp (the M1 clamp bug's sibling). */
+  double anchorSec = 0;
   double lengthBeat = 0;
   double videoDurSec = 0;
   double seed = 0;
+  // ── Content event timeline (kinds 2/3) ──
+  /** Change token for THIS stream's event generator (streams_rev). Bumps on
+   *  rebuild, (re)launch, stop, and declaration revision — NOT as time passes
+   *  (the list is a virtual, index-stable timeline whose count may grow at a
+   *  fixed rev). Values are per-host tokens; only monotonicity is contractual. */
+  int32_t eventRev = 0;
+  /** Controller-declared future (driven clips): predicted end on the elapsed
+   *  axis (-1 = none declared) + completed-pass count. Built-in play modes
+   *  never set these — their boundaries are analytic. */
+  bool declared = false;
+  double declNextEnd = -1;
+  double declLoopCount = 0;
+  /** Declared 'looped' edges observed so far (appended when declLoopCount
+   *  increments; integer compares — no fp hazard). Elapsed-axis times. */
+  std::vector<StreamEvent> dynEvents;
 };
 
 struct StreamsTable {
@@ -297,6 +319,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
   t.docRev = docRev;
 
   auto push = [&](StreamInfo&& s) -> StreamInfo& {
+    s.eventRev = docRev;  // every stream's generator token starts at the doc rev
     t.byHandle[s.handle] = static_cast<int32_t>(t.streams.size());
     t.streams.push_back(std::move(s));
     return t.streams.back();
@@ -404,7 +427,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
                          : 0;
       s.videoDurSec = s.frameCount > 0 ? s.frameCount / s.fps : 0;
       s.durationPrimary = s.durationSec = s.videoDurSec;
-      s.flags = kStreamFinite |
+      s.flags = kStreamFinite | kStreamHasEvents |
                 (streams_detail::sourceSeekInstant(src) ? kStreamSeekInstant
                                                         : kStreamSeekSlow);
       s.bpm = doc.baseBPM;
@@ -413,13 +436,143 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       s.loop = clip.loop;
       s.loopJson = clip.loopJson.is_object() ? clip.loopJson : nlohmann::json::object();
       s.anchorBeat = clip.startBeat;
+      s.anchorSec = clock.secondsAt(clip.startBeat);
       s.lengthBeat = clip.lengthBeat;
       s.seed = clipNoiseSeed(clip.id);
+      s.eventRev = docRev;
       t.contentByClipId[clip.id] = s.handle;
       push(std::move(s));
     }
   }
   return t;
+}
+
+// ── Content event timeline (LOCK-STEP: web/src/streams-registry.ts) ─────────
+// A content stream's events are a VIRTUAL, index-stable timeline: index i maps
+// analytically to the i-th boundary, so the count may grow as time passes at a
+// fixed eventRev (readers paginate safely; rev bumps only when the GENERATOR
+// changes: anchor, config, declaration). 'looped' = one full pass of the source
+// slice completed — non-pingpong wraps at an edge, pingpong touches alternate
+// edges: identical spacing (loopLen of consumed source) either way. 'ended'
+// (one-shot) lands EXACTLY at standardClipDurationSec — the engine auto-stop's
+// time. Random mode has no boundaries (readers fall back to clip_duration).
+// Declared (controller-driven) streams replace the analytics with the observed
+// looped log + one revisable predicted 'ended'.
+
+inline constexpr int32_t kContentEventHorizon = 4;
+
+struct ContentEventGen {
+  int32_t mode = 0;    // 0 = none, 1 = single 'ended', 2 = periodic 'looped'
+  double firstTime = 0;
+  double period = 0;
+};
+
+inline ContentEventGen contentEventGen(const StreamInfo& s) {
+  ContentEventGen g;
+  const double speedAbs = std::max(1e-6, std::abs(s.loop.speed));
+  if (s.loop.mode == ClipPlayMode::OneShot) {
+    const double sliceSec = s.loop.endSec ? *s.loop.endSec - s.loop.startSec : s.videoDurSec;
+    if (sliceSec > 0) {
+      g.mode = 1;
+      g.firstTime = sliceSec / speedAbs;  // == standardClipDurationSec
+    }
+    return g;
+  }
+  if (s.loop.mode == ClipPlayMode::Random) return g;
+  const double loopStart = s.loop.startSec;
+  const double loopEnd = s.loop.endSec.value_or(s.videoDurSec);
+  const double loopLen = loopEnd - loopStart;
+  if (loopLen <= 1e-9) return g;
+  const double playStart = s.loop.playStartSec.value_or(loopStart);
+  // First pass runs playStart → far edge (the pre-roll, clip_time.h); a
+  // degenerate play-start at/past the edge degrades to whole-slice passes.
+  double c1 = s.loop.direction >= 0 ? loopEnd - playStart : playStart - loopStart;
+  if (c1 <= 1e-9) c1 = loopLen;
+  if (s.loop.mode == ClipPlayMode::BeatSync) {
+    const double videoBeats = s.loop.syncUseBpm ? loopLen * (s.loop.syncBpm.value_or(120) / 60)
+                                                : s.loop.syncBeats.value_or(4);
+    if (videoBeats <= 1e-9) return g;
+    g.mode = 2;
+    g.firstTime = (c1 / loopLen) * videoBeats;  // BEAT axis (matches elapsed)
+    g.period = videoBeats;
+    return g;
+  }
+  g.mode = 2;
+  g.firstTime = c1 / speedAbs;
+  g.period = loopLen / speedAbs;
+  return g;
+}
+
+/** Elapsed "now" on the stream's EVENT axis (streams_elapsed): seconds since
+ *  anchor — beats since anchor for beat-sync content. The anchor is the SHIPPED
+ *  anchorSec/anchorBeat double, identical on both hosts by construction. */
+inline double streamElapsed(const StreamInfo& s, const StreamsTable& t, double sessionSec) {
+  switch (s.kind) {
+    case kStreamKindSessionClock:
+      return sessionSec;
+    case kStreamKindTimeline:
+    case kStreamKindTimelineTrack:
+      return t.frame.posSec;
+    case kStreamKindSceneTrack:
+      return std::isnan(s.liveOrdinal) ? s.liveOrdinal : t.frame.posSec;  // see posSec
+    case kStreamKindVideoContent:
+    case kStreamKindSequenceContent:
+      if (s.loop.mode == ClipPlayMode::BeatSync) return t.frame.posBeat - s.anchorBeat;
+      return t.frame.posSec - s.anchorSec;
+    default:
+      return std::numeric_limits<double>::quiet_NaN();
+  }
+}
+
+inline bool isContentStream(const StreamInfo& s) {
+  return s.kind == kStreamKindVideoContent || s.kind == kStreamKindSequenceContent;
+}
+
+inline int32_t contentEventCount(const StreamInfo& s, double nowElapsed) {
+  if (s.declared) {
+    return static_cast<int32_t>(s.dynEvents.size()) + (s.declNextEnd >= 0 ? 1 : 0);
+  }
+  const ContentEventGen g = contentEventGen(s);
+  if (g.mode == 0) return 0;
+  if (g.mode == 1) return 1;
+  // Boundaries with time <= now are PAST (an exactly-on-boundary now counts
+  // it) + a fixed future horizon. floor() operands are shipped doubles on
+  // both hosts — no per-host warp math.
+  const double past = std::floor((nowElapsed - g.firstTime) / g.period) + 1;
+  return static_cast<int32_t>(std::max(0.0, past)) + kContentEventHorizon;
+}
+
+inline StreamEvent contentEventAt(const StreamInfo& s, int32_t i) {
+  StreamEvent e;
+  e.idHash48 = clipIdHash48(s.ownerId);
+  if (s.declared) {
+    if (i < static_cast<int32_t>(s.dynEvents.size())) return s.dynEvents[static_cast<size_t>(i)];
+    e.time = s.declNextEnd;
+    e.kind = 3;
+    return e;
+  }
+  const ContentEventGen g = contentEventGen(s);
+  if (g.mode == 1) {
+    e.time = g.firstTime;
+    e.kind = 3;
+    return e;
+  }
+  e.time = g.firstTime + i * g.period;
+  e.kind = 2;
+  e.clipOrdinal = i + 1;  // 1-based pass count
+  return e;
+}
+
+/** lower_bound on the virtual timeline: first index with time >= t. */
+inline int32_t contentEventLowerBound(const StreamInfo& s, double nowElapsed, double tTime) {
+  const int32_t n = contentEventCount(s, nowElapsed);
+  int32_t lo = 0, hi = n;
+  while (lo < hi) {
+    const int32_t mid = lo + (hi - lo) / 2;
+    if (contentEventAt(s, mid).time < tTime) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /**
@@ -582,10 +735,12 @@ inline std::string streamsTableJson(const StreamsTable& t) {
     if (s.kind == kStreamKindVideoContent || s.kind == kStreamKindSequenceContent) {
       j["loop"] = s.loopJson;
       j["anchorBeat"] = s.anchorBeat;
+      j["anchorSec"] = s.anchorSec;
       j["lengthBeat"] = s.lengthBeat;
       j["videoDurSec"] = s.videoDurSec;
       j["seed"] = s.seed;
     }
+    j["eventRev"] = s.eventRev;
     if (!s.clipsById.empty()) {
       nlohmann::json clips = nlohmann::json::object();
       for (const auto& [clipId, ref] : s.clipsById)

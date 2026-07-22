@@ -112,6 +112,8 @@ interface ExecutorExports {
   comp_update(c: number, dtSec: number): number;
   comp_transport_resolve(c: number, dtSec: number): void;
   comp_transport_times(c: number, out: number, capRows: number): number;
+  comp_transport_decls(c: number, out: number, capRows: number): number;
+  comp_transport_decls_ver?(): number;
   comp_transport_order_json(c: number, out: number, cap: number): number;
   comp_render(c: number, inTex: number, outTex: number, w: number, h: number, dt: number): number;
   comp_required_json(c: number, out: number, cap: number): number;
@@ -850,6 +852,9 @@ export class WasmSketchExecutor {
   private compTransportPtr = 0;
   private compTransportCap = 0;   // rows
   private compTransportRows = 0;  // current row count (from the order json)
+  /** Driven clip ids in row order, retained ACROSS frames (the order json only
+   *  ships on set-change; the per-frame registry fold needs it every frame). */
+  private compTransportOrder: string[] = [];
   /** The seekable-streams registry stamped onto every effect host (streams.*
    *  imports). Owned by the engine worker; null = comp inactive. */
   private streamsRegistry: StreamsRegistry | null = null;
@@ -1188,6 +1193,38 @@ export class WasmSketchExecutor {
           this.compTransportCap);
       transportTimes = new Float64Array(n * 8);
       transportTimes.set(new Float64Array(this.memory.buffer, this.compTransportPtr, n * 8));
+    }
+    if (transportOrder) this.compTransportOrder = transportOrder;
+    // Worker registry feed — the web twin of the native transportResolve fold:
+    // applied content-time overrides from the times rows (pos(content) parity
+    // for effects reading a DRIVEN clip), and the declared future from the
+    // decls channel (streams content events). The _ver export is the
+    // stale-executor.wasm handshake: mismatch → skip, never misread.
+    if (this.streamsRegistry) {
+      const reg = this.streamsRegistry;
+      reg.appliedContentSec.clear();
+      const live = new Set<string>();
+      const order = this.compTransportOrder;
+      if (order.length > 0 && transportTimes) {
+        for (let i = 0; i < order.length && i * 8 + 8 <= transportTimes.length; i++) {
+          live.add(order[i]);
+          const timeSec = transportTimes[i * 8];
+          const active = transportTimes[i * 8 + 1];
+          if (!Number.isNaN(timeSec) && active >= 0.5) reg.appliedContentSec.set(order[i], timeSec);
+        }
+        if (this.exports.comp_transport_decls_ver?.() === 1 && this.compTransportPtr) {
+          const nd = Math.min(
+              this.exports.comp_transport_decls(c, this.compTransportPtr, this.compTransportCap * 4),
+              order.length);
+          const decls = new Float64Array(this.memory.buffer, this.compTransportPtr, nd * 2);
+          for (let i = 0; i < nd; i++) {
+            const timeSec = transportTimes && i * 8 < transportTimes.length ? transportTimes[i * 8] : NaN;
+            if (Number.isNaN(timeSec)) continue; // invalid row: no declaration
+            reg.foldDecl(order[i], decls[i * 2], decls[i * 2 + 1]);
+          }
+        }
+      }
+      reg.pruneDecls(live);
     }
     const handle = this.exports.comp_render(c, -1, this.compOutTex, width, height, execDt);
     this.accumulateDebugStats(this.exports.comp_sketch_executor(c));

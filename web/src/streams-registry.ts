@@ -44,13 +44,25 @@ export const STREAM_INVALID = 0n;
 export const STREAM_SESSION_CLOCK = 1n;
 export const STREAM_TIMELINE = 2n;
 
-/** One start/stop event — the 5-double wire record, parsed. */
+/** One event — the 5-double wire record, parsed. Content streams: time is on
+ *  the ELAPSED axis (elapsed(); beats for beat-sync clips) and 'looped'
+ *  records carry the 1-based pass count in clipOrdinal. */
 export interface StreamEventRec {
   time: number;
-  kind: number; // 0 = start, 1 = stop
+  kind: number; // 0 = start, 1 = stop, 2 = looped, 3 = ended
   clipOrdinal: number;
   idHash48: number;
   channel: number; // NaN for non-scene streams
+}
+
+/** streams_table.h fnv1a64 low-48 twin (BigInt; clip ids are ASCII). */
+function clipIdHash48(id: string): number {
+  let h = 14695981039346656037n;
+  for (let i = 0; i < id.length; i++) {
+    h ^= BigInt(id.charCodeAt(i) & 0xff);
+    h = (h * 1099511628211n) & 0xffffffffffffffffn;
+  }
+  return Number(h & 0xffffffffffffn);
 }
 
 export interface StreamRec {
@@ -76,6 +88,9 @@ export interface StreamRec {
   // Content streams: the lazy position-eval context.
   loop: ClipLoopConfig | null;
   anchorBeat: number;
+  /** SHIPPED seconds-at-anchor (never recomputed — the native table's double,
+   *  so elapsed subtractions are bit-identical on both hosts). */
+  anchorSec: number;
   lengthBeat: number;
   videoDurSec: number;
   seed: number;
@@ -83,6 +98,15 @@ export interface StreamRec {
   liveOrdinal: number; // NaN = nothing playing
   liveAnchorBeat: number;
   liveLengthBeat: number;
+  /** Per-stream event-generator revision (streams.rev). A per-host change
+   *  token — bumps on reload/(re)launch/stop/declaration change, never merely
+   *  because time passed. */
+  eventRev: number;
+  // Content streams: controller-declared future (driven clips).
+  declared: boolean;
+  declNextEnd: number; // absolute elapsed; -1 = none
+  declLoopCount: number;
+  dynEvents: StreamEventRec[];
 }
 
 export class StreamsRegistry {
@@ -145,12 +169,18 @@ export class StreamsRegistry {
         byOrdinalClipId: [],
         loop: s.loop ?? null,
         anchorBeat: s.anchorBeat ?? 0,
+        anchorSec: s.anchorSec ?? 0,
         lengthBeat: s.lengthBeat ?? 0,
         videoDurSec: s.videoDurSec ?? 0,
         seed: s.seed ?? 0,
         liveOrdinal: NaN,
         liveAnchorBeat: 0,
         liveLengthBeat: 0,
+        eventRev: s.eventRev ?? (json?.docRev ?? 0),
+        declared: false,
+        declNextEnd: -1,
+        declLoopCount: 0,
+        dynEvents: [],
       };
       for (const [clipId, ref] of rec.clipsById) rec.byOrdinalClipId[ref[0]] = clipId;
       this.byHandle.set(rec.handle, rec);
@@ -171,13 +201,15 @@ export class StreamsRegistry {
   }
 
   /** The last launch map applied (re-applied after loadStatic — see above). */
-  private lastLaunches: Record<string, { sceneId: string; launchBeat: number }> = {};
+  private lastLaunches: Record<string, { sceneId: string; launchBeat: number; launchSec?: number }> = {};
 
   /** Mirror the launch map (comp_scene_states_json: {trackId: {sceneId,
-   *  launchBeat}}) into the scene-track streams — the twin of the native
-   *  sampleStreamsFrame sync. Also re-anchors launched scenes' content
-   *  streams (launchScene's anchor rebase). */
-  syncSceneLaunches(launches: Record<string, { sceneId: string; launchBeat: number }>): void {
+   *  launchBeat, launchSec}}) into the scene-track streams — the twin of the
+   *  native sampleStreamsFrame sync. Also re-anchors launched scenes' content
+   *  streams (launchScene's anchor rebase) using the SHIPPED launchSec, and
+   *  bumps event revs on actual launch changes (launchScene/stopScene twins). */
+  syncSceneLaunches(launches: Record<string, { sceneId: string; launchBeat: number; launchSec?: number }>): void {
+    const prev = this.lastLaunches;
     this.lastLaunches = launches ?? {};
     for (const s of this.streams) {
       if (s.kind === StreamKind.SceneTrack) s.liveOrdinal = NaN;
@@ -193,7 +225,28 @@ export class StreamsRegistry {
       s.liveLengthBeat = ref[1];
       const ch = this.contentByClipId.get(l.sceneId);
       const content = ch !== undefined ? this.byHandle.get(ch) : undefined;
-      if (content) content.anchorBeat = l.launchBeat;
+      const p = prev[trackId];
+      const changed = !p || p.sceneId !== l.sceneId || p.launchBeat !== l.launchBeat;
+      if (content) {
+        content.anchorBeat = l.launchBeat;
+        content.anchorSec = l.launchSec ?? this.secondsAt(l.launchBeat);
+        if (changed) {
+          content.dynEvents = [];
+          content.declLoopCount = 0;
+          content.eventRev++;
+        }
+      }
+      if (changed) s.eventRev++;
+    }
+    // Stops: a track that had a launch and lost it bumps its rev too.
+    for (const [trackId, p] of Object.entries(prev)) {
+      if ((launches ?? {})[trackId]) continue;
+      const th = this.trackByTrackId.get(trackId);
+      const s = th !== undefined ? this.byHandle.get(th) : undefined;
+      if (s) s.eventRev++;
+      const ch = this.contentByClipId.get(p.sceneId);
+      const content = ch !== undefined ? this.byHandle.get(ch) : undefined;
+      if (content) content.eventRev++;
     }
   }
 
@@ -356,8 +409,10 @@ export class StreamsRegistry {
     return true;
   }
 
-  /** First event index with time >= t (event_lower_bound). */
+  /** First event index with time >= t (event_lower_bound). Content streams
+   *  route through the virtual timeline (contentEventLowerBound). */
   eventLowerBound(s: StreamRec, t: number): number {
+    if (isContentStream(s)) return this.contentEventLowerBound(s, t);
     let lo = 0, hi = s.events.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
@@ -366,4 +421,148 @@ export class StreamsRegistry {
     }
     return lo;
   }
+
+  // ── Content event timeline (LOCK-STEP: streams_table.h contentEventGen/
+  // Count/At/LowerBound + streamElapsed) — see that header's contract notes. ──
+
+  /** "Now" on the stream's EVENT axis (streams.elapsed). */
+  elapsed(s: StreamRec, sessionSec: number): number {
+    switch (s.kind) {
+      case StreamKind.SessionClock:
+        return sessionSec;
+      case StreamKind.Timeline:
+      case StreamKind.TimelineTrack:
+        return this.frame.posSec;
+      case StreamKind.SceneTrack:
+        return Number.isNaN(s.liveOrdinal) ? s.liveOrdinal : this.frame.posSec;
+      case StreamKind.VideoContent:
+      case StreamKind.SequenceContent:
+        if (s.loop?.mode === 'beat-sync') return this.frame.posBeat - s.anchorBeat;
+        return this.frame.posSec - s.anchorSec;
+      default:
+        return NaN;
+    }
+  }
+
+  private contentEventGen(s: StreamRec): { mode: number; firstTime: number; period: number } {
+    const g = { mode: 0, firstTime: 0, period: 0 };
+    const loop = s.loop;
+    const speedAbs = Math.max(1e-6, Math.abs(loop?.speed ?? 1));
+    const mode = loop?.mode ?? 'time'; // ClipLoopConfig's native default
+    if (mode === 'one-shot') {
+      const sliceSec = loop?.endSec != null ? loop.endSec - (loop.startSec ?? 0) : s.videoDurSec;
+      if (sliceSec > 0) {
+        g.mode = 1;
+        g.firstTime = sliceSec / speedAbs; // == standardClipDurationSec
+      }
+      return g;
+    }
+    if (mode === 'random') return g;
+    const loopStart = loop?.startSec ?? 0;
+    const loopEnd = loop?.endSec ?? s.videoDurSec;
+    const loopLen = loopEnd - loopStart;
+    if (loopLen <= 1e-9) return g;
+    const playStart = loop?.playStartSec ?? loopStart;
+    let c1 = loop?.direction === 'reverse' ? playStart - loopStart : loopEnd - playStart;
+    if (c1 <= 1e-9) c1 = loopLen;
+    if (mode === 'beat-sync') {
+      const videoBeats = loop?.syncUseBpm ? loopLen * ((loop?.syncBpm ?? 120) / 60)
+                                          : loop?.syncBeats ?? 4;
+      if (videoBeats <= 1e-9) return g;
+      g.mode = 2;
+      g.firstTime = (c1 / loopLen) * videoBeats; // BEAT axis (matches elapsed)
+      g.period = videoBeats;
+      return g;
+    }
+    g.mode = 2;
+    g.firstTime = c1 / speedAbs;
+    g.period = loopLen / speedAbs;
+    return g;
+  }
+
+  contentEventCount(s: StreamRec, nowElapsed: number): number {
+    if (s.declared) return s.dynEvents.length + (s.declNextEnd >= 0 ? 1 : 0);
+    const g = this.contentEventGen(s);
+    if (g.mode === 0) return 0;
+    if (g.mode === 1) return 1;
+    const past = Math.floor((nowElapsed - g.firstTime) / g.period) + 1;
+    return Math.max(0, past) + CONTENT_EVENT_HORIZON;
+  }
+
+  contentEventAt(s: StreamRec, i: number): StreamEventRec {
+    if (s.declared) {
+      if (i < s.dynEvents.length) return s.dynEvents[i];
+      return { time: s.declNextEnd, kind: 3, clipOrdinal: 0,
+               idHash48: clipIdHash48(s.ownerId), channel: NaN };
+    }
+    const g = this.contentEventGen(s);
+    if (g.mode === 1) {
+      return { time: g.firstTime, kind: 3, clipOrdinal: 0,
+               idHash48: clipIdHash48(s.ownerId), channel: NaN };
+    }
+    return { time: g.firstTime + i * g.period, kind: 2, clipOrdinal: i + 1,
+             idHash48: clipIdHash48(s.ownerId), channel: NaN };
+  }
+
+  contentEventLowerBound(s: StreamRec, t: number): number {
+    const n = this.contentEventCount(s, this.elapsed(s, 0));
+    let lo = 0, hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.contentEventAt(s, mid).time < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** Fold one driven row's declaration (comp_transport_decls) into the clip's
+   *  content stream — LOCK-STEP with CompExecutor::transportResolve's fold:
+   *  remaining → absolute elapsed quantized to 10 ms (rev churns only on real
+   *  revisions); integer loop-count increments append 'looped' edges. */
+  foldDecl(clipId: string, nextEndSec: number, loopCount: number): void {
+    const ch = this.contentByClipId.get(clipId);
+    const s = ch !== undefined ? this.byHandle.get(ch) : undefined;
+    if (!s) return;
+    if (!s.declared) {
+      s.declared = true;
+      s.eventRev++;
+    }
+    const nowElapsed = this.elapsed(s, 0);
+    const absEnd = nextEndSec >= 0 ? Math.round((nowElapsed + nextEndSec) * 100) / 100 : -1;
+    if (absEnd !== s.declNextEnd) {
+      s.declNextEnd = absEnd;
+      s.eventRev++;
+    }
+    const k = Math.floor(loopCount);
+    if (k < s.declLoopCount) { // controller restarted its count
+      s.dynEvents = [];
+      s.declLoopCount = 0;
+      s.eventRev++;
+    }
+    while (s.declLoopCount < k) {
+      s.declLoopCount += 1;
+      s.dynEvents.push({ time: nowElapsed, kind: 2, clipOrdinal: s.declLoopCount,
+                         idHash48: clipIdHash48(s.ownerId), channel: NaN });
+    }
+  }
+
+  /** Streams whose controller vanished revert to the built-in analytics. */
+  pruneDecls(liveClipIds: Set<string>): void {
+    for (const s of this.streams) {
+      if (s.declared && !liveClipIds.has(s.ownerId)) {
+        s.declared = false;
+        s.declNextEnd = -1;
+        s.declLoopCount = 0;
+        s.dynEvents = [];
+        s.eventRev++;
+      }
+    }
+  }
 }
+
+export function isContentStream(s: StreamRec): boolean {
+  return s.kind === StreamKind.VideoContent || s.kind === StreamKind.SequenceContent;
+}
+
+/** streams_table.h kContentEventHorizon — future entries past "now". */
+export const CONTENT_EVENT_HORIZON = 4;

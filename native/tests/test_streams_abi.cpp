@@ -246,6 +246,103 @@ TEST_CASE("scene-track pos() clamps strictly below the next ordinal", "[streams]
   CHECK(std::floor(comp::streamPos(*s, t, b.clock, 0)) == 2.0);
 }
 
+TEST_CASE("content event timeline: analytic looped/ended, elapsed axis, growth",
+          "[streams]") {
+  Built b = build();
+  auto& t = b.table;
+  // clipB: 'time' loop, slice = full 4 s source, speed 1, anchored at beat 8
+  // (anchorSec 4 @120 BPM). One 'looped' per full pass → first at elapsed 4,
+  // then every 4 s. The list is index-stable and GROWS at fixed rev.
+  const auto& vid = streamOf(t, t.contentByClipId.at("clipB"));
+  CHECK((vid.flags & comp::kStreamHasEvents) != 0);
+  CHECK(vid.eventRev == 7);  // == docRev at build
+  CHECK_THAT(vid.anchorSec, WithinAbs(4.0, kTol));
+
+  t.frame.posBeat = 8;
+  t.frame.posSec = 4;  // elapsed 0
+  CHECK_THAT(comp::streamElapsed(vid, t, 0), WithinAbs(0.0, kTol));
+  CHECK(comp::contentEventCount(vid, 0.0) == comp::kContentEventHorizon);
+  const comp::StreamEvent e0 = comp::contentEventAt(vid, 0);
+  CHECK_THAT(e0.time, WithinAbs(4.0, kTol));
+  CHECK(e0.kind == 2);
+  CHECK(e0.clipOrdinal == 1);  // pass count
+
+  // elapsed 9.5 → two boundaries past (4, 8) + horizon; index space unchanged.
+  CHECK(comp::contentEventCount(vid, 9.5) == 2 + comp::kContentEventHorizon);
+  CHECK_THAT(comp::contentEventAt(vid, 1).time, WithinAbs(8.0, kTol));
+  CHECK(comp::contentEventAt(vid, 1).clipOrdinal == 2);
+  // BOUNDARY-EXACT: elapsed exactly ON a boundary counts it as past (<= now).
+  CHECK(comp::contentEventCount(vid, 8.0) == 2 + comp::kContentEventHorizon);
+  CHECK(comp::contentEventLowerBound(vid, 8.0, 8.0) == 1);  // first time >= 8
+
+  // s2 (no loop config → native default Time): full 2 s slice, period 2.
+  const auto& s2 = streamOf(t, t.contentByClipId.at("s2"));
+  CHECK_THAT(comp::contentEventAt(s2, 0).time, WithinAbs(2.0, kTol));
+
+  // One-shot: a single 'ended' EXACTLY at standardClipDurationSec.
+  comp::StreamInfo one = vid;
+  one.loop.mode = comp::ClipPlayMode::OneShot;
+  one.loop.endSec = 3.0;
+  one.loop.speed = 2.0;
+  CHECK(comp::contentEventCount(one, 100.0) == 1);
+  const comp::StreamEvent ee = comp::contentEventAt(one, 0);
+  CHECK(ee.kind == 3);
+  CHECK_THAT(ee.time, WithinAbs(1.5, kTol));  // (3-0)/|2|
+
+  // playStartSec pre-roll: first pass runs playStart → loopEnd (clip_time.h).
+  comp::StreamInfo pre = vid;
+  pre.loop.playStartSec = 1.0;
+  CHECK_THAT(comp::contentEventAt(pre, 0).time, WithinAbs(3.0, kTol));
+  CHECK_THAT(comp::contentEventAt(pre, 1).time, WithinAbs(7.0, kTol));
+  // Reverse: first boundary is playStart → loopStart.
+  comp::StreamInfo rev = pre;
+  rev.loop.direction = -1;
+  CHECK_THAT(comp::contentEventAt(rev, 0).time, WithinAbs(1.0, kTol));
+  // Pingpong: same spacing — every edge touch is one full pass.
+  comp::StreamInfo pp = pre;
+  pp.loop.pingpong = true;
+  CHECK_THAT(comp::contentEventAt(pp, 1).time, WithinAbs(7.0, kTol));
+
+  // Beat-sync: boundaries in BEATS (the elapsed axis for beat-sync clips —
+  // no per-host warp math anywhere near the floor()).
+  comp::StreamInfo bs = vid;
+  bs.loop.mode = comp::ClipPlayMode::BeatSync;
+  bs.loop.syncBeats = 4.0;
+  t.frame.posBeat = 14;  // 6 beats past anchor 8
+  CHECK_THAT(comp::streamElapsed(bs, t, 0), WithinAbs(6.0, kTol));
+  CHECK_THAT(comp::contentEventAt(bs, 0).time, WithinAbs(4.0, kTol));
+  CHECK(comp::contentEventCount(bs, 6.0) == 1 + comp::kContentEventHorizon);
+
+  // Random: NO boundaries — readers fall back to clip_duration.
+  comp::StreamInfo rnd = vid;
+  rnd.loop.mode = comp::ClipPlayMode::Random;
+  CHECK(comp::contentEventCount(rnd, 100.0) == 0);
+}
+
+TEST_CASE("content event timeline: declared future replaces the analytics",
+          "[streams]") {
+  Built b = build();
+  auto& t = b.table;
+  comp::StreamInfo* s = t.findMutable(t.contentByClipId.at("clipB"));
+  REQUIRE(s != nullptr);
+  s->declared = true;
+  s->declNextEnd = 3.5;
+  comp::StreamEvent logged;
+  logged.time = 1.2;
+  logged.kind = 2;
+  logged.clipOrdinal = 1;
+  s->dynEvents.push_back(logged);
+  // Log first, then the single predicted 'ended'.
+  CHECK(comp::contentEventCount(*s, 2.0) == 2);
+  CHECK(comp::contentEventAt(*s, 0).kind == 2);
+  CHECK_THAT(comp::contentEventAt(*s, 1).time, WithinAbs(3.5, kTol));
+  CHECK(comp::contentEventAt(*s, 1).kind == 3);
+  CHECK(comp::contentEventLowerBound(*s, 2.0, 2.0) == 1);
+  // No prediction → just the log.
+  s->declNextEnd = -1;
+  CHECK(comp::contentEventCount(*s, 2.0) == 1);
+}
+
 TEST_CASE("streamsTableJson matches the committed golden (web twin replays it)",
           "[streams]") {
   // NATIVE is the reference implementation for the streams registry (the

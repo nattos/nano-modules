@@ -161,10 +161,15 @@ void CompExecutor::rebuildStreamsTable() {
   streamsTable_ = buildStreamsTable(doc_, clock_, docEpoch_);
   // Launched scenes keep their live content anchor across the rebuild (the
   // launch map survives doc reloads; the table is doc-shaped and must follow).
+  // anchorSec is the STORED launch seconds — shipped, never recomputed, so the
+  // web twin subtracts the identical double (event-boundary determinism).
   for (const auto& [trackId, l] : sceneLaunch_) {
     auto it = streamsTable_.contentByClipId.find(l.sceneId);
     if (it == streamsTable_.contentByClipId.end()) continue;
-    if (StreamInfo* s = streamsTable_.findMutable(it->second)) s->anchorBeat = l.launchBeat;
+    if (StreamInfo* s = streamsTable_.findMutable(it->second)) {
+      s->anchorBeat = l.launchBeat;
+      s->anchorSec = l.launchSec;
+    }
   }
   sampleStreamsFrame();
 }
@@ -326,17 +331,38 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
   // the next heal kill the relaunch before the effect re-arms.
   transportEnded_.erase(sceneId);
   // The scene's content stream re-anchors too: its lazy position mapping runs
-  // from the launch beat, exactly like the tree's anchorBeat.
+  // from the launch beat, exactly like the tree's anchorBeat. A (re)launch is
+  // an event-generator change → bump the stream revs (content + parent track).
   auto it = streamsTable_.contentByClipId.find(sceneId);
   if (it != streamsTable_.contentByClipId.end()) {
-    if (StreamInfo* s = streamsTable_.findMutable(it->second)) s->anchorBeat = l.launchBeat;
+    if (StreamInfo* s = streamsTable_.findMutable(it->second)) {
+      s->anchorBeat = l.launchBeat;
+      s->anchorSec = l.launchSec;
+      s->dynEvents.clear();  // a relaunch restarts the declared looped log
+      s->declLoopCount = 0;
+      s->eventRev++;
+    }
+  }
+  auto pt = streamsTable_.trackByTrackId.find(trackId);
+  if (pt != streamsTable_.trackByTrackId.end()) {
+    if (StreamInfo* s = streamsTable_.findMutable(pt->second)) s->eventRev++;
   }
   scenesDirty_ = true;
   invalidateEval();
 }
 
 void CompExecutor::stopScene(const std::string& trackId) {
-  if (!sceneLaunch_.erase(trackId)) return;
+  auto lit = sceneLaunch_.find(trackId);
+  if (lit == sceneLaunch_.end()) return;
+  auto cit = streamsTable_.contentByClipId.find(lit->second.sceneId);
+  if (cit != streamsTable_.contentByClipId.end()) {
+    if (StreamInfo* s = streamsTable_.findMutable(cit->second)) s->eventRev++;
+  }
+  auto pt = streamsTable_.trackByTrackId.find(trackId);
+  if (pt != streamsTable_.trackByTrackId.end()) {
+    if (StreamInfo* s = streamsTable_.findMutable(pt->second)) s->eventRev++;
+  }
+  sceneLaunch_.erase(lit);
   scenesDirty_ = true;
   invalidateEval();
 }
@@ -701,11 +727,12 @@ void CompExecutor::transportResolve(double dtSec) {
                         transportDirty_);
   transportDirty_ = false;
 
-  static constexpr const char* kFields[8] = {
+  static constexpr const char* kFields[10] = {
       "transport_time_sec",      "transport_active",
       "transport_rate",          "transport_next_jump_sec",
       "transport_jump_target_sec", "transport_loop_start_sec",
-      "transport_loop_end_sec",  "transport_ended"};
+      "transport_loop_end_sec",  "transport_ended",
+      "transport_next_end_sec",  "transport_loop_count"};
   for (size_t i = 0; i < transportRows_.size(); ++i) {
     const TransportRow& row = transportRows_[i];
     const int32_t inst =
@@ -713,9 +740,10 @@ void CompExecutor::transportResolve(double dtSec) {
                            row.instanceKey.data(), static_cast<int32_t>(row.instanceKey.size()));
     if (inst < 0) continue;  // pre-instance frame → invalid row → fallback
     TransportResolved r;
-    double* slots[8] = {&r.timeSec,       &r.active,       &r.rate,       &r.nextJumpSec,
-                        &r.jumpTargetSec, &r.loopStartSec, &r.loopEndSec, &r.ended};
-    for (int f = 0; f < 8; ++f) {
+    double* slots[10] = {&r.timeSec,       &r.active,       &r.rate,       &r.nextJumpSec,
+                         &r.jumpTargetSec, &r.loopStartSec, &r.loopEndSec, &r.ended,
+                         &r.nextEndSec,    &r.loopCount};
+    for (int f = 0; f < 10; ++f) {
       double v = 0.0;
       if (effrt_published_scalar(inst, kFields[f],
                                  static_cast<int32_t>(std::strlen(kFields[f])), &v)) {
@@ -737,6 +765,52 @@ void CompExecutor::transportResolve(double dtSec) {
     if (!r.valid) continue;
     if (r.active >= 0.5) streamsTable_.appliedContentSec[transportRows_[i].clipId] = r.timeSec;
     if (r.ended >= 0.5) transportEnded_.insert(transportRows_[i].clipId);
+    // Fold the controller's DECLARED future into the clip's content stream
+    // (streams events; LOCK-STEP: StreamsRegistry.foldDecl). nextEndSec is
+    // REMAINING seconds → absolute elapsed, quantized to 10 ms so per-frame
+    // jitter doesn't churn the rev; loop_count increments append 'looped'
+    // edges (integer compares — no fp hazard).
+    auto cit = streamsTable_.contentByClipId.find(transportRows_[i].clipId);
+    if (cit != streamsTable_.contentByClipId.end()) {
+      if (StreamInfo* s = streamsTable_.findMutable(cit->second)) {
+        if (!s->declared) {
+          s->declared = true;
+          s->eventRev++;
+        }
+        const double nowElapsed = streamElapsed(*s, streamsTable_, 0.0);
+        const double absEnd =
+            r.nextEndSec >= 0 ? std::round((nowElapsed + r.nextEndSec) * 100.0) / 100.0 : -1;
+        if (absEnd != s->declNextEnd) {
+          s->declNextEnd = absEnd;
+          s->eventRev++;
+        }
+        const double k = std::floor(r.loopCount);
+        if (k < s->declLoopCount) {  // controller restarted its count
+          s->dynEvents.clear();
+          s->declLoopCount = 0;
+          s->eventRev++;
+        }
+        while (s->declLoopCount < k) {
+          s->declLoopCount += 1;
+          StreamEvent e;
+          e.time = nowElapsed;
+          e.kind = 2;
+          e.clipOrdinal = static_cast<int32_t>(s->declLoopCount);
+          e.idHash48 = clipIdHash48(s->ownerId);
+          s->dynEvents.push_back(e);
+        }
+      }
+    }
+  }
+  // Streams whose controller vanished revert to the built-in analytics.
+  for (auto& s : streamsTable_.streams) {
+    if (s.declared && !liveIds.count(s.ownerId)) {
+      s.declared = false;
+      s.declNextEnd = -1;
+      s.declLoopCount = 0;
+      s.dynEvents.clear();
+      s.eventRev++;
+    }
   }
   for (auto it = transportEnded_.begin(); it != transportEnded_.end();) {
     if (!liveIds.count(*it)) it = transportEnded_.erase(it);
@@ -1106,7 +1180,11 @@ const std::string& CompExecutor::transportOrderJson() {
 const std::string& CompExecutor::sceneStatesJson() {
   nlohmann::json out = nlohmann::json::object();
   for (const auto& [trackId, l] : sceneLaunch_) {
-    out[trackId] = {{"sceneId", l.sceneId}, {"launchBeat", l.launchBeat}};
+    // launchSec is SHIPPED so the web registry anchors with the identical
+    // double (never re-derives seconds from the beat — warp-sin ulp trap).
+    out[trackId] = {{"sceneId", l.sceneId},
+                    {"launchBeat", l.launchBeat},
+                    {"launchSec", l.launchSec}};
   }
   sceneStatesScratch_ = out.dump();
   return sceneStatesScratch_;

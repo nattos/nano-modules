@@ -101,6 +101,10 @@ struct Frame {
   double nextJumpSec = std::nan("");
   double jumpTargetSec = std::nan("");
   bool ended = false;
+  /** Declared future (streams content events): remaining seconds until the
+   *  content ends (-1 = never / unknown) + completed passes of the slice. */
+  double nextEndSec = -1;
+  double loopCount = 0;
 };
 
 /** The pure mapping at parent time (`elapsedSec`, `parentBeat`) — the
@@ -236,6 +240,34 @@ inline void evalFrame(State* s, int mode, Frame& out) {
     if (!out.active && elapsedSec > 0) s->ended = true;
     out.ended = s->ended;
   }
+
+  // Declared future — the host folds these into the content stream's event
+  // timeline (streams events; same boundary math as contentEventGen).
+  const double speedAbs = std::fmax(1e-6, std::fabs(s->speed));
+  if (mode == ModeOneShot) {
+    const double sliceSec = s->endSec > 0 ? s->endSec - s->startSec : videoDurSec;
+    const double T = sliceSec / speedAbs;
+    out.nextEndSec = out.ended ? -1 : std::fmax(0.0, T - elapsedSec);
+  } else {
+    const double loopStart = s->startSec;
+    const double loopEnd = s->endSec > 0 ? s->endSec : videoDurSec;
+    const double loopLen = loopEnd - loopStart;
+    if (loopLen > kEps) {
+      const double playStart = s->playStartSec >= 0 ? s->playStartSec : loopStart;
+      double c1 = (s->direction == 1 ? -1 : 1) >= 0 ? loopEnd - playStart
+                                                    : playStart - loopStart;
+      if (c1 <= kEps) c1 = loopLen;
+      double consumed;
+      if (mode == ModeBeatSync) {
+        const double videoBeats = s->syncUseBpm ? loopLen * (s->syncBpm / 60.0)
+                                                : (double)s->syncBeats;
+        consumed = videoBeats > kEps ? (localBeat / videoBeats) * loopLen : 0;
+      } else {
+        consumed = s->speed * elapsedSec;
+      }
+      out.loopCount = std::fmax(0.0, std::floor((consumed - c1) / loopLen) + 1);
+    }
+  }
 }
 
 inline void publishFrame(const Frame& f) {
@@ -252,6 +284,8 @@ inline void publishFrame(const Frame& f) {
   pub("transport_loop_start_sec", f.loopStart);
   pub("transport_loop_end_sec", f.loopEnd);
   pub("transport_ended", f.ended ? 1.0 : 0.0);
+  pub("transport_next_end_sec", f.nextEndSec);
+  pub("transport_loop_count", f.loopCount);
 }
 
 int32_t is_identity(void* self) {
@@ -307,6 +341,10 @@ inline state::Schema& outputFields(state::Schema& sch) {
         .label("Loop End", "L1")
       .floatField("transport_ended", 0.f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
         .label("Ended", "End")
+      .floatField("transport_next_end_sec", -1.f, -1.f, 1e6f, state::SecondaryOutput, "unsigned")
+        .label("Next End", "NEd")
+      .floatField("transport_loop_count", 0.f, 0.f, 1e6f, state::SecondaryOutput, "unsigned")
+        .label("Loops", "Lps")
       .capability(state::Capability::TransportController);
 }
 

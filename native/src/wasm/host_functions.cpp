@@ -392,11 +392,13 @@ static int32_t streams_describe_fn(wasm_exec_env_t env, int64_t h, int32_t desc_
   int32_t fields[12] = {sent, comp::kStreamKindInvalid, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0};
   if (s) {
     fields[1] = s->kind;
-    fields[2] = s->flags;
+    fields[2] = s->flags | (s->declared ? comp::kStreamDriven : 0);
     fields[3] = s->axis;
     fields[4] = s->frameCount;
-    fields[5] = static_cast<int32_t>(s->events.size());
-    fields[6] = t->docRev;
+    fields[5] = comp::isContentStream(*s)
+                    ? comp::contentEventCount(*s, comp::streamElapsed(*s, *t, session_sec(env)))
+                    : static_cast<int32_t>(s->events.size());
+    fields[6] = s->eventRev;
     fields[7] = s->index;
     fields[8] = s->clipCount;
   } else if (!t && h == comp::kStreamSessionClock) {
@@ -411,9 +413,10 @@ static int32_t streams_describe_fn(wasm_exec_env_t env, int64_t h, int32_t desc_
 }
 
 static int32_t streams_rev_fn(wasm_exec_env_t env, int64_t h) {
-  (void)h;
   const auto* t = get_streams(env);
-  return t ? t->docRev : 0;
+  if (!t) return 0;
+  const comp::StreamInfo* s = t->find(h);
+  return s ? s->eventRev : t->docRev;
 }
 
 // Shared per-kind evaluators live in streams_table.h (lock-step with the web
@@ -533,20 +536,35 @@ static int32_t streams_stop_fn(wasm_exec_env_t env, int64_t h) {
   return 1;
 }
 
+static double streams_elapsed_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  if (!s) return h == comp::kStreamSessionClock ? session_sec(env) : std::nan("");
+  return comp::streamElapsed(*s, *t, session_sec(env));
+}
+
 static int32_t streams_event_count_fn(wasm_exec_env_t env, int64_t h) {
-  const auto* s = resolve_stream(env, h);
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
   if (!s) {
-    return !get_streams(env) && h == comp::kStreamSessionClock ? 0 : -1;
+    return !t && h == comp::kStreamSessionClock ? 0 : -1;
+  }
+  if (comp::isContentStream(*s)) {
+    return comp::contentEventCount(*s, comp::streamElapsed(*s, *t, session_sec(env)));
   }
   return static_cast<int32_t>(s->events.size());
 }
 
 static int32_t streams_read_events_fn(wasm_exec_env_t env, int64_t h, int32_t first,
                                       int32_t out_ptr, int32_t cap_events) {
-  const auto* s = resolve_stream(env, h);
-  if (!s) return !get_streams(env) && h == comp::kStreamSessionClock ? 0 : -1;
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  if (!s) return !t && h == comp::kStreamSessionClock ? 0 : -1;
   if (first < 0 || cap_events <= 0) return 0;
-  const int32_t total = static_cast<int32_t>(s->events.size());
+  const bool content = comp::isContentStream(*s);
+  const int32_t total =
+      content ? comp::contentEventCount(*s, comp::streamElapsed(*s, *t, session_sec(env)))
+              : static_cast<int32_t>(s->events.size());
   const int32_t n = std::max(0, std::min(total - first, cap_events));
   if (n == 0) return 0;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
@@ -554,7 +572,8 @@ static int32_t streams_read_events_fn(wasm_exec_env_t env, int64_t h, int32_t fi
   double* out = static_cast<double*>(wasm_runtime_addr_app_to_native(inst, out_ptr));
   if (!out) return 0;
   for (int32_t k = 0; k < n; ++k) {
-    const auto& e = s->events[static_cast<size_t>(first + k)];
+    const comp::StreamEvent e = content ? comp::contentEventAt(*s, first + k)
+                                        : s->events[static_cast<size_t>(first + k)];
     out[k * 5 + 0] = e.time;
     out[k * 5 + 1] = static_cast<double>(e.kind);
     out[k * 5 + 2] = static_cast<double>(e.clipOrdinal);
@@ -565,8 +584,12 @@ static int32_t streams_read_events_fn(wasm_exec_env_t env, int64_t h, int32_t fi
 }
 
 static int32_t streams_event_lb_fn(wasm_exec_env_t env, int64_t h, double time) {
-  const auto* s = resolve_stream(env, h);
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
   if (!s) return 0;
+  if (comp::isContentStream(*s)) {
+    return comp::contentEventLowerBound(*s, comp::streamElapsed(*s, *t, session_sec(env)), time);
+  }
   // First event with time >= t, by TIME only (kind ties don't matter here).
   int32_t lo = 0, hi = static_cast<int32_t>(s->events.size());
   while (lo < hi) {
@@ -596,6 +619,7 @@ static NativeSymbol streams_symbols[] = {
     {"fps", reinterpret_cast<void*>(streams_fps_fn), "(I)F", nullptr},
     {"anchor", reinterpret_cast<void*>(streams_anchor_fn), "(I)F", nullptr},
     {"anchor_sec", reinterpret_cast<void*>(streams_anchor_sec_fn), "(I)F", nullptr},
+    {"elapsed", reinterpret_cast<void*>(streams_elapsed_fn), "(I)F", nullptr},
     {"clip_duration", reinterpret_cast<void*>(streams_clip_duration_fn), "(Ii)F", nullptr},
     {"clip_grid", reinterpret_cast<void*>(streams_clip_grid_fn), "(Ii)F", nullptr},
     {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IF)i", nullptr},
