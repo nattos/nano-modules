@@ -18,6 +18,10 @@
  * Deterministic: Random/Other use a seeded LCG (export-stable). Re-arms when
  * the launch-relative clock regresses (relaunch/scrub) or the active scene
  * changes.
+ *
+ * Gapless: inside the last ~4 s the effect ANNOUNCES its intended target
+ * (streams.announce) so the host precaches/primes exactly that scene —
+ * Random/Other pre-draw once per cycle so the fire honors the announcement.
  */
 
 #include <host.h>
@@ -50,6 +54,11 @@ struct State {
   double lastElapsed = -1e30;
   bool rngInit = false;
   uint32_t rng = 0;
+  /** Random/Other pre-draw (streams.announce must name the REAL target, and
+   *  the fire must honor what it announced): one draw per armed cycle,
+   *  cleared exactly where `fired` clears (the re-arm edge). */
+  bool planned = false;
+  int plannedTarget = -1;
 };
 
 inline double lcg(State* s) {
@@ -148,6 +157,93 @@ static void publishRemaining(double v, double phase = 0.0) {
   val::release(p);
 }
 
+/** The follow's pick: candidates = launchable scenes (start events) in
+ *  ordinal order; Scope Group keeps the run of TOUCHING cells
+ *  (streams.clip_group) around self. Returns the target ordinal or -1.
+ *  Stable within an armed cycle — deterministic modes recompute identically
+ *  and Random/Other PRE-DRAW once (s->planned) — so the announce and the
+ *  fire name the same scene. */
+static int pickTarget(State* s, streams::Stream parent, int ord) {
+  int cand[64];
+  int nCand = 0;
+  const int total = streams::eventCount(parent);
+  streams::Event ev[16];
+  for (int first = 0; first < total && nCand < 64;) {
+    const int n = streams::readEvents(parent, first, ev, 16);
+    if (n <= 0) break;
+    for (int k = 0; k < n && nCand < 64; k++) {
+      if (ev[k].isStart()) cand[nCand++] = (int)ev[k].clipOrdinal;
+    }
+    first += n;
+  }
+  if (nCand == 0) return -1;
+
+  // Scope Group: keep the candidates sharing this scene's follow-group id —
+  // the host groups maximal runs of TOUCHING spans (streams.clip_group), so
+  // freeform placement groups by visual adjacency, no bar alignment needed.
+  // Candidates arrive ordinal-ascending == grid-ascending, so walk outward
+  // from self while the id holds (ids are small integers; == is exact).
+  int lo = 0, hi = nCand - 1;
+  if (s->scope == ScopeGroup) {
+    int selfIdx = -1;
+    for (int i = 0; i < nCand; i++) {
+      if (cand[i] == ord) { selfIdx = i; break; }
+    }
+    const double group = streams::clipGroup(parent, ord);
+    if (selfIdx >= 0 && group >= 0) {
+      lo = hi = selfIdx;
+      while (lo > 0 && streams::clipGroup(parent, cand[lo - 1]) == group) lo--;
+      while (hi < nCand - 1 && streams::clipGroup(parent, cand[hi + 1]) == group) hi++;
+    }
+  }
+  const int count = hi - lo + 1;
+  const auto inPool = [&](int t) {
+    for (int i = lo; i <= hi; i++) {
+      if (cand[i] == t) return true;
+    }
+    return false;
+  };
+
+  switch (s->mode) {
+    case ModeNext: {
+      for (int i = lo; i <= hi; i++) {
+        if (cand[i] > ord) return cand[i];
+      }
+      return cand[lo];  // wrap
+    }
+    case ModePrevious: {
+      for (int i = hi; i >= lo; i--) {
+        if (cand[i] < ord) return cand[i];
+      }
+      return cand[hi];  // wrap
+    }
+    case ModeFirst:
+      return cand[lo];
+    case ModeLast:
+      return cand[hi];
+    case ModeRandom: {
+      // Re-draw only when the planned target left the pool (doc edit).
+      if (!s->planned || !inPool(s->plannedTarget)) {
+        s->planned = true;
+        s->plannedTarget = cand[lo + (int)(lcg(s) * count) % count];
+      }
+      return s->plannedTarget;
+    }
+    case ModeOther: {
+      if (count <= 1) return ord;
+      if (!s->planned || !inPool(s->plannedTarget) || s->plannedTarget == ord) {
+        s->planned = true;
+        do {
+          s->plannedTarget = cand[lo + (int)(lcg(s) * count) % count];
+        } while (s->plannedTarget == ord);
+      }
+      return s->plannedTarget;
+    }
+    default:
+      return ord;
+  }
+}
+
 void tick(void* self, double dt) {
   (void)dt;
   auto* s = static_cast<State*>(self);
@@ -171,8 +267,13 @@ void tick(void* self, double dt) {
   const int ord = (int)std::floor(posP);
   const double elapsed = streams::posSec(parent);
   // Re-arm on a scene change or a launch-relative clock regression
-  // (relaunch / Again / scrub-back).
-  if (ord != s->lastOrdinal || elapsed < s->lastElapsed - 1e-6) s->fired = false;
+  // (relaunch / Again / scrub-back). The Random/Other pre-draw re-arms on
+  // the SAME edge (an ordinal marker alone would reuse a stale draw across
+  // an Again/self-relaunch cycle).
+  if (ord != s->lastOrdinal || elapsed < s->lastElapsed - 1e-6) {
+    s->fired = false;
+    s->planned = false;
+  }
   s->lastOrdinal = ord;
   s->lastElapsed = elapsed;
 
@@ -222,8 +323,21 @@ void tick(void* self, double dt) {
     publishRemaining(-1);  // unbounded: never fires (a looping clip runs on)
     return;
   }
-  publishRemaining(std::fmax(0.0, (fireAt - now) * unitScale),
-                   std::fmin(1.0, std::fmax(0.0, now / fireAt)));
+  const double remainingSec = std::fmax(0.0, (fireAt - now) * unitScale);
+  publishRemaining(remainingSec, std::fmin(1.0, std::fmax(0.0, now / fireAt)));
+
+  // ANNOUNCE inside the host's precache horizon: declare the intended target
+  // so the host warms/primes it EXACTLY (its proximity heuristic can miss a
+  // Last/Random pick). Level-triggered — re-asserted each tick; the host
+  // expires a silent announce, so a mode/param edit self-corrects. Bounded to
+  // ~2x the host's 2 s warm window: keeps the per-tick candidate enumeration
+  // off the steady-state path. Again/Stop never announce (self is already
+  // decoded; a stop has nothing to warm).
+  if (!s->fired && remainingSec <= 4.0 && s->mode != ModeStop && s->mode != ModeAgain) {
+    const int target = pickTarget(s, parent, ord);
+    if (target >= 0) streams::announce(parent, (double)target, remainingSec);
+  }
+
   if (s->fired || now < fireAt) return;
   s->fired = true;
 
@@ -235,81 +349,11 @@ void tick(void* self, double dt) {
     streams::seek(parent, (double)ord);  // relaunch re-anchors (retrigger)
     return;
   }
-
-  // Candidates = launchable scenes (start events), in ordinal order.
-  int cand[64];
-  int nCand = 0;
-  const int total = streams::eventCount(parent);
-  streams::Event ev[16];
-  for (int first = 0; first < total && nCand < 64;) {
-    const int n = streams::readEvents(parent, first, ev, 16);
-    if (n <= 0) break;
-    for (int k = 0; k < n && nCand < 64; k++) {
-      if (ev[k].isStart()) cand[nCand++] = (int)ev[k].clipOrdinal;
-    }
-    first += n;
-  }
-  if (nCand == 0) return;
-
-  // Scope Group: keep the candidates sharing this scene's follow-group id —
-  // the host groups maximal runs of TOUCHING spans (streams.clip_group), so
-  // freeform placement groups by visual adjacency, no bar alignment needed.
-  // Candidates arrive ordinal-ascending == grid-ascending, so walk outward
-  // from self while the id holds (ids are small integers; == is exact).
-  int lo = 0, hi = nCand - 1;
-  if (s->scope == ScopeGroup) {
-    int selfIdx = -1;
-    for (int i = 0; i < nCand; i++) {
-      if (cand[i] == ord) { selfIdx = i; break; }
-    }
-    const double group = streams::clipGroup(parent, ord);
-    if (selfIdx >= 0 && group >= 0) {
-      lo = hi = selfIdx;
-      while (lo > 0 && streams::clipGroup(parent, cand[lo - 1]) == group) lo--;
-      while (hi < nCand - 1 && streams::clipGroup(parent, cand[hi + 1]) == group) hi++;
-    }
-  }
-  const int count = hi - lo + 1;
-
-  int target = ord;
-  switch (s->mode) {
-    case ModeNext: {
-      target = cand[lo];  // wrap default
-      for (int i = lo; i <= hi; i++) {
-        if (cand[i] > ord) { target = cand[i]; break; }
-      }
-      break;
-    }
-    case ModePrevious: {
-      target = cand[hi];  // wrap default
-      for (int i = hi; i >= lo; i--) {
-        if (cand[i] < ord) { target = cand[i]; break; }
-      }
-      break;
-    }
-    case ModeFirst:
-      target = cand[lo];
-      break;
-    case ModeLast:
-      target = cand[hi];
-      break;
-    case ModeRandom:
-      target = cand[lo + (int)(lcg(s) * count) % count];
-      break;
-    case ModeOther: {
-      if (count <= 1) {
-        target = ord;
-        break;
-      }
-      do {
-        target = cand[lo + (int)(lcg(s) * count) % count];
-      } while (target == ord);
-      break;
-    }
-    default:
-      break;
-  }
-  streams::seek(parent, (double)target);
+  // The fire honors what the announce declared (pickTarget is stable within
+  // a cycle: deterministic modes recompute identically; Random/Other reuse
+  // the pre-draw unless the pool changed under it).
+  const int target = pickTarget(s, parent, ord);
+  if (target >= 0) streams::seek(parent, (double)target);
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,

@@ -2506,6 +2506,79 @@ TEST_CASE("follow: Group = TOUCHING cells — unaligned spans group, a gap split
   CHECK(stepUntilChange(cx, "red", 40) == "green");
 }
 
+TEST_CASE("follow announces its target: a Last jump OUTSIDE the proximity set primes and "
+          "fast-commits (Metal)",
+          "[comp_follow][comp_announce][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // Six video scenes; only v1 carries a follower — mode LAST, so the fire
+  // target is v6 (ordinal 5), OUTSIDE the 4-nearest proximity heuristic
+  // (which, from ordinal 0, would only ever warm v2..v5). The announce is
+  // the only way v6 gets primed. Beats=4 (2 s @120) fires well inside v1's
+  // 10 s content pass, so the heuristic window never even arms.
+  json v1 = mkVideoClip("v1", 0, 4);
+  v1["transport"] = {
+      {"devices",
+       json::array({mkDevice("v1_f", "core.transport.follow",
+                             {{"mode", 3 /*Last*/}, {"scope", 1 /*Track*/},
+                              {"followAfter", 1 /*Beats*/}, {"followBeats", 4}})})},
+      {"wires", json::array()}};
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("st",
+              json::array({std::move(v1), mkVideoClip("v2", 4, 4), mkVideoClip("v3", 8, 4),
+                           mkVideoClip("v4", 12, 4), mkVideoClip("v5", 16, 4),
+                           mkVideoClip("v6", 20, 4)}),
+              {{"kind", "scene"}}),
+  })));
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+  cx.setVideoReadyFeed();
+  cx.setTransportMode(true);  // Precise
+  cx.play();
+
+  cx.launchScene("st", "v1");
+  cx.update(1.0 / 60.0);
+  cx.transportResolve(1.0 / 60.0);
+  cx.setVideoReady("v1", true);
+  cx.update(1.0 / 60.0);
+  cx.transportResolve(1.0 / 60.0);
+  REQUIRE(playingScene(cx) == "v1");
+
+  // A few frames in: the follower announced v6 (remaining 2 s ≤ the 4 s
+  // horizon from the first tick) → primed desc + pre-instantiated chain.
+  for (int i = 0; i < 5; i++) {
+    cx.update(1.0 / 60.0);
+    cx.transportResolve(1.0 / 60.0);
+  }
+  {
+    bool sawV6 = false, v6Primed = false;
+    for (const auto& d : json::parse(cx.videoDescsJson())) {
+      if (d["clipId"] == "v6") {
+        sawV6 = true;
+        v6Primed = d.value("prime", false);
+      }
+      CHECK(d["clipId"] != "v2");  // proximity did NOT arm — announce-only
+    }
+    CHECK(sawV6);
+    CHECK(v6Primed);
+    CHECK(cx.requiredJson().find("v6_v") != std::string::npos);
+  }
+
+  // Primed readiness latches pre-fire → the follow's seek fast-commits:
+  // NO pending window opens across the whole handover.
+  cx.setVideoReady("v6", true);
+  bool sawPending = false;
+  for (int i = 0; i < 80 && playingScene(cx) == "v1"; i++) {
+    cx.update(0.05);
+    cx.transportResolve(0.05);
+    if (!json::parse(cx.pendingScenesJson()).empty()) sawPending = true;
+  }
+  CHECK(playingScene(cx) == "v6");
+  CHECK(!sawPending);
+}
+
 TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;

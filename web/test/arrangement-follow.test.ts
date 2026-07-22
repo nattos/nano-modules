@@ -216,4 +216,75 @@ describe('Follow actions (GPU)', () => {
     expect(endPending).toBe(basePending);
     expect(errors).toEqual([]);
   });
+
+  it('streams.announce: a Last jump OUTSIDE the proximity set still opens NO pending window', async () => {
+    // Six scenes; the follower on A picks LAST (ordinal 5) — beyond the
+    // 4-nearest heuristic, so only the effect's announce can prime it. The
+    // pin: the announced target ships primed and the hop commits with zero
+    // pending windows, Precise mode, real media.
+    const errors: string[] = [];
+    page.removeAllListeners('pageerror');
+    page.on('pageerror', (err) => errors.push(String(err)));
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore.enginePlugins['core.transport.follow'],
+      { timeout: 30_000 },
+    );
+    const ids = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const st = store.addSceneTrack();
+      const beatsPerBar = store.composition.meta.timeSignature[0];
+      const media = {
+        sourceKey: 'test_h264', url: '/media/test_h264.mp4',
+        frameCount: 55, fps: 30, width: 1280, height: 720, label: 'h264',
+      };
+      const mk = (bar: number) => {
+        const id = store.addVideoClip(st, bar * beatsPerBar, media, beatsPerBar).split('/')[2];
+        const clip = store.trackById(st).clips.find((c: any) => c.id === id);
+        clip.loop = { mode: 'time', startSec: 0, speed: 1 }; // full-file loop ≈1.83 s
+        return id;
+      };
+      const scenes = [0, 1, 2, 3, 4, 5].map(mk);
+      const devId = store.insertClipTransportDeviceAt(st, scenes[0], 0, 'core.transport.follow');
+      store.setClipTransportDeviceField(st, scenes[0], devId, 'mode', 3); // Last
+      store.docRev++;
+      store.positionBeat = 0;
+      store.setTransportMode('precise');
+      store.playing = true;
+      store.launchScene(st, scenes[0]);
+      return { st, a: scenes[0], last: scenes[5] };
+    });
+
+    // The initial launch legitimately defers (cold media) — wait for the
+    // commit, then baseline the pending-window counter.
+    await page.waitForFunction((x: any) => {
+      const s = (window as any).arrangementStore.sceneLaunchState[x.st];
+      const pend = (globalThis as any).__arrScenesPending ?? {};
+      return !!s && s.sceneId === x.a && !pend[x.st];
+    }, { timeout: 20_000 }, ids);
+    const basePending = await page.evaluate(
+      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
+
+    // The ANNOUNCED target (ordinal 5) must ship primed with a real injected
+    // entry frame — proximity alone would never reach it from ordinal 0.
+    await page.waitForFunction((x: any) => {
+      const bridge = (window as any).__engineBridge;
+      const primed = bridge?.compPumpDescs?.some((d: any) => d.clipId === x.last && d.prime);
+      const pump = bridge?.video?.pumps?.get(x.last);
+      return !!primed && pump?.primedFrame != null;
+    }, { timeout: 15_000 }, ids);
+
+    // The follow fires at the first looped edge (~1.83 s) → LAST, fast-commit.
+    const next = await waitForSceneChange(ids.st, ids.a, 'A jumps to LAST');
+    expect(next).toBe(ids.last);
+    const endPending = await page.evaluate(
+      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    expect(endPending).toBe(basePending);
+    expect(errors).toEqual([]);
+  });
 });
