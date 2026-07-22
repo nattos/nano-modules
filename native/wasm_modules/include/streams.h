@@ -135,10 +135,13 @@ extern "C" {
   // controller effectively makes it infinite; a follower substitutes its own).
   __attribute__((import_module("streams"), import_name("clip_duration")))
   double streams_clip_duration(int64_t h, int32_t ordinal);
-  // The clip's GRID slot (scene tracks: startBeat / bar length — contiguous
-  // integers form a Live-style follow GROUP). NaN for bad ordinal/stream.
-  __attribute__((import_module("streams"), import_name("clip_grid")))
-  double streams_clip_grid(int64_t h, int32_t ordinal);
+  // The clip's follow-GROUP id: the host groups maximal runs of TOUCHING
+  // launchable spans in grid order (abutting or overlapping cells join; a
+  // spatial gap, a bypassed scene, or a truly-empty clip breaks the run —
+  // Live-style groups without requiring bar-aligned placement). Equal ids =
+  // same group; -1 = unlaunchable clip. NaN for bad ordinal/stream.
+  __attribute__((import_module("streams"), import_name("clip_group")))
+  double streams_clip_group(int64_t h, int32_t ordinal);
 
   // ── Write verbs (queued; applied by the host after the transport pre-pass,
   // landing next frame — the same latency as trigger-ring launches) ──
@@ -282,7 +285,7 @@ inline double anchor(Stream h) { return streams_anchor(h); }
 inline double anchorSec(Stream h) { return streams_anchor_sec(h); }
 inline double elapsed(Stream h) { return streams_elapsed(h); }
 inline double clipDuration(Stream h, int ordinal) { return streams_clip_duration(h, ordinal); }
-inline double clipGrid(Stream h, int ordinal) { return streams_clip_grid(h, ordinal); }
+inline double clipGroup(Stream h, int ordinal) { return streams_clip_group(h, ordinal); }
 enum LaunchClass : int32_t { LaunchInstant = 0, LaunchLoose = 1 };
 
 inline bool seek(Stream h, double t, LaunchClass cls = LaunchLoose) {

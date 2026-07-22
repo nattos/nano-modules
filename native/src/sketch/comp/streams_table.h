@@ -122,9 +122,11 @@ struct StreamClipRef {
    *  effect-only: lengthBeat at base tempo (warp-approximate; scenes are
    *  launch-anchored while warp segments are timeline-derived). */
   double stdDurationSec = 0;
-  /** Grid slot (startBeat ÷ bar length) — contiguous integers form a
-   *  Live-style follow GROUP (streams.clip_grid). */
-  double gridSlot = 0;
+  /** Live-style follow GROUP id (streams.clip_group): maximal runs of
+   *  TOUCHING launchable spans in grid order — cells that abut or overlap
+   *  join; a spatial gap, a bypassed scene, or a truly-empty clip breaks the
+   *  run. -1 = the clip itself is unlaunchable. */
+  double groupId = -1;
 };
 
 /**
@@ -172,7 +174,7 @@ struct StreamInfo {
   std::string ownerId;
   std::vector<StreamEvent> events;
   /** Track streams: clipId → {grid ordinal, lengthBeat, ...} (scene sync,
-   *  clip_duration/clip_grid queries, seek translation). */
+   *  clip_duration/clip_group queries, seek translation). */
   std::unordered_map<std::string, StreamClipRef> clipsById;
   /** Track streams: ordinal → clipId (the streams.seek target lookup). */
   std::vector<std::string> byOrdinalClipId;
@@ -372,6 +374,8 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
     const std::vector<int> channels = scene ? sceneChannelAssignments(track)
                                             : std::vector<int>();
     double extent = 0;
+    double runEnd = -1e300;  // end of the current touching-span group run
+    int32_t nextGroup = -1;
     s.byOrdinalClipId.reserve(order.size());
     for (size_t ord = 0; ord < order.size(); ++ord) {
       const ClipM& clip = track.clips[order[ord]];
@@ -380,18 +384,24 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       ref.ordinal = static_cast<int32_t>(ord);
       ref.lengthBeat = clip.lengthBeat;
       ref.stdDurationSec = standardClipDurationSec(clip, doc.baseBPM);
-      ref.gridSlot = clip.startBeat / doc.timeSignatureNum;
+      // Launchable = not bypassed and not a truly-empty scene. Empty scenes
+      // ARE launchable when they carry a transport section: a Follow-only
+      // "gap" scene is a timed blank (renders nothing, its section owns the
+      // dwell + hands the track on).
+      const bool launchable =
+          !clip.bypassed && !(scene && !clip.hasSourceUrl && clip.sketch.devices.empty() &&
+                              clip.transport.devices.empty());
+      if (launchable) {
+        if (clip.startBeat > runEnd + 1e-6) nextGroup++;  // gap → new group
+        ref.groupId = nextGroup;
+        runEnd = std::max(runEnd, clip.startBeat + clip.lengthBeat);
+      } else {
+        runEnd = -1e300;  // a bypassed / truly-empty cell breaks the run
+      }
       s.clipsById[clip.id] = ref;
       s.byOrdinalClipId.push_back(clip.id);
       extent = std::max(extent, clip.startBeat + clip.lengthBeat);
-      if (clip.bypassed) continue;
-      // Empty scenes are unlaunchable — EXCEPT when they carry a transport
-      // section: a Follow-only "gap" scene is a timed blank (renders nothing,
-      // its section owns the dwell + hands the track on).
-      if (scene && !clip.hasSourceUrl && clip.sketch.devices.empty() &&
-          clip.transport.devices.empty()) {
-        continue;
-      }
+      if (!launchable) continue;
       StreamEvent start;
       start.time = scene ? static_cast<double>(ord) : clip.startBeat;
       start.kind = 0;
@@ -754,7 +764,7 @@ inline std::string streamsTableJson(const StreamsTable& t) {
     if (!s.clipsById.empty()) {
       nlohmann::json clips = nlohmann::json::object();
       for (const auto& [clipId, ref] : s.clipsById)
-        clips[clipId] = {ref.ordinal, ref.lengthBeat, ref.stdDurationSec, ref.gridSlot};
+        clips[clipId] = {ref.ordinal, ref.lengthBeat, ref.stdDurationSec, ref.groupId};
       j["clipsById"] = std::move(clips);
     }
     out["streams"].push_back(std::move(j));

@@ -10,9 +10,10 @@
  * the clip's end-of-life: the engine's config auto-stop defers to it.
  *
  * Scope: Track = all launchable scenes on the track; Group = the maximal run
- * of CONTIGUOUS grid cells (streams.clip_grid slots) containing the current
- * scene — Live-style groups, so Next wraps within the group and an empty
- * grid cell (or a bypassed scene) breaks the run.
+ * of TOUCHING scene cells containing the current scene (streams.clip_group:
+ * abutting or overlapping spans join, no bar alignment required) — Live-style
+ * groups, so Next wraps within the group and a spatial gap (or a bypassed /
+ * truly-empty scene) breaks the run.
  *
  * Deterministic: Random/Other use a seeded LCG (export-stable). Re-arms when
  * the launch-relative clock regresses (relaunch/scrub) or the active scene
@@ -92,8 +93,8 @@ void module_init() {
         "Autopilot for scene tracks: when this scene's duration elapses, launch "
         "another scene on the same track — Live's follow actions.\n\n"
         "**Scope** picks the pool: the whole *Track* (default), or the *Group* "
-        "of scenes in contiguous grid cells around this one (an empty cell ends "
-        "the group). **Follow After** overrides the standard clip duration.\n\n"
+        "of scenes whose cells touch this one (a gap between cells ends the "
+        "group). **Follow After** overrides the standard clip duration.\n\n"
         "While a Follow sits on a scene, the engine's automatic one-shot stop "
         "defers to it — the scene ends when Follow says so.")
       .group("action", "Action")
@@ -250,23 +251,22 @@ void tick(void* self, double dt) {
   }
   if (nCand == 0) return;
 
-  // Scope Group: keep the maximal run of CONTIGUOUS grid slots containing the
-  // current scene. Candidates arrive ordinal-ascending == grid-ascending
-  // (grid order IS the ordinal order), so walk outward from self.
+  // Scope Group: keep the candidates sharing this scene's follow-group id —
+  // the host groups maximal runs of TOUCHING spans (streams.clip_group), so
+  // freeform placement groups by visual adjacency, no bar alignment needed.
+  // Candidates arrive ordinal-ascending == grid-ascending, so walk outward
+  // from self while the id holds (ids are small integers; == is exact).
   int lo = 0, hi = nCand - 1;
   if (s->scope == ScopeGroup) {
     int selfIdx = -1;
     for (int i = 0; i < nCand; i++) {
       if (cand[i] == ord) { selfIdx = i; break; }
     }
-    if (selfIdx >= 0) {
+    const double group = streams::clipGroup(parent, ord);
+    if (selfIdx >= 0 && group >= 0) {
       lo = hi = selfIdx;
-      while (lo > 0 && std::abs(streams::clipGrid(parent, cand[lo - 1]) + 1.0 -
-                                streams::clipGrid(parent, cand[lo])) < 1e-9)
-        lo--;
-      while (hi < nCand - 1 && std::abs(streams::clipGrid(parent, cand[hi + 1]) - 1.0 -
-                                        streams::clipGrid(parent, cand[hi])) < 1e-9)
-        hi++;
+      while (lo > 0 && streams::clipGroup(parent, cand[lo - 1]) == group) lo--;
+      while (hi < nCand - 1 && streams::clipGroup(parent, cand[hi + 1]) == group) hi++;
     }
   }
   const int count = hi - lo + 1;

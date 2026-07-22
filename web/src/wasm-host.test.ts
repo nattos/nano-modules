@@ -142,7 +142,7 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       anchor_sec: () => NaN,
       elapsed: () => NaN,
       clip_duration: () => NaN,
-      clip_grid: () => NaN,
+      clip_group: () => NaN,
       seek: () => 0,
       stop: () => 0,
       event_count: () => 0,

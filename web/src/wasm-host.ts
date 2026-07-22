@@ -672,9 +672,9 @@ export class WasmHost {
           const s = this.streams?.find(h);
           return s ? this.streams!.clipDuration(s, ordinal) : NaN;
         },
-        clip_grid: (h: bigint, ordinal: number): number => {
+        clip_group: (h: bigint, ordinal: number): number => {
           const s = this.streams?.find(h);
-          return s ? this.streams!.clipGrid(s, ordinal) : NaN;
+          return s ? this.streams!.clipGroup(s, ordinal) : NaN;
         },
         seek: (h: bigint, t: number, cls: number): number =>
           this.streams?.queueSeek(h, t, cls === 0 ? 'instant' : 'loose') ? 1 : 0,

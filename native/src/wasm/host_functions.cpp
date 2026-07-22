@@ -515,9 +515,9 @@ static double streams_clip_duration_fn(wasm_exec_env_t env, int64_t h, int32_t o
   return ref ? ref->stdDurationSec : std::nan("");
 }
 
-static double streams_clip_grid_fn(wasm_exec_env_t env, int64_t h, int32_t ordinal) {
+static double streams_clip_group_fn(wasm_exec_env_t env, int64_t h, int32_t ordinal) {
   const auto* ref = resolve_clip_ref(env, h, ordinal);
-  return ref ? ref->gridSlot : std::nan("");
+  return ref ? ref->groupId : std::nan("");
 }
 
 static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t, int32_t cls) {
@@ -621,7 +621,7 @@ static NativeSymbol streams_symbols[] = {
     {"anchor_sec", reinterpret_cast<void*>(streams_anchor_sec_fn), "(I)F", nullptr},
     {"elapsed", reinterpret_cast<void*>(streams_elapsed_fn), "(I)F", nullptr},
     {"clip_duration", reinterpret_cast<void*>(streams_clip_duration_fn), "(Ii)F", nullptr},
-    {"clip_grid", reinterpret_cast<void*>(streams_clip_grid_fn), "(Ii)F", nullptr},
+    {"clip_group", reinterpret_cast<void*>(streams_clip_group_fn), "(Ii)F", nullptr},
     {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IFi)i", nullptr},
     {"stop", reinterpret_cast<void*>(streams_stop_fn), "(I)i", nullptr},
     {"event_count", reinterpret_cast<void*>(streams_event_count_fn), "(I)i", nullptr},

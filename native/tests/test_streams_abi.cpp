@@ -203,7 +203,7 @@ TEST_CASE("content position: lazy clip-time mapping, override wins, NaN off-ends
   CHECK_THAT(comp::contentPosSec(still, t, b.clock), WithinAbs(0.0, kTol));
 }
 
-TEST_CASE("clip refs: standard duration, grid slots, ordinal lookup", "[streams]") {
+TEST_CASE("clip refs: standard duration, follow groups, ordinal lookup", "[streams]") {
   Built b = build();
   const auto& scenes = streamOf(b.table, comp::streamHandleOf("track:scenes"));
   // byOrdinal inverts the grid order: s1(0), s2(4), s3(8) at 4 beats/bar.
@@ -211,10 +211,11 @@ TEST_CASE("clip refs: standard duration, grid slots, ordinal lookup", "[streams]
   CHECK(scenes.byOrdinalClipId[0] == "s1");
   CHECK(scenes.byOrdinalClipId[1] == "s2");
   CHECK(scenes.byOrdinalClipId[2] == "s3");
-  // Grid slots = startBeat / timeSignature numerator (default 4).
-  CHECK_THAT(scenes.clipsById.at("s1").gridSlot, WithinAbs(0.0, kTol));
-  CHECK_THAT(scenes.clipsById.at("s2").gridSlot, WithinAbs(1.0, kTol));
-  CHECK_THAT(scenes.clipsById.at("s3").gridSlot, WithinAbs(2.0, kTol));
+  // Follow groups: s1/s2 abut ([0,4)[4,8)) → one group; s3 is EMPTY —
+  // unlaunchable, so it takes -1 (and would break a run through it).
+  CHECK_THAT(scenes.clipsById.at("s1").groupId, WithinAbs(0.0, kTol));
+  CHECK_THAT(scenes.clipsById.at("s2").groupId, WithinAbs(0.0, kTol));
+  CHECK_THAT(scenes.clipsById.at("s3").groupId, WithinAbs(-1.0, kTol));
   // Standard duration: s2 is video (60f @ 30fps → 2 s slice at speed 1);
   // s1/s3 are effect-only (lengthBeat 4 at 120 BPM → 2 s).
   CHECK_THAT(scenes.clipsById.at("s2").stdDurationSec, WithinAbs(2.0, kTol));

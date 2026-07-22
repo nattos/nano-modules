@@ -2286,6 +2286,43 @@ TEST_CASE("follow: Next wraps within the contiguous group; gaps excluded (Metal)
   CHECK(stepUntilChange(cx, "red", 40) == "green");
 }
 
+TEST_CASE("follow: Group = TOUCHING cells — unaligned spans group, a gap splits (Metal)",
+          "[comp_follow][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // red [0,3) + green [3,5): touching but NOT bar-aligned — the old integer
+  // grid-slot rule (startBeat ÷ bar) put them at slots 0 and 0.75, never
+  // contiguous, so Group self-looped on freeform docs. blue [8,12) sits
+  // across a spatial gap: a separate group.
+  const json follow = {{"mode", 0 /*Next*/}, {"scope", 0 /*Group*/}};
+  json red = mkFollowScene("red", 0, follow);
+  red["lengthBeat"] = 3;  // 1.5 s @120
+  json green = mkFollowScene("green", 3, follow);
+  green["lengthBeat"] = 2;  // 1 s
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("st",
+              json::array({std::move(red), std::move(green), mkFollowScene("blue", 8, follow)}),
+              {{"kind", "scene"}}),
+  })));
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+  cx.setTransportMode(false);
+  cx.play();
+
+  cx.launchScene("st", "red");
+  cx.update(0.0);
+  cx.transportResolve(0.0);
+  REQUIRE(playingScene(cx) == "red");
+
+  // red elapses → green (same touching group despite the odd alignment)...
+  CHECK(stepUntilChange(cx, "red", 40) == "green");
+  // ...green is the group's end → wraps to red, never to blue across the gap.
+  CHECK(stepUntilChange(cx, "green", 40) == "red");
+  CHECK(stepUntilChange(cx, "red", 40) == "green");
+}
+
 TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;

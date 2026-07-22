@@ -129,12 +129,13 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(Number.isNaN(reg.pos(sc, 0))).toBe(true);
   });
 
-  it('clip refs: standard duration, grid slots, ordinal lookup (golden values)', () => {
+  it('clip refs: standard duration, follow groups, ordinal lookup (golden values)', () => {
     const sc = reg.find(scenes)!;
     expect(sc.byOrdinalClipId).toEqual(['s1', 's2', 's3']);
-    expect(reg.clipGrid(sc, 0)).toBe(0);
-    expect(reg.clipGrid(sc, 1)).toBe(1);
-    expect(reg.clipGrid(sc, 2)).toBe(2);
+    // s1/s2 abut → one touching-cell follow group; s3 is EMPTY → -1.
+    expect(reg.clipGroup(sc, 0)).toBe(0);
+    expect(reg.clipGroup(sc, 1)).toBe(0);
+    expect(reg.clipGroup(sc, 2)).toBe(-1);
     // s2 video: 60f@30 → 2 s; s1 effect-only: 4 beats @120 → 2 s.
     expect(reg.clipDuration(sc, 1)).toBeCloseTo(2, 9);
     expect(reg.clipDuration(sc, 0)).toBeCloseTo(2, 9);

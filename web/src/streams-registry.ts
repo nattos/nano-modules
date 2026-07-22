@@ -80,7 +80,7 @@ export interface StreamRec {
   name: string;
   ownerId: string;
   events: StreamEventRec[];
-  /** Track streams: clipId → [ordinal, lengthBeat, stdDurationSec, gridSlot]
+  /** Track streams: clipId → [ordinal, lengthBeat, stdDurationSec, groupId]
    *  (older payloads may carry only the first two — read defensively). */
   clipsById: Map<string, number[]>;
   /** Track streams: ordinal → clipId (seek translation; inverted at load). */
@@ -388,8 +388,9 @@ export class StreamsRegistry {
     return ref?.[2] ?? NaN;
   }
 
-  /** streams.clip_grid: the grid slot of ordinal N (group contiguity). */
-  clipGrid(s: StreamRec, ordinal: number): number {
+  /** streams.clip_group: the follow-group id of ordinal N (touching-span
+   *  runs, computed native-side — see streams_table.h; -1 = unlaunchable). */
+  clipGroup(s: StreamRec, ordinal: number): number {
     const clipId = s.byOrdinalClipId[ordinal];
     const ref = clipId !== undefined ? s.clipsById.get(clipId) : undefined;
     return ref?.[3] ?? NaN;
