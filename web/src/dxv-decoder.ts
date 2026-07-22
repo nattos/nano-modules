@@ -21,6 +21,7 @@
 
 import { WasmHost } from './wasm-host';
 import { GPUHost } from './gpu-host';
+import { parseMoov } from './video/bmff-meta';
 
 export interface BytesSource {
   readonly size: number;
@@ -53,6 +54,11 @@ export interface DxvVideoInfo {
   /** Codec FourCC as a 4-char string ("DXD3", "DXDA", ...). */
   fourccStr: string;
   frameCount: number;
+  /** Real container frame rate (video trak mdhd/stts); 0 = unknown. An
+   *  assumed rate here made every consumer's duration math wrong: a 25fps
+   *  clip "ended" 20% early, so a loop slice sized from the DOC's (correct)
+   *  metadata mapped past the presumed end → transparent tail every pass. */
+  fps: number;
 }
 
 interface DxvExports {
@@ -175,12 +181,21 @@ export class DxvDecoder {
       }
 
       const fourcc = this.exports.dxv_video_fourcc();
+      // Real frame rate from the same moov bytes (mvhd/trak, bmff-meta.ts) —
+      // the wasm parser only indexes samples. Body starts past the box header.
+      let fps = 0;
+      try {
+        const bodyOff = moov.length >= 8 && new DataView(moovBuf).getUint32(0) === 1 ? 16 : 8;
+        const meta = parseMoov(new DataView(moovBuf, bodyOff));
+        if (meta?.fps && meta.fps > 0) fps = meta.fps;
+      } catch { /* malformed metadata → consumers fall back to an assumed rate */ }
       this.info = {
         width: this.exports.dxv_video_width(),
         height: this.exports.dxv_video_height(),
         fourcc,
         fourccStr: fourCCToString(fourcc),
         frameCount,
+        fps,
       };
 
       this.ensurePayloadCapacity(maxSize);

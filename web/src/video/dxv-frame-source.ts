@@ -24,10 +24,13 @@ export class DxvFrameSource implements FrameSource {
   readonly frameCount: number;
   readonly width: number;
   readonly height: number;
-  // DXV is random-access (every frame independent), so playback rate is
-  // purely cosmetic — any value avoids black frames. The container's true
-  // rate isn't parsed yet; 30 is a sensible default.
-  readonly fps: number = 30;
+  /** Real container rate; 0 = unknown (consumers fall back to the DOC's
+   *  probed fps, then 30). NOT cosmetic: consumers derive the source duration
+   *  (frameCount/fps) and map seconds→frames with it — an assumed 30 made a
+   *  25fps clip play 20% fast and go transparent for the last fifth of every
+   *  loop pass (the slice end, sized from real metadata, lay past the
+   *  presumed file end). */
+  readonly fps: number;
   readonly formatCode: number = 1;     // rgba8unorm (matches GPUHost.createTexture code)
   readonly codec: string;
   readonly streaming = false;          // random-access: every frame independent
@@ -39,6 +42,7 @@ export class DxvFrameSource implements FrameSource {
     this.frameCount = info.frameCount;
     this.width = info.width;
     this.height = info.height;
+    this.fps = info.fps; // 0 = unknown → consumers fall back (doc fps, then 30)
     this.codec = `DXV-${info.fourccStr}`;   // e.g. "DXV-DXD3"
   }
 
