@@ -38,7 +38,7 @@ enum FollowAfter : int { AfterAuto = 0, AfterBeats = 1, AfterSeconds = 2 };
 
 struct State {
   int mode = ModeNext;
-  int scope = ScopeGroup;
+  int scope = ScopeTrack;
   int followAfter = AfterAuto;
   float followBeats = 4.0f;
   float followSec = 2.0f;
@@ -91,8 +91,8 @@ void module_init() {
         "## Follow\n"
         "Autopilot for scene tracks: when this scene's duration elapses, launch "
         "another scene on the same track — Live's follow actions.\n\n"
-        "**Scope** picks the pool: the whole *Track*, or the *Group* of "
-        "scenes in contiguous grid cells around this one (an empty cell ends "
+        "**Scope** picks the pool: the whole *Track* (default), or the *Group* "
+        "of scenes in contiguous grid cells around this one (an empty cell ends "
         "the group). **Follow After** overrides the standard clip duration.\n\n"
         "While a Follow sits on a scene, the engine's automatic one-shot stop "
         "defers to it — the scene ends when Follow says so.")
@@ -103,7 +103,7 @@ void module_init() {
                     {"Random", ModeRandom}, {"Other", ModeOther},
                     {"Again", ModeAgain}, {"Stop", ModeStop}})
         .label("Action", "Act")
-      .selectField("scope", ScopeGroup, state::PrimaryInput,
+      .selectField("scope", ScopeTrack, state::PrimaryInput,
                    {{"Group", ScopeGroup}, {"Track", ScopeTrack}})
         .label("Scope", "Scp")
       .group("timing", "Timing")
@@ -116,9 +116,15 @@ void module_init() {
         .label("Seconds", "Sec")
       .floatField("seed", 0.f, 0.f, 1.f, state::PrimaryInput).label("Seed", "Sd")
       .group("output", "Output")
-      // Seconds until the follow fires; -1 while idle / unbounded.
+      // Seconds until the follow fires; -1 while idle / unbounded. NOTE: the
+      // declared range must cover followSec's max, so on a trace a short
+      // countdown is a near-flat line — watch follow_phase for motion.
       .floatField("follow_remaining_sec", -1.f, -1.f, 600.f, state::SecondaryOutput, "unsigned")
         .label("Remaining", "Rem")
+      // elapsed/duration as a 0→1 ramp toward the fire (0 while idle): trace-
+      // visible at any duration, and wireable as a pre-transition envelope.
+      .floatField("follow_phase", 0.f, 0.f, 1.f, state::SecondaryOutput, "unsigned")
+        .label("Phase", "Ph")
       .capability(state::Capability::TransportSection)
   );
   state::setOnStateReady(&on_state_ready);
@@ -132,10 +138,13 @@ void init(void* self) {
   if (s) *s = State{};
 }
 
-static void publishRemaining(double v) {
+static void publishRemaining(double v, double phase = 0.0) {
   auto h = val::number(v);
   state::setValPath("follow_remaining_sec", h);
   val::release(h);
+  auto p = val::number(phase);
+  state::setValPath("follow_phase", p);
+  val::release(p);
 }
 
 void tick(void* self, double dt) {
@@ -184,7 +193,8 @@ void tick(void* self, double dt) {
     publishRemaining(-1);  // unbounded: never fires (a looping clip runs on)
     return;
   }
-  publishRemaining(std::fmax(0.0, D - elapsed));
+  publishRemaining(std::fmax(0.0, D - elapsed),
+                   std::fmin(1.0, std::fmax(0.0, elapsed / D)));
   if (s->fired || elapsed < D) return;
   s->fired = true;
 
