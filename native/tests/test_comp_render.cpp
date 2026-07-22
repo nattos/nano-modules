@@ -2316,3 +2316,43 @@ TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
   // along — the one-shot config math never stopped anyone here).
   CHECK(stepUntilChange(cx, "blue", 40) == "");
 }
+
+TEST_CASE("follow: an EMPTY gap scene is launchable and its section executes (Metal)",
+          "[comp_follow][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // red(bar 0) → gap(bar 1): a scene with NO content devices, ONLY a Follow in
+  // its transport section — a timed blank. It must be launchable (start event)
+  // and its section must execute despite producing no composite-tree leaf,
+  // then hand the track on to blue(bar 2) after its own standard duration.
+  const json follow = {{"mode", 0 /*Next*/}, {"scope", 1 /*Track*/}};
+  json gap = mkClip("gap", 4, 4, json::array());
+  gap["transport"] = {
+      {"devices", json::array({mkDevice("gap_f", "core.transport.follow", follow)})},
+      {"wires", json::array()}};
+  cx.loadDocument(mkComposition(json::array({
+      mkTrack("st",
+              json::array({mkFollowScene("red", 0, follow), std::move(gap),
+                           mkFollowScene("blue", 8, follow)}),
+              {{"kind", "scene"}}),
+  })));
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+  cx.setTransportMode(false);
+  cx.play();
+
+  cx.launchScene("st", "red");
+  cx.update(0.0);
+  cx.transportResolve(0.0);
+  REQUIRE(playingScene(cx) == "red");
+
+  // red's 2 s elapse → Next lands ON the gap (it has a start event now)...
+  CHECK(stepUntilChange(cx, "red", 40) == "gap");
+  // ...which renders NOTHING (no leaf ⇒ no content) but its section runs.
+  CHECK((cx.update(0.0) & comp::kCompHasContent) == 0);
+  CHECK(cx.requiredJson().find("clip_gap_transport_gap_f") != std::string::npos);
+  // The gap's own standard duration (lengthBeat 4 @120 ⇒ 2 s) elapses → blue.
+  CHECK(stepUntilChange(cx, "gap", 40) == "blue");
+}

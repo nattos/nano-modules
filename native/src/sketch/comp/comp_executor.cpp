@@ -902,6 +902,17 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
         }
       };
   walk(evalTree_);
+  // Launched scenes with NO content leaf: an empty "gap" scene carrying only
+  // a transport section never reaches the composite tree (nothing to render),
+  // but its section must still execute — it owns the gap's dwell and hands
+  // the track on (Follow-as-timed-gap).
+  for (const auto& [trackId, l] : sceneLaunch_) {
+    const ClipM* scene = findSceneClip(trackId, l.sceneId);
+    if (!scene || scene->bypassed || seen.count(scene->id)) continue;
+    if (!clipHasTransportSection(*scene, catalog_)) continue;
+    seen.insert(scene->id);
+    clips.push_back(scene);
+  }
   const double beatEnd = beat + kLookaheadBeats;
   for (const auto& t : doc_.tracks) {
     if (t.kind != TrackKind::Track || t.bypassed) continue;

@@ -385,7 +385,13 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       s.byOrdinalClipId.push_back(clip.id);
       extent = std::max(extent, clip.startBeat + clip.lengthBeat);
       if (clip.bypassed) continue;
-      if (scene && !clip.hasSourceUrl && clip.sketch.devices.empty()) continue;  // empty
+      // Empty scenes are unlaunchable — EXCEPT when they carry a transport
+      // section: a Follow-only "gap" scene is a timed blank (renders nothing,
+      // its section owns the dwell + hands the track on).
+      if (scene && !clip.hasSourceUrl && clip.sketch.devices.empty() &&
+          clip.transport.devices.empty()) {
+        continue;
+      }
       StreamEvent start;
       start.time = scene ? static_cast<double>(ord) : clip.startBeat;
       start.kind = 0;
