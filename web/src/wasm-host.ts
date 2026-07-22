@@ -679,6 +679,8 @@ export class WasmHost {
         seek: (h: bigint, t: number, cls: number): number =>
           this.streams?.queueSeek(h, t, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
         stop: (h: bigint): number => (this.streams?.queueStop(h) ? 1 : 0),
+        announce: (h: bigint, t: number, eta: number, cls: number): number =>
+          this.streams?.queueAnnounce(h, t, eta, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
         event_count: (h: bigint): number => {
           const s = this.streams?.find(h);
           if (!s) return !this.streams && h === 1n ? 0 : -1;

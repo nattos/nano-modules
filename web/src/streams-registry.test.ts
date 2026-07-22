@@ -172,6 +172,16 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(reg.pendingOps[0].handle).toBe(scenes);
   });
 
+  it('announce queues like seek and carries eta (retract = t < 0)', () => {
+    expect(reg.queueAnnounce(scenes, 1.0, 1.5)).toBe(true);
+    expect(reg.queueAnnounce(reg.contentByClipId.get('clipB')!, 0, 1)).toBe(false); // content: no
+    expect(reg.queueAnnounce(scenes, -1, 0)).toBe(true); // retract queues too
+    expect(reg.pendingOps.map((o) => o.kind)).toEqual(['announce', 'announce']);
+    expect(reg.pendingOps[0].eta).toBe(1.5);
+    expect(reg.pendingOps[0].cls).toBe('loose');
+    expect(reg.pendingOps[1].t).toBe(-1);
+  });
+
   it('live scene state survives a static reload (doc reloads are routine)', () => {
     const sc = reg.find(scenes)!;
     reg.frame.posBeat = 42;

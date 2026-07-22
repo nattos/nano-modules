@@ -536,6 +536,15 @@ static int32_t streams_stop_fn(wasm_exec_env_t env, int64_t h) {
   return 1;
 }
 
+static int32_t streams_announce_fn(wasm_exec_env_t env, int64_t h, double t, double eta,
+                                   int32_t cls) {
+  auto* table = get_streams(env);
+  const comp::StreamInfo* s = table ? table->find(h) : nullptr;
+  if (!s || !(s->flags & comp::kStreamTriggerOnSeek)) return 0;
+  table->pendingOps.push_back({2, h, t, cls != 0 ? 1 : 0, eta});
+  return 1;
+}
+
 static double streams_elapsed_fn(wasm_exec_env_t env, int64_t h) {
   const auto* t = get_streams(env);
   const comp::StreamInfo* s = t ? t->find(h) : nullptr;
@@ -624,6 +633,7 @@ static NativeSymbol streams_symbols[] = {
     {"clip_group", reinterpret_cast<void*>(streams_clip_group_fn), "(Ii)F", nullptr},
     {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IFi)i", nullptr},
     {"stop", reinterpret_cast<void*>(streams_stop_fn), "(I)i", nullptr},
+    {"announce", reinterpret_cast<void*>(streams_announce_fn), "(IFFi)i", nullptr},
     {"event_count", reinterpret_cast<void*>(streams_event_count_fn), "(I)i", nullptr},
     {"read_events", reinterpret_cast<void*>(streams_read_events_fn), "(Iiii)i", nullptr},
     {"event_lower_bound", reinterpret_cast<void*>(streams_event_lb_fn), "(IF)i", nullptr},

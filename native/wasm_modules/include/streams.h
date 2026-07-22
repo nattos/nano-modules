@@ -158,6 +158,17 @@ extern "C" {
   // Stop the playing clip on a scene track (the track leaves the composite).
   __attribute__((import_module("streams"), import_name("stop")))
   int32_t streams_stop(int64_t h);
+  // ANNOUNCE a future seek: "I intend to seek this stream to time t (scene
+  // tracks: ordinal floor(t)) in ~eta_sec seconds, launch class cls." A
+  // precache hint, never an engine mutation — the host warms/primes/pre-
+  // instantiates the EXACT target so the eventual seek commits gaplessly
+  // (heuristic proximity can miss Last/Random/custom jumps). LEVEL-TRIGGERED:
+  // re-assert every tick while the intent holds; the host expires a silent
+  // announce within ~0.5 s. t < 0 retracts explicitly. Returns 1 when queued
+  // (valid seek-triggerable handle), 0 otherwise. Only scene tracks act on it
+  // today (others: accepted, dropped at apply — the streams_seek contract).
+  __attribute__((import_module("streams"), import_name("announce")))
+  int32_t streams_announce(int64_t h, double t, double eta_sec, int32_t cls);
 
   // ── Events (index-stable; tracks static per rev(), content may GROW) ──
   __attribute__((import_module("streams"), import_name("event_count")))
@@ -292,6 +303,10 @@ inline bool seek(Stream h, double t, LaunchClass cls = LaunchLoose) {
   return streams_seek(h, t, cls) != 0;
 }
 inline bool stop(Stream h) { return streams_stop(h) != 0; }
+inline bool announce(Stream h, double t, double etaSec, LaunchClass cls = LaunchLoose) {
+  return streams_announce(h, t, etaSec, cls) != 0;
+}
+inline bool retractAnnounce(Stream h) { return streams_announce(h, -1.0, 0.0, LaunchLoose) != 0; }
 
 inline int eventCount(Stream h) { return streams_event_count(h); }
 inline int readEvents(Stream h, int first, Event* out, int maxCount) {

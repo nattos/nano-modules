@@ -123,6 +123,8 @@ interface ExecutorExports {
   comp_launch_scene(c: number, track: number, trackLen: number, scene: number, sceneLen: number,
                     cls: number): void;
   comp_stop_scene(c: number, track: number, len: number): void;
+  comp_announce_scene(c: number, track: number, trackLen: number, scene: number,
+                      sceneLen: number, etaSec: number, cls: number): void;
   comp_set_video_ready_feed?(c: number): void;
   comp_pending_scenes_json?(c: number, out: number, cap: number): number;
   comp_stop_all_scenes(c: number): void;
@@ -1173,12 +1175,28 @@ export class WasmSketchExecutor {
           this.withBytes(s.ownerId, (p, l) => this.exports.comp_stop_scene(c, p, l));
           continue;
         }
+        // Announce retract (t < 0) resolves BEFORE the ordinal lookup —
+        // LOCK-STEP with the native drain (floor(-1) must not silently drop).
+        if (op.kind === 'announce' && op.t < 0) {
+          this.withBytes(s.ownerId, (tp, tl) =>
+            this.exports.comp_announce_scene(c, tp, tl, 0, 0, 0, 0));
+          continue;
+        }
         const ord = Math.floor(op.t);
         const sceneId = s.byOrdinalClipId[ord];
         if (sceneId === undefined) continue;
         // Launchable = has a START event (excludes bypassed/empty scenes) —
-        // LOCK-STEP with the native drainStreamOps validation.
+        // LOCK-STEP with the native drainStreamOps validation (seek AND
+        // announce).
         if (!s.events.some((e) => e.kind === 0 && e.clipOrdinal === ord)) continue;
+        if (op.kind === 'announce') {
+          // Declared future launch: a precache hint, no engine mutation.
+          this.withBytes(s.ownerId, (tp, tl) =>
+            this.withBytes(sceneId, (sp, sl) =>
+              this.exports.comp_announce_scene(
+                c, tp, tl, sp, sl, op.eta ?? 0, op.cls === 'instant' ? 0 : 1)));
+          continue;
+        }
         // Streams-verb launches carry the effect's declared class (loose by
         // default — the handover may linger while the incoming video warms).
         this.withBytes(s.ownerId, (tp, tl) =>

@@ -229,6 +229,19 @@ void comp_stop_scene(CompExecutor* c, const char* trackId, int32_t len) {
   if (c) c->stopScene(std::string(trackId, static_cast<size_t>(len)));
 }
 
+// streams.announce landing point for the WEB drain (executor-host resolves
+// handle→trackId + ordinal→sceneId in TS, LOCK-STEP with the native
+// drainStreamOps). scene_len == 0 = retract.
+EXEC_EXPORT("comp_announce_scene")
+void comp_announce_scene(CompExecutor* c, const char* trackId, int32_t track_len,
+                         const char* sceneId, int32_t scene_len, double etaSec, int32_t cls) {
+  if (!c) return;
+  c->announceScene(std::string(trackId, static_cast<size_t>(track_len)),
+                   scene_len > 0 ? std::string(sceneId, static_cast<size_t>(scene_len))
+                                 : std::string(),
+                   etaSec, cls);
+}
+
 EXEC_EXPORT("comp_stop_all_scenes")
 void comp_stop_all_scenes(CompExecutor* c) { if (c) c->stopAllScenes(); }
 

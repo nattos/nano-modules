@@ -167,6 +167,11 @@ class CompExecutor {
   void stopScene(const std::string& trackId);
   /** Stop every playing scene (document open). */
   void stopAllScenes();
+  /** streams.announce landing point (native drain + the web comp_announce_scene
+   *  export): declared future launch on `trackId` — precache the exact target.
+   *  Empty sceneId retracts. See SceneAnnounce below for semantics. */
+  void announceScene(const std::string& trackId, const std::string& sceneId,
+                     double etaSec, int32_t cls);
 
   /**
    * Drop the cached timeline evaluation (the eval-skip span) so the next
@@ -431,8 +436,6 @@ class CompExecutor {
   };
   std::map<std::string, SceneAnnounce> announces_;  // per track, last-wins
   static constexpr double kAnnounceStaleSec = 0.5;
-  void announceScene(const std::string& trackId, const std::string& sceneId,
-                     double etaSec, int32_t cls);
   /** The fresh, in-window announce target for a track — revalidated against
    *  the CURRENT doc — or nullptr. */
   const ClipM* announcedTargetFor(const std::string& trackId) const;

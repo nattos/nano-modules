@@ -132,7 +132,14 @@ export class StreamsRegistry {
    *  comp_launch_scene/comp_stop_scene). One-frame-latency, like triggers.
    *  `cls` = launch deadline class (gapless handover): loose handovers may
    *  linger on the outgoing scene while the incoming video warms. */
-  pendingOps: { kind: 'seek' | 'stop'; handle: bigint; t: number; cls?: 'instant' | 'loose' }[] = [];
+  pendingOps: {
+    kind: 'seek' | 'stop' | 'announce';
+    handle: bigint;
+    t: number;
+    cls?: 'instant' | 'loose';
+    /** announce only: declared seconds until the intended seek. */
+    eta?: number;
+  }[] = [];
 
   /** Warp-aware beat→seconds map, rebuilt with the document (makeWarpClock). */
   secondsAt: (beat: number) => number = (beat) => beat * 0.5;
@@ -409,6 +416,15 @@ export class StreamsRegistry {
     const s = this.find(h);
     if (!s || s.kind !== StreamKind.SceneTrack) return false;
     this.pendingOps.push({ kind: 'stop', handle: BigInt.asUintN(64, h), t: 0 });
+    return true;
+  }
+
+  /** streams.announce: declared future seek (precache hint; t < 0 retracts).
+   *  Validated like seek (TriggerOnSeek) — LOCK-STEP with the native import. */
+  queueAnnounce(h: bigint, t: number, eta: number, cls: 'instant' | 'loose' = 'loose'): boolean {
+    const s = this.find(h);
+    if (!s || !(s.flags & StreamFlags.TriggerOnSeek)) return false;
+    this.pendingOps.push({ kind: 'announce', handle: BigInt.asUintN(64, h), t, cls, eta });
     return true;
   }
 
