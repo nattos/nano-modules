@@ -778,7 +778,15 @@ export class ArrClip extends MobxLitElement {
     const grid = buildBeatGrid();
     const beatAtCursor = grid.xToBeat(e.clientX - this.laneRect().left);
     if (this.mode === 'resize-r') {
-      const len = Math.max(0.5, q(beatAtCursor) - this.clip.startBeat);
+      let endBeat = q(beatAtCursor);
+      // Media-end magnet: landing within half a snap step of the source's end
+      // snaps the INTERNAL value exactly there — the one boundary the beat
+      // grid can't express. (Alt/free drag bypasses it like any snap.)
+      const mediaEnd = free ? null : this.mediaEndBeat();
+      if (mediaEnd != null && Math.abs(beatAtCursor - mediaEnd) <= store.snapStep / 2) {
+        endBeat = mediaEnd;
+      }
+      const len = Math.max(0.5, endBeat - this.clip.startBeat);
       const res = store.resizeClip(this.trackId, this.clip.id, this.clip.startBeat, len);
       // Caret (+ playhead when paused) follows the dragging RIGHT edge live — using the
       // CLAMPED end (one-shot can't grow past the file), so the caret stops with the clip.
@@ -804,6 +812,24 @@ export class ArrClip extends MobxLitElement {
       }
     }
   };
+
+  /** The beat where the clip's SOURCE runs out (one pass at the current slice +
+   *  speed) — the natural right edge for the resize magnet. Null when the length
+   *  isn't media-bound (no source, looping-grid modes, unknown duration). */
+  private mediaEndBeat(): number | null {
+    const c = this.clip;
+    if (c.kind !== 'video' || !c.source || !(c.source.durationFrames > 0)) return null;
+    const mode = c.loop?.mode ?? 'one-shot';
+    if (mode !== 'one-shot' && mode !== 'time') return null;
+    const fps = c.source.fps && c.source.fps > 0 ? c.source.fps : 30;
+    const durSec = c.source.durationFrames / fps;
+    const startSec = Math.max(0, c.loop?.startSec ?? 0);
+    const endSec = mode === 'time' ? Math.min(durSec, c.loop?.endSec ?? durSec) : durSec;
+    const speed = c.loop?.speed ?? 1;
+    const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
+    if (!(speed > 1e-6) || !(endSec > startSec)) return null;
+    return c.startBeat + (endSec - startSec) / (speed * spb);
+  }
 
   private onWinUp = () => {
     this.mode = null;

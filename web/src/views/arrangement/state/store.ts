@@ -3263,13 +3263,14 @@ export class ArrangementStore {
   ): string | null {
     const track = this.trackById(trackId);
     if (!track || (track.kind !== 'track' && track.kind !== 'scene')) return null;
-    const isScene = track.kind === 'scene';
     const label = media.label ?? 'Video';
     const clip: Clip = {
       id: uid('clip'),
       name: label,
       startBeat: Math.max(0, startBeat),
-      lengthBeat: isScene ? this.barBeats : lengthBeat,
+      // Scene cells too: the cell spans the real video (exact beats, not bar-
+      // rounded) — a scene's standard duration IS its source length.
+      lengthBeat,
       kind: 'video',
       sketch: {
         devices: [

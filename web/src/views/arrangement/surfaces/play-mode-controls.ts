@@ -140,7 +140,13 @@ export function renderPlayModeControls(
     </div>
     ${loop.mode === 'one-shot'
       ? ''
-      : html`<div class="pm-row"><span>${random ? 'Range end (s)' : 'End (s)'}</span>${secSlider(loop.endSec ?? endDefault, (n) => onPatch({ endSec: n }), endDefault)}</div>`}
+      : html`<div class="pm-row"><span>${random ? 'Range end (s)' : 'End (s)'}</span>${secSlider(
+          loop.endSec ?? endDefault,
+          // At the slider's max, store the SENTINEL (endSec absent = "source
+          // end") instead of a literal — the end stays live-linked to the real
+          // video length across speed changes, relinks, and fps corrections.
+          (n) => onPatch({ endSec: endDefault > 0 && n >= endDefault - 1e-9 ? undefined : n }),
+          endDefault)}</div>`}
     ${looping
       ? html`<div class="pm-row"><span>Play start (s)</span>${secSlider(loop.playStartSec ?? loop.startSec ?? 0, (n) => onPatch({ playStartSec: n }), endDefault)}</div>`
       : ''}

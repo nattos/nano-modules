@@ -50,8 +50,8 @@ describe('scene tracks', () => {
     const video = t.clips.find((c) => c.kind === 'video')!;
     const scene = t.clips.find((c) => c.id === a)!;
     expect(video.startBeat).toBe(2);                // the dropped cell keeps its spot
-    expect(video.lengthBeat).toBe(store.barBeats);  // forced to the fixed width
-    expect(scene.startBeat).toBe(6);                // pushed past the new cell
+    expect(video.lengthBeat).toBe(8);               // cell spans the real video length
+    expect(scene.startBeat).toBe(10);               // pushed past the new cell
   });
 
   it('moveClip on a scene track chain-pushes overlapped cells', () => {
