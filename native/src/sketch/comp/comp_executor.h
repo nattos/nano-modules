@@ -389,6 +389,12 @@ class CompExecutor {
     double requestSec = 0;
     double ageSec = 0;  // wall-clock (dtSec accumulated — never transport time)
     int32_t cls = 0;
+    /** Linger clamp: the beat where the OUTGOING scene's in-progress pass
+     *  ends (minus a sub-frame margin). Its desc ships this as holdBeat and
+     *  the pump clamps its clock there, so during the deferral window the
+     *  outgoing plays to its pass end and FREEZES instead of wrapping back
+     *  to its start. -1 = no clamp (no outgoing / no boundary). */
+    double holdBeat = -1;
   };
   std::map<std::string, PendingLaunch> pendingLaunch_;
   /** The POST-COMMIT world's sketch while a handover is pending (identical

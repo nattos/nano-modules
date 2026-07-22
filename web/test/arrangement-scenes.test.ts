@@ -237,6 +237,95 @@ describe('Arrangement scene tracks (GPU)', () => {
     expect(errors).toEqual([]);
   });
 
+  it('linger clamp: a COLD Precise launch ships holdBeat on the outgoing loop (freeze, not wrap)', async () => {
+    const { ids, errors } = await boot();
+    await page.waitForFunction(
+      () => ((window as any).__engineBridge?.discoveredEffects?.() ?? []).includes('source.video.file'),
+      { timeout: 30_000 },
+    );
+    const scenes = await page.evaluate((a) => {
+      const store = (window as any).arrangementStore;
+      const media = {
+        sourceKey: 'test_h264', url: '/media/test_h264.mp4',
+        frameCount: 55, fps: 30, width: 1280, height: 720, label: 'h264',
+      };
+      const mk = (bar: number) => {
+        const id = store.addVideoClip(a.sceneTrackId, bar * 4, media, 4).split('/')[2];
+        const clip = store.trackById(a.sceneTrackId).clips.find((c: any) => c.id === id);
+        clip.loop = { mode: 'time', startSec: 0, speed: 1 }; // full-file loop ≈1.83 s
+        return id;
+      };
+      const A = mk(8);
+      const B = mk(16);
+      store.docRev++;
+      store.setTransportMode('precise');
+      store.positionBeat = 0;
+      store.playing = true;
+      store.launchScene(a.sceneTrackId, A);
+      return { st: a.sceneTrackId, A, B };
+    }, ids);
+
+    // A's own cold launch legitimately defers — wait for the ENGINE-confirmed
+    // commit. The store mirror alone is a trap here: launchScene sets it
+    // optimistically, so "sceneId === A && no pending" is true BEFORE the
+    // engine even hears the request — and launching B in that state replaces
+    // A's still-pending slot (last-wins), leaving no outgoing to clamp.
+    // Engine truth = A's pump has injected frames AND the raw pending map
+    // (which only engine reports write) is empty for the track.
+    await page.waitForFunction((x: any) => {
+      const bridge = (window as any).__engineBridge;
+      const s = (window as any).arrangementStore.sceneLaunchState[x.st];
+      const pend = (globalThis as any).__arrScenesPending ?? {};
+      return !!s && s.sceneId === x.A && !pend[x.st] &&
+          bridge?.video?.pumps?.get(x.A)?.lastKey != null;
+    }, { timeout: 20_000 }, scenes);
+    await new Promise((r) => setTimeout(r, 250));  // settle mid-pass
+
+    // COLD manual launch of B (no follower ⇒ never precached): Precise defers,
+    // and the deferral window must clamp the OUTGOING — A's pump desc gains
+    // holdBeat so the loop freezes at its pass end instead of wrapping. The
+    // window is only a few frames (B's media is browser-cached), so a per-rAF
+    // watcher goes in BEFORE the launch — a post-launch waitForFunction loses
+    // the race to its own CDP install round-trip.
+    await page.evaluate((x) => {
+      const seen = { hold: null as number | null, pended: false, frames: 0 };
+      (globalThis as any).__lingerSeen = seen;
+      const timer = setInterval(() => {
+        const pend = (globalThis as any).__arrScenesPending ?? {};
+        if (pend[x.st]?.sceneId === x.B) seen.pended = true;
+        const a = ((window as any).__engineBridge?.compPumpDescs ?? [])
+            .find((d: any) => d.clipId === x.A);
+        if (a && typeof a.holdBeat === 'number') seen.hold = a.holdBeat;
+        if (++seen.frames >= 2400) clearInterval(timer);
+      }, 8);
+      (window as any).arrangementStore.launchScene(x.st, x.B);
+    }, scenes);
+
+    // Sequence on ENGINE truth, not the optimistic store: first the pending
+    // window OPENS (the watcher sees the engine's pending report), then it
+    // CLOSES (commit). Waiting only for "B live" passes instantly on the
+    // optimistic click state, milliseconds before the watcher's first tick.
+    await page.waitForFunction(
+      () => ((globalThis as any).__lingerSeen?.pended ?? false) === true,
+      { timeout: 10_000 });
+    await page.waitForFunction((x: any) => {
+      const s = (window as any).arrangementStore.sceneLaunchState[x.st];
+      const pend = (globalThis as any).__arrScenesPending ?? {};
+      return !!s && s.sceneId === x.B && !pend[x.st];
+    }, { timeout: 20_000 }, scenes);
+    const seen = await page.evaluate(
+      () => (globalThis as any).__lingerSeen as { hold: number | null; pended: boolean });
+    const anyHold = await page.evaluate(() => {
+      const descs = (window as any).__engineBridge?.compPumpDescs ?? [];
+      return descs.some((d: any) => typeof d.holdBeat === 'number');
+    });
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    expect(seen.pended).toBe(true);          // the launch really deferred
+    expect(typeof seen.hold).toBe('number'); // and the outgoing was clamped
+    expect(anyHold).toBe(false);             // clamp gone once committed
+    expect(errors).toEqual([]);
+  });
+
   it('clicking a scene cell body launches it (real component path)', async () => {
     const { ids, errors } = await boot();
 

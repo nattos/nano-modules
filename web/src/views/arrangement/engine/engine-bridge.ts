@@ -344,6 +344,9 @@ export class EngineBridge {
         if (Object.keys(pending).length > 0) {
           (globalThis as any).__arrPendingReports = ((globalThis as any).__arrPendingReports ?? 0) + 1;
         }
+        // The raw pending map, un-merged (probes distinguish live vs pending —
+        // the store mirror deliberately can't).
+        (globalThis as any).__arrScenesPending = pending;
         store.setSceneLaunchState({ ...live, ...pending });
       } catch { /* keep prev */ }
     }

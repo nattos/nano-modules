@@ -1453,6 +1453,60 @@ TEST_CASE("primed precache: candidates prime + pre-instantiate; readiness fast-p
   CHECK(live["st"]["launchBeat"].get<double>() == Catch::Approx(reqBeat).margin(1e-9));
 }
 
+TEST_CASE("linger clamp: the outgoing scene's desc freezes at its pass end while a "
+          "launch pends",
+          "[comp_pending]") {
+  EvalHarness h;
+  // v1: a 10 s looping video (300f @ 30). v2: the cold incoming.
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.setVideoReadyFeed();
+  h.cx.setTransportMode(true);  // Precise: ALL launches defer while cold
+  h.cx.play();
+
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+  const double launchBeat =
+      json::parse(h.cx.sceneStatesJson())["st"]["launchBeat"].get<double>();
+
+  // ~2 s into v1's 10 s pass: a COLD manual launch of v2 defers, and v1's
+  // desc must now carry the freeze beat — the end of the pass in progress
+  // (launch + 10 s ⇒ +20 beats @120), pulled a sub-frame margin inside it.
+  h.run(120, 1.0 / 60.0);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v2");
+  {
+    bool sawV1 = false, sawV2 = false;
+    for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+      if (d["clipId"] == "v1") {
+        sawV1 = true;
+        REQUIRE(d.contains("holdBeat"));
+        const double hold = d["holdBeat"].get<double>();
+        CHECK(hold > h.cx.positionBeat());  // still ahead: play out the pass
+        CHECK(hold < launchBeat + 20.0);    // strictly INSIDE the pass...
+        CHECK(hold == Catch::Approx(launchBeat + 20.0).margin(0.05));  // ...just
+      } else if (d["clipId"] == "v2") {
+        sawV2 = true;
+        CHECK(!d.contains("holdBeat"));  // only the OUTGOING is clamped
+      }
+    }
+    CHECK(sawV1);
+    CHECK(sawV2);
+  }
+
+  // The commit replaces v1 — the clamp leaves with it.
+  h.cx.setVideoReady("v2", true);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+  for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+    CHECK(!d.contains("holdBeat"));
+  }
+}
+
 TEST_CASE("scenes: clip lanes anchor at the launch beat", "[comp_scene]") {
   // Pure comp_eval check: a scene's clip-relative lane evaluates from the
   // LAUNCH beat, not the scene's meaningless startBeat.

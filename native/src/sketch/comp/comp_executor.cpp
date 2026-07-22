@@ -419,6 +419,43 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
     p.requestBeat = state_.positionBeat;  // REQUEST anchor: chains stay on grid
     p.requestSec = clock_.secondsAt(p.requestBeat);
     p.cls = cls;
+    // Linger clamp: freeze the OUTGOING scene at the end of its in-progress
+    // pass while the handover pends — without it a looping outgoing wraps
+    // back to its start during the window (the cold-launch cousin of the
+    // primed-candidate fast path; primed follows never get here). Driven
+    // scenes are excluded: their controller owns content time (the pump
+    // follows the times channel, not the desc mapping we clamp).
+    auto lit = sceneLaunch_.find(trackId);
+    if (lit != sceneLaunch_.end()) {
+      const ClipM* out = findSceneClip(trackId, lit->second.sceneId);
+      auto cit = streamsTable_.contentByClipId.find(lit->second.sceneId);
+      const StreamInfo* cs =
+          cit != streamsTable_.contentByClipId.end() ? streamsTable_.find(cit->second) : nullptr;
+      if (cs && out && !transportDeviceOf(*out, catalog_)) {
+        const double nowE = streamElapsed(*cs, streamsTable_, 0.0);
+        const int32_t idx = contentEventLowerBound(*cs, nowE, nowE);
+        if (!std::isnan(nowE) && idx < contentEventCount(*cs, nowE)) {
+          // A sub-frame margin keeps the clamp strictly INSIDE the pass —
+          // the boundary itself already maps to the wrapped frame.
+          const double marginSec = 0.25 / std::max(1.0, cs->fps);
+          const double bound = contentEventAt(*cs, idx).time;
+          if (cs->loop.mode == ClipPlayMode::BeatSync) {
+            const double spb = 60.0 / (doc_.baseBPM > 1 ? doc_.baseBPM : 120.0);
+            p.holdBeat = cs->anchorBeat + bound - marginSec / spb;
+          } else {
+            p.holdBeat = clock_.beatAtSeconds(cs->anchorSec + bound - marginSec);
+          }
+        }
+      }
+    }
+    // A re-request on the same track keeps the FIRST freeze point: the pump
+    // has been clamped there since the original request — adopting a later
+    // boundary would visibly unfreeze + wrap.
+    auto prev = pendingLaunch_.find(trackId);
+    if (prev != pendingLaunch_.end() && prev->second.holdBeat >= 0 &&
+        (p.holdBeat < 0 || prev->second.holdBeat < p.holdBeat)) {
+      p.holdBeat = prev->second.holdBeat;
+    }
     pendingLaunch_[trackId] = std::move(p);  // single slot, last wins
     scenesDirty_ = true;                     // ships in the pending channel
     invalidateEval();                        // the pending desc must reach the pump
@@ -650,7 +687,18 @@ nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree
           }
           const bool scene = n.track && n.track->kind == TrackKind::Scene;
           nlohmann::json d = videoDescFor(*n.clip, n.anchorBeat, scene);
-          if (!d.is_null()) descs.push_back(std::move(d));
+          if (!d.is_null()) {
+            // Linger clamp: while this track's handover pends, the OUTGOING
+            // scene's desc carries the pass-end freeze beat (launchScene).
+            if (scene) {
+              auto pit = pendingLaunch_.find(n.track->id);
+              if (pit != pendingLaunch_.end() && pit->second.holdBeat >= 0 &&
+                  !d.contains("transport")) {
+                d["holdBeat"] = pit->second.holdBeat;
+              }
+            }
+            descs.push_back(std::move(d));
+          }
         }
       };
   walk(tree);

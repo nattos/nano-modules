@@ -78,6 +78,13 @@ export interface VideoClipDesc {
    *  the engine BEFORE a launch request, so the request commits same-frame
    *  (no deferral window → no wrapped/blank frames at the handover). */
   prime?: boolean;
+  /** Linger clamp (OUTGOING scene of a pending handover): the beat where the
+   *  clip's in-progress pass ends, minus a sub-frame margin. The pump clamps
+   *  its clock to `min(beat, holdBeat)` before the loop mapping, so during a
+   *  deferral window the outgoing plays to its pass end and FREEZES on the
+   *  last frame instead of wrapping back to its start (the cold-launch
+   *  cousin of `prime` — primed follows commit same-frame and never pend). */
+  holdBeat?: number;
 }
 
 /** One resolved transport row (the comp pre-pass's published transport_*
@@ -469,6 +476,9 @@ export class VideoCompositor {
       const s = this.transportResolver?.(d.clipId);
       if (s && Number.isFinite(s.timeSec)) return s.active >= 0.5 ? s.timeSec : null;
     }
+    // Linger clamp: freeze the clock at the pass-end beat while this clip's
+    // track has a pending handover (see VideoClipDesc.holdBeat).
+    if (d.holdBeat != null && beat > d.holdBeat) beat = d.holdBeat;
     const secondsAt = this.secondsAt ?? ((b: number) => b * (60 / Math.max(1, bpm)));
     const ctx: ClipTimeCtx = {
       startBeat: d.startBeat,
