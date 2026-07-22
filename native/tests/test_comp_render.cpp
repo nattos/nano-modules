@@ -1507,6 +1507,135 @@ TEST_CASE("linger clamp: the outgoing scene's desc freezes at its pass end while
   }
 }
 
+namespace {
+
+/** True when clipId ships in videoDescsJson; primed reports the prime flag. */
+bool descShips(comp::CompExecutor& cx, const std::string& clipId, bool* primed = nullptr) {
+  for (const auto& d : json::parse(cx.videoDescsJson())) {
+    if (d["clipId"] != clipId) continue;
+    if (primed) *primed = d.value("prime", false);
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("streams.announce: exact-target precache — primed desc, pre-instantiation, "
+          "expiry/retract, fast-commit",
+          "[comp_announce]") {
+  EvalHarness h;
+  // v1..v3 video scenes + e1 effect-only, NO followers anywhere — the
+  // proximity heuristic never arms, so everything warmed below is the
+  // announce's doing.
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4),
+                         mkVideoClip("v3", 8, 4),
+                         mkClip("e1", 12, 4,
+                                json::array({mkDevice("e1_d", "source.solid_color")}))}))})));
+  h.cx.setVideoReadyFeed();
+  h.cx.setTransportMode(true);  // Precise
+  h.cx.play();
+
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t handle = table.trackByTrackId.at("st");
+
+  // (a) Announce v2 (ordinal 1): its desc ships PRIMED and its post-commit
+  // chain pre-instantiates; v3 stays cold (no heuristic in play).
+  table.pendingOps.push_back({2, handle, 1.0, 1, 1.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  {
+    bool primed = false;
+    CHECK(descShips(h.cx, "v2", &primed));
+    CHECK(primed);
+    CHECK(!descShips(h.cx, "v3"));
+    CHECK(h.cx.requiredJson().find("v2_v") != std::string::npos);
+  }
+
+  // (d) Retract (t < 0) drops it immediately.
+  table.pendingOps.push_back({2, handle, -1.0, 1, 0.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  CHECK(!descShips(h.cx, "v2"));
+
+  // (g) An effect-only target pre-instantiates its chain but ships no desc
+  // (descs are video-only; its instant commit still renders on frame 1).
+  table.pendingOps.push_back({2, handle, 3.0, 1, 0.5});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  CHECK(h.cx.requiredJson().find("clip_e1_") != std::string::npos);
+  CHECK(!descShips(h.cx, "e1"));
+  table.pendingOps.push_back({2, handle, -1.0, 1, 0.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+
+  // Outside the warm window (eta > kScenePrewarmSec): accepted but inert.
+  table.pendingOps.push_back({2, handle, 1.0, 1, 10.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  CHECK(!descShips(h.cx, "v2"));
+
+  // (c) Staleness: an in-window announce not re-asserted for > 0.5 s expires.
+  table.pendingOps.push_back({2, handle, 1.0, 1, 1.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  CHECK(descShips(h.cx, "v2"));
+  h.run(40, 1.0 / 60.0);  // ~0.67 s silent
+  CHECK(!descShips(h.cx, "v2"));
+
+  // (e) Announce → primed readiness latches → the launch fast-commits
+  // SAME-CALL at the request anchor (no pending window), Precise mode.
+  table.pendingOps.push_back({2, handle, 1.0, 1, 1.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  h.cx.setVideoReady("v2", true);
+  h.run(2, 1.0 / 60.0);
+  const double reqBeat = h.cx.positionBeat();
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+  const json live = json::parse(h.cx.sceneStatesJson());
+  CHECK(live["st"]["sceneId"] == "v2");
+  CHECK(live["st"]["launchBeat"].get<double>() == Catch::Approx(reqBeat).margin(1e-9));
+}
+
+TEST_CASE("streams.announce: empty-track announce warms; validation drops bad targets",
+          "[comp_announce]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.setVideoReadyFeed();
+  h.cx.play();
+
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t handle = table.trackByTrackId.at("st");
+
+  // Nothing playing on the track: an announce still warms its target (the
+  // heuristic path needs a live scene; a declared intro cue does not).
+  table.pendingOps.push_back({2, handle, 0.0, 1, 1.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  {
+    bool primed = false;
+    CHECK(descShips(h.cx, "v1", &primed));
+    CHECK(primed);
+  }
+
+  // A bad ordinal is dropped at the drain (same matcher as seek) — the prior
+  // announce keeps its slot.
+  table.pendingOps.push_back({2, handle, 99.0, 1, 1.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  CHECK(descShips(h.cx, "v1"));
+  CHECK(!descShips(h.cx, "v2"));
+}
+
 TEST_CASE("scenes: clip lanes anchor at the launch beat", "[comp_scene]") {
   // Pure comp_eval check: a scene's clip-relative lane evaluates from the
   // LAUNCH beat, not the scene's meaningless startBeat.

@@ -357,7 +357,6 @@ bool CompExecutor::scenePrewarmWanted(const std::string& trackId, const SceneLau
 
 std::vector<const ClipM*> CompExecutor::precacheCandidatesFor(const std::string& trackId,
                                                               const SceneLaunch& l) const {
-  static constexpr int kScenePrewarmMax = 4;
   std::vector<const ClipM*> out;
   auto tit = streamsTable_.trackByTrackId.find(trackId);
   const StreamInfo* ts =
@@ -387,6 +386,70 @@ std::vector<const ClipM*> CompExecutor::precacheCandidatesFor(const std::string&
     out.push_back(cand);
   }
   return out;
+}
+
+void CompExecutor::announceScene(const std::string& trackId, const std::string& sceneId,
+                                 double etaSec, int32_t cls) {
+  if (sceneId.empty()) {  // retract
+    if (announces_.erase(trackId)) invalidateEval();
+    return;
+  }
+  // Invalidate only on DISCRETE changes: an entry crossing the warm window
+  // or a target change while visible. Per-tick re-asserts inside the window
+  // carry no eval-visible information (descs embed no eta; consumption reads
+  // the stored record) — invalidating on each would defeat the span cache.
+  auto it = announces_.find(trackId);
+  const bool visibleBefore = it != announces_.end() && it->second.etaSec <= kScenePrewarmSec;
+  const std::string beforeTarget = it != announces_.end() ? it->second.sceneId : std::string();
+  const bool visibleAfter = etaSec <= kScenePrewarmSec;
+  SceneAnnounce& a = announces_[trackId];
+  a.sceneId = sceneId;
+  a.etaSec = etaSec;
+  a.cls = cls;
+  a.ageSec = 0;
+  if (visibleBefore != visibleAfter || (visibleAfter && beforeTarget != sceneId)) {
+    invalidateEval();
+  }
+}
+
+const ClipM* CompExecutor::announcedTargetFor(const std::string& trackId) const {
+  auto it = announces_.find(trackId);
+  if (it == announces_.end()) return nullptr;
+  if (it->second.etaSec > kScenePrewarmSec) return nullptr;  // outside the warm window
+  // Revalidate against the CURRENT doc: announces outlive their drain across
+  // edits/reloads, and staleness expiry alone is too slow for correctness.
+  const ClipM* scene = findSceneClip(trackId, it->second.sceneId);
+  if (!scene || scene->bypassed) return nullptr;
+  return scene;
+}
+
+std::map<std::string, std::vector<const ClipM*>> CompExecutor::scenePrewarmPlan() const {
+  std::map<std::string, std::vector<const ClipM*>> plan;
+  // Track ids from live launches ∪ announces — an announce onto an EMPTY
+  // track (nothing playing) warms its target too.
+  std::set<std::string> trackIds;
+  for (const auto& [tid, l] : sceneLaunch_) trackIds.insert(tid);
+  for (const auto& [tid, a] : announces_) trackIds.insert(tid);
+  for (const auto& tid : trackIds) {
+    std::vector<const ClipM*> cands;
+    std::set<std::string> taken;
+    // The announced target goes FIRST — the fill order below guarantees the
+    // heuristic can never evict it.
+    if (const ClipM* target = announcedTargetFor(tid)) {
+      cands.push_back(target);
+      taken.insert(target->id);
+    }
+    auto lit = sceneLaunch_.find(tid);
+    if (lit != sceneLaunch_.end() && scenePrewarmWanted(tid, lit->second)) {
+      for (const ClipM* c : precacheCandidatesFor(tid, lit->second)) {
+        if (static_cast<int>(cands.size()) >= kScenePrewarmMax) break;
+        if (!taken.insert(c->id).second) continue;
+        cands.push_back(c);
+      }
+    }
+    if (!cands.empty()) plan[tid] = std::move(cands);
+  }
+  return plan;
 }
 
 const ClipM* CompExecutor::findSceneClip(const std::string& trackId,
@@ -491,6 +554,10 @@ void CompExecutor::applyPendingLaunches(double dtSec) {
 
 void CompExecutor::commitLaunch(const std::string& trackId, const std::string& sceneId,
                                 double launchBeat, double launchSec) {
+  // A fulfilled announce is done — without this the just-launched target
+  // haunts the NEXT cycle's warm slots until the stale window closes.
+  auto ait = announces_.find(trackId);
+  if (ait != announces_.end() && ait->second.sceneId == sceneId) announces_.erase(ait);
   SceneLaunch& l = sceneLaunch_[trackId];
   l.sceneId = sceneId;
   l.launchBeat = launchBeat;
@@ -521,6 +588,9 @@ void CompExecutor::commitLaunch(const std::string& trackId, const std::string& s
 }
 
 void CompExecutor::stopScene(const std::string& trackId) {
+  // The announcing section dies with the scene — collapse the warm set now
+  // rather than waiting out the stale window.
+  if (announces_.erase(trackId)) invalidateEval();
   if (pendingLaunch_.erase(trackId)) {
     scenesDirty_ = true;
     invalidateEval();
@@ -542,9 +612,10 @@ void CompExecutor::stopScene(const std::string& trackId) {
 }
 
 void CompExecutor::stopAllScenes() {
-  if (sceneLaunch_.empty() && pendingLaunch_.empty()) return;
+  if (sceneLaunch_.empty() && pendingLaunch_.empty() && announces_.empty()) return;
   sceneLaunch_.clear();
   pendingLaunch_.clear();
+  announces_.clear();
   scenesDirty_ = true;
   invalidateEval();
 }
@@ -773,20 +844,22 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
     warm.push_back(std::move(d));
   }
 
-  // Follow-candidate precache: when a live scene with a FOLLOWER is inside
-  // its last kScenePrewarmSec (next content event — 'ended' or the pass edge
-  // the follow fires on), warm the track's launchable sibling scenes. This is
-  // the primary gapless mechanism — deferral alone would just relocate the
-  // gap onto the outgoing scene. Candidates ship PRIMED: the pump decodes AND
-  // INJECTS the entry frame (the worker retains textures for instances and
-  // binds on creation) and reports real entry readiness, so the follow's
-  // launch hits the readyClips_ fast path and commits SAME-FRAME — a deferral
-  // window here would render the outgoing clip wrapping back to its start
-  // (the "plays 1-3 frames of the first clip again" handover artifact).
-  for (const auto& [trackId, l] : sceneLaunch_) {
-    if (!scenePrewarmWanted(trackId, l)) continue;
-    for (const ClipM* cand : precacheCandidatesFor(trackId, l)) {
-      if (seen.count(cand->id)) continue;
+  // Scene precache plan (announced target first, then follower proximity):
+  // warm the tracks' likely-next scenes. This is the primary gapless
+  // mechanism — deferral alone would just relocate the gap onto the outgoing
+  // scene. Candidates ship PRIMED: the pump decodes AND INJECTS the entry
+  // frame (the worker retains textures for instances and binds on creation)
+  // and reports real entry readiness, so the launch hits the readyClips_
+  // fast path and commits SAME-FRAME — a deferral window here would render
+  // the outgoing clip wrapping back to its start (the "plays 1-3 frames of
+  // the first clip again" handover artifact). The pending block above ran
+  // first, so a pending handover's ACTIVE-shape wins the dedup when the
+  // announced target IS the pending scene. Descs are video-only; a source-
+  // less (effect-only / gap) announced target still pre-instantiates its
+  // chain via ensureEvalAt's candidate worlds.
+  for (const auto& [trackId, cands] : scenePrewarmPlan()) {
+    for (const ClipM* cand : cands) {
+      if (seen.count(cand->id) || !cand->hasSourceUrl) continue;
       // Warm-shaped (in-the-future anchor: entry targeting, no play) + prime.
       nlohmann::json d = videoDescFor(*cand, beat + kLookaheadBeats);
       if (d.is_null()) continue;
@@ -899,9 +972,8 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   {
     nlohmann::json cand;
     std::set<std::string> have;
-    for (const auto& [trackId, l] : sceneLaunch_) {
-      if (!scenePrewarmWanted(trackId, l)) continue;
-      for (const ClipM* c : precacheCandidatesFor(trackId, l)) {
+    for (const auto& [trackId, cands] : scenePrewarmPlan()) {
+      for (const ClipM* c : cands) {
         std::map<std::string, SceneLaunch> future = sceneLaunch_;
         future[trackId] = SceneLaunch{c->id, beat, clock_.secondsAt(beat)};
         std::vector<CompNode> ftree =
@@ -1153,17 +1225,30 @@ void CompExecutor::drainStreamOps() {
       stopScene(s->ownerId);
       continue;
     }
+    // Announce retract (t < 0) resolves BEFORE the ordinal guard — floor(-1)
+    // must not fall into the bad-ordinal silent drop.
+    if (op.kind == 2 && op.t < 0) {
+      announceScene(s->ownerId, std::string(), 0, 0);
+      continue;
+    }
     const int32_t ord = static_cast<int32_t>(std::floor(op.t));
     if (ord < 0 || ord >= static_cast<int32_t>(s->byOrdinalClipId.size())) continue;
     // Launchable = has a START event (the event list already excludes
     // bypassed/empty scenes — the trigger matcher's rules; a raw seek must
     // not create a phantom playing state). LOCK-STEP: the web drain applies
-    // the same events-based check.
+    // the same events-based check for seek AND announce.
     bool launchable = false;
     for (const auto& e : s->events) {
       if (e.kind == 0 && e.clipOrdinal == ord) { launchable = true; break; }
     }
     if (!launchable) continue;
+    if (op.kind == 2) {
+      // streams.announce: declared future launch — a precache hint, no
+      // engine mutation. The eventual seek carries the operative class.
+      announceScene(s->ownerId, s->byOrdinalClipId[static_cast<size_t>(ord)], op.eta,
+                    static_cast<int32_t>(op.cls));
+      continue;
+    }
     // Streams-verb launches come from transport effects (autopilot): Loose —
     // Live mode may linger on the outgoing scene while the incoming warms.
     launchScene(s->ownerId, s->byOrdinalClipId[static_cast<size_t>(ord)],
@@ -1181,6 +1266,19 @@ uint32_t CompExecutor::update(double dtSec) {
   // dangling entries drop) before this frame's eval.
   applyPendingLaunches(dtSec);
   healSceneLaunches();
+  // streams.announce records age on WALL-CLOCK and expire when not
+  // re-asserted (the announcing effect died or went silent). Runs PRE-HOLD —
+  // a Precise hold outlasts the stale window while sections keep ticking, so
+  // ageing after the hold's early return would never expire anything.
+  for (auto it = announces_.begin(); it != announces_.end();) {
+    it->second.ageSec += std::max(0.0, dtSec);
+    if (it->second.ageSec > kAnnounceStaleSec) {
+      it = announces_.erase(it);
+      invalidateEval();
+    } else {
+      ++it;
+    }
+  }
   // Follow-candidate precache arming is TIME-based and must flip mid-span
   // (evals skip during steady playback): re-eval when the armed set changes.
   {

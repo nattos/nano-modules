@@ -409,13 +409,39 @@ class CompExecutor {
   /** Follow-candidate precache window (warmVideoDescs + the mid-span arming
    *  recheck in update — the trigger is TIME-based, evals span-skip). */
   static constexpr double kScenePrewarmSec = 2.0;
+  /** Precache candidates per track, total (announced target + heuristic). */
+  static constexpr int kScenePrewarmMax = 4;
   bool scenePrewarmWanted(const std::string& trackId, const SceneLaunch& l) const;
   /** Launchable sibling scenes to precache for an ARMED track, nearest
-   *  ordinal first, bounded — shared by warmVideoDescs (prime descs) and
-   *  ensureEvalAt (candidate-world pre-instantiation) so the primed frame
-   *  always has an instance to bind to. */
+   *  ordinal first, bounded — the proximity HEURISTIC half of
+   *  scenePrewarmPlan (the announce half knows the exact target). */
   std::vector<const ClipM*> precacheCandidatesFor(const std::string& trackId,
                                                   const SceneLaunch& l) const;
+  /** streams.announce — a controller's declared future launch: "will seek
+   *  this track to scene S in ~eta sec". Level-triggered (effects re-assert
+   *  per tick; expires after kAnnounceStaleSec without a re-assert) so the
+   *  host precaches the EXACT target — proximity can miss Last/Random/custom
+   *  jumps. `cls` is carried for the declared-launch contract; no host
+   *  policy reads it yet (the eventual seek's class governs). */
+  struct SceneAnnounce {
+    std::string sceneId;
+    double etaSec = -1;
+    int32_t cls = 1;
+    double ageSec = 0;  // wall-clock since the last re-assert
+  };
+  std::map<std::string, SceneAnnounce> announces_;  // per track, last-wins
+  static constexpr double kAnnounceStaleSec = 0.5;
+  void announceScene(const std::string& trackId, const std::string& sceneId,
+                     double etaSec, int32_t cls);
+  /** The fresh, in-window announce target for a track — revalidated against
+   *  the CURRENT doc — or nullptr. */
+  const ClipM* announcedTargetFor(const std::string& trackId) const;
+  /** Per-track precache candidates: the announced target FIRST (never
+   *  evicted), then heuristic proximity fills to kScenePrewarmMax. Shared by
+   *  warmVideoDescs (prime descs — video targets only) and ensureEvalAt
+   *  (candidate-world pre-instantiation — ALL targets, so an effect-only /
+   *  gap target's chain also exists before its instant commit). */
+  std::map<std::string, std::vector<const ClipM*>> scenePrewarmPlan() const;
   /** Union of the candidate POST-COMMIT worlds' chains while precache is
    *  armed ({"chain":[...]}, deduped) — requiredJson ships it so a primed
    *  candidate's whole chain exists BEFORE its (fast-path) commit. */
