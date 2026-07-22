@@ -400,6 +400,13 @@ class CompExecutor {
   void commitLaunch(const std::string& trackId, const std::string& sceneId,
                     double launchBeat, double launchSec);
   const ClipM* findSceneClip(const std::string& trackId, const std::string& sceneId) const;
+  /** Follow-candidate precache window (warmVideoDescs + the mid-span arming
+   *  recheck in update — the trigger is TIME-based, evals span-skip). */
+  static constexpr double kScenePrewarmSec = 2.0;
+  bool scenePrewarmWanted(const std::string& trackId, const SceneLaunch& l) const;
+  /** Which tracks were arming candidates at the last eval (a flip mid-span
+   *  forces a re-eval so the warm set updates). */
+  std::string precacheArm_;
   /** Trigger-source routing (instanceKey → target rail), doc-shaped. */
   struct TriggerRoute {
     std::string moduleType;

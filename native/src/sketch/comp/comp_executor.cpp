@@ -321,6 +321,40 @@ void CompExecutor::setVideoReady(const std::string& clipId, bool ready) {
   else readyClips_.erase(clipId);
 }
 
+bool CompExecutor::scenePrewarmWanted(const std::string& trackId, const SceneLaunch& l) const {
+  // A live scene with a FOLLOWER inside its last kScenePrewarmSec: the follow
+  // will fire at the next semantic boundary — warm its candidates now.
+  const ClipM* live = findSceneClip(trackId, l.sceneId);
+  if (!live) return false;
+  bool hasFollower = false;
+  for (const auto& dev : live->transport.devices) {
+    if (catalog_.hasCapability(dev.moduleType, "transport_section")) {
+      hasFollower = true;
+      break;
+    }
+  }
+  if (!hasFollower) return false;
+  double remainingSec = -1;
+  auto cit = streamsTable_.contentByClipId.find(l.sceneId);
+  const StreamInfo* cs =
+      cit != streamsTable_.contentByClipId.end() ? streamsTable_.find(cit->second) : nullptr;
+  if (cs) {
+    const double nowE = streamElapsed(*cs, streamsTable_, 0.0);
+    const int32_t idx = contentEventLowerBound(*cs, nowE, nowE);
+    if (idx < contentEventCount(*cs, nowE)) {
+      double units = contentEventAt(*cs, idx).time - nowE;
+      if (cs->loop.mode == ClipPlayMode::BeatSync) {
+        units *= 60.0 / (doc_.baseBPM > 1 ? doc_.baseBPM : 120.0);
+      }
+      remainingSec = units;
+    }
+  } else {
+    // Effect-only scene: the standard duration clock.
+    remainingSec = l.launchSec + standardClipDurationSec(*live, doc_.baseBPM) - transportSec_;
+  }
+  return remainingSec >= 0 && remainingSec <= kScenePrewarmSec;
+}
+
 const ClipM* CompExecutor::findSceneClip(const std::string& trackId,
                                          const std::string& sceneId) const {
   for (const auto& t : doc_.tracks) {
@@ -653,6 +687,50 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
     }
     seen.insert(p.sceneId);
     warm.push_back(std::move(d));
+  }
+
+  // Follow-candidate precache: when a live scene with a FOLLOWER is inside
+  // its last kScenePrewarmSec (next content event — 'ended' or the pass edge
+  // the follow fires on), warm the track's launchable sibling scenes (entry
+  // pre-seek only; the successor is unknown until the effect fires, so warm
+  // by ordinal proximity, bounded). This is the primary gapless mechanism —
+  // deferral alone would just relocate the gap onto the outgoing scene.
+  static constexpr int kScenePrewarmMax = 4;
+  for (const auto& [trackId, l] : sceneLaunch_) {
+    const ClipM* live = findSceneClip(trackId, l.sceneId);
+    if (!live) continue;
+    if (!scenePrewarmWanted(trackId, l)) continue;
+    auto tit = streamsTable_.trackByTrackId.find(trackId);
+    const StreamInfo* ts =
+        tit != streamsTable_.trackByTrackId.end() ? streamsTable_.find(tit->second) : nullptr;
+    if (!ts) continue;
+    int32_t liveOrd = -1;
+    auto lref = ts->clipsById.find(l.sceneId);
+    if (lref != ts->clipsById.end()) liveOrd = lref->second.ordinal;
+    // Launchable ordinals (start events), nearest-first around the live scene.
+    std::vector<int32_t> cands;
+    for (const auto& e : ts->events) {
+      if (e.kind == 0 && e.clipOrdinal != liveOrd) cands.push_back(e.clipOrdinal);
+    }
+    std::stable_sort(cands.begin(), cands.end(), [&](int32_t a, int32_t b) {
+      return std::abs(a - liveOrd) < std::abs(b - liveOrd);
+    });
+    int added = 0;
+    for (const int32_t ord : cands) {
+      if (added >= kScenePrewarmMax) break;
+      if (ord < 0 || ord >= static_cast<int32_t>(ts->byOrdinalClipId.size())) continue;
+      const std::string& clipId = ts->byOrdinalClipId[static_cast<size_t>(ord)];
+      if (seen.count(clipId)) continue;
+      const ClipM* cand = findSceneClip(trackId, clipId);
+      if (!cand || !cand->hasSourceUrl) continue;
+      // Warm-shaped: an in-the-future anchor makes the pump pre-seek the
+      // candidate's ENTRY frame without playing/injecting it.
+      nlohmann::json d = videoDescFor(*cand, beat + kLookaheadBeats);
+      if (d.is_null()) continue;
+      seen.insert(clipId);
+      warm.push_back(std::move(d));
+      ++added;
+    }
   }
   return warm;
 }
@@ -998,6 +1076,21 @@ uint32_t CompExecutor::update(double dtSec) {
   // dangling entries drop) before this frame's eval.
   applyPendingLaunches(dtSec);
   healSceneLaunches();
+  // Follow-candidate precache arming is TIME-based and must flip mid-span
+  // (evals skip during steady playback): re-eval when the armed set changes.
+  {
+    std::string arm;
+    for (const auto& [trackId, l] : sceneLaunch_) {
+      if (scenePrewarmWanted(trackId, l)) {
+        arm += trackId;
+        arm += ';';
+      }
+    }
+    if (arm != precacheArm_) {
+      precacheArm_ = arm;
+      invalidateEval();
+    }
+  }
   if (scenesDirty_) {
     flags |= kCompScenesChanged;
     scenesDirty_ = false;
