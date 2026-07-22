@@ -175,27 +175,55 @@ void tick(void* self, double dt) {
   s->lastOrdinal = ord;
   s->lastElapsed = elapsed;
 
-  double D;
+  // The fire condition lives on ONE clock: `now` vs `fireAt` in `unit`s, with
+  // unitScale converting a unit to display seconds. Auto reads the content
+  // stream's SEMANTIC timeline — the first event is 'ended' (one-shot: the
+  // auto-stop time) or the first 'looped' (played through once), and a driven
+  // clip's controller-declared future rides the same surface. Fallbacks (no
+  // content stream = effect-only scene; no boundaries = random mode) and the
+  // Beats/Seconds overrides use the standard clip duration clock as before.
+  const double bpm = streams::bpm(parent);
+  const double spb = 60.0 / (bpm > 1 ? bpm : 120.0);
+  double now = elapsed;  // scene seconds
+  double fireAt;
+  double unitScale = 1.0;
+  bool haveFire = false;
   switch (s->followAfter) {
-    case AfterBeats: {
-      const double bpm = streams::bpm(parent);
-      D = s->followBeats * 60.0 / (bpm > 1 ? bpm : 120.0);
+    case AfterBeats:
+      fireAt = s->followBeats * spb;
+      haveFire = fireAt > 0;
+      break;
+    case AfterSeconds:
+      fireAt = s->followSec;
+      haveFire = fireAt > 0;
+      break;
+    default: {
+      const streams::Stream ev = streams::content();
+      streams::Event e0;
+      if (ev && streams::eventCount(ev) > 0 && streams::readEvents(ev, 0, &e0, 1) == 1 &&
+          e0.time > 0) {
+        now = streams::elapsed(ev);
+        fireAt = e0.time;
+        haveFire = !std::isnan(now);
+        // The event axis is seconds — beats for beat-sync clips. Scenes anchor
+        // content at the launch instant, so whichever reading of `now` matches
+        // the scene's elapsed SECONDS reveals the unit (identical at 60 BPM,
+        // where the conversion is 1 anyway).
+        unitScale = std::fabs(now * spb - elapsed) <= std::fabs(now - elapsed) ? spb : 1.0;
+      } else {
+        fireAt = streams::clipDuration(parent, ord);
+        haveFire = !std::isnan(fireAt) && fireAt > 0;
+      }
       break;
     }
-    case AfterSeconds:
-      D = s->followSec;
-      break;
-    default:
-      D = streams::clipDuration(parent, ord);
-      break;
   }
-  if (std::isnan(D) || !(D > 0)) {
+  if (!haveFire) {
     publishRemaining(-1);  // unbounded: never fires (a looping clip runs on)
     return;
   }
-  publishRemaining(std::fmax(0.0, D - elapsed),
-                   std::fmin(1.0, std::fmax(0.0, elapsed / D)));
-  if (s->fired || elapsed < D) return;
+  publishRemaining(std::fmax(0.0, (fireAt - now) * unitScale),
+                   std::fmin(1.0, std::fmax(0.0, now / fireAt)));
+  if (s->fired || now < fireAt) return;
   s->fired = true;
 
   if (s->mode == ModeStop) {

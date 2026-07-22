@@ -89,4 +89,51 @@ describe('Follow actions (GPU)', () => {
 
     expect(errors).toEqual([]);
   });
+
+  it('Auto rides the SEMANTIC event timeline: a looping video scene follows at the first looped edge, not the duration math', async () => {
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore.enginePlugins['core.transport.follow'],
+      { timeout: 30_000 },
+    );
+    const ids = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const st = store.addSceneTrack();
+      const beatsPerBar = store.composition.meta.timeSignature[0];
+      // Scene A: a VIDEO scene (fake media → the engine's test-input fallback;
+      // the streams table only needs the metadata). Loop slice [0,1]s with a
+      // 0.5s play-start: the first 'looped' edge lands at 0.5s — the standard
+      // duration says 1.0s. Auto must fire at the EDGE (event timeline), and
+      // the launch-beat delta proves which clock fired (dt-invariant).
+      const a = store.addVideoClip(st, 0,
+        { sourceKey: 'ktest', url: 'blob:none', frameCount: 300, fps: 30, label: 'v' },
+        beatsPerBar).split('/')[2];
+      const b = store.createEmptyClip(st, beatsPerBar).split('/')[2];
+      store.addClipDeviceType(st, b, 'source.solid_color');
+      const clipA = store.trackById(st).clips.find((c: any) => c.id === a);
+      clipA.loop = { mode: 'time', startSec: 0, endSec: 1, playStartSec: 0.5, speed: 1 };
+      store.insertClipTransportDeviceAt(st, a, 0, 'core.transport.follow'); // all defaults: Next/Track/Auto
+      store.docRev++;
+      store.positionBeat = 0;
+      store.playing = true;
+      store.launchScene(st, a);
+      return { st, a, b };
+    });
+    expect(await playingScene(ids.st)).toBe(ids.a);
+    const next = await waitForSceneChange(ids.st, ids.a, 'A follows to B at the looped edge');
+    expect(next).toBe(ids.b);
+    // 0.5s at 120 BPM = 1 beat; the duration clock would be 2 beats. Allow
+    // one frame of drain latency but stay decisively under the 2-beat line.
+    const delta = await page.evaluate((x) => {
+      const ls = (window as any).arrangementStore.sceneLaunchState[x.st];
+      return ls?.launchBeat ?? null;
+    }, ids);
+    expect(delta).not.toBeNull();
+    expect(delta!).toBeGreaterThan(0.8);
+    expect(delta!).toBeLessThan(1.7);
+  });
 });
