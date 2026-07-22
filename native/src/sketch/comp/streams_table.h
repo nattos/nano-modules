@@ -246,6 +246,10 @@ struct StreamsTable {
     int32_t kind = 0;  // 0 = seek, 1 = stop
     int64_t handle = 0;
     double t = 0;
+    /** Launch deadline class (streams.seek's cls arg): 0 = instant, 1 = loose
+     *  (the default for transport effects — Live mode may linger on the
+     *  outgoing scene while the incoming video warms). */
+    int32_t cls = 1;
   };
   std::vector<StreamOp> pendingOps;
 

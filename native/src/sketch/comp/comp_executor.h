@@ -140,14 +140,29 @@ class CompExecutor {
   /** The composition's base tempo (frameState.bpm for comp-mode instances). */
   double bpm() const { return doc_.baseBPM; }
 
-  /** Edge-triggered readiness from the host's decode pump (Precise gate). */
+  /** Edge-triggered readiness from the host's decode pump (Precise gate +
+   *  pending-launch commits). */
   void setVideoReady(const std::string& clipId, bool ready);
+  /** One-shot handshake: the host DOES run a readiness feed (the web bridge
+   *  sends it at comp boot). Without it every launch commits immediately —
+   *  the native barrel has no feed, so its behavior is unchanged. */
+  void setVideoReadyFeed() { readyFeedAlive_ = true; }
+
+  /** Launch deadline class carried by the launch intent (gapless handover):
+   *  Instant = commit now in Live mode (a played stab — keep pumping frames);
+   *  Loose = the switch may LINGER on the outgoing scene while the incoming
+   *  video warms (autopilot/follow default). Precise mode defers both. */
+  enum LaunchClass : int32_t { kLaunchInstant = 0, kLaunchLoose = 1 };
 
   // ── Scenes (transient launch state — the "session-view live clip trigger"
   // the invalidateEval doc-comment anticipated; never a document reload) ──
-  /** Launch `sceneId` on scene track `trackId`, anchored at the current beat.
-   *  Re-launching the active scene RETRIGGERS (re-anchors) it. */
-  void launchScene(const std::string& trackId, const std::string& sceneId);
+  /** Launch `sceneId` on scene track `trackId`, anchored at the REQUEST beat.
+   *  Re-launching the active scene RETRIGGERS (re-anchors) it. When a
+   *  readiness feed is alive and the incoming video isn't decoded yet, the
+   *  commit DEFERS (per the class/mode policy) — the outgoing scene keeps
+   *  playing while the pump warms the incoming one (gapless handover). */
+  void launchScene(const std::string& trackId, const std::string& sceneId,
+                   int32_t cls = kLaunchInstant);
   /** Stop the playing scene on `trackId` (the track leaves the composite). */
   void stopScene(const std::string& trackId);
   /** Stop every playing scene (document open). */
@@ -229,6 +244,8 @@ class CompExecutor {
   const std::string& layerTargetsJson();
   /** Launched scenes: {trackId: {sceneId, launchBeat}} (UI playing highlight). */
   const std::string& sceneStatesJson();
+  /** Deferred handovers (trackId → incoming {sceneId, launchBeat, launchSec}). */
+  const std::string& pendingScenesJson();
   /** The STATIC seekable-streams registry (streams_table.h) — the web engine
    *  worker mirrors it into its StreamsRegistry on doc-epoch change only. */
   const std::string& streamsJson();
@@ -302,6 +319,9 @@ class CompExecutor {
   void readRailBypassSignals();
   static std::string chainSigOf(const nlohmann::json& sketch);
   static nlohmann::json pumpUnion(const nlohmann::json& target, const nlohmann::json& displayed);
+  /** Drop ready latches for clips no longer in the pump set (their decoders
+   *  are disposed — stale readiness would defeat handover deferral). */
+  void pruneReadyClips();
 
   effect_runtime::EffectRuntime* rt_;  // native effrt rebind; null in wasm
   sketch_executor::ModuleRegistry* registry_;  // for internal-executor rebuilds
@@ -358,6 +378,28 @@ class CompExecutor {
    *  by stopAllScenes (document open). Entries hold ids, not pointers. */
   std::map<std::string, SceneLaunch> sceneLaunch_;
   bool scenesDirty_ = true;  // ship sceneStatesJson on the next update
+  /** Deferred launch commits (gapless handover): request-anchored, single
+   *  slot per track (last wins). While pending, the OUTGOING scene keeps
+   *  playing (heal skips its stop paths) and the incoming scene's desc ships
+   *  ACTIVE-SHAPED in the warm set so the pump opens+plays+injects it — its
+   *  readiness edge (or the wall-clock deadline) commits the launch. */
+  struct PendingLaunch {
+    std::string sceneId;
+    double requestBeat = 0;
+    double requestSec = 0;
+    double ageSec = 0;  // wall-clock (dtSec accumulated — never transport time)
+    int32_t cls = 0;
+  };
+  std::map<std::string, PendingLaunch> pendingLaunch_;
+  /** The POST-COMMIT world's sketch while a handover is pending (identical
+   *  instance keys to what the commit will build) — requiredJson ships its
+   *  chain so the worker pre-instantiates the incoming scene. */
+  nlohmann::json pendingSketch_;
+  bool readyFeedAlive_ = false;
+  void applyPendingLaunches(double dtSec);
+  void commitLaunch(const std::string& trackId, const std::string& sceneId,
+                    double launchBeat, double launchSec);
+  const ClipM* findSceneClip(const std::string& trackId, const std::string& sceneId) const;
   /** Trigger-source routing (instanceKey → target rail), doc-shaped. */
   struct TriggerRoute {
     std::string moduleType;
@@ -416,6 +458,7 @@ class CompExecutor {
   std::string videoDescsScratch_;
   std::string layerTargetsScratch_;
   std::string sceneStatesScratch_;
+  std::string pendingScenesScratch_;
   std::string streamsScratch_;
   std::string transportOrderScratch_;
 };

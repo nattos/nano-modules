@@ -676,8 +676,8 @@ export class WasmHost {
           const s = this.streams?.find(h);
           return s ? this.streams!.clipGrid(s, ordinal) : NaN;
         },
-        seek: (h: bigint, t: number): number =>
-          this.streams?.queueSeek(h, t) ? 1 : 0,
+        seek: (h: bigint, t: number, cls: number): number =>
+          this.streams?.queueSeek(h, t, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
         stop: (h: bigint): number => (this.streams?.queueStop(h) ? 1 : 0),
         event_count: (h: bigint): number => {
           const s = this.streams?.find(h);

@@ -119,6 +119,10 @@ describe('Follow actions (GPU)', () => {
       store.insertClipTransportDeviceAt(st, a, 0, 'core.transport.follow'); // all defaults: Next/Track/Auto
       store.docRev++;
       store.positionBeat = 0;
+      // LIVE mode: UI launches commit instantly — this test pins the EVENT
+      // TIMELINE math, so keep it decoupled from gapless-handover deferral
+      // (the fake blob URL would otherwise pend until the open gives up).
+      store.setTransportMode('live');
       store.playing = true;
       store.launchScene(st, a);
       return { st, a, b };

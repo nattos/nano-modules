@@ -520,11 +520,11 @@ static double streams_clip_grid_fn(wasm_exec_env_t env, int64_t h, int32_t ordin
   return ref ? ref->gridSlot : std::nan("");
 }
 
-static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t) {
+static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t, int32_t cls) {
   auto* table = get_streams(env);
   const comp::StreamInfo* s = table ? table->find(h) : nullptr;
   if (!s || !(s->flags & comp::kStreamTriggerOnSeek)) return 0;
-  table->pendingOps.push_back({0, h, t});
+  table->pendingOps.push_back({0, h, t, cls != 0 ? 1 : 0});
   return 1;
 }
 
@@ -622,7 +622,7 @@ static NativeSymbol streams_symbols[] = {
     {"elapsed", reinterpret_cast<void*>(streams_elapsed_fn), "(I)F", nullptr},
     {"clip_duration", reinterpret_cast<void*>(streams_clip_duration_fn), "(Ii)F", nullptr},
     {"clip_grid", reinterpret_cast<void*>(streams_clip_grid_fn), "(Ii)F", nullptr},
-    {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IF)i", nullptr},
+    {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IFi)i", nullptr},
     {"stop", reinterpret_cast<void*>(streams_stop_fn), "(I)i", nullptr},
     {"event_count", reinterpret_cast<void*>(streams_event_count_fn), "(I)i", nullptr},
     {"read_events", reinterpret_cast<void*>(streams_read_events_fn), "(Iiii)i", nullptr},

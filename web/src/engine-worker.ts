@@ -1035,6 +1035,7 @@ async function simulateTick(dt: number, execDt: number = dt) {
         ...(r.videoDescs !== undefined ? { videoDescs: r.videoDescs } : {}),
         ...(r.layerTargets !== undefined ? { layerTargets: r.layerTargets } : {}),
         ...(r.scenes !== undefined ? { scenes: r.scenes } : {}),
+        ...(r.scenesPending !== undefined ? { scenesPending: r.scenesPending } : {}),
         ...(r.transportOrder ? { transportOrder: r.transportOrder } : {}),
         ...(r.transportTimes ? { transportTimes: r.transportTimes } : {}),
       };

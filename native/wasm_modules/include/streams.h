@@ -146,9 +146,12 @@ extern "C" {
   // time t (scene tracks: ordinal floor(t) — launches it, evicting the
   // track's current scene). Returns 1 when queued, 0 for an invalid handle /
   // non-seek-triggerable stream. Bypassed/empty targets are dropped at apply
-  // time (same matcher as trigger launches).
+  // time (same matcher as trigger launches). `cls` is the launch deadline
+  // class: 0 = instant (commit now, flash or not — a played stab), 1 = loose
+  // (the handover may LINGER on the outgoing scene while the incoming video
+  // warms; the transport-effect default).
   __attribute__((import_module("streams"), import_name("seek")))
-  int32_t streams_seek(int64_t h, double t);
+  int32_t streams_seek(int64_t h, double t, int32_t cls);
   // Stop the playing clip on a scene track (the track leaves the composite).
   __attribute__((import_module("streams"), import_name("stop")))
   int32_t streams_stop(int64_t h);
@@ -280,7 +283,11 @@ inline double anchorSec(Stream h) { return streams_anchor_sec(h); }
 inline double elapsed(Stream h) { return streams_elapsed(h); }
 inline double clipDuration(Stream h, int ordinal) { return streams_clip_duration(h, ordinal); }
 inline double clipGrid(Stream h, int ordinal) { return streams_clip_grid(h, ordinal); }
-inline bool seek(Stream h, double t) { return streams_seek(h, t) != 0; }
+enum LaunchClass : int32_t { LaunchInstant = 0, LaunchLoose = 1 };
+
+inline bool seek(Stream h, double t, LaunchClass cls = LaunchLoose) {
+  return streams_seek(h, t, cls) != 0;
+}
 inline bool stop(Stream h) { return streams_stop(h) != 0; }
 
 inline int eventCount(Stream h) { return streams_event_count(h); }

@@ -321,11 +321,75 @@ void CompExecutor::setVideoReady(const std::string& clipId, bool ready) {
   else readyClips_.erase(clipId);
 }
 
-void CompExecutor::launchScene(const std::string& trackId, const std::string& sceneId) {
+const ClipM* CompExecutor::findSceneClip(const std::string& trackId,
+                                         const std::string& sceneId) const {
+  for (const auto& t : doc_.tracks) {
+    if (t.id != trackId || t.kind != TrackKind::Scene) continue;
+    for (const auto& c : t.clips) {
+      if (c.id == sceneId) return &c;
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+void CompExecutor::launchScene(const std::string& trackId, const std::string& sceneId,
+                               int32_t cls) {
+  // Gapless handover: defer the commit while the incoming VIDEO isn't decoded
+  // yet — the outgoing scene keeps playing and the pump warms the incoming
+  // one (its desc ships active-shaped from warmVideoDescs). Deferral needs a
+  // live readiness feed (the web bridge's handshake; the native barrel has
+  // none → legacy immediate commits), an actual video, and a policy match:
+  // Precise defers everything; Live defers only Loose intents ("we must keep
+  // pumping frames" — an Instant stab commits now, flash or not).
+  const ClipM* scene = findSceneClip(trackId, sceneId);
+  const bool defer = readyFeedAlive_ && scene && scene->hasSourceUrl &&
+                     !readyClips_.count(sceneId) && (precise_ || cls == kLaunchLoose);
+  if (defer) {
+    PendingLaunch p;
+    p.sceneId = sceneId;
+    p.requestBeat = state_.positionBeat;  // REQUEST anchor: chains stay on grid
+    p.requestSec = clock_.secondsAt(p.requestBeat);
+    p.cls = cls;
+    pendingLaunch_[trackId] = std::move(p);  // single slot, last wins
+    scenesDirty_ = true;                     // ships in the pending channel
+    invalidateEval();                        // the pending desc must reach the pump
+    return;
+  }
+  pendingLaunch_.erase(trackId);
+  commitLaunch(trackId, sceneId, state_.positionBeat, clock_.secondsAt(state_.positionBeat));
+}
+
+void CompExecutor::applyPendingLaunches(double dtSec) {
+  for (auto it = pendingLaunch_.begin(); it != pendingLaunch_.end();) {
+    it->second.ageSec += std::max(0.0, dtSec);
+    // Doc edits round-trip through loadDocument while pending survives —
+    // validate like the heal: a vanished track/scene drops the entry.
+    const ClipM* scene = findSceneClip(it->first, it->second.sceneId);
+    if (!scene) {
+      it = pendingLaunch_.erase(it);
+      scenesDirty_ = true;
+      invalidateEval();
+      continue;
+    }
+    const bool ready = !scene->hasSourceUrl || readyClips_.count(it->second.sceneId) > 0;
+    if (ready || it->second.ageSec >= kForceTimeoutSec) {
+      const PendingLaunch p = it->second;
+      const std::string trackId = it->first;
+      it = pendingLaunch_.erase(it);
+      commitLaunch(trackId, p.sceneId, p.requestBeat, p.requestSec);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void CompExecutor::commitLaunch(const std::string& trackId, const std::string& sceneId,
+                                double launchBeat, double launchSec) {
   SceneLaunch& l = sceneLaunch_[trackId];
   l.sceneId = sceneId;
-  l.launchBeat = state_.positionBeat;  // immediate: anchor at the current beat
-  l.launchSec = clock_.secondsAt(l.launchBeat);
+  l.launchBeat = launchBeat;
+  l.launchSec = launchSec;
   // A (re)launch clears any latched transport_ended for this scene — else a
   // controller's stale latch (still live in the effect instance) would let
   // the next heal kill the relaunch before the effect re-arms.
@@ -352,6 +416,10 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
 }
 
 void CompExecutor::stopScene(const std::string& trackId) {
+  if (pendingLaunch_.erase(trackId)) {
+    scenesDirty_ = true;
+    invalidateEval();
+  }
   auto lit = sceneLaunch_.find(trackId);
   if (lit == sceneLaunch_.end()) return;
   auto cit = streamsTable_.contentByClipId.find(lit->second.sceneId);
@@ -363,19 +431,29 @@ void CompExecutor::stopScene(const std::string& trackId) {
     if (StreamInfo* s = streamsTable_.findMutable(pt->second)) s->eventRev++;
   }
   sceneLaunch_.erase(lit);
+  pendingLaunch_.erase(trackId);
   scenesDirty_ = true;
   invalidateEval();
 }
 
 void CompExecutor::stopAllScenes() {
-  if (sceneLaunch_.empty()) return;
+  if (sceneLaunch_.empty() && pendingLaunch_.empty()) return;
   sceneLaunch_.clear();
+  pendingLaunch_.clear();
   scenesDirty_ = true;
   invalidateEval();
 }
 
 void CompExecutor::healSceneLaunches() {
   for (auto it = sceneLaunch_.begin(); it != sceneLaunch_.end();) {
+    // A PENDING handover owns this track's end-of-life: the successor is
+    // already chosen, so no stop path may evict the outgoing scene mid-window
+    // (mirrors the follower defer below — the commit replaces it, bounded by
+    // the pending deadline).
+    if (pendingLaunch_.count(it->first)) {
+      ++it;
+      continue;
+    }
     const TrackM* track = nullptr;
     for (const auto& t : doc_.tracks) {
       if (t.id == it->first && t.kind == TrackKind::Scene) { track = &t; break; }
@@ -548,6 +626,34 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
       warm.push_back(std::move(d));
     }
   }
+
+  // Pending handovers: the incoming scene ships ACTIVE-SHAPED (request-beat
+  // anchor, unbounded window) so the pump opens + plays + INJECTS it while
+  // the outgoing scene still shows — its readiness edge commits the launch,
+  // and the injected frame is exactly what the committed mapping wants (the
+  // commit anchors at the same request beat; zero snap). Warm-shaped descs
+  // can NOT signal readiness (the warm path never injects) — do not "clean
+  // this up" into an entry pre-seek.
+  for (const auto& [trackId, p] : pendingLaunch_) {
+    if (seen.count(p.sceneId)) continue;
+    const ClipM* scene = findSceneClip(trackId, p.sceneId);
+    if (!scene || !scene->hasSourceUrl) continue;
+    nlohmann::json d = videoDescFor(*scene, p.requestBeat, /*unbounded=*/true);
+    if (d.is_null()) continue;
+    // A driven scene has NO times row while pending (rows follow the ACTIVE
+    // tree) — force the real loop config so the pump's mapping, and thus its
+    // readiness verdict, is well-defined rather than an arbitrary fallback.
+    if (d.contains("transport")) {
+      d.erase("transport");
+      d["loop"] = scene->loopJson.is_object() ? scene->loopJson : nlohmann::json::object();
+      if (scene->loopJson.is_object() && scene->loopJson.contains("speed") &&
+          scene->loopJson["speed"].is_number()) {
+        d["speed"] = scene->loopJson["speed"];
+      }
+    }
+    seen.insert(p.sceneId);
+    warm.push_back(std::move(d));
+  }
   return warm;
 }
 
@@ -615,6 +721,34 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   }
   evalActiveDescs_ = videoDescsForTree(evalTree_);
   evalWarmDescs_ = warmVideoDescs(evalTree_, beat);
+  // Pending handovers: pre-build the POST-COMMIT world's sketch (launch map
+  // with pending overlaid — same builder, same anchors ⇒ IDENTICAL instance
+  // keys) and ship its chain through requiredJson, so the worker instantiates
+  // the incoming scene's whole chain (video source, effects, layer) BEFORE
+  // the commit. Without this the swap's first frames render with missing
+  // instances → the layer blanks for exactly the frames instantiation takes.
+  if (pendingLaunch_.empty()) {
+    if (!pendingSketch_.is_null()) {
+      pendingSketch_ = nlohmann::json();
+      flags |= kCompStructureChanged;
+    }
+  } else {
+    std::map<std::string, SceneLaunch> future = sceneLaunch_;
+    for (const auto& [tid, p] : pendingLaunch_) {
+      SceneLaunch l;
+      l.sceneId = p.sceneId;
+      l.launchBeat = p.requestBeat;
+      l.launchSec = p.requestSec;
+      future[tid] = l;
+    }
+    std::vector<CompNode> futureTree =
+        compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &future);
+    SketchBuild fb = buildCompositeRenderFromTree(doc_, catalog_, clock_, futureTree, beat);
+    if (fb.sketch != pendingSketch_) {
+      pendingSketch_ = std::move(fb.sketch);
+      flags |= kCompStructureChanged;  // the worker re-fetches requiredJson
+    }
+  }
   rebuildTransportSketch(beat, flags);
   evalBeat_ = beat;
   evalNextBoundary_ = nextEvalBoundary(doc_, beat, kLookaheadBeats);
@@ -847,7 +981,10 @@ void CompExecutor::drainStreamOps() {
       if (e.kind == 0 && e.clipOrdinal == ord) { launchable = true; break; }
     }
     if (!launchable) continue;
-    launchScene(s->ownerId, s->byOrdinalClipId[static_cast<size_t>(ord)]);
+    // Streams-verb launches come from transport effects (autopilot): Loose —
+    // Live mode may linger on the outgoing scene while the incoming warms.
+    launchScene(s->ownerId, s->byOrdinalClipId[static_cast<size_t>(ord)],
+                static_cast<int32_t>(op.cls));
   }
 }
 
@@ -855,8 +992,11 @@ uint32_t CompExecutor::update(double dtSec) {
   uint32_t flags = 0;
   if (!docLoaded_) return 0;
 
-  // Scene lifecycle first: elapsed one-shots auto-stop (and dangling entries
-  // drop) before this frame's eval, so the launch map the tree sees is current.
+  // Scene lifecycle first: pending handovers commit the moment their video is
+  // ready (BEFORE the heal, so a fresh commit can't be same-frame stopped and
+  // the heal sees the committed map), then elapsed one-shots auto-stop (and
+  // dangling entries drop) before this frame's eval.
+  applyPendingLaunches(dtSec);
   healSceneLaunches();
   if (scenesDirty_) {
     flags |= kCompScenesChanged;
@@ -886,6 +1026,7 @@ uint32_t CompExecutor::update(double dtSec) {
     if (unionSet != pumpDescs_) {
       pumpDescs_ = std::move(unionSet);
       flags |= kCompVideoSetChanged;
+      pruneReadyClips();
     }
     // Automation still evaluates (frozen beat → stable values).
     automation_ = automationEntriesForTree(doc_, evalTree_, state_.positionBeat, clipLoopMode_,
@@ -912,6 +1053,11 @@ uint32_t CompExecutor::update(double dtSec) {
     if (evalWarmDescs_ != pumpDescs_) {
       pumpDescs_ = evalWarmDescs_;
       flags |= kCompVideoSetChanged;
+      // Readiness is only knowable for clips the pump is feeding: a clip that
+      // left the pump set had its decoder DISPOSED — a stale ready latch would
+      // make its next launch commit instantly against a closed pump (the
+      // handover flash this whole mechanism exists to prevent).
+      pruneReadyClips();
     }
     pumpRecheck_ = false;
   }
@@ -922,6 +1068,20 @@ uint32_t CompExecutor::update(double dtSec) {
                                          &layerTargets_);
   sampleStreamsFrame();
   return flags;
+}
+
+void CompExecutor::pruneReadyClips() {
+  if (readyClips_.empty()) return;
+  std::set<std::string> pumped;
+  for (const auto& d : pumpDescs_) {
+    if (d.contains("clipId") && d["clipId"].is_string()) {
+      pumped.insert(d["clipId"].get<std::string>());
+    }
+  }
+  for (auto it = readyClips_.begin(); it != readyClips_.end();) {
+    if (!pumped.count(*it)) it = readyClips_.erase(it);
+    else ++it;
+  }
 }
 
 nlohmann::json CompExecutor::pumpUnion(const nlohmann::json& target,
@@ -1140,6 +1300,18 @@ const std::string& CompExecutor::requiredJson() {
                      {"instanceKey", e.value("instance_key", std::string())}});
     }
   }
+  // Pending handovers: the post-commit world's chain pre-instantiates so the
+  // commit's first frame renders complete (dedupe: unchanged tracks repeat).
+  if (pendingSketch_.is_object() && pendingSketch_.contains("chain")) {
+    std::set<std::string> have;
+    for (const auto& e : req) have.insert(e["instanceKey"].get<std::string>());
+    for (const auto& e : pendingSketch_["chain"]) {
+      const std::string key = e.value("instance_key", std::string());
+      if (have.count(key)) continue;
+      req.push_back({{"moduleType", e.value("module_type", std::string())},
+                     {"instanceKey", key}});
+    }
+  }
   requiredScratch_ = req.dump();
   return requiredScratch_;
 }
@@ -1188,6 +1360,21 @@ const std::string& CompExecutor::sceneStatesJson() {
   }
   sceneStatesScratch_ = out.dump();
   return sceneStatesScratch_;
+}
+
+const std::string& CompExecutor::pendingScenesJson() {
+  // Deferred handovers (gapless): shipped beside sceneStatesJson so the UI can
+  // highlight the INCOMING scene through the pending window (matching the
+  // store's optimistic click state) — the streams registry keeps reading the
+  // LIVE map only (committed semantics).
+  nlohmann::json out = nlohmann::json::object();
+  for (const auto& [trackId, p] : pendingLaunch_) {
+    out[trackId] = {{"sceneId", p.sceneId},
+                    {"launchBeat", p.requestBeat},
+                    {"launchSec", p.requestSec}};
+  }
+  pendingScenesScratch_ = out.dump();
+  return pendingScenesScratch_;
 }
 
 }  // namespace comp

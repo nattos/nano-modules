@@ -129,8 +129,10 @@ export class StreamsRegistry {
 
   /** Queued streams.seek/stop write verbs from effect imports; drained by
    *  executor-host after the transport pre-pass (translated to
-   *  comp_launch_scene/comp_stop_scene). One-frame-latency, like triggers. */
-  pendingOps: { kind: 'seek' | 'stop'; handle: bigint; t: number }[] = [];
+   *  comp_launch_scene/comp_stop_scene). One-frame-latency, like triggers.
+   *  `cls` = launch deadline class (gapless handover): loose handovers may
+   *  linger on the outgoing scene while the incoming video warms. */
+  pendingOps: { kind: 'seek' | 'stop'; handle: bigint; t: number; cls?: 'instant' | 'loose' }[] = [];
 
   /** Warp-aware beat→seconds map, rebuilt with the document (makeWarpClock). */
   secondsAt: (beat: number) => number = (beat) => beat * 0.5;
@@ -395,10 +397,10 @@ export class StreamsRegistry {
 
   /** streams.seek/stop: queue a write verb (validated per the same rules as
    *  the native import — seek needs TriggerOnSeek, stop a scene track). */
-  queueSeek(h: bigint, t: number): boolean {
+  queueSeek(h: bigint, t: number, cls: 'instant' | 'loose' = 'loose'): boolean {
     const s = this.find(h);
     if (!s || !(s.flags & StreamFlags.TriggerOnSeek)) return false;
-    this.pendingOps.push({ kind: 'seek', handle: BigInt.asUintN(64, h), t });
+    this.pendingOps.push({ kind: 'seek', handle: BigInt.asUintN(64, h), t, cls });
     return true;
   }
 

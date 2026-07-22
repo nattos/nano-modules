@@ -120,8 +120,11 @@ interface ExecutorExports {
   comp_chain_keys_json(c: number, out: number, cap: number): number;
   comp_video_descs_json(c: number, out: number, cap: number): number;
   comp_layer_targets_json(c: number, out: number, cap: number): number;
-  comp_launch_scene(c: number, track: number, trackLen: number, scene: number, sceneLen: number): void;
+  comp_launch_scene(c: number, track: number, trackLen: number, scene: number, sceneLen: number,
+                    cls: number): void;
   comp_stop_scene(c: number, track: number, len: number): void;
+  comp_set_video_ready_feed?(c: number): void;
+  comp_pending_scenes_json?(c: number, out: number, cap: number): number;
   comp_stop_all_scenes(c: number): void;
   comp_scene_states_json(c: number, out: number, cap: number): number;
   comp_streams_json(c: number, out: number, cap: number): number;
@@ -951,6 +954,10 @@ export class WasmSketchExecutor {
         this.withBytes(msg.clipId ?? '', (p, l) =>
           this.exports.comp_set_video_ready(c, p, l, msg.ready ? 1 : 0));
         break;
+      // One-shot handshake at comp boot: a readiness feed exists → scene
+      // launches may DEFER (gapless handover). Optional export: a stale
+      // executor.wasm simply keeps legacy immediate commits.
+      case 'videoReadyFeed': this.exports.comp_set_video_ready_feed?.(c); break;
     }
   }
 
@@ -995,9 +1002,10 @@ export class WasmSketchExecutor {
             this.exports.comp_set_source_transform(c, cp, cl, jp, jl)));
         break;
       case 'launchScene':
+        // UI cell clicks are INSTANT-class (0): Live mode commits now.
         this.withBytes(msg.trackId ?? '', (tp, tl) =>
           this.withBytes(msg.sceneId ?? '', (sp, sl) =>
-            this.exports.comp_launch_scene(c, tp, tl, sp, sl)));
+            this.exports.comp_launch_scene(c, tp, tl, sp, sl, 0)));
         break;
       case 'stopScene':
         this.withBytes(msg.trackId ?? '', (p, l) => this.exports.comp_stop_scene(c, p, l));
@@ -1022,7 +1030,7 @@ export class WasmSketchExecutor {
   ): Promise<{ handle: number; hasContent: boolean; structureChanged: boolean;
                holding: boolean; positionBeat: number; positionSec: number;
                chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-               scenes?: string; controlSeq: number;
+               scenes?: string; scenesPending?: string; controlSeq: number;
                transportOrder?: string[]; transportTimes?: Float64Array }> {
     const c = this.ensureComp();
     // Frame-local effrt handle table (repopulated by effrt_instance_for).
@@ -1049,8 +1057,13 @@ export class WasmSketchExecutor {
     // THIS frame's (post-advance) transport. Scenes read early for the same
     // reason (launch anchors re-anchor content streams).
     let scenes: string | undefined;
+    let scenesPending: string | undefined;
     if (scenesChanged) {
       scenes = this.compRead((o, n) => this.exports.comp_scene_states_json(c, o, n)) || '{}';
+      // Deferred handovers (UI highlight only; the registry reads live-only).
+      scenesPending = this.exports.comp_pending_scenes_json
+        ? this.compRead((o, n) => this.exports.comp_pending_scenes_json!(c, o, n)) || '{}'
+        : '{}';
     }
     if (this.streamsRegistry) {
       if (!this.compStreamsFramePtr) this.compStreamsFramePtr = this.exports.malloc(48);
@@ -1166,9 +1179,11 @@ export class WasmSketchExecutor {
         // Launchable = has a START event (excludes bypassed/empty scenes) —
         // LOCK-STEP with the native drainStreamOps validation.
         if (!s.events.some((e) => e.kind === 0 && e.clipOrdinal === ord)) continue;
+        // Streams-verb launches carry the effect's declared class (loose by
+        // default — the handover may linger while the incoming video warms).
         this.withBytes(s.ownerId, (tp, tl) =>
           this.withBytes(sceneId, (sp, sl) =>
-            this.exports.comp_launch_scene(c, tp, tl, sp, sl)));
+            this.exports.comp_launch_scene(c, tp, tl, sp, sl, op.cls === 'instant' ? 0 : 1)));
       }
     }
     // Times channel: resolved rows as a fresh transferable (stride 8; NaN
@@ -1232,7 +1247,7 @@ export class WasmSketchExecutor {
     const out: { handle: number; hasContent: boolean; structureChanged: boolean;
                  holding: boolean; positionBeat: number; positionSec: number;
                  chainKeys?: string[]; videoDescs?: string; layerTargets?: string;
-                 scenes?: string; controlSeq: number;
+                 scenes?: string; scenesPending?: string; controlSeq: number;
                  transportOrder?: string[]; transportTimes?: Float64Array } = {
       handle, hasContent, structureChanged, holding,
       positionBeat: this.exports.comp_position_beat(c),
@@ -1245,6 +1260,7 @@ export class WasmSketchExecutor {
       out.videoDescs = this.compRead((o, n) => this.exports.comp_video_descs_json(c, o, n));
     }
     if (scenes !== undefined) out.scenes = scenes;
+    if (scenesPending !== undefined) out.scenesPending = scenesPending;
     if (transportOrder) out.transportOrder = transportOrder;
     if (transportTimes) out.transportTimes = transportTimes;
     return out;

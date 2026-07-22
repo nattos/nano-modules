@@ -206,14 +206,22 @@ void comp_set_video_ready(CompExecutor* c, const char* clipId, int32_t len, int3
   if (c) c->setVideoReady(std::string(clipId, static_cast<size_t>(len)), ready != 0);
 }
 
+// One-shot handshake: the host runs a readiness feed (sent by the web bridge
+// at comp boot). Without it launches always commit immediately — the native
+// barrel never sends it, so its behavior is unchanged.
+EXEC_EXPORT("comp_set_video_ready_feed")
+void comp_set_video_ready_feed(CompExecutor* c) {
+  if (c) c->setVideoReadyFeed();
+}
+
 // ── Scenes (transient launch state; cheap ops — never a document reload) ──
 
 EXEC_EXPORT("comp_launch_scene")
 void comp_launch_scene(CompExecutor* c, const char* trackId, int32_t track_len,
-                       const char* sceneId, int32_t scene_len) {
+                       const char* sceneId, int32_t scene_len, int32_t cls) {
   if (!c) return;
   c->launchScene(std::string(trackId, static_cast<size_t>(track_len)),
-                 std::string(sceneId, static_cast<size_t>(scene_len)));
+                 std::string(sceneId, static_cast<size_t>(scene_len)), cls);
 }
 
 EXEC_EXPORT("comp_stop_scene")
@@ -325,6 +333,13 @@ int32_t comp_layer_targets_json(CompExecutor* c, char* out, int32_t cap) {
 EXEC_EXPORT("comp_scene_states_json")
 int32_t comp_scene_states_json(CompExecutor* c, char* out, int32_t cap) {
   return c ? writeOut(c->sceneStatesJson(), out, cap) : 0;
+}
+
+// Deferred handovers (gapless): the INCOMING scene per track while its video
+// warms — UI highlight only; the streams registry reads the live map above.
+EXEC_EXPORT("comp_pending_scenes_json")
+int32_t comp_pending_scenes_json(CompExecutor* c, char* out, int32_t cap) {
+  return c ? writeOut(c->pendingScenesJson(), out, cap) : 0;
 }
 
 // The STATIC seekable-streams registry (streams_table.h). Doc-shaped — the web

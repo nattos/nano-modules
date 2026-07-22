@@ -330,8 +330,15 @@ export class EngineBridge {
     }
     if (info.scenes !== undefined) {
       // The executor owns launch state (triggers can launch engine-side); the
-      // store's copy is a mirror for the playing highlight.
-      try { store.setSceneLaunchState(JSON.parse(info.scenes)); } catch { /* keep prev */ }
+      // store's copy is a mirror for the playing highlight. PENDING handovers
+      // (deferred commits) overlay the live map so the highlight tracks the
+      // INCOMING scene through the pending window — matching the store's
+      // optimistic click state instead of snapping back to the outgoing.
+      try {
+        const live = JSON.parse(info.scenes);
+        const pending = info.scenesPending ? JSON.parse(info.scenesPending) : {};
+        store.setSceneLaunchState({ ...live, ...pending });
+      } catch { /* keep prev */ }
     }
     if (info.videoDescs !== undefined) {
       try {
@@ -520,6 +527,13 @@ export class EngineBridge {
     }
     const precise = store.transportMode === 'precise';
     if (precise !== this.sentPrecise) {
+      if (this.sentPrecise === null) {
+        // First control push of this comp session: announce that a readiness
+        // feed exists (pushCompVideoReadiness) — the engine may then DEFER
+        // scene launches until the incoming video is decoded (gapless
+        // handover). The native barrel never announces → legacy commits.
+        e.compControl({ op: 'videoReadyFeed' });
+      }
       this.sentPrecise = precise;
       e.compControl({ op: 'mode', precise });
     }

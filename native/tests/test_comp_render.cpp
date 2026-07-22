@@ -1261,6 +1261,137 @@ TEST_CASE("scenes: launch/replace/retrigger/stop lifecycle", "[comp_scene]") {
   CHECK(json::parse(h.cx.sceneStatesJson()).empty());
 }
 
+TEST_CASE("pending launches: deferred commit, request anchor, class/mode policy",
+          "[comp_pending]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkScene("s1", 8),
+                         mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.setVideoReadyFeed();  // the web bridge's handshake
+  h.cx.play();
+
+  // Effect-only scenes never defer (nothing to decode). Empty track + video
+  // scene DOES defer (uniform policy: the transport never holds for scenes).
+  h.cx.launchScene("st", "s1", comp::CompExecutor::kLaunchLoose);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "s1");
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+
+  // Video scene, loose: DEFERS — the outgoing keeps playing; the incoming
+  // ships ACTIVE-SHAPED in the pump set so the host warms + injects it.
+  const double reqBeat = h.cx.positionBeat();
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchLoose);
+  h.run(3, 1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "s1");
+  CHECK(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v1");
+  {
+    bool pumped = false;
+    for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+      if (d["clipId"] == "v1") {
+        pumped = true;
+        CHECK(d["startBeat"].get<double>() == Catch::Approx(reqBeat).margin(1e-9));
+        CHECK(d["lengthBeat"].get<double>() > 1e8);  // active-shaped, unbounded
+      }
+    }
+    CHECK(pumped);
+  }
+
+  // Readiness commits — anchored at the REQUEST beat, not the commit beat.
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  {
+    const json live = json::parse(h.cx.sceneStatesJson());
+    CHECK(live["st"]["sceneId"] == "v1");
+    CHECK(live["st"]["launchBeat"].get<double>() == Catch::Approx(reqBeat).margin(1e-9));
+  }
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+
+  // Live mode + INSTANT: commits immediately even when not ready (keep
+  // pumping frames).
+  h.cx.setTransportMode(false);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+
+  // v1 left the pump set when v2 took over → its ready latch was PRUNED (a
+  // stale latch would commit instantly against a DISPOSED decoder — exactly
+  // the handover flash). Live + loose → lingers on v2 until ready again.
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchLoose);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+  CHECK(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v1");
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+
+  // Precise defers even INSTANT-class launches.
+  h.cx.setTransportMode(true);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+  CHECK(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v2");
+
+  // Deadline: 2.5 s of WALL-CLOCK dt force-commits without readiness.
+  h.run(80, 1.0 / 30.0);  // ~2.7 s
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+
+  // Release the post-deadline precise hold (v2 active but unready): once v2
+  // is ready and displayed commits, v1 leaves the pump union and its ready
+  // latch prunes — so the next v1 launch defers. (While v1 was still
+  // DISPLAYED under the hold, relaunching it instantly was CORRECT: its
+  // decoder was warm.)
+  h.cx.setVideoReady("v2", true);
+  h.cx.update(1.0 / 60.0);
+  h.cx.update(1.0 / 60.0);
+
+  // stopScene clears a pending entry (and the live one).
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchLoose);
+  h.cx.update(1.0 / 60.0);
+  CHECK(!json::parse(h.cx.pendingScenesJson()).empty());
+  h.cx.stopScene("st");
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+  CHECK(json::parse(h.cx.sceneStatesJson()).empty());
+}
+
+TEST_CASE("pending launches: heal defers the outgoing; doc reloads preserve pending",
+          "[comp_pending]") {
+  EvalHarness h;
+  json oneShot = mkVideoClip("v1", 0, 4);
+  oneShot["loop"] = {{"mode", "one-shot"}, {"startSec", 0}, {"speed", 1},
+                     {"direction", "forward"}};
+  oneShot["source"]["durationFrames"] = 30;  // 1 s — elapses fast
+  const json doc = mkComposition(json::array({mkSceneTrack(
+      "st", json::array({oneShot, mkVideoClip("v2", 4, 4)}))}));
+  h.cx.loadDocument(doc);
+  h.cx.setVideoReadyFeed();
+  h.cx.play();
+
+  h.cx.setVideoReady("v1", true);
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchLoose);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+
+  // Play past the one-shot's 1 s end WITH a pending successor: the heal must
+  // NOT stop the outgoing mid-window (no transparent hole) — the commit
+  // replaces it instead.
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchLoose);
+  h.run(90, 1.0 / 60.0);  // 1.5 s: past the one-shot end, under the deadline
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");  // still alive
+  CHECK(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v2");
+
+  // A doc reload mid-window (every undoable edit round-trips) PRESERVES the
+  // pending entry; a reload that removed the scene drops it.
+  h.cx.loadDocument(doc);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v2");
+  h.cx.setVideoReady("v2", true);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+}
+
 TEST_CASE("scenes: clip lanes anchor at the launch beat", "[comp_scene]") {
   // Pure comp_eval check: a scene's clip-relative lane evaluates from the
   // LAUNCH beat, not the scene's meaningless startBeat.
