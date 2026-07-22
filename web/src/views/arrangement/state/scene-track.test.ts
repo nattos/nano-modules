@@ -319,3 +319,36 @@ describe('scene tracks', () => {
     expect(t.clips[0].triggerChannel).toBe(3);
   });
 });
+
+describe('doc-load heal: transport devices migrate out of the pixel chain', () => {
+  it('moves core.transport.* from sketch.devices into clip.transport with real caps', () => {
+    const comp: any = {
+      meta: { baseBPM: 120, timeSignature: [4, 4] },
+      tracks: [{
+        id: 't1', name: 'S', kind: 'scene', clips: [{
+          id: 'c1', name: 'v', startBeat: 0, lengthBeat: 4, kind: 'video',
+          sketch: {
+            devices: [
+              { id: 'd1', moduleType: 'source.video.file', capabilities: ['source'] },
+              { id: 'd2', moduleType: 'core.transport.follow', capabilities: ['time_independent'],
+                state: { followAfter: 2 } },
+              { id: 'd3', moduleType: 'color.tone.brightness_contrast', capabilities: ['time_independent'] },
+            ],
+            wires: [{ id: 'w1', src: { instanceKey: 'd2', path: 'x' }, dest: { instanceKey: 'd3', path: 'y' } }],
+          },
+          automation: [], exports: [], warps: [],
+        }],
+      }],
+      rails: [],
+    };
+    (store.constructor as any).repairIds(comp);
+    const clip = comp.tracks[0].clips[0];
+    expect(clip.sketch.devices.map((d: any) => d.moduleType))
+      .toEqual(['source.video.file', 'color.tone.brightness_contrast']);
+    expect(clip.transport.devices).toHaveLength(1);
+    expect(clip.transport.devices[0].moduleType).toBe('core.transport.follow');
+    expect(clip.transport.devices[0].capabilities).toEqual(['transport_section']);
+    expect(clip.transport.devices[0].state).toEqual({ followAfter: 2 }); // state survives
+    expect(clip.sketch.wires).toEqual([]); // wires touching the stray drop
+  });
+});

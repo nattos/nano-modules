@@ -132,6 +132,13 @@ const CAPS: ColumnCapabilities = {
 function availableEffects(): AvailableEffect[] {
   return effectCatalog()
     .filter((c) => c.type !== VIDEO_SOURCE_TYPE)
+    // Transport effects live in the clip's TRANSPORT section, never the pixel
+    // chain (their pixel-chain cold path stalls the whole clip's output for
+    // seconds; openArrangement migrates strays out of legacy docs).
+    .filter((c) => {
+      const caps = store.enginePlugins[c.type]?.capabilities ?? [];
+      return !caps.includes('transport_controller') && !caps.includes('transport_section');
+    })
     .map((c) => ({
       id: c.type,
       name: c.name,

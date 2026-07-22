@@ -5090,7 +5090,35 @@ export class ArrangementStore {
         healDevices(c.sketch?.devices);
         healLanes(c.automation);
         ArrangementStore.repairClipLoop(c);
+        ArrangementStore.migrateTransportDevices(c);
       }
+    }
+  }
+
+  /** Transport effects (core.transport.*) belong in the clip's TRANSPORT
+   *  section; earlier palettes let them land in the pixel chain, where the
+   *  cold instantiation path stalls the clip's output for seconds. Move
+   *  strays over on load (matched by module-type prefix — the doc's stamped
+   *  capabilities can't be trusted: pixel-chain adds stamped
+   *  'time_independent'). */
+  private static migrateTransportDevices(c: Clip): void {
+    const devs = c.sketch?.devices;
+    if (!devs?.length) return;
+    const strays = devs.filter((d) => d.moduleType.startsWith('core.transport.'));
+    if (!strays.length) return;
+    c.sketch!.devices = devs.filter((d) => !d.moduleType.startsWith('core.transport.'));
+    c.transport ??= { devices: [], wires: [] };
+    for (const d of strays) {
+      // Re-stamp the section capability (the pixel-chain add stamped
+      // 'time_independent', which would render the section inert in the UI).
+      d.capabilities = d.moduleType === 'core.transport.follow'
+        ? ['transport_section'] : ['transport_controller'];
+      c.transport.devices.push(d);
+    }
+    if (c.sketch?.wires) {
+      const ids = new Set(strays.map((d) => d.id));
+      c.sketch.wires = c.sketch.wires.filter(
+        (w) => !ids.has(w.src.instanceKey) && !ids.has(w.dest.instanceKey));
     }
   }
 
