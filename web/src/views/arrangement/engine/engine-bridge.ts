@@ -337,6 +337,13 @@ export class EngineBridge {
       try {
         const live = JSON.parse(info.scenes);
         const pending = info.scenesPending ? JSON.parse(info.scenesPending) : {};
+        // Diagnostic: count reports carrying an open pending window. A primed
+        // (precached) handover fast-commits and never opens one — probes
+        // assert this stays flat across follow hops (a window renders the
+        // outgoing clip wrapping back to its start for its 1-3 frames).
+        if (Object.keys(pending).length > 0) {
+          (globalThis as any).__arrPendingReports = ((globalThis as any).__arrPendingReports ?? 0) + 1;
+        }
         store.setSceneLaunchState({ ...live, ...pending });
       } catch { /* keep prev */ }
     }

@@ -355,6 +355,40 @@ bool CompExecutor::scenePrewarmWanted(const std::string& trackId, const SceneLau
   return remainingSec >= 0 && remainingSec <= kScenePrewarmSec;
 }
 
+std::vector<const ClipM*> CompExecutor::precacheCandidatesFor(const std::string& trackId,
+                                                              const SceneLaunch& l) const {
+  static constexpr int kScenePrewarmMax = 4;
+  std::vector<const ClipM*> out;
+  auto tit = streamsTable_.trackByTrackId.find(trackId);
+  const StreamInfo* ts =
+      tit != streamsTable_.trackByTrackId.end() ? streamsTable_.find(tit->second) : nullptr;
+  if (!ts) return out;
+  int32_t liveOrd = -1;
+  auto lref = ts->clipsById.find(l.sceneId);
+  if (lref != ts->clipsById.end()) liveOrd = lref->second.ordinal;
+  // Launchable ordinals (start events), nearest-first around the live scene —
+  // the successor is unknown until the effect fires, so warm by proximity.
+  std::vector<int32_t> cands;
+  for (const auto& e : ts->events) {
+    if (e.kind == 0 && e.clipOrdinal != liveOrd) cands.push_back(e.clipOrdinal);
+  }
+  std::stable_sort(cands.begin(), cands.end(), [&](int32_t a, int32_t b) {
+    return std::abs(a - liveOrd) < std::abs(b - liveOrd);
+  });
+  std::set<std::string> taken;
+  for (const int32_t ord : cands) {
+    if (static_cast<int>(out.size()) >= kScenePrewarmMax) break;
+    if (ord < 0 || ord >= static_cast<int32_t>(ts->byOrdinalClipId.size())) continue;
+    const std::string& clipId = ts->byOrdinalClipId[static_cast<size_t>(ord)];
+    if (taken.count(clipId)) continue;
+    const ClipM* cand = findSceneClip(trackId, clipId);
+    if (!cand || !cand->hasSourceUrl) continue;
+    taken.insert(clipId);
+    out.push_back(cand);
+  }
+  return out;
+}
+
 const ClipM* CompExecutor::findSceneClip(const std::string& trackId,
                                          const std::string& sceneId) const {
   for (const auto& t : doc_.tracks) {
@@ -668,68 +702,50 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
   // commit anchors at the same request beat; zero snap). Warm-shaped descs
   // can NOT signal readiness (the warm path never injects) — do not "clean
   // this up" into an entry pre-seek.
+  // A driven scene has NO times row while pending/warming (rows follow the
+  // ACTIVE tree) — force the real loop config so the pump's mapping, and thus
+  // its readiness verdict, is well-defined rather than an arbitrary fallback.
+  auto forceLoopShape = [](nlohmann::json& d, const ClipM& scene) {
+    if (!d.contains("transport")) return;
+    d.erase("transport");
+    d["loop"] = scene.loopJson.is_object() ? scene.loopJson : nlohmann::json::object();
+    if (scene.loopJson.is_object() && scene.loopJson.contains("speed") &&
+        scene.loopJson["speed"].is_number()) {
+      d["speed"] = scene.loopJson["speed"];
+    }
+  };
   for (const auto& [trackId, p] : pendingLaunch_) {
     if (seen.count(p.sceneId)) continue;
     const ClipM* scene = findSceneClip(trackId, p.sceneId);
     if (!scene || !scene->hasSourceUrl) continue;
     nlohmann::json d = videoDescFor(*scene, p.requestBeat, /*unbounded=*/true);
     if (d.is_null()) continue;
-    // A driven scene has NO times row while pending (rows follow the ACTIVE
-    // tree) — force the real loop config so the pump's mapping, and thus its
-    // readiness verdict, is well-defined rather than an arbitrary fallback.
-    if (d.contains("transport")) {
-      d.erase("transport");
-      d["loop"] = scene->loopJson.is_object() ? scene->loopJson : nlohmann::json::object();
-      if (scene->loopJson.is_object() && scene->loopJson.contains("speed") &&
-          scene->loopJson["speed"].is_number()) {
-        d["speed"] = scene->loopJson["speed"];
-      }
-    }
+    forceLoopShape(d, *scene);
     seen.insert(p.sceneId);
     warm.push_back(std::move(d));
   }
 
   // Follow-candidate precache: when a live scene with a FOLLOWER is inside
   // its last kScenePrewarmSec (next content event — 'ended' or the pass edge
-  // the follow fires on), warm the track's launchable sibling scenes (entry
-  // pre-seek only; the successor is unknown until the effect fires, so warm
-  // by ordinal proximity, bounded). This is the primary gapless mechanism —
-  // deferral alone would just relocate the gap onto the outgoing scene.
-  static constexpr int kScenePrewarmMax = 4;
+  // the follow fires on), warm the track's launchable sibling scenes. This is
+  // the primary gapless mechanism — deferral alone would just relocate the
+  // gap onto the outgoing scene. Candidates ship PRIMED: the pump decodes AND
+  // INJECTS the entry frame (the worker retains textures for instances and
+  // binds on creation) and reports real entry readiness, so the follow's
+  // launch hits the readyClips_ fast path and commits SAME-FRAME — a deferral
+  // window here would render the outgoing clip wrapping back to its start
+  // (the "plays 1-3 frames of the first clip again" handover artifact).
   for (const auto& [trackId, l] : sceneLaunch_) {
-    const ClipM* live = findSceneClip(trackId, l.sceneId);
-    if (!live) continue;
     if (!scenePrewarmWanted(trackId, l)) continue;
-    auto tit = streamsTable_.trackByTrackId.find(trackId);
-    const StreamInfo* ts =
-        tit != streamsTable_.trackByTrackId.end() ? streamsTable_.find(tit->second) : nullptr;
-    if (!ts) continue;
-    int32_t liveOrd = -1;
-    auto lref = ts->clipsById.find(l.sceneId);
-    if (lref != ts->clipsById.end()) liveOrd = lref->second.ordinal;
-    // Launchable ordinals (start events), nearest-first around the live scene.
-    std::vector<int32_t> cands;
-    for (const auto& e : ts->events) {
-      if (e.kind == 0 && e.clipOrdinal != liveOrd) cands.push_back(e.clipOrdinal);
-    }
-    std::stable_sort(cands.begin(), cands.end(), [&](int32_t a, int32_t b) {
-      return std::abs(a - liveOrd) < std::abs(b - liveOrd);
-    });
-    int added = 0;
-    for (const int32_t ord : cands) {
-      if (added >= kScenePrewarmMax) break;
-      if (ord < 0 || ord >= static_cast<int32_t>(ts->byOrdinalClipId.size())) continue;
-      const std::string& clipId = ts->byOrdinalClipId[static_cast<size_t>(ord)];
-      if (seen.count(clipId)) continue;
-      const ClipM* cand = findSceneClip(trackId, clipId);
-      if (!cand || !cand->hasSourceUrl) continue;
-      // Warm-shaped: an in-the-future anchor makes the pump pre-seek the
-      // candidate's ENTRY frame without playing/injecting it.
+    for (const ClipM* cand : precacheCandidatesFor(trackId, l)) {
+      if (seen.count(cand->id)) continue;
+      // Warm-shaped (in-the-future anchor: entry targeting, no play) + prime.
       nlohmann::json d = videoDescFor(*cand, beat + kLookaheadBeats);
       if (d.is_null()) continue;
-      seen.insert(clipId);
+      forceLoopShape(d, *cand);
+      d["prime"] = true;
+      seen.insert(cand->id);
       warm.push_back(std::move(d));
-      ++added;
     }
   }
   return warm;
@@ -824,6 +840,36 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
     SketchBuild fb = buildCompositeRenderFromTree(doc_, catalog_, clock_, futureTree, beat);
     if (fb.sketch != pendingSketch_) {
       pendingSketch_ = std::move(fb.sketch);
+      flags |= kCompStructureChanged;  // the worker re-fetches requiredJson
+    }
+  }
+  // Precache candidates: pre-instantiate each candidate's POST-COMMIT world
+  // too (same builder ⇒ identical, anchor-independent instance keys), so a
+  // primed candidate's fast-path commit renders complete on its very first
+  // frame — the primed entry texture is already retained/bound. Alternative
+  // futures per track union by chain (bounded by kScenePrewarmMax).
+  {
+    nlohmann::json cand;
+    std::set<std::string> have;
+    for (const auto& [trackId, l] : sceneLaunch_) {
+      if (!scenePrewarmWanted(trackId, l)) continue;
+      for (const ClipM* c : precacheCandidatesFor(trackId, l)) {
+        std::map<std::string, SceneLaunch> future = sceneLaunch_;
+        future[trackId] = SceneLaunch{c->id, beat, clock_.secondsAt(beat)};
+        std::vector<CompNode> ftree =
+            compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &future);
+        SketchBuild fb = buildCompositeRenderFromTree(doc_, catalog_, clock_, ftree, beat);
+        if (!fb.sketch.is_object() || !fb.sketch.contains("chain")) continue;
+        if (cand.is_null()) cand = nlohmann::json{{"chain", nlohmann::json::array()}};
+        for (auto& e : fb.sketch["chain"]) {
+          const std::string key = e.value("instance_key", std::string());
+          if (!have.insert(key).second) continue;
+          cand["chain"].push_back(std::move(e));
+        }
+      }
+    }
+    if (cand != candidateSketch_) {
+      candidateSketch_ = std::move(cand);
       flags |= kCompStructureChanged;  // the worker re-fetches requiredJson
     }
   }
@@ -1393,16 +1439,20 @@ const std::string& CompExecutor::requiredJson() {
                      {"instanceKey", e.value("instance_key", std::string())}});
     }
   }
-  // Pending handovers: the post-commit world's chain pre-instantiates so the
-  // commit's first frame renders complete (dedupe: unchanged tracks repeat).
-  if (pendingSketch_.is_object() && pendingSketch_.contains("chain")) {
+  // Pending handovers + primed precache candidates: the post-commit worlds'
+  // chains pre-instantiate so a commit's first frame renders complete
+  // (dedupe: unchanged tracks repeat).
+  {
     std::set<std::string> have;
     for (const auto& e : req) have.insert(e["instanceKey"].get<std::string>());
-    for (const auto& e : pendingSketch_["chain"]) {
-      const std::string key = e.value("instance_key", std::string());
-      if (have.count(key)) continue;
-      req.push_back({{"moduleType", e.value("module_type", std::string())},
-                     {"instanceKey", key}});
+    for (const nlohmann::json* sk : {&pendingSketch_, &candidateSketch_}) {
+      if (!sk->is_object() || !sk->contains("chain")) continue;
+      for (const auto& e : (*sk)["chain"]) {
+        const std::string key = e.value("instance_key", std::string());
+        if (!have.insert(key).second) continue;
+        req.push_back({{"moduleType", e.value("module_type", std::string())},
+                       {"instanceKey", key}});
+      }
     }
   }
   requiredScratch_ = req.dump();

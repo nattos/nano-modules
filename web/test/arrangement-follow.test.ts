@@ -140,4 +140,80 @@ describe('Follow actions (GPU)', () => {
     expect(delta!).toBeGreaterThan(0.8);
     expect(delta!).toBeLessThan(1.7);
   });
+
+  it('primed precache: a REAL-media follow ping-pong opens NO pending window in Precise mode', async () => {
+    // The user-visible artifact this pins: with warm-only precache the follow
+    // launch always DEFERRED (warm pumps never inject → readiness can't latch
+    // pre-request), and the 2-4 frame commit round-trip rendered the outgoing
+    // loop wrapping back to its start. Primed candidates inject their entry
+    // frame + latch readiness ahead of the request → the launch fast-commits
+    // same-frame and scenesPending never ships an entry.
+    const errors: string[] = [];
+    page.removeAllListeners('pageerror');
+    page.on('pageerror', (err) => errors.push(String(err)));
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore && !!customElements.get('arrangement-app'),
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(
+      () => !!(window as any).arrangementStore.enginePlugins['core.transport.follow'],
+      { timeout: 30_000 },
+    );
+    const ids = await page.evaluate(() => {
+      const store = (window as any).arrangementStore;
+      const st = store.addSceneTrack();
+      const beatsPerBar = store.composition.meta.timeSignature[0];
+      const media = {
+        sourceKey: 'test_h264', url: '/media/test_h264.mp4',
+        frameCount: 55, fps: 30, width: 1280, height: 720, label: 'h264',
+      };
+      const mk = (bar: number) => {
+        const id = store.addVideoClip(st, bar * beatsPerBar, media, beatsPerBar).split('/')[2];
+        const clip = store.trackById(st).clips.find((c: any) => c.id === id);
+        clip.loop = { mode: 'time', startSec: 0, speed: 1 }; // full-file loop ≈1.83 s
+        store.insertClipTransportDeviceAt(st, id, 0, 'core.transport.follow'); // Next/Track/Auto
+        return id;
+      };
+      const a = mk(0);
+      const b = mk(1);
+      store.docRev++;
+      store.positionBeat = 0;
+      store.setTransportMode('precise');
+      store.playing = true;
+      store.launchScene(st, a);
+      return { st, a, b };
+    });
+
+    // The INITIAL launch legitimately defers (cold media, Precise): wait for
+    // the commit, then baseline the pending-window counter.
+    await page.waitForFunction((x: any) => {
+      const s = (window as any).arrangementStore.sceneLaunchState[x.st];
+      return !!s && s.sceneId === x.a;
+    }, { timeout: 20_000 }, ids);
+    const basePending = await page.evaluate(
+      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
+
+    // The candidate precache arms immediately (loop pass 1.83 s < the 2 s
+    // window): B must ship PRIMED and its pump must inject the entry frame.
+    await page.waitForFunction((x: any) => {
+      const bridge = (window as any).__engineBridge;
+      const primed = bridge?.compPumpDescs?.some((d: any) => d.clipId === x.b && d.prime);
+      const pump = bridge?.video?.pumps?.get(x.b);
+      return !!primed && pump?.primedFrame != null;
+    }, { timeout: 15_000 }, ids);
+
+    // Three hops of the ping-pong (A→B→A→B), every one a fast-path commit.
+    let cur: string | null = ids.a;
+    for (const expect_ of [ids.b, ids.a, ids.b]) {
+      cur = await waitForSceneChange(ids.st, cur, `hop to ${expect_}`);
+      expect(cur).toBe(expect_);
+    }
+    const endPending = await page.evaluate(
+      () => ((globalThis as any).__arrPendingReports ?? 0) as number);
+    await page.evaluate(() => { (window as any).arrangementStore.playing = false; });
+    // Zero pending windows across all three handovers — same-frame commits.
+    expect(endPending).toBe(basePending);
+    expect(errors).toEqual([]);
+  });
 });

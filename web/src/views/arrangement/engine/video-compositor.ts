@@ -70,6 +70,14 @@ export interface VideoClipDesc {
    *  {@link TransportResolver}; the ClipLoopConfig math is bypassed (but
    *  remains the invalid-row fallback via DEFAULT_LOOP). */
   transport?: boolean;
+  /** Precache candidate (engine warmVideoDescs): while warm (pre-start), the
+   *  pump also INJECTS the entry frame — the worker retains textures for
+   *  not-yet-existing instances and binds on creation — and {@link
+   *  VideoCompositor.clipReady} reports REAL entry readiness (injected-key
+   *  match at the entry frame). That readiness edge latches `readyClips_` in
+   *  the engine BEFORE a launch request, so the request commits same-frame
+   *  (no deferral window → no wrapped/blank frames at the handover). */
+  prime?: boolean;
 }
 
 /** One resolved transport row (the comp pre-pass's published transport_*
@@ -165,6 +173,11 @@ interface Pump {
   lastKey?: string;
   /** Last frame decoded for LOOKAHEAD warming (not injected) — dedupe warm pulls. */
   warmedKey?: string;
+  /** PRIMED descs: the entry frame index actually injected pre-start —
+   *  clipReady's entry-readiness check keys off this exact frame (the cursor
+   *  path may present a neighbouring decoded frame, so the target index alone
+   *  would never match). */
+  primedFrame?: number;
   /** Stateful 'random' play-mode walk, driven like a synth oscillator. `phase` is the
    *  NORMALISED progress [0,1) through the current dwell cycle; each frame it advances by
    *  `delta / effectiveDwell`, where `effectiveDwell` is read fresh from the live `dwell`
@@ -646,9 +659,17 @@ export class VideoCompositor {
         if (!active) {
           if (targetSec == null) return;
           const key = `warm:${Math.floor(targetSec * p.fps)}`;
-          if (key === p.warmedKey) return;
-          p.cursor.present(targetSec, 0); // rate 0 ⇒ pre-seek the entry frame
+          if (key === p.warmedKey && (!d.prime || p.primedFrame != null)) return;
+          const res = p.cursor.present(targetSec, 0); // rate 0 ⇒ pre-seek the entry frame
           p.warmedKey = key;
+          if (d.prime && res && this.pumps.has(d.clipId)) {
+            // PRIMED candidate: inject the entry frame now (the worker retains
+            // it until the pre-instantiated instance binds) so readiness can
+            // latch BEFORE the launch request — see VideoClipDesc.prime.
+            const frame = Math.max(0, Math.floor(res.sec * p.fps));
+            p.primedFrame = frame;
+            this.injectFrame(p, res.handle, frame);
+          }
           return;
         }
         const res = p.cursor.present(targetSec!, rate, speed);
@@ -659,9 +680,18 @@ export class VideoCompositor {
         // DXV / image: random-access decode of the exact source frame (service cache).
         const frame = Math.max(0, Math.min(p.frameCount - 1, Math.floor((targetSec ?? 0) * p.fps)));
         if (!active) {
+          if (targetSec == null) return;
           const key = `warm:${frame}`;
-          if (targetSec == null || key === p.warmedKey) return;
-          if ((await this.service!.pull(p.clip, frame)) > 0) p.warmedKey = key; // warm the cache
+          if (key === p.warmedKey && (!d.prime || p.primedFrame != null)) return;
+          const h = await this.service!.pull(p.clip, frame);
+          if (h > 0) {
+            p.warmedKey = key; // warm the cache
+            if (d.prime && this.pumps.has(d.clipId)) {
+              // PRIMED candidate: inject the entry frame (see the cursor path).
+              p.primedFrame = frame;
+              this.injectFrame(p, h, frame);
+            }
+          }
           return;
         }
         const h = await this.service!.pull(p.clip, frame);
@@ -746,6 +776,16 @@ export class VideoCompositor {
     if (this.opening.has(clipId)) return false;
     const pump = this.pumps.get(clipId);
     if (!pump) return false;
+    if (pump.desc.prime && beat < pump.desc.startBeat - 1e-6) {
+      // PRIMED candidate (pre-start): ready means its ENTRY frame is actually
+      // injected. Evaluating at the current beat would return off-slice
+      // "ready" for one-shots (false positive — the engine would fast-commit
+      // a launch against a cold instance) and a never-matching frame for
+      // loops (false negative — the launch defers and the deferral window
+      // renders the outgoing clip wrapping back to its start).
+      return pump.primedFrame != null &&
+          pump.lastKey === this.frameKey(pump, pump.primedFrame);
+    }
     const targetSec = this.targetSecFor(pump, beat, bpm);
     if (targetSec == null) return true; // off-slice ⇒ transparent is a valid "ready"
     if (pump.cursor) return pump.cursor.ready(targetSec);

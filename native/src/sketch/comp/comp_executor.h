@@ -404,6 +404,16 @@ class CompExecutor {
    *  recheck in update — the trigger is TIME-based, evals span-skip). */
   static constexpr double kScenePrewarmSec = 2.0;
   bool scenePrewarmWanted(const std::string& trackId, const SceneLaunch& l) const;
+  /** Launchable sibling scenes to precache for an ARMED track, nearest
+   *  ordinal first, bounded — shared by warmVideoDescs (prime descs) and
+   *  ensureEvalAt (candidate-world pre-instantiation) so the primed frame
+   *  always has an instance to bind to. */
+  std::vector<const ClipM*> precacheCandidatesFor(const std::string& trackId,
+                                                  const SceneLaunch& l) const;
+  /** Union of the candidate POST-COMMIT worlds' chains while precache is
+   *  armed ({"chain":[...]}, deduped) — requiredJson ships it so a primed
+   *  candidate's whole chain exists BEFORE its (fast-path) commit. */
+  nlohmann::json candidateSketch_;
   /** Which tracks were arming candidates at the last eval (a flip mid-span
    *  forces a re-eval so the warm set updates). */
   std::string precacheArm_;

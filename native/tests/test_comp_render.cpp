@@ -1392,6 +1392,67 @@ TEST_CASE("pending launches: heal defers the outgoing; doc reloads preserve pend
   CHECK(json::parse(h.cx.pendingScenesJson()).empty());
 }
 
+TEST_CASE("primed precache: candidates prime + pre-instantiate; readiness fast-path "
+          "commits same-call",
+          "[comp_pending]") {
+  EvalHarness h;
+  h.cx.registerSchema("core.transport.follow", json::object());
+  h.cx.registerCapabilities("core.transport.follow",
+                            json::array({"transport_section"}));
+  // v1: 10 s looping video with a FOLLOWER (arms the candidate precache near
+  // each pass boundary). v2: the launchable sibling the follow would pick.
+  json v1 = mkVideoClip("v1", 0, 4);
+  v1["transport"] = {{"devices", json::array({mkDevice("f", "core.transport.follow")})},
+                     {"wires", json::array()}};
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({std::move(v1), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.setVideoReadyFeed();
+  h.cx.setTransportMode(true);  // Precise
+  h.cx.play();
+
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+
+  // Far from the pass boundary: NOT armed — v2 stays out of the pump set
+  // (scene clips are excluded from the plain warm scan).
+  h.run(60, 1.0 / 60.0);  // ~1 s in
+  for (const auto& d : json::parse(h.cx.videoDescsJson())) CHECK(d["clipId"] != "v2");
+
+  // Inside the last kScenePrewarmSec of v1's pass: v2 ships PRIMED (the pump
+  // injects its entry frame + reports real entry readiness) and its
+  // post-commit chain pre-instantiates through requiredJson.
+  h.run(60 * 8, 1.0 / 60.0);  // ~9 s in, ~1 s remaining
+  {
+    bool sawV2 = false;
+    for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+      if (d["clipId"] != "v2") continue;
+      sawV2 = true;
+      CHECK(d.value("prime", false));
+    }
+    CHECK(sawV2);
+    CHECK(h.cx.requiredJson().find("v2_v") != std::string::npos);
+  }
+
+  // The primed readiness edge lands BEFORE the follow fires, and the latch
+  // survives while the candidate stays pumped...
+  h.cx.setVideoReady("v2", true);
+  h.run(3, 1.0 / 60.0);
+
+  // ...so the launch hits the readyClips_ fast path: committed SAME-CALL with
+  // no pending window — a window here renders the outgoing clip wrapping
+  // back to its start (the "plays 1-3 frames of the first clip" artifact),
+  // even in Precise mode.
+  const double reqBeat = h.cx.positionBeat();
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchLoose);
+  CHECK(json::parse(h.cx.pendingScenesJson()).empty());
+  const json live = json::parse(h.cx.sceneStatesJson());
+  CHECK(live["st"]["sceneId"] == "v2");
+  CHECK(live["st"]["launchBeat"].get<double>() == Catch::Approx(reqBeat).margin(1e-9));
+}
+
 TEST_CASE("scenes: clip lanes anchor at the launch beat", "[comp_scene]") {
   // Pure comp_eval check: a scene's clip-relative lane evaluates from the
   // LAUNCH beat, not the scene's meaningless startBeat.
