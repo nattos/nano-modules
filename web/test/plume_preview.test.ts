@@ -28,9 +28,14 @@ describe('plume preview', () => {
       ['plume_ref_b', { ...base, ridge_scale: 0.85, ridge_depth: 0.55, ridge_aniso: 1.0 }],
       ['plume_ref_c', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4 }],
       ['plume_gi_off_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
-                            bounce: 0.0 }],
+                            bounce: 0.0, fog: 0.0 }],
       ['plume_gi_on_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
-                           bounce: 1.0, gi_decay: 0.75, sun: 0.85 }],
+                           bounce: 1.0, gi_decay: 0.75, sun: 0.85, fog: 0.0 }],
+      ['plume_fog_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
+                         bounce: 0.8, fog: 0.6, fog_soft: 0.6, room_fog: 0.15 }],
+      ['plume_backlit_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
+                             bounce: 0.6, fog: 0.7, fog_soft: 0.7, phase: 0.9,
+                             azimuth: 170, elevation: 10, sun: 1.0 }],
     ] as const) {
       const r = await runEngineTest({
         width: 512, height: 512,

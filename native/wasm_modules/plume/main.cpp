@@ -75,9 +75,25 @@ struct MarchUniforms {
   float albedo[4];     // rgb, w = opacity
   float vp[4];         // w, h, 1/w, 1/h
   float shade_p[4];    // shadow, ao, ambient, rim
-  float fine_p[4];     // R (base radius), px_world (per unit t), shadow_k, 0
+  float fine_p[4];     // R (base radius), px_world (per unit t), inv_lip, bounce
+  float misc[4];       // scene_mode, 0, 0, 0
 };
-static_assert(sizeof(MarchUniforms) == 144, "MarchUniforms layout mismatch");
+static_assert(sizeof(MarchUniforms) == 160, "MarchUniforms layout mismatch");
+
+struct FogUniforms {
+  float cam_row0[4];
+  float cam_row1[4];
+  float cam_row2[4];
+  float cam_p[4];      // focal, cover_ax, cover_ay, R
+  float sun_p[4];      // sun dir toward light, w = intensity
+  float fog_p[4];      // shell gain, inv_soft, room gain, phase g
+  float misc[4];       // inv_lip, ambient, bounce, 0
+  float vp[4];         // half w, half h, 1/half w, 1/half h
+};
+static_assert(sizeof(FogUniforms) == 128, "FogUniforms layout mismatch");
+
+struct CompUniforms { float opacity, has_bg, _p0, _p1; };
+static_assert(sizeof(CompUniforms) == 16, "CompUniforms layout mismatch");
 
 struct DebugUniforms { float mode, slice, scale, _pad0; };
 static_assert(sizeof(DebugUniforms) == 16, "DebugUniforms layout mismatch");
@@ -95,10 +111,13 @@ static_assert(sizeof(PropUniforms) == 16, "PropUniforms layout mismatch");
 static gpu::ComputePSO s_pso_shell;
 static gpu::ComputePSO s_pso_bake;
 static gpu::ComputePSO s_pso_march;
+static gpu::ComputePSO s_pso_march_hdr;
 static gpu::ComputePSO s_pso_prefill;
 static gpu::ComputePSO s_pso_debug;
 static gpu::ComputePSO s_pso_inject;
 static gpu::ComputePSO s_pso_prop;
+static gpu::ComputePSO s_pso_fog;
+static gpu::ComputePSO s_pso_comp;
 
 // ---------------------------------------------------------------------------
 
@@ -106,15 +125,18 @@ struct State {
   bool initialized = false;
 
   gpu::Buffer ub_shell_full, ub_shell_coarse, ub_bake, ub_march, ub_debug;
-  gpu::Buffer ub_inject, ub_prop;
+  gpu::Buffer ub_inject, ub_prop, ub_fog, ub_comp;
   gpu::Texture shell_full, shell_coarse;   // 2D RGBA16F, fixed sizes (lazy)
   gpu::Texture sdf_vol;                    // 3D RGBA16F 128³ (lazy)
   gpu::Texture rad_vol[3];                 // GI wave field: prev/cur/next ring
   gpu::Texture inject_vol;                 // GI source term (lazy with rad)
   gpu::Texture zero_vol;                   // 1³ zeros (GI-off stand-in)
   gpu::Texture zero_tex;                   // 1×1 zeros (unwired-input stand-in)
+  gpu::Texture scene_tex;                  // vp RGBA16F: color + hit distance
+  gpu::Texture fog_tex;                    // vp/2 RGBA16F: in-scatter + trans
   gpu::Sampler samp_clamp;
   int rad_rot = 0;                         // ring index of "cur"
+  int scratch_w = 0, scratch_h = 0;
 
   // Param mirrors.
   float radius = 0.5f;
@@ -138,6 +160,10 @@ struct State {
   float resonance = 0.35f;
   float gi_speed = 0.5f;
   float gi_decay = 0.5f;
+  float fog = 0.25f;
+  float fog_soft = 0.5f;
+  float phase = 0.4f;
+  float room_fog = 0.0f;
   float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
   float opacity = 1.0f;
   int debug_view = DBG_OFF;
@@ -224,6 +250,23 @@ void module_init() {
           .label("Light Speed", "Spd")
       .floatField("gi_decay", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Decay", "Dcy")
+      // --- Atmosphere ---
+      .group("atmosphere", "Atmosphere")
+        .groupHelp(
+          "*Fog* is a haze that hugs the displaced surface (its light comes "
+          "from the same wave field as the bounce — the shape glows into "
+          "its own atmosphere). *Softness* sets how far the haze reaches "
+          "off the shell; *Phase* pushes the sun's in-scatter forward "
+          "(silvery backlit shafts near ±180 azimuth); *Room Fog* adds a "
+          "thin medium everywhere for depth.")
+      .floatField("fog", 0.25f, 0.f, 1.f, state::PrimaryInput)
+          .label("Fog", "Fog")
+      .floatField("fog_soft", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Softness", "Soft")
+      .floatField("phase", 0.4f, 0.f, 1.f, state::PrimaryInput)
+          .label("Phase", "Phase")
+      .floatField("room_fog", 0.0f, 0.f, 1.f, state::PrimaryInput)
+          .label("Room Fog", "Room")
       // --- Material ---
       .group("material", "Material")
       .rgbField("albedo", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
@@ -253,7 +296,13 @@ void module_init() {
                            "rgba16float", "write");
   state::registerShaderSPV("plume_bake", BAKE_SPV, BAKE_SPV_SIZE,
                            "rgba16float", "write");
+  // march is registered twice: the direct path writes tex_out (sketch
+  // default format), the fog path writes the RGBA16F scene buffer — each
+  // name gets the right naga storage-format substitution (flash_particles
+  // prefill precedent).
   state::registerShaderSPV("plume_march", MARCH_SPV, MARCH_SPV_SIZE);
+  state::registerShaderSPV("plume_march_hdr", MARCH_SPV, MARCH_SPV_SIZE,
+                           "rgba16float", "write");
   state::registerShaderSPV("plume_prefill", PREFILL_SPV, PREFILL_SPV_SIZE);
   state::registerShaderSPV("plume_slice_debug", SLICE_DEBUG_SPV,
                            SLICE_DEBUG_SPV_SIZE);
@@ -261,16 +310,22 @@ void module_init() {
                            "rgba16float", "write");
   state::registerShaderSPV("plume_gi_prop", GI_PROP_SPV, GI_PROP_SPV_SIZE,
                            "rgba16float", "write");
+  state::registerShaderSPV("plume_fog", FOG_SPV, FOG_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("plume_composite", COMPOSITE_SPV, COMPOSITE_SPV_SIZE);
 
   auto cs_shell = gpu::Device::createShaderModuleByName("plume_shell");
   auto cs_bake = gpu::Device::createShaderModuleByName("plume_bake");
   auto cs_march = gpu::Device::createShaderModuleByName("plume_march");
   auto cs_prefill = gpu::Device::createShaderModuleByName("plume_prefill");
   auto cs_debug = gpu::Device::createShaderModuleByName("plume_slice_debug");
+  auto cs_march_hdr = gpu::Device::createShaderModuleByName("plume_march_hdr");
   auto cs_inject = gpu::Device::createShaderModuleByName("plume_gi_inject");
   auto cs_prop = gpu::Device::createShaderModuleByName("plume_gi_prop");
-  if (!cs_shell || !cs_bake || !cs_march || !cs_prefill || !cs_debug ||
-      !cs_inject || !cs_prop) return;
+  auto cs_fog = gpu::Device::createShaderModuleByName("plume_fog");
+  auto cs_comp = gpu::Device::createShaderModuleByName("plume_composite");
+  if (!cs_shell || !cs_bake || !cs_march || !cs_march_hdr || !cs_prefill ||
+      !cs_debug || !cs_inject || !cs_prop || !cs_fog || !cs_comp) return;
 
   s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)
@@ -286,6 +341,14 @@ void module_init() {
       .tex2d(2)
       .sampler(3)
       .storageTex2d(4)
+      .uniform(5)
+      .tex3d(6));
+  s_pso_march_hdr = gpu::Device::createComputePSO(cs_march_hdr, "main", gpu::Bindings()
+      .tex3d(0)
+      .tex2d(1)
+      .tex2d(2)
+      .sampler(3)
+      .storageTex2d(4, gpu::TextureFormat::RGBA16F)
       .uniform(5)
       .tex3d(6));
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
@@ -312,6 +375,20 @@ void module_init() {
       .sampler(4)
       .storageTex3d(5, gpu::TextureFormat::RGBA16F)
       .uniform(6));
+  s_pso_fog = gpu::Device::createComputePSO(cs_fog, "main", gpu::Bindings()
+      .tex3d(0)
+      .tex3d(1)
+      .tex2d(2)
+      .sampler(3)
+      .storageTex2d(4, gpu::TextureFormat::RGBA16F)
+      .uniform(5));
+  s_pso_comp = gpu::Device::createComputePSO(cs_comp, "main", gpu::Bindings()
+      .tex2d(0)
+      .tex2d(1)
+      .tex2d(2)
+      .sampler(3)
+      .storageTex2d(4)
+      .uniform(5));
 
   state::log("plume: module initialized");
 }
@@ -332,6 +409,10 @@ void* create() {
                                            gpu::BufferUsage::Uniform);
   s->ub_prop = gpu::Device::createBuffer(sizeof(PropUniforms),
                                          gpu::BufferUsage::Uniform);
+  s->ub_fog = gpu::Device::createBuffer(sizeof(FogUniforms),
+                                        gpu::BufferUsage::Uniform);
+  s->ub_comp = gpu::Device::createBuffer(sizeof(CompUniforms),
+                                         gpu::BufferUsage::Uniform);
   s->zero_vol = gpu::Device::createTexture3D(1, 1, 1, gpu::TextureFormat::RGBA16F);
   s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
   if (s->zero_tex.valid())
@@ -351,6 +432,10 @@ void destroy(void* self) {
   s->ub_debug.release();
   s->ub_inject.release();
   s->ub_prop.release();
+  s->ub_fog.release();
+  s->ub_comp.release();
+  s->scene_tex.release();
+  s->fog_tex.release();
   s->shell_full.release();
   s->shell_coarse.release();
   s->sdf_vol.release();
@@ -373,7 +458,10 @@ void init(void* self) {
                    s->ub_prop.valid() && s_pso_shell.valid() &&
                    s_pso_bake.valid() && s_pso_march.valid() &&
                    s_pso_prefill.valid() && s_pso_debug.valid() &&
-                   s_pso_inject.valid() && s_pso_prop.valid();
+                   s_pso_inject.valid() && s_pso_prop.valid() &&
+                   s_pso_march_hdr.valid() && s_pso_fog.valid() &&
+                   s_pso_comp.valid() && s->ub_fog.valid() &&
+                   s->ub_comp.valid();
 }
 
 static inline double wrap01(double v) { return v - std::floor(v); }
@@ -422,6 +510,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "resonance"))   s->resonance = state::patchFloat(i);
     else if (state::pathIs(p, l, "gi_speed"))    s->gi_speed = state::patchFloat(i);
     else if (state::pathIs(p, l, "gi_decay"))    s->gi_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "fog"))         s->fog = state::patchFloat(i);
+    else if (state::pathIs(p, l, "fog_soft"))    s->fog_soft = state::patchFloat(i);
+    else if (state::pathIs(p, l, "phase"))       s->phase = state::patchFloat(i);
+    else if (state::pathIs(p, l, "room_fog"))    s->room_fog = state::patchFloat(i);
     else if (state::pathIs(p, l, "albedo")) {
       auto v = state::patchVec3(i);
       s->albedo_r = v.x; s->albedo_g = v.y; s->albedo_b = v.z;
@@ -635,6 +727,28 @@ void render(void* self, int vp_w, int vp_h) {
     return;
   }
 
+  // --- Fog pipeline scratch (lazy, vp-sized, only when fog is on) ---
+  bool fog_on = s->fog > 0.001f || s->room_fog > 0.001f;
+  const bool resized = (s->scratch_w != vp_w || s->scratch_h != vp_h);
+  const int half_w = (vp_w + 1) / 2, half_h = (vp_h + 1) / 2;
+  if (fog_on) {
+    if (!s->scene_tex.valid() || resized) {
+      s->scene_tex.release();
+      s->scene_tex = gpu::Device::createTexture(vp_w, vp_h,
+                                                gpu::TextureFormat::RGBA16F);
+    }
+    if (!s->fog_tex.valid() || resized) {
+      s->fog_tex.release();
+      s->fog_tex = gpu::Device::createTexture(half_w, half_h,
+                                              gpu::TextureFormat::RGBA16F);
+    }
+    fog_on = s->scene_tex.valid() && s->fog_tex.valid();
+    // Dims track the LIVE scratch only — if fog is off across a resize,
+    // `resized` stays stale-true and the textures rebuild on re-entry.
+    s->scratch_w = vp_w;
+    s->scratch_h = vp_h;
+  }
+
   // --- Camera: orbit yaw accumulator + tilt, framing-hold dolly ---
   const auto cs = fx::coverSquare(vp_w, vp_h);
   const float yaw = kTau * (float)s->orbit_phase;
@@ -687,20 +801,70 @@ void render(void* self, int vp_w, int vp_h) {
   // Decompression for penumbra/AO reads of the compressed grid distances.
   mu.fine_p[2] = 1.0f / lip;
   mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
+  mu.misc[0] = fog_on ? 1.0f : 0.0f;
   s->ub_march.writeOne(mu);
 
   {
     auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_march);
+    cp.setPSO(fog_on ? s_pso_march_hdr : s_pso_march);
     cp.setTexture(s->sdf_vol, 0, 0);
     cp.setTexture(in.valid() ? in : s->zero_tex, 1, 0);
     cp.setTexture(s->shell_full, 2, 0);
     cp.setSampler(s->samp_clamp, 3);
-    cp.setTexture(out, 4, 1);
+    cp.setTexture(fog_on ? s->scene_tex : out, 4, 1);
     cp.setBuffer(s->ub_march, 5);
     cp.setTexture(rad_cur, 6, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
+  }
+
+  if (fog_on) {
+    FogUniforms fu = {};
+    for (int i = 0; i < 4; i++) {
+      fu.cam_row0[i] = mu.cam_row0[i];
+      fu.cam_row1[i] = mu.cam_row1[i];
+      fu.cam_row2[i] = mu.cam_row2[i];
+      fu.sun_p[i] = mu.sun_p[i];
+    }
+    fu.cam_p[0] = focal; fu.cam_p[1] = cs.ax; fu.cam_p[2] = cs.ay;
+    fu.cam_p[3] = R;
+    fu.fog_p[0] = s->fog * 5.0f;
+    fu.fog_p[1] = 1.4427f / (0.04f + 0.30f * s->fog_soft);
+    fu.fog_p[2] = s->room_fog * 1.2f;
+    fu.fog_p[3] = 0.75f * s->phase;
+    fu.misc[0] = 1.0f / lip;
+    fu.misc[1] = s->ambient;
+    fu.misc[2] = gi_on ? 1.2f * s->bounce : 0.0f;
+    fu.vp[0] = (float)half_w; fu.vp[1] = (float)half_h;
+    fu.vp[2] = 1.0f / half_w; fu.vp[3] = 1.0f / half_h;
+    s->ub_fog.writeOne(fu);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_fog);
+      cp.setTexture(s->sdf_vol, 0, 0);
+      cp.setTexture(rad_cur, 1, 0);
+      cp.setTexture(s->scene_tex, 2, 0);
+      cp.setSampler(s->samp_clamp, 3);
+      cp.setTexture(s->fog_tex, 4, 1);
+      cp.setBuffer(s->ub_fog, 5);
+      cp.dispatch((half_w + 7) / 8, (half_h + 7) / 8);
+      cp.end();
+    }
+
+    CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, 0.f, 0.f };
+    s->ub_comp.writeOne(cu);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_comp);
+      cp.setTexture(s->scene_tex, 0, 0);
+      cp.setTexture(s->fog_tex, 1, 0);
+      cp.setTexture(in.valid() ? in : s->zero_tex, 2, 0);
+      cp.setSampler(s->samp_clamp, 3);
+      cp.setTexture(out, 4, 1);
+      cp.setBuffer(s->ub_comp, 5);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+    }
   }
 
   gpu::Device::submit();

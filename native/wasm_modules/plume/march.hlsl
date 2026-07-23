@@ -31,6 +31,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 vp;          // w, h, 1/w, 1/h
   float4 shade_p;     // shadow, ao, ambient, rim
   float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, bounce
+  float4 misc;        // scene_mode (fog pipeline: write color+depth), 0, 0, 0
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -71,9 +72,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
                         cam_row2.xyz * V.z);
   float3 ro = float3(cam_row0.w, cam_row1.w, cam_row2.w);
 
+  // Fog-pipeline mode: emit (shaded color, hit distance) for the fog +
+  // composite passes instead of compositing over the input here.
+  bool scene_mode = misc.x > 0.5;
+
   float t0, t1;
   if (!plm_box(ro, rd, t0, t1)) {
-    outTex[gid.xy] = bg;
+    outTex[gid.xy] = scene_mode ? float4(0.0, 0.0, 0.0, 6.0e4) : bg;
     return;
   }
 
@@ -101,7 +106,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   if (!hit) {
-    outTex[gid.xy] = bg;
+    outTex[gid.xy] = scene_mode ? float4(0.0, 0.0, 0.0, 6.0e4) : bg;
     return;
   }
 
@@ -184,6 +189,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Gentle shoulder: keeps the key from clipping chalky.
   c = c / (1.0 + 0.18 * c);
 
+  if (scene_mode) {
+    outTex[gid.xy] = float4(c, t);
+    return;
+  }
   float w_op = albedo.w;
   outTex[gid.xy] = float4(lerp(bg.rgb, c, w_op), max(bg.a, w_op));
 }

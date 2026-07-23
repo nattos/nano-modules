@@ -16,10 +16,12 @@ import type { Sketch } from '../src/sketch-types';
 const BG = { r: 178, g: 178, b: 191 };
 const lum = (c: { r: number, g: number, b: number }) => (c.r + c.g + c.b) / 3;
 
-// Frozen accumulators + dark body against the bright input.
+// Frozen accumulators + dark body against the bright input. Atmosphere is
+// pinned off (it reaches the whole frame by design) so corner probes stay
+// exact — fog behavior gets its own dedicated test.
 const STATIC = {
   orbit: 0.0, morph: 0.0, tilt: 0.1, zoom: 0.25,
-  albedo: [0.1, 0.1, 0.1], opacity: 1.0,
+  albedo: [0.1, 0.1, 0.1], opacity: 1.0, fog: 0.0, room_fog: 0.0,
 };
 
 function buildSketch(params: Record<string, unknown>,
@@ -145,6 +147,20 @@ describe('source.sdf.plume E2E', () => {
       }
     }
     expect(maxLum).toBeGreaterThan(15);
+  });
+
+  it('fog wraps the body in haze; room fog lifts the whole frame', async () => {
+    const clear = await render('plume_fog_off', { ...STATIC });
+    const hazy = await render('plume_fog_on',
+      { ...STATIC, fog: 0.8, fog_soft: 0.8 });
+    hazy.trace('out').expectDifferentFrom(clear.trace('out'), 8);
+    // The shell haze is bright over the dark body's silhouette region.
+    const edge = { x: 48, y: 26 };
+    expect(lum(hazy.trace('out').pixelAt(edge.x, edge.y)))
+        .toBeGreaterThan(lum(clear.trace('out').pixelAt(edge.x, edge.y)) - 2);
+    const roomy = await render('plume_room_fog',
+      { ...STATIC, room_fog: 1.0 });
+    roomy.trace('out').expectDifferentFrom(clear.trace('out'), 5);
   });
 
   it('orbit animates across frames', async () => {
