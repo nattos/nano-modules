@@ -155,6 +155,42 @@ inline double standardClipDurationSec(const ClipM& clip, double baseBPM) {
   return clip.lengthBeat * 60.0 / (baseBPM > 1 ? baseBPM : 120.0);
 }
 
+// ── Resources (ABI v4): a resource is the ASSET; a stream is its TRANSPORT
+// VIEW. resources.stream(res) fetches the view; future kinds (file / image /
+// audio) add data/texture views on the same handle namespace by appending
+// ops. Identity domain "res:clip:<clipId>" — same FNV scheme, disjoint from
+// stream identities by the domain prefix. Effect-side enum twins:
+// wasm_modules/include/resources.h (values are ABI).
+
+enum ResourceKind : int32_t {
+  kResKindInvalid = 0,
+  kResKindClipContent = 1,  // a clip's playable media
+  kResKindFile = 2,         // RESERVED: raw binary asset
+  kResKindImage = 3,        // RESERVED: static image
+  kResKindAudio = 4,        // RESERVED: audio asset
+};
+
+enum ResourceFlags : int32_t {
+  kResHasStream = 1 << 0,   // resources.stream() answers non-zero
+  kResHasData = 1 << 1,     // RESERVED: byte view
+  kResHasTexture = 1 << 2,  // RESERVED: texture view
+  kResForkable = 1 << 3,    // resources.fork() accepted
+};
+
+struct ResourceInfo {
+  int64_t handle = 0;
+  int32_t kind = kResKindInvalid;
+  int32_t flags = 0;
+  /** The seekable-stream view handle (0 = not stream-backed). */
+  int64_t stream = 0;
+  int64_t sizeBytes = -1;
+  double durationSec = -1;
+  int32_t width = 0;
+  int32_t height = 0;
+  /** clipId for ClipContent resources. */
+  std::string ownerId;
+};
+
 struct StreamInfo {
   int64_t handle = kStreamInvalid;
   int32_t kind = kStreamKindInvalid;
@@ -224,6 +260,10 @@ struct StreamsTable {
   std::unordered_map<std::string, int64_t> contentByClipId;
   /** trackId → track stream handle (no-alloc per-frame scene sync). */
   std::unordered_map<std::string, int64_t> trackByTrackId;
+  /** Resources (the asset namespace) — one ClipContent resource per
+   *  video-backed clip today. */
+  std::unordered_map<int64_t, ResourceInfo> resourcesByHandle;
+  std::unordered_map<std::string, int64_t> resourceByClipId;
 
   /** Per-frame transport sample — mutated in place by CompExecutor::update();
    *  the import handlers read it directly (no copies, no messages). */
@@ -264,6 +304,10 @@ struct StreamsTable {
   StreamInfo* findMutable(int64_t h) {
     auto it = byHandle.find(h);
     return it == byHandle.end() ? nullptr : &streams[static_cast<size_t>(it->second)];
+  }
+  const ResourceInfo* findResource(int64_t h) const {
+    auto it = resourcesByHandle.find(h);
+    return it == resourcesByHandle.end() ? nullptr : &it->second;
   }
 };
 
@@ -463,6 +507,25 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       s.seed = clipNoiseSeed(clip.id);
       s.eventRev = docRev;
       t.contentByClipId[clip.id] = s.handle;
+
+      // The clip's ASSET, as a resource. Its rev mirrors the content stream's
+      // eventRev at read time (resolved through `stream`, never copied).
+      ResourceInfo r;
+      r.handle = streamHandleOf("res:clip:" + clip.id);
+      r.kind = kResKindClipContent;
+      r.flags = kResHasStream | kResForkable;
+      r.stream = s.handle;
+      r.durationSec = s.videoDurSec;
+      if (src.is_object()) {
+        if (src.contains("width") && src["width"].is_number())
+          r.width = src["width"].get<int32_t>();
+        if (src.contains("height") && src["height"].is_number())
+          r.height = src["height"].get<int32_t>();
+      }
+      r.ownerId = clip.id;
+      t.resourceByClipId[clip.id] = r.handle;
+      t.resourcesByHandle[r.handle] = std::move(r);
+
       push(std::move(s));
     }
   }
@@ -722,6 +785,36 @@ inline const std::string* clipIdForInstanceKey(const StreamsTable& t, const std:
   return best;
 }
 
+// ── Resource evaluators (LOCK-STEP: web/src/streams-registry.ts) ────────────
+
+/** The resource of the clip currently LIVE on a scene track (0 idle /
+ *  non-scene / clip has no media). */
+inline int64_t resourceForTrackLive(const StreamsTable& t, const StreamInfo& s) {
+  if (s.kind != kStreamKindSceneTrack || std::isnan(s.liveOrdinal)) return 0;
+  const int32_t ord = static_cast<int32_t>(s.liveOrdinal);
+  if (ord < 0 || ord >= static_cast<int32_t>(s.byOrdinalClipId.size())) return 0;
+  auto it = t.resourceByClipId.find(s.byOrdinalClipId[static_cast<size_t>(ord)]);
+  return it == t.resourceByClipId.end() ? 0 : it->second;
+}
+
+/** The resource of the clip at grid ordinal N on a track stream (either
+ *  track kind). 0 out of range / no media. */
+inline int64_t resourceForTrackClipAt(const StreamsTable& t, const StreamInfo& s,
+                                      int32_t ordinal) {
+  if (ordinal < 0 || ordinal >= static_cast<int32_t>(s.byOrdinalClipId.size())) return 0;
+  auto it = t.resourceByClipId.find(s.byOrdinalClipId[static_cast<size_t>(ordinal)]);
+  return it == t.resourceByClipId.end() ? 0 : it->second;
+}
+
+/** A resource's change token: the underlying stream's eventRev for
+ *  stream-backed resources, else the table's docRev. */
+inline int32_t resourceRev(const StreamsTable& t, const ResourceInfo& r) {
+  if (r.stream != 0) {
+    if (const StreamInfo* s = t.find(r.stream)) return s->eventRev;
+  }
+  return t.docRev;
+}
+
 /**
  * Serialize the STATIC registry for the web engine worker's StreamsRegistry
  * twin. Fetched on doc-epoch change only — never per frame. Handles are
@@ -774,6 +867,24 @@ inline std::string streamsTableJson(const StreamsTable& t) {
   for (const auto& [clipId, h] : t.parentByClipId) out["parentByClipId"][clipId] = handleStr(h);
   for (const auto& [clipId, h] : t.contentByClipId) out["contentByClipId"][clipId] = handleStr(h);
   for (const auto& [trackId, h] : t.trackByTrackId) out["trackByTrackId"][trackId] = handleStr(h);
+  // Resources, in stream (= document) order so the emission is deterministic.
+  nlohmann::json resources = nlohmann::json::array();
+  for (const auto& s : t.streams) {
+    if (s.kind != kStreamKindVideoContent && s.kind != kStreamKindSequenceContent) continue;
+    auto it = t.resourceByClipId.find(s.ownerId);
+    if (it == t.resourceByClipId.end()) continue;
+    const ResourceInfo& r = t.resourcesByHandle.at(it->second);
+    resources.push_back({{"handle", handleStr(r.handle)},
+                         {"kind", r.kind},
+                         {"flags", r.flags},
+                         {"stream", handleStr(r.stream)},
+                         {"sizeBytes", r.sizeBytes},
+                         {"durationSec", r.durationSec},
+                         {"width", r.width},
+                         {"height", r.height},
+                         {"ownerId", r.ownerId}});
+  }
+  out["resources"] = std::move(resources);
   return out.dump();
 }
 

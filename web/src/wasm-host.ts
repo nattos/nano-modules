@@ -718,6 +718,48 @@ export class WasmHost {
           return s ? this.streams!.eventLowerBound(s, t) : 0;
         },
       },
+      // Resources surface (ABI v4) — the ASSET namespace behind streams (web
+      // twin of the native "resources" host module; effect header
+      // resources.h). resources.stream fetches the seekable-stream view.
+      resources: {
+        content: (): bigint =>
+          this.streams ? this.streams.resourceContentOf(this.instanceKey) : 0n,
+        live: (h: bigint): bigint => this.streams?.resourceLive(h) ?? 0n,
+        clip_at: (h: bigint, ordinal: number): bigint =>
+          this.streams?.resourceClipAt(h, ordinal) ?? 0n,
+        describe: (h: bigint, descPtr: number): number => {
+          const dv = new DataView(this.memory.buffer);
+          const sent = dv.getInt32(descPtr, true);
+          const fill = Math.min(sent, 64);
+          if (fill < 4) return 0;
+          const r = this.streams?.findResource(h);
+          // ResourceDesc image as (offset, write) pairs — 8-byte fields sit
+          // at 8-aligned offsets (resources.h layout).
+          const scratch = new ArrayBuffer(64);
+          const sv = new DataView(scratch);
+          sv.setInt32(0, sent, true);
+          sv.setInt32(4, r ? r.kind : 0, true);
+          sv.setInt32(8, r ? r.flags : 0, true);
+          sv.setInt32(12, r ? this.streams!.resourceRevOf(r) : 0, true);
+          sv.setBigInt64(16, r ? BigInt.asIntN(64, r.stream) : 0n, true);
+          sv.setBigInt64(24, r ? BigInt(r.sizeBytes) : -1n, true);
+          sv.setFloat64(32, r ? r.durationSec : -1, true);
+          sv.setInt32(40, r ? r.width : 0, true);
+          sv.setInt32(44, r ? r.height : 0, true);
+          new Uint8Array(this.memory.buffer, descPtr + 4, fill - 4)
+            .set(new Uint8Array(scratch, 4, fill - 4));
+          return r ? 1 : 0;
+        },
+        rev: (h: bigint): number => {
+          const r = this.streams?.findResource(h);
+          return r ? this.streams!.resourceRevOf(r) : this.streams?.docRev ?? 0;
+        },
+        stream: (h: bigint): bigint =>
+          this.streams?.findResource(h)?.stream ?? 0n,
+        // Fork engine arrives with the transition work; until then a valid
+        // forkable resource still answers 0 (native twin agrees).
+        fork: (_h: bigint): bigint => 0n,
+      },
       state: {
         get_key: (bufPtr: number, bufLen: number): number => {
           const key = this.pluginKey || (this.metadata?.id

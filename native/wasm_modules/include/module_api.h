@@ -75,7 +75,14 @@
 //       (streams.seek, streams.frame_at), new Kind/Flags values, and new
 //       reserved transport_* published-output field names stay name-keyed
 //       (no bump).
-#define NANO_ABI_VERSION 3
+//   4 — resources surface (2026-07): the `resources` import module
+//       (resources.h) — the ASSET namespace behind streams. Identity-derived
+//       i64 handles in a disjoint domain ("res:clip:<id>"), the sized 64-byte
+//       ResourceDesc (grows by APPEND, no bump), resources.stream fetches the
+//       seekable-stream view, resources.fork arms the owner-controlled
+//       successor used by transition effects. New resource Kind/Flags values
+//       and future view ops (data/texture) stay name-keyed (no bump).
+#define NANO_ABI_VERSION 4
 
 // Emit the exported `nano_abi_version()` accessor. Each bundle's aggregator
 // TU (the one that defines nano_module_main) invokes this ONCE at file scope.

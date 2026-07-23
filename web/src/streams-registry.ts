@@ -44,6 +44,38 @@ export const STREAM_INVALID = 0n;
 export const STREAM_SESSION_CLOCK = 1n;
 export const STREAM_TIMELINE = 2n;
 
+// ── Resource twins (ABI v4 — resources.h / streams_table.h resource section).
+// A resource is the ASSET; a stream is its transport view.
+
+export const ResourceKind = {
+  Invalid: 0,
+  ClipContent: 1,
+  File: 2,   // RESERVED
+  Image: 3,  // RESERVED
+  Audio: 4,  // RESERVED
+} as const;
+
+export const ResourceFlags = {
+  HasStream: 1 << 0,
+  HasData: 1 << 1,     // RESERVED
+  HasTexture: 1 << 2,  // RESERVED
+  Forkable: 1 << 3,
+} as const;
+
+export interface ResourceRec {
+  handle: bigint;
+  kind: number;
+  flags: number;
+  /** The seekable-stream view handle (0n = not stream-backed). */
+  stream: bigint;
+  sizeBytes: number;
+  durationSec: number;
+  width: number;
+  height: number;
+  /** clipId for ClipContent resources. */
+  ownerId: string;
+}
+
 /** One event — the 5-double wire record, parsed. Content streams: time is on
  *  the ELAPSED axis (elapsed(); beats for beat-sync clips) and 'looped'
  *  records carry the 1-based pass count in clipOrdinal. */
@@ -117,6 +149,8 @@ export class StreamsRegistry {
   parentByClipId = new Map<string, bigint>();
   contentByClipId = new Map<string, bigint>();
   trackByTrackId = new Map<string, bigint>();
+  resourcesByHandle = new Map<bigint, ResourceRec>();
+  resourceByClipId = new Map<string, bigint>();
 
   /** Per-frame transport sample (comp_streams_frame's 6 doubles). */
   frame = {
@@ -154,6 +188,8 @@ export class StreamsRegistry {
     this.parentByClipId.clear();
     this.contentByClipId.clear();
     this.trackByTrackId.clear();
+    this.resourcesByHandle.clear();
+    this.resourceByClipId.clear();
     for (const s of json?.streams ?? []) {
       const rec: StreamRec = {
         handle: BigInt(s.handle ?? '0'),
@@ -201,6 +237,21 @@ export class StreamsRegistry {
       this.contentByClipId.set(clipId, BigInt(h as string));
     for (const [trackId, h] of Object.entries(json?.trackByTrackId ?? {}))
       this.trackByTrackId.set(trackId, BigInt(h as string));
+    for (const r of json?.resources ?? []) {
+      const rec: ResourceRec = {
+        handle: BigInt(r.handle ?? '0'),
+        kind: r.kind ?? 0,
+        flags: r.flags ?? 0,
+        stream: BigInt(r.stream ?? '0'),
+        sizeBytes: r.sizeBytes ?? -1,
+        durationSec: r.durationSec ?? -1,
+        width: r.width ?? 0,
+        height: r.height ?? 0,
+        ownerId: r.ownerId ?? '',
+      };
+      this.resourcesByHandle.set(rec.handle, rec);
+      if (rec.ownerId) this.resourceByClipId.set(rec.ownerId, rec.handle);
+    }
     // A doc reload rebuilds every StreamRec (live scene state resets to NaN),
     // but the ENGINE's launch map survives reloads (healed, not cleared) and
     // the scenes channel only re-ships ON CHANGE — re-apply the last-known
@@ -297,6 +348,52 @@ export class StreamsRegistry {
       if (h !== undefined) return h;
     }
     return STREAM_INVALID;
+  }
+
+  // ── Resource evaluators (LOCK-STEP: streams_table.h resource section) ──
+
+  findResource(h: bigint): ResourceRec | undefined {
+    return this.resourcesByHandle.get(BigInt.asUintN(64, h));
+  }
+
+  /** resources.content: THIS clip's content resource. */
+  resourceContentOf(instanceKey: string): bigint {
+    const clipId = this.clipIdForInstanceKey(instanceKey);
+    if (clipId !== null) {
+      const h = this.resourceByClipId.get(clipId);
+      if (h !== undefined) return h;
+    }
+    return 0n;
+  }
+
+  /** resources.live: the resource of a scene track's live clip (0n idle /
+   *  non-scene / no media) — twin of resourceForTrackLive. */
+  resourceLive(trackStream: bigint): bigint {
+    const s = this.find(trackStream);
+    if (!s || s.kind !== StreamKind.SceneTrack || Number.isNaN(s.liveOrdinal)) return 0n;
+    const ord = Math.trunc(s.liveOrdinal);
+    const clipId = s.byOrdinalClipId[ord];
+    if (clipId === undefined) return 0n;
+    return this.resourceByClipId.get(clipId) ?? 0n;
+  }
+
+  /** resources.clip_at — twin of resourceForTrackClipAt. */
+  resourceClipAt(trackStream: bigint, ordinal: number): bigint {
+    const s = this.find(trackStream);
+    if (!s) return 0n;
+    const clipId = ordinal >= 0 ? s.byOrdinalClipId[ordinal] : undefined;
+    if (clipId === undefined) return 0n;
+    return this.resourceByClipId.get(clipId) ?? 0n;
+  }
+
+  /** resources.rev — the underlying stream's eventRev for stream-backed
+   *  resources, else docRev (twin of resourceRev). */
+  resourceRevOf(r: ResourceRec): number {
+    if (r.stream !== 0n) {
+      const s = this.find(r.stream);
+      if (s) return s.eventRev;
+    }
+    return this.docRev;
   }
 
   // ── Per-kind evaluators (LOCK-STEP: streams_table.h streamPos/PosSec/

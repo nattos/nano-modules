@@ -181,6 +181,49 @@ TEST_CASE("content streams: per video-backed clip, seek-cost classified", "[stre
   CHECK(vid.ownerId == "clipB");
 }
 
+TEST_CASE("resources: one ClipContent asset per video-backed clip", "[streams]") {
+  Built b = build();
+  auto& t = b.table;
+  // clipA, clipB, s2 carry media; clipC/s1/s3 do not.
+  CHECK(t.resourceByClipId.size() == 3);
+  CHECK(t.resourceByClipId.count("clipC") == 0);
+  CHECK(t.resourceByClipId.count("s1") == 0);
+
+  const int64_t rh = t.resourceByClipId.at("clipB");
+  CHECK(rh == comp::streamHandleOf("res:clip:clipB"));
+  CHECK(rh != t.contentByClipId.at("clipB"));  // disjoint identity domains
+  const comp::ResourceInfo* r = t.findResource(rh);
+  REQUIRE(r != nullptr);
+  CHECK(r->kind == comp::kResKindClipContent);
+  CHECK(r->flags == (comp::kResHasStream | comp::kResForkable));
+  CHECK(r->stream == t.contentByClipId.at("clipB"));  // the transport view
+  CHECK_THAT(r->durationSec, WithinAbs(4.0, kTol));
+  CHECK(r->ownerId == "clipB");
+  // rev mirrors the content stream's event generator token.
+  CHECK(comp::resourceRev(t, *r) == streamOf(t, r->stream).eventRev);
+
+  // A stale/foreign handle resolves to nothing.
+  CHECK(t.findResource(comp::streamHandleOf("res:clip:nope")) == nullptr);
+  CHECK(t.findResource(t.contentByClipId.at("clipB")) == nullptr);
+
+  // clip_at: ordinal-keyed on track streams; media-less clips answer 0.
+  const auto& scenes = streamOf(t, comp::streamHandleOf("track:scenes"));
+  CHECK(comp::resourceForTrackClipAt(t, scenes, 1) == t.resourceByClipId.at("s2"));
+  CHECK(comp::resourceForTrackClipAt(t, scenes, 0) == 0);   // s1: effect-only
+  CHECK(comp::resourceForTrackClipAt(t, scenes, 9) == 0);   // out of range
+  CHECK(comp::resourceForTrackClipAt(t, scenes, -1) == 0);
+
+  // live: the scene track's launched clip's resource; idle/non-scene → 0.
+  CHECK(comp::resourceForTrackLive(t, scenes) == 0);  // idle (NaN ordinal)
+  comp::StreamInfo* sm = t.findMutable(scenes.handle);
+  sm->liveOrdinal = 1;
+  CHECK(comp::resourceForTrackLive(t, *sm) == t.resourceByClipId.at("s2"));
+  sm->liveOrdinal = 0;
+  CHECK(comp::resourceForTrackLive(t, *sm) == 0);  // live clip has no media
+  const auto& trackA = streamOf(t, comp::streamHandleOf("track:trackA"));
+  CHECK(comp::resourceForTrackLive(t, trackA) == 0);  // not a scene track
+}
+
 TEST_CASE("content position: lazy clip-time mapping, override wins, NaN off-ends",
           "[streams]") {
   Built b = build();

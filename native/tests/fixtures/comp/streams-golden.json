@@ -14,6 +14,41 @@
     "s2": "16891505844459616675",
     "s3": "16891505844459616675"
   },
+  "resources": [
+    {
+      "durationSec": 4.0,
+      "flags": 9,
+      "handle": "11617379727884086089",
+      "height": 0,
+      "kind": 1,
+      "ownerId": "clipB",
+      "sizeBytes": -1,
+      "stream": "17659250394925871044",
+      "width": 0
+    },
+    {
+      "durationSec": 0.03333333333333333,
+      "flags": 9,
+      "handle": "11617376429349201456",
+      "height": 0,
+      "kind": 1,
+      "ownerId": "clipA",
+      "sizeBytes": -1,
+      "stream": "17659253693460755677",
+      "width": 0
+    },
+    {
+      "durationSec": 2.0,
+      "flags": 9,
+      "handle": "14602422086327921530",
+      "height": 0,
+      "kind": 1,
+      "ownerId": "s2",
+      "sizeBytes": -1,
+      "stream": "10020721931943541321",
+      "width": 0
+    }
+  ],
   "streams": [
     {
       "axis": 0,

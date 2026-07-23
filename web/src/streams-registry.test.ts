@@ -9,7 +9,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { StreamsRegistry, StreamKind, StreamFlags, CONTENT_EVENT_HORIZON } from './streams-registry';
+import { StreamsRegistry, StreamKind, StreamFlags, ResourceKind, ResourceFlags,
+         CONTENT_EVENT_HORIZON } from './streams-registry';
 
 const GOLDEN = path.resolve(
   __dirname, '../../native/tests/fixtures/comp/streams-golden.json');
@@ -83,6 +84,37 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(vid.frameCount).toBe(120);
     expect(vid.durationSec).toBe(4);
     expect(vid.anchorBeat).toBe(8);
+  });
+
+  it('mirrors resources: one ClipContent asset per video-backed clip', () => {
+    // Assertion values mirror test_streams_abi.cpp "resources: one ClipContent
+    // asset per video-backed clip".
+    expect(reg.resourceByClipId.size).toBe(3);
+    expect(reg.resourceByClipId.has('clipC')).toBe(false);
+    const rh = reg.resourceByClipId.get('clipB')!;
+    expect(rh).not.toBe(reg.contentByClipId.get('clipB')); // disjoint domains
+    const r = reg.findResource(rh)!;
+    expect(r.kind).toBe(ResourceKind.ClipContent);
+    expect(r.flags).toBe(ResourceFlags.HasStream | ResourceFlags.Forkable);
+    expect(r.stream).toBe(reg.contentByClipId.get('clipB'));
+    expect(r.durationSec).toBe(4);
+    expect(r.ownerId).toBe('clipB');
+    expect(reg.resourceRevOf(r)).toBe(reg.find(r.stream)!.eventRev);
+    // Stale/foreign handles resolve to nothing; SIGNED lookups normalize.
+    expect(reg.findResource(reg.contentByClipId.get('clipB')!)).toBeUndefined();
+    expect(reg.findResource(BigInt.asIntN(64, rh))).toBe(r);
+    // Self-scoping.
+    expect(reg.resourceContentOf('clip_clipB_vid')).toBe(rh);
+    expect(reg.resourceContentOf('standalone')).toBe(0n);
+    // clip_at: ordinal-keyed; media-less clips answer 0.
+    expect(reg.resourceClipAt(scenes, 1)).toBe(reg.resourceByClipId.get('s2'));
+    expect(reg.resourceClipAt(scenes, 0)).toBe(0n); // s1: effect-only
+    expect(reg.resourceClipAt(scenes, 9)).toBe(0n);
+    // live: the launched clip's resource; idle / non-scene → 0.
+    expect(reg.resourceLive(scenes)).toBe(0n);
+    reg.syncSceneLaunches({ scenes: { sceneId: 's2', launchBeat: 40 } } as any);
+    expect(reg.resourceLive(scenes)).toBe(reg.resourceByClipId.get('s2'));
+    expect(reg.resourceLive(trackA)).toBe(0n);
   });
 
   it('evaluates content positions identically to native (lazy + override + still)', () => {

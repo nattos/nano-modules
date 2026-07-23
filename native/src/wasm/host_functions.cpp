@@ -640,6 +640,109 @@ static NativeSymbol streams_symbols[] = {
 };
 
 // ========================================================================
+// Module "resources" — the ASSET namespace behind streams (streams_table.h
+// resource section; effect-side header wasm_modules/include/resources.h).
+// A resource is the material (clip media today; files/images/audio later);
+// resources.stream fetches its seekable-stream transport view.
+// ========================================================================
+
+static const comp::ResourceInfo* resolve_resource(wasm_exec_env_t env, int64_t h) {
+  const auto* t = get_streams(env);
+  return t ? t->findResource(h) : nullptr;
+}
+
+static int64_t resources_content_fn(wasm_exec_env_t env) {
+  auto* ctx = get_ctx(env);
+  const auto* t = get_streams(env);
+  if (t && ctx && ctx->effect_instance) {
+    const std::string& key = ctx->effect_instance->instanceKey();
+    if (const std::string* clipId = comp::clipIdForInstanceKey(*t, key)) {
+      auto it = t->resourceByClipId.find(*clipId);
+      if (it != t->resourceByClipId.end()) return it->second;
+    }
+  }
+  return 0;
+}
+
+static int64_t resources_live_fn(wasm_exec_env_t env, int64_t track_stream) {
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(track_stream) : nullptr;
+  return s ? comp::resourceForTrackLive(*t, *s) : 0;
+}
+
+static int64_t resources_clip_at_fn(wasm_exec_env_t env, int64_t track_stream,
+                                    int32_t ordinal) {
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(track_stream) : nullptr;
+  return s ? comp::resourceForTrackClipAt(*t, *s, ordinal) : 0;
+}
+
+static int32_t resources_describe_fn(wasm_exec_env_t env, int64_t h, int32_t desc_ptr) {
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, desc_ptr, 4)) return 0;
+  int32_t* head = static_cast<int32_t*>(wasm_runtime_addr_app_to_native(inst, desc_ptr));
+  if (!head) return 0;
+  constexpr int32_t kKnown = 64;  // sizeof(ResourceDesc) fields the host fills
+  const int32_t sent = *head;
+  const int32_t fill = std::min(sent, kKnown);
+  if (fill < 4 || !wasm_runtime_validate_app_addr(inst, desc_ptr, fill)) return 0;
+
+  const auto* t = get_streams(env);
+  const comp::ResourceInfo* r = t ? t->findResource(h) : nullptr;
+  // Field image, matching ResourceDesc exactly (8-byte fields 8-aligned).
+  struct Image {
+    int32_t struct_size, kind, flags, rev;
+    int64_t stream, size_bytes;
+    double duration_sec;
+    int32_t width, height, r0, r1, r2, r3;
+  } img = {sent, comp::kResKindInvalid, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0};
+  static_assert(sizeof(Image) == 64, "twin of resources.h ResourceDesc");
+  if (r) {
+    img.kind = r->kind;
+    img.flags = r->flags;
+    img.rev = comp::resourceRev(*t, *r);
+    img.stream = r->stream;
+    img.size_bytes = r->sizeBytes;
+    img.duration_sec = r->durationSec;
+    img.width = r->width;
+    img.height = r->height;
+  }
+  // Byte-copy past the caller's struct_size word only, up to `fill`.
+  memcpy(reinterpret_cast<char*>(head) + 4, reinterpret_cast<char*>(&img) + 4,
+         static_cast<size_t>(fill - 4));
+  return img.kind != comp::kResKindInvalid ? 1 : 0;
+}
+
+static int32_t resources_rev_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* t = get_streams(env);
+  const comp::ResourceInfo* r = t ? t->findResource(h) : nullptr;
+  return r ? comp::resourceRev(*t, *r) : (t ? t->docRev : 0);
+}
+
+static int64_t resources_stream_fn(wasm_exec_env_t env, int64_t h) {
+  const auto* r = resolve_resource(env, h);
+  return r ? r->stream : 0;
+}
+
+static int64_t resources_fork_fn(wasm_exec_env_t env, int64_t h) {
+  // Arms nothing yet — the fork engine drains StreamOp kind 3 (a later
+  // stage); until then a valid forkable resource still answers 0.
+  const auto* r = resolve_resource(env, h);
+  if (!r || !(r->flags & comp::kResForkable) || r->stream == 0) return 0;
+  return 0;
+}
+
+static NativeSymbol resources_symbols[] = {
+    {"content", reinterpret_cast<void*>(resources_content_fn), "()I", nullptr},
+    {"live", reinterpret_cast<void*>(resources_live_fn), "(I)I", nullptr},
+    {"clip_at", reinterpret_cast<void*>(resources_clip_at_fn), "(Ii)I", nullptr},
+    {"describe", reinterpret_cast<void*>(resources_describe_fn), "(Ii)i", nullptr},
+    {"rev", reinterpret_cast<void*>(resources_rev_fn), "(I)i", nullptr},
+    {"stream", reinterpret_cast<void*>(resources_stream_fn), "(I)I", nullptr},
+    {"fork", reinterpret_cast<void*>(resources_fork_fn), "(I)I", nullptr},
+};
+
+// ========================================================================
 // Module "state" — plugin metadata, logging, state access
 // ========================================================================
 
@@ -1779,6 +1882,10 @@ bool register_host_functions() {
   ok = ok && wasm_runtime_register_natives(
       "streams", streams_symbols,
       sizeof(streams_symbols) / sizeof(NativeSymbol));
+
+  ok = ok && wasm_runtime_register_natives(
+      "resources", resources_symbols,
+      sizeof(resources_symbols) / sizeof(NativeSymbol));
 
   ok = ok && wasm_runtime_register_natives(
       "state", state_symbols,
