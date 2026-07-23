@@ -228,8 +228,13 @@ export interface DeviceTarget {
 export function transportTarget(trackId: string, clipId: string): DeviceTarget {
   return {
     id: `transport/${trackId}/${clipId}`,
-    getDevices: () =>
-      store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.transport?.devices,
+    // A clip WITHOUT a section yet reads as an EMPTY device list (not
+    // undefined): undefined makes column-group render nothing at all, hiding
+    // the empty-chain insert header that is the section's add affordance.
+    getDevices: () => {
+      const clip = store.trackById(trackId)?.clips.find((c) => c.id === clipId);
+      return clip ? clip.transport?.devices ?? [] : undefined;
+    },
     setField: (d, k, v) => store.setClipTransportDeviceField(trackId, clipId, d, k, v),
     setType: (d, t, ck) => store.setClipTransportDeviceType(trackId, clipId, d, t, ck),
     replace: (d, s, ck) => store.replaceClipTransportDevice(trackId, clipId, d, s, ck),
@@ -258,7 +263,12 @@ export function transportTarget(trackId: string, clipId: string): DeviceTarget {
 export function trackTransportTarget(trackId: string): DeviceTarget {
   return {
     id: `transport/${trackId}`,
-    getDevices: () => store.trackById(trackId)?.transport?.devices,
+    // Same as the clip section: no section yet = EMPTY list, so the insert
+    // header (the add affordance) renders.
+    getDevices: () => {
+      const t = store.trackById(trackId);
+      return t ? t.transport?.devices ?? [] : undefined;
+    },
     setField: (d, k, v) => store.setTrackTransportDeviceField(trackId, d, k, v),
     setType: (d, t, ck) => store.setTrackTransportDeviceType(trackId, d, t, ck),
     replace: (d, s, ck) => store.replaceTrackTransportDevice(trackId, d, s, ck),
