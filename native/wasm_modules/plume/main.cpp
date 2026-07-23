@@ -57,8 +57,9 @@ constexpr int DBG_RESIDUAL = 3;
 struct ShellUniforms {
   float res, octaves, ridge_scale, ridge_amp;
   float ridge_sharp, morph_x, seed, morph_z;
+  float aniso, swirl, wobble, _pad0;
 };
-static_assert(sizeof(ShellUniforms) == 32, "ShellUniforms layout mismatch");
+static_assert(sizeof(ShellUniforms) == 48, "ShellUniforms layout mismatch");
 
 struct BakeUniforms { float radius, lipschitz, dens_soft, _pad0; };
 static_assert(sizeof(BakeUniforms) == 16, "BakeUniforms layout mismatch");
@@ -71,8 +72,10 @@ struct MarchUniforms {
   float sun_p[4];      // sun dir (world, toward light), w = intensity
   float albedo[4];     // rgb, w = opacity
   float vp[4];         // w, h, 1/w, 1/h
+  float shade_p[4];    // shadow, ao, ambient, rim
+  float fine_p[4];     // R (base radius), px_world (per unit t), shadow_k, 0
 };
-static_assert(sizeof(MarchUniforms) == 112, "MarchUniforms layout mismatch");
+static_assert(sizeof(MarchUniforms) == 144, "MarchUniforms layout mismatch");
 
 struct DebugUniforms { float mode, slice, scale, _pad0; };
 static_assert(sizeof(DebugUniforms) == 16, "DebugUniforms layout mismatch");
@@ -100,14 +103,19 @@ struct State {
   float ridge_scale = 0.5f;
   float ridge_depth = 0.5f;
   float ridge_sharp = 0.5f;
+  float ridge_aniso = 0.6f;
+  float swirl = 0.15f;
   float morph = 0.4f;
   float variation = 0.0f;
   float orbit = 0.35f;
   float tilt = 0.1f;
   float zoom = 0.25f;
-  float azimuth = 35.0f;
-  float elevation = 30.0f;
+  float azimuth = -35.0f;
+  float elevation = 35.0f;
   float sun = 0.6f;
+  float shadow = 0.7f;
+  float ao_amt = 0.7f;
+  float ambient = 0.5f;
   float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
   float opacity = 1.0f;
   int debug_view = DBG_OFF;
@@ -146,6 +154,10 @@ void module_init() {
           .label("Ridge Scale", "Scale")
       .floatField("ridge_sharp", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Ridge Sharpness", "Sharp")
+      .floatField("ridge_aniso", 0.6f, 0.f, 1.f, state::PrimaryInput)
+          .label("Feathering", "Feath")
+      .floatField("swirl", 0.15f, 0.f, 1.f, state::PrimaryInput)
+          .label("Flow Direction", "Flow")
       .floatField("morph", 0.4f, 0.f, 1.f, state::PrimaryInput)
           .label("Morph", "Morph")
       .floatField("variation", 0.0f, 0.f, 1.f, state::PrimaryInput)
@@ -160,12 +172,18 @@ void module_init() {
           .label("Zoom", "Zoom")
       // --- Light ---
       .group("light", "Light")
-      .floatField("azimuth", 35.0f, -180.f, 180.f, state::PrimaryInput,
+      .floatField("azimuth", -35.0f, -180.f, 180.f, state::PrimaryInput,
                   nullptr, 0.f, "deg").label("Azimuth", "Azim")
-      .floatField("elevation", 30.0f, -80.f, 80.f, state::PrimaryInput,
+      .floatField("elevation", 35.0f, -80.f, 80.f, state::PrimaryInput,
                   nullptr, 0.f, "deg").label("Elevation", "Elev")
       .floatField("sun", 0.6f, 0.f, 1.f, state::PrimaryInput)
           .label("Sun", "Sun")
+      .floatField("shadow", 0.7f, 0.f, 1.f, state::PrimaryInput)
+          .label("Shadow", "Shdw")
+      .floatField("ao", 0.7f, 0.f, 1.f, state::PrimaryInput)
+          .label("Occlusion", "AO")
+      .floatField("ambient", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Ambient", "Amb")
       // --- Material ---
       .group("material", "Material")
       .rgbField("albedo", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
@@ -217,9 +235,10 @@ void module_init() {
   s_pso_march = gpu::Device::createComputePSO(cs_march, "main", gpu::Bindings()
       .tex3d(0)
       .tex2d(1)
-      .sampler(2)
-      .storageTex2d(3)
-      .uniform(4));
+      .tex2d(2)
+      .sampler(3)
+      .storageTex2d(4)
+      .uniform(5));
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1));
@@ -311,6 +330,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "ridge_depth")) s->ridge_depth = state::patchFloat(i);
     else if (state::pathIs(p, l, "ridge_scale")) s->ridge_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "ridge_sharp")) s->ridge_sharp = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ridge_aniso")) s->ridge_aniso = state::patchFloat(i);
+    else if (state::pathIs(p, l, "swirl"))       s->swirl = state::patchFloat(i);
     else if (state::pathIs(p, l, "morph"))       s->morph = state::patchFloat(i);
     else if (state::pathIs(p, l, "variation"))   s->variation = state::patchFloat(i);
     else if (state::pathIs(p, l, "orbit"))       s->orbit = state::patchFloat(i);
@@ -319,6 +340,9 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "azimuth"))     s->azimuth = state::patchFloat(i);
     else if (state::pathIs(p, l, "elevation"))   s->elevation = state::patchFloat(i);
     else if (state::pathIs(p, l, "sun"))         s->sun = state::patchFloat(i);
+    else if (state::pathIs(p, l, "shadow"))      s->shadow = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ao"))          s->ao_amt = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ambient"))     s->ambient = state::patchFloat(i);
     else if (state::pathIs(p, l, "albedo")) {
       auto v = state::patchVec3(i);
       s->albedo_r = v.x; s->albedo_g = v.y; s->albedo_b = v.z;
@@ -373,8 +397,10 @@ void render(void* self, int vp_w, int vp_h) {
   if (R + amp > 0.82f) amp = 0.82f - R;
   const float freq = 4.0f * std::pow(2.0f, (s->ridge_scale - 0.5f) * 4.0f);
   // Radial-displacement Lipschitz compression: slope ~ amp * freq (noise
-  // gradient ~1.5/unit folded into the constant), conservative.
-  float lip = 1.0f / (1.0f + 3.0f * amp * freq / std::fmax(R, 0.1f));
+  // gradient ~1.5/unit folded into the constant), conservative. The
+  // anisotropy's cross-flow squeeze raises the max slope by `across`.
+  const float across = 1.0f + 2.5f * s->ridge_aniso;
+  float lip = 1.0f / (1.0f + 3.0f * amp * freq * across / std::fmax(R, 0.1f));
   if (lip < 0.15f) lip = 0.15f;
 
   // Morph walks a closed circle in the noise domain — seamless, no drift.
@@ -389,12 +415,20 @@ void render(void* self, int vp_w, int vp_h) {
   su.morph_x = mx;
   su.morph_z = mz;
   su.seed = s->variation * 10.0f;
+  su.aniso = s->ridge_aniso;
+  su.swirl = s->swirl;
+  su.wobble = 0.35f;
 
+  // Both maps evaluate the SAME field (same octaves): the terrace cut is a
+  // hard nonlinearity, so differing octave counts could land on different
+  // terrace levels — a whole plate step of surface divergence, enough for
+  // the coarse march to tunnel through a protruding plate. The coarse map
+  // differs only by resolution (sub-voxel error the band handoff absorbs).
   su.res = (float)kShellRes;
-  su.octaves = 5.0f;
+  su.octaves = 4.0f;
   s->ub_shell_full.writeOne(su);
   su.res = (float)kCoarseRes;
-  su.octaves = 3.0f;   // band-limited: what the 128³ grid can carry
+  su.octaves = 4.0f;
   s->ub_shell_coarse.writeOne(su);
 
   {
@@ -488,6 +522,15 @@ void render(void* self, int vp_w, int vp_h) {
   mu.albedo[2] = s->albedo_b; mu.albedo[3] = s->opacity;
   mu.vp[0] = (float)vp_w; mu.vp[1] = (float)vp_h;
   mu.vp[2] = 1.0f / vp_w; mu.vp[3] = 1.0f / vp_h;
+  mu.shade_p[0] = s->shadow;
+  mu.shade_p[1] = s->ao_amt;
+  mu.shade_p[2] = s->ambient;
+  mu.shade_p[3] = 0.6f;   // rim
+  mu.fine_p[0] = R;
+  // World size of one pixel at unit distance (screen-adaptive normal eps).
+  mu.fine_p[1] = 1.0f / ((float)vp_h * cs.ay * focal);
+  // Decompression for penumbra/AO reads of the compressed grid distances.
+  mu.fine_p[2] = 1.0f / lip;
   s->ub_march.writeOne(mu);
 
   {
@@ -495,9 +538,10 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setPSO(s_pso_march);
     cp.setTexture(s->sdf_vol, 0, 0);
     cp.setTexture(in.valid() ? in : s->zero_tex, 1, 0);
-    cp.setSampler(s->samp_clamp, 2);
-    cp.setTexture(out, 3, 1);
-    cp.setBuffer(s->ub_march, 4);
+    cp.setTexture(s->shell_full, 2, 0);
+    cp.setSampler(s->samp_clamp, 3);
+    cp.setTexture(out, 4, 1);
+    cp.setBuffer(s->ub_march, 5);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
