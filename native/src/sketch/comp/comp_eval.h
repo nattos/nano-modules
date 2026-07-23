@@ -177,6 +177,9 @@ struct TreeBuilder {
   const std::map<std::string, bool>* railBypass = nullptr;
   /** Launched-scene state per scene track (CompExecutor's transient map). */
   const std::map<std::string, SceneLaunch>* sceneLaunch = nullptr;
+  /** Live fork slots per scene track (CompExecutor's fork_ view): sceneId =
+   *  the OUTGOING clip, launchBeat/launchSec = its frozen anchors. */
+  const std::map<std::string, SceneLaunch>* forkLaunch = nullptr;
 
   std::vector<const TrackM*> childrenOf(const std::string& parentId) const {
     std::vector<const TrackM*> out;
@@ -226,6 +229,24 @@ struct TreeBuilder {
     out.opacity = clamp01(track.level.value_or(1));
     out.blendMode = track.blendMode ? *track.blendMode : clip->blendMode.value_or(0);
     out.layerOpacityModulated = hasLayerOpacityModulation(track, clip);
+    // A live FORK rides its track's leaf: the outgoing clip renders standalone
+    // beside the incoming and both feed the track xfade blend. Anchors are the
+    // fork slot's frozen (SHIPPED) doubles — never recomputed.
+    if (track.kind == TrackKind::Scene && forkLaunch) {
+      auto fit = forkLaunch->find(track.id);
+      if (fit != forkLaunch->end() && fit->second.sceneId != clip->id) {
+        for (const auto& c : track.clips) {
+          if (c.id != fit->second.sceneId) continue;
+          if (!c.bypassed && (c.hasSourceUrl || !c.sketch.devices.empty())) {
+            out.forkClip = &c;
+            out.forkAnchorBeat = fit->second.launchBeat;
+            out.forkStartSec = fit->second.launchSec;
+            out.hasFork = true;
+          }
+          break;
+        }
+      }
+    }
     return true;
   }
 };
@@ -248,14 +269,15 @@ inline void flattenLeaves(std::vector<CompNode>& tree, std::vector<CompNode*>& o
 inline std::vector<CompNode> compositeTreeAtBeat(
     const CompositionM& comp, double beat, bool ignoreSolo = false,
     const std::map<std::string, bool>* railBypass = nullptr,
-    const std::map<std::string, SceneLaunch>* sceneLaunch = nullptr) {
+    const std::map<std::string, SceneLaunch>* sceneLaunch = nullptr,
+    const std::map<std::string, SceneLaunch>* forkLaunch = nullptr) {
   bool anySolo = false;
   if (!ignoreSolo) {
     for (const auto& t : comp.tracks) {
       if (t.soloed) { anySolo = true; break; }
     }
   }
-  eval_detail::TreeBuilder builder{comp, anySolo, railBypass, sceneLaunch};
+  eval_detail::TreeBuilder builder{comp, anySolo, railBypass, sceneLaunch, forkLaunch};
   std::vector<CompNode> roots;
   for (const TrackM* t : builder.childrenOf(std::string())) {
     CompNode n;

@@ -868,6 +868,14 @@ nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree
             }
             descs.push_back(std::move(d));
           }
+          // A live fork's desc is BYTE-IDENTICAL to the desc it shipped as
+          // the live scene (same clipId/instanceKey/anchors, unbounded, no
+          // holdBeat) — the pump reconcile must keep the running pump/decoder
+          // untouched across the detach.
+          if (n.hasFork && n.forkClip) {
+            nlohmann::json fd = videoDescFor(*n.forkClip, n.forkAnchorBeat, true);
+            if (!fd.is_null()) descs.push_back(std::move(fd));
+          }
         }
       };
   walk(tree);
@@ -1011,7 +1019,14 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   evalCount_++;
   evalBypassDecisions_ = std::move(bypassDec);
   evalRailBypass_ = railBypassDecisions_;
-  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &sceneLaunch_);
+  // Live forks join the tree as second leaves on their tracks. (Candidate /
+  // pending worlds below deliberately DON'T carry them: a fork's chain keys
+  // are the previously-live scene's keys — already alive in this sketch — so
+  // continuity needs no pre-instantiation.)
+  std::map<std::string, SceneLaunch> forkView;
+  for (const auto& [tid, f] : fork_) forkView[tid] = {f.clipId, f.anchorBeat, f.anchorSec};
+  evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &sceneLaunch_,
+                                  forkView.empty() ? nullptr : &forkView);
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
   layerTargets_ = std::move(build.layerTargets);
@@ -1106,6 +1121,7 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
   // its entry target before the playhead arrives (pre-seek parity).
   std::vector<const ClipM*> clips;
   std::set<std::string> seen;
+  std::set<std::string> controllerOnly;
   std::function<void(const std::vector<CompNode>&)> walk =
       [&](const std::vector<CompNode>& nodes) {
         for (const auto& n : nodes) {
@@ -1113,10 +1129,20 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
             walk(n.children);
             continue;
           }
-          if (!n.clip || seen.count(n.clip->id)) continue;
-          if (!clipHasTransportSection(*n.clip, catalog_)) continue;
-          seen.insert(n.clip->id);
-          clips.push_back(n.clip);
+          if (n.clip && !seen.count(n.clip->id) &&
+              clipHasTransportSection(*n.clip, catalog_)) {
+            seen.insert(n.clip->id);
+            clips.push_back(n.clip);
+          }
+          // A DRIVEN fork keeps its controller (its clock stays owned), but
+          // sheds its section members — a detached clip's follower re-arming
+          // against the track's new live scene would double-drive.
+          if (n.hasFork && n.forkClip && !seen.count(n.forkClip->id) &&
+              clipHasTransportSection(*n.forkClip, catalog_)) {
+            seen.insert(n.forkClip->id);
+            clips.push_back(n.forkClip);
+            controllerOnly.insert(n.forkClip->id);
+          }
         }
       };
   walk(evalTree_);
@@ -1143,7 +1169,8 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
     }
   }
 
-  nlohmann::json built = buildTransportSketch(clips, catalog_);
+  nlohmann::json built = buildTransportSketch(
+      clips, catalog_, controllerOnly.empty() ? nullptr : &controllerOnly);
   // Same contract as the main sketch: ANY JSON difference (a param edit baked
   // into an instance state, not just topology) must re-apply state.
   if (built != transportCleanSketch_) {

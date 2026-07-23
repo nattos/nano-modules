@@ -89,7 +89,8 @@ inline bool clipHasTransportSection(const ClipM& clip, const Catalog& catalog) {
  * LOCK-STEP: clip-sketch.ts buildTransportSketch (deep-equal, golden-tested).
  */
 inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clips,
-                                           const Catalog& catalog) {
+                                           const Catalog& catalog,
+                                           const std::set<std::string>* controllerOnly = nullptr) {
   nlohmann::json chain = nlohmann::json::array();
   nlohmann::json wires = nlohmann::json::array();
   nlohmann::json instances = nlohmann::json::object();
@@ -97,9 +98,14 @@ inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clip
   for (const ClipM* clip : clips) {
     // SECTIONED, not just driven: a follower-only section must execute too.
     if (!clip || !clipHasTransportSection(*clip, catalog)) continue;
+    // `controllerOnly` clips (live FORKS) keep their driving controller but
+    // shed their SECTION members: a detached clip's follower re-arming against
+    // the track's new live scene would double-drive the autopilot.
+    const bool ctlOnly = controllerOnly && controllerOnly->count(clip->id) > 0;
     std::set<std::string> pushed;
     for (const auto& d : clip->transport.devices) {
       if (!catalog.has(d.moduleType)) continue;
+      if (ctlOnly && !catalog.hasCapability(d.moduleType, "transport_controller")) continue;
       const std::string key = transportInstanceKey(clip->id, d.id);
       if (instances.contains(key)) continue;  // duplicate device id: keep first
       nlohmann::json s = catalog.defaultStateFor(d.moduleType);
@@ -153,6 +159,14 @@ struct CompNode {
    *  opacity — forces a blend node where the static build would elide one, so
    *  the modulation has a target. Set by the tree builder (comp_eval.h). */
   bool layerOpacityModulated = false;
+  /** FORK leaf (scene tracks): the OUTGOING clip riding this track through a
+   *  crossfade — rendered standalone beside the incoming clip and fed into
+   *  the track's xfade blend. Anchors are the fork slot's FROZEN launch
+   *  anchors (adopted identity). Set by the tree builder. */
+  const ClipM* forkClip = nullptr;
+  double forkAnchorBeat = 0;
+  double forkStartSec = 0;
+  bool hasFork = false;
   std::vector<CompNode> children;
 };
 
@@ -408,6 +422,70 @@ struct Builder {
         // Legacy / non-catalog clip → a solid stand-in so the layer still draws.
         firstKey = lastKey = clipInstanceKey(clip.id, "src");
         push(kImplicitAnchor, firstKey, nlohmann::json::object());
+      }
+
+      // ── FORK crossfade: the OUTGOING clip renders STANDALONE beside the
+      // incoming and both feed the track xfade blend (composite.blend — the
+      // A/B crossfader: fader 0 = pure A/outgoing, 1 = pure B/incoming). The
+      // transition effect's published fade reaches its opacity through the
+      // automation fold (CompExecutor::transportResolve). Only a source-type
+      // outgoing fades — an effect-only outgoing has nothing standalone to
+      // draw and keeps the plain path.
+      if (!lastKey.empty() && node.hasFork && node.forkClip && node.track) {
+        const ClipM& fc = *node.forkClip;
+        std::vector<const DeviceM*> fdevs;
+        for (const auto& d : fc.sketch.devices) {
+          if (cat.has(d.moduleType)) fdevs.push_back(&d);
+        }
+        const DeviceM* fgen = nullptr;
+        for (const DeviceM* d : fdevs) {
+          if (cat.isGenerator(d->moduleType)) { fgen = d; break; }
+        }
+        std::string fLast;
+        if (fgen) {
+          std::vector<const DeviceM*> seg{fgen};
+          for (const DeviceM* d : fdevs) {
+            if (!cat.isGenerator(d->moduleType)) seg.push_back(d);
+          }
+          for (const DeviceM* d : seg) {
+            const std::string key = clipInstanceKey(fc.id, d->id);
+            push(d->moduleType, key, defaultsPlus(*d), &node.forkStartSec);
+            if (!isMod(d->moduleType)) fLast = key;
+          }
+        } else if (fdevs.empty()) {
+          fLast = clipInstanceKey(fc.id, "src");
+          push(kImplicitAnchor, fLast, nlohmann::json::object());
+        }
+        if (!fLast.empty()) {
+          // The outgoing's internal modulation wires keep running — its look
+          // must not change at the detach instant. `__layer__` wires drop
+          // (the fork has no layer slot of its own).
+          std::set<std::string> fpushed;
+          for (const DeviceM* d : fdevs) fpushed.insert(d->id);
+          for (const auto& w : fc.sketch.wires) {
+            if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
+            const std::string srcKey = w["src"].value("instanceKey", std::string());
+            const std::string destKey = w["dest"].value("instanceKey", std::string());
+            if (!fpushed.count(srcKey) || !fpushed.count(destKey)) continue;
+            nlohmann::json w2 = w;
+            w2["id"] = "fw" + std::to_string(wid++);
+            w2["src"] = {{"instanceKey", clipInstanceKey(fc.id, srcKey)},
+                         {"field", w["src"].value("field", std::string())}};
+            w2["dest"] = {{"instanceKey", clipInstanceKey(fc.id, destKey)},
+                          {"field", w["dest"].value("field", std::string())}};
+            wires.push_back(std::move(w2));
+          }
+          const std::string x = trackInstanceKey(node.track->id, "xfade");
+          push("composite.blend", x, {{"mode", 0}, {"opacity", 0.0}});
+          wires.push_back({{"id", "w" + std::to_string(wid++)},
+                           {"src", {{"instanceKey", fLast}, {"field", "tex_out"}}},
+                           {"dest", {{"instanceKey", x}, {"field", "0"}}}});
+          wires.push_back({{"id", "w" + std::to_string(wid++)},
+                           {"src", {{"instanceKey", lastKey}, {"field", "tex_out"}}},
+                           {"dest", {{"instanceKey", x}, {"field", "1"}}}});
+          firstKey = x;  // the layer's opacity rides the xfade node's wet/dry
+          lastKey = x;
+        }
       }
 
       if (!lastKey.empty()) {

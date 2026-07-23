@@ -2597,6 +2597,57 @@ TEST_CASE("fork: A->A relaunch skips; stop verbs and TTL release", "[comp_fork]"
   CHECK(!json::parse(h.cx.sceneStatesJson()).contains("st"));
 }
 
+TEST_CASE("fork: a second leaf + the track xfade blend; desc byte-parity",
+          "[comp_fork]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.play();
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t contentV1 = table.contentByClipId.at("v1");
+
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  // The live v1 desc — the fork's desc must be BYTE-IDENTICAL to it.
+  json v1Desc;
+  for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+    if (d["clipId"] == "v1") v1Desc = d;
+  }
+  REQUIRE(!v1Desc.is_null());
+
+  // Arm + commit v2: the tree grows the fork leaf and the track xfade node.
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(!forkOf(h.cx).is_null());
+  const std::string keys = h.cx.chainKeysJson();
+  CHECK(keys.find("clip_v1_v1_v") != std::string::npos);   // outgoing source
+  CHECK(keys.find("clip_v2_v2_v") != std::string::npos);   // incoming source
+  CHECK(keys.find("track_st_xfade") != std::string::npos); // the A/B crossfader
+  // requiredJson keeps BOTH chains alive (instance continuity across detach).
+  CHECK(h.cx.requiredJson().find("clip_v1_v1_v") != std::string::npos);
+  // Pump set: both descs; the fork's is byte-identical to the live one (no
+  // holdBeat, same anchors) so the pump/decoder survives untouched.
+  json v1After, v2After;
+  for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+    if (d["clipId"] == "v1") v1After = d;
+    if (d["clipId"] == "v2") v2After = d;
+  }
+  REQUIRE(!v1After.is_null());
+  REQUIRE(!v2After.is_null());
+  CHECK(v1After == v1Desc);
+
+  // Release (fade done): the fork leaf + xfade node leave the build.
+  table.pendingOps.push_back({1, contentV1, 0.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  const std::string after = h.cx.chainKeysJson();
+  CHECK(after.find("clip_v1_v1_v") == std::string::npos);
+  CHECK(after.find("track_st_xfade") == std::string::npos);
+  CHECK(after.find("clip_v2_v2_v") != std::string::npos);
+}
+
 TEST_CASE("fork: an armed track suppresses the linger clamp", "[comp_fork]") {
   EvalHarness h;
   h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
