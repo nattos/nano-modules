@@ -92,7 +92,15 @@ cbuffer Uniforms : register(b4) {
   float stream;          // +align / -diverge velocity vs the group
   float stream_density;  // neighbour density for ~max stream effect
   float field_res;       // field texture resolution (B-spline sampling)
-  float _pad2;
+  float dens_scale;      // screen uv → density uv (scale about the centre)
+}
+
+// The density buffer covers a MARGIN of screen uv beyond the frame so that
+// off-frame particles still crowd their in-frame neighbours; mapping in is a
+// pure scale about the centre. Clamping past the margin is harmless — nothing
+// lives out there that a particle inside the frame can feel.
+float2 swc_dens_uv(float2 p) {
+  return saturate(p * dens_scale + 0.5 * (1.0 - dens_scale));
 }
 
 // Max settle rate (1/s) at pull = 1 (flow_swarm parity).
@@ -177,7 +185,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float  stream_sign = (stream >= 0.0) ? 1.0 : -1.0;
   if (interactions != 0u && !respawn) {
     if (density_death > 1e-5) {
-      float dens = densityTex.SampleLevel(linearSampler, saturate(pos), 0).r;
+      float dens = densityTex.SampleLevel(linearSampler, swc_dens_uv(pos), 0).r;
       float others = max(dens - 1.0, 0.0);          // subtract own halo peak (~1)
       float knee = max(density_threshold * 0.5, 1.0);
       float factor = smoothstep(0.0, knee, others - density_threshold);
@@ -188,12 +196,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
     }
     if (avoid > 1e-5 && !respawn) {
       // Gradient over equal PIXEL distances → round avoidance on screen.
-      float e = 2.0 / max(density_res, 1.0);
+      // Step = two density texels, in SCREEN uv (the buffer spans 1/dens_scale
+      // of the frame, so one texel is 1/(res·dens_scale) of it).
+      float e = 2.0 / max(density_res * dens_scale, 1.0);
       float ex = e * aspect_x, ey = e * aspect_y;
-      float dl = densityTex.SampleLevel(linearSampler, saturate(pos - float2(ex, 0.0)), 0).r;
-      float dr = densityTex.SampleLevel(linearSampler, saturate(pos + float2(ex, 0.0)), 0).r;
-      float dd = densityTex.SampleLevel(linearSampler, saturate(pos - float2(0.0, ey)), 0).r;
-      float du = densityTex.SampleLevel(linearSampler, saturate(pos + float2(0.0, ey)), 0).r;
+      float dl = densityTex.SampleLevel(linearSampler, swc_dens_uv(pos - float2(ex, 0.0)), 0).r;
+      float dr = densityTex.SampleLevel(linearSampler, swc_dens_uv(pos + float2(ex, 0.0)), 0).r;
+      float dd = densityTex.SampleLevel(linearSampler, swc_dens_uv(pos - float2(0.0, ey)), 0).r;
+      float du = densityTex.SampleLevel(linearSampler, swc_dens_uv(pos + float2(0.0, ey)), 0).r;
       float2 away = -float2(dr - dl, du - dd);            // away from crowding
       float2 awayhat = away / (length(away) + 0.5);       // soft-normalised
       float ang2 = avoid_curl * 1.5707963;
@@ -211,7 +221,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
       avoid_vec = vec_iso * float2(aspect_x, aspect_y);   // pixel push → uv
     }
     if (abs(stream) > 1e-4 && !respawn) {
-      float3 dv = densityTex.SampleLevel(linearSampler, saturate(pos), 0).rgb;
+      float3 dv = densityTex.SampleLevel(linearSampler, swc_dens_uv(pos), 0).rgb;
       float2 gmean = dv.gb / max(dv.r, 1e-4);             // halo-weighted mean vel
       stream_dir = gmean / (length(gmean) + 1e-4);
       float others = max(dv.r - 1.0, 0.0);

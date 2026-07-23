@@ -46,7 +46,20 @@ static constexpr int FIELD_RES = 256;
 
 // Interaction density buffer — an abstract square proximity field, resolution
 // unrelated to the viewport (flow_swarm parity).
-static constexpr int DENSITY_RES = 256;
+//
+// It covers uv [-MARGIN, 1+MARGIN] rather than the bare viewport: particles
+// live out to s-radius SWC_ESCAPE_R (well off-screen), and their crowding must
+// still reach neighbours just inside the frame. Without the margin the halo of
+// every off-frame particle is clipped away and the outermost `radius` of the
+// picture under-reports density — a rim where avoidance, density-death and
+// streaming all quietly weaken. The margin exceeds the largest
+// interaction_radius (0.08), so the whole visible region has full kernel
+// support. RES is scaled with the span to keep the on-screen texel pitch.
+static constexpr int   DENSITY_RES    = 320;
+static constexpr float DENSITY_MARGIN = 0.1f;
+static constexpr float DENSITY_SPAN   = 1.0f + 2.0f * DENSITY_MARGIN;
+// screen uv → density uv: a scale about the centre (offset = (1-scale)/2).
+static constexpr float DENSITY_SCALE  = 1.0f / DENSITY_SPAN;
 
 // Tracers ("lines"): fixed slot ranges in the segment buffer, no atomics.
 static constexpr int MAX_TRACERS = 96;
@@ -150,11 +163,11 @@ struct UpdateUniforms {
   float    stream;
   float    stream_density;
   float    field_res;
-  float    _pad2;
+  float    dens_scale;   // screen uv → density uv (scale about the centre)
 };
 static_assert(sizeof(UpdateUniforms) == 192, "UpdateUniforms layout mismatch");
 
-struct DensityUniforms { float res, _p0, _p1, _p2; };
+struct DensityUniforms { float res, dens_scale, dens_off, _pad; };
 static_assert(sizeof(DensityUniforms) == 16, "DensityUniforms layout mismatch");
 
 // One axis of the separable density halo (see density_blur.hlsl).
@@ -861,7 +874,8 @@ void module_init() {
   s_pso_density_debug = gpu::Device::createComputePSO(cs_dbg, "main", gpu::Bindings()
       .tex2d(0)
       .sampler(1)
-      .storageTex2d(2));
+      .storageTex2d(2)
+      .uniform(3));
 
   s_pso_field_debug = gpu::Device::createComputePSO(cs_fdbg, "main", gpu::Bindings()
       .tex2d(0)       // field_a
@@ -1286,6 +1300,7 @@ void render(void* self, int vp_w, int vp_h) {
   uu.stream             = s->stream;
   uu.stream_density     = s->stream_density;
   uu.field_res          = (float)FIELD_RES;
+  uu.dens_scale         = DENSITY_SCALE;
   s->update_uniforms.writeOne(uu);
 
   StatsUniforms su = {};
@@ -1487,7 +1502,8 @@ void render(void* self, int vp_w, int vp_h) {
   // radius 0.04 that was >100M additive fragments piling onto the same few
   // texels wherever the swarm clustered, which is what tanked the frame rate.
   if (need_density) {
-    DensityUniforms du = { (float)DENSITY_RES, 0.f, 0.f, 0.f };
+    DensityUniforms du = { (float)DENSITY_RES, DENSITY_SCALE,
+                           0.5f * (1.0f - DENSITY_SCALE), 0.f };
     s->density_uniforms.writeOne(du);
     {
       auto rp = gpu::RenderPass::begin(s->density_splat_tex, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -1517,7 +1533,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch((DENSITY_RES + 7) / 8, (DENSITY_RES + 7) / 8);
       cp.end();
     };
-    float half_r = 0.5f * s->interaction_radius * (float)DENSITY_RES;
+    float half_r = 0.5f * s->interaction_radius * (float)DENSITY_RES * DENSITY_SCALE;
     blur_axis(s->density_splat_tex, s->density_tmp_tex, s->blur_h_uniforms,
               half_r * aspect_x, 1.0f, 0.0f);
     blur_axis(s->density_tmp_tex, dens_cur, s->blur_v_uniforms,
@@ -1542,6 +1558,7 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_density_debug);
     cp.setTexture(dens_cur, 0, 0);
+    cp.setBuffer(s->density_uniforms, 3);
     cp.setSampler(s->sampler, 1);
     cp.setTexture(out, 2, 1);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);

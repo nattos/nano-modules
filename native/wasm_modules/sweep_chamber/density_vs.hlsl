@@ -21,8 +21,10 @@
 StructuredBuffer<Particle> particles : register(t0);
 
 cbuffer DensityUniforms : register(b1) {
-  float res;        // density buffer resolution (texels per axis)
-  float _p0, _p1, _p2;
+  float res;         // density buffer resolution (texels per axis)
+  float dens_scale;  // screen uv → density uv (scale about the centre)
+  float dens_off;    // = (1 - dens_scale) / 2
+  float _pad;
 };
 
 struct DOut {
@@ -49,8 +51,10 @@ DOut main(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   }
   o.vel = p.b.xy;
 
+  // The buffer covers a margin of screen uv beyond the frame, so an off-frame
+  // particle still deposits mass its in-frame neighbours can feel.
   // One texel of half-extent in each axis → the 2×2 bilinear footprint.
-  float2 world = p.a.xy + c * (1.0 / max(res, 1.0));
+  float2 world = p.a.xy * dens_scale + dens_off + c * (1.0 / max(res, 1.0));
   o.pos    = float4(world * 2.0 - 1.0, 0.0, 1.0);
   o.corner = c;
   return o;
