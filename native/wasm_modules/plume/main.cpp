@@ -195,10 +195,13 @@ void module_init() {
       // --- Shape ---
       .group("shape", "Shape")
         .groupHelp(
-          "*Radius* is the body; *Ridge Depth/Scale/Sharpness* shape the "
-          "displacement flakes riding on it. *Morph* drifts the field along "
-          "a closed loop — it breathes forever without ever jumping. "
-          "*Variation* picks a different flake pattern.")
+          "*Radius* is the body; *Ridge Depth/Scale* shape the displacement "
+          "riding on it. *Sharpness* carves the field into terraced plates — "
+          "at 0 the surface stays a smooth rolling heightfield. *Feathering* "
+          "smears the pattern along the flow into wind-swept shingles. "
+          "*Morph* drifts the field along a closed loop — it breathes "
+          "forever without ever jumping. *Variation* picks a different "
+          "pattern.")
       .floatField("radius", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Radius", "Rad")
       .floatField("ridge_depth", 0.5f, 0.f, 1.f, state::PrimaryInput)
@@ -591,10 +594,11 @@ void render(void* self, int vp_w, int vp_h) {
   if (R + amp > 0.82f) amp = 0.82f - R;
   const float freq = 4.0f * std::pow(2.0f, (s->ridge_scale - 0.5f) * 4.0f);
   // Radial-displacement Lipschitz compression: slope ~ amp * freq (noise
-  // gradient ~1.5/unit folded into the constant), conservative. The
-  // anisotropy's cross-flow squeeze raises the max slope by `across`.
-  const float across = 1.0f + 2.5f * s->ridge_aniso;
-  float lip = 1.0f / (1.0f + 3.0f * amp * freq * across / std::fmax(R, 0.1f));
+  // gradient ~1.5/unit folded into the constant), conservative. Terrace
+  // cliffs steepen the field well past the smooth-fbm bound; feathering's
+  // along-flow smear only ever smooths, so it needs no margin.
+  const float steep = 1.0f + 2.0f * s->ridge_sharp;
+  float lip = 1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
   if (lip < 0.15f) lip = 0.15f;
 
   // Morph walks a closed circle in the noise domain — seamless, no drift.
