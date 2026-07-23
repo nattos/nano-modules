@@ -171,6 +171,16 @@ void CompExecutor::rebuildStreamsTable() {
       s->anchorSec = l.launchSec;
     }
   }
+  // Live forks keep their frozen launch anchors the same way — the outgoing
+  // playback must survive a routine doc reload mid-fade.
+  for (const auto& [trackId, f] : fork_) {
+    auto it = streamsTable_.contentByClipId.find(f.clipId);
+    if (it == streamsTable_.contentByClipId.end()) continue;
+    if (StreamInfo* s = streamsTable_.findMutable(it->second)) {
+      s->anchorBeat = f.anchorBeat;
+      s->anchorSec = f.anchorSec;
+    }
+  }
   sampleStreamsFrame();
 }
 
@@ -496,8 +506,28 @@ const ClipM* CompExecutor::findSceneClip(const std::string& trackId,
   return nullptr;
 }
 
+void CompExecutor::releaseFork(const std::string& trackId) {
+  auto it = fork_.find(trackId);
+  if (it == fork_.end()) return;
+  auto cit = streamsTable_.contentByClipId.find(it->second.clipId);
+  if (cit != streamsTable_.contentByClipId.end()) {
+    if (StreamInfo* cs = streamsTable_.findMutable(cit->second)) cs->eventRev++;
+  }
+  fork_.erase(it);
+  scenesDirty_ = true;
+  invalidateEval();
+}
+
 void CompExecutor::launchScene(const std::string& trackId, const std::string& sceneId,
                                int32_t cls) {
+  // While a fork runs on this track, a relaunch of the ALREADY-LIVE scene is
+  // dropped: the transition committed the incoming early, and the original
+  // announcer's redundant boundary-time fire must not re-anchor it mid-fade.
+  // Bounded by the fork's short life; retriggers behave normally otherwise.
+  if (fork_.count(trackId)) {
+    auto lit = sceneLaunch_.find(trackId);
+    if (lit != sceneLaunch_.end() && lit->second.sceneId == sceneId) return;
+  }
   // Gapless handover: defer the commit while the incoming VIDEO isn't decoded
   // yet — the outgoing scene keeps playing and the pump warms the incoming
   // one (its desc ships active-shaped from warmVideoDescs). Deferral needs a
@@ -519,9 +549,11 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
     // back to its start during the window (the cold-launch cousin of the
     // primed-candidate fast path; primed follows never get here). Driven
     // scenes are excluded: their controller owns content time (the pump
-    // follows the times channel, not the desc mapping we clamp).
+    // follows the times channel, not the desc mapping we clamp). An armed or
+    // live FORK also suppresses the clamp — the outgoing plays THROUGH the
+    // window into the crossfade; freezing it would fight the fade.
     auto lit = sceneLaunch_.find(trackId);
-    if (lit != sceneLaunch_.end()) {
+    if (lit != sceneLaunch_.end() && !forkArm_.count(trackId) && !fork_.count(trackId)) {
       const ClipM* out = findSceneClip(trackId, lit->second.sceneId);
       auto cit = streamsTable_.contentByClipId.find(lit->second.sceneId);
       const StreamInfo* cs =
@@ -545,9 +577,11 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
     }
     // A re-request on the same track keeps the FIRST freeze point: the pump
     // has been clamped there since the original request — adopting a later
-    // boundary would visibly unfreeze + wrap.
+    // boundary would visibly unfreeze + wrap. (Not when a fork suppresses
+    // the clamp — the outgoing must keep playing.)
     auto prev = pendingLaunch_.find(trackId);
     if (prev != pendingLaunch_.end() && prev->second.holdBeat >= 0 &&
+        !forkArm_.count(trackId) && !fork_.count(trackId) &&
         (p.holdBeat < 0 || prev->second.holdBeat < p.holdBeat)) {
       p.holdBeat = prev->second.holdBeat;
     }
@@ -586,6 +620,30 @@ void CompExecutor::applyPendingLaunches(double dtSec) {
 
 void CompExecutor::commitLaunch(const std::string& trackId, const std::string& sceneId,
                                 double launchBeat, double launchSec) {
+  // fork materialization (ADOPTED IDENTITY): an armed fork whose clip IS the
+  // track's live scene detaches at the exact commit instant — the evicted
+  // SceneLaunch moves into the fork slot with its anchors frozen, so the
+  // outgoing keeps advancing through the untouched lazy mapping (same clipId,
+  // same content stream, same pump, same effect instances — nothing moves).
+  // A→A relaunches skip: identity collision, plain retrigger semantics.
+  auto arm = forkArm_.find(trackId);
+  if (arm != forkArm_.end()) {
+    auto live = sceneLaunch_.find(trackId);
+    if (live != sceneLaunch_.end() && live->second.sceneId == arm->second.clipId &&
+        sceneId != arm->second.clipId) {
+      releaseFork(trackId);  // snap-finish an existing fork (chained cuts)
+      ForkState f;
+      f.clipId = live->second.sceneId;
+      f.anchorBeat = live->second.launchBeat;
+      f.anchorSec = live->second.launchSec;
+      fork_[trackId] = std::move(f);
+      auto fcit = streamsTable_.contentByClipId.find(arm->second.clipId);
+      if (fcit != streamsTable_.contentByClipId.end()) {
+        if (StreamInfo* cs = streamsTable_.findMutable(fcit->second)) cs->eventRev++;
+      }
+    }
+    forkArm_.erase(arm);  // consumed; the standing re-assert re-arms next tick
+  }
   // A fulfilled announce is done — without this the just-launched target
   // haunts the NEXT cycle's warm slots until the stale window closes.
   auto ait = announces_.find(trackId);
@@ -621,8 +679,11 @@ void CompExecutor::commitLaunch(const std::string& trackId, const std::string& s
 
 void CompExecutor::stopScene(const std::string& trackId) {
   // The announcing section dies with the scene — collapse the warm set now
-  // rather than waiting out the stale window.
+  // rather than waiting out the stale window. A stop gesture also clears the
+  // track's fork lifecycle (armed or fading).
   if (announces_.erase(trackId)) invalidateEval();
+  forkArm_.erase(trackId);
+  releaseFork(trackId);
   if (pendingLaunch_.erase(trackId)) {
     scenesDirty_ = true;
     invalidateEval();
@@ -644,10 +705,15 @@ void CompExecutor::stopScene(const std::string& trackId) {
 }
 
 void CompExecutor::stopAllScenes() {
-  if (sceneLaunch_.empty() && pendingLaunch_.empty() && announces_.empty()) return;
+  if (sceneLaunch_.empty() && pendingLaunch_.empty() && announces_.empty() &&
+      fork_.empty() && forkArm_.empty()) {
+    return;
+  }
   sceneLaunch_.clear();
   pendingLaunch_.clear();
   announces_.clear();
+  fork_.clear();
+  forkArm_.clear();
   scenesDirty_ = true;
   invalidateEval();
 }
@@ -1252,7 +1318,43 @@ void CompExecutor::drainStreamOps() {
   streamsTable_.pendingOps.clear();
   for (const auto& op : ops) {
     const StreamInfo* s = streamsTable_.find(op.handle);
-    if (!s || s->kind != kStreamKindSceneTrack) continue;  // seekable timelines: future
+    if (!s) continue;
+    if (s->kind == kStreamKindVideoContent) {
+      // Content-handle verbs exist only for the FORK lifecycle (LOCK-STEP:
+      // the web drain forwards these raw via comp_queue_stream_op, so this
+      // branch is the single implementation on both hosts). Resolve the
+      // owning scene track first.
+      const std::string& clipId = s->ownerId;
+      auto pit = streamsTable_.parentByClipId.find(clipId);
+      const StreamInfo* pt =
+          pit != streamsTable_.parentByClipId.end() ? streamsTable_.find(pit->second) : nullptr;
+      if (!pt || pt->kind != kStreamKindSceneTrack) continue;
+      const std::string& trackId = pt->ownerId;
+      if (op.kind == 3) {
+        // fork arm / re-assert: a LIVE fork of this clip refreshes its keep-
+        // alive; else arming requires the clip to be the track's live scene.
+        auto fit = fork_.find(trackId);
+        if (fit != fork_.end() && fit->second.clipId == clipId) {
+          fit->second.assertAgeSec = 0;
+          continue;
+        }
+        auto lit = sceneLaunch_.find(trackId);
+        if (lit != sceneLaunch_.end() && lit->second.sceneId == clipId) {
+          auto& arm = forkArm_[trackId];
+          arm.clipId = clipId;
+          arm.ageSec = 0;
+        }
+        continue;
+      }
+      if (op.kind == 1) {
+        // streams.stop on a fork stream releases it (the fade-done call).
+        auto fit = fork_.find(trackId);
+        if (fit != fork_.end() && fit->second.clipId == clipId) releaseFork(trackId);
+        continue;
+      }
+      continue;  // content-handle seek/announce: future (owner re-timing)
+    }
+    if (s->kind != kStreamKindSceneTrack) continue;  // seekable timelines: future
     if (op.kind == 1) {
       stopScene(s->ownerId);
       continue;
@@ -1310,6 +1412,25 @@ uint32_t CompExecutor::update(double dtSec) {
     } else {
       ++it;
     }
+  }
+  // fork arms + detached forks age on WALL-CLOCK too (same PRE-hold rule):
+  // an arm not re-asserted expires quietly; a detached fork releases when its
+  // owner goes silent, when the TTL backstop trips, or when a doc edit
+  // removed its clip (the heal's validation, fork flavored).
+  for (auto it = forkArm_.begin(); it != forkArm_.end();) {
+    it->second.ageSec += std::max(0.0, dtSec);
+    if (it->second.ageSec > kForkArmStaleSec) it = forkArm_.erase(it);
+    else ++it;
+  }
+  for (auto it = fork_.begin(); it != fork_.end();) {
+    it->second.ageSec += std::max(0.0, dtSec);
+    it->second.assertAgeSec += std::max(0.0, dtSec);
+    const bool dead = it->second.assertAgeSec > kForkArmStaleSec ||
+                      it->second.ageSec > kForkMaxSec ||
+                      !findSceneClip(it->first, it->second.clipId);
+    const std::string trackId = it->first;
+    ++it;
+    if (dead) releaseFork(trackId);
   }
   // Follow-candidate precache arming is TIME-based and must flip mid-span
   // (evals skip during steady playback): re-eval when the armed set changes.
@@ -1689,6 +1810,13 @@ const std::string& CompExecutor::sceneStatesJson() {
     out[trackId] = {{"sceneId", l.sceneId},
                     {"launchBeat", l.launchBeat},
                     {"launchSec", l.launchSec}};
+  }
+  // A live fork rides its track's entry: the web registry re-applies the
+  // frozen anchors so the outgoing playback survives doc reloads mid-fade.
+  for (const auto& [trackId, f] : fork_) {
+    out[trackId]["fork"] = {{"clipId", f.clipId},
+                            {"anchorBeat", f.anchorBeat},
+                            {"anchorSec", f.anchorSec}};
   }
   sceneStatesScratch_ = out.dump();
   return sceneStatesScratch_;

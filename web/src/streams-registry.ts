@@ -177,7 +177,7 @@ export class StreamsRegistry {
    *  `cls` = launch deadline class (gapless handover): loose handovers may
    *  linger on the outgoing scene while the incoming video warms. */
   pendingOps: {
-    kind: 'seek' | 'stop' | 'announce';
+    kind: 'seek' | 'stop' | 'announce' | 'fork';
     handle: bigint;
     t: number;
     cls?: 'instant' | 'loose';
@@ -277,14 +277,22 @@ export class StreamsRegistry {
   }
 
   /** The last launch map applied (re-applied after loadStatic — see above). */
-  private lastLaunches: Record<string, { sceneId: string; launchBeat: number; launchSec?: number }> = {};
+  private lastLaunches: Record<string, {
+    sceneId: string; launchBeat: number; launchSec?: number;
+    /** Live fork riding this track (comp fork slot): the OUTGOING clip's
+     *  frozen anchors, re-applied so its content stream keeps advancing. */
+    fork?: { clipId: string; anchorBeat: number; anchorSec: number };
+  }> = {};
 
   /** Mirror the launch map (comp_scene_states_json: {trackId: {sceneId,
    *  launchBeat, launchSec}}) into the scene-track streams — the twin of the
    *  native sampleStreamsFrame sync. Also re-anchors launched scenes' content
    *  streams (launchScene's anchor rebase) using the SHIPPED launchSec, and
    *  bumps event revs on actual launch changes (launchScene/stopScene twins). */
-  syncSceneLaunches(launches: Record<string, { sceneId: string; launchBeat: number; launchSec?: number }>): void {
+  syncSceneLaunches(launches: Record<string, {
+    sceneId: string; launchBeat: number; launchSec?: number;
+    fork?: { clipId: string; anchorBeat: number; anchorSec: number };
+  }>): void {
     const prev = this.lastLaunches;
     this.lastLaunches = launches ?? {};
     for (const s of this.streams) {
@@ -316,6 +324,22 @@ export class StreamsRegistry {
         s.eventRev++;
         // A fulfilled announce is done (native commitLaunch's erase twin).
         if (s.annOrdinal === ref[0]) s.annOrdinal = -1;
+      }
+      // A live FORK keeps the OUTGOING clip's content stream on its frozen
+      // launch anchors (adopted identity — nothing re-anchors it at commit;
+      // this also restores it after a doc-reload loadStatic). Rev bumps on
+      // fork create/release mirror the native eventRev bumps.
+      const fh = l.fork ? this.contentByClipId.get(l.fork.clipId) : undefined;
+      const forkContent = fh !== undefined ? this.byHandle.get(fh) : undefined;
+      if (forkContent && l.fork) {
+        forkContent.anchorBeat = l.fork.anchorBeat;
+        forkContent.anchorSec = l.fork.anchorSec;
+        if (p?.fork?.clipId !== l.fork.clipId) forkContent.eventRev++;
+      }
+      if (p?.fork && p.fork.clipId !== l.fork?.clipId) {
+        const ph = this.contentByClipId.get(p.fork.clipId);
+        const prevContent = ph !== undefined ? this.byHandle.get(ph) : undefined;
+        if (prevContent) prevContent.eventRev++;
       }
     }
     // Stops: a track that had a launch and lost it bumps its rev too (and
@@ -606,9 +630,23 @@ export class StreamsRegistry {
 
   queueStop(h: bigint): boolean {
     const s = this.find(h);
-    if (!s || s.kind !== StreamKind.SceneTrack) return false;
+    // Scene tracks (stop the playing clip) and content streams (release a
+    // FORK — validated at the engine drain, LOCK-STEP with the native import).
+    if (!s || (s.kind !== StreamKind.SceneTrack && s.kind !== StreamKind.VideoContent)) {
+      return false;
+    }
     this.pendingOps.push({ kind: 'stop', handle: BigInt.asUintN(64, h), t: 0 });
     return true;
+  }
+
+  /** resources.fork: queue the fork arm / re-assert for a forkable resource.
+   *  Returns the fork STREAM handle (adopted identity — the resource's own
+   *  content stream) or 0n, LOCK-STEP with the native resources_fork_fn. */
+  queueFork(h: bigint): bigint {
+    const r = this.findResource(h);
+    if (!r || !(r.flags & ResourceFlags.Forkable) || r.stream === 0n) return 0n;
+    this.pendingOps.push({ kind: 'fork', handle: r.stream, t: 0 });
+    return r.stream;
   }
 
   /** streams.announce: declared future seek (precache hint; t < 0 retracts).

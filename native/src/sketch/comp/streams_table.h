@@ -292,7 +292,7 @@ struct StreamsTable {
    *  reload rebuilds the table and clobbers queued ops (edit-rate; ops are
    *  one-frame — acceptable). */
   struct StreamOp {
-    int32_t kind = 0;  // 0 = seek, 1 = stop, 2 = announce
+    int32_t kind = 0;  // 0 = seek, 1 = stop, 2 = announce, 3 = fork arm
     int64_t handle = 0;
     double t = 0;
     /** Launch deadline class (streams.seek's cls arg): 0 = instant, 1 = loose

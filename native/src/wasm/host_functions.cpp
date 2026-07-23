@@ -566,7 +566,12 @@ static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t, int32_t
 static int32_t streams_stop_fn(wasm_exec_env_t env, int64_t h) {
   auto* table = get_streams(env);
   const comp::StreamInfo* s = table ? table->find(h) : nullptr;
-  if (!s || s->kind != comp::kStreamKindSceneTrack) return 0;
+  // Scene tracks (stop the playing clip) and content streams (release a FORK
+  // — validated at drain: only a live fork's stream acts).
+  if (!s || (s->kind != comp::kStreamKindSceneTrack &&
+             s->kind != comp::kStreamKindVideoContent)) {
+    return 0;
+  }
   table->pendingOps.push_back({1, h, 0.0});
   return 1;
 }
@@ -761,11 +766,15 @@ static int64_t resources_stream_fn(wasm_exec_env_t env, int64_t h) {
 }
 
 static int64_t resources_fork_fn(wasm_exec_env_t env, int64_t h) {
-  // Arms nothing yet — the fork engine drains StreamOp kind 3 (a later
-  // stage); until then a valid forkable resource still answers 0.
-  const auto* r = resolve_resource(env, h);
+  // Queues the fork arm / re-assert (StreamOp kind 3, drained by
+  // CompExecutor::drainStreamOps — level-triggered, so callers re-assert per
+  // tick). Returns the fork STREAM handle: adopted identity — the fork IS the
+  // resource's content stream, re-owned.
+  auto* table = get_streams(env);
+  const comp::ResourceInfo* r = table ? table->findResource(h) : nullptr;
   if (!r || !(r->flags & comp::kResForkable) || r->stream == 0) return 0;
-  return 0;
+  table->pendingOps.push_back({3, r->stream, 0.0, 1, 0});
+  return r->stream;
 }
 
 static NativeSymbol resources_symbols[] = {

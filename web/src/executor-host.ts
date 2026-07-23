@@ -123,6 +123,8 @@ interface ExecutorExports {
   comp_launch_scene(c: number, track: number, trackLen: number, scene: number, sceneLen: number,
                     cls: number): void;
   comp_stop_scene(c: number, track: number, len: number): void;
+  comp_queue_stream_op?(c: number, handle: bigint, kind: number, t: number,
+                        eta: number, cls: number): void;
   comp_announce_scene(c: number, track: number, trackLen: number, scene: number,
                       sceneLen: number, etaSec: number, cls: number): void;
   comp_set_video_ready_feed?(c: number): void;
@@ -1175,7 +1177,19 @@ export class WasmSketchExecutor {
       const ops = this.streamsRegistry.pendingOps.splice(0);
       for (const op of ops) {
         const s = this.streamsRegistry.find(op.handle);
-        if (!s || s.kind !== 4 /* SceneTrack */) continue;
+        if (!s) continue;
+        if (op.kind === 'fork' || s.kind === 5 /* VideoContent */) {
+          // Content-handle verbs (fork arm kind 3 / fork release via stop):
+          // forwarded RAW — the native drainStreamOps inside executor.wasm is
+          // the single fork-lifecycle implementation on both hosts. Seek /
+          // announce on content handles stay future.
+          if (op.kind !== 'fork' && op.kind !== 'stop') continue;
+          this.exports.comp_queue_stream_op?.(
+            c, BigInt.asIntN(64, op.handle), op.kind === 'fork' ? 3 : 1, op.t,
+            op.eta ?? 0, op.cls === 'instant' ? 0 : 1);
+          continue;
+        }
+        if (s.kind !== 4 /* SceneTrack */) continue;
         if (op.kind === 'stop') {
           this.withBytes(s.ownerId, (p, l) => this.exports.comp_stop_scene(c, p, l));
           continue;

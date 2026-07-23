@@ -245,6 +245,18 @@ void comp_announce_scene(CompExecutor* c, const char* trackId, int32_t track_len
 EXEC_EXPORT("comp_stop_all_scenes")
 void comp_stop_all_scenes(CompExecutor* c) { if (c) c->stopAllScenes(); }
 
+// RAW stream-op landing point for the WEB drain: content-handle verbs (fork
+// arm kind 3, fork release via stop kind 1) push straight into the engine's
+// pendingOps so CompExecutor::drainStreamOps stays the SINGLE fork-lifecycle
+// implementation on both hosts (drained at the next resolve entry — the
+// standard one-frame verb latency).
+EXEC_EXPORT("comp_queue_stream_op")
+void comp_queue_stream_op(CompExecutor* c, int64_t handle, int32_t kind, double t,
+                          double eta, int32_t cls) {
+  if (!c) return;
+  c->streamsTableMutable().pendingOps.push_back({kind, handle, t, cls, eta});
+}
+
 // ── Per frame (two-phase; see comp_executor.h) ──
 
 EXEC_EXPORT("comp_update")

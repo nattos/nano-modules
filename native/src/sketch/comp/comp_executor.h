@@ -436,6 +436,30 @@ class CompExecutor {
   };
   std::map<std::string, SceneAnnounce> announces_;  // per track, last-wins
   static constexpr double kAnnounceStaleSec = 0.5;
+  /** resources.fork — ADOPTED-IDENTITY successor: when the track commits a
+   *  launch away from the armed clip, the outgoing playback (same clipId,
+   *  same content stream, same pump, same effect instances) moves into
+   *  fork_[trackId] instead of being evicted — a transition effect then owns
+   *  it (advances via the untouched lazy mapping; streams.stop releases).
+   *  ARM is level-triggered like announce: re-asserted per tick, stale after
+   *  kForkArmStaleSec; a DETACHED fork is kept alive by the same re-asserts
+   *  (silence = owner died → release) with a wall-clock TTL backstop. */
+  struct ForkPending {
+    std::string clipId;
+    double ageSec = 0;  // wall-clock since the last re-assert
+  };
+  std::map<std::string, ForkPending> forkArm_;  // per track, last-wins
+  static constexpr double kForkArmStaleSec = 0.5;
+  struct ForkState {
+    std::string clipId;      // the OUTGOING clip — identity adopted, not cloned
+    double anchorBeat = 0;   // frozen from the evicted SceneLaunch
+    double anchorSec = 0;
+    double ageSec = 0;       // wall-clock TTL backstop
+    double assertAgeSec = 0; // wall-clock since the owner's last re-assert
+  };
+  std::map<std::string, ForkState> fork_;  // single slot per track
+  static constexpr double kForkMaxSec = 10.0;
+  void releaseFork(const std::string& trackId);
   /** The fresh, in-window announce target for a track — revalidated against
    *  the CURRENT doc — or nullptr. */
   const ClipM* announcedTargetFor(const std::string& trackId) const;

@@ -775,9 +775,9 @@ export class WasmHost {
         },
         stream: (h: bigint): bigint =>
           this.streams?.findResource(h)?.stream ?? 0n,
-        // Fork engine arrives with the transition work; until then a valid
-        // forkable resource still answers 0 (native twin agrees).
-        fork: (_h: bigint): bigint => 0n,
+        // Queues the fork arm / re-assert; returns the fork STREAM handle
+        // (adopted identity — the resource's own content stream, re-owned).
+        fork: (h: bigint): bigint => this.streams?.queueFork(h) ?? 0n,
       },
       state: {
         get_key: (bufPtr: number, bufLen: number): number => {

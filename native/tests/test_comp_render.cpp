@@ -2459,6 +2459,173 @@ TEST_CASE("streams.next_launch: the table mirrors announces and pending commits"
 
 namespace {
 
+/** The fork entry riding track `st`, or null. */
+json forkOf(comp::CompExecutor& cx) {
+  const json s = json::parse(cx.sceneStatesJson());
+  if (!s.contains("st") || !s["st"].contains("fork")) return nullptr;
+  return s["st"]["fork"];
+}
+
+}  // namespace
+
+TEST_CASE("fork: arm + commit detaches the outgoing under its own identity",
+          "[comp_fork]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4),
+                         mkVideoClip("v3", 8, 4)}))})));
+  h.cx.play();
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t contentV1 = table.contentByClipId.at("v1");
+  const int64_t contentV2 = table.contentByClipId.at("v2");
+
+  // v1 live (no ready feed → immediate commits, the barrel-degrade path).
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  const double v1Anchor =
+      json::parse(h.cx.sceneStatesJson())["st"]["launchBeat"].get<double>();
+
+  // Arm alone is invisible; an unconsumed arm expires after kForkArmStaleSec.
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  CHECK(forkOf(h.cx).is_null());
+
+  // Commit v2 while armed → the evicted v1 moves into the fork slot with its
+  // anchors FROZEN (adopted identity — its content stream never re-anchors).
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+  json f = forkOf(h.cx);
+  REQUIRE(!f.is_null());
+  CHECK(f["clipId"] == "v1");
+  CHECK(f["anchorBeat"].get<double>() == Catch::Approx(v1Anchor).margin(1e-9));
+  const comp::StreamInfo* cs = table.find(contentV1);
+  REQUIRE(cs != nullptr);
+  CHECK(cs->anchorBeat == Catch::Approx(v1Anchor).margin(1e-9));
+
+  // Owner re-asserts keep the detached fork alive well past the stale window.
+  for (int i = 0; i < 10; i++) {
+    table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+    h.cx.transportResolve(0.0);
+    h.cx.update(0.1);
+  }
+  CHECK(!forkOf(h.cx).is_null());
+
+  // While the fork runs, a relaunch of the LIVE scene is dropped (the
+  // announcer's redundant boundary fire must not re-anchor v2 mid-fade).
+  const double v2Anchor =
+      json::parse(h.cx.sceneStatesJson())["st"]["launchBeat"].get<double>();
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["launchBeat"].get<double>() ==
+        Catch::Approx(v2Anchor).margin(1e-9));
+
+  // Snap-finish: arming the NEW live scene and committing a third launch
+  // releases the old fork and detaches v2 in its place.
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});  // keep v1 fork alive
+  table.pendingOps.push_back({3, contentV2, 0.0, 1, 0});  // arm v2
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v3", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  f = forkOf(h.cx);
+  REQUIRE(!f.is_null());
+  CHECK(f["clipId"] == "v2");
+
+  // Owner silence releases (no re-asserts for > kForkArmStaleSec).
+  h.cx.update(0.3);
+  h.cx.update(0.3);
+  CHECK(forkOf(h.cx).is_null());
+}
+
+TEST_CASE("fork: A->A relaunch skips; stop verbs and TTL release", "[comp_fork]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.play();
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t contentV1 = table.contentByClipId.at("v1");
+
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+
+  // A→A: an armed fork whose clip is retriggered SKIPS (identity collision —
+  // plain retrigger semantics, no fork).
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  CHECK(forkOf(h.cx).is_null());
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+
+  // Fork v1 under v2, then release via streams.stop on the FORK stream.
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(!forkOf(h.cx).is_null());
+  table.pendingOps.push_back({1, contentV1, 0.0});
+  h.cx.transportResolve(0.0);
+  CHECK(forkOf(h.cx).is_null());
+  // The live scene is untouched by the fork release.
+  CHECK(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+
+  // TTL backstop: even a diligently re-asserted fork dies at kForkMaxSec.
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(!forkOf(h.cx).is_null());
+  for (int i = 0; i < 26; i++) {
+    table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+    h.cx.transportResolve(0.0);
+    h.cx.update(0.4);
+  }
+  CHECK(forkOf(h.cx).is_null());
+
+  // stopScene clears the whole fork lifecycle on the track.
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(!forkOf(h.cx).is_null());
+  h.cx.stopScene("st");
+  CHECK(forkOf(h.cx).is_null());
+  CHECK(!json::parse(h.cx.sceneStatesJson()).contains("st"));
+}
+
+TEST_CASE("fork: an armed track suppresses the linger clamp", "[comp_fork]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.setVideoReadyFeed();
+  h.cx.play();
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t contentV1 = table.contentByClipId.at("v1");
+
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchLoose);
+  h.cx.update(1.0 / 60.0);
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+
+  // Armed fork → the deferred launch's outgoing desc ships NO holdBeat (the
+  // fork plays through the window into the fade; a freeze would fight it).
+  table.pendingOps.push_back({3, contentV1, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchLoose);  // defers
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v2");
+  for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+    if (d["clipId"] == "v1") CHECK(!d.contains("holdBeat"));
+  }
+}
+
+namespace {
+
 /** A solid-color scene at grid `startBeat` carrying core.transport.follow. */
 json mkFollowScene(const std::string& id, double startBeat, json followState) {
   json c = mkClip(id, startBeat, 4,
