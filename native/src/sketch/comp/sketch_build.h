@@ -46,6 +46,14 @@ inline std::string transportInstanceKey(const std::string& clipId, const std::st
   return "clip_" + clipId + "_transport_" + devId;
 }
 
+/** `track_<trackId>_transport_<devId>` — a TRACK transport-section device
+ *  (transition effects). `track_`-prefixed so streams self-scoping resolves
+ *  parent() to the track's own stream (trackIdForInstanceKey). */
+inline std::string trackTransportInstanceKey(const std::string& trackId,
+                                             const std::string& devId) {
+  return "track_" + trackId + "_transport_" + devId;
+}
+
 /**
  * The device DRIVING a clip's content time: the LAST catalog-known
  * transport-controller device in the clip's transport section, or nullptr —
@@ -90,7 +98,8 @@ inline bool clipHasTransportSection(const ClipM& clip, const Catalog& catalog) {
  */
 inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clips,
                                            const Catalog& catalog,
-                                           const std::set<std::string>* controllerOnly = nullptr) {
+                                           const std::set<std::string>* controllerOnly = nullptr,
+                                           const std::vector<const TrackM*>* trackSections = nullptr) {
   nlohmann::json chain = nlohmann::json::array();
   nlohmann::json wires = nlohmann::json::array();
   nlohmann::json instances = nlohmann::json::object();
@@ -128,6 +137,40 @@ inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clip
       w2["dest"] = {{"instanceKey", transportInstanceKey(clip->id, destKey)},
                     {"field", w["dest"].value("field", std::string())}};
       wires.push_back(std::move(w2));
+    }
+  }
+  // TRACK transport sections (transition effects on scene tracks): member
+  // devices only — a track has no content clock, so nothing here ever drives
+  // a times-channel row. Keys are track_<trackId>_transport_<devId>.
+  if (trackSections) {
+    for (const TrackM* track : *trackSections) {
+      if (!track || !track->hasTransport) continue;
+      std::set<std::string> pushed;
+      for (const auto& d : track->transport.devices) {
+        if (!catalog.has(d.moduleType)) continue;
+        const std::string key = trackTransportInstanceKey(track->id, d.id);
+        if (instances.contains(key)) continue;  // duplicate device id: keep first
+        nlohmann::json s = catalog.defaultStateFor(d.moduleType);
+        if (d.state.is_object()) s.update(d.state);
+        chain.push_back({{"type", "module"},
+                         {"module_type", d.moduleType},
+                         {"instance_key", key}});
+        instances[key] = {{"module_type", d.moduleType}, {"state", std::move(s)}};
+        pushed.insert(d.id);
+      }
+      for (const auto& w : track->transport.wires) {
+        if (!w.is_object() || !w.contains("src") || !w.contains("dest")) continue;
+        const std::string srcKey = w["src"].value("instanceKey", std::string());
+        const std::string destKey = w["dest"].value("instanceKey", std::string());
+        if (!pushed.count(srcKey) || !pushed.count(destKey)) continue;
+        nlohmann::json w2 = w;
+        w2["id"] = "xw" + std::to_string(wid++);
+        w2["src"] = {{"instanceKey", trackTransportInstanceKey(track->id, srcKey)},
+                     {"field", w["src"].value("field", std::string())}};
+        w2["dest"] = {{"instanceKey", trackTransportInstanceKey(track->id, destKey)},
+                      {"field", w["dest"].value("field", std::string())}};
+        wires.push_back(std::move(w2));
+      }
     }
   }
   if (chain.empty()) return nlohmann::json();

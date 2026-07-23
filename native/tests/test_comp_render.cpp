@@ -2648,6 +2648,29 @@ TEST_CASE("fork: a second leaf + the track xfade blend; desc byte-parity",
   CHECK(after.find("clip_v2_v2_v") != std::string::npos);
 }
 
+TEST_CASE("track transport section: parsed, built, track-keyed, never drives",
+          "[comp_fork]") {
+  EvalHarness h;
+  h.cx.registerSchema("core.transport.follow", json::object());
+  h.cx.registerCapabilities("core.transport.follow", json::array({"transport_section"}));
+  json track = mkSceneTrack("st", json::array({mkVideoClip("v1", 0, 4)}));
+  track["transport"] = {
+      {"devices", json::array({mkDevice("x1", "core.transport.follow")})},
+      {"wires", json::array()}};
+  h.cx.loadDocument(mkComposition(json::array({track})));
+  h.cx.update(0.0);
+  // The track section's device rides requiredJson under the track-scoped
+  // transport key (streams.parent() resolves it to the track's own stream).
+  CHECK(h.cx.requiredJson().find("track_st_transport_x1") != std::string::npos);
+  // A track has no content clock: sections here never produce times rows.
+  CHECK(h.cx.transportOrder().empty());
+  // Launching the scene doesn't change that (the clip has no section).
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  CHECK(h.cx.transportOrder().empty());
+  CHECK(h.cx.requiredJson().find("track_st_transport_x1") != std::string::npos);
+}
+
 TEST_CASE("fork: an armed track suppresses the linger clamp", "[comp_fork]") {
   EvalHarness h;
   h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(

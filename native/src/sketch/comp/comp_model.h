@@ -279,6 +279,12 @@ struct TrackM {
   /** Scene tracks: default listen rail for all scenes (composition.ts
    *  Track.triggerRead.railId). Empty ⇒ the global trigger rail. */
   std::string triggerReadRailId;
+  /** The TRACK's transport section (scene tracks; composition.ts
+   *  Track.transport): a mini-sketch of section devices scoped to the whole
+   *  track — home of transition effects (crossfade). Executes whenever the
+   *  track exists; devices key as track_<trackId>_transport_<devId>. */
+  SketchSpecM transport;
+  bool hasTransport = false;
 };
 
 /**
@@ -486,6 +492,10 @@ inline TrackM parseTrack(const nlohmann::json& j) {
   t.reads = parseReads(j.contains("reads") ? j["reads"] : nlohmann::json());
   if (j.contains("triggerRead") && j["triggerRead"].is_object())
     t.triggerReadRailId = j["triggerRead"].value("railId", std::string());
+  if (j.contains("transport") && j["transport"].is_object()) {
+    t.hasTransport = true;
+    t.transport = parseSketchSpec(j["transport"]);
+  }
   if (j.contains("clips") && j["clips"].is_array()) {
     for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c));
   }

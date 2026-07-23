@@ -659,6 +659,11 @@ export interface Track {
    *  (channel id → label). UI shows 8 channels by default with placeholder
    *  names '1'..'8'; channels are numeric ids, names are per-return sugar. */
   triggerChannelNames?: Record<string, string>;
+  /** For kind 'scene': the TRACK's transport section — a mini-sketch of
+   *  section devices scoped to the whole track (transition effects like the
+   *  crossfade). Devices key as track_<trackId>_transport_<devId> and execute
+   *  whenever the track exists. Lock-step: comp_model.h TrackM.transport. */
+  transport?: ClipSketch;
 }
 
 export interface PlayModeConfig {

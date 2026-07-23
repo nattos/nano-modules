@@ -1169,8 +1169,19 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
     }
   }
 
+  // TRACK transport sections: every non-bypassed scene track with a section
+  // executes unconditionally (no beat window — the track is always "active";
+  // transition effects must watch even while the track idles).
+  std::vector<const TrackM*> trackSections;
+  for (const auto& t : doc_.tracks) {
+    if (t.kind != TrackKind::Scene || t.bypassed || !t.hasTransport) continue;
+    for (const auto& d : t.transport.devices) {
+      if (catalog_.has(d.moduleType)) { trackSections.push_back(&t); break; }
+    }
+  }
   nlohmann::json built = buildTransportSketch(
-      clips, catalog_, controllerOnly.empty() ? nullptr : &controllerOnly);
+      clips, catalog_, controllerOnly.empty() ? nullptr : &controllerOnly,
+      trackSections.empty() ? nullptr : &trackSections);
   // Same contract as the main sketch: ANY JSON difference (a param edit baked
   // into an instance state, not just topology) must re-apply state.
   if (built != transportCleanSketch_) {
@@ -1329,6 +1340,44 @@ void CompExecutor::transportResolve(double dtSec) {
   for (auto it = transportEnded_.begin(); it != transportEnded_.end();) {
     if (!liveIds.count(*it)) it = transportEnded_.erase(it);
     else ++it;
+  }
+
+  // ── FORK fader fold: while a track has a live fork, its TRACK transport
+  // section's published `xfade_mix` (+ optional `xfade_shape`) rides the
+  // automation channel onto the build's track_<tid>_xfade blend node —
+  // same-frame, both hosts, zero new channels (automation_ was rebuilt by
+  // this frame's update(); render() consumes it via setAutomation).
+  for (const auto& [trackId, f] : fork_) {
+    const TrackM* track = nullptr;
+    for (const auto& t : doc_.tracks) {
+      if (t.id == trackId) { track = &t; break; }
+    }
+    if (!track || !track->hasTransport) continue;
+    for (const auto& d : track->transport.devices) {
+      if (!catalog_.has(d.moduleType)) continue;
+      const std::string key = trackTransportInstanceKey(trackId, d.id);
+      const int32_t inst =
+          effrt_instance_for(d.moduleType.data(), static_cast<int32_t>(d.moduleType.size()),
+                             key.data(), static_cast<int32_t>(key.size()));
+      if (inst < 0) continue;
+      double mix = 0;
+      if (!effrt_published_scalar(inst, "xfade_mix", 9, &mix)) continue;
+      const std::string xkey = trackInstanceKey(trackId, "xfade");
+      automation_.push_back({{"instance", xkey},
+                             {"field", "opacity"},
+                             {"value", std::max(0.0, std::min(1.0, mix))},
+                             {"combine", "replace"},
+                             {"magnitude", "unsigned"}});
+      double shape = 0;
+      if (effrt_published_scalar(inst, "xfade_shape", 11, &shape)) {
+        automation_.push_back({{"instance", xkey},
+                               {"field", "__xfade_shape__"},
+                               {"value", shape},
+                               {"combine", "replace"},
+                               {"magnitude", "unsigned"}});
+      }
+      break;  // first publishing device wins
+    }
   }
 
   // Second drain: ops the section fired DURING this execute apply same-frame
