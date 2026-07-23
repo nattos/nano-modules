@@ -154,8 +154,15 @@ struct UpdateUniforms {
 };
 static_assert(sizeof(UpdateUniforms) == 192, "UpdateUniforms layout mismatch");
 
-struct DensityUniforms { float radius, aspect_x, aspect_y, _pad; };
+struct DensityUniforms { float res, _p0, _p1, _p2; };
 static_assert(sizeof(DensityUniforms) == 16, "DensityUniforms layout mismatch");
+
+// One axis of the separable density halo (see density_blur.hlsl).
+struct BlurUniforms {
+  float res, dir_x, dir_y, inv_sigma;
+  float taps, _p0, _p1, _p2;
+};
+static_assert(sizeof(BlurUniforms) == 32, "BlurUniforms layout mismatch");
 
 struct FieldDebugUniforms { float to_image, to_image_curl, _p0, _p1; };
 static_assert(sizeof(FieldDebugUniforms) == 16, "FieldDebugUniforms layout mismatch");
@@ -268,7 +275,8 @@ static gpu::RenderPSO  s_pso_render_alpha;
 static gpu::RenderPSO  s_pso_render_add;
 static gpu::RenderPSO  s_pso_line_alpha;
 static gpu::RenderPSO  s_pso_line_add;
-static gpu::RenderPSO  s_pso_density;        // soft-halo additive splat
+static gpu::RenderPSO  s_pso_density;        // unit-mass additive scatter
+static gpu::ComputePSO s_pso_density_blur;   // separable halo convolution
 static gpu::ComputePSO s_pso_density_debug;  // heat-map blit
 static gpu::ComputePSO s_pso_field_debug;    // field readout blit
 static gpu::ComputePSO s_pso_motion_prefill;
@@ -291,6 +299,8 @@ struct State {
   gpu::Buffer  line_vs_uniforms;
   gpu::Buffer  line_fs_uniforms;
   gpu::Buffer  density_uniforms;
+  gpu::Buffer  blur_h_uniforms;
+  gpu::Buffer  blur_v_uniforms;
   gpu::Buffer  field_debug_uniforms;
   gpu::Buffer  motion_vs_uniforms;
   gpu::Buffer  motion_fs_uniforms;
@@ -304,7 +314,11 @@ struct State {
   bool         field_a_flip = false;   // flips field_a AND field_c pairs
   gpu::Texture field_b_tex;     // FIELD_RES² velocity field (lazy)
   gpu::Texture black_tex;       // 1×1 opaque black — generator fallback input
-  gpu::Texture density_tex;     // persistent crowding buffer (1-frame delayed)
+  gpu::Texture density_tex;     // blurred crowding buffer (1-frame delayed)
+  gpu::Texture density_tex2;    // ping-pong partner (this frame's write target)
+  gpu::Texture density_splat_tex; // raw unit-mass scatter (pre-blur scratch)
+  gpu::Texture density_tmp_tex;   // horizontal-pass scratch
+  bool         density_flip = false;
   gpu::Texture zero_density_tex; // 1×1 fallback when interactions are off
   gpu::Texture motion_tex;      // render_outputs/motion (RGBA16F, when a sink reads it)
   gpu::Texture zero_motion_tex; // 1×1 zero upstream-motion fallback
@@ -727,6 +741,8 @@ void module_init() {
   state::registerShaderSPV("sweep_chamber_line_fs",  LINE_FS_SPV,  LINE_FS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_density_vs", DENSITY_VS_SPV, DENSITY_VS_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_density_fs", DENSITY_FS_SPV, DENSITY_FS_SPV_SIZE);
+  state::registerShaderSPV("sweep_chamber_density_blur", DENSITY_BLUR_SPV, DENSITY_BLUR_SPV_SIZE,
+                           "rgba16float", "write");
   state::registerShaderSPV("sweep_chamber_density_debug", DENSITY_DEBUG_SPV, DENSITY_DEBUG_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_field_debug", FIELD_DEBUG_SPV, FIELD_DEBUG_SPV_SIZE);
   state::registerShaderSPV("sweep_chamber_motion_prefill", MOTION_PREFILL_SPV, MOTION_PREFILL_SPV_SIZE,
@@ -748,6 +764,7 @@ void module_init() {
   auto line_fs    = gpu::Device::createShaderModuleByName("sweep_chamber_line_fs");
   auto vs_density = gpu::Device::createShaderModuleByName("sweep_chamber_density_vs");
   auto fs_density = gpu::Device::createShaderModuleByName("sweep_chamber_density_fs");
+  auto cs_dblur   = gpu::Device::createShaderModuleByName("sweep_chamber_density_blur");
   auto cs_dbg     = gpu::Device::createShaderModuleByName("sweep_chamber_density_debug");
   auto cs_fdbg    = gpu::Device::createShaderModuleByName("sweep_chamber_field_debug");
   auto cs_mpf     = gpu::Device::createShaderModuleByName("sweep_chamber_motion_prefill");
@@ -757,7 +774,7 @@ void module_init() {
   auto lmfs       = gpu::Device::createShaderModuleByName("sweep_chamber_line_motion_fs");
   if (!cs_field_a || !cs_field_b || !cs_update || !cs_trace || !cs_stats ||
       !cs_prefill || !vs_module || !fs_module || !line_vs || !line_fs ||
-      !vs_density || !fs_density || !cs_dbg || !cs_fdbg ||
+      !vs_density || !fs_density || !cs_dblur || !cs_dbg || !cs_fdbg ||
       !cs_mpf || !mvs || !mfs || !lmvs || !lmfs) return;
 
   s_pso_field_a = gpu::Device::createComputePSO(cs_field_a, "main", gpu::Bindings()
@@ -829,11 +846,17 @@ void module_init() {
       gpu::Bindings().storage(0).uniform(1).uniform(2),
       gpu::Device::BlendMode::Additive);
 
-  // Density splat: soft halos summed into the RGBA16F crowding buffer.
+  // Density scatter: one unit of mass per particle (2×2 texels), summed into
+  // the RGBA16F buffer; the halo itself is the separable blur below.
   s_pso_density = gpu::Device::createInstancedRenderPSO(
       vs_density, "main", fs_density, "main", gpu::TextureFormat::RGBA16F,
       gpu::Bindings().storage(0).uniform(1),
       gpu::Device::BlendMode::Additive);
+
+  s_pso_density_blur = gpu::Device::createComputePSO(cs_dblur, "main", gpu::Bindings()
+      .tex2d(0)                                       // source (one axis in)
+      .storageTex2d(1, gpu::TextureFormat::RGBA16F)   // destination
+      .uniform(2));
 
   s_pso_density_debug = gpu::Device::createComputePSO(cs_dbg, "main", gpu::Bindings()
       .tex2d(0)
@@ -884,6 +907,8 @@ void* create() {
   s->line_vs_uniforms = gpu::Device::createBuffer(sizeof(LineVsUniforms),  gpu::BufferUsage::Uniform);
   s->line_fs_uniforms = gpu::Device::createBuffer(sizeof(LineFsUniforms),  gpu::BufferUsage::Uniform);
   s->density_uniforms = gpu::Device::createBuffer(sizeof(DensityUniforms), gpu::BufferUsage::Uniform);
+  s->blur_h_uniforms  = gpu::Device::createBuffer(sizeof(BlurUniforms),    gpu::BufferUsage::Uniform);
+  s->blur_v_uniforms  = gpu::Device::createBuffer(sizeof(BlurUniforms),    gpu::BufferUsage::Uniform);
   s->field_debug_uniforms = gpu::Device::createBuffer(sizeof(FieldDebugUniforms), gpu::BufferUsage::Uniform);
   s->motion_vs_uniforms = gpu::Device::createBuffer(sizeof(MotionVsUniforms), gpu::BufferUsage::Uniform);
   s->motion_fs_uniforms = gpu::Device::createBuffer(sizeof(MotionFsUniforms), gpu::BufferUsage::Uniform);
@@ -910,6 +935,8 @@ void destroy(void* self) {
   s->line_vs_uniforms.release();
   s->line_fs_uniforms.release();
   s->density_uniforms.release();
+  s->blur_h_uniforms.release();
+  s->blur_v_uniforms.release();
   s->field_debug_uniforms.release();
   s->motion_vs_uniforms.release();
   s->motion_fs_uniforms.release();
@@ -923,6 +950,9 @@ void destroy(void* self) {
   s->field_b_tex.release();
   s->black_tex.release();
   s->density_tex.release();
+  s->density_tex2.release();
+  s->density_splat_tex.release();
+  s->density_tmp_tex.release();
   s->zero_density_tex.release();
   s->motion_tex.release();
   s->zero_motion_tex.release();
@@ -937,7 +967,8 @@ void init(void* self) {
       !s_pso_prefill.valid() ||
       !s_pso_render_alpha.valid() || !s_pso_render_add.valid() ||
       !s_pso_line_alpha.valid() || !s_pso_line_add.valid() ||
-      !s_pso_density.valid() || !s_pso_density_debug.valid() ||
+      !s_pso_density.valid() || !s_pso_density_blur.valid() ||
+      !s_pso_density_debug.valid() ||
       !s_pso_field_debug.valid() ||
       !s_pso_motion_prefill.valid() || !s_pso_motion_point.valid() ||
       !s_pso_motion_line.valid()) return;
@@ -1121,18 +1152,32 @@ void render(void* self, int vp_w, int vp_h) {
 
   // Interactions: persistent density buffer read by the update pass (built
   // from LAST frame's particles → 1-frame delay). 1×1 zero when off.
+  // Four buffers: a scatter target + a horizontal-blur scratch, plus a
+  // ping-pong pair so this frame's blur never writes the texture the update
+  // pass already sampled.
   bool ix = s->interactions;
+  // The density chain is the most expensive interaction work; only run it
+  // when something downstream actually reads the buffer.
+  bool need_density = ix && (s->density_death > 0.0f || s->avoid > 0.0f ||
+                             s->stream != 0.0f || s->debug_density);
+  gpu::Texture dens_cur, dens_prev;
   gpu::Texture density_in;
-  if (ix) {
-    if (!s->density_tex.valid()) {
-      s->density_tex = gpu::Device::createTexture(DENSITY_RES, DENSITY_RES,
-                                                  gpu::TextureFormat::RGBA16F);
-      gpu::Device::clear(s->density_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  if (need_density) {
+    gpu::Texture* dts[4] = { &s->density_tex, &s->density_tex2,
+                             &s->density_splat_tex, &s->density_tmp_tex };
+    for (auto* t : dts) {
+      if (t->valid()) continue;
+      *t = gpu::Device::createTexture(DENSITY_RES, DENSITY_RES,
+                                      gpu::TextureFormat::RGBA16F);
+      gpu::Device::clear(*t, 0.0f, 0.0f, 0.0f, 0.0f);
     }
-    if (!s->density_tex.valid()) ix = false;
+    for (auto* t : dts) if (!t->valid()) need_density = false;
   }
-  if (ix) {
-    density_in = s->density_tex;
+  if (need_density) {
+    s->density_flip = !s->density_flip;
+    dens_cur  = s->density_flip ? s->density_tex2 : s->density_tex;
+    dens_prev = s->density_flip ? s->density_tex  : s->density_tex2;
+    density_in = dens_prev;
   } else {
     if (!s->zero_density_tex.valid()) {
       s->zero_density_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
@@ -1403,10 +1448,6 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   bool debug = (ix && s->debug_density) || s->debug_field;
-  // The density splat is the most expensive interaction pass; only run it
-  // when something actually reads the buffer this frame (flow_swarm parity).
-  bool need_density = ix && (s->density_death > 0.0f || s->avoid > 0.0f ||
-                             s->stream != 0.0f || s->debug_density);
 
   // ---- Pass 4: instanced particle raster ----
   if (s->opacity > 0.0f && !debug) {
@@ -1436,16 +1477,51 @@ void render(void* self, int vp_w, int vp_h) {
     rp.end();
   }
 
-  // ---- Pass 6: density splat (after update moved them) → next frame's read.
+  // ---- Pass 6: density scatter + halo convolution (after update moved the
+  // particles) → next frame's read.
+  //
+  // The interaction halo is a gaussian, and a gaussian is separable, so the
+  // per-particle footprint stays at 2×2 texels (unit mass) and the radius is
+  // applied by two 1-D passes over the 256² buffer. Cost is O(N) + O(RES²·σ)
+  // instead of the old O(N·radius²) blended fragments — at 700k particles and
+  // radius 0.04 that was >100M additive fragments piling onto the same few
+  // texels wherever the swarm clustered, which is what tanked the frame rate.
   if (need_density) {
-    DensityUniforms du = { s->interaction_radius, aspect_x, aspect_y, 0.f };
+    DensityUniforms du = { (float)DENSITY_RES, 0.f, 0.f, 0.f };
     s->density_uniforms.writeOne(du);
-    auto rp = gpu::RenderPass::begin(s->density_tex, 0.0f, 0.0f, 0.0f, 0.0f);
-    rp.setPSO(s_pso_density);
-    rp.setBuffer(s->particle_buf, 0);
-    rp.setBuffer(s->density_uniforms, 1);
-    rp.draw(6, s->count);
-    rp.end();
+    {
+      auto rp = gpu::RenderPass::begin(s->density_splat_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+      rp.setPSO(s_pso_density);
+      rp.setBuffer(s->particle_buf, 0);
+      rp.setBuffer(s->density_uniforms, 1);
+      rp.draw(6, s->count);
+      rp.end();
+    }
+    // σ per axis in density texels: the halo is round in SCREEN pixels, and
+    // the buffer is square, so the aspect factors survive into the kernel.
+    // Truncate at 2σ — exactly where the old splat quad's `discard` cut off.
+    auto blur_axis = [&](gpu::Texture src, gpu::Texture dst, gpu::Buffer ub,
+                         float sigma, float dx, float dy) {
+      float taps = std::ceil(2.0f * sigma);
+      if (taps > 24.0f) taps = 24.0f;
+      if (!(taps > 0.0f)) taps = 0.0f;
+      BlurUniforms bu = { (float)DENSITY_RES, dx, dy,
+                          1.0f / (sigma > 1e-3f ? sigma : 1e-3f),
+                          taps, 0.f, 0.f, 0.f };
+      ub.writeOne(bu);
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_density_blur);
+      cp.setTexture(src, 0, 0);
+      cp.setTexture(dst, 1, 1);
+      cp.setBuffer(ub, 2);
+      cp.dispatch((DENSITY_RES + 7) / 8, (DENSITY_RES + 7) / 8);
+      cp.end();
+    };
+    float half_r = 0.5f * s->interaction_radius * (float)DENSITY_RES;
+    blur_axis(s->density_splat_tex, s->density_tmp_tex, s->blur_h_uniforms,
+              half_r * aspect_x, 1.0f, 0.0f);
+    blur_axis(s->density_tmp_tex, dens_cur, s->blur_v_uniforms,
+              half_r * aspect_y, 0.0f, 1.0f);
   }
 
   // ---- Pass 7 (debug): field readout or density heat map into tex_out. ----
@@ -1462,10 +1538,10 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(fc_cur, 5, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
-  } else if (debug) {
+  } else if (debug && dens_cur.valid()) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_density_debug);
-    cp.setTexture(s->density_tex, 0, 0);
+    cp.setTexture(dens_cur, 0, 0);
     cp.setSampler(s->sampler, 1);
     cp.setTexture(out, 2, 1);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
