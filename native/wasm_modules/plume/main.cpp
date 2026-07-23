@@ -1,0 +1,512 @@
+/*
+ * source.sdf.plume — SDF volume renderer, flagship effect (milestone 1).
+ *
+ * A displaced-sphere "plume" authored on a spherical SHELL MAP (octahedral
+ * S² parameterization: displacement + material channels), baked each frame
+ * into a cartesian SDF volume, and sphere-traced in a full-res compute
+ * pass. This is the skeleton of the reusable SDF renderer: shell → bake →
+ * march. Later milestones split the march into G-buffer + deferred shade,
+ * add the detail tier (shell residual), resonant wave GI, the tier-1
+ * atmosphere cascade, and materials.
+ *
+ * Pass chain (all compute):
+ *   shell (×2)  — author h(dir) on shell_full (1024², all octaves) and
+ *                 shell_coarse (256², band-limited for the 128³ grid).
+ *   bake        — shell_coarse → sdf volume (distance, density, crest).
+ *   march       — per-pixel ray vs volume: trilinear sphere-trace, central-
+ *                 difference normal, sun lambert + rim, composite over
+ *                 tex_in.
+ *   slice_debug — optional volume/shell inspector replacing tex_out.
+ *
+ * World space: x right, y up, z into the screen; object at origin; the
+ * camera orbits (yaw accumulator + tilt) at a distance holding framing
+ * (monolith conventions). Motion is accumulator-driven (§2.1); the morph
+ * drift walks a CLOSED CIRCLE in the noise domain so it never accumulates
+ * float error and never jumps.
+ */
+
+#include <gpu.h>
+#include <host.h>
+#include <effect_utils.h>
+
+#include <cmath>
+
+#include "plume_shaders.h"
+
+namespace plume {
+
+constexpr float kPi = 3.14159265358979323846f;
+constexpr float kTau = 2.0f * kPi;
+constexpr float kDeg = kPi / 180.0f;
+
+// Mirrors common.hlsl — keep in lockstep.
+constexpr int kVolRes = 128;
+constexpr float kExt0 = 0.85f;
+constexpr int kShellRes = 1024;
+constexpr int kCoarseRes = 256;
+
+constexpr int DBG_OFF = 0;
+constexpr int DBG_SDF = 1;
+constexpr int DBG_SHELL = 2;
+constexpr int DBG_RESIDUAL = 3;
+
+// ---------------------------------------------------------------------------
+// GPU uniform structs (16-byte rows, lockstep with the .hlsl cbuffers).
+// ---------------------------------------------------------------------------
+
+struct ShellUniforms {
+  float res, octaves, ridge_scale, ridge_amp;
+  float ridge_sharp, morph_x, seed, morph_z;
+};
+static_assert(sizeof(ShellUniforms) == 32, "ShellUniforms layout mismatch");
+
+struct BakeUniforms { float radius, lipschitz, dens_soft, _pad0; };
+static_assert(sizeof(BakeUniforms) == 16, "BakeUniforms layout mismatch");
+
+struct MarchUniforms {
+  float cam_row0[4];   // view right (world), w = cam_pos.x
+  float cam_row1[4];   // view up (world),    w = cam_pos.y
+  float cam_row2[4];   // view fwd (world),   w = cam_pos.z
+  float cam_p[4];      // focal, cover_ax, cover_ay, has_bg
+  float sun_p[4];      // sun dir (world, toward light), w = intensity
+  float albedo[4];     // rgb, w = opacity
+  float vp[4];         // w, h, 1/w, 1/h
+};
+static_assert(sizeof(MarchUniforms) == 112, "MarchUniforms layout mismatch");
+
+struct DebugUniforms { float mode, slice, scale, _pad0; };
+static_assert(sizeof(DebugUniforms) == 16, "DebugUniforms layout mismatch");
+
+// Type-shared PSOs.
+static gpu::ComputePSO s_pso_shell;
+static gpu::ComputePSO s_pso_bake;
+static gpu::ComputePSO s_pso_march;
+static gpu::ComputePSO s_pso_prefill;
+static gpu::ComputePSO s_pso_debug;
+
+// ---------------------------------------------------------------------------
+
+struct State {
+  bool initialized = false;
+
+  gpu::Buffer ub_shell_full, ub_shell_coarse, ub_bake, ub_march, ub_debug;
+  gpu::Texture shell_full, shell_coarse;   // 2D RGBA16F, fixed sizes (lazy)
+  gpu::Texture sdf_vol;                    // 3D RGBA16F 128³ (lazy)
+  gpu::Texture zero_tex;                   // 1×1 zeros (unwired-input stand-in)
+  gpu::Sampler samp_clamp;
+
+  // Param mirrors.
+  float radius = 0.5f;
+  float ridge_scale = 0.5f;
+  float ridge_depth = 0.5f;
+  float ridge_sharp = 0.5f;
+  float morph = 0.4f;
+  float variation = 0.0f;
+  float orbit = 0.35f;
+  float tilt = 0.1f;
+  float zoom = 0.25f;
+  float azimuth = 35.0f;
+  float elevation = 30.0f;
+  float sun = 0.6f;
+  float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
+  float opacity = 1.0f;
+  int debug_view = DBG_OFF;
+  float debug_slice = 0.5f;
+
+  // Accumulators (§2.1), cycles in [0,1).
+  double morph_phase = 0.0;
+  double orbit_phase = 0.0;
+};
+
+void module_init() {
+  state::init("source.sdf.plume", {1, 0, 0},
+    state::Schema()
+      .helpField("intro",
+        "## Plume\n"
+        "A raymarched volumetric shape — a sphere sheathed in ridged, "
+        "wind-swept flakes, authored as a live displacement field on the "
+        "sphere's surface and rendered through a signed-distance volume. "
+        "This is the first effect on the SDF volume renderer; bounce "
+        "lighting, atmosphere and materials are landing milestone by "
+        "milestone.\n\n"
+        "**Try:** *Ridge Scale* high with *Sharpness* up for fine feathering; "
+        "*Morph* slow for a breathing, living surface.")
+      // --- Shape ---
+      .group("shape", "Shape")
+        .groupHelp(
+          "*Radius* is the body; *Ridge Depth/Scale/Sharpness* shape the "
+          "displacement flakes riding on it. *Morph* drifts the field along "
+          "a closed loop — it breathes forever without ever jumping. "
+          "*Variation* picks a different flake pattern.")
+      .floatField("radius", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Radius", "Rad")
+      .floatField("ridge_depth", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Ridge Depth", "Depth")
+      .floatField("ridge_scale", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Ridge Scale", "Scale")
+      .floatField("ridge_sharp", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Ridge Sharpness", "Sharp")
+      .floatField("morph", 0.4f, 0.f, 1.f, state::PrimaryInput)
+          .label("Morph", "Morph")
+      .floatField("variation", 0.0f, 0.f, 1.f, state::PrimaryInput)
+          .label("Variation", "Var")
+      // --- Motion / camera ---
+      .group("motion", "Camera")
+      .floatField("orbit", 0.35f, 0.f, 1.f, state::PrimaryInput)
+          .label("Orbit", "Orbit")
+      .floatField("tilt", 0.1f, -1.f, 1.f, state::PrimaryInput)
+          .label("Tilt", "Tilt")
+      .floatField("zoom", 0.25f, 0.f, 1.f, state::PrimaryInput)
+          .label("Zoom", "Zoom")
+      // --- Light ---
+      .group("light", "Light")
+      .floatField("azimuth", 35.0f, -180.f, 180.f, state::PrimaryInput,
+                  nullptr, 0.f, "deg").label("Azimuth", "Azim")
+      .floatField("elevation", 30.0f, -80.f, 80.f, state::PrimaryInput,
+                  nullptr, 0.f, "deg").label("Elevation", "Elev")
+      .floatField("sun", 0.6f, 0.f, 1.f, state::PrimaryInput)
+          .label("Sun", "Sun")
+      // --- Material ---
+      .group("material", "Material")
+      .rgbField("albedo", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
+          .label("Albedo", "Alb")
+      .floatField("opacity", 1.0f, 0.f, 1.f, state::PrimaryInput)
+          .label("Opacity", "Opac")
+      // --- Debug ---
+      .group("debug", "Debug")
+      .selectField("debug_view", DBG_OFF, state::SecondaryInput,
+                   {{"Off", DBG_OFF},
+                    {"SDF Slice", DBG_SDF},
+                    {"Shell Map", DBG_SHELL},
+                    {"Shell Residual", DBG_RESIDUAL}})
+          .label("Debug View", "Dbg")
+      .floatField("debug_slice", 0.5f, 0.f, 1.f, state::SecondaryInput)
+          .label("Debug Slice", "Slice")
+      // --- I/O ---
+      .textureField("tex_in", state::PrimaryInput)
+      .textureField("tex_out", state::PrimaryOutput)
+      .capability(state::Capability::Generator)
+  );
+
+  if (gpu::Device::backend() == gpu::Backend::None) return;
+
+  state::registerShaderSPV("plume_shell", SHELL_SPV, SHELL_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("plume_bake", BAKE_SPV, BAKE_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("plume_march", MARCH_SPV, MARCH_SPV_SIZE);
+  state::registerShaderSPV("plume_prefill", PREFILL_SPV, PREFILL_SPV_SIZE);
+  state::registerShaderSPV("plume_slice_debug", SLICE_DEBUG_SPV,
+                           SLICE_DEBUG_SPV_SIZE);
+
+  auto cs_shell = gpu::Device::createShaderModuleByName("plume_shell");
+  auto cs_bake = gpu::Device::createShaderModuleByName("plume_bake");
+  auto cs_march = gpu::Device::createShaderModuleByName("plume_march");
+  auto cs_prefill = gpu::Device::createShaderModuleByName("plume_prefill");
+  auto cs_debug = gpu::Device::createShaderModuleByName("plume_slice_debug");
+  if (!cs_shell || !cs_bake || !cs_march || !cs_prefill || !cs_debug) return;
+
+  s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main", gpu::Bindings()
+      .storageTex2d(0, gpu::TextureFormat::RGBA16F)
+      .uniform(1));
+  s_pso_bake = gpu::Device::createComputePSO(cs_bake, "main", gpu::Bindings()
+      .tex2d(0)
+      .sampler(1)
+      .storageTex3d(2, gpu::TextureFormat::RGBA16F)
+      .uniform(3));
+  s_pso_march = gpu::Device::createComputePSO(cs_march, "main", gpu::Bindings()
+      .tex3d(0)
+      .tex2d(1)
+      .sampler(2)
+      .storageTex2d(3)
+      .uniform(4));
+  s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
+      .tex2d(0)
+      .storageTex2d(1));
+  s_pso_debug = gpu::Device::createComputePSO(cs_debug, "main", gpu::Bindings()
+      .tex3d(0)
+      .tex2d(1)
+      .tex2d(2)
+      .sampler(3)
+      .storageTex2d(4)
+      .uniform(5));
+
+  state::log("plume: module initialized");
+}
+
+void* create() {
+  auto* s = new State();
+  s->ub_shell_full = gpu::Device::createBuffer(sizeof(ShellUniforms),
+                                               gpu::BufferUsage::Uniform);
+  s->ub_shell_coarse = gpu::Device::createBuffer(sizeof(ShellUniforms),
+                                                 gpu::BufferUsage::Uniform);
+  s->ub_bake = gpu::Device::createBuffer(sizeof(BakeUniforms),
+                                         gpu::BufferUsage::Uniform);
+  s->ub_march = gpu::Device::createBuffer(sizeof(MarchUniforms),
+                                          gpu::BufferUsage::Uniform);
+  s->ub_debug = gpu::Device::createBuffer(sizeof(DebugUniforms),
+                                          gpu::BufferUsage::Uniform);
+  s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
+  if (s->zero_tex.valid())
+    gpu::Device::clear(s->zero_tex, 0.0f, 0.0f, 0.0f, 0.0f);
+  s->samp_clamp = gpu::Device::createSampler(gpu::FilterMode::Linear,
+                                             gpu::AddressMode::ClampToEdge);
+  return s;
+}
+
+void destroy(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->ub_shell_full.release();
+  s->ub_shell_coarse.release();
+  s->ub_bake.release();
+  s->ub_march.release();
+  s->ub_debug.release();
+  s->shell_full.release();
+  s->shell_coarse.release();
+  s->sdf_vol.release();
+  s->zero_tex.release();
+  s->samp_clamp.release();
+  delete s;
+}
+
+void init(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  s->morph_phase = 0.0;
+  s->orbit_phase = 0.0;
+  s->initialized = s->ub_shell_full.valid() && s->ub_shell_coarse.valid() &&
+                   s->ub_bake.valid() && s->ub_march.valid() &&
+                   s->ub_debug.valid() && s_pso_shell.valid() &&
+                   s_pso_bake.valid() && s_pso_march.valid() &&
+                   s_pso_prefill.valid() && s_pso_debug.valid();
+}
+
+static inline double wrap01(double v) { return v - std::floor(v); }
+
+// Knob -> cycles/sec, exponential (§1.3); 0 is fully stopped.
+static inline double rateHz(float k, double mid) {
+  if (k <= 0.001f) return 0.0;
+  return mid * std::pow(2.0, ((double)k - 0.5) * 5.0);
+}
+
+void tick(void* self, double dt) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  if (!(dt > 0.0)) dt = 0.0;
+  if (dt > 0.050) dt = 0.050;
+  s->morph_phase = wrap01(s->morph_phase + dt * rateHz(s->morph, 0.02));
+  s->orbit_phase = wrap01(s->orbit_phase + dt * rateHz(s->orbit, 0.02));
+}
+
+void on_state_patched(void* self, int n, const char* pb, const int* off,
+                      const int* len, const int* ops) {
+  auto* s = static_cast<State*>(self);
+  if (!s) return;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    const char* p = pb + off[i];
+    int l = len[i];
+    if      (state::pathIs(p, l, "radius"))      s->radius = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ridge_depth")) s->ridge_depth = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ridge_scale")) s->ridge_scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ridge_sharp")) s->ridge_sharp = state::patchFloat(i);
+    else if (state::pathIs(p, l, "morph"))       s->morph = state::patchFloat(i);
+    else if (state::pathIs(p, l, "variation"))   s->variation = state::patchFloat(i);
+    else if (state::pathIs(p, l, "orbit"))       s->orbit = state::patchFloat(i);
+    else if (state::pathIs(p, l, "tilt"))        s->tilt = state::patchFloat(i);
+    else if (state::pathIs(p, l, "zoom"))        s->zoom = state::patchFloat(i);
+    else if (state::pathIs(p, l, "azimuth"))     s->azimuth = state::patchFloat(i);
+    else if (state::pathIs(p, l, "elevation"))   s->elevation = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sun"))         s->sun = state::patchFloat(i);
+    else if (state::pathIs(p, l, "albedo")) {
+      auto v = state::patchVec3(i);
+      s->albedo_r = v.x; s->albedo_g = v.y; s->albedo_b = v.z;
+    }
+    else if (state::pathIs(p, l, "opacity"))     s->opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "debug_view"))  s->debug_view = state::patchInt(i);
+    else if (state::pathIs(p, l, "debug_slice")) s->debug_slice = state::patchFloat(i);
+  }
+}
+
+void render(void* self, int vp_w, int vp_h) {
+  auto* s = static_cast<State*>(self);
+  if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
+
+  auto in = gpu::Device::textureForField("tex_in");
+  auto out = gpu::Device::textureForField("tex_out");
+  if (!out.valid()) return;
+
+  // --- Idle: pure passthrough / clear ---
+  if (s->opacity < 1.0f / 255.0f && s->debug_view == DBG_OFF) {
+    if (in.valid()) {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_prefill);
+      cp.setTexture(in, 0, 0);
+      cp.setTexture(out, 1, 1);
+      cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+      cp.end();
+    } else {
+      gpu::Device::clear(out, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    gpu::Device::submit();
+    return;
+  }
+
+  // --- Lazy fixed-size resources ---
+  if (!s->shell_full.valid())
+    s->shell_full = gpu::Device::createTexture(kShellRes, kShellRes,
+                                               gpu::TextureFormat::RGBA16F);
+  if (!s->shell_coarse.valid())
+    s->shell_coarse = gpu::Device::createTexture(kCoarseRes, kCoarseRes,
+                                                 gpu::TextureFormat::RGBA16F);
+  if (!s->sdf_vol.valid())
+    s->sdf_vol = gpu::Device::createTexture3D(kVolRes, kVolRes, kVolRes,
+                                              gpu::TextureFormat::RGBA16F);
+  if (!s->shell_full.valid() || !s->shell_coarse.valid() || !s->sdf_vol.valid())
+    return;
+
+  // --- Shape params -> world quantities ---
+  // Body + flakes must stay inside the volume's inscribed sphere (kExt0).
+  const float R = 0.28f + 0.27f * s->radius;
+  float amp = 0.5f * R * s->ridge_depth;
+  if (R + amp > 0.82f) amp = 0.82f - R;
+  const float freq = 4.0f * std::pow(2.0f, (s->ridge_scale - 0.5f) * 4.0f);
+  // Radial-displacement Lipschitz compression: slope ~ amp * freq (noise
+  // gradient ~1.5/unit folded into the constant), conservative.
+  float lip = 1.0f / (1.0f + 3.0f * amp * freq / std::fmax(R, 0.1f));
+  if (lip < 0.15f) lip = 0.15f;
+
+  // Morph walks a closed circle in the noise domain — seamless, no drift.
+  const float mx = 5.0f * std::cos(kTau * (float)s->morph_phase);
+  const float mz = 5.0f * std::sin(kTau * (float)s->morph_phase);
+
+  // --- Pass 0: shell update (full + coarse) ---
+  ShellUniforms su = {};
+  su.ridge_scale = freq;
+  su.ridge_amp = amp;
+  su.ridge_sharp = s->ridge_sharp;
+  su.morph_x = mx;
+  su.morph_z = mz;
+  su.seed = s->variation * 10.0f;
+
+  su.res = (float)kShellRes;
+  su.octaves = 5.0f;
+  s->ub_shell_full.writeOne(su);
+  su.res = (float)kCoarseRes;
+  su.octaves = 3.0f;   // band-limited: what the 128³ grid can carry
+  s->ub_shell_coarse.writeOne(su);
+
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_shell);
+    cp.setTexture(s->shell_full, 0, 1);
+    cp.setBuffer(s->ub_shell_full, 1);
+    cp.dispatch(kShellRes / 8, kShellRes / 8);
+    cp.end();
+  }
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_shell);
+    cp.setTexture(s->shell_coarse, 0, 1);
+    cp.setBuffer(s->ub_shell_coarse, 1);
+    cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
+    cp.end();
+  }
+
+  // --- Pass 1: bake shell -> SDF volume ---
+  BakeUniforms bu = { R, lip, 3.0f * (2.0f * kExt0 / (float)kVolRes), 0.f };
+  s->ub_bake.writeOne(bu);
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_bake);
+    cp.setTexture(s->shell_coarse, 0, 0);
+    cp.setSampler(s->samp_clamp, 1);
+    cp.setTexture(s->sdf_vol, 2, 1);
+    cp.setBuffer(s->ub_bake, 3);
+    cp.dispatch(kVolRes / 4, kVolRes / 4, kVolRes / 4);
+    cp.end();
+  }
+
+  // --- Debug views replace the output entirely ---
+  if (s->debug_view != DBG_OFF) {
+    DebugUniforms du = { (float)(s->debug_view - 1), s->debug_slice, 1.0f, 0.f };
+    s->ub_debug.writeOne(du);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_debug);
+    cp.setTexture(s->sdf_vol, 0, 0);
+    cp.setTexture(s->shell_full, 1, 0);
+    cp.setTexture(s->shell_coarse, 2, 0);
+    cp.setSampler(s->samp_clamp, 3);
+    cp.setTexture(out, 4, 1);
+    cp.setBuffer(s->ub_debug, 5);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+    gpu::Device::submit();
+    return;
+  }
+
+  // --- Camera: orbit yaw accumulator + tilt, framing-hold dolly ---
+  const auto cs = fx::coverSquare(vp_w, vp_h);
+  const float yaw = kTau * (float)s->orbit_phase;
+  const float el = s->tilt * 40.0f * kDeg;
+  const float fov = (30.0f + 45.0f * s->zoom) * kDeg;
+  const float focal = 1.0f / std::tan(fov * 0.5f);
+  float cam_d = 3.0f * focal / 3.7320508f;
+  cam_d = std::fmax(cam_d, kExt0 + 0.35f);
+
+  const float cy = std::cos(yaw), sy = std::sin(yaw);
+  const float ce = std::cos(el), se = std::sin(el);
+  const float px = cam_d * (-sy * ce);
+  const float py = cam_d * se;
+  const float pz = cam_d * (-cy * ce);
+  // forward = -pos/|pos|; right = norm(cross(up, fwd)); up = cross(fwd, right).
+  const float fx_ = -px / cam_d, fy_ = -py / cam_d, fz_ = -pz / cam_d;
+  float rx = fz_, rz = -fx_;   // cross((0,1,0), f), y component is 0
+  const float rlen = std::sqrt(rx * rx + rz * rz);
+  rx = rlen > 1e-5f ? rx / rlen : 1.0f;
+  rz = rlen > 1e-5f ? rz / rlen : 0.0f;
+  const float ux = fy_ * rz;                 // cross(f, r) with r.y = 0
+  const float uy = fz_ * rx - fx_ * rz;
+  const float uz = -fy_ * rx;
+
+  // --- Sun (world; azimuth 0 lights from the resting camera direction) ---
+  const float az = s->azimuth * kDeg, sel = s->elevation * kDeg;
+  const float sun_i = std::pow(2.0f, (s->sun - 0.5f) * 3.0f);
+
+  MarchUniforms mu = {};
+  mu.cam_row0[0] = rx;  mu.cam_row0[1] = 0.0f; mu.cam_row0[2] = rz;  mu.cam_row0[3] = px;
+  mu.cam_row1[0] = ux;  mu.cam_row1[1] = uy;   mu.cam_row1[2] = uz;  mu.cam_row1[3] = py;
+  mu.cam_row2[0] = fx_; mu.cam_row2[1] = fy_;  mu.cam_row2[2] = fz_; mu.cam_row2[3] = pz;
+  mu.cam_p[0] = focal; mu.cam_p[1] = cs.ax; mu.cam_p[2] = cs.ay;
+  mu.cam_p[3] = in.valid() ? 1.0f : 0.0f;
+  mu.sun_p[0] = std::sin(az) * std::cos(sel);
+  mu.sun_p[1] = std::sin(sel);
+  mu.sun_p[2] = -std::cos(az) * std::cos(sel);
+  mu.sun_p[3] = sun_i;
+  mu.albedo[0] = s->albedo_r; mu.albedo[1] = s->albedo_g;
+  mu.albedo[2] = s->albedo_b; mu.albedo[3] = s->opacity;
+  mu.vp[0] = (float)vp_w; mu.vp[1] = (float)vp_h;
+  mu.vp[2] = 1.0f / vp_w; mu.vp[3] = 1.0f / vp_h;
+  s->ub_march.writeOne(mu);
+
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_march);
+    cp.setTexture(s->sdf_vol, 0, 0);
+    cp.setTexture(in.valid() ? in : s->zero_tex, 1, 0);
+    cp.setSampler(s->samp_clamp, 2);
+    cp.setTexture(out, 3, 1);
+    cp.setBuffer(s->ub_march, 4);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
+
+  gpu::Device::submit();
+}
+
+void on_resolume_param(void* self, long long param_id, double value) {
+  (void)self; (void)param_id; (void)value;
+}
+
+} // namespace plume

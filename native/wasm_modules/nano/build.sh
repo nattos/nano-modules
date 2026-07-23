@@ -87,6 +87,21 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
 _emit_spv_header_var monolith prefill resolve rays final gbuf_vs gbuf_fs
 echo "  monolith shaders compiled (SPV: prefill + resolve + rays + final + gbuf)"
 
+# plume — SDF volume renderer flagship (shell-map displaced sphere).
+#   shell       — octahedral S² displacement field (dispatched at full +
+#                 coarse res into two maps).
+#   bake        — shell_coarse -> 128³ SDF volume (3D rgba16float storage).
+#   march       — per-pixel trilinear sphere-trace + shade + composite.
+#   prefill     — idle passthrough copy.
+#   slice_debug — volume slice / shell map inspector.
+compile_shaders_compute_var_spv plume shell
+compile_shaders_compute_var_spv plume bake
+compile_shaders_compute_var_spv plume march
+compile_shaders_compute_var_spv plume prefill
+compile_shaders_compute_var_spv plume slice_debug
+_emit_spv_header_var plume shell bake march prefill slice_debug
+echo "  plume shaders compiled (SPV: shell + bake + march + prefill + slice_debug)"
+
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update
 compile_shaders_compute_var_spv flow_swarm prefill
@@ -478,6 +493,7 @@ wasm_build \
   ../line_reconstruct/main.cpp \
   ../lens/main.cpp \
   ../envelope_warp/main.cpp \
-  ../monolith/main.cpp
+  ../monolith/main.cpp \
+  ../plume/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

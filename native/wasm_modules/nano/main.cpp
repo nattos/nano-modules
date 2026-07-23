@@ -39,6 +39,7 @@ NANO_DECLARE_INSTANCE_EFFECT(line_reconstruct)
 NANO_DECLARE_INSTANCE_EFFECT(lens)
 NANO_DECLARE_INSTANCE_EFFECT(envelope_warp)
 NANO_DECLARE_INSTANCE_EFFECT(monolith)
+NANO_DECLARE_INSTANCE_EFFECT(plume)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
@@ -372,6 +373,23 @@ void nano_module_main() {
         "generator,3d,mesh,monolith,pyramid,tetrahedron,glass,reflection,env,fresnel,fog,godrays,rotate,tumble,concentric,2001,massive",
         "la-cube",
         NANO_INSTANCE_LIFECYCLE(monolith),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.sdf.plume",
+        "Plume",
+        "Raymarched volumetric shape generator — a sphere sheathed in "
+        "ridged, morphing flakes, authored as a live displacement field on "
+        "an octahedral shell map and rendered by sphere-tracing a signed-"
+        "distance volume. The first effect on the SDF volume renderer; "
+        "resonant bounce lighting, two-tier atmosphere and materials land "
+        "milestone by milestone. Composites over the input (or generates "
+        "on transparent black).",
+        "source",
+        "generator,3d,sdf,raymarching,volume,sphere,ridges,feather,morph,procedural",
+        "la-feather",
+        NANO_INSTANCE_LIFECYCLE(plume),
     });
 }
 
