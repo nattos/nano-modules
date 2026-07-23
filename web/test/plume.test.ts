@@ -163,6 +163,23 @@ describe('source.sdf.plume E2E', () => {
     roomy.trace('out').expectDifferentFrom(clear.trace('out'), 5);
   });
 
+  it('sheen and backlit translucency change the material read', async () => {
+    // Backlit setup: sun behind the shape, dark-ish body.
+    const base = { ...STATIC, albedo: [0.35, 0.35, 0.35], azimuth: 170,
+                   elevation: 10, sun: 1.0, reflect: 0, transmission: 0 };
+    const matte = await render('plume_mat_off', base);
+    const lucent = await render('plume_mat_trans',
+      { ...base, transmission: 1.0, thickness: 0.8 });
+    lucent.trace('out').expectDifferentFrom(matte.trace('out'), 6);
+    // Translucency only ADDS light on the body.
+    const lM = lum(matte.trace('out').pixelAt(48, 48));
+    const lT = lum(lucent.trace('out').pixelAt(48, 48));
+    expect(lT).toBeGreaterThanOrEqual(lM);
+    const glossy = await render('plume_mat_spec',
+      { ...base, azimuth: -35, elevation: 35, reflect: 1.0, roughness: 0.1 });
+    glossy.trace('out').expectDifferentFrom(matte.trace('out'), 6);
+  });
+
   it('orbit animates across frames', async () => {
     const moving = await runEngineMultiPhaseTest({
       width: 96, height: 96,

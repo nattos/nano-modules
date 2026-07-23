@@ -32,6 +32,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 shade_p;     // shadow, ao, ambient, rim
   float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, bounce
   float4 misc;        // scene_mode (fog pipeline: write color+depth), 0, 0, 0
+  float4 mat;         // reflect, roughness, transmission, thickness
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -176,6 +177,33 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float fill = shade_p.z * 0.4 * sky * (0.15 + 0.85 * ao);
   float3 c = albedo.rgb * (key + fill) * (0.90 + 0.10 * crest);
   c += shade_p.w * rim * ao * 0.25 * sun_p.w;
+
+  // Porcelain sheen: a tight sun specular, widened by roughness and dimmed
+  // in shadow — the plates catch a glossy edge without needing an env map.
+  if (mat.x > 0.001) {
+    float3 Hv = normalize(sun_p.xyz - rd);
+    float spec_pow = exp2(3.0 + 7.0 * (1.0 - mat.y));
+    float fres = 0.25 + 0.75 * pow(1.0 - ndv, 2.0);
+    float spec = mat.x * fres * pow(saturate(dot(N, Hv)), spec_pow);
+    c += spec * sun_p.w * (0.15 + 0.85 * sh) * ao;
+  }
+
+  // Translucency: integrate body density toward the sun from just inside
+  // the hit — thin plates pass light and glow when backlit. `thickness`
+  // sets the attenuation length; the forward-scatter lobe keeps it a
+  // backlit effect rather than a flat gain.
+  if (mat.z > 0.001) {
+    float tlen = 0.03 + 0.14 * mat.w;
+    float tau = 0.0;
+    [unroll] for (int q = 1; q <= 5; q++) {
+      float3 tp = hp + sun_p.xyz * (float(q) * 0.4 * tlen);
+      tau += sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(tp), 0).g;
+    }
+    tau *= 0.4;   // per-tap spacing / tlen, folded
+    float fwd = 0.35 + 0.65 * pow(saturate(dot(rd, sun_p.xyz)), 2.0);
+    float glow = mat.z * exp2(-tau * 4.3) * fwd;
+    c += albedo.rgb * sun_p.w * glow;
+  }
 
   // Bounce: the wave-GI radiance field, sampled a little off the surface
   // along the normal (the light lives in the air next to the shell).

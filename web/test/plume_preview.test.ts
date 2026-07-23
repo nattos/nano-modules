@@ -36,6 +36,11 @@ describe('plume preview', () => {
       ['plume_backlit_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
                              bounce: 0.6, fog: 0.7, fog_soft: 0.7, phase: 0.9,
                              azimuth: 170, elevation: 10, sun: 1.0 }],
+      ['plume_lucent_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
+                            bounce: 0.5, fog: 0.25, fog_soft: 0.4, phase: 0.7,
+                            azimuth: 155, elevation: 15, sun: 1.0,
+                            transmission: 0.9, thickness: 0.7,
+                            reflect: 0.5, roughness: 0.25 }],
     ] as const) {
       const r = await runEngineTest({
         width: 512, height: 512,

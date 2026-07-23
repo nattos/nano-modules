@@ -77,8 +77,9 @@ struct MarchUniforms {
   float shade_p[4];    // shadow, ao, ambient, rim
   float fine_p[4];     // R (base radius), px_world (per unit t), inv_lip, bounce
   float misc[4];       // scene_mode, 0, 0, 0
+  float mat[4];        // reflect, roughness, transmission, thickness
 };
-static_assert(sizeof(MarchUniforms) == 160, "MarchUniforms layout mismatch");
+static_assert(sizeof(MarchUniforms) == 176, "MarchUniforms layout mismatch");
 
 struct FogUniforms {
   float cam_row0[4];
@@ -165,6 +166,10 @@ struct State {
   float phase = 0.4f;
   float room_fog = 0.0f;
   float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
+  float reflect_k = 0.25f;
+  float roughness = 0.4f;
+  float transmission = 0.3f;
+  float thickness = 0.5f;
   float opacity = 1.0f;
   int debug_view = DBG_OFF;
   float debug_slice = 0.5f;
@@ -269,8 +274,22 @@ void module_init() {
           .label("Room Fog", "Room")
       // --- Material ---
       .group("material", "Material")
+        .groupHelp(
+          "*Reflect*/*Roughness* are the porcelain sheen — a glossy sun "
+          "glint on the plates, tight when smooth and broad when rough. "
+          "*Translucency* lets light pass through thin plates so their "
+          "edges glow when backlit (sun azimuth toward ±180); *Thickness* "
+          "sets how deep light penetrates before dying out.")
       .rgbField("albedo", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
           .label("Albedo", "Alb")
+      .floatField("reflect", 0.25f, 0.f, 1.f, state::PrimaryInput)
+          .label("Reflect", "Refl")
+      .floatField("roughness", 0.4f, 0.f, 1.f, state::PrimaryInput)
+          .label("Roughness", "Rough")
+      .floatField("transmission", 0.3f, 0.f, 1.f, state::PrimaryInput)
+          .label("Translucency", "Trans")
+      .floatField("thickness", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Thickness", "Thick")
       .floatField("opacity", 1.0f, 0.f, 1.f, state::PrimaryInput)
           .label("Opacity", "Opac")
       // --- Debug ---
@@ -518,6 +537,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       auto v = state::patchVec3(i);
       s->albedo_r = v.x; s->albedo_g = v.y; s->albedo_b = v.z;
     }
+    else if (state::pathIs(p, l, "reflect"))     s->reflect_k = state::patchFloat(i);
+    else if (state::pathIs(p, l, "roughness"))   s->roughness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "transmission")) s->transmission = state::patchFloat(i);
+    else if (state::pathIs(p, l, "thickness"))   s->thickness = state::patchFloat(i);
     else if (state::pathIs(p, l, "opacity"))     s->opacity = state::patchFloat(i);
     else if (state::pathIs(p, l, "debug_view"))  s->debug_view = state::patchInt(i);
     else if (state::pathIs(p, l, "debug_slice")) s->debug_slice = state::patchFloat(i);
@@ -802,6 +825,10 @@ void render(void* self, int vp_w, int vp_h) {
   mu.fine_p[2] = 1.0f / lip;
   mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
   mu.misc[0] = fog_on ? 1.0f : 0.0f;
+  mu.mat[0] = s->reflect_k;
+  mu.mat[1] = s->roughness;
+  mu.mat[2] = s->transmission;
+  mu.mat[3] = s->thickness;
   s->ub_march.writeOne(mu);
 
   {
