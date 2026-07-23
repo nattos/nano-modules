@@ -15,6 +15,7 @@
 #include "nano_octahedral.hlsl"
 
 static const int   PLM_VOL_RES  = 128;   // tier-0 sdf volume, per axis
+static const int   PLM_GI_RES   = 64;    // tier-0 radiance volume, per axis
 static const float PLM_EXT0     = 0.85;  // tier-0 half-extent, world units
 static const int   PLM_SHELL_RES  = 1024; // shell_full
 static const int   PLM_COARSE_RES = 256;  // shell_coarse

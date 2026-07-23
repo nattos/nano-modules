@@ -119,6 +119,34 @@ describe('source.sdf.plume E2E', () => {
     shell.trace('out').expectDifferentFrom(slice.trace('out'), 20);
   });
 
+  it('bounce light brightens the surface once the wave field fills', async () => {
+    const base = { ...STATIC, albedo: [0.6, 0.6, 0.6], sun: 0.9, ambient: 0.2 };
+    const off = await render('plume_gi_off',
+      { ...base, bounce: 0.0 }, { waitFrames: 24 });
+    const on = await render('plume_gi_on',
+      { ...base, bounce: 1.0, gi_decay: 0.8 }, { waitFrames: 24 });
+    on.trace('out').expectDifferentFrom(off.trace('out'), 6);
+    // Bounce only ADDS light; background stays untouched.
+    on.trace('out').expectPixelAt(3, 3, BG, 8);
+    const lOn = lum(on.trace('out').pixelAt(48, 48));
+    const lOff = lum(off.trace('out').pixelAt(48, 48));
+    expect(lOn).toBeGreaterThanOrEqual(lOff);
+  });
+
+  it('radiance debug view shows the wave field', async () => {
+    const r = await render('plume_dbg_rad',
+      { ...STATIC, bounce: 1.0, sun: 1.0, gi_decay: 0.9, debug_view: 4,
+        debug_slice: 0.5 }, { waitFrames: 24 });
+    // The field must have real energy somewhere in the slice.
+    let maxLum = 0;
+    for (let y = 8; y < 88; y += 4) {
+      for (let x = 8; x < 88; x += 4) {
+        maxLum = Math.max(maxLum, lum(r.trace('out').pixelAt(x, y)));
+      }
+    }
+    expect(maxLum).toBeGreaterThan(15);
+  });
+
   it('orbit animates across frames', async () => {
     const moving = await runEngineMultiPhaseTest({
       width: 96, height: 96,

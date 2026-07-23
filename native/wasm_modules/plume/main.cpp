@@ -41,6 +41,7 @@ constexpr float kDeg = kPi / 180.0f;
 
 // Mirrors common.hlsl — keep in lockstep.
 constexpr int kVolRes = 128;
+constexpr int kGiRes = 64;
 constexpr float kExt0 = 0.85f;
 constexpr int kShellRes = 1024;
 constexpr int kCoarseRes = 256;
@@ -49,6 +50,7 @@ constexpr int DBG_OFF = 0;
 constexpr int DBG_SDF = 1;
 constexpr int DBG_SHELL = 2;
 constexpr int DBG_RESIDUAL = 3;
+constexpr int DBG_RADIANCE = 4;
 
 // ---------------------------------------------------------------------------
 // GPU uniform structs (16-byte rows, lockstep with the .hlsl cbuffers).
@@ -80,12 +82,23 @@ static_assert(sizeof(MarchUniforms) == 144, "MarchUniforms layout mismatch");
 struct DebugUniforms { float mode, slice, scale, _pad0; };
 static_assert(sizeof(DebugUniforms) == 16, "DebugUniforms layout mismatch");
 
+struct InjectUniforms {
+  float sun_p[4];    // sun dir toward light, w = intensity
+  float albedo[4];   // rgb bounce color, w = inv_lip
+};
+static_assert(sizeof(InjectUniforms) == 32, "InjectUniforms layout mismatch");
+
+struct PropUniforms { float c2, damp, decay_mul, inject_gain; };
+static_assert(sizeof(PropUniforms) == 16, "PropUniforms layout mismatch");
+
 // Type-shared PSOs.
 static gpu::ComputePSO s_pso_shell;
 static gpu::ComputePSO s_pso_bake;
 static gpu::ComputePSO s_pso_march;
 static gpu::ComputePSO s_pso_prefill;
 static gpu::ComputePSO s_pso_debug;
+static gpu::ComputePSO s_pso_inject;
+static gpu::ComputePSO s_pso_prop;
 
 // ---------------------------------------------------------------------------
 
@@ -93,10 +106,15 @@ struct State {
   bool initialized = false;
 
   gpu::Buffer ub_shell_full, ub_shell_coarse, ub_bake, ub_march, ub_debug;
+  gpu::Buffer ub_inject, ub_prop;
   gpu::Texture shell_full, shell_coarse;   // 2D RGBA16F, fixed sizes (lazy)
   gpu::Texture sdf_vol;                    // 3D RGBA16F 128³ (lazy)
+  gpu::Texture rad_vol[3];                 // GI wave field: prev/cur/next ring
+  gpu::Texture inject_vol;                 // GI source term (lazy with rad)
+  gpu::Texture zero_vol;                   // 1³ zeros (GI-off stand-in)
   gpu::Texture zero_tex;                   // 1×1 zeros (unwired-input stand-in)
   gpu::Sampler samp_clamp;
+  int rad_rot = 0;                         // ring index of "cur"
 
   // Param mirrors.
   float radius = 0.5f;
@@ -116,6 +134,10 @@ struct State {
   float shadow = 0.7f;
   float ao_amt = 0.7f;
   float ambient = 0.5f;
+  float bounce = 0.5f;
+  float resonance = 0.35f;
+  float gi_speed = 0.5f;
+  float gi_decay = 0.5f;
   float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
   float opacity = 1.0f;
   int debug_view = DBG_OFF;
@@ -184,6 +206,24 @@ void module_init() {
           .label("Occlusion", "AO")
       .floatField("ambient", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Ambient", "Amb")
+      // --- Bounce (resonant wave GI) ---
+      .group("gi", "Bounce Light")
+        .groupHelp(
+          "Bounce light lives in a volumetric field around the shape and "
+          "PROPAGATES as a damped wave. *Bounce* is how much of it the "
+          "surface picks up. *Resonance* is the character: low is calm "
+          "diffusion (classic soft GI), high lets the light slosh and ring "
+          "— reverb for light; move the sun and watch the field chase it. "
+          "*Speed* sets how fast light travels, *Decay* how long it "
+          "lingers.")
+      .floatField("bounce", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Bounce", "Bnce")
+      .floatField("resonance", 0.35f, 0.f, 1.f, state::PrimaryInput)
+          .label("Resonance", "Reso")
+      .floatField("gi_speed", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Light Speed", "Spd")
+      .floatField("gi_decay", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Decay", "Dcy")
       // --- Material ---
       .group("material", "Material")
       .rgbField("albedo", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
@@ -196,7 +236,8 @@ void module_init() {
                    {{"Off", DBG_OFF},
                     {"SDF Slice", DBG_SDF},
                     {"Shell Map", DBG_SHELL},
-                    {"Shell Residual", DBG_RESIDUAL}})
+                    {"Shell Residual", DBG_RESIDUAL},
+                    {"Radiance", DBG_RADIANCE}})
           .label("Debug View", "Dbg")
       .floatField("debug_slice", 0.5f, 0.f, 1.f, state::SecondaryInput)
           .label("Debug Slice", "Slice")
@@ -216,13 +257,20 @@ void module_init() {
   state::registerShaderSPV("plume_prefill", PREFILL_SPV, PREFILL_SPV_SIZE);
   state::registerShaderSPV("plume_slice_debug", SLICE_DEBUG_SPV,
                            SLICE_DEBUG_SPV_SIZE);
+  state::registerShaderSPV("plume_gi_inject", GI_INJECT_SPV, GI_INJECT_SPV_SIZE,
+                           "rgba16float", "write");
+  state::registerShaderSPV("plume_gi_prop", GI_PROP_SPV, GI_PROP_SPV_SIZE,
+                           "rgba16float", "write");
 
   auto cs_shell = gpu::Device::createShaderModuleByName("plume_shell");
   auto cs_bake = gpu::Device::createShaderModuleByName("plume_bake");
   auto cs_march = gpu::Device::createShaderModuleByName("plume_march");
   auto cs_prefill = gpu::Device::createShaderModuleByName("plume_prefill");
   auto cs_debug = gpu::Device::createShaderModuleByName("plume_slice_debug");
-  if (!cs_shell || !cs_bake || !cs_march || !cs_prefill || !cs_debug) return;
+  auto cs_inject = gpu::Device::createShaderModuleByName("plume_gi_inject");
+  auto cs_prop = gpu::Device::createShaderModuleByName("plume_gi_prop");
+  if (!cs_shell || !cs_bake || !cs_march || !cs_prefill || !cs_debug ||
+      !cs_inject || !cs_prop) return;
 
   s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)
@@ -238,7 +286,8 @@ void module_init() {
       .tex2d(2)
       .sampler(3)
       .storageTex2d(4)
-      .uniform(5));
+      .uniform(5)
+      .tex3d(6));
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1));
@@ -248,7 +297,21 @@ void module_init() {
       .tex2d(2)
       .sampler(3)
       .storageTex2d(4)
-      .uniform(5));
+      .uniform(5)
+      .tex3d(6));
+  s_pso_inject = gpu::Device::createComputePSO(cs_inject, "main", gpu::Bindings()
+      .tex3d(0)
+      .sampler(1)
+      .storageTex3d(2, gpu::TextureFormat::RGBA16F)
+      .uniform(3));
+  s_pso_prop = gpu::Device::createComputePSO(cs_prop, "main", gpu::Bindings()
+      .tex3d(0)
+      .tex3d(1)
+      .tex3d(2)
+      .tex3d(3)
+      .sampler(4)
+      .storageTex3d(5, gpu::TextureFormat::RGBA16F)
+      .uniform(6));
 
   state::log("plume: module initialized");
 }
@@ -265,6 +328,11 @@ void* create() {
                                           gpu::BufferUsage::Uniform);
   s->ub_debug = gpu::Device::createBuffer(sizeof(DebugUniforms),
                                           gpu::BufferUsage::Uniform);
+  s->ub_inject = gpu::Device::createBuffer(sizeof(InjectUniforms),
+                                           gpu::BufferUsage::Uniform);
+  s->ub_prop = gpu::Device::createBuffer(sizeof(PropUniforms),
+                                         gpu::BufferUsage::Uniform);
+  s->zero_vol = gpu::Device::createTexture3D(1, 1, 1, gpu::TextureFormat::RGBA16F);
   s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
   if (s->zero_tex.valid())
     gpu::Device::clear(s->zero_tex, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -281,9 +349,14 @@ void destroy(void* self) {
   s->ub_bake.release();
   s->ub_march.release();
   s->ub_debug.release();
+  s->ub_inject.release();
+  s->ub_prop.release();
   s->shell_full.release();
   s->shell_coarse.release();
   s->sdf_vol.release();
+  for (int i = 0; i < 3; i++) s->rad_vol[i].release();
+  s->inject_vol.release();
+  s->zero_vol.release();
   s->zero_tex.release();
   s->samp_clamp.release();
   delete s;
@@ -296,9 +369,11 @@ void init(void* self) {
   s->orbit_phase = 0.0;
   s->initialized = s->ub_shell_full.valid() && s->ub_shell_coarse.valid() &&
                    s->ub_bake.valid() && s->ub_march.valid() &&
-                   s->ub_debug.valid() && s_pso_shell.valid() &&
+                   s->ub_debug.valid() && s->ub_inject.valid() &&
+                   s->ub_prop.valid() && s_pso_shell.valid() &&
                    s_pso_bake.valid() && s_pso_march.valid() &&
-                   s_pso_prefill.valid() && s_pso_debug.valid();
+                   s_pso_prefill.valid() && s_pso_debug.valid() &&
+                   s_pso_inject.valid() && s_pso_prop.valid();
 }
 
 static inline double wrap01(double v) { return v - std::floor(v); }
@@ -343,6 +418,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "shadow"))      s->shadow = state::patchFloat(i);
     else if (state::pathIs(p, l, "ao"))          s->ao_amt = state::patchFloat(i);
     else if (state::pathIs(p, l, "ambient"))     s->ambient = state::patchFloat(i);
+    else if (state::pathIs(p, l, "bounce"))      s->bounce = state::patchFloat(i);
+    else if (state::pathIs(p, l, "resonance"))   s->resonance = state::patchFloat(i);
+    else if (state::pathIs(p, l, "gi_speed"))    s->gi_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "gi_decay"))    s->gi_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "albedo")) {
       auto v = state::patchVec3(i);
       s->albedo_r = v.x; s->albedo_g = v.y; s->albedo_b = v.z;
@@ -462,6 +541,81 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
+  // --- GI: inject + wave propagation (whole stage skipped at bounce 0) ---
+  bool gi_on = s->bounce > 0.001f || s->debug_view == DBG_RADIANCE;
+  gpu::Texture rad_cur = s->zero_vol;
+  if (gi_on) {
+    const bool fresh = !s->rad_vol[0].valid();
+    for (int i = 0; i < 3; i++) {
+      if (!s->rad_vol[i].valid())
+        s->rad_vol[i] = gpu::Device::createTexture3D(kGiRes, kGiRes, kGiRes,
+                                                     gpu::TextureFormat::RGBA16F);
+      gi_on = gi_on && s->rad_vol[i].valid();
+    }
+    if (!s->inject_vol.valid())
+      s->inject_vol = gpu::Device::createTexture3D(kGiRes, kGiRes, kGiRes,
+                                                   gpu::TextureFormat::RGBA16F);
+    gi_on = gi_on && s->inject_vol.valid();
+
+    if (gi_on) {
+      const float saz = s->azimuth * kDeg, sel2 = s->elevation * kDeg;
+      const float gi_sun = std::pow(2.0f, (s->sun - 0.5f) * 3.0f);
+      InjectUniforms iu = {};
+      iu.sun_p[0] = std::sin(saz) * std::cos(sel2);
+      iu.sun_p[1] = std::sin(sel2);
+      iu.sun_p[2] = -std::cos(saz) * std::cos(sel2);
+      iu.sun_p[3] = gi_sun;
+      iu.albedo[0] = s->albedo_r; iu.albedo[1] = s->albedo_g;
+      iu.albedo[2] = s->albedo_b; iu.albedo[3] = 1.0f / lip;
+      s->ub_inject.writeOne(iu);
+      {
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_inject);
+        cp.setTexture(s->sdf_vol, 0, 0);
+        cp.setSampler(s->samp_clamp, 1);
+        cp.setTexture(s->inject_vol, 2, 1);
+        cp.setBuffer(s->ub_inject, 3);
+        cp.dispatch(kGiRes / 4, kGiRes / 4, kGiRes / 4);
+        cp.end();
+      }
+
+      // Telegrapher step params. Damping sweeps diffusion <-> ringing;
+      // injection is scaled against survival so overall brightness stays
+      // in the same ballpark across the decay range.
+      const float c = 0.10f + 0.45f * s->gi_speed;   // voxels/step (CFL < 0.577)
+      const float damp = 0.9f * std::pow(0.02f / 0.9f, s->resonance);
+      const float decay_mul = 0.86f + 0.135f * s->gi_decay;
+      // Steady state ~ gain / (1 - decay_mul): normalize so the field's
+      // equilibrium brightness stays ~O(1) across the decay range.
+      const float inject_gain = 1.1f * (1.005f - decay_mul);
+      // Freshly created volumes hold garbage on some backends: a survival-0
+      // step writes exact zeros, so three rotations scrub the whole ring.
+      const int steps = fresh ? 3 : 2;
+      for (int k = 0; k < steps; k++) {
+        PropUniforms pu = fresh
+            ? PropUniforms{0.0f, 1.0f, 0.0f, 0.0f}
+            : PropUniforms{c * c, damp, decay_mul, inject_gain};
+        s->ub_prop.writeOne(pu);
+        gpu::Texture& prev = s->rad_vol[(s->rad_rot + 2) % 3];
+        gpu::Texture& cur = s->rad_vol[s->rad_rot];
+        gpu::Texture& next = s->rad_vol[(s->rad_rot + 1) % 3];
+        auto cp = gpu::ComputePass::begin();
+        cp.setPSO(s_pso_prop);
+        cp.setTexture(cur, 0, 0);
+        cp.setTexture(prev, 1, 0);
+        cp.setTexture(s->inject_vol, 2, 0);
+        cp.setTexture(s->sdf_vol, 3, 0);
+        cp.setSampler(s->samp_clamp, 4);
+        cp.setTexture(next, 5, 1);
+        cp.setBuffer(s->ub_prop, 6);
+        cp.dispatch(kGiRes / 4, kGiRes / 4, kGiRes / 4);
+        cp.end();
+        s->rad_rot = (s->rad_rot + 1) % 3;
+      }
+      rad_cur = s->rad_vol[s->rad_rot];
+    }
+  }
+
   // --- Debug views replace the output entirely ---
   if (s->debug_view != DBG_OFF) {
     DebugUniforms du = { (float)(s->debug_view - 1), s->debug_slice, 1.0f, 0.f };
@@ -474,6 +628,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setSampler(s->samp_clamp, 3);
     cp.setTexture(out, 4, 1);
     cp.setBuffer(s->ub_debug, 5);
+    cp.setTexture(rad_cur, 6, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
     gpu::Device::submit();
@@ -531,6 +686,7 @@ void render(void* self, int vp_w, int vp_h) {
   mu.fine_p[1] = 1.0f / ((float)vp_h * cs.ay * focal);
   // Decompression for penumbra/AO reads of the compressed grid distances.
   mu.fine_p[2] = 1.0f / lip;
+  mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
   s->ub_march.writeOne(mu);
 
   {
@@ -542,6 +698,7 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setSampler(s->samp_clamp, 3);
     cp.setTexture(out, 4, 1);
     cp.setBuffer(s->ub_march, 5);
+    cp.setTexture(rad_cur, 6, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }

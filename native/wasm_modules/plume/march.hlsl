@@ -19,6 +19,7 @@ Texture2D<float4>   bgTex      : register(t1);
 Texture2D<float4>   shellFull  : register(t2);
 SamplerState        linearSamp : register(s3);
 RWTexture2D<float4> outTex     : register(u4);
+Texture3D<float4>   radVol     : register(t6);   // GI radiance (or 1³ zeros)
 
 cbuffer MarchUniforms : register(b5) {
   float4 cam_row0;    // view right (world), w = cam_pos.x
@@ -29,7 +30,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 albedo;      // rgb, w = opacity
   float4 vp;          // w, h, 1/w, 1/h
   float4 shade_p;     // shadow, ao, ambient, rim
-  float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, 0
+  float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, bounce
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -170,6 +171,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float fill = shade_p.z * 0.4 * sky * (0.15 + 0.85 * ao);
   float3 c = albedo.rgb * (key + fill) * (0.90 + 0.10 * crest);
   c += shade_p.w * rim * ao * 0.25 * sun_p.w;
+
+  // Bounce: the wave-GI radiance field, sampled a little off the surface
+  // along the normal (the light lives in the air next to the shell).
+  if (fine_p.w > 0.001) {
+    float goff = 2.5 * (2.0 * PLM_EXT0 / float(PLM_GI_RES));
+    float3 gi = radVol.SampleLevel(linearSamp,
+                                   plm_world_to_uvw(hp + N * goff), 0).rgb;
+    c += albedo.rgb * gi * fine_p.w * (0.35 + 0.65 * ao);
+  }
 
   // Gentle shoulder: keeps the key from clipping chalky.
   c = c / (1.0 + 0.18 * c);

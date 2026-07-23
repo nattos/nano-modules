@@ -99,8 +99,10 @@ compile_shaders_compute_var_spv plume bake
 compile_shaders_compute_var_spv plume march
 compile_shaders_compute_var_spv plume prefill
 compile_shaders_compute_var_spv plume slice_debug
-_emit_spv_header_var plume shell bake march prefill slice_debug
-echo "  plume shaders compiled (SPV: shell + bake + march + prefill + slice_debug)"
+compile_shaders_compute_var_spv plume gi_inject
+compile_shaders_compute_var_spv plume gi_prop
+_emit_spv_header_var plume shell bake march prefill slice_debug gi_inject gi_prop
+echo "  plume shaders compiled (SPV: shell + bake + march + prefill + slice_debug + gi)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update

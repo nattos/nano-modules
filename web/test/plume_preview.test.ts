@@ -27,6 +27,10 @@ describe('plume preview', () => {
       ['plume_ref_a', base],
       ['plume_ref_b', { ...base, ridge_scale: 0.85, ridge_depth: 0.55, ridge_aniso: 1.0 }],
       ['plume_ref_c', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4 }],
+      ['plume_gi_off_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
+                            bounce: 0.0 }],
+      ['plume_gi_on_hi', { ...base, ridge_sharp: 1.0, ridge_aniso: 0.4, swirl: 0.4,
+                           bounce: 1.0, gi_decay: 0.75, sun: 0.85 }],
     ] as const) {
       const r = await runEngineTest({
         width: 512, height: 512,
@@ -37,7 +41,7 @@ describe('plume preview', () => {
             { id: 'out', target: { type: 'sketch_output', sketchId: name } },
           ]},
         ],
-        waitFrames: 4,
+        waitFrames: 24,
         captureTraceIds: ['out'],
         dumpName: name,
       });

@@ -6,6 +6,7 @@
 // mode 1: shell_full displacement map (the raw octahedral field).
 // mode 2: shell residual (full − coarse), mid-gray anchored — the data the
 //         detail tier will consume; seams or aliasing show up here first.
+// mode 3: GI radiance slice — watch the wave field slosh and ring.
 
 #include "common.hlsl"
 
@@ -14,6 +15,7 @@ Texture2D<float4>   shellFull   : register(t1);
 Texture2D<float4>   shellCoarse : register(t2);
 SamplerState        linearSamp  : register(s3);
 RWTexture2D<float4> outTex      : register(u4);
+Texture3D<float4>   radVol      : register(t6);
 
 cbuffer DebugUniforms : register(b5) {
   float mode;     // 0 sdf slice, 1 shell, 2 residual
@@ -48,10 +50,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   } else if (m == 1) {
     float h = shellFull.SampleLevel(linearSamp, sq, 0).g * scale;
     col = h.xxx;
-  } else {
+  } else if (m == 2) {
     float r = (shellFull.SampleLevel(linearSamp, sq, 0).r -
                shellCoarse.SampleLevel(linearSamp, sq, 0).r) * scale;
     col = saturate(0.5 + r * 4.0).xxx;
+  } else {
+    // Self-normalizing view: the field's equilibrium level varies a lot
+    // with the decay/speed knobs, so compress instead of scaling.
+    float3 gi = radVol.SampleLevel(linearSamp, float3(sq, slice), 0).rgb * scale;
+    col = gi / (gi + 0.12);
   }
   outTex[gid.xy] = float4(col, 1.0);
 }
