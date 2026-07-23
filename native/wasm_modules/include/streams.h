@@ -142,6 +142,14 @@ extern "C" {
   // same group; -1 = unlaunchable clip. NaN for bad ordinal/stream.
   __attribute__((import_module("streams"), import_name("clip_group")))
   double streams_clip_group(int64_t h, int32_t ordinal);
+  // The UPCOMING launch declared/pending on a SCENE track (the read twin of
+  // announce + the deferred-handover state): fills a sized NextLaunchRec and
+  // returns 1 when a controller has announced a future seek (state 1) or a
+  // deferred launch is awaiting readiness/commit (state 2 — the more imminent
+  // fact wins), else returns 0 (record zeroed). Transition effects watch this
+  // to act BEFORE a launch lands (e.g. fork + crossfade into it).
+  __attribute__((import_module("streams"), import_name("next_launch")))
+  int32_t streams_next_launch(int64_t h, void* rec);
 
   // ── Write verbs (queued; applied by the host after the transport pre-pass,
   // landing next frame — the same latency as trigger-ring launches) ──
@@ -253,6 +261,21 @@ enum EventKind : int32_t {
   EvEnded = 3,   // the standard clip duration elapsed (one-shot auto-stop time)
 };
 
+/**
+ * The upcoming launch on a scene track (streams_next_launch) — sized-struct
+ * convention like StreamDesc; grows by APPEND. 8-byte fields sit 8-aligned.
+ */
+struct NextLaunchRec {
+  int32_t struct_size = static_cast<int32_t>(sizeof(NextLaunchRec));
+  int32_t state = 0;    // 0 = none, 1 = announced, 2 = pending commit
+  int32_t ordinal = -1; // target scene's grid ordinal
+  int32_t cls = 1;      // declared launch class (LaunchClass)
+  double eta_sec = 0;   // announced: seconds until the declared seek; pending: 0
+  int32_t reserved0 = 0;
+  int32_t reserved1 = 0;
+};
+static_assert(sizeof(NextLaunchRec) == 32, "NextLaunchRec grows by append only");
+
 /** One event, overlaying the 5-double wire record exactly (all doubles). */
 struct Event {
   double time = 0;
@@ -297,6 +320,10 @@ inline double anchorSec(Stream h) { return streams_anchor_sec(h); }
 inline double elapsed(Stream h) { return streams_elapsed(h); }
 inline double clipDuration(Stream h, int ordinal) { return streams_clip_duration(h, ordinal); }
 inline double clipGroup(Stream h, int ordinal) { return streams_clip_group(h, ordinal); }
+inline bool nextLaunch(Stream h, NextLaunchRec& rec) {
+  rec.struct_size = static_cast<int32_t>(sizeof(NextLaunchRec));
+  return streams_next_launch(h, &rec) != 0;
+}
 enum LaunchClass : int32_t { LaunchInstant = 0, LaunchLoose = 1 };
 
 inline bool seek(Stream h, double t, LaunchClass cls = LaunchLoose) {

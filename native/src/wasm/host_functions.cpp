@@ -328,6 +328,12 @@ static int64_t streams_parent_fn(wasm_exec_env_t env) {
       auto it = t->parentByClipId.find(*clipId);
       if (it != t->parentByClipId.end()) return it->second;
     }
+    // Track-hosted effects (track FX, track transport sections): the parent
+    // transport is the track's own stream.
+    if (const std::string* trackId = comp::trackIdForInstanceKey(*t, key)) {
+      auto it = t->trackByTrackId.find(*trackId);
+      if (it != t->trackByTrackId.end()) return it->second;
+    }
   }
   return comp::kStreamSessionClock;
 }
@@ -520,6 +526,35 @@ static double streams_clip_group_fn(wasm_exec_env_t env, int64_t h, int32_t ordi
   return ref ? ref->groupId : std::nan("");
 }
 
+static int32_t streams_next_launch_fn(wasm_exec_env_t env, int64_t h, int32_t rec_ptr) {
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, rec_ptr, 4)) return 0;
+  int32_t* head = static_cast<int32_t*>(wasm_runtime_addr_app_to_native(inst, rec_ptr));
+  if (!head) return 0;
+  constexpr int32_t kKnown = 32;  // sizeof(NextLaunchRec) fields the host fills
+  const int32_t sent = *head;
+  const int32_t fill = std::min(sent, kKnown);
+  if (fill < 4 || !wasm_runtime_validate_app_addr(inst, rec_ptr, fill)) return 0;
+
+  const auto* t = get_streams(env);
+  const comp::StreamInfo* s = t ? t->find(h) : nullptr;
+  struct Image {
+    int32_t struct_size, state, ordinal, cls;
+    double eta_sec;
+    int32_t r0, r1;
+  } img = {sent, 0, -1, 1, 0, 0, 0};
+  static_assert(sizeof(Image) == 32, "twin of streams.h NextLaunchRec");
+  if (s && s->kind == comp::kStreamKindSceneTrack && s->nlState != 0) {
+    img.state = s->nlState;
+    img.ordinal = s->nlOrdinal;
+    img.cls = s->nlCls;
+    img.eta_sec = s->nlEtaSec;
+  }
+  memcpy(reinterpret_cast<char*>(head) + 4, reinterpret_cast<char*>(&img) + 4,
+         static_cast<size_t>(fill - 4));
+  return img.state != 0 ? 1 : 0;
+}
+
 static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t, int32_t cls) {
   auto* table = get_streams(env);
   const comp::StreamInfo* s = table ? table->find(h) : nullptr;
@@ -631,6 +666,7 @@ static NativeSymbol streams_symbols[] = {
     {"elapsed", reinterpret_cast<void*>(streams_elapsed_fn), "(I)F", nullptr},
     {"clip_duration", reinterpret_cast<void*>(streams_clip_duration_fn), "(Ii)F", nullptr},
     {"clip_group", reinterpret_cast<void*>(streams_clip_group_fn), "(Ii)F", nullptr},
+    {"next_launch", reinterpret_cast<void*>(streams_next_launch_fn), "(Ii)i", nullptr},
     {"seek", reinterpret_cast<void*>(streams_seek_fn), "(IFi)i", nullptr},
     {"stop", reinterpret_cast<void*>(streams_stop_fn), "(I)i", nullptr},
     {"announce", reinterpret_cast<void*>(streams_announce_fn), "(IFFi)i", nullptr},

@@ -2401,6 +2401,62 @@ TEST_CASE("drainStreamOps: queued seek launches a launchable scene; validation d
   CHECK(!json::parse(h.cx.sceneStatesJson()).contains("st"));
 }
 
+TEST_CASE("streams.next_launch: the table mirrors announces and pending commits",
+          "[comp_announce]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({mkVideoClip("v1", 0, 4), mkVideoClip("v2", 4, 4)}))})));
+  h.cx.setVideoReadyFeed();
+  h.cx.play();
+
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t handle = table.trackByTrackId.at("st");
+  const comp::StreamInfo* s = table.find(handle);
+  REQUIRE(s != nullptr);
+  CHECK(s->nlState == 0);  // idle: no upcoming launch
+
+  // A queued announce lands in the mirror: state 1 + target ordinal + eta.
+  table.pendingOps.push_back({2, handle, 1.0, 1, 3.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(0.0);
+  CHECK(s->nlState == 1);
+  CHECK(s->nlOrdinal == 1);
+  CHECK(s->nlCls == 1);
+  CHECK(s->nlEtaSec == Catch::Approx(3.0).margin(1e-9));
+
+  // The declared eta decays as the announce ages without a re-assert...
+  h.cx.update(0.2);
+  CHECK(s->nlState == 1);
+  CHECK(s->nlEtaSec == Catch::Approx(2.8).margin(1e-9));
+  // ...and a silent announce expires entirely (kAnnounceStaleSec).
+  h.cx.update(0.4);
+  CHECK(s->nlState == 0);
+
+  // A deferred handover mirrors as state 2 (pending commit) and WINS over a
+  // fresh announce on the same track.
+  h.cx.launchScene("st", "v1", comp::CompExecutor::kLaunchLoose);
+  h.cx.update(1.0 / 60.0);
+  h.cx.setVideoReady("v1", true);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v1");
+  table.pendingOps.push_back({2, handle, 1.0, 1, 2.0});  // announce v2
+  h.cx.transportResolve(0.0);
+  h.cx.update(0.0);
+  CHECK(s->nlState == 1);
+  h.cx.launchScene("st", "v2", comp::CompExecutor::kLaunchLoose);  // defers
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.pendingScenesJson())["st"]["sceneId"] == "v2");
+  CHECK(s->nlState == 2);
+  CHECK(s->nlOrdinal == 1);
+  CHECK(s->nlEtaSec == 0.0);
+
+  // The commit clears both halves (fulfilled announce + drained pending).
+  h.cx.setVideoReady("v2", true);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "v2");
+  CHECK(s->nlState == 0);
+}
+
 namespace {
 
 /** A solid-color scene at grid `startBeat` carrying core.transport.follow. */

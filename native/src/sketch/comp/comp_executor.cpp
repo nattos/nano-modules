@@ -185,8 +185,13 @@ void CompExecutor::sampleStreamsFrame() {
   // Scene-track live state (ordinal-axis pos): reset, then mirror the launch
   // map. All lookups are by pre-built maps — no allocation on this path.
   for (auto& s : streamsTable_.streams) {
-    if (s.kind == kStreamKindSceneTrack)
+    if (s.kind == kStreamKindSceneTrack) {
       s.liveOrdinal = std::numeric_limits<double>::quiet_NaN();
+      s.nlState = 0;
+      s.nlOrdinal = -1;
+      s.nlCls = 1;
+      s.nlEtaSec = 0;
+    }
   }
   for (const auto& [trackId, l] : sceneLaunch_) {
     auto th = streamsTable_.trackByTrackId.find(trackId);
@@ -198,6 +203,33 @@ void CompExecutor::sampleStreamsFrame() {
     s->liveOrdinal = static_cast<double>(ref->second.ordinal);
     s->liveAnchorBeat = l.launchBeat;
     s->liveLengthBeat = ref->second.lengthBeat;
+  }
+  // Upcoming-launch mirror (streams.next_launch): announces first, then
+  // pending commits OVERWRITE (a deferral in flight is the more imminent
+  // fact). Stale announces are erased in update(), so entries here are fresh.
+  for (const auto& [trackId, a] : announces_) {
+    auto th = streamsTable_.trackByTrackId.find(trackId);
+    if (th == streamsTable_.trackByTrackId.end()) continue;
+    StreamInfo* s = streamsTable_.findMutable(th->second);
+    if (!s || s->kind != kStreamKindSceneTrack) continue;
+    auto ref = s->clipsById.find(a.sceneId);
+    if (ref == s->clipsById.end()) continue;
+    s->nlState = 1;
+    s->nlOrdinal = ref->second.ordinal;
+    s->nlCls = a.cls;
+    s->nlEtaSec = std::max(0.0, a.etaSec - a.ageSec);
+  }
+  for (const auto& [trackId, p] : pendingLaunch_) {
+    auto th = streamsTable_.trackByTrackId.find(trackId);
+    if (th == streamsTable_.trackByTrackId.end()) continue;
+    StreamInfo* s = streamsTable_.findMutable(th->second);
+    if (!s || s->kind != kStreamKindSceneTrack) continue;
+    auto ref = s->clipsById.find(p.sceneId);
+    if (ref == s->clipsById.end()) continue;
+    s->nlState = 2;
+    s->nlOrdinal = ref->second.ordinal;
+    s->nlCls = p.cls;
+    s->nlEtaSec = 0;
   }
 }
 
@@ -1671,7 +1703,8 @@ const std::string& CompExecutor::pendingScenesJson() {
   for (const auto& [trackId, p] : pendingLaunch_) {
     out[trackId] = {{"sceneId", p.sceneId},
                     {"launchBeat", p.requestBeat},
-                    {"launchSec", p.requestSec}};
+                    {"launchSec", p.requestSec},
+                    {"cls", p.cls}};
   }
   pendingScenesScratch_ = out.dump();
   return pendingScenesScratch_;

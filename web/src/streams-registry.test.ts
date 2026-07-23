@@ -117,6 +117,42 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(reg.resourceLive(trackA)).toBe(0n);
   });
 
+  it('mirrors upcoming launches: pending wins, announces age out', () => {
+    const sc = reg.find(scenes)!;
+    expect(reg.nextLaunch(sc)).toBeNull();
+    // Announce tee (the drain stamps ACCEPTED announces): ordinal 1 in 3 s.
+    reg.noteAnnounce(sc, 1, 3.0, 1);
+    let nl = reg.nextLaunch(sc)!;
+    expect(nl.state).toBe(1);
+    expect(nl.ordinal).toBe(1);
+    expect(nl.cls).toBe(1);
+    expect(nl.etaSec).toBeLessThanOrEqual(3.0);
+    expect(nl.etaSec).toBeGreaterThan(2.4);
+    // A pending handover WINS over the announce (the more imminent fact).
+    reg.syncPendingLaunches({ scenes: { sceneId: 's2', cls: 1 } });
+    nl = reg.nextLaunch(sc)!;
+    expect(nl.state).toBe(2);
+    expect(nl.ordinal).toBe(1);
+    expect(nl.etaSec).toBe(0);
+    reg.syncPendingLaunches({});
+    expect(reg.nextLaunch(sc)!.state).toBe(1);
+    // A silent announce expires (ANNOUNCE_STALE_SEC — backdate the stamp).
+    sc.annAtMs -= 600;
+    expect(reg.nextLaunch(sc)).toBeNull();
+    // A fulfilled announce clears when the launch sync sees its target live.
+    reg.noteAnnounce(sc, 1, 1.0, 1);
+    reg.syncSceneLaunches({ scenes: { sceneId: 's2', launchBeat: 8 } } as any);
+    expect(reg.nextLaunch(sc)).toBeNull();
+    reg.syncSceneLaunches({});
+  });
+
+  it('resolves track-hosted instance keys to the track stream', () => {
+    expect(reg.trackIdForInstanceKey('track_scenes_transport_x1')).toBe('scenes');
+    expect(reg.trackIdForInstanceKey('clip_s1_dev')).toBe(null);
+    expect(reg.parentOf('track_scenes_transport_x1')).toBe(scenes);
+    expect(reg.parentOf('clip_clipB_vid')).toBe(trackA);  // clip keys unchanged
+  });
+
   it('evaluates content positions identically to native (lazy + override + still)', () => {
     const vid = reg.find(reg.contentByClipId.get('clipB')!)!;
     // 'time' mode anchored at beat 8: two beats past at 120 BPM = 1 real second.

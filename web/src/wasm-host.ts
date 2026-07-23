@@ -676,6 +676,25 @@ export class WasmHost {
           const s = this.streams?.find(h);
           return s ? this.streams!.clipGroup(s, ordinal) : NaN;
         },
+        next_launch: (h: bigint, recPtr: number): number => {
+          const dv = new DataView(this.memory.buffer);
+          const sent = dv.getInt32(recPtr, true);
+          const fill = Math.min(sent, 32);
+          if (fill < 4) return 0;
+          const s = this.streams?.find(h);
+          const nl = s ? this.streams!.nextLaunch(s) : null;
+          // NextLaunchRec image (streams.h): 8-byte eta sits 8-aligned.
+          const scratch = new ArrayBuffer(32);
+          const sv = new DataView(scratch);
+          sv.setInt32(0, sent, true);
+          sv.setInt32(4, nl ? nl.state : 0, true);
+          sv.setInt32(8, nl ? nl.ordinal : -1, true);
+          sv.setInt32(12, nl ? nl.cls : 1, true);
+          sv.setFloat64(16, nl ? nl.etaSec : 0, true);
+          new Uint8Array(this.memory.buffer, recPtr + 4, fill - 4)
+            .set(new Uint8Array(scratch, 4, fill - 4));
+          return nl ? 1 : 0;
+        },
         seek: (h: bigint, t: number, cls: number): number =>
           this.streams?.queueSeek(h, t, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
         stop: (h: bigint): number => (this.streams?.queueStop(h) ? 1 : 0),

@@ -219,6 +219,13 @@ struct StreamInfo {
   double liveOrdinal = std::numeric_limits<double>::quiet_NaN();
   double liveAnchorBeat = 0;
   double liveLengthBeat = 0;
+  // ── Scene tracks only: upcoming-launch mirror (streams.next_launch),
+  // synced per frame from the executor's announce + pending-handover maps.
+  // A PENDING commit wins over an announce (it is the more imminent fact).
+  int32_t nlState = 0;    // 0 = none, 1 = announced, 2 = pending commit
+  int32_t nlOrdinal = -1;
+  int32_t nlCls = 1;
+  double nlEtaSec = 0;    // announced: declared eta minus its age; pending: 0
   // ── Content streams only: everything the lazy position eval needs ──
   ClipLoopConfig loop;
   nlohmann::json loopJson;  // raw, for the web registry twin
@@ -781,6 +788,27 @@ inline const std::string* clipIdForInstanceKey(const StreamsTable& t, const std:
         key.compare(kPrefix, clipId.size(), clipId) != 0)
       continue;
     if (!best || clipId.size() > best->size()) best = &clipId;
+  }
+  return best;
+}
+
+/**
+ * Resolve the track that owns a TRACK-hosted effect ("track_<trackId>_<suffix>"
+ * — track FX and track transport sections). Same longest-match discipline as
+ * clipIdForInstanceKey (track ids may contain '_'). streams.parent() falls
+ * through here so a track section's parent is its track stream.
+ */
+inline const std::string* trackIdForInstanceKey(const StreamsTable& t, const std::string& key) {
+  constexpr size_t kPrefix = 6;  // "track_"
+  if (key.compare(0, kPrefix, "track_") != 0) return nullptr;
+  const std::string* best = nullptr;
+  for (const auto& kv : t.trackByTrackId) {
+    const std::string& trackId = kv.first;
+    if (key.size() <= kPrefix + trackId.size() ||
+        key[kPrefix + trackId.size()] != '_' ||
+        key.compare(kPrefix, trackId.size(), trackId) != 0)
+      continue;
+    if (!best || trackId.size() > best->size()) best = &trackId;
   }
   return best;
 }

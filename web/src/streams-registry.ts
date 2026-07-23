@@ -130,6 +130,16 @@ export interface StreamRec {
   liveOrdinal: number; // NaN = nothing playing
   liveAnchorBeat: number;
   liveLengthBeat: number;
+  // Scene tracks: upcoming-launch mirror (streams.next_launch). The pending
+  // half syncs from comp_pending_scenes_json; the announce half is teed by
+  // the executor-host drain when an announce op is ACCEPTED and ages out
+  // after ANNOUNCE_STALE_SEC (native twin: sampleStreamsFrame's nl* fields).
+  pendOrdinal: number; // -1 = none
+  pendCls: number;
+  annOrdinal: number;  // -1 = none
+  annEtaSec: number;
+  annCls: number;
+  annAtMs: number;     // performance.now() at the last re-assert
   /** Per-stream event-generator revision (streams.rev). A per-host change
    *  token — bumps on reload/(re)launch/stop/declaration change, never merely
    *  because time passed. */
@@ -221,6 +231,12 @@ export class StreamsRegistry {
         liveOrdinal: NaN,
         liveAnchorBeat: 0,
         liveLengthBeat: 0,
+        pendOrdinal: -1,
+        pendCls: 1,
+        annOrdinal: -1,
+        annEtaSec: 0,
+        annCls: 1,
+        annAtMs: 0,
         eventRev: s.eventRev ?? (json?.docRev ?? 0),
         declared: false,
         declNextEnd: -1,
@@ -296,18 +312,76 @@ export class StreamsRegistry {
           content.eventRev++;
         }
       }
-      if (changed) s.eventRev++;
+      if (changed) {
+        s.eventRev++;
+        // A fulfilled announce is done (native commitLaunch's erase twin).
+        if (s.annOrdinal === ref[0]) s.annOrdinal = -1;
+      }
     }
-    // Stops: a track that had a launch and lost it bumps its rev too.
+    // Stops: a track that had a launch and lost it bumps its rev too (and
+    // sheds any announce — native stopScene's erase twin).
     for (const [trackId, p] of Object.entries(prev)) {
       if ((launches ?? {})[trackId]) continue;
       const th = this.trackByTrackId.get(trackId);
       const s = th !== undefined ? this.byHandle.get(th) : undefined;
-      if (s) s.eventRev++;
+      if (s) {
+        s.eventRev++;
+        s.annOrdinal = -1;
+      }
       const ch = this.contentByClipId.get(p.sceneId);
       const content = ch !== undefined ? this.byHandle.get(ch) : undefined;
       if (content) content.eventRev++;
     }
+  }
+
+  /** Mirror the deferred-handover map (comp_pending_scenes_json) into the
+   *  scene-track streams — the pending half of streams.next_launch. */
+  syncPendingLaunches(pending: Record<string, { sceneId: string; cls?: number }>): void {
+    for (const s of this.streams) {
+      if (s.kind === StreamKind.SceneTrack) s.pendOrdinal = -1;
+    }
+    for (const [trackId, p] of Object.entries(pending ?? {})) {
+      const th = this.trackByTrackId.get(trackId);
+      const s = th !== undefined ? this.byHandle.get(th) : undefined;
+      if (!s || s.kind !== StreamKind.SceneTrack) continue;
+      const ref = s.clipsById.get(p.sceneId);
+      if (!ref) continue;
+      s.pendOrdinal = ref[0];
+      s.pendCls = p.cls ?? 1;
+    }
+  }
+
+  /** Tee from the executor-host drain when an announce op is ACCEPTED
+   *  (validation already happened there). Re-asserted per tick by the
+   *  announcer; ages out via ANNOUNCE_STALE_SEC in nextLaunch(). */
+  noteAnnounce(s: StreamRec, ordinal: number, etaSec: number, cls: number): void {
+    s.annOrdinal = ordinal;
+    s.annEtaSec = etaSec;
+    s.annCls = cls;
+    s.annAtMs = performance.now();
+  }
+
+  clearAnnounce(s: StreamRec): void {
+    s.annOrdinal = -1;
+  }
+
+  /** streams.next_launch — LOCK-STEP semantics with the native mirror
+   *  (sampleStreamsFrame nl* fields + streams_next_launch_fn): a PENDING
+   *  commit wins over an announce; a silent announce expires. */
+  nextLaunch(s: StreamRec): { state: number; ordinal: number; cls: number; etaSec: number } | null {
+    if (s.kind !== StreamKind.SceneTrack) return null;
+    if (s.pendOrdinal >= 0) {
+      return { state: 2, ordinal: s.pendOrdinal, cls: s.pendCls, etaSec: 0 };
+    }
+    if (s.annOrdinal >= 0) {
+      const ageSec = (performance.now() - s.annAtMs) / 1000;
+      if (ageSec <= ANNOUNCE_STALE_SEC) {
+        return { state: 1, ordinal: s.annOrdinal, cls: s.annCls,
+                 etaSec: Math.max(0, s.annEtaSec - ageSec) };
+      }
+      s.annOrdinal = -1;  // lazy expiry
+    }
+    return null;
   }
 
   find(h: bigint): StreamRec | undefined {
@@ -332,10 +406,31 @@ export class StreamsRegistry {
     return best;
   }
 
+  /** streams_table.h trackIdForInstanceKey: resolve the track that owns a
+   *  TRACK-hosted effect ("track_<trackId>_<suffix>" — track FX and track
+   *  transport sections). Longest-match like clipIdForInstanceKey. */
+  trackIdForInstanceKey(key: string): string | null {
+    if (!key.startsWith('track_')) return null;
+    let best: string | null = null;
+    for (const trackId of this.trackByTrackId.keys()) {
+      if (key.length <= 6 + trackId.length + 1) continue;
+      if (key[6 + trackId.length] !== '_') continue;
+      if (!key.startsWith(trackId, 6)) continue;
+      if (!best || trackId.length > best.length) best = trackId;
+    }
+    return best;
+  }
+
   parentOf(instanceKey: string): bigint {
     const clipId = this.clipIdForInstanceKey(instanceKey);
     if (clipId !== null) {
       const h = this.parentByClipId.get(clipId);
+      if (h !== undefined) return h;
+    }
+    // Track-hosted effects: the parent transport is the track's own stream.
+    const trackId = this.trackIdForInstanceKey(instanceKey);
+    if (trackId !== null) {
+      const h = this.trackByTrackId.get(trackId);
       if (h !== undefined) return h;
     }
     return STREAM_SESSION_CLOCK;
@@ -682,3 +777,6 @@ export function isContentStream(s: StreamRec): boolean {
 
 /** streams_table.h kContentEventHorizon — future entries past "now". */
 export const CONTENT_EVENT_HORIZON = 4;
+
+/** Announce staleness window — LOCK-STEP with CompExecutor::kAnnounceStaleSec. */
+export const ANNOUNCE_STALE_SEC = 0.5;

@@ -1083,6 +1083,11 @@ export class WasmSketchExecutor {
           this.streamsRegistry.syncSceneLaunches(JSON.parse(scenes));
         } catch { /* malformed scene states: keep the last sync */ }
       }
+      if (scenesPending !== undefined) {
+        try {
+          this.streamsRegistry.syncPendingLaunches(JSON.parse(scenesPending));
+        } catch { /* malformed pending states: keep the last sync */ }
+      }
     }
 
     let chainKeys: string[] | undefined;
@@ -1180,6 +1185,7 @@ export class WasmSketchExecutor {
         if (op.kind === 'announce' && op.t < 0) {
           this.withBytes(s.ownerId, (tp, tl) =>
             this.exports.comp_announce_scene(c, tp, tl, 0, 0, 0, 0));
+          this.streamsRegistry.clearAnnounce(s);
           continue;
         }
         const ord = Math.floor(op.t);
@@ -1190,11 +1196,15 @@ export class WasmSketchExecutor {
         // announce).
         if (!s.events.some((e) => e.kind === 0 && e.clipOrdinal === ord)) continue;
         if (op.kind === 'announce') {
-          // Declared future launch: a precache hint, no engine mutation.
+          // Declared future launch: a precache hint, no engine mutation. The
+          // registry mirror feeds streams.next_launch readers (the tee stamps
+          // only ACCEPTED announces — validation just happened above).
           this.withBytes(s.ownerId, (tp, tl) =>
             this.withBytes(sceneId, (sp, sl) =>
               this.exports.comp_announce_scene(
                 c, tp, tl, sp, sl, op.eta ?? 0, op.cls === 'instant' ? 0 : 1)));
+          this.streamsRegistry.noteAnnounce(s, ord, op.eta ?? 0,
+                                            op.cls === 'instant' ? 0 : 1);
           continue;
         }
         // Streams-verb launches carry the effect's declared class (loose by
