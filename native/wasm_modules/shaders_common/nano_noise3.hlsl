@@ -14,11 +14,17 @@
 #include "nano_hash.hlsl"
 
 // Per-corner pseudo-gradient in [-1,1]³ (not normalized — cheap, adequate).
-float3 nano_grad3_(float3 i) {
-  float h0 = nano_hash31(i + 17.17);
-  float h1 = nano_hash31(i + 31.31);
-  float h2 = nano_hash31(i + 47.47);
-  return float3(h0, h1, h2) * 2.0 - 1.0;
+// INTEGER hashing (nano_uhash), not the float-frac hashes: fbm octaves push
+// lattice coords into the hundreds, where frac(p * 127.1)-style hashes
+// degrade into correlated runs — visible as straight-edged "rift" patches
+// aligned with the noise lattice. Bitwise mixing is exact at any magnitude.
+float3 nano_grad3_(float3 p) {
+  int3 i = int3(round(p));
+  uint h0 = nano_uhash(uint(i.x) * 0x9E3779B9u ^ uint(i.y) * 0x85EBCA6Bu ^
+                       uint(i.z) * 0xC2B2AE35u);
+  uint h1 = nano_uhash(h0 ^ 0x68E31DA4u);
+  uint h2 = nano_uhash(h1 ^ 0xB5297A4Du);
+  return float3(uint3(h0, h1, h2)) * (2.0 / 4294967296.0) - 1.0;
 }
 
 // 3D gradient noise, quintic fade. Output roughly [-1, 1].
