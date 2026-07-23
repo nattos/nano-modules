@@ -259,7 +259,11 @@ void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string&
     return false;
   };
   for (auto& t : doc_.tracks) {
-    if (t.id == ownerId && patch(t.sketch)) return;
+    if (t.id == ownerId) {
+      if (patch(t.sketch)) return;
+      // TRACK transport sections (transition effects) take params too.
+      if (t.hasTransport && patch(t.transport)) return;
+    }
     for (auto& c : t.clips) {
       if (c.id != ownerId) continue;
       if (patch(c.sketch)) return;

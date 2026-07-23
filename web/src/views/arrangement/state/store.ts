@@ -3930,6 +3930,51 @@ export class ArrangementStore {
     );
   }
 
+  // ── TRACK transport section (transition effects on scene tracks) ──────────
+
+  /** Add a section device (e.g. transition.xfade) to a TRACK's transport
+   *  section — devices key as track_<trackId>_transport_<devId>. */
+  insertTrackTransportDeviceAt(
+    trackId: string, index: number, moduleType: string, coalesceKey?: string,
+  ): string | null {
+    const dev = this.makeTransportDevice(moduleType);
+    this.mutate('add track transition', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t) return;
+      t.transport ??= { devices: [], wires: [] };
+      const i = Math.max(0, Math.min(index, t.transport.devices.length));
+      t.transport.devices.splice(i, 0, dev);
+    }, coalesceKey);
+    return dev.id;
+  }
+
+  setTrackTransportDeviceField(trackId: string, deviceId: string, key: string, value: unknown) {
+    this.mutateCheap(
+      'set param',
+      (d) => {
+        const dev = d.tracks.find((t) => t.id === trackId)
+          ?.transport?.devices.find((x) => x.id === deviceId);
+        if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
+      },
+      `transport:${trackId}:${deviceId}:${key}`,
+      [{ op: 'param', ownerId: trackId, deviceId, field: key, valueJson: JSON.stringify(value) ?? 'null' }],
+    );
+  }
+
+  /** Remove a track transport-section device; an emptied section is deleted. */
+  removeTrackTransportDevice(trackId: string, deviceId: string) {
+    this.mutate('remove track transition', (d) => {
+      const t = d.tracks.find((x) => x.id === trackId);
+      if (!t?.transport) return;
+      t.transport.devices = t.transport.devices.filter((x) => x.id !== deviceId);
+      if (t.transport.wires) {
+        t.transport.wires = t.transport.wires.filter(
+          (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
+      }
+      if (t.transport.devices.length === 0) delete t.transport;
+    });
+  }
+
   // ── Multi-clip fan-out (edit several selected clips as one undo step) ──────
   // Each action wraps a SINGLE `mutate`, so touching N clips records exactly one
   // undo point. The per-clip recipes mirror the single-clip bodies above.
