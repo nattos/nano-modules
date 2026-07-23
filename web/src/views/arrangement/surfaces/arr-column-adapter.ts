@@ -29,7 +29,7 @@ import { buildMultiEditModel, clipInsertIndex, aggregateField, multiSketchId, ty
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
-import { clipInstanceKey, trackInstanceKey, transportInstanceKey } from '../engine/instance-keys';
+import { clipInstanceKey, trackInstanceKey, transportInstanceKey, trackTransportInstanceKey } from '../engine/instance-keys';
 
 /**
  * Stable fingerprint of a candidate device state for the static-visibility
@@ -242,6 +242,35 @@ export function transportTarget(trackId: string, clipId: string): DeviceTarget {
         .filter((c) => {
           const caps = store.enginePlugins[c.type]?.capabilities ?? [];
           return caps.includes('transport_controller') || caps.includes('transport_section');
+        })
+        .map((c) => ({
+          id: c.type, name: c.name, description: '',
+          category: 'transport', keywords: [],
+        })),
+  };
+}
+
+/** A scene TRACK's transport section (track.transport): transition effects
+ *  (crossfade etc.) that watch the track's launches. Palette restricted to
+ *  transport_section effects — CONTROLLERS are excluded because track
+ *  sections never drive a content-time row (there is no clip row to drive).
+ *  Telemetry keyed by trackTransportInstanceKey. */
+export function trackTransportTarget(trackId: string): DeviceTarget {
+  return {
+    id: `transport/${trackId}`,
+    getDevices: () => store.trackById(trackId)?.transport?.devices,
+    setField: (d, k, v) => store.setTrackTransportDeviceField(trackId, d, k, v),
+    setType: (d, t, ck) => store.setTrackTransportDeviceType(trackId, d, t, ck),
+    replace: (d, s, ck) => store.replaceTrackTransportDevice(trackId, d, s, ck),
+    insertAt: (i, t, ck) => store.insertTrackTransportDeviceAt(trackId, i, t, ck),
+    remove: (d) => store.removeTrackTransportDevice(trackId, d),
+    move: (from, to) => store.moveTrackTransportDevice(trackId, from, to),
+    engineKeyFor: (d) => trackTransportInstanceKey(trackId, d),
+    availableEffects: () =>
+      effectCatalog()
+        .filter((c) => {
+          const caps = store.enginePlugins[c.type]?.capabilities ?? [];
+          return caps.includes('transport_section');
         })
         .map((c) => ({
           id: c.type, name: c.name, description: '',

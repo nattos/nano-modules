@@ -16,7 +16,7 @@ import { clipProcessesTexture, clipTransportDriven, clipHasTransportSection, res
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
-import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
+import { ArrColumnAdapter, clipTarget, trackTarget, transportTarget, trackTransportTarget, multiClipTarget, buildClipFieldBinding, buildMultiDashBinding, type DeviceTarget } from './arr-column-adapter';
 import { multiSketchId } from '../state/multi-edit';
 import { catalogEffect } from '../engine/effect-catalog';
 import { exportController } from '../engine/export-controller';
@@ -1201,6 +1201,7 @@ export class ArrInspector extends MobxLitElement {
               </span>
             </div>`}
         ${isRail ? this.renderTriggerChannelNames(track) : ''}
+        ${track.kind === 'scene' ? this.renderTrackTransportSection(track) : ''}
         ${isRail
           ? '' /* Returns carry no effect chain — they're value-only rails. */
           : html`<div class="group-title chain-hdr"><span>Chain (sketch)</span></div>
@@ -1215,6 +1216,32 @@ export class ArrInspector extends MobxLitElement {
         <!-- Track envelopes are edited ONLY on the timeline (automation lanes),
              not the inspector. -->
       </div>
+    `;
+  }
+
+  /** A scene TRACK's TRANSPORT section (transition effects — e.g. Crossfade):
+   *  the section's own effect card, palette restricted to transport_section
+   *  effects. An empty card is the add affordance. */
+  private renderTrackTransportSection(track: Track) {
+    const has = (track.transport?.devices.length ?? 0) > 0;
+    const target = trackTransportTarget(track.id);
+    return html`
+      <div class="row transport-head">
+        <label>Transition</label>
+        <span class="val">
+          ${has
+            ? html`<span class="tag">on scene launch</span>`
+            : html`<span class="tag" style="opacity:0.6">cut (none)</span>`}
+        </span>
+      </div>
+      <column-group
+        class="chain transport-chain"
+        .colIdx=${0}
+        .sketchId=${target.id}
+        .columnWidth=${280}
+        .adapter=${this.adapterFor(target)}
+        .callbacks=${this.columnCallbacks}
+      ></column-group>
     `;
   }
 

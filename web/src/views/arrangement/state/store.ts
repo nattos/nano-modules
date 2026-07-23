@@ -3948,6 +3948,33 @@ export class ArrangementStore {
     return dev.id;
   }
 
+  replaceTrackTransportDevice(
+    trackId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string,
+  ) {
+    this.mutate('change track transition', (d) => {
+      const dev = d.tracks.find((t) => t.id === trackId)
+        ?.transport?.devices.find((x) => x.id === deviceId);
+      if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
+    }, coalesceKey);
+  }
+
+  setTrackTransportDeviceType(
+    trackId: string, deviceId: string, moduleType: string, coalesceKey?: string,
+  ) {
+    const next = this.makeTransportDevice(moduleType);
+    this.replaceTrackTransportDevice(trackId, deviceId, {
+      moduleType: next.moduleType, name: next.name,
+      capabilities: next.capabilities, state: next.state,
+    }, coalesceKey);
+  }
+
+  moveTrackTransportDevice(trackId: string, from: number, to: number) {
+    this.mutate('reorder track transition', (d) => {
+      const devs = d.tracks.find((t) => t.id === trackId)?.transport?.devices;
+      if (devs) moveInArray(devs, from, to);
+    });
+  }
+
   setTrackTransportDeviceField(trackId: string, deviceId: string, key: string, value: unknown) {
     this.mutateCheap(
       'set param',
