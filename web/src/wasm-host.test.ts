@@ -149,6 +149,18 @@ function buildImports(host: WasmHost): WebAssembly.Imports {
       event_count: () => 0,
       read_events: () => 0,
       event_lower_bound: () => 0,
+      next_launch: () => 0,
+    },
+    // No-resource world stub (core.wasm's transition effect imports it).
+    resources: {
+      content: () => 0n,
+      live: () => 0n,
+      clip_at: () => 0n,
+      describe: () => 0,
+      rev: () => 0,
+      stream: () => 0n,
+      fork: () => 0n,
+      release: () => 0,
     },
     resolume: {
       get_param: (_id: bigint) => 0,

@@ -127,6 +127,7 @@ wasm_build \
   ../mod_time/main.cpp \
   ../transport_core/main.cpp \
   ../transport_follow/main.cpp \
+  ../transition_xfade/main.cpp \
   ../mod_bpm/main.cpp \
   ../mod_smooth/main.cpp \
   ../mod_motion/main.cpp \

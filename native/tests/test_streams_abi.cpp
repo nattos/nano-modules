@@ -181,13 +181,13 @@ TEST_CASE("content streams: per video-backed clip, seek-cost classified", "[stre
   CHECK(vid.ownerId == "clipB");
 }
 
-TEST_CASE("resources: one ClipContent asset per video-backed clip", "[streams]") {
+TEST_CASE("resources: one ClipContent asset per content-bearing clip", "[streams]") {
   Built b = build();
   auto& t = b.table;
-  // clipA, clipB, s2 carry media; clipC/s1/s3 do not.
-  CHECK(t.resourceByClipId.size() == 3);
-  CHECK(t.resourceByClipId.count("clipC") == 0);
-  CHECK(t.resourceByClipId.count("s1") == 0);
+  // Every clip with media OR a sketch mints (clipA/clipB/clipC/s1/s2); the
+  // truly-empty s3 has no asset.
+  CHECK(t.resourceByClipId.size() == 5);
+  CHECK(t.resourceByClipId.count("s3") == 0);
 
   const int64_t rh = t.resourceByClipId.at("clipB");
   CHECK(rh == comp::streamHandleOf("res:clip:clipB"));
@@ -202,14 +202,22 @@ TEST_CASE("resources: one ClipContent asset per video-backed clip", "[streams]")
   // rev mirrors the content stream's event generator token.
   CHECK(comp::resourceRev(t, *r) == streamOf(t, r->stream).eventRev);
 
+  // A generative (streamless) clip is still forkable content.
+  const comp::ResourceInfo* g = t.findResource(t.resourceByClipId.at("s1"));
+  REQUIRE(g != nullptr);
+  CHECK(g->flags == comp::kResForkable);
+  CHECK(g->stream == 0);
+  CHECK(g->durationSec == -1);
+
   // A stale/foreign handle resolves to nothing.
   CHECK(t.findResource(comp::streamHandleOf("res:clip:nope")) == nullptr);
   CHECK(t.findResource(t.contentByClipId.at("clipB")) == nullptr);
 
-  // clip_at: ordinal-keyed on track streams; media-less clips answer 0.
+  // clip_at: ordinal-keyed on track streams.
   const auto& scenes = streamOf(t, comp::streamHandleOf("track:scenes"));
   CHECK(comp::resourceForTrackClipAt(t, scenes, 1) == t.resourceByClipId.at("s2"));
-  CHECK(comp::resourceForTrackClipAt(t, scenes, 0) == 0);   // s1: effect-only
+  CHECK(comp::resourceForTrackClipAt(t, scenes, 0) == t.resourceByClipId.at("s1"));
+  CHECK(comp::resourceForTrackClipAt(t, scenes, 2) == 0);   // s3: truly empty
   CHECK(comp::resourceForTrackClipAt(t, scenes, 9) == 0);   // out of range
   CHECK(comp::resourceForTrackClipAt(t, scenes, -1) == 0);
 
@@ -219,7 +227,7 @@ TEST_CASE("resources: one ClipContent asset per video-backed clip", "[streams]")
   sm->liveOrdinal = 1;
   CHECK(comp::resourceForTrackLive(t, *sm) == t.resourceByClipId.at("s2"));
   sm->liveOrdinal = 0;
-  CHECK(comp::resourceForTrackLive(t, *sm) == 0);  // live clip has no media
+  CHECK(comp::resourceForTrackLive(t, *sm) == t.resourceByClipId.at("s1"));
   const auto& trackA = streamOf(t, comp::streamHandleOf("track:trackA"));
   CHECK(comp::resourceForTrackLive(t, trackA) == 0);  // not a scene track
 }

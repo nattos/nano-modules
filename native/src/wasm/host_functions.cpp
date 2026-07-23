@@ -766,15 +766,26 @@ static int64_t resources_stream_fn(wasm_exec_env_t env, int64_t h) {
 }
 
 static int64_t resources_fork_fn(wasm_exec_env_t env, int64_t h) {
-  // Queues the fork arm / re-assert (StreamOp kind 3, drained by
-  // CompExecutor::drainStreamOps — level-triggered, so callers re-assert per
-  // tick). Returns the fork STREAM handle: adopted identity — the fork IS the
-  // resource's content stream, re-owned.
+  // Queues the fork arm / re-assert (StreamOp kind 3 on the RESOURCE handle,
+  // drained by CompExecutor::drainStreamOps — level-triggered, so callers
+  // re-assert per tick). Returns the resource handle when accepted (adopted
+  // identity: the fork keeps the same resource; a stream-backed one exposes
+  // its transport view via resources.stream).
   auto* table = get_streams(env);
   const comp::ResourceInfo* r = table ? table->findResource(h) : nullptr;
-  if (!r || !(r->flags & comp::kResForkable) || r->stream == 0) return 0;
-  table->pendingOps.push_back({3, r->stream, 0.0, 1, 0});
-  return r->stream;
+  if (!r || !(r->flags & comp::kResForkable)) return 0;
+  table->pendingOps.push_back({3, h, 0.0, 1, 0});
+  return h;
+}
+
+static int32_t resources_release_fn(wasm_exec_env_t env, int64_t h) {
+  // Ends a fork of this resource (the fade-done call) — kind 1 on the
+  // resource handle; validated at drain (only a live fork's owner acts).
+  auto* table = get_streams(env);
+  const comp::ResourceInfo* r = table ? table->findResource(h) : nullptr;
+  if (!r) return 0;
+  table->pendingOps.push_back({1, h, 0.0});
+  return 1;
 }
 
 static NativeSymbol resources_symbols[] = {
@@ -785,6 +796,7 @@ static NativeSymbol resources_symbols[] = {
     {"rev", reinterpret_cast<void*>(resources_rev_fn), "(I)i", nullptr},
     {"stream", reinterpret_cast<void*>(resources_stream_fn), "(I)I", nullptr},
     {"fork", reinterpret_cast<void*>(resources_fork_fn), "(I)I", nullptr},
+    {"release", reinterpret_cast<void*>(resources_release_fn), "(I)i", nullptr},
 };
 
 // ========================================================================

@@ -1176,17 +1176,24 @@ export class WasmSketchExecutor {
     if (this.streamsRegistry && this.streamsRegistry.pendingOps.length > 0) {
       const ops = this.streamsRegistry.pendingOps.splice(0);
       for (const op of ops) {
-        const s = this.streamsRegistry.find(op.handle);
-        if (!s) continue;
-        if (op.kind === 'fork' || s.kind === 5 /* VideoContent */) {
-          // Content-handle verbs (fork arm kind 3 / fork release via stop):
-          // forwarded RAW — the native drainStreamOps inside executor.wasm is
-          // the single fork-lifecycle implementation on both hosts. Seek /
-          // announce on content handles stay future.
-          if (op.kind !== 'fork' && op.kind !== 'stop') continue;
+        if (op.kind === 'fork' || op.kind === 'release') {
+          // Resource-handle fork verbs: forwarded RAW — the native
+          // drainStreamOps inside executor.wasm is the single fork-lifecycle
+          // implementation on both hosts.
           this.exports.comp_queue_stream_op?.(
             c, BigInt.asIntN(64, op.handle), op.kind === 'fork' ? 3 : 1, op.t,
             op.eta ?? 0, op.cls === 'instant' ? 0 : 1);
+          continue;
+        }
+        const s = this.streamsRegistry.find(op.handle);
+        if (!s) continue;
+        if (s.kind === 5 /* VideoContent */) {
+          // Content-handle stop (a video fork's stream) forwards raw too;
+          // seek/announce on content handles stay future.
+          if (op.kind !== 'stop') continue;
+          this.exports.comp_queue_stream_op?.(
+            c, BigInt.asIntN(64, op.handle), 1, op.t, op.eta ?? 0,
+            op.cls === 'instant' ? 0 : 1);
           continue;
         }
         if (s.kind !== 4 /* SceneTrack */) continue;

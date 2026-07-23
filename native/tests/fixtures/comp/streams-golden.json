@@ -38,6 +38,28 @@
       "width": 0
     },
     {
+      "durationSec": -1.0,
+      "flags": 8,
+      "handle": "11617378628372457878",
+      "height": 0,
+      "kind": 1,
+      "ownerId": "clipC",
+      "sizeBytes": -1,
+      "stream": "0",
+      "width": 0
+    },
+    {
+      "durationSec": -1.0,
+      "flags": 8,
+      "handle": "14602420986816293319",
+      "height": 0,
+      "kind": 1,
+      "ownerId": "s1",
+      "sizeBytes": -1,
+      "stream": "0",
+      "width": 0
+    },
+    {
       "durationSec": 2.0,
       "flags": 9,
       "handle": "14602422086327921530",

@@ -2876,6 +2876,101 @@ TEST_CASE("follow announces its target: a Last jump OUTSIDE the proximity set pr
   CHECK(!sawPending);
 }
 
+TEST_CASE("transition.xfade: announced launch triggers early, forks the outgoing, "
+          "fades, releases (Metal)",
+          "[comp_fork][comp_xfade][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  // red + green solid scenes with Follow(Next, Track): red's standard duration
+  // is 2 s @120. The TRACK carries transition.xfade (fadeSec 0.5): the follow
+  // announces its target, the crossfade triggers green EARLY at eta ≤ 0.5 s,
+  // red detaches into the fork, and the fade completes at red's true end.
+  const json follow = {{"mode", 0 /*Next*/}, {"scope", 1 /*Track*/}};
+  json track = mkTrack("st", json::array({mkFollowScene("red", 0, follow),
+                                          mkFollowScene("green", 4, follow)}),
+                       {{"kind", "scene"}});
+  track["transport"] = {
+      {"devices", json::array({mkDevice("x1", "transition.xfade", {{"fadeSec", 0.5}})})},
+      {"wires", json::array()}};
+  cx.loadDocument(mkComposition(json::array({std::move(track)})));
+  hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+  cx.setTransportMode(false);  // Live; no ready feed → commits are immediate
+  cx.play();
+
+  cx.launchScene("st", "red");
+  cx.update(0.0);
+  cx.transportResolve(0.0);
+  REQUIRE(playingScene(cx) == "red");
+
+  // Step until the flip. The crossfade must trigger EARLY: green commits
+  // around red's 1.5 s mark (2 s boundary − 0.5 s fade), well before 2 s.
+  int flipFrame = -1;
+  for (int i = 0; i < 40; i++) {
+    cx.update(0.05);
+    cx.transportResolve(0.05);
+    if (playingScene(cx) == "green") { flipFrame = i; break; }
+  }
+  REQUIRE(flipFrame >= 0);
+  CHECK(flipFrame >= 20);  // not instantly (fade window is only the last 0.5 s)
+  CHECK(flipFrame <= 36);  // meaningfully before the 2 s boundary (frame ~40)
+
+  // The detach: red rides the fork slot; the composite holds BOTH chains and
+  // the track xfade blend; red's chain stays in requiredJson (continuity).
+  {
+    const json f = json::parse(cx.sceneStatesJson())["st"].value("fork", json());
+    REQUIRE(!f.is_null());
+    CHECK(f["clipId"] == "red");
+  }
+  // One more frame: the commit invalidated the eval; the rebuild (two-leaf
+  // tree + xfade node) lands at the next update.
+  cx.update(0.05);
+  cx.transportResolve(0.05);
+  const std::string keys = cx.chainKeysJson();
+  CHECK(keys.find("track_st_xfade") != std::string::npos);
+  CHECK(keys.find("clip_red_red_g") != std::string::npos);
+  CHECK(keys.find("clip_green_green_g") != std::string::npos);
+  CHECK(cx.requiredJson().find("clip_red_red_g") != std::string::npos);
+
+  // Mid-fade the fork survives on the effect's re-asserts (well past the
+  // 0.5 s arm-staleness window counted from the detach)...
+  for (int i = 0; i < 6; i++) {
+    cx.update(0.05);
+    cx.transportResolve(0.05);
+  }
+  CHECK(!json::parse(cx.sceneStatesJson())["st"].value("fork", json()).is_null());
+
+  // ...and once the fade completes, the effect releases it: the fork leaf and
+  // the xfade node leave the build, green plays on alone.
+  for (int i = 0; i < 20; i++) {
+    cx.update(0.05);
+    cx.transportResolve(0.05);
+  }
+  CHECK(json::parse(cx.sceneStatesJson())["st"].value("fork", json()).is_null());
+  const std::string after = cx.chainKeysJson();
+  CHECK(after.find("track_st_xfade") == std::string::npos);
+  CHECK(after.find("clip_red_red_g") == std::string::npos);
+  CHECK(playingScene(cx) == "green");
+
+  // The cycle repeats: green's follow announces red; the next transition
+  // crossfades too (fork slot = green this time).
+  bool sawGreenFork = false;
+  for (int i = 0; i < 60 && playingScene(cx) == "green"; i++) {
+    cx.update(0.05);
+    cx.transportResolve(0.05);
+  }
+  CHECK(playingScene(cx) == "red");
+  for (int i = 0; i < 4; i++) {
+    const json f = json::parse(cx.sceneStatesJson())["st"].value("fork", json());
+    if (!f.is_null() && f["clipId"] == "green") sawGreenFork = true;
+    cx.update(0.05);
+    cx.transportResolve(0.05);
+  }
+  CHECK(sawGreenFork);
+}
+
 TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;

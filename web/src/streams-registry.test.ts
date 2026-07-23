@@ -86,11 +86,15 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(vid.anchorBeat).toBe(8);
   });
 
-  it('mirrors resources: one ClipContent asset per video-backed clip', () => {
+  it('mirrors resources: one ClipContent asset per content-bearing clip', () => {
     // Assertion values mirror test_streams_abi.cpp "resources: one ClipContent
-    // asset per video-backed clip".
-    expect(reg.resourceByClipId.size).toBe(3);
-    expect(reg.resourceByClipId.has('clipC')).toBe(false);
+    // asset per content-bearing clip".
+    expect(reg.resourceByClipId.size).toBe(5);
+    expect(reg.resourceByClipId.has('s3')).toBe(false);
+    // A generative (streamless) clip is still forkable content.
+    const g = reg.findResource(reg.resourceByClipId.get('s1')!)!;
+    expect(g.flags).toBe(ResourceFlags.Forkable);
+    expect(g.stream).toBe(0n);
     const rh = reg.resourceByClipId.get('clipB')!;
     expect(rh).not.toBe(reg.contentByClipId.get('clipB')); // disjoint domains
     const r = reg.findResource(rh)!;
@@ -106,9 +110,10 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     // Self-scoping.
     expect(reg.resourceContentOf('clip_clipB_vid')).toBe(rh);
     expect(reg.resourceContentOf('standalone')).toBe(0n);
-    // clip_at: ordinal-keyed; media-less clips answer 0.
+    // clip_at: ordinal-keyed; truly-empty clips answer 0.
     expect(reg.resourceClipAt(scenes, 1)).toBe(reg.resourceByClipId.get('s2'));
-    expect(reg.resourceClipAt(scenes, 0)).toBe(0n); // s1: effect-only
+    expect(reg.resourceClipAt(scenes, 0)).toBe(reg.resourceByClipId.get('s1'));
+    expect(reg.resourceClipAt(scenes, 2)).toBe(0n); // s3: truly empty
     expect(reg.resourceClipAt(scenes, 9)).toBe(0n);
     // live: the launched clip's resource; idle / non-scene → 0.
     expect(reg.resourceLive(scenes)).toBe(0n);

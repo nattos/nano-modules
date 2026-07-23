@@ -177,7 +177,7 @@ export class StreamsRegistry {
    *  `cls` = launch deadline class (gapless handover): loose handovers may
    *  linger on the outgoing scene while the incoming video warms. */
   pendingOps: {
-    kind: 'seek' | 'stop' | 'announce' | 'fork';
+    kind: 'seek' | 'stop' | 'announce' | 'fork' | 'release';
     handle: bigint;
     t: number;
     cls?: 'instant' | 'loose';
@@ -639,14 +639,23 @@ export class StreamsRegistry {
     return true;
   }
 
-  /** resources.fork: queue the fork arm / re-assert for a forkable resource.
-   *  Returns the fork STREAM handle (adopted identity — the resource's own
-   *  content stream) or 0n, LOCK-STEP with the native resources_fork_fn. */
+  /** resources.fork: queue the fork arm / re-assert for a forkable resource
+   *  (RESOURCE-handle op — streamless generative clips fork too). Returns the
+   *  resource handle when accepted, LOCK-STEP with resources_fork_fn. */
   queueFork(h: bigint): bigint {
     const r = this.findResource(h);
-    if (!r || !(r.flags & ResourceFlags.Forkable) || r.stream === 0n) return 0n;
-    this.pendingOps.push({ kind: 'fork', handle: r.stream, t: 0 });
-    return r.stream;
+    if (!r || !(r.flags & ResourceFlags.Forkable)) return 0n;
+    this.pendingOps.push({ kind: 'fork', handle: r.handle, t: 0 });
+    return r.handle;
+  }
+
+  /** resources.release: end a fork of this resource (validated at the engine
+   *  drain — only the live fork's owner clip acts). */
+  queueRelease(h: bigint): boolean {
+    const r = this.findResource(h);
+    if (!r) return false;
+    this.pendingOps.push({ kind: 'release', handle: r.handle, t: 0 });
+    return true;
   }
 
   /** streams.announce: declared future seek (precache hint; t < 0 retracts).

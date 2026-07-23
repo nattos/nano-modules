@@ -1394,7 +1394,36 @@ void CompExecutor::drainStreamOps() {
   streamsTable_.pendingOps.clear();
   for (const auto& op : ops) {
     const StreamInfo* s = streamsTable_.find(op.handle);
-    if (!s) continue;
+    if (!s) {
+      // RESOURCE-handle verbs: fork arm/re-assert (kind 3) and fork release
+      // (kind 1) — the streamless generative-clip path (a video clip's
+      // content-stream handle resolves the same way below).
+      const ResourceInfo* r = streamsTable_.findResource(op.handle);
+      if (!r) continue;
+      const std::string& clipId = r->ownerId;
+      auto pit = streamsTable_.parentByClipId.find(clipId);
+      const StreamInfo* pt =
+          pit != streamsTable_.parentByClipId.end() ? streamsTable_.find(pit->second) : nullptr;
+      if (!pt || pt->kind != kStreamKindSceneTrack) continue;
+      const std::string& trackId = pt->ownerId;
+      if (op.kind == 3) {
+        auto fit = fork_.find(trackId);
+        if (fit != fork_.end() && fit->second.clipId == clipId) {
+          fit->second.assertAgeSec = 0;
+          continue;
+        }
+        auto lit = sceneLaunch_.find(trackId);
+        if (lit != sceneLaunch_.end() && lit->second.sceneId == clipId) {
+          auto& arm = forkArm_[trackId];
+          arm.clipId = clipId;
+          arm.ageSec = 0;
+        }
+      } else if (op.kind == 1) {
+        auto fit = fork_.find(trackId);
+        if (fit != fork_.end() && fit->second.clipId == clipId) releaseFork(trackId);
+      }
+      continue;
+    }
     if (s->kind == kStreamKindVideoContent) {
       // Content-handle verbs exist only for the FORK lifecycle (LOCK-STEP:
       // the web drain forwards these raw via comp_queue_stream_op, so this

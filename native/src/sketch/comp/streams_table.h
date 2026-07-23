@@ -268,9 +268,11 @@ struct StreamsTable {
   /** trackId → track stream handle (no-alloc per-frame scene sync). */
   std::unordered_map<std::string, int64_t> trackByTrackId;
   /** Resources (the asset namespace) — one ClipContent resource per
-   *  video-backed clip today. */
+   *  content-bearing clip (video media OR a generative/effect sketch).
+   *  `resourceOrder` preserves document order for deterministic emission. */
   std::unordered_map<int64_t, ResourceInfo> resourcesByHandle;
   std::unordered_map<std::string, int64_t> resourceByClipId;
+  std::vector<int64_t> resourceOrder;
 
   /** Per-frame transport sample — mutated in place by CompExecutor::update();
    *  the import handlers read it directly (no copies, no messages). */
@@ -484,6 +486,29 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
   for (const auto& track : doc.tracks) {
     if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene) continue;
     for (const auto& clip : track.clips) {
+      // The clip's ASSET, as a resource: any content-bearing clip — video
+      // media OR a generative/effect sketch (a solid-color scene is fork-able
+      // content even without a seekable stream). Truly empty clips have none.
+      if (clip.hasSourceUrl || !clip.sketch.devices.empty()) {
+        ResourceInfo r;
+        r.handle = streamHandleOf("res:clip:" + clip.id);
+        r.kind = kResKindClipContent;
+        r.flags = kResForkable | (clip.hasSourceUrl ? kResHasStream : 0);
+        r.ownerId = clip.id;
+        if (clip.hasSourceUrl) {
+          r.stream = streamHandleOf("content:" + clip.id);
+          const auto& src = clip.sourceJson;
+          if (src.is_object()) {
+            if (src.contains("width") && src["width"].is_number())
+              r.width = src["width"].get<int32_t>();
+            if (src.contains("height") && src["height"].is_number())
+              r.height = src["height"].get<int32_t>();
+          }
+        }
+        t.resourceByClipId[clip.id] = r.handle;
+        t.resourceOrder.push_back(r.handle);
+        t.resourcesByHandle[r.handle] = std::move(r);
+      }
       if (!clip.hasSourceUrl) continue;
       StreamInfo s;
       s.handle = streamHandleOf("content:" + clip.id);
@@ -514,25 +539,9 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       s.seed = clipNoiseSeed(clip.id);
       s.eventRev = docRev;
       t.contentByClipId[clip.id] = s.handle;
-
-      // The clip's ASSET, as a resource. Its rev mirrors the content stream's
-      // eventRev at read time (resolved through `stream`, never copied).
-      ResourceInfo r;
-      r.handle = streamHandleOf("res:clip:" + clip.id);
-      r.kind = kResKindClipContent;
-      r.flags = kResHasStream | kResForkable;
-      r.stream = s.handle;
-      r.durationSec = s.videoDurSec;
-      if (src.is_object()) {
-        if (src.contains("width") && src["width"].is_number())
-          r.width = src["width"].get<int32_t>();
-        if (src.contains("height") && src["height"].is_number())
-          r.height = src["height"].get<int32_t>();
-      }
-      r.ownerId = clip.id;
-      t.resourceByClipId[clip.id] = r.handle;
-      t.resourcesByHandle[r.handle] = std::move(r);
-
+      // The resource's playable duration mirrors its stream's. (Its rev is
+      // resolved through `stream` at read time, never copied.)
+      t.resourcesByHandle.at(t.resourceByClipId.at(clip.id)).durationSec = s.videoDurSec;
       push(std::move(s));
     }
   }
@@ -895,13 +904,10 @@ inline std::string streamsTableJson(const StreamsTable& t) {
   for (const auto& [clipId, h] : t.parentByClipId) out["parentByClipId"][clipId] = handleStr(h);
   for (const auto& [clipId, h] : t.contentByClipId) out["contentByClipId"][clipId] = handleStr(h);
   for (const auto& [trackId, h] : t.trackByTrackId) out["trackByTrackId"][trackId] = handleStr(h);
-  // Resources, in stream (= document) order so the emission is deterministic.
+  // Resources, in mint (= document) order so the emission is deterministic.
   nlohmann::json resources = nlohmann::json::array();
-  for (const auto& s : t.streams) {
-    if (s.kind != kStreamKindVideoContent && s.kind != kStreamKindSequenceContent) continue;
-    auto it = t.resourceByClipId.find(s.ownerId);
-    if (it == t.resourceByClipId.end()) continue;
-    const ResourceInfo& r = t.resourcesByHandle.at(it->second);
+  for (const int64_t rh : t.resourceOrder) {
+    const ResourceInfo& r = t.resourcesByHandle.at(rh);
     resources.push_back({{"handle", handleStr(r.handle)},
                          {"kind", r.kind},
                          {"flags", r.flags},

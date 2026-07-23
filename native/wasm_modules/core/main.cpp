@@ -142,6 +142,8 @@ NANO_DECLARE_INSTANCE_EFFECT(transport_random)
 namespace transport_random { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(transport_follow)
 namespace transport_follow { int32_t is_identity(void* self); }
+NANO_DECLARE_INSTANCE_EFFECT(transition_xfade)
+namespace transition_xfade { int32_t is_identity(void* self); }
 NANO_DECLARE_INSTANCE_EFFECT(mod_bpm)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_smooth)
@@ -930,6 +932,18 @@ void nano_module_main() {
         nullptr,            // on_active
         nullptr,            // seek
         &transport_follow::eval_visibility,
+    });
+
+    nano::registerEffect({
+        2,
+        "transition.xfade",
+        "Transition: Crossfade",
+        "Crossfade transition for scene tracks: place it on the TRACK's transport section and scene changes fade instead of cutting. Announced launches (a Follow inside its window) trigger the incoming EARLY so the fade completes at the outgoing clip's true end; manual launches fade from the switch. The outgoing playback forks and keeps running — same decoder, same effect instances — until the fade releases it.",
+        "transport",
+        "transition,crossfade,fade,scene,launch,blend,mix",
+        "la-random",
+        NANO_INSTANCE_LIFECYCLE(transition_xfade),
+        &transition_xfade::is_identity,
     });
 
     nano::registerEffect({

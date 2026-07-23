@@ -54,15 +54,20 @@ extern "C" {
   // ── Fork (owner-controlled successor instance) ──
   // Declares THIS instance the standing fork owner of the resource's live
   // playback on its track. LEVEL-TRIGGERED like streams.announce: re-assert
-  // every tick; the host expires an arm not re-asserted within ~0.5 s. When
-  // the track commits a launch to a DIFFERENT clip, the outgoing playback is
-  // moved into the fork — same stream handle, same decode, same effect
-  // instances — now advancing under this owner's control (streams.seek on the
-  // returned handle re-times it; streams.stop releases it). Returns the fork
-  // STREAM handle (== resources_stream(res)) when accepted, 0 otherwise
-  // (non-forkable resource, or its clip is not the track's live scene).
+  // every tick; the host expires an arm (or a detached fork) not re-asserted
+  // within ~0.5 s. When the track commits a launch to a DIFFERENT clip, the
+  // outgoing playback moves into the fork — same clip identity, same decode,
+  // same effect instances, still advancing — until resources_release ends it.
+  // Returns `res` when accepted (the fork keeps the resource's identity;
+  // stream-backed resources expose their transport view via resources_stream),
+  // 0 for a non-forkable/stale handle. Works for streamless generative clips
+  // too — forkability is about CONTENT, not media.
   __attribute__((import_module("resources"), import_name("fork")))
   int64_t resources_fork(int64_t res);
+  // Ends a fork of this resource (the fade-done call). Queued; only the live
+  // fork's owner clip acts. Returns 1 when queued (valid resource handle).
+  __attribute__((import_module("resources"), import_name("release")))
+  int32_t resources_release(int64_t res);
 
   // ── RESERVED (documented, not yet provided by hosts) ──
   //   int64_t resources_data_size(int64_t res);          // byte view (files)
@@ -126,6 +131,7 @@ inline bool describe(Resource r, ResourceDesc& d) {
 }
 inline int rev(Resource r) { return resources_rev(r); }
 inline int64_t stream(Resource r) { return resources_stream(r); }
-inline int64_t fork(Resource r) { return resources_fork(r); }
+inline Resource fork(Resource r) { return resources_fork(r); }
+inline bool release(Resource r) { return resources_release(r) != 0; }
 
 }  // namespace resources
