@@ -5,10 +5,12 @@ describe('schema-compat', () => {
   it('accepts identical leaf nodes', () => {
     expect(isRailCompatible({ type: 'float' }, { type: 'float' })).toBe(true);
     expect(isRailCompatible({ type: 'texture' }, { type: 'texture' })).toBe(true);
+    expect(isRailCompatible({ type: 'resource' }, { type: 'resource' })).toBe(true);
   });
 
   it('rejects leaf type mismatch', () => {
     expect(isRailCompatible({ type: 'float' }, { type: 'int' })).toBe(false);
+    expect(isRailCompatible({ type: 'resource' }, { type: 'texture' })).toBe(false);
   });
 
   it('walks nested object fields', () => {

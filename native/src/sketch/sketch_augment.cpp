@@ -34,9 +34,9 @@ static std::string nodeCompat(const json& writer, const json& reader,
   if (wt != rt) {
     return (path.empty() ? "<root>" : path) + ": type mismatch";
   }
-  // Primitive/scalar/texture/vec leaves — same type passes.
+  // Primitive/scalar/texture/resource/vec leaves — same type passes.
   if (wt == "float"  || wt == "int"    || wt == "bool"   || wt == "string" ||
-      wt == "event"  || wt == "texture" ||
+      wt == "event"  || wt == "texture" || wt == "resource" ||
       wt == "float2" || wt == "float3" || wt == "float4") {
     return "";
   }

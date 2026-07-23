@@ -53,6 +53,7 @@ function nodeCompatible(
     case 'string':
     case 'event':
     case 'texture':
+    case 'resource':
     case 'float2':
     case 'float3':
     case 'float4':

@@ -505,6 +505,23 @@ public:
     return *this;
   }
 
+  /// RESOURCE handle leaf (resources.h): an identity-derived i64 asset
+  /// reference, string-backed — the value is the handle's unsigned-decimal
+  /// string ("0" = none; handles exceed 2^53, so they never ride a float).
+  /// Unlike textures this IS persisted state (a durable asset reference, not
+  /// per-frame wiring): store it, reload it, pass it across sessions. The
+  /// effect reads it via patchString + strtoull and publishes one with
+  /// val::string through setValPath.
+  Schema& resourceField(const char* name, int io) {
+    beginField(name);
+    appendRaw("\"type\":\"resource\",\"io\":");
+    appendInt(io);
+    appendRaw(",\"default\":\"0\"");
+    appendOrder();
+    appendRaw("}");
+    return *this;
+  }
+
   /// Canonical "auxiliary outputs of a 3D rendering pipeline" struct.
   /// Always declares the same shape so that any two effects using this
   /// helper have schema-compatible struct rails (auto-binding).

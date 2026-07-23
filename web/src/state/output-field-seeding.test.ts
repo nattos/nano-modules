@@ -56,6 +56,36 @@ describe('fresh instance output-field seeding', () => {
     expect(state.amplitude).toBe(1);
     expect('output' in state).toBe(false);
   });
+
+  it('resource fields ARE seeded/persisted (asset references), textures are not', () => {
+    const PLUGIN: PluginInfo = {
+      id: 'transition.custom',
+      key: 'transition.custom',
+      version: '1',
+      params: [],
+      io: [],
+      schema: {
+        source_res: { type: 'resource', default: '0', io: 5 /* PrimaryInput */ },
+        tex_in: { type: 'texture', io: 5 },
+      },
+    } as any;
+    runInAction(() => {
+      appState.local.plugins = [PLUGIN];
+      appState.database.sketches = {
+        sk: { anchor: null, chain: [], instances: {} },
+      } as any;
+    });
+
+    appController.addEffectToChain('sk', 0, 0, 'transition.custom');
+
+    const entry = sketchChain(appState.database.sketches.sk)[0] as any;
+    const state = appState.database.sketches.sk.instances![entry.instance_key].state;
+
+    // A resource is a DURABLE asset reference (decimal-string handle) — it is
+    // authored state; a texture is per-frame wiring and never persists.
+    expect(state.source_res).toBe('0');
+    expect('tex_in' in state).toBe(false);
+  });
 });
 
 // A UI-only help slot (schema `type: 'help'`) whose default is a large markdown
