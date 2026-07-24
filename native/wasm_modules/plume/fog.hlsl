@@ -98,7 +98,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // Shell-hug distance: grid inside the tier-0 box, analytic outside.
     float d;
     bool in0 = abs(p.x) < PLM_EXT0 && abs(p.y) < PLM_EXT0 && abs(p.z) < PLM_EXT0;
-    if (in0) d = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(p), 0).r * misc.x;
+    if (in0) {
+      d = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(p), 0).r * misc.x;
+      // The baked distance is RADIAL (r - R - h(dir)), not a true SDF: the
+      // angular spike pattern of h persists undiminished at every altitude,
+      // which paints faint density spokes out to the box edge — on screen a
+      // sunburst of rays radiating from the object center (worst with tight
+      // fog_soft + spiky ridges). Haze should read as a smooth ball from
+      // afar, so fade the displaced detail toward the analytic sphere gap
+      // as the gap grows: full crevice-hugging detail below ~0.06 wu,
+      // smooth sphere beyond ~0.45.
+      float da = length(p) - cam_p.w;
+      d = lerp(d, da, smoothstep(0.06, 0.45, d));
+    }
     else     d = length(p) - cam_p.w;
 
     float sigma = fog_p.x * exp2(-max(d, 0.0) * fog_p.y)
@@ -115,11 +127,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
       // the crossing (sun-disk cone), and the tap pair rides the pixel
       // jitter so coarse-grid blotch dithers into noise the composite's
       // tent upsample absorbs.
+      // Only rays whose crossing lies AHEAD can be shadowed: on the
+      // sun side of the terminator plane the forward sun ray moves
+      // radially outward and nothing can block it — but the clamped
+      // near taps would still read "spike radially below this point"
+      // and manufacture a shadow skin keyed to dir(p), which projects
+      // as a radial sunburst around the whole ball. Fade the shadow in
+      // across the terminator instead.
       float occ = 1.0;
-      if (sun_p.w > 1e-3) {
-        float sc  = max(-dot(p, sun_p.xyz), 0.0);
-        float sa  = max(sc, 0.30) + (jitter - 0.5) * 0.24;
-        float wid = 14.0 / (1.0 + 1.1 * sc);
+      float scs = -dot(p, sun_p.xyz);
+      if (sun_p.w > 1e-3 && scs > 0.0) {
+        float sa  = max(scs, 0.30) + (jitter - 0.5) * 0.24;
+        float wid = 14.0 / (1.0 + 1.1 * scs);
         [unroll] for (int k = 0; k < 2; k++) {
           float3 ps = p + sun_p.xyz * max(sa + 0.36 * float(k) - 0.18, 0.12);
           float ds;
@@ -131,6 +150,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
             ds = length(ps) - cam_p.w;
           occ *= saturate(ds * wid + 0.5);
         }
+        occ = lerp(1.0, occ, smoothstep(0.0, 0.15, scs));
       }
 
       float3 gi = float3(0.0, 0.0, 0.0);
