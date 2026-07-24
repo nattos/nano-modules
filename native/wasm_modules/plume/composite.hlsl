@@ -15,7 +15,8 @@ RWTexture2D<float4> outTex     : register(u4);
 cbuffer CompUniforms : register(b5) {
   float opacity;
   float has_bg;
-  float _p0, _p1;
+  float exposure;   // linear gain on the fog in-scatter (see below)
+  float black;      // black level: >0 lift, <0 crush
 };
 
 [numthreads(8, 8, 1)]
@@ -48,8 +49,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float cover = hit ? 1.0 : 0.0;
 
   // Fog integrates in front of the body (the march stopped at its depth).
-  c = fog.rgb + c * fog.a;
+  // Exposure applies to the fog's LINEAR in-scatter here — the surface
+  // color already took the same gain ahead of its shoulder in march.hlsl.
+  c = fog.rgb * exposure + c * fog.a;
   cover = max(cover, 1.0 - fog.a);
+
+  // Black level: >0 lifts the floor toward a filmic pedestal, <0 crushes
+  // the darks to true black. Graded before the opacity fade (opacity 0
+  // stays pure passthrough) and BEFORE the dither below, so the ±half-LSB
+  // amplitude stays exact at the output quantizer no matter how the grade
+  // reshapes the gradients.
+  c = black >= 0.0 ? black + (1.0 - black) * c
+                   : max((c + black) / (1.0 + black), 0.0);
 
   float3 outc = lerp(bg.rgb, c, opacity);
   // ±half-LSB output dither. The soft looks are built from huge shallow

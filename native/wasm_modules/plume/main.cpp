@@ -78,7 +78,7 @@ struct MarchUniforms {
   float fine_p[4];     // R (base radius), px_world (per unit t), inv_lip, bounce
   float misc[4];       // scene_mode, 0, 0, 0
   float mat[4];        // reflect, roughness, transmission, thickness
-  float misc2[4];      // wrap lit-gate, 0, 0, 0
+  float misc2[4];      // wrap lit-gate, exposure gain, black level, 0
 };
 static_assert(sizeof(MarchUniforms) == 192, "MarchUniforms layout mismatch");
 
@@ -94,7 +94,7 @@ struct FogUniforms {
 };
 static_assert(sizeof(FogUniforms) == 128, "FogUniforms layout mismatch");
 
-struct CompUniforms { float opacity, has_bg, _p0, _p1; };
+struct CompUniforms { float opacity, has_bg, exposure, black; };
 static_assert(sizeof(CompUniforms) == 16, "CompUniforms layout mismatch");
 
 struct DebugUniforms { float mode, slice, scale, _pad0; };
@@ -174,6 +174,8 @@ struct State {
   float transmission = 0.3f;
   float thickness = 0.5f;
   float opacity = 1.0f;
+  float exposure = 0.5f;
+  float black_lvl = 0.0f;
   int debug_view = DBG_OFF;
   float debug_slice = 0.5f;
 
@@ -302,6 +304,17 @@ void module_init() {
           .label("Thickness", "Thick")
       .floatField("opacity", 1.0f, 0.f, 1.f, state::PrimaryInput)
           .label("Opacity", "Opac")
+      // --- Render ---
+      .group("render", "Render")
+        .groupHelp(
+          "Camera-style output grade. *Exposure* is gain ahead of the "
+          "tonemapper (±2 stops) — highlights roll off instead of "
+          "clipping. *Black Level* lifts the floor toward a hazy film "
+          "gray (right) or crushes the darks to true black (left).")
+      .floatField("exposure", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Exposure", "Expo")
+      .floatField("black", 0.0f, -1.f, 1.f, state::PrimaryInput)
+          .label("Black Level", "Black")
       // --- Debug ---
       .group("debug", "Debug")
       .selectField("debug_view", DBG_OFF, state::SecondaryInput,
@@ -554,6 +567,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "transmission")) s->transmission = state::patchFloat(i);
     else if (state::pathIs(p, l, "thickness"))   s->thickness = state::patchFloat(i);
     else if (state::pathIs(p, l, "opacity"))     s->opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "exposure"))    s->exposure = state::patchFloat(i);
+    else if (state::pathIs(p, l, "black"))       s->black_lvl = state::patchFloat(i);
     else if (state::pathIs(p, l, "debug_view"))  s->debug_view = state::patchInt(i);
     else if (state::pathIs(p, l, "debug_slice")) s->debug_slice = state::patchFloat(i);
   }
@@ -821,6 +836,11 @@ void render(void* self, int vp_w, int vp_h) {
   const float az = s->azimuth * kDeg, sel = s->elevation * kDeg;
   const float sun_i = std::pow(2.0f, (s->sun - 0.5f) * 3.0f);
 
+  // Output grade: exposure = ±2 stops around unity; black level knob maps
+  // to a ±0.5 lift/crush point (full ±1 would be degenerate).
+  const float expo = std::pow(2.0f, (s->exposure - 0.5f) * 4.0f);
+  const float black = 0.5f * s->black_lvl;
+
   MarchUniforms mu = {};
   mu.cam_row0[0] = rx;  mu.cam_row0[1] = 0.0f; mu.cam_row0[2] = rz;  mu.cam_row0[3] = px;
   mu.cam_row1[0] = ux;  mu.cam_row1[1] = uy;   mu.cam_row1[2] = uz;  mu.cam_row1[3] = py;
@@ -851,6 +871,8 @@ void render(void* self, int vp_w, int vp_h) {
   mu.misc[2] = std::fmin(1.0f, 10.0f * s->ridge_depth);
   mu.misc[3] = s->wrap;
   mu.misc2[0] = s->wrap_gate;
+  mu.misc2[1] = expo;
+  mu.misc2[2] = black;
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;
@@ -905,7 +927,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.end();
     }
 
-    CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, 0.f, 0.f };
+    CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, expo, black };
     s->ub_comp.writeOne(cu);
     {
       auto cp = gpu::ComputePass::begin();

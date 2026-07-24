@@ -35,7 +35,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 misc;        // scene_mode (fog pipeline), band widen, crest gain,
                       // wrap-light amount
   float4 mat;         // reflect, roughness, transmission, thickness
-  float4 misc2;       // wrap lit-gate, 0, 0, 0
+  float4 misc2;       // wrap lit-gate, exposure gain, black level, 0
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -252,6 +252,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     c += albedo.rgb * gi * fine_p.w * (0.35 + 0.65 * ao);
   }
 
+  // Exposure is camera gain AHEAD of the shoulder — highlights roll off
+  // instead of clipping chalky when pushed.
+  c *= misc2.y;
   // Gentle shoulder: keeps the key from clipping chalky.
   c = c / (1.0 + 0.18 * c);
 
@@ -259,6 +262,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     outTex[gid.xy] = float4(c, t);
     return;
   }
+  // Black level: >0 lifts the floor toward a filmic pedestal, <0 crushes
+  // the darks to true black. Graded before the opacity fade (opacity 0
+  // stays pure passthrough) and BEFORE the dither, so the ±half-LSB
+  // amplitude stays exact at the output quantizer no matter how the grade
+  // reshapes the gradients. (The fog pipeline grades in composite.hlsl.)
+  float b = misc2.z;
+  c = b >= 0.0 ? b + (1.0 - b) * c : max((c + b) / (1.0 + b), 0.0);
   float w_op = albedo.w;
   // ±half-LSB output dither on the direct (fog-off) path — the fog
   // pipeline's composite.hlsl dithers its own final write; see there.
