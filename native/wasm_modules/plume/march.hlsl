@@ -13,6 +13,7 @@
 // texture sample, cheaper than a grid tap chain.
 
 #include "common.hlsl"
+#include "nano_hash.hlsl"
 
 Texture3D<float4>   sdfVol     : register(t0);
 Texture2D<float4>   bgTex      : register(t1);
@@ -259,5 +260,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
   float w_op = albedo.w;
-  outTex[gid.xy] = float4(lerp(bg.rgb, c, w_op), max(bg.a, w_op));
+  // ±half-LSB output dither on the direct (fog-off) path — the fog
+  // pipeline's composite.hlsl dithers its own final write; see there.
+  float3 outc = lerp(bg.rgb, c, w_op)
+              + (nano_ign(float2(gid.xy)) - 0.5) * (1.0 / 255.0);
+  outTex[gid.xy] = float4(outc, max(bg.a, w_op));
 }

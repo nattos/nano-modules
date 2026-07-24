@@ -4,6 +4,8 @@
 // the half-res fog buffer (rgb = in-scatter, .a = transmittance, bilinear
 // upsample — fog is soft), over the input, faded by the global opacity.
 
+#include "nano_hash.hlsl"
+
 Texture2D<float4>   sceneTex   : register(t0);
 Texture2D<float4>   fogTex     : register(t1);
 Texture2D<float4>   bgTex      : register(t2);
@@ -50,5 +52,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   cover = max(cover, 1.0 - fog.a);
 
   float3 outc = lerp(bg.rgb, c, opacity);
+  // ±half-LSB output dither. The soft looks are built from huge shallow
+  // gradients (fog haze, grazing-sun key rolloff), and the downstream
+  // 8-bit output quantizes them into visible contour bands — one gray
+  // level every ~10 px reads as banding on a dark display. Dithering
+  // before that rounding breaks the contours into invisible grain; IGN
+  // keeps neighboring pixels maximally spread, and the pattern is static
+  // (stable in motion). Costs one hash.
+  outc += (nano_ign(float2(gid.xy)) - 0.5) * (1.0 / 255.0);
   outTex[gid.xy] = float4(outc, max(bg.a, cover * opacity));
 }
