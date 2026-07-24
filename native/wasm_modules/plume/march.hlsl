@@ -128,6 +128,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
   float3 hp = ro + rd * t;
 
+  // Snap the hit RADIALLY onto the exact shell surface. Fine stepping
+  // accepts a hit anywhere under eps (~0.2 voxel) ABOVE the surface, and
+  // that residual is quantized by the step phase; grazing shadow rays at
+  // the terminator amplify it into coherent arc banding. The radial
+  // excess is exactly plm_fine(hp) (h is a function of direction only),
+  // so remove it exactly — one 2D tap.
+  float3 rdir = hp / max(length(hp), 1e-5);
+  hp -= rdir * plm_fine(hp);
+
   // Normal: tetrahedron taps on the fine surface, screen-adaptive epsilon
   // (small up close for crisp flakes, wider far away to kill shimmer).
   // Floor at ~2 shell-map texels: below that the taps read the map's
