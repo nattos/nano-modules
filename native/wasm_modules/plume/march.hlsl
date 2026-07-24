@@ -31,7 +31,8 @@ cbuffer MarchUniforms : register(b5) {
   float4 vp;          // w, h, 1/w, 1/h
   float4 shade_p;     // shadow, ao, ambient, rim
   float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, bounce
-  float4 misc;        // scene_mode (fog pipeline), band widen, crest gain, 0
+  float4 misc;        // scene_mode (fog pipeline), band widen, crest gain,
+                      // wrap-light amount
   float4 mat;         // reflect, roughness, transmission, thickness
 };
 
@@ -197,8 +198,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // Studio-matte combine: the porcelain look is FORM-shaded — white tops
   // rolling to gray sides (straight lambert key), a restrained AO'd fill,
-  // and near-black gaps between plates.
-  float key = sun_p.w * (0.06 + 0.94 * lam) * sh;
+  // and near-black gaps between plates. The key floor and the rim term
+  // below are deliberate NON-physical studio wrap; misc.w (Wrap Light)
+  // scales both — at 0 the dark side is strictly sun-only.
+  float wrap_floor = 0.06 * misc.w;
+  float key = sun_p.w * (wrap_floor + (1.0 - wrap_floor) * lam) * sh;
   float sky = 0.55 + 0.45 * saturate(N.y * 0.8 + 0.5);
   float fill = shade_p.z * 0.4 * sky * (0.15 + 0.85 * ao);
   float3 c = albedo.rgb * (key + fill) * (0.90 + 0.10 * crest);

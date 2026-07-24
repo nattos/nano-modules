@@ -157,6 +157,7 @@ struct State {
   float shadow = 0.7f;
   float ao_amt = 0.7f;
   float ambient = 0.5f;
+  float wrap = 1.0f;
   float bounce = 0.5f;
   float resonance = 0.35f;
   float gi_speed = 0.5f;
@@ -240,6 +241,8 @@ void module_init() {
           .label("Occlusion", "AO")
       .floatField("ambient", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Ambient", "Amb")
+      .floatField("wrap", 1.0f, 0.f, 1.f, state::PrimaryInput)
+          .label("Wrap Light", "Wrap")
       // --- Bounce (resonant wave GI) ---
       .group("gi", "Bounce Light")
         .groupHelp(
@@ -528,6 +531,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "shadow"))      s->shadow = state::patchFloat(i);
     else if (state::pathIs(p, l, "ao"))          s->ao_amt = state::patchFloat(i);
     else if (state::pathIs(p, l, "ambient"))     s->ambient = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wrap"))        s->wrap = state::patchFloat(i);
     else if (state::pathIs(p, l, "bounce"))      s->bounce = state::patchFloat(i);
     else if (state::pathIs(p, l, "resonance"))   s->resonance = state::patchFloat(i);
     else if (state::pathIs(p, l, "gi_speed"))    s->gi_speed = state::patchFloat(i);
@@ -829,7 +833,7 @@ void render(void* self, int vp_w, int vp_h) {
   mu.shade_p[0] = s->shadow;
   mu.shade_p[1] = s->ao_amt;
   mu.shade_p[2] = s->ambient;
-  mu.shade_p[3] = 0.6f;   // rim
+  mu.shade_p[3] = 0.6f * s->wrap;   // rim rides the wrap-light control
   mu.fine_p[0] = R;
   // World size of one pixel at unit distance (screen-adaptive normal eps).
   mu.fine_p[1] = 1.0f / ((float)vp_h * cs.ay * focal);
@@ -840,6 +844,7 @@ void render(void* self, int vp_w, int vp_h) {
   mu.misc[1] = band_widen;
   // Crest shading emphasis only exists when there are ridges to crest.
   mu.misc[2] = std::fmin(1.0f, 10.0f * s->ridge_depth);
+  mu.misc[3] = s->wrap;
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;
