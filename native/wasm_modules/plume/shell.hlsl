@@ -159,16 +159,26 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // the reference look). `ridge_sharp` is the whole dial: 0 keeps the
   // field a fully SMOOTH heightfield (no quantized levels), the terrace
   // cliffs fade in above that and steepen toward 1.
+  // The cut heights must NOT be a global lattice: floor(n*4)/4 alone puts
+  // every plateau on the same 3-4 absolute heights sphere-wide (and the
+  // fbm concentrates mid-range, so mostly 3) — at high sharpness the whole
+  // ball reads as three stacked tiers. So quantize RELATIVE to a
+  // low-frequency terrace phase and shift back afterward: cliffs still
+  // cut locally (frac sees the same pitch), but each plateau height is
+  // k/levels − φ/levels with φ drifting smoothly — a continuous spread of
+  // heights, plates gently canted like strata, no shared tiers. φ spans a
+  // full level so adjacent-k bands overlap into continuous coverage.
   float terr = smoothstep(0.05, 0.7, ridge_sharp);
   float levels = 4.0;
-  float tn = n * levels;
+  float phi = 0.5 + 0.5 * nano_gnoise3(p * 1.7 + 17.9);
+  float tn = n * levels + phi;
   float f = frac(tn);
   // Smooth plateau -> cliff profile: stays flat, then commits.
   float cliff = lerp(2.5, 14.0, ridge_sharp);
   float step_s = f * f * (3.0 - 2.0 * f);
   step_s = pow(step_s, cliff * 0.5) /
            (pow(step_s, cliff * 0.5) + pow(1.0 - step_s, cliff * 0.5));
-  float h = lerp(n, (floor(tn) + step_s) / levels, terr);
+  float h = lerp(n, (floor(tn) + step_s - phi) / levels, terr);
   // Faint plate-top texture, gated ENTIRELY by terr: the 1-abs() ridges
   // are C1 creases whose normal kinks read as etched veins under grazing
   // light — on the smooth (sharp=0) surface they're pure artifact, and
