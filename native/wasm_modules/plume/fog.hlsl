@@ -34,7 +34,7 @@ cbuffer FogUniforms : register(b5) {
   float4 cam_p;       // focal, cover_ax, cover_ay, R (base radius)
   float4 sun_p;       // sun dir (world, toward light), w = intensity
   float4 fog_p;       // shell gain, inv_soft, room gain, phase g
-  float4 misc;        // inv_lip, ambient, bounce, 0
+  float4 misc;        // inv_lip, ambient, bounce, ridge amp (world)
   float4 vp;          // half W, half H, 1/(half W), 1/(half H)
 };
 
@@ -102,14 +102,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
       d = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(p), 0).r * misc.x;
       // The baked distance is RADIAL (r - R - h(dir)), not a true SDF: the
       // angular spike pattern of h persists undiminished at every altitude,
-      // which paints faint density spokes out to the box edge — on screen a
+      // which paints density spokes out to the box edge — on screen a
       // sunburst of rays radiating from the object center (worst with tight
-      // fog_soft + spiky ridges). Haze should read as a smooth ball from
-      // afar, so fade the displaced detail toward the analytic sphere gap
-      // as the gap grows: full crevice-hugging detail below ~0.06 wu,
-      // smooth sphere beyond ~0.45.
+      // fog_soft + spiky ridges, where exp2(-d*inv_soft) amplifies gap
+      // contrast by 2^(inv_soft*h)). Haze should read as a smooth ball from
+      // afar, so fade the displaced detail toward the analytic sphere gap.
+      // The fade key MUST be the smooth altitude da, not the grid gap: the
+      // gap is itself spike-modulated, so keying on it lets every spike
+      // keep its spoke for an extra h of radius before the ramp engages.
+      // Ramp: full detail below the crest sphere (R + amp — the skin coats
+      // spike tips and crevices alike), then out over ~2 density e-folds.
       float da = length(p) - cam_p.w;
-      d = lerp(d, da, smoothstep(0.06, 0.45, d));
+      float sig = 1.4427 / fog_p.y;      // density e-fold length, wu
+      d = lerp(d, da, smoothstep(misc.w, misc.w + 2.0 * sig, da));
     }
     else     d = length(p) - cam_p.w;
 

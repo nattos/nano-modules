@@ -888,6 +888,7 @@ void render(void* self, int vp_w, int vp_h) {
     fu.misc[0] = 1.0f / lip;
     fu.misc[1] = s->ambient;
     fu.misc[2] = gi_on ? 1.2f * s->bounce : 0.0f;
+    fu.misc[3] = amp;
     fu.vp[0] = (float)half_w; fu.vp[1] = (float)half_h;
     fu.vp[2] = 1.0f / half_w; fu.vp[3] = 1.0f / half_h;
     s->ub_fog.writeOne(fu);
