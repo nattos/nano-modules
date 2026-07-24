@@ -91,8 +91,9 @@ struct FogUniforms {
   float fog_p[4];      // shell gain, inv_soft, room gain, phase g
   float misc[4];       // inv_lip, ambient, bounce, 0
   float vp[4];         // half w, half h, 1/half w, 1/half h
+  float misc2[4];      // iso-lobe blend, 0, 0, 0
 };
-static_assert(sizeof(FogUniforms) == 128, "FogUniforms layout mismatch");
+static_assert(sizeof(FogUniforms) == 144, "FogUniforms layout mismatch");
 
 struct CompUniforms { float opacity, has_bg, exposure, black; };
 static_assert(sizeof(CompUniforms) == 16, "CompUniforms layout mismatch");
@@ -167,6 +168,7 @@ struct State {
   float fog = 0.25f;
   float fog_soft = 0.5f;
   float phase = 0.4f;
+  bool dual_lobe = false;
   float room_fog = 0.0f;
   float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
   float reflect_k = 0.25f;
@@ -274,14 +276,18 @@ void module_init() {
           "from the same wave field as the bounce — the shape glows into "
           "its own atmosphere). *Softness* sets how far the haze reaches "
           "off the shell; *Phase* pushes the sun's in-scatter forward "
-          "(silvery backlit shafts near ±180 azimuth); *Room Fog* adds a "
-          "thin medium everywhere for depth.")
+          "(silvery backlit shafts near ±180 azimuth); *Dual Lobe* mixes a "
+          "small isotropic lobe into the phase — a multi-scatter stand-in "
+          "that keeps frontlit fog from dropping to black at high Phase; "
+          "*Room Fog* adds a thin medium everywhere for depth.")
       .floatField("fog", 0.25f, 0.f, 1.f, state::PrimaryInput)
           .label("Fog", "Fog")
       .floatField("fog_soft", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Softness", "Soft")
       .floatField("phase", 0.4f, 0.f, 1.f, state::PrimaryInput)
           .label("Phase", "Phase")
+      .boolField("dual_lobe", false, state::SecondaryInput)
+          .label("Dual Lobe", "Dual")
       .floatField("room_fog", 0.0f, 0.f, 1.f, state::PrimaryInput)
           .label("Room Fog", "Room")
       // --- Material ---
@@ -557,6 +563,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "fog"))         s->fog = state::patchFloat(i);
     else if (state::pathIs(p, l, "fog_soft"))    s->fog_soft = state::patchFloat(i);
     else if (state::pathIs(p, l, "phase"))       s->phase = state::patchFloat(i);
+    else if (state::pathIs(p, l, "dual_lobe"))   s->dual_lobe = state::patchBool(i);
     else if (state::pathIs(p, l, "room_fog"))    s->room_fog = state::patchFloat(i);
     else if (state::pathIs(p, l, "albedo")) {
       auto v = state::patchVec3(i);
@@ -913,6 +920,10 @@ void render(void* self, int vp_w, int vp_h) {
     fu.misc[3] = amp;
     fu.vp[0] = (float)half_w; fu.vp[1] = (float)half_h;
     fu.vp[2] = 1.0f / half_w; fu.vp[3] = 1.0f / half_h;
+    // Dual lobe blends 20% isotropic into the HG phase — enough of a
+    // multi-scatter floor that frontlit fog stays visible, small enough
+    // that the backlit forward glare keeps its character.
+    fu.misc2[0] = s->dual_lobe ? 0.2f : 0.0f;
     s->ub_fog.writeOne(fu);
     {
       auto cp = gpu::ComputePass::begin();

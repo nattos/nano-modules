@@ -36,6 +36,7 @@ cbuffer FogUniforms : register(b5) {
   float4 fog_p;       // shell gain, inv_soft, room gain, phase g
   float4 misc;        // inv_lip, ambient, bounce, ridge amp (world)
   float4 vp;          // half W, half H, 1/(half W), 1/(half H)
+  float4 misc2;       // iso-lobe blend, 0, 0, 0
 };
 
 bool plm_sphere(float3 ro, float3 rd, float rad, out float t0, out float t1) {
@@ -89,6 +90,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float cosv = dot(rd, sun_p.xyz);
   float hg = (1.0 - g * g) /
              max(pow(1.0 + g * g - 2.0 * g * cosv, 1.5), 1e-3) * 0.25;
+  // Dual lobe (gated by the knob): blend a small isotropic lobe (0.25 is
+  // HG at g=0 in this normalization) as a multi-scatter stand-in. A pure
+  // forward lobe is single-scatter physics — its backward tail is ~1/80th
+  // of its peak at high Phase, so frontlit fog goes black; real fog's
+  // multiple bounces lose direction and put a floor under that.
+  hg = lerp(hg, 0.25, misc2.x);
 
   float3 acc = float3(0.0, 0.0, 0.0);
   float trans = 1.0;
