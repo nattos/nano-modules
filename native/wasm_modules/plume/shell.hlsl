@@ -44,8 +44,32 @@ cbuffer ShellUniforms : register(b1) {
   float aniso;       // flow-direction stretch factor (0 = isotropic)
   float swirl;       // flow direction angle around the local normal
   float wobble;      // low-freq flow meander amount
-  float _pad0;
+  float bl_nyq;      // FULL map Nyquist (cycles/rad) — octave fade limit
 };
+
+// Band-limited fbm: octaves fade out as they approach the FULL shell
+// map's Nyquist, like a mip chain — without this, high Ridge Scale pushes
+// the top octaves under the map's texel size and bilinear reconstruction
+// renders them as pixel-crunch (aliasing), not detail. `bl_nyq` is the
+// same for both map resolutions so full/coarse stay the same field
+// (terrace parity); `base_freq` is the octave-0 frequency baked into p.
+float plm_fbm_bl(float3 p, int oct, float base_freq, float nyq,
+                 out float total) {
+  float sum = 0.0;
+  float amp = 0.5;
+  float f = base_freq;
+  total = 0.0;
+  [loop] for (int i = 0; i < 6; i++) {
+    if (i >= oct) break;
+    float fade = 1.0 - smoothstep(0.30 * nyq, 0.85 * nyq, f);
+    sum += amp * fade * nano_gnoise3(p);
+    total += amp * fade;
+    p = mul(NANO_OCT_ROT3, p) * 2.02 + 11.31;
+    amp *= 0.45;
+    f *= 2.02;
+  }
+  return sum / max(total, 1e-4);
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -86,7 +110,8 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // at any Ridge Scale.
   float arc = min(aniso * 2.6 / ridge_scale, 0.55);
   int oct_full = int(octaves);
-  float raw = nano_gfbm3(p, oct_full, 0.45);
+  float tf;
+  float raw = plm_fbm_bl(p, oct_full, ridge_scale, bl_nyq, tf);
   if (arc > 1e-4) {
     // Smear only the LOW octaves: sparse taps can't sample the fine
     // octaves densely enough, and wind-swept regions reading smoother
@@ -94,14 +119,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // residual is re-added locally, faded with feathering so it doesn't
     // pockmark the smoothed tails.
     int oct_lo = max(oct_full - 2, 2);
-    float tf = 0.0, tl = 0.0, aw = 0.5;
-    [unroll] for (int i = 0; i < 6; i++) {
-      if (i < oct_full) tf += aw;
-      if (i < oct_lo) tl += aw;
-      aw *= 0.45;
-    }
-    float norm_lo = tl / tf;
-    float raw_lo = nano_gfbm3(p, oct_lo, 0.45);
+    float tl;
+    float raw_lo = plm_fbm_bl(p, oct_lo, ridge_scale, bl_nyq, tl);
+    float norm_lo = tl / max(tf, 1e-4);
     float fine = raw - raw_lo * norm_lo;   // full-normalized residual
     float step_a = arc * 0.1;
     float sum = raw_lo, wsum = 1.0;
@@ -118,7 +138,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
                  + wobble * 2.2 * nano_gnoise3(dcur * 2.3 + wob_off);
       fcur = t1k * cos(angk) + t2k * sin(angk);
       float w = 1.0 - float(k) / 11.0;   // triangular taper upwind
-      sum += w * nano_gfbm3(dcur * ridge_scale + off, oct_lo, 0.45);
+      float tk;
+      sum += w * plm_fbm_bl(dcur * ridge_scale + off, oct_lo, ridge_scale,
+                            bl_nyq, tk);
       wsum += w;
     }
     // The averaged field loses variance — restore contrast so feathering

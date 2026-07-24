@@ -59,7 +59,7 @@ constexpr int DBG_RADIANCE = 4;
 struct ShellUniforms {
   float res, octaves, ridge_scale, ridge_amp;
   float ridge_sharp, morph_x, seed, morph_z;
-  float aniso, swirl, wobble, _pad0;
+  float aniso, swirl, wobble, bl_nyq;
 };
 static_assert(sizeof(ShellUniforms) == 48, "ShellUniforms layout mismatch");
 
@@ -598,8 +598,13 @@ void render(void* self, int vp_w, int vp_h) {
   // cliffs steepen the field well past the smooth-fbm bound; feathering's
   // along-flow smear only ever smooths, so it needs no margin.
   const float steep = 1.0f + 2.0f * s->ridge_sharp;
-  float lip = 1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
-  if (lip < 0.15f) lip = 0.15f;
+  const float lip_true =
+      1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
+  // Floor keeps coarse marching from crawling, but a floored grid stores
+  // distances LONGER than the true bound — the march widens its fine-tier
+  // handoff band by lip/lip_true (capped) to absorb the overshoot.
+  float lip = std::fmax(lip_true, 0.15f);
+  const float band_widen = std::fmin(3.0f, lip / lip_true);
 
   // Morph walks a closed circle in the noise domain — seamless, no drift.
   const float mx = 5.0f * std::cos(kTau * (float)s->morph_phase);
@@ -616,6 +621,9 @@ void render(void* self, int vp_w, int vp_h) {
   su.aniso = s->ridge_aniso;
   su.swirl = s->swirl;
   su.wobble = 0.35f;
+  // Band-limit octaves at the FULL map's Nyquist (cycles/rad) for BOTH
+  // map resolutions — same fade => same field => terrace parity holds.
+  su.bl_nyq = (float)kShellRes / 6.2831853f;
 
   // Both maps evaluate the SAME field (same octaves): the terrace cut is a
   // hard nonlinearity, so differing octave counts could land on different
@@ -829,6 +837,7 @@ void render(void* self, int vp_w, int vp_h) {
   mu.fine_p[2] = 1.0f / lip;
   mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
   mu.misc[0] = fog_on ? 1.0f : 0.0f;
+  mu.misc[1] = band_widen;
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;

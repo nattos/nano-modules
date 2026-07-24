@@ -31,7 +31,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 vp;          // w, h, 1/w, 1/h
   float4 shade_p;     // shadow, ao, ambient, rim
   float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, bounce
-  float4 misc;        // scene_mode (fog pipeline: write color+depth), 0, 0, 0
+  float4 misc;        // scene_mode (fog pipeline), band widen factor, 0, 0
   float4 mat;         // reflect, roughness, transmission, thickness
 };
 
@@ -84,11 +84,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
   }
 
   const float voxel = 2.0 * PLM_EXT0 / float(PLM_VOL_RES);
-  const float band = 1.6 * voxel;    // coarse->fine handoff distance
+  // Handoff band widens (misc.y) when the bake's Lipschitz floor is
+  // engaged: floored grids store distances LONGER than the true bound, so
+  // the coarse trace overshoots — enter the (overshoot-immune, exact
+  // radial) fine tier correspondingly earlier.
+  const float band = 1.6 * misc.y * voxel;
   float t = max(t0, 0.0) + 0.5 * voxel;
   bool hit = false;
   float t_prev = t;
-  float df_prev = 1e5;
   [loop] for (int i = 0; i < 220; i++) {
     if (t > t1) break;
     float3 p = ro + rd * t;
@@ -98,10 +101,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float df = plm_fine(p);
       float eps = max(0.20 * voxel, 0.9 * fine_p.y * t);
       if (df < eps) { hit = true; break; }
-      t_prev = t; df_prev = df;
+      t_prev = t;
       t += clamp(df * 0.55, 0.18 * voxel, band);
     } else {
-      t_prev = t; df_prev = 1e5;
+      t_prev = t;
       t += d * 0.9;
     }
   }
@@ -111,10 +114,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
 
-  // Bisection polish between the last outside sample and the hit.
-  if (df_prev < 1e4) {
+  // Bisection polish between the last sample and the hit — ALWAYS when
+  // the last sample was still outside, even if it was a coarse step (an
+  // overshooting coarse step can land the first fine sample deep inside
+  // the body; without the polish those hits shade as pixel garbage).
+  if (plm_fine(ro + rd * t_prev) > 0.0) {
     float ta = t_prev, tb = t;
-    [unroll] for (int j = 0; j < 4; j++) {
+    [unroll] for (int j = 0; j < 5; j++) {
       float tm = 0.5 * (ta + tb);
       if (plm_fine(ro + rd * tm) < 0.0) tb = tm; else ta = tm;
     }
@@ -124,7 +130,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // Normal: tetrahedron taps on the fine surface, screen-adaptive epsilon
   // (small up close for crisp flakes, wider far away to kill shimmer).
-  float e = clamp(0.8 * fine_p.y * t, 0.0012, 0.02);
+  // Floor at ~2 shell-map texels: below that the taps read the map's
+  // bilinear facets and the normal speckles.
+  float texw = fine_p.x * 6.2832 / (2.0 * float(PLM_SHELL_RES));
+  float e = clamp(0.8 * fine_p.y * t, max(0.0012, 2.0 * texw), 0.02);
   float2 k = float2(1.0, -1.0);
   float3 N = normalize(
       k.xyy * plm_fine(hp + k.xyy * e) + k.yyx * plm_fine(hp + k.yyx * e) +
