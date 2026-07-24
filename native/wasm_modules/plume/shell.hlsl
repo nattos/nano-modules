@@ -53,8 +53,10 @@ cbuffer ShellUniforms : register(b1) {
 // renders them as pixel-crunch (aliasing), not detail. `bl_nyq` is the
 // same for both map resolutions so full/coarse stay the same field
 // (terrace parity); `base_freq` is the octave-0 frequency baked into p.
+// `top_roll` scales the LAST counted octave's amplitude (1 = full): the
+// smooth-field rolloff below passes < 1 here for the low-band evals.
 float plm_fbm_bl(float3 p, int oct, float base_freq, float nyq,
-                 out float total) {
+                 float top_roll, out float total) {
   float sum = 0.0;
   float amp = 0.5;
   float f = base_freq;
@@ -62,8 +64,9 @@ float plm_fbm_bl(float3 p, int oct, float base_freq, float nyq,
   [loop] for (int i = 0; i < 6; i++) {
     if (i >= oct) break;
     float fade = 1.0 - smoothstep(0.30 * nyq, 0.85 * nyq, f);
-    sum += amp * fade * nano_gnoise3(p);
-    total += amp * fade;
+    float w = amp * fade * (i == oct - 1 ? top_roll : 1.0);
+    sum += w * nano_gnoise3(p);
+    total += w;
     p = mul(NANO_OCT_ROT3, p) * 2.02 + 11.31;
     amp *= 0.45;
     f *= 2.02;
@@ -111,9 +114,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float arc = min(aniso * 2.6 / ridge_scale, 0.55);
   int oct_full = int(octaves);
   int oct_lo = max(oct_full - 2, 2);
+  // Smooth-field rolloff: at low sharpness the base field's TOP octave is
+  // what reads as elephant-skin mottle under grazing light (every mid-
+  // frequency bump stretches into a long lambert gradient) — the smooth
+  // look wants rolling swells, not pebble texture. Fade that octave out
+  // as sharpness drops (75% gone at sharp 0); above sharp 0.5 the field
+  // is bit-identical to before, so the plate/terrace looks are untouched.
+  // Only the LOW-band evals roll off — the full-band map keeps every
+  // octave, so the removed content migrates into the fine residual and
+  // returns only at fine_w (~0.1) strength as the faint wrinkle.
+  float roll = 0.25 + 0.75 * smoothstep(0.05, 0.5, ridge_sharp);
   float tf, tl;
-  float raw_full = plm_fbm_bl(p, oct_full, ridge_scale, bl_nyq, tf);
-  float raw_lo = plm_fbm_bl(p, oct_lo, ridge_scale, bl_nyq, tl);
+  float raw_full = plm_fbm_bl(p, oct_full, ridge_scale, bl_nyq, 1.0, tf);
+  float raw_lo = plm_fbm_bl(p, oct_lo, ridge_scale, bl_nyq, roll, tl);
   float norm_lo = tl / max(tf, 1e-4);
   float fine = raw_full - raw_lo * norm_lo;   // full-normalized residual
   float base = raw_lo;
@@ -138,7 +151,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
       float w = 1.0 - float(k) / 11.0;   // triangular taper upwind
       float tk;
       sum += w * plm_fbm_bl(dcur * ridge_scale + off, oct_lo, ridge_scale,
-                            bl_nyq, tk);
+                            bl_nyq, roll, tk);
       wsum += w;
     }
     // The averaged field loses variance — restore contrast so feathering
