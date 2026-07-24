@@ -3041,3 +3041,77 @@ TEST_CASE("follow: an EMPTY gap scene is launchable and its section executes (Me
   // The gap's own standard duration (lengthBeat 4 @120 ⇒ 2 s) elapses → blue.
   CHECK(stepUntilChange(cx, "gap", 40) == "blue");
 }
+
+TEST_CASE("transition.xfade: SHORT scenes fade on every hop — no settle blackout, "
+          "no same-tick arm/seek race (Metal)",
+          "[comp_fork][comp_xfade][comp_render]") {
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  // Regression (user repro): fadeSec 0.3, scene A fires at ~1.83 s, scene B
+  // fires at `bFireSec`. Two past failure modes:
+  //  - B <= ~0.8 s: B's boundary landed inside the effect's old post-fade
+  //    settle blackout (fade 0.3 + 0.5 s), during which it neither armed nor
+  //    triggered -> the flip found no fork (cut). Fixed by arming the live
+  //    scene's fork EVERY tick, mid-fade included.
+  //  - B <= 1.10 s (= fade + settle + trigger window) on the WEB: the first
+  //    re-arm after the settle and the early-trigger seek landed on the same
+  //    tick, and the raw-forwarded arm (comp_queue_stream_op -> pendingOps)
+  //    was only drained at transportResolve — AFTER applyPendingLaunches had
+  //    committed the seek. Fixed by draining stream ops at the top of
+  //    update(); the continuous arm covers it too.
+  auto run = [&](double bFireSec) -> std::string {
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    const json followA = {{"mode", 0}, {"scope", 1},
+                          {"followAfter", 2}, {"followSec", 1.8333}};
+    const json followB = {{"mode", 0}, {"scope", 1},
+                          {"followAfter", 2}, {"followSec", bFireSec}};
+    json track = mkTrack("st", json::array({mkFollowScene("red", 0, followA),
+                                            mkFollowScene("green", 4, followB)}),
+                         {{"kind", "scene"}});
+    track["transport"] = {
+        {"devices", json::array({mkDevice("x1", "transition.xfade", {{"fadeSec", 0.3}})})},
+        {"wires", json::array()}};
+    cx.loadDocument(mkComposition(json::array({std::move(track)})));
+    hx.bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
+    cx.setTransportMode(false);
+    cx.play();
+    cx.launchScene("st", "red");
+    cx.update(0.0);
+    cx.transportResolve(0.0);
+    const double dt = 1.0 / 60.0;
+    // Phase 1: red -> green (should always fade).
+    bool fork1 = false;
+    for (int i = 0; i < 400 && playingScene(cx) == "red"; i++) {
+      cx.update(dt); cx.transportResolve(dt);
+    }
+    if (playingScene(cx) != "green") return "no-first-flip";
+    for (int i = 0; i < 6; i++) {
+      if (!json::parse(cx.sceneStatesJson())["st"].value("fork", json()).is_null())
+        fork1 = true;
+      cx.update(dt); cx.transportResolve(dt);
+    }
+    // Phase 2: green -> red. Watch for the fork across the flip.
+    bool fork2 = false;
+    for (int i = 0; i < 400 && playingScene(cx) == "green"; i++) {
+      cx.update(dt); cx.transportResolve(dt);
+      const json f = json::parse(cx.sceneStatesJson())["st"].value("fork", json());
+      if (!f.is_null() && f["clipId"] == "green") fork2 = true;
+    }
+    if (playingScene(cx) != "red") return "no-second-flip";
+    for (int i = 0; i < 8; i++) {
+      const json f = json::parse(cx.sceneStatesJson())["st"].value("fork", json());
+      if (!f.is_null() && f["clipId"] == "green") fork2 = true;
+      cx.update(dt); cx.transportResolve(dt);
+    }
+    std::string r = fork1 ? "fade1" : "CUT1";
+    r += fork2 ? "+fade2" : "+CUT2";
+    return r;
+  };
+
+  for (double b : {0.45, 0.6, 1.0, 1.10, 1.11}) {
+    INFO("B fire " << b << " s");
+    CHECK(run(b) == "fade1+fade2");
+  }
+}

@@ -41,7 +41,6 @@ struct State {
   bool fading = false;
   int64_t fadeRes = 0;      // the OUTGOING clip's resource (re-assert target)
   double fadeEndClock = 0;
-  bool stopped = false;
   // Early trigger bookkeeping.
   bool triggered = false;
   double triggerEndClock = 0;
@@ -105,12 +104,12 @@ static void publish(State* s, double mix) {
   val::release(sh);
 }
 
+// Clears the FADE fields only — a chained early trigger (fired mid-fade for
+// the NEXT hop) keeps its bookkeeping so the coming commit still fades on the
+// declared window.
 static void resetFade(State* s) {
   s->fading = false;
   s->fadeRes = 0;
-  s->stopped = false;
-  s->triggered = false;
-  s->triggerTarget = -1;
 }
 
 void tick(void* self, double dt) {
@@ -122,12 +121,35 @@ void tick(void* self, double dt) {
   streams::StreamDesc pd;
   if (!streams::describe(parent, pd) || pd.kind != streams::KindSceneTrack) {
     resetFade(s);
+    s->triggered = false;
     s->armedRes = 0;
     publish(s, 0);
     return;
   }
   const double posP = streams::pos(parent);
   const int ord = std::isnan(posP) ? -1 : (int)std::floor(posP);
+
+  // Commit detection FIRST — on any tick, mid-fade included. A flip while we
+  // hold a standing arm means the engine detached the outgoing into our fork:
+  // start the fade (or restart it — a chained commit snap-finishes the old
+  // fork engine-side, and the incoming of the OLD fade keeps its instance
+  // keys either way). A flip with no arm is a cut we didn't broker: drop any
+  // stale fade state.
+  if (ord != s->lastOrd) {
+    if (ord >= 0 && s->lastOrd >= 0 && s->armedRes != 0) {
+      s->fading = true;
+      s->fadeRes = s->armedRes;
+      s->fadeEndClock = (s->triggered && s->triggerTarget == ord)
+                            ? s->triggerEndClock
+                            : s->clock + s->fadeSec;
+      s->armedRes = 0;
+      resources::fork(s->fadeRes);
+    } else {
+      resetFade(s);
+    }
+    s->triggered = false;
+    s->lastOrd = ord;
+  }
 
   if (s->fading) {
     // Keep the DETACHED fork alive (level-triggered — silence releases it),
@@ -136,64 +158,37 @@ void tick(void* self, double dt) {
     const double remaining = s->fadeEndClock - s->clock;
     const double mix = 1.0 - std::fmax(0.0, remaining) / std::fmax(0.05, (double)s->fadeSec);
     publish(s, std::fmin(1.0, std::fmax(0.0, mix)));
-    if (remaining <= 0 && !s->stopped) {
-      s->stopped = true;
+    if (remaining <= 0) {
       resources::release(s->fadeRes);  // fade done — release the fork
+      resetFade(s);                    // bookkeeping only; the blend leaves the build
     }
-    if (s->stopped && remaining <= -0.5) resetFade(s);  // settled
-    if (ord != s->lastOrd) {
-      // Another commit mid-fade: the engine snap-finished the old fork and
-      // (if we were armed) detached a new one — restart the fade from here.
-      if (s->armedRes != 0 && ord >= 0) {
-        s->fadeRes = s->armedRes;
-        s->fadeEndClock = s->clock + s->fadeSec;
-        s->stopped = false;
-        s->armedRes = 0;
-      } else {
-        resetFade(s);
-      }
-    }
-    s->lastOrd = ord;
-    if (s->fading) return;
+  } else {
+    publish(s, 0);
   }
 
-  publish(s, 0);
   if (ord < 0) {  // idle track: nothing to arm
     s->armedRes = 0;
     s->armedOrd = -1;
-    s->lastOrd = ord;
     return;
   }
 
-  // Commit detection: the live ordinal flipped while we held a standing arm →
-  // the engine detached the outgoing into our fork. Announced launches carry
-  // their fade window (trigger bookkeeping); manual ones fade from here.
-  if (s->lastOrd >= 0 && ord != s->lastOrd && s->armedRes != 0) {
-    s->fading = true;
-    s->fadeRes = s->armedRes;
-    s->fadeEndClock = (s->triggered && s->triggerTarget == ord)
-                          ? s->triggerEndClock
-                          : s->clock + s->fadeSec;
-    s->stopped = false;
-    s->armedRes = 0;
-    s->triggered = false;
-    s->lastOrd = ord;
-    resources::fork(s->fadeRes);
-    publish(s, 0);
-    return;
-  }
-  s->lastOrd = ord;
-  if (s->triggered && ord == s->triggerTarget) s->triggered = false;
+  // Stale trigger hygiene: a triggered launch that never commits (announce
+  // withdrawn, target stopped) must not block future triggers forever.
+  if (s->triggered && s->clock > s->triggerEndClock + 2.0) s->triggered = false;
 
-  // Standing successor: keep the live scene's fork armed every tick.
+  // Standing successor: keep the live scene's fork armed EVERY tick — during
+  // a fade too. Continuous arming is what makes back-to-back transitions
+  // (a scene shorter than fade + trigger window) fork instead of cut: the
+  // arm is always standing long before any commit evaluates.
   const int64_t res = resources::live(parent);
   s->armedRes = res;
   s->armedOrd = ord;
   if (res != 0) resources::fork(res);
 
   // Early trigger: an ANNOUNCED launch within the fade window starts the
-  // incoming now, so the fade completes at the declared boundary. Pending
-  // commits (state 2) are already in flight — nothing to trigger.
+  // incoming now, so the fade completes at the declared boundary — chained
+  // mid-fade triggers included. Pending commits (state 2) are already in
+  // flight — nothing to trigger.
   streams::NextLaunchRec nl;
   if (!s->triggered && res != 0 && streams::nextLaunch(parent, nl) && nl.state == 1 &&
       nl.ordinal != ord && nl.eta_sec <= (double)s->fadeSec) {

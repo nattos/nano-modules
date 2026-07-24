@@ -1503,6 +1503,15 @@ uint32_t CompExecutor::update(double dtSec) {
   uint32_t flags = 0;
   if (!docLoaded_) return 0;
 
+  // Verb ordering: ops queued since the last resolve apply BEFORE the
+  // pending-commit evaluation below. The WEB drain forwards raw fork arms
+  // via comp_queue_stream_op AFTER its comp_transport_resolve call, so an
+  // arm queued in the same effect tick as its seek would otherwise sit in
+  // pendingOps until the NEXT transportResolve — and applyPendingLaunches
+  // would commit that seek's handover first, seeing no arm (a cut instead
+  // of a detach). Draining here makes same-frame arm+seek safe on both
+  // hosts by construction.
+  drainStreamOps();
   // Scene lifecycle first: pending handovers commit the moment their video is
   // ready (BEFORE the heal, so a fresh commit can't be same-frame stopped and
   // the heal sees the committed map), then elapsed one-shots auto-stop (and
