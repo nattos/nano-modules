@@ -11,7 +11,8 @@
 // Lighting per step: ambient + the wave-GI radiance field (the fog is
 // GI-lit for free — light bleeds from the shape into the haze, and at
 // high resonance the haze RINGS) + direct sun with a Henyey-Greenstein
-// phase and a cheap 2-tap occlusion toward the sun (soft shaft hints).
+// phase and a 2-tap occlusion sampled where the sun ray crosses the
+// object (full-length silhouette shafts, cone-widening penumbra).
 // Output: (in-scattered light, transmittance) — composited full-res by
 // composite.hlsl with a bilinear (fog is soft) upsample.
 
@@ -103,16 +104,34 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float sigma = fog_p.x * exp2(-max(d, 0.0) * fog_p.y)
                 + fog_p.z * 0.22;
     if (sigma > 1e-4) {
-      // Direct sun with a 2-tap occlusion through the shape.
+      // Direct sun occlusion: sample the SDF around the point where THIS
+      // sun ray crosses the object — its closest approach to the origin —
+      // not at fixed near offsets. Fixed 0.22/0.55 taps truncate every
+      // shadow ~0.5 wu behind the object (columns collapse into a
+      // surface-hugging blob) and out-of-box taps used to count as clear.
+      // Sampling the crossing keeps silhouette-detailed shafts through the
+      // whole fog domain for the same 2 taps; outside the box the base
+      // sphere stands in analytically. Penumbra widens with distance to
+      // the crossing (sun-disk cone), and the tap pair rides the pixel
+      // jitter so coarse-grid blotch dithers into noise the composite's
+      // tent upsample absorbs.
       float occ = 1.0;
-      float3 s1 = p + sun_p.xyz * 0.22;
-      float3 s2 = p + sun_p.xyz * 0.55;
-      if (abs(s1.x) < PLM_EXT0 && abs(s1.y) < PLM_EXT0 && abs(s1.z) < PLM_EXT0)
-        occ *= saturate(sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(s1), 0).r
-                        * misc.x * 14.0 + 0.5);
-      if (abs(s2.x) < PLM_EXT0 && abs(s2.y) < PLM_EXT0 && abs(s2.z) < PLM_EXT0)
-        occ *= saturate(sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(s2), 0).r
-                        * misc.x * 14.0 + 0.5);
+      if (sun_p.w > 1e-3) {
+        float sc  = max(-dot(p, sun_p.xyz), 0.0);
+        float sa  = max(sc, 0.30) + (jitter - 0.5) * 0.24;
+        float wid = 14.0 / (1.0 + 1.1 * sc);
+        [unroll] for (int k = 0; k < 2; k++) {
+          float3 ps = p + sun_p.xyz * max(sa + 0.36 * float(k) - 0.18, 0.12);
+          float ds;
+          if (abs(ps.x) < PLM_EXT0 && abs(ps.y) < PLM_EXT0 &&
+              abs(ps.z) < PLM_EXT0)
+            ds = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(ps), 0).r
+                 * misc.x;
+          else
+            ds = length(ps) - cam_p.w;
+          occ *= saturate(ds * wid + 0.5);
+        }
+      }
 
       float3 gi = float3(0.0, 0.0, 0.0);
       if (misc.z > 0.001 && in0)
