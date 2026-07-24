@@ -110,19 +110,17 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // at any Ridge Scale.
   float arc = min(aniso * 2.6 / ridge_scale, 0.55);
   int oct_full = int(octaves);
-  float tf;
-  float raw = plm_fbm_bl(p, oct_full, ridge_scale, bl_nyq, tf);
+  int oct_lo = max(oct_full - 2, 2);
+  float tf, tl;
+  float raw_full = plm_fbm_bl(p, oct_full, ridge_scale, bl_nyq, tf);
+  float raw_lo = plm_fbm_bl(p, oct_lo, ridge_scale, bl_nyq, tl);
+  float norm_lo = tl / max(tf, 1e-4);
+  float fine = raw_full - raw_lo * norm_lo;   // full-normalized residual
+  float base = raw_lo;
   if (arc > 1e-4) {
     // Smear only the LOW octaves: sparse taps can't sample the fine
     // octaves densely enough, and wind-swept regions reading smoother
-    // than fresh crests is the right look anyway. The fine-octave
-    // residual is re-added locally, faded with feathering so it doesn't
-    // pockmark the smoothed tails.
-    int oct_lo = max(oct_full - 2, 2);
-    float tl;
-    float raw_lo = plm_fbm_bl(p, oct_lo, ridge_scale, bl_nyq, tl);
-    float norm_lo = tl / max(tf, 1e-4);
-    float fine = raw - raw_lo * norm_lo;   // full-normalized residual
+    // than fresh crests is the right look anyway.
     float step_a = arc * 0.1;
     float sum = raw_lo, wsum = 1.0;
     float3 dcur = dir;
@@ -145,9 +143,15 @@ void main(uint3 gid : SV_DispatchThreadID) {
     }
     // The averaged field loses variance — restore contrast so feathering
     // doesn't just read as "flatter".
-    float smear = (sum / wsum) * (1.0 + 0.9 * aniso);
-    raw = smear * norm_lo + fine * (1.0 - 0.6 * aniso);
+    base = (sum / wsum) * (1.0 + 0.9 * aniso);
   }
+  // Fine octaves ride the smooth base scaled by SHARPNESS (they're the
+  // plate-chop texture — at sharp 0 the surface is meant to be a smooth
+  // rolling field, and this residual was the entire remaining "wrinkle")
+  // and faded with feathering so they don't pockmark the smoothed tails.
+  float fine_w = (0.1 + 0.9 * smoothstep(0.0, 0.55, ridge_sharp))
+               * (1.0 - 0.6 * aniso);
+  float raw = base * norm_lo + fine * fine_w;
   float n = saturate(0.5 + 0.5 * raw);
 
   // The plate/petal look: the smooth field cut into terraces — broad
@@ -165,9 +169,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   step_s = pow(step_s, cliff * 0.5) /
            (pow(step_s, cliff * 0.5) + pow(1.0 - step_s, cliff * 0.5));
   float h = lerp(n, (floor(tn) + step_s) / levels, terr);
-  // Faint top texture — scaled down with terr off so the smooth end stays
-  // a genuinely smooth heightfield instead of uniform wrinkle.
-  h += 0.04 * (0.25 + 0.75 * terr) * (1.0 - abs(nano_gnoise3(p * 2.2 + 5.0)));
+  // Faint plate-top texture, gated ENTIRELY by terr: the 1-abs() ridges
+  // are C1 creases whose normal kinks read as etched veins under grazing
+  // light — on the smooth (sharp=0) surface they're pure artifact, and
+  // there are no plates to texture there anyway.
+  h += 0.04 * terr * (1.0 - abs(nano_gnoise3(p * 2.2 + 5.0)));
   h = saturate(h * 0.96);
 
   shellTex[gid.xy] = float4(h * ridge_amp, h, 0.0, 0.0);
