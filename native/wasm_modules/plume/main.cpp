@@ -838,6 +838,8 @@ void render(void* self, int vp_w, int vp_h) {
   mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
   mu.misc[0] = fog_on ? 1.0f : 0.0f;
   mu.misc[1] = band_widen;
+  // Crest shading emphasis only exists when there are ridges to crest.
+  mu.misc[2] = std::fmin(1.0f, 10.0f * s->ridge_depth);
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;

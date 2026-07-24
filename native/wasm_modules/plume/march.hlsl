@@ -31,7 +31,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 vp;          // w, h, 1/w, 1/h
   float4 shade_p;     // shadow, ao, ambient, rim
   float4 fine_p;      // R (base radius), px_world (per unit t), inv_lip, bounce
-  float4 misc;        // scene_mode (fog pipeline), band widen factor, 0, 0
+  float4 misc;        // scene_mode (fog pipeline), band widen, crest gain, 0
   float4 mat;         // reflect, roughness, transmission, thickness
 };
 
@@ -153,6 +153,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float inv_lip = fine_p.z;
 
   // Soft shadow: march the coarse grid toward the sun.
+  // (An improved between-sample penumbra estimator was tried and backed
+  // out twice: it visibly deepens the plate crevice shadows away from the
+  // approved look, and the faint dark-gradient rings it was suspected of
+  // causing turned out to be plain 8-bit output quantization.)
   float sh = 1.0;
   if (shade_p.x > 0.001) {
     float st = 2.5 * voxel;
@@ -182,7 +186,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     ao = saturate(1.0 - shade_p.y * 1.15 * occ);
   }
 
-  float crest = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(hp), 0).b;
+  // Crest emphasis, gated by ridge depth (misc.z): the crest channel
+  // carries the raw field even at depth 0, and ungated it paints a ±10%
+  // pattern onto a geometrically smooth sphere.
+  float crest = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(hp), 0).b
+              * misc.z;
   float lam = saturate(dot(N, sun_p.xyz));
   float ndv = saturate(dot(N, -rd));
   float rim = pow(1.0 - ndv, 3.0);
