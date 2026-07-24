@@ -78,8 +78,9 @@ struct MarchUniforms {
   float fine_p[4];     // R (base radius), px_world (per unit t), inv_lip, bounce
   float misc[4];       // scene_mode, 0, 0, 0
   float mat[4];        // reflect, roughness, transmission, thickness
+  float misc2[4];      // wrap lit-gate, 0, 0, 0
 };
-static_assert(sizeof(MarchUniforms) == 176, "MarchUniforms layout mismatch");
+static_assert(sizeof(MarchUniforms) == 192, "MarchUniforms layout mismatch");
 
 struct FogUniforms {
   float cam_row0[4];
@@ -158,6 +159,7 @@ struct State {
   float ao_amt = 0.7f;
   float ambient = 0.5f;
   float wrap = 1.0f;
+  float wrap_gate = 0.0f;
   float bounce = 0.5f;
   float resonance = 0.35f;
   float gi_speed = 0.5f;
@@ -243,6 +245,8 @@ void module_init() {
           .label("Ambient", "Amb")
       .floatField("wrap", 1.0f, 0.f, 1.f, state::PrimaryInput)
           .label("Wrap Light", "Wrap")
+      .floatField("wrap_gate", 0.0f, 0.f, 1.f, state::PrimaryInput)
+          .label("Wrap Gate", "WGate")
       // --- Bounce (resonant wave GI) ---
       .group("gi", "Bounce Light")
         .groupHelp(
@@ -532,6 +536,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "ao"))          s->ao_amt = state::patchFloat(i);
     else if (state::pathIs(p, l, "ambient"))     s->ambient = state::patchFloat(i);
     else if (state::pathIs(p, l, "wrap"))        s->wrap = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wrap_gate"))   s->wrap_gate = state::patchFloat(i);
     else if (state::pathIs(p, l, "bounce"))      s->bounce = state::patchFloat(i);
     else if (state::pathIs(p, l, "resonance"))   s->resonance = state::patchFloat(i);
     else if (state::pathIs(p, l, "gi_speed"))    s->gi_speed = state::patchFloat(i);
@@ -845,6 +850,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Crest shading emphasis only exists when there are ridges to crest.
   mu.misc[2] = std::fmin(1.0f, 10.0f * s->ridge_depth);
   mu.misc[3] = s->wrap;
+  mu.misc2[0] = s->wrap_gate;
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;

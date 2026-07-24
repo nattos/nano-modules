@@ -34,6 +34,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 misc;        // scene_mode (fog pipeline), band widen, crest gain,
                       // wrap-light amount
   float4 mat;         // reflect, roughness, transmission, thickness
+  float4 misc2;       // wrap lit-gate, 0, 0, 0
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -200,13 +201,19 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // rolling to gray sides (straight lambert key), a restrained AO'd fill,
   // and near-black gaps between plates. The key floor and the rim term
   // below are deliberate NON-physical studio wrap; misc.w (Wrap Light)
-  // scales both — at 0 the dark side is strictly sun-only.
-  float wrap_floor = 0.06 * misc.w;
+  // scales both — at 0 the dark side is strictly sun-only. misc2.x
+  // (Wrap Gate) confines the wrap to regions ACTUALLY receiving sun:
+  // lam alone is not enough (a spike flank can face the sun yet sit in
+  // the body's full shadow — the rim term is not otherwise sh-gated),
+  // and the soft saturate(2*lam) ramp keeps the terminator from
+  // knife-edging.
+  float wgate = lerp(1.0, saturate(2.0 * lam) * sh, misc2.x);
+  float wrap_floor = 0.06 * misc.w * wgate;
   float key = sun_p.w * (wrap_floor + (1.0 - wrap_floor) * lam) * sh;
   float sky = 0.55 + 0.45 * saturate(N.y * 0.8 + 0.5);
   float fill = shade_p.z * 0.4 * sky * (0.15 + 0.85 * ao);
   float3 c = albedo.rgb * (key + fill) * (0.90 + 0.10 * crest);
-  c += shade_p.w * rim * ao * 0.25 * sun_p.w;
+  c += shade_p.w * rim * ao * 0.25 * sun_p.w * wgate;
 
   // Porcelain sheen: a tight sun specular, widened by roughness and dimmed
   // in shadow — the plates catch a glossy edge without needing an env map.
