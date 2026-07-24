@@ -26,7 +26,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
                            : float4(0.0, 0.0, 0.0, 0.0);
   float4 scene = sceneTex.Load(int3(int(gid.x), int(gid.y), 0));
   float2 uv = (float2(gid.xy) + 0.5) / float2(W, H);
-  float4 fog = fogTex.SampleLevel(linearSamp, uv, 0);
+  // 4-tap tent upsample of the half-res fog: averages out the march's IGN
+  // jitter dither (a single bilinear tap leaves a faint 2-px diamond
+  // lattice in high-banding regions, e.g. backlit fog shadows). Fog is
+  // soft by construction, so the extra half-texel of blur costs nothing.
+  uint FW, FH;
+  fogTex.GetDimensions(FW, FH);
+  float2 ft = 0.5 / float2(FW, FH);
+  float4 fog = (fogTex.SampleLevel(linearSamp, uv + float2( ft.x,  ft.y), 0)
+              + fogTex.SampleLevel(linearSamp, uv + float2(-ft.x,  ft.y), 0)
+              + fogTex.SampleLevel(linearSamp, uv + float2( ft.x, -ft.y), 0)
+              + fogTex.SampleLevel(linearSamp, uv + float2(-ft.x, -ft.y), 0))
+             * 0.25;
 
   // Miss sentinel is 6e4 — the largest sentinel that survives the RGBA16F
   // scene buffer (f16 tops out at 65504; anything bigger reads back NaN).

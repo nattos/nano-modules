@@ -14,6 +14,17 @@ float nano_hash21(float2 p) {
   return frac(p.x * p.y);
 }
 
+// Interleaved gradient noise (Jimenez 2014) — THE jitter for screen-space
+// ray-march offsets. nano_hash21 on integer pixel coords is a trap: its
+// frac(p * 127.1)-style mixing is ~periodic every 10 pixels on the integer
+// lattice (autocorrelation ≈ 0.9 at every 10-px lag), so instead of
+// dithering march banding into grain it frequency-shifts it into a visible
+// 10-px crosshatch weave. IGN gives neighboring pixels maximally spread
+// values, so banding averages away under bilinear upsample and the eye.
+float nano_ign(float2 px) {
+  return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+}
+
 float nano_hash31(float3 p) {
   p = frac(p * float3(127.1, 311.7, 74.7));
   p += dot(p, p.yzx + 19.19);

@@ -80,7 +80,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   const int STEPS = 36;
   float dt = (t1 - t0) / float(STEPS);
-  float jitter = nano_hash21(float2(gid.xy));
+  float jitter = nano_ign(float2(gid.xy));
   float t = t0 + dt * jitter;
 
   // Henyey-Greenstein phase for the direct term.
