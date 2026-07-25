@@ -1,0 +1,935 @@
+{
+ "cases": [
+  {
+   "composition": {
+    "meta": {
+     "baseBPM": 120,
+     "resolution": {
+      "height": 1080,
+      "width": 1920
+     },
+     "timeSignature": [
+      4,
+      4
+     ]
+    },
+    "rails": [],
+    "tracks": [
+     {
+      "automation": [],
+      "clips": [
+       {
+        "automation": [],
+        "exports": [],
+        "id": "seq",
+        "kind": "sequence",
+        "lengthBeat": 8.0,
+        "loop": {
+         "direction": "forward",
+         "mode": "time",
+         "speed": 1,
+         "startSec": 0
+        },
+        "name": "seq",
+        "sequence": {
+         "automation": [],
+         "clips": [
+          {
+           "automation": [],
+           "exports": [],
+           "id": "sub1",
+           "kind": "effect",
+           "lengthBeat": 4.0,
+           "loop": {
+            "direction": "forward",
+            "mode": "time",
+            "speed": 1,
+            "startSec": 0
+           },
+           "name": "sub1",
+           "sketch": {
+            "devices": [
+             {
+              "capabilities": [],
+              "id": "sc",
+              "moduleType": "source.solid_color",
+              "name": "source.solid_color"
+             }
+            ]
+           },
+           "startBeat": 0.0,
+           "warps": []
+          },
+          {
+           "automation": [],
+           "exports": [],
+           "id": "sub2",
+           "kind": "effect",
+           "lengthBeat": 4.0,
+           "loop": {
+            "direction": "forward",
+            "mode": "time",
+            "speed": 1,
+            "startSec": 0
+           },
+           "name": "sub2",
+           "sketch": {
+            "devices": [
+             {
+              "capabilities": [],
+              "id": "nz",
+              "moduleType": "source.noise",
+              "name": "source.noise"
+             }
+            ]
+           },
+           "startBeat": 4.0,
+           "warps": []
+          }
+         ],
+         "id": "lane1",
+         "kind": "track",
+         "name": "lane1",
+         "parentId": null,
+         "sketch": {
+          "devices": [
+           {
+            "capabilities": [],
+            "id": "linv",
+            "moduleType": "color.invert",
+            "name": "color.invert"
+           }
+          ]
+         }
+        },
+        "sketch": {
+         "devices": [
+          {
+           "capabilities": [],
+           "id": "sat",
+           "moduleType": "color.saturate",
+           "name": "color.saturate"
+          }
+         ]
+        },
+        "startBeat": 0.0,
+        "warps": []
+       }
+      ],
+      "id": "t1",
+      "kind": "track",
+      "level": 0.8,
+      "name": "t1",
+      "parentId": null,
+      "sketch": {
+       "devices": []
+      }
+     },
+     {
+      "automation": [],
+      "clips": [
+       {
+        "automation": [],
+        "exports": [],
+        "id": "base",
+        "kind": "effect",
+        "lengthBeat": 16.0,
+        "loop": {
+         "direction": "forward",
+         "mode": "time",
+         "speed": 1,
+         "startSec": 0
+        },
+        "name": "base",
+        "sketch": {
+         "devices": [
+          {
+           "capabilities": [],
+           "id": "bn",
+           "moduleType": "source.noise",
+           "name": "source.noise"
+          }
+         ]
+        },
+        "startBeat": 0.0,
+        "warps": []
+       }
+      ],
+      "id": "t2",
+      "kind": "track",
+      "name": "t2",
+      "parentId": null,
+      "sketch": {
+       "devices": []
+      }
+     }
+    ]
+   },
+   "frames": [
+    {
+     "automation": [],
+     "beat": 1.0,
+     "sketch": {
+      "anchor": null,
+      "chain": [
+       {
+        "instance_key": "arr_bg",
+        "module_type": "source.solid_color",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_sub1_sc",
+        "module_type": "source.solid_color",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "track_lane1_linv",
+        "module_type": "color.invert",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_sub1_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_seq_sat",
+        "module_type": "color.saturate",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_seq_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_base_bn",
+        "module_type": "source.noise",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_base_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       }
+      ],
+      "instances": {
+       "arr_bg": {
+        "module_type": "source.solid_color",
+        "state": {
+         "color": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       },
+       "clip_base_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 1.0
+        }
+       },
+       "clip_base_bn": {
+        "module_type": "source.noise",
+        "state": {
+         "contrast": 0,
+         "scale": 0.5
+        }
+       },
+       "clip_seq_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 0.8
+        }
+       },
+       "clip_seq_sat": {
+        "module_type": "color.saturate",
+        "state": {
+         "prescale": 1
+        }
+       },
+       "clip_sub1_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 1.0
+        }
+       },
+       "clip_sub1_sc": {
+        "module_type": "source.solid_color",
+        "state": {}
+       },
+       "track_lane1_linv": {
+        "module_type": "color.invert",
+        "state": {}
+       }
+      },
+      "wires": [
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_sub1_blend"
+        },
+        "id": "w0",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "arr_bg"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_sub1_blend"
+        },
+        "id": "w1",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "track_lane1_linv"
+        }
+       },
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_seq_blend"
+        },
+        "id": "qw2",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "arr_bg"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_seq_blend"
+        },
+        "id": "qw3",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_seq_sat"
+        }
+       },
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_base_blend"
+        },
+        "id": "w4",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_seq_blend"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_base_blend"
+        },
+        "id": "w5",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_base_bn"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "automation": [],
+     "beat": 5.0,
+     "sketch": {
+      "anchor": null,
+      "chain": [
+       {
+        "instance_key": "arr_bg",
+        "module_type": "source.solid_color",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_sub2_nz",
+        "module_type": "source.noise",
+        "startSec": 2.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "track_lane1_linv",
+        "module_type": "color.invert",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_sub2_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_seq_sat",
+        "module_type": "color.saturate",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_seq_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_base_bn",
+        "module_type": "source.noise",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_base_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       }
+      ],
+      "instances": {
+       "arr_bg": {
+        "module_type": "source.solid_color",
+        "state": {
+         "color": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       },
+       "clip_base_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 1.0
+        }
+       },
+       "clip_base_bn": {
+        "module_type": "source.noise",
+        "state": {
+         "contrast": 0,
+         "scale": 0.5
+        }
+       },
+       "clip_seq_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 0.8
+        }
+       },
+       "clip_seq_sat": {
+        "module_type": "color.saturate",
+        "state": {
+         "prescale": 1
+        }
+       },
+       "clip_sub2_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 1.0
+        }
+       },
+       "clip_sub2_nz": {
+        "module_type": "source.noise",
+        "state": {
+         "contrast": 0,
+         "scale": 0.5
+        }
+       },
+       "track_lane1_linv": {
+        "module_type": "color.invert",
+        "state": {}
+       }
+      },
+      "wires": [
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_sub2_blend"
+        },
+        "id": "w0",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "arr_bg"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_sub2_blend"
+        },
+        "id": "w1",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "track_lane1_linv"
+        }
+       },
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_seq_blend"
+        },
+        "id": "qw2",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "arr_bg"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_seq_blend"
+        },
+        "id": "qw3",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_seq_sat"
+        }
+       },
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_base_blend"
+        },
+        "id": "w4",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_seq_blend"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_base_blend"
+        },
+        "id": "w5",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_base_bn"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "automation": [],
+     "beat": 9.0,
+     "sketch": {
+      "anchor": null,
+      "chain": [
+       {
+        "instance_key": "arr_bg",
+        "module_type": "source.solid_color",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_base_bn",
+        "module_type": "source.noise",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_base_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       }
+      ],
+      "instances": {
+       "arr_bg": {
+        "module_type": "source.solid_color",
+        "state": {
+         "color": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       },
+       "clip_base_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 1.0
+        }
+       },
+       "clip_base_bn": {
+        "module_type": "source.noise",
+        "state": {
+         "contrast": 0,
+         "scale": 0.5
+        }
+       }
+      },
+      "wires": [
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_base_blend"
+        },
+        "id": "w0",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "arr_bg"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_base_blend"
+        },
+        "id": "w1",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_base_bn"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "name": "sequence-basic"
+  },
+  {
+   "composition": {
+    "meta": {
+     "baseBPM": 120,
+     "resolution": {
+      "height": 1080,
+      "width": 1920
+     },
+     "timeSignature": [
+      4,
+      4
+     ]
+    },
+    "rails": [],
+    "tracks": [
+     {
+      "automation": [],
+      "clips": [
+       {
+        "automation": [],
+        "exports": [],
+        "id": "seq",
+        "kind": "sequence",
+        "lengthBeat": 8.0,
+        "loop": {
+         "direction": "forward",
+         "mode": "time",
+         "speed": 1,
+         "startSec": 0
+        },
+        "name": "seq",
+        "sequence": {
+         "automation": [],
+         "clips": [
+          {
+           "automation": [],
+           "exports": [],
+           "id": "fxonly",
+           "kind": "effect",
+           "lengthBeat": 8.0,
+           "loop": {
+            "direction": "forward",
+            "mode": "time",
+            "speed": 1,
+            "startSec": 0
+           },
+           "name": "fxonly",
+           "sketch": {
+            "devices": [
+             {
+              "capabilities": [],
+              "id": "ssat",
+              "moduleType": "color.saturate",
+              "name": "color.saturate"
+             },
+             {
+              "capabilities": [],
+              "id": "slfo",
+              "moduleType": "mod.source.lfo",
+              "name": "mod.source.lfo",
+              "state": {
+               "rate": 0.25
+              }
+             }
+            ],
+            "wires": [
+             {
+              "combine": "add",
+              "dest": {
+               "field": "prescale",
+               "instanceKey": "ssat"
+              },
+              "id": "w1",
+              "magnitude": "signed",
+              "src": {
+               "field": "output",
+               "instanceKey": "slfo"
+              }
+             }
+            ]
+           },
+           "startBeat": 0.0,
+           "warps": []
+          }
+         ],
+         "id": "lane1",
+         "kind": "track",
+         "name": "lane1",
+         "parentId": null,
+         "sketch": {
+          "devices": []
+         }
+        },
+        "sketch": {
+         "devices": [
+          {
+           "capabilities": [],
+           "id": "osat",
+           "moduleType": "color.saturate",
+           "name": "color.saturate"
+          },
+          {
+           "capabilities": [],
+           "id": "olfo",
+           "moduleType": "mod.source.lfo",
+           "name": "mod.source.lfo",
+           "state": {
+            "rate": 0.5
+           }
+          }
+         ],
+         "wires": [
+          {
+           "combine": "add",
+           "dest": {
+            "field": "prescale",
+            "instanceKey": "osat"
+           },
+           "id": "w2",
+           "magnitude": "signed",
+           "src": {
+            "field": "output",
+            "instanceKey": "olfo"
+           }
+          }
+         ]
+        },
+        "startBeat": 0.0,
+        "warps": []
+       }
+      ],
+      "id": "t1",
+      "kind": "track",
+      "name": "t1",
+      "parentId": null,
+      "sketch": {
+       "devices": []
+      }
+     },
+     {
+      "automation": [],
+      "clips": [
+       {
+        "automation": [],
+        "exports": [],
+        "id": "under",
+        "kind": "effect",
+        "lengthBeat": 16.0,
+        "loop": {
+         "direction": "forward",
+         "mode": "time",
+         "speed": 1,
+         "startSec": 0
+        },
+        "name": "under",
+        "sketch": {
+         "devices": [
+          {
+           "capabilities": [],
+           "id": "un",
+           "moduleType": "source.noise",
+           "name": "source.noise"
+          }
+         ]
+        },
+        "startBeat": 0.0,
+        "warps": []
+       }
+      ],
+      "id": "t2",
+      "kind": "track",
+      "name": "t2",
+      "parentId": null,
+      "sketch": {
+       "devices": []
+      }
+     }
+    ]
+   },
+   "frames": [
+    {
+     "automation": [],
+     "beat": 2.0,
+     "sketch": {
+      "anchor": null,
+      "chain": [
+       {
+        "instance_key": "arr_bg",
+        "module_type": "source.solid_color",
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_fxonly_ssat",
+        "module_type": "color.saturate",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_fxonly_slfo",
+        "module_type": "mod.source.lfo",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_seq_osat",
+        "module_type": "color.saturate",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_seq_olfo",
+        "module_type": "mod.source.lfo",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_under_un",
+        "module_type": "source.noise",
+        "startSec": 0.0,
+        "type": "module"
+       },
+       {
+        "instance_key": "clip_under_blend",
+        "module_type": "composite.layer",
+        "type": "module"
+       }
+      ],
+      "instances": {
+       "arr_bg": {
+        "module_type": "source.solid_color",
+        "state": {
+         "color": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       },
+       "clip_fxonly_slfo": {
+        "module_type": "mod.source.lfo",
+        "state": {
+         "amplitude": 1,
+         "rate": 0.25,
+         "shape": 0
+        }
+       },
+       "clip_fxonly_ssat": {
+        "module_type": "color.saturate",
+        "state": {
+         "prescale": 1
+        }
+       },
+       "clip_seq_olfo": {
+        "module_type": "mod.source.lfo",
+        "state": {
+         "amplitude": 1,
+         "rate": 0.5,
+         "shape": 0
+        }
+       },
+       "clip_seq_osat": {
+        "module_type": "color.saturate",
+        "state": {
+         "prescale": 1
+        }
+       },
+       "clip_under_blend": {
+        "module_type": "composite.layer",
+        "state": {
+         "mode": 0,
+         "opacity": 1.0
+        }
+       },
+       "clip_under_un": {
+        "module_type": "source.noise",
+        "state": {
+         "contrast": 0,
+         "scale": 0.5
+        }
+       }
+      },
+      "wires": [
+       {
+        "combine": "add",
+        "dest": {
+         "field": "prescale",
+         "instanceKey": "clip_fxonly_ssat"
+        },
+        "id": "cw0",
+        "magnitude": "signed",
+        "src": {
+         "field": "output",
+         "instanceKey": "clip_fxonly_slfo"
+        }
+       },
+       {
+        "combine": "add",
+        "dest": {
+         "field": "prescale",
+         "instanceKey": "clip_seq_osat"
+        },
+        "id": "cw1",
+        "magnitude": "signed",
+        "src": {
+         "field": "output",
+         "instanceKey": "clip_seq_olfo"
+        }
+       },
+       {
+        "dest": {
+         "field": "0",
+         "instanceKey": "clip_under_blend"
+        },
+        "id": "w2",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_seq_osat"
+        }
+       },
+       {
+        "dest": {
+         "field": "1",
+         "instanceKey": "clip_under_blend"
+        },
+        "id": "w3",
+        "src": {
+         "field": "tex_out",
+         "instanceKey": "clip_under_un"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "name": "sequence-underlying-seed"
+  }
+ ]
+}

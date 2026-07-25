@@ -96,18 +96,19 @@ void checkDeepClose(const json& actual, const json& expected, const std::string&
   CHECK(ok);
 }
 
-}  // namespace
-
-TEST_CASE("build goldens — tree eval + sketch build + automation match TS", "[comp]") {
-  const json fx = loadFixture("build.json");
-
+/** Register the shared plugin catalog (schemas + capabilities) from build.json. */
+comp::Catalog catalogFrom(const json& fx) {
   comp::Catalog cat;
   for (const auto& p : fx["plugins"]) {
     cat.registerSchema(p["id"].get<std::string>(), p["schema"]);
     cat.registerCapabilities(p["id"].get<std::string>(), p["capabilities"]);
   }
+  return cat;
+}
 
-  for (const auto& c : fx["cases"]) {
+/** Replay one fixture's `cases` array against the C++ build. */
+void replayCases(const json& cases, const comp::Catalog& cat) {
+  for (const auto& c : cases) {
     const std::string name = c["name"].get<std::string>();
     INFO("case " << name);
     const comp::CompositionM comp = comp::parseComposition(c["composition"]);
@@ -135,4 +136,174 @@ TEST_CASE("build goldens — tree eval + sketch build + automation match TS", "[
       checkDeepClose(automation, frame["automation"], "automation");
     }
   }
+}
+
+}  // namespace
+
+TEST_CASE("build goldens — tree eval + sketch build + automation match TS", "[comp]") {
+  const json fx = loadFixture("build.json");
+  replayCases(fx["cases"], catalogFrom(fx));
+}
+
+// The sequence cases live in their OWN fixture: build.json is frozen and its
+// key order is the TS reference's insertion order, which nlohmann's writer does
+// not preserve — regenerating in place would rewrite all 12 existing cases for
+// no reason. Same plugin catalog, same replay.
+TEST_CASE("build goldens — sequence clips", "[comp][comp_sequence]") {
+  const json seq = loadFixture("build-sequence.json");
+  replayCases(seq["cases"], catalogFrom(loadFixture("build.json")));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCE-CLIP golden generator.
+//
+// The original TS reference (clip-sketch.ts / composite-frame.ts) was deleted
+// when the offline exporter moved onto the comp executor, so there is no
+// cross-host oracle left to generate a composite golden from. These cases are
+// therefore CHANGE DETECTORS, not cross-validation — they pin the exact node
+// structure, instance keys and wire numbering that compositeSequence emits
+// today, so a refactor that silently renumbers wires or reorders the interior
+// (the class the foldClipModulation extraction risked) fails loudly instead of
+// quietly changing every user's render.
+//
+// Regenerate deliberately, and READ THE DIFF before committing:
+//     ./build/test_comp_build "[.gen]"
+// Hidden by the leading dot — the normal run replays them like any other case.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+json gDevice(const std::string& id, const std::string& type, json state = json::object()) {
+  json d = {{"id", id}, {"moduleType", type}, {"name", type}, {"capabilities", json::array()}};
+  if (!state.empty()) d["state"] = std::move(state);
+  return d;
+}
+
+json gClip(const std::string& id, double startBeat, double lengthBeat, json devices,
+           json over = json::object()) {
+  json c = {{"id", id}, {"name", id}, {"startBeat", startBeat}, {"lengthBeat", lengthBeat},
+            {"kind", "effect"}, {"sketch", {{"devices", std::move(devices)}}},
+            {"loop", {{"mode", "time"}, {"startSec", 0}, {"speed", 1},
+                      {"direction", "forward"}}},
+            {"automation", json::array()}, {"exports", json::array()},
+            {"warps", json::array()}};
+  c.update(over);
+  return c;
+}
+
+json gTrack(const std::string& id, json clips, json over = json::object()) {
+  json t = {{"id", id}, {"name", id}, {"kind", "track"}, {"parentId", nullptr},
+            {"sketch", {{"devices", json::array()}}}, {"automation", json::array()},
+            {"clips", std::move(clips)}};
+  t.update(over);
+  return t;
+}
+
+json gComposition(json tracks) {
+  return {{"meta", {{"resolution", {{"width", 1920}, {"height", 1080}}},
+                    {"baseBPM", 120}, {"timeSignature", json::array({4, 4})}}},
+          {"tracks", std::move(tracks)}, {"rails", json::array()}};
+}
+
+/** A sequence clip: `laneDevices` is the interior lane's FX bus, `ownDevices`
+ *  the sequence clip's own chain (which runs OVER the interior composite). */
+json gSequenceClip(const std::string& id, double startBeat, double lengthBeat,
+                   const std::string& laneId, json subClips, json ownDevices,
+                   json laneDevices = json::array(), json ownWires = json::array()) {
+  json lane = {{"id", laneId}, {"name", laneId}, {"kind", "track"}, {"parentId", nullptr},
+               {"sketch", {{"devices", std::move(laneDevices)}}},
+               {"automation", json::array()}, {"clips", std::move(subClips)}};
+  json over = {{"kind", "sequence"}, {"sequence", std::move(lane)}};
+  json c = gClip(id, startBeat, lengthBeat, std::move(ownDevices), over);
+  if (!ownWires.empty()) c["sketch"]["wires"] = std::move(ownWires);
+  return c;
+}
+
+/** Snapshot (sketch, automation) at each beat — the frame shape build.json uses. */
+json gFrames(const comp::CompositionM& comp, const comp::Catalog& cat,
+             const std::vector<double>& beats) {
+  const comp::WarpClock clock(
+      comp::WarpCurve(comp::derivedWarpSegments(comp), comp::compositionLengthBeats(comp)),
+      comp.baseBPM);
+  json frames = json::array();
+  for (const double beat : beats) {
+    const auto build = comp::buildCompositeRenderAtBeat(comp, cat, clock, beat, false);
+    frames.push_back({{"beat", beat},
+                      {"sketch", build.hasContent ? build.sketch : json()},
+                      {"automation", comp::automationEntriesAtBeat(comp, beat, false, true)}});
+  }
+  return frames;
+}
+
+}  // namespace
+
+TEST_CASE("[.gen] regenerate build-sequence.json", "[.gen]") {
+  const std::string path = std::string(COMP_FIXTURES_DIR) + "/build-sequence.json";
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+
+  json cases = json::array();
+
+  // sequence-basic — the whole four-level stack in one case: interior sub-clip
+  // → interior lane FX bus → the sequence clip's OWN chain → the parent track's
+  // blend, over a second track so the blend-up has something to land on. Beats
+  // 1 and 5 straddle the interior switch; beat 9 is past the sequence entirely
+  // (the parent track must fall back to contributing nothing).
+  {
+    json comp = gComposition(json::array({
+        gTrack("t1", json::array({gSequenceClip(
+                   "seq", 0, 8, "lane1",
+                   json::array({gClip("sub1", 0, 4,
+                                      json::array({gDevice("sc", "source.solid_color")})),
+                                gClip("sub2", 4, 4,
+                                      json::array({gDevice("nz", "source.noise")}))}),
+                   json::array({gDevice("sat", "color.saturate")}),
+                   json::array({gDevice("linv", "color.invert")}))}),
+               {{"level", 0.8}}),
+        gTrack("t2", json::array({gClip("base", 0, 16,
+                                        json::array({gDevice("bn", "source.noise")}))})),
+    }));
+    cases.push_back({{"name", "sequence-basic"},
+                     {"composition", comp},
+                     {"frames", gFrames(comp::parseComposition(comp), cat, {1, 5, 9})}});
+  }
+
+  // sequence-underlying-seed — the interior seeds from `underlying`, NOT from a
+  // transparent input: an interior holding ONLY an effect must process the
+  // track below it. Also pins clip-modulation wire numbering on both levels at
+  // once (an LFO inside the sub-clip AND one on the sequence clip's own chain),
+  // which is what keeps compositeSequence and compositeClip from drifting.
+  {
+    json subWires = json::array({{{"id", "w1"},
+                                  {"src", {{"instanceKey", "slfo"}, {"field", "output"}}},
+                                  {"dest", {{"instanceKey", "ssat"}, {"field", "prescale"}}},
+                                  {"combine", "add"},
+                                  {"magnitude", "signed"}}});
+    json ownWires = json::array({{{"id", "w2"},
+                                  {"src", {{"instanceKey", "olfo"}, {"field", "output"}}},
+                                  {"dest", {{"instanceKey", "osat"}, {"field", "prescale"}}},
+                                  {"combine", "add"},
+                                  {"magnitude", "signed"}}});
+    json sub = gClip("fxonly", 0, 8,
+                     json::array({gDevice("ssat", "color.saturate"),
+                                  gDevice("slfo", "mod.source.lfo",
+                                          {{"rate", 0.25}})}));
+    sub["sketch"]["wires"] = subWires;
+    json comp = gComposition(json::array({
+        gTrack("t1", json::array({gSequenceClip(
+                   "seq", 0, 8, "lane1", json::array({sub}),
+                   json::array({gDevice("osat", "color.saturate"),
+                                gDevice("olfo", "mod.source.lfo", {{"rate", 0.5}})}),
+                   json::array(), ownWires)})),
+        gTrack("t2", json::array({gClip("under", 0, 16,
+                                        json::array({gDevice("un", "source.noise")}))})),
+    }));
+    cases.push_back({{"name", "sequence-underlying-seed"},
+                     {"composition", comp},
+                     {"frames", gFrames(comp::parseComposition(comp), cat, {2})}});
+  }
+
+  std::ofstream out(path);
+  REQUIRE(out.good());
+  out << json{{"cases", std::move(cases)}}.dump(1) << "\n";
+  WARN("regenerated " << path << " — READ THE DIFF");
 }
