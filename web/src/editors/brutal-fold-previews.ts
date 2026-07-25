@@ -18,6 +18,7 @@ import { html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { FieldBinding } from '../widgets/field-editor';
+import { requestStandardDevice } from '../webgpu-device';
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -306,7 +307,7 @@ function getFogGpu(): Promise<FogGpu | null> {
     try {
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) return null;
-      const device = await adapter.requestDevice();
+      const device = await requestStandardDevice(adapter);
       const format = navigator.gpu.getPreferredCanvasFormat();
       const module = device.createShaderModule({ code: FOG_WGSL });
       const pipeline = device.createRenderPipeline({

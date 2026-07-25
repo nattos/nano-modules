@@ -18,6 +18,8 @@
  * frames that arrive before the device is ready are dropped (a few ms at boot).
  */
 
+import { requestStandardDevice } from './webgpu-device';
+
 /** A preview frame that already lives on the GPU. Shares .width/.height with
  *  ImageBitmap so existing aspect/size reads keep working. */
 export interface GpuPreviewFrame {
@@ -85,7 +87,7 @@ class PreviewGpu {
     try {
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) { this.initFailed = true; return; }
-      const device = await adapter.requestDevice();
+      const device = await requestStandardDevice(adapter);
       this.format = navigator.gpu.getPreferredCanvasFormat();
       const module = device.createShaderModule({ code: BLIT_WGSL });
       this.pipeline = device.createRenderPipeline({

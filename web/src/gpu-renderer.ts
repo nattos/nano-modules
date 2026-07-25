@@ -1,5 +1,6 @@
 import { buildFontAtlas, FONT_ATLAS_W, FONT_ATLAS_H, FONT_ATLAS_COLS, FONT_GLYPH_W, FONT_GLYPH_H } from './font8x8';
 import shaderSource from './shaders.wgsl?raw';
+import { requestStandardDevice } from './webgpu-device';
 
 export interface DrawCmd {
   type: 'fill_rect' | 'draw_image' | 'draw_text';
@@ -48,7 +49,7 @@ export class GPURenderer {
   async init(canvas: HTMLCanvasElement): Promise<boolean> {
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) return false;
-    this.device = await adapter.requestDevice();
+    this.device = await requestStandardDevice(adapter);
     this.context = canvas.getContext('webgpu') as GPUCanvasContext;
     this.format = navigator.gpu.getPreferredCanvasFormat();
     // Opaque presentation: alpha is INTERNAL to the pipeline (used by

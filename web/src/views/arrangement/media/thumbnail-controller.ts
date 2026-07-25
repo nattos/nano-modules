@@ -21,6 +21,7 @@ import { VideoPlaybackService, ClipHandle } from '../../../video/playback-servic
 import { VideoThumbnailProducer } from './video-thumbnail-producer';
 import { ThumbnailManager, type ThumbView, type ThumbHit } from './thumbnail-manager';
 import { identityCodec } from './thumbnail-store';
+import { requestStandardDevice } from '../../../webgpu-device';
 import { WorkerThumbStore } from './worker-thumb-store';
 import { levelForFramesPerThumb } from './thumbnail-mip';
 
@@ -124,10 +125,8 @@ export class ThumbnailController {
         try {
           const adapter = await navigator.gpu?.requestAdapter();
           if (!adapter) throw new Error('no WebGPU adapter for thumbnails');
-          const required: GPUFeatureName[] = [];
-          // DXV's BC1 fast path; harmless when absent.
-          if (adapter.features.has('texture-compression-bc')) required.push('texture-compression-bc');
-          device = await adapter.requestDevice({ requiredFeatures: required });
+          // texture-compression-bc: DXV's BC1 fast path; harmless when absent.
+          device = await requestStandardDevice(adapter, ['texture-compression-bc']);
         } catch (err) {
           if (attempt === 3) throw err;
           await new Promise((r) => setTimeout(r, 60 * (attempt + 1)));

@@ -11,6 +11,7 @@
 
 import { BridgeCore } from './bridge-core';
 import { GPUHost } from './gpu-host';
+import { requestStandardDevice } from './webgpu-device';
 import { TextEngine } from './text-engine';
 import { WasmHost, WasmModule, type EffectInfo } from './wasm-host';
 import { WasmSketchExecutor } from './executor-host';
@@ -588,7 +589,7 @@ async function init(width: number, height: number) {
     post({ type: 'error', message: 'No GPU adapter available' });
     return;
   }
-  gpuDevice = await adapter.requestDevice();
+  gpuDevice = await requestStandardDevice(adapter);
   // Surface WebGPU validation errors to the console so E2E tests can
   // catch silent shader / bind-group breakage.
   gpuDevice.onuncapturederror = (e: any) => {

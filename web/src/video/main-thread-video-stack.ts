@@ -13,6 +13,7 @@
 import { GPUHost } from '../gpu-host';
 import { VideoPlaybackService } from './playback-service';
 import { FrameBlitter } from './frame-blitter';
+import { requestStandardDevice } from '../webgpu-device';
 
 export interface MainThreadVideoStack {
   service: VideoPlaybackService;
@@ -27,13 +28,10 @@ export function getMainThreadVideoStack(): Promise<MainThreadVideoStack> {
   stackPromise = (async () => {
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) throw new Error('no WebGPU adapter for video playback');
-    const required: GPUFeatureName[] = [];
-    // DXV's BC1 fast path needs this; harmless when the host lacks it
-    // (only the DXV codec is then unavailable — <video> formats still work).
-    if (adapter.features.has('texture-compression-bc')) {
-      required.push('texture-compression-bc');
-    }
-    const device = await adapter.requestDevice({ requiredFeatures: required });
+    // texture-compression-bc: DXV's BC1 fast path needs it; harmless when the
+    // host lacks it (only the DXV codec is then unavailable — <video> formats
+    // still work).
+    const device = await requestStandardDevice(adapter, ['texture-compression-bc']);
     const gpuHost = new GPUHost(device, 'rgba8unorm');
     const blitter = new FrameBlitter(device);
     // Absolute path: the dev server (and the built app) serve /wasm/ at the

@@ -73,9 +73,9 @@ struct State {
   gpu::Buffer tracer_buf;      // kTracers × 2 float4
   gpu::Buffer deposit_buf;     // kSimRes² × 2 int (atomics)
   gpu::Buffer ub_sim, ub_resolve;
-  gpu::Texture overlay[2];     // RGBA16F ping-pong (.r height, .g flow) —
-                               // fp16 like the shell maps; 32F is
-                               // unfilterable on WebGPU without a feature
+  gpu::Texture overlay[2];     // RGBA32F ping-pong (.r height, .g flow) —
+                               // full float: it's an accumulator, and fp16
+                               // absorbs tiny per-frame deposits near |h|~1
   int ov_ping = 0;             // index written LAST frame (the current map)
   bool sim_cleared = false;    // overlay textures cleared since (re)init
   uint32_t sim_frame = 0;
@@ -152,7 +152,7 @@ void module_init() {
   state::registerShaderSPV("plume_field_sim_resolve",
                            PLUME_FIELD_SIM_RESOLVE_SPV,
                            PLUME_FIELD_SIM_RESOLVE_SPV_SIZE,
-                           "rgba16float", "write");
+                           "rgba32float", "write");
   auto cs_prefill = gpu::Device::createShaderModuleByName("plume_field_prefill");
   auto cs_step = gpu::Device::createShaderModuleByName("plume_field_sim_step");
   auto cs_resolve =
@@ -174,7 +174,7 @@ void module_init() {
       gpu::Bindings()
           .storageRW(0)      // deposit bins (read + clear)
           .tex2d(1)          // overlay (previous)
-          .storageTex2d(2, gpu::TextureFormat::RGBA16F)  // overlay (next)
+          .storageTex2d(2, gpu::TextureFormat::RGBA32F)  // overlay (next)
           .uniform(3));
 
   state::log("plume_field: module initialized");
@@ -269,7 +269,7 @@ static plume_gen::Overlay stepSim(State* s) {
   for (int i = 0; i < 2; i++) {
     if (!s->overlay[i].valid())
       s->overlay[i] = gpu::Device::createTexture(
-          kSimRes, kSimRes, gpu::TextureFormat::RGBA16F);
+          kSimRes, kSimRes, gpu::TextureFormat::RGBA32F);
     if (!s->overlay[i].valid()) return ov;
   }
   if (!s->sim_cleared) {
