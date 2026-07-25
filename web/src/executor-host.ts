@@ -1411,7 +1411,19 @@ export class WasmSketchExecutor {
         const i = this.resolve(h);
         const ps = i?.host.pluginState;
         if (!ps || typeof ps !== 'object') return 0;
-        const v = (ps as Record<string, unknown>)[this.readString(fieldPtr, fieldLen)];
+        const field = this.readString(fieldPtr, fieldLen);
+        let v: unknown = (ps as Record<string, unknown>)[field];
+        if (v === undefined && field.includes('/')) {
+          // Slash path (struct-rail scalar leaves, e.g. "sdf_field/radius"):
+          // the web set_val stores nested objects, so walk segments. The flat
+          // lookup above stays first for parity with the native runtime's
+          // flat published_ map.
+          v = ps;
+          for (const k of field.split('/')) {
+            if (v === null || typeof v !== 'object') { v = undefined; break; }
+            v = (v as Record<string, unknown>)[k];
+          }
+        }
         const num = typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 1 : 0) : null;
         if (num === null) return 0;
         new DataView(this.memory.buffer).setFloat64(outPtr, num, true);

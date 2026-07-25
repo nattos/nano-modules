@@ -203,4 +203,80 @@ describe('source.sdf.plume E2E', () => {
     expect(moving.success).toBe(true);
     moving.phases[1].trace('out').expectDifferentFrom(moving.phases[0].trace('out'), 10);
   });
+
+  // --- sdf_field provider rail (plume -> plume) ---
+  // Two adjacent plumes auto-couple by schema shape: the upstream's
+  // `sdf_field` output binds to the downstream's `sdf_field_in`, and the
+  // downstream renders the FOREIGN geometry with its own camera/light.
+  // This is also the platform smoke test for a 3D texture riding a rail.
+
+  // Provider shape (big, spiky) — shared verbatim by the solo reference.
+  const A_SHAPE = { radius: 0.8, ridge_depth: 0.9, ridge_scale: 0.6,
+                    ridge_sharp: 0.7, ridge_aniso: 0.4, swirl: 0.3,
+                    variation: 0.35 };
+  // Consumer look (light/material). bounce 0 keeps rendering exact.
+  const B_LOOK = { albedo: [0.75, 0.75, 0.8], sun: 0.85, azimuth: 40,
+                   elevation: 20, bounce: 0 };
+
+  async function renderSketch(sketchId: string, sketch: Sketch) {
+    const result = await runEngineTest({
+      width: 96, height: 96,
+      modules: ['com.nano.core', 'com.nano.nano'],
+      commands: [
+        { type: 'createSketch', sketchId, sketch },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId } },
+        ]},
+      ],
+      // Rail scalars ride the sketch-state mirror (one-frame lag) — give
+      // the chain a few frames to settle before capturing.
+      waitFrames: 10,
+      captureTraceIds: ['out'],
+      dumpName: sketchId,
+    });
+    expect(result.success).toBe(true);
+    return result;
+  }
+
+  it('wired sdf_field renders the provider geometry exactly', async () => {
+    // Chain: A (provider, big spiky shape) -> B (consumer, tiny smooth
+    // shape of its own, distinct look). Reference: a solo plume with A's
+    // shape + B's look — same field, same renderer, so BODY pixels must
+    // match the wired consumer bit-exactly (off-body differs by design:
+    // the consumer composites over A's render, the reference over clear).
+    const wired = await renderSketch('plume_rail', {
+      anchor: null, wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.sdf.plume', instance_key: 'railA@0',
+          params: { ...STATIC, ...A_SHAPE, bounce: 0 } },
+        { type: 'module', module_type: 'source.sdf.plume', instance_key: 'railB@0',
+          params: { ...STATIC, ...B_LOOK, radius: 0, ridge_depth: 0 } },
+      ],
+    } as Sketch);
+    const ref = await render('plume_rail_ref',
+      { ...STATIC, ...A_SHAPE, ...B_LOOK }, { noInput: true, waitFrames: 10 });
+
+    // Probes well inside the provider body (base radius ~30 px on screen).
+    for (const [x, y] of [[48, 48], [40, 48], [56, 48], [48, 40], [48, 58]]) {
+      const expected = ref.trace('out').pixelAt(x, y);
+      wired.trace('out').expectPixelAt(x, y, expected, 0);
+    }
+  });
+
+  it('wired sdf_field overrides the consumer\'s own shape', async () => {
+    // The consumer alone (tiny smooth ball) vs the same consumer fed the
+    // big spiky provider field: silhouettes differ across the frame.
+    const solo = await render('plume_rail_solo',
+      { ...STATIC, ...B_LOOK, radius: 0, ridge_depth: 0 }, { noInput: true, waitFrames: 10 });
+    const wired = await renderSketch('plume_rail_ovr', {
+      anchor: null, wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.sdf.plume', instance_key: 'ovrA@0',
+          params: { ...STATIC, ...A_SHAPE, bounce: 0, opacity: 1 } },
+        { type: 'module', module_type: 'source.sdf.plume', instance_key: 'ovrB@0',
+          params: { ...STATIC, ...B_LOOK, radius: 0, ridge_depth: 0 } },
+      ],
+    } as Sketch);
+    wired.trace('out').expectDifferentFrom(solo.trace('out'), 40);
+  });
 });

@@ -664,6 +664,11 @@ class SketchExecutor {
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railTextures,
       const std::unordered_map<std::string, float>& railFloats,
+      // Struct-rail scalar leaves captured live from producers this frame
+      // (railId → leafPath → value); a leaf absent here falls back to the
+      // producer's schema default.
+      const std::unordered_map<std::string,
+        std::unordered_map<std::string, float>>& railScalars,
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railBuffers,
       const nlohmann::json& sketchInstances,
@@ -741,6 +746,12 @@ class SketchExecutor {
       std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railTextures,
       std::unordered_map<std::string, float>& railFloats,
+      // Struct-rail scalar leaves: the producer's LIVE declaration (published
+      // state / instance state), captured here so consumers see the values the
+      // producer computed this frame — not its schema defaults. Delayed
+      // (back-edge) struct taps keep default-only scalars for now.
+      std::unordered_map<std::string,
+        std::unordered_map<std::string, float>>& railScalars,
       std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railBuffers,
       // Read-tap-modulated scalars from applyReadTaps this frame. A field that

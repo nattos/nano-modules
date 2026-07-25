@@ -1251,6 +1251,11 @@ int32_t SketchExecutor::execute(
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railTextures;
     std::unordered_map<std::string, float> railFloats;
+    // Struct-rail scalar leaves, captured live from producers (railId →
+    // leafPath → value). Read taps fall back to schema defaults for leaves
+    // absent here.
+    std::unordered_map<std::string,
+      std::unordered_map<std::string, float>> railScalars;
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railBuffers;
 
@@ -1524,7 +1529,7 @@ int32_t SketchExecutor::execute(
         inst.setTextureField("tex_out", fx);
         markWriteTapOutputsConnected(inst.h, entry);
         captureWriteTaps(inst.h, entry, instKey, instances,
-                         railsById, railTextures, railFloats, railBuffers,
+                         railsById, railTextures, railFloats, railScalars, railBuffers,
                          nullptr);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
@@ -1653,7 +1658,7 @@ int32_t SketchExecutor::execute(
           // export no is_identity, so they always take the standalone path
           // where serviceScalarBus folds into modScalars).
           captureWriteTaps(inst.h, entry, instKey, instances,
-                           railsById, railTextures, railFloats, railBuffers,
+                           railsById, railTextures, railFloats, railScalars, railBuffers,
                            nullptr);
         }
         if (chainEntryHook_) {
@@ -1694,7 +1699,7 @@ int32_t SketchExecutor::execute(
         inst.setFieldConnected("tex_in", true, false);
         std::unordered_map<std::string, float> modScalars;
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                      railBuffers, instances, instKey, &modScalars);
+                      railScalars, railBuffers, instances, instKey, &modScalars);
         applyAutomation(inst.h, entry, instances, instKey, &modScalars);
         applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
         markWriteTapOutputsConnected(inst.h, entry);
@@ -1708,7 +1713,7 @@ int32_t SketchExecutor::execute(
         // so the passthrough below still forwards colInput untouched.
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
         captureWriteTaps(inst.h, entry, instKey, instances,
-                         railsById, railTextures, railFloats, railBuffers,
+                         railsById, railTextures, railFloats, railScalars, railBuffers,
                          &modScalars);
         int32_t out = passthroughOutput(colInput);
         if (chainEntryHook_) {
@@ -1744,7 +1749,7 @@ int32_t SketchExecutor::execute(
 
       std::unordered_map<std::string, float> modScalars;
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                    railBuffers, instances, instKey, &modScalars);
+                    railScalars, railBuffers, instances, instKey, &modScalars);
       applyAutomation(inst.h, entry, instances, instKey, &modScalars);
       applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
       markWriteTapOutputsConnected(inst.h, entry);
@@ -1789,7 +1794,7 @@ int32_t SketchExecutor::execute(
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
       captureWriteTaps(inst.h, entry, instKey, instances,
-                       railsById, railTextures, railFloats, railBuffers,
+                       railsById, railTextures, railFloats, railScalars, railBuffers,
                        &modScalars);
 
       if (partial) {
@@ -2281,6 +2286,8 @@ void SketchExecutor::applyReadTaps(
       std::unordered_map<std::string, int32_t>>& railTextures,
     const std::unordered_map<std::string, float>& railFloats,
     const std::unordered_map<std::string,
+      std::unordered_map<std::string, float>>& railScalars,
+    const std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railBuffers,
     const json& sketchInstances,
     const std::string& instanceKey,
@@ -2356,14 +2363,23 @@ void SketchExecutor::applyReadTaps(
     // with only buffer/scalar leaves has no entry in railTextures, so the
     // texture bind must not gate the others).
 
-    // Scalar leaves: the producer's declared value (schema default) flows onto
-    // the consumer's nested input field — e.g. particles_out/count → the
-    // renderer's particles_in/count. Patched as a float; int/bool effects read
-    // it back through their own coercion.
+    // Scalar leaves: the producer's LIVE declaration flows onto the
+    // consumer's nested input field — e.g. sdf_field/radius → the
+    // renderer's sdf_field_in/radius (captured by captureWriteTaps from
+    // the producer's published/instance state this frame). Leaves the
+    // producer never published fall back to its schema default — which is
+    // also the whole story for static declarations like particles_out/
+    // count. Patched as a float; int/bool effects re-coerce on read.
+    auto scIt = railScalars.find(railId);
     forEachRailLeafScalar(dataType, [&](const std::string& leaf, double def) {
       const std::string target = leaf.empty() ? fieldPath
                                               : (fieldPath + "/" + leaf);
-      inst.setParamFloat(target, (float)def);
+      float v = (float)def;
+      if (scIt != railScalars.end()) {
+        auto lit = scIt->second.find(leaf);
+        if (lit != scIt->second.end()) v = lit->second;
+      }
+      inst.setParamFloat(target, v);
     });
 
     // GPU storage-buffer leaves: bind the producer's published handle (captured
@@ -2646,6 +2662,8 @@ void SketchExecutor::captureWriteTaps(
       std::unordered_map<std::string, int32_t>>& railTextures,
     std::unordered_map<std::string, float>& railFloats,
     std::unordered_map<std::string,
+      std::unordered_map<std::string, float>>& railScalars,
+    std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railBuffers,
     const std::unordered_map<std::string, float>* modulatedScalars,
     int32_t aliasedTexOut) {
@@ -2756,6 +2774,39 @@ void SketchExecutor::captureWriteTaps(
       int32_t h = (aliasedTexOut > 0 && source == "tex_out")
           ? aliasedTexOut : inst.textureField(source);
       if (h > 0) texMap[leaf] = h;
+    });
+
+    // Scalar leaves: capture the producer's LIVE value so the consumer's
+    // read tap sees this frame's declaration, not the schema default —
+    // same source chain as float rails above: the sketch's instance-state
+    // mirror (editor-refreshed), else the producer's published state
+    // (setValPath — the only source on a cached exec doc, e.g. the
+    // barrel). Leaves absent from both stay uncaptured and fall back to
+    // the schema default on the read side.
+    forEachRailLeafScalar(dataType, [&](const std::string& leaf, double) {
+      const std::string source = leaf.empty() ? fieldPath
+                                              : (fieldPath + "/" + leaf);
+      bool has = false;
+      float raw = 0.0f;
+      if (sketchInstances.is_object() &&
+          sketchInstances.contains(producerInstanceKey)) {
+        const auto& st = sketchInstances[producerInstanceKey]
+                            .value("state", json::object());
+        if (st.is_object() && st.contains(source)) {
+          const auto& v = st[source];
+          if (v.is_number())       { raw = (float)v.get<double>(); has = true; }
+          else if (v.is_boolean()) { raw = v.get<bool>() ? 1.0f : 0.0f; has = true; }
+        }
+      }
+      if (!has) {
+        double live = 0.0;
+        if (effrt_published_scalar(inst_handle, source.data(),
+                                   (int32_t)source.size(), &live)) {
+          raw = (float)live;
+          has = true;
+        }
+      }
+      if (has) railScalars[railId][leaf] = raw;
     });
 
     // GPU storage-buffer leaves: record the producer's published handle so the

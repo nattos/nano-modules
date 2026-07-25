@@ -191,11 +191,21 @@ struct State {
   // Accumulators (§2.1), cycles in [0,1).
   double morph_phase = 0.0;
   double orbit_phase = 0.0;
+
+  // sdf_field rail. rail_in mirrors the wired provider's scalar leaves
+  // (texture validity is resolved per frame); rail_reject_reason is the
+  // last validate() failure (static strings — pointer compare) so a
+  // mis-declared provider logs once per transition, not per frame.
+  // rail_pub_* dedupe the provider-side publish.
+  fx::sdf_field::Desc rail_in;
+  const char* rail_reject_reason = nullptr;
+  fx::sdf_field::Desc rail_pub;
+  bool rail_pub_valid = false;
+  int rail_pub_grid = -1, rail_pub_shell = -1;
 };
 
 void module_init() {
-  state::init("source.sdf.plume", {1, 0, 0},
-    state::Schema()
+  auto schema = state::Schema()
       .helpField("intro",
         "## Plume\n"
         "A raymarched volumetric shape — a sphere sheathed in ridged, "
@@ -215,7 +225,9 @@ void module_init() {
           "smears the pattern along the flow into wind-swept shingles. "
           "*Morph* drifts the field along a closed loop — it breathes "
           "forever without ever jumping. *Variation* picks a different "
-          "pattern.")
+          "pattern. When an upstream SDF field is wired into `sdf_field_in` "
+          "this whole group goes inert — the provider's geometry renders "
+          "in its place.")
       .floatField("radius", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Radius", "Rad")
       .floatField("ridge_depth", 0.5f, 0.f, 1.f, state::PrimaryInput)
@@ -341,9 +353,17 @@ void module_init() {
           .label("Debug Slice", "Slice")
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
-      .textureField("tex_out", state::PrimaryOutput)
-      .capability(state::Capability::Generator)
-  );
+      .textureField("tex_out", state::PrimaryOutput);
+  // The sdf_field provider seam (effect_sdf_field.h), both directions:
+  // `sdf_field` publishes the field this instance renders; a wired
+  // `sdf_field_in` (auto-binds by shape to an upstream `sdf_field`)
+  // REPLACES the sculpted shape — the Shape group goes inert and the
+  // foreign geometry renders with this instance's camera/light/
+  // atmosphere.
+  fx::sdf_field::declare(schema, state::SecondaryOutput);
+  fx::sdf_field::declare(schema, state::SecondaryInput, "sdf_field_in");
+  schema.capability(state::Capability::Generator);
+  state::init("source.sdf.plume", {1, 0, 0}, schema);
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
@@ -585,6 +605,23 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "black"))       s->black_lvl = state::patchFloat(i);
     else if (state::pathIs(p, l, "debug_view"))  s->debug_view = state::patchInt(i);
     else if (state::pathIs(p, l, "debug_slice")) s->debug_slice = state::patchFloat(i);
+    // sdf_field_in scalar leaves (the wired provider's declaration).
+    else if (state::pathIs(p, l, "sdf_field_in/field_class"))
+      s->rail_in.field_class = state::patchInt(i);
+    else if (state::pathIs(p, l, "sdf_field_in/radius"))
+      s->rail_in.radius = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/lip"))
+      s->rail_in.lip = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/lip_true"))
+      s->rail_in.lip_true = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/crest_amp"))
+      s->rail_in.crest_amp = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/crest_gain"))
+      s->rail_in.crest_gain = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/grid_ext"))
+      s->rail_in.grid_ext = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/shell_res"))
+      s->rail_in.shell_res = state::patchFloat(i);
   }
 }
 
@@ -625,102 +662,164 @@ void render(void* self, int vp_w, int vp_h) {
   if (!s->shell_full.valid() || !s->shell_coarse.valid() || !s->sdf_vol.valid())
     return;
 
-  // --- Shape params -> world quantities ---
-  // Body + flakes must stay inside the volume's inscribed sphere (kExt0).
-  const float R = 0.28f + 0.27f * s->radius;
-  float amp = 0.5f * R * s->ridge_depth;
-  if (R + amp > 0.82f) amp = 0.82f - R;
-  const float freq = 4.0f * std::pow(2.0f, (s->ridge_scale - 0.5f) * 4.0f);
-  // Radial-displacement Lipschitz compression: slope ~ amp * freq (noise
-  // gradient ~1.5/unit folded into the constant), conservative. Terrace
-  // cliffs steepen the field well past the smooth-fbm bound; feathering's
-  // along-flow smear only ever smooths, so it needs no margin.
-  const float steep = 1.0f + 2.0f * s->ridge_sharp;
-  const float lip_true =
-      1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
-  // Floor keeps coarse marching from crawling, but a floored grid stores
-  // distances LONGER than the true bound — the march widens its fine-tier
-  // handoff band by lip/lip_true (capped) to absorb the overshoot.
-  float lip = std::fmax(lip_true, 0.15f);
-
-  // Self-provided field, stated in the sdf_field provider contract. The
-  // renderer half below (march/fog/GI uniform fills + binds) reads the
-  // field ONLY through this Desc + texture pair, so a rail-provided
-  // foreign field can slot in without touching those passes.
+  // --- Field source: wired provider, else self ---
+  // The renderer half below (march/fog/GI/debug uniform fills + binds)
+  // reads the field ONLY through this Desc + texture pair — the
+  // sdf_field provider contract (effect_sdf_field.h) — so a foreign
+  // field renders through code paths identical to the sculpted one.
   fx::sdf_field::Desc field;
-  field.field_class = fx::sdf_field::SphericalHeightmap;
-  field.radius = R;
-  field.lip = lip;
-  field.lip_true = lip_true;
-  field.crest_amp = amp;
-  // Crest shading emphasis only exists when there are ridges to crest.
-  field.crest_gain = std::fmin(1.0f, 10.0f * s->ridge_depth);
-  field.grid_ext = fx::sdf_field::kGridExt;
-  field.shell_res = (float)kShellRes;
-  field.has_grid = field.has_shell = true;
-  const gpu::Texture field_grid = s->sdf_vol;
-  const gpu::Texture field_shell = s->shell_full;
-
-  // Morph walks a closed circle in the noise domain — seamless, no drift.
-  const float mx = 5.0f * std::cos(kTau * (float)s->morph_phase);
-  const float mz = 5.0f * std::sin(kTau * (float)s->morph_phase);
-
-  // --- Pass 0: shell update (full + coarse) ---
-  ShellUniforms su = {};
-  su.ridge_scale = freq;
-  su.ridge_amp = amp;
-  su.ridge_sharp = s->ridge_sharp;
-  su.morph_x = mx;
-  su.morph_z = mz;
-  su.seed = s->variation * 10.0f;
-  su.aniso = s->ridge_aniso;
-  su.swirl = s->swirl;
-  su.wobble = 0.35f;
-  // Band-limit octaves at the FULL map's Nyquist (cycles/rad) for BOTH
-  // map resolutions — same fade => same field => terrace parity holds.
-  su.bl_nyq = (float)kShellRes / 6.2831853f;
-
-  // Both maps evaluate the SAME field (same octaves): the terrace cut is a
-  // hard nonlinearity, so differing octave counts could land on different
-  // terrace levels — a whole plate step of surface divergence, enough for
-  // the coarse march to tunnel through a protruding plate. The coarse map
-  // differs only by resolution (sub-voxel error the band handoff absorbs).
-  su.res = (float)kShellRes;
-  su.octaves = 4.0f;
-  s->ub_shell_full.writeOne(su);
-  su.res = (float)kCoarseRes;
-  su.octaves = 4.0f;
-  s->ub_shell_coarse.writeOne(su);
-
-  {
-    auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_shell);
-    cp.setTexture(s->shell_full, 0, 1);
-    cp.setBuffer(s->ub_shell_full, 1);
-    cp.dispatch(kShellRes / 8, kShellRes / 8);
-    cp.end();
-  }
-  {
-    auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_shell);
-    cp.setTexture(s->shell_coarse, 0, 1);
-    cp.setBuffer(s->ub_shell_coarse, 1);
-    cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
-    cp.end();
+  gpu::Texture field_grid, field_shell;
+  bool foreign = false;
+  if (state::isInputConnected("sdf_field_in")) {
+    fx::sdf_field::Desc fd = s->rail_in;
+    gpu::Texture fg = gpu::Device::textureForField("sdf_field_in/grid");
+    gpu::Texture fsh = gpu::Device::textureForField("sdf_field_in/shell");
+    fd.has_grid = fg.valid();
+    fd.has_shell = fsh.valid();
+    fx::sdf_field::Class cls;
+    const char* reason = fx::sdf_field::validate(fd, &cls);
+    if (!reason) {
+      field = fd;
+      field_grid = fg;
+      field_shell = fsh;
+      foreign = true;
+    }
+    // A mis-declared provider falls back to the sculpted shape — log the
+    // validate() reason once per transition so it's diagnosable (static
+    // strings, so pointer identity tracks the transition).
+    if (reason != s->rail_reject_reason) {
+      s->rail_reject_reason = reason;
+      if (reason) state::log(state::LogLevel::Warn, reason);
+    }
+  } else {
+    s->rail_reject_reason = nullptr;
   }
 
-  // --- Pass 1: bake shell -> SDF volume ---
-  BakeUniforms bu = { R, lip, 3.0f * (2.0f * kExt0 / (float)kVolRes), 0.f };
-  s->ub_bake.writeOne(bu);
-  {
-    auto cp = gpu::ComputePass::begin();
-    cp.setPSO(s_pso_bake);
-    cp.setTexture(s->shell_coarse, 0, 0);
-    cp.setSampler(s->samp_clamp, 1);
-    cp.setTexture(s->sdf_vol, 2, 1);
-    cp.setBuffer(s->ub_bake, 3);
-    cp.dispatch(kVolRes / 4, kVolRes / 4, kVolRes / 4);
-    cp.end();
+  if (!foreign) {
+    // --- Shape params -> world quantities ---
+    // Body + flakes must stay inside the volume's inscribed sphere (kExt0).
+    const float R = 0.28f + 0.27f * s->radius;
+    float amp = 0.5f * R * s->ridge_depth;
+    if (R + amp > 0.82f) amp = 0.82f - R;
+    const float freq = 4.0f * std::pow(2.0f, (s->ridge_scale - 0.5f) * 4.0f);
+    // Radial-displacement Lipschitz compression: slope ~ amp * freq (noise
+    // gradient ~1.5/unit folded into the constant), conservative. Terrace
+    // cliffs steepen the field well past the smooth-fbm bound; feathering's
+    // along-flow smear only ever smooths, so it needs no margin.
+    const float steep = 1.0f + 2.0f * s->ridge_sharp;
+    const float lip_true =
+        1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
+    // Floor keeps coarse marching from crawling, but a floored grid stores
+    // distances LONGER than the true bound — the march widens its fine-tier
+    // handoff band by lip/lip_true (capped) to absorb the overshoot.
+    float lip = std::fmax(lip_true, 0.15f);
+
+    field.field_class = fx::sdf_field::SphericalHeightmap;
+    field.radius = R;
+    field.lip = lip;
+    field.lip_true = lip_true;
+    field.crest_amp = amp;
+    // Crest shading emphasis only exists when there are ridges to crest.
+    field.crest_gain = std::fmin(1.0f, 10.0f * s->ridge_depth);
+    field.grid_ext = fx::sdf_field::kGridExt;
+    field.shell_res = (float)kShellRes;
+    field.has_grid = field.has_shell = true;
+    field_grid = s->sdf_vol;
+    field_shell = s->shell_full;
+
+    // Morph walks a closed circle in the noise domain — seamless, no drift.
+    const float mx = 5.0f * std::cos(kTau * (float)s->morph_phase);
+    const float mz = 5.0f * std::sin(kTau * (float)s->morph_phase);
+
+    // --- Pass 0: shell update (full + coarse) ---
+    ShellUniforms su = {};
+    su.ridge_scale = freq;
+    su.ridge_amp = amp;
+    su.ridge_sharp = s->ridge_sharp;
+    su.morph_x = mx;
+    su.morph_z = mz;
+    su.seed = s->variation * 10.0f;
+    su.aniso = s->ridge_aniso;
+    su.swirl = s->swirl;
+    su.wobble = 0.35f;
+    // Band-limit octaves at the FULL map's Nyquist (cycles/rad) for BOTH
+    // map resolutions — same fade => same field => terrace parity holds.
+    su.bl_nyq = (float)kShellRes / 6.2831853f;
+
+    // Both maps evaluate the SAME field (same octaves): the terrace cut is a
+    // hard nonlinearity, so differing octave counts could land on different
+    // terrace levels — a whole plate step of surface divergence, enough for
+    // the coarse march to tunnel through a protruding plate. The coarse map
+    // differs only by resolution (sub-voxel error the band handoff absorbs).
+    su.res = (float)kShellRes;
+    su.octaves = 4.0f;
+    s->ub_shell_full.writeOne(su);
+    su.res = (float)kCoarseRes;
+    su.octaves = 4.0f;
+    s->ub_shell_coarse.writeOne(su);
+
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_shell);
+      cp.setTexture(s->shell_full, 0, 1);
+      cp.setBuffer(s->ub_shell_full, 1);
+      cp.dispatch(kShellRes / 8, kShellRes / 8);
+      cp.end();
+    }
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_shell);
+      cp.setTexture(s->shell_coarse, 0, 1);
+      cp.setBuffer(s->ub_shell_coarse, 1);
+      cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
+      cp.end();
+    }
+
+    // --- Pass 1: bake shell -> SDF volume ---
+    BakeUniforms bu = { R, lip, 3.0f * (2.0f * kExt0 / (float)kVolRes), 0.f };
+    s->ub_bake.writeOne(bu);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_bake);
+      cp.setTexture(s->shell_coarse, 0, 0);
+      cp.setSampler(s->samp_clamp, 1);
+      cp.setTexture(s->sdf_vol, 2, 1);
+      cp.setBuffer(s->ub_bake, 3);
+      cp.dispatch(kVolRes / 4, kVolRes / 4, kVolRes / 4);
+      cp.end();
+    }
+  }
+
+  // --- Provider publish: the ACTIVE field (relays foreign when wired
+  // through, so a chain of consumers sees one consistent declaration) ---
+  if (state::isOutputConnected("sdf_field")) {
+    if (field_grid.id != s->rail_pub_grid) {
+      s->rail_pub_grid = field_grid.id;
+      state::setGpuTexture("sdf_field/grid", field_grid.id);
+    }
+    if (field_shell.id != s->rail_pub_shell) {
+      s->rail_pub_shell = field_shell.id;
+      state::setGpuTexture("sdf_field/shell", field_shell.id);
+    }
+    // Scalars only on change (patch-churn hygiene).
+    auto pub = [&](const char* path, float v, float prev) {
+      if (s->rail_pub_valid && v == prev) return;
+      int vh = val::number(v);
+      state::setValPath(path, vh);
+      val::release(vh);
+    };
+    pub("sdf_field/field_class", (float)field.field_class,
+        (float)s->rail_pub.field_class);
+    pub("sdf_field/radius", field.radius, s->rail_pub.radius);
+    pub("sdf_field/lip", field.lip, s->rail_pub.lip);
+    pub("sdf_field/lip_true", field.lip_true, s->rail_pub.lip_true);
+    pub("sdf_field/crest_amp", field.crest_amp, s->rail_pub.crest_amp);
+    pub("sdf_field/crest_gain", field.crest_gain, s->rail_pub.crest_gain);
+    pub("sdf_field/grid_ext", field.grid_ext, s->rail_pub.grid_ext);
+    pub("sdf_field/shell_res", field.shell_res, s->rail_pub.shell_res);
+    s->rail_pub = field;
+    s->rail_pub_valid = true;
+    state::markGpuDirty("sdf_field");
   }
 
   // --- GI: inject + wave propagation (whole stage skipped at bounce 0) ---
