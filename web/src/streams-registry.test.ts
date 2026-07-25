@@ -245,6 +245,19 @@ describe('StreamsRegistry (lock-step with streams_table.h)', () => {
     expect(reg.pendingOps[0].handle).toBe(scenes);
   });
 
+  it('stop accepts BOTH content kinds — a sequence interior forks like a video', () => {
+    // The fork lifecycle rides content handles, and a sequence clip's interior
+    // is a content stream (kind 6) in its own right — a sequence clip on a
+    // scene track is exactly what a transition crossfades. The golden doc has
+    // no sequence clip (adding one would regenerate streams-golden.json), so
+    // re-kind a content stream in place: the predicate is what's under test.
+    const content = reg.contentByClipId.get('clipB')!;
+    expect(reg.queueStop(content)).toBe(true);   // video content: fork release
+    reg.find(content)!.kind = StreamKind.SequenceContent;
+    expect(reg.queueStop(content)).toBe(true);   // sequence interior: same verb
+    expect(reg.queueStop(trackA)).toBe(false);   // a timeline track still can't
+  });
+
   it('announce queues like seek and carries eta (retract = t < 0)', () => {
     expect(reg.queueAnnounce(scenes, 1.0, 1.5)).toBe(true);
     expect(reg.queueAnnounce(reg.contentByClipId.get('clipB')!, 0, 1)).toBe(false); // content: no

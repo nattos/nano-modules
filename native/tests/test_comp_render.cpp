@@ -3752,3 +3752,45 @@ TEST_CASE("sequence: only the LIVE interior clip plays; siblings pin at their en
   CHECK(descFor("live").value("prime", false) == true);
   CHECK(rowFor("warm").timeSec == Catch::Approx(1.0).margin(1e-6));
 }
+
+TEST_CASE("sequence: a scene-track sequence clip forks through its CONTENT handle",
+          "[comp_sequence][comp_fork]") {
+  // A sequence clip is legal on a scene track, and `transition.xfade` forks the
+  // outgoing scene to crossfade it out. The RESOURCE-handle route always worked
+  // (a sequence clip mints a forkable resource like any content-bearing clip);
+  // the CONTENT-handle route dropped the verb on the floor, because the drain
+  // matched kStreamKindVideoContent exactly and an interior is kind 6. Both
+  // routes must behave identically — the effect ABI doesn't distinguish them.
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({mkSceneTrack(
+      "st", json::array({
+                mkSequenceClip("seq", 0, 4, "lane1",
+                               json::array({mkClip("sub1", 0, 4,
+                                                   json::array({mkDevice(
+                                                       "g1", "source.solid_color")}))})),
+                mkScene("s2", 4)}))})));
+  h.cx.play();
+  auto& table = h.cx.streamsTableMutable();
+  const int64_t contentSeq = table.contentByClipId.at("seq");
+  REQUIRE(table.find(contentSeq) != nullptr);
+  REQUIRE(table.find(contentSeq)->kind == comp::kStreamKindSequenceContent);
+
+  h.cx.launchScene("st", "seq", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  REQUIRE(json::parse(h.cx.sceneStatesJson())["st"]["sceneId"] == "seq");
+
+  // Arm on the sequence's own content handle, then commit a launch away from it.
+  table.pendingOps.push_back({3, contentSeq, 0.0, 1, 0});
+  h.cx.transportResolve(0.0);
+  h.cx.launchScene("st", "s2", comp::CompExecutor::kLaunchInstant);
+  h.cx.update(1.0 / 60.0);
+  const json f = forkOf(h.cx);
+  REQUIRE(!f.is_null());
+  CHECK(f["clipId"] == "seq");  // detached under its own identity, not dropped
+
+  // ...and streams.stop on the same handle releases it (the fade-done call).
+  table.pendingOps.push_back({1, contentSeq, 0.0});
+  h.cx.transportResolve(0.0);
+  h.cx.update(1.0 / 60.0);
+  CHECK(forkOf(h.cx).is_null());
+}

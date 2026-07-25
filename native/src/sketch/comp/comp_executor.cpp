@@ -1616,11 +1616,15 @@ void CompExecutor::drainStreamOps() {
       }
       continue;
     }
-    if (s->kind == kStreamKindVideoContent) {
+    if (isContentStream(*s)) {
       // Content-handle verbs exist only for the FORK lifecycle (LOCK-STEP:
       // the web drain forwards these raw via comp_queue_stream_op, so this
       // branch is the single implementation on both hosts). Resolve the
       // owning scene track first.
+      //
+      // isContentStream, not == VideoContent: a SEQUENCE clip's interior is a
+      // content stream too (kind 6) and forks identically — a sequence sitting
+      // on a scene track is exactly what transitions crossfade between.
       const std::string& clipId = s->ownerId;
       auto pit = streamsTable_.parentByClipId.find(clipId);
       const StreamInfo* pt =

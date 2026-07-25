@@ -566,10 +566,10 @@ static int32_t streams_seek_fn(wasm_exec_env_t env, int64_t h, double t, int32_t
 static int32_t streams_stop_fn(wasm_exec_env_t env, int64_t h) {
   auto* table = get_streams(env);
   const comp::StreamInfo* s = table ? table->find(h) : nullptr;
-  // Scene tracks (stop the playing clip) and content streams (release a FORK
-  // — validated at drain: only a live fork's stream acts).
-  if (!s || (s->kind != comp::kStreamKindSceneTrack &&
-             s->kind != comp::kStreamKindVideoContent)) {
+  // Scene tracks (stop the playing clip) and content streams — video AND
+  // sequence-clip interiors — (release a FORK; validated at drain: only a live
+  // fork's stream acts).
+  if (!s || (s->kind != comp::kStreamKindSceneTrack && !comp::isContentStream(*s))) {
     return 0;
   }
   table->pendingOps.push_back({1, h, 0.0});

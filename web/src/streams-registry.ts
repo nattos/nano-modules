@@ -633,9 +633,10 @@ export class StreamsRegistry {
 
   queueStop(h: bigint): boolean {
     const s = this.find(h);
-    // Scene tracks (stop the playing clip) and content streams (release a
-    // FORK — validated at the engine drain, LOCK-STEP with the native import).
-    if (!s || (s.kind !== StreamKind.SceneTrack && s.kind !== StreamKind.VideoContent)) {
+    // Scene tracks (stop the playing clip) and content streams — video AND
+    // sequence-clip interiors — (release a FORK; validated at the engine drain,
+    // LOCK-STEP with the native import).
+    if (!s || (s.kind !== StreamKind.SceneTrack && !isContentStream(s))) {
       return false;
     }
     this.pendingOps.push({ kind: 'stop', handle: BigInt.asUintN(64, h), t: 0 });
