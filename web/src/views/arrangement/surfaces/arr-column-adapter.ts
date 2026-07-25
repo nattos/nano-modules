@@ -232,7 +232,7 @@ export function transportTarget(trackId: string, clipId: string): DeviceTarget {
     // undefined): undefined makes column-group render nothing at all, hiding
     // the empty-chain insert header that is the section's add affordance.
     getDevices: () => {
-      const clip = store.trackById(trackId)?.clips.find((c) => c.id === clipId);
+      const clip = store.clipIn(trackId, clipId);
       return clip ? clip.transport?.devices ?? [] : undefined;
     },
     setField: (d, k, v) => store.setClipTransportDeviceField(trackId, clipId, d, k, v),
@@ -266,7 +266,7 @@ export function trackTransportTarget(trackId: string): DeviceTarget {
     // Same as the clip section: no section yet = EMPTY list, so the insert
     // header (the add affordance) renders.
     getDevices: () => {
-      const t = store.trackById(trackId);
+      const t = store.laneById(trackId);
       return t ? t.transport?.devices ?? [] : undefined;
     },
     setField: (d, k, v) => store.setTrackTransportDeviceField(trackId, d, k, v),
@@ -292,7 +292,7 @@ export function trackTransportTarget(trackId: string): DeviceTarget {
 export function clipTarget(trackId: string, clipId: string): DeviceTarget {
   return {
     id: `clip/${trackId}/${clipId}`,
-    getDevices: () => store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices,
+    getDevices: () => store.clipIn(trackId, clipId)?.sketch.devices,
     setField: (d, k, v) => store.setClipDeviceField(trackId, clipId, d, k, v),
     setType: (d, t, ck) => store.setClipDeviceType(trackId, clipId, d, t, ck),
     replace: (d, s, ck) => store.replaceClipDevice(trackId, clipId, d, s, ck),
@@ -306,7 +306,7 @@ export function clipTarget(trackId: string, clipId: string): DeviceTarget {
       // the exact device by id (instance_key === device.id) so duplicate
       // same-type effects each resolve their own state; fall back to the first
       // of the type when no key is supplied.
-      const devices = store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices;
+      const devices = store.clipIn(trackId, clipId)?.sketch.devices;
       const dev = (instanceKey ? devices?.find((d) => d.id === instanceKey) : undefined)
         ?? devices?.find((d) => d.moduleType === mt);
       if (!dev) return null;
@@ -318,7 +318,7 @@ export function clipTarget(trackId: string, clipId: string): DeviceTarget {
 export function trackTarget(trackId: string): DeviceTarget {
   return {
     id: `track/${trackId}`,
-    getDevices: () => store.trackById(trackId)?.sketch.devices,
+    getDevices: () => store.laneById(trackId)?.sketch.devices,
     setField: (d, k, v) => store.setTrackDeviceField(trackId, d, k, v),
     setType: (d, t, ck) => store.setTrackDeviceType(trackId, d, t, ck),
     replace: (d, s, ck) => store.replaceTrackDevice(trackId, d, s, ck),
@@ -329,7 +329,7 @@ export function trackTarget(trackId: string): DeviceTarget {
     // output traces and modulation bands read nothing (they were dead).
     engineKeyFor: (d) => trackInstanceKey(trackId, d),
     staticHiddenFor: (mt, instanceKey) => {
-      const devices = store.trackById(trackId)?.sketch.devices;
+      const devices = store.laneById(trackId)?.sketch.devices;
       const dev = (instanceKey ? devices?.find((d) => d.id === instanceKey) : undefined)
         ?? devices?.find((d) => d.moduleType === mt);
       if (!dev) return null;
@@ -355,7 +355,7 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
 
   const clips = (): Clip[] =>
     refs
-      .map((r) => store.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
+      .map((r) => store.clipIn(r.trackId, r.clipId))
       .filter((c): c is Clip => !!c);
   const model = (): MultiEditModel => buildMultiEditModel(clips());
   // The engine schema is authoritative (it carries EVERY field's default — incl.
@@ -494,7 +494,7 @@ export function multiClipTarget(refs: { trackId: string; clipId: string }[]): De
  */
 export function buildClipFieldBinding(trackId: string, clipId: string, deviceId: string): FieldBinding {
   const device = (): Device | undefined =>
-    store.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices.find((d) => d.id === deviceId);
+    store.clipIn(trackId, clipId)?.sketch.devices.find((d) => d.id === deviceId);
   const ek = clipInstanceKey(clipId, deviceId);
   const fallback = (field: string): number => {
     const cat = catalogEffect(device()?.moduleType ?? '');

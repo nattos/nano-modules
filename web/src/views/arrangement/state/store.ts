@@ -1844,6 +1844,21 @@ export class ArrangementStore {
       const trackId = sketchId.split('/')[1];
       const dev = this.laneById(trackId)?.sketch.devices[chainIdx];
       if (dev) this.removeTrackDevice(trackId, dev.id);
+    } else if (sketchId.startsWith('transport/')) {
+      // TRANSPORT sections: `transport/<trackId>/<clipId>` (a clip's section)
+      // or `transport/<trackId>` (a scene track's transition section). Both
+      // were missing here, so Delete cleared the focus (the "flash") without
+      // ever removing the device.
+      const parts2 = sketchId.split('/');
+      if (parts2.length >= 3) {
+        const [, trackId, clipId] = parts2;
+        const dev = this.clipIn(trackId, clipId)?.transport?.devices[chainIdx];
+        if (dev) this.removeClipTransportDevice(trackId, clipId, dev.id);
+      } else {
+        const trackId = parts2[1];
+        const dev = this.laneById(trackId)?.transport?.devices[chainIdx];
+        if (dev) this.removeTrackTransportDevice(trackId, dev.id);
+      }
     } else if (sketchId.startsWith('multi/')) {
       // A COMMON effect in the multi-edit panel: fan the delete out to the
       // matched device in every selected clip (one undo).
@@ -1900,6 +1915,40 @@ export class ArrangementStore {
           if (id) this.replaceTrackDevice(trackId, id, { state: JSON.parse(JSON.stringify(payload.state)) });
         },
         remove: () => this.removeTrackDevice(trackId, device.id),
+      };
+    }
+    if (sketchId.startsWith('transport/')) {
+      const parts2 = sketchId.split('/');
+      if (parts2.length >= 3) {
+        const [, trackId, clipId] = parts2;
+        const device = this.clipIn(trackId, clipId)?.transport?.devices[chainIdx];
+        if (!device) return null;
+        return {
+          device,
+          insertAfter: (payload) => {
+            const id = this.insertClipTransportDeviceAt(
+              trackId, clipId, chainIdx + 1, payload.moduleType);
+            if (id) {
+              this.replaceClipTransportDevice(trackId, clipId, id,
+                { state: JSON.parse(JSON.stringify(payload.state)) });
+            }
+          },
+          remove: () => this.removeClipTransportDevice(trackId, clipId, device.id),
+        };
+      }
+      const trackId = parts2[1];
+      const device = this.laneById(trackId)?.transport?.devices[chainIdx];
+      if (!device) return null;
+      return {
+        device,
+        insertAfter: (payload) => {
+          const id = this.insertTrackTransportDeviceAt(trackId, chainIdx + 1, payload.moduleType);
+          if (id) {
+            this.replaceTrackTransportDevice(trackId, id,
+              { state: JSON.parse(JSON.stringify(payload.state)) });
+          }
+        },
+        remove: () => this.removeTrackTransportDevice(trackId, device.id),
       };
     }
     return null; // multi/ — per-effect clipboard doesn't fan out across clips
@@ -2184,7 +2233,16 @@ export class ArrangementStore {
    */
   get clipViewTarget(): { track: Track; clip: Clip } | null {
     const pinned = this.clipViewPinPath ? this.clipByPath(this.clipViewPinPath) : null;
-    return pinned ?? this.selectedClip;
+    if (pinned) return pinned;
+    const sel = this.selectedClip;
+    if (!sel) return null;
+    // SELECTING an interior sub-clip must NOT retarget the panel — you're
+    // clicking around inside the sequence you're already editing, and swapping
+    // the panel out from under yourself makes the lane unusable. The panel
+    // stays on the OWNING sequence clip; only an explicit double-click on a
+    // sub-clip's header (setClipViewTarget) pins it.
+    const owner = sequenceOwnerOf(this.composition, sel.track.id);
+    return owner ? { track: owner.track, clip: owner.clip } : sel;
   }
 
   /**
@@ -4471,7 +4529,7 @@ export class ArrangementStore {
   ): string | null {
     const dev = this.makeTransportDevice(moduleType);
     this.mutate('add track transition', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       if (!t) return;
       t.transport ??= { devices: [], wires: [] };
       const i = Math.max(0, Math.min(index, t.transport.devices.length));
@@ -4484,7 +4542,7 @@ export class ArrangementStore {
     trackId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string,
   ) {
     this.mutate('change track transition', (d) => {
-      const dev = d.tracks.find((t) => t.id === trackId)
+      const dev = draftLane(d, trackId)
         ?.transport?.devices.find((x) => x.id === deviceId);
       if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
     }, coalesceKey);
@@ -4502,7 +4560,7 @@ export class ArrangementStore {
 
   moveTrackTransportDevice(trackId: string, from: number, to: number) {
     this.mutate('reorder track transition', (d) => {
-      const devs = d.tracks.find((t) => t.id === trackId)?.transport?.devices;
+      const devs = draftLane(d, trackId)?.transport?.devices;
       if (devs) moveInArray(devs, from, to);
     });
   }
@@ -4511,7 +4569,7 @@ export class ArrangementStore {
     this.mutateCheap(
       'set param',
       (d) => {
-        const dev = d.tracks.find((t) => t.id === trackId)
+        const dev = draftLane(d, trackId)
           ?.transport?.devices.find((x) => x.id === deviceId);
         if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
       },
@@ -4523,7 +4581,7 @@ export class ArrangementStore {
   /** Remove a track transport-section device; an emptied section is deleted. */
   removeTrackTransportDevice(trackId: string, deviceId: string) {
     this.mutate('remove track transition', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       if (!t?.transport) return;
       t.transport.devices = t.transport.devices.filter((x) => x.id !== deviceId);
       if (t.transport.wires) {
