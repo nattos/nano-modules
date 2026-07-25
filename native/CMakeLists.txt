@@ -278,6 +278,11 @@ add_executable(test_param_cache tests/test_param_cache.cpp)
 target_link_libraries(test_param_cache PRIVATE param_cache Catch2::Catch2WithMain)
 catch_discover_tests(test_param_cache)
 
+# Pure header (Desc + validate only outside __wasm__) — no deps.
+add_executable(test_sdf_field tests/test_sdf_field.cpp)
+target_link_libraries(test_sdf_field PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_sdf_field)
+
 add_executable(test_protocol tests/test_protocol.cpp)
 target_link_libraries(test_protocol PRIVATE resolume_protocol Catch2::Catch2WithMain)
 catch_discover_tests(test_protocol)
