@@ -393,6 +393,48 @@ inline std::vector<CompNode> compositeTreeAtBeat(
 }
 
 /**
+ * The interior sub-clips a sequence clip's INTERIOR clock will reach within
+ * `lookaheadBeats` — the precache window, expressed on the interior axis.
+ *
+ * This is the interior twin of the plain lookahead scan (`startBeat < beatEnd
+ * && end > beat`), and it uses the SAME strict comparisons so a clip is never
+ * warmed earlier inside a sequence than it would be outside one. Mapping both
+ * ends of the arrangement window through the interior clock handles warp,
+ * sequence speed and a transport controller for free. A window that WRAPS (the
+ * interior loops within the lookahead) returns the whole lane — the clip at
+ * interior beat 0 really is upcoming again, and a forward-only scan would miss
+ * it and hitch at the loop point.
+ */
+inline std::vector<std::string> sequenceWarmIds(
+    const ClipM& clip, const TrackM& lane, const WarpClock& clock, double beat,
+    double lookaheadBeats, double baseBPM,
+    const std::unordered_map<std::string, double>* appliedContentSec) {
+  std::vector<std::string> out;
+  const double durSec = sequenceInteriorSec(lane, baseBPM);
+  if (!(durSec > 0)) return out;
+  const double b0 = std::max(beat, clip.startBeat);
+  // Clamp JUST INSIDE the clip's end: sampling exactly at the end of a looping
+  // clip folds the content clock back to 0, which would read as "the interior
+  // wraps inside the window" when in fact the clip is simply over.
+  const double b1 = std::min(beat + lookaheadBeats,
+                             clip.startBeat + clip.lengthBeat - 1e-9);
+  if (b1 < b0) return out;
+  const auto s0 = sequenceContentSecAt(clip, clip.startBeat, durSec, clock, b0, appliedContentSec);
+  if (!s0) return out;
+  const auto s1 = sequenceContentSecAt(clip, clip.startBeat, durSec, clock, b1, appliedContentSec);
+  const double i0 = interiorBeatOf(*s0, baseBPM);
+  const double i1 = s1 ? interiorBeatOf(*s1, baseBPM) : i0;
+  const double consumedSec = (b1 - b0) * 60.0 / (baseBPM > 0 ? baseBPM : 120.0);
+  const bool wrapped = i1 < i0 - 1e-9 || consumedSec >= durSec;
+  for (const auto& sub : lane.clips) {
+    if (sub.bypassed) continue;
+    if (!wrapped && !(sub.startBeat < i1 && sub.startBeat + sub.lengthBeat > i0)) continue;
+    out.push_back(sub.id);
+  }
+  return out;
+}
+
+/**
  * Which interior sub-clip each SEQUENCE clip is showing at `beat`
  * (seqClipId → active sub-clip id, "" when the interior is transparent).
  *
@@ -410,7 +452,8 @@ inline std::vector<CompNode> compositeTreeAtBeat(
  */
 inline std::map<std::string, std::string> sequencePickDecisions(
     const CompositionM& comp, double beat, const WarpClock& clock,
-    const std::unordered_map<std::string, double>* appliedContentSec) {
+    const std::unordered_map<std::string, double>* appliedContentSec,
+    double lookaheadBeats) {
   std::map<std::string, std::string> out;
   for (const auto& t : comp.tracks) {
     if (t.kind != TrackKind::Track && t.kind != TrackKind::Scene) continue;
@@ -429,7 +472,18 @@ inline std::map<std::string, std::string> sequencePickDecisions(
           sequenceContentSecAt(c, c.startBeat, durSec, clock, beat, appliedContentSec);
       const ClipM* sub =
           cs ? pickActiveClip(*lane, interiorBeatOf(*cs, comp.baseBPM)) : nullptr;
-      out[c.id] = sub ? sub->id : std::string();
+      // The PRECACHE window rides the same decision. An ungrouped track gets
+      // warm-entry boundaries from nextEvalBoundary (clip start - lookahead);
+      // interior boundaries are invisible to it, so without this the interior
+      // warm set would only refresh when some unrelated top-level boundary
+      // happened to fire — i.e. the interior would prefetch late, or not at all.
+      std::string dec = sub ? sub->id : std::string();
+      for (const auto& id : sequenceWarmIds(c, *lane, clock, beat, lookaheadBeats,
+                                            comp.baseBPM, appliedContentSec)) {
+        dec += '\x1f';
+        dec += id;
+      }
+      out[c.id] = std::move(dec);
     }
   }
   return out;

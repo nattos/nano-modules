@@ -417,8 +417,12 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
   }
 
   int32_t nextIndex = 2;
-  for (const auto& track : doc.tracks) {
-    if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene) continue;
+  // One body for BOTH a top-level track and a sequence clip's INTERIOR lane.
+  // A lane passes index -1: it is a first-class mini-timeline (clip_at,
+  // clip_duration, clip_group, streams.parent() from an interior effect, and
+  // the scene-precache ordinal machinery all work inside it) but it is NOT
+  // enumerated, so `enumCount` and every existing ordinal are unchanged.
+  auto buildTrackStream = [&](const TrackM& track, int32_t index) {
     const bool scene = track.kind == TrackKind::Scene;
     StreamInfo s;
     s.handle = streamHandleOf("track:" + track.id);
@@ -429,7 +433,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
     s.bpm = doc.baseBPM;
     s.name = track.name;
     s.ownerId = track.id;
-    s.index = nextIndex++;
+    s.index = index;
     s.clipCount = static_cast<int32_t>(track.clips.size());
 
     const std::vector<size_t> order = gridOrder(track);
@@ -487,10 +491,21 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
     }
     t.trackByTrackId[track.id] = s.handle;
     push(std::move(s));
+  };
+  for (const auto& track : doc.tracks) {
+    if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene) continue;
+    buildTrackStream(track, nextIndex++);
+    // Interior lanes ride along, unenumerated.
+    for (const auto& clip : track.clips) {
+      if (const TrackM* lane = sequenceLaneOf(clip)) buildTrackStream(*lane, -1);
+    }
   }
   t.enumCount = nextIndex;
 
-  for (const auto& track : doc.tracks) {
+  // allLanes: an interior sub-clip needs its own resource + content stream
+  // exactly like a top-level clip (the pump addresses it, effects fork it).
+  for (const TrackM* lanePtr : allLanes(doc)) {
+    const TrackM& track = *lanePtr;
     if (track.kind != TrackKind::Track && track.kind != TrackKind::Scene) continue;
     for (const auto& clip : track.clips) {
       // The clip's ASSET, as a resource: any content-bearing clip — video

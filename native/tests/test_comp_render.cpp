@@ -3410,3 +3410,176 @@ TEST_CASE("sequence: the interior is a kind-6 content stream", "[comp_sequence]"
   }
   CHECK(found);
 }
+
+// ── Prefetch / announce parity: a sequence clip must prewarm and take launch
+// hints exactly as if its sub-clips were sitting on a plain track. ───────────
+
+namespace {
+
+/** Video clip ids present in the pump/warm desc set. */
+std::set<std::string> warmedIds(comp::CompExecutor& cx) {
+  std::set<std::string> out;
+  for (const auto& d : json::parse(cx.videoDescsJson())) {
+    out.insert(d.value("clipId", std::string()));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("sequence prefetch parity: track mode warms the same upcoming clips",
+          "[comp_sequence]") {
+  // Same four media clips, twice: loose on a track, and grouped into a
+  // sequence clip spanning the same beats. The warm set must match at every
+  // playhead — the lookahead is just expressed on the interior axis.
+  auto looseDoc = [] {
+    return mkComposition(json::array({
+        mkTrack("t1", json::array({mkVideoClip("v0", 0, 8), mkVideoClip("v1", 8, 8),
+                                   mkVideoClip("v2", 16, 8), mkVideoClip("v3", 24, 8)})),
+    }));
+  };
+  auto seqDoc = [] {
+    return mkComposition(json::array({
+        mkTrack("t1", json::array({mkSequenceClip(
+                          "seq", 0, 32, "lane1",
+                          json::array({mkVideoClip("v0", 0, 8), mkVideoClip("v1", 8, 8),
+                                       mkVideoClip("v2", 16, 8), mkVideoClip("v3", 24, 8)}))})),
+    }));
+  };
+
+  EvalHarness a, b;
+  a.cx.loadDocument(looseDoc());
+  b.cx.loadDocument(seqDoc());
+
+  // kLookaheadBeats is 8, so each playhead should reach exactly one clip ahead.
+  for (const double beat : {0.0, 4.0, 9.0, 17.0, 25.0}) {
+    a.cx.seekBeat(beat); a.cx.update(0.0); a.cx.transportResolve(0.0);
+    b.cx.seekBeat(beat); b.cx.update(0.0); b.cx.transportResolve(0.0);
+    const auto loose = warmedIds(a.cx);
+    const auto seq = warmedIds(b.cx);
+    INFO("beat " << beat);
+    INFO("loose: " << json(std::vector<std::string>(loose.begin(), loose.end())).dump());
+    INFO("seq:   " << json(std::vector<std::string>(seq.begin(), seq.end())).dump());
+    CHECK(seq == loose);
+  }
+}
+
+TEST_CASE("sequence prefetch: a distant sub-clip is NOT warmed early",
+          "[comp_sequence]") {
+  // The bound matters: grouping must not turn "warm what's next" into "open
+  // every decoder in the interior".
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 64, "lane1",
+                        json::array({mkVideoClip("near", 0, 8), mkVideoClip("far", 48, 8)}))})),
+  })));
+  h.cx.seekBeat(0.0);
+  h.cx.update(0.0);
+  h.cx.transportResolve(0.0);
+  const auto w = warmedIds(h.cx);
+  CHECK(w.count("near") == 1);
+  CHECK(w.count("far") == 0);   // 48 beats out — far past the lookahead
+
+  // ...but it IS warmed once the interior clock approaches it.
+  h.cx.seekBeat(44.0);
+  h.cx.update(0.0);
+  h.cx.transportResolve(0.0);
+  CHECK(warmedIds(h.cx).count("far") == 1);
+}
+
+TEST_CASE("sequence prefetch: a LOOPING interior warms across the wrap",
+          "[comp_sequence]") {
+  // The interior boundary recurs every pass, so the clip at interior beat 0 is
+  // "upcoming" again as the pass ends — a forward-only scan would miss it and
+  // the loop point would hitch.
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 64, "lane1",
+                        json::array({mkVideoClip("head", 0, 8), mkVideoClip("tail", 8, 8)}))})),
+  })));
+  // Interior extent 16 beats; at beat 14 the next 8 beats wrap past 16 back to 0.
+  h.cx.seekBeat(14.0);
+  h.cx.update(0.0);
+  h.cx.transportResolve(0.0);
+  const auto w = warmedIds(h.cx);
+  INFO(h.cx.videoDescsJson());
+  CHECK(w.count("tail") == 1);
+  CHECK(w.count("head") == 1);  // the wrap target
+}
+
+TEST_CASE("sequence scene mode: launch, prewarm and announce reach the interior lane",
+          "[comp_sequence]") {
+  // A scene-mode interior is a scene track in every respect — it just lives
+  // inside a clip. Its lane id keys sceneLaunch_/announces_ like any track id.
+  EvalHarness h;
+  json laneScene = json::object();
+  laneScene["kind"] = "scene";
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 32, "lane1",
+                        json::array({mkVideoClip("sA", 0, 4), mkVideoClip("sB", 4, 4),
+                                     mkVideoClip("sC", 8, 4)}),
+                        json::array(), laneScene)})),
+  })));
+  h.cx.seekBeat(0.0);
+  h.cx.update(0.0);
+
+  // Nothing launched ⇒ the interior renders nothing (scenes don't follow beats).
+  CHECK(h.cx.chainKeysJson().find("clip_sA") == std::string::npos);
+
+  // Launching by the LANE's id works — findSceneClip resolves interior lanes.
+  h.cx.launchScene("lane1", "sA");
+  h.cx.update(0.0);
+  INFO(h.cx.chainKeysJson());
+  CHECK(h.cx.chainKeysJson().find("clip_sA") != std::string::npos);
+  CHECK(warmedIds(h.cx).count("sA") == 1);
+
+  // The precache planner reaches the interior: with a scene live, its nearest
+  // launchable siblings warm (the ordinal machinery needs the LANE's track
+  // stream, which is minted unenumerated).
+  h.cx.transportResolve(0.0);
+  const auto w = warmedIds(h.cx);
+  INFO(json(std::vector<std::string>(w.begin(), w.end())).dump());
+  CHECK((w.count("sB") == 1 || w.count("sC") == 1));
+
+  // An ANNOUNCE (the autopilot's "I'll launch ordinal N in ~eta") targets the
+  // lane and pins its target into the warm set ahead of the fire.
+  h.cx.announceScene("lane1", "sC", 0.4, 1);
+  h.cx.update(0.0);
+  CHECK(warmedIds(h.cx).count("sC") == 1);
+}
+
+TEST_CASE("sequence scene mode: the interior lane gets a real track stream",
+          "[comp_sequence]") {
+  // streams.parent() from an effect inside the interior must resolve to the
+  // LANE (not the session clock), and the lane must NOT consume an enumerated
+  // ordinal (that would renumber every existing track stream).
+  EvalHarness plain, seq;
+  plain.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("c1", 0, 8,
+                                        json::array({mkDevice("d1", "source.solid_color")}))})),
+  })));
+  json laneScene = json::object();
+  laneScene["kind"] = "scene";
+  seq.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 8, "lane1",
+                        json::array({mkClip("c1", 0, 8,
+                                            json::array({mkDevice("d1", "source.solid_color")}))}),
+                        json::array(), laneScene)})),
+  })));
+  const json a = json::parse(plain.cx.streamsJson());
+  const json b = json::parse(seq.cx.streamsJson());
+  CHECK(b.value("enumCount", -1) == a.value("enumCount", -2));  // unenumerated
+
+  bool laneFound = false;
+  for (const auto& s : b.at("streams")) {
+    if (s.value("ownerId", std::string()) != "lane1") continue;
+    laneFound = true;
+    CHECK(s.value("kind", 0) == 4);      // SceneTrack — the lane is in scene mode
+    CHECK(s.value("index", 0) == -1);    // present but not enumerated
+  }
+  CHECK(laneFound);
+}

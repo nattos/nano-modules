@@ -506,7 +506,11 @@ std::map<std::string, std::vector<const ClipM*>> CompExecutor::scenePrewarmPlan(
 
 const ClipM* CompExecutor::findSceneClip(const std::string& trackId,
                                          const std::string& sceneId) const {
-  for (const auto& t : doc_.tracks) {
+  // allLanes: a SEQUENCE clip's interior lane in scene mode is a scene lane
+  // like any other — its cells launch, heal, prewarm and announce through the
+  // same machinery, keyed by the lane's own (globally unique) track id.
+  for (const TrackM* tp : allLanes(doc_)) {
+    const TrackM& t = *tp;
     if (t.id != trackId || t.kind != TrackKind::Scene) continue;
     for (const auto& c : t.clips) {
       if (c.id == sceneId) return &c;
@@ -739,8 +743,8 @@ void CompExecutor::healSceneLaunches() {
       continue;
     }
     const TrackM* track = nullptr;
-    for (const auto& t : doc_.tracks) {
-      if (t.id == it->first && t.kind == TrackKind::Scene) { track = &t; break; }
+    for (const TrackM* t : allLanes(doc_)) {
+      if (t->id == it->first && t->kind == TrackKind::Scene) { track = t; break; }
     }
     const ClipM* scene = nullptr;
     if (track) {
@@ -937,21 +941,30 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
     if (effectiveBypassed(t)) continue;
     for (const auto& c : t.clips) {
       if (!(c.startBeat < beatEnd && c.startBeat + c.lengthBeat > beat)) continue;
-      // A SEQUENCE clip in the window: warm EVERY video sub-clip of its
-      // interior, PRIMED. Interiors are small, and warming the whole lane
-      // removes a class of wrap-around lookahead bugs (an interior boundary
-      // recurs every loop pass, so "which sub-clip is next" isn't a simple
-      // forward scan). Descs are transport-shaped like the active ones.
+      // A SEQUENCE clip in the window: warm the interior sub-clips the INTERIOR
+      // clock is about to reach — the same lookahead an ungrouped track applies,
+      // just expressed on the interior axis (sequenceWarmIds, shared with the
+      // per-frame decision compare so this set can't go stale). Descs ship
+      // PRIMED so the pump decodes AND injects the entry frame, which is what
+      // makes an interior switch flash-free.
       if (const TrackM* lane = sequenceLaneOf(c)) {
-        for (const auto& sub : lane->clips) {
-          if (!sub.hasSourceUrl || seen.count(sub.id)) continue;
-          nlohmann::json d = videoDescFor(sub, c.startBeat, /*unbounded=*/true);
+        if (c.bypassed) continue;
+        for (const auto& subId : sequenceWarmIds(c, *lane, clock_, beat, kLookaheadBeats,
+                                                 doc_.baseBPM,
+                                                 &streamsTable_.appliedContentSec)) {
+          if (seen.count(subId)) continue;
+          const ClipM* sub = nullptr;
+          for (const auto& x : lane->clips) {
+            if (x.id == subId) { sub = &x; break; }
+          }
+          if (!sub || !sub->hasSourceUrl) continue;
+          nlohmann::json d = videoDescFor(*sub, c.startBeat, /*unbounded=*/true);
           if (d.is_null()) continue;
           d["transport"] = true;
           d.erase("loop");
           d.erase("speed");
           d["prime"] = true;
-          seen.insert(sub.id);
+          seen.insert(subId);
           warm.push_back(std::move(d));
         }
         continue;
@@ -1063,7 +1076,8 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   // appliedContentSec for transport-driven sequences, identical in class to
   // the rail-bypass readback loop.
   std::map<std::string, std::string> seqPicks =
-      sequencePickDecisions(doc_, beat, clock_, &streamsTable_.appliedContentSec);
+      sequencePickDecisions(doc_, beat, clock_, &streamsTable_.appliedContentSec,
+                            kLookaheadBeats);
   if (evalValid_ && seqPicks != evalSequencePicks_) evalValid_ = false;
 
   // Span hit: the evaluation at evalBeat_ is valid for [evalBeat_, boundary).
@@ -1232,10 +1246,10 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
   // executes unconditionally (no beat window — the track is always "active";
   // transition effects must watch even while the track idles).
   std::vector<const TrackM*> trackSections;
-  for (const auto& t : doc_.tracks) {
-    if (t.kind != TrackKind::Scene || t.bypassed || !t.hasTransport) continue;
-    for (const auto& d : t.transport.devices) {
-      if (catalog_.has(d.moduleType)) { trackSections.push_back(&t); break; }
+  for (const TrackM* t : allLanes(doc_)) {
+    if (t->kind != TrackKind::Scene || t->bypassed || !t->hasTransport) continue;
+    for (const auto& d : t->transport.devices) {
+      if (catalog_.has(d.moduleType)) { trackSections.push_back(t); break; }
     }
   }
   nlohmann::json built = buildTransportSketch(
@@ -1966,7 +1980,8 @@ void CompExecutor::readTriggerSignals() {
   // 2. Match against scene tracks: effective listen rail = scene ?? track ??
   //    global; channel via the lock-step auto-assignment; the FIRST matching
   //    scene in array order wins one event; a LATER event overwrites the slot.
-  for (const auto& t : doc_.tracks) {
+  for (const TrackM* tp : allLanes(doc_)) {
+    const TrackM& t = *tp;
     if (t.kind != TrackKind::Scene || t.bypassed) continue;
     const std::vector<int> channels = sceneChannelAssignments(t);
     for (const auto& ev : fired) {
