@@ -3293,3 +3293,92 @@ TEST_CASE("sequence: layerTargets records the OUTER track, not the interior lane
   CHECK(lt.contains("t2"));
   CHECK(lt["t2"]["instanceKey"].get<std::string>().find("clip_seq") != std::string::npos);
 }
+
+TEST_CASE("sequence: interior video follows the synthetic times row (nested mapping)",
+          "[comp_sequence]") {
+  // The four-level mapping proved end to end:
+  //   arrangement beat -> the sequence's content sec -> interior beat
+  //                    -> the sub-clip's own source sec
+  // At 120 BPM one beat = 0.5 s, and every link here is identity-shaped, so
+  // the expected source second is hand-computable.
+  EvalHarness h;
+  json sub = mkVideoClip("v1", 0, 8);   // lane-local: interior beats 0..8
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip("seq", 4, 8, "lane1",
+                                                json::array({std::move(sub)}))})),
+  })));
+
+  auto rowFor = [&](const std::string& clipId) -> comp::CompExecutor::TransportResolved {
+    const json order = json::parse(h.cx.transportOrderJson());
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].get<std::string>() == clipId) return h.cx.transportResolved()[i];
+    }
+    return {};
+  };
+
+  // Beat 6 = 2 beats into a sequence clip that starts at beat 4 ⇒ 1.0 s of
+  // content ⇒ interior beat 2 ⇒ 1.0 s into the sub-clip's own source.
+  h.cx.seekBeat(6.0);
+  h.cx.update(0.0);
+  h.cx.transportResolve(0.0);
+  const auto r = rowFor("v1");
+  INFO(h.cx.transportOrderJson());
+  CHECK(r.valid);
+  CHECK(r.active >= 0.5);
+  CHECK(r.timeSec == Catch::Approx(1.0).margin(1e-6));
+
+  // The desc reaches the pump, transport-shaped and unbounded (never rebased
+  // per loop pass — that would churn the desc every wrap and reset the pump).
+  const json descs = json::parse(h.cx.videoDescsJson());
+  INFO(descs.dump());
+  bool found = false;
+  for (const auto& d : descs) {
+    if (d.value("clipId", std::string()) != "v1") continue;
+    found = true;
+    CHECK(d.value("transport", false) == true);
+    CHECK(d.contains("loop") == false);
+    CHECK(d.value("startBeat", -1.0) == 4.0);       // the SEQUENCE clip's start
+    CHECK(d.value("lengthBeat", 0.0) > 1e8);        // unbounded
+  }
+  CHECK(found);
+}
+
+TEST_CASE("sequence: the interior clock keeps mapping across a loop wrap",
+          "[comp_sequence]") {
+  EvalHarness h;
+  // Interior extent 4 beats (2 s); the clip spans 16 beats ⇒ four passes.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip("seq", 0, 16, "lane1",
+                                                json::array({mkVideoClip("v1", 0, 4)}))})),
+  })));
+  auto timeAt = [&](double beat) {
+    h.cx.seekBeat(beat);
+    h.cx.update(0.0);
+    h.cx.transportResolve(0.0);
+    const json order = json::parse(h.cx.transportOrderJson());
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].get<std::string>() == "v1") return h.cx.transportResolved()[i].timeSec;
+    }
+    return -1.0;
+  };
+  // Beat 1 → 0.5 s in. Beat 5 is ONE FULL PASS later → the same 0.5 s.
+  CHECK(timeAt(1.0) == Catch::Approx(0.5).margin(1e-6));
+  CHECK(timeAt(5.0) == Catch::Approx(0.5).margin(1e-6));
+  CHECK(timeAt(3.0) == Catch::Approx(1.5).margin(1e-6));
+}
+
+TEST_CASE("sequence: the transport ROW SET changes when an interior row appears",
+          "[comp_sequence]") {
+  // Synthetic rows contribute no chain entries, so the section-sketch signature
+  // can't see them appear — without a separate row signature the host's
+  // row-order mirror goes stale and interior video freezes on the old row.
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip("seq", 0, 8, "lane1",
+                                                json::array({mkVideoClip("v1", 0, 8)}))})),
+  })));
+  h.cx.seekBeat(1.0);
+  const uint32_t flags = h.cx.update(0.0);
+  CHECK((flags & comp::kCompTransportSetChanged) != 0);
+  CHECK(json::parse(h.cx.transportOrderJson()).size() == 1);
+}

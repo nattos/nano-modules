@@ -377,6 +377,35 @@ struct CompositionM {
   std::vector<TrackM> tracks;
 };
 
+/**
+ * Every clip-bearing lane in `comp`: each top-level track, then each sequence
+ * clip's INTERIOR lane. Depth is 1 by the one-level rule (parseTrack enforces
+ * it), so this is a flat two-level walk. Use it wherever a scan addresses
+ * CLIPS by a globally-unique id — a clip authored inside a sequence is
+ * otherwise invisible to it. LOCK-STEP: composition.ts allLanes.
+ */
+inline std::vector<TrackM*> allLanes(CompositionM& comp) {
+  std::vector<TrackM*> out;
+  for (auto& t : comp.tracks) {
+    out.push_back(&t);
+    for (auto& c : t.clips) {
+      if (!c.sequence.empty()) out.push_back(&c.sequence.front());
+    }
+  }
+  return out;
+}
+
+inline std::vector<const TrackM*> allLanes(const CompositionM& comp) {
+  std::vector<const TrackM*> out;
+  for (const auto& t : comp.tracks) {
+    out.push_back(&t);
+    for (const auto& c : t.clips) {
+      if (!c.sequence.empty()) out.push_back(&c.sequence.front());
+    }
+  }
+  return out;
+}
+
 // ── JSON parsing (defensive: bad/missing fields fall back to defaults) ──────
 
 namespace model_detail {

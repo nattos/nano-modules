@@ -275,6 +275,13 @@ class CompExecutor {
    *  driven-only). Called from ensureEvalAt; a chain-sig change raises
    *  kCompStructureChanged + kCompTransportSetChanged. */
   void rebuildTransportSketch(double beat, uint32_t& flags);
+  /** Append times-channel rows for every interior video sub-clip of a sequence
+   *  clip. Called from rebuildTransportSketch AFTER the driven rows, so a
+   *  sequence's own controller row always precedes its interior rows. */
+  void appendSyntheticTransportRows();
+  /** Resolve those rows analytically (no section instance): arrangement beat →
+   *  the sequence's content sec → interior beat → the sub-clip's source sec. */
+  void resolveSyntheticTransportRows();
   /** Apply queued streams.seek/stop write verbs (validated: scene tracks
    *  only, bypassed/empty targets dropped — the trigger matcher's rules).
    *  Runs at transportResolve entry (render-fired ops from last frame; works
@@ -350,6 +357,10 @@ class CompExecutor {
   nlohmann::json cleanSketch_;  // structural basis (mirror-built, no live outputs)
   nlohmann::json execSketch_;   // clean + folded producer outputs (what execute() gets)
   nlohmann::json layerTargets_ = nlohmann::json::object();  // ownerId → {instanceKey, field}
+  /** A FLAT clock at the document tempo — a sequence clip's interior is
+   *  unwarped by construction (warp segments are arrangement-beat spans, so
+   *  they don't reach inside). Rebuilt with clock_. */
+  WarpClock interiorClock_{WarpCurve{}, 120.0};
   bool hasContent_ = false;
   bool dirty_ = false;  // consumed by the next render()
   std::string chainSig_;
@@ -519,12 +530,28 @@ class CompExecutor {
     std::string clipId;
     std::string moduleType;   // the winning controller device's type
     std::string instanceKey;  // transportInstanceKey(clip, device)
+    /** SYNTHETIC row: an interior video sub-clip of a SEQUENCE clip. It has no
+     *  section instance — its time is computed analytically from the nested
+     *  clock (arrangement beat → the sequence's content sec → interior beat →
+     *  the sub-clip's own source sec). Riding the existing times channel keeps
+     *  the pump's nested mapping in ONE place and avoids a per-loop-pass desc
+     *  churn (a rebased startBeat would change every pass). */
+    bool synthetic = false;
+    const ClipM* seqClip = nullptr;   // the owning sequence clip
+    double interiorDurSec = 0;        // sequenceInteriorSec(lane, baseBPM)
+    double subVideoDurSec = 0;        // the sub-clip's own media duration
   };
   std::vector<TransportRow> transportRows_;
   std::vector<TransportResolved> transportResolved_;
   nlohmann::json transportCleanSketch_;
   nlohmann::json transportExecSketch_;
   std::string transportSig_;
+  /** Signature of the times-channel ROW SET (concatenated clip ids). Synthetic
+   *  rows contribute no chain entries, so `transportSig_` (derived from the
+   *  section sketch) cannot see them appear or vanish — without this the host's
+   *  row-order mirror would go permanently stale and interior video would
+   *  freeze on the previous row. */
+  std::string transportRowSig_;
   bool transportDirty_ = false;
   /** Clips whose controller latched transport_ended=1 (scene auto-stop input;
    *  pruned to the current row set every resolve). */

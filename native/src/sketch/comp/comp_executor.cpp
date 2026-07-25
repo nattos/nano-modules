@@ -122,6 +122,9 @@ void CompExecutor::registerCapabilities(const std::string& moduleType,
 void CompExecutor::rebuildClock() {
   clock_ = WarpClock(WarpCurve(derivedWarpSegments(doc_), compositionLengthBeats(doc_)),
                      doc_.baseBPM);
+  // The interior of a sequence clip runs FLAT at the document tempo — warp
+  // segments are arrangement-beat spans and deliberately don't reach inside.
+  interiorClock_ = WarpClock(WarpCurve(), doc_.baseBPM);
   transport_.reanchor();
 }
 
@@ -258,13 +261,16 @@ void CompExecutor::setDeviceParam(const std::string& ownerId, const std::string&
     }
     return false;
   };
-  for (auto& t : doc_.tracks) {
-    if (t.id == ownerId) {
-      if (patch(t.sketch)) return;
+  // allLanes, not doc_.tracks: a device inside a sequence's interior (or on the
+  // interior lane's own FX bus) is a param target like any other — without this
+  // a slider drag inside a sequence silently does nothing.
+  for (TrackM* t : allLanes(doc_)) {
+    if (t->id == ownerId) {
+      if (patch(t->sketch)) return;
       // TRACK transport sections (transition effects) take params too.
-      if (t.hasTransport && patch(t.transport)) return;
+      if (t->hasTransport && patch(t->transport)) return;
     }
-    for (auto& c : t.clips) {
+    for (auto& c : t->clips) {
       if (c.id != ownerId) continue;
       if (patch(c.sketch)) return;
       // Transport-section devices are param targets too (same cheap-op path).
@@ -285,8 +291,8 @@ void CompExecutor::setSourceTransform(const std::string& clipId,
   // The transform rides the video DESC (videoDescFor reads sourceJson), so the
   // eval must re-run for the pump to see it (kCompVideoSetChanged).
   invalidateEval();
-  for (auto& t : doc_.tracks) {
-    for (auto& c : t.clips) {
+  for (TrackM* t : allLanes(doc_)) {
+    for (auto& c : t->clips) {
       if (c.id != clipId) continue;
       if (!c.sourceJson.is_object()) return;  // no source → nothing to place
       c.sourceJson["transform"] = transform;
@@ -316,9 +322,9 @@ void CompExecutor::setLanePoints(const std::string& ownerId, const std::string& 
     }
     return false;
   };
-  for (auto& t : doc_.tracks) {
-    if (t.id == ownerId && patch(t.automation)) return;
-    for (auto& c : t.clips) {
+  for (TrackM* t : allLanes(doc_)) {
+    if (t->id == ownerId && patch(t->automation)) return;
+    for (auto& c : t->clips) {
       if (c.id == ownerId && patch(c.automation)) return;
     }
   }
@@ -880,6 +886,22 @@ nlohmann::json CompExecutor::videoDescsForTree(const std::vector<CompNode>& tree
             nlohmann::json fd = videoDescFor(*n.forkClip, n.forkAnchorBeat, true);
             if (!fd.is_null()) descs.push_back(std::move(fd));
           }
+          // A SEQUENCE node is a leaf AND a parent: its interior video sub-clip
+          // needs a desc too. It ships unbounded and anchored at the SEQUENCE
+          // clip's start (never rebased per loop pass — that would churn the
+          // desc every wrap and reset the pump); its actual frame time rides
+          // the times channel from a synthetic row, which is where the nested
+          // mapping lives.
+          if (n.isSequence) {
+            for (const auto& k : n.children) {
+              nlohmann::json sd = videoDescFor(*k.clip, n.clip->startBeat, /*unbounded=*/true);
+              if (sd.is_null()) continue;
+              sd["transport"] = true;
+              sd.erase("loop");
+              sd.erase("speed");
+              descs.push_back(std::move(sd));
+            }
+          }
         }
       };
   walk(tree);
@@ -914,8 +936,27 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
     if (t.kind != TrackKind::Track) continue;
     if (effectiveBypassed(t)) continue;
     for (const auto& c : t.clips) {
-      if (!c.hasSourceUrl) continue;
       if (!(c.startBeat < beatEnd && c.startBeat + c.lengthBeat > beat)) continue;
+      // A SEQUENCE clip in the window: warm EVERY video sub-clip of its
+      // interior, PRIMED. Interiors are small, and warming the whole lane
+      // removes a class of wrap-around lookahead bugs (an interior boundary
+      // recurs every loop pass, so "which sub-clip is next" isn't a simple
+      // forward scan). Descs are transport-shaped like the active ones.
+      if (const TrackM* lane = sequenceLaneOf(c)) {
+        for (const auto& sub : lane->clips) {
+          if (!sub.hasSourceUrl || seen.count(sub.id)) continue;
+          nlohmann::json d = videoDescFor(sub, c.startBeat, /*unbounded=*/true);
+          if (d.is_null()) continue;
+          d["transport"] = true;
+          d.erase("loop");
+          d.erase("speed");
+          d["prime"] = true;
+          seen.insert(sub.id);
+          warm.push_back(std::move(d));
+        }
+        continue;
+      }
+      if (!c.hasSourceUrl) continue;
       if (seen.count(c.id)) continue;
       nlohmann::json d = videoDescFor(c, c.startBeat);
       if (d.is_null()) continue;
@@ -1220,6 +1261,11 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
     row.instanceKey = transportInstanceKey(c->id, dev->id);
     transportRows_.push_back(std::move(row));
   }
+  // SYNTHETIC rows for interior video sub-clips. ORDER IS A CONTRACT: every
+  // sequence clip's OWN (driven) row is already in the vector above, so a
+  // synthetic row appended here reads this frame's appliedContentSec[seqId]
+  // rather than last frame's.
+  appendSyntheticTransportRows();
   transportResolved_.assign(transportRows_.size(), TransportResolved{});
   std::string sig = chainSigOf(transportCleanSketch_);
   if (sig != transportSig_) {
@@ -1228,6 +1274,91 @@ void CompExecutor::rebuildTransportSketch(double beat, uint32_t& flags) {
     // refreshes the times-channel row order. (Dirty already followed the JSON
     // diff above — a sig change is always a JSON change.)
     flags |= kCompStructureChanged | kCompTransportSetChanged;
+  }
+  // Synthetic rows contribute NO chain entries, so the sig above can't see them
+  // appear or vanish. Track the row set separately or the host's row-order
+  // mirror goes permanently stale and interior video freezes on the old row.
+  std::string rowSig;
+  for (const auto& r : transportRows_) {
+    rowSig += r.clipId;
+    rowSig += '\x1f';
+  }
+  if (rowSig != transportRowSig_) {
+    transportRowSig_ = std::move(rowSig);
+    flags |= kCompTransportSetChanged;
+  }
+}
+
+void CompExecutor::appendSyntheticTransportRows() {
+  for (const auto& t : doc_.tracks) {
+    if (t.kind != TrackKind::Track && t.kind != TrackKind::Scene) continue;
+    for (const auto& seq : t.clips) {
+      const TrackM* lane = sequenceLaneOf(seq);
+      if (!lane || seq.bypassed) continue;
+      const double durSec = sequenceInteriorSec(*lane, doc_.baseBPM);
+      if (!(durSec > 0)) continue;
+      for (const auto& sub : lane->clips) {
+        if (!sub.hasSourceUrl || sub.bypassed) continue;
+        // A sub-clip with its OWN controller already has a driven row; never
+        // emit both (they'd fight over appliedContentSec).
+        if (transportDeviceOf(sub, catalog_) != nullptr) continue;
+        TransportRow row;
+        row.clip = &sub;
+        row.clipId = sub.id;
+        row.synthetic = true;
+        row.seqClip = &seq;
+        row.interiorDurSec = durSec;
+        const auto& src = sub.sourceJson;
+        const double frames = src.contains("durationFrames") && src["durationFrames"].is_number()
+                                  ? src["durationFrames"].get<double>()
+                                  : 0.0;
+        const double fps =
+            src.contains("fps") && src["fps"].is_number() && src["fps"].get<double>() > 0
+                ? src["fps"].get<double>()
+                : 30.0;
+        row.subVideoDurSec = frames / fps;
+        transportRows_.push_back(std::move(row));
+      }
+    }
+  }
+}
+
+void CompExecutor::resolveSyntheticTransportRows() {
+  // The four-level mapping, in one place:
+  //   arrangement beat --(the sequence's play mode / controller)--> content sec
+  //                    --(x bpm/60)-------------------------------> interior beat
+  //                    --(the sub-clip's own play mode)-----------> source sec
+  // Only the OUTERMOST link is warp-aware; the interior is flat by construction.
+  const double beat = state_.positionBeat;
+  for (size_t i = 0; i < transportRows_.size(); ++i) {
+    const TransportRow& row = transportRows_[i];
+    if (!row.synthetic || !row.seqClip || !row.clip) continue;
+    TransportResolved r;
+    const auto seqSec = sequenceContentSecAt(*row.seqClip, row.seqClip->startBeat,
+                                             row.interiorDurSec, clock_, beat,
+                                             &streamsTable_.appliedContentSec);
+    if (!seqSec) {  // the sequence itself is transparent here
+      transportResolved_[i] = r;   // invalid ⇒ the pump renders nothing
+      continue;
+    }
+    const double interiorBeat = interiorBeatOf(*seqSec, doc_.baseBPM);
+    ClipTimeCtx ctx;
+    ctx.startBeat = row.clip->startBeat;   // LANE-LOCAL, matching interiorBeat
+    ctx.lengthBeat = row.clip->lengthBeat;
+    ctx.videoDurSec = row.subVideoDurSec;
+    ctx.clock = &interiorClock_;
+    ctx.seed = clipNoiseSeed(row.clip->id);
+    const auto srcSec = clipSourceTimeAt(row.clip->loop, ctx, interiorBeat);
+    r.valid = true;
+    r.rate = 1.0;
+    if (srcSec) {
+      r.timeSec = *srcSec;
+      r.active = 1.0;
+    } else {
+      r.active = 0.0;  // off the sub-clip's slice ⇒ transparent
+    }
+    transportResolved_[i] = r;
+    if (r.active >= 0.5) streamsTable_.appliedContentSec[row.clipId] = r.timeSec;
   }
 }
 
@@ -1247,8 +1378,11 @@ void CompExecutor::transportResolve(double dtSec) {
   // Gate on the SKETCH, not the rows: a follower-only section has zero driven
   // rows but must still execute (its whole job is watching + launching).
   if (transportCleanSketch_.is_null()) {
+    // No section anywhere — but SYNTHETIC rows are pure math with no instance,
+    // so a sequence's interior video must still get its times-channel row.
     streamsTable_.appliedContentSec.clear();
     transportEnded_.clear();
+    resolveSyntheticTransportRows();
     return;
   }
 #ifndef __wasm__
@@ -1278,6 +1412,7 @@ void CompExecutor::transportResolve(double dtSec) {
       "transport_next_end_sec",  "transport_loop_count"};
   for (size_t i = 0; i < transportRows_.size(); ++i) {
     const TransportRow& row = transportRows_[i];
+    if (row.synthetic) continue;  // no section instance — resolved analytically below
     const int32_t inst =
         effrt_instance_for(row.moduleType.data(), static_cast<int32_t>(row.moduleType.size()),
                            row.instanceKey.data(), static_cast<int32_t>(row.instanceKey.size()));
@@ -1303,6 +1438,11 @@ void CompExecutor::transportResolve(double dtSec) {
   streamsTable_.appliedContentSec.clear();
   std::set<std::string> liveIds;
   for (size_t i = 0; i < transportRows_.size(); ++i) {
+    // Synthetic rows own none of this: they never latch `ended` (nothing drives
+    // a scene's end-of-life from inside a sequence), never declare a future
+    // (the analytic event generator doesn't apply to nested content), and must
+    // not join `liveIds` (which prunes CONTROLLER state).
+    if (transportRows_[i].synthetic) continue;
     liveIds.insert(transportRows_[i].clipId);
     const TransportResolved& r = transportResolved_[i];
     if (!r.valid) continue;
@@ -1359,6 +1499,9 @@ void CompExecutor::transportResolve(double dtSec) {
     if (!liveIds.count(*it)) it = transportEnded_.erase(it);
     else ++it;
   }
+  // AFTER the driven fold: a synthetic row reads appliedContentSec[seqId], so
+  // a transport-CONTROLLED sequence clip's own time must already be written.
+  resolveSyntheticTransportRows();
 
   // ── FORK fader fold: while a track has a live fork, its TRACK transport
   // section's published `xfade_mix` (+ optional `xfade_shape`) rides the
@@ -1755,10 +1898,12 @@ void CompExecutor::rebuildTriggerRoutes() {
       triggerRoutes_[key] = {d.moduleType, std::move(railId)};
     }
   };
-  for (const auto& t : doc_.tracks) {
+  // allLanes: a trigger source authored inside a sequence's interior routes
+  // like any other (instance keys are clip-scoped and globally unique).
+  for (const TrackM* t : allLanes(doc_)) {
     // Track-hosted sources always write global in v1 (exports are clip-level).
-    routeSketch(t.sketch, nullptr, t.id, /*isClip=*/false);
-    for (const auto& c : t.clips) {
+    routeSketch(t->sketch, nullptr, t->id, /*isClip=*/false);
+    for (const auto& c : t->clips) {
       routeSketch(c.sketch, &c.triggerExports, c.id, /*isClip=*/true);
     }
   }
