@@ -3842,3 +3842,63 @@ TEST_CASE("sequence: a scene-track sequence clip forks through its CONTENT handl
   h.cx.update(1.0 / 60.0);
   CHECK(forkOf(h.cx).is_null());
 }
+
+TEST_CASE("a live modulation wire keeps flowing across a structural change",
+          "[comp_render][comp_rails]") {
+  // Regression: CompExecutor mirrored each producer's LIVE published output into
+  // the sketch doc it handed the executor. But the executor treats that doc as
+  // purely STRUCTURAL and reuses its lowered copy across clean frames, so the
+  // mirrored scalars froze at whatever they were on the last STRUCTURAL change —
+  // and the doc-state branch of captureWriteTaps shadowed the live read that
+  // would have supplied the true value. Every comp-mode wire went dead.
+  //
+  // Frame 0 hid it: instances don't exist yet, so the mirror writes nothing and
+  // the live path is used. It takes a structural change AFTER the instances are
+  // alive (any clip edit, scene launch, or eval-boundary crossing) to poison the
+  // cached doc — which is why this test warms first, then reloads.
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  json clip = mkClip("c1", 0, 16,
+                     json::array({mkDevice("d1", "source.solid_color",
+                                           {{"color", {1.0, 1.0, 1.0}}}),
+                                  mkDevice("lfo", "mod.source.lfo",
+                                           {{"period", 0.25}, {"amplitude", 1.0}}),
+                                  mkDevice("bc", "color.tone.brightness_contrast",
+                                           {{"brightness", 0.0}, {"contrast", 0.0}})}));
+  clip["exports"] = json::array(
+      {{{"id", "e1"}, {"railId", "R"}, {"sourceDeviceId", "lfo"},
+        {"sourceField", "output"}, {"combine", "add"}, {"magnitude", "auto"}}});
+  clip["reads"] = json::array(
+      {{{"id", "r1"}, {"railId", "R"}, {"targetDeviceId", "bc"},
+        {"targetField", "brightness"}, {"combine", "replace"}, {"magnitude", "auto"}}});
+  json t1 = mkTrack("t1", json::array({clip}));
+  json rail = mkTrack("r", json::array(), {{"kind", "rail"}, {"railId", "R"}});
+  const json doc = mkComposition(json::array({t1, rail}));
+
+  comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+  hx.seed(cx);
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+  int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+
+  // Warm: let the instances come alive and the LFO tick off its 0 rest value.
+  for (int i = 0; i < 8; i++) {
+    cx.update(1.0 / 60.0);
+    cx.render(inTex, outTex, W, H, 1.0 / 60.0);
+  }
+  // A structural change with the instances ALREADY live — the poisoning step.
+  cx.loadDocument(doc);
+  cx.seekBeat(1.0);
+
+  // Now free-run on CLEAN frames. The wire must keep sweeping the brightness.
+  double lo = 1e9, hi = -1e9;
+  for (int i = 0; i < 40; i++) {
+    cx.update(1.0 / 60.0);
+    const double m = meanRgb(hx.read(cx.render(inTex, outTex, W, H, 1.0 / 60.0)));
+    lo = std::min(lo, m);
+    hi = std::max(hi, m);
+  }
+  INFO("mean range after the structural change: [" << lo << ", " << hi << "]");
+  CHECK(hi - lo > 60.0);
+}

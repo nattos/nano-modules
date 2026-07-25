@@ -1114,7 +1114,6 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
     }
   } else if (!cleanSketch_.is_null()) {
     cleanSketch_ = nlohmann::json();
-    execSketch_ = nlohmann::json();
     chainSig_.clear();
     dirty_ = false;
     flags |= kCompStructureChanged;
@@ -1428,10 +1427,9 @@ void CompExecutor::transportResolve(double dtSec) {
     transportInTex_ = gpu_create_texture(1, 1, 1);
     transportOutTex_ = gpu_create_texture(1, 1, 1);
   }
-  transportExecSketch_ = transportCleanSketch_;
-  foldPublishedOutputs(transportExecSketch_);  // intra-section wires, 1-frame
   transportEx_->setFrameTime(transportSec_);
-  transportEx_->execute(transportExecSketch_, transportInTex_, transportOutTex_, 1, 1, dtSec,
+  // Structural doc only — intra-section wires read live published state (above).
+  transportEx_->execute(transportCleanSketch_, transportInTex_, transportOutTex_, 1, 1, dtSec,
                         transportDirty_);
   transportDirty_ = false;
 
@@ -1855,35 +1853,6 @@ nlohmann::json CompExecutor::pumpUnion(const nlohmann::json& target,
   return nlohmann::json(std::move(merged));
 }
 
-void CompExecutor::foldPublishedOutputs(nlohmann::json& sketch) {
-  // executor-host.ts step 3: mirror each instance's LIVE published PURE-OUTPUT
-  // scalars into the sketch state the executor's write-taps read (1-frame
-  // latency, matching the barrel's state-doc mirroring). Field names come
-  // statically from the catalog, so each read is one numeric published_scalar
-  // call — no JSON on this per-frame path.
-  if (!sketch.is_object() || !sketch.contains("chain")) return;
-  auto& instances = sketch["instances"];
-  for (const auto& e : sketch["chain"]) {
-    const std::string mt = e.value("module_type", std::string());
-    const std::string key = e.value("instance_key", std::string());
-    const auto outFields = catalog_.publishedOutFields(mt);
-    if (outFields.empty()) continue;
-    const int32_t inst = effrt_instance_for(mt.data(), static_cast<int32_t>(mt.size()),
-                                            key.data(), static_cast<int32_t>(key.size()));
-    if (inst < 0) continue;
-    for (const auto& field : outFields) {
-      double v = 0.0;
-      if (!effrt_published_scalar(inst, field.data(),
-                                  static_cast<int32_t>(field.size()), &v))
-        continue;
-      auto& instObj = instances[key];
-      if (!instObj.is_object()) instObj = {{"module_type", mt}};
-      auto& state = instObj["state"];
-      if (!state.is_object()) state = nlohmann::json::object();
-      state[field] = v;
-    }
-  }
-}
 
 int32_t CompExecutor::render(int32_t inTex, int32_t outTex, int32_t W, int32_t H, double dt) {
   if (!docLoaded_ || !hasContent_ || cleanSketch_.is_null()) return inTex;
@@ -1898,11 +1867,16 @@ int32_t CompExecutor::render(int32_t inTex, int32_t outTex, int32_t W, int32_t H
   effect_runtime::setHostBarPhase(std::fmod(std::max(0.0, state_.positionBeat) / 4.0, 1.0));
   effect_runtime::setHostBpm(doc_.baseBPM);
 #endif
-  execSketch_ = cleanSketch_;  // fresh copy → last frame's folded outputs can't go stale
-  foldPublishedOutputs(execSketch_);
+  // NO published-output mirror here: the exec doc is purely STRUCTURAL (see
+  // sketch_executor.cpp's cached-exec-doc note). Per-frame producer values reach
+  // the write-taps through captureWriteTaps' LIVE published-state read instead.
+  // Mirroring them into the doc froze every comp-mode wire: the executor reuses
+  // its lowered doc across clean frames, so the folded values stuck at whatever
+  // they were on the last STRUCTURAL change (0 for a just-loaded LFO) and the
+  // doc-state branch shadowed the live read forever.
   ex_->setFrameTime(transportSec_);
   ex_->setAutomation(automation_);
-  const int32_t out = ex_->execute(execSketch_, inTex, outTex, W, H, dt, dirty_);
+  const int32_t out = ex_->execute(cleanSketch_, inTex, outTex, W, H, dt, dirty_);
   dirty_ = false;
   // Rail-driven structural bypass: sample the rails AFTER the frame computed
   // them; the decisions feed the NEXT update()'s eval compare (1-frame loop).
@@ -2035,7 +2009,7 @@ void CompExecutor::readRailBypassSignals() {
       bool on = false;
       if (inst >= 0) {
         // The rail relay's live `output`, via the same numeric published-state
-        // seam foldPublishedOutputs reads producers through.
+        // seam captureWriteTaps reads producers through.
         double v = 0.0;
         if (effrt_published_scalar(inst, "output", 6, &v)) on = v >= 0.5;
       }

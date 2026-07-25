@@ -311,7 +311,6 @@ class CompExecutor {
    */
   bool ensureEvalAt(double beat, uint32_t& flags);
   bool videoReady(const nlohmann::json& descs) const;
-  void foldPublishedOutputs(nlohmann::json& sketch);
   /** Rebuild the trigger routing map (instanceKey → {moduleType, railId}) from
    *  the document: every device whose type declares `trigger_source`, routed to
    *  its clip's matching triggerExport or the global trigger rail. Doc-shaped
@@ -355,7 +354,6 @@ class CompExecutor {
   std::unique_ptr<sketch_executor::SketchExecutor> ex_;
 
   nlohmann::json cleanSketch_;  // structural basis (mirror-built, no live outputs)
-  nlohmann::json execSketch_;   // clean + folded producer outputs (what execute() gets)
   nlohmann::json layerTargets_ = nlohmann::json::object();  // ownerId → {instanceKey, field}
   /** A FLAT clock at the document tempo — a sequence clip's interior is
    *  unwarped by construction (warp segments are arrangement-beat spans, so
@@ -544,7 +542,6 @@ class CompExecutor {
   std::vector<TransportRow> transportRows_;
   std::vector<TransportResolved> transportResolved_;
   nlohmann::json transportCleanSketch_;
-  nlohmann::json transportExecSketch_;
   std::string transportSig_;
   /** Signature of the times-channel ROW SET (concatenated clip ids). Synthetic
    *  rows contribute no chain entries, so `transportSig_` (derived from the
