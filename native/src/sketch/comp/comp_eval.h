@@ -313,16 +313,28 @@ struct TreeBuilder {
           sequenceContentSecAt(*clip, anchor, out.interiorDurSec, ck, beat, appliedContentSec);
       out.interiorLive = cs.has_value();
       out.interiorBeat = cs ? interiorBeatOf(*cs, comp.baseBPM) : 0.0;
-      if (out.interiorLive && lane->kind == TrackKind::Track) {
-        if (const ClipM* sub = pickActiveClip(*lane, out.interiorBeat)) {
+      // TIMELINE interior: the sub-clip under the interior beat.
+      // SCENE interior: the LAUNCHED cell (launch replaces the beat overlap,
+      // exactly as on a scene track) — its local time runs from the launch
+      // beat in ARRANGEMENT units, so it doesn't consult the interior clock at
+      // all and stays live even while the sequence's own content is transparent.
+      const ClipM* sub = nullptr;
+      double subAnchor = 0;
+      if (lane->kind == TrackKind::Scene) {
+        sub = pickActiveScene(*lane, sceneLaunch, &subAnchor);
+      } else if (out.interiorLive) {
+        sub = pickActiveClip(*lane, out.interiorBeat);
+        if (sub) subAnchor = sub->startBeat;
+      }
+      {
+        if (sub) {
           CompNode k;
           k.clip = sub;
           k.track = lane;
-          // Interior units: the sub-leaf's lane timing (clip-relative automation,
-          // effect startSec) is expressed on the interior axis. `startSec` is
-          // stamped in arrangement seconds by the pass-start walk (stage 5);
-          // until then buildCompositeRenderFromTree derives it from anchorBeat.
-          k.anchorBeat = sub->startBeat;
+          // Timeline interior: INTERIOR units (the sub-leaf's clip-relative
+          // automation + effect startSec run on the interior axis).
+          // Scene interior: the arrangement LAUNCH beat, like any scene.
+          k.anchorBeat = subAnchor;
           k.opacity = clamp01(lane->level.value_or(1));
           k.blendMode = lane->blendMode ? *lane->blendMode : sub->blendMode.value_or(0);
           k.layerOpacityModulated = hasLayerOpacityModulation(*lane, sub);

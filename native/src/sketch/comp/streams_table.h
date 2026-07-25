@@ -136,6 +136,13 @@ struct StreamClipRef {
  * max(1e-6,|speed|); effect-only: lengthBeat · 60/bpm.
  */
 inline double standardClipDurationSec(const ClipM& clip, double baseBPM) {
+  // A SEQUENCE clip's "one pass" is its INTERIOR extent, not the cell width —
+  // the same relationship a media clip's slice has to its grid span.
+  if (const TrackM* lane = sequenceLaneOf(clip)) {
+    const double durSec = sequenceInteriorSec(*lane, baseBPM);
+    if (durSec > 0) return durSec / std::max(1e-6, std::abs(clip.loop.speed));
+    return 0;
+  }
   if (clip.hasSourceUrl) {
     double sliceSec = -1;
     if (clip.loop.endSec) {
@@ -509,6 +516,43 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
         t.resourceOrder.push_back(r.handle);
         t.resourcesByHandle[r.handle] = std::move(r);
       }
+      // A SEQUENCE clip's interior is a content stream in its own right
+      // (kStreamKindSequenceContent — the kind this milestone was reserved
+      // for): effects can watch its loop passes, seek it, and fork it exactly
+      // like a video's. Its "media duration" is the interior extent.
+      if (const TrackM* lane = sequenceLaneOf(clip)) {
+        const double durSec = sequenceInteriorSec(*lane, doc.baseBPM);
+        StreamInfo q;
+        q.handle = streamHandleOf("content:" + clip.id);
+        q.kind = kStreamKindSequenceContent;
+        q.axis = kStreamAxisSeconds;
+        q.fps = 0;
+        q.frameCount = 0;
+        q.videoDurSec = durSec;
+        q.durationPrimary = q.durationSec = durSec;
+        // An interior seek is free — there is no decoder to spin up.
+        q.flags = kStreamFinite | kStreamHasEvents | kStreamSeekInstant;
+        q.bpm = doc.baseBPM;
+        q.name = clip.name;
+        q.ownerId = clip.id;
+        q.loop = clip.loop;
+        q.loopJson = clip.loopJson.is_object() ? clip.loopJson : nlohmann::json::object();
+        q.anchorBeat = clip.startBeat;
+        q.anchorSec = clock.secondsAt(clip.startBeat);
+        q.lengthBeat = clip.lengthBeat;
+        q.seed = clipNoiseSeed(clip.id);
+        q.eventRev = docRev;
+        t.contentByClipId[clip.id] = q.handle;
+        auto rit = t.resourceByClipId.find(clip.id);
+        if (rit != t.resourceByClipId.end()) {
+          auto& res = t.resourcesByHandle.at(rit->second);
+          res.stream = q.handle;
+          res.flags |= kResHasStream;
+          res.durationSec = durSec;
+        }
+        push(std::move(q));
+        continue;  // a sequence clip is never also a media clip
+      }
       if (!clip.hasSourceUrl) continue;
       StreamInfo s;
       s.handle = streamHandleOf("content:" + clip.id);
@@ -723,6 +767,7 @@ inline double streamPos(const StreamInfo& s, const StreamsTable& t, const WarpCl
       return s.liveOrdinal + frac;
     }
     case kStreamKindVideoContent:
+    case kStreamKindSequenceContent:
       return contentPosSec(s, t, clock);
     default:
       return std::numeric_limits<double>::quiet_NaN();
@@ -742,6 +787,7 @@ inline double streamPosSec(const StreamInfo& s, const StreamsTable& t, const War
       if (std::isnan(s.liveOrdinal)) return s.liveOrdinal;
       return t.frame.posSec - clock.secondsAt(s.liveAnchorBeat);
     case kStreamKindVideoContent:
+    case kStreamKindSequenceContent:
       return contentPosSec(s, t, clock);
     default:
       return std::numeric_limits<double>::quiet_NaN();
@@ -769,6 +815,7 @@ inline int32_t streamLoop(const StreamInfo& s, const StreamsTable& t, double* ou
       out2[1] = t.frame.loopEndBeat;
       return 1;
     case kStreamKindVideoContent:
+    case kStreamKindSequenceContent:
       // The looping play modes expose their source slice; one-shot/random
       // wander freely (no steady window).
       if (s.loop.mode != ClipPlayMode::Time && s.loop.mode != ClipPlayMode::BeatSync) return 0;

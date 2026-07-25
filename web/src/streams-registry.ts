@@ -552,6 +552,7 @@ export class StreamsRegistry {
         return s.liveOrdinal + frac;
       }
       case StreamKind.VideoContent:
+      case StreamKind.SequenceContent:
         return this.contentPosSec(s);
       default:
         return NaN;
@@ -569,6 +570,7 @@ export class StreamsRegistry {
         if (Number.isNaN(s.liveOrdinal)) return s.liveOrdinal;
         return this.frame.posSec - this.secondsAt(s.liveAnchorBeat);
       case StreamKind.VideoContent:
+      case StreamKind.SequenceContent:
         return this.contentPosSec(s);
       default:
         return NaN;
@@ -593,7 +595,8 @@ export class StreamsRegistry {
       case StreamKind.TimelineTrack:
         if (!this.frame.loopEnabled) return null;
         return [this.frame.loopStartBeat, this.frame.loopEndBeat];
-      case StreamKind.VideoContent: {
+      case StreamKind.VideoContent:
+      case StreamKind.SequenceContent: {
         const mode = s.loop?.mode ?? 'time';
         if (mode !== 'time' && mode !== 'beat-sync') return null;
         return [s.loop?.startSec ?? 0, s.loop?.endSec ?? s.videoDurSec];

@@ -3382,3 +3382,31 @@ TEST_CASE("sequence: the transport ROW SET changes when an interior row appears"
   CHECK((flags & comp::kCompTransportSetChanged) != 0);
   CHECK(json::parse(h.cx.transportOrderJson()).size() == 1);
 }
+
+TEST_CASE("sequence: the interior is a kind-6 content stream", "[comp_sequence]") {
+  // kStreamKindSequenceContent was RESERVED by M1 and left unhandled in
+  // streamPos/PosSec/Loop (they answered NaN through the default arm) — this
+  // pins both the minting and those three now-closed holes.
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 16, "lane1",
+                        json::array({mkClip("sub1", 0, 4,
+                                            json::array({mkDevice("g1", "source.solid_color")}))}))})),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+
+  const json tbl = json::parse(h.cx.streamsJson());
+  INFO(tbl.dump(2));
+  const json& streams = tbl.at("streams");
+  bool found = false;
+  for (const auto& s : streams) {
+    if (s.value("ownerId", std::string()) != "seq") continue;
+    found = true;
+    CHECK(s.value("kind", 0) == 6);                       // SequenceContent
+    // "Media duration" = the INTERIOR extent: 4 beats at 120 BPM = 2 s.
+    CHECK(s.value("videoDurSec", 0.0) == Catch::Approx(2.0).margin(1e-9));
+  }
+  CHECK(found);
+}
