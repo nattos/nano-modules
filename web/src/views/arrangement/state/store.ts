@@ -241,13 +241,26 @@ function freshClipIds(clip: Clip): void {
  */
 function clipLoopSourceSecAt(clip: Clip, beat: number): number | null {
   const loop = clip.loop;
-  if (!loop || !clip.source || (loop.mode !== 'time' && loop.mode !== 'beat-sync')) return null;
-  const fps = clip.source.fps && clip.source.fps > 0 ? clip.source.fps : 30;
-  const spb = 60 / Math.max(1, store.composition.meta.baseBPM);
+  if (!loop || (loop.mode !== 'time' && loop.mode !== 'beat-sync')) return null;
+  const bpm = Math.max(1, store.composition.meta.baseBPM);
+  const spb = 60 / bpm;
+  // A SEQUENCE clip's "source duration" is its interior extent — the one place
+  // interior beats convert into the seconds domain ClipLoopConfig is written for
+  // (sequenceInteriorSec). Everything downstream is the plain video mapping.
+  let videoDurSec: number;
+  if (isSequenceClip(clip)) {
+    videoDurSec = sequenceInteriorSec(clip, bpm);
+    if (!(videoDurSec > 0)) return null; // empty interior — nothing to phase
+  } else if (clip.source) {
+    const fps = clip.source.fps && clip.source.fps > 0 ? clip.source.fps : 30;
+    videoDurSec = (clip.source.durationFrames ?? 0) / fps;
+  } else {
+    return null;
+  }
   const ctx: ClipTimeCtx = {
     startBeat: clip.startBeat,
     lengthBeat: clip.lengthBeat,
-    videoDurSec: (clip.source.durationFrames ?? 0) / fps,
+    videoDurSec,
     secondsAt: (b) => b * spb,
   };
   return clipSourceTimeAt(loop, ctx, beat);
@@ -376,6 +389,103 @@ function resolveOverlapsKeepStarts(track: Track) {
     if (a.startBeat + a.lengthBeat > b.startBeat + 1e-6 && gap > 1e-6) {
       a.lengthBeat = gap; // trim a's end back to b's start (keep both starts)
     }
+  }
+}
+
+// ── Consolidate primitives ────────────────────────────────────────────────
+
+/**
+ * Lift `seq`'s sub-clips back onto `lane` at ABSOLUTE beats and drop `seq`.
+ *
+ * Sub-clips are clipped to the sequence clip's own span (a shorter clip reveals
+ * only part of its interior), and a LOOPING interior emits only its FIRST pass:
+ * unrolling N passes would silently multiply the clip count, and the visible
+ * result is identical for the common case where the clip is interior-length.
+ *
+ * Does NOT dispose of `seq.sketch` — that's the caller's call (consolidate
+ * captures it to merge; uncollapse fans it onto each lifted sub-clip). Operates
+ * on a draft Track; returns the lifted clips in timeline order.
+ */
+function explodeSequence(lane: Track, seq: Clip): Clip[] {
+  const inner = seq.sequence;
+  const at = lane.clips.findIndex((c) => c.id === seq.id);
+  if (at >= 0) lane.clips.splice(at, 1);
+  if (!inner) return [];
+  const end = seq.startBeat + seq.lengthBeat;
+  const lifted: Clip[] = [];
+  for (const sub of [...inner.clips].sort((a, b) => a.startBeat - b.startBeat)) {
+    const start = seq.startBeat + sub.startBeat;
+    if (start >= end - 1e-6) continue; // past the wrapper's right edge
+    sub.startBeat = start;
+    sub.lengthBeat = Math.min(sub.lengthBeat, end - start);
+    if (sub.lengthBeat <= 1e-6) continue;
+    lifted.push(sub);
+  }
+  lane.clips.push(...lifted);
+  return lifted;
+}
+
+/**
+ * Deep-clone a chain onto `target`, APPENDED after whatever it already holds,
+ * with fresh device ids and the source's intra-sketch wires remapped. Rail
+ * exports/reads referencing the copied devices come along with fresh tap ids.
+ *
+ * Automation lanes and warp bindings are deliberately NOT carried: a lane's
+ * x ∈ [0,1] spans its old owner's length, which means nothing once the chain
+ * moves to a clip of a different length.
+ */
+function appendChain(target: Clip, source: Clip): void {
+  const devices = source.sketch?.devices ?? [];
+  if (!devices.length) return;
+  const map = new Map<string, string>();
+  for (const d of devices) {
+    const copy: Device = JSON.parse(JSON.stringify(d));
+    copy.id = uid('dev');
+    map.set(d.id, copy.id);
+    target.sketch.devices.push(copy);
+  }
+  for (const w of source.sketch?.wires ?? []) {
+    const s = map.get(w.src.instanceKey);
+    const t = map.get(w.dest.instanceKey);
+    if (!s || !t) continue; // a wire leaving the copied set has no meaning here
+    const copy = JSON.parse(JSON.stringify(w));
+    copy.id = uid('wire');
+    copy.src.instanceKey = s;
+    copy.dest.instanceKey = t;
+    (target.sketch.wires ??= []).push(copy);
+  }
+  for (const exp of source.exports ?? []) {
+    const s = map.get(exp.sourceDeviceId);
+    if (!s) continue;
+    const copy: RailExport = JSON.parse(JSON.stringify(exp));
+    copy.id = uid('rail');
+    copy.sourceDeviceId = s;
+    (target.exports ??= []).push(copy);
+  }
+  for (const read of source.reads ?? []) {
+    const t = map.get(read.targetDeviceId);
+    if (!t) continue;
+    const copy: RailRead = JSON.parse(JSON.stringify(read));
+    copy.id = uid('rail');
+    copy.targetDeviceId = t;
+    (target.reads ??= []).push(copy);
+  }
+}
+
+/**
+ * Concatenate the chains of the sequence clips being absorbed onto `target`, in
+ * left-to-right timeline order. A chain EXACTLY equal to one already taken
+ * (same module types AND the same editable params, in order — `chainsEqual`,
+ * which ignores ids and names) is SKIPPED: consolidating a row of clips that
+ * all carried the same effect should leave one copy, not N.
+ */
+function concatChains(target: Clip, sources: Clip[]): void {
+  const taken: Clip[] = [];
+  for (const src of [...sources].sort((a, b) => a.startBeat - b.startBeat)) {
+    if (!(src.sketch?.devices.length)) continue;
+    if (taken.some((t) => chainsEqual(t.sketch, src.sketch))) continue;
+    taken.push(src);
+    appendChain(target, src);
   }
 }
 
@@ -2798,6 +2908,180 @@ export class ArrangementStore {
     this.splitAtCursor();
   }
 
+  /** Split every clip on ONE lane at `beat` — the nested timeline's ⌘E (the
+   *  interior has no global caret, so it can't go through splitAtCursor). */
+  splitLaneAt(laneId: string, beat: number) {
+    this.mutate('split', (d) => {
+      const lane = draftLane(d, laneId);
+      if (lane) splitClipsAt(lane, beat);
+    });
+  }
+
+  // ── Consolidate (⌘J) ──────────────────────────────────────────────────
+  /**
+   * The beat span Consolidate acts on: the time box, else the union extent of
+   * the selected clips (Ableton's clip-selection consolidate), else null.
+   */
+  private consolidateRange(): { start: number; end: number } | null {
+    if (this.hasTimeSelection) return { start: this.timeSelStart!, end: this.timeSelEnd };
+    let start = Infinity;
+    let end = -Infinity;
+    for (const { trackId, clipId } of this.selectedClipRefs()) {
+      const clip = this.clipIn(trackId, clipId);
+      if (!clip) continue;
+      start = Math.min(start, clip.startBeat);
+      end = Math.max(end, clip.startBeat + clip.lengthBeat);
+    }
+    return end - start > 1e-6 ? { start, end } : null;
+  }
+
+  /** Is there anything for ⌘J to act on? (Toolbar/menu gating.) */
+  get canConsolidate(): boolean {
+    if (this.caretLaneId) return false;
+    if (!this.regionTracks().some((t) => t.kind !== 'scene')) return false;
+    return this.consolidateRange() !== null;
+  }
+
+  /** Are any selected/in-region clips sequence clips? (⇧⌘J gating.) */
+  get canUncollapse(): boolean {
+    if (this.selectedClipRefs().some(
+        (r) => { const c = this.clipIn(r.trackId, r.clipId); return !!c && isSequenceClip(c); })) return true;
+    const range = this.consolidateRange();
+    if (!range) return false;
+    return this.regionTracks().some((t) => t.clips.some(
+      (c) => isSequenceClip(c) && c.startBeat < range.end - 1e-6
+             && c.startBeat + c.lengthBeat > range.start + 1e-6));
+  }
+
+  /**
+   * ⌘J — Consolidate the region into ONE sequence clip per in-scope track.
+   *
+   * Per track: any sequence clip overlapping the range is BROKEN FIRST (its
+   * sub-clips lifted to absolute beats) — this is what enforces the no-nesting
+   * rule — and its own chain is captured; then the lane is split at both edges,
+   * the in-range clips are lifted into a fresh interior lane rebased to
+   * range-relative beats, and one sequence clip spanning [start, end) is dropped
+   * in carrying the captured chains concatenated left-to-right.
+   *
+   * An EMPTY region still yields an empty sequence clip of that length (a
+   * deliberate container you can then fill).
+   *
+   * SCENE tracks are skipped: their cells are rigid launchable slots that
+   * `splitClipsAt` already no-ops on, and wrapping them in a timeline-positioned
+   * clip is contradictory. (You can still drag a finished sequence clip onto a
+   * scene track.)
+   *
+   * One undo entry; the new clips end up selected.
+   */
+  consolidateSelection() {
+    if (this.caretLaneId) return; // an automation lane isn't a clip region
+    const scope = this.regionTracks().filter((t) => t.kind !== 'scene').map((t) => t.id);
+    if (!scope.length) return;
+    const range = this.consolidateRange();
+    if (!range) return;
+    const { start, end } = range;
+    const created: string[] = [];
+    this.mutate('consolidate', (d) => {
+      for (const laneId of scope) {
+        const lane = draftLane(d, laneId);
+        if (!lane) continue;
+        // 1. Break the sequence clips we're absorbing, capturing their chains
+        //    (in timeline order) before their identity disappears.
+        const seqs = lane.clips
+          .filter((c) => isSequenceClip(c)
+                      && c.startBeat < end - 1e-6
+                      && c.startBeat + c.lengthBeat > start + 1e-6)
+          .sort((a, b) => a.startBeat - b.startBeat);
+        const captured: Clip[] = seqs.map((s) => JSON.parse(JSON.stringify(s)));
+        for (const s of seqs) explodeSequence(lane, s);
+        // 2. Cut at the edges so only whole clips land inside.
+        splitClipsAt(lane, start);
+        splitClipsAt(lane, end);
+        // 3. Lift the interior out, rebased to lane-local beats.
+        const inRange = lane.clips.filter(
+          (c) => c.startBeat >= start - 1e-6 && c.startBeat < end - 1e-6);
+        const keep = new Set(inRange.map((c) => c.id));
+        lane.clips = lane.clips.filter((c) => !keep.has(c.id));
+        const inner = makeSequenceLane(uid('track'), 'track');
+        for (const c of inRange.sort((a, b) => a.startBeat - b.startBeat)) {
+          c.startBeat -= start;
+          inner.clips.push(c);
+        }
+        // 4. The sequence clip itself.
+        const seq: Clip = {
+          id: uid('clip'),
+          name: 'Sequence #',
+          startBeat: start,
+          lengthBeat: end - start,
+          kind: 'sequence',
+          sequence: inner,
+          sketch: { devices: [] },
+          // The interior is a CONTENT STREAM: 'time' loops it when the clip is
+          // resized past its interior extent, which is the least surprising
+          // default and keeps the analytic loop path the only one in play.
+          loop: { mode: 'time', startSec: 0, speed: 1, direction: 'forward' },
+          automation: [],
+          exports: [],
+          warps: [],
+        };
+        concatChains(seq, captured);
+        lane.clips.push(seq);
+        carveTrackSpan(lane, seq.id, start, end); // safety net vs. leftover slivers
+        created.push(paths.clip(lane.id, seq.id));
+      }
+    });
+    if (created.length) this.setSelection(created);
+  }
+
+  /**
+   * ⇧⌘J — break sequence clips back onto their lane (the inverse of ⌘J).
+   *
+   * The sequence's own chain is FANNED onto each lifted sub-clip rather than
+   * discarded: only one sub-clip is active at a time in a single lane, so
+   * running the chain per sub-clip is near-equivalent to running it on the
+   * interior composite, and nothing the user built is lost. (Re-consolidating
+   * then dedupes identical chains back down.)
+   *
+   * Targets the selected sequence clips; with none selected, every sequence clip
+   * overlapping the region on in-scope tracks. One undo entry.
+   */
+  uncollapseSelection() {
+    const selected = this.selectedClipRefs().filter(
+      (r) => { const c = this.clipIn(r.trackId, r.clipId); return !!c && isSequenceClip(c); });
+    const targets = selected.length
+      ? selected.map((r) => ({ laneId: r.trackId, clipId: r.clipId }))
+      : (() => {
+          const range = this.consolidateRange();
+          if (!range) return [];
+          const out: Array<{ laneId: string; clipId: string }> = [];
+          for (const t of this.regionTracks()) {
+            for (const c of t.clips) {
+              if (!isSequenceClip(c)) continue;
+              if (c.startBeat < range.end - 1e-6
+                  && c.startBeat + c.lengthBeat > range.start + 1e-6) {
+                out.push({ laneId: t.id, clipId: c.id });
+              }
+            }
+          }
+          return out;
+        })();
+    if (!targets.length) return;
+    const revealed: string[] = [];
+    this.mutate('uncollapse', (d) => {
+      for (const { laneId, clipId } of targets) {
+        const lane = draftLane(d, laneId);
+        const seq = lane?.clips.find((c) => c.id === clipId);
+        if (!lane || !seq) continue;
+        const chain = seq.sketch?.devices.length ? seq : null;
+        for (const sub of explodeSequence(lane, seq)) {
+          if (chain) appendChain(sub, chain);
+          revealed.push(paths.clip(lane.id, sub.id));
+        }
+      }
+    });
+    this.setSelection(revealed);
+  }
+
   /** Remove the region's span; later clips shift left, spanning clips trim. */
   deleteTime() {
     if (!this.hasTimeSelection) return;
@@ -2995,7 +3279,7 @@ export class ArrangementStore {
    *  carving overlaps. Used by Cmd-drag duplicate to restore the source clip. */
   insertClipClone(trackId: string, source: Clip) {
     this.mutate('duplicate clip', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       if (!t || t.kind !== 'track') return;
       const clip: Clip = JSON.parse(JSON.stringify(source));
       clip.id = uid('clip');
@@ -3014,7 +3298,7 @@ export class ArrangementStore {
   insertClipCopyAt(source: Clip, destTrackId: string, beat: number, coalesceKey?: string) {
     const barBeats = this.barBeats;
     this.mutate('duplicate clip', (d) => {
-      const t = d.tracks.find((x) => x.id === destTrackId);
+      const t = draftLane(d, destTrackId);
       if (!t || (t.kind !== 'track' && t.kind !== 'scene')) return;
       const clip: Clip = JSON.parse(JSON.stringify(source));
       clip.id = uid('clip');
@@ -4442,8 +4726,7 @@ export class ArrangementStore {
 
   /** Add a device to a clip; a source/generator promotes it to a video clip. */
   addDeviceToClip(trackId: string, clipId: string, device: Device) {
-    const track = this.trackById(trackId);
-    const clip = track?.clips.find((c) => c.id === clipId);
+    const clip = this.clipIn(trackId, clipId);
     if (!clip) return;
     this.mutate('add device', (d) => {
       const c = draftClip(d, trackId, clipId);
