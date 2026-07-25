@@ -40,6 +40,7 @@ NANO_DECLARE_INSTANCE_EFFECT(lens)
 NANO_DECLARE_INSTANCE_EFFECT(envelope_warp)
 NANO_DECLARE_INSTANCE_EFFECT(monolith)
 NANO_DECLARE_INSTANCE_EFFECT(plume)
+NANO_DECLARE_INSTANCE_EFFECT(plume_field)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
@@ -390,6 +391,22 @@ void nano_module_main() {
         "generator,3d,sdf,raymarching,volume,sphere,ridges,feather,morph,procedural",
         "la-feather",
         NANO_INSTANCE_LIFECYCLE(plume),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.sdf.plume_field",
+        "Plume Field",
+        "The plume sculptor as a standalone SDF provider: authors the same "
+        "ridged, morphing displaced-sphere field (octahedral shell map "
+        "baked into a signed-distance volume) and publishes it on the "
+        "`sdf_field` rail instead of rendering it. Wire into an SDF "
+        "renderer downstream (e.g. Plume) to split the geometry from the "
+        "camera/light/atmosphere. Video passes through untouched.",
+        "source",
+        "generator,3d,sdf,field,provider,producer,sdf-field,shell,ridges,morph,procedural",
+        "la-globe",
+        NANO_INSTANCE_LIFECYCLE(plume_field),
     });
 }
 

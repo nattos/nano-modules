@@ -111,6 +111,11 @@ _emit_spv_header_var plume march prefill slice_debug gi_inject gi_prop fog compo
 python3 ../_emit_spv_header.py "$TMP_DIR/plume_gen_shaders.h" \
   "plume_gen_shell=$TMP_DIR/plume_shell.spv" \
   "plume_gen_bake=$TMP_DIR/plume_bake.spv"
+# plume_field — the sculptor as a standalone sdf_field provider. Its only
+# own shader is the passthrough (the generator pair rides field_gen.h);
+# reuse plume's compiled prefill SPV under a prefixed symbol.
+python3 ../_emit_spv_header.py "$TMP_DIR/plume_field_shaders.h" \
+  "plume_field_prefill=$TMP_DIR/plume_prefill.spv"
 echo "  plume shaders compiled (SPV: shell + bake + march + prefill + slice_debug + gi + fog + composite)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
@@ -505,6 +510,7 @@ wasm_build \
   ../lens/main.cpp \
   ../envelope_warp/main.cpp \
   ../monolith/main.cpp \
-  ../plume/main.cpp
+  ../plume/main.cpp \
+  ../plume_field/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

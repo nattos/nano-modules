@@ -279,4 +279,47 @@ describe('source.sdf.plume E2E', () => {
     } as Sketch);
     wired.trace('out').expectDifferentFrom(solo.trace('out'), 40);
   });
+
+  // --- source.sdf.plume_field: the sculptor as a standalone provider ---
+
+  it('plume_field provides the identical field to a downstream plume', async () => {
+    // The standalone generator must sculpt byte-for-byte the field plume
+    // sculpts for itself (shared field_gen.h). Its video output is clear,
+    // so the consumer composites over transparent exactly like the solo
+    // reference — the WHOLE frame matches, background included.
+    const wired = await renderSketch('plume_fieldgen', {
+      anchor: null, wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.sdf.plume_field',
+          instance_key: 'fgen@0', params: { ...A_SHAPE, morph: 0 } },
+        { type: 'module', module_type: 'source.sdf.plume', instance_key: 'frend@0',
+          params: { ...STATIC, ...B_LOOK, radius: 0, ridge_depth: 0 } },
+      ],
+    } as Sketch);
+    const ref = await render('plume_fieldgen_ref',
+      { ...STATIC, ...A_SHAPE, ...B_LOOK }, { noInput: true, waitFrames: 10 });
+
+    for (const [x, y] of [[48, 48], [40, 48], [56, 48], [48, 40], [48, 58],
+                          [3, 3], [92, 3], [3, 92]]) {
+      const expected = ref.trace('out').pixelAt(x, y);
+      wired.trace('out').expectPixelAt(x, y, expected, 0);
+    }
+  });
+
+  it('plume_field passes video through untouched', async () => {
+    const result = await renderSketch('plume_field_pass', {
+      anchor: null, wires: [],
+      chain: [
+        { type: 'module', module_type: 'source.solid_color',
+          instance_key: 'pbg@0', params: { color: [0.7, 0.7, 0.75] } },
+        { type: 'module', module_type: 'source.sdf.plume_field',
+          instance_key: 'fpass@0', params: {} },
+      ],
+    } as Sketch);
+    // Nothing consumes the rail: the effect is a pure passthrough of the
+    // solid color (checkerboard-composited trace ⇒ assert by color).
+    for (const [x, y] of [[3, 3], [48, 48], [92, 92]]) {
+      result.trace('out').expectPixelAt(x, y, BG, 2);
+    }
+  });
 });
