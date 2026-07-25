@@ -96,6 +96,7 @@ echo "  monolith shaders compiled (SPV: prefill + resolve + rays + final + gbuf)
 #   slice_debug — volume slice / shell map inspector.
 compile_shaders_compute_var_spv plume shell
 compile_shaders_compute_var_spv plume bake
+compile_shaders_compute_var_spv plume compose
 compile_shaders_compute_var_spv plume march
 compile_shaders_compute_var_spv plume prefill
 compile_shaders_compute_var_spv plume slice_debug
@@ -104,19 +105,26 @@ compile_shaders_compute_var_spv plume gi_prop
 compile_shaders_compute_var_spv plume fog
 compile_shaders_compute_var_spv plume composite
 _emit_spv_header_var plume march prefill slice_debug gi_inject gi_prop fog composite
-# The generator pair (shell + bake) is emitted into its own header with
-# prefixed symbols: plume/field_gen.h — the sculptor shared by plume and
-# plume_field — includes it, and both effects' TUs also see their own
-# <effect>_shaders.h, so the symbol sets must not collide.
+# The generator set (shell + bake + overlay compose) is emitted into its
+# own header with prefixed symbols: plume/field_gen.h — the sculptor
+# shared by plume and plume_field — includes it, and both effects' TUs
+# also see their own <effect>_shaders.h, so the symbol sets must not
+# collide.
 python3 ../_emit_spv_header.py "$TMP_DIR/plume_gen_shaders.h" \
   "plume_gen_shell=$TMP_DIR/plume_shell.spv" \
-  "plume_gen_bake=$TMP_DIR/plume_bake.spv"
-# plume_field — the sculptor as a standalone sdf_field provider. Its only
-# own shader is the passthrough (the generator pair rides field_gen.h);
-# reuse plume's compiled prefill SPV under a prefixed symbol.
+  "plume_gen_bake=$TMP_DIR/plume_bake.spv" \
+  "plume_gen_compose=$TMP_DIR/plume_compose.spv"
+# plume_field — the sculptor as a standalone sdf_field provider, plus its
+# tracer simulation (sim_step / sim_resolve — the mode plume itself
+# doesn't have). The passthrough reuses plume's compiled prefill SPV
+# under a prefixed symbol.
+compile_shaders_compute_var_spv plume_field sim_step
+compile_shaders_compute_var_spv plume_field sim_resolve
 python3 ../_emit_spv_header.py "$TMP_DIR/plume_field_shaders.h" \
-  "plume_field_prefill=$TMP_DIR/plume_prefill.spv"
-echo "  plume shaders compiled (SPV: shell + bake + march + prefill + slice_debug + gi + fog + composite)"
+  "plume_field_prefill=$TMP_DIR/plume_prefill.spv" \
+  "plume_field_sim_step=$TMP_DIR/plume_field_sim_step.spv" \
+  "plume_field_sim_resolve=$TMP_DIR/plume_field_sim_resolve.spv"
+echo "  plume shaders compiled (SPV: shell + bake + compose + march + prefill + slice_debug + gi + fog + composite + sim)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update

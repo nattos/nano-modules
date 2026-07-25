@@ -49,21 +49,40 @@ static_assert(sizeof(ShellUniforms) == 48, "ShellUniforms layout mismatch");
 struct BakeUniforms { float radius, lipschitz, dens_soft, _pad0; };
 static_assert(sizeof(BakeUniforms) == 16, "BakeUniforms layout mismatch");
 
+struct ComposeUniforms { float res, ov_amp, trail, h_min; };
+static_assert(sizeof(ComposeUniforms) == 16, "ComposeUniforms layout mismatch");
+
+// An external height overlay composed onto the shell maps before bake —
+// the seam the standalone provider's tracer simulation plugs into. The
+// texture is an oct map sampled bilinear: .r = height in [-1,1]
+// (amp scales it to world units), .g = flow density feeding the crest
+// channel (streamline trails). Plume itself never passes one.
+struct Overlay {
+  gpu::Texture tex;
+  float amp = 0.0f;     // .r -> world units
+  float trail = 0.0f;   // .g -> crest emphasis
+};
+
 // Module-shared PSOs (see header comment).
 inline gpu::ComputePSO g_pso_shell;
 inline gpu::ComputePSO g_pso_bake;
+inline gpu::ComputePSO g_pso_compose;
 
 // Register the generator shaders + build the PSOs. Idempotent; call from
 // each including effect's module_init AFTER the backend check.
 inline void moduleInit() {
-  if (g_pso_shell.valid() && g_pso_bake.valid()) return;
+  if (g_pso_shell.valid() && g_pso_bake.valid() && g_pso_compose.valid())
+    return;
   state::registerShaderSPV("plume_shell", PLUME_GEN_SHELL_SPV,
                            PLUME_GEN_SHELL_SPV_SIZE, "rgba16float", "write");
   state::registerShaderSPV("plume_bake", PLUME_GEN_BAKE_SPV,
                            PLUME_GEN_BAKE_SPV_SIZE, "rgba16float", "write");
+  state::registerShaderSPV("plume_gen_compose", PLUME_GEN_COMPOSE_SPV,
+                           PLUME_GEN_COMPOSE_SPV_SIZE, "rgba16float", "write");
   auto cs_shell = gpu::Device::createShaderModuleByName("plume_shell");
   auto cs_bake = gpu::Device::createShaderModuleByName("plume_bake");
-  if (!cs_shell || !cs_bake) return;
+  auto cs_compose = gpu::Device::createShaderModuleByName("plume_gen_compose");
+  if (!cs_shell || !cs_bake || !cs_compose) return;
   g_pso_shell = gpu::Device::createComputePSO(cs_shell, "main", gpu::Bindings()
       .storageTex2d(0, gpu::TextureFormat::RGBA16F)
       .uniform(1));
@@ -72,6 +91,13 @@ inline void moduleInit() {
       .sampler(1)
       .storageTex3d(2, gpu::TextureFormat::RGBA16F)
       .uniform(3));
+  g_pso_compose = gpu::Device::createComputePSO(cs_compose, "main",
+      gpu::Bindings()
+          .tex2d(0)
+          .tex2d(1)
+          .sampler(2)
+          .storageTex2d(3, gpu::TextureFormat::RGBA16F)
+          .uniform(4));
 }
 
 inline double wrap01(double v) { return v - std::floor(v); }
@@ -86,7 +112,10 @@ inline double rateHz(float k, double mid) {
 // generator resources and passes.
 struct Sculptor {
   gpu::Buffer ub_shell_full, ub_shell_coarse, ub_bake;
+  gpu::Buffer ub_comp_full, ub_comp_coarse;
   gpu::Texture shell_full, shell_coarse;   // 2D RGBA16F, fixed sizes (lazy)
+  gpu::Texture comp_full, comp_coarse;     // overlay-composed maps (lazy,
+                                           // only allocated when used)
   gpu::Texture sdf_vol;                    // 3D RGBA16F 128³ (lazy)
   gpu::Sampler samp_clamp;                 // linear/clamp (bake shell reads)
 
@@ -134,6 +163,10 @@ struct Sculptor {
                                                 gpu::BufferUsage::Uniform);
     ub_bake = gpu::Device::createBuffer(sizeof(BakeUniforms),
                                         gpu::BufferUsage::Uniform);
+    ub_comp_full = gpu::Device::createBuffer(sizeof(ComposeUniforms),
+                                             gpu::BufferUsage::Uniform);
+    ub_comp_coarse = gpu::Device::createBuffer(sizeof(ComposeUniforms),
+                                               gpu::BufferUsage::Uniform);
     samp_clamp = gpu::Device::createSampler(gpu::FilterMode::Linear,
                                             gpu::AddressMode::ClampToEdge);
   }
@@ -142,8 +175,12 @@ struct Sculptor {
     ub_shell_full.release();
     ub_shell_coarse.release();
     ub_bake.release();
+    ub_comp_full.release();
+    ub_comp_coarse.release();
     shell_full.release();
     shell_coarse.release();
+    comp_full.release();
+    comp_coarse.release();
     sdf_vol.release();
     samp_clamp.release();
   }
@@ -154,6 +191,10 @@ struct Sculptor {
   }
 
   void resetPhase() { morph_phase = 0.0; }
+
+  // Base sphere radius in world units — the same expression run() uses,
+  // for callers sizing an Overlay amp against the body.
+  float worldRadius() const { return 0.28f + 0.27f * radius; }
 
   void tick(double dt) {
     morph_phase = wrap01(morph_phase + dt * rateHz(morph, 0.02));
@@ -176,8 +217,12 @@ struct Sculptor {
   // Sculpt the field: shell update (full + coarse) + SDF bake. Fills the
   // rail Desc and hands back the grid + shell textures. False when GPU
   // resources are unavailable (caller skips the frame).
+  //
+  // `ov` (optional) composes an external height overlay onto both shell
+  // maps before the bake (see Overlay above). With ov == nullptr the
+  // whole path — fp math included — is exactly the base sculptor.
   bool run(fx::sdf_field::Desc& desc, gpu::Texture& grid_out,
-           gpu::Texture& shell_out) {
+           gpu::Texture& shell_out, const Overlay* ov = nullptr) {
     if (!valid()) return false;
     if (!shell_full.valid())
       shell_full = gpu::Device::createTexture(kShellRes, kShellRes,
@@ -202,8 +247,24 @@ struct Sculptor {
     // cliffs steepen the field well past the smooth-fbm bound; feathering's
     // along-flow smear only ever smooths, so it needs no margin.
     const float steep = 1.0f + 2.0f * ridge_sharp;
-    const float lip_true =
-        1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
+    // Overlay budget: the composed field can rise a further ov_amp above
+    // the base crest (clamped inside the volume), and its carvings can be
+    // channel-sharp — fold a conservative slope term (freq·steep ~ 24 for
+    // the diffused 256² overlay) into the Lipschitz bound. ov == nullptr
+    // keeps every expression byte-identical to the base sculptor.
+    float ov_amp = 0.0f, ov_trail = 0.0f;
+    const bool use_ov = ov && ov->tex.valid() && ov->amp > 0.0f &&
+                        g_pso_compose.valid();
+    if (use_ov) {
+      ov_amp = ov->amp;
+      if (R + amp + ov_amp > 0.84f)
+        ov_amp = std::fmax(0.0f, 0.84f - R - amp);
+      ov_trail = ov->trail;
+    }
+    const float lip_true = use_ov
+        ? 1.0f / (1.0f + (3.0f * amp * freq * steep + 72.0f * ov_amp)
+                          / std::fmax(R, 0.1f))
+        : 1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
     // Floor keeps coarse marching from crawling, but a floored grid stores
     // distances LONGER than the true bound — the march widens its fine-tier
     // handoff band by lip/lip_true (capped) to absorb the overshoot.
@@ -213,7 +274,7 @@ struct Sculptor {
     desc.radius = R;
     desc.lip = lip;
     desc.lip_true = lip_true;
-    desc.crest_amp = amp;
+    desc.crest_amp = use_ov ? amp + ov_amp : amp;
     // Crest shading emphasis only exists when there are ridges to crest.
     desc.crest_gain = std::fmin(1.0f, 10.0f * ridge_depth);
     desc.grid_ext = fx::sdf_field::kGridExt;
@@ -270,13 +331,58 @@ struct Sculptor {
       cp.end();
     }
 
+    // --- Pass 0.5 (overlay only): compose base + overlay -> final maps ---
+    // Everything downstream (bake, rail, renderer) sees the composed maps;
+    // the base maps stay untouched so next frame's compose (and the sim's
+    // own height sampling) reads a clean base.
+    gpu::Texture bake_src = shell_coarse;
+    if (use_ov) {
+      if (!comp_full.valid())
+        comp_full = gpu::Device::createTexture(kShellRes, kShellRes,
+                                               gpu::TextureFormat::RGBA16F);
+      if (!comp_coarse.valid())
+        comp_coarse = gpu::Device::createTexture(kCoarseRes, kCoarseRes,
+                                                 gpu::TextureFormat::RGBA16F);
+      if (comp_full.valid() && comp_coarse.valid()) {
+        ComposeUniforms cu = { (float)kShellRes, ov_amp, ov_trail,
+                               -0.5f * R };
+        ub_comp_full.writeOne(cu);
+        cu.res = (float)kCoarseRes;
+        ub_comp_coarse.writeOne(cu);
+        {
+          auto cp = gpu::ComputePass::begin();
+          cp.setPSO(g_pso_compose);
+          cp.setTexture(shell_full, 0, 0);
+          cp.setTexture(ov->tex, 1, 0);
+          cp.setSampler(samp_clamp, 2);
+          cp.setTexture(comp_full, 3, 1);
+          cp.setBuffer(ub_comp_full, 4);
+          cp.dispatch(kShellRes / 8, kShellRes / 8);
+          cp.end();
+        }
+        {
+          auto cp = gpu::ComputePass::begin();
+          cp.setPSO(g_pso_compose);
+          cp.setTexture(shell_coarse, 0, 0);
+          cp.setTexture(ov->tex, 1, 0);
+          cp.setSampler(samp_clamp, 2);
+          cp.setTexture(comp_coarse, 3, 1);
+          cp.setBuffer(ub_comp_coarse, 4);
+          cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
+          cp.end();
+        }
+        bake_src = comp_coarse;
+        shell_out = comp_full;
+      }
+    }
+
     // --- Pass 1: bake shell -> SDF volume ---
     BakeUniforms bu = { R, lip, 3.0f * (2.0f * kExt0 / (float)kVolRes), 0.f };
     ub_bake.writeOne(bu);
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(g_pso_bake);
-      cp.setTexture(shell_coarse, 0, 0);
+      cp.setTexture(bake_src, 0, 0);
       cp.setSampler(samp_clamp, 1);
       cp.setTexture(sdf_vol, 2, 1);
       cp.setBuffer(ub_bake, 3);

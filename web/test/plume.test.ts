@@ -371,6 +371,52 @@ describe('source.sdf.plume E2E', () => {
     dyn.phases[2].trace('out').expectDifferentFrom(solo.trace('out'), 40);
   });
 
+  it('simulate mode evolves the field over time', async () => {
+    // Tracers stream over the manifold and keep reshaping the height field
+    // (persistent overlay, sim_fade 0), so the SAME static camera/light
+    // must see the surface change across captures — while at sim 0 the
+    // published field is exactly the static sculpt (pinned at tolerance 0
+    // by the identical-field test above, since sim defaults to 0).
+    const r = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.core', 'com.nano.nano'],
+      dumpName: 'plume_sim_evolve',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'plume_simev', sketch: {
+              anchor: null, wires: [],
+              chain: [
+                { type: 'module', module_type: 'source.sdf.plume_field',
+                  instance_key: 'sev_g@0',
+                  params: { ...A_SHAPE, morph: 0,
+                            sim: 0.9, sim_rate: 0.8, sim_carve: 0.85,
+                            sim_fade: 0.0, sim_trail: 0.8 } },
+                { type: 'module', module_type: 'source.sdf.plume',
+                  instance_key: 'sev_r@0',
+                  params: { ...STATIC, ...B_LOOK, radius: 0, ridge_depth: 0 } },
+              ],
+            } as Sketch },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'plume_simev' } },
+            ]},
+          ],
+          waitFrames: 10, captureTraceIds: ['out'],
+        },
+        { waitFrames: 60, captureTraceIds: ['out'] },
+      ],
+    });
+    expect(r.success).toBe(true);
+    const early = r.phases[0].trace('out');
+    const late = r.phases[1].trace('out');
+    // The carved surface differs from the young one...
+    late.expectDifferentFrom(early, 30);
+    // ...but the rail stays valid: the body still renders (center on-body,
+    // clearly darker/other than the empty checkerboard corners would be).
+    const center = late.pixelAt(48, 48);
+    expect(center.a).toBe(255);
+  });
+
   it('plume_field passes video through untouched', async () => {
     const result = await renderSketch('plume_field_pass', {
       anchor: null, wires: [],

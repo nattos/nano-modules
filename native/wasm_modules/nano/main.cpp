@@ -402,9 +402,12 @@ void nano_module_main() {
         "baked into a signed-distance volume) and publishes it on the "
         "`sdf_field` rail instead of rendering it. Wire into an SDF "
         "renderer downstream (e.g. Plume) to split the geometry from the "
-        "camera/light/atmosphere. Video passes through untouched.",
+        "camera/light/atmosphere. Its own Simulate mode runs tracers over "
+        "the surface — streaming downhill, carving valleys deeper and "
+        "building ridges, leaving glowing streamline trails. Video passes "
+        "through untouched.",
         "source",
-        "generator,3d,sdf,field,provider,producer,sdf-field,shell,ridges,morph,procedural",
+        "generator,3d,sdf,field,provider,producer,sdf-field,shell,ridges,morph,procedural,simulation,erosion,tracers,streamlines",
         "la-globe",
         NANO_INSTANCE_LIFECYCLE(plume_field),
     });
