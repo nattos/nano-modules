@@ -3583,3 +3583,119 @@ TEST_CASE("sequence scene mode: the interior lane gets a real track stream",
   }
   CHECK(laneFound);
 }
+
+TEST_CASE("sequence repro: interior video with follow sections + an xfade on the sequence",
+          "[comp_seqrepro]") {
+  // Shape taken from a real user document: a 60-beat sequence clip at beat 12
+  // whose own transport section holds transition.xfade, containing two media
+  // sub-clips at interior 0..4 and 18..22, each with core.transport.follow.
+  EvalHarness h;
+  h.cx.registerSchema("transition.xfade", json::object());
+  h.cx.registerCapabilities("transition.xfade", json::array({"transport_section"}));
+  h.cx.registerSchema("core.transport.follow", json::object());
+  h.cx.registerCapabilities("core.transport.follow", json::array({"transport_section"}));
+
+  auto sub = [](const std::string& id, double start, double endSec, int frames, double fps) {
+    json c = mkClip(id, start, 4, json::array({mkDevice(id + "_v", "source.video.file")}),
+                    {{"kind", "video"},
+                     {"source", {{"label", id}, {"durationFrames", frames}, {"sourceKey", id},
+                                 {"url", "blob:media/" + id}, {"fps", fps}}},
+                     {"loop", {{"mode", "time"}, {"startSec", 0}, {"endSec", endSec},
+                               {"speed", 1}, {"direction", "forward"}}},
+                     {"transport", {{"devices", json::array({
+                          mkDevice(id + "_f", "core.transport.follow")})}}}});
+    return c;
+  };
+  json seq = mkSequenceClip("seq", 12, 60, "lane1",
+                            json::array({sub("subA", 0, 1.8333333333333333, 55, 30),
+                                         sub("subB", 18, 0.95, 250, 25)}));
+  seq["transport"] = {{"devices", json::array({mkDevice("xf", "transition.xfade")})}};
+  h.cx.loadDocument(mkComposition(json::array({ mkTrack("t1", json::array({seq})) })));
+
+  h.cx.seekBeat(13.0);   // 1 beat into the sequence ⇒ interior beat 1 ⇒ subA live
+  h.cx.update(0.0);
+  h.cx.transportResolve(0.0);
+
+  INFO("chain:  " << h.cx.chainKeysJson());
+  INFO("descs:  " << h.cx.videoDescsJson());
+  INFO("order:  " << h.cx.transportOrderJson());
+  {
+    std::string rows;
+    const json order = json::parse(h.cx.transportOrderJson());
+    for (size_t i = 0; i < order.size(); ++i) {
+      const auto& r = h.cx.transportResolved()[i];
+      rows += order[i].get<std::string>() + "{valid=" + std::to_string(r.valid) +
+              " active=" + std::to_string(r.active) + " t=" + std::to_string(r.timeSec) + "} ";
+    }
+    INFO("rows:   " << rows);
+  }
+
+  CHECK(h.cx.chainKeysJson().find("clip_subA_subA_v") != std::string::npos);
+
+  const json order = json::parse(h.cx.transportOrderJson());
+  int rowIdx = -1;
+  for (size_t i = 0; i < order.size(); ++i) {
+    if (order[i].get<std::string>() == "subA") rowIdx = static_cast<int>(i);
+  }
+  REQUIRE(rowIdx >= 0);                                  // the pump needs a row
+  const auto& r = h.cx.transportResolved()[rowIdx];
+  CHECK(r.valid);
+  CHECK(r.active >= 0.5);                                // else the pump injects NOTHING
+  CHECK(r.timeSec == Catch::Approx(0.5).margin(1e-6));   // 1 beat @120bpm = 0.5 s in
+}
+
+TEST_CASE("sequence renders its interior to real pixels (GPU)", "[comp_render][comp_sequence]") {
+  // Compositing in isolation — a solid-colour interior clip, no video pump.
+  // If a sequence renders transparent/black while the same clip on a plain
+  // track renders red, the bug is in compositeSequence, not the decode path.
+  Harness hx;
+  if (!hx.init()) SKIP("No Metal device available");
+
+  auto redClip = [](const std::string& id, double start, double len) {
+    return mkClip(id, start, len,
+                  json::array({mkDevice(id + "_d", "source.solid_color",
+                                        {{"color", {1.0, 0.0, 0.0}}})}));
+  };
+
+  // A: the clip on a plain track.
+  const json looseDoc = mkComposition(json::array({
+      mkTrack("t1", json::array({redClip("c1", 0, 8)})),
+  }));
+  // B: the SAME clip inside a sequence clip spanning the same beats.
+  const json seqDoc = mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip("seq", 0, 8, "lane1",
+                                                json::array({redClip("c1", 0, 8)}))})),
+  }));
+
+  auto renderMean = [&](const json& doc) {
+    comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
+    hx.seed(cx);
+    cx.loadDocument(doc);
+    cx.seekBeat(1.0);
+    const uint32_t flags = cx.update(0.0);
+    INFO("chain: " << cx.chainKeysJson());
+    CHECK((flags & comp::kCompHasContent) != 0);
+    int32_t inTex = hx.makeTex(), outTex = hx.makeTex();
+    const int32_t out = cx.render(inTex, outTex, W, H, 1.0 / 60.0);
+    return meanRgb(hx.read(out));
+  };
+
+  const double loose = renderMean(looseDoc);
+  const double seq = renderMean(seqDoc);
+  INFO("loose mean " << loose << "  sequence mean " << seq);
+  CHECK(loose > 10.0);                       // the reference actually drew something
+  CHECK(seq == Catch::Approx(loose).margin(1.0));  // the sequence must match it
+
+  // TRANSPARENT background — a DIFFERENT path: the accumulator starts empty, so
+  // nothing composites the layer over a base and the blend node is elided. This
+  // is the real-world default for a comp destined for a video mixer.
+  auto withTransparentBg = [](json doc) {
+    doc["meta"]["background"] = {{"mode", "transparent"}};
+    return doc;
+  };
+  const double looseT = renderMean(withTransparentBg(looseDoc));
+  const double seqT = renderMean(withTransparentBg(seqDoc));
+  INFO("transparent bg — loose " << looseT << "  sequence " << seqT);
+  CHECK(looseT > 10.0);
+  CHECK(seqT == Catch::Approx(looseT).margin(1.0));
+}
