@@ -54,7 +54,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
              * 0.25;
 
   float h = lerp(prev.r, hn, blur);
-  h = clamp((h + dh * rate_h) * decay_h, -1.0, 1.0);
+  // Deposition tapers as the overlay grows: carving/building stays gentle,
+  // approaching a soft ceiling instead of racing to the clamp.
+  h = clamp((h + dh * rate_h * (1.0 - 0.6 * abs(h))) * decay_h, -1.0, 1.0);
   float f = saturate(prev.g * decay_f + fl * rate_f);
 
   overlayNext[pc] = float4(h, f, 0.0, 0.0);

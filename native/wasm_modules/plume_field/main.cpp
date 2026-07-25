@@ -12,11 +12,13 @@
  * camera/light/atmosphere.
  *
  * On top of the shared sculpt, this effect (and only this effect) has a
- * Simulate mode: a tracer population runs over the manifold of the
- * displaced sphere, streaming downhill with inertia, digging the valleys
- * it finds deeper and piling material where it slows. The reshaped
- * terrain steers later tracers, so channels/ridges emerge over time and
- * the tracer traffic paints streamline trails into the crest channel.
+ * Simulate mode: a tracer population sweeps over the manifold of the
+ * displaced sphere in long arcs, curling around the sphere's axis. Each
+ * tracer is a valley-cutter (steers into valleys, gently digs along its
+ * path) or a ridge-builder (rides crests, builds them up); the zonal
+ * flow carries it ALONG the feature it hugs, so existing relief is
+ * emphasised and extended into streamlines, and the reshaped terrain
+ * steers later tracers. Traffic paints trails into the crest channel.
  * Implementation: sim_step (tracers + fixed-point atomic deposits) →
  * sim_resolve (deposits → persistent overlay map, ping-pong) → the
  * sculptor's compose pass folds the overlay into the published field.
@@ -48,8 +50,8 @@ constexpr int kSimRes = 256;      // overlay + deposit resolution
 constexpr int kTracers = 8192;
 
 struct SimUniforms {
-  float dt, accel, vmax, drag;
-  float ero_gain, dep_gain, cap_k, ov_amp;
+  float dt, accel, vmax, relax;
+  float curl, carve_gain, ridge_frac, ov_amp;
   float sim_res, frame, life, _pad0;
 };
 static_assert(sizeof(SimUniforms) == 48, "SimUniforms layout mismatch");
@@ -84,7 +86,8 @@ struct State {
   // Sim param mirrors.
   float sim = 0.0f;
   float sim_rate = 0.5f;
-  float sim_carve = 0.75f;
+  float sim_swirl = 0.6f;
+  float sim_carve = 0.5f;
   float sim_fade = 0.1f;
   float sim_trail = 0.6f;
 };
@@ -115,20 +118,26 @@ void module_init() {
       // --- Simulation (the standalone provider's own mode) ---
       .group("sim", "Simulate")
       .groupHelp(
-          "A population of **tracers** runs over the sculpted surface: they "
-          "stream downhill with inertia, carve the valleys they find deeper, "
-          "and pile material up where they slow — the terrain they reshape "
-          "steers the tracers that follow, so channels and ridges emerge and "
-          "sharpen over time. *Simulate* is the master amount (0 = off, the "
-          "field is exactly the static sculpt). *Carve* balances digging "
-          "against building. *Fade* lets the carvings heal (0 = permanent). "
-          "*Streamlines* paints the tracer traffic into the crest channel, "
-          "so trails light up in a downstream renderer's material.")
+          "A population of **tracers** streams over the sculpted surface in "
+          "long arcs, curling around the sphere's axis. Each tracer is born "
+          "a *valley-cutter* (hugs valleys, gently digs along its whole "
+          "path) or a *ridge-builder* (rides crests, builds them up) — the "
+          "swirl carries it ALONG the feature while the slope holds it ON "
+          "the feature, so existing valleys and ridges get emphasised and "
+          "extended into streamlines. *Simulate* is the master amount (0 = "
+          "off, the field is exactly the static sculpt). *Swirl* is the "
+          "strength of the axial circulation. *Carve* mixes the population "
+          "(1 = all cutters, 0 = all builders). *Fade* lets the carvings "
+          "heal (0 = permanent). *Streamlines* paints the tracer traffic "
+          "into the crest channel, so trails light up in a downstream "
+          "renderer's material.")
       .floatField("sim", 0.0f, 0.f, 1.f, state::PrimaryInput)
           .label("Simulate", "Sim")
       .floatField("sim_rate", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Sim Rate", "Rate")
-      .floatField("sim_carve", 0.75f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("sim_swirl", 0.6f, 0.f, 1.f, state::PrimaryInput)
+          .label("Swirl", "Swirl")
+      .floatField("sim_carve", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Carve", "Carve")
       .floatField("sim_fade", 0.1f, 0.f, 1.f, state::PrimaryInput)
           .label("Fade", "Fade")
@@ -247,6 +256,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (s->gen.patch(p, l, i)) continue;
     if      (state::pathIs(p, l, "sim"))       s->sim = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_rate"))  s->sim_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sim_swirl")) s->sim_swirl = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_carve")) s->sim_carve = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_fade"))  s->sim_fade = state::patchFloat(i);
     else if (state::pathIs(p, l, "sim_trail")) s->sim_trail = state::patchFloat(i);
@@ -287,12 +297,16 @@ static plume_gen::Overlay stepSim(State* s) {
 
   SimUniforms su = {};
   su.dt = dt;
-  su.accel = 0.4f + 7.0f * s->sim_rate * s->sim_rate;
+  su.accel = 0.8f + 10.0f * s->sim_rate * s->sim_rate;
   su.vmax = 0.6f + 1.8f * s->sim_rate;
-  su.drag = 1.6f;                     // inertia: streamlines, not jitter
-  su.ero_gain = 0.25f + 2.2f * s->sim_carve;
-  su.dep_gain = 0.35f + 2.0f * (1.0f - s->sim_carve);
-  su.cap_k = 0.06f;
+  // Velocity relaxes toward the zonal (around-the-axis) flow: relax doubles
+  // as drag, and the steady advection is what stretches every tracer's path
+  // well past ~35 deg of arc. curl is a solid-body angular rate (rad/s at
+  // the equator), so at default knobs a tracer sweeps ~30 deg/s.
+  su.relax = 1.0f;
+  su.curl = (0.05f + 0.95f * s->sim_swirl) * (0.25f + 1.25f * s->sim_rate);
+  su.carve_gain = 2.5f;               // gentle, continuous along the path
+  su.ridge_frac = 1.0f - s->sim_carve;  // Carve 1 = all valley-cutters
   su.ov_amp = ov_amp;
   su.sim_res = (float)kSimRes;
   su.frame = (float)(s->sim_frame++);
@@ -319,12 +333,14 @@ static plume_gen::Overlay stepSim(State* s) {
   // Deposits are already dt-scaled in the step; these are unit gains
   // tuned so an active population reshapes the field over seconds.
   ru.rate_h = 1.8f;
-  ru.rate_f = 0.6f;
+  ru.rate_f = 0.45f;
   // Diffusion must be dt-scaled (a per-frame constant would out-diffuse
   // the tracers' digging) — just enough to keep channel walls smooth.
-  ru.blur = std::fmin(0.3f, 0.9f * dt);
+  ru.blur = std::fmin(0.3f, 1.6f * dt);
   ru.decay_h = std::exp(-dt * 1.8f * s->sim_fade * s->sim_fade);
-  ru.decay_f = std::exp(-dt * (0.8f + 5.0f * s->sim_fade));
+  // Flow decays fast regardless of Fade: trails read as RECENT traffic
+  // (moving streamlines), not the whole run's history smeared to white.
+  ru.decay_f = std::exp(-dt * (1.5f + 5.0f * s->sim_fade));
   s->ub_resolve.writeOne(ru);
   {
     auto cp = gpu::ComputePass::begin();

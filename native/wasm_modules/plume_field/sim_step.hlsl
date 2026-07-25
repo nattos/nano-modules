@@ -1,23 +1,31 @@
 // source.sdf.plume_field — tracer simulation, step pass.
 //
-// A population of tracers runs over the manifold of the displaced sphere
-// (base sculpt + the accumulated overlay — so carved channels steer later
-// tracers: the tracers interact THROUGH the surface they reshape). Each
-// tracer:
-//   - reads the local height + gradient of the composed field,
-//   - accelerates downhill along the sphere tangent with inertia (the
-//     inertia is what stretches paths into streamlines instead of jitter),
-//   - carries sediment: it ERODES (digs) where it moves fast — deepening
-//     the valleys it found — and DEPOSITS where it slows, building up
-//     material; the carve/build balance is a knob,
-//   - splats its height delta AND its traffic (flow) into a fixed-point
-//     atomic deposit buffer; sim_resolve folds that into the persistent
-//     overlay map next.
+// A population of tracers sweeps over the manifold of the displaced
+// sphere (base sculpt + the accumulated overlay — so carved channels
+// steer later tracers: the tracers interact THROUGH the surface they
+// reshape). The motion is built from two ingredients:
+//
+//   - a ZONAL flow curling around the sphere's +Y axis (solid-body:
+//     v = curl * (axis × dir), strongest at the equator). Velocity
+//     relaxes toward it, which both sustains motion (every tracer's
+//     path stretches well past ~35° of arc) and acts as drag;
+//   - slope STEERING with a per-tracer polarity: a valley-cutter
+//     steers downhill and a ridge-builder steers uphill. Combined with
+//     the along-flow advection, a tracer oscillates about the valley
+//     floor / ridge crest while being carried along it — it traces the
+//     feature LENGTHWISE.
+//
+// Deposition is gentle and continuous along the path (∝ arc traveled),
+// signed by the same polarity: cutters dig the valleys they hug,
+// builders raise the crests they ride. No sediment transport — the
+// polarity already says which way material moves.
 //
 // Tracer state: 2 × float4 per tracer,
-//   [2i]   = (dir.xyz  — unit position on S², sediment)
-//   [2i+1] = (vel.xyz  — tangent velocity, age)
-// A zeroed buffer self-initializes: |dir| < 0.5 triggers a respawn.
+//   [2i]   = (dir.xyz — unit position on S², carve)
+//   [2i+1] = (vel.xyz — tangent velocity, age)
+// carve ∈ ±[0.5, 1]: sign = polarity (+ builds ridges, − cuts valleys),
+// magnitude = per-tracer strength. A zeroed buffer self-initializes:
+// |dir| < 0.5 triggers a respawn.
 //
 // Deposits: 2 × int per overlay texel, fixed point —
 //   [2t]   = height delta   (world-normalized × 65536)
@@ -33,13 +41,13 @@ RWStructuredBuffer<int>    deposit     : register(u4);
 
 cbuffer SimUniforms : register(b5) {
   float dt;         // clamped frame delta, seconds
-  float accel;      // downhill acceleration gain
+  float accel;      // slope-steering gain
   float vmax;       // tangent speed limit (rad/s-ish)
-  float drag;       // velocity damping per second
+  float relax;      // relaxation toward the zonal flow, per second
 
-  float ero_gain;   // erosion (dig) rate — carve knob, may be 0
-  float dep_gain;   // deposition (build) rate — carve knob complement
-  float cap_k;      // sediment carrying capacity per unit speed
+  float curl;       // zonal angular rate (rad/s at the equator)
+  float carve_gain; // deposit rate along the path
+  float ridge_frac; // fraction of the population born ridge-builders
   float ov_amp;     // overlay .r -> world units (for height sampling)
 
   float sim_res;    // overlay resolution
@@ -70,7 +78,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float4 t0 = tracers[i * 2];
   float4 t1 = tracers[i * 2 + 1];
   float3 dir = t0.xyz;
-  float sed = t0.w;
+  float carve = t0.w;
   float3 vel = t1.xyz;
   float age = t1.w;
 
@@ -85,9 +93,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float rr = sqrt(max(1.0 - z * z, 0.0));
     dir = float3(rr * cos(ph), z, rr * sin(ph));
     vel = float3(0.0, 0.0, 0.0);
-    sed = 0.0;
+    // Polarity + strength for this life: ridge-builder (carve > 0) with
+    // probability ridge_frac, else valley-cutter (carve < 0).
+    float mag = 0.5 + 0.5 * sim_hash01(seed ^ 0xc2b2ae35u);
+    carve = (sim_hash01(seed ^ 0x27d4eb2fu) < ridge_frac) ? mag : -mag;
     age = sim_hash01(seed ^ 0x85ebca6bu) * life * 0.5;
-    tracers[i * 2] = float4(dir, sed);
+    tracers[i * 2] = float4(dir, carve);
     tracers[i * 2 + 1] = float4(vel, age);
     return;  // no deposit on the spawn frame
   }
@@ -99,7 +110,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 eu = float2(eps, 0.0);
   float2 ev = float2(0.0, eps);
   // True slope: dh over the actual arc the ±eps taps span, so `grad` is
-  // world-units-per-radian and the downhill acceleration has real teeth.
+  // world-units-per-radian and the slope steering has real teeth.
   float3 pu = nano_oct_decode(uv + eu), mu = nano_oct_decode(uv - eu);
   float3 pv = nano_oct_decode(uv + ev), mv = nano_oct_decode(uv - ev);
   float du_arc = max(length(pu - mu), 1e-4);
@@ -110,25 +121,24 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float3 tv = (pv - mv) / dv_arc;
   float3 grad = tu * dh_du + tv * dh_dv;   // uphill, tangent-ish
 
-  // --- Integrate: downhill + inertia, constrained to the tangent plane ---
-  vel *= exp(-drag * dt);
-  vel -= grad * (accel * dt);
+  // --- Integrate: relax toward the zonal flow, steer by polarity, keep to
+  // the tangent plane ---
+  float3 v_curl = cross(float3(0.0, 1.0, 0.0), dir) * curl;
+  vel = lerp(vel, v_curl, 1.0 - exp(-relax * dt));
+  // Saturating steer: on very steep slopes the pull stops growing, so a
+  // builder oscillating about a sharpening crest can't self-trap into a
+  // runaway needle — the zonal flow always wins eventually and carries it
+  // on along the ridge line.
+  float3 steer = grad / (1.0 + 2.0 * length(grad));
+  vel += steer * (accel * dt * sign(carve));  // + uphill (ridge), − downhill
   vel -= dir * dot(dir, vel);
   float spd = length(vel);
   if (spd > vmax) { vel *= vmax / spd; spd = vmax; }
   dir = normalize(dir + vel * dt);
 
-  // --- Continuous path-carving + sediment transport. A moving tracer
-  // ALWAYS digs in proportion to its speed (a steady stream keeps
-  // deepening its channel — a capacity-gated model stalls the moment
-  // sediment fills up), carries part of the spoil, and dumps the excess
-  // where it decelerates (bars/deltas where streams slow and fan out). ---
-  float dig = ero_gain * spd * 0.05 * dt;
-  sed += dig * 0.6;
-  float cap = cap_k * spd;
-  float drop = max(sed - cap, 0.0) * dep_gain * dt;
-  sed -= drop;
-  float dh = drop - dig;
+  // --- Gentle continuous deposition along the path: ∝ arc traveled this
+  // step, signed by the polarity (cutters dig, builders raise) ---
+  float dh = carve * carve_gain * spd * 0.05 * dt;
 
   // --- Splat: height delta + traffic, bilinear 2×2 tent (mass-conserving)
   // so channels are a few texels wide instead of single-texel scratches ---
@@ -148,6 +158,6 @@ void main(uint3 gid : SV_DispatchThreadID) {
     }
   }
 
-  tracers[i * 2] = float4(dir, sed);
+  tracers[i * 2] = float4(dir, carve);
   tracers[i * 2 + 1] = float4(vel, age);
 }
