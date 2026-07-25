@@ -191,8 +191,14 @@ export class ArrangementApp extends MobxLitElement {
   `;
 
   private raf = 0;
-  /** Which surface the user last interacted with (gates timeline deletions). */
-  private lastSurface: 'timeline' | 'inspector' | 'clipview' | 'other' = 'other';
+  /** Which surface the user last interacted with (gates timeline deletions).
+   *  Mirrored onto the store, which the inspector routes on. */
+  private get lastSurface(): 'timeline' | 'inspector' | 'clipview' | 'other' {
+    return store.lastSurface;
+  }
+  private set lastSurface(s: 'timeline' | 'inspector' | 'clipview' | 'other') {
+    store.setLastSurface(s);
+  }
 
   connectedCallback() {
     super.connectedCallback();
@@ -505,7 +511,25 @@ export class ArrangementApp extends MobxLitElement {
       else store.undo();
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') {
       e.preventDefault();
+      // Inside the clip panel's nested sequence lane, Split acts on the
+      // INTERIOR (it has its own local caret; the global one never points into
+      // a sequence — see store.regionTracks' guard).
+      if (this.lastSurface === 'clipview') {
+        const panel = this.renderRoot?.querySelector('arr-clip-view') as any;
+        const lane = panel?.renderRoot?.querySelector('arr-seq-lane') as any;
+        if (lane?.splitAtLocalCaret) { lane.splitAtLocalCaret(); return; }
+      }
       store.splitAtCursor(); // split at the caret
+      // Cmd+Shift+J must precede Cmd+J (same precedence shape as Cmd+Shift+B
+      // before Cmd+B below) — otherwise the plain branch swallows the shifted one.
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.uncollapseSelection(); // break sequence clips back onto the timeline
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+      if (this.lastSurface !== 'timeline') return;
+      e.preventDefault();
+      store.consolidateSelection(); // gather the region into a sequence clip
     } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
       // Cmd+Shift+B → collapse/expand the bottom (clip-details) panel.
       e.preventDefault();

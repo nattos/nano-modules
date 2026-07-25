@@ -16,6 +16,7 @@ import { GENERATOR_THUMB_SAMPLES } from '../media/generator-thumb-capture';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { store, paths } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
+import type { BeatGrid } from '../model/beat-grid';
 import {
   Clip,
   clipProcessesTexture,
@@ -223,6 +224,41 @@ export class ArrClip extends MobxLitElement {
       : null;
   }
 
+  /**
+   * The beat↔px transform for the lane this clip lives in. Defaults to the
+   * global (warped, store-driven) grid, so the main timeline is unchanged; a
+   * nested single-lane host (<arr-seq-lane>) passes its own clip-local axis.
+   * Same shape as <arr-automation-editor>.gridProvider.
+   */
+  @property({ attribute: false }) gridProvider: () => BeatGrid = buildBeatGrid;
+
+  /** Header-gutter width to subtract from the lane viewport (0 when nested). */
+  private hostHeaderWidth(): number {
+    const h = this.gridHost();
+    return typeof h?.laneHeaderWidth === 'number' ? h.laneHeaderWidth : store.headerWidth;
+  }
+
+  /** Snap a beat through the host's grid (the nested lane has its own snap). */
+  private hostQuantize(b: number, free: boolean): number {
+    const h = this.gridHost();
+    return h?.quantize ? h.quantize(b, free) : store.quantize(b, free);
+  }
+
+  /**
+   * Drop a zero-width caret at a dragged clip edge. Routed through the HOST:
+   * the global caret addresses TOP-LEVEL rows only, so writing an interior
+   * lane id into it would leave caretRowSpan() empty — which reads as "global"
+   * and silently widens every region op to the whole document.
+   */
+  private setEdgeCaret(beat: number) {
+    const h = this.gridHost();
+    if (h?.setEdgeCaret) { h.setEdgeCaret(beat, this.trackId); return; }
+    store.setCaret({
+      anchorBeat: beat, anchorTrackId: this.trackId,
+      headBeat: beat, headTrackId: this.trackId,
+    });
+  }
+
   @query('.body.reel canvas') private reelCanvas?: HTMLCanvasElement;
   @query('.trace-card canvas') private traceCanvas?: HTMLCanvasElement;
   private ro?: ResizeObserver;
@@ -308,7 +344,7 @@ export class ArrClip extends MobxLitElement {
     const h = canvas.clientHeight;
     const clip = this.clip;
     // Full clip pixel width from the grid (the clip element is sized to this).
-    const grid = buildBeatGrid();
+    const grid = this.gridProvider();
     const leftX = grid.beatToX(clip.startBeat);
     const clipW = grid.beatToX(clip.startBeat + clip.lengthBeat) - leftX;
     if (clipW <= 0 || h <= 0) return;
@@ -318,7 +354,7 @@ export class ArrClip extends MobxLitElement {
     // every off-screen thumbnail. leftX is the clip's left edge in lane coords (negative
     // when scrolled off the left); the lane viewport is [0, laneW].
     const scrollEl = this.gridHost()?.renderRoot?.querySelector?.('.scroll') as HTMLElement | undefined;
-    const laneW = scrollEl ? Math.max(0, scrollEl.clientWidth - store.headerWidth) : clipW;
+    const laneW = scrollEl ? Math.max(0, scrollEl.clientWidth - this.hostHeaderWidth()) : clipW;
     const MARGIN = 240;
     const visL = Math.max(0, Math.min(clipW, -leftX - MARGIN));
     const visR = Math.max(0, Math.min(clipW, (laneW - leftX) + MARGIN));
@@ -619,7 +655,7 @@ export class ArrClip extends MobxLitElement {
       if (d.state) void Object.values(d.state).join('|');
       void store.enginePlugin(d.moduleType);
     }
-    const grid = buildBeatGrid();
+    const grid = this.gridProvider();
     const left = grid.beatToX(clip.startBeat);
     const width = Math.max(8, grid.spanWidth(clip.startBeat, clip.lengthBeat));
     this.style.left = `${left}px`;
@@ -722,13 +758,21 @@ export class ArrClip extends MobxLitElement {
     if (store.primaryPath?.startsWith('track/')) return false;
     const scope = store.timeSelTrackIds;
     if (scope.length && !scope.includes(this.trackId)) return false;
-    const beat = buildBeatGrid().xToBeat(e.clientX - this.laneRect().left);
+    const beat = this.gridProvider().xToBeat(e.clientX - this.laneRect().left);
     return beat >= store.timeSelStart! && beat <= store.timeSelEnd;
   }
 
   /** Double-clicking the header opens the bottom clip panel (if not already open). */
   private onHeaderDblClick = (e: MouseEvent) => {
     e.stopPropagation();
+    // Inside a NESTED sequence lane, double-click PINS this sub-clip into the
+    // details panel, overriding the sequence clip that put it there. That's the
+    // one place the panel deliberately diverges from the inspector's selection
+    // (there's no "back" affordance yet — re-select the sequence clip).
+    if (this.gridHost()?.isNestedLane) {
+      store.setClipViewTarget(paths.clip(this.trackId, this.clip.id));
+      return;
+    }
     if (!store.clipViewOpen) store.toggleClipView();
   };
 
@@ -752,12 +796,7 @@ export class ArrClip extends MobxLitElement {
     store.selectClipOnly(paths.clip(this.trackId, this.clip.id));
     const edgeBeat =
       mode === 'resize-l' ? this.clip.startBeat : this.clip.startBeat + this.clip.lengthBeat;
-    store.setCaret({
-      anchorBeat: edgeBeat,
-      anchorTrackId: this.trackId,
-      headBeat: edgeBeat,
-      headTrackId: this.trackId,
-    });
+    this.setEdgeCaret(edgeBeat);
     this.beginDrag(e, mode);
   }
 
@@ -774,8 +813,8 @@ export class ArrClip extends MobxLitElement {
   private onWinMove = (e: PointerEvent) => {
     if (!this.mode) return;
     const free = e.altKey;
-    const q = (b: number) => store.quantize(b, free);
-    const grid = buildBeatGrid();
+    const q = (b: number) => this.hostQuantize(b, free);
+    const grid = this.gridProvider();
     const beatAtCursor = grid.xToBeat(e.clientX - this.laneRect().left);
     if (this.mode === 'resize-r') {
       let endBeat = q(beatAtCursor);
@@ -791,24 +830,14 @@ export class ArrClip extends MobxLitElement {
       // Caret (+ playhead when paused) follows the dragging RIGHT edge live — using the
       // CLAMPED end (one-shot can't grow past the file), so the caret stops with the clip.
       const edgeBeat = res.start + res.len;
-      store.setCaret({
-        anchorBeat: edgeBeat,
-        anchorTrackId: this.trackId,
-        headBeat: edgeBeat,
-        headTrackId: this.trackId,
-      });
+      this.setEdgeCaret(edgeBeat);
     } else if (this.mode === 'resize-l') {
       const newStart = q(beatAtCursor);
       const end = this.origStart + this.origLen;
       if (newStart < end - 0.5) {
         const res = store.resizeClip(this.trackId, this.clip.id, newStart, end - newStart);
         // Caret follows the CLAMPED left edge (left-trim caps the start at frame 0).
-        store.setCaret({
-          anchorBeat: res.start,
-          anchorTrackId: this.trackId,
-          headBeat: res.start,
-          headTrackId: this.trackId,
-        });
+        this.setEdgeCaret(res.start);
       }
     }
   };

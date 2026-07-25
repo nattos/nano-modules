@@ -86,6 +86,9 @@ function draftClip(d: Composition, laneId: string, clipId: string): Clip | undef
  *  faders stay the same width regardless of nesting. */
 export const GROUP_INDENT = 20;
 
+/** The app's interactive surfaces (see {@link ArrangementStore.lastSurface}). */
+export type ArrSurface = 'timeline' | 'inspector' | 'clipview' | 'other';
+
 /**
  * A field-level engine patch queued by a cheap (drag) mutation — the payload
  * the bridge forwards verbatim as a comp cheap op (engine-types compOp, minus
@@ -856,6 +859,19 @@ export class ArrangementStore {
   pendingCompOps: CompCheapOp[] = [];
   private cheapReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   private cheapEditsSinceDocRev = false;
+  /**
+   * Which surface the user last interacted with. Written by the app shell's
+   * capture-phase pointerdown; read by the shortcut guards AND (stage 8) the
+   * inspector, which shows the owning sequence clip when the selection is empty
+   * but the clip panel's nested timeline was last focused. Ephemeral, but
+   * OBSERVABLE — the inspector routes on it.
+   */
+  lastSurface: ArrSurface = 'other';
+
+  setLastSurface(s: ArrSurface) {
+    if (this.lastSurface !== s) this.lastSurface = s;
+  }
+
   /** Bumps on EVERY document mutation (incl. param/xform drags) + undo/redo
    *  + document replacement — the comp-mode bridge re-pushes the document
    *  mirror when this changes. Distinct from warpEpoch (which deliberately
@@ -1527,6 +1543,7 @@ export class ArrangementStore {
 
   select(path: string) {
     runInAction(() => {
+      this.prunePanelPin(path);
       this.selection = new Set([path]);
       this.primaryPath = path;
       this.selectedWireId = null;
@@ -1629,6 +1646,7 @@ export class ArrangementStore {
    */
   selectClipOnly(path: string) {
     runInAction(() => {
+      this.prunePanelPin(path);
       this.selection = new Set([path]);
       this.primaryPath = path;
       this.selectedWireId = null;
@@ -1656,6 +1674,7 @@ export class ArrangementStore {
 
   setSelection(pathsToSelect: string[]) {
     runInAction(() => {
+      this.prunePanelPin(pathsToSelect[pathsToSelect.length - 1] ?? null);
       this.selection = new Set(pathsToSelect);
       this.primaryPath = pathsToSelect.length
         ? pathsToSelect[pathsToSelect.length - 1]
@@ -2149,6 +2168,64 @@ export class ArrangementStore {
   }
   setClipAutoTiming(t: 'loop' | 'clip') {
     this.clipAutoTiming = t;
+  }
+
+  /**
+   * Path of a clip PINNED into the details panel, overriding the selection.
+   * Set by double-clicking a sub-clip's header inside a nested sequence lane —
+   * the ONE case where the panel deliberately shows something other than what
+   * the inspector shows. Ephemeral (never persisted, never undoable).
+   */
+  clipViewPinPath: string | null = null;
+
+  /**
+   * What the details panel edits: the pin if it still resolves, else the
+   * selection. A stale pin (its clip deleted) simply falls through.
+   */
+  get clipViewTarget(): { track: Track; clip: Clip } | null {
+    const pinned = this.clipViewPinPath ? this.clipByPath(this.clipViewPinPath) : null;
+    return pinned ?? this.selectedClip;
+  }
+
+  /**
+   * What the INSPECTOR should show when the timeline selection is empty but the
+   * clip panel's nested timeline was the last thing touched: the SEQUENCE clip
+   * that owns the panel's target (never the sub-clip — that one is already
+   * shown in the panel below). Null in every other case.
+   */
+  get inspectorFallbackPath(): string | null {
+    if (this.lastSurface !== 'clipview') return null;
+    const t = this.clipViewTarget;
+    if (!t) return null;
+    const owner = sequenceOwnerOf(this.composition, t.track.id);
+    if (owner) return paths.clip(owner.track.id, owner.clip.id);
+    return isSequenceClip(t.clip) ? paths.clip(t.track.id, t.clip.id) : null;
+  }
+
+  /** Pin (or clear, with null) the details panel's target. */
+  setClipViewTarget(path: string | null) {
+    runInAction(() => {
+      this.clipViewPinPath = path;
+      if (path && !this.clipViewOpen) this.toggleClipView();
+    });
+  }
+
+  /**
+   * Drop the pin when the selection moves somewhere unrelated. It SURVIVES a
+   * selection change within the same interior lane, or onto the sequence clip
+   * that owns it — otherwise clicking around inside a sequence would keep
+   * yanking the panel back to the outer clip.
+   */
+  private prunePanelPin(nextPath: string | null) {
+    if (!this.clipViewPinPath) return;
+    const pinned = this.clipByPath(this.clipViewPinPath);
+    if (!pinned) { this.clipViewPinPath = null; return; }
+    if (!nextPath) return;
+    const [, nextLaneId] = nextPath.split('/');
+    if (nextLaneId === pinned.track.id) return;                 // same interior lane
+    const owner = sequenceOwnerOf(this.composition, pinned.track.id);
+    if (owner && nextPath === paths.clip(owner.track.id, owner.clip.id)) return;
+    this.clipViewPinPath = null;
   }
 
   /** The single selected clip (for the clip view), or null. */
@@ -2906,6 +2983,26 @@ export class ArrangementStore {
   /** @deprecated kept for callers — splits at the caret/region. */
   splitAtRegion() {
     this.splitAtCursor();
+  }
+
+  /**
+   * Flip a sequence clip's interior between a TIMELINE lane (sub-clips play by
+   * position) and a SCENE lane (sub-clips are launchable cells). Switching to
+   * scenes snaps every sub-clip to the rigid one-bar cell width and settles
+   * them, matching how a real scene track behaves.
+   */
+  setSequenceLaneKind(trackId: string, clipId: string, kind: 'track' | 'scene') {
+    const barBeats = this.barBeats;
+    this.mutate('sequence lane kind', (d) => {
+      const lane = draftClip(d, trackId, clipId)?.sequence;
+      if (!lane || lane.kind === kind) return;
+      lane.kind = kind;
+      if (kind !== 'scene') return;
+      for (const c of [...lane.clips].sort((a, b) => a.startBeat - b.startBeat)) {
+        c.lengthBeat = barBeats;
+        settleSceneTrack(lane, c.id);
+      }
+    });
   }
 
   /** Split every clip on ONE lane at `beat` — the nested timeline's ⌘E (the

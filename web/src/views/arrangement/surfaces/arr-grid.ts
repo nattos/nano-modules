@@ -9,7 +9,7 @@
  * scrollUnits in the store); only vertical scrolling is native.
  */
 
-import { html, css } from 'lit';
+import { html, css, nothing } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { reaction, type IReactionDisposer } from 'mobx';
@@ -721,6 +721,18 @@ export class ArrGrid extends MobxLitElement {
           <button @click=${() => store.splitAtCursor()} title="Split clips at the cursor">
             <ui-icon icon="la-cut"></ui-icon> Split
           </button>
+          <button
+            @click=${() => store.consolidateSelection()}
+            ?disabled=${!store.canConsolidate}
+            title="Consolidate the selection into one sequence clip (⌘J)"
+          >
+            <ui-icon icon="la-object-group"></ui-icon> Consolidate
+          </button>
+          ${store.canUncollapse ? html`
+            <button @click=${() => store.uncollapseSelection()}
+                    title="Break the sequence clip back onto the timeline (⇧⌘J)">
+              <ui-icon icon="la-object-ungroup"></ui-icon> Uncollapse
+            </button>` : nothing}
         </div>
       `;
     }
@@ -736,6 +748,18 @@ export class ArrGrid extends MobxLitElement {
         <button @click=${() => store.splitAtRegion()} title="Split clips at region edges">
           <ui-icon icon="la-cut"></ui-icon> Split
         </button>
+        <button
+          @click=${() => store.consolidateSelection()}
+          ?disabled=${!store.canConsolidate}
+          title="Consolidate the region into one sequence clip per track (⌘J)"
+        >
+          <ui-icon icon="la-object-group"></ui-icon> Consolidate
+        </button>
+        ${store.canUncollapse ? html`
+          <button @click=${() => store.uncollapseSelection()}
+                  title="Break sequence clips back onto the timeline (⇧⌘J)">
+            <ui-icon icon="la-object-ungroup"></ui-icon> Uncollapse
+          </button>` : nothing}
         <button @click=${() => store.clearTime()} title="Delete (leave empty time)">
           <ui-icon icon="la-eraser"></ui-icon> Delete
         </button>
@@ -1489,6 +1513,24 @@ export class ArrGrid extends MobxLitElement {
   } | null = null;
 
   /** Begin moving `clip` (from arr-clip). `fromHeader` enables time-box split-move. */
+  // ── Duck-typed lane-host contract (also implemented by <arr-seq-lane>) ────
+  // <arr-clip>/<arr-scene> reach their host through the shadow root and call
+  // these; the nested single-lane host overrides them with its clip-local axis.
+
+  /** Track-header gutter to subtract from the lane viewport. */
+  get laneHeaderWidth(): number { return store.headerWidth; }
+
+  /** Snap a beat to the timeline's grid (`free` = Alt-drag, no snap). */
+  quantize(beat: number, free = false): number { return store.quantize(beat, free); }
+
+  /** Drop a zero-width caret at a dragged clip edge on `trackId`. */
+  setEdgeCaret(beat: number, trackId: string): void {
+    store.setCaret({
+      anchorBeat: beat, anchorTrackId: trackId,
+      headBeat: beat, headTrackId: trackId,
+    });
+  }
+
   beginClipMove(e: PointerEvent, trackId: string, clip: Clip, fromHeader: boolean) {
     const grid = buildBeatGrid();
     const laneLeft = this.scrollEl.getBoundingClientRect().left + store.headerWidth;

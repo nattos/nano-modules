@@ -7,12 +7,12 @@
  * Mockup: editors are representative; field values aren't deeply wired.
  */
 
-import { html, css, TemplateResult } from 'lit';
+import { html, css, nothing, TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
-import { store } from '../state/store';
+import { store, paths } from '../state/store';
 import { libraryPaths } from '../../../state/library-paths';
-import { clipProcessesTexture, clipTransportDriven, clipHasTransportSection, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
+import { sequenceLaneOf, sequenceInteriorBeats, clipProcessesTexture, clipTransportDriven, clipHasTransportSection, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
 import './arr-debug';
@@ -563,7 +563,8 @@ export class ArrInspector extends MobxLitElement {
       const refs = store.selectedClipRefs();
       if (refs.length > 1) return multiSketchId(refs);
     }
-    return store.primaryPath;
+    // Include the sequence fallback so the panel keeps its own scroll memory.
+    return store.primaryPath ?? store.inspectorFallbackPath;
   }
 
   connectedCallback() {
@@ -623,6 +624,11 @@ export class ArrInspector extends MobxLitElement {
   private renderSelection(): TemplateResult {
     const count = store.selection.size;
     if (count === 0) {
+      // Nothing selected, but the clip panel's nested sequence timeline was the
+      // last surface touched → show the SEQUENCE clip that owns it, so the
+      // inspector isn't blank while you're editing its interior.
+      const seq = store.inspectorFallbackPath;
+      if (seq) return this.renderClipInspector(seq);
       return html`<div class="empty">
         Nothing selected.<br />Click a clip or track. Double-click an empty lane
         to create a clip.
@@ -1006,6 +1012,51 @@ export class ArrInspector extends MobxLitElement {
     </div>`;
   }
 
+  /**
+   * SEQUENCE clips: what's inside, how the interior lane behaves, and the
+   * escape hatch. The clip's play-mode controls and transport section render
+   * unchanged below — the interior IS a content stream, so looping/seeking a
+   * sequence clip works exactly like looping a video.
+   */
+  private renderSequenceSection(trackId: string, clip: Clip): TemplateResult | typeof nothing {
+    const lane = sequenceLaneOf(clip);
+    if (!lane) return nothing;
+    const bars = sequenceInteriorBeats(clip) / store.barBeats;
+    return html`
+      <div class="row">
+        <label>Contents</label>
+        <span class="val">
+          <span class="tag">${lane.clips.length} clip${lane.clips.length === 1 ? '' : 's'}</span>
+          <span class="tag">${bars.toFixed(2)} bars</span>
+        </span>
+      </div>
+      <div class="row">
+        <label>Interior</label>
+        <span class="val">
+          <button
+            class=${lane.kind === 'track' ? 'on' : ''}
+            @click=${() => store.setSequenceLaneKind(trackId, clip.id, 'track')}
+            title="Timeline lane: sub-clips play by position"
+          >Timeline</button>
+          <button
+            class=${lane.kind === 'scene' ? 'on' : ''}
+            @click=${() => store.setSequenceLaneKind(trackId, clip.id, 'scene')}
+            title="Scene lane: sub-clips are launchable cells"
+          >Scenes</button>
+        </span>
+      </div>
+      <div class="row">
+        <label></label>
+        <span class="val">
+          <button
+            @click=${() => { store.select(paths.clip(trackId, clip.id)); store.uncollapseSelection(); }}
+            title="Break this sequence back onto the timeline (⇧⌘J)"
+          >Uncollapse</button>
+        </span>
+      </div>
+    `;
+  }
+
   private renderClipInspector(path: string): TemplateResult {
     const found = store.clipByPath(path);
     if (!found) return html`<div class="empty">Clip not found.</div>`;
@@ -1033,6 +1084,7 @@ export class ArrInspector extends MobxLitElement {
           </span>
         </div>
         ${isScene ? this.renderSceneChannelRow(found.track, clip) : ''}
+        ${this.renderSequenceSection(found.track.id, clip)}
         ${this.renderTransportSection(found.track.id, clip)}
         ${clipTransportDriven(clip)
           ? html`<div class="transport-overridden"

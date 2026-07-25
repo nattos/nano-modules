@@ -101,3 +101,47 @@ describe('main bus + return tracks', () => {
     expect(busIdx).toBeGreaterThan(idx);
   });
 });
+
+/**
+ * ⌘J Consolidate / ⇧⌘J Uncollapse gating. The keydown branches themselves live
+ * in arrangement-app.onKey; these pin the store predicates behind them (and
+ * that ⌘E Split is untouched).
+ */
+describe('consolidate shortcut gating', () => {
+  beforeEach(() => {
+    store.clearSelection();
+    store.clearTimeSelection();
+  });
+
+  it('canConsolidate follows the time box', () => {
+    const t = store.addTrack();
+    store.createEmptyClip(t, 0, 8);
+    store.clearSelection();
+    store.clearTimeSelection();
+    expect(store.canConsolidate).toBe(false); // no box AND nothing selected
+    store.setTimeSelection(0, 8, [t]);
+    expect(store.canConsolidate).toBe(true);
+    // A selected clip alone is enough (its extent is the fallback range).
+    store.clearTimeSelection();
+    store.select(paths.clip(t, store.trackById(t)!.clips[0].id));
+    expect(store.canConsolidate).toBe(true);
+  });
+
+  it('canUncollapse only once a sequence clip exists', () => {
+    const t = store.addTrack();
+    store.createEmptyClip(t, 0, 8);
+    store.setTimeSelection(0, 8, [t]);
+    expect(store.canUncollapse).toBe(false);
+    store.consolidateSelection();
+    store.setTimeSelection(0, 8, [t]);
+    expect(store.canUncollapse).toBe(true);
+  });
+
+  it('⌘E Split still splits (the bindings do not collide)', () => {
+    const t = store.addTrack();
+    store.createEmptyClip(t, 0, 8);
+    store.setTimeSelection(4, 4, [t]);
+    store.splitAtCursor();
+    expect(store.trackById(t)!.clips).toHaveLength(2);
+  });
+});

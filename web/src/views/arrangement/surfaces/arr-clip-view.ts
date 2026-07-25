@@ -18,12 +18,13 @@ import { renderPlayModeControls, playModeControlsStyles } from './play-mode-cont
 import { thumbnailController } from '../media/thumbnail-controller';
 import { levelForFramesPerThumb } from '../media/thumbnail-mip';
 import { clipSourceFrameAt, clipNoiseSeed, type ClipTimeCtx } from '../engine/clip-time';
-import { resolveSourceTransform } from '../model/composition';
+import { resolveSourceTransform, isSequenceClip, sequenceInteriorBeats } from '../model/composition';
 import { importVideoFile } from '../media/drop-import';
 import { linkMedia } from '../workspace/media-store';
 import './source-transform-widget';
 import './time-strip';
 import './arr-automation-editor';
+import './arr-seq-lane';
 import './arr-ruler';
 import { ClipTimelineView, type ClipViewContext } from './timeline-view';
 import '../../../widgets/ui-icon';
@@ -225,12 +226,18 @@ export class ArrClipView extends MobxLitElement {
   /** Stable grid provider (same ref each render) for the envelope editor. */
   private clipGrid = (): import('../model/beat-grid').BeatGrid => this.clipView.grid();
   private clipCtx(): ClipViewContext {
-    const clip = store.selectedClip?.clip;
+    const clip = store.clipViewTarget?.clip;
+    // A SEQUENCE clip's editor axis is its INTERIOR extent, and the interior
+    // repeats whenever the clip is longer than that — so the panel playhead
+    // wraps exactly like the engine's interior clock.
+    const seqBeats = clip && isSequenceClip(clip) ? sequenceInteriorBeats(clip) : 0;
     return {
       startBeat: clip?.startBeat ?? 0,
       lengthBeat: clip?.lengthBeat ?? 4,
-      spanBeats: this.editorBeats(),
-      loopMode: store.clipAutoTiming === 'loop',
+      spanBeats: seqBeats > 0 ? seqBeats : this.editorBeats(),
+      loopMode: seqBeats > 0
+        ? (clip!.lengthBeat > seqBeats + 1e-6)
+        : store.clipAutoTiming === 'loop',
       beatsPerBar: this.beatsPerBar(),
     };
   }
@@ -262,7 +269,7 @@ export class ArrClipView extends MobxLitElement {
   // duration()/fpsOf() prefer the DECODER's true values (drop-import only assumes 30fps,
   // so e.g. a 60fps clip would map beats to half-time frames in the preview/strip).
   private duration(): number {
-    const src = store.selectedClip?.clip.source;
+    const src = store.clipViewTarget?.clip.source;
     const real = src?.sourceKey ? thumbnailController.realInfo(src.sourceKey) : undefined;
     return real?.frameCount ?? src?.durationFrames ?? 300;
   }
@@ -289,12 +296,15 @@ export class ArrClipView extends MobxLitElement {
 
   render() {
     void store.positionBeat; // track: during playback the playhead drives the scrub
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (!sel) return html`<div class="empty">Select a clip to inspect it here.</div>`;
     const { clip } = sel;
     const mode = store.clipViewMode;
     const short = store.clipViewHeight < 150;
     const isVideo = clip.kind === 'video' && !!clip.source;
+    // A sequence clip shows its INTERIOR timeline where a video shows its film
+    // strip — the Source tab is meaningless for a container.
+    const isSeq = isSequenceClip(clip);
 
     return html`
       <div class="wrap">
@@ -310,10 +320,10 @@ export class ArrClipView extends MobxLitElement {
           ${mode === 'source' ? this.renderSourceCtl(clip, isVideo) : this.renderAutoCtl(clip)}
         </div>
         <div class="body ${short ? 'strip-fill' : ''}">
-          ${!short && (mode === 'automation' || isVideo)
+          ${!short && (mode === 'automation' || isVideo || isSeq)
             ? html`<arr-ruler compact .view=${this.clipView}></arr-ruler>`
             : ''}
-          ${short
+          ${short || (isSeq && mode === 'source')
             ? ''
             : html`<div class="top">
                 ${mode === 'automation'
@@ -336,7 +346,13 @@ export class ArrClipView extends MobxLitElement {
                   : html`<canvas></canvas>`}
                 <span class="plabel">${this.topLabel(clip, mode)}</span>
               </div>`}
-          ${mode === 'source'
+          ${mode === 'source' && isSeq
+            ? html`<arr-seq-lane
+                .clip=${clip}
+                .view=${this.clipView}
+              ></arr-seq-lane>`
+            : ''}
+          ${mode === 'source' && !isSeq
             ? (isVideo
               ? html`<time-strip
                   .clipId=${clip.id}
@@ -365,7 +381,7 @@ export class ArrClipView extends MobxLitElement {
   /** Editable play-mode timing — the shared controls (also used in the inspector),
    *  routed through the undoable store action. */
   private renderPlayMode(clip: any) {
-    const tid = store.selectedClip?.track.id;
+    const tid = store.clipViewTarget?.track.id;
     const videoDurSec = clip.source ? this.duration() / this.fpsOf(clip) : 0;
     return renderPlayModeControls(clip.loop, videoDurSec, (patch) => {
       if (tid) store.updateClipLoop(tid, clip.id, patch);
@@ -378,7 +394,7 @@ export class ArrClipView extends MobxLitElement {
   private onSourceDrop = async (e: DragEvent) => {
     const dt = e.dataTransfer;
     if (!dt) return;
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     const file = dt.files?.[0];
     const handleItem = Array.from(dt.items || []).find(
       (it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function',
@@ -429,7 +445,7 @@ export class ArrClipView extends MobxLitElement {
                 (m) => html`<button
                   class=${scale === m ? 'on' : ''}
                   @click=${() => {
-                    const sel = store.selectedClip;
+                    const sel = store.clipViewTarget;
                     if (sel) store.setClipScaleMode(sel.track.id, clip.id, m);
                   }}
                 >${m}</button>`,
@@ -447,7 +463,7 @@ export class ArrClipView extends MobxLitElement {
             .mode=${scale}
             .transform=${xf}
             .onChange=${(patch: any, ck?: string) => {
-              const sel = store.selectedClip;
+              const sel = store.clipViewTarget;
               if (sel) store.setClipSourceTransform(sel.track.id, clip.id, patch, ck);
             }}
           ></source-transform-widget>`
@@ -457,7 +473,7 @@ export class ArrClipView extends MobxLitElement {
 
   /** Label for the clip's selected automation field (falls back to its 1st lane). */
   private clipAutoLabel(): string {
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (!sel) return 'amount';
     const f = store.autoField(`clip/${sel.track.id}/${sel.clip.id}`);
     return f?.label
@@ -508,7 +524,7 @@ export class ArrClipView extends MobxLitElement {
     this.scrubFrame = e.detail.frame;
     // Scrubbing the strip moves the timeline playhead (frame → clip-local beat →
     // arrangement beat) so the monitor + arrangement follow.
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (sel) {
       const { inFrame, framesPerBeat } = this.frameMap();
       const localBeat = (this.scrubFrame - inFrame) / framesPerBeat;
@@ -526,7 +542,7 @@ export class ArrClipView extends MobxLitElement {
   updated() {
     // Re-fit the shared view when the clip OR the mode changes (the source view spans
     // the whole video, the automation view spans the loop/clip — different extents).
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     const clipChanged = !!sel && sel.clip.id !== this.lastClipId;
     const modeChanged = store.clipViewMode !== this.lastMode;
     if (sel && (clipChanged || modeChanged)) {
@@ -559,7 +575,7 @@ export class ArrClipView extends MobxLitElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (!sel) return;
     // Automation mode renders the editable <arr-automation-editor> (no canvas);
     // this canvas only exists in source mode → big preview at the scrub frame.
@@ -638,7 +654,7 @@ export class ArrClipView extends MobxLitElement {
   /** The source frame the engine is actually showing at the transport position (play
    *  mode applied), or null when the playhead is off this clip. */
   private currentSourceFrame(): number | null {
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     const clip = sel?.clip;
     if (!clip?.source) return null;
     const beat = store.positionBeat;
@@ -661,7 +677,7 @@ export class ArrClipView extends MobxLitElement {
    *  sub-region and you can always pan to the real video start. In AUTOMATION mode it's
    *  the source-loop length (loop timing) or the clip's arrangement length. */
   private editorBeats(): number {
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (!sel) return 4;
     const clip = sel.clip;
     if (store.clipViewMode === 'source' && clip.source) {
@@ -691,7 +707,7 @@ export class ArrClipView extends MobxLitElement {
   /** Delete the envelope nodes inside the clip-local selection. Returns true if
    *  there was a selection to act on (so the key is consumed). */
   deleteSelectedAutoNodes(): boolean {
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     const range = this.clipView.timeSel;
     const span = this.editorBeats();
     if (!sel || !range || span <= 0 || store.clipViewMode !== 'automation') return false;
@@ -714,7 +730,7 @@ export class ArrClipView extends MobxLitElement {
    *  editor span [0,spanBeats] covers the loop's [inFrame, inFrame+loopFrames].
    *  Lets the SOURCE film strip share the clip-local ruler's zoom/pan exactly. */
   private frameMap(): { inFrame: number; framesPerBeat: number } {
-    const clip = store.selectedClip?.clip;
+    const clip = store.clipViewTarget?.clip;
     if (store.clipViewMode === 'source' && clip?.source) {
       // Whole-video span: [0 beats, videoBeats] ↔ [frame 0, durationFrames].
       return { inFrame: 0, framesPerBeat: (this.fpsOf(clip) * 60) / store.composition.meta.baseBPM };
@@ -742,7 +758,7 @@ export class ArrClipView extends MobxLitElement {
   /** Cursor as normalized x∈[0,1] along the editor's BEAT axis (under the
    *  playhead). Null when the playhead isn't over the clip. */
   private autoCursor(): number | null {
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (!sel) return null;
     const clip = sel.clip;
     const beats = this.editorBeats();
@@ -776,7 +792,7 @@ export class ArrClipView extends MobxLitElement {
     canvas.height = Math.floor(h * dpr);
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const sel = store.selectedClip;
+    const sel = store.clipViewTarget;
     if (!sel) return;
     this.drawSourceFrame(ctx, w, h, sel.clip, this.hoverFrame);
   }

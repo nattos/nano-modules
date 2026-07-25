@@ -13,6 +13,7 @@ import { customElement, property, query } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths } from '../state/store';
 import { buildBeatGrid } from './grid-shared';
+import type { BeatGrid } from '../model/beat-grid';
 import type { Clip } from '../model/composition';
 import { sceneChannelAssignments } from '../model/composition';
 import { drawPlaceholderCell } from './film-reel';
@@ -185,7 +186,7 @@ export class ArrScene extends MobxLitElement {
     }
     // Grid placement: scenes scroll + zoom with the timeline like any clip
     // (fixed one-bar width — the store pins lengthBeat).
-    const grid = buildBeatGrid();
+    const grid = this.gridProvider();
     this.style.left = `${grid.beatToX(clip.startBeat)}px`;
     this.style.width = `${Math.max(24, grid.spanWidth(clip.startBeat, clip.lengthBeat))}px`;
     const selected = store.isSelected(paths.clip(this.trackId, clip.id));
@@ -193,7 +194,7 @@ export class ArrScene extends MobxLitElement {
     this.classList.toggle('selected', selected);
     this.classList.toggle('playing', playing);
 
-    const track = store.trackById(this.trackId);
+    const track = store.laneById(this.trackId);
     const idx = track ? track.clips.indexOf(clip) : -1;
     const channel = track && idx >= 0 ? sceneChannelAssignments(track)[idx] : 0;
     // Channel display name from the LISTEN rail's per-return names (P4 wiring);
@@ -280,7 +281,7 @@ export class ArrScene extends MobxLitElement {
     if (store.primaryPath?.startsWith('track/')) return false;
     const scope = store.timeSelTrackIds;
     if (scope.length && !scope.includes(this.trackId)) return false;
-    const beat = buildBeatGrid().xToBeat(e.clientX - this.laneRect().left);
+    const beat = this.gridProvider().xToBeat(e.clientX - this.laneRect().left);
     return beat >= store.timeSelStart! && beat <= store.timeSelEnd;
   }
 
@@ -293,6 +294,9 @@ export class ArrScene extends MobxLitElement {
     e.stopPropagation();
     if (!store.clipViewOpen) store.toggleClipView();
   };
+
+  /** Beat↔px transform for the lane (see <arr-clip>.gridProvider). */
+  @property({ attribute: false }) gridProvider: () => BeatGrid = buildBeatGrid;
 
   private gridHost(): any {
     return this.getRootNode() instanceof ShadowRoot
