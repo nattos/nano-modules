@@ -15,7 +15,10 @@ const probeSlider = () =>
   page.evaluate(() => {
     const app = document.querySelector('arrangement-app') as any;
     const insp = app?.shadowRoot?.querySelector('arr-inspector') as any;
-    const cg = insp?.shadowRoot?.querySelector('column-group') as any;
+    // The clip inspector renders the TRANSPORT section as its own column-group
+    // ABOVE the chain, so pick by sketchId rather than taking the first one.
+    const cg = [...(insp?.shadowRoot?.querySelectorAll('column-group') ?? [])]
+      .find((g: any) => String(g.sketchId ?? '').startsWith('clip/')) as any;
     if (!cg) return { mounted: false };
     const sliders = Array.from(cg.shadowRoot.querySelectorAll('scalar-slider')) as any[];
     const hue = sliders.find((s) => s.fieldPath === 'hue_shift');
@@ -62,7 +65,9 @@ describe('Arrangement real clip inspector (column-group)', () => {
     await page.waitForFunction(
       () => {
         const app = document.querySelector('arrangement-app') as any;
-        const cg = app?.shadowRoot?.querySelector('arr-inspector')?.shadowRoot?.querySelector('column-group') as any;
+        const cg = [...(app?.shadowRoot?.querySelector('arr-inspector')
+          ?.shadowRoot?.querySelectorAll('column-group') ?? [])]
+          .find((g: any) => String(g.sketchId ?? '').startsWith('clip/')) as any;
         return !!cg?.shadowRoot?.querySelector('scalar-slider');
       },
       { timeout: 10_000 },
@@ -82,7 +87,9 @@ describe('Arrangement real clip inspector (column-group)', () => {
     await page.waitForFunction(
       () => {
         const app = document.querySelector('arrangement-app') as any;
-        const cg = app?.shadowRoot?.querySelector('arr-inspector')?.shadowRoot?.querySelector('column-group') as any;
+        const cg = [...(app?.shadowRoot?.querySelector('arr-inspector')
+          ?.shadowRoot?.querySelectorAll('column-group') ?? [])]
+          .find((g: any) => String(g.sketchId ?? '').startsWith('clip/')) as any;
         const hue = Array.from(cg.shadowRoot.querySelectorAll('scalar-slider')).find((s: any) => s.fieldPath === 'hue_shift') as any;
         return hue?.binding?.getValue('hue_shift') === 0.3;
       },
@@ -92,7 +99,9 @@ describe('Arrangement real clip inspector (column-group)', () => {
     // WRITE path: setValue through the binding mutates the store.
     const written = await page.evaluate((d) => {
       const app = document.querySelector('arrangement-app') as any;
-      const cg = app?.shadowRoot?.querySelector('arr-inspector')?.shadowRoot?.querySelector('column-group') as any;
+      const cg = [...(app?.shadowRoot?.querySelector('arr-inspector')
+        ?.shadowRoot?.querySelectorAll('column-group') ?? [])]
+        .find((g: any) => String(g.sketchId ?? '').startsWith('clip/')) as any;
       const hue = Array.from(cg.shadowRoot.querySelectorAll('scalar-slider')).find((s: any) => s.fieldPath === 'hue_shift') as any;
       hue.binding.setValue('hue_shift', -0.4);
       const dev = (window as any).arrangementStore.clipByPath(`clip/${d.trackId}/${d.clipId}`).clip.sketch.devices[0];
