@@ -3699,3 +3699,56 @@ TEST_CASE("sequence renders its interior to real pixels (GPU)", "[comp_render][c
   CHECK(looseT > 10.0);
   CHECK(seqT == Catch::Approx(looseT).margin(1.0));
 }
+
+TEST_CASE("sequence: only the LIVE interior clip plays; siblings pin at their entry",
+          "[comp_sequence]") {
+  // Every interior desc shares the sequence clip's unbounded window, so the pump
+  // cannot tell them apart by window alone — it keys off `prime`. This pins the
+  // contract both sides rely on:
+  //   live sibling  → no `prime`, row advances with the interior clock
+  //   warm sibling  → `prime`, row PINNED at its entry second
+  // Without the pin every interior video clip decodes at full rate at once and
+  // they race for the decode service (the live one intermittently blanking).
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 32, "lane1",
+                        json::array({mkVideoClip("live", 0, 8),
+                                     mkVideoClip("warm", 8, 8)}))})),
+  })));
+
+  auto rowFor = [&](const std::string& id) {
+    const json order = json::parse(h.cx.transportOrderJson());
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].get<std::string>() == id) return h.cx.transportResolved()[i];
+    }
+    return comp::CompExecutor::TransportResolved{};
+  };
+  auto descFor = [&](const std::string& id) {
+    for (const auto& d : json::parse(h.cx.videoDescsJson())) {
+      if (d.value("clipId", std::string()) == id) return d;
+    }
+    return json();
+  };
+
+  auto sampleAt = [&](double beat) {
+    h.cx.seekBeat(beat);
+    h.cx.update(0.0);
+    h.cx.transportResolve(0.0);
+  };
+
+  sampleAt(2.0);   // interior beat 2 ⇒ "live" is on screen
+  CHECK(descFor("live").value("prime", false) == false);
+  CHECK(descFor("warm").value("prime", false) == true);
+  const double warmAt2 = rowFor("warm").timeSec;
+  CHECK(rowFor("live").timeSec == Catch::Approx(1.0).margin(1e-6));
+
+  sampleAt(5.0);   // still "live"; the warm sibling must NOT have moved
+  CHECK(rowFor("live").timeSec == Catch::Approx(2.5).margin(1e-6));
+  CHECK(rowFor("warm").timeSec == Catch::Approx(warmAt2).margin(1e-9));
+
+  sampleAt(10.0);  // interior beat 10 ⇒ the roles swap
+  CHECK(descFor("warm").value("prime", false) == false);
+  CHECK(descFor("live").value("prime", false) == true);
+  CHECK(rowFor("warm").timeSec == Catch::Approx(1.0).margin(1e-6));
+}

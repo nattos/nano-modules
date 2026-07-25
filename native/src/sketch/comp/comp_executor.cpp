@@ -1356,6 +1356,25 @@ void CompExecutor::resolveSyntheticTransportRows() {
       continue;
     }
     const double interiorBeat = interiorBeatOf(*seqSec, doc_.baseBPM);
+    // Only the sub-clip the interior clock is actually ON plays; the others are
+    // PRECACHE candidates and must report a STABLE entry second. Reporting each
+    // one's folded position instead would advance their target every frame, so
+    // every interior video clip would decode at full rate simultaneously and
+    // race for the decode service (the live one intermittently losing).
+    const TrackM* lane = sequenceLaneOf(*row.seqClip);
+    const ClipM* live = lane ? pickActiveClip(*lane, interiorBeat) : nullptr;
+    const bool isLive = live && live->id == row.clipId;
+    r.valid = true;
+    r.rate = 1.0;
+    if (!isLive) {
+      // The entry the clip will show when it becomes live (playStart ?? slice
+      // start) — pinned, so the pump warms it ONCE and then idles.
+      const auto& lp = row.clip->loop;
+      r.timeSec = lp.playStartSec.value_or(lp.startSec);
+      r.active = 1.0;   // a valid target: the warm path needs one to pre-seek
+      transportResolved_[i] = r;
+      continue;         // deliberately NOT written to appliedContentSec
+    }
     ClipTimeCtx ctx;
     ctx.startBeat = row.clip->startBeat;   // LANE-LOCAL, matching interiorBeat
     ctx.lengthBeat = row.clip->lengthBeat;
@@ -1363,8 +1382,6 @@ void CompExecutor::resolveSyntheticTransportRows() {
     ctx.clock = &interiorClock_;
     ctx.seed = clipNoiseSeed(row.clip->id);
     const auto srcSec = clipSourceTimeAt(row.clip->loop, ctx, interiorBeat);
-    r.valid = true;
-    r.rate = 1.0;
     if (srcSec) {
       r.timeSec = *srcSec;
       r.active = 1.0;

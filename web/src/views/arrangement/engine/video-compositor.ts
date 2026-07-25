@@ -628,7 +628,17 @@ export class VideoCompositor {
     try {
       if (!this.gpuHost || !this.blitter) return;
       const d = p.desc;
-      const active = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
+      // A PRIMED desc is by construction a WARM CANDIDATE, never the live clip:
+      // the active-desc builder never sets `prime`, only the precache path does
+      // (and it skips ids already in the active set). Honouring that here matters
+      // for SEQUENCE interiors, whose descs all share the sequence clip's window
+      // (unbounded, since the interior loops) — without it every interior video
+      // clip reads as "playing" simultaneously and they race for the decode
+      // service, so whichever loses shows nothing.
+      const inWindow = beat >= d.startBeat - 1e-6 && beat < d.startBeat + d.lengthBeat - 1e-6;
+      const active = inWindow && !d.prime;
+      // `ahead` stays purely positional: a scene precache candidate anchors at a
+      // FUTURE beat and must target its entry, which is what this drives.
       const ahead = beat < d.startBeat - 1e-6;
       // For a clip not yet reached, target its ENTRY (what it shows AT its start) so we
       // pre-warm/seek there rather than chasing a future / wrong-phase frame.
