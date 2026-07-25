@@ -103,7 +103,14 @@ compile_shaders_compute_var_spv plume gi_inject
 compile_shaders_compute_var_spv plume gi_prop
 compile_shaders_compute_var_spv plume fog
 compile_shaders_compute_var_spv plume composite
-_emit_spv_header_var plume shell bake march prefill slice_debug gi_inject gi_prop fog composite
+_emit_spv_header_var plume march prefill slice_debug gi_inject gi_prop fog composite
+# The generator pair (shell + bake) is emitted into its own header with
+# prefixed symbols: plume/field_gen.h — the sculptor shared by plume and
+# plume_field — includes it, and both effects' TUs also see their own
+# <effect>_shaders.h, so the symbol sets must not collide.
+python3 ../_emit_spv_header.py "$TMP_DIR/plume_gen_shaders.h" \
+  "plume_gen_shell=$TMP_DIR/plume_shell.spv" \
+  "plume_gen_bake=$TMP_DIR/plume_bake.spv"
 echo "  plume shaders compiled (SPV: shell + bake + march + prefill + slice_debug + gi + fog + composite)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).

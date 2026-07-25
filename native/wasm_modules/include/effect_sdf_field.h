@@ -154,6 +154,44 @@ inline state::Schema& declare(state::Schema& s, int io,
       .endObject();
 }
 
+// Provider-side publish helper: pushes the ACTIVE field onto the
+// canonical `sdf_field` output each frame, deduping texture handles and
+// eliding unchanged scalar leaves (patch-churn hygiene). Call only when
+// state::isOutputConnected("sdf_field"); pass gpu texture `.id`s.
+struct Publisher {
+  Desc last{};
+  bool valid = false;
+  int last_grid = -1, last_shell = -1;
+
+  void publish(const Desc& d, int grid_id, int shell_id) {
+    if (grid_id != last_grid) {
+      last_grid = grid_id;
+      state::setGpuTexture("sdf_field/grid", grid_id);
+    }
+    if (shell_id != last_shell) {
+      last_shell = shell_id;
+      state::setGpuTexture("sdf_field/shell", shell_id);
+    }
+    auto pub = [&](const char* path, float v, float prev) {
+      if (valid && v == prev) return;
+      int vh = val::number(v);
+      state::setValPath(path, vh);
+      val::release(vh);
+    };
+    pub("sdf_field/field_class", (float)d.field_class, (float)last.field_class);
+    pub("sdf_field/radius", d.radius, last.radius);
+    pub("sdf_field/lip", d.lip, last.lip);
+    pub("sdf_field/lip_true", d.lip_true, last.lip_true);
+    pub("sdf_field/crest_amp", d.crest_amp, last.crest_amp);
+    pub("sdf_field/crest_gain", d.crest_gain, last.crest_gain);
+    pub("sdf_field/grid_ext", d.grid_ext, last.grid_ext);
+    pub("sdf_field/shell_res", d.shell_res, last.shell_res);
+    last = d;
+    valid = true;
+    state::markGpuDirty("sdf_field");
+  }
+};
+
 }  // namespace sdf_field
 }  // namespace fx
 #endif  // __wasm__

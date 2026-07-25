@@ -32,6 +32,7 @@
 
 #include <cmath>
 
+#include "field_gen.h"
 #include "plume_shaders.h"
 
 namespace plume {
@@ -40,17 +41,11 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTau = 2.0f * kPi;
 constexpr float kDeg = kPi / 180.0f;
 
-// Mirrors common.hlsl — keep in lockstep.
-constexpr int kVolRes = 128;
+// Grid/shell conventions live with the shared sculptor (field_gen.h);
+// the renderer's shaders bake the same constants (common.hlsl), and the
+// sculptor's static_asserts pin them to the sdf_field rail's.
+using plume_gen::kExt0;
 constexpr int kGiRes = 64;
-constexpr float kExt0 = 0.85f;
-constexpr int kShellRes = 1024;
-constexpr int kCoarseRes = 256;
-
-// The renderer half consumes the field through the sdf_field contract;
-// its shaders bake the grid conventions, so they must match the rail's.
-static_assert(kVolRes == fx::sdf_field::kGridRes, "grid res contract");
-static_assert(kExt0 == fx::sdf_field::kGridExt, "grid extent contract");
 
 constexpr int DBG_OFF = 0;
 constexpr int DBG_SDF = 1;
@@ -61,16 +56,6 @@ constexpr int DBG_RADIANCE = 4;
 // ---------------------------------------------------------------------------
 // GPU uniform structs (16-byte rows, lockstep with the .hlsl cbuffers).
 // ---------------------------------------------------------------------------
-
-struct ShellUniforms {
-  float res, octaves, ridge_scale, ridge_amp;
-  float ridge_sharp, morph_x, seed, morph_z;
-  float aniso, swirl, wobble, bl_nyq;
-};
-static_assert(sizeof(ShellUniforms) == 48, "ShellUniforms layout mismatch");
-
-struct BakeUniforms { float radius, lipschitz, dens_soft, _pad0; };
-static_assert(sizeof(BakeUniforms) == 16, "BakeUniforms layout mismatch");
 
 struct MarchUniforms {
   float cam_row0[4];   // view right (world), w = cam_pos.x
@@ -117,9 +102,7 @@ static_assert(sizeof(InjectUniforms) == 32, "InjectUniforms layout mismatch");
 struct PropUniforms { float c2, damp, decay_mul, inject_gain; };
 static_assert(sizeof(PropUniforms) == 16, "PropUniforms layout mismatch");
 
-// Type-shared PSOs.
-static gpu::ComputePSO s_pso_shell;
-static gpu::ComputePSO s_pso_bake;
+// Type-shared PSOs (shell/bake live with the sculptor in field_gen.h).
 static gpu::ComputePSO s_pso_march;
 static gpu::ComputePSO s_pso_march_hdr;
 static gpu::ComputePSO s_pso_prefill;
@@ -134,10 +117,12 @@ static gpu::ComputePSO s_pso_comp;
 struct State {
   bool initialized = false;
 
-  gpu::Buffer ub_shell_full, ub_shell_coarse, ub_bake, ub_march, ub_debug;
+  // The sculpted-field generator (shape params, morph accumulator,
+  // shell/coarse/sdf textures + passes) — shared with plume_field.
+  plume_gen::Sculptor gen;
+
+  gpu::Buffer ub_march, ub_debug;
   gpu::Buffer ub_inject, ub_prop, ub_fog, ub_comp;
-  gpu::Texture shell_full, shell_coarse;   // 2D RGBA16F, fixed sizes (lazy)
-  gpu::Texture sdf_vol;                    // 3D RGBA16F 128³ (lazy)
   gpu::Texture rad_vol[3];                 // GI wave field: prev/cur/next ring
   gpu::Texture inject_vol;                 // GI source term (lazy with rad)
   gpu::Texture zero_vol;                   // 1³ zeros (GI-off stand-in)
@@ -148,15 +133,7 @@ struct State {
   int rad_rot = 0;                         // ring index of "cur"
   int scratch_w = 0, scratch_h = 0;
 
-  // Param mirrors.
-  float radius = 0.5f;
-  float ridge_scale = 0.5f;
-  float ridge_depth = 0.5f;
-  float ridge_sharp = 0.5f;
-  float ridge_aniso = 0.6f;
-  float swirl = 0.15f;
-  float morph = 0.4f;
-  float variation = 0.0f;
+  // Param mirrors (shape params live in `gen`).
   float orbit = 0.35f;
   float tilt = 0.1f;
   float zoom = 0.25f;
@@ -188,20 +165,16 @@ struct State {
   int debug_view = DBG_OFF;
   float debug_slice = 0.5f;
 
-  // Accumulators (§2.1), cycles in [0,1).
-  double morph_phase = 0.0;
+  // Accumulator (§2.1), cycles in [0,1); morph's lives in `gen`.
   double orbit_phase = 0.0;
 
   // sdf_field rail. rail_in mirrors the wired provider's scalar leaves
   // (texture validity is resolved per frame); rail_reject_reason is the
   // last validate() failure (static strings — pointer compare) so a
   // mis-declared provider logs once per transition, not per frame.
-  // rail_pub_* dedupe the provider-side publish.
   fx::sdf_field::Desc rail_in;
   const char* rail_reject_reason = nullptr;
-  fx::sdf_field::Desc rail_pub;
-  bool rail_pub_valid = false;
-  int rail_pub_grid = -1, rail_pub_shell = -1;
+  fx::sdf_field::Publisher rail_pub;
 };
 
 void module_init() {
@@ -215,10 +188,9 @@ void module_init() {
         "lighting, atmosphere and materials are landing milestone by "
         "milestone.\n\n"
         "**Try:** *Ridge Scale* high with *Sharpness* up for fine feathering; "
-        "*Morph* slow for a breathing, living surface.")
-      // --- Shape ---
-      .group("shape", "Shape")
-        .groupHelp(
+        "*Morph* slow for a breathing, living surface.");
+  // --- Shape (the shared sculptor's params, field_gen.h) ---
+  plume_gen::Sculptor::declareSchema(schema,
           "*Radius* is the body; *Ridge Depth/Scale* shape the displacement "
           "riding on it. *Sharpness* carves the field into terraced plates — "
           "at 0 the surface stays a smooth rolling heightfield. *Feathering* "
@@ -228,22 +200,6 @@ void module_init() {
           "pattern. When an upstream SDF field is wired into `sdf_field_in` "
           "this whole group goes inert — the provider's geometry renders "
           "in its place.")
-      .floatField("radius", 0.5f, 0.f, 1.f, state::PrimaryInput)
-          .label("Radius", "Rad")
-      .floatField("ridge_depth", 0.5f, 0.f, 1.f, state::PrimaryInput)
-          .label("Ridge Depth", "Depth")
-      .floatField("ridge_scale", 0.5f, 0.f, 1.f, state::PrimaryInput)
-          .label("Ridge Scale", "Scale")
-      .floatField("ridge_sharp", 0.5f, 0.f, 1.f, state::PrimaryInput)
-          .label("Ridge Sharpness", "Sharp")
-      .floatField("ridge_aniso", 0.6f, 0.f, 1.f, state::PrimaryInput)
-          .label("Feathering", "Feath")
-      .floatField("swirl", 0.15f, 0.f, 1.f, state::PrimaryInput)
-          .label("Flow Direction", "Flow")
-      .floatField("morph", 0.4f, 0.f, 1.f, state::PrimaryInput)
-          .label("Morph", "Morph")
-      .floatField("variation", 0.0f, 0.f, 1.f, state::PrimaryInput)
-          .label("Variation", "Var")
       // --- Motion / camera ---
       .group("motion", "Camera")
       .floatField("orbit", 0.35f, 0.f, 1.f, state::PrimaryInput)
@@ -367,10 +323,8 @@ void module_init() {
 
   if (gpu::Device::backend() == gpu::Backend::None) return;
 
-  state::registerShaderSPV("plume_shell", SHELL_SPV, SHELL_SPV_SIZE,
-                           "rgba16float", "write");
-  state::registerShaderSPV("plume_bake", BAKE_SPV, BAKE_SPV_SIZE,
-                           "rgba16float", "write");
+  // Generator shaders (shell/bake) register with the shared sculptor.
+  plume_gen::moduleInit();
   // march is registered twice: the direct path writes tex_out (sketch
   // default format), the fog path writes the RGBA16F scene buffer — each
   // name gets the right naga storage-format substitution (flash_particles
@@ -389,8 +343,6 @@ void module_init() {
                            "rgba16float", "write");
   state::registerShaderSPV("plume_composite", COMPOSITE_SPV, COMPOSITE_SPV_SIZE);
 
-  auto cs_shell = gpu::Device::createShaderModuleByName("plume_shell");
-  auto cs_bake = gpu::Device::createShaderModuleByName("plume_bake");
   auto cs_march = gpu::Device::createShaderModuleByName("plume_march");
   auto cs_prefill = gpu::Device::createShaderModuleByName("plume_prefill");
   auto cs_debug = gpu::Device::createShaderModuleByName("plume_slice_debug");
@@ -399,17 +351,9 @@ void module_init() {
   auto cs_prop = gpu::Device::createShaderModuleByName("plume_gi_prop");
   auto cs_fog = gpu::Device::createShaderModuleByName("plume_fog");
   auto cs_comp = gpu::Device::createShaderModuleByName("plume_composite");
-  if (!cs_shell || !cs_bake || !cs_march || !cs_march_hdr || !cs_prefill ||
+  if (!cs_march || !cs_march_hdr || !cs_prefill ||
       !cs_debug || !cs_inject || !cs_prop || !cs_fog || !cs_comp) return;
 
-  s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main", gpu::Bindings()
-      .storageTex2d(0, gpu::TextureFormat::RGBA16F)
-      .uniform(1));
-  s_pso_bake = gpu::Device::createComputePSO(cs_bake, "main", gpu::Bindings()
-      .tex2d(0)
-      .sampler(1)
-      .storageTex3d(2, gpu::TextureFormat::RGBA16F)
-      .uniform(3));
   s_pso_march = gpu::Device::createComputePSO(cs_march, "main", gpu::Bindings()
       .tex3d(0)
       .tex2d(1)
@@ -470,12 +414,7 @@ void module_init() {
 
 void* create() {
   auto* s = new State();
-  s->ub_shell_full = gpu::Device::createBuffer(sizeof(ShellUniforms),
-                                               gpu::BufferUsage::Uniform);
-  s->ub_shell_coarse = gpu::Device::createBuffer(sizeof(ShellUniforms),
-                                                 gpu::BufferUsage::Uniform);
-  s->ub_bake = gpu::Device::createBuffer(sizeof(BakeUniforms),
-                                         gpu::BufferUsage::Uniform);
+  s->gen.createBuffers();
   s->ub_march = gpu::Device::createBuffer(sizeof(MarchUniforms),
                                           gpu::BufferUsage::Uniform);
   s->ub_debug = gpu::Device::createBuffer(sizeof(DebugUniforms),
@@ -500,9 +439,7 @@ void* create() {
 void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->ub_shell_full.release();
-  s->ub_shell_coarse.release();
-  s->ub_bake.release();
+  s->gen.release();
   s->ub_march.release();
   s->ub_debug.release();
   s->ub_inject.release();
@@ -511,9 +448,6 @@ void destroy(void* self) {
   s->ub_comp.release();
   s->scene_tex.release();
   s->fog_tex.release();
-  s->shell_full.release();
-  s->shell_coarse.release();
-  s->sdf_vol.release();
   for (int i = 0; i < 3; i++) s->rad_vol[i].release();
   s->inject_vol.release();
   s->zero_vol.release();
@@ -525,13 +459,11 @@ void destroy(void* self) {
 void init(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
-  s->morph_phase = 0.0;
+  s->gen.resetPhase();
   s->orbit_phase = 0.0;
-  s->initialized = s->ub_shell_full.valid() && s->ub_shell_coarse.valid() &&
-                   s->ub_bake.valid() && s->ub_march.valid() &&
+  s->initialized = s->gen.valid() && s->ub_march.valid() &&
                    s->ub_debug.valid() && s->ub_inject.valid() &&
-                   s->ub_prop.valid() && s_pso_shell.valid() &&
-                   s_pso_bake.valid() && s_pso_march.valid() &&
+                   s->ub_prop.valid() && s_pso_march.valid() &&
                    s_pso_prefill.valid() && s_pso_debug.valid() &&
                    s_pso_inject.valid() && s_pso_prop.valid() &&
                    s_pso_march_hdr.valid() && s_pso_fog.valid() &&
@@ -539,21 +471,14 @@ void init(void* self) {
                    s->ub_comp.valid();
 }
 
-static inline double wrap01(double v) { return v - std::floor(v); }
-
-// Knob -> cycles/sec, exponential (§1.3); 0 is fully stopped.
-static inline double rateHz(float k, double mid) {
-  if (k <= 0.001f) return 0.0;
-  return mid * std::pow(2.0, ((double)k - 0.5) * 5.0);
-}
-
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   if (!(dt > 0.0)) dt = 0.0;
   if (dt > 0.050) dt = 0.050;
-  s->morph_phase = wrap01(s->morph_phase + dt * rateHz(s->morph, 0.02));
-  s->orbit_phase = wrap01(s->orbit_phase + dt * rateHz(s->orbit, 0.02));
+  s->gen.tick(dt);
+  s->orbit_phase = plume_gen::wrap01(
+      s->orbit_phase + dt * plume_gen::rateHz(s->orbit, 0.02));
 }
 
 void on_state_patched(void* self, int n, const char* pb, const int* off,
@@ -564,15 +489,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
     int l = len[i];
-    if      (state::pathIs(p, l, "radius"))      s->radius = state::patchFloat(i);
-    else if (state::pathIs(p, l, "ridge_depth")) s->ridge_depth = state::patchFloat(i);
-    else if (state::pathIs(p, l, "ridge_scale")) s->ridge_scale = state::patchFloat(i);
-    else if (state::pathIs(p, l, "ridge_sharp")) s->ridge_sharp = state::patchFloat(i);
-    else if (state::pathIs(p, l, "ridge_aniso")) s->ridge_aniso = state::patchFloat(i);
-    else if (state::pathIs(p, l, "swirl"))       s->swirl = state::patchFloat(i);
-    else if (state::pathIs(p, l, "morph"))       s->morph = state::patchFloat(i);
-    else if (state::pathIs(p, l, "variation"))   s->variation = state::patchFloat(i);
-    else if (state::pathIs(p, l, "orbit"))       s->orbit = state::patchFloat(i);
+    if (s->gen.patch(p, l, i)) continue;   // Shape params (field_gen.h)
+    if      (state::pathIs(p, l, "orbit"))       s->orbit = state::patchFloat(i);
     else if (state::pathIs(p, l, "tilt"))        s->tilt = state::patchFloat(i);
     else if (state::pathIs(p, l, "zoom"))        s->zoom = state::patchFloat(i);
     else if (state::pathIs(p, l, "azimuth"))     s->azimuth = state::patchFloat(i);
@@ -649,19 +567,6 @@ void render(void* self, int vp_w, int vp_h) {
     return;
   }
 
-  // --- Lazy fixed-size resources ---
-  if (!s->shell_full.valid())
-    s->shell_full = gpu::Device::createTexture(kShellRes, kShellRes,
-                                               gpu::TextureFormat::RGBA16F);
-  if (!s->shell_coarse.valid())
-    s->shell_coarse = gpu::Device::createTexture(kCoarseRes, kCoarseRes,
-                                                 gpu::TextureFormat::RGBA16F);
-  if (!s->sdf_vol.valid())
-    s->sdf_vol = gpu::Device::createTexture3D(kVolRes, kVolRes, kVolRes,
-                                              gpu::TextureFormat::RGBA16F);
-  if (!s->shell_full.valid() || !s->shell_coarse.valid() || !s->sdf_vol.valid())
-    return;
-
   // --- Field source: wired provider, else self ---
   // The renderer half below (march/fog/GI/debug uniform fills + binds)
   // reads the field ONLY through this Desc + texture pair — the
@@ -695,132 +600,14 @@ void render(void* self, int vp_w, int vp_h) {
     s->rail_reject_reason = nullptr;
   }
 
-  if (!foreign) {
-    // --- Shape params -> world quantities ---
-    // Body + flakes must stay inside the volume's inscribed sphere (kExt0).
-    const float R = 0.28f + 0.27f * s->radius;
-    float amp = 0.5f * R * s->ridge_depth;
-    if (R + amp > 0.82f) amp = 0.82f - R;
-    const float freq = 4.0f * std::pow(2.0f, (s->ridge_scale - 0.5f) * 4.0f);
-    // Radial-displacement Lipschitz compression: slope ~ amp * freq (noise
-    // gradient ~1.5/unit folded into the constant), conservative. Terrace
-    // cliffs steepen the field well past the smooth-fbm bound; feathering's
-    // along-flow smear only ever smooths, so it needs no margin.
-    const float steep = 1.0f + 2.0f * s->ridge_sharp;
-    const float lip_true =
-        1.0f / (1.0f + 3.0f * amp * freq * steep / std::fmax(R, 0.1f));
-    // Floor keeps coarse marching from crawling, but a floored grid stores
-    // distances LONGER than the true bound — the march widens its fine-tier
-    // handoff band by lip/lip_true (capped) to absorb the overshoot.
-    float lip = std::fmax(lip_true, 0.15f);
-
-    field.field_class = fx::sdf_field::SphericalHeightmap;
-    field.radius = R;
-    field.lip = lip;
-    field.lip_true = lip_true;
-    field.crest_amp = amp;
-    // Crest shading emphasis only exists when there are ridges to crest.
-    field.crest_gain = std::fmin(1.0f, 10.0f * s->ridge_depth);
-    field.grid_ext = fx::sdf_field::kGridExt;
-    field.shell_res = (float)kShellRes;
-    field.has_grid = field.has_shell = true;
-    field_grid = s->sdf_vol;
-    field_shell = s->shell_full;
-
-    // Morph walks a closed circle in the noise domain — seamless, no drift.
-    const float mx = 5.0f * std::cos(kTau * (float)s->morph_phase);
-    const float mz = 5.0f * std::sin(kTau * (float)s->morph_phase);
-
-    // --- Pass 0: shell update (full + coarse) ---
-    ShellUniforms su = {};
-    su.ridge_scale = freq;
-    su.ridge_amp = amp;
-    su.ridge_sharp = s->ridge_sharp;
-    su.morph_x = mx;
-    su.morph_z = mz;
-    su.seed = s->variation * 10.0f;
-    su.aniso = s->ridge_aniso;
-    su.swirl = s->swirl;
-    su.wobble = 0.35f;
-    // Band-limit octaves at the FULL map's Nyquist (cycles/rad) for BOTH
-    // map resolutions — same fade => same field => terrace parity holds.
-    su.bl_nyq = (float)kShellRes / 6.2831853f;
-
-    // Both maps evaluate the SAME field (same octaves): the terrace cut is a
-    // hard nonlinearity, so differing octave counts could land on different
-    // terrace levels — a whole plate step of surface divergence, enough for
-    // the coarse march to tunnel through a protruding plate. The coarse map
-    // differs only by resolution (sub-voxel error the band handoff absorbs).
-    su.res = (float)kShellRes;
-    su.octaves = 4.0f;
-    s->ub_shell_full.writeOne(su);
-    su.res = (float)kCoarseRes;
-    su.octaves = 4.0f;
-    s->ub_shell_coarse.writeOne(su);
-
-    {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_shell);
-      cp.setTexture(s->shell_full, 0, 1);
-      cp.setBuffer(s->ub_shell_full, 1);
-      cp.dispatch(kShellRes / 8, kShellRes / 8);
-      cp.end();
-    }
-    {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_shell);
-      cp.setTexture(s->shell_coarse, 0, 1);
-      cp.setBuffer(s->ub_shell_coarse, 1);
-      cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
-      cp.end();
-    }
-
-    // --- Pass 1: bake shell -> SDF volume ---
-    BakeUniforms bu = { R, lip, 3.0f * (2.0f * kExt0 / (float)kVolRes), 0.f };
-    s->ub_bake.writeOne(bu);
-    {
-      auto cp = gpu::ComputePass::begin();
-      cp.setPSO(s_pso_bake);
-      cp.setTexture(s->shell_coarse, 0, 0);
-      cp.setSampler(s->samp_clamp, 1);
-      cp.setTexture(s->sdf_vol, 2, 1);
-      cp.setBuffer(s->ub_bake, 3);
-      cp.dispatch(kVolRes / 4, kVolRes / 4, kVolRes / 4);
-      cp.end();
-    }
-  }
+  // Sculpt our own field (shell ×2 + bake, field_gen.h) unless a valid
+  // foreign one replaced it.
+  if (!foreign && !s->gen.run(field, field_grid, field_shell)) return;
 
   // --- Provider publish: the ACTIVE field (relays foreign when wired
   // through, so a chain of consumers sees one consistent declaration) ---
-  if (state::isOutputConnected("sdf_field")) {
-    if (field_grid.id != s->rail_pub_grid) {
-      s->rail_pub_grid = field_grid.id;
-      state::setGpuTexture("sdf_field/grid", field_grid.id);
-    }
-    if (field_shell.id != s->rail_pub_shell) {
-      s->rail_pub_shell = field_shell.id;
-      state::setGpuTexture("sdf_field/shell", field_shell.id);
-    }
-    // Scalars only on change (patch-churn hygiene).
-    auto pub = [&](const char* path, float v, float prev) {
-      if (s->rail_pub_valid && v == prev) return;
-      int vh = val::number(v);
-      state::setValPath(path, vh);
-      val::release(vh);
-    };
-    pub("sdf_field/field_class", (float)field.field_class,
-        (float)s->rail_pub.field_class);
-    pub("sdf_field/radius", field.radius, s->rail_pub.radius);
-    pub("sdf_field/lip", field.lip, s->rail_pub.lip);
-    pub("sdf_field/lip_true", field.lip_true, s->rail_pub.lip_true);
-    pub("sdf_field/crest_amp", field.crest_amp, s->rail_pub.crest_amp);
-    pub("sdf_field/crest_gain", field.crest_gain, s->rail_pub.crest_gain);
-    pub("sdf_field/grid_ext", field.grid_ext, s->rail_pub.grid_ext);
-    pub("sdf_field/shell_res", field.shell_res, s->rail_pub.shell_res);
-    s->rail_pub = field;
-    s->rail_pub_valid = true;
-    state::markGpuDirty("sdf_field");
-  }
+  if (state::isOutputConnected("sdf_field"))
+    s->rail_pub.publish(field, field_grid.id, field_shell.id);
 
   // --- GI: inject + wave propagation (whole stage skipped at bounce 0) ---
   bool gi_on = s->bounce > 0.001f || s->debug_view == DBG_RADIANCE;
@@ -904,10 +691,12 @@ void render(void* self, int vp_w, int vp_h) {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_debug);
     // Inspect the field actually being rendered (foreign when wired);
-    // the coarse map is plume-authoring-specific and stays self.
+    // the coarse map is plume-authoring-specific and stays self (it may
+    // never have been sculpted when a foreign field is wired).
     cp.setTexture(field_grid, 0, 0);
     cp.setTexture(field_shell, 1, 0);
-    cp.setTexture(s->shell_coarse, 2, 0);
+    cp.setTexture(s->gen.shell_coarse.valid() ? s->gen.shell_coarse
+                                              : s->zero_tex, 2, 0);
     cp.setSampler(s->samp_clamp, 3);
     cp.setTexture(out, 4, 1);
     cp.setBuffer(s->ub_debug, 5);
