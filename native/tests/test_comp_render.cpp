@@ -3464,6 +3464,54 @@ TEST_CASE("sequence prefetch parity: track mode warms the same upcoming clips",
   }
 }
 
+TEST_CASE("sequence prefetch: a CONSOLIDATED sequence warms its next sub-clip",
+          "[comp_sequence]") {
+  // Consolidate makes the sequence clip span EXACTLY the sub-clips it absorbed,
+  // so clip end == interior extent. Sampling the lookahead's far end then lands
+  // in clipSourceTimeAt's end-of-media epsilon and the interior clock reads
+  // nullopt — which used to collapse the window to a point and warm nothing
+  // ahead, leaving every interior switch to a cold decode. The parity case
+  // above shares this geometry but never samples a playhead where the
+  // clamped-to-end window still holds an UNSTARTED clip, which is the only
+  // place it discriminates.
+  auto looseDoc = [] {
+    return mkComposition(json::array({
+        mkTrack("t1", json::array({mkVideoClip("subA", 0, 4), mkVideoClip("subB", 4, 4)})),
+    }));
+  };
+  auto seqDoc = [] {
+    return mkComposition(json::array({
+        mkTrack("t1", json::array({mkSequenceClip(
+                          "seq", 0, 8, "lane1",
+                          json::array({mkVideoClip("subA", 0, 4),
+                                       mkVideoClip("subB", 4, 4)}))})),
+    }));
+  };
+
+  EvalHarness a, b;
+  a.cx.loadDocument(looseDoc());
+  b.cx.loadDocument(seqDoc());
+  for (const double beat : {0.0, 1.0, 3.0, 5.0, 7.0}) {
+    a.cx.seekBeat(beat); a.cx.update(0.0); a.cx.transportResolve(0.0);
+    b.cx.seekBeat(beat); b.cx.update(0.0); b.cx.transportResolve(0.0);
+    const auto loose = warmedIds(a.cx);
+    const auto seq = warmedIds(b.cx);
+    INFO("beat " << beat);
+    INFO("loose: " << json(std::vector<std::string>(loose.begin(), loose.end())).dump());
+    INFO("seq:   " << json(std::vector<std::string>(seq.begin(), seq.end())).dump());
+    CHECK(seq == loose);
+  }
+
+  // Explicitly: the upcoming sub-clip is warmed, and PRIMED so the pump injects
+  // its entry frame before the switch rather than decoding cold at it.
+  b.cx.seekBeat(1.0); b.cx.update(0.0); b.cx.transportResolve(0.0);
+  bool primedB = false;
+  for (const auto& d : json::parse(b.cx.videoDescsJson())) {
+    if (d.value("clipId", std::string()) == "subB") primedB = d.value("prime", false);
+  }
+  CHECK(primedB);
+}
+
 TEST_CASE("sequence prefetch: a distant sub-clip is NOT warmed early",
           "[comp_sequence]") {
   // The bound matters: grouping must not turn "warm what's next" into "open

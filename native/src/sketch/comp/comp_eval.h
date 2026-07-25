@@ -423,7 +423,15 @@ inline std::vector<std::string> sequenceWarmIds(
   if (!s0) return out;
   const auto s1 = sequenceContentSecAt(clip, clip.startBeat, durSec, clock, b1, appliedContentSec);
   const double i0 = interiorBeatOf(*s0, baseBPM);
-  const double i1 = s1 ? interiorBeatOf(*s1, baseBPM) : i0;
+  // An UNMAPPABLE far end means the interior runs off its end inside the window
+  // — `clipSourceTimeAt` calls the last `kEps` of the media transparent, and the
+  // 1e-9 clamp above lands inside that dead zone whenever the clip stops exactly
+  // at its interior extent. That is the shape CONSOLIDATE produces (the new
+  // clip spans precisely the sub-clips it absorbed), so it is the common case,
+  // not an edge one. The window still reaches the interior's END; falling back
+  // to `i0` collapsed it to a point and warmed NOTHING ahead, leaving every
+  // upcoming sub-clip to a cold decode at the switch.
+  const double i1 = s1 ? interiorBeatOf(*s1, baseBPM) : interiorBeatOf(durSec, baseBPM);
   const double consumedSec = (b1 - b0) * 60.0 / (baseBPM > 0 ? baseBPM : 120.0);
   const bool wrapped = i1 < i0 - 1e-9 || consumedSec >= durSec;
   for (const auto& sub : lane.clips) {
