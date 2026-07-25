@@ -28,6 +28,7 @@
 #include <gpu.h>
 #include <host.h>
 #include <effect_utils.h>
+#include <effect_sdf_field.h>
 
 #include <cmath>
 
@@ -45,6 +46,11 @@ constexpr int kGiRes = 64;
 constexpr float kExt0 = 0.85f;
 constexpr int kShellRes = 1024;
 constexpr int kCoarseRes = 256;
+
+// The renderer half consumes the field through the sdf_field contract;
+// its shaders bake the grid conventions, so they must match the rail's.
+static_assert(kVolRes == fx::sdf_field::kGridRes, "grid res contract");
+static_assert(kExt0 == fx::sdf_field::kGridExt, "grid extent contract");
 
 constexpr int DBG_OFF = 0;
 constexpr int DBG_SDF = 1;
@@ -78,7 +84,8 @@ struct MarchUniforms {
   float fine_p[4];     // R (base radius), px_world (per unit t), inv_lip, bounce
   float misc[4];       // scene_mode, 0, 0, 0
   float mat[4];        // reflect, roughness, transmission, thickness
-  float misc2[4];      // wrap lit-gate, exposure gain, black level, 0
+  float misc2[4];      // wrap lit-gate, exposure gain, black level,
+                       // shell texel width (world units)
 };
 static_assert(sizeof(MarchUniforms) == 192, "MarchUniforms layout mismatch");
 
@@ -635,7 +642,24 @@ void render(void* self, int vp_w, int vp_h) {
   // distances LONGER than the true bound — the march widens its fine-tier
   // handoff band by lip/lip_true (capped) to absorb the overshoot.
   float lip = std::fmax(lip_true, 0.15f);
-  const float band_widen = std::fmin(3.0f, lip / lip_true);
+
+  // Self-provided field, stated in the sdf_field provider contract. The
+  // renderer half below (march/fog/GI uniform fills + binds) reads the
+  // field ONLY through this Desc + texture pair, so a rail-provided
+  // foreign field can slot in without touching those passes.
+  fx::sdf_field::Desc field;
+  field.field_class = fx::sdf_field::SphericalHeightmap;
+  field.radius = R;
+  field.lip = lip;
+  field.lip_true = lip_true;
+  field.crest_amp = amp;
+  // Crest shading emphasis only exists when there are ridges to crest.
+  field.crest_gain = std::fmin(1.0f, 10.0f * s->ridge_depth);
+  field.grid_ext = fx::sdf_field::kGridExt;
+  field.shell_res = (float)kShellRes;
+  field.has_grid = field.has_shell = true;
+  const gpu::Texture field_grid = s->sdf_vol;
+  const gpu::Texture field_shell = s->shell_full;
 
   // Morph walks a closed circle in the noise domain — seamless, no drift.
   const float mx = 5.0f * std::cos(kTau * (float)s->morph_phase);
@@ -724,12 +748,12 @@ void render(void* self, int vp_w, int vp_h) {
       iu.sun_p[2] = -std::cos(saz) * std::cos(sel2);
       iu.sun_p[3] = gi_sun;
       iu.albedo[0] = s->albedo_r; iu.albedo[1] = s->albedo_g;
-      iu.albedo[2] = s->albedo_b; iu.albedo[3] = 1.0f / lip;
+      iu.albedo[2] = s->albedo_b; iu.albedo[3] = 1.0f / field.lip;
       s->ub_inject.writeOne(iu);
       {
         auto cp = gpu::ComputePass::begin();
         cp.setPSO(s_pso_inject);
-        cp.setTexture(s->sdf_vol, 0, 0);
+        cp.setTexture(field_grid, 0, 0);
         cp.setSampler(s->samp_clamp, 1);
         cp.setTexture(s->inject_vol, 2, 1);
         cp.setBuffer(s->ub_inject, 3);
@@ -762,7 +786,7 @@ void render(void* self, int vp_w, int vp_h) {
         cp.setTexture(cur, 0, 0);
         cp.setTexture(prev, 1, 0);
         cp.setTexture(s->inject_vol, 2, 0);
-        cp.setTexture(s->sdf_vol, 3, 0);
+        cp.setTexture(field_grid, 3, 0);
         cp.setSampler(s->samp_clamp, 4);
         cp.setTexture(next, 5, 1);
         cp.setBuffer(s->ub_prop, 6);
@@ -780,8 +804,10 @@ void render(void* self, int vp_w, int vp_h) {
     s->ub_debug.writeOne(du);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_debug);
-    cp.setTexture(s->sdf_vol, 0, 0);
-    cp.setTexture(s->shell_full, 1, 0);
+    // Inspect the field actually being rendered (foreign when wired);
+    // the coarse map is plume-authoring-specific and stays self.
+    cp.setTexture(field_grid, 0, 0);
+    cp.setTexture(field_shell, 1, 0);
     cp.setTexture(s->shell_coarse, 2, 0);
     cp.setSampler(s->samp_clamp, 3);
     cp.setTexture(out, 4, 1);
@@ -866,20 +892,23 @@ void render(void* self, int vp_w, int vp_h) {
   mu.shade_p[1] = s->ao_amt;
   mu.shade_p[2] = s->ambient;
   mu.shade_p[3] = 0.6f * s->wrap;   // rim rides the wrap-light control
-  mu.fine_p[0] = R;
+  mu.fine_p[0] = field.radius;
   // World size of one pixel at unit distance (screen-adaptive normal eps).
   mu.fine_p[1] = 1.0f / ((float)vp_h * cs.ay * focal);
   // Decompression for penumbra/AO reads of the compressed grid distances.
-  mu.fine_p[2] = 1.0f / lip;
+  mu.fine_p[2] = 1.0f / field.lip;
   mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
   mu.misc[0] = fog_on ? 1.0f : 0.0f;
-  mu.misc[1] = band_widen;
-  // Crest shading emphasis only exists when there are ridges to crest.
-  mu.misc[2] = std::fmin(1.0f, 10.0f * s->ridge_depth);
+  mu.misc[1] = std::fmin(3.0f, field.lip / field.lip_true);
+  mu.misc[2] = field.crest_gain;
   mu.misc[3] = s->wrap;
   mu.misc2[0] = s->wrap_gate;
   mu.misc2[1] = expo;
   mu.misc2[2] = black;
+  // Shell texel width (world units) for the normal-eps floor — computed
+  // from the field's DECLARED shell_res (a provider's map may differ
+  // from plume's own PLM_SHELL_RES).
+  mu.misc2[3] = field.radius * 6.2832f / (2.0f * field.shell_res);
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;
@@ -889,9 +918,9 @@ void render(void* self, int vp_w, int vp_h) {
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(fog_on ? s_pso_march_hdr : s_pso_march);
-    cp.setTexture(s->sdf_vol, 0, 0);
+    cp.setTexture(field_grid, 0, 0);
     cp.setTexture(in.valid() ? in : s->zero_tex, 1, 0);
-    cp.setTexture(s->shell_full, 2, 0);
+    cp.setTexture(field_shell, 2, 0);
     cp.setSampler(s->samp_clamp, 3);
     cp.setTexture(fog_on ? s->scene_tex : out, 4, 1);
     cp.setBuffer(s->ub_march, 5);
@@ -909,15 +938,15 @@ void render(void* self, int vp_w, int vp_h) {
       fu.sun_p[i] = mu.sun_p[i];
     }
     fu.cam_p[0] = focal; fu.cam_p[1] = cs.ax; fu.cam_p[2] = cs.ay;
-    fu.cam_p[3] = R;
+    fu.cam_p[3] = field.radius;
     fu.fog_p[0] = s->fog * 5.0f;
     fu.fog_p[1] = 1.4427f / (0.04f + 0.30f * s->fog_soft);
     fu.fog_p[2] = s->room_fog * 1.2f;
     fu.fog_p[3] = 0.75f * s->phase;
-    fu.misc[0] = 1.0f / lip;
+    fu.misc[0] = 1.0f / field.lip;
     fu.misc[1] = s->ambient;
     fu.misc[2] = gi_on ? 1.2f * s->bounce : 0.0f;
-    fu.misc[3] = amp;
+    fu.misc[3] = field.crest_amp;
     fu.vp[0] = (float)half_w; fu.vp[1] = (float)half_h;
     fu.vp[2] = 1.0f / half_w; fu.vp[3] = 1.0f / half_h;
     // Dual lobe blends 20% isotropic into the HG phase — enough of a
@@ -928,7 +957,7 @@ void render(void* self, int vp_w, int vp_h) {
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_fog);
-      cp.setTexture(s->sdf_vol, 0, 0);
+      cp.setTexture(field_grid, 0, 0);
       cp.setTexture(rad_cur, 1, 0);
       cp.setTexture(s->scene_tex, 2, 0);
       cp.setSampler(s->samp_clamp, 3);

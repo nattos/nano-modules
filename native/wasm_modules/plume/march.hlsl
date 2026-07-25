@@ -35,7 +35,8 @@ cbuffer MarchUniforms : register(b5) {
   float4 misc;        // scene_mode (fog pipeline), band widen, crest gain,
                       // wrap-light amount
   float4 mat;         // reflect, roughness, transmission, thickness
-  float4 misc2;       // wrap lit-gate, exposure gain, black level, 0
+  float4 misc2;       // wrap lit-gate, exposure gain, black level,
+                      // shell texel width (world units)
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -143,8 +144,10 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // Normal: tetrahedron taps on the fine surface, screen-adaptive epsilon
   // (small up close for crisp flakes, wider far away to kill shimmer).
   // Floor at ~2 shell-map texels: below that the taps read the map's
-  // bilinear facets and the normal speckles.
-  float texw = fine_p.x * 6.2832 / (2.0 * float(PLM_SHELL_RES));
+  // bilinear facets and the normal speckles. The texel width comes from
+  // the host (the field's DECLARED shell_res — a provider's map need not
+  // match plume's own PLM_SHELL_RES).
+  float texw = misc2.w;
   float e = clamp(0.8 * fine_p.y * t, max(0.0012, 2.0 * texw), 0.02);
   float2 k = float2(1.0, -1.0);
   float3 N = normalize(
