@@ -539,7 +539,14 @@ export const RANDOM_DEFAULTS = {
   jumpDistanceUnit: 'fraction' as const,
 };
 
-export type ClipKind = 'effect' | 'video';
+/**
+ * `effect`   — an adjustment layer: its chain processes the composite below it.
+ * `video`    — a source clip (media file or a procedural generator at the chain top).
+ * `sequence` — a container: it owns an interior mini-timeline ({@link Clip.sequence})
+ *              whose sub-clips composite among themselves before the clip's own chain
+ *              runs over the result. See {@link isSequenceClip}.
+ */
+export type ClipKind = 'effect' | 'video' | 'sequence';
 
 export interface Clip {
   id: string;
@@ -580,6 +587,29 @@ export interface Clip {
      *  scaleMode fit. Omitted fields default per {@link resolveSourceTransform}. */
     transform?: Partial<SourceTransform>;
   };
+  /**
+   * Present iff kind === 'sequence'. The clip's INTERIOR mini-timeline, modelled
+   * as a real {@link Track} — a sequence clip behaves like a short-lived
+   * track/layer, so the whole track vocabulary applies verbatim: `kind`
+   * ('track' = timeline lane, 'scene' = launchable cells), `clips`, `transport`
+   * (transition effects), `triggerRead`, `level`, `blendMode`. Fields that only
+   * mean something for a top-level track (`parentId`, `groupInput`, `railId`,
+   * `baseCurve`) are unused, exactly as they already are on ordinary tracks.
+   *
+   * The lane's `id` is a globally unique `uid('track')`, so `paths.clip()`,
+   * `sceneLaunchState[id]`, `trackInstanceKey()` and every `(trackId, clipId)`
+   * store op keep working once lookups resolve nested lanes (state/lane-resolve.ts).
+   *
+   * Sub-clip `startBeat` is LANE-LOCAL: 0 is the sequence clip's left edge, and
+   * the interior runs on its own content clock (the clip's play mode / transport
+   * section retimes it), so interior beats are NOT arrangement beats.
+   *
+   * EXACTLY ONE LEVEL — a sub-clip is never itself a sequence. Consolidate breaks
+   * nested sequences first; `repairIds` explodes any that reach the document.
+   *
+   * LOCK-STEP: comp_model.h ClipM::sequence.
+   */
+  sequence?: Track;
   loop: ClipLoopConfig;
   automation: AutomationLane[];
   exports: RailExport[];
@@ -764,6 +794,12 @@ export interface WarpSegment {
   phase: number;
 }
 
+/**
+ * Deliberately does NOT descend into `clip.sequence`: a sequence clip's interior
+ * runs on its own content clock (play mode / transport section), so interior
+ * beats are not arrangement beats and integrating an interior warp into the
+ * global grid is ill-defined. The sequence clip's OWN `warps` still count.
+ */
 export function derivedWarpSegments(comp: Composition): WarpSegment[] {
   const segs: WarpSegment[] = [];
   for (const track of comp.tracks) {
@@ -784,13 +820,136 @@ export function derivedWarpSegments(comp: Composition): WarpSegment[] {
   return segs;
 }
 
-/** Does this clip process texture frames (insert) vs. modulation-only? */
+/** Does this clip process texture frames (insert) vs. modulation-only? A
+ *  sequence clip always does — it composites its interior into a frame even
+ *  when its own chain is empty. */
 export function clipProcessesTexture(clip: Clip): boolean {
+  if (isSequenceClip(clip)) return true;
   return clip.sketch.devices.some(deviceProcessesTexture);
 }
 
+// ── Sequence clips ────────────────────────────────────────────────────────
+
+/** Does this clip own an interior mini-timeline? (LOCK-STEP: comp_model.h
+ *  isSequenceClip — both sides infer sequence-ness from the LANE's presence,
+ *  never from a parsed `kind`, exactly as video-ness comes from `source.url`.) */
+export function isSequenceClip(clip: Clip): clip is Clip & { sequence: Track } {
+  return !!clip.sequence;
+}
+
+/** The clip's interior lane, or undefined when it isn't a sequence clip. */
+export function sequenceLaneOf(clip: Clip): Track | undefined {
+  return clip.sequence;
+}
+
+/**
+ * Is this clip worth compositing at all? The "empty clip" test, factored so the
+ * next content kind is ONE edit instead of nine. A sequence clip counts as
+ * content even with an empty own chain — its interior is the content.
+ * LOCK-STEP: comp_model.h clipHasContent.
+ */
+export function clipHasContent(clip: Clip): boolean {
+  return !!clip.source?.url || clip.sketch.devices.length > 0 || isSequenceClip(clip);
+}
+
+/** A fresh, empty interior lane. `id` must be a globally unique uid('track'). */
+export function makeSequenceLane(id: string, kind: 'track' | 'scene' = 'track'): Track {
+  return {
+    id,
+    name: 'Sequence',
+    kind,
+    parentId: null,
+    sketch: { devices: [] },
+    automation: [],
+    clips: [],
+    level: 1,
+  };
+}
+
+/** The interior's extent in LANE-LOCAL beats (0 when empty). Unlike
+ *  {@link compositionLengthBeats} there is no minimum — an empty interior is
+ *  genuinely zero-length, which the play modes read as "nothing to loop". */
+export function sequenceInteriorBeats(clip: Clip): number {
+  const lane = clip.sequence;
+  if (!lane) return 0;
+  let end = 0;
+  for (const c of lane.clips) end = Math.max(end, c.startBeat + c.lengthBeat);
+  return end;
+}
+
+/**
+ * The interior's extent in SECONDS at `bpm` — the bridge into the
+ * {@link ClipLoopConfig} machinery, which is written for a seconds-based media
+ * source. The interior is UNWARPED by construction (warp segments are
+ * arrangement-beat spans), so this is a flat beats→seconds conversion.
+ * LOCK-STEP: comp_model.h sequenceInteriorSec.
+ */
+export function sequenceInteriorSec(clip: Clip, bpm: number): number {
+  const b = bpm > 0 ? bpm : 120;
+  return (sequenceInteriorBeats(clip) * 60) / b;
+}
+
+/**
+ * Every clip-bearing lane in `comp`: each top-level track, then each sequence
+ * clip's interior lane. Depth is 1 by the no-nesting rule, but written
+ * recursively so a malformed document can't loop forever unnoticed.
+ */
+export function* allLanes(comp: Composition): Generator<Track> {
+  function* walk(lane: Track): Generator<Track> {
+    yield lane;
+    for (const c of lane.clips) if (c.sequence) yield* walk(c.sequence);
+  }
+  for (const t of comp.tracks) yield* walk(t);
+}
+
+/** The (top-level track, sequence clip) owning the interior lane `laneId`, or
+ *  null when `laneId` names a top-level track (or nothing). */
+export function sequenceOwnerOf(
+  comp: Composition, laneId: string,
+): { track: Track; clip: Clip } | null {
+  for (const track of comp.tracks) {
+    for (const clip of track.clips) {
+      if (clip.sequence?.id === laneId) return { track, clip };
+    }
+  }
+  return null;
+}
+
+// ── Chain fingerprints (Consolidate's exact-duplicate merge) ──────────────
+
+/** Recursive key-sorted JSON — a stable fingerprint of an editable param blob
+ *  (plain `JSON.stringify` is key-order sensitive, so two equal states written
+ *  in different orders would compare unequal). */
+export function stableStateJson(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map(stableStateJson).join(',')}]`;
+  const rec = v as Record<string, unknown>;
+  const keys = Object.keys(rec).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStateJson(rec[k])}`).join(',')}}`;
+}
+
+/** Structural identity of a device: module type + editable state. IGNORES `id`
+ *  and `name` — a renamed, re-ided copy is the SAME device for merge purposes. */
+export function deviceStateKey(d: Device): string {
+  return `${d.moduleType} ${stableStateJson(d.state ?? {})}`;
+}
+
+/** Structural identity of a whole chain. Order-sensitive: the same effects in a
+ *  different order are a different chain. */
+export function chainKey(s: ClipSketch | undefined): string {
+  return (s?.devices ?? []).map(deviceStateKey).join('');
+}
+
+/** Are two chains EXACTLY the same — same module types and the same editable
+ *  parameters, in order? Consolidate keeps only one copy when so. */
+export function chainsEqual(a: ClipSketch | undefined, b: ClipSketch | undefined): boolean {
+  return chainKey(a) === chainKey(b);
+}
+
 /** Total beats spanned by the composition (for ruler extent), min 64. Scene
- *  cells sit ON the grid, so they count toward the extent like any clip. */
+ *  cells sit ON the grid, so they count toward the extent like any clip.
+ *  Deliberately does NOT descend into `clip.sequence` — an interior lives
+ *  inside its parent clip's span and must not extend the ruler. */
 export function compositionLengthBeats(comp: Composition): number {
   let end = 64;
   for (const t of comp.tracks) {

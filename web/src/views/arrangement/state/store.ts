@@ -49,7 +49,37 @@ import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, remembered
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMedia, resolveMedia } from '../workspace/media-store';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
+import {
+  allLanes,
+  clipHasContent,
+  isSequenceClip,
+  makeSequenceLane,
+  sequenceInteriorBeats,
+  sequenceInteriorSec,
+  sequenceOwnerOf,
+  chainsEqual,
+} from '../model/composition';
+import {
+  laneById as resolveLaneById,
+  clipIn as resolveClipIn,
+  laneIdOfClip as resolveLaneIdOfClip,
+  isSequenceLaneId as resolveIsSequenceLaneId,
+  duplicateDocIds,
+} from './lane-resolve';
 import { buildMultiEditModel, multiSketchId } from './multi-edit';
+
+/** Resolve a lane (top-level track OR a sequence clip's interior lane) inside an
+ *  immer draft. The draft twin of `store.laneById` — same resolver underneath. */
+function draftLane(d: Composition, laneId: string): Track | undefined {
+  return resolveLaneById(d, laneId);
+}
+
+/** Resolve a clip by (laneId, clipId) inside an immer draft. Replaces the
+ *  `d.tracks.find(t => t.id === trackId)?.clips.find(...)` idiom, which sees
+ *  top-level tracks only and so silently no-ops inside a sequence. */
+function draftClip(d: Composition, laneId: string, clipId: string): Clip | undefined {
+  return draftLane(d, laneId)?.clips.find((c) => c.id === clipId);
+}
 
 /** Per-nesting-level budget (px) for the group gutter: one vertical group line
  *  per depth lives here, and every opacity fader is offset by the full gutter so
@@ -134,19 +164,28 @@ const uid = (p: string) => `${p}_${genId()}`;
  * resolves globally) → the edit snaps back. Remaps in place + rewires the clip's
  * own wires + automation targets to the new device ids.
  */
-function freshClipIds(clip: Clip): void {
+function freshSketchIds(sketch: ClipSketch | undefined): Map<string, string> {
   const devMap = new Map<string, string>();
-  for (const d of clip.sketch.devices) {
+  if (!sketch) return devMap;
+  for (const d of sketch.devices ?? []) {
     const fresh = uid('dev');
     devMap.set(d.id, fresh);
     d.id = fresh;
   }
-  for (const w of clip.sketch.wires ?? []) {
+  for (const w of sketch.wires ?? []) {
     const s = devMap.get(w.src.instanceKey);
     if (s) w.src.instanceKey = s;
     const t = devMap.get(w.dest.instanceKey);
     if (t) w.dest.instanceKey = t;
   }
+  return devMap;
+}
+
+function freshClipIds(clip: Clip): void {
+  const devMap = freshSketchIds(clip.sketch);
+  // The TRANSPORT section keys as clip_<clipId>_transport_<devId>: a clone that
+  // kept these ids collides exactly like the pixel chain does.
+  freshSketchIds(clip.transport);
   for (const lane of clip.automation ?? []) {
     lane.id = uid('auto');
     const t = devMap.get(lane.targetDeviceId);
@@ -165,6 +204,26 @@ function freshClipIds(clip: Clip): void {
     read.id = uid('rail');
     const t = devMap.get(read.targetDeviceId);
     if (t) read.targetDeviceId = t;
+  }
+  // ── Sequence interior ───────────────────────────────────────────────────
+  // A clone that kept the lane id + sub-clip ids emits DUPLICATE engine instance
+  // keys, and the native Builder::push (sketch_build.h) DROPS a duplicate key
+  // silently — the copy renders black with no error anywhere. Recursive: depth
+  // is 1 by the no-nesting rule, but don't rely on a rule a bad file can break.
+  const seq = clip.sequence;
+  if (seq) {
+    seq.id = uid('track');
+    const laneDevMap = freshSketchIds(seq.sketch);
+    freshSketchIds(seq.transport);
+    for (const lane of seq.automation ?? []) {
+      lane.id = uid('auto');
+      const t = laneDevMap.get(lane.targetDeviceId);
+      if (t) lane.targetDeviceId = t;
+    }
+    for (const sub of seq.clips) {
+      sub.id = uid('clip');
+      freshClipIds(sub);
+    }
   }
 }
 
@@ -325,10 +384,12 @@ function resolveOverlapsKeepStarts(track: Track) {
 function draftSketch(d: Composition, sketchId: string): ClipSketch | undefined {
   if (sketchId.startsWith('clip/')) {
     const [, trackId, clipId] = sketchId.split('/');
-    return d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId)?.sketch;
+    return draftClip(d, trackId, clipId)?.sketch;
   }
   if (sketchId.startsWith('track/')) {
-    return d.tracks.find((t) => t.id === sketchId.split('/')[1])?.sketch;
+    // laneById, not d.tracks: a sequence clip's interior lane has its own FX bus
+    // (`track/<laneId>`), edited from the sequence-clip inspector.
+    return draftLane(d, sketchId.split('/')[1])?.sketch;
   }
   return undefined;
 }
@@ -628,6 +689,7 @@ export class ArrangementStore {
       'backend' | 'saveTimer' | 'persistenceEnabled' | 'lastSavedJson' | 'tracedFrames'
       | 'layoutReady' | 'layoutSaveTimer' | 'clipClipboard' | 'autoClipboard'
       | 'fieldVisPending' | 'cheapReconcileTimer' | 'cheapEditsSinceDocRev'
+      | 'laneIndex' | 'laneIndexRev'
     >(
       this,
       {
@@ -654,6 +716,11 @@ export class ArrangementStore {
         // own action (untracked); the resolver is a plain injected callback.
         fieldVisPending: false,
         visibilityResolver: false,
+        // Interior-lane lookup cache — a pure derivation of `composition`,
+        // rebuilt on docRev. Observing it would make every clip render
+        // subscribe to a Map that changes on every edit.
+        laneIndex: false,
+        laneIndexRev: false,
       },
       { autoBind: true },
     );
@@ -685,6 +752,12 @@ export class ArrangementStore {
    *  skips drag edits). */
   docRev = 0;
 
+  /** laneId → interior lane, rebuilt lazily when `laneIndexRev !== docRev`.
+   *  Non-observable (see the makeAutoObservable overrides): it's a pure
+   *  derivation, and `laneById` runs per clip per frame. */
+  private laneIndex = new Map<string, Track>();
+  private laneIndexRev = -1;
+
   private mutate(
     description: string,
     recipe: (d: Composition) => void,
@@ -701,6 +774,16 @@ export class ArrangementStore {
     // every frame, stalling the playhead during playback.
     if (!coalesceKey || (!coalesceKey.startsWith('param:') && !coalesceKey.startsWith('xform:'))) {
       this.warpEpoch++;
+    }
+    if (import.meta.env?.DEV) {
+      // Tripwire: duplicate clip/lane/device ids are SILENT corruption — the
+      // native Builder::push drops a colliding instance key without a word, so
+      // the symptom is a black layer with no error anywhere. Surface it at the
+      // edit that caused it instead of three debugging sessions later.
+      const dupes = duplicateDocIds(this.composition);
+      if (dupes.length) {
+        console.error(`[arr] duplicate doc ids after "${description}":`, dupes.join(', '));
+      }
     }
   }
 
@@ -1194,8 +1277,56 @@ export class ArrangementStore {
   }
 
   // ── Lookups ─────────────────────────────────────────────────────────
+  /**
+   * A TOP-LEVEL track/group/rail row. Deliberately does NOT see a sequence
+   * clip's interior lane: callers here read `.level`/`.parentId`/`.collapsed`/
+   * `.soloed` and feed `ancestorsOf`/`trackDepth`/`visibleTracks` — arrangement-
+   * row concepts an interior lane doesn't participate in. When you are
+   * addressing CLIPS, use {@link laneById} / {@link clipIn} instead.
+   */
   trackById(id: string): Track | undefined {
     return this.composition.tracks.find((t) => t.id === id);
+  }
+
+  /**
+   * A LANE: a top-level track, or a sequence clip's interior lane. The lookup to
+   * use whenever you are addressing clips — every `(trackId, clipId)` store op
+   * resolves through this, which is what makes the ~30 existing clip operations
+   * work inside a sequence unchanged.
+   *
+   * The interior index is memoized on `docRev` because the render path hits this
+   * once per clip per frame; a plain scan would be O(clips) each time.
+   */
+  laneById(id: string): Track | undefined {
+    if (!id) return undefined;
+    const top = this.composition.tracks.find((t) => t.id === id);
+    if (top) return top;
+    if (this.laneIndexRev !== this.docRev) {
+      this.laneIndex = new Map();
+      for (const track of this.composition.tracks) {
+        for (const clip of track.clips) {
+          if (clip.sequence) this.laneIndex.set(clip.sequence.id, clip.sequence);
+        }
+      }
+      this.laneIndexRev = this.docRev;
+    }
+    return this.laneIndex.get(id);
+  }
+
+  /** (laneId, clipId) → clip, resolving interior lanes. Replaces every
+   *  `trackById(x)?.clips.find(y)` that means "the clip", not "the row". */
+  clipIn(laneId: string, clipId: string): Clip | undefined {
+    return this.laneById(laneId)?.clips.find((c) => c.id === clipId);
+  }
+
+  /** The lane id owning `clipId`, interiors included. */
+  laneIdOfClip(clipId: string): string | undefined {
+    return resolveLaneIdOfClip(this.composition, clipId);
+  }
+
+  /** Does `id` name a sequence clip's INTERIOR lane (not a top-level track)? */
+  isSequenceLaneId(id: string): boolean {
+    return resolveIsSequenceLaneId(this.composition, id);
   }
 
   // ── Display names (the `#` token) ─────────────────────────────────────
@@ -1248,7 +1379,7 @@ export class ArrangementStore {
   noteClipSourceDims(clipId: string, width: number, height: number) {
     if (!(width > 0 && height > 0)) return;
     runInAction(() => {
-      for (const t of this.composition.tracks) {
+      for (const t of allLanes(this.composition)) {
         const c = t.clips.find((x) => x.id === clipId);
         if (!c || !c.source) continue;
         if (c.source.width === width && c.source.height === height) return;
@@ -1260,10 +1391,13 @@ export class ArrangementStore {
     });
   }
 
+  /** Resolve a `clip/<laneId>/<clipId>` path. THE hinge: because this goes
+   *  through `laneById`, every path-addressed clip operation works inside a
+   *  sequence's interior lane for free. */
   clipByPath(path: string): { track: Track; clip: Clip } | undefined {
     const [kind, trackId, clipId] = path.split('/');
     if (kind !== 'clip') return undefined;
-    const track = this.trackById(trackId);
+    const track = this.laneById(trackId);
     const clip = track?.clips.find((c) => c.id === clipId);
     if (track && clip) return { track, clip };
     return undefined;
@@ -1271,7 +1405,7 @@ export class ArrangementStore {
 
   /** The clip on `trackId` whose span contains `beat` (start ≤ beat < end). */
   clipAtBeat(trackId: string, beat: number): Clip | undefined {
-    return this.trackById(trackId)?.clips.find(
+    return this.laneById(trackId)?.clips.find(
       (c) => beat >= c.startBeat - 1e-6 && beat < c.startBeat + c.lengthBeat - 1e-6,
     );
   }
@@ -1294,6 +1428,15 @@ export class ArrangementStore {
       // Selecting a clip syncs the time region to the clip's extent;
       // selecting a track selects a time box spanning the whole track.
       const found = this.clipByPath(path);
+      if (found && this.isSequenceLaneId(found.track.id)) {
+        // A sub-clip inside a sequence's INTERIOR lane: selection only, never a
+        // caret write. The global caret addresses TOP-LEVEL rows — an interior
+        // lane id matches no row, so `caretRowSpan()` returns [] and
+        // `regionTracks()` would silently widen every region op (⌘E, ⌘J,
+        // Delete) to the whole document. The interior has its own local
+        // selection axis (ClipTimelineView) instead.
+        return;
+      }
       if (found && found.track.kind === 'scene') {
         // Scene cells are layout-only: playback anchors at LAUNCH beat, never
         // at the grid position — so selecting (or launch-clicking, or grabbing
@@ -1455,10 +1598,11 @@ export class ArrangementStore {
   private devicesForOwner(ownerKey: string): Device[] | undefined {
     if (ownerKey.startsWith('clip/')) {
       const [, trk, clip] = ownerKey.split('/');
-      return this.trackById(trk)?.clips.find((c) => c.id === clip)?.sketch.devices;
+      return this.clipIn(trk, clip)?.sketch.devices;
     }
     if (ownerKey.startsWith('track/')) {
-      return this.trackById(ownerKey.split('/')[1])?.sketch.devices;
+      // laneById: `track/<id>` also addresses a sequence clip's interior lane FX bus.
+      return this.laneById(ownerKey.split('/')[1])?.sketch.devices;
     }
     return undefined;
   }
@@ -1565,11 +1709,11 @@ export class ArrangementStore {
     if (!Number.isFinite(chainIdx)) return;
     if (sketchId.startsWith('clip/')) {
       const [, trackId, clipId] = sketchId.split('/');
-      const dev = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
+      const dev = this.clipIn(trackId, clipId)?.sketch.devices[chainIdx];
       if (dev) this.removeClipDevice(trackId, clipId, dev.id);
     } else if (sketchId.startsWith('track/')) {
       const trackId = sketchId.split('/')[1];
-      const dev = this.trackById(trackId)?.sketch.devices[chainIdx];
+      const dev = this.laneById(trackId)?.sketch.devices[chainIdx];
       if (dev) this.removeTrackDevice(trackId, dev.id);
     } else if (sketchId.startsWith('multi/')) {
       // A COMMON effect in the multi-edit panel: fan the delete out to the
@@ -1605,7 +1749,7 @@ export class ArrangementStore {
 
     if (sketchId.startsWith('clip/')) {
       const [, trackId, clipId] = sketchId.split('/');
-      const device = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
+      const device = this.clipIn(trackId, clipId)?.sketch.devices[chainIdx];
       if (!device) return null;
       return {
         device,
@@ -1618,7 +1762,7 @@ export class ArrangementStore {
     }
     if (sketchId.startsWith('track/')) {
       const trackId = sketchId.split('/')[1];
-      const device = this.trackById(trackId)?.sketch.devices[chainIdx];
+      const device = this.laneById(trackId)?.sketch.devices[chainIdx];
       if (!device) return null;
       return {
         device,
@@ -1718,7 +1862,7 @@ export class ArrangementStore {
     const refs = this.selectedClipRefs();
     if (refs.length < 2 || multiSketchId(refs) !== sketchId) return null;
     const clips = refs
-      .map((r) => this.trackById(r.trackId)?.clips.find((c) => c.id === r.clipId))
+      .map((r) => this.clipIn(r.trackId, r.clipId))
       .filter((c): c is Clip => !!c);
     if (clips.length < 2) return null;
     return buildMultiEditModel(clips);
@@ -1740,7 +1884,7 @@ export class ArrangementStore {
 
   /** Find the track owning a clip id (used to rebuild fan-out targets). */
   private trackIdOfClip(clipId: string): string | undefined {
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       if (t.clips.some((c) => c.id === clipId)) return t.id;
     }
     return undefined;
@@ -1967,7 +2111,7 @@ export class ArrangementStore {
       let pick: Clip | undefined;
       for (const c of t.clips) {
         if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
-        if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty clip
+        if (!clipHasContent(c)) continue; // empty clip
         if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
       }
       if (!pick || pick.bypassed) continue;
@@ -1993,7 +2137,7 @@ export class ArrangementStore {
     if (!l) return undefined;
     const c = track.clips.find((x) => x.id === l.sceneId);
     if (!c || c.bypassed) return undefined;
-    if (!c.source?.url && c.sketch.devices.length === 0) return undefined; // empty
+    if (!clipHasContent(c)) return undefined; // empty
     return c;
   }
 
@@ -2003,7 +2147,7 @@ export class ArrangementStore {
     let pick: Clip | undefined;
     for (const c of track.clips) {
       if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
-      if (!c.source?.url && c.sketch.devices.length === 0) continue; // empty clip
+      if (!clipHasContent(c)) continue; // empty clip
       if (!pick || c.startBeat >= pick.startBeat) pick = c; // latest-started wins
     }
     return !pick || pick.bypassed ? undefined : pick;
@@ -2083,7 +2227,13 @@ export class ArrangementStore {
   }
 
   /** Video clips overlapping [beatStart, beatEnd) on non-bypassed tracks — the
-   *  lookahead set the compositor pre-opens + pre-decodes (precache warming). */
+   *  lookahead set the compositor pre-opens + pre-decodes (precache warming).
+   *
+   *  Deliberately TOP-LEVEL only. A sequence clip's interior sub-clips have
+   *  LANE-LOCAL `startBeat`, so `videoDescFor` would build a desc anchored to the
+   *  wrong arrangement beat; interior warming is the engine's job (native
+   *  `warmVideoDescs` walks the tree and knows the interior→arrangement mapping),
+   *  and its descs supersede this fallback set on the first comp report. */
   videoClipsInWindow(beatStart: number, beatEnd: number): Clip[] {
     const out: Clip[] = [];
     for (const t of this.composition.tracks) {
@@ -2262,6 +2412,12 @@ export class ArrangementStore {
    *  plain tracks + scene tracks). */
   private regionTracks(): Track[] {
     const scope = this.caretTrackIds;
+    // An anchor/head that names something which ISN'T a caret row (e.g. a
+    // sequence clip's interior lane) yields no rows, and an empty scope means
+    // "global" — so without this guard a stray lane id would silently widen
+    // ⌘E / ⌘J / Delete to EVERY track. Only a caret with both ids empty is
+    // genuinely global. This kills the whole class regardless of future leaks.
+    if (scope.length === 0 && (this.caretAnchorTrackId || this.caretHeadTrackId)) return [];
     return this.composition.tracks.filter(
       (t) => (t.kind === 'track' || t.kind === 'scene') &&
              (scope.length === 0 || scope.includes(t.id)),
@@ -2972,7 +3128,7 @@ export class ArrangementStore {
   /** Toggle one clip's bypass (skipped in the composite). */
   toggleClipBypass(trackId: string, clipId: string) {
     this.mutate('toggle clip bypass', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (c) c.bypassed = !c.bypassed;
     });
   }
@@ -2984,7 +3140,7 @@ export class ArrangementStore {
     this.mutate('toggle clip bypass', (d) => {
       for (const p of clipPaths) {
         const [, trackId, clipId] = p.split('/');
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        const c = draftClip(d, trackId, clipId);
         if (c) c.bypassed = !c.bypassed;
       }
     });
@@ -3003,14 +3159,14 @@ export class ArrangementStore {
     if (!Number.isFinite(chainIdx)) return false;
     if (sketchId.startsWith('clip/')) {
       const [, trackId, clipId] = sketchId.split('/');
-      const dev = this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.devices[chainIdx];
+      const dev = this.clipIn(trackId, clipId)?.sketch.devices[chainIdx];
       if (!dev) return false;
       this.setClipDeviceField(trackId, clipId, dev.id, '__enable__', isDeviceOff(dev.state));
       return true;
     }
     if (sketchId.startsWith('track/')) {
       const trackId = sketchId.split('/')[1];
-      const dev = this.trackById(trackId)?.sketch.devices[chainIdx];
+      const dev = this.laneById(trackId)?.sketch.devices[chainIdx];
       if (!dev) return false;
       this.setTrackDeviceField(trackId, dev.id, '__enable__', isDeviceOff(dev.state));
       return true;
@@ -3115,7 +3271,7 @@ export class ArrangementStore {
   /** Clips (with their track + export) that WRITE to a rail. */
   railWriters(railId: string): Array<{ track: Track; clip: Clip; exp: RailExport }> {
     const out: Array<{ track: Track; clip: Clip; exp: RailExport }> = [];
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       for (const c of t.clips) {
         for (const exp of c.exports) {
           if (exp.railId === railId) out.push({ track: t, clip: c, exp });
@@ -3132,7 +3288,7 @@ export class ArrangementStore {
   /** Clips that warp the beat grid (one or more warp bindings). */
   warpWriters(): Array<{ track: Track; clip: Clip }> {
     const out: Array<{ track: Track; clip: Clip }> = [];
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       for (const c of t.clips) {
         if (c.warps.length) out.push({ track: t, clip: c });
       }
@@ -3143,7 +3299,7 @@ export class ArrangementStore {
   /** Clips (with their track + read) that READ from a rail. */
   railReaders(railId: string): Array<{ track: Track; clip: Clip; read: RailRead }> {
     const out: Array<{ track: Track; clip: Clip; read: RailRead }> = [];
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       for (const c of t.clips) {
         for (const read of c.reads ?? []) {
           if (read.railId === railId) out.push({ track: t, clip: c, read });
@@ -3180,7 +3336,7 @@ export class ArrangementStore {
     const kind = wireId[0];
     const id = wireId.slice(2);
     this.mutate('delete wire', (d) => {
-      for (const t of d.tracks) {
+      for (const t of allLanes(d)) {
         for (const c of t.clips) {
           if (kind === 'w') {
             c.exports = (c.exports ?? []).filter((x) => x.id !== id);
@@ -3204,7 +3360,7 @@ export class ArrangementStore {
   /** Find a rail export/read tap object by wire id (`w:<id>` / `r:<id>`). */
   tapByWireId(wireId: string): RailExport | RailRead | undefined {
     const [kind, id] = [wireId[0], wireId.slice(2)];
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       for (const c of t.clips) {
         if (kind === 'w') {
           const e = c.exports.find((x) => x.id === id);
@@ -3311,7 +3467,7 @@ export class ArrangementStore {
   /** Assign a scene's trigger channel (null ⇒ back to 'auto', position-assigned). */
   setSceneChannel(trackId: string, sceneId: string, channel: number | null) {
     this.mutate('set scene channel', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === sceneId);
+      const c = draftClip(d, trackId, sceneId);
       if (!c) return;
       if (channel == null) delete c.triggerChannel;
       else c.triggerChannel = Math.max(1, Math.round(channel));
@@ -3323,7 +3479,7 @@ export class ArrangementStore {
     this.mutate(
       'set scale mode',
       (d) => {
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        const c = draftClip(d, trackId, clipId);
         if (c?.source) c.source.scaleMode = mode;
       },
       `scale:${clipId}`,
@@ -3337,7 +3493,7 @@ export class ArrangementStore {
   ) {
     // Resolve the FINAL transform up front so the cheap op carries the same
     // absolute value the recipe writes (patches must never be relative).
-    const cur = this.trackById(trackId)?.clips.find((x) => x.id === clipId);
+    const cur = this.clipIn(trackId, clipId);
     const next = cur?.source
       ? { ...resolveSourceTransform(cur.source.transform), ...patch }
       : null;
@@ -3345,7 +3501,7 @@ export class ArrangementStore {
     this.mutateCheap(
       'adjust source placement',
       (d) => {
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        const c = draftClip(d, trackId, clipId);
         if (!c?.source) return;
         c.source.transform = { ...next };
       },
@@ -3367,7 +3523,7 @@ export class ArrangementStore {
     lengthBeat?: number,
   ) {
     this.mutate('set clip source', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       const c = t?.clips.find((x) => x.id === clipId);
       if (!t || !c) return;
       const label = media.label ?? c.name ?? 'Video';
@@ -3422,8 +3578,7 @@ export class ArrangementStore {
     snap: Partial<Device>, coalesceKey?: string,
   ) {
     this.mutate('change device', (d) => {
-      const dev = d.tracks.find((t) => t.id === trackId)
-        ?.clips.find((c) => c.id === clipId)
+      const dev = draftClip(d, trackId, clipId)
         ?.sketch.devices.find((x) => x.id === deviceId);
       if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
     }, coalesceKey);
@@ -3453,7 +3608,7 @@ export class ArrangementStore {
     if (!cat) return null;
     const id = uid('dev');
     this.mutate('insert device', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c) return;
       const dev: Device = {
         id,
@@ -3475,7 +3630,7 @@ export class ArrangementStore {
   /** Remove a clip device by id. Also drops any wires touching it. */
   removeClipDevice(trackId: string, clipId: string, deviceId: string, coalesceKey?: string) {
     this.mutate('remove device', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c) return;
       const i = c.sketch.devices.findIndex((x) => x.id === deviceId);
       if (i >= 0) c.sketch.devices.splice(i, 1);
@@ -3494,7 +3649,7 @@ export class ArrangementStore {
   /** Reorder: move the clip device at `from` to insertion index `to`. */
   moveClipDevice(trackId: string, clipId: string, from: number, to: number) {
     this.mutate('reorder device', (d) => {
-      const devs = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId)?.sketch.devices;
+      const devs = draftClip(d, trackId, clipId)?.sketch.devices;
       if (devs) moveInArray(devs, from, to);
     });
   }
@@ -3502,7 +3657,7 @@ export class ArrangementStore {
   // ── Track device chain edits (track-level sketch; same shape as clip ones) ──
   setTrackDeviceField(trackId: string, deviceId: string, key: string, value: unknown) {
     this.mutateCheap('set param', (d) => {
-      const dev = d.tracks.find((t) => t.id === trackId)?.sketch.devices.find((x) => x.id === deviceId);
+      const dev = draftLane(d, trackId)?.sketch.devices.find((x) => x.id === deviceId);
       if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
     }, `param:${deviceId}:${key}`,
     [{ op: 'param', ownerId: trackId, deviceId, field: key, valueJson: JSON.stringify(value) ?? 'null' }]);
@@ -3510,7 +3665,7 @@ export class ArrangementStore {
 
   replaceTrackDevice(trackId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string) {
     this.mutate('change device', (d) => {
-      const dev = d.tracks.find((t) => t.id === trackId)?.sketch.devices.find((x) => x.id === deviceId);
+      const dev = draftLane(d, trackId)?.sketch.devices.find((x) => x.id === deviceId);
       if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
     }, coalesceKey);
   }
@@ -3530,7 +3685,7 @@ export class ArrangementStore {
     if (!cat) return null;
     const id = uid('dev');
     this.mutate('insert device', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       if (!t) return;
       const dev: Device = {
         id, moduleType: cat.type, name: cat.name,
@@ -3545,7 +3700,7 @@ export class ArrangementStore {
 
   removeTrackDevice(trackId: string, deviceId: string, coalesceKey?: string) {
     this.mutate('remove device', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       if (!t) return;
       const i = t.sketch.devices.findIndex((x) => x.id === deviceId);
       if (i >= 0) t.sketch.devices.splice(i, 1);
@@ -3563,7 +3718,7 @@ export class ArrangementStore {
   /** Reorder: move the track device at `from` to insertion index `to`. */
   moveTrackDevice(trackId: string, from: number, to: number) {
     this.mutate('reorder device', (d) => {
-      const devs = d.tracks.find((x) => x.id === trackId)?.sketch.devices;
+      const devs = draftLane(d, trackId)?.sketch.devices;
       if (devs) moveInArray(devs, from, to);
     });
   }
@@ -3644,7 +3799,7 @@ export class ArrangementStore {
     if (!field.sketchId.startsWith('clip/')) return;
     const [, trackId, clipId] = field.sketchId.split('/');
     this.mutate('connect rail', (d) => {
-      const clip = d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId);
+      const clip = draftClip(d, trackId, clipId);
       const dev = clip?.sketch.devices[field.chainIdx];
       if (!clip || !dev) return;
       if (field.isOutput && this.isTriggerSourceDevice(dev)) {
@@ -3722,7 +3877,7 @@ export class ArrangementStore {
   /** Remove a trigger-source device's rail export (back to the global bus). */
   removeTriggerExport(trackId: string, clipId: string, deviceId: string) {
     this.mutate('remove trigger export', (d) => {
-      const clip = d.tracks.find((t) => t.id === trackId)?.clips.find((c) => c.id === clipId);
+      const clip = draftClip(d, trackId, clipId);
       if (!clip?.triggerExports) return;
       clip.triggerExports = clip.triggerExports.filter((e) => e.sourceDeviceId !== deviceId);
     });
@@ -3801,10 +3956,10 @@ export class ArrangementStore {
   sketchWires(sketchId: string) {
     if (sketchId.startsWith('clip/')) {
       const [, trackId, clipId] = sketchId.split('/');
-      return this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.sketch.wires ?? [];
+      return this.clipIn(trackId, clipId)?.sketch.wires ?? [];
     }
     if (sketchId.startsWith('track/')) {
-      return this.trackById(sketchId.split('/')[1])?.sketch.wires ?? [];
+      return this.laneById(sketchId.split('/')[1])?.sketch.wires ?? [];
     }
     return [];
   }
@@ -3815,9 +3970,7 @@ export class ArrangementStore {
     this.mutateCheap(
       'set param',
       (d) => {
-        const dev = d.tracks
-          .find((t) => t.id === trackId)
-          ?.clips.find((x) => x.id === clipId)
+        const dev = draftClip(d, trackId, clipId)
           ?.sketch.devices.find((x) => x.id === deviceId);
         if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
       },
@@ -3858,7 +4011,7 @@ export class ArrangementStore {
   ): string | null {
     const dev = this.makeTransportDevice(moduleType);
     this.mutate('add transport effect', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c) return;
       c.transport ??= { devices: [], wires: [] };
       const i = Math.max(0, Math.min(index, c.transport.devices.length));
@@ -3871,7 +4024,7 @@ export class ArrangementStore {
     trackId: string, clipId: string, deviceId: string, snap: Partial<Device>, coalesceKey?: string,
   ) {
     this.mutate('change transport effect', (d) => {
-      const dev = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId)
+      const dev = draftClip(d, trackId, clipId)
         ?.transport?.devices.find((x) => x.id === deviceId);
       if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
     }, coalesceKey);
@@ -3889,7 +4042,7 @@ export class ArrangementStore {
 
   moveClipTransportDevice(trackId: string, clipId: string, from: number, to: number) {
     this.mutate('reorder transport effect', (d) => {
-      const devs = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId)
+      const devs = draftClip(d, trackId, clipId)
         ?.transport?.devices;
       if (devs) moveInArray(devs, from, to);
     });
@@ -3899,7 +4052,7 @@ export class ArrangementStore {
    *  clip cleanly reverts to its ClipLoopConfig play mode. */
   removeClipTransportDevice(trackId: string, clipId: string, deviceId: string) {
     this.mutate('remove transport effect', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c?.transport) return;
       c.transport.devices = c.transport.devices.filter((x) => x.id !== deviceId);
       if (c.transport.wires) {
@@ -3919,9 +4072,7 @@ export class ArrangementStore {
     this.mutateCheap(
       'set param',
       (d) => {
-        const dev = d.tracks
-          .find((t) => t.id === trackId)
-          ?.clips.find((x) => x.id === clipId)
+        const dev = draftClip(d, trackId, clipId)
           ?.transport?.devices.find((x) => x.id === deviceId);
         if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
       },
@@ -4015,7 +4166,7 @@ export class ArrangementStore {
   ) {
     this.mutate(description, (d) => {
       for (const r of refs) {
-        const c = d.tracks.find((t) => t.id === r.trackId)?.clips.find((x) => x.id === r.clipId);
+        const c = draftClip(d, r.trackId, r.clipId);
         if (c) recipe(c);
       }
     }, coalesceKey);
@@ -4030,7 +4181,7 @@ export class ArrangementStore {
     const valueJson = JSON.stringify(value) ?? 'null';
     this.mutateCheap('set param', (d) => {
       for (const t of targets) {
-        const dev = d.tracks.find((x) => x.id === t.trackId)?.clips.find((c) => c.id === t.clipId)
+        const dev = draftClip(d, t.trackId, t.clipId)
           ?.sketch.devices.find((x) => x.id === t.deviceId);
         if (dev) dev.state = { ...(dev.state ?? {}), [key]: value };
       }
@@ -4048,7 +4199,7 @@ export class ArrangementStore {
   ) {
     this.mutate('change device', (d) => {
       for (const t of targets) {
-        const dev = d.tracks.find((x) => x.id === t.trackId)?.clips.find((c) => c.id === t.clipId)
+        const dev = draftClip(d, t.trackId, t.clipId)
           ?.sketch.devices.find((x) => x.id === t.deviceId);
         if (dev) Object.assign(dev, JSON.parse(JSON.stringify(snap)));
       }
@@ -4082,7 +4233,7 @@ export class ArrangementStore {
     const ids = targets.map((t) => ({ ...t, id: uid('dev') }));
     this.mutate('insert device', (d) => {
       for (const t of ids) {
-        const c = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId);
+        const c = draftClip(d, t.trackId, t.clipId);
         if (!c) continue;
         const dev: Device = {
           id: t.id, moduleType: cat.type, name: cat.name,
@@ -4109,7 +4260,7 @@ export class ArrangementStore {
   ) {
     this.mutate('remove device', (d) => {
       for (const t of targets) {
-        const c = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId);
+        const c = draftClip(d, t.trackId, t.clipId);
         if (!c) continue;
         const i = c.sketch.devices.findIndex((x) => x.id === t.deviceId);
         if (i >= 0) c.sketch.devices.splice(i, 1);
@@ -4130,7 +4281,7 @@ export class ArrangementStore {
   moveClipsDevice(targets: { trackId: string; clipId: string; from: number; to: number }[]) {
     this.mutate('reorder device', (d) => {
       for (const t of targets) {
-        const devs = d.tracks.find((x) => x.id === t.trackId)?.clips.find((x) => x.id === t.clipId)?.sketch.devices;
+        const devs = draftClip(d, t.trackId, t.clipId)?.sketch.devices;
         if (devs) moveInArray(devs, t.from, t.to);
       }
     });
@@ -4158,7 +4309,7 @@ export class ArrangementStore {
     if (!wires.length) return;
     this.mutate('remove wire', (d) => {
       for (const w of wires) {
-        const c = d.tracks.find((x) => x.id === w.trackId)?.clips.find((x) => x.id === w.clipId);
+        const c = draftClip(d, w.trackId, w.clipId);
         if (c?.sketch.wires) c.sketch.wires = c.sketch.wires.filter((x) => x.id !== w.wireId);
       }
     });
@@ -4173,7 +4324,7 @@ export class ArrangementStore {
     if (!wires.length) return;
     this.mutate('update wire', (d) => {
       for (const w of wires) {
-        const wi = d.tracks.find((x) => x.id === w.trackId)?.clips.find((x) => x.id === w.clipId)
+        const wi = draftClip(d, w.trackId, w.clipId)
           ?.sketch.wires?.find((x) => x.id === w.wireId);
         if (wi) Object.assign(wi, JSON.parse(JSON.stringify(patch)));
       }
@@ -4219,7 +4370,7 @@ export class ArrangementStore {
     const exp = new Set(taps.filter((t) => t.kind === 'w').map((t) => t.id));
     const rd = new Set(taps.filter((t) => t.kind === 'r').map((t) => t.id));
     this.mutate('remove rail taps', (d) => {
-      for (const t of d.tracks) {
+      for (const t of allLanes(d)) {
         for (const c of t.clips) {
           if (exp.size && c.exports) c.exports = c.exports.filter((x) => !exp.has(x.id));
           if (rd.size && c.reads) c.reads = c.reads.filter((x) => !rd.has(x.id));
@@ -4234,7 +4385,7 @@ export class ArrangementStore {
     this.mutate(
       'rename clip',
       (d) => {
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        const c = draftClip(d, trackId, clipId);
         if (c && next.length > 0) c.name = next;
       },
       `rename:clip:${clipId}`,
@@ -4295,7 +4446,7 @@ export class ArrangementStore {
     const clip = track?.clips.find((c) => c.id === clipId);
     if (!clip) return;
     this.mutate('add device', (d) => {
-      const c = d.tracks.find((x) => x.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c) return;
       c.sketch.devices.push(device);
       if (deviceIsSource(device) && c.kind === 'effect') {
@@ -4310,7 +4461,7 @@ export class ArrangementStore {
     this.mutate(
       'move clip',
       (d) => {
-        const t = d.tracks.find((t) => t.id === trackId);
+        const t = draftLane(d, trackId);
         const c = t?.clips.find((x) => x.id === clipId);
         if (t && c) {
           c.startBeat = v;
@@ -4333,7 +4484,7 @@ export class ArrangementStore {
     this.mutate(
       'resize clip',
       (d) => {
-        const t = d.tracks.find((t) => t.id === trackId);
+        const t = draftLane(d, trackId);
         const c = t?.clips.find((x) => x.id === clipId);
         if (t && c) {
           const oldLen = c.lengthBeat;
@@ -4465,7 +4616,7 @@ export class ArrangementStore {
     this.mutate(
       'clip play mode',
       (d) => {
-        const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+        const c = draftClip(d, trackId, clipId);
         if (c) c.loop = { ...c.loop, ...patch };
       },
       `loop:${trackId}:${clipId}:${fields}`,
@@ -4478,7 +4629,7 @@ export class ArrangementStore {
       for (const path of sel) {
         const [kind, trackId, clipId] = path.split('/');
         if (kind !== 'clip') continue;
-        const t = d.tracks.find((x) => x.id === trackId);
+        const t = draftLane(d, trackId);
         if (t) t.clips = t.clips.filter((c) => c.id !== clipId);
       }
     });
@@ -4872,15 +5023,21 @@ export class ArrangementStore {
    */
   moveClipToTrack(fromTrackId: string, clipId: string, toTrackId: string, newStartBeat: number) {
     const v = Math.max(0, newStartBeat);
-    const dest = this.trackById(toTrackId);
+    // A clip never crosses the interior boundary: dragging a sub-clip out of a
+    // sequence (or an arrangement clip into one) has no defined semantics —
+    // interior beats are lane-local and run on the sequence's own content clock.
+    // Fall back to a within-lane move instead.
+    const crossesInterior = fromTrackId !== toTrackId &&
+      (this.isSequenceLaneId(fromTrackId) || this.isSequenceLaneId(toTrackId));
+    const dest = crossesInterior ? undefined : this.laneById(toTrackId);
     const realDest = dest && (dest.kind === 'track' || dest.kind === 'scene')
       ? toTrackId : fromTrackId;
     const barBeats = this.barBeats;
     this.mutate(
       'move clip',
       (d) => {
-        const from = d.tracks.find((t) => t.id === fromTrackId);
-        const to = d.tracks.find((t) => t.id === realDest);
+        const from = draftLane(d, fromTrackId);
+        const to = draftLane(d, realDest);
         if (!from || !to) return;
         // Scene tracks hold RIGID fixed-width cells: a clip landing on one
         // snaps to the one-bar width and pushes siblings aside (never carves).
@@ -5042,7 +5199,7 @@ export class ArrangementStore {
 
   toggleAutomationExpand(trackId: string, laneId: string) {
     this.mutate('toggle lane', (d) => {
-      const t = d.tracks.find((x) => x.id === trackId);
+      const t = draftLane(d, trackId);
       const lane =
         t?.automation.find((l) => l.id === laneId) ??
         t?.clips.flatMap((c) => c.automation).find((l) => l.id === laneId);
@@ -5053,7 +5210,7 @@ export class ArrangementStore {
   // ── Automation point editing ──────────────────────────────────────────
   /** Locate a lane by id across track-level AND clip-level automation. */
   private static laneIn(d: Composition, laneId: string): AutomationLane | undefined {
-    for (const t of d.tracks) {
+    for (const t of allLanes(d)) {
       const tl = t.automation.find((l) => l.id === laneId);
       if (tl) return tl;
       for (const c of t.clips) {
@@ -5072,7 +5229,7 @@ export class ArrangementStore {
   /** The id of the track (track/group lane) or clip (clip lane) owning `laneId`
    *  — the comp cheap-op addressing (comp_set_lane_points' ownerId). */
   private laneOwnerId(laneId: string): string | null {
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       if (t.automation.some((l) => l.id === laneId)) return t.id;
       for (const c of t.clips) {
         if (c.automation.some((l) => l.id === laneId)) return c.id;
@@ -5138,8 +5295,22 @@ export class ArrangementStore {
     // above) makes two clips share a composite instance key + a single decode pump, so
     // the second clip plays the first's video. Remint + freshen the whole clip's
     // internal ids (it's effectively a duplicate).
-    const seenClips = new Set<string>();
+    // Sequence hygiene runs FIRST — the scans below iterate `allLanes`, whose
+    // shape these two passes fix.
+    ArrangementStore.explodeNestedSequences(comp);
+    // Interior LANE ids share the track-id namespace (they feed
+    // trackInstanceKey + sceneLaunchState), so a collision would silently merge
+    // two sequences' engine instances.
+    const seenLaneIds = new Set(comp.tracks.map((t) => t.id));
     for (const t of comp.tracks) {
+      for (const c of t.clips ?? []) {
+        if (!c.sequence) continue;
+        if (!c.sequence.id || seenLaneIds.has(c.sequence.id)) c.sequence.id = uid('track');
+        seenLaneIds.add(c.sequence.id);
+      }
+    }
+    const seenClips = new Set<string>();
+    for (const t of allLanes(comp)) {
       for (const c of t.clips ?? []) {
         if (seenClips.has(c.id)) {
           c.id = uid('clip');
@@ -5148,8 +5319,9 @@ export class ArrangementStore {
         seenClips.add(c.id);
       }
     }
-    for (const t of comp.tracks) {
+    for (const t of allLanes(comp)) {
       healDevices(t.sketch?.devices);
+      healDevices(t.transport?.devices);
       healLanes(t.automation);
       // Returns rested at a centred 0.5 default that clipped on unsigned +add. Reset
       // the UNTOUCHED default to a 0 floor (base editing isn't prototyped, so a flat
@@ -5160,9 +5332,46 @@ export class ArrangementStore {
       }
       for (const c of t.clips) {
         healDevices(c.sketch?.devices);
+        healDevices(c.transport?.devices);
         healLanes(c.automation);
         ArrangementStore.repairClipLoop(c);
         ArrangementStore.migrateTransportDevices(c);
+        // A `kind:'sequence'` with no lane (hand-edited file) would make every
+        // isSequenceClip() reader disagree with the payload — downgrade it.
+        if (c.kind === 'sequence' && !c.sequence) c.kind = 'effect';
+        if (c.sequence && c.kind !== 'sequence') c.kind = 'sequence';
+      }
+    }
+  }
+
+  /**
+   * Enforce the one-level rule on load: a sub-clip that is ITSELF a sequence has
+   * its own sub-clips lifted into the parent lane at their absolute interior
+   * beats, and its chain is dropped. Preserves content rather than discarding
+   * it, and guarantees every downstream walk is provably 2-deep. Only reachable
+   * from a hand-edited or future-version file — Consolidate never creates nesting.
+   */
+  private static explodeNestedSequences(comp: Composition): void {
+    for (const track of comp.tracks) {
+      for (const clip of track.clips ?? []) {
+        const lane = clip.sequence;
+        if (!lane) continue;
+        let guard = 0;
+        while (lane.clips.some((c) => c.sequence) && guard++ < 8) {
+          const next: Clip[] = [];
+          for (const sub of lane.clips) {
+            if (!sub.sequence) { next.push(sub); continue; }
+            const end = sub.startBeat + sub.lengthBeat;
+            for (const inner of sub.sequence.clips) {
+              const start = sub.startBeat + inner.startBeat;
+              if (start >= end - 1e-6) continue; // beyond the wrapper's span
+              inner.startBeat = start;
+              inner.lengthBeat = Math.min(inner.lengthBeat, end - start);
+              next.push(inner);
+            }
+          }
+          lane.clips = next;
+        }
       }
     }
   }
@@ -5354,7 +5563,7 @@ export class ArrangementStore {
     const laneId = uid('auto');
     const t = this.autoTargetFor(clip?.sketch.devices);
     this.mutate('add automation', (d) => {
-      const c = d.tracks.find((x) => x.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c || c.automation.length) return;
       c.automation.push({
         id: laneId, targetDeviceId: t.deviceId, targetField: t.field,
@@ -5402,7 +5611,7 @@ export class ArrangementStore {
   selectedClipLane(trackId: string, clipId: string): AutomationLane | undefined {
     const sel = this.autoField(paths.clip(trackId, clipId));
     if (!sel) return undefined;
-    return this.trackById(trackId)?.clips.find((c) => c.id === clipId)?.automation
+    return this.clipIn(trackId, clipId)?.automation
       .find((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field);
   }
   /** Ensure a lane for the clip's selected field; '' if nothing is selected. */
@@ -5413,7 +5622,7 @@ export class ArrangementStore {
     if (existing) return existing.id;
     const laneId = uid('auto');
     this.mutate('add automation', (d) => {
-      const c = d.tracks.find((t) => t.id === trackId)?.clips.find((x) => x.id === clipId);
+      const c = draftClip(d, trackId, clipId);
       if (!c || c.automation.some((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field)) return;
       c.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
     });

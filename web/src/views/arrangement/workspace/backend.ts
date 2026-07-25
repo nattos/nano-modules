@@ -18,7 +18,7 @@
 
 import { toJS } from 'mobx';
 import { ENGINE_VERSION } from '../../../version';
-import type { Composition } from '../model/composition';
+import type { Clip, Composition, Track } from '../model/composition';
 import { emptyComposition } from '../model/composition';
 
 /** File extension for a serialized arrangement. */
@@ -83,6 +83,46 @@ export function serializeComposition(comp: Composition): string {
 }
 
 /**
+ * SHAPE-only normalization of sequence clips (id uniqueness and the one-level
+ * rule are `store.repairIds`' job, on the same load path). A clip whose `kind`
+ * and `sequence` disagree would make every `isSequenceClip()` reader disagree
+ * with the payload, so reconcile them here; and fill the interior lane's
+ * required Track fields so the surfaces can't hit an undefined `clips`.
+ */
+function normalizeSequenceLanes(tracks: Track[]): Track[] {
+  const fixLane = (lane: Partial<Track> | undefined): Track | undefined => {
+    if (!lane || typeof lane !== 'object') return undefined;
+    const out: Track = {
+      id: typeof lane.id === 'string' ? lane.id : '', // '' ⇒ repairIds mints one
+      name: lane.name ?? 'Sequence',
+      kind: lane.kind === 'scene' ? 'scene' : 'track',
+      parentId: null,
+      sketch: lane.sketch ?? { devices: [] },
+      automation: lane.automation ?? [],
+      clips: Array.isArray(lane.clips) ? lane.clips : [],
+      ...(lane.transport ? { transport: lane.transport } : {}),
+      ...(lane.triggerRead ? { triggerRead: lane.triggerRead } : {}),
+      ...(lane.level !== undefined ? { level: lane.level } : {}),
+      ...(lane.blendMode !== undefined ? { blendMode: lane.blendMode } : {}),
+    };
+    for (const c of out.clips) fixClip(c);
+    return out;
+  };
+  const fixClip = (clip: Clip): void => {
+    const lane = fixLane(clip.sequence);
+    if (lane) {
+      clip.sequence = lane;
+      clip.kind = 'sequence';
+    } else {
+      delete clip.sequence;
+      if (clip.kind === 'sequence') clip.kind = 'effect';
+    }
+  };
+  for (const t of tracks) for (const c of t.clips ?? []) fixClip(c);
+  return tracks;
+}
+
+/**
  * Parse an arrangement file. Tolerates a bare `Composition` (no envelope) and
  * normalizes against `emptyComposition()` defaults so a partial / old / corrupt
  * file can never white-screen the surfaces (which assume `tracks`/`rails` etc.).
@@ -95,7 +135,7 @@ export function deserializeComposition(text: string): Composition {
   const base = emptyComposition();
   return {
     meta: { ...base.meta, ...(comp?.meta ?? {}) },
-    tracks: comp?.tracks ?? base.tracks,
+    tracks: normalizeSequenceLanes(comp?.tracks ?? base.tracks),
     rails: comp?.rails ?? base.rails,
     playMode: { ...base.playMode, ...(comp?.playMode ?? {}) },
     loop: comp?.loop, // persisted loop markers (undefined on legacy files ⇒ store keeps defaults)
