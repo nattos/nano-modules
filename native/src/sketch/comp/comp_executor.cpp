@@ -1013,6 +1013,17 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
                      railBypassDecisions_ != evalRailBypass_)) {
     evalValid_ = false;
   }
+  // SEQUENCE interiors: a sub-clip switch inside a sequence clip is a
+  // structural change the span can't see (the span is built from TOP-LEVEL
+  // clip boundaries), so compare which sub-clip each active sequence is
+  // showing and invalidate exactly on a change — the same shape as the bypass
+  // compare above. Exact for every play mode; an analytic interior boundary
+  // can layer on top later as a pure optimization. One frame of latency on
+  // appliedContentSec for transport-driven sequences, identical in class to
+  // the rail-bypass readback loop.
+  std::map<std::string, std::string> seqPicks =
+      sequencePickDecisions(doc_, beat, clock_, &streamsTable_.appliedContentSec);
+  if (evalValid_ && seqPicks != evalSequencePicks_) evalValid_ = false;
 
   // Span hit: the evaluation at evalBeat_ is valid for [evalBeat_, boundary).
   // Backward motion (seek/loop wrap) falls out of the half-open interval and
@@ -1022,6 +1033,7 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
 
   evalCount_++;
   evalBypassDecisions_ = std::move(bypassDec);
+  evalSequencePicks_ = std::move(seqPicks);
   evalRailBypass_ = railBypassDecisions_;
   // Live forks join the tree as second leaves on their tracks. (Candidate /
   // pending worlds below deliberately DON'T carry them: a fork's chain keys
@@ -1030,7 +1042,8 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
   std::map<std::string, SceneLaunch> forkView;
   for (const auto& [tid, f] : fork_) forkView[tid] = {f.clipId, f.anchorBeat, f.anchorSec};
   evalTree_ = compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &sceneLaunch_,
-                                  forkView.empty() ? nullptr : &forkView);
+                                  forkView.empty() ? nullptr : &forkView, &clock_,
+                                  &streamsTable_.appliedContentSec);
   SketchBuild build = buildCompositeRenderFromTree(doc_, catalog_, clock_, evalTree_, beat);
   hasContent_ = build.hasContent;
   layerTargets_ = std::move(build.layerTargets);
@@ -1074,7 +1087,8 @@ bool CompExecutor::ensureEvalAt(double beat, uint32_t& flags) {
       future[tid] = l;
     }
     std::vector<CompNode> futureTree =
-        compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &future);
+        compositeTreeAtBeat(doc_, beat, ignoreSolo_, &evalRailBypass_, &future, nullptr, &clock_,
+                            &streamsTable_.appliedContentSec);
     SketchBuild fb = buildCompositeRenderFromTree(doc_, catalog_, clock_, futureTree, beat);
     if (fb.sketch != pendingSketch_) {
       pendingSketch_ = std::move(fb.sketch);
@@ -1814,7 +1828,7 @@ void CompExecutor::readTriggerSignals() {
       for (size_t i = 0; i < t.clips.size(); ++i) {
         const auto& scene = t.clips[i];
         if (scene.bypassed) continue;
-        if (!scene.hasSourceUrl && scene.sketch.devices.empty()) continue;  // empty
+        if (!comp::clipHasContent(scene)) continue;  // empty
         const std::string& rail = !scene.triggerReadRailId.empty() ? scene.triggerReadRailId
                                   : !t.triggerReadRailId.empty()   ? t.triggerReadRailId
                                                                    : kGlobalTriggerRailId;

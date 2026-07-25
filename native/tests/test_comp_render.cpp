@@ -3115,3 +3115,181 @@ TEST_CASE("transition.xfade: SHORT scenes fade on every hop — no settle blacko
     CHECK(run(b) == "fade1+fade2");
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCE CLIPS (M2): a clip that owns an interior mini-timeline. Its sub-clips
+// composite among themselves over a PASS-THROUGH seed, the sequence clip's own
+// chain runs over that, and the result blends up — a short-lived track/layer.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/** A sequence clip wrapping `subClips` (their startBeat is LANE-LOCAL). */
+json mkSequenceClip(const std::string& id, double startBeat, double lengthBeat,
+                    const std::string& laneId, json subClips, json ownDevices = json::array(),
+                    json laneOver = json::object()) {
+  json lane = {{"id", laneId}, {"name", "Sequence"}, {"kind", "track"},
+               {"parentId", nullptr}, {"sketch", {{"devices", json::array()}}},
+               {"automation", json::array()}, {"clips", std::move(subClips)}};
+  lane.update(laneOver);
+  return mkClip(id, startBeat, lengthBeat, std::move(ownDevices),
+                {{"kind", "sequence"}, {"sequence", std::move(lane)}});
+}
+
+}  // namespace
+
+TEST_CASE("sequence: the interior sub-clip renders under the sequence clip's own chain",
+          "[comp_sequence]") {
+  EvalHarness h;
+  h.cx.registerSchema("color.saturate", json::object());
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 8, "lane1",
+                        json::array({mkClip("sub1", 0, 4,
+                                            json::array({mkDevice("g1", "source.solid_color")})),
+                                     mkClip("sub2", 4, 4,
+                                            json::array({mkDevice("g2", "source.solid_color")}))}),
+                        json::array({mkDevice("fx", "color.saturate")}))})),
+  })));
+
+  // At beat 1 the interior is on sub1; the sequence's own FX runs over it.
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  const std::string keys = h.cx.chainKeysJson();
+  INFO(keys);
+  CHECK(keys.find("clip_sub1_g1") != std::string::npos);   // interior leaf
+  CHECK(keys.find("clip_seq_fx") != std::string::npos);    // the sequence's OWN chain
+  CHECK(keys.find("clip_sub2_g2") == std::string::npos);   // not yet active
+
+  // At beat 5 the interior has moved on to sub2 — same outer clip, new interior.
+  h.cx.seekBeat(5.0);
+  h.cx.update(0.0);
+  const std::string keys2 = h.cx.chainKeysJson();
+  INFO(keys2);
+  CHECK(keys2.find("clip_sub2_g2") != std::string::npos);
+  CHECK(keys2.find("clip_sub1_g1") == std::string::npos);
+  CHECK(keys2.find("clip_seq_fx") != std::string::npos);
+}
+
+TEST_CASE("sequence: the interior lane has its own FX bus, keyed per lane",
+          "[comp_sequence]") {
+  EvalHarness h;
+  h.cx.registerSchema("color.saturate", json::object());
+  json lane = json::object();
+  lane["sketch"] = {{"devices", json::array({mkDevice("lfx", "color.saturate")})}};
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 8, "lane1",
+                        json::array({mkClip("sub1", 0, 8,
+                                            json::array({mkDevice("g1", "source.solid_color")}))}),
+                        json::array(), lane)})),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  // The lane is a real Track, so its chain keys as a track FX bus.
+  CHECK(h.cx.chainKeysJson().find("track_lane1_lfx") != std::string::npos);
+}
+
+TEST_CASE("sequence: an EFFECT-ONLY interior sub-clip processes the underlying composite",
+          "[comp_sequence]") {
+  EvalHarness h;
+  h.cx.registerSchema("color.saturate", json::object());
+  // Track 1 (above) draws a solid; track 2 holds a sequence whose only interior
+  // clip is effect-only. With a pass-through ('underlying') seed it has the
+  // track-1 composite to process; with a transparent seed it would render nothing.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("bg", 0, 8,
+                                        json::array({mkDevice("g1", "source.solid_color")}))})),
+      mkTrack("t2", json::array({mkSequenceClip(
+                        "seq", 0, 8, "lane1",
+                        json::array({mkClip("sub1", 0, 8,
+                                            json::array({mkDevice("e1", "color.saturate")}))}))})),
+  })));
+  h.cx.seekBeat(1.0);
+  CHECK((h.cx.update(0.0) & comp::kCompHasContent) != 0);
+  const std::string keys = h.cx.chainKeysJson();
+  INFO(keys);
+  CHECK((keys.find("clip_g1") != std::string::npos ||
+         keys.find("clip_bg_g1") != std::string::npos));
+  CHECK(keys.find("clip_sub1_e1") != std::string::npos);
+}
+
+TEST_CASE("sequence: an empty interior with no own chain contributes nothing",
+          "[comp_sequence]") {
+  EvalHarness h;
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip("seq", 0, 8, "lane1", json::array())})),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.chainKeysJson().find("clip_seq") == std::string::npos);
+}
+
+TEST_CASE("sequence: an empty interior still renders the clip's OWN chain",
+          "[comp_sequence]") {
+  EvalHarness h;
+  h.cx.registerSchema("color.saturate", json::object());
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("bg", 0, 8,
+                                        json::array({mkDevice("g1", "source.solid_color")}))})),
+      mkTrack("t2", json::array({mkSequenceClip(
+                        "seq", 0, 8, "lane1", json::array(),
+                        json::array({mkDevice("fx", "color.saturate")}))})),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  // A consolidated-but-emptied sequence degrades to a pass-through adjustment
+  // layer carrying its own FX — never to "silently gone".
+  CHECK(h.cx.chainKeysJson().find("clip_seq_fx") != std::string::npos);
+}
+
+TEST_CASE("sequence: the interior loops when the clip outruns its interior extent",
+          "[comp_sequence]") {
+  EvalHarness h;
+  // Interior extent 4 beats (= 2 s at 120 BPM); the clip spans 16 beats, so the
+  // interior plays four passes under the default 'time' play mode.
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkSequenceClip(
+                        "seq", 0, 16, "lane1",
+                        json::array({mkClip("subA", 0, 2,
+                                            json::array({mkDevice("ga", "source.solid_color")})),
+                                     mkClip("subB", 2, 2,
+                                            json::array({mkDevice("gb", "source.solid_color")}))}))})),
+  })));
+  // Beat 1 → interior beat 1 → subA. Beat 3 → interior beat 3 → subB.
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.chainKeysJson().find("clip_subA_ga") != std::string::npos);
+  h.cx.seekBeat(3.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.chainKeysJson().find("clip_subB_gb") != std::string::npos);
+  // Beat 5 is one full pass later → back on subA (the interior WRAPPED).
+  h.cx.seekBeat(5.0);
+  h.cx.update(0.0);
+  CHECK(h.cx.chainKeysJson().find("clip_subA_ga") != std::string::npos);
+  CHECK(h.cx.chainKeysJson().find("clip_subB_gb") == std::string::npos);
+}
+
+TEST_CASE("sequence: layerTargets records the OUTER track, not the interior lane",
+          "[comp_sequence]") {
+  EvalHarness h;
+  h.cx.registerSchema("color.saturate", json::object());
+  h.cx.loadDocument(mkComposition(json::array({
+      mkTrack("t1", json::array({mkClip("bg", 0, 8,
+                                        json::array({mkDevice("g1", "source.solid_color")}))})),
+      mkTrack("t2", json::array({mkSequenceClip(
+                        "seq", 0, 8, "lane1",
+                        json::array({mkClip("sub1", 0, 8,
+                                            json::array({mkDevice("g2", "source.solid_color")}))}),
+                        json::array({mkDevice("fx", "color.saturate")}))}),
+               {{"level", 0.5}}),
+  })));
+  h.cx.seekBeat(1.0);
+  h.cx.update(0.0);
+  const json lt = json::parse(h.cx.layerTargetsJson());
+  INFO(lt.dump());
+  // The sequence clip's layer owner is its ARRANGEMENT track (t2). The interior
+  // sub-leaf's owner is the LANE (lane1) — distinct ids, no collision.
+  CHECK(lt.contains("t2"));
+  CHECK(lt["t2"]["instanceKey"].get<std::string>().find("clip_seq") != std::string::npos);
+}

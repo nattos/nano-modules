@@ -210,6 +210,8 @@ struct WarpBindingM {
   double phase = 0;
 };
 
+struct TrackM;  // ClipM::sequence — mutually recursive, see the field's comment.
+
 struct ClipM {
   std::string id;
   std::string name;
@@ -243,6 +245,20 @@ struct ClipM {
   std::string triggerReadRailId;
   /** Trigger-source devices wired out to rails (composition.ts Clip.triggerExports). */
   std::vector<TriggerExportM> triggerExports;
+  /**
+   * SEQUENCE clip: the interior mini-timeline, as a real Track (LOCK-STEP:
+   * composition.ts `Clip.sequence?: Track`). A sequence clip behaves like a
+   * short-lived track/layer, so the whole track vocabulary applies verbatim.
+   *
+   * 0 or 1 element. It's a vector only because `TrackM` is incomplete here —
+   * std::vector permits an incomplete element type (C++17), which keeps `ClipM`
+   * regular (copyable/movable with implicit special members; a unique_ptr would
+   * force hand-written ones that drift from the LOCK-STEP discipline).
+   *
+   * EXACTLY ONE LEVEL: parseTrack drops `sequence` at depth >= 1, so every
+   * downstream walk is provably 2-deep.
+   */
+  std::vector<TrackM> sequence;
 };
 
 enum class TrackKind : uint8_t { Track, Group, Rail, Scene };
@@ -286,6 +302,54 @@ struct TrackM {
   SketchSpecM transport;
   bool hasTransport = false;
 };
+
+// ── Sequence clips ────────────────────────────────────────────────────────
+// (Defined after TrackM so the interior lane is a complete type here.
+//  LOCK-STEP: web/src/views/arrangement/model/composition.ts.)
+
+/** Does this clip own an interior mini-timeline? Both hosts infer sequence-ness
+ *  from the LANE's presence, never from a parsed `kind` — exactly as video-ness
+ *  comes from `source.url`. A second source of truth can disagree with the payload. */
+inline bool isSequenceClip(const ClipM& c) { return !c.sequence.empty(); }
+
+/** The clip's interior lane, or nullptr. */
+inline const TrackM* sequenceLaneOf(const ClipM& c) {
+  return c.sequence.empty() ? nullptr : &c.sequence.front();
+}
+
+/**
+ * Is this clip worth compositing at all? The "empty clip" test, factored so the
+ * next content kind is ONE edit instead of six. A sequence clip counts as
+ * content even with an empty own chain — its interior IS the content.
+ * LOCK-STEP: composition.ts clipHasContent.
+ */
+inline bool clipHasContent(const ClipM& c) {
+  return c.hasSourceUrl || !c.sketch.devices.empty() || isSequenceClip(c);
+}
+
+/** The interior lane's extent in INTERIOR beats (0 = empty). No 64-beat floor,
+ *  unlike compositionLengthBeats — an empty interior is genuinely zero-length,
+ *  which the play modes read as "nothing to loop". */
+inline double sequenceInteriorBeats(const TrackM& lane) {
+  double end = 0;
+  for (const auto& c : lane.clips) end = std::max(end, c.startBeat + c.lengthBeat);
+  return end;
+}
+
+/** Interior extent in SECONDS at `baseBPM` — the bridge into the ClipLoopConfig
+ *  machinery, which is written for a seconds-based media source. The interior is
+ *  UNWARPED by construction (warp segments are arrangement-beat spans), so this
+ *  is a flat conversion. LOCK-STEP: composition.ts sequenceInteriorSec. */
+inline double sequenceInteriorSec(const TrackM& lane, double baseBPM) {
+  const double bpm = baseBPM > 0 ? baseBPM : 120.0;
+  return sequenceInteriorBeats(lane) * 60.0 / bpm;
+}
+
+/** Same, straight off a clip (0 when it isn't a sequence clip). */
+inline double sequenceInteriorSec(const ClipM& c, double baseBPM) {
+  const TrackM* lane = sequenceLaneOf(c);
+  return lane ? sequenceInteriorSec(*lane, baseBPM) : 0.0;
+}
 
 /**
  * Transient launched-scene state for one scene track. Lives on CompExecutor
@@ -392,7 +456,11 @@ inline std::vector<RailReadM> parseReads(const nlohmann::json& arr) {
   return out;
 }
 
-inline ClipM parseClip(const nlohmann::json& j) {
+// Forward declaration: parseClip materializes a sequence clip's interior lane,
+// which is itself parsed by parseTrack. `depth` enforces the one-level rule.
+inline TrackM parseTrack(const nlohmann::json& j, int depth);
+
+inline ClipM parseClip(const nlohmann::json& j, int depth = 0) {
   using namespace model_detail;
   ClipM c;
   if (!j.is_object()) return c;
@@ -440,6 +508,13 @@ inline ClipM parseClip(const nlohmann::json& j) {
       c.warps.push_back(b);
     }
   }
+  // SEQUENCE interior. Materialized whenever the lane object is present, even
+  // with zero clips, so an emptied sequence degrades to "pass-through carrying
+  // only its own FX" rather than silently becoming an adjustment layer.
+  // depth > 0 ⇒ dropped: sequence-in-sequence is an express non-goal, and the
+  // web repairIds explodes any that reach a document.
+  if (depth == 0 && j.contains("sequence") && j["sequence"].is_object())
+    c.sequence.push_back(parseTrack(j["sequence"], depth + 1));
   c.loop = ClipLoopConfig::fromJson(j.contains("loop") ? j["loop"] : nlohmann::json());
   if (j.contains("triggerChannel") && j["triggerChannel"].is_number())
     c.triggerChannel = j["triggerChannel"].get<int>();
@@ -457,7 +532,7 @@ inline ClipM parseClip(const nlohmann::json& j) {
   return c;
 }
 
-inline TrackM parseTrack(const nlohmann::json& j) {
+inline TrackM parseTrack(const nlohmann::json& j, int depth = 0) {
   using namespace model_detail;
   TrackM t;
   if (!j.is_object()) return t;
@@ -497,7 +572,7 @@ inline TrackM parseTrack(const nlohmann::json& j) {
     t.transport = parseSketchSpec(j["transport"]);
   }
   if (j.contains("clips") && j["clips"].is_array()) {
-    for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c));
+    for (const auto& c : j["clips"]) t.clips.push_back(parseClip(c, depth));
   }
   return t;
 }

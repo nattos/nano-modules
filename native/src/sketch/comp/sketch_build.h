@@ -210,6 +210,18 @@ struct CompNode {
   double forkAnchorBeat = 0;
   double forkStartSec = 0;
   bool hasFork = false;
+  /** SEQUENCE leaf: a clip that ALSO owns children. It keeps every clip-leaf
+   *  field (`clip`/`track`/`anchorBeat` — its own chain and layer are owned by
+   *  its arrangement track like any clip), and `children` holds the interior
+   *  sub-clip leaves evaluated at the INTERIOR beat, owned by `lane`. A `bool`
+   *  rather than a third enum value so `isGroup ? group : clip-leaf` stays true
+   *  everywhere. Exactly one level: a child is never itself a sequence. */
+  bool isSequence = false;
+  const TrackM* lane = nullptr;   // &clip->sequence.front()
+  double interiorBeat = 0;        // sampled at EVAL time (structural use only)
+  double interiorDurSec = 0;      // sequenceInteriorSec(lane, baseBPM)
+  double interiorBpm = 120;       // doc.baseBPM (the interior is unwarped)
+  bool interiorLive = false;      // false ⇒ contentSec was nullopt (transparent)
   std::vector<CompNode> children;
 };
 
@@ -575,7 +587,22 @@ struct Builder {
     if (node.track && !layerKey.empty()) {
       recordLayerTarget(node.track->id, layerKey, layerField);
     }
+    foldClipModulation(clip, catDevs, node.track, layerKey, layerField);
+    return acc;
+  }
 
+  /**
+   * Fold a clip's modulation into the build: its intra-sketch wires (device ids
+   * → composite keys, `__layer__`/opacity remapped to the layer slot), its rail
+   * exports/reads, and its OWNER's rail reads + own-layer wires.
+   *
+   * Extracted from compositeClip so compositeSequence can reuse it verbatim —
+   * the two must not drift on wire-id numbering or rail-writer ordering (both
+   * are golden-pinned).
+   */
+  void foldClipModulation(const ClipM& clip, const std::vector<const DeviceM*>& catDevs,
+                          const TrackM* owner, const std::string& layerKey,
+                          const std::string& layerField) {
     // Fold this clip's modulation wires in, remapping device ids → composite keys.
     // A dest of `__layer__`/opacity remaps to this layer's opacity slot (an
     // own-layer wire); `__layer__`/bypass would be self-killing (dropping the
@@ -629,9 +656,119 @@ struct Builder {
     }
     // Track-level rail reads (the owner's layer opacity / FX-bus params) +
     // the owner's own-layer sketch wires.
-    collectOwnerReads(node.track, layerKey, layerField);
-    pushOwnerLayerWires(node.track, layerKey, layerField);
-    return acc;
+    collectOwnerReads(owner, layerKey, layerField);
+    pushOwnerLayerWires(owner, layerKey, layerField);
+  }
+
+  /**
+   * A CLIP's own effect chain run over `startKey`, with CLIP keys
+   * (`clip_<clipId>_<devId>`) — the clip twin of pushTrackFx. Used by
+   * compositeSequence: a sequence clip's SOURCE is its interior, so its own
+   * chain is pure FX and generators in it are a data bug (filtered, exactly as
+   * pushTrackFx does). Mod devices push but don't advance the accumulator.
+   *
+   * Reports the FIRST non-mod device into `outLayerKey`/`outLayerField` as the
+   * `__opacity__` slot, for the no-blend case where the layer's opacity has
+   * nowhere else to ride.
+   */
+  std::string pushClipFx(const ClipM& clip, std::string startKey, const double* startSec,
+                         std::vector<const DeviceM*>& outCatDevs, std::string& outLayerKey,
+                         std::string& outLayerField) {
+    for (const auto& d : clip.sketch.devices) {
+      if (cat.has(d.moduleType)) outCatDevs.push_back(&d);
+    }
+    std::string last = std::move(startKey);
+    std::string first;
+    for (const DeviceM* d : outCatDevs) {
+      if (cat.isGenerator(d->moduleType)) continue;
+      const std::string key = clipInstanceKey(clip.id, d->id);
+      push(d->moduleType, key, defaultsPlus(*d), startSec);
+      if (!isMod(d->moduleType)) {
+        if (first.empty()) first = key;
+        last = key;
+      }
+    }
+    if (!first.empty()) {
+      outLayerKey = first;
+      outLayerField = "__opacity__";
+    }
+    return last;
+  }
+
+  /**
+   * Composite a SEQUENCE clip over `acc`: the interior lane composites over a
+   * PASS-THROUGH seed, the clip's own FX chain runs over that result, the
+   * parent track's FX bus runs over that, and the whole thing blends up.
+   * Modelled on compositeGroup with compositeClip's clip-key / clip-layer /
+   * clip-modulation discipline.
+   *
+   * The seed is `underlying` (never a fresh transparent base) on purpose: a
+   * sequence interior behaves like a TRACK, so an effect-only or
+   * modulation-only sub-clip has the composite below it to process.
+   */
+  std::optional<std::string> compositeSequence(const CompNode& node,
+                                               std::optional<std::string> acc) {
+    const ClipM& clip = *node.clip;
+    const double* startSec = node.hasStartSec ? &node.startSec : nullptr;
+
+    // 1. Interior over the pass-through seed. Children carry `track = lane`, so
+    //    compositeClip runs the LANE's FX bus (track_<laneId>_<dev>) for free.
+    std::optional<std::string> inner = compositeNodes(node.children, acc);
+
+    // 2. The sequence clip's OWN chain over the interior result.
+    std::string layerKey;
+    std::string layerField;
+    std::vector<const DeviceM*> catDevs;
+    if (inner) {
+      inner = pushClipFx(clip, *inner, startSec, catDevs, layerKey, layerField);
+    } else {
+      for (const auto& d : clip.sketch.devices) {
+        if (cat.has(d.moduleType)) catDevs.push_back(&d);
+      }
+    }
+
+    // 3. The parent track's FX bus (same position as compositeClip's
+    //    adjustment-layer path — an `underlying` seed makes this structurally
+    //    an adjustment layer over the tracks above).
+    if (inner) inner = pushTrackFx(node.track, *inner);
+    if (!inner) {
+      collectOwnerReads(node.track, std::string(), std::string());
+      return acc;  // nothing rendered → leave the accumulator alone
+    }
+
+    // 4. Blend up. PARITY with compositeGroup: an `underlying` seed at full
+    //    opacity already CONTAINS the below content, so it just replaces the
+    //    accumulator; a modulated or sub-1 opacity forces a real blend node
+    //    (the modulation needs somewhere to land).
+    const bool needBlend =
+        acc.has_value() && (node.layerOpacityModulated || node.opacity < 1);
+    if (needBlend) {
+      // Unique by construction: a clip is never both a source clip and a
+      // sequence clip, so this can't collide with compositeClip's blend key.
+      const std::string b = clipInstanceKey(clip.id, "blend");
+      push(kBlend, b, {{"mode", node.blendMode}, {"opacity", node.opacity}});
+      wires.push_back({{"id", "qw" + std::to_string(wid++)},
+                       {"src", {{"instanceKey", *acc}, {"field", "tex_out"}}},
+                       {"dest", {{"instanceKey", b}, {"field", "0"}}}});
+      wires.push_back({{"id", "qw" + std::to_string(wid++)},
+                       {"src", {{"instanceKey", *inner}, {"field", "tex_out"}}},
+                       {"dest", {{"instanceKey", b}, {"field", "1"}}}});
+      layerKey = b;
+      layerField = "opacity";
+      inner = b;
+    } else if (node.opacity < 1 && !layerKey.empty()) {
+      instances[layerKey]["state"]["__opacity__"] = node.opacity;
+    }
+
+    // 5. The sequence clip's layer OWNER is its arrangement track (identical to
+    //    compositeClip); the interior sub-leaf's owner is the LANE, recorded by
+    //    compositeClip under the lane's globally-unique uid('track') id. No
+    //    collision, and layerTargets needs no schema change.
+    if (node.track && !layerKey.empty()) {
+      recordLayerTarget(node.track->id, layerKey, layerField);
+    }
+    foldClipModulation(clip, catDevs, node.track, layerKey, layerField);
+    return inner;
   }
 
   /** Composite a GROUP over `acc`: children → sub-image over the group's input
@@ -689,15 +826,25 @@ struct Builder {
   /** Fold an ordered node list (top → bottom) into `acc` — the downward sum. */
   std::optional<std::string> compositeNodes(const std::vector<CompNode>& ns,
                                             std::optional<std::string> acc) {
-    for (const auto& n : ns) acc = n.isGroup ? compositeGroup(n, acc) : compositeClip(n, acc);
+    for (const auto& n : ns) {
+      acc = n.isGroup      ? compositeGroup(n, acc)
+            : n.isSequence ? compositeSequence(n, acc)
+                           : compositeClip(n, acc);
+    }
     return acc;
   }
 };
 
 inline void collectClips(const std::vector<CompNode>& ns, std::vector<const ClipM*>& out) {
   for (const auto& n : ns) {
-    if (n.isGroup) collectClips(n.children, out);
-    else out.push_back(n.clip);
+    if (n.isGroup) {
+      collectClips(n.children, out);
+    } else {
+      out.push_back(n.clip);
+      // A sequence node is a leaf AND a parent: its interior sub-clips must
+      // reach the background gate + the rail pre-pass like any other clip.
+      if (n.isSequence) collectClips(n.children, out);
+    }
   }
 }
 
@@ -709,6 +856,9 @@ inline void collectOwners(const std::vector<CompNode>& ns, std::vector<const Tra
       collectOwners(n.children, out);
     } else if (n.track) {
       out.push_back(n.track);
+      // Descend a sequence node so the interior LANE registers as an owner —
+      // that's what pulls its rail-read rail nodes alive.
+      if (n.isSequence) collectOwners(n.children, out);
     }
   }
 }

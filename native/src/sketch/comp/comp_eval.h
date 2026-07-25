@@ -17,15 +17,19 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "../envelope.h"
+#include "clip_time.h"
 #include "comp_catalog.h"
 #include "comp_model.h"
 #include "sketch_build.h"
@@ -78,7 +82,7 @@ inline const ClipM* pickActiveClip(const TrackM& track, double beat) {
   const ClipM* pick = nullptr;
   for (const auto& c : track.clips) {
     if (beat < c.startBeat || beat >= c.startBeat + c.lengthBeat) continue;
-    if (!c.hasSourceUrl && c.sketch.devices.empty()) continue;  // empty clip
+    if (!clipHasContent(c)) continue;  // empty clip
     if (!pick || c.startBeat >= pick->startBeat) pick = &c;     // latest-started wins
   }
   return (!pick || pick->bypassed) ? nullptr : pick;
@@ -96,7 +100,7 @@ inline const ClipM* pickActiveScene(const TrackM& track,
   for (const auto& c : track.clips) {
     if (c.id != it->second.sceneId) continue;
     if (c.bypassed) return nullptr;
-    if (!c.hasSourceUrl && c.sketch.devices.empty()) return nullptr;  // empty scene
+    if (!clipHasContent(c)) return nullptr;  // empty scene
     if (outLaunchBeat) *outLaunchBeat = it->second.launchBeat;
     return &c;
   }
@@ -166,6 +170,46 @@ inline bool dynamicBypassed(const TrackM& track, double beat,
   return false;
 }
 
+// ── Sequence-clip interior clock ──────────────────────────────────────────
+
+/**
+ * The CONTENT second a sequence clip is showing at arrangement `beat` — the
+ * SINGLE definition of the interior clock; the tree builder, the automation
+ * walk, the eval-skip boundary and the synthetic transport rows all route
+ * through it.
+ *
+ * A sequence clip's interior is a content stream exactly like a video's: the
+ * transport-controller override wins when one is applied (appliedContentSec,
+ * written by transportResolve), else the built-in play modes map arrangement
+ * beats onto interior seconds with `sequenceInteriorSec` standing in for the
+ * media duration.
+ *
+ * nullopt ⇒ the interior is transparent (a one-shot past its end, `random` off
+ * the ends, or an empty interior).
+ */
+inline std::optional<double> sequenceContentSecAt(
+    const ClipM& clip, double anchorBeat, double interiorDurSec, const WarpClock& clock,
+    double beat, const std::unordered_map<std::string, double>* appliedContentSec) {
+  if (!(interiorDurSec > 0)) return std::nullopt;
+  if (appliedContentSec) {
+    auto it = appliedContentSec->find(clip.id);
+    if (it != appliedContentSec->end() && !std::isnan(it->second)) return it->second;
+  }
+  ClipTimeCtx ctx;
+  ctx.startBeat = anchorBeat;
+  ctx.lengthBeat = clip.lengthBeat;
+  ctx.videoDurSec = interiorDurSec;
+  ctx.clock = &clock;
+  ctx.seed = clipNoiseSeed(clip.id);
+  return clipSourceTimeAt(clip.loop, ctx, beat);
+}
+
+/** contentSec → interior beat. The interior runs FLAT at the document tempo
+ *  (warp segments are arrangement-beat spans, so they don't reach inside). */
+inline double interiorBeatOf(double contentSec, double bpm) {
+  return contentSec * (bpm > 0 ? bpm : 120.0) / 60.0;
+}
+
 namespace eval_detail {
 
 inline double clamp01(double v) { return std::max(0.0, std::min(1.0, v)); }
@@ -180,6 +224,13 @@ struct TreeBuilder {
   /** Live fork slots per scene track (CompExecutor's fork_ view): sceneId =
    *  the OUTGOING clip, launchBeat/launchSec = its frozen anchors. */
   const std::map<std::string, SceneLaunch>* forkLaunch = nullptr;
+  /** Warp clock — needed to resolve a SEQUENCE clip's interior content time.
+   *  Null ⇒ a flat clock at the document tempo is synthesized (the default
+   *  WarpCurve is exactly identity), so golden/offline callers need no change. */
+  const WarpClock* clock = nullptr;
+  /** Transport-resolved content seconds per clip (streamsTable.appliedContentSec):
+   *  a transport-controller-driven sequence clip's interior time comes from here. */
+  const std::unordered_map<std::string, double>* appliedContentSec = nullptr;
 
   std::vector<const TrackM*> childrenOf(const std::string& parentId) const {
     std::vector<const TrackM*> out;
@@ -237,7 +288,7 @@ struct TreeBuilder {
       if (fit != forkLaunch->end() && fit->second.sceneId != clip->id) {
         for (const auto& c : track.clips) {
           if (c.id != fit->second.sceneId) continue;
-          if (!c.bypassed && (c.hasSourceUrl || !c.sketch.devices.empty())) {
+          if (!c.bypassed && clipHasContent(c)) {
             out.forkClip = &c;
             out.forkAnchorBeat = fit->second.launchBeat;
             out.forkStartSec = fit->second.launchSec;
@@ -247,15 +298,55 @@ struct TreeBuilder {
         }
       }
     }
+    // A SEQUENCE clip owns an interior lane: pick its active sub-clip at the
+    // INTERIOR beat (the clip's content time, per its play mode / transport
+    // controller) and hang it off `children`. The sub-leaf's owner is the LANE,
+    // so compositeClip runs the lane's own FX bus over it for free.
+    if (const TrackM* lane = sequenceLaneOf(*clip)) {
+      out.isSequence = true;
+      out.lane = lane;
+      out.interiorBpm = comp.baseBPM;
+      out.interiorDurSec = sequenceInteriorSec(*lane, comp.baseBPM);
+      const WarpClock flat{WarpCurve{}, comp.baseBPM};
+      const WarpClock& ck = clock ? *clock : flat;
+      const auto cs =
+          sequenceContentSecAt(*clip, anchor, out.interiorDurSec, ck, beat, appliedContentSec);
+      out.interiorLive = cs.has_value();
+      out.interiorBeat = cs ? interiorBeatOf(*cs, comp.baseBPM) : 0.0;
+      if (out.interiorLive && lane->kind == TrackKind::Track) {
+        if (const ClipM* sub = pickActiveClip(*lane, out.interiorBeat)) {
+          CompNode k;
+          k.clip = sub;
+          k.track = lane;
+          // Interior units: the sub-leaf's lane timing (clip-relative automation,
+          // effect startSec) is expressed on the interior axis. `startSec` is
+          // stamped in arrangement seconds by the pass-start walk (stage 5);
+          // until then buildCompositeRenderFromTree derives it from anchorBeat.
+          k.anchorBeat = sub->startBeat;
+          k.opacity = clamp01(lane->level.value_or(1));
+          k.blendMode = lane->blendMode ? *lane->blendMode : sub->blendMode.value_or(0);
+          k.layerOpacityModulated = hasLayerOpacityModulation(*lane, sub);
+          out.children.push_back(std::move(k));
+        }
+      }
+      // A sequence contributing neither interior content nor its own FX is inert.
+      if (out.children.empty() && clip->sketch.devices.empty()) return false;
+    }
     return true;
   }
 };
 
-/** Every clip leaf in a composite tree (depth-first). */
+/** Every clip leaf in a composite tree (depth-first). A SEQUENCE node is both a
+ *  leaf (its own chain + layer) AND a parent (its interior sub-leaf), so it is
+ *  emitted and then descended. */
 inline void flattenLeaves(std::vector<CompNode>& tree, std::vector<CompNode*>& out) {
   for (auto& n : tree) {
-    if (n.isGroup) flattenLeaves(n.children, out);
-    else out.push_back(&n);
+    if (n.isGroup) {
+      flattenLeaves(n.children, out);
+    } else {
+      out.push_back(&n);
+      if (n.isSequence) flattenLeaves(n.children, out);
+    }
   }
 }
 
@@ -270,20 +361,66 @@ inline std::vector<CompNode> compositeTreeAtBeat(
     const CompositionM& comp, double beat, bool ignoreSolo = false,
     const std::map<std::string, bool>* railBypass = nullptr,
     const std::map<std::string, SceneLaunch>* sceneLaunch = nullptr,
-    const std::map<std::string, SceneLaunch>* forkLaunch = nullptr) {
+    const std::map<std::string, SceneLaunch>* forkLaunch = nullptr,
+    const WarpClock* clock = nullptr,
+    const std::unordered_map<std::string, double>* appliedContentSec = nullptr) {
   bool anySolo = false;
   if (!ignoreSolo) {
     for (const auto& t : comp.tracks) {
       if (t.soloed) { anySolo = true; break; }
     }
   }
-  eval_detail::TreeBuilder builder{comp, anySolo, railBypass, sceneLaunch, forkLaunch};
+  eval_detail::TreeBuilder builder{comp,      anySolo, railBypass, sceneLaunch,
+                                   forkLaunch, clock,   appliedContentSec};
   std::vector<CompNode> roots;
   for (const TrackM* t : builder.childrenOf(std::string())) {
     CompNode n;
     if (builder.build(*t, false, beat, n)) roots.push_back(std::move(n));
   }
   return roots;
+}
+
+/**
+ * Which interior sub-clip each SEQUENCE clip is showing at `beat`
+ * (seqClipId → active sub-clip id, "" when the interior is transparent).
+ *
+ * The eval-skip span is built from TOP-LEVEL clip boundaries only, so an
+ * interior switch is invisible to it — the span would over-hold and the
+ * interior would freeze on one sub-clip. CompExecutor compares this vector per
+ * frame against the one captured at eval time and invalidates exactly on a
+ * change, the same shape as laneBypassDecisions.
+ *
+ * Deliberately EXACT rather than analytic: it re-picks through the real
+ * interior clock, so it is correct for every play mode (including `random`)
+ * and for transport-controller-driven sequence clips, at the cost of one small
+ * per-frame walk of each active sequence's lane. An analytic boundary can
+ * layer on top as a pure optimization; this stays as the safety net.
+ */
+inline std::map<std::string, std::string> sequencePickDecisions(
+    const CompositionM& comp, double beat, const WarpClock& clock,
+    const std::unordered_map<std::string, double>* appliedContentSec) {
+  std::map<std::string, std::string> out;
+  for (const auto& t : comp.tracks) {
+    if (t.kind != TrackKind::Track && t.kind != TrackKind::Scene) continue;
+    for (const auto& c : t.clips) {
+      const TrackM* lane = sequenceLaneOf(c);
+      if (!lane) continue;
+      // Only clips whose span currently covers `beat` can be showing anything;
+      // a scene-track sequence is keyed off its launch anchor instead, which
+      // the tree builder resolves — conservatively include it.
+      const bool inSpan = t.kind == TrackKind::Scene ||
+                          (beat >= c.startBeat - 1e-9 &&
+                           beat < c.startBeat + c.lengthBeat - 1e-9);
+      if (!inSpan) continue;
+      const double durSec = sequenceInteriorSec(*lane, comp.baseBPM);
+      const auto cs =
+          sequenceContentSecAt(c, c.startBeat, durSec, clock, beat, appliedContentSec);
+      const ClipM* sub =
+          cs ? pickActiveClip(*lane, interiorBeatOf(*cs, comp.baseBPM)) : nullptr;
+      out[c.id] = sub ? sub->id : std::string();
+    }
+  }
+  return out;
 }
 
 /**

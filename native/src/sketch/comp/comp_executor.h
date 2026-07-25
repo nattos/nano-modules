@@ -372,6 +372,10 @@ class CompExecutor {
   /** Lane-driven `__layer__`/bypass decisions captured at eval time; a flip at
    *  the current beat invalidates the span (see ensureEvalAt). */
   std::map<std::string, bool> evalBypassDecisions_;
+  /** Which interior sub-clip each active SEQUENCE clip was showing at eval time
+   *  (seqClipId → subClipId). Compared per frame in ensureEvalAt: an interior
+   *  switch is invisible to the top-level boundary span. */
+  std::map<std::string, std::string> evalSequencePicks_;
   /** Rail-driven structural-bypass decisions: written by the post-render
    *  readback (readRailBypassSignals), consumed by the NEXT eval (1-frame
    *  latency — rails are computed during render). */

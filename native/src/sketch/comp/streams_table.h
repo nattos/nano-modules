@@ -444,7 +444,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       // "gap" scene is a timed blank (renders nothing, its section owns the
       // dwell + hands the track on).
       const bool launchable =
-          !clip.bypassed && !(scene && !clip.hasSourceUrl && clip.sketch.devices.empty() &&
+          !clip.bypassed && !(scene && !clipHasContent(clip) &&
                               clip.transport.devices.empty());
       if (launchable) {
         if (clip.startBeat > runEnd + 1e-6) nextGroup++;  // gap → new group
@@ -489,7 +489,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
       // The clip's ASSET, as a resource: any content-bearing clip — video
       // media OR a generative/effect sketch (a solid-color scene is fork-able
       // content even without a seekable stream). Truly empty clips have none.
-      if (clip.hasSourceUrl || !clip.sketch.devices.empty()) {
+      if (clipHasContent(clip)) {
         ResourceInfo r;
         r.handle = streamHandleOf("res:clip:" + clip.id);
         r.kind = kResKindClipContent;
