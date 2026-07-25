@@ -63,6 +63,9 @@ bool ModuleRegistry::registerEffect(
   extractTextureLeafPaths(reg.schemaFields, "",
                           reg.inputTexturePaths,
                           reg.outputTexturePaths);
+  schema_util::deriveStructRailRoots(reg.schemaFields,
+                                     reg.structInputRoots,
+                                     reg.structOutputRoots);
   buildSlotInputTextureFields(reg.schemaFields, reg.slotInputTextureFields);
   entries_[moduleType] = std::move(reg);
   return true;
@@ -103,6 +106,9 @@ bool ModuleRegistry::registerWasmEffect(
   extractTextureLeafPaths(reg.schemaFields, "",
                           reg.inputTexturePaths,
                           reg.outputTexturePaths);
+  schema_util::deriveStructRailRoots(reg.schemaFields,
+                                     reg.structInputRoots,
+                                     reg.structOutputRoots);
   buildSlotInputTextureFields(reg.schemaFields, reg.slotInputTextureFields);
   entries_[moduleType] = std::move(reg);
   return true;

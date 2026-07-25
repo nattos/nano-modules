@@ -36,6 +36,12 @@ struct RegisteredModule {
   /** Output side — excludes "tex_out". Used to reset connection markers each
    *  frame. */
   std::vector<std::string> outputTexturePaths;
+  /** Top-level struct-rail fields (object/array/vec) by root io direction
+   *  (e.g. "sdf_field_in" / "sdf_field"). Connection markers on these roots are
+   *  reset each frame so a rail whose peer disappears mid-run reads as
+   *  DISCONNECTED again — see schema_util::deriveStructRailRoots. */
+  std::vector<std::string> structInputRoots;
+  std::vector<std::string> structOutputRoots;
   /** Top-level input-texture field names in schema "order" order, INCLUDING the
    *  slot-0 field (tex_in / tex_a): the positional mapping the slot-based GPU
    *  ABI (inputTexture(N)) reads. Distinct from inputTexturePaths. */

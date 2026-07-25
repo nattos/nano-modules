@@ -521,6 +521,8 @@ void SketchExecutor::registerModuleSchema(const std::string& moduleType,
   rm.schemaFields = schemaFields;
   schema_util::deriveTextureLeafPaths(rm.schemaFields, "",
                                       rm.inputTexturePaths, rm.outputTexturePaths);
+  schema_util::deriveStructRailRoots(rm.schemaFields,
+                                     rm.structInputRoots, rm.structOutputRoots);
   schema_util::deriveSlotInputTextureFields(rm.schemaFields,
                                             rm.slotInputTextureFields);
   // A node with NO output texture field (io & 2) emits only scalars/structs — a
@@ -1452,6 +1454,16 @@ int32_t SketchExecutor::execute(
       }
       for (const auto& path : reg->outputTexturePaths) {
         inst.setFieldConnected(path, false, false);
+      }
+      // Struct-rail ROOTS: applyReadTaps / captureWriteTaps re-mark tapped
+      // roots below, so a rail whose peer disappeared mid-run (bypassed or
+      // deleted — the augmenter dropped the implicit tap) reads DISCONNECTED
+      // again and the effect falls back (e.g. plume resumes its own sculptor).
+      for (const auto& root : reg->structInputRoots) {
+        inst.setFieldConnected(root, false, false);
+      }
+      for (const auto& root : reg->structOutputRoots) {
+        inst.setFieldConnected(root, false, false);
       }
 
       // -- Apply persisted instance state from the sketch (no-copy lookup) --

@@ -306,6 +306,71 @@ describe('source.sdf.plume E2E', () => {
     }
   });
 
+  it('disabling the provider mid-run falls back to the internal sculptor', async () => {
+    // A bypassed provider is invisible to the rail: with no other source the
+    // consumer's `sdf_field_in` must read DISCONNECTED again (executor resets
+    // struct-root connection markers every frame) and the renderer resumes its
+    // own sculpted shape — exactly, not approximately. Re-enabling re-couples.
+    const solo = await render('plume_dis_solo',
+      { ...STATIC, ...B_LOOK, radius: 0, ridge_depth: 0 },
+      { noInput: true, waitFrames: 10 });
+    const dyn = await runEngineMultiPhaseTest({
+      width: 96, height: 96,
+      modules: ['com.nano.core', 'com.nano.nano'],
+      dumpName: 'plume_dis_dyn',
+      phases: [
+        {
+          commands: [
+            { type: 'createSketch', sketchId: 'plume_dis', sketch: {
+              anchor: null, wires: [],
+              chain: [
+                { type: 'module', module_type: 'source.sdf.plume_field',
+                  instance_key: 'disgen@0' },
+                { type: 'module', module_type: 'source.sdf.plume',
+                  instance_key: 'disrend@0' },
+              ],
+              // Canonical state home — setParam mutates instances[key].state
+              // (the legacy entry.params blob is not writable mid-run).
+              instances: {
+                'disgen@0': { state: { ...A_SHAPE, morph: 0 } },
+                'disrend@0': { state: { ...STATIC, ...B_LOOK,
+                                        radius: 0, ridge_depth: 0 } },
+              },
+            } as unknown as Sketch },
+            { type: 'setTracePoints', tracePoints: [
+              { id: 'out', target: { type: 'sketch_output', sketchId: 'plume_dis' } },
+            ]},
+          ],
+          waitFrames: 10, captureTraceIds: ['out'],
+        },
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'plume_dis', chainIdx: 0,
+              paramKey: '__enable__', value: 0 },
+          ],
+          waitFrames: 10, captureTraceIds: ['out'],
+        },
+        {
+          commands: [
+            { type: 'setParam', sketchId: 'plume_dis', chainIdx: 0,
+              paramKey: '__enable__', value: 1 },
+          ],
+          waitFrames: 10, captureTraceIds: ['out'],
+        },
+      ],
+    });
+    expect(dyn.success).toBe(true);
+    // Wired: the foreign (big spiky) field — clearly not the tiny ball.
+    dyn.phases[0].trace('out').expectDifferentFrom(solo.trace('out'), 40);
+    // Disabled with no other source: EXACTLY the consumer's own shape.
+    for (const [x, y] of [[48, 48], [40, 48], [56, 48], [30, 30], [3, 3]]) {
+      const expected = solo.trace('out').pixelAt(x, y);
+      dyn.phases[1].trace('out').expectPixelAt(x, y, expected, 0);
+    }
+    // Re-enabled: the rail re-couples and the foreign field returns.
+    dyn.phases[2].trace('out').expectDifferentFrom(solo.trace('out'), 40);
+  });
+
   it('plume_field passes video through untouched', async () => {
     const result = await renderSketch('plume_field_pass', {
       anchor: null, wires: [],
