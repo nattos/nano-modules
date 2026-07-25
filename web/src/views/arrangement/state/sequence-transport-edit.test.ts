@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { store, paths } from './store';
-import { isSequenceClip } from '../model/composition';
+import { isSequenceClip, mediaSourceKeys, mediaClips } from '../model/composition';
 import { seedTestPlugins } from '../engine/test-plugins';
 seedTestPlugins();
 
@@ -122,5 +122,45 @@ describe('the details panel does not follow interior selection', () => {
     const op = store.createEmptyClip(other, 0, 4)!;
     store.select(op);
     expect(store.clipViewTarget?.clip.id).toBe(op.split('/')[2]);
+  });
+});
+
+/**
+ * MEDIA RELINK. Blob URLs die on reload, so `relinkMedia` re-resolves every
+ * media key and rewrites the matching clips' `source.url`. Enumerating only
+ * top-level clips left a sequence's interior sub-clips pointing at the DEAD
+ * pre-reload blob — the decode service could never open them, so they rendered
+ * transparent, and with no "missing media" warning either (their key never
+ * entered the relink set).
+ */
+describe('media enumeration reaches sequence interiors', () => {
+  it('collects sourceKeys from interior sub-clips', () => {
+    const t = store.addTrack();
+    const media = { sourceKey: 'inner_key', url: 'blob:dead', frameCount: 55, fps: 30 };
+    store.addVideoClip(t, 0, media as any, 4);
+    store.addVideoClip(t, 4, media as any, 4);
+    store.setTimeSelection(0, 8, [t]);
+    store.consolidateSelection();
+
+    // The clips now live ONLY inside the sequence.
+    expect(store.trackById(t)!.clips.every(isSequenceClip)).toBe(true);
+    expect([...mediaSourceKeys(store.composition)]).toContain('inner_key');
+    expect([...mediaClips(store.composition)].length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('rewrites interior source urls (what relinkMedia does after a reload)', () => {
+    const t = store.addTrack();
+    const media = { sourceKey: 'relink_key', url: 'blob:dead', frameCount: 55, fps: 30 };
+    store.addVideoClip(t, 0, media as any, 8);
+    store.setTimeSelection(0, 8, [t]);
+    store.consolidateSelection();
+
+    for (const c of mediaClips(store.composition)) {
+      if (c.source!.sourceKey === 'relink_key') c.source!.url = 'blob:fresh';
+    }
+    const seq = store.trackById(t)!.clips.find(isSequenceClip)!;
+    for (const sub of seq.sequence!.clips) {
+      expect(sub.source!.url).toBe('blob:fresh');
+    }
   });
 });

@@ -902,6 +902,32 @@ export function* allLanes(comp: Composition): Generator<Track> {
   for (const t of comp.tracks) yield* walk(t);
 }
 
+/**
+ * Every distinct media `sourceKey` in the document, INTERIORS INCLUDED.
+ *
+ * Blob URLs die on reload, so `store.relinkMedia` re-resolves each key and
+ * rewrites the matching clips' `source.url`. Enumerating only top-level clips
+ * left a sequence's interior sub-clips pointing at the dead pre-reload blob:
+ * the decode service could never open them, so they rendered TRANSPARENT — and
+ * with no "missing media" warning either, since their key never entered the
+ * relink set at all.
+ */
+export function mediaSourceKeys(comp: Composition): Set<string> {
+  const keys = new Set<string>();
+  for (const lane of allLanes(comp)) {
+    for (const c of lane.clips) if (c.source?.sourceKey) keys.add(c.source.sourceKey);
+  }
+  return keys;
+}
+
+/** Every clip carrying media, INTERIORS INCLUDED (the relink rewrite target). */
+export function* mediaClips(comp: Composition): Generator<Clip> {
+  for (const lane of allLanes(comp)) {
+    for (const c of lane.clips) if (c.source?.sourceKey) yield c;
+  }
+}
+
+
 /** The (top-level track, sequence clip) owning the interior lane `laneId`, or
  *  null when `laneId` names a top-level track (or nothing). */
 export function sequenceOwnerOf(

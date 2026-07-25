@@ -51,6 +51,8 @@ import { openMedia, resolveMedia } from '../workspace/media-store';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
 import {
   allLanes,
+  mediaSourceKeys,
+  mediaClips,
   clipHasContent,
   isSequenceClip,
   makeSequenceLane,
@@ -978,9 +980,9 @@ export class ArrangementStore {
 
   /** Snapshot every clip id + track id across the document. */
   private snapshotIds(): { clips: Map<string, string>; tracks: Set<string> } {
-    const clips = new Map<string, string>(); // clipId → trackId
+    const clips = new Map<string, string>(); // clipId → laneId
     const tracks = new Set<string>();
-    for (const t of this.composition.tracks) {
+    for (const t of allLanes(this.composition)) {
       tracks.add(t.id);
       for (const c of t.clips) clips.set(c.id, t.id);
     }
@@ -1080,8 +1082,11 @@ export class ArrangementStore {
 
   async relinkMedia() {
     const keys = new Set<string>();
-    for (const t of this.composition.tracks)
-      for (const c of t.clips) if (c.source?.sourceKey) keys.add(c.source.sourceKey);
+    // allLanes: a sequence clip's INTERIOR sub-clips hold media too. Missing
+    // them left their `source.url` pointing at the dead pre-reload blob, so the
+    // decode service could never open them — the clip rendered TRANSPARENT with
+    // no "missing media" warning either (the key never entered `mediaMissing`).
+    for (const k of mediaSourceKeys(this.composition)) keys.add(k);
     for (const key of keys) {
       // Record the library-relative path (IDB read only, no permission) so the
       // inspector can show it even if the file itself can't be resolved yet.
@@ -1096,8 +1101,9 @@ export class ArrangementStore {
       if (!file) continue;
       const url = URL.createObjectURL(file);
       runInAction(() => {
-        for (const t of this.composition.tracks)
-          for (const c of t.clips) if (c.source?.sourceKey === key) c.source.url = url;
+        for (const c of mediaClips(this.composition)) {
+          if (c.source!.sourceKey === key) c.source!.url = url;
+        }
         // Deliberately NOT an undoable mutate() â but the comp-mode document
         // MIRROR must still refresh, or it keeps serving the dead pre-reload
         // blob URL to the decode pump (video decodes fine in previews yet
@@ -5509,7 +5515,7 @@ export class ArrangementStore {
     // resolving it (a dangling path made channel edits silently no-op after a
     // scene changed tracks). Resolved post-mutate rather than from the args:
     // coalesced drag frames re-pass the ORIGINAL source track every frame.
-    const landed = this.composition.tracks.find((t) => t.clips.some((c) => c.id === clipId));
+    const landed = [...allLanes(this.composition)].find((t) => t.clips.some((c) => c.id === clipId));
     if (landed) {
       const newPath = paths.clip(landed.id, clipId);
       const stale = [...this.selection].filter(
