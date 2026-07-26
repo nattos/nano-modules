@@ -30,12 +30,19 @@
  *                         kGridExt — consumer shaders bake it)
  *   shell_res   : float — shell map resolution per axis (consumers floor
  *                         normal-estimation epsilons at ~2 shell texels)
+ *   dust_count  : int   — number of live dust particles (see `dust`);
+ *                         0 = no dust, consumer skips every dust path
  *   grid        : texture — kGridRes³ RGBA16F volume over [-ext, ext]³:
  *                         .r signed distance × lip (world units),
  *                         .g soft density band (1 inside → 0 outside
  *                            across a few voxels — GI injection, fog,
  *                            translucency read this),
- *                         .b crest emphasis, .a spare
+ *                         .b crest emphasis,
+ *                         .a dust/extinction density ≥ 0 (OPTIONAL — 0
+ *                            when unused; a soft aggregate medium the
+ *                            consumer may add to fog scattering and
+ *                            attenuate sun by; NOT part of the distance
+ *                            field)
  *   shell     : texture — octahedral S² heightmap (nano_octahedral
  *                         mapping), RGBA16F: .r radial displacement
  *                         h(dir) ≥ 0 (world units), .g crest.
@@ -45,12 +52,27 @@
  *                         the grid was baked from (band-limit differences
  *                         within the fine-tier handoff band are fine,
  *                         whole-feature divergence is not)
+ *   dust      : gpu array — dust particles: small discrete glinting
+ *                         motes, SHARP in primary visibility (the
+ *                         consumer splats them with exact depth), soft
+ *                         everywhere else (their aggregate presence is
+ *                         the grid's .a channel). float4-element buffer,
+ *                         TWO float4 rows per particle:
+ *                           row 0: pos.xyz (world), .w = radius (world)
+ *                           row 1: normal.xyz (unit; drives glint),
+ *                                  .w = seed in [0, 1)
+ *                         Rows [0, 2·dust_count) are live; capacity may
+ *                         exceed the live count. (A future emissive
+ *                         extension adds rows per particle behind a new
+ *                         scalar leaf — validate() gates it then.)
  *
  * Producer side: fill the scalars each frame via setValPath (elide when
  * unchanged), setGpuTexture("sdf_field/grid"|"shell", id) on
- * (re)allocation, markGpuDirty("sdf_field") per frame. Consumer side:
+ * (re)allocation, setGpuBuffer("sdf_field/dust", id) likewise when
+ * publishing dust, markGpuDirty("sdf_field") per frame. Consumer side:
  * mirror scalar patches on "<name>/…", resolve textures with
- * gpu::Device::textureForField, then gate rendering on validate().
+ * gpu::Device::textureForField (buffers with bufferForField), then gate
+ * rendering on validate().
  */
 
 namespace fx {
@@ -80,6 +102,10 @@ enum Class {
 constexpr int   kGridRes = 128;
 constexpr float kGridExt = 0.85f;
 
+// Dust pool ceiling. Consumers size per-frame scratch against the LIVE
+// count, not this, so the cap only bounds a mis-declared provider.
+constexpr int   kDustMax = 262144;
+
 // Scalar half of the rail, plus consumer-resolved texture validity.
 struct Desc {
   int   field_class = 0;
@@ -90,8 +116,10 @@ struct Desc {
   float crest_gain  = 0.f;
   float grid_ext    = 0.f;
   float shell_res   = 0.f;
+  int   dust_count  = 0;
   bool  has_grid    = false;
   bool  has_shell   = false;
+  bool  has_dust    = false;
 };
 
 // THE executable documentation of the supported combinations — the
@@ -118,6 +146,13 @@ inline const char* validate(const Desc& d, Class* out) {
   if (d.radius + d.crest_amp > d.grid_ext)
     return "sdf_field: crest sphere exceeds the grid extent";
   if (d.shell_res < 64.f) return "sdf_field: shell_res must be >= 64";
+  // Dust is optional: a live count requires the buffer, but a resolvable
+  // buffer with count 0 is fine (a provider parks its pool at 0).
+  if (d.dust_count < 0) return "sdf_field: dust_count must be >= 0";
+  if (d.dust_count > kDustMax)
+    return "sdf_field: dust_count exceeds kDustMax";
+  if (d.dust_count > 0 && !d.has_dust)
+    return "sdf_field: dust_count > 0 requires the dust buffer";
   *out = SphericalHeightmap;
   return nullptr;
 }
@@ -149,8 +184,10 @@ inline state::Schema& declare(state::Schema& s, int io,
       .floatField("crest_gain", 0.f, 0.f, 1.f,  state::None)
       .floatField("grid_ext",   kGridExt, 0.f, 4.f, state::None)
       .floatField("shell_res",  1024.f, 0.f, 8192.f, state::None)
+      .intField("dust_count", 0, 0, kDustMax, state::None)
       .textureField("grid",  state::None)
       .textureField("shell", state::None)
+      .gpuArrayField("dust", "float4")
       .endObject();
 }
 
@@ -161,9 +198,11 @@ inline state::Schema& declare(state::Schema& s, int io,
 struct Publisher {
   Desc last{};
   bool valid = false;
-  int last_grid = -1, last_shell = -1;
+  int last_grid = -1, last_shell = -1, last_dust = -1;
 
-  void publish(const Desc& d, int grid_id, int shell_id) {
+  // dust_id < 0 = no dust buffer (dust_count must then be 0 to validate
+  // consumer-side; passing a buffer with count 0 parks the pool).
+  void publish(const Desc& d, int grid_id, int shell_id, int dust_id = -1) {
     if (grid_id != last_grid) {
       last_grid = grid_id;
       state::setGpuTexture("sdf_field/grid", grid_id);
@@ -171,6 +210,10 @@ struct Publisher {
     if (shell_id != last_shell) {
       last_shell = shell_id;
       state::setGpuTexture("sdf_field/shell", shell_id);
+    }
+    if (dust_id >= 0 && dust_id != last_dust) {
+      last_dust = dust_id;
+      state::setGpuBuffer("sdf_field/dust", dust_id);
     }
     auto pub = [&](const char* path, float v, float prev) {
       if (valid && v == prev) return;
@@ -186,6 +229,7 @@ struct Publisher {
     pub("sdf_field/crest_gain", d.crest_gain, last.crest_gain);
     pub("sdf_field/grid_ext", d.grid_ext, last.grid_ext);
     pub("sdf_field/shell_res", d.shell_res, last.shell_res);
+    pub("sdf_field/dust_count", (float)d.dust_count, (float)last.dust_count);
     last = d;
     valid = true;
     state::markGpuDirty("sdf_field");

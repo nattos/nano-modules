@@ -38,6 +38,7 @@ namespace helio_field {
 
 constexpr int kSimRes = 512;      // sim maps + published shell (full)
 constexpr int kCoarseRes = 256;   // bake source shell
+constexpr int kDustPool = 131072; // dust particle slots (≤ rail kDustMax)
 
 struct DynUniforms {
   float dt, reset, sim_res, seed;
@@ -63,6 +64,12 @@ struct DustUniforms {
 };
 static_assert(sizeof(DustUniforms) == 64, "DustUniforms layout mismatch");
 
+struct DustSimUniforms {
+  float count, seed, R, lift;
+  float size, thresh, drift, _p0;
+};
+static_assert(sizeof(DustSimUniforms) == 32, "DustSimUniforms layout mismatch");
+
 struct StormUniforms {
   float dt, thresh, prop, burn;
   float cool, charge, recover, kink_gain;
@@ -74,6 +81,7 @@ static gpu::ComputePSO s_pso_prefill;
 static gpu::ComputePSO s_pso_dynamics;
 static gpu::ComputePSO s_pso_storm;
 static gpu::ComputePSO s_pso_dust;
+static gpu::ComputePSO s_pso_dust_sim;
 static gpu::ComputePSO s_pso_shell;
 
 struct State {
@@ -87,8 +95,9 @@ struct State {
   gpu::Texture shell_full;      // RGBA16F 512² (h, crest)
   gpu::Texture shell_coarse;    // RGBA16F 256²
   gpu::Texture sdf_vol;         // RGBA16F 128³
-  gpu::Buffer ub_dyn, ub_storm, ub_dust, ub_shell_full, ub_shell_coarse,
-              ub_bake;
+  gpu::Buffer dust_parts;       // kDustPool × 2 float4 (rail dust layout)
+  gpu::Buffer ub_dyn, ub_storm, ub_dust, ub_dust_sim, ub_shell_full,
+              ub_shell_coarse, ub_bake;
   gpu::Sampler samp;
 
   int ping = 0;                 // dyn/aux index written LAST frame
@@ -111,6 +120,8 @@ struct State {
   float line_scale = 0.5f;
   float granules = 0.5f;
   float grain_size = 0.5f;
+  float dust_amt = 0.35f;
+  float dust_size = 0.5f;
   float excite = 0.5f;
   float storm_h = 0.6f;
   float glow = 0.7f;
@@ -186,6 +197,18 @@ void module_init() {
           .label("Granules", "Grain")
       .floatField("grain_size", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Grain Size", "Size")
+      .group("dust", "Dust")
+      .groupHelp(
+          "Glinting motes hovering just off the surface — dust riding "
+          "the granulation. Each mote is born on a live granule and "
+          "carries its own facet orientation, so it catches the sun as "
+          "a hard little glint. Published on the rail's dust channel; "
+          "the downstream renderer (e.g. Plume) splats them SHARP with "
+          "exact depth. *Dust* is how many, *Dust Size* the mote size.")
+      .floatField("dust", 0.35f, 0.f, 1.f, state::PrimaryInput)
+          .label("Dust", "Dust")
+      .floatField("dust_size", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Dust Size", "DSize")
       .group("storms", "Storms")
       .groupHelp(
           "Storms are not triggered — they SELF-IGNITE where the sim "
@@ -229,6 +252,8 @@ void module_init() {
   state::registerShaderSPV("helio_field_dust", HELIO_FIELD_DUST_SPV,
                            HELIO_FIELD_DUST_SPV_SIZE,
                            "rgba16float", "write");
+  state::registerShaderSPV("helio_field_dust_sim", HELIO_FIELD_DUST_SIM_SPV,
+                           HELIO_FIELD_DUST_SIM_SPV_SIZE);
   state::registerShaderSPV("helio_field_shell", HELIO_FIELD_SHELL_SPV,
                            HELIO_FIELD_SHELL_SPV_SIZE,
                            "rgba16float", "write");
@@ -236,8 +261,10 @@ void module_init() {
   auto cs_dyn = gpu::Device::createShaderModuleByName("helio_field_dynamics");
   auto cs_storm = gpu::Device::createShaderModuleByName("helio_field_storm");
   auto cs_dust = gpu::Device::createShaderModuleByName("helio_field_dust");
+  auto cs_dsim = gpu::Device::createShaderModuleByName("helio_field_dust_sim");
   auto cs_shell = gpu::Device::createShaderModuleByName("helio_field_shell");
-  if (!cs_prefill || !cs_dyn || !cs_storm || !cs_dust || !cs_shell) return;
+  if (!cs_prefill || !cs_dyn || !cs_storm || !cs_dust || !cs_dsim ||
+      !cs_shell) return;
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main",
       gpu::Bindings()
           .tex2d(0)
@@ -266,6 +293,13 @@ void module_init() {
           .sampler(3)
           .storageTex2d(4, gpu::TextureFormat::RGBA16F)  // dust (next)
           .uniform(5));
+  s_pso_dust_sim = gpu::Device::createComputePSO(cs_dsim, "main",
+      gpu::Bindings()
+          .tex2d(0)          // dust chemistry (current)
+          .tex2d(1)          // shell_full (hover height)
+          .sampler(2)
+          .storageRW(3)      // rail particle buffer
+          .uniform(4));
   s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main",
       gpu::Bindings()
           .tex2d(0)          // aux (current)
@@ -286,6 +320,8 @@ void* create() {
                                           gpu::BufferUsage::Uniform);
   s->ub_dust = gpu::Device::createBuffer(sizeof(DustUniforms),
                                          gpu::BufferUsage::Uniform);
+  s->ub_dust_sim = gpu::Device::createBuffer(sizeof(DustSimUniforms),
+                                             gpu::BufferUsage::Uniform);
   s->ub_shell_full = gpu::Device::createBuffer(sizeof(HShellUniforms),
                                                gpu::BufferUsage::Uniform);
   s->ub_shell_coarse = gpu::Device::createBuffer(sizeof(HShellUniforms),
@@ -311,9 +347,11 @@ void destroy(void* self) {
   s->shell_full.release();
   s->shell_coarse.release();
   s->sdf_vol.release();
+  s->dust_parts.release();
   s->ub_dyn.release();
   s->ub_storm.release();
   s->ub_dust.release();
+  s->ub_dust_sim.release();
   s->ub_shell_full.release();
   s->ub_shell_coarse.release();
   s->ub_bake.release();
@@ -370,6 +408,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "line_scale")) s->line_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "granules"))   s->granules = state::patchFloat(i);
     else if (state::pathIs(p, l, "grain_size")) s->grain_size = state::patchFloat(i);
+    else if (state::pathIs(p, l, "dust"))       s->dust_amt = state::patchFloat(i);
+    else if (state::pathIs(p, l, "dust_size"))  s->dust_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "excite"))     s->excite = state::patchFloat(i);
     else if (state::pathIs(p, l, "storm_h"))    s->storm_h = state::patchFloat(i);
     else if (state::pathIs(p, l, "glow"))       s->glow = state::patchFloat(i);
@@ -601,6 +641,44 @@ static bool runField(State* s) {
     cp.end();
   }
 
+  // --- Pass 1.5: dust motes (rail particle channel) — placed on the
+  // fresh chemistry + shell, so a frozen sim re-derives the identical
+  // set every frame. ---
+  int dust_count = 0;
+  if (s->dust_amt > 0.001f && s_pso_dust_sim.valid() &&
+      s->ub_dust_sim.valid()) {
+    if (!s->dust_parts.valid())
+      s->dust_parts = gpu::Device::createBuffer(
+          (long long)kDustPool * 2 * 16, gpu::BufferUsage::Storage);
+    if (s->dust_parts.valid()) {
+      // Square taper: the low half of the knob stays sparse.
+      dust_count = (int)((float)kDustPool * s->dust_amt * s->dust_amt);
+      dust_count = dust_count / 64 * 64;
+    }
+  }
+  if (dust_count > 0) {
+    DustSimUniforms du2 = {};
+    du2.count = (float)dust_count;
+    du2.seed = s->variation * 10.0f;
+    du2.R = R;
+    du2.lift = 0.018f;
+    du2.size = 0.0025f + 0.005f * s->dust_size;
+    // Chemistry b tops out ~0.35 (seeded) / ~0.45 (mature): accept from
+    // the blob shoulders up so dust tracks granules, not just cores.
+    du2.thresh = 0.12f;
+    du2.drift = (float)s->stir_phase;
+    s->ub_dust_sim.writeOne(du2);
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_dust_sim);
+    cp.setTexture(s->dust[dnxt], 0, 0);
+    cp.setTexture(s->shell_full, 1, 0);
+    cp.setSampler(s->samp, 2);
+    cp.setBuffer(s->dust_parts, 3);
+    cp.setBuffer(s->ub_dust_sim, 4);
+    cp.dispatch(dust_count / 64);
+    cp.end();
+  }
+
   // --- Pass 2: bake (shared plume sculptor shader) ---
   // Lipschitz: the shell pass renders fixed-spatial-width ridges, so the
   // max slope is (amp + storm curtain)·0.86/line_w regardless of how the
@@ -641,7 +719,10 @@ static bool runField(State* s) {
   d.grid_ext = fx::sdf_field::kGridExt;
   d.shell_res = (float)kSimRes;
   d.has_grid = d.has_shell = true;
-  s->rail_pub.publish(d, s->sdf_vol.id, s->shell_full.id);
+  d.dust_count = dust_count;
+  d.has_dust = s->dust_parts.valid();
+  s->rail_pub.publish(d, s->sdf_vol.id, s->shell_full.id,
+                      s->dust_parts.valid() ? s->dust_parts.id : -1);
   return true;
 }
 

@@ -108,6 +108,16 @@ describe('source.sdf.helio_field E2E', () => {
     on.phases[0].trace('out').expectDifferentFrom(off.phases[0].trace('out'), 200);
   });
 
+  it('dust motes render sharp above the surface', async () => {
+    // Frozen sim: mote placement is a pure function of the (static)
+    // chemistry + seed, so on-vs-off is a deterministic static diff.
+    const off = await run('helio_dust_off',
+      { radius: 0.8, relief: 0.6, sim_rate: 0, dust: 0 }, [10]);
+    const on = await run('helio_dust_on',
+      { radius: 0.8, relief: 0.6, sim_rate: 0, dust: 0.9 }, [10]);
+    on.phases[0].trace('out').expectDifferentFrom(off.phases[0].trace('out'), 100);
+  });
+
   it('self-resonant storms keep the surface churning', async () => {
     const r = await run('helio_storms',
       { radius: 0.8, relief: 0.5, sim_rate: 0.7, excite: 0.95,

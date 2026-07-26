@@ -90,6 +90,25 @@ static_assert(sizeof(FogUniforms) == 144, "FogUniforms layout mismatch");
 struct CompUniforms { float opacity, has_bg, exposure, black; };
 static_assert(sizeof(CompUniforms) == 16, "CompUniforms layout mismatch");
 
+// Shared by both dust splat passes (dust_common.hlsl).
+struct DustSplatUniforms {
+  float cam_row0[4];
+  float cam_row1[4];
+  float cam_row2[4];
+  float cam_p[4];      // focal, cover_ax, cover_ay, dust_count
+  float sun_p[4];      // sun dir toward light, w = intensity
+  float albedo[4];     // rgb, w = exposure gain
+  float vp[4];         // w, h, 1/w, 1/h
+  float shade_p[4];    // shadow, ambient, bounce, inv_lip
+  float misc[4];       // px_world, reflect, roughness, 0
+};
+static_assert(sizeof(DustSplatUniforms) == 144,
+              "DustSplatUniforms layout mismatch");
+
+struct DustClearUniforms { float count, _p0, _p1, _p2; };
+static_assert(sizeof(DustClearUniforms) == 16,
+              "DustClearUniforms layout mismatch");
+
 struct DebugUniforms { float mode, slice, scale, _pad0; };
 static_assert(sizeof(DebugUniforms) == 16, "DebugUniforms layout mismatch");
 
@@ -111,6 +130,9 @@ static gpu::ComputePSO s_pso_inject;
 static gpu::ComputePSO s_pso_prop;
 static gpu::ComputePSO s_pso_fog;
 static gpu::ComputePSO s_pso_comp;
+static gpu::ComputePSO s_pso_dust_clear;
+static gpu::ComputePSO s_pso_dust_depth;
+static gpu::ComputePSO s_pso_dust_shade;
 
 // ---------------------------------------------------------------------------
 
@@ -129,6 +151,9 @@ struct State {
   gpu::Texture zero_tex;                   // 1×1 zeros (unwired-input stand-in)
   gpu::Texture scene_tex;                  // vp RGBA16F: color + hit distance
   gpu::Texture fog_tex;                    // vp/2 RGBA16F: in-scatter + trans
+  gpu::Buffer dust_depth_buf;              // vp uints: splat depth resolve
+  gpu::Buffer ub_dust, ub_dust_clear;
+  int dust_buf_px = 0;
   gpu::Sampler samp_clamp;
   int rad_rot = 0;                         // ring index of "cur"
   int scratch_w = 0, scratch_h = 0;
@@ -342,6 +367,12 @@ void module_init() {
   state::registerShaderSPV("plume_fog", FOG_SPV, FOG_SPV_SIZE,
                            "rgba16float", "write");
   state::registerShaderSPV("plume_composite", COMPOSITE_SPV, COMPOSITE_SPV_SIZE);
+  state::registerShaderSPV("plume_dust_clear", DUST_CLEAR_SPV,
+                           DUST_CLEAR_SPV_SIZE);
+  state::registerShaderSPV("plume_dust_depth", DUST_DEPTH_SPV,
+                           DUST_DEPTH_SPV_SIZE);
+  state::registerShaderSPV("plume_dust_shade", DUST_SHADE_SPV,
+                           DUST_SHADE_SPV_SIZE, "rgba16float", "write");
 
   auto cs_march = gpu::Device::createShaderModuleByName("plume_march");
   auto cs_prefill = gpu::Device::createShaderModuleByName("plume_prefill");
@@ -351,8 +382,12 @@ void module_init() {
   auto cs_prop = gpu::Device::createShaderModuleByName("plume_gi_prop");
   auto cs_fog = gpu::Device::createShaderModuleByName("plume_fog");
   auto cs_comp = gpu::Device::createShaderModuleByName("plume_composite");
+  auto cs_dclear = gpu::Device::createShaderModuleByName("plume_dust_clear");
+  auto cs_ddepth = gpu::Device::createShaderModuleByName("plume_dust_depth");
+  auto cs_dshade = gpu::Device::createShaderModuleByName("plume_dust_shade");
   if (!cs_march || !cs_march_hdr || !cs_prefill ||
-      !cs_debug || !cs_inject || !cs_prop || !cs_fog || !cs_comp) return;
+      !cs_debug || !cs_inject || !cs_prop || !cs_fog || !cs_comp ||
+      !cs_dclear || !cs_ddepth || !cs_dshade) return;
 
   s_pso_march = gpu::Device::createComputePSO(cs_march, "main", gpu::Bindings()
       .tex3d(0)
@@ -408,6 +443,25 @@ void module_init() {
       .sampler(3)
       .storageTex2d(4)
       .uniform(5));
+  s_pso_dust_clear = gpu::Device::createComputePSO(cs_dclear, "main",
+      gpu::Bindings()
+      .storageRW(0)
+      .uniform(1));
+  s_pso_dust_depth = gpu::Device::createComputePSO(cs_ddepth, "main",
+      gpu::Bindings()
+      .storage(0)        // dust particles (rail buffer)
+      .tex2d(1)          // scene (.a = surface depth)
+      .storageRW(2)      // depth resolve (atomics)
+      .uniform(3));
+  s_pso_dust_shade = gpu::Device::createComputePSO(cs_dshade, "main",
+      gpu::Bindings()
+      .storage(0)        // dust particles
+      .tex3d(1)          // sdf grid (shadow march)
+      .tex3d(2)          // GI radiance
+      .sampler(3)
+      .storage(4)        // depth resolve (read)
+      .storageTex2d(5, gpu::TextureFormat::RGBA16F)
+      .uniform(6));
 
   state::log("plume: module initialized");
 }
@@ -427,6 +481,10 @@ void* create() {
                                         gpu::BufferUsage::Uniform);
   s->ub_comp = gpu::Device::createBuffer(sizeof(CompUniforms),
                                          gpu::BufferUsage::Uniform);
+  s->ub_dust = gpu::Device::createBuffer(sizeof(DustSplatUniforms),
+                                         gpu::BufferUsage::Uniform);
+  s->ub_dust_clear = gpu::Device::createBuffer(sizeof(DustClearUniforms),
+                                               gpu::BufferUsage::Uniform);
   s->zero_vol = gpu::Device::createTexture3D(1, 1, 1, gpu::TextureFormat::RGBA16F);
   s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
   if (s->zero_tex.valid())
@@ -448,6 +506,9 @@ void destroy(void* self) {
   s->ub_comp.release();
   s->scene_tex.release();
   s->fog_tex.release();
+  s->dust_depth_buf.release();
+  s->ub_dust.release();
+  s->ub_dust_clear.release();
   for (int i = 0; i < 3; i++) s->rad_vol[i].release();
   s->inject_vol.release();
   s->zero_vol.release();
@@ -540,6 +601,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       s->rail_in.grid_ext = state::patchFloat(i);
     else if (state::pathIs(p, l, "sdf_field_in/shell_res"))
       s->rail_in.shell_res = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sdf_field_in/dust_count"))
+      s->rail_in.dust_count = state::patchInt(i);
   }
 }
 
@@ -574,19 +637,23 @@ void render(void* self, int vp_w, int vp_h) {
   // field renders through code paths identical to the sculpted one.
   fx::sdf_field::Desc field;
   gpu::Texture field_grid, field_shell;
+  gpu::Buffer field_dust;
   bool foreign = false;
   if (state::isInputConnected("sdf_field_in")) {
     fx::sdf_field::Desc fd = s->rail_in;
     gpu::Texture fg = gpu::Device::textureForField("sdf_field_in/grid");
     gpu::Texture fsh = gpu::Device::textureForField("sdf_field_in/shell");
+    gpu::Buffer fdu = gpu::Device::bufferForField("sdf_field_in/dust");
     fd.has_grid = fg.valid();
     fd.has_shell = fsh.valid();
+    fd.has_dust = fdu.valid();
     fx::sdf_field::Class cls;
     const char* reason = fx::sdf_field::validate(fd, &cls);
     if (!reason) {
       field = fd;
       field_grid = fg;
       field_shell = fsh;
+      field_dust = fdu;
       foreign = true;
     }
     // A mis-declared provider falls back to the sculpted shape — log the
@@ -607,7 +674,8 @@ void render(void* self, int vp_w, int vp_h) {
   // --- Provider publish: the ACTIVE field (relays foreign when wired
   // through, so a chain of consumers sees one consistent declaration) ---
   if (state::isOutputConnected("sdf_field"))
-    s->rail_pub.publish(field, field_grid.id, field_shell.id);
+    s->rail_pub.publish(field, field_grid.id, field_shell.id,
+                        field_dust.valid() ? field_dust.id : -1);
 
   // --- GI: inject + wave propagation (whole stage skipped at bounce 0) ---
   bool gi_on = s->bounce > 0.001f || s->debug_view == DBG_RADIANCE;
@@ -707,11 +775,20 @@ void render(void* self, int vp_w, int vp_h) {
     return;
   }
 
-  // --- Fog pipeline scratch (lazy, vp-sized, only when fog is on) ---
+  // --- Scene-buffer path scratch (lazy, vp-sized). The scene buffer is
+  // needed by fog AND by dust (the splat passes need per-pixel surface
+  // depth and a rewritable color target) — dust forces the full
+  // march → scene → composite route even at fog 0, with the fog texture
+  // simply cleared to "no fog" so composite runs unchanged. ---
   bool fog_on = s->fog > 0.001f || s->room_fog > 0.001f;
+  bool dust_on = field.dust_count > 0 && field_dust.valid() &&
+                 s_pso_dust_clear.valid() && s_pso_dust_depth.valid() &&
+                 s_pso_dust_shade.valid() && s->ub_dust.valid() &&
+                 s->ub_dust_clear.valid();
   const bool resized = (s->scratch_w != vp_w || s->scratch_h != vp_h);
   const int half_w = (vp_w + 1) / 2, half_h = (vp_h + 1) / 2;
-  if (fog_on) {
+  bool scene_path = fog_on || dust_on;
+  if (scene_path) {
     if (!s->scene_tex.valid() || resized) {
       s->scene_tex.release();
       s->scene_tex = gpu::Device::createTexture(vp_w, vp_h,
@@ -722,11 +799,24 @@ void render(void* self, int vp_w, int vp_h) {
       s->fog_tex = gpu::Device::createTexture(half_w, half_h,
                                               gpu::TextureFormat::RGBA16F);
     }
-    fog_on = s->scene_tex.valid() && s->fog_tex.valid();
-    // Dims track the LIVE scratch only — if fog is off across a resize,
-    // `resized` stays stale-true and the textures rebuild on re-entry.
+    scene_path = s->scene_tex.valid() && s->fog_tex.valid();
+    fog_on = fog_on && scene_path;
+    dust_on = dust_on && scene_path;
+    // Dims track the LIVE scratch only — if the path is off across a
+    // resize, `resized` stays stale-true and the textures rebuild on
+    // re-entry.
     s->scratch_w = vp_w;
     s->scratch_h = vp_h;
+  }
+  if (dust_on) {
+    const int px = vp_w * vp_h;
+    if (!s->dust_depth_buf.valid() || s->dust_buf_px != px) {
+      s->dust_depth_buf.release();
+      s->dust_depth_buf = gpu::Device::createBuffer(
+          (long long)px * 4, gpu::BufferUsage::Storage);
+      s->dust_buf_px = px;
+    }
+    dust_on = s->dust_depth_buf.valid();
   }
 
   // --- Camera: orbit yaw accumulator + tilt, framing-hold dolly ---
@@ -786,7 +876,7 @@ void render(void* self, int vp_w, int vp_h) {
   // Decompression for penumbra/AO reads of the compressed grid distances.
   mu.fine_p[2] = 1.0f / field.lip;
   mu.fine_p[3] = gi_on ? 1.2f * s->bounce : 0.0f;
-  mu.misc[0] = fog_on ? 1.0f : 0.0f;
+  mu.misc[0] = scene_path ? 1.0f : 0.0f;
   mu.misc[1] = std::fmin(3.0f, field.lip / field.lip_true);
   mu.misc[2] = field.crest_gain;
   mu.misc[3] = s->wrap;
@@ -805,17 +895,82 @@ void render(void* self, int vp_w, int vp_h) {
 
   {
     auto cp = gpu::ComputePass::begin();
-    cp.setPSO(fog_on ? s_pso_march_hdr : s_pso_march);
+    cp.setPSO(scene_path ? s_pso_march_hdr : s_pso_march);
     cp.setTexture(field_grid, 0, 0);
     cp.setTexture(in.valid() ? in : s->zero_tex, 1, 0);
     cp.setTexture(field_shell, 2, 0);
     cp.setSampler(s->samp_clamp, 3);
-    cp.setTexture(fog_on ? s->scene_tex : out, 4, 1);
+    cp.setTexture(scene_path ? s->scene_tex : out, 4, 1);
     cp.setBuffer(s->ub_march, 5);
     cp.setTexture(rad_cur, 6, 0);
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
+
+  // --- Dust splats: nearest-particle depth resolve, then the winner
+  // shades into the scene buffer (color + its depth — fog then stops at
+  // dust exactly like at the surface). ---
+  if (dust_on) {
+    DustClearUniforms dcu = { (float)(vp_w * vp_h), 0.f, 0.f, 0.f };
+    s->ub_dust_clear.writeOne(dcu);
+    DustSplatUniforms du = {};
+    for (int i = 0; i < 4; i++) {
+      du.cam_row0[i] = mu.cam_row0[i];
+      du.cam_row1[i] = mu.cam_row1[i];
+      du.cam_row2[i] = mu.cam_row2[i];
+      du.sun_p[i] = mu.sun_p[i];
+      du.vp[i] = mu.vp[i];
+    }
+    du.cam_p[0] = focal; du.cam_p[1] = cs.ax; du.cam_p[2] = cs.ay;
+    du.cam_p[3] = (float)field.dust_count;
+    du.albedo[0] = s->albedo_r; du.albedo[1] = s->albedo_g;
+    du.albedo[2] = s->albedo_b; du.albedo[3] = expo;
+    du.shade_p[0] = s->shadow;
+    du.shade_p[1] = s->ambient;
+    du.shade_p[2] = gi_on ? 1.2f * s->bounce : 0.0f;
+    du.shade_p[3] = 1.0f / field.lip;
+    du.misc[0] = mu.fine_p[1];   // px_world
+    du.misc[1] = s->reflect_k;
+    du.misc[2] = s->roughness;
+    s->ub_dust.writeOne(du);
+    const int pgroups = (field.dust_count + 63) / 64;
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_dust_clear);
+      cp.setBuffer(s->dust_depth_buf, 0);
+      cp.setBuffer(s->ub_dust_clear, 1);
+      cp.dispatch((vp_w * vp_h + 63) / 64);
+      cp.end();
+    }
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_dust_depth);
+      cp.setBuffer(field_dust, 0);
+      cp.setTexture(s->scene_tex, 1, 0);
+      cp.setBuffer(s->dust_depth_buf, 2);
+      cp.setBuffer(s->ub_dust, 3);
+      cp.dispatch(pgroups);
+      cp.end();
+    }
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_dust_shade);
+      cp.setBuffer(field_dust, 0);
+      cp.setTexture(field_grid, 1, 0);
+      cp.setTexture(rad_cur, 2, 0);
+      cp.setSampler(s->samp_clamp, 3);
+      cp.setBuffer(s->dust_depth_buf, 4);
+      cp.setTexture(s->scene_tex, 5, 1);
+      cp.setBuffer(s->ub_dust, 6);
+      cp.dispatch(pgroups);
+      cp.end();
+    }
+  }
+
+  // Dust without fog still needs composite: park the fog texture at
+  // "no in-scatter, full transmittance".
+  if (scene_path && !fog_on)
+    gpu::Device::clear(s->fog_tex, 0.0f, 0.0f, 0.0f, 1.0f);
 
   if (fog_on) {
     FogUniforms fu = {};
@@ -854,7 +1009,9 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch((half_w + 7) / 8, (half_h + 7) / 8);
       cp.end();
     }
+  }
 
+  if (scene_path) {
     CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, expo, black };
     s->ub_comp.writeOne(cu);
     {

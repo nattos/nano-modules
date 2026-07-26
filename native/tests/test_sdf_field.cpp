@@ -118,6 +118,36 @@ TEST_CASE("scalar declarations are range-checked", "[sdf_field]") {
   REQUIRE(rejected_mentioning(d, "shell_res"));
 }
 
+TEST_CASE("dust is optional and gated on its buffer", "[sdf_field]") {
+  // No dust at all — the pre-dust rail, still the baseline combo.
+  Desc d = valid_spherical_heightmap();
+  Class c = Class::None;
+  REQUIRE(validate(d, &c) == nullptr);
+
+  // A parked pool (buffer present, count 0) is valid and means "no dust".
+  d = valid_spherical_heightmap();
+  d.has_dust = true;
+  REQUIRE(validate(d, &c) == nullptr);
+  REQUIRE(c == Class::SphericalHeightmap);
+
+  // Live dust requires the buffer.
+  d = valid_spherical_heightmap();
+  d.dust_count = 1000;
+  REQUIRE(rejected_mentioning(d, "dust buffer"));
+  d.has_dust = true;
+  REQUIRE(validate(d, &c) == nullptr);
+
+  // Counts are range-checked.
+  d = valid_spherical_heightmap();
+  d.has_dust = true;
+  d.dust_count = -1;
+  REQUIRE(rejected_mentioning(d, "dust_count"));
+  d.dust_count = fx::sdf_field::kDustMax + 1;
+  REQUIRE(rejected_mentioning(d, "kDustMax"));
+  d.dust_count = fx::sdf_field::kDustMax;
+  REQUIRE(validate(d, &c) == nullptr);
+}
+
 TEST_CASE("v1 grid conventions are enforced", "[sdf_field]") {
   // Consumer shaders bake extent/res as compile-time constants, so a
   // mismatched provider must be refused, not mis-sampled.
