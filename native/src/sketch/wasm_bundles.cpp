@@ -97,13 +97,15 @@ void WasmEffectBundles::setStreamsTable(comp::StreamsTable* table,
 
 void WasmEffectBundles::setHostClock(double elapsedTime, double deltaTime,
                                      double barPhase, double bpm,
-                                     int viewportW, int viewportH) {
+                                     int viewportW, int viewportH,
+                                     int referenceH) {
   frame_state_.elapsed_time = elapsedTime;
   frame_state_.delta_time = deltaTime;
   frame_state_.bar_phase = barPhase;
   frame_state_.bpm = bpm;
   frame_state_.viewport_w = viewportW;
   frame_state_.viewport_h = viewportH;
+  frame_state_.reference_h = referenceH;
 }
 
 int WasmEffectBundles::loadBundleFile(const std::string& path,

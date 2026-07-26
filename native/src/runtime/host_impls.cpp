@@ -199,6 +199,9 @@ static double g_host_bar_phase = 0.0;
 static double g_host_bpm = 120.0;
 static int    g_host_vp_w = 0;
 static int    g_host_vp_h = 0;
+// Output height the viewport stands in for; 0 = "the viewport IS the output"
+// (the native default — nothing here renders a scaled proxy). See host.h.
+static int    g_host_ref_h = 0;
 
 double host_get_time(void)        { return g_host_time; }
 double host_get_delta_time(void)  { return g_host_dt; }
@@ -207,6 +210,7 @@ double host_get_bpm(void)         { return g_host_bpm; }
 double host_get_param(int)        { return 0.0; }
 int    host_get_viewport_w(void)  { return g_host_vp_w; }
 int    host_get_viewport_h(void)  { return g_host_vp_h; }
+int    host_get_reference_h(void)  { return g_host_ref_h; }
 void   host_trigger_audio(int)    {}
 
 // Test-runner / plugin shell setter helpers (non-extern-C — only used
@@ -219,6 +223,7 @@ void setHostDeltaTime(double dt) { g_host_dt = dt; }
 void setHostBarPhase(double p)   { g_host_bar_phase = p; }
 void setHostBpm(double bpm)      { g_host_bpm = bpm; }
 void setHostViewport(int w, int h) { g_host_vp_w = w; g_host_vp_h = h; }
+void setHostReferenceHeight(int h) { g_host_ref_h = h; }
 }  // namespace effect_runtime
 
 // ============================================================================

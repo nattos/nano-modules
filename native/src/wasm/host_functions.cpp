@@ -145,6 +145,12 @@ static int32_t host_get_viewport_h(wasm_exec_env_t env) {
   return f ? f->viewport_h : 0;
 }
 
+/** Output height the viewport stands in for (0 = the viewport IS the output). */
+static int32_t host_get_reference_h(wasm_exec_env_t env) {
+  auto* f = get_frame(env);
+  return f ? f->reference_h : 0;
+}
+
 static void host_log_fn(wasm_exec_env_t env, int32_t msg_ptr, int32_t msg_len) {
   env_log(env, msg_ptr, msg_len); // reuse env.log implementation
 }
@@ -173,6 +179,7 @@ static NativeSymbol host_symbols[] = {
     {"get_param", reinterpret_cast<void*>(host_get_param), "(i)F", nullptr},
     {"get_viewport_w", reinterpret_cast<void*>(host_get_viewport_w), "()i", nullptr},
     {"get_viewport_h", reinterpret_cast<void*>(host_get_viewport_h), "()i", nullptr},
+    {"get_reference_h", reinterpret_cast<void*>(host_get_reference_h), "()i", nullptr},
     {"log", reinterpret_cast<void*>(host_log_fn), "(ii)", nullptr},
     {"trigger_audio", reinterpret_cast<void*>(host_trigger_audio), "(i)", nullptr},
 };

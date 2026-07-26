@@ -12,6 +12,17 @@ export interface FrameState {
   bpm: number;
   viewportW: number;
   viewportH: number;
+  /**
+   * Output height (px) the viewport STANDS IN FOR — the composition resolution
+   * when the engine renders a scaled-down proxy of it (the arrangement preview
+   * caps its edge; an export runs full-size). 0 = "the viewport IS the output",
+   * which yields a unit `host::pxScale` — raw output pixels, as before.
+   *
+   * Effects with pixel-denominated params scale by vp_h / referenceH so an
+   * authored value is a fixed fraction of the frame at any render size, i.e. the
+   * preview and the export agree. See native/wasm_modules/include/host.h.
+   */
+  referenceH: number;
   params: number[];
 }
 
@@ -219,7 +230,7 @@ export class WasmHost {
 
   frameState: FrameState = {
     elapsedTime: 0, deltaTime: 0, barPhase: 0, bpm: 120,
-    viewportW: 0, viewportH: 0, params: new Array(16).fill(0),
+    viewportW: 0, viewportH: 0, referenceH: 0, params: new Array(16).fill(0),
   };
 
   // Seekable-streams registry backing the streams.* imports (streams-registry
@@ -530,6 +541,7 @@ export class WasmHost {
         get_param: (index: number) => this.frameState.params[index] ?? 0,
         get_viewport_w: () => this.frameState.viewportW,
         get_viewport_h: () => this.frameState.viewportH,
+        get_reference_h: () => this.frameState.referenceH,
         log: (ptr: number, len: number) => {
           console.log('[wasm]', this.readString(ptr, len));
         },

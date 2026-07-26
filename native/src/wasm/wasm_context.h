@@ -37,6 +37,18 @@ struct FrameState {
   double bpm = 120;
   int viewport_w = 0;
   int viewport_h = 0;
+  /**
+   * Output height (px) this frame's viewport REPRESENTS — the composition
+   * resolution, when the engine is rendering a scaled-down proxy of it (the
+   * arrangement preview caps its edge; an export runs at full size). 0 = "the
+   * viewport IS the output", which is the plain case (barrel, tests, an
+   * uncapped engine) and yields a unit scale.
+   *
+   * Effects with PIXEL-denominated params divide by this (host::pxScale) so an
+   * authored value is a fixed fraction of the frame at any render size, i.e. the
+   * preview and the export agree. See host.h.
+   */
+  int reference_h = 0;
 
   static constexpr int MAX_PARAMS = 16;
   double ffgl_params[MAX_PARAMS] = {};

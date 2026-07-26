@@ -926,7 +926,20 @@ export class WasmSketchExecutor {
   compLoadDocument(json: string): void {
     const c = this.ensureComp();
     this.withBytes(json, (p, l) => this.exports.comp_load_document(c, p, l));
+    // Remember the composition's own output height: the engine may be rendering a
+    // SCALED PROXY of it (the arrangement preview caps its edge, an export runs
+    // full-size), and effects with pixel-denominated params need the ratio to
+    // stay resolution-independent — see host::pxScale in host.h.
+    try {
+      const h = JSON.parse(json)?.meta?.resolution?.height;
+      this.compReferenceH = typeof h === 'number' && h > 0 ? Math.round(h) : 0;
+    } catch {
+      this.compReferenceH = 0; // unparseable → fall back to raw output pixels
+    }
   }
+
+  /** Composition output height (px), or 0 when unknown. See compLoadDocument. */
+  private compReferenceH = 0;
 
   /** The STATIC seekable-streams registry (streams_table.h serialization) —
    *  fetch on docEpoch change only, never per frame. */
@@ -1153,6 +1166,10 @@ export class WasmSketchExecutor {
       fs.bpm = this.exports.comp_bpm(c);
       fs.viewportW = width;
       fs.viewportH = height;
+      // The proxy ratio: (width,height) may be a capped preview of a larger
+      // composition. Effects divide their pixel params by this (host::pxScale) so
+      // the preview and a full-resolution export show the same thing.
+      fs.referenceH = this.compReferenceH;
     }
     onInstancesReady?.();
 

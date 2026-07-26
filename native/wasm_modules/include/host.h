@@ -28,6 +28,8 @@ extern "C" {
   int host_get_viewport_w(void);
   __attribute__((import_module("host"), import_name("get_viewport_h")))
   int host_get_viewport_h(void);
+  __attribute__((import_module("host"), import_name("get_reference_h")))
+  int host_get_reference_h(void);
   __attribute__((import_module("host"), import_name("trigger_audio")))
   void host_trigger_audio(int channel);
 
@@ -160,6 +162,32 @@ inline double param(int index) { return host_get_param(index); }
 inline int viewportWidth() { return host_get_viewport_w(); }
 inline int viewportHeight() { return host_get_viewport_h(); }
 inline void triggerAudio(int channel) { host_trigger_audio(channel); }
+
+/// Output height (px) the current viewport STANDS IN FOR — the composition
+/// resolution when the engine is rendering a scaled-down proxy of it. 0 means
+/// "the viewport is the output" (the plain case: barrel, tests, an uncapped
+/// engine).
+inline int referenceHeight() { return host_get_reference_h(); }
+
+/// Multiplier that turns an AUTHORED pixel value into render-target pixels.
+///
+/// The same composition renders at different sizes: the arrangement preview
+/// caps its engine to a smaller edge, an export runs at the full composition
+/// resolution. A param in raw output pixels therefore means a different
+/// FRACTION of the frame in each — text authored at 64 px covered 8.9% of a
+/// 720-tall preview and 5.9% of a 1080-tall export, which is the "export
+/// doesn't match the monitor" class of bug.
+///
+/// Effects with pixel-denominated params multiply them by this, so an authored
+/// value is a fixed fraction of the frame however big the target is, and
+/// preview ≡ export by construction. Pass the size of the target you are
+/// rendering into (the `vp_h` handed to render()). With no reference declared
+/// this is exactly 1 — raw output pixels, unchanged.
+inline float pxScale(int vp_h) {
+  const int ref = referenceHeight();
+  if (ref <= 0 || vp_h <= 0) return 1.0f;
+  return static_cast<float>(vp_h) / static_cast<float>(ref);
+}
 
 } // namespace host
 

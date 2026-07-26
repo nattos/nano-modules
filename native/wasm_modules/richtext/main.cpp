@@ -161,10 +161,11 @@ void module_init() {
       .textField   ("css",   GEN_RICHTEXT_DEFAULT_CSS,  state::PrimaryInput).label("CSS", "CSS")
       .group("layout", "Layout")
         .groupHelp(
-          "The document lays out into the output's pixel viewport, so CSS pixels map "
-          "1:1 to output pixels and `100vw` fills the node. *Scale* is a zoom over "
-          "that mapping (2 = twice as large) — handy for hidpi output without "
-          "editing every size in the CSS.")
+          "The document lays out into a **1080p-reference** viewport and is then "
+          "magnified into whatever the output actually is, so `100vw` fills the node, "
+          "CSS pixels map 1:1 at 1080p, and the layout never reflows between the "
+          "preview and a 4K export. *Scale* is a zoom over that mapping (2 = twice "
+          "as large) — handy for retuning everything without editing the CSS.")
       .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput).label("Scale", "Scale")
       .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
@@ -201,9 +202,17 @@ void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
+  // The zoom handed to Blitz folds in the RESOLUTION scale: the CSS viewport is
+  // target/zoom, so `zoom = userScale × vp_h/kReferenceHeight` keeps the CSS box
+  // (and therefore the whole layout — wraps, line breaks, font-size:48px) fixed
+  // at the reference size and just magnifies it into whatever we render into.
+  // Without it the same document reflowed between the preview and a
+  // full-resolution export, which is the "export doesn't match the monitor" bug.
+  const float zoom = s->scale * host::pxScale(vp_h);
+
   // Lay the document out at the render target's pixel size. width/height are the
   // OUTPUT pixels (so 100vw / 100% == the node's full width, and font-size:48px
-  // is 48 output px); `scale` is a zoom (2 = twice as big). The document is
+  // is 48 REFERENCE px); `scale` is a user zoom (2 = twice as big). The document is
   // Full document: <html><head><style>{css}</style></head><body>{html}</body>.
   // The scaffolding matters — Blitz only establishes the initial containing
   // block (and thus a sized body) for a real document; a bare {style}{html}
@@ -224,7 +233,7 @@ void render(void* self, int vp_w, int vp_h) {
     appendEscaped(spec, pos, (int)sizeof(spec), s->html);
     pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</body></html>");
     pos += std::snprintf(spec + pos, sizeof(spec) - pos,
-        "\",\"width\":%d,\"height\":%d,\"scale\":%.3f}", vp_w, vp_h, s->scale);
+        "\",\"width\":%d,\"height\":%d,\"scale\":%.4f}", vp_w, vp_h, zoom);
 
     int id = text::layout(spec, pos);
     if (id > 0) {

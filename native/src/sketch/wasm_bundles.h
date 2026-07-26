@@ -48,8 +48,12 @@ class WasmEffectBundles {
   // beat-sync (control.nanolooper) read barPhase from here; without this call it
   // stays 0 (the loaded modules have no per-frame FrameState otherwise). Call
   // once per frame before SketchExecutor::execute; the render lock serializes it.
+  // `referenceH` is the output height the viewport STANDS IN FOR when the engine
+  // renders a scaled proxy of a larger composition (host::pxScale keeps effects'
+  // pixel-denominated params a fixed fraction of the frame across sizes). 0 =
+  // "the viewport IS the output", the native default.
   void setHostClock(double elapsedTime, double deltaTime, double barPhase,
-                    double bpm, int viewportW, int viewportH);
+                    double bpm, int viewportW, int viewportH, int referenceH = 0);
 
   // Publish the seekable-streams registry (+ its warp clock) to every loaded
   // bundle's streams.* imports. A pointer store — the comp executor mutates the

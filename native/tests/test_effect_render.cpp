@@ -2358,6 +2358,66 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   CHECK(bold.lit > reg.lit + reg.lit / 20);       // faux bold: visibly more ink
   CHECK(ital.slant > reg.slant + 2.0);            // faux oblique: top leans right
 }
+
+// Resolution independence (host::pxScale). The arrangement preview renders a
+// SCALED PROXY of the composition (its engine edge is capped) while an export
+// runs at full size, so text sized in raw output pixels covered a different
+// FRACTION of the frame in each — "the export doesn't match the monitor".
+// Declaring the composition height (FrameState.reference_h, via setHostClock)
+// makes the authored size a fraction of the REFERENCE, so a half-size proxy
+// renders the same picture at half scale. With no reference declared the scale
+// is exactly 1 and raw output pixels are unchanged (every other test relies on
+// that, so it's asserted here too).
+TEST_CASE("source.text.plain is resolution-independent under a declared reference",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  effect_runtime::textInstallDefaultFonts(nullptr);
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(TEXT_WASM_PATH, registry, backend.get(), nullptr) >= 1);
+  EffectInstance* inst = rt.instanceFor("source.text.plain", "k0");
+  REQUIRE(inst != nullptr);
+
+  inst->setParamJson("text", "\"HHHH\"");
+  inst->setParamJson("size", "48");
+  inst->setFieldConnected("tex_in", false, false);
+  inst->setFieldConnected("tex_out", false, true);
+
+  // Fraction of the frame the ink covers at viewport (w,h) with `referenceH`
+  // declared — the resolution-invariant measure of "how big is the text".
+  const auto inkFraction = [&](uint32_t w, uint32_t h, int referenceH) -> double {
+    int tex = backend->createTexture(w, h, /*RGBA8*/ 1);
+    REQUIRE(tex >= 0);
+    inst->setTextureField("tex_in", -1);
+    inst->setTextureField("tex_out", tex);
+    bundles.setHostClock(0.0, 1.0 / 60.0, 0.0, 120.0, (int)w, (int)h, referenceH);
+    backend->clearTexture(tex, 0, 0, 0, 0);
+    backend->submit();
+    inst->doRender((int)w, (int)h);
+    auto px = backend->readbackTexture(tex, w, h);
+    REQUIRE(px.size() == (size_t)w * h * 4);
+    long lit = 0;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) if (px[i + 3] > 128) ++lit;
+    return (double)lit / (double)(w * h);
+  };
+
+  // A 1920x1080 composition previewed at half size: same coverage fraction.
+  const double full = inkFraction(1920, 1080, 1080);
+  const double half = inkFraction(960, 540, 1080);
+  INFO("ink fraction: full " << full << "  half-size proxy " << half);
+  REQUIRE(full > 0.0005);                              // text actually rendered
+  CHECK(std::abs(half - full) < full * 0.15);           // same fraction of the frame
+
+  // No reference declared ⇒ raw output pixels: the SAME 48px text is a much
+  // bigger fraction of a half-size frame (the pre-existing behaviour).
+  const double rawHalf = inkFraction(960, 540, 0);
+  INFO("raw half-size fraction " << rawHalf);
+  CHECK(rawHalf > full * 2.0);
+}
 #endif  // TEXT_WASM_PATH
 
 // triangulate — the topology-following GPU triangulation effect (nano bundle).

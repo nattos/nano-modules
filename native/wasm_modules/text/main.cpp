@@ -96,8 +96,9 @@ void module_init() {
           "primary font; otherwise name any installed OS or bundled family — the "
           "host resolves the matching **Bold** / **Italic** face for you, and "
           "synthesizes the style (faux bold / oblique) when the family has no "
-          "true face for it. *Size* is the cap height in output pixels (MSDF "
-          "keeps it crisp when scaled).")
+          "true face for it. *Size* is the cap height in pixels **at 1080p** — it "
+          "scales with the output, so the preview and a 4K export show the same "
+          "text at the same place (MSDF keeps it crisp at any scale).")
       .textField  ("font",         "",     state::PrimaryInput).label("Font", "Font")
       .boolField  ("bold",         false,  state::PrimaryInput).label("Bold", "Bold")
       .boolField  ("italic",       false,  state::PrimaryInput).label("Italic", "Ital")
@@ -107,7 +108,8 @@ void module_init() {
       .group("layout", "Layout")
         .groupHelp(
           "*Max Width* controls wrapping — 0 keeps everything on one line; any "
-          "positive value (in pixels) wraps the text into a column. *Line Spacing* "
+          "positive value (pixels at 1080p, like *Size*) wraps the text into a "
+          "column, and the wrap points don't move with the output size. *Line Spacing* "
           "is a multiplier on the font's natural leading (1.0 = tight, 1.5 = airy).\n\n"
           "*V Anchor* picks what sits on the anchor line at *V Position* (a "
           "fraction of the output height): **Center** centers the layout box "
@@ -166,6 +168,11 @@ void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized || vp_w <= 0 || vp_h <= 0) return;
 
+  // Size + wrap width are authored in REFERENCE pixels (host::kReferenceHeight),
+  // so the text is the same fraction of the frame whatever we're rendering into —
+  // the arrangement preview and a full-resolution export agree by construction.
+  const float px = host::pxScale(vp_h);
+
   // Build the attributed-string JSON spec.
   char spec[4096];
   int pos = 0;
@@ -191,7 +198,7 @@ void render(void* self, int vp_w, int vp_h) {
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\"size_px\":%.3f,\"rgba\":[%.4f,%.4f,%.4f,%.4f]}],"
       "\"constraints\":{\"max_width_px\":%.3f,\"line_spacing\":%.3f}}",
-      s->size, s->r, s->g, s->b, s->a, s->max_width, s->line_spacing);
+      s->size * px, s->r, s->g, s->b, s->a, s->max_width * px, s->line_spacing);
 
   // Output target: the executor binds our PrimaryOutput as the "tex_out" field
   // (same as every other effect). renderTarget() only works on a path that set
