@@ -32,10 +32,13 @@ cbuffer DustSplatUniforms : register(DUST_UB_REG) {
   float4 misc;       // px_world (per unit t), reflect, roughness, 0
 };
 
-// Footprint radius bounds, pixels. The floor keeps a sub-pixel particle
-// owning its center pixel (sharp or absent — never faded); the cap
-// bounds the per-thread pixel loop.
-static const float DUST_MIN_PX = 0.5;
+// Footprint radius bounds, pixels. The floor guarantees a sub-pixel
+// particle PRESENCE: at half a pixel-diagonal the nearest pixel center is
+// always inside the disc, so a mote never blinks out crossing a pixel
+// corner (at 0.5 the corner dead zone swallowed ~21% of them); near a
+// pixel edge it may win 2 px. Never faded either way — sharp, always
+// there. The cap bounds the per-thread pixel loop.
+static const float DUST_MIN_PX = 0.7072;
 static const float DUST_MAX_PX = 8.0;
 
 // Particle -> screen. ctr is the footprint center in PIXEL coordinates,
