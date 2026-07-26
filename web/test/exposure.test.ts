@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.tone.exposure` against `core`. amount [-1, +1]
 // maps to ±3 stops (gain 1/8 .. 8). Warm/cool tinting moved to the
@@ -7,7 +7,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // Param indices (declaration order):
 //   0 = amount
 
-describe('Exposure Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Exposure Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -29,7 +30,7 @@ describe('Exposure Effect E2E', () => {
       module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.4, 0.4, 0.4, 1.0],
-      params: [[0, 0.0]],
+      params: [['amount', 0.0]],
       dumpName: 'exposure_zero',
     });
 
@@ -43,7 +44,7 @@ describe('Exposure Effect E2E', () => {
       module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.1, 0.1, 0.1, 1.0],
-      params: [[0, 1.0]],
+      params: [['amount', 1.0]],
       dumpName: 'exposure_lift',
     });
 
@@ -57,11 +58,12 @@ describe('Exposure Effect E2E', () => {
       module: 'color.tone.exposure',
       bundle: 'core',
       inputColor: [0.8, 0.8, 0.8, 1.0],
-      params: [[0, -1.0]],
+      params: [['amount', -1.0]],
       dumpName: 'exposure_cut',
     });
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 26, g: 26, b: 26, a: 255 }, 4);
   });
+});
 });

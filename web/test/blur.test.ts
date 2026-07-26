@@ -1,4 +1,4 @@
-import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
+import { runGpuEffectTest, runGpuChainTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `filter.blur.gaussian` against `core`. The blur is a two-pass
 // separable Gaussian with a CPU-driven kernel: tap LOCATIONS depend only
@@ -7,7 +7,8 @@ import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
 //
 // Param indices: 0 = radius, 1 = quality.
 
-describe('Blur Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Blur Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -47,7 +48,7 @@ describe('Blur Effect E2E', () => {
       module: 'filter.blur.gaussian',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.2, 1.0],
-      params: [[0, 0.0], [1, 0.5]],
+      params: [['radius', 0.0], ['quality', 0.5]],
       dumpName: 'blur_zero_radius',
     });
     expect(frame.success).toBe(true);
@@ -56,15 +57,15 @@ describe('Blur Effect E2E', () => {
 
   it('high-radius blur softens a grid (variance drops)', async () => {
     const sharp = await runGpuChainTest({
-      chain: [{ module: 'source.grid', params: [[0, 0.2], [1, 0.2]] }],
+      chain: [{ module: 'source.grid', params: [['cell_size', 0.2], ['line_width', 0.2]] }],
       bundle: 'core',
       width: 64, height: 64,
       dumpName: 'blur_chain_sharp',
     });
     const blurred = await runGpuChainTest({
       chain: [
-        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'filter.blur.gaussian', params: [[0, 1.0], [1, 1.0]] },
+        { module: 'source.grid', params: [['cell_size', 0.2], ['line_width', 0.2]] },
+        { module: 'filter.blur.gaussian', params: [['radius', 1.0], ['quality', 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -89,14 +90,14 @@ describe('Blur Effect E2E', () => {
     // jitter across the frame.
     const grid = (extra: any[]) => runGpuChainTest({
       chain: [
-        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
+        { module: 'source.grid', params: [['cell_size', 0.2], ['line_width', 0.2]] },
         ...extra,
       ],
       bundle: 'core',
       width: 64, height: 64,
     });
-    const a = await grid([{ module: 'filter.blur.gaussian', params: [[0, 0.50], [1, 1.0]] }]);
-    const b = await grid([{ module: 'filter.blur.gaussian', params: [[0, 0.51], [1, 1.0]] }]);
+    const a = await grid([{ module: 'filter.blur.gaussian', params: [['radius', 0.50], ['quality', 1.0]] }]);
+    const b = await grid([{ module: 'filter.blur.gaussian', params: [['radius', 0.51], ['quality', 1.0]] }]);
     expect(a.success && b.success).toBe(true);
 
     const ap = a.region(0, 0, a.width, a.height);
@@ -115,4 +116,5 @@ describe('Blur Effect E2E', () => {
     expect(meanAbsDiff).toBeLessThan(4);
     expect(maxDiff).toBeLessThan(20);
   });
+});
 });

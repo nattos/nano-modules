@@ -1,9 +1,10 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.hsl` against `core`.
 // Param indices: 0=hue_shift, 1=saturation, 2=lightness.
 
-describe('HSL Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`HSL Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -38,7 +39,7 @@ describe('HSL Effect E2E', () => {
       module: 'color.hsl',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
-      params: [[1, -1.0]],
+      params: [['saturation', -1.0]],
       dumpName: 'hsl_desat',
     });
 
@@ -52,7 +53,7 @@ describe('HSL Effect E2E', () => {
       module: 'color.hsl',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
-      params: [[0, 1.0]],
+      params: [['hue_shift', 1.0]],
       dumpName: 'hsl_hue_180',
     });
 
@@ -65,7 +66,7 @@ describe('HSL Effect E2E', () => {
       module: 'color.hsl',
       bundle: 'core',
       inputColor: [0.5, 0.0, 0.0, 1.0],
-      params: [[2, 1.0]],
+      params: [['lightness', 1.0]],
       dumpName: 'hsl_light_max',
     });
 
@@ -78,11 +79,12 @@ describe('HSL Effect E2E', () => {
       module: 'color.hsl',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[2, -1.0]],
+      params: [['lightness', -1.0]],
       dumpName: 'hsl_light_min',
     });
 
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ r: 0, g: 0, b: 0 }, 4);
   });
+});
 });

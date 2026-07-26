@@ -1,11 +1,12 @@
-import { runGpuChainTest, runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuChainTest, runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `filter.blur.fast` (the dual-filter / 13-tap +
 // 9-tap blur). Compared to the precise Gaussian in `filter.blur.gaussian`, this
 // trades exactness for speed — the assertions verify the blur
 // behaviour rather than pixel-stable shape.
 
-describe('Fast Blur Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Fast Blur Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and a single iterations input', async () => {
@@ -43,14 +44,14 @@ describe('Fast Blur Effect E2E', () => {
     // significantly fewer "bright line" pixels and significantly more
     // "midtone" pixels than the unblurred grid.
     const before = await runGpuChainTest({
-      chain: [{ module: 'source.grid', params: [[0, 0.1], [1, 0.3]] }],
+      chain: [{ module: 'source.grid', params: [['cell_size', 0.1], ['line_width', 0.3]] }],
       bundle: 'core',
       width: 128, height: 128,
       dumpName: 'fast_blur_grid_before',
     });
     const after = await runGpuChainTest({
       chain: [
-        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'source.grid',      params: [['cell_size', 0.1], ['line_width', 0.3]] },
         { module: 'filter.blur.fast', params: [['iterations', 4]] },
       ],
       bundle: 'core',
@@ -78,7 +79,7 @@ describe('Fast Blur Effect E2E', () => {
     };
     const fewer = await runGpuChainTest({
       chain: [
-        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'source.grid',      params: [['cell_size', 0.1], ['line_width', 0.3]] },
         { module: 'filter.blur.fast', params: [['iterations', 1]] },
       ],
       bundle: 'core',
@@ -87,7 +88,7 @@ describe('Fast Blur Effect E2E', () => {
     });
     const more = await runGpuChainTest({
       chain: [
-        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'source.grid',      params: [['cell_size', 0.1], ['line_width', 0.3]] },
         { module: 'filter.blur.fast', params: [['iterations', 5]] },
       ],
       bundle: 'core',
@@ -103,14 +104,14 @@ describe('Fast Blur Effect E2E', () => {
     // bright pixel should bleed into its neighbours via the bilinear
     // 13-tap downsample.
     const before = await runGpuChainTest({
-      chain: [{ module: 'source.grid', params: [[0, 0.1], [1, 0.3]] }],
+      chain: [{ module: 'source.grid', params: [['cell_size', 0.1], ['line_width', 0.3]] }],
       bundle: 'core',
       width: 128, height: 128,
       dumpName: 'fast_blur_iter1_before',
     });
     const after = await runGpuChainTest({
       chain: [
-        { module: 'source.grid',      params: [[0, 0.1], [1, 0.3]] },
+        { module: 'source.grid',      params: [['cell_size', 0.1], ['line_width', 0.3]] },
         { module: 'filter.blur.fast', params: [['iterations', 1]] },
       ],
       bundle: 'core',
@@ -120,4 +121,5 @@ describe('Fast Blur Effect E2E', () => {
     expect(before.success && after.success).toBe(true);
     after.expectDifferentFrom(before, 200);
   });
+});
 });

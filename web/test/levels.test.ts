@@ -1,9 +1,10 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.tone.levels` against `core`.
 // Param indices: 0=in_low, 1=in_high, 2=gamma, 3=out_low, 4=out_high.
 
-describe('Levels Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Levels Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -38,7 +39,7 @@ describe('Levels Effect E2E', () => {
       module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.3, 0.3, 0.3, 1.0],
-      params: [[0, 0.5]],
+      params: [['in_low', 0.5]],
       dumpName: 'levels_clip_low',
     });
 
@@ -51,7 +52,7 @@ describe('Levels Effect E2E', () => {
       module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.6, 0.6, 0.6, 1.0],
-      params: [[1, 0.5]],
+      params: [['in_high', 0.5]],
       dumpName: 'levels_clip_high',
     });
 
@@ -65,7 +66,7 @@ describe('Levels Effect E2E', () => {
       module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[2, 1.0]],
+      params: [['gamma', 1.0]],
       dumpName: 'levels_gamma_lift',
     });
 
@@ -78,7 +79,7 @@ describe('Levels Effect E2E', () => {
       module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[2, -1.0]],
+      params: [['gamma', -1.0]],
       dumpName: 'levels_gamma_crush',
     });
 
@@ -94,11 +95,12 @@ describe('Levels Effect E2E', () => {
       module: 'color.tone.levels',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[3, 0.25], [4, 0.75]],
+      params: [['out_low', 0.25], ['out_high', 0.75]],
       dumpName: 'levels_output_compress',
     });
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 191, g: 191, b: 191 }, 4);
   });
+});
 });

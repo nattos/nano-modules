@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `filter.vignette` against `core`. Tests use a 64x64
 // input so the centre pixel is well inside the inner radius and the
@@ -8,7 +8,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // (vec2), shape + squash (secondary). center is a vec2 so tests refer to it by
 // name.
 
-describe('Vignette Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Vignette Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -32,7 +33,7 @@ describe('Vignette Effect E2E', () => {
       module: 'filter.vignette',
       bundle: 'core',
       inputColor: [0.6, 0.6, 0.6, 1.0],
-      params: [[0, 0.0]],
+      params: [['amount', 0.0]],
       samplePoints: [[32, 32], [0, 0], [63, 63]],
       dumpName: 'vignette_off',
     });
@@ -50,7 +51,7 @@ describe('Vignette Effect E2E', () => {
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, -1.0], [1, 0.6], [2, 0.4]],
+      params: [['amount', -1.0], ['radius', 0.6], ['softness', 0.4]],
       samplePoints: [[32, 32], [0, 0], [63, 63]],
       dumpName: 'vignette_dark_corners',
     });
@@ -73,7 +74,7 @@ describe('Vignette Effect E2E', () => {
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [0.4, 0.4, 0.4, 1.0],
-      params: [[0, 1.0], [1, 0.6], [2, 0.4]],
+      params: [['amount', 1.0], ['radius', 0.6], ['softness', 0.4]],
       samplePoints: [[32, 32], [0, 0]],
       dumpName: 'vignette_bright_corners',
     });
@@ -129,7 +130,7 @@ describe('Vignette Effect E2E', () => {
       bundle: 'core',
       width: 64, height: 64,
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, -1.0], [1, 0.6], [2, 0.4], ['center', [-1.0, 0.0]]],
+      params: [['amount', -1.0], ['radius', 0.6], ['softness', 0.4], ['center', [-1.0, 0.0]]],
       samplePoints: [[0, 32], [63, 32]],
       dumpName: 'vignette_offset',
     });
@@ -139,4 +140,5 @@ describe('Vignette Effect E2E', () => {
     const right = frame.samples.find(s => s.x === 63 && s.y === 32);
     expect(left!.r).toBeGreaterThan(right!.r);
   });
+});
 });

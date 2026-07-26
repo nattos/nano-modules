@@ -1,8 +1,9 @@
-import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
+import { runGpuEffectTest, runGpuChainTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `filter.sharpen` against `core`.
 
-describe('Sharpen Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Sharpen Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -24,7 +25,7 @@ describe('Sharpen Effect E2E', () => {
       module: 'filter.sharpen',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.2, 1.0],
-      params: [[0, 1.0]],
+      params: [['amount', 1.0]],
       dumpName: 'sharpen_uniform',
     });
     expect(frame.success).toBe(true);
@@ -34,8 +35,8 @@ describe('Sharpen Effect E2E', () => {
   it('sharpening a blurred grid restores edge contrast', async () => {
     const blurred = await runGpuChainTest({
       chain: [
-        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'filter.blur.gaussian', params: [[0, 1.0]] },
+        { module: 'source.grid', params: [['cell_size', 0.2], ['line_width', 0.2]] },
+        { module: 'filter.blur.gaussian', params: [['radius', 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -43,9 +44,9 @@ describe('Sharpen Effect E2E', () => {
     });
     const sharpened = await runGpuChainTest({
       chain: [
-        { module: 'source.grid', params: [[0, 0.2], [1, 0.2]] },
-        { module: 'filter.blur.gaussian', params: [[0, 1.0]] },
-        { module: 'filter.sharpen', params: [[0, 1.0]] },
+        { module: 'source.grid', params: [['cell_size', 0.2], ['line_width', 0.2]] },
+        { module: 'filter.blur.gaussian', params: [['radius', 1.0]] },
+        { module: 'filter.sharpen', params: [['amount', 1.0]] },
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -62,4 +63,5 @@ describe('Sharpen Effect E2E', () => {
     };
     expect(std(sharpened)).toBeGreaterThan(std(blurred));
   });
+});
 });

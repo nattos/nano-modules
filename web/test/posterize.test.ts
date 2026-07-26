@@ -1,10 +1,11 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.posterize` against `core`.
 // amount [0, 1] maps exponentially to a number of levels: 0→256, 1→2.
 // Param indices: 0 = amount, 1 = quantize_alpha.
 
-describe('Posterize Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Posterize Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -27,7 +28,7 @@ describe('Posterize Effect E2E', () => {
       module: 'color.posterize',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
-      params: [[0, 0.0]],
+      params: [['amount', 0.0]],
       dumpName: 'posterize_off',
     });
 
@@ -41,7 +42,7 @@ describe('Posterize Effect E2E', () => {
       module: 'color.posterize',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 1.0]],
+      params: [['amount', 1.0]],
       dumpName: 'posterize_max',
     });
 
@@ -55,7 +56,7 @@ describe('Posterize Effect E2E', () => {
       module: 'color.posterize',
       bundle: 'core',
       inputColor: [0.4, 0.4, 0.4, 1.0],
-      params: [[0, 1.0]],
+      params: [['amount', 1.0]],
       dumpName: 'posterize_max_low',
     });
 
@@ -68,7 +69,7 @@ describe('Posterize Effect E2E', () => {
       module: 'color.posterize',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.5],
-      params: [[0, 1.0], [1, 0.0]],
+      params: [['amount', 1.0], ['quantize_alpha', 0.0]],
       dumpName: 'posterize_alpha_continuous',
     });
 
@@ -82,11 +83,12 @@ describe('Posterize Effect E2E', () => {
       module: 'color.posterize',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.5],
-      params: [[0, 1.0], [1, 1.0]],
+      params: [['amount', 1.0], ['quantize_alpha', 1.0]],
       dumpName: 'posterize_alpha_quantized',
     });
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { a: 255 }, 4);
   });
+});
 });

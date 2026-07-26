@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.temperature` against `core`.
 // temperature [-1, +1] shifts the per-channel gain on the orange/blue axis:
@@ -9,7 +9,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // Param indices (declaration order):
 //   0 = temperature
 
-describe('Color Temperature Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Color Temperature Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -31,7 +32,7 @@ describe('Color Temperature Effect E2E', () => {
       module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 0.0]],
+      params: [['temperature', 0.0]],
       dumpName: 'color_temperature_zero',
     });
 
@@ -45,7 +46,7 @@ describe('Color Temperature Effect E2E', () => {
       module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 1.0]],
+      params: [['temperature', 1.0]],
       dumpName: 'color_temperature_warm',
     });
 
@@ -59,11 +60,12 @@ describe('Color Temperature Effect E2E', () => {
       module: 'color.temperature',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, -1.0]],
+      params: [['temperature', -1.0]],
       dumpName: 'color_temperature_cool',
     });
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 64, g: 128, b: 192 }, 6);
   });
+});
 });

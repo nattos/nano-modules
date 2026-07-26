@@ -1,6 +1,7 @@
-import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
+import { runGpuEffectTest, runGpuChainTest, forEachBackend } from './gpu-test-helpers';
 
-describe('Transform Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Transform Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -31,7 +32,7 @@ describe('Transform Effect E2E', () => {
     // column smeared across).
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'source.grid', params: [[0, 0.3], [1, 0.2]] },
+        { module: 'source.grid', params: [['cell_size', 0.3], ['line_width', 0.2]] },
         { module: 'warp.transform', params: [['translate', [1.0, 0.0]]] },
       ],
       bundle: 'core',
@@ -46,7 +47,7 @@ describe('Transform Effect E2E', () => {
     // should now hold the colour that was previously near the right edge.
     const before = await runGpuChainTest({
       chain: [
-        { module: 'source.gradient', params: [[0, 0.0], [1, 0.0], [2, 1.0]] },  // angle=0 (left→right), full ramp
+        { module: 'source.gradient', params: [['angle', 0.0], ['offset', 0.0], ['softness', 1.0]] },  // angle=0 (left→right), full ramp
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -54,8 +55,8 @@ describe('Transform Effect E2E', () => {
     });
     const after = await runGpuChainTest({
       chain: [
-        { module: 'source.gradient', params: [[0, 0.0], [1, 0.0], [2, 1.0]] },
-        { module: 'warp.transform', params: [[1, 1.0]] },  // rotation=+1 → +180°
+        { module: 'source.gradient', params: [['angle', 0.0], ['offset', 0.0], ['softness', 1.0]] },
+        { module: 'warp.transform', params: [['rotation', 1.0]] },  // rotation=+1 → +180°
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -69,4 +70,5 @@ describe('Transform Effect E2E', () => {
     const lum = (p: { r: number; g: number; b: number }) => 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
     expect(Math.abs(lum(left_after) - lum(right_before))).toBeLessThan(40);
   });
+});
 });

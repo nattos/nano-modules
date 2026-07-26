@@ -1,6 +1,7 @@
-import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
+import { runGpuEffectTest, runGpuChainTest, forEachBackend } from './gpu-test-helpers';
 
-describe('Edges Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Edges Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -29,8 +30,8 @@ describe('Edges Effect E2E', () => {
   it('grid produces visible edges', async () => {
     const frame = await runGpuChainTest({
       chain: [
-        { module: 'source.grid', params: [[0, 0.3], [1, 0.2]] },
-        { module: 'filter.edges', params: [[0, 0.05]] },  // threshold=0.05
+        { module: 'source.grid', params: [['cell_size', 0.3], ['line_width', 0.2]] },
+        { module: 'filter.edges', params: [['threshold', 0.05]] },  // threshold=0.05
       ],
       bundle: 'core',
       width: 64, height: 64,
@@ -43,4 +44,5 @@ describe('Edges Effect E2E', () => {
     expect(white).toBeGreaterThan(0);
     expect(black).toBeGreaterThan(0);
   });
+});
 });

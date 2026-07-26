@@ -1,11 +1,12 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `filter.glitch.twitch_mask` against `core`. A roaming vignette
 // glitch: each frame picks a random anchor + strength and suppresses an oval.
 // Param indices (declaration order):
 //   0 = amount, 1 = shape, 2 = radius, 3 = softness, 4 = position
 
-describe('Twitch Mask Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Twitch Mask Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -26,7 +27,7 @@ describe('Twitch Mask Effect E2E', () => {
       module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
-      params: [[0, 0.0]],
+      params: [['amount', 0.0]],
       ticks: 3,
       dumpName: 'twitch_mask_off',
     });
@@ -41,7 +42,7 @@ describe('Twitch Mask Effect E2E', () => {
       module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, 1.0], [1, -1.0], [4, 1.0]],
+      params: [['amount', 1.0], ['shape', -1.0], ['position', 1.0]],
       ticks: 2,
       dumpName: 'twitch_mask_active',
     });
@@ -57,7 +58,7 @@ describe('Twitch Mask Effect E2E', () => {
       module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, 1.0], [1, 0.0]],   // amount=1, shape=0
+      params: [['amount', 1.0], ['shape', 0.0]],   // amount=1, shape=0
       ticks: 2,
       dumpName: 'twitch_mask_solid',
     });
@@ -74,7 +75,7 @@ describe('Twitch Mask Effect E2E', () => {
       module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, 1.0], [1, 0.5], [2, 0.5], [4, -1.0]],  // amount, shape, radius, position
+      params: [['amount', 1.0], ['shape', 0.5], ['radius', 0.5], ['position', -1.0]],  // amount, shape, radius, position
       ticks: 2,
       dumpName: 'twitch_mask_linear',
     });
@@ -90,7 +91,7 @@ describe('Twitch Mask Effect E2E', () => {
       module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, 1.0], [1, -1.0], [4, 1.0]],
+      params: [['amount', 1.0], ['shape', -1.0], ['position', 1.0]],
       ticks: 1,
       dumpName: 'twitch_mask_frame_a',
     });
@@ -98,7 +99,7 @@ describe('Twitch Mask Effect E2E', () => {
       module: 'filter.glitch.twitch_mask',
       bundle: 'core',
       inputColor: [1.0, 1.0, 1.0, 1.0],
-      params: [[0, 1.0], [1, -1.0], [4, 1.0]],
+      params: [['amount', 1.0], ['shape', -1.0], ['position', 1.0]],
       ticks: 6,
       dumpName: 'twitch_mask_frame_b',
     });
@@ -106,4 +107,5 @@ describe('Twitch Mask Effect E2E', () => {
     // Fresh instances share the seed, so different tick counts → different anchor.
     b.expectDifferentFrom(a, 20);
   });
+});
 });

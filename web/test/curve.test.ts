@@ -1,11 +1,12 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.tone.curve` against `core`. The slider is signed
 // [-1, +1] mapping to power exponents 8 → 1 → 1/8.
 //
 // Param indices (schema declaration order): 0 = rgb, 1 = alpha.
 
-describe('Curve Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Curve Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -27,7 +28,7 @@ describe('Curve Effect E2E', () => {
       module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.25, 0.75, 0.6],
-      params: [[0, 0.0], [1, 0.0]],
+      params: [['rgb', 0.0], ['alpha', 0.0]],
       dumpName: 'curve_identity',
     });
 
@@ -41,7 +42,7 @@ describe('Curve Effect E2E', () => {
       module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, 1.0]],
+      params: [['rgb', 1.0]],
       dumpName: 'curve_lift',
     });
 
@@ -55,7 +56,7 @@ describe('Curve Effect E2E', () => {
       module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 1.0],
-      params: [[0, -1.0]],
+      params: [['rgb', -1.0]],
       dumpName: 'curve_crush',
     });
 
@@ -69,11 +70,12 @@ describe('Curve Effect E2E', () => {
       module: 'color.tone.curve',
       bundle: 'core',
       inputColor: [0.0, 0.0, 0.0, 0.5],
-      params: [[0, 0.0], [1, 1.0]],
+      params: [['rgb', 0.0], ['alpha', 1.0]],
       dumpName: 'curve_alpha_lift',
     });
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { a: 234 }, 5);
   });
+});
 });

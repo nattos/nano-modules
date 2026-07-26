@@ -1,11 +1,12 @@
-import { runGpuEffectTest, runGpuChainTest, runGpuTest } from './gpu-test-helpers';
+import { runGpuEffectTest, runGpuChainTest, runGpuTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for brightness_contrast — load the actual `core` bundle so
 // changes to the shipping implementation are caught here. Chains with
 // spinningtris use `testonly` (where spinningtris lives) since chain tests
 // can mix bundles only by step.
 
-describe('Brightness & Contrast Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Brightness & Contrast Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   describe('standalone (solid color input)', () => {
@@ -30,7 +31,7 @@ describe('Brightness & Contrast Effect E2E', () => {
         module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.25, 0.75, 1.0],
-        params: [[0, 0.0], [1, 0.0]],
+        params: [['brightness', 0.0], ['contrast', 0.0]],
         dumpName: 'bc_neutral',
       });
 
@@ -45,7 +46,7 @@ describe('Brightness & Contrast Effect E2E', () => {
         module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
-        params: [[0, 0.0], [1, -1.0]],
+        params: [['brightness', 0.0], ['contrast', -1.0]],
         dumpName: 'bc_contrast_zero',
       });
 
@@ -60,7 +61,7 @@ describe('Brightness & Contrast Effect E2E', () => {
         module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.25, 0.25, 0.25, 1.0],
-        params: [[0, 0.0], [1, 1.0]],
+        params: [['brightness', 0.0], ['contrast', 1.0]],
         dumpName: 'bc_contrast_double',
       });
 
@@ -75,7 +76,7 @@ describe('Brightness & Contrast Effect E2E', () => {
         module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.0, 0.0, 0.0, 1.0],
-        params: [[0, 1.0], [1, 0.0]],
+        params: [['brightness', 1.0], ['contrast', 0.0]],
         dumpName: 'bc_brightness_max',
       });
 
@@ -90,7 +91,7 @@ describe('Brightness & Contrast Effect E2E', () => {
         module: 'color.tone.brightness_contrast',
         bundle: 'core',
         inputColor: [0.5, 0.5, 0.5, 1.0],
-        params: [[0, -1.0], [1, 0.0]],
+        params: [['brightness', -1.0], ['contrast', 0.0]],
         dumpName: 'bc_brightness_min',
       });
 
@@ -108,7 +109,9 @@ describe('Brightness & Contrast Effect E2E', () => {
       const before = await runGpuTest({
         module: 'debug.spinningtris',
         width: 64, height: 64,
-        params: [[0, 0.5]], // ~500 triangles
+        // No params: debug.spinningtris declares no schema fields at all, so
+        // the `[[0, 0.5]] // ~500 triangles` this used to pass was writing to a
+        // param that has never existed. Dead on both backends.
         ticks: 5,
         dumpName: 'chain_before',
       });
@@ -117,8 +120,8 @@ describe('Brightness & Contrast Effect E2E', () => {
       // Render spinningtris → brightness_contrast with half contrast
       const after = await runGpuChainTest({
         chain: [
-          { module: 'debug.spinningtris', params: [[0, 0.5]], ticks: 5 },
-          { module: 'color.tone.brightness_contrast', params: [[0, 0.0], [1, -0.5]] },
+          { module: 'debug.spinningtris', ticks: 5 },  // no schema fields — see above
+          { module: 'color.tone.brightness_contrast', params: [['brightness', 0.0], ['contrast', -0.5]] },
         ],
         width: 64, height: 64,
         dumpName: 'chain_half_contrast',
@@ -140,8 +143,8 @@ describe('Brightness & Contrast Effect E2E', () => {
     it('contrast=-1 in chain produces black', async () => {
       const frame = await runGpuChainTest({
         chain: [
-          { module: 'debug.spinningtris', params: [[0, 0.5]], ticks: 5 },
-          { module: 'color.tone.brightness_contrast', params: [[0, 0.0], [1, -1.0]] },
+          { module: 'debug.spinningtris', ticks: 5 },  // no schema fields — see above
+          { module: 'color.tone.brightness_contrast', params: [['brightness', 0.0], ['contrast', -1.0]] },
         ],
         width: 64, height: 64,
         dumpName: 'chain_black',
@@ -151,4 +154,5 @@ describe('Brightness & Contrast Effect E2E', () => {
       frame.expectUniformColor({ r: 0, g: 0, b: 0, a: 255 }, 5);
     });
   });
+});
 });

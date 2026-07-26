@@ -195,6 +195,12 @@ int main(int argc, char** argv) {
         + bundles.loadBundleFile(NANO_WASM_DIR "/text.wasm",     registry, gpu.get(), nullptr)
         + bundles.loadBundleFile(NANO_WASM_DIR "/richtext.wasm", registry, gpu.get(), nullptr)
         + bundles.loadBundleFile(NANO_WASM_DIR "/legacy.wasm",   registry, gpu.get(), nullptr)
+        // testonly holds the debug.* fixtures the fusion suites and a few chain
+        // tests build on (fuse_add/fuse_mul/fuse_solid, spinningtris). It is the
+        // helpers' DEFAULT bundle, so leaving it out meant any suite that didn't
+        // name a bundle failed natively with "unknown effect id" — the one thing
+        // that looks like a missing effect rather than a missing bundle.
+        + bundles.loadBundleFile(NANO_WASM_DIR "/testonly.wasm", registry, gpu.get(), nullptr)
         : 0;
     if (loaded < 1) {
       std::fprintf(stderr, "failed to load effect bundles from %s\n", NANO_WASM_DIR);
@@ -392,11 +398,19 @@ int main(int argc, char** argv) {
         nlohmann::json params = nlohmann::json::array();
         auto* proto = rt.find(effectId);
         if (!proto) return params;
-        auto schema = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
+        // ORDERED parse, deliberately. Plain `nlohmann::json` is backed by
+        // std::map, so iterating its fields yields them ALPHABETICALLY — while
+        // the web host walks `Object.entries(schema)` in DECLARATION order.
+        // That silently renumbered every param whose schema isn't declared
+        // alphabetically (auto_level: web 0,1,2 = equalize/median_target/
+        // median_pull, native = equalize/median_pull/median_target), so
+        // `params[i].index` and `params[i].name` disagreed across backends.
+        // Only assertions that sort or use `toContain` survived it.
+        auto schema = nlohmann::ordered_json::parse(proto->schemaJson(), nullptr, false);
         if (schema.is_discarded() || !schema.is_object()) return params;
         // The schema payload wraps its fields (moduleVersion/capabilities sit
         // beside them); accept either shape.
-        const nlohmann::json& fields =
+        const nlohmann::ordered_json& fields =
             schema.contains("fields") && schema["fields"].is_object() ? schema["fields"] : schema;
         int paramIdx = 0;
         for (auto it = fields.begin(); it != fields.end(); ++it) {

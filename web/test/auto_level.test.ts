@@ -1,4 +1,4 @@
-import { runGpuEffectTest, runGpuChainTest } from './gpu-test-helpers';
+import { runGpuEffectTest, runGpuChainTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.tone.auto_level` against `core`.
 // Param indices (declaration order): 0 = equalize, 1 = median_target, 2 = median_pull.
@@ -9,8 +9,8 @@ const W = 64, H = 64;
 function noiseAutoLevel(equalize: number, target: number, pull: number) {
   return runGpuChainTest({
     chain: [
-      { module: 'source.noise', params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.2]] }, // value noise, fixed seed
-      { module: 'color.tone.auto_level', params: [[0, equalize], [1, target], [2, pull]] },
+      { module: 'source.noise', params: [['algorithm', 1], ['scale', 0.5], ['contrast', 0.0], ['seed', 0.2]] }, // value noise, fixed seed
+      { module: 'color.tone.auto_level', params: [['equalize', equalize], ['median_target', target], ['median_pull', pull]] },
     ],
     bundle: 'core',
     width: W, height: H,
@@ -31,7 +31,8 @@ function lumMean(frame: any) {
   return L.reduce((a: number, b: number) => a + b, 0) / L.length;
 }
 
-describe('Auto Level Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Auto Level Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -54,7 +55,7 @@ describe('Auto Level Effect E2E', () => {
       module: 'color.tone.auto_level',
       bundle: 'core',
       inputColor: [0.3, 0.5, 0.7, 1.0],
-      params: [[0, 1.0]],
+      params: [['equalize', 1.0]],
       dumpName: 'auto_level_flat',
     });
     expect(frame.success).toBe(true);
@@ -63,7 +64,7 @@ describe('Auto Level Effect E2E', () => {
 
   it('neutral params (equalize=0, median_pull=0) reproduce the input', async () => {
     const raw = await runGpuChainTest({
-      chain: [{ module: 'source.noise', params: [[0, 1], [1, 0.5], [2, 0.0], [3, 0.2]] }],
+      chain: [{ module: 'source.noise', params: [['algorithm', 1], ['scale', 0.5], ['contrast', 0.0], ['seed', 0.2]] }],
       bundle: 'core', width: W, height: H, dumpName: 'auto_level_raw',
     });
     const neutral = await noiseAutoLevel(0.0, 0.5, 0.0);
@@ -84,4 +85,5 @@ describe('Auto Level Effect E2E', () => {
     expect(dark.success && bright.success).toBe(true);
     expect(lumMean(bright)).toBeGreaterThan(lumMean(dark) + 20);
   });
+});
 });

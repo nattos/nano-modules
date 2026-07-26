@@ -1,9 +1,10 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.vibrance` against `core`.
 // amount [-1, +1] biased toward unsaturated pixels.
 
-describe('Vibrance Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Vibrance Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -25,7 +26,7 @@ describe('Vibrance Effect E2E', () => {
       module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.4, 0.6, 0.8, 1.0],
-      params: [[0, 0.0]],
+      params: [['amount', 0.0]],
       dumpName: 'vibrance_off',
     });
 
@@ -39,7 +40,7 @@ describe('Vibrance Effect E2E', () => {
       module: 'color.vibrance',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
-      params: [[0, -1.0]],
+      params: [['amount', -1.0]],
       dumpName: 'vibrance_desat',
     });
 
@@ -53,7 +54,7 @@ describe('Vibrance Effect E2E', () => {
       module: 'color.vibrance',
       bundle: 'core',
       inputColor: [1.0, 0.0, 0.0, 1.0],
-      params: [[0, 1.0]],
+      params: [['amount', 1.0]],
       dumpName: 'vibrance_no_bias',
     });
 
@@ -68,14 +69,14 @@ describe('Vibrance Effect E2E', () => {
       module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.5, 0.4, 0.4, 1.0],
-      params: [[0, 0.0]],
+      params: [['amount', 0.0]],
       dumpName: 'vibrance_low_sat_before',
     });
     const after = await runGpuEffectTest({
       module: 'color.vibrance',
       bundle: 'core',
       inputColor: [0.5, 0.4, 0.4, 1.0],
-      params: [[0, 1.0]],
+      params: [['amount', 1.0]],
       dumpName: 'vibrance_low_sat_after',
     });
 
@@ -87,4 +88,5 @@ describe('Vibrance Effect E2E', () => {
     expect(a.g).toBeLessThan(b.g);
     expect(a.b).toBeLessThan(b.b);
   });
+});
 });
