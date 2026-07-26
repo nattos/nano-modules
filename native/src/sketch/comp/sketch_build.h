@@ -442,13 +442,22 @@ struct Builder {
     for (const auto& d : clip.sketch.devices) {
       if (cat.has(d.moduleType)) catDevs.push_back(&d);
     }
+    // The FIRST generator anchors the layer (it heads the chain, so the clip has
+    // something to draw); `rest` is every OTHER catalog device in declaration
+    // order — including any FURTHER generators, which used to be dropped on the
+    // floor. A second source therefore renders as a normal chain entry: one that
+    // reads tex_in composites over what came before (two source.text.plain
+    // overlay), one that ignores it simply wins. `fx` (the non-generators) is
+    // still what the effect-only/adjustment-layer path below wants.
     const DeviceM* gen = nullptr;
     for (const DeviceM* d : catDevs) {
       if (cat.isGenerator(d->moduleType)) { gen = d; break; }
     }
     std::vector<const DeviceM*> fx;
+    std::vector<const DeviceM*> rest;
     for (const DeviceM* d : catDevs) {
       if (!cat.isGenerator(d->moduleType)) fx.push_back(d);
+      if (d != gen) rest.push_back(d);
     }
     const double* startSec = node.hasStartSec ? &node.startSec : nullptr;
 
@@ -464,7 +473,7 @@ struct Builder {
       std::string lastKey;
       if (gen) {
         std::vector<const DeviceM*> segment{gen};
-        segment.insert(segment.end(), fx.begin(), fx.end());
+        segment.insert(segment.end(), rest.begin(), rest.end());
         for (const DeviceM* d : segment) {
           const std::string key = clipInstanceKey(clip.id, d->id);
           push(d->moduleType, key, defaultsPlus(*d), startSec);
@@ -498,9 +507,11 @@ struct Builder {
         }
         std::string fLast;
         if (fgen) {
+          // Same rule as the incoming clip: everything after the anchoring
+          // generator stays in the chain, extra generators included.
           std::vector<const DeviceM*> seg{fgen};
           for (const DeviceM* d : fdevs) {
-            if (!cat.isGenerator(d->moduleType)) seg.push_back(d);
+            if (d != fgen) seg.push_back(d);
           }
           for (const DeviceM* d : seg) {
             const std::string key = clipInstanceKey(fc.id, d->id);

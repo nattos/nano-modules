@@ -22,6 +22,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -306,4 +307,92 @@ TEST_CASE("[.gen] regenerate build-sequence.json", "[.gen]") {
   REQUIRE(out.good());
   out << json{{"cases", std::move(cases)}}.dump(1) << "\n";
   WARN("regenerated " << path << " — READ THE DIFF");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTIPLE SOURCES IN ONE CLIP.
+//
+// The build used to keep only the FIRST generator in a clip's chain and drop
+// every later one, so a second source (two source.text.plain with different
+// copy, say) simply never rendered. The first generator still ANCHORS the layer;
+// the rest follow it in declaration order, so a source that reads tex_in
+// composites over what came before and one that ignores it wins outright.
+namespace {
+
+/** A one-track composition whose single clip carries `devices` in order. */
+json compWithDevices(const std::vector<std::pair<std::string, std::string>>& devices) {
+  json devs = json::array();
+  for (const auto& [id, type] : devices) {
+    devs.push_back({{"id", id}, {"moduleType", type}, {"name", type},
+                    {"capabilities", json::array()}, {"state", json::object()}});
+  }
+  return {
+    {"meta", {{"resolution", {{"width", 64}, {"height", 64}}},
+              {"baseBPM", 120}, {"timeSignature", {4, 4}}}},
+    {"tracks", json::array({
+      {{"id", "t1"}, {"name", "t1"}, {"kind", "track"}, {"parentId", nullptr},
+       {"sketch", {{"devices", json::array()}}}, {"automation", json::array()},
+       {"clips", json::array({
+         {{"id", "c1"}, {"name", "c1"}, {"startBeat", 0}, {"lengthBeat", 8},
+          {"kind", "effect"}, {"sketch", {{"devices", devs}}},
+          {"automation", json::array()}, {"exports", json::array()},
+          {"warps", json::array()}, {"blendMode", 0}}})}},
+    })},
+    {"rails", json::array()},
+  };
+}
+
+/** Ordered `instance_key`s of the built chain. */
+std::vector<std::string> chainKeys(const comp::SketchBuild& b) {
+  std::vector<std::string> out;
+  for (const auto& e : b.sketch["chain"]) out.push_back(e.value("instance_key", std::string()));
+  return out;
+}
+
+comp::SketchBuild buildOne(const json& compJson, const comp::Catalog& cat) {
+  const comp::CompositionM c = comp::parseComposition(compJson);
+  const comp::WarpClock clock(
+      comp::WarpCurve(comp::derivedWarpSegments(c), comp::compositionLengthBeats(c)), c.baseBPM);
+  return comp::buildCompositeRenderAtBeat(c, cat, clock, 0.0, false);
+}
+
+}  // namespace
+
+TEST_CASE("a clip's SECOND generator stays in the chain", "[comp]") {
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  REQUIRE(cat.isGenerator("source.solid_color"));
+  REQUIRE(cat.isGenerator("source.noise"));
+
+  SECTION("two sources render in declaration order, the first anchoring the layer") {
+    const auto b = buildOne(compWithDevices({{"g1", "source.solid_color"},
+                                             {"g2", "source.noise"}}), cat);
+    REQUIRE(b.hasContent);
+    const auto keys = chainKeys(b);
+    // arr_bg is the opaque backdrop under all clips, clip_c1_blend composites the
+    // layer over it; between them the clip's own devices, in order.
+    CHECK(keys == std::vector<std::string>{
+        "arr_bg", "clip_c1_g1", "clip_c1_g2", "clip_c1_blend"});
+  }
+
+  SECTION("effects between two sources keep their order relative to each other") {
+    const auto b = buildOne(compWithDevices({{"g1", "source.solid_color"},
+                                             {"fx", "color.invert"},
+                                             {"g2", "source.noise"}}), cat);
+    REQUIRE(b.hasContent);
+    const auto keys = chainKeys(b);
+    CHECK(keys == std::vector<std::string>{
+        "arr_bg", "clip_c1_g1", "clip_c1_fx", "clip_c1_g2", "clip_c1_blend"});
+  }
+
+  SECTION("a generator that is not first is still hoisted to anchor the layer") {
+    // [fx, gen] must not start the chain on an effect — there would be nothing
+    // to process. The generator leads; the effect follows it (the pre-existing
+    // rule, unchanged).
+    const auto b = buildOne(compWithDevices({{"fx", "color.invert"},
+                                             {"g1", "source.noise"}}), cat);
+    REQUIRE(b.hasContent);
+    const auto keys = chainKeys(b);
+    CHECK(keys == std::vector<std::string>{
+        "arr_bg", "clip_c1_g1", "clip_c1_fx", "clip_c1_blend"});
+  }
 }
