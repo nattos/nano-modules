@@ -48,6 +48,25 @@ export interface CompScenario {
   precise?: boolean;
   ignoreSolo?: boolean;
   ops: CompOp[];
+  /** Offline export mode — renders a planned frame grid instead of `ops`. */
+  export?: { fps?: number; startBeat?: number; endBeat?: number };
+}
+
+/** One rendered export frame, summarised (the raw pixels stay on the GPU). */
+export interface ExportFrameStat {
+  index: number;
+  beat: number;
+  meanLuma: number;
+  hasContent: boolean;
+}
+
+export interface ExportResult {
+  fps: number;
+  frames: number;
+  /** Frames the composite actually had content for. */
+  engineFrames: number;
+  durationSec: number;
+  frameStats: ExportFrameStat[];
 }
 
 export interface CompCapture {
@@ -81,6 +100,7 @@ export interface CompRunResult {
      *  wasn't decoded yet — the stall metric. */
     stalledFrames: number;
   };
+  export?: ExportResult;
 }
 
 // ── Helpers shared in spirit with the native runner ────────────────────────
@@ -283,6 +303,67 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
      * after a seek renders BEFORE anything has been decoded — video scenarios
      * need at least two.
      */
+    // ── Offline export ─────────────────────────────────────────────────────
+    // Every frame is a seek to a PLANNED beat, fully resolved before it renders.
+    // Because the target beat is known in advance this path injects the decoded
+    // frame BEFORE the seek, rather than carrying the realtime lag below — the
+    // same thing export-renderer.ts does, and the native runner's export block.
+    //
+    // Scope, matching the native twin: frame-accurate RENDERING only. No muxing;
+    // that would test an encoder, not the compositor.
+    if (scenario.export) {
+      const fps = Math.max(1, scenario.export.fps ?? 30);
+      const startBeat = Math.max(0, scenario.export.startBeat ?? 0);
+      const endBeat = scenario.export.endBeat ?? 8;
+      const secondsAt = (b: number) => b * (60 / Math.max(1, bpm));
+      const beatAt = (s: number) => s / (60 / Math.max(1, bpm));
+      const startSec = secondsAt(startBeat);
+      const durSec = Math.max(0, secondsAt(Math.max(startBeat, endBeat)) - startSec);
+      const total = Math.max(1, Math.round(durSec * fps));
+
+      // Prime the desc set before the loop: it only rides a frame report, and
+      // every export frame pumps BEFORE its step — so without this warm-up
+      // frame 0 would render before anything had been decoded.
+      e.compControl({ op: 'seek', beat: startBeat });
+      await engineStep(0);
+
+      const frameStats: ExportFrameStat[] = [];
+      let engineFrames = 0;
+      for (let i = 0; i < total; i++) {
+        const tSec = startSec + i / fps;
+        const beat = beatAt(tSec);
+        await pump.setActiveClips(liveVideoDescs);
+        await pump.pump(beat, bpm);
+        e.compControl({ op: 'seek', beat });
+        await engineStep(0);
+        const raw = await e.readbackTrace(COMPOSITE_ID);
+        const px = raw?.pixels ?? new Uint8Array(0);
+        let lumaSum = 0;
+        for (let o = 0; o + 3 < px.length; o += 4) {
+          lumaSum += 0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2];
+        }
+        const hasContent = !!last.info?.hasContent;
+        if (hasContent) engineFrames++;
+        frameStats.push({
+          index: i,
+          beat,
+          meanLuma: px.length ? lumaSum / (px.length / 4) : 0,
+          hasContent,
+        });
+      }
+
+      e.onFrameSet = null;
+      e.onCompInfo = null;
+      const exported: ExportResult = {
+        fps, frames: total, engineFrames, durationSec: total / fps, frameStats,
+      };
+      const exportVideo = {
+        clips: pump.telemetry(), skipped: pump.skipped, frames, stalledFrames,
+      };
+      await pump.dispose();
+      return { success: true, width, height, captures, video: exportVideo, export: exported };
+    }
+
     const step = async (dtSec: number): Promise<void> => {
       // From the page-scope mirror, not `last.info`: the desc set only rides a
       // frame when it CHANGED, and this pump is younger than the engine.

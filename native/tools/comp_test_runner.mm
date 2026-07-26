@@ -58,6 +58,7 @@
 #include "runtime/effect_runtime.h"
 #include "runtime/text_host.h"
 #include "sketch/comp/comp_executor.h"
+#include "sketch/comp/export_plan.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
@@ -329,6 +330,77 @@ int main(int argc, char** argv) {
 
     json captures = json::object();
     json err;
+    json exportOut;
+
+    // ── Offline export ───────────────────────────────────────────────────────
+    // The highest-value native target and the one that sidesteps realtime
+    // pacing entirely: every frame is a seek to a PLANNED beat, fully resolved
+    // before it renders. Because the target beat is known in advance, this path
+    // injects the decoded frame BEFORE the seek instead of carrying the
+    // realtime runner's one-frame lag — exactly what export-renderer.ts does.
+    //
+    // Scope, matching the web exporter's twin: frame-accurate RENDERING only.
+    // No muxing; that would test an encoder, not the compositor.
+    if (cfg.contains("export") && cfg["export"].is_object()) {
+      const auto& ex = cfg["export"];
+      const double fps = std::max(1.0, ex.value("fps", 30.0));
+      const double startBeat = std::max(0.0, ex.value("startBeat", 0.0));
+      const double endBeat = ex.value("endBeat", 8.0);
+      const std::string dir = ex.value("dir", std::string());
+      const comp::WarpClock clock(comp::WarpCurve(), cx.bpm());
+      const auto plan = comp::planExportFrames(clock, fps, startBeat, endBeat);
+
+      // Prime the desc set before the loop. It is published by update(), and
+      // every export frame pumps BEFORE its update — so without this warm-up
+      // pass frame 0 renders before anything has been decoded. One thrown-away
+      // update, no render. (The web exporter doesn't need it only because it
+      // derives descs from the store, which the runner deliberately excludes.)
+      cx.seekBeat(startBeat);
+      lastFlags = cx.update(0.0);
+
+      json stats = json::array();
+      int engineFrames = 0;
+      for (const auto& fr : plan) {
+        // Decode + inject the exact frame this beat wants, THEN seek + step.
+        if (lastFlags & comp::kCompVideoSetChanged) {
+          pump.setActiveClips(json::parse(cx.videoDescsJson(), nullptr, false));
+        }
+        pump.pump(fr.beat, cx.bpm());
+        cx.seekBeat(fr.beat);
+        hostTime = fr.tSec;
+        effect_runtime::setHostTime(hostTime);
+        effect_runtime::setHostDeltaTime(1.0 / fps);
+        lastFlags = cx.update(0.0);
+        cx.transportResolve(0.0);
+        const int32_t handle = cx.render(inTex, outTex, W, H, 1.0 / fps);
+        if (lastFlags & comp::kCompStructureChanged) lastChainKeys = cx.chainKeysJson();
+        if (lastFlags & comp::kCompHasContent) engineFrames++;
+
+        const auto px = backend->readbackTexture(handle >= 0 ? handle : outTex,
+                                                 (uint32_t)W, (uint32_t)H);
+        double lumaSum = 0;
+        for (size_t i = 0; i + 3 < px.size(); i += 4) {
+          lumaSum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        }
+        const double meanLuma = px.empty() ? 0 : lumaSum / (double)(px.size() / 4);
+        stats.push_back({{"index", fr.index},
+                         {"beat", fr.beat},
+                         {"meanLuma", meanLuma},
+                         {"hasContent", (lastFlags & comp::kCompHasContent) != 0}});
+        if (!dir.empty()) {
+          // Raw RGBA8, not PNG: no encoder in this target, and a raw dump is
+          // what a pixel comparison wants anyway.
+          const std::string path = dir + "/frame_" + std::to_string(fr.index) + ".rgba";
+          std::ofstream f(path, std::ios::binary);
+          f.write(reinterpret_cast<const char*>(px.data()), (std::streamsize)px.size());
+        }
+      }
+      exportOut = {{"fps", fps},
+                   {"frames", (int)plan.size()},
+                   {"engineFrames", engineFrames},
+                   {"durationSec", plan.size() / fps},
+                   {"frameStats", stats}};
+    }
 
     try {
       for (const auto& op : cfg.value("ops", json::array())) {
@@ -452,6 +524,7 @@ int main(int argc, char** argv) {
              {"height", H},
              {"captures", captures},
              {"video", video}};
+    if (!exportOut.is_null()) out["export"] = exportOut;
     if (!err.is_null()) out["error"] = err;
     std::cout << out.dump() << std::endl;
     return err.is_null() ? 0 : 1;

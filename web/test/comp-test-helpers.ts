@@ -70,6 +70,13 @@ export interface CompScenario {
    * you prove the perf suite's hit-rate gate actually bites.
    */
   readAheadDepth?: number;
+  /**
+   * Offline export mode: render a PLANNED frame grid over [startBeat, endBeat]
+   * at `fps` instead of walking `ops`. Every frame is a seek to its planned
+   * beat with its media injected first, so nothing is paced by wall clock.
+   * Frame-accurate RENDERING only — muxing is deliberately out of scope.
+   */
+  export?: { fps?: number; startBeat?: number; endBeat?: number; dir?: string };
   ignoreSolo?: boolean;
   ops: CompOp[];
 }
@@ -104,6 +111,13 @@ interface RawResult {
     totalDecodes?: number;
     frames?: number;
     stalledFrames?: number;
+  };
+  export?: {
+    fps: number;
+    frames: number;
+    engineFrames: number;
+    durationSec: number;
+    frameStats: { index: number; beat: number; meanLuma: number; hasContent: boolean }[];
   };
 }
 
@@ -242,6 +256,14 @@ export class CompRun {
   /** Engine frames stepped, and how many the Precise transport held. */
   get frames() { return this.raw.video?.frames ?? 0; }
   get stalledFrames() { return this.raw.video?.stalledFrames ?? 0; }
+
+  /** The offline export result — only present for an `export` scenario. */
+  get exported() {
+    if (!this.raw.export) {
+      throw new Error(`[${this.backend}] scenario produced no export result`);
+    }
+    return this.raw.export;
+  }
 
   /** Fail loudly if any clip was skipped — a silent hole in the picture is the
    *  failure mode the skip list exists to prevent. */
