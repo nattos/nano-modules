@@ -272,9 +272,12 @@ describe(`Double Chamber (source.legacy.double_chamber) E2E (${backend})`, () =>
 // boundary in the first place — the persistent particle buffer isn't carrying
 // state across ticks. The four cases above still run on both backends and prove
 // the effect loads, renders particles, tracers and bridgers; what doesn't
-// survive natively is multi-frame integration. Suspect the known native
-// compute-effect gotchas (hardcoded 8×8 threadgroups, persistent-buffer sim
-// state) rather than anything here; flip to the default list once that's fixed.
+// survive natively is multi-frame integration. This effect keeps its particle,
+// tracer and bridger pools in BufferUsage::Storage buffers advanced in place
+// each frame, which is the documented native gap — see web/KNOWN_ISSUES.md,
+// "Persistent GPU storage buffers don't carry state across frames on Metal"
+// (d_wave is the cleanest measurement of it). Flip to the default list once
+// that's fixed.
 forEachBackend((backend) => {
 describe(`Double Chamber multi-frame integration (${backend})`, () => {
   jest.setTimeout(30000);

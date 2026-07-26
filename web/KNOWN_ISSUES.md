@@ -21,6 +21,39 @@ Compounding it, `postRecordHook` stamps `sketch.lastModified` on every committed
 ### Empty columns left behind after drag-drop
 When a module is dragged out of a column, the empty column (just `texture_input` → `texture_output`) is not automatically removed. This is cosmetic — the executor correctly skips empty columns for output — but it clutters the UI.
 
+### Persistent GPU storage buffers don't carry state across frames on Metal (2026-07-26)
+
+An effect that keeps its simulation in a **storage buffer** and advances it in place each frame (read `buf[i]` → integrate → write `buf[i]`) does not integrate on the native Metal path. The same effect's persistent **textures** — ping-pong render targets read one frame and written the next — integrate correctly and match WebGPU exactly. Both live in the same `render()`, so this is a buffer-vs-texture split, not "native sim state is broken".
+
+**Where it shows.** Three pinned dual-backend gaps: `double-chamber-interactions` (density buffer reads back all zeros), legacy `double_chamber`'s `boundary_death` case, and `d-wave`'s dampening. Each is skipped or thresholded per-backend at its call site with a pointer here. `source.legacy.double_chamber` and `warp.legacy.d_wave` are the only two effects with `BufferUsage::Storage` sim state in these suites, and both are affected.
+
+The other two pinned gaps, `pixel_descent` and `pixel_ocean`, are **not** this — both allocate only a uniform buffer. Theirs is a step-clock divergence (the row/step progression lands elsewhere on Metal despite both runners stepping host time, dt and barPhase identically) and is separately undiagnosed.
+
+**The cleanest measurement** is `warp.legacy.d_wave`, because one effect contains both mechanisms — a stateful wave field in ping-pong textures, and a pool of dampening-flash particles in a `RWStructuredBuffer` that the vertex shader then splats as instanced quads. Mean red of the debug field overlay, 128×128, `renderEachTick`:
+
+| | ticks=1 | ticks=4 | ticks=14 | ticks=40 |
+|---|---|---|---|---|
+| wave field alone (`damp=0`), **both backends** | 17.84 | 54.82 | 114.01 | 232.09 |
+
+Identical to 2 dp at every tick count — the texture-based field is fine. Now the same runs with the flash layer on, as a ratio of the above:
+
+| `damp_count` | 100 | 400 | 1500 | 4096 |
+|---|---|---|---|---|
+| WebGPU | 0.949 | 0.826 | 0.618 | 0.477 |
+| Metal | 0.958 | 0.922 | 0.912 | 0.915 |
+
+WebGPU scales monotonically with particle count. Metal **plateaus at ~256 particles** (a finer sweep: 64 → 0.972, 128 → 0.950, 256 → 0.920, then flat and slightly non-monotonic out to 2000) — past that, more particles change nothing. And natively `damp_rate`, the particles' outward drift speed, has **no observable effect at all**: rate 0.0 and rate 1.0 give the same numbers, so the flashes are not moving.
+
+**Ruled out** (don't redo this):
+- Metal's additive blend descriptor is correct (`createInstancedRenderPSO`, `blendMode == 1` → `sourceAlpha`/`one`).
+- Instance count passes straight through to `drawPrimitives:instanceCount:` — no cap.
+- The `// nano_threadgroup:` hint is present for this shader; the 8×8 fallback warning does not fire, so `[numthreads(64,1,1)]` is honoured.
+- `writeBuffer`'s version-on-write-after-bind copies old contents into the new backing buffer, and only fires for CPU writes — the particle buffer is GPU-written only.
+
+**Leading hypothesis**, unproven: the GPU-written contents of a storage buffer aren't what the next frame's dispatch reads — either the pool is being re-seeded every frame (the shader's `seed != 0` branch returns before integrating, which would explain rate-independence exactly), or the backing allocation the encoded compute pass wrote isn't the one the following frame binds. The ~256 plateau suggests only a small prefix of the pool ever holds valid positions, with the rest stacked at a degenerate spot. Start by dumping the particle buffer after two frames and comparing it against the seed-only contents.
+
+**When fixed**, flip these back: `double-chamber-interactions.test.ts` and legacy `double_chamber`'s multi-frame describe to the default backend list, and `d-wave.test.ts`'s dampening case to a single shared threshold.
+
 ### E2E: four known-failing suites (as of 2026-07)
 Surfaced while getting the full Puppeteer e2e suite green (run against this workspace's dev server: `GPU_TEST_BASE_URL=http://localhost:5174 npx jest <name>`). The bulk of the earlier failures were a stale harness readiness-check and tests that hadn't caught up to the LFO going signed — both fixed. These four are genuine, independent, and still open:
 

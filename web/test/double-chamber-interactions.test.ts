@@ -71,9 +71,12 @@ const runRing = (name: string, over: Record<string, number>) =>
 // 0-vs-0 (the metadata and "interactions off" cases still pass, which is why the
 // gap is easy to miss). The two cases that DO pass natively prove the effect
 // loads and renders; what doesn't survive is the cross-frame density feedback.
-// Suspect the known native compute-effect gotchas — hardcoded 8×8 threadgroups
-// and persistent-buffer sim state — rather than anything in this suite. Flip the
-// list back to the default once that's chased down.
+// Not this suite's bug, and not a one-off: it's the persistent-storage-buffer
+// class — an effect that advances a sim buffer in place each frame doesn't
+// integrate natively, while its persistent TEXTURES do. Characterised (with the
+// ruled-out list) in web/KNOWN_ISSUES.md, "Persistent GPU storage buffers don't
+// carry state across frames on Metal". Flip the list back to the default when
+// that's fixed.
 forEachBackend((backend) => {
 describe(`Double Chamber interactions (density buffer) E2E (${backend})`, () => {
   jest.setTimeout(90000);

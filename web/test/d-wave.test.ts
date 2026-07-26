@@ -126,13 +126,20 @@ describe(`D Wave (warp.legacy.d_wave) E2E (${backend})`, () => {
     const off = await meanRed(0.0, 0);
     const on  = await meanRed(1.0, 1500);
     expect(off).toBeGreaterThan(10);       // the wave actually lit the field
-    // The flashes dampen on BOTH backends, but not equally: WebGPU lands around
-    // 0.8× and Metal around 0.91× (measured 114.0 → 104.0). The direction is the
-    // claim this case exists for and it holds on both; the magnitude gap is a
-    // real cross-backend divergence in the flash particle pool — a persistent
-    // GPU buffer advanced per frame, the same subsystem as the double-chamber
-    // gap — and is RECORDED here rather than tuned away. Tighten to one number
-    // once that's chased down.
+    // The flashes dampen on BOTH backends, but not equally: WebGPU reaches
+    // ~0.8× here and Metal ~0.91× (114.0 → 104.0). The direction is the claim
+    // this case exists for and it holds on both, so the threshold is per-backend
+    // rather than tuned down to one number that asserts nothing.
+    //
+    // The gap is real and characterised — d_wave is the cleanest measurement of
+    // it, because ONE effect holds both mechanisms: its wave field lives in
+    // ping-pong textures and matches WebGPU exactly at every tick count, while
+    // these flashes live in a storage buffer advanced in place per frame and
+    // don't integrate natively at all (`damp_rate` 0 and 1.0 give identical
+    // output). Metal plateaus at ~256 particles where WebGPU keeps scaling.
+    // Full write-up incl. what's already been ruled out: web/KNOWN_ISSUES.md,
+    // "Persistent GPU storage buffers don't carry state across frames on Metal".
+    // Collapse to a single threshold once that's fixed.
     expect(on).toBeLessThan(off * (backend === 'metal' ? 0.95 : 0.85));
   });
 
