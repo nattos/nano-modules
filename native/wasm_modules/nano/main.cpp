@@ -422,12 +422,16 @@ void nano_module_main() {
         "sheared by differential rotation carries a frozen-in magnetic "
         "field whose lines ARE the surface: ridges ride the live field "
         "lines, combed into filaments by magnetic tension, bunched and "
-        "swirled into eddies. Publishes on the `sdf_field` rail; wire "
-        "into an SDF renderer downstream (e.g. Plume). Video passes "
-        "through untouched.",
+        "swirled into eddies. Storms self-ignite where a line kinks "
+        "harder than it is strong, burn along the line as tall glowing "
+        "curtains, and quench by reconnecting the kink away — one "
+        "Excitability dial spans quiet sun to self-resonant. Publishes "
+        "on the `sdf_field` rail; wire into an SDF renderer downstream "
+        "(e.g. Plume). Video passes through untouched.",
         "source",
         "generator,3d,sdf,field,provider,producer,sdf-field,simulation,"
-        "sun,solar,magnetic,mhd,field-lines,eddies,advection,fluid",
+        "sun,solar,magnetic,mhd,field-lines,eddies,advection,fluid,"
+        "storms,flare,excitable,criticality,aurora",
         "la-sun",
         NANO_INSTANCE_LIFECYCLE(helio_field),
     });

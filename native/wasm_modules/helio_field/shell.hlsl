@@ -20,9 +20,10 @@
 
 #include "../plume/common.hlsl"
 
-Texture2D<float4>   auxTex   : register(t0);  // (A, heat)
+Texture2D<float4>   auxTex   : register(t0);  // (A, ...)
 SamplerState        samp     : register(s1);
 RWTexture2D<float4> shellTex : register(u2);
+Texture2D<float4>   stormTex : register(t4);  // (u, v, heat)
 
 cbuffer HShellUniforms : register(b3) {
   float res;         // target resolution (full or coarse)
@@ -31,9 +32,14 @@ cbuffer HShellUniforms : register(b3) {
   float line_w;      // ridge half-width, radians
 
   float base_floor;  // body skin height fraction below the lines
-  float heat_gain;   // storm heat → crest (0 until storms land)
+  float heat_gain;   // storm heat → crest glow
   float sim_eps;     // gradient half-step, radians (matches dynamics)
   float ga_cap;      // |∇A| normalizer for line brightness
+
+  float storm_amp;   // storm curtain extrusion, world units
+  float _pad0;
+  float _pad1;
+  float _pad2;
 };
 
 void hs_frame(float3 dir, out float3 t1, out float3 t2) {
@@ -43,6 +49,9 @@ void hs_frame(float3 dir, out float3 t1, out float3 t2) {
   t2 = cross(dir, t1);
 }
 
+// .x = raw A (line positions keep their detail), .y = A_smooth (all
+// gradient estimates — the raw field's bilinear phase noise would fur
+// the walls).
 float2 aux_sample(float3 d) {
   return auxTex.SampleLevel(samp, nano_oct_encode(d), 0).xy;
 }
@@ -56,13 +65,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float3 t1, t2;
   hs_frame(dir, t1, t2);
-  float2 ac = aux_sample(dir);
-  float A = ac.x;
-  float heat = ac.y;
-  float Apu = aux_sample(normalize(dir + sim_eps * t1)).x;
-  float Amu = aux_sample(normalize(dir - sim_eps * t1)).x;
-  float Apv = aux_sample(normalize(dir + sim_eps * t2)).x;
-  float Amv = aux_sample(normalize(dir - sim_eps * t2)).x;
+  float A = aux_sample(dir).x;
+  float2 uvS = nano_oct_encode(dir);
+  float4 storm = stormTex.SampleLevel(samp, uvS, 0);  // (u, v, heat[, kink])
+  float Apu = aux_sample(normalize(dir + sim_eps * t1)).y;
+  float Amu = aux_sample(normalize(dir - sim_eps * t1)).y;
+  float Apv = aux_sample(normalize(dir + sim_eps * t2)).y;
+  float Amv = aux_sample(normalize(dir - sim_eps * t2)).y;
   float3 gA = (t1 * (Apu - Amu) + t2 * (Apv - Amv)) / (2.0 * sim_eps);
   float gAl = max(length(gA), 1e-5);
 
@@ -82,8 +91,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float w = gAl / (gAl + ga_cap);
   float lines = ridge * (0.35 + 0.65 * w);
 
-  float h = amp * (base_floor + (1.0 - base_floor) * lines);
-  float crest = saturate(lines + heat * heat_gain);
+  // Storm curtain: an actively burning storm (u) EXTRUDES the line it
+  // rides — tall aurora-like walls along the field line. The afterglow
+  // (heat) only lights the crest channel; the relief relaxes back as
+  // the burn passes.
+  float h = amp * (base_floor + (1.0 - base_floor) * lines)
+          + storm_amp * storm.x * ridge;
+  float crest = saturate(lines + storm.x + heat_gain * storm.z);
 
   shellTex[gid.xy] = float4(h, crest, 0.0, 0.0);
 }

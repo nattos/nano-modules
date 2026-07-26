@@ -44,18 +44,27 @@ struct DynUniforms {
   float rot_rate, rot_relax, stir_gain, stir_phase;
   float mag_gain, conf_gain, drag, vmax;
   float sim_eps, recon, emerge, emerge_phase;
-  float resist, force_eps, _pad1, _pad2;
+  float resist, force_eps, resist_w, visc;
 };
 static_assert(sizeof(DynUniforms) == 80, "DynUniforms layout mismatch");
 
 struct HShellUniforms {
   float res, amp, line_k, line_w;
   float base_floor, heat_gain, sim_eps, ga_cap;
+  float storm_amp, _pad0, _pad1, _pad2;
 };
-static_assert(sizeof(HShellUniforms) == 32, "HShellUniforms layout mismatch");
+static_assert(sizeof(HShellUniforms) == 48, "HShellUniforms layout mismatch");
+
+struct StormUniforms {
+  float dt, thresh, prop, burn;
+  float cool, charge, recover, kink_gain;
+  float force_eps, sim_res, reset, _pad0;
+};
+static_assert(sizeof(StormUniforms) == 48, "StormUniforms layout mismatch");
 
 static gpu::ComputePSO s_pso_prefill;
 static gpu::ComputePSO s_pso_dynamics;
+static gpu::ComputePSO s_pso_storm;
 static gpu::ComputePSO s_pso_shell;
 
 struct State {
@@ -63,14 +72,16 @@ struct State {
   fx::sdf_field::Publisher rail_pub;
 
   gpu::Texture dyn[2];          // RGBA32F (vel.xyz, spare)
-  gpu::Texture aux[2];          // RGBA32F (A, heat, 0, 0)
+  gpu::Texture aux[2];          // RGBA32F (A, 0, 0, 0)
+  gpu::Texture storm[2];        // RGBA16F (u, v, heat, 0)
   gpu::Texture shell_full;      // RGBA16F 512² (h, crest)
   gpu::Texture shell_coarse;    // RGBA16F 256²
   gpu::Texture sdf_vol;         // RGBA16F 128³
-  gpu::Buffer ub_dyn, ub_shell_full, ub_shell_coarse, ub_bake;
+  gpu::Buffer ub_dyn, ub_storm, ub_shell_full, ub_shell_coarse, ub_bake;
   gpu::Sampler samp;
 
   int ping = 0;                 // dyn/aux index written LAST frame
+  int st_ping = 0;              // storm index written LAST frame
   bool reset_pending = true;    // write initial conditions on next step
   double stir_phase = 0.0;
   double emerge_phase = 0.0;
@@ -86,6 +97,10 @@ struct State {
   float magnet = 0.6f;
   float relief = 0.5f;
   float line_scale = 0.5f;
+  float excite = 0.5f;
+  float storm_h = 0.6f;
+  float glow = 0.7f;
+  float calm = 0.5f;
 
   // Master speed: 0 freezes the sun, 1 runs it hot.
   float rateScale() const { return 3.0f * sim_rate * sim_rate; }
@@ -102,8 +117,10 @@ void module_init() {
         "Wire it into an SDF renderer downstream (e.g. **Plume**) to "
         "light and render it.\n\n"
         "Nothing here is keyframed: the lines move because the fluid "
-        "moves them. Storms (self-igniting, propagating along the "
-        "lines) arrive in the next milestone.\n\n"
+        "moves them, and the STORMS self-ignite where the rotation has "
+        "wound a line past its breaking kink — burning along the line "
+        "as a glowing extruded curtain until the release (reconnection) "
+        "has erased the kink that lit them.\n\n"
         "The video input passes through untouched.")
       .group("body", "Body")
       .groupHelp(
@@ -142,6 +159,26 @@ void module_init() {
           .label("Relief", "Rel")
       .floatField("line_scale", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Line Scale", "Scale")
+      .group("storms", "Storms")
+      .groupHelp(
+          "Storms are not triggered — they SELF-IGNITE where the sim "
+          "kinks a field line harder than it is strong, then burn ALONG "
+          "the line as a tall glowing curtain until they've released "
+          "(reconnected) the kink that lit them. *Excitability* is the "
+          "criticality dial: low = quiet sun, the middle = storms "
+          "firing stochastically every few seconds wherever the "
+          "rotation has wound the field tight, high = self-resonant, "
+          "the storms never stop. *Storm Height* is the curtain "
+          "extrusion, *Glow* the afterglow left in the crest channel, "
+          "*Calm* the dead time before a burned region can re-ignite.")
+      .floatField("excite", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Excitability", "Excit")
+      .floatField("storm_h", 0.6f, 0.f, 1.f, state::PrimaryInput)
+          .label("Storm Height", "Storm")
+      .floatField("glow", 0.7f, 0.f, 1.f, state::PrimaryInput)
+          .label("Glow", "Glow")
+      .floatField("calm", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Calm", "Calm")
       // --- I/O ---
       .textureField("tex_in", state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput);
@@ -159,13 +196,17 @@ void module_init() {
   state::registerShaderSPV("helio_field_dynamics", HELIO_FIELD_DYNAMICS_SPV,
                            HELIO_FIELD_DYNAMICS_SPV_SIZE,
                            "rgba32float", "write");
+  state::registerShaderSPV("helio_field_storm", HELIO_FIELD_STORM_SPV,
+                           HELIO_FIELD_STORM_SPV_SIZE,
+                           "rgba16float", "write");
   state::registerShaderSPV("helio_field_shell", HELIO_FIELD_SHELL_SPV,
                            HELIO_FIELD_SHELL_SPV_SIZE,
                            "rgba16float", "write");
   auto cs_prefill = gpu::Device::createShaderModuleByName("helio_field_prefill");
   auto cs_dyn = gpu::Device::createShaderModuleByName("helio_field_dynamics");
+  auto cs_storm = gpu::Device::createShaderModuleByName("helio_field_storm");
   auto cs_shell = gpu::Device::createShaderModuleByName("helio_field_shell");
-  if (!cs_prefill || !cs_dyn || !cs_shell) return;
+  if (!cs_prefill || !cs_dyn || !cs_storm || !cs_shell) return;
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main",
       gpu::Bindings()
           .tex2d(0)
@@ -177,13 +218,22 @@ void module_init() {
           .sampler(2)
           .storageTex2d(3, gpu::TextureFormat::RGBA32F)  // dyn (next)
           .storageTex2d(4, gpu::TextureFormat::RGBA32F)  // aux (next)
-          .uniform(5));
+          .uniform(5)
+          .tex2d(6));        // storm (previous — reconnection gate)
+  s_pso_storm = gpu::Device::createComputePSO(cs_storm, "main",
+      gpu::Bindings()
+          .tex2d(0)          // aux (current)
+          .tex2d(1)          // storm (previous)
+          .sampler(2)
+          .storageTex2d(3, gpu::TextureFormat::RGBA16F)  // storm (next)
+          .uniform(4));
   s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main",
       gpu::Bindings()
           .tex2d(0)          // aux (current)
           .sampler(1)
           .storageTex2d(2, gpu::TextureFormat::RGBA16F)  // shell target
-          .uniform(3));
+          .uniform(3)
+          .tex2d(4));        // storm (current)
 
   state::log("helio_field: module initialized");
 }
@@ -192,6 +242,8 @@ void* create() {
   auto* s = new State();
   s->ub_dyn = gpu::Device::createBuffer(sizeof(DynUniforms),
                                         gpu::BufferUsage::Uniform);
+  s->ub_storm = gpu::Device::createBuffer(sizeof(StormUniforms),
+                                          gpu::BufferUsage::Uniform);
   s->ub_shell_full = gpu::Device::createBuffer(sizeof(HShellUniforms),
                                                gpu::BufferUsage::Uniform);
   s->ub_shell_coarse = gpu::Device::createBuffer(sizeof(HShellUniforms),
@@ -210,10 +262,13 @@ void destroy(void* self) {
   s->dyn[1].release();
   s->aux[0].release();
   s->aux[1].release();
+  s->storm[0].release();
+  s->storm[1].release();
   s->shell_full.release();
   s->shell_coarse.release();
   s->sdf_vol.release();
   s->ub_dyn.release();
+  s->ub_storm.release();
   s->ub_shell_full.release();
   s->ub_shell_coarse.release();
   s->ub_bake.release();
@@ -228,6 +283,7 @@ void init(void* self) {
   s->stir_phase = 0.0;
   s->emerge_phase = 0.0;
   s->ping = 0;
+  s->st_ping = 0;
   s->initialized = s->ub_dyn.valid() && s_pso_dynamics.valid() &&
                    s_pso_shell.valid() && plume_gen::g_pso_bake.valid();
 }
@@ -265,6 +321,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "magnet"))     s->magnet = state::patchFloat(i);
     else if (state::pathIs(p, l, "relief"))     s->relief = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_scale")) s->line_scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "excite"))     s->excite = state::patchFloat(i);
+    else if (state::pathIs(p, l, "storm_h"))    s->storm_h = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glow"))       s->glow = state::patchFloat(i);
+    else if (state::pathIs(p, l, "calm"))       s->calm = state::patchFloat(i);
   }
 }
 
@@ -277,7 +337,11 @@ static bool runField(State* s) {
     if (!s->aux[i].valid())
       s->aux[i] = gpu::Device::createTexture(kSimRes, kSimRes,
                                              gpu::TextureFormat::RGBA32F);
-    if (!s->dyn[i].valid() || !s->aux[i].valid()) return false;
+    if (!s->storm[i].valid())
+      s->storm[i] = gpu::Device::createTexture(kSimRes, kSimRes,
+                                               gpu::TextureFormat::RGBA16F);
+    if (!s->dyn[i].valid() || !s->aux[i].valid() || !s->storm[i].valid())
+      return false;
   }
   if (!s->shell_full.valid())
     s->shell_full = gpu::Device::createTexture(kSimRes, kSimRes,
@@ -297,6 +361,11 @@ static bool runField(State* s) {
   const float R = 0.28f + 0.27f * s->radius;
   float amp = 0.35f * R * s->relief;
   if (R + amp > 0.82f) amp = 0.82f - R;
+  // Storm curtains extrude ABOVE the line relief; the pair shares the
+  // volume budget (crest sphere must stay inside the grid extent).
+  float storm_amp = 0.45f * R * s->storm_h;
+  if (R + amp + storm_amp > 0.82f)
+    storm_amp = std::fmax(0.0f, 0.82f - R - amp);
   const float line_k = 2.0f + 10.0f * s->line_scale;
   const float line_w = 0.07f - 0.04f * s->line_scale;  // radians
 
@@ -322,10 +391,16 @@ static bool runField(State* s) {
   du.emerge_phase = (float)s->emerge_phase;
   du.resist = std::fmin(0.25f, 1.2f * dt_sim);
   du.force_eps = 15.0f / (float)kSimRes;
+  du.resist_w = std::fmin(0.15f, 0.5f * dt_sim);
+  du.visc = std::fmin(0.85f, 30.0f * dt_sim);
+  du.recon = std::fmin(0.2f, 2.0f * dt_sim);
   s->ub_dyn.writeOne(du);
 
+  const bool reset = s->reset_pending;
   const int cur = s->ping;
   const int nxt = 1 - cur;
+  const int scur = s->st_ping;
+  const int snxt = 1 - scur;
   {
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_dynamics);
@@ -335,11 +410,42 @@ static bool runField(State* s) {
     cp.setTexture(s->dyn[nxt], 3, 1);
     cp.setTexture(s->aux[nxt], 4, 1);
     cp.setBuffer(s->ub_dyn, 5);
+    cp.setTexture(s->storm[scur], 6, 0);
     cp.dispatch(kSimRes / 8, kSimRes / 8);
     cp.end();
   }
   s->ping = nxt;
   s->reset_pending = false;
+
+  // --- Pass 0.5: storm layer (excitable medium over THIS frame's A) ---
+  StormUniforms su = {};
+  su.dt = dt_sim;
+  // Threshold mapping calibrated against the measured kink distribution
+  // (background turbulence ~0.2, p90 ~0.5, genuine sheets 1+): excite
+  // 0.5 sits at ~p99 (rare discrete storms), 0.9 near p90 (resonant).
+  su.thresh = 0.15f + 3.8f * (1.0f - s->excite) * (1.0f - s->excite);
+  su.prop = 2.0f;
+  su.burn = 8.0f;
+  su.cool = 2.5f;
+  su.charge = 1.2f;
+  su.recover = 0.1f + 1.4f * (1.0f - s->calm);
+  su.kink_gain = 3.0f;
+  su.force_eps = 15.0f / (float)kSimRes;
+  su.sim_res = (float)kSimRes;
+  su.reset = reset ? 1.0f : 0.0f;
+  s->ub_storm.writeOne(su);
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_storm);
+    cp.setTexture(s->aux[nxt], 0, 0);
+    cp.setTexture(s->storm[scur], 1, 0);
+    cp.setSampler(s->samp, 2);
+    cp.setTexture(s->storm[snxt], 3, 1);
+    cp.setBuffer(s->ub_storm, 4);
+    cp.dispatch(kSimRes / 8, kSimRes / 8);
+    cp.end();
+  }
+  s->st_ping = snxt;
 
   // --- Pass 1: shell maps from the fresh state (full + coarse) ---
   HShellUniforms hu = {};
@@ -347,12 +453,13 @@ static bool runField(State* s) {
   hu.line_k = line_k;
   hu.line_w = line_w;
   hu.base_floor = 0.12f;
-  hu.heat_gain = 0.0f;   // storms milestone
+  hu.heat_gain = s->glow;
   // Wider gradient step than the dynamics uses: |∇A| feeds the ridge
   // width, and at texel scale bilinear kinks make it noisy — the walls
   // grow serrated "fur". Two texels of smoothing reads clean.
   hu.sim_eps = 10.0f / (float)kSimRes;
   hu.ga_cap = 2.0f;
+  hu.storm_amp = storm_amp;
   hu.res = (float)kSimRes;
   s->ub_shell_full.writeOne(hu);
   hu.res = (float)kCoarseRes;
@@ -364,6 +471,7 @@ static bool runField(State* s) {
     cp.setSampler(s->samp, 1);
     cp.setTexture(s->shell_full, 2, 1);
     cp.setBuffer(s->ub_shell_full, 3);
+    cp.setTexture(s->storm[snxt], 4, 0);
     cp.dispatch(kSimRes / 8, kSimRes / 8);
     cp.end();
   }
@@ -374,16 +482,19 @@ static bool runField(State* s) {
     cp.setSampler(s->samp, 1);
     cp.setTexture(s->shell_coarse, 2, 1);
     cp.setBuffer(s->ub_shell_coarse, 3);
+    cp.setTexture(s->storm[snxt], 4, 0);
     cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
     cp.end();
   }
 
   // --- Pass 2: bake (shared plume sculptor shader) ---
   // Lipschitz: the shell pass renders fixed-spatial-width ridges, so the
-  // max slope is amp·0.86/line_w regardless of how the sim bunches the
-  // lines; 1.5 covers the profile constant + bilinear-A wiggle.
+  // max slope is (amp + storm curtain)·0.86/line_w regardless of how the
+  // sim bunches the lines; 1.5 covers the profile constant + bilinear-A
+  // wiggle. Storm u rides the same ridge profile, so it shares the bound.
+  const float amp_total = amp + storm_amp;
   const float lip_true =
-      1.0f / (1.0f + 1.5f * amp / (line_w * std::fmax(R, 0.1f)));
+      1.0f / (1.0f + 1.5f * amp_total / (line_w * std::fmax(R, 0.1f)));
   const float lip = std::fmax(lip_true, 0.15f);
   plume_gen::BakeUniforms bu = {
       R, lip,
@@ -407,7 +518,7 @@ static bool runField(State* s) {
   d.radius = R;
   d.lip = lip;
   d.lip_true = lip_true;
-  d.crest_amp = amp;
+  d.crest_amp = amp_total;
   d.crest_gain = 1.0f;   // the lines ARE the crest
   d.grid_ext = fx::sdf_field::kGridExt;
   d.shell_res = (float)kSimRes;

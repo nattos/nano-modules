@@ -131,12 +131,14 @@ echo "  plume shaders compiled (SPV: shell + bake + compose + march + prefill + 
 # field lines. Reuses plume's compiled prefill SPV (passthrough) and the
 # shared plume_gen bake shader (registered via field_gen.h moduleInit).
 compile_shaders_compute_var_spv helio_field dynamics
+compile_shaders_compute_var_spv helio_field storm
 compile_shaders_compute_var_spv helio_field shell
 python3 ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
   "helio_field_prefill=$TMP_DIR/plume_prefill.spv" \
   "helio_field_dynamics=$TMP_DIR/helio_field_dynamics.spv" \
+  "helio_field_storm=$TMP_DIR/helio_field_storm.spv" \
   "helio_field_shell=$TMP_DIR/helio_field_shell.spv"
-echo "  helio_field shaders compiled (SPV: dynamics + shell + prefill reuse)"
+echo "  helio_field shaders compiled (SPV: dynamics + storm + shell + prefill reuse)"
 
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update
