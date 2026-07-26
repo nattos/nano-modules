@@ -738,7 +738,9 @@ static bool runField(State* s) {
     du2.seed = s->variation * 10.0f;
     du2.R = R;
     du2.lift = 0.018f;
-    du2.size = 0.0015f + 0.0035f * s->dust_size;
+    // Bottom reaches sub-pixel at real viewport sizes (single-px glints
+    // via the splat presence floor) — keep in step with dust_halo's.
+    du2.size = 0.0001f + 0.0049f * s->dust_size;
     // Chemistry b tops out ~0.35 (seeded) / ~0.45 (mature): accept from
     // the blob shoulders up so dust tracks granules, not just cores.
     du2.thresh = 0.12f;

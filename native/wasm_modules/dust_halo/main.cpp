@@ -382,7 +382,11 @@ static bool runField(State* s) {
     gu.radial[0] = R * (0.03f + 0.85f * s->gap);
     gu.radial[1] = R * (0.02f + 0.6f * s->thick);
     gu.radial[2] = s->gap_soft;
-    gu.radial[3] = 0.0015f + 0.0035f * s->size;
+    // Bottom must reach sub-pixel at real viewport sizes (a 1080p pixel
+    // is ~0.001 world units at typical camera distance); below the splat
+    // presence floor every size is the same 1-px glint, so no resolution
+    // is wasted down there.
+    gu.radial[3] = 0.0001f + 0.0049f * s->size;
     gu.motion[0] = (float)s->t_drift;
     gu.motion[1] = (float)s->t_tumble;
     s->ub_gen.writeOne(gu);
