@@ -22,6 +22,7 @@ import { setGeneratorThumbPersist } from './media/generator-thumb-cache';
 import { generatorThumbDisk } from './media/generator-thumb-disk';
 import { importVideoFile } from './media/drop-import';
 import { linkMedia } from './workspace/media-store';
+import type { MediaDocRef } from './model/composition';
 import { DirectoryBackend } from './workspace/backend';
 import {
   handlesFromDataTransfer,
@@ -363,21 +364,21 @@ export class ArrangementApp extends MobxLitElement {
     // relative when possible) so the source RELINKS after reload. Without a
     // handle (Safari) we fall back to the plain File (session-only blob URL).
     const fileHandles = handles.filter((h): h is PathsFileHandle => h.kind === 'file');
-    const imports: Array<{ file: File; sourceKey: string }> = [];
+    const imports: Array<{ file: File; sourceKey: string; docRef: MediaDocRef | null }> = [];
     if (fileHandles.length) {
       for (const h of fileHandles) {
         try {
-          const sourceKey = await linkMedia(h); // persist + canonical key
-          imports.push({ file: await h.getFile(), sourceKey });
+          const { sourceKey, docRef } = await linkMedia(h); // persist + canonical key
+          imports.push({ file: await h.getFile(), sourceKey, docRef });
         } catch { /* unreadable handle → skip */ }
       }
     } else {
-      for (const file of Array.from(files)) imports.push({ file, sourceKey: '' });
+      for (const file of Array.from(files)) imports.push({ file, sourceKey: '', docRef: null });
     }
 
     const bpm = store.composition.meta.baseBPM;
     let beat = target.startBeat;
-    for (const { file, sourceKey } of imports) {
+    for (const { file, sourceKey, docRef } of imports) {
       const media = await importVideoFile(file, sourceKey || undefined);
       // Match the clip length to the REAL video duration (metadata already probed in
       // importVideoFile) — exact beats, NOT snapped, so the clip spans the whole file.
@@ -393,6 +394,7 @@ export class ArrangementApp extends MobxLitElement {
           label: media.label,
           width: media.width,
           height: media.height,
+          ...(docRef ? { ref: docRef } : {}),
         },
         lengthBeat,
       );

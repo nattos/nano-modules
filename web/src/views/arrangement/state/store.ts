@@ -48,6 +48,7 @@ import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaP
 import { rememberWorkspace, restoreWorkspace, restoreWorkspaceSilent, rememberedWorkspaceLabel } from '../workspace/workspace-store';
 import { saveLayout, loadLayout, type ArrLayout } from '../workspace/layout-store';
 import { openMedia, resolveMedia } from '../workspace/media-store';
+import { resolveFileRef } from '../../../state/handle-ref';
 import { emptyComposition, makeMainBus, defaultClipLoop, MAIN_BUS_ID, LAYER_TARGET_ID } from '../model/composition';
 import {
   allLanes,
@@ -60,6 +61,7 @@ import {
   sequenceInteriorSec,
   sequenceOwnerOf,
   chainsEqual,
+  type MediaDocRef,
 } from '../model/composition';
 import {
   laneById as resolveLaneById,
@@ -1080,6 +1082,17 @@ export class ArrangementStore {
     return !!sourceKey && this.mediaMissing[sourceKey] === true;
   }
 
+  /** The document's own library-relative ref for a sourceKey, if it carries one. */
+  private docRefFor(sourceKey: string): { kind: 'lib'; libraryId: string; path: string[] } | null {
+    for (const c of mediaClips(this.composition)) {
+      const ref = c.source?.ref;
+      if (c.source?.sourceKey === sourceKey && ref?.libraryId && Array.isArray(ref.path)) {
+        return { kind: 'lib', libraryId: ref.libraryId, path: ref.path };
+      }
+    }
+    return null;
+  }
+
   async relinkMedia() {
     const keys = new Set<string>();
     // allLanes: a sequence clip's INTERIOR sub-clips hold media too. Missing
@@ -1088,15 +1101,37 @@ export class ArrangementStore {
     // no "missing media" warning either (the key never entered `mediaMissing`).
     for (const k of mediaSourceKeys(this.composition)) keys.add(k);
     for (const key of keys) {
-      // Record the library-relative path (IDB read only, no permission) so the
-      // inspector can show it even if the file itself can't be resolved yet.
+      // The DOCUMENT's own ref comes first: it's the only binding that survives
+      // arriving from another machine, where the IDB media table is empty.
+      const docRef = this.docRefFor(key);
+      // The IDB record is a per-profile CACHE — it also covers directly-picked
+      // media, which can't be expressed in the document.
       const rec = await resolveMedia(key);
-      if (rec?.ref?.kind === 'lib' && Array.isArray(rec.ref.path)) {
-        const rel = rec.ref.path.join('/');
+      const libRef = docRef ?? (rec?.ref?.kind === 'lib' ? rec.ref : null);
+      // Record the library-relative path (no permission needed) so the inspector
+      // can show it even if the file itself can't be resolved yet.
+      if (libRef && Array.isArray(libRef.path)) {
+        const rel = libRef.path.join('/');
         runInAction(() => { this.mediaRelPaths[key] = rel; });
       }
+      // Learned a portable ref from IDB that the document lacks → write it in,
+      // so opening and re-saving upgrades the file in place.
+      if (!docRef && libRef) {
+        runInAction(() => {
+          for (const c of mediaClips(this.composition)) {
+            if (c.source!.sourceKey === key) {
+              c.source!.ref = { libraryId: libRef.libraryId, path: [...libRef.path] };
+            }
+          }
+        });
+      }
       let file: File | null = null;
-      try { file = await openMedia(key); } catch { file = null; }
+      try {
+        // Resolve through the document ref when we have one; openMedia (IDB) is
+        // the fallback for direct handles and pre-ref documents.
+        const fh = docRef ? await resolveFileRef(docRef, { prompt: true, mode: 'read' }) : null;
+        file = fh ? await fh.getFile() : await openMedia(key);
+      } catch { file = null; }
       runInAction(() => { this.mediaMissing[key] = !file; });
       if (!file) continue;
       const url = URL.createObjectURL(file);
@@ -3859,7 +3894,7 @@ export class ArrangementStore {
   addVideoClip(
     trackId: string,
     startBeat: number,
-    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number },
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number; ref?: MediaDocRef },
     lengthBeat = 8,
   ): string | null {
     const track = this.trackById(trackId);
@@ -3882,6 +3917,7 @@ export class ArrangementStore {
         label,
         durationFrames: media.frameCount,
         sourceKey: media.sourceKey,
+        ...(media.ref ? { ref: media.ref } : {}),
         url: media.url,
         fps: media.fps,
         width: media.width,
@@ -3964,7 +4000,7 @@ export class ArrangementStore {
    */
   setClipSource(
     trackId: string, clipId: string,
-    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number },
+    media: { sourceKey: string; url: string; frameCount: number; fps?: number; label?: string; width?: number; height?: number; ref?: MediaDocRef },
     lengthBeat?: number,
   ) {
     this.mutate('set clip source', (d) => {
@@ -3978,6 +4014,9 @@ export class ArrangementStore {
         label,
         durationFrames: media.frameCount,
         sourceKey: media.sourceKey,
+        // Deliberately NOT carried over from the old source — a swap points at
+        // different media, so a stale ref would resolve to the wrong file.
+        ...(media.ref ? { ref: media.ref } : {}),
         url: media.url,
         fps: media.fps,
         width: media.width,

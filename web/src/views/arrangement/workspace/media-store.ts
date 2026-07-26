@@ -12,6 +12,7 @@ import { idbGet, idbPut, idbGetAll, idbDelete, STORE_MEDIA } from '../../../stat
 import { deriveSourceKey } from '../../../video/profile-store';
 import { HandleRef, makeHandleRef, resolveFileRef } from '../../../state/handle-ref';
 import { deserializeHandle, type PathsFileHandle } from '../../../state/paths';
+import type { MediaDocRef } from '../model/composition';
 
 export interface MediaHandleRecord {
   sourceKey: string; // 'name|size|lastModified'
@@ -24,10 +25,15 @@ export interface MediaHandleRecord {
 }
 
 /**
- * Link a media file handle, returning the stable sourceKey an arrangement
- * stores. Idempotent: relinking the same file overwrites the record.
+ * Link a media file handle. Returns the stable `sourceKey` an arrangement
+ * stores, plus the portable `docRef` to write into `clip.source.ref` — null
+ * when the file isn't under any library path, in which case only this
+ * per-profile record can find it again. Idempotent: relinking the same file
+ * overwrites the record.
  */
-export async function linkMedia(handle: PathsFileHandle): Promise<string> {
+export async function linkMedia(
+  handle: PathsFileHandle,
+): Promise<{ sourceKey: string; docRef: MediaDocRef | null }> {
   const { sourceKey, file } = await deriveSourceKey(handle);
   const ref = await makeHandleRef(handle);
   const rec: MediaHandleRecord = {
@@ -39,7 +45,10 @@ export async function linkMedia(handle: PathsFileHandle): Promise<string> {
     linkedAt: Date.now(),
   };
   await idbPut(STORE_MEDIA, rec);
-  return sourceKey;
+  return {
+    sourceKey,
+    docRef: ref.kind === 'lib' ? { libraryId: ref.libraryId, path: ref.path } : null,
+  };
 }
 
 /** Look up the persisted record for a sourceKey, or null on miss. */

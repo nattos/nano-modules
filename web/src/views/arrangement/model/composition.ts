@@ -548,6 +548,13 @@ export const RANDOM_DEFAULTS = {
  */
 export type ClipKind = 'effect' | 'video' | 'sequence';
 
+/** Library-relative media location as stored IN THE DOCUMENT. See
+ *  {@link Clip.source}`.ref` for why a handle can't go here. */
+export interface MediaDocRef {
+  libraryId: string;
+  path: string[];
+}
+
 export interface Clip {
   id: string;
   name: string;
@@ -575,7 +582,27 @@ export interface Clip {
     durationFrames: number;
     /** Stable cache identity (a file change should change this). */
     sourceKey?: string;
-    /** Fetchable URL of the media (served asset / object URL). */
+    /**
+     * Where the media lives, RELATIVE to a library path — the portable binding,
+     * and the only one that survives leaving this browser profile. Mirrors
+     * `handle-ref.ts`'s `lib` variant.
+     *
+     * The IndexedDB media table (`workspace/media-store.ts`) is a per-profile
+     * CACHE of handles, not the binding: a document carrying only a `sourceKey`
+     * resolves to nothing on another machine, and to nothing at all in the
+     * native executor, which never sees anything but this JSON.
+     *
+     * A `direct` handle ref deliberately can't live here — a handle
+     * JSON-stringifies to `{}` — so directly-picked media stays IDB-only and
+     * simply doesn't resolve natively.
+     */
+    ref?: MediaDocRef;
+    /**
+     * Fetchable URL of the media. RUNTIME ONLY — an object URL that dies with
+     * the page, rebuilt by `store.relinkMedia()`. Stripped by
+     * `serializeComposition`; persisting it just wrote a dead pointer into
+     * every saved file.
+     */
     url?: string;
     fps?: number;
     /** Native pixel dimensions (aspect for the placement widget). 0/absent ⇒ unknown. */

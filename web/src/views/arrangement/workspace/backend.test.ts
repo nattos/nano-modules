@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DirectoryBackend, serializeComposition, deserializeComposition } from './backend';
-import { emptyComposition } from '../model/composition';
+import { emptyComposition, type Clip } from '../model/composition';
 
 // ── Minimal in-memory FileSystemDirectoryHandle (only what the backend uses) ──
 class MemFile {
@@ -102,5 +102,68 @@ describe('composition (de)serialization', () => {
   it('leaves loop undefined for a legacy file without one', () => {
     const back = deserializeComposition(serializeComposition(emptyComposition()));
     expect(back.loop).toBeUndefined();
+  });
+
+  // ── media bindings ──
+  // `source.url` is an object URL scoped to the page that made it: persisting it
+  // wrote a dead pointer into every saved file. `source.ref` is what actually
+  // locates the media, here and in the native executor.
+
+  function videoClip(id: string, withRef = true): Clip {
+    return {
+      id,
+      name: id,
+      startBeat: 0,
+      lengthBeat: 4,
+      kind: 'video',
+      sketch: { devices: [] },
+      source: {
+        label: id,
+        durationFrames: 30,
+        sourceKey: `key:${id}`,
+        ...(withRef ? { ref: { libraryId: 'L1', path: ['footage', `${id}.mov`] } } : {}),
+        url: `blob:${id}`,
+      },
+      loop: { mode: 'time', startSec: 0, speed: 1, direction: 'forward' },
+      automation: [],
+      exports: [],
+      warps: [],
+    } satisfies Clip;
+  }
+
+  it('strips the runtime blob URL and keeps the portable ref', () => {
+    const comp = emptyComposition();
+    comp.tracks[0].clips.push(videoClip('a'));
+    const back = deserializeComposition(serializeComposition(comp));
+    const src = back.tracks[0].clips[0].source!;
+    expect(src.url).toBeUndefined();
+    expect(src.ref).toEqual({ libraryId: 'L1', path: ['footage', 'a.mov'] });
+    expect(src.sourceKey).toBe('key:a');
+  });
+
+  it('strips it inside a sequence clip s interior too', () => {
+    // mediaClips recurses; a top-level-only walk left consolidated sequences
+    // shipping dead urls.
+    const comp = emptyComposition();
+    const outer = videoClip('outer', false);
+    outer.kind = 'sequence';
+    outer.sequence = {
+      id: 'lane1', name: 'Sequence', kind: 'track', parentId: null,
+      sketch: { devices: [] }, automation: [], clips: [videoClip('inner')],
+    };
+    comp.tracks[0].clips.push(outer);
+    const back = deserializeComposition(serializeComposition(comp));
+    const inner = back.tracks[0].clips[0].sequence!.clips[0].source!;
+    expect(inner.url).toBeUndefined();
+    expect(inner.ref).toEqual({ libraryId: 'L1', path: ['footage', 'inner.mov'] });
+  });
+
+  it('does not mutate the live composition it serializes', () => {
+    // The store keeps rendering from this object — dropping its url mid-save
+    // would blank the clip.
+    const comp = emptyComposition();
+    comp.tracks[0].clips.push(videoClip('a'));
+    serializeComposition(comp);
+    expect(comp.tracks[0].clips[0].source!.url).toBe('blob:a');
   });
 });

@@ -25,7 +25,7 @@ import {
 } from '../../../state/paths';
 import { ENGINE_VERSION } from '../../../version';
 import type { Clip, Composition, Track } from '../model/composition';
-import { emptyComposition } from '../model/composition';
+import { emptyComposition, mediaClips } from '../model/composition';
 
 /** File extension for a serialized arrangement. */
 export const ARRANGEMENT_EXT = '.nano-arr';
@@ -80,6 +80,11 @@ function fileNameFor(name: string): string {
  */
 export function serializeComposition(comp: Composition): string {
   const safe = JSON.parse(JSON.stringify(toJS(comp))) as Composition;
+  // `source.url` is an object URL scoped to this page — persisting it wrote a
+  // dead pointer into every saved file. What actually locates the media is
+  // `source.ref`. Must reach INTERIOR sub-clips too (mediaClips recurses), or a
+  // consolidated sequence keeps shipping dead urls.
+  for (const c of mediaClips(safe)) delete c.source!.url;
   const file: ArrangementFile = {
     format: 'nano-arr',
     engineVersion: ENGINE_VERSION,
