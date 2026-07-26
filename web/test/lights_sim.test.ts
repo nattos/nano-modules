@@ -1,4 +1,4 @@
-import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runGpuEffectTest, Frame, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for filter.lights_sim — samples the input into 4 vertical LED
 // bars (Resolume-style) and renders them inset into their quarters.
@@ -8,7 +8,8 @@ import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 // cover the geometry instead: bars show the sampled colour, render inset into
 // each quarter, and the background obeys input_opacity.
 
-describe('Lights Sim Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Lights Sim Effect E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const W = 160, H = 108;
@@ -72,4 +73,5 @@ describe('Lights Sim Effect E2E', () => {
     expect(lum(wide, 0.225, 0.5)).toBeGreaterThan(720);
     expect(lum(narrow, 0.225, 0.5)).toBeLessThan(20);
   });
+});
 });

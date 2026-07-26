@@ -16,7 +16,7 @@
  * dump PNGs. Needs the dev server up (GPU_TEST_BASE_URL) and a fresh nano
  * bundle (native/wasm_modules/nano/build.sh).
  */
-import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runGpuEffectTest, Frame, forEachBackend } from './gpu-test-helpers';
 
 jest.setTimeout(120000);
 
@@ -54,7 +54,8 @@ function litMap(f: Frame, cols = 4, rows = 10): string {
   return out;
 }
 
-describe('Pixel Rift', () => {
+forEachBackend((backend) => {
+describe(`Pixel Rift (${backend})`, () => {
   it('renders clean with defaults', async () => {
     const f = await run([], 60, 'pixel_rift_defaults');
     expect(f.success).toBe(true);
@@ -137,4 +138,5 @@ describe('Pixel Rift', () => {
     expect(f.success).toBe(true);
     expect(f.gpuErrors).toEqual([]);
   });
+});
 });

@@ -1,4 +1,4 @@
-import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runGpuEffectTest, Frame, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for source.light.bounce_resonator — a 4-bar scalar diffusion
 // network with NO spatial structure. Each hop multiplies the 4-vector by a
@@ -16,7 +16,8 @@ import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 // A single rising-edge gate kick + auto_rate 0 keeps it deterministic;
 // tests assert on conservation/concentration, not which specific bar lights.
 
-describe('Bounce Resonator (diffusion) E2E', () => {
+forEachBackend((backend) => {
+describe(`Bounce Resonator (diffusion) E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const W = 160, H = 108;
@@ -260,4 +261,5 @@ describe('Bounce Resonator (diffusion) E2E', () => {
     // Single-bar concentration is ~1.0; fanned-out is ~0.3-0.4.
     expect(concentration(narrow)).toBeGreaterThan(concentration(wide) + 0.3);
   });
+});
 });

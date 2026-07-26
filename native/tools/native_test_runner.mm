@@ -383,7 +383,57 @@ int main(int argc, char** argv) {
           {"version", proto ? proto->metadataVersion() : std::string()},
         };
       }()},
-      {"params", nlohmann::json::array()},
+      // The legacy param-row view of the schema. LOCK-STEP with the web host's
+      // derivation (wasm-host.ts, "Derive params and ioDecls from schema"):
+      // same skip rules, same ordering, same numeric type codes — otherwise a
+      // suite's `frame.params.map(p => p.name)` assertion passes on one backend
+      // and fails on the other for no real reason.
+      {"params", [&] {
+        nlohmann::json params = nlohmann::json::array();
+        auto* proto = rt.find(effectId);
+        if (!proto) return params;
+        auto schema = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
+        if (schema.is_discarded() || !schema.is_object()) return params;
+        // The schema payload wraps its fields (moduleVersion/capabilities sit
+        // beside them); accept either shape.
+        const nlohmann::json& fields =
+            schema.contains("fields") && schema["fields"].is_object() ? schema["fields"] : schema;
+        int paramIdx = 0;
+        for (auto it = fields.begin(); it != fields.end(); ++it) {
+          if (!it.value().is_object()) continue;
+          const auto& field = it.value();
+          const std::string type = field.value("type", std::string());
+          // help = UI-only doc slot; texture = an io decl, not a param;
+          // aggregates never had a legacy param row.
+          if (type == "help" || type == "texture" || type == "object" || type == "array" ||
+              type == "float2" || type == "float3" || type == "float4") {
+            continue;
+          }
+          int typeCode = 10;  // Standard
+          if (type == "bool") typeCode = 0;
+          else if (type == "event") typeCode = 1;
+          else if (type == "int") typeCode = 13;
+          else if (type == "string") typeCode = 100;
+          double defaultValue = 0;
+          if (field.contains("default")) {
+            const auto& d = field["default"];
+            if (d.is_number()) defaultValue = d.get<double>();
+            else if (d.is_boolean()) defaultValue = d.get<bool>() ? 1 : 0;
+          }
+          params.push_back({
+              {"index", paramIdx++},
+              {"name", it.key()},
+              {"type", typeCode},
+              {"defaultValue", defaultValue},
+              // Always emitted: downstream widgets disable range mapping when
+              // these are absent, and [0,1] is the safe default for unranged
+              // fields (bools, events, strings).
+              {"min", field.contains("min") && field["min"].is_number() ? field["min"].get<double>() : 0.0},
+              {"max", field.contains("max") && field["max"].is_number() ? field["max"].get<double>() : 1.0},
+          });
+        }
+        return params;
+      }()},
     };
     std::cout << result.dump() << std::endl;
     return 0;

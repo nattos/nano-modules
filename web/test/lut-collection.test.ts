@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 /**
  * E2E for color.legacy.lut_collection — "LUT Collection 1", the v2 port of the
@@ -12,7 +12,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
  * 4 Transfer, 5 Tonal, 6 Mono, 7 Noir, 8 Sat+Contrast, 9 Sat/Contrast More,
  * 10/11/12 Hue Rotate 90/180/270.
  */
-describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
+forEachBackend((backend) => {
+describe(`LUT Collection 1 (color.legacy.lut_collection) E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const COLOR: [number, number, number, number] = [0.8, 0.2, 0.4, 1.0];
@@ -113,4 +114,5 @@ describe('LUT Collection 1 (color.legacy.lut_collection) E2E', () => {
     const delta = Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
     expect(delta).toBeGreaterThan(5);
   });
+});
 });

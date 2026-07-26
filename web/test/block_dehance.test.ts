@@ -1,4 +1,4 @@
-import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runGpuEffectTest, Frame, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for filter.glitch.block_dehance — a GPU rect pool that "dehances"
 // the input (black / mosaic / noise) inside bright-seeking rectangles.
@@ -8,7 +8,8 @@ import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 // snapshot. A solid input means bright-seek lands rects anywhere (uniform
 // mask) — fine for asserting coverage/mode, not specific positions.
 
-describe('Block Dehance Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Block Dehance Effect E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const W = 128, H = 128;
@@ -147,4 +148,5 @@ describe('Block Dehance Effect E2E', () => {
     frame.expectCoverage(c => luma(c) > 180, { min: 0.03 });
     frame.expectCoverage(c => luma(c) < 70, { min: 0.03 });
   });
+});
 });

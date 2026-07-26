@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for source.light.side_jet — the fixed-engine JPL test plume.
 //
@@ -8,7 +8,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // rendering once). Without it the plume only advances a single frame and
 // barely leaves the nozzle.
 
-describe('Side Jet Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Side Jet Effect E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const W = 192, H = 108;
@@ -75,4 +76,5 @@ describe('Side Jet Effect E2E', () => {
     };
     expect(bandLum(hi)).toBeGreaterThan(bandLum(lo) * 1.2);
   });
+});
 });

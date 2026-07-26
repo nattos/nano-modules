@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for filter.light.flicker_grid — reduces the input to a grid
 // of flat cells and turns each column's luma into a per-column flicker rate
@@ -16,7 +16,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // here — verify those by eye in-app. A grey (g,g,g) input has Rec.601 luma
 // exactly g, which makes the threshold/rate math below exact.
 
-describe('Flicker Grid Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Flicker Grid Effect E2E (${backend})`, () => {
   jest.setTimeout(120000);
 
   const W = 160, H = 100;
@@ -125,4 +126,5 @@ describe('Flicker Grid Effect E2E', () => {
     expect(peak.pixelAt(W / 2, H / 2).r).toBeGreaterThan(200);
     expect(avg.pixelAt(W / 2, H / 2).r).toBeGreaterThan(200);
   });
+});
 });

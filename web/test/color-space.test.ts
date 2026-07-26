@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.color_space` against `core`. The effect
 // always routes input → linear (canonical) → output, so all four
@@ -11,7 +11,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // At c = 0.5 (input r=128/255 ≈ 0.502): srgb→linear ≈ 0.2159 → 55.
 // At c = 0.5 linear: linear→srgb ≈ 0.7354 → 187.
 
-describe('Color Space Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Color Space Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and two select inputs', async () => {
@@ -102,4 +103,5 @@ describe('Color Space Effect E2E', () => {
       white.expectUniformColor({ r: 255, g: 255, b: 255, a: 255 }, 2);
     }
   });
+});
 });

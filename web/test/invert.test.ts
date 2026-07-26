@@ -1,10 +1,11 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.invert` against `core`. Inversion is now
 // unconditional (partial-strength mixing is handled by the system-level
 // per-effect alpha). Param indices: 0 = invert_alpha (bool as 0/1).
 
-describe('Invert Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Invert Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -39,7 +40,7 @@ describe('Invert Effect E2E', () => {
       module: 'color.invert',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.4],
-      params: [[0, 0.0]],
+      params: [["invert_alpha", 0.0]],
       dumpName: 'invert_alpha_keep',
     });
 
@@ -53,11 +54,12 @@ describe('Invert Effect E2E', () => {
       module: 'color.invert',
       bundle: 'core',
       inputColor: [0.5, 0.5, 0.5, 0.4],
-      params: [[0, 1.0]],
+      params: [["invert_alpha", 1.0]],
       dumpName: 'invert_alpha_flip',
     });
 
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { a: 153 }, 3);
   });
+});
 });

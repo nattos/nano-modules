@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.hue_basis` against `core`.
 //
@@ -12,7 +12,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 //     input channels — exact inverse for an orthogonal basis,
 //     graceful collapse otherwise (no NaNs).
 
-describe('Hue Basis Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Hue Basis Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and four scalar inputs', async () => {
@@ -211,4 +212,5 @@ describe('Hue Basis Effect E2E', () => {
     // through the 8-bit quantization in the intermediate.
     reversed.expectUniformColor({ r: 255, g: 128, b: 0, a: 255 }, 3);
   });
+});
 });

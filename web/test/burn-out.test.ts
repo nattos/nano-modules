@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 /**
  * E2E for color.legacy.burn_out — "Burn Out", the v2 port of the Resolume Wire
@@ -8,7 +8,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
  * `amount` knob drives the burn without any timing; `trigger` fires the
  * envelope over a few ticks.
  */
-describe('Burn Out (color.legacy.burn_out) E2E', () => {
+forEachBackend((backend) => {
+describe(`Burn Out (color.legacy.burn_out) E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const MID: [number, number, number, number] = [0.30, 0.30, 0.50, 1.0]; // ~ (76,76,128)
@@ -87,4 +88,5 @@ describe('Burn Out (color.legacy.burn_out) E2E', () => {
       expect(a).toBeLessThan(40); // burn=1 → alpha → ~0
     }
   });
+});
 });

@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `composite.bake_alpha` against the shipping `core`
 // bundle. The effect composites the input *over* a chosen background
@@ -8,7 +8,8 @@ import { runGpuEffectTest } from './gpu-test-helpers';
 // caller bake against any colour. With bg.a = 0 the input's alpha is
 // preserved (transparent-aware composite).
 
-describe('Bake Alpha Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Bake Alpha Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and a single color input', async () => {
@@ -98,4 +99,5 @@ describe('Bake Alpha Effect E2E', () => {
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 128, g: 64, b: 0, a: 128 }, 4);
   });
+});
 });

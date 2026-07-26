@@ -1,6 +1,7 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
-describe('Crop Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Crop Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -136,4 +137,5 @@ describe('Crop Effect E2E', () => {
       expect(corner.r).toBeLessThan(50);
     });
   });
+});
 });

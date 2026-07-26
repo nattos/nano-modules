@@ -1,4 +1,4 @@
-import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuTest, runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `warp.dispersion` against the `lights` bundle.
 //
@@ -9,7 +9,8 @@ import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
 // non-uniform input, which we don't easily produce in the per-effect
 // runner (it ships a solid-color input).
 
-describe('Dispersion Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Dispersion Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -90,4 +91,5 @@ describe('Dispersion Effect E2E', () => {
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ r: 51, g: 102, b: 204, a: 255 }, 5);
   });
+});
 });

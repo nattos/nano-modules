@@ -1,10 +1,11 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.colorize` against `core`.
 // Schema: color (rgb — referenced by name), amount [0,1], mode select
 // (0 = Luma, 1 = Multiply, 2 = Screen).
 
-describe('Colorize Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Colorize Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -107,4 +108,5 @@ describe('Colorize Effect E2E', () => {
     expect(frame.success).toBe(true);
     frame.expectPixelAt(32, 32, { r: 124, g: 76, b: 102 }, 4);
   });
+});
 });

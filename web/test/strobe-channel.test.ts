@@ -1,4 +1,4 @@
-import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuTest, runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `source.light.strobe_channel` against the `lights` bundle.
 //
@@ -14,7 +14,8 @@ import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
 // use `seed_low = seed_high` to pin the seed directly. We can also pin
 // `iterations` to make the math simpler.
 
-describe('Strobe Channel Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Strobe Channel Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -136,4 +137,5 @@ describe('Strobe Channel Effect E2E', () => {
     frame.expectPixelAt(12, 32, { r: 0, g: 0, b: 0 }, 5);       // bar 1
     frame.expectPixelAt(60, 32, { r: 0, g: 0, b: 0 }, 5);       // bar 7
   });
+});
 });
