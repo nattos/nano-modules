@@ -517,6 +517,15 @@ add_executable(test_bridge_core tests/test_bridge_core.cpp)
 target_link_libraries(test_bridge_core PRIVATE bridge_core Catch2::Catch2WithMain)
 catch_discover_tests(test_bridge_core)
 
+# Video policy twins (header-only) — replays the TS-generated goldens.
+add_executable(test_video_policy tests/test_video_policy.cpp)
+target_include_directories(test_video_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(test_video_policy PRIVATE
+  VIDEO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/video")
+target_link_libraries(test_video_policy PRIVATE
+  nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_video_policy)
+
 # Library-root resolver (header-only, so nothing to link but json).
 add_executable(test_library_paths tests/test_library_paths.cpp)
 target_include_directories(test_library_paths PRIVATE ${CMAKE_SOURCE_DIR}/src)

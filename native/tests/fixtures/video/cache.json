@@ -1,0 +1,1250 @@
+[
+ {
+  "name": "lru-eviction",
+  "budgetBytes": 65536,
+  "ops": [
+   {
+    "op": "reserve",
+    "frame": 0,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 0
+   },
+   {
+    "op": "lookup",
+    "frame": 0
+   },
+   {
+    "op": "reserve",
+    "frame": 1,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 1
+   },
+   {
+    "op": "lookup",
+    "frame": 1
+   },
+   {
+    "op": "reserve",
+    "frame": 2,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 2
+   },
+   {
+    "op": "lookup",
+    "frame": 2
+   },
+   {
+    "op": "reserve",
+    "frame": 3,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 3
+   },
+   {
+    "op": "lookup",
+    "frame": 3
+   },
+   {
+    "op": "reserve",
+    "frame": 4,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 4
+   },
+   {
+    "op": "lookup",
+    "frame": 4
+   },
+   {
+    "op": "reserve",
+    "frame": 5,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 5
+   },
+   {
+    "op": "lookup",
+    "frame": 5
+   },
+   {
+    "op": "reserve",
+    "frame": 6,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 6
+   },
+   {
+    "op": "lookup",
+    "frame": 6
+   },
+   {
+    "op": "reserve",
+    "frame": 7,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 7
+   },
+   {
+    "op": "lookup",
+    "frame": 7
+   },
+   {
+    "op": "stats"
+   }
+  ],
+  "result": {
+   "trace": [
+    {
+     "op": "reserve",
+     "frame": 0,
+     "handle": 1
+    },
+    {
+     "op": "markReady",
+     "frame": 0
+    },
+    {
+     "op": "lookup",
+     "frame": 0,
+     "handle": 1
+    },
+    {
+     "op": "reserve",
+     "frame": 1,
+     "handle": 2
+    },
+    {
+     "op": "markReady",
+     "frame": 1
+    },
+    {
+     "op": "lookup",
+     "frame": 1,
+     "handle": 2
+    },
+    {
+     "op": "reserve",
+     "frame": 2,
+     "handle": 3
+    },
+    {
+     "op": "markReady",
+     "frame": 2
+    },
+    {
+     "op": "lookup",
+     "frame": 2,
+     "handle": 3
+    },
+    {
+     "op": "reserve",
+     "frame": 3,
+     "handle": 4
+    },
+    {
+     "op": "markReady",
+     "frame": 3
+    },
+    {
+     "op": "lookup",
+     "frame": 3,
+     "handle": 4
+    },
+    {
+     "op": "reserve",
+     "frame": 4,
+     "handle": 5
+    },
+    {
+     "op": "markReady",
+     "frame": 4
+    },
+    {
+     "op": "lookup",
+     "frame": 4,
+     "handle": 5
+    },
+    {
+     "op": "reserve",
+     "frame": 5,
+     "handle": 6
+    },
+    {
+     "op": "markReady",
+     "frame": 5
+    },
+    {
+     "op": "lookup",
+     "frame": 5,
+     "handle": 6
+    },
+    {
+     "op": "reserve",
+     "frame": 6,
+     "handle": 7
+    },
+    {
+     "op": "markReady",
+     "frame": 6
+    },
+    {
+     "op": "lookup",
+     "frame": 6,
+     "handle": 7
+    },
+    {
+     "op": "reserve",
+     "frame": 7,
+     "handle": 8
+    },
+    {
+     "op": "markReady",
+     "frame": 7
+    },
+    {
+     "op": "lookup",
+     "frame": 7,
+     "handle": 8
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 65536,
+      "entries": 4,
+      "hits": 8,
+      "misses": 0,
+      "hitRate": 1,
+      "recentHits": 8,
+      "recentMisses": 0,
+      "recentHitRate": 1,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      4,
+      5,
+      6,
+      7
+     ]
+    }
+   ],
+   "released": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "cached": [
+    4,
+    5,
+    6,
+    7
+   ],
+   "bytes": 65536,
+   "stats": {
+    "bytes": 65536,
+    "entries": 4,
+    "hits": 8,
+    "misses": 0,
+    "hitRate": 1,
+    "recentHits": 8,
+    "recentMisses": 0,
+    "recentHitRate": 1,
+    "pinnedEvicted": false
+   }
+  }
+ },
+ {
+  "name": "not-ready-is-a-miss",
+  "budgetBytes": 32768,
+  "ops": [
+   {
+    "op": "reserve",
+    "frame": 0,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "lookup",
+    "frame": 0
+   },
+   {
+    "op": "reserve",
+    "frame": 1,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 1
+   },
+   {
+    "op": "lookup",
+    "frame": 1
+   },
+   {
+    "op": "reserve",
+    "frame": 2,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 2
+   },
+   {
+    "op": "lookup",
+    "frame": 2
+   },
+   {
+    "op": "markReady",
+    "frame": 0
+   },
+   {
+    "op": "lookup",
+    "frame": 0
+   },
+   {
+    "op": "stats"
+   }
+  ],
+  "result": {
+   "trace": [
+    {
+     "op": "reserve",
+     "frame": 0,
+     "handle": 1
+    },
+    {
+     "op": "lookup",
+     "frame": 0,
+     "handle": -1
+    },
+    {
+     "op": "reserve",
+     "frame": 1,
+     "handle": 2
+    },
+    {
+     "op": "markReady",
+     "frame": 1
+    },
+    {
+     "op": "lookup",
+     "frame": 1,
+     "handle": 2
+    },
+    {
+     "op": "reserve",
+     "frame": 2,
+     "handle": 3
+    },
+    {
+     "op": "markReady",
+     "frame": 2
+    },
+    {
+     "op": "lookup",
+     "frame": 2,
+     "handle": 3
+    },
+    {
+     "op": "markReady",
+     "frame": 0
+    },
+    {
+     "op": "lookup",
+     "frame": 0,
+     "handle": 1
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 32768,
+      "entries": 2,
+      "hits": 3,
+      "misses": 1,
+      "hitRate": 0.75,
+      "recentHits": 3,
+      "recentMisses": 1,
+      "recentHitRate": 0.75,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      0,
+      2
+     ]
+    }
+   ],
+   "released": [
+    2
+   ],
+   "cached": [
+    0,
+    2
+   ],
+   "bytes": 32768,
+   "stats": {
+    "bytes": 32768,
+    "entries": 2,
+    "hits": 3,
+    "misses": 1,
+    "hitRate": 0.75,
+    "recentHits": 3,
+    "recentMisses": 1,
+    "recentHitRate": 0.75,
+    "pinnedEvicted": false
+   }
+  }
+ },
+ {
+  "name": "pinned-survives-then-forced",
+  "budgetBytes": 49152,
+  "ops": [
+   {
+    "op": "reserve",
+    "frame": 10,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 10
+   },
+   {
+    "op": "lookup",
+    "frame": 10
+   },
+   {
+    "op": "reserve",
+    "frame": 11,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 11
+   },
+   {
+    "op": "lookup",
+    "frame": 11
+   },
+   {
+    "op": "reserve",
+    "frame": 12,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 12
+   },
+   {
+    "op": "lookup",
+    "frame": 12
+   },
+   {
+    "op": "setPinned",
+    "frames": [
+     10,
+     11,
+     12
+    ]
+   },
+   {
+    "op": "reserve",
+    "frame": 20,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 20
+   },
+   {
+    "op": "lookup",
+    "frame": 20
+   },
+   {
+    "op": "stats"
+   },
+   {
+    "op": "reserve",
+    "frame": 21,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 21
+   },
+   {
+    "op": "lookup",
+    "frame": 21
+   },
+   {
+    "op": "stats"
+   }
+  ],
+  "result": {
+   "trace": [
+    {
+     "op": "reserve",
+     "frame": 10,
+     "handle": 1
+    },
+    {
+     "op": "markReady",
+     "frame": 10
+    },
+    {
+     "op": "lookup",
+     "frame": 10,
+     "handle": 1
+    },
+    {
+     "op": "reserve",
+     "frame": 11,
+     "handle": 2
+    },
+    {
+     "op": "markReady",
+     "frame": 11
+    },
+    {
+     "op": "lookup",
+     "frame": 11,
+     "handle": 2
+    },
+    {
+     "op": "reserve",
+     "frame": 12,
+     "handle": 3
+    },
+    {
+     "op": "markReady",
+     "frame": 12
+    },
+    {
+     "op": "lookup",
+     "frame": 12,
+     "handle": 3
+    },
+    {
+     "op": "setPinned",
+     "pinned": [
+      10,
+      11,
+      12
+     ]
+    },
+    {
+     "op": "reserve",
+     "frame": 20,
+     "handle": 4
+    },
+    {
+     "op": "markReady",
+     "frame": 20
+    },
+    {
+     "op": "lookup",
+     "frame": 20,
+     "handle": 4
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 49152,
+      "entries": 3,
+      "hits": 4,
+      "misses": 0,
+      "hitRate": 1,
+      "recentHits": 4,
+      "recentMisses": 0,
+      "recentHitRate": 1,
+      "pinnedEvicted": true
+     },
+     "cached": [
+      11,
+      12,
+      20
+     ]
+    },
+    {
+     "op": "reserve",
+     "frame": 21,
+     "handle": 5
+    },
+    {
+     "op": "markReady",
+     "frame": 21
+    },
+    {
+     "op": "lookup",
+     "frame": 21,
+     "handle": 5
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 49152,
+      "entries": 3,
+      "hits": 5,
+      "misses": 0,
+      "hitRate": 1,
+      "recentHits": 5,
+      "recentMisses": 0,
+      "recentHitRate": 1,
+      "pinnedEvicted": true
+     },
+     "cached": [
+      11,
+      12,
+      21
+     ]
+    }
+   ],
+   "released": [
+    1,
+    4
+   ],
+   "cached": [
+    11,
+    12,
+    21
+   ],
+   "bytes": 49152,
+   "stats": {
+    "bytes": 49152,
+    "entries": 3,
+    "hits": 5,
+    "misses": 0,
+    "hitRate": 1,
+    "recentHits": 5,
+    "recentMisses": 0,
+    "recentHitRate": 1,
+    "pinnedEvicted": true
+   }
+  }
+ },
+ {
+  "name": "unpin-drops-to-lru",
+  "budgetBytes": 32768,
+  "ops": [
+   {
+    "op": "reserve",
+    "frame": 1,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 1
+   },
+   {
+    "op": "lookup",
+    "frame": 1
+   },
+   {
+    "op": "reserve",
+    "frame": 2,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 2
+   },
+   {
+    "op": "lookup",
+    "frame": 2
+   },
+   {
+    "op": "setPinned",
+    "frames": [
+     1
+    ]
+   },
+   {
+    "op": "setPinned",
+    "frames": []
+   },
+   {
+    "op": "reserve",
+    "frame": 3,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 3
+   },
+   {
+    "op": "lookup",
+    "frame": 3
+   },
+   {
+    "op": "stats"
+   }
+  ],
+  "result": {
+   "trace": [
+    {
+     "op": "reserve",
+     "frame": 1,
+     "handle": 1
+    },
+    {
+     "op": "markReady",
+     "frame": 1
+    },
+    {
+     "op": "lookup",
+     "frame": 1,
+     "handle": 1
+    },
+    {
+     "op": "reserve",
+     "frame": 2,
+     "handle": 2
+    },
+    {
+     "op": "markReady",
+     "frame": 2
+    },
+    {
+     "op": "lookup",
+     "frame": 2,
+     "handle": 2
+    },
+    {
+     "op": "setPinned",
+     "pinned": [
+      1
+     ]
+    },
+    {
+     "op": "setPinned",
+     "pinned": []
+    },
+    {
+     "op": "reserve",
+     "frame": 3,
+     "handle": 3
+    },
+    {
+     "op": "markReady",
+     "frame": 3
+    },
+    {
+     "op": "lookup",
+     "frame": 3,
+     "handle": 3
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 32768,
+      "entries": 2,
+      "hits": 3,
+      "misses": 0,
+      "hitRate": 1,
+      "recentHits": 3,
+      "recentMisses": 0,
+      "recentHitRate": 1,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      2,
+      3
+     ]
+    }
+   ],
+   "released": [
+    1
+   ],
+   "cached": [
+    2,
+    3
+   ],
+   "bytes": 32768,
+   "stats": {
+    "bytes": 32768,
+    "entries": 2,
+    "hits": 3,
+    "misses": 0,
+    "hitRate": 1,
+    "recentHits": 3,
+    "recentMisses": 0,
+    "recentHitRate": 1,
+    "pinnedEvicted": false
+   }
+  }
+ },
+ {
+  "name": "rolling-window",
+  "budgetBytes": 131072,
+  "ops": [
+   {
+    "op": "reserve",
+    "frame": 1,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 1
+   },
+   {
+    "op": "lookup",
+    "frame": 1
+   },
+   {
+    "op": "reserve",
+    "frame": 2,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 2
+   },
+   {
+    "op": "lookup",
+    "frame": 2
+   },
+   {
+    "op": "lookup",
+    "frame": 99
+   },
+   {
+    "op": "stats"
+   },
+   {
+    "op": "advance",
+    "ms": 1500
+   },
+   {
+    "op": "stats"
+   },
+   {
+    "op": "lookup",
+    "frame": 1
+   },
+   {
+    "op": "stats"
+   },
+   {
+    "op": "resetStats"
+   },
+   {
+    "op": "stats"
+   }
+  ],
+  "result": {
+   "trace": [
+    {
+     "op": "reserve",
+     "frame": 1,
+     "handle": 1
+    },
+    {
+     "op": "markReady",
+     "frame": 1
+    },
+    {
+     "op": "lookup",
+     "frame": 1,
+     "handle": 1
+    },
+    {
+     "op": "reserve",
+     "frame": 2,
+     "handle": 2
+    },
+    {
+     "op": "markReady",
+     "frame": 2
+    },
+    {
+     "op": "lookup",
+     "frame": 2,
+     "handle": 2
+    },
+    {
+     "op": "lookup",
+     "frame": 99,
+     "handle": -1
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 32768,
+      "entries": 2,
+      "hits": 2,
+      "misses": 1,
+      "hitRate": 0.6666666666666666,
+      "recentHits": 2,
+      "recentMisses": 1,
+      "recentHitRate": 0.6666666666666666,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      1,
+      2
+     ]
+    },
+    {
+     "op": "advance",
+     "clock": 1500
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 32768,
+      "entries": 2,
+      "hits": 2,
+      "misses": 1,
+      "hitRate": 0.6666666666666666,
+      "recentHits": 0,
+      "recentMisses": 0,
+      "recentHitRate": 0,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      1,
+      2
+     ]
+    },
+    {
+     "op": "lookup",
+     "frame": 1,
+     "handle": 1
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 32768,
+      "entries": 2,
+      "hits": 3,
+      "misses": 1,
+      "hitRate": 0.75,
+      "recentHits": 1,
+      "recentMisses": 0,
+      "recentHitRate": 1,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      1,
+      2
+     ]
+    },
+    {
+     "op": "resetStats"
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 32768,
+      "entries": 2,
+      "hits": 0,
+      "misses": 0,
+      "hitRate": 0,
+      "recentHits": 0,
+      "recentMisses": 0,
+      "recentHitRate": 0,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      1,
+      2
+     ]
+    }
+   ],
+   "released": [],
+   "cached": [
+    1,
+    2
+   ],
+   "bytes": 32768,
+   "stats": {
+    "bytes": 32768,
+    "entries": 2,
+    "hits": 0,
+    "misses": 0,
+    "hitRate": 0,
+    "recentHits": 0,
+    "recentMisses": 0,
+    "recentHitRate": 0,
+    "pinnedEvicted": false
+   }
+  }
+ },
+ {
+  "name": "format-sizing",
+  "budgetBytes": 65536,
+  "ops": [
+   {
+    "op": "reserve",
+    "frame": 0,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 0
+   },
+   {
+    "op": "lookup",
+    "frame": 0
+   },
+   {
+    "op": "reserve",
+    "frame": 1,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 1
+   },
+   {
+    "op": "lookup",
+    "frame": 1
+   },
+   {
+    "op": "reserve",
+    "frame": 2,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 2
+   },
+   {
+    "op": "lookup",
+    "frame": 2
+   },
+   {
+    "op": "reserve",
+    "frame": 3,
+    "width": 64,
+    "height": 64,
+    "format": 1
+   },
+   {
+    "op": "markReady",
+    "frame": 3
+   },
+   {
+    "op": "lookup",
+    "frame": 3
+   },
+   {
+    "op": "reserve",
+    "frame": 9,
+    "width": 64,
+    "height": 64,
+    "format": 5
+   },
+   {
+    "op": "markReady",
+    "frame": 9
+   },
+   {
+    "op": "lookup",
+    "frame": 9
+   },
+   {
+    "op": "stats"
+   },
+   {
+    "op": "clear"
+   },
+   {
+    "op": "stats"
+   }
+  ],
+  "result": {
+   "trace": [
+    {
+     "op": "reserve",
+     "frame": 0,
+     "handle": 1
+    },
+    {
+     "op": "markReady",
+     "frame": 0
+    },
+    {
+     "op": "lookup",
+     "frame": 0,
+     "handle": 1
+    },
+    {
+     "op": "reserve",
+     "frame": 1,
+     "handle": 2
+    },
+    {
+     "op": "markReady",
+     "frame": 1
+    },
+    {
+     "op": "lookup",
+     "frame": 1,
+     "handle": 2
+    },
+    {
+     "op": "reserve",
+     "frame": 2,
+     "handle": 3
+    },
+    {
+     "op": "markReady",
+     "frame": 2
+    },
+    {
+     "op": "lookup",
+     "frame": 2,
+     "handle": 3
+    },
+    {
+     "op": "reserve",
+     "frame": 3,
+     "handle": 4
+    },
+    {
+     "op": "markReady",
+     "frame": 3
+    },
+    {
+     "op": "lookup",
+     "frame": 3,
+     "handle": 4
+    },
+    {
+     "op": "reserve",
+     "frame": 9,
+     "handle": 5
+    },
+    {
+     "op": "markReady",
+     "frame": 9
+    },
+    {
+     "op": "lookup",
+     "frame": 9,
+     "handle": 5
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 65536,
+      "entries": 1,
+      "hits": 5,
+      "misses": 0,
+      "hitRate": 1,
+      "recentHits": 5,
+      "recentMisses": 0,
+      "recentHitRate": 1,
+      "pinnedEvicted": false
+     },
+     "cached": [
+      9
+     ]
+    },
+    {
+     "op": "clear"
+    },
+    {
+     "op": "stats",
+     "stats": {
+      "bytes": 0,
+      "entries": 0,
+      "hits": 0,
+      "misses": 0,
+      "hitRate": 0,
+      "recentHits": 0,
+      "recentMisses": 0,
+      "recentHitRate": 0,
+      "pinnedEvicted": false
+     },
+     "cached": []
+    }
+   ],
+   "released": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "cached": [],
+   "bytes": 0,
+   "stats": {
+    "bytes": 0,
+    "entries": 0,
+    "hits": 0,
+    "misses": 0,
+    "hitRate": 0,
+    "recentHits": 0,
+    "recentMisses": 0,
+    "recentHitRate": 0,
+    "pinnedEvicted": false
+   }
+  }
+ }
+]

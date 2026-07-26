@@ -26,7 +26,7 @@ import { ImageFrameSource } from './image-frame-source';
 import { FrameCache, type FrameCacheStats } from './frame-cache';
 import { CostTracker, type CostSnapshot } from './cost-tracker';
 import { AccessClassifier, type AccessMode, type ClassifierSnapshot } from './access-classifier';
-import { computeReadAheadTargets } from './read-ahead';
+import { computeReadAheadTargets, computePinnedFrames, READAHEAD_DEPTH } from './read-ahead';
 import {
   CoalescingWriter, deriveSourceKey,
   readSourceProfile, writeSourceProfile,
@@ -66,11 +66,6 @@ export interface ProfileSnapshot {
   /** Frame indices currently in the pinned set. */
   pinnedFrameIndices: number[];
 }
-
-/** Per-pull read-ahead depth for ring-shaped modes (Sequential / Reverse
- *  / Strided). Sized to roughly cover the gap between consecutive pulls
- *  on a 30 fps timeline. */
-const READAHEAD_DEPTH = 5;
 
 interface ClipState {
   sourceKey: string;
@@ -537,15 +532,7 @@ export class VideoPlaybackService {
 
   /** Refresh the cache's pinned set to match the current access mode. */
   private applyPinning(state: ClipState): void {
-    const m = state.classifier.snapshot();
-    let pinned: number[] = [];
-    if (m.mode === 'Loop' && m.loopRange) {
-      const [a, b] = m.loopRange;
-      for (let i = a; i <= b; i++) pinned.push(i);
-    } else if (m.mode === 'Hotspots' && m.hotFrames) {
-      pinned = m.hotFrames.slice();
-    }
-    state.cache.setPinned(pinned);
+    state.cache.setPinned(computePinnedFrames(state.classifier.snapshot()));
   }
 
   /** Persist profiles when mode or cost class changes, or periodically. */

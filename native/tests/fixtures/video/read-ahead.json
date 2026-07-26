@@ -1,0 +1,1945 @@
+{
+ "depth": 5,
+ "targets": [
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    6,
+    5,
+    4,
+    3,
+    2
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    6,
+    5,
+    4,
+    3,
+    2
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    6,
+    5,
+    4,
+    3,
+    2
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    96,
+    95,
+    94,
+    93,
+    92
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    96,
+    95,
+    94,
+    93,
+    92
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    96,
+    95,
+    94,
+    93,
+    92
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    98,
+    97,
+    96,
+    95,
+    94
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98,
+    97,
+    96,
+    95,
+    94
+   ]
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98,
+    97,
+    96,
+    95,
+    94
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    6,
+    5,
+    4,
+    3,
+    2
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    6,
+    5,
+    4,
+    3,
+    2
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    6,
+    5,
+    4,
+    3,
+    2
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    96,
+    95,
+    94,
+    93,
+    92
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    96,
+    95,
+    94,
+    93,
+    92
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    96,
+    95,
+    94,
+    93,
+    92
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    98,
+    97,
+    96,
+    95,
+    94
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98,
+    97,
+    96,
+    95,
+    94
+   ]
+  },
+  {
+   "mode": "Reverse",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98,
+    97,
+    96,
+    95,
+    94
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    3,
+    6,
+    9,
+    12,
+    15
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    3,
+    6,
+    9,
+    12,
+    15
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    10,
+    13,
+    16,
+    19,
+    22
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    3
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    8,
+    9,
+    10,
+    11,
+    12
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    10,
+    13,
+    16,
+    19,
+    22
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    3
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    93,
+    89,
+    85,
+    81,
+    77
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    98,
+    99
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    93,
+    89,
+    85,
+    81,
+    77
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    95,
+    91,
+    87,
+    83,
+    79
+   ]
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Strided",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    95,
+    91,
+    87,
+    83,
+    79
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    8
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    8
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    8
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    8
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    8
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    8
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    1
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    6,
+    8
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    6,
+    8
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    6,
+    8
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    6,
+    8
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    6,
+    8
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    6,
+    8
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    96,
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    96,
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    96,
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    96,
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    96,
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    96,
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Scrub",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": [
+    98
+   ]
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 7,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 97,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": 3,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "frameIdx": 99,
+   "frameCount": 100,
+   "motionDir": -1,
+   "depth": 5,
+   "stride": -4,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 100,
+   "motionDir": 1,
+   "depth": 0,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 1,
+   "motionDir": 1,
+   "depth": 5,
+   "expect": []
+  },
+  {
+   "mode": "Sequential",
+   "frameIdx": 0,
+   "frameCount": 8,
+   "motionDir": 1,
+   "depth": 12,
+   "expect": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ]
+  }
+ ],
+ "pinned": [
+  {
+   "mode": "Sequential",
+   "confidence": 1,
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "confidence": 1,
+   "loopRange": [
+    10,
+    19
+   ],
+   "expect": [
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+   ]
+  },
+  {
+   "mode": "Loop",
+   "confidence": 1,
+   "loopRange": [
+    5,
+    5
+   ],
+   "expect": [
+    5
+   ]
+  },
+  {
+   "mode": "Loop",
+   "confidence": 1,
+   "loopRange": [
+    9,
+    4
+   ],
+   "expect": []
+  },
+  {
+   "mode": "Loop",
+   "confidence": 1,
+   "expect": []
+  },
+  {
+   "mode": "Hotspots",
+   "confidence": 1,
+   "hotFrames": [
+    4,
+    8,
+    1
+   ],
+   "expect": [
+    4,
+    8,
+    1
+   ]
+  },
+  {
+   "mode": "Hotspots",
+   "confidence": 1,
+   "expect": []
+  },
+  {
+   "mode": "Random",
+   "confidence": 1,
+   "expect": []
+  }
+ ]
+}
