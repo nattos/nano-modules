@@ -25,23 +25,25 @@ const LOOK = {
 const BG = { r: 178, g: 178, b: 191 };
 const lum = (c: { r: number, g: number, b: number }) => (c.r + c.g + c.b) / 3;
 
-function helioSketch(params: Record<string, unknown>): Sketch {
+function helioSketch(params: Record<string, unknown>,
+                     look: Record<string, unknown> = {}): Sketch {
   return {
     anchor: null, wires: [],
     chain: [
       { type: 'module', module_type: 'source.sdf.helio_field',
         instance_key: 'sun@0', params },
       { type: 'module', module_type: 'source.sdf.plume',
-        instance_key: 'look@0', params: LOOK },
+        instance_key: 'look@0', params: { ...LOOK, ...look } },
     ],
   } as Sketch;
 }
 
 function phasesFor(sketchId: string, params: Record<string, unknown>,
-                   waits: number[]): any[] {
+                   waits: number[],
+                   look: Record<string, unknown> = {}): any[] {
   const phases: any[] = [{
     commands: [
-      { type: 'createSketch', sketchId, sketch: helioSketch(params) },
+      { type: 'createSketch', sketchId, sketch: helioSketch(params, look) },
       { type: 'setTracePoints', tracePoints: [
         { id: 'out', target: { type: 'sketch_output', sketchId } },
       ]},
@@ -55,12 +57,12 @@ function phasesFor(sketchId: string, params: Record<string, unknown>,
 }
 
 async function run(sketchId: string, params: Record<string, unknown>,
-                   waits: number[]) {
+                   waits: number[], look: Record<string, unknown> = {}) {
   const r = await runEngineMultiPhaseTest({
     width: 96, height: 96,
     modules: ['com.nano.core', 'com.nano.nano'],
     dumpName: sketchId,
-    phases: phasesFor(sketchId, params, waits),
+    phases: phasesFor(sketchId, params, waits, look),
   });
   expect(r.success).toBe(true);
   return r;
@@ -115,6 +117,17 @@ describe('source.sdf.helio_field E2E', () => {
       { radius: 0.8, relief: 0.6, sim_rate: 0, dust: 0 }, [10]);
     const on = await run('helio_dust_on',
       { radius: 0.8, relief: 0.6, sim_rate: 0, dust: 0.9 }, [10]);
+    on.phases[0].trace('out').expectDifferentFrom(off.phases[0].trace('out'), 100);
+  });
+
+  it('dust survives the fog pipeline', async () => {
+    // With fog on, the splat runs inside the scene-buffer route (march →
+    // dust → fog → composite) — this pins that integration: dust must
+    // still land on screen through the fog composite.
+    const off = await run('helio_dustfog_off',
+      { radius: 0.8, relief: 0.6, sim_rate: 0, dust: 0 }, [10], { fog: 0.4 });
+    const on = await run('helio_dustfog_on',
+      { radius: 0.8, relief: 0.6, sim_rate: 0, dust: 0.9 }, [10], { fog: 0.4 });
     on.phases[0].trace('out').expectDifferentFrom(off.phases[0].trace('out'), 100);
   });
 

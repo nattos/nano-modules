@@ -218,11 +218,14 @@ void module_init() {
       .group("dust", "Dust")
       .groupHelp(
           "Glinting motes hovering just off the surface — dust riding "
-          "the granulation. Each mote is born on a live granule and "
-          "carries its own facet orientation, so it catches the sun as "
-          "a hard little glint. Published on the rail's dust channel; "
-          "the downstream renderer (e.g. Plume) splats them SHARP with "
-          "exact depth. *Dust* is how many, *Dust Size* the mote size.")
+          "the granulation. Each mote is born on a live granule, rides "
+          "the same fluid as everything else (watch them stream around "
+          "the eddies), tumbles so its facet twinkles in the sun, and "
+          "dies where its granule starves near a strong line. Published "
+          "on the rail's dust channel: the downstream renderer (e.g. "
+          "Plume) splats each mote SHARP with exact depth, while their "
+          "aggregate density scatters fog and dims the sun softly. "
+          "*Dust* is how many, *Dust Size* the mote size.")
       .floatField("dust", 0.35f, 0.f, 1.f, state::PrimaryInput)
           .label("Dust", "Dust")
       .floatField("dust_size", 0.5f, 0.f, 1.f, state::PrimaryInput)
