@@ -137,6 +137,8 @@ compile_shaders_compute_var_spv helio_field dynamics
 compile_shaders_compute_var_spv helio_field storm
 compile_shaders_compute_var_spv helio_field dust
 compile_shaders_compute_var_spv helio_field dust_sim
+compile_shaders_compute_var_spv helio_field dust_accum
+compile_shaders_compute_var_spv helio_field dust_fold
 compile_shaders_compute_var_spv helio_field shell
 python3 ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
   "helio_field_prefill=$TMP_DIR/plume_prefill.spv" \
@@ -144,6 +146,9 @@ python3 ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
   "helio_field_storm=$TMP_DIR/helio_field_storm.spv" \
   "helio_field_dust=$TMP_DIR/helio_field_dust.spv" \
   "helio_field_dust_sim=$TMP_DIR/helio_field_dust_sim.spv" \
+  "helio_field_dust_accum=$TMP_DIR/helio_field_dust_accum.spv" \
+  "helio_field_dust_fold=$TMP_DIR/helio_field_dust_fold.spv" \
+  "helio_field_accum_clear=$TMP_DIR/plume_dust_clear.spv" \
   "helio_field_shell=$TMP_DIR/helio_field_shell.spv"
 echo "  helio_field shaders compiled (SPV: dynamics + storm + dust + shell + prefill reuse)"
 

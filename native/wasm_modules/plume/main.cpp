@@ -105,7 +105,7 @@ struct DustSplatUniforms {
 static_assert(sizeof(DustSplatUniforms) == 144,
               "DustSplatUniforms layout mismatch");
 
-struct DustClearUniforms { float count, _p0, _p1, _p2; };
+struct DustClearUniforms { float count, ones, _p0, _p1; };
 static_assert(sizeof(DustClearUniforms) == 16,
               "DustClearUniforms layout mismatch");
 
@@ -911,7 +911,7 @@ void render(void* self, int vp_w, int vp_h) {
   // shades into the scene buffer (color + its depth — fog then stops at
   // dust exactly like at the surface). ---
   if (dust_on) {
-    DustClearUniforms dcu = { (float)(vp_w * vp_h), 0.f, 0.f, 0.f };
+    DustClearUniforms dcu = { (float)(vp_w * vp_h), 1.f, 0.f, 0.f };
     s->ub_dust_clear.writeOne(dcu);
     DustSplatUniforms du = {};
     for (int i = 0; i < 4; i++) {

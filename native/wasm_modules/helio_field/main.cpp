@@ -66,9 +66,19 @@ static_assert(sizeof(DustUniforms) == 64, "DustUniforms layout mismatch");
 
 struct DustSimUniforms {
   float count, seed, R, lift;
-  float size, thresh, drift, _p0;
+  float size, thresh, dt, reset;
+  float tumble, life0, _p0, _p1;
 };
-static_assert(sizeof(DustSimUniforms) == 32, "DustSimUniforms layout mismatch");
+static_assert(sizeof(DustSimUniforms) == 48, "DustSimUniforms layout mismatch");
+
+struct DustAccumUniforms { float count, _p0, _p1, _p2; };
+static_assert(sizeof(DustAccumUniforms) == 16, "DustAccumUniforms mismatch");
+
+struct DustFoldUniforms { float norm, _p0, _p1, _p2; };
+static_assert(sizeof(DustFoldUniforms) == 16, "DustFoldUniforms mismatch");
+
+struct AccumClearUniforms { float count, ones, _p0, _p1; };
+static_assert(sizeof(AccumClearUniforms) == 16, "AccumClearUniforms mismatch");
 
 struct StormUniforms {
   float dt, thresh, prop, burn;
@@ -82,6 +92,9 @@ static gpu::ComputePSO s_pso_dynamics;
 static gpu::ComputePSO s_pso_storm;
 static gpu::ComputePSO s_pso_dust;
 static gpu::ComputePSO s_pso_dust_sim;
+static gpu::ComputePSO s_pso_dust_accum;
+static gpu::ComputePSO s_pso_dust_fold;
+static gpu::ComputePSO s_pso_accum_clear;
 static gpu::ComputePSO s_pso_shell;
 
 struct State {
@@ -94,15 +107,20 @@ struct State {
   gpu::Texture dust[2];         // RGBA16F (a, b, 0, 0) — granule chemistry
   gpu::Texture shell_full;      // RGBA16F 512² (h, crest)
   gpu::Texture shell_coarse;    // RGBA16F 256²
-  gpu::Texture sdf_vol;         // RGBA16F 128³
+  gpu::Texture sdf_vol;         // RGBA16F 128³ (baked, .a = 0)
+  gpu::Texture sdf_vol_pub;     // RGBA16F 128³ (bake + dust density .a)
   gpu::Buffer dust_parts;       // kDustPool × 2 float4 (rail dust layout)
-  gpu::Buffer ub_dyn, ub_storm, ub_dust, ub_dust_sim, ub_shell_full,
+  gpu::Buffer dust_state;       // kDustPool × float4 (age, life, salt, hover)
+  gpu::Buffer dust_accum;       // 128³ uints (fixed-point density counts)
+  gpu::Buffer ub_dyn, ub_storm, ub_dust, ub_dust_sim, ub_dust_accum,
+              ub_dust_fold, ub_accum_clear, ub_shell_full,
               ub_shell_coarse, ub_bake;
   gpu::Sampler samp;
 
   int ping = 0;                 // dyn/aux index written LAST frame
   int st_ping = 0;              // storm index written LAST frame
   int du_ping = 0;              // dust index written LAST frame
+  int dust_hwm = 0;             // pool slots ever initialized (grow = reseed)
   bool reset_pending = true;    // write initial conditions on next step
   double stir_phase = 0.0;
   double emerge_phase = 0.0;
@@ -254,6 +272,16 @@ void module_init() {
                            "rgba16float", "write");
   state::registerShaderSPV("helio_field_dust_sim", HELIO_FIELD_DUST_SIM_SPV,
                            HELIO_FIELD_DUST_SIM_SPV_SIZE);
+  state::registerShaderSPV("helio_field_dust_accum", HELIO_FIELD_DUST_ACCUM_SPV,
+                           HELIO_FIELD_DUST_ACCUM_SPV_SIZE);
+  state::registerShaderSPV("helio_field_dust_fold", HELIO_FIELD_DUST_FOLD_SPV,
+                           HELIO_FIELD_DUST_FOLD_SPV_SIZE,
+                           "rgba16float", "write");
+  // The plume dust splat's clear pass, re-registered under this effect
+  // (same SPV — a uint-buffer fill is a uint-buffer fill).
+  state::registerShaderSPV("helio_field_accum_clear",
+                           HELIO_FIELD_ACCUM_CLEAR_SPV,
+                           HELIO_FIELD_ACCUM_CLEAR_SPV_SIZE);
   state::registerShaderSPV("helio_field_shell", HELIO_FIELD_SHELL_SPV,
                            HELIO_FIELD_SHELL_SPV_SIZE,
                            "rgba16float", "write");
@@ -262,9 +290,12 @@ void module_init() {
   auto cs_storm = gpu::Device::createShaderModuleByName("helio_field_storm");
   auto cs_dust = gpu::Device::createShaderModuleByName("helio_field_dust");
   auto cs_dsim = gpu::Device::createShaderModuleByName("helio_field_dust_sim");
+  auto cs_dacc = gpu::Device::createShaderModuleByName("helio_field_dust_accum");
+  auto cs_dfold = gpu::Device::createShaderModuleByName("helio_field_dust_fold");
+  auto cs_aclr = gpu::Device::createShaderModuleByName("helio_field_accum_clear");
   auto cs_shell = gpu::Device::createShaderModuleByName("helio_field_shell");
   if (!cs_prefill || !cs_dyn || !cs_storm || !cs_dust || !cs_dsim ||
-      !cs_shell) return;
+      !cs_dacc || !cs_dfold || !cs_aclr || !cs_shell) return;
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main",
       gpu::Bindings()
           .tex2d(0)
@@ -297,9 +328,26 @@ void module_init() {
       gpu::Bindings()
           .tex2d(0)          // dust chemistry (current)
           .tex2d(1)          // shell_full (hover height)
-          .sampler(2)
-          .storageRW(3)      // rail particle buffer
-          .uniform(4));
+          .tex2d(2)          // velocity (current)
+          .sampler(3)
+          .storageRW(4)      // rail particle buffer
+          .storageRW(5)      // private life-cycle state
+          .uniform(6));
+  s_pso_dust_accum = gpu::Device::createComputePSO(cs_dacc, "main",
+      gpu::Bindings()
+          .storage(0)        // particles
+          .storageRW(1)      // count volume (atomics)
+          .uniform(2));
+  s_pso_dust_fold = gpu::Device::createComputePSO(cs_dfold, "main",
+      gpu::Bindings()
+          .tex3d(0)          // baked volume
+          .storage(1)        // count volume
+          .storageTex3d(2, gpu::TextureFormat::RGBA16F)
+          .uniform(3));
+  s_pso_accum_clear = gpu::Device::createComputePSO(cs_aclr, "main",
+      gpu::Bindings()
+          .storageRW(0)
+          .uniform(1));
   s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main",
       gpu::Bindings()
           .tex2d(0)          // aux (current)
@@ -322,6 +370,12 @@ void* create() {
                                          gpu::BufferUsage::Uniform);
   s->ub_dust_sim = gpu::Device::createBuffer(sizeof(DustSimUniforms),
                                              gpu::BufferUsage::Uniform);
+  s->ub_dust_accum = gpu::Device::createBuffer(sizeof(DustAccumUniforms),
+                                               gpu::BufferUsage::Uniform);
+  s->ub_dust_fold = gpu::Device::createBuffer(sizeof(DustFoldUniforms),
+                                              gpu::BufferUsage::Uniform);
+  s->ub_accum_clear = gpu::Device::createBuffer(sizeof(AccumClearUniforms),
+                                                gpu::BufferUsage::Uniform);
   s->ub_shell_full = gpu::Device::createBuffer(sizeof(HShellUniforms),
                                                gpu::BufferUsage::Uniform);
   s->ub_shell_coarse = gpu::Device::createBuffer(sizeof(HShellUniforms),
@@ -347,11 +401,17 @@ void destroy(void* self) {
   s->shell_full.release();
   s->shell_coarse.release();
   s->sdf_vol.release();
+  s->sdf_vol_pub.release();
   s->dust_parts.release();
+  s->dust_state.release();
+  s->dust_accum.release();
   s->ub_dyn.release();
   s->ub_storm.release();
   s->ub_dust.release();
   s->ub_dust_sim.release();
+  s->ub_dust_accum.release();
+  s->ub_dust_fold.release();
+  s->ub_accum_clear.release();
   s->ub_shell_full.release();
   s->ub_shell_coarse.release();
   s->ub_bake.release();
@@ -641,40 +701,58 @@ static bool runField(State* s) {
     cp.end();
   }
 
-  // --- Pass 1.5: dust motes (rail particle channel) — placed on the
-  // fresh chemistry + shell, so a frozen sim re-derives the identical
-  // set every frame. ---
+  // --- Pass 1.5: dust motes (rail particle channel) — a persistent
+  // pool advected by the sim velocity; born on granules, dying where
+  // they starve. Pool growth (knob up / fresh buffers) reseeds so no
+  // slot ever runs on uninitialized state. ---
   int dust_count = 0;
   if (s->dust_amt > 0.001f && s_pso_dust_sim.valid() &&
       s->ub_dust_sim.valid()) {
-    if (!s->dust_parts.valid())
+    if (!s->dust_parts.valid()) {
       s->dust_parts = gpu::Device::createBuffer(
           (long long)kDustPool * 2 * 16, gpu::BufferUsage::Storage);
-    if (s->dust_parts.valid()) {
-      // Square taper: the low half of the knob stays sparse.
-      dust_count = (int)((float)kDustPool * s->dust_amt * s->dust_amt);
+      s->dust_hwm = 0;
+    }
+    if (!s->dust_state.valid()) {
+      s->dust_state = gpu::Device::createBuffer(
+          (long long)kDustPool * 16, gpu::BufferUsage::Storage);
+      s->dust_hwm = 0;
+    }
+    if (s->dust_parts.valid() && s->dust_state.valid()) {
+      // Square taper: the low half of the knob stays sparse. The ceiling
+      // sits well under the pool: full-knob dust should read as heavy
+      // glitter, not a crust (measured: ~64k motes tile the granule
+      // fields solid at 512²).
+      dust_count = (int)(49152.0f * s->dust_amt * s->dust_amt);
       dust_count = dust_count / 64 * 64;
     }
   }
   if (dust_count > 0) {
+    const bool dust_reset = reset || dust_count > s->dust_hwm;
+    if (dust_count > s->dust_hwm) s->dust_hwm = dust_count;
     DustSimUniforms du2 = {};
     du2.count = (float)dust_count;
     du2.seed = s->variation * 10.0f;
     du2.R = R;
     du2.lift = 0.018f;
-    du2.size = 0.0025f + 0.005f * s->dust_size;
+    du2.size = 0.0015f + 0.0035f * s->dust_size;
     // Chemistry b tops out ~0.35 (seeded) / ~0.45 (mature): accept from
     // the blob shoulders up so dust tracks granules, not just cores.
     du2.thresh = 0.12f;
-    du2.drift = (float)s->stir_phase;
+    du2.dt = dt_sim;
+    du2.reset = dust_reset ? 1.0f : 0.0f;
+    du2.tumble = 2.5f;
+    du2.life0 = 7.0f;
     s->ub_dust_sim.writeOne(du2);
     auto cp = gpu::ComputePass::begin();
     cp.setPSO(s_pso_dust_sim);
     cp.setTexture(s->dust[dnxt], 0, 0);
     cp.setTexture(s->shell_full, 1, 0);
-    cp.setSampler(s->samp, 2);
-    cp.setBuffer(s->dust_parts, 3);
-    cp.setBuffer(s->ub_dust_sim, 4);
+    cp.setTexture(s->dyn[nxt], 2, 0);
+    cp.setSampler(s->samp, 3);
+    cp.setBuffer(s->dust_parts, 4);
+    cp.setBuffer(s->dust_state, 5);
+    cp.setBuffer(s->ub_dust_sim, 6);
     cp.dispatch(dust_count / 64);
     cp.end();
   }
@@ -708,6 +786,66 @@ static bool runField(State* s) {
     cp.end();
   }
 
+  // --- Pass 2.5: dust density → published grid .a (the soft half of
+  // dust: fog scattering + sun extinction read this as an aggregate
+  // medium; the motes themselves stay sharp in the consumer's splat).
+  // Runs on a COPY of the baked volume — when dust is off the baked
+  // volume (with .a = 0) publishes directly and this whole stage is
+  // skipped. ---
+  bool dust_vol = dust_count > 0 && s_pso_dust_accum.valid() &&
+                  s_pso_dust_fold.valid() && s_pso_accum_clear.valid() &&
+                  s->ub_dust_accum.valid() && s->ub_dust_fold.valid() &&
+                  s->ub_accum_clear.valid();
+  if (dust_vol) {
+    const int vres = plume_gen::kVolRes;
+    const int vcount = vres * vres * vres;
+    if (!s->dust_accum.valid())
+      s->dust_accum = gpu::Device::createBuffer((long long)vcount * 4,
+                                                gpu::BufferUsage::Storage);
+    if (!s->sdf_vol_pub.valid())
+      s->sdf_vol_pub = gpu::Device::createTexture3D(
+          vres, vres, vres, gpu::TextureFormat::RGBA16F);
+    dust_vol = s->dust_accum.valid() && s->sdf_vol_pub.valid();
+  }
+  if (dust_vol) {
+    const int vres = plume_gen::kVolRes;
+    const int vcount = vres * vres * vres;
+    AccumClearUniforms au = { (float)vcount, 0.f, 0.f, 0.f };  // fill zeros
+    s->ub_accum_clear.writeOne(au);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_accum_clear);
+      cp.setBuffer(s->dust_accum, 0);
+      cp.setBuffer(s->ub_accum_clear, 1);
+      cp.dispatch((vcount + 63) / 64);
+      cp.end();
+    }
+    DustAccumUniforms cu = { (float)dust_count, 0.f, 0.f, 0.f };
+    s->ub_dust_accum.writeOne(cu);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_dust_accum);
+      cp.setBuffer(s->dust_parts, 0);
+      cp.setBuffer(s->dust_accum, 1);
+      cp.setBuffer(s->ub_dust_accum, 2);
+      cp.dispatch((dust_count + 63) / 64);
+      cp.end();
+    }
+    // Full density at ~10 motes/voxel (each deposits 256 fixed-point).
+    DustFoldUniforms fu = { 1.0f / (256.0f * 10.0f), 0.f, 0.f, 0.f };
+    s->ub_dust_fold.writeOne(fu);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_dust_fold);
+      cp.setTexture(s->sdf_vol, 0, 0);
+      cp.setBuffer(s->dust_accum, 1);
+      cp.setTexture(s->sdf_vol_pub, 2, 1);
+      cp.setBuffer(s->ub_dust_fold, 3);
+      cp.dispatch(vres / 4, vres / 4, vres / 4);
+      cp.end();
+    }
+  }
+
   // --- Publish ---
   fx::sdf_field::Desc d;
   d.field_class = fx::sdf_field::SphericalHeightmap;
@@ -721,7 +859,9 @@ static bool runField(State* s) {
   d.has_grid = d.has_shell = true;
   d.dust_count = dust_count;
   d.has_dust = s->dust_parts.valid();
-  s->rail_pub.publish(d, s->sdf_vol.id, s->shell_full.id,
+  s->rail_pub.publish(d,
+                      dust_vol ? s->sdf_vol_pub.id : s->sdf_vol.id,
+                      s->shell_full.id,
                       s->dust_parts.valid() ? s->dust_parts.id : -1);
   return true;
 }

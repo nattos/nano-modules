@@ -40,17 +40,20 @@ void main(uint3 gid : SV_DispatchThreadID) {
   if (shade_p.x > 0.001) {
     const float voxel = 2.0 * PLM_EXT0 / float(PLM_VOL_RES);
     float st = 2.0 * voxel;
+    float dtau = 0.0;   // dust self-shadow: motes dim inside a clump
     [loop] for (int m = 0; m < 6; m++) {
       float3 sp = pos + sun_p.xyz * st;
       if (abs(sp.x) > PLM_EXT0 || abs(sp.y) > PLM_EXT0 ||
           abs(sp.z) > PLM_EXT0) break;
-      float d = sdfVol.SampleLevel(linSamp, plm_world_to_uvw(sp), 0).r
-              * shade_p.w;
+      float4 gs = sdfVol.SampleLevel(linSamp, plm_world_to_uvw(sp), 0);
+      float d = gs.r * shade_p.w;
       sh = min(sh, 5.0 * d / st);
       if (sh < 0.02) break;
-      st += clamp(d, 0.8 * voxel, 5.0 * voxel);
+      float step = clamp(d, 0.8 * voxel, 5.0 * voxel);
+      dtau += gs.a * step;
+      st += step;
     }
-    sh = lerp(1.0, saturate(sh), shade_p.x);
+    sh = lerp(1.0, saturate(sh) * exp2(-8.0 * dtau), shade_p.x);
   }
 
   // Two-sided diffuse (a mote has no meaningful "back"); the normal
@@ -68,11 +71,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // Glint: a Blinn lobe off the oriented normal — wide enough that a
   // useful fraction of random facets catch it, tight enough to flash.
-  float3 c = albedo.rgb * (0.55 * (key + fill) + gi);
+  float3 c = albedo.rgb * (0.68 * (key + fill) + gi);
   if (misc.y > 0.001) {
     float3 Hv = normalize(sun_p.xyz - rd);
     float spec_pow = exp2(2.5 + 4.5 * (1.0 - misc.z));
-    float spec = misc.y * 2.0 * pow(saturate(abs(dot(N, Hv))), spec_pow);
+    float spec = misc.y * 2.5 * pow(saturate(abs(dot(N, Hv))), spec_pow);
     c += spec * sun_p.w * (0.15 + 0.85 * sh);
   }
 

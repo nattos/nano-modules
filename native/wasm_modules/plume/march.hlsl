@@ -166,16 +166,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float sh = 1.0;
   if (shade_p.x > 0.001) {
     float st = 2.5 * voxel;
+    // Dust optical depth rides the same taps: the grid's .a channel is
+    // the provider's aggregate dust density (0 for dust-free fields —
+    // the term is then exactly 1 and the look is bit-identical).
+    float dtau = 0.0;
     [loop] for (int m = 0; m < 20; m++) {
       float3 sp = hp + sun_p.xyz * st;
       if (abs(sp.x) > PLM_EXT0 || abs(sp.y) > PLM_EXT0 ||
           abs(sp.z) > PLM_EXT0) break;
-      float d = plm_sdf(sp) * inv_lip;
+      float4 gs = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(sp), 0);
+      float d = gs.r * inv_lip;
       sh = min(sh, 5.0 * d / st);
       if (sh < 0.02) break;
-      st += clamp(d, 0.6 * voxel, 4.0 * voxel);
+      float step = clamp(d, 0.6 * voxel, 4.0 * voxel);
+      dtau += gs.a * step;
+      st += step;
     }
-    sh = lerp(1.0, saturate(sh), shade_p.x);
+    sh = lerp(1.0, saturate(sh) * exp2(-8.0 * dtau), shade_p.x);
   }
 
   // AO: how much the SDF falls short of free space along the normal.

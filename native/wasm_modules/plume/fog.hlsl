@@ -104,9 +104,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
     // Shell-hug distance: grid inside the tier-0 box, analytic outside.
     float d;
+    float dust_d = 0.0;   // provider dust density (grid .a; 0 when unused)
     bool in0 = abs(p.x) < PLM_EXT0 && abs(p.y) < PLM_EXT0 && abs(p.z) < PLM_EXT0;
     if (in0) {
-      d = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(p), 0).r * misc.x;
+      float4 gs = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(p), 0);
+      dust_d = gs.a;
+      d = gs.r * misc.x;
       // The baked distance is RADIAL (r - R - h(dir)), not a true SDF: the
       // angular spike pattern of h persists undiminished at every altitude,
       // which paints density spokes out to the box edge — on screen a
@@ -125,8 +128,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
     }
     else     d = length(p) - cam_p.w;
 
+    // Dust clumps scatter like local pockets of shell haze — scaled by
+    // the same Fog knob so dust-in-fog obeys the atmosphere controls.
     float sigma = fog_p.x * exp2(-max(d, 0.0) * fog_p.y)
-                + fog_p.z * 0.22;
+                + fog_p.z * 0.22
+                + fog_p.x * 0.6 * dust_d;
     if (sigma > 1e-4) {
       // Direct sun occlusion: sample the SDF around the point where THIS
       // sun ray crosses the object — its closest approach to the origin —
@@ -155,9 +161,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
           float3 ps = p + sun_p.xyz * max(sa + 0.36 * float(k) - 0.18, 0.12);
           float ds;
           if (abs(ps.x) < PLM_EXT0 && abs(ps.y) < PLM_EXT0 &&
-              abs(ps.z) < PLM_EXT0)
-            ds = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(ps), 0).r
-                 * misc.x;
+              abs(ps.z) < PLM_EXT0) {
+            float4 g2 = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(ps), 0);
+            ds = g2.r * misc.x;
+            // Dust clumps dim the sun shafts too (soft, 2-tap estimate).
+            occ *= exp2(-3.0 * g2.a);
+          }
           else
             ds = length(ps) - cam_p.w;
           occ *= saturate(ds * wid + 0.5);
