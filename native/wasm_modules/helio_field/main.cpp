@@ -51,9 +51,17 @@ static_assert(sizeof(DynUniforms) == 80, "DynUniforms layout mismatch");
 struct HShellUniforms {
   float res, amp, line_k, line_w;
   float base_floor, heat_gain, sim_eps, ga_cap;
-  float storm_amp, _pad0, _pad1, _pad2;
+  float storm_amp, dust_amp, dust_gain, _pad2;
 };
 static_assert(sizeof(HShellUniforms) == 48, "HShellUniforms layout mismatch");
+
+struct DustUniforms {
+  float dt, reset, sim_res, seed;
+  float feed, kill, diff, gs;
+  float eps, line_kill, nucleate, drift;
+  float gate_eps, _p0, _p1, _p2;
+};
+static_assert(sizeof(DustUniforms) == 64, "DustUniforms layout mismatch");
 
 struct StormUniforms {
   float dt, thresh, prop, burn;
@@ -65,6 +73,7 @@ static_assert(sizeof(StormUniforms) == 48, "StormUniforms layout mismatch");
 static gpu::ComputePSO s_pso_prefill;
 static gpu::ComputePSO s_pso_dynamics;
 static gpu::ComputePSO s_pso_storm;
+static gpu::ComputePSO s_pso_dust;
 static gpu::ComputePSO s_pso_shell;
 
 struct State {
@@ -74,14 +83,17 @@ struct State {
   gpu::Texture dyn[2];          // RGBA32F (vel.xyz, spare)
   gpu::Texture aux[2];          // RGBA32F (A, 0, 0, 0)
   gpu::Texture storm[2];        // RGBA16F (u, v, heat, 0)
+  gpu::Texture dust[2];         // RGBA16F (a, b, 0, 0) — granule chemistry
   gpu::Texture shell_full;      // RGBA16F 512² (h, crest)
   gpu::Texture shell_coarse;    // RGBA16F 256²
   gpu::Texture sdf_vol;         // RGBA16F 128³
-  gpu::Buffer ub_dyn, ub_storm, ub_shell_full, ub_shell_coarse, ub_bake;
+  gpu::Buffer ub_dyn, ub_storm, ub_dust, ub_shell_full, ub_shell_coarse,
+              ub_bake;
   gpu::Sampler samp;
 
   int ping = 0;                 // dyn/aux index written LAST frame
   int st_ping = 0;              // storm index written LAST frame
+  int du_ping = 0;              // dust index written LAST frame
   bool reset_pending = true;    // write initial conditions on next step
   double stir_phase = 0.0;
   double emerge_phase = 0.0;
@@ -97,6 +109,8 @@ struct State {
   float magnet = 0.6f;
   float relief = 0.5f;
   float line_scale = 0.5f;
+  float granules = 0.5f;
+  float grain_size = 0.5f;
   float excite = 0.5f;
   float storm_h = 0.6f;
   float glow = 0.7f;
@@ -159,6 +173,19 @@ void module_init() {
           .label("Relief", "Rel")
       .floatField("line_scale", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Line Scale", "Scale")
+      .group("granules", "Granules")
+      .groupHelp(
+          "Detail for the quiet flatlands between the lines: a granule "
+          "chemistry riding the same fluid — discrete spots that space "
+          "themselves out, curl along the eddies, and starve where the "
+          "field is strong (granulation lives only in the quiet sun). "
+          "Purely a surface detail: it never feeds back into the lines "
+          "or the storms. *Granules* is the bump height, *Grain Size* "
+          "the spot scale.")
+      .floatField("granules", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Granules", "Grain")
+      .floatField("grain_size", 0.5f, 0.f, 1.f, state::PrimaryInput)
+          .label("Grain Size", "Size")
       .group("storms", "Storms")
       .groupHelp(
           "Storms are not triggered — they SELF-IGNITE where the sim "
@@ -199,14 +226,18 @@ void module_init() {
   state::registerShaderSPV("helio_field_storm", HELIO_FIELD_STORM_SPV,
                            HELIO_FIELD_STORM_SPV_SIZE,
                            "rgba16float", "write");
+  state::registerShaderSPV("helio_field_dust", HELIO_FIELD_DUST_SPV,
+                           HELIO_FIELD_DUST_SPV_SIZE,
+                           "rgba16float", "write");
   state::registerShaderSPV("helio_field_shell", HELIO_FIELD_SHELL_SPV,
                            HELIO_FIELD_SHELL_SPV_SIZE,
                            "rgba16float", "write");
   auto cs_prefill = gpu::Device::createShaderModuleByName("helio_field_prefill");
   auto cs_dyn = gpu::Device::createShaderModuleByName("helio_field_dynamics");
   auto cs_storm = gpu::Device::createShaderModuleByName("helio_field_storm");
+  auto cs_dust = gpu::Device::createShaderModuleByName("helio_field_dust");
   auto cs_shell = gpu::Device::createShaderModuleByName("helio_field_shell");
-  if (!cs_prefill || !cs_dyn || !cs_storm || !cs_shell) return;
+  if (!cs_prefill || !cs_dyn || !cs_storm || !cs_dust || !cs_shell) return;
   s_pso_prefill = gpu::Device::createComputePSO(cs_prefill, "main",
       gpu::Bindings()
           .tex2d(0)
@@ -227,13 +258,22 @@ void module_init() {
           .sampler(2)
           .storageTex2d(3, gpu::TextureFormat::RGBA16F)  // storm (next)
           .uniform(4));
+  s_pso_dust = gpu::Device::createComputePSO(cs_dust, "main",
+      gpu::Bindings()
+          .tex2d(0)          // dyn (current — velocity)
+          .tex2d(1)          // aux (current — gate)
+          .tex2d(2)          // dust (previous)
+          .sampler(3)
+          .storageTex2d(4, gpu::TextureFormat::RGBA16F)  // dust (next)
+          .uniform(5));
   s_pso_shell = gpu::Device::createComputePSO(cs_shell, "main",
       gpu::Bindings()
           .tex2d(0)          // aux (current)
           .sampler(1)
           .storageTex2d(2, gpu::TextureFormat::RGBA16F)  // shell target
           .uniform(3)
-          .tex2d(4));        // storm (current)
+          .tex2d(4)          // storm (current)
+          .tex2d(5));        // dust (current)
 
   state::log("helio_field: module initialized");
 }
@@ -244,6 +284,8 @@ void* create() {
                                         gpu::BufferUsage::Uniform);
   s->ub_storm = gpu::Device::createBuffer(sizeof(StormUniforms),
                                           gpu::BufferUsage::Uniform);
+  s->ub_dust = gpu::Device::createBuffer(sizeof(DustUniforms),
+                                         gpu::BufferUsage::Uniform);
   s->ub_shell_full = gpu::Device::createBuffer(sizeof(HShellUniforms),
                                                gpu::BufferUsage::Uniform);
   s->ub_shell_coarse = gpu::Device::createBuffer(sizeof(HShellUniforms),
@@ -264,11 +306,14 @@ void destroy(void* self) {
   s->aux[1].release();
   s->storm[0].release();
   s->storm[1].release();
+  s->dust[0].release();
+  s->dust[1].release();
   s->shell_full.release();
   s->shell_coarse.release();
   s->sdf_vol.release();
   s->ub_dyn.release();
   s->ub_storm.release();
+  s->ub_dust.release();
   s->ub_shell_full.release();
   s->ub_shell_coarse.release();
   s->ub_bake.release();
@@ -284,8 +329,10 @@ void init(void* self) {
   s->emerge_phase = 0.0;
   s->ping = 0;
   s->st_ping = 0;
+  s->du_ping = 0;
   s->initialized = s->ub_dyn.valid() && s_pso_dynamics.valid() &&
-                   s_pso_shell.valid() && plume_gen::g_pso_bake.valid();
+                   s_pso_dust.valid() && s_pso_shell.valid() &&
+                   plume_gen::g_pso_bake.valid();
 }
 
 void tick(void* self, double dt) {
@@ -321,6 +368,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "magnet"))     s->magnet = state::patchFloat(i);
     else if (state::pathIs(p, l, "relief"))     s->relief = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_scale")) s->line_scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "granules"))   s->granules = state::patchFloat(i);
+    else if (state::pathIs(p, l, "grain_size")) s->grain_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "excite"))     s->excite = state::patchFloat(i);
     else if (state::pathIs(p, l, "storm_h"))    s->storm_h = state::patchFloat(i);
     else if (state::pathIs(p, l, "glow"))       s->glow = state::patchFloat(i);
@@ -340,7 +389,11 @@ static bool runField(State* s) {
     if (!s->storm[i].valid())
       s->storm[i] = gpu::Device::createTexture(kSimRes, kSimRes,
                                                gpu::TextureFormat::RGBA16F);
-    if (!s->dyn[i].valid() || !s->aux[i].valid() || !s->storm[i].valid())
+    if (!s->dust[i].valid())
+      s->dust[i] = gpu::Device::createTexture(kSimRes, kSimRes,
+                                              gpu::TextureFormat::RGBA16F);
+    if (!s->dyn[i].valid() || !s->aux[i].valid() || !s->storm[i].valid() ||
+        !s->dust[i].valid())
       return false;
   }
   if (!s->shell_full.valid())
@@ -366,8 +419,13 @@ static bool runField(State* s) {
   float storm_amp = 0.45f * R * s->storm_h;
   if (R + amp + storm_amp > 0.82f)
     storm_amp = std::fmax(0.0f, 0.82f - R - amp);
+  float dust_amp = 0.10f * R * s->granules;
+  if (R + amp + storm_amp + dust_amp > 0.82f)
+    dust_amp = std::fmax(0.0f, 0.82f - R - amp - storm_amp);
   const float line_k = 2.0f + 10.0f * s->line_scale;
   const float line_w = 0.07f - 0.04f * s->line_scale;  // radians
+  // Granule spot radius follows the diffusion ring (about three rings).
+  const float dust_eps = (1.5f + 3.0f * s->grain_size) / (float)kSimRes;
 
   // --- Pass 0: dynamics step (or initial conditions) ---
   DynUniforms du = {};
@@ -458,6 +516,45 @@ static bool runField(State* s) {
   }
   s->st_ping = snxt;
 
+  // --- Pass 0.7: granule chemistry (passive — reads vel + A, feeds
+  // back into nothing) ---
+  DustUniforms uu = {};
+  uu.dt = dt_sim;
+  uu.reset = reset ? 1.0f : 0.0f;
+  uu.sim_res = (float)kSimRes;
+  uu.seed = s->variation * 10.0f;
+  // Gray-Scott worm/labyrinth corner: self-spacing shapes that GROW and
+  // tile whatever quiet space they're given (the spot-only soliton
+  // corner stalled at ~8% coverage under the flow's shear — measured).
+  uu.feed = 0.046f;
+  uu.kill = 0.061f;
+  uu.diff = 0.64f;
+  // The reaction runs on its own accelerated clock — GS patterns in
+  // ~unit steps, so ~70 of them per sim-second forms granules within a
+  // few seconds. Clamped at the standard stable step.
+  uu.gs = std::fmin(1.0f, 70.0f * dt_sim);
+  uu.eps = dust_eps;
+  uu.line_kill = 0.05f;
+  uu.nucleate = 0.04f;
+  uu.drift = (float)s->stir_phase;
+  uu.gate_eps = 10.0f / (float)kSimRes;
+  s->ub_dust.writeOne(uu);
+  const int dcur = s->du_ping;
+  const int dnxt = 1 - dcur;
+  {
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_pso_dust);
+    cp.setTexture(s->dyn[nxt], 0, 0);
+    cp.setTexture(s->aux[nxt], 1, 0);
+    cp.setTexture(s->dust[dcur], 2, 0);
+    cp.setSampler(s->samp, 3);
+    cp.setTexture(s->dust[dnxt], 4, 1);
+    cp.setBuffer(s->ub_dust, 5);
+    cp.dispatch(kSimRes / 8, kSimRes / 8);
+    cp.end();
+  }
+  s->du_ping = dnxt;
+
   // --- Pass 1: shell maps from the fresh state (full + coarse) ---
   HShellUniforms hu = {};
   hu.amp = amp;
@@ -471,6 +568,10 @@ static bool runField(State* s) {
   hu.sim_eps = 10.0f / (float)kSimRes;
   hu.ga_cap = 2.0f;
   hu.storm_amp = storm_amp;
+  hu.dust_amp = dust_amp;
+  // Soliton-interior b sits around 0.3 — normalize so a mature granule
+  // reaches the full bump height.
+  hu.dust_gain = 3.5f;
   hu.res = (float)kSimRes;
   s->ub_shell_full.writeOne(hu);
   hu.res = (float)kCoarseRes;
@@ -483,6 +584,7 @@ static bool runField(State* s) {
     cp.setTexture(s->shell_full, 2, 1);
     cp.setBuffer(s->ub_shell_full, 3);
     cp.setTexture(s->storm[snxt], 4, 0);
+    cp.setTexture(s->dust[dnxt], 5, 0);
     cp.dispatch(kSimRes / 8, kSimRes / 8);
     cp.end();
   }
@@ -494,6 +596,7 @@ static bool runField(State* s) {
     cp.setTexture(s->shell_coarse, 2, 1);
     cp.setBuffer(s->ub_shell_coarse, 3);
     cp.setTexture(s->storm[snxt], 4, 0);
+    cp.setTexture(s->dust[dnxt], 5, 0);
     cp.dispatch(kCoarseRes / 8, kCoarseRes / 8);
     cp.end();
   }
@@ -503,9 +606,13 @@ static bool runField(State* s) {
   // max slope is (amp + storm curtain)·0.86/line_w regardless of how the
   // sim bunches the lines; 1.5 covers the profile constant + bilinear-A
   // wiggle. Storm u rides the same ridge profile, so it shares the bound.
-  const float amp_total = amp + storm_amp;
+  // Granule bumps are narrower than the line ridges (radius ~3 rings),
+  // so they get their own slope term against their own width.
+  const float amp_total = amp + storm_amp + dust_amp;
+  const float Rf = std::fmax(R, 0.1f);
   const float lip_true =
-      1.0f / (1.0f + 1.5f * amp_total / (line_w * std::fmax(R, 0.1f)));
+      1.0f / (1.0f + 1.5f * (amp + storm_amp) / (line_w * Rf)
+                   + 1.5f * dust_amp / (3.0f * dust_eps * Rf));
   const float lip = std::fmax(lip_true, 0.15f);
   plume_gen::BakeUniforms bu = {
       R, lip,

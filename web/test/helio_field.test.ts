@@ -98,6 +98,16 @@ describe('source.sdf.helio_field E2E', () => {
     b.phases[0].trace('out').expectDifferentFrom(a.phases[0].trace('out'), 500);
   });
 
+  it('granules add relief in the flatlands', async () => {
+    // Frozen sim (deterministic): the granule chemistry's seeded initial
+    // state still renders as bumps, so on-vs-off is a pure static diff.
+    const off = await run('helio_grain_off',
+      { radius: 0.8, relief: 0.6, sim_rate: 0, granules: 0 }, [10]);
+    const on = await run('helio_grain_on',
+      { radius: 0.8, relief: 0.6, sim_rate: 0, granules: 1 }, [10]);
+    on.phases[0].trace('out').expectDifferentFrom(off.phases[0].trace('out'), 200);
+  });
+
   it('self-resonant storms keep the surface churning', async () => {
     const r = await run('helio_storms',
       { radius: 0.8, relief: 0.5, sim_rate: 0.7, excite: 0.95,

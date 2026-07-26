@@ -25,6 +25,7 @@ Texture2D<float4>   auxTex   : register(t0);  // (A, ...)
 SamplerState        samp     : register(s1);
 RWTexture2D<float4> shellTex : register(u2);
 Texture2D<float4>   stormTex : register(t4);  // (u, v, heat)
+Texture2D<float4>   dustTex  : register(t5);  // (a, b) — granule chemistry
 
 cbuffer HShellUniforms : register(b3) {
   float res;         // target resolution (full or coarse)
@@ -38,8 +39,8 @@ cbuffer HShellUniforms : register(b3) {
   float ga_cap;      // |∇A| normalizer for line brightness
 
   float storm_amp;   // storm curtain extrusion, world units
-  float _pad0;
-  float _pad1;
+  float dust_amp;    // granule bump height, world units
+  float dust_gain;   // granule chemical b → full bump normalization
   float _pad2;
 };
 
@@ -92,13 +93,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float w = gAl / (gAl + ga_cap);
   float lines = ridge * (0.35 + 0.65 * w);
 
+  // Granules: the dust layer's b chemical, ridge-gated so the height
+  // hierarchy stays lines > storms > grain (the chemistry already
+  // starves them near strong field — this just keeps stragglers off
+  // the walls).
+  float dots = saturate(dustTex.SampleLevel(samp, uvS, 0).y * dust_gain);
+  dots = dots * dots * (3.0 - 2.0 * dots);   // rounded caps, not plateaus
+  float grain = dots * (1.0 - 0.75 * ridge);
+
   // Storm curtain: an actively burning storm (u) EXTRUDES the line it
   // rides — tall aurora-like walls along the field line. The afterglow
   // (heat) only lights the crest channel; the relief relaxes back as
   // the burn passes.
   float h = amp * (base_floor + (1.0 - base_floor) * lines)
-          + storm_amp * storm.x * ridge;
-  float crest = saturate(lines + storm.x + heat_gain * storm.z);
+          + storm_amp * storm.x * ridge
+          + dust_amp * grain;
+  float crest = saturate(lines + storm.x + heat_gain * storm.z
+                         + 0.3 * grain);
 
   shellTex[gid.xy] = float4(h, crest, storm.x, 0.0);
 }
