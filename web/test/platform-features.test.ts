@@ -9,11 +9,12 @@
  * platform.
  */
 
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
-describe('Platform features', () => {
+forEachBackend((backend) => {
+describe(`Platform features (${backend})`, () => {
   jest.setTimeout(30000);
 
   describe('rgba16float storage textures (HDR round-trip)', () => {
@@ -143,48 +144,6 @@ describe('Platform features', () => {
       frame.expectUniformColor({ r: 128, g: 0, b: 255, a: 255 }, 2);
     });
 
-    // The same copy, but routed through the chain executor path, whose
-    // intermediate pool backs tex_out. That pool was COPY_SRC-only, so a
-    // gpu::Device::copy(scratch, tex_out) was a silent WebGPU validation failure
-    // there (it only worked in the single-effect harness above, whose output has
-    // COPY_DST). Now the pool allocates the COPY_SRC|COPY_DST superset, so a
-    // stage can copy into its own output — e.g. to skip a passthrough dispatch.
-    it('copies into tex_out through the chain executor (intermediate-pool COPY_DST)', async () => {
-      const sketch: Sketch = {
-        anchor: null,
-        chain: [
-          // Red bg that must be fully overwritten by the clear+copy.
-          {
-            type: 'module',
-            module_type: 'source.solid_color',
-            instance_key: 'bg@0',
-            params: { color: [1.0, 0.0, 0.0] },
-          },
-          {
-            type: 'module',
-            module_type: 'debug.clear_copy_test',
-            instance_key: 'cc@0',
-          },
-        ],
-      };
-
-      const result = await runEngineTest({
-        width: 64, height: 64,
-        modules: ['com.nano.testonly'],
-        commands: [
-          { type: 'createSketch', sketchId: 'cc', sketch },
-          { type: 'setTracePoints', tracePoints: [
-            { id: 'out', target: { type: 'sketch_output', sketchId: 'cc' } },
-          ]},
-        ],
-        waitFrames: 4,
-        captureTraceIds: ['out'],
-        dumpName: 'clear_copy_chain',
-      });
-      expect(result.success).toBe(true);
-      // scratch cleared to (0.5, 0.0, 1.0) → copied verbatim into tex_out.
-      result.trace('out').expectUniformColor({ r: 128, g: 0, b: 255 }, 2);
-    });
   });
 
   describe('multi-render-target', () => {
@@ -277,5 +236,58 @@ describe('Platform features', () => {
       // No subresource conflicts in any of the dispatches.
       expect(frame.gpuErrors).toEqual([]);
     });
+  });
+});
+});
+
+// The chain-executor leg of the same copy, PUPPETEER ONLY: it goes through
+// runEngineTest, which drives the engine harness page (executor.wasm + the
+// intermediate texture pool) in the browser. There is no native engine runner
+// — the native side's equivalent is the comp runner, and a native sketch host
+// is an explicit follow-up. Everything above is effect-level and runs on both.
+describe('Platform features (engine path)', () => {
+  jest.setTimeout(30000);
+
+  // The same copy, but routed through the chain executor path, whose
+  // intermediate pool backs tex_out. That pool was COPY_SRC-only, so a
+  // gpu::Device::copy(scratch, tex_out) was a silent WebGPU validation failure
+  // there (it only worked in the single-effect harness above, whose output has
+  // COPY_DST). Now the pool allocates the COPY_SRC|COPY_DST superset, so a
+  // stage can copy into its own output — e.g. to skip a passthrough dispatch.
+  it('copies into tex_out through the chain executor (intermediate-pool COPY_DST)', async () => {
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        // Red bg that must be fully overwritten by the clear+copy.
+        {
+          type: 'module',
+          module_type: 'source.solid_color',
+          instance_key: 'bg@0',
+          params: { color: [1.0, 0.0, 0.0] },
+        },
+        {
+          type: 'module',
+          module_type: 'debug.clear_copy_test',
+          instance_key: 'cc@0',
+        },
+      ],
+    };
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: ['com.nano.testonly'],
+      commands: [
+        { type: 'createSketch', sketchId: 'cc', sketch },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: 'cc' } },
+        ]},
+      ],
+      waitFrames: 4,
+      captureTraceIds: ['out'],
+      dumpName: 'clear_copy_chain',
+    });
+    expect(result.success).toBe(true);
+    // scratch cleared to (0.5, 0.0, 1.0) → copied verbatim into tex_out.
+    result.trace('out').expectUniformColor({ r: 128, g: 0, b: 255 }, 2);
   });
 });

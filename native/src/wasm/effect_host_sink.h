@@ -31,6 +31,13 @@ class EffectHostSink {
   virtual void hostSetMetadata(std::string id, std::string version) = 0;
   virtual void hostSetSchema(std::string schemaJson) = 0;
 
+  // state.console_log from a WASM effect. The bridge StateDocument is the other
+  // consumer, but it is optional (bridge_core isn't linked into every host), and
+  // without this a host that has no state doc drops effect logging on the floor
+  // entirely — which is how `state::log("<effect>: initialized")` reached the
+  // web console but never the native one. Default: dropped.
+  virtual void hostLog(std::string_view level, std::string_view message) {}
+
   // Live published values (state.set_val) — effects broadcast output fields
   // during tick/render (e.g. shape_fold's autopilot_x). The instance
   // accumulates them STRUCTURED (no per-publish stringify) so the per-frame

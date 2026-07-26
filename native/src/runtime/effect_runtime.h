@@ -224,6 +224,7 @@ class EffectInstance : public wasm::EffectHostSink {
   // extern-C symbols route here.
   void hostSetMetadata(std::string id, std::string version) override;
   void hostSetSchema(std::string schemaJson) override;
+  void hostLog(std::string_view level, std::string_view message) override;
   void hostSetVal(std::string_view path, const nlohmann::json& value) override;
   // The accumulated set_val outputs as a JSON object string ("" when the
   // effect has published nothing). TELEMETRY-ONLY (barrel plugin_states

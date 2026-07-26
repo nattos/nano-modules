@@ -889,7 +889,7 @@ static int32_t state_get_key(wasm_exec_env_t env, int32_t buf_ptr, int32_t buf_l
 static void state_console_log(wasm_exec_env_t env,
     int32_t level, int32_t msg_ptr, int32_t msg_len) {
   auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+  if (!ctx) return;
 
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, msg_ptr, msg_len)) return;
@@ -899,6 +899,14 @@ static void state_console_log(wasm_exec_env_t env,
   const char* levels[] = {"log", "warn", "error"};
   std::string lvl = (level >= 0 && level < 3) ? levels[level] : "log";
 
+  // The runtime's console log FIRST, and unconditionally: the state doc is
+  // optional (a host that doesn't link bridge_core has none), and gating the
+  // whole function on it — as this used to — silently discarded every effect
+  // log on such a host.
+  if (ctx->effect_instance)
+    ctx->effect_instance->hostLog(lvl, std::string_view(msg, msg_len));
+
+  if (!ctx->state_doc || ctx->plugin_key.empty()) return;
   auto* frame = ctx->frame_state;
   double ts = frame ? frame->elapsed_time : 0.0;
 
@@ -945,7 +953,7 @@ static void state_console_log_structured(wasm_exec_env_t env,
     int32_t level, int32_t msg_ptr, int32_t msg_len,
     int32_t json_ptr, int32_t json_len) {
   auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->state_doc || ctx->plugin_key.empty()) return;
+  if (!ctx) return;
 
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, msg_ptr, msg_len)) return;
@@ -957,6 +965,13 @@ static void state_console_log_structured(wasm_exec_env_t env,
 
   const char* levels[] = {"log", "warn", "error"};
   std::string lvl = (level >= 0 && level < 3) ? levels[level] : "log";
+
+  // The message half reaches the runtime log even without a state doc; the
+  // structured payload is state-doc-only (see state_console_log above).
+  if (ctx->effect_instance)
+    ctx->effect_instance->hostLog(lvl, std::string_view(msg, msg_len));
+
+  if (!ctx->state_doc || ctx->plugin_key.empty()) return;
   auto* frame = ctx->frame_state;
   double ts = frame ? frame->elapsed_time : 0.0;
 

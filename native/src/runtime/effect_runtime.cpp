@@ -259,6 +259,13 @@ void EffectInstance::hostSetMetadata(std::string id, std::string version) {
 void EffectInstance::hostSetSchema(std::string schemaJson) {
   schema_json_ = std::move(schemaJson);
 }
+void EffectInstance::hostLog(std::string_view level, std::string_view message) {
+  // Same sink the statically-linked path uses (host_impls.cpp's
+  // state_console_log), so a WASM effect's log lands in drainConsoleLog()
+  // alongside a native one's rather than depending on a bridge StateDocument
+  // the host may not have.
+  if (runtime_) runtime_->log(level, message);
+}
 void EffectInstance::hostSetVal(std::string_view path, const nlohmann::json& value) {
   if (path.empty()) {
     // Whole-state replace (state::setVal with no path).

@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -99,6 +100,30 @@ std::string base64Encode(const std::vector<uint8_t>& bytes) {
       out.push_back('=');
       out.push_back('=');
     }
+  }
+  return out;
+}
+
+/**
+ * The effect's own log messages, in the shape the web runner reports.
+ *
+ * EffectRuntime stores each entry as "<level>: <message>" (one string, so the
+ * barrel can print it straight out), while the web host keeps ConsoleEntry
+ * structured and gpu-test-runner.html surfaces `entry.message`. Tests assert
+ * the raw message — `expect(frame.consoleLog).toContain('mrt_test:
+ * initialized')` — so strip the level prefix here rather than change what the
+ * barrel prints.
+ */
+nlohmann::json consoleLogJson(effect_runtime::EffectRuntime& rt) {
+  nlohmann::json out = nlohmann::json::array();
+  for (const auto& entry : rt.drainConsoleLog()) {
+    static const char* kPrefixes[] = {"log: ", "warn: ", "error: "};
+    std::string msg = entry;
+    for (const char* p : kPrefixes) {
+      const size_t n = std::strlen(p);
+      if (msg.compare(0, n, p) == 0) { msg = msg.substr(n); break; }
+    }
+    out.push_back(msg);
   }
   return out;
 }
@@ -271,7 +296,7 @@ int main(int argc, char** argv) {
         {"success", true}, {"width", W}, {"height", H},
         {"pixelCount", pixels.size() / 4}, {"pixelsBase64", base64Encode(pixels)},
         {"samples", samples}, {"fusedRuns", exec.fusedRunCount()},
-        {"consoleLog", rt.drainConsoleLog()}, {"gpuErrors", nlohmann::json::array()},
+        {"consoleLog", consoleLogJson(rt)}, {"gpuErrors", nlohmann::json::array()},
         {"pluginState", nlohmann::json::object()}, {"params", nlohmann::json::array()},
       };
       std::cout << result.dump() << std::endl;
@@ -377,7 +402,7 @@ int main(int argc, char** argv) {
       // an effect still declares itself fusion-eligible before asserting it
       // actually fused in a chain. Mirrors the web runner's `fusionKind`.
       {"fusionKind", inst->fusionInfo().kind},
-      {"consoleLog", rt.drainConsoleLog()},
+      {"consoleLog", consoleLogJson(rt)},
       {"gpuErrors", nlohmann::json::array()},
       {"pluginState", nlohmann::json::object()},
       // Metadata + schema are published by module_init() onto the type
