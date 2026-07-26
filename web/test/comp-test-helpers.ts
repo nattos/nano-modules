@@ -135,6 +135,26 @@ export class CompCapture {
     return sum / n;
   }
 
+  /**
+   * Luma spread over an interior `n`×`n` sample grid — the "is this frame
+   * spatially varied?" measure the monitor-sampling suites used. A flat fill
+   * (e.g. a gray stand-in where a real effect should have run) reads ≈0.
+   * Samples the interior only, so edge clamping can't manufacture a spread.
+   */
+  lumaSpread(n = 5): number {
+    if (this.pixels.length === 0) return 0;
+    const ls: number[] = [];
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= n; j++) {
+        const x = Math.min(this.width - 1, Math.floor((this.width * i) / (n + 1)));
+        const y = Math.min(this.height - 1, Math.floor((this.height * j) / (n + 1)));
+        const p = this.pixelAt(x, y);
+        ls.push(0.299 * p.r + 0.587 * p.g + 0.114 * p.b);
+      }
+    }
+    return Math.max(...ls) - Math.min(...ls);
+  }
+
   /** Fraction of pixels satisfying `pred`. */
   coverage(pred: (c: RGBA) => boolean): number {
     if (this.pixels.length === 0) return 0;

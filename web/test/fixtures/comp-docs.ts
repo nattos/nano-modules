@@ -180,6 +180,72 @@ export function railReadWireDoc(): Json {
 }
 
 /**
+ * A noise generator on the top track, and an effect-only invert clip on the
+ * track BELOW it. The invert must process the noise coming from above — a gray
+ * stand-in (the failure mode) is a flat fill, so the composite's luma spread
+ * collapses to ~0.
+ */
+export function layerPipelineDoc(): Json {
+  return mkComposition([
+    mkTrack('t-noise', [mkClip('c-noise', 40, 8, [
+      mkDevice('d-noise', 'source.noise'),
+    ])]),
+    mkTrack('t-invert', [mkClip('c-invert', 40, 8, [
+      mkDevice('d-invert', 'color.invert'),
+    ])]),
+  ]);
+}
+
+/**
+ * One automation lane ramping a clip's brightness across its own span. Lane `x`
+ * is normalized over the CLIP's beat range, `y` over the field's declared range
+ * — so sampling near the clip start vs its end must differ. This is the
+ * DOCUMENT automation path (evaluated by comp_eval on both backends), not the
+ * executor's per-frame `setAutomation` side channel, which is web-host-only.
+ */
+export function automationRampDoc(): Json {
+  return mkComposition([
+    mkTrack('t-1', [mkClip('c-1', 0, 16, [
+      mkDevice('d-solid', 'source.solid_color', { color: [0.5, 0.5, 0.5] }),
+      mkDevice('d-bc', 'color.tone.brightness_contrast'),
+    ], {
+      automation: [{
+        id: 'lane-1',
+        targetDeviceId: 'd-bc',
+        targetField: 'brightness',
+        label: 'Brightness',
+        points: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+        combine: 'replace',
+        magnitude: 'unsigned',
+      }],
+    })]),
+  ]);
+}
+
+/**
+ * The same ramp, but on a TRACK-level FX device (the per-track bus) rather than
+ * inside the clip — the `track_<id>_<dev>` keyed path.
+ */
+export function trackFxAutomationDoc(): Json {
+  return mkComposition([
+    mkTrack('t-1', [mkClip('c-1', 0, 16, [
+      mkDevice('d-solid', 'source.solid_color', { color: [0.5, 0.5, 0.5] }),
+    ])], {
+      sketch: { devices: [mkDevice('d-trackbc', 'color.tone.brightness_contrast')] },
+      automation: [{
+        id: 'lane-t',
+        targetDeviceId: 'd-trackbc',
+        targetField: 'brightness',
+        label: 'Brightness',
+        points: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+        combine: 'replace',
+        magnitude: 'unsigned',
+      }],
+    }),
+  ]);
+}
+
+/**
  * An LFO on one track exporting to a return rail, and ANOTHER track's
  * TRACK-LEVEL read (targetDeviceId `__layer__`) driving that track's layer
  * OPACITY — resolved comp-side to the layer's blend `opacity` param. The white
