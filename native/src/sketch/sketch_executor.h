@@ -162,6 +162,27 @@ class SketchExecutor {
   void clearInjectedScalars() { injectedScalars_.clear(); }
 
   /**
+   * Host-injected FRAME texture for an in-chain instance — the video pump
+   * handing a decoded frame to a `source.video.file` entry.
+   *
+   * Bound as the instance's numeric "0" texture field, which the slot scan
+   * below turns into input slot 0 (what the effect reads via inputTexture(0)).
+   * That is the same path the web worker takes (`host.textureFields.set('0',
+   * handle)` in applyInstanceTextures), including the ordering: it lands
+   * BEFORE read taps, so a wire bound to slot 0 still wins.
+   *
+   * The handle is borrowed — the pump's frame cache owns the texture and its
+   * lifetime. Pass -1 to UNBIND, which stores -1 rather than forgetting the
+   * key: the instance keeps whatever texture field it was last given, so
+   * dropping the entry would leave the last decoded frame frozen on screen
+   * instead of clearing it. `clearInjectedTextures()` is the real forget.
+   */
+  void setInjectedTexture(const std::string& instanceKey, int32_t textureHandle) {
+    injectedTextures_[instanceKey] = textureHandle < 0 ? -1 : textureHandle;
+  }
+  void clearInjectedTextures() { injectedTextures_.clear(); }
+
+  /**
    * Clean-frame fast path (executor_execute with sketch_len == 0): run from
    * the cached exec doc without any host-passed JSON — the wasm host skips
    * the stringify → copy → parse round-trip entirely on clean frames.
@@ -390,6 +411,11 @@ class SketchExecutor {
   // instance state so hosts can drive wire sources without doc mutation.
   std::unordered_map<std::string, std::unordered_map<std::string, float>>
       injectedScalars_;
+
+  // Host-injected frame textures (setInjectedTexture): instance key → texture
+  // handle, bound as that instance's "0" field each tick. Handles are BORROWED
+  // — the pump's frame cache owns them.
+  std::unordered_map<std::string, int32_t> injectedTextures_;
 
   // --- Clean-frame exec-doc cache -----------------------------------------
   // The final execution doc (columns-normalized, wires lowered to taps,

@@ -186,6 +186,42 @@ export function railReadWireDoc(): Json {
   ]);
 }
 
+/**
+ * A video clip playing a real asset from `web/public/media`.
+ *
+ * `source.mediaFile` is a bare filename, NOT a url or a ref: the two hosts
+ * address media differently on purpose (web fetches a URL; the native host
+ * opens a path resolved from the portable `source.ref`), so `runCompScenario`
+ * binds it per backend. Anything that hardcoded one form would only run on one
+ * side.
+ *
+ * `durationFrames`/`fps` are the DOCUMENT's metadata, which is what the pump
+ * falls back to; the file's own frame count wins where the two disagree.
+ */
+export function videoClip(
+  id: string, startBeat: number, lengthBeat: number, mediaFile: string, over: Json = {},
+): Json {
+  return mkClip(id, startBeat, lengthBeat, [mkDevice(`${id}_v`, 'source.video.file')], {
+    kind: 'video',
+    source: {
+      label: mediaFile,
+      mediaFile,
+      sourceKey: id,
+      durationFrames: 0,
+      fps: 30,
+      scaleMode: 'fit',
+    },
+    ...over,
+  });
+}
+
+/** One video clip on one track, playing from the timeline's start. */
+export function videoDoc(mediaFile = 'test_dxv.mov', over: Json = {}): Json {
+  return mkComposition([
+    mkTrack('t-vid', [videoClip('v1', 0, 16, mediaFile, over)]),
+  ]);
+}
+
 /** A scene track (`kind: 'scene'`) — its clips are launchable cells, not
  *  timeline content. Mirrors `store.addSceneTrack()`. */
 export function mkSceneTrack(id: string, clips: Json[], over: Json = {}): Json {

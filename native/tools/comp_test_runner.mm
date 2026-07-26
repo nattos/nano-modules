@@ -53,6 +53,7 @@
 #include <nlohmann/json.hpp>
 
 #include "bridge/comp_media_resolver.h"
+#include "media/video_pump.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/text_host.h"
@@ -276,10 +277,40 @@ int main(int argc, char** argv) {
     uint32_t lastFlags = 0;
     std::string lastChainKeys = "[]";
 
-    // One comp frame: update → transportResolve → render. The order is the
-    // host contract (see comp_executor.h) — transportResolve must sit between
-    // the two so plugin timing lands same-frame.
+    // The decode pump. comp never decodes: it publishes a desc set and blocks
+    // on setVideoReady, and this is the host half of that contract.
+    // setVideoReadyFeed tells the Precise gate a pump EXISTS — without it the
+    // gate assumes there's nobody to wait for and never holds.
+    nano_media::VideoPump::Config pumpCfg;
+    pumpCfg.renderW = W;
+    pumpCfg.renderH = H;
+    pumpCfg.readAheadDepth = cfg.value("readAheadDepth", nano_media::kReadAheadDepth);
+    nano_media::VideoPump pump(backend.get(), pumpCfg);
+    pump.setInjectSink([&cx](const std::string& instanceKey, int32_t tex) {
+      if (auto* ex = cx.sketchExecutor()) ex->setInjectedTexture(instanceKey, tex);
+    });
+    pump.setReadySink([&cx](const std::string& clipId, bool ready) {
+      cx.setVideoReady(clipId, ready);
+    });
+    cx.setVideoReadyFeed();
+
+    // One comp frame: pump → update → transportResolve → render. The last three
+    // are the host contract (see comp_executor.h) — transportResolve must sit
+    // between update and render so plugin timing lands same-frame.
+    //
+    // The pump runs FIRST, on the position the last frame left us at, so this
+    // frame renders what was decoded for the previous one. That one-frame lag is
+    // deliberate: web can't avoid it (its pump is on the main thread while
+    // update+render run inside the worker, which is also how the app behaves),
+    // so injecting mid-frame here would make every mid-play frame differ by one
+    // decoded frame and the pixel comparison would be meaningless. Consequence
+    // when writing scenarios: a single step after a seek renders BEFORE anything
+    // has been decoded — video scenarios need at least two.
     auto stepFrame = [&](double dt) -> int32_t {
+      if (lastFlags & comp::kCompVideoSetChanged) {
+        pump.setActiveClips(json::parse(cx.videoDescsJson(), nullptr, false));
+      }
+      pump.pump(cx.positionBeat(), cx.bpm());
       hostTime += dt;
       effect_runtime::setHostTime(hostTime);
       effect_runtime::setHostDeltaTime(dt);
@@ -388,10 +419,30 @@ int main(int argc, char** argv) {
       err = std::string("op failed: ") + e.what();
     }
 
+    // Decode telemetry rides the RESULT, not each capture: it's cumulative over
+    // the whole run, which is what the perf comparison wants.
+    json video{{"totalDecodes", pump.totalDecodes()}, {"clips", json::object()},
+               {"skipped", json::object()}};
+    for (const auto& [clipId, t] : pump.telemetry()) {
+      video["clips"][clipId] = {
+          {"cacheHits", t.cacheHits},         {"cacheMisses", t.cacheMisses},
+          {"decodes", t.decodes},             {"precacheDecodes", t.precacheDecodes},
+          {"precacheHits", t.precacheHits},   {"seeks", t.seeks},
+          {"injects", t.injects},             {"meanDecodeMs", t.meanDecodeMs},
+          {"seekDecodeMs", t.seekDecodeMs},   {"costClass", t.costClass},
+          {"accessMode", t.accessMode},       {"cachedFrames", t.cachedFrames},
+          {"cacheBytes", t.cacheBytes},
+      };
+    }
+    // Clips nothing here can decode, BY NAME with the reason — a silent hole in
+    // the picture is the failure mode this exists to prevent.
+    for (const auto& [clipId, why] : pump.skipped()) video["skipped"][clipId] = why;
+
     json out{{"success", err.is_null()},
              {"width", W},
              {"height", H},
-             {"captures", captures}};
+             {"captures", captures},
+             {"video", video}};
     if (!err.is_null()) out["error"] = err;
     std::cout << out.dump() << std::endl;
     return err.is_null() ? 0 : 1;

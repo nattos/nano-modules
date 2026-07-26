@@ -23,6 +23,8 @@
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { EFFECT_BUNDLES } from './effect-bundles';
 import type { CompFrameInfo } from './engine-types';
+import { CompTestPump, type PumpClipTelemetry } from './comp-test-pump';
+import { thumbnailController } from './views/arrangement/media/thumbnail-controller';
 
 /** The comp executor publishes its output under this fixed sketch id. */
 const COMPOSITE_ID = 'arr-composite';
@@ -69,6 +71,12 @@ export interface CompRunResult {
   width: number;
   height: number;
   captures: Record<string, CompCapture>;
+  /** Decode telemetry, cumulative over the run (native: the `video` block). */
+  video?: {
+    clips: Record<string, PumpClipTelemetry>;
+    /** Clip ids nothing could decode, with the reason — never a silent hole. */
+    skipped: Record<string, string>;
+  };
 }
 
 // ── Helpers shared in spirit with the native runner ────────────────────────
@@ -136,6 +144,13 @@ let liveChainKeys: string[] = [];
  *  frame when it CHANGED, so it has to be tracked where the engine lives. */
 let liveScenes: Record<string, unknown> = {};
 let livePendingScenes: Record<string, unknown> = {};
+/**
+ * And the decode-pump desc set — same story, and it bites HARDER: the pump is
+ * rebuilt per scenario, so a scenario re-running a document the engine already
+ * has built would report no change, hand its fresh pump nothing, and silently
+ * render no video at all while every other assertion still passed.
+ */
+let liveVideoDescs = '[]';
 
 async function ensureEngine(width: number, height: number): Promise<ArrEngine> {
   if (enginePromise) {
@@ -184,14 +199,27 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
     liveScenes = {};
     livePendingScenes = {};
     const doc = JSON.parse(JSON.stringify(scenario.doc)) as Record<string, unknown>;
+    const bpm = (doc.meta as { baseBPM?: number } | undefined)?.baseBPM ?? 120;
     e.compLoadDoc(JSON.stringify(doc));
     e.setPaused(true);
     e.compControl({ op: 'pause' });
-    // Fluid by default: with no decode pump in this path there is nothing to
-    // feed the Precise gate, and a held transport would freeze the beat.
+    // Fluid by default — a Precise hold only makes sense for a scenario whose
+    // clips have media to wait on.
     e.compControl({ op: 'mode', precise: !!scenario.precise });
     e.compControl({ op: 'loop', enabled: false });
     e.compControl({ op: 'ignoreSolo', on: !!scenario.ignoreSolo });
+
+    // The decode pump, rebuilt per scenario so its cache/classifier state can't
+    // leak between them (the ENGINE is shared; the pump is cheap). videoReadyFeed
+    // tells the Precise gate a pump exists — without it the gate assumes nobody
+    // is decoding and never holds.
+    const gpu = await thumbnailController.sharedGpu();
+    const pump = new CompTestPump(
+      gpu.gpuHost, gpu.device, gpu.service, width, height,
+      (key, bmp) => e.setInstanceTexture(key, bmp),
+      (clipId, isReady) => e.compControl({ op: 'videoReady', clipId, ready: isReady }),
+    );
+    e.compControl({ op: 'videoReadyFeed' });
 
     // Held in an object, not plain `let`s: they're written from the engine
     // callbacks, which TS's control-flow analysis can't see — reading them in
@@ -211,8 +239,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
       r?.(last.info);
     };
 
-    /** Advance exactly one frame with a known dt, and wait for it to land. */
-    const step = (dtSec: number): Promise<void> => new Promise((res, rej) => {
+    /** Advance exactly one engine frame with a known dt, and wait for it. */
+    const engineStep = (dtSec: number): Promise<void> => new Promise((res, rej) => {
       const timer = setTimeout(() => {
         resolveFrame = null;
         rej(new Error('engine frame timed out'));
@@ -222,6 +250,7 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
         if (last.info?.chainKeys) liveChainKeys = last.info.chainKeys;
         if (last.info?.scenes) liveScenes = JSON.parse(last.info.scenes);
         if (last.info?.scenesPending) livePendingScenes = JSON.parse(last.info.scenesPending);
+        if (last.info?.videoDescs !== undefined) liveVideoDescs = last.info.videoDescs;
         res();
       };
       // Pin the step size explicitly. `setTime` CANNOT pace a comp-mode step:
@@ -230,6 +259,29 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
       // collapses to 0 and the transport never advances.
       e.stepFrame(dtSec);
     });
+
+    /**
+     * One scenario frame: decode + inject for the position the LAST frame left
+     * us at, then step.
+     *
+     * The one-frame lag is deliberate and MATCHED on both runners. Web can't do
+     * better: the pump lives on the main thread and the engine's update+render
+     * happen inside the worker, so a frame decoded now can only be sampled by
+     * the next step (which is exactly the app's behaviour — its pump is async
+     * off the frame report). Native could inject mid-frame, but then mid-play
+     * pixels would differ by one decoded frame and the comparison would be
+     * meaningless, so comp_test_runner.mm pumps before update for the same
+     * reason. Consequence worth knowing when writing scenarios: a single step
+     * after a seek renders BEFORE anything has been decoded — video scenarios
+     * need at least two.
+     */
+    const step = async (dtSec: number): Promise<void> => {
+      // From the page-scope mirror, not `last.info`: the desc set only rides a
+      // frame when it CHANGED, and this pump is younger than the engine.
+      await pump.setActiveClips(liveVideoDescs);
+      if (last.info) await pump.pump(last.info.positionBeat, bpm);
+      await engineStep(dtSec);
+    };
 
     for (const op of scenario.ops) {
       if ('seek' in op) {
@@ -314,7 +366,9 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
 
     e.onFrameSet = null;
     e.onCompInfo = null;
-    const result: CompRunResult = { success: true, width, height, captures };
+    const video = { clips: pump.telemetry(), skipped: pump.skipped };
+    await pump.dispose();
+    const result: CompRunResult = { success: true, width, height, captures, video };
     if (outEl) outEl.textContent = JSON.stringify({ ...result, captures: Object.keys(captures) }, null, 1);
     return result;
   } catch (err) {

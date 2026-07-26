@@ -60,6 +60,8 @@ export interface CompScenario {
    * document carries no runtime `source.url`, so the native host has to locate
    * the media itself (bridge/comp_media_resolver.h). The web runner ignores
    * this: on web the store has already relinked and filled `url` in.
+   *
+   * Set automatically by `runCompScenario` for any clip carrying `mediaFile`.
    */
   libraries?: { id: string; label?: string; absolutePath: string }[];
   ignoreSolo?: boolean;
@@ -89,6 +91,12 @@ interface RawResult {
   width: number;
   height: number;
   captures: Record<string, RawCapture>;
+  video?: {
+    clips: Record<string, Record<string, number | string>>;
+    /** clipId → why nothing could decode it. Never a silent hole. */
+    skipped: Record<string, string>;
+    totalDecodes?: number;
+  };
 }
 
 // ── Assertion surface ──────────────────────────────────────────────────────
@@ -219,6 +227,22 @@ export class CompRun {
   get success() { return this.raw.success; }
   get error() { return this.raw.error; }
   get captureNames() { return Object.keys(this.raw.captures); }
+  /** Per-clip decode telemetry (cache hits, access mode, cost class, ...). */
+  get videoClips() { return this.raw.video?.clips ?? {}; }
+  /** clipId → the reason nothing could decode it. */
+  get videoSkipped() { return this.raw.video?.skipped ?? {}; }
+
+  /** Fail loudly if any clip was skipped — a silent hole in the picture is the
+   *  failure mode the skip list exists to prevent. */
+  expectNothingSkipped(): void {
+    const skipped = this.videoSkipped;
+    const ids = Object.keys(skipped);
+    if (ids.length > 0) {
+      throw new Error(
+        `[${this.backend}] clips skipped by the decode pump: ` +
+        ids.map((id) => `${id} (${skipped[id]})`).join(', '));
+    }
+  }
 
   capture(name: string): CompCapture {
     const c = this.raw.captures[name];
@@ -288,13 +312,56 @@ async function runPuppeteerScenario(scenario: CompScenario): Promise<RawResult> 
   ) as RawResult;
 }
 
+/** Shared test media, served by vite at /media and readable on disk natively. */
+const MEDIA_DIR = path.resolve(__dirname, '..', 'public', 'media');
+const MEDIA_LIBRARY_ID = 'comp-test-media';
+
+/**
+ * Bind every clip carrying `source.mediaFile` (a bare filename under
+ * web/public/media) to whatever the target backend can actually open.
+ *
+ * The two hosts address media differently ON PURPOSE — web fetches a URL, the
+ * native host opens a path resolved from the portable `source.ref` — so a
+ * fixture that hardcoded either one would only work on one side. `mediaFile`
+ * says "this clip plays this asset" and lets the runner do the binding.
+ */
+function bindMedia(scenario: CompScenario, backend: string): CompScenario {
+  const out = JSON.parse(JSON.stringify(scenario)) as CompScenario;
+  let found = false;
+  const walk = (node: any) => {
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (!node || typeof node !== 'object') return;
+    const src = node.source;
+    if (src && typeof src.mediaFile === 'string') {
+      found = true;
+      if (backend === 'metal') {
+        src.ref = { libraryId: MEDIA_LIBRARY_ID, path: [src.mediaFile] };
+        delete src.url;
+      } else {
+        src.url = `${TEST_BASE_URL}/media/${src.mediaFile}`;
+        delete src.ref;
+      }
+    }
+    for (const k of Object.keys(node)) walk(node[k]);
+  };
+  walk(out.doc);
+  if (found && backend === 'metal') {
+    out.libraries = [
+      ...(out.libraries ?? []),
+      { id: MEDIA_LIBRARY_ID, label: 'Comp test media', absolutePath: MEDIA_DIR },
+    ];
+  }
+  return out;
+}
+
 /**
  * Run a scenario on the ambient backend and return its captures. Throws with
  * the runner's own message when the scenario itself failed, so a broken
  * document surfaces as a real error rather than an empty capture set.
  */
-export async function runCompScenario(scenario: CompScenario): Promise<CompRun> {
+export async function runCompScenario(input: CompScenario): Promise<CompRun> {
   const backend = currentBackend();
+  const scenario = bindMedia(input, backend);
   const raw = backend === 'metal'
     ? runMetalScenario(scenario)
     : await runPuppeteerScenario(scenario);

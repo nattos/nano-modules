@@ -193,13 +193,15 @@ if(APPLE)
   # dxv_decoder wasm module compiles — reused, not ported.
   add_library(nano_media STATIC
     src/media/dxv_source.cpp
+    src/media/frame_blitter.cpp
+    src/media/video_pump.cpp
     wasm_modules/dxv_decoder/dxv_demux.cpp
     wasm_modules/dxv_decoder/dxv_lz.cpp
   )
   target_include_directories(nano_media PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/wasm_modules/dxv_decoder)
-  target_link_libraries(nano_media PUBLIC gpu_backend)
+  target_link_libraries(nano_media PUBLIC gpu_backend nlohmann_json::nlohmann_json)
 endif()
 
 # --- WASM Host library ---
@@ -1048,6 +1050,7 @@ if(APPLE)
   target_link_libraries(comp_test_runner PRIVATE
     sketch_executor   # CompExecutor + ModuleRegistry + WasmEffectBundles
     effect_runtime
+    nano_media        # the DXV decode pump
     gpu_backend
     nlohmann_json::nlohmann_json
     "-framework Metal"

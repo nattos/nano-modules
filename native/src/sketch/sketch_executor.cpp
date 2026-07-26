@@ -1731,6 +1731,17 @@ int32_t SketchExecutor::execute(
       inst.setFieldConnected("tex_in",  true,  false);
       inst.setFieldConnected("tex_out", false, true);
 
+      // Host-injected frame (the video pump → a source.video.file entry). Bound
+      // as the numeric "0" field so the slot scan below picks it up as input
+      // slot 0 — the same route the web worker takes, and ahead of read taps so
+      // a wire bound to slot 0 still wins. An UNBIND (-1) has to be written
+      // through too: the field persists on the instance, so skipping it would
+      // leave the last decoded frame frozen after the clip ran off its slice.
+      if (!injectedTextures_.empty()) {
+        auto ij = injectedTextures_.find(instKey);
+        if (ij != injectedTextures_.end()) inst.setTextureField("0", ij->second);
+      }
+
       std::unordered_map<std::string, float> modScalars;
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
                     railBuffers, instances, instKey, &modScalars);
