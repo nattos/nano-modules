@@ -72,6 +72,8 @@ interface RawCapture {
   positionSec: number;
   layerCount: number;
   chainKeys: string[];
+  sceneStates: Record<string, any>;
+  pendingScenes: Record<string, any>;
 }
 
 interface RawResult {
@@ -101,6 +103,16 @@ export class CompCapture {
   get positionSec() { return this.raw.positionSec; }
   get layerCount() { return this.raw.layerCount; }
   get chainKeys() { return this.raw.chainKeys; }
+  /** {trackId: {sceneId, launchBeat}} for every launched scene. */
+  get sceneStates() { return this.raw.sceneStates ?? {}; }
+  /** trackId → incoming scene while a gapless handover is still deferred. */
+  get pendingScenes() { return this.raw.pendingScenes ?? {}; }
+
+  /** The scene currently playing on `trackId`, or null. */
+  playingScene(trackId: string): string | null {
+    const s = this.sceneStates[trackId];
+    return s && typeof s.sceneId === 'string' ? s.sceneId : null;
+  }
 
   pixelAt(x: number, y: number): RGBA {
     const o = (y * this.width + x) * 4;

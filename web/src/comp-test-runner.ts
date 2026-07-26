@@ -59,6 +59,8 @@ export interface CompCapture {
   positionSec: number;
   layerCount: number;
   chainKeys: string[];
+  sceneStates: Record<string, unknown>;
+  pendingScenes: Record<string, unknown>;
 }
 
 export interface CompRunResult {
@@ -130,6 +132,10 @@ let enginePromise: Promise<ArrEngine> | null = null;
  * native runner doesn't hit this only because it's a fresh process per run.
  */
 let liveChainKeys: string[] = [];
+/** Same story for the launched-scene set: `CompFrameInfo.scenes` only rides a
+ *  frame when it CHANGED, so it has to be tracked where the engine lives. */
+let liveScenes: Record<string, unknown> = {};
+let livePendingScenes: Record<string, unknown> = {};
 
 async function ensureEngine(width: number, height: number): Promise<ArrEngine> {
   if (enginePromise) {
@@ -175,6 +181,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
     // A scenario owns the whole transport: reset any launch state left behind
     // by the previous one, then mirror this document.
     e.compOp({ op: 'stopAllScenes' });
+    liveScenes = {};
+    livePendingScenes = {};
     const doc = JSON.parse(JSON.stringify(scenario.doc)) as Record<string, unknown>;
     e.compLoadDoc(JSON.stringify(doc));
     e.setPaused(true);
@@ -212,6 +220,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
       resolveFrame = () => {
         clearTimeout(timer);
         if (last.info?.chainKeys) liveChainKeys = last.info.chainKeys;
+        if (last.info?.scenes) liveScenes = JSON.parse(last.info.scenes);
+        if (last.info?.scenesPending) livePendingScenes = JSON.parse(last.info.scenesPending);
         res();
       };
       // Pin the step size explicitly. `setTime` CANNOT pace a comp-mode step:
@@ -296,6 +306,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
           positionSec: last.info?.positionSec ?? 0,
           layerCount: layerCountFrom(liveChainKeys),
           chainKeys: liveChainKeys,
+          sceneStates: liveScenes,
+          pendingScenes: livePendingScenes,
         };
       }
     }

@@ -179,6 +179,42 @@ export function railReadWireDoc(): Json {
   ]);
 }
 
+/** A scene track (`kind: 'scene'`) — its clips are launchable cells, not
+ *  timeline content. Mirrors `store.addSceneTrack()`. */
+export function mkSceneTrack(id: string, clips: Json[], over: Json = {}): Json {
+  return {
+    id,
+    name: 'Scenes',
+    kind: 'scene',
+    parentId: null,
+    level: 1,
+    sketch: { devices: [] },
+    automation: [],
+    clips,
+    ...over,
+  };
+}
+
+/**
+ * A dim-blue base layer plus a scene track holding a RED and a GREEN scene.
+ * The base keeps the composite meaningful while no scene plays — with an empty
+ * composite there is nothing to assert about.
+ *
+ * Scenes are rigid one-bar cells and auto channels follow GRID order, so the
+ * two live at distinct grid spots (bar 1 and bar 2).
+ */
+export function sceneTrackDoc(): Json {
+  return mkComposition([
+    mkTrack('t-base', [mkClip('c-base', 40, 8, [
+      mkDevice('d-base', 'source.solid_color', { color: [0, 0, 0.3] }),
+    ])]),
+    mkSceneTrack('t-scenes', [
+      mkClip('s-red', 0, 4, [mkDevice('d-red', 'source.solid_color', { color: [1, 0, 0] })]),
+      mkClip('s-green', 4, 4, [mkDevice('d-green', 'source.solid_color', { color: [0, 1, 0] })]),
+    ]),
+  ]);
+}
+
 /**
  * A noise generator on the top track, and an effect-only invert clip on the
  * track BELOW it. The invert must process the noise coming from above — a gray

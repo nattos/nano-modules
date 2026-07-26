@@ -364,6 +364,10 @@ int main(int argc, char** argv) {
               {"positionSec", cx.positionSec()},
               {"layerCount", layerCountFrom(lastChainKeys)},
               {"chainKeys", json::parse(lastChainKeys, nullptr, false)},
+              // {trackId: {sceneId, launchBeat}} — the launched-scene set.
+              {"sceneStates", json::parse(cx.sceneStatesJson(), nullptr, false)},
+              // trackId → incoming {sceneId, ...} while a handover is deferred.
+              {"pendingScenes", json::parse(cx.pendingScenesJson(), nullptr, false)},
           };
         }
       }

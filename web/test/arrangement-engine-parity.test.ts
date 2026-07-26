@@ -20,6 +20,7 @@
 
 import { forEachBackend, runCompScenario, ensureCompRunnerPage } from './comp-test-helpers';
 import {
+  sceneTrackDoc,
   layerPipelineDoc,
   automationRampDoc,
   trackFxAutomationDoc,
@@ -77,6 +78,46 @@ forEachBackend((backend) => {
       // The track FX rendered AND the track-keyed automation drove it.
       expect(run.capture('high').meanLuma())
         .toBeGreaterThan(run.capture('low').meanLuma() + 40);
+    });
+
+    it('scene launch / switch / retrigger / stop lifecycle', async () => {
+      const run = await runCompScenario({
+        doc: sceneTrackDoc(),
+        width: 32,
+        height: 32,
+        ops: [
+          // Park on the base clip so there is always something composited.
+          { seek: 42 },
+          { capture: 'base' },
+          { launch: { trackId: 't-scenes', sceneId: 's-red' } },
+          { capture: 'red' },
+          { launch: { trackId: 't-scenes', sceneId: 's-green' } },
+          { capture: 'green' },
+          // Re-launching the ACTIVE scene retriggers (re-anchors) it rather
+          // than stopping it.
+          { launch: { trackId: 't-scenes', sceneId: 's-green' } },
+          { capture: 'retrigger' },
+          { stopScene: { trackId: 't-scenes' } },
+          { capture: 'stopped' },
+        ],
+      });
+
+      // No scene playing before the first launch, or after the stop.
+      expect(run.capture('base').playingScene('t-scenes')).toBeNull();
+      expect(run.capture('red').playingScene('t-scenes')).toBe('s-red');
+      expect(run.capture('green').playingScene('t-scenes')).toBe('s-green');
+      expect(run.capture('retrigger').playingScene('t-scenes')).toBe('s-green');
+      expect(run.capture('stopped').playingScene('t-scenes')).toBeNull();
+
+      // …and the launched scene actually reaches the picture.
+      const base = run.capture('base').centerPixel();
+      const red = run.capture('red').centerPixel();
+      const green = run.capture('green').centerPixel();
+      expect(base.b).toBeGreaterThan(base.r);
+      expect(red.r).toBeGreaterThan(red.g);
+      expect(green.g).toBeGreaterThan(green.r);
+      // Stopping returns the composite to the base layer exactly.
+      expect(run.capture('stopped').diffBytes(run.capture('base'))).toBe(0);
     });
 
     it('renders a real effect chain and a param edit reaches the engine', async () => {
