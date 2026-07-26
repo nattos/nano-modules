@@ -106,10 +106,10 @@ describe('comp cheap ops (drag fast path)', () => {
     expect(t.scale).toBe(0.5);
     expect(t.anchorX).toBe(0.5); // defaults resolved into the absolute payload
     // A second drag frame patches over the RESOLVED current, not the base.
-    store.setClipSourceTransform(trk, clipId, { rotation: 0.25 });
+    store.setClipSourceTransform(trk, clipId, { rotation: 90 });
     const t2 = JSON.parse(store.pendingCompOps[1].valueJson!);
     expect(t2.scale).toBe(0.5);
-    expect(t2.rotation).toBe(0.25);
+    expect(t2.rotation).toBe(90);
   });
 
   it('a transform edit on a sourceless clip is a no-op (no op, no history)', () => {

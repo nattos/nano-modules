@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -219,8 +220,17 @@ struct ClipM {
   double lengthBeat = 0;
   bool bypassed = false;
   std::optional<int> blendMode;
-  /** clip.source?.url presence (the video/media path). */
-  bool hasSourceUrl = false;
+  /**
+   * The clip has media the host can actually fetch (the video/media path) —
+   * either a runtime `source.url`, or a `source.ref` the installed
+   * {@link MediaRefResolver} located. False ⇒ the clip is effect-only as far as
+   * the executor is concerned: no video desc, no content stream, and no
+   * readiness gate (nothing will ever report ready for media nobody can open).
+   */
+  bool hasLocatableSource = false;
+  /** Where that media is, as the host addresses it: the runtime `source.url`
+   *  when present, else the resolver's answer. Ships on the video desc. */
+  std::string sourceUrl;
   /** Raw clip.source object (url/sourceKey/durationFrames/fps/scaleMode/
    *  transform...) — consumed by the video-desc build (videoDescFor twin). */
   nlohmann::json sourceJson;
@@ -324,7 +334,7 @@ inline const TrackM* sequenceLaneOf(const ClipM& c) {
  * LOCK-STEP: composition.ts clipHasContent.
  */
 inline bool clipHasContent(const ClipM& c) {
-  return c.hasSourceUrl || !c.sketch.devices.empty() || isSequenceClip(c);
+  return c.hasLocatableSource || !c.sketch.devices.empty() || isSequenceClip(c);
 }
 
 /** The interior lane's extent in INTERIOR beats (0 = empty). No 64-beat floor,
@@ -404,6 +414,35 @@ inline std::vector<const TrackM*> allLanes(const CompositionM& comp) {
     }
   }
   return out;
+}
+
+// ── Media resolution (host hook) ────────────────────────────────────────────
+
+/**
+ * Turns a document's `clip.source.ref` ({libraryId, path[]}) into something the
+ * HOST can open, or "" when it can't locate it.
+ *
+ * Why a hook and not a direct call: `source.url` is RUNTIME-ONLY (an object URL
+ * the web store rebuilds via `relinkMedia`, stripped by `serializeComposition`),
+ * so a `.nano-arr` read straight off disk carries only `ref`. Resolving that
+ * means touching the filesystem — and this header is dual-compiled into
+ * `executor.wasm`, which has none. So the host installs a resolver
+ * (`nano_assets::LibraryPaths` natively; none on web, where the store has
+ * already filled in `url` before the document reaches the engine) and the
+ * parse consults it.
+ *
+ * Install ONCE at startup, before any document is parsed — it is read from
+ * whichever thread parses, with no synchronization.
+ */
+using MediaRefResolver = std::function<std::string(const nlohmann::json& ref)>;
+
+inline MediaRefResolver& mediaRefResolver() {
+  static MediaRefResolver resolver;
+  return resolver;
+}
+
+inline void setMediaRefResolver(MediaRefResolver resolver) {
+  mediaRefResolver() = std::move(resolver);
 }
 
 // ── JSON parsing (defensive: bad/missing fields fall back to defaults) ──────
@@ -503,8 +542,13 @@ inline ClipM parseClip(const nlohmann::json& j, int depth = 0) {
   if (j.contains("source") && j["source"].is_object()) {
     const auto& src = j["source"];
     c.sourceJson = src;
-    c.hasSourceUrl = src.contains("url") && src["url"].is_string() &&
-                     !src["url"].get<std::string>().empty();
+    if (src.contains("url") && src["url"].is_string()) c.sourceUrl = src["url"].get<std::string>();
+    // No runtime url (a document read from disk — it is stripped at save):
+    // ask the host to locate the portable `ref` binding instead.
+    if (c.sourceUrl.empty() && src.contains("ref")) {
+      if (const auto& resolve = mediaRefResolver()) c.sourceUrl = resolve(src["ref"]);
+    }
+    c.hasLocatableSource = !c.sourceUrl.empty();
   }
   if (j.contains("loop") && j["loop"].is_object()) c.loopJson = j["loop"];
   c.sketch = parseSketchSpec(j.contains("sketch") ? j["sketch"] : nlohmann::json());

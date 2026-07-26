@@ -55,6 +55,13 @@ export interface CompScenario {
   height?: number;
   /** Precise transport (stalls on unready video). Default: fluid. */
   precise?: boolean;
+  /**
+   * Library roots a clip's `source.ref` resolves against — NATIVE ONLY. A saved
+   * document carries no runtime `source.url`, so the native host has to locate
+   * the media itself (bridge/comp_media_resolver.h). The web runner ignores
+   * this: on web the store has already relinked and filled `url` in.
+   */
+  libraries?: { id: string; label?: string; absolutePath: string }[];
   ignoreSolo?: boolean;
   ops: CompOp[];
 }

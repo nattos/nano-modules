@@ -1088,6 +1088,15 @@ if(APPLE)
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
     catch_discover_tests(test_comp_render)
 
+    # Media-ref resolution: a disk-loaded document (no runtime source.url) must
+    # still emit video descs. Null GPU backends, but links the same closure.
+    add_executable(test_comp_media_ref tests/test_comp_media_ref.cpp)
+    target_link_libraries(test_comp_media_ref PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    catch_discover_tests(test_comp_media_ref)
+
     add_executable(test_effect_render tests/test_effect_render.cpp)
     target_link_libraries(test_effect_render PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend

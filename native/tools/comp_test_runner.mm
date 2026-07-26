@@ -13,6 +13,9 @@
 //     "doc": { ...Composition... },       // or "docFile": "<path>"
 //     "width": 64, "height": 64,
 //     "precise": false,                   // transport mode (default: fluid)
+//     "libraries": [                      // roots a clip's source.ref resolves
+//       { "id": "L1", "label": "Footage", "absolutePath": "/abs/dir" }
+//     ],
 //     "ops": [
 //       { "seek": 4.0 },
 //       { "play": { "frames": 30, "dtSec": 0.016666 } },
@@ -49,6 +52,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "bridge/comp_media_resolver.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "runtime/text_host.h"
@@ -240,6 +244,15 @@ int main(int argc, char** argv) {
       }
       cx.registerCapabilities(moduleType, caps);
     }
+
+    // Media resolution. A scenario document is authored the way a SAVED one
+    // looks — `clip.source.ref`, no runtime `url` — so without the roots and
+    // the resolver every video clip would parse as effect-only. Install before
+    // loadDocument: the flag is decided at parse time.
+    if (cfg.contains("libraries")) {
+      nano_assets::LibraryPaths::instance().setRoots(cfg["libraries"]);
+    }
+    nano_assets::installLibraryMediaResolver();
 
     cx.loadDocument(doc);
     cx.pause();

@@ -143,7 +143,7 @@ inline double standardClipDurationSec(const ClipM& clip, double baseBPM) {
     if (durSec > 0) return durSec / std::max(1e-6, std::abs(clip.loop.speed));
     return 0;
   }
-  if (clip.hasSourceUrl) {
+  if (clip.hasLocatableSource) {
     double sliceSec = -1;
     if (clip.loop.endSec) {
       sliceSec = *clip.loop.endSec - clip.loop.startSec;
@@ -515,9 +515,9 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
         ResourceInfo r;
         r.handle = streamHandleOf("res:clip:" + clip.id);
         r.kind = kResKindClipContent;
-        r.flags = kResForkable | (clip.hasSourceUrl ? kResHasStream : 0);
+        r.flags = kResForkable | (clip.hasLocatableSource ? kResHasStream : 0);
         r.ownerId = clip.id;
-        if (clip.hasSourceUrl) {
+        if (clip.hasLocatableSource) {
           r.stream = streamHandleOf("content:" + clip.id);
           const auto& src = clip.sourceJson;
           if (src.is_object()) {
@@ -568,7 +568,7 @@ inline StreamsTable buildStreamsTable(const CompositionM& doc, const WarpClock& 
         push(std::move(q));
         continue;  // a sequence clip is never also a media clip
       }
-      if (!clip.hasSourceUrl) continue;
+      if (!clip.hasLocatableSource) continue;
       StreamInfo s;
       s.handle = streamHandleOf("content:" + clip.id);
       s.kind = kStreamKindVideoContent;

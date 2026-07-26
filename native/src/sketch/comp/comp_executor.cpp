@@ -433,7 +433,7 @@ std::vector<const ClipM*> CompExecutor::precacheCandidatesFor(const std::string&
     const std::string& clipId = ts->byOrdinalClipId[static_cast<size_t>(ord)];
     if (taken.count(clipId)) continue;
     const ClipM* cand = findSceneClip(trackId, clipId);
-    if (!cand || !cand->hasSourceUrl) continue;
+    if (!cand || !cand->hasLocatableSource) continue;
     taken.insert(clipId);
     out.push_back(cand);
   }
@@ -550,7 +550,7 @@ void CompExecutor::launchScene(const std::string& trackId, const std::string& sc
   // Precise defers everything; Live defers only Loose intents ("we must keep
   // pumping frames" — an Instant stab commits now, flash or not).
   const ClipM* scene = findSceneClip(trackId, sceneId);
-  const bool defer = readyFeedAlive_ && scene && scene->hasSourceUrl &&
+  const bool defer = readyFeedAlive_ && scene && scene->hasLocatableSource &&
                      !readyClips_.count(sceneId) && (precise_ || cls == kLaunchLoose);
   if (defer) {
     PendingLaunch p;
@@ -620,7 +620,7 @@ void CompExecutor::applyPendingLaunches(double dtSec) {
       invalidateEval();
       continue;
     }
-    const bool ready = !scene->hasSourceUrl || readyClips_.count(it->second.sceneId) > 0;
+    const bool ready = !scene->hasLocatableSource || readyClips_.count(it->second.sceneId) > 0;
     if (ready || it->second.ageSec >= kForceTimeoutSec) {
       const PendingLaunch p = it->second;
       const std::string trackId = it->first;
@@ -776,7 +776,7 @@ void CompExecutor::healSceneLaunches() {
     // empty). Video: the source slice at its speed; effect-only: the scene's
     // nominal lengthBeat. Loop-mode scenes play until replaced/stopped.
     else if (scene && scene->loop.mode == ClipPlayMode::OneShot) {
-      if (scene->hasSourceUrl) {
+      if (scene->hasLocatableSource) {
         double sliceSec = -1;
         if (scene->loop.endSec) {
           sliceSec = *scene->loop.endSec - scene->loop.startSec;
@@ -814,7 +814,7 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat,
   // source.video.file chain entry or the injected frame goes nowhere.
   // `anchorBeat` = clip.startBeat for arrangement clips, the LAUNCH beat for
   // scenes (the pump maps beats to source time from the desc's startBeat).
-  if (!clip.hasSourceUrl) return nullptr;
+  if (!clip.hasLocatableSource) return nullptr;
   const DeviceM* dev = nullptr;
   for (const auto& d : clip.sketch.devices) {
     if (d.moduleType == kVideoSourceType) { dev = &d; break; }
@@ -825,7 +825,9 @@ nlohmann::json CompExecutor::videoDescFor(const ClipM& clip, double anchorBeat,
   nlohmann::json d = {
       {"clipId", clip.id},
       {"instanceKey", clipInstanceKey(clip.id, dev->id)},
-      {"url", src.value("url", std::string())},
+      // The RESOLVED location, not `source.url` — a disk-loaded document has no
+      // runtime url and the parse filled this in from `source.ref` instead.
+      {"url", clip.sourceUrl},
       {"sourceKey", src.contains("sourceKey") && src["sourceKey"].is_string()
                         ? src["sourceKey"].get<std::string>()
                         : clip.id},
@@ -957,7 +959,7 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
           for (const auto& x : lane->clips) {
             if (x.id == subId) { sub = &x; break; }
           }
-          if (!sub || !sub->hasSourceUrl) continue;
+          if (!sub || !sub->hasLocatableSource) continue;
           nlohmann::json d = videoDescFor(*sub, c.startBeat, /*unbounded=*/true);
           if (d.is_null()) continue;
           d["transport"] = true;
@@ -969,7 +971,7 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
         }
         continue;
       }
-      if (!c.hasSourceUrl) continue;
+      if (!c.hasLocatableSource) continue;
       if (seen.count(c.id)) continue;
       nlohmann::json d = videoDescFor(c, c.startBeat);
       if (d.is_null()) continue;
@@ -1000,7 +1002,7 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
   for (const auto& [trackId, p] : pendingLaunch_) {
     if (seen.count(p.sceneId)) continue;
     const ClipM* scene = findSceneClip(trackId, p.sceneId);
-    if (!scene || !scene->hasSourceUrl) continue;
+    if (!scene || !scene->hasLocatableSource) continue;
     nlohmann::json d = videoDescFor(*scene, p.requestBeat, /*unbounded=*/true);
     if (d.is_null()) continue;
     forceLoopShape(d, *scene);
@@ -1023,7 +1025,7 @@ nlohmann::json CompExecutor::warmVideoDescs(const std::vector<CompNode>& tree,
   // chain via ensureEvalAt's candidate worlds.
   for (const auto& [trackId, cands] : scenePrewarmPlan()) {
     for (const ClipM* cand : cands) {
-      if (seen.count(cand->id) || !cand->hasSourceUrl) continue;
+      if (seen.count(cand->id) || !cand->hasLocatableSource) continue;
       // Warm-shaped (in-the-future anchor: entry targeting, no play) + prime.
       nlohmann::json d = videoDescFor(*cand, beat + kLookaheadBeats);
       if (d.is_null()) continue;
@@ -1311,7 +1313,7 @@ void CompExecutor::appendSyntheticTransportRows() {
       const double durSec = sequenceInteriorSec(*lane, doc_.baseBPM);
       if (!(durSec > 0)) continue;
       for (const auto& sub : lane->clips) {
-        if (!sub.hasSourceUrl || sub.bypassed) continue;
+        if (!sub.hasLocatableSource || sub.bypassed) continue;
         // A sub-clip with its OWN controller already has a driven row; never
         // emit both (they'd fight over appliedContentSec).
         if (transportDeviceOf(sub, catalog_) != nullptr) continue;
