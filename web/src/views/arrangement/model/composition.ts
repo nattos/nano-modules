@@ -152,8 +152,9 @@ export type ExportResolutionMode = 'default' | '2x' | 'scale' | 'custom';
 export type ExportFpsMode = 'default' | 'custom';
 /** H.264 quality tier (→ a bits-per-pixel budget in the exporter). */
 export type ExportQuality = 'low' | 'medium' | 'high';
-/** Which beat span to export. */
-export type ExportRangeKind = 'all' | 'loop';
+/** Which beat span to export: the whole arrangement, the loop region, or the
+ *  live time selection (the timeline's current time box). */
+export type ExportRangeKind = 'all' | 'loop' | 'selection';
 
 /** Persisted export/render settings (saved on the composition's `meta.export`). */
 export interface ExportSettings {

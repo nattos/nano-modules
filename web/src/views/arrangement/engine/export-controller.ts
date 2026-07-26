@@ -42,10 +42,21 @@ class ExportController {
   /** Whether a usable loop region exists to export. */
   get hasLoop(): boolean { return store.loopEnabled && store.loopEndBeat > store.loopStartBeat; }
 
-  /** The beat range the current settings export (loop region or whole arrangement). */
+  /** Whether the timeline currently has a time box to export. */
+  get hasSelection(): boolean {
+    return store.hasTimeSelection && store.timeSelEnd > (store.timeSelStart ?? 0);
+  }
+
+  /** The beat range the current settings export: the loop region, the live time
+   *  selection, or the whole arrangement (also the fallback when the chosen
+   *  range has since gone away — a cleared loop / collapsed box). */
   get range(): { startBeat: number; endBeat: number } {
-    if (store.exportSettings.range === 'loop' && this.hasLoop) {
+    const kind = store.exportSettings.range;
+    if (kind === 'loop' && this.hasLoop) {
       return { startBeat: store.loopStartBeat, endBeat: store.loopEndBeat };
+    }
+    if (kind === 'selection' && this.hasSelection) {
+      return { startBeat: store.timeSelStart!, endBeat: store.timeSelEnd };
     }
     return { startBeat: 0, endBeat: compositionLengthBeats(store.composition) };
   }

@@ -1831,8 +1831,17 @@ export class ArrInspector extends MobxLitElement {
               ?disabled=${rendering || !ec.hasLoop}
               title=${ec.hasLoop ? 'Export the loop region' : 'No loop region set'}
               @click=${() => store.setExportSettings({ range: 'loop' })}>Loop</button>
+            <button class="segbtn ${s.range === 'selection' ? 'on' : ''}"
+              ?disabled=${rendering || !ec.hasSelection}
+              title=${ec.hasSelection
+                ? 'Export the current time selection'
+                : 'No time selection — drag a region on the timeline'}
+              @click=${() => store.setExportSettings({ range: 'selection' })}>Selection</button>
           </span>
         </div>
+        <div class="row"><label></label><span class="val muted">
+          → ${ec.range.startBeat.toFixed(2)}–${ec.range.endBeat.toFixed(2)}b
+        </span></div>
         <div class="row">
           <label>Solo</label>
           <span class="val seg">

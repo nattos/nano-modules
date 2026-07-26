@@ -34,6 +34,11 @@ import { compositionLengthBeats, exportFps, type BackgroundConfig } from '../mod
 /** The comp executor publishes its output under this fixed sketch id. */
 const COMPOSITE_ID = 'arr-composite';
 
+/** Warm-up: consecutive structure-stable frames required before recording, and the
+ *  hard cap on warm-up steps (a chain that never settles must not hang an export). */
+const WARMUP_SETTLED_FRAMES = 3;
+const MAX_WARMUP_FRAMES = 30;
+
 export interface FramePlan {
   /** 0-based output frame index. */
   index: number;
@@ -237,29 +242,63 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   const pump = new ExportVideoPump(width, height);
   await pump.init();
 
-  /** Step the engine one frame and resolve with its traced composite bitmap. */
-  const stepAndCapture = (): Promise<ImageBitmap | undefined> => new Promise((res, rej) => {
+  // Track the comp executor's per-frame structure report so the warm-up below can
+  // tell "the chain is still being instantiated" from "steady state".
+  let lastStructureChanged = true;
+  engine.onCompInfo = (info) => { lastStructureChanged = info.structureChanged; };
+
+  /** Step the engine one frame and resolve with its traced composite bitmap.
+   *  `dtSec` is the effect-clock advance; 0 makes the step a pure
+   *  build/instantiate pass that moves no stateful effect (the warm-up below). */
+  const stepAndCapture = (dtSec?: number): Promise<ImageBitmap | undefined> => new Promise((res, rej) => {
     const timer = setTimeout(() => { resolveFrame = null; rej(new Error('export: engine frame timed out')); }, 20_000);
     resolveFrame = (b) => { clearTimeout(timer); res(b); };
-    engine.stepFrame();
+    engine.stepFrame(dtSec);
   });
+
+  /** Await-decode + inject every active video clip's exact frame at `beat`
+   *  (null = clear the slot). */
+  const injectVideo = async (beat: number) => {
+    for (const l of store.compositeLayersAtBeat(beat, opts.ignoreSolo)) {
+      const d = videoDescFor(l.clip);
+      if (!d) continue;
+      const bmp = await pump.frameBitmapAt(d, beat, (b) => clock.secondsAt(b));
+      engine.setInstanceTexture(d.instanceKey, bmp);
+    }
+  };
 
   const keyEvery = Math.max(1, fps * 2); // a keyframe roughly every 2 seconds
   let engineFrames = 0;
 
   try {
+    // ── Warm-up: settle the chain BEFORE recording ────────────────────────────
+    // The comp executor reports a structure change, and only THEN does the worker
+    // instantiate the new chain — so a cold engine's first frames render with
+    // missing instances (layers blank, generators un-created, host services like
+    // the text atlas not yet primed). The live preview hides this behind a
+    // fraction of a second; an export would bake it into the opening frames.
+    //
+    // The steps run at the start beat with dt = 0, so they build the graph
+    // without moving ANY clock: the recorded frame 0 is still exactly the frame
+    // at `plan[0].beat`, with a fully-instantiated chain behind it.
+    if (plan.length) {
+      const warmBeat = plan[0].beat;
+      await injectVideo(warmBeat);
+      let settled = 0;
+      for (let i = 0; i < MAX_WARMUP_FRAMES && settled < WARMUP_SETTLED_FRAMES; i++) {
+        if (opts.signal?.aborted) throw new DOMException('Export canceled', 'AbortError');
+        engine.compControl({ op: 'seek', beat: warmBeat });
+        const warm = await stepAndCapture(0);
+        warm?.close();
+        settled = lastStructureChanged ? 0 : settled + 1;
+      }
+    }
+
     for (const fr of plan) {
       if (opts.signal?.aborted) throw new DOMException('Export canceled', 'AbortError');
       if (encErr) throw encErr instanceof Error ? encErr : new Error(String(encErr));
 
-      const layers = store.compositeLayersAtBeat(fr.beat, opts.ignoreSolo);
-      // Await-decode + inject every active video clip's exact frame (null = clear).
-      for (const l of layers) {
-        const d = videoDescFor(l.clip);
-        if (!d) continue;
-        const bmp = await pump.frameBitmapAt(d, fr.beat, (b) => clock.secondsAt(b));
-        engine.setInstanceTexture(d.instanceKey, bmp);
-      }
+      await injectVideo(fr.beat);
 
       // Seek + step: the comp executor rebuilds/evaluates at exactly this beat and
       // publishes under COMPOSITE_ID; a gap in the timeline steps too (the frame

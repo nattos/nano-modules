@@ -30,8 +30,13 @@ export interface FrameSource {
   readonly streaming: boolean;
 
   /** Decode frame `idx` into the GPUHost texture handle `outTexHandle`.
-   *  Resolves when the texture is ready to sample. */
-  decode(idx: number, outTexHandle: number): Promise<void>;
+   *  Resolves when the texture is ready to sample.
+   *
+   *  A source that can tell it landed on a DIFFERENT frame than asked for (an
+   *  imprecise <video> seek) may resolve `{exact:false}`: the pixels are still
+   *  usable for the request in hand, but the service must not cache them under
+   *  `idx`. Omitting the result (or `{exact:true}`) means "this is frame idx". */
+  decode(idx: number, outTexHandle: number): Promise<{ exact: boolean } | void>;
 
   /** Live (streaming) sources only: play or pause the underlying element.
    *  Streaming sources are driven by the element's own clock (decode()

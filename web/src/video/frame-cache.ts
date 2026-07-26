@@ -38,6 +38,10 @@ interface Entry {
    *  the texture. A not-ready entry must never be served as a cache hit
    *  (it's still black) nor evicted (its decode is writing into it). */
   ready: boolean;
+  /** True when the decode that filled this texture is known to have landed on
+   *  the WRONG frame (see `markSuspect`): resident + evictable, but never
+   *  served — a later request re-decodes rather than replaying bad pixels. */
+  suspect?: boolean;
 }
 
 export interface FrameCacheStats {
@@ -109,7 +113,7 @@ export class FrameCache {
     // miss so the caller awaits the in-flight decode rather than serving
     // garbage. (With slow <video> seeks the decode chain can back up, so
     // this window is real, not theoretical.)
-    const ready = !!e && e.ready;
+    const ready = !!e && e.ready && !e.suspect;
     this.recordEvent(ready);
     if (!ready) { this.misses++; return -1; }
     this.hits++;
@@ -118,9 +122,11 @@ export class FrameCache {
   }
 
   /** Presence check that records nothing and doesn't touch LRU order.
-   *  For internal bookkeeping (e.g. prefetch "is this already cached?"). */
+   *  For internal bookkeeping (e.g. prefetch "is this already cached?").
+   *  A suspect entry reads as absent so a prefetch/pull re-decodes it. */
   has(frameIdx: number): boolean {
-    return this.entries.has(frameIdx);
+    const e = this.entries.get(frameIdx);
+    return !!e && !e.suspect;
   }
 
   private recordEvent(hit: boolean): void {
@@ -144,6 +150,7 @@ export class FrameCache {
     const existing = this.entries.get(frameIdx);
     if (existing) {
       existing.lastAccessedMs = ++this.accessTicker;
+      existing.suspect = false; // the caller is about to overwrite the pixels
       return existing.textureHandle;
     }
     const sizeBytes = width * height * (FORMAT_BPP[formatCode] ?? 4);
@@ -164,6 +171,28 @@ export class FrameCache {
   markReady(frameIdx: number): void {
     const e = this.entries.get(frameIdx);
     if (e) e.ready = true;
+  }
+
+  /** Forget `frameIdx` and release its texture. For a decode that FAILED: a
+   *  reserved-but-never-ready entry is un-evictable by design, so leaving it
+   *  behind would leak its bytes AND make that frame a permanent miss. */
+  drop(frameIdx: number): void {
+    const e = this.entries.get(frameIdx);
+    if (e) this.evict(e);
+  }
+
+  /**
+   * Flag `frameIdx` as holding the WRONG pixels — a <video> seek that timed out
+   * or landed on a different frame still wrote *something* into the reserved
+   * texture. The entry stays resident (the caller is about to sample it for the
+   * frame it already asked for, and it must remain evictable so it can't leak),
+   * but `lookup`/`has` report a miss so it is never SERVED again: a later pull
+   * re-decodes instead of replaying the errant frame. `reserve` clears the flag
+   * — that re-decode overwrites the pixels.
+   */
+  markSuspect(frameIdx: number): void {
+    const e = this.entries.get(frameIdx);
+    if (e) { e.ready = true; e.suspect = true; }
   }
 
   /** Replace the pinned set wholesale. Frames removed from the pinned

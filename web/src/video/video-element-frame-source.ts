@@ -28,7 +28,21 @@ export interface VideoElementOptions {
    *  streaming (play-forward), `false` forces seekable. If omitted, the
    *  source is probed at open. */
   streaming?: boolean;
+  /**
+   * OFFLINE (export) mode: correctness over latency. Seeks get a much longer
+   * budget than the realtime one, and each decode VERIFIES which frame actually
+   * landed (rVFC's `mediaTime`), retrying once and finally reporting
+   * `{exact:false}` rather than passing off the wrong pixels as frame N. Without
+   * this a slow source silently times out mid-seek and the wrong frame gets
+   * cached under N — read-ahead then serves it to every later pull.
+   */
+  precise?: boolean;
 }
+
+/** Seek budget when correctness matters more than latency (offline export). */
+const PRECISE_SEEK_TIMEOUT_MS = 5000;
+/** How long to wait for the post-seek rVFC that reveals the landed frame. */
+const PRESENT_TIMEOUT_MS = 250;
 
 /** Cap on a single seek's wait in the decode path. */
 const SEEK_TIMEOUT_MS = 300;
@@ -56,9 +70,11 @@ export class VideoElementFrameSource implements FrameSource {
   private video: HTMLVideoElement;
   private objectUrl: string;
 
+  private readonly precise: boolean;
+
   private constructor(
     gpuHost: GPUHost, video: HTMLVideoElement, objectUrl: string,
-    fps: number, codec: string, streaming: boolean,
+    fps: number, codec: string, streaming: boolean, precise: boolean,
   ) {
     this.gpuHost = gpuHost;
     this.device = gpuHost.device;
@@ -66,6 +82,7 @@ export class VideoElementFrameSource implements FrameSource {
     this.objectUrl = objectUrl;
     this.fps = fps;
     this.streaming = streaming;
+    this.precise = precise;
     this.width = video.videoWidth;
     this.height = video.videoHeight;
     this.frameCount = Math.max(1, Math.round(video.duration * fps));
@@ -121,10 +138,12 @@ export class VideoElementFrameSource implements FrameSource {
     const streaming = opts?.streaming ?? !(await probeSeekable(video, fps));
     video.loop = streaming;          // streaming plays + loops; seekable stays paused
     try { video.currentTime = 0; } catch { /* ignore */ }
-    return new VideoElementFrameSource(gpuHost, video, objectUrl, fps, blob.type, streaming);
+    return new VideoElementFrameSource(
+      gpuHost, video, objectUrl, fps, blob.type, streaming, opts?.precise === true);
   }
 
-  async decode(idx: number, outTexHandle: number): Promise<void> {
+  async decode(idx: number, outTexHandle: number): Promise<{ exact: boolean } | void> {
+    if (this.precise && !this.streaming) return this.decodePrecise(idx, outTexHandle);
     if (this.streaming) {
       // Live sampling — `idx` ignored. The element plays + loops itself
       // (play/pause is driven explicitly via setPlaying, not here, so a
@@ -148,6 +167,42 @@ export class VideoElementFrameSource implements FrameSource {
       { texture: tex },
       { width: this.width, height: this.height, depthOrArrayLayers: 1 },
     );
+  }
+
+  /**
+   * Offline decode: seek with a generous budget, then CONFIRM which frame the
+   * element is actually showing before copying it out. `mediaTime` from rVFC is
+   * the presented frame's own timestamp (unlike `currentTime`, which just echoes
+   * the seek target), so it's the only honest answer. One retry, then we copy
+   * whatever we have and report `exact:false` — the caller keeps the pixels for
+   * this request but must not cache them as frame `idx`.
+   */
+  private async decodePrecise(idx: number, outTexHandle: number): Promise<{ exact: boolean }> {
+    const tolerance = 0.75 / this.fps;
+    const want = idx / this.fps;                       // this frame's start time
+    const target = Math.min(Math.max(0, this.video.duration - 1e-3), want + 0.5 / this.fps);
+    let exact = false;
+    for (let attempt = 0; attempt < 2 && !exact; attempt++) {
+      const landed = await seekVideo(
+        this.video, target, this.fps, PRECISE_SEEK_TIMEOUT_MS, /*wantPresented=*/true);
+      // No rVFC reading available (non-Chromium): fall back to trusting the seek,
+      // exactly as the realtime path always has.
+      if (landed == null) { exact = true; break; }
+      exact = Math.abs(landed - want) <= tolerance;
+      if (!exact && attempt === 0) {
+        // Nudge off the current position so the retry is a real seek (a re-seek to
+        // the same currentTime is a no-op that resolves instantly on the old frame).
+        try { this.video.currentTime = Math.max(0, target - 2 / this.fps); } catch { /* ignore */ }
+      }
+    }
+    const tex = this.gpuHost.getTextureByHandle(outTexHandle);
+    if (!tex) throw new Error(`output texture handle ${outTexHandle} not found`);
+    this.device.queue.copyExternalImageToTexture(
+      { source: this.video, flipY: false },
+      { texture: tex },
+      { width: this.width, height: this.height, depthOrArrayLayers: 1 },
+    );
+    return { exact };
   }
 
   /** Streaming sources: play/pause the element so the preview can freeze
@@ -201,31 +256,51 @@ export class VideoElementFrameSource implements FrameSource {
   }
 }
 
-/** Seek `video` to `t` and resolve when the frame is ready (`seeked` /
- *  rVFC) or `timeoutMs` elapses. Never rejects, so a no-op seek that
- *  fires no event can't hang the caller. */
+/**
+ * Seek `video` to `t` and resolve when the frame is ready (`seeked` / rVFC) or
+ * `timeoutMs` elapses. Never rejects, so a no-op seek that fires no event can't
+ * hang the caller.
+ *
+ * Resolves with the PRESENTED frame's `mediaTime` when rVFC supplied one, else
+ * null ("don't know"). `wantPresented` keeps waiting (briefly) for that rVFC
+ * even after `seeked` has fired, which is the only way to learn what actually
+ * landed — `currentTime` merely echoes the requested position.
+ */
 function seekVideo(
   video: HTMLVideoElement, t: number, fps: number, timeoutMs: number,
-): Promise<void> {
+  wantPresented = false,
+): Promise<number | null> {
   return new Promise((resolve) => {
-    if (Math.abs(video.currentTime - t) < (0.5 / fps) && video.readyState >= 2) {
-      resolve();
-      return;
-    }
-    let settled = false;
-    const done = () => { if (settled) return; settled = true; cleanup(); resolve(); };
-    const onSeeked = () => done();
     const rvfc = (video as unknown as {
-      requestVideoFrameCallback?: (cb: () => void) => void;
+      requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => void;
     }).requestVideoFrameCallback;
-    const timer = setTimeout(done, timeoutMs);
+    const already = Math.abs(video.currentTime - t) < (0.5 / fps) && video.readyState >= 2;
+    if (already && !wantPresented) { resolve(null); return; }
+
+    let settled = false;
+    let presented: number | null = null;
+    const done = () => { if (settled) return; settled = true; cleanup(); resolve(presented); };
+    const onFrame = (_now: number, meta: { mediaTime: number }) => {
+      presented = meta?.mediaTime ?? null;
+      done();
+    };
+    // With wantPresented, `seeked` alone isn't enough — give the compositor a short
+    // window to present the frame (and hence fire rVFC) before giving up on knowing.
+    const onSeeked = () => {
+      if (!wantPresented || typeof rvfc !== 'function') { done(); return; }
+      clearTimeout(timer);
+      timer = setTimeout(done, PRESENT_TIMEOUT_MS);
+    };
+    let timer = setTimeout(done, timeoutMs);
     const cleanup = () => {
       video.removeEventListener('seeked', onSeeked);
       clearTimeout(timer);
     };
     video.addEventListener('seeked', onSeeked);
-    if (typeof rvfc === 'function') rvfc.call(video, () => done());
-    video.currentTime = t;
+    if (typeof rvfc === 'function') rvfc.call(video, onFrame);
+    // A re-seek to the position we're already at fires no `seeked`; the rVFC above
+    // (or the timeout) still resolves us.
+    if (!already) video.currentTime = t;
   });
 }
 

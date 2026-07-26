@@ -68,7 +68,10 @@ export class ExportVideoPump {
     }
     if (!o) {
       const blob = await (await fetch(d.url)).blob();
-      const clip = await this.service.open(blob, d.sourceKey, { sequential: false });
+      // `offline`: no speculative read-ahead (we ask for exactly the frames the
+      // plan needs, one at a time) and every seek's landed frame is verified, so
+      // a slow source can't cache an errant frame that later pulls then serve.
+      const clip = await this.service.open(blob, d.sourceKey, { sequential: false, offline: true });
       const info = this.service.inspect(clip);
       o = {
         clip,

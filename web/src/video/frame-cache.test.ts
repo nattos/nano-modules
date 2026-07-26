@@ -235,3 +235,43 @@ describe('FrameCache clear', () => {
     expect(c.currentBytes).toBe(0);
   });
 });
+
+describe('FrameCache drop + markSuspect (errant-frame guard)', () => {
+  it('drop frees a reserved-but-never-decoded entry (a failed decode)', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, 100 * 1024 * 1024);
+    const h = c.reserve(7, W, H, FMT_RGBA8);   // decode throws → never markReady
+    c.drop(7);
+    expect(host.released).toContain(h);
+    expect(c.stats().entries).toBe(0);
+    expect(c.currentBytes).toBe(0);
+  });
+
+  it('a suspect entry stays resident + evictable but is never SERVED', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, 100 * 1024 * 1024);
+    const h = c.reserve(3, W, H, FMT_RGBA8);
+    c.markSuspect(3);                          // the seek landed on another frame
+    expect(c.lookup(3)).toBe(-1);              // → a miss, so the caller re-decodes
+    expect(c.has(3)).toBe(false);              // → a prefetch won't skip it either
+    expect(c.stats().entries).toBe(1);         // still resident (the handle is in use)
+    // Evictable, unlike a not-ready entry: budget pressure can reclaim it.
+    const c2 = new FrameCache(host, FRAME_BYTES);
+    c2.reserve(0, W, H, FMT_RGBA8);
+    c2.markSuspect(0);
+    c2.reserve(1, W, H, FMT_RGBA8);
+    expect(c2.stats().entries).toBe(1);
+    void h;
+  });
+
+  it('re-reserving a suspect frame clears the flag (the pixels get overwritten)', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, 100 * 1024 * 1024);
+    const h = c.reserve(4, W, H, FMT_RGBA8);
+    c.markSuspect(4);
+    expect(c.reserve(4, W, H, FMT_RGBA8)).toBe(h); // same texture, reused
+    c.markReady(4);
+    expect(c.lookup(4)).toBe(h);
+    expect(host.created.length).toBe(1);           // no realloc
+  });
+});

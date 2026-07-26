@@ -109,6 +109,11 @@ interface ClipState {
   /** The source's play-forward-vs-seekable verdict, persisted into the
    *  source profile so re-opens skip the seek probe. */
   videoStreaming: boolean;
+  /** Offline (export) consumer: never speculate. Read-ahead is off — the
+   *  consumer asks for exactly the frames it needs and awaits each one, so a
+   *  prefetch can only add seek pressure (and, on a slow source, fill the cache
+   *  with frames its own seeks never confirmed). */
+  offline: boolean;
 }
 
 /** The opaque ClipHandle that sinks pass back to the service. Just an
@@ -147,7 +152,7 @@ export class VideoPlaybackService {
   async open(
     source: FileSystemFileHandle | File | Blob | ArrayBuffer,
     salt: string,
-    opts?: { sequential?: boolean },
+    opts?: { sequential?: boolean; offline?: boolean },
   ): Promise<ClipHandle> {
     // Derive source identity + a BytesSource (for DXV) and a Blob (for
     // the browser-decoder fallback) from whatever the caller handed us.
@@ -188,6 +193,8 @@ export class VideoPlaybackService {
         // Sequential intent forces play-forward; otherwise use the persisted
         // seek-strategy verdict (or probe at open if neither).
         streaming: opts?.sequential ? true : persistedSource?.videoStreaming,
+        // Offline: verify every seek's landed frame (correctness over latency).
+        precise: opts?.offline === true,
       });
 
     let frameSource: FrameSource;
@@ -286,6 +293,7 @@ export class VideoPlaybackService {
         ? this.gpuHost.createTexture(frameSource.width, frameSource.height, frameSource.formatCode)
         : 0,
       videoStreaming: frameSource.streaming,
+      offline: opts?.offline === true,
     };
 
     // Streaming sources play live — skip the cache-priming + prefetch
@@ -437,7 +445,7 @@ export class VideoPlaybackService {
   /** Serialize FrameSource.decode() calls behind a single in-flight chain
    *  so concurrent pulls / prefetches don't race. Used directly by the
    *  streaming path (re-samples the live frame each pull). */
-  private chainDecode(state: ClipState, frameIdx: number, outHandle: number): Promise<void> {
+  private chainDecode(state: ClipState, frameIdx: number, outHandle: number): Promise<unknown> {
     const p = state.decodeChain.then(() => state.source.decode(frameIdx, outHandle));
     // Don't poison the chain on a single failure.
     state.decodeChain = p.catch(() => {});
@@ -466,9 +474,22 @@ export class VideoPlaybackService {
       const handle = state.cache.reserve(
         frameIdx, state.source.width, state.source.height, state.source.formatCode);
       const t = performance.now();
-      await state.source.decode(frameIdx, handle);
+      let res: { exact: boolean } | void;
+      try {
+        res = await state.source.decode(frameIdx, handle);
+      } catch (err) {
+        // A reserved-but-never-ready entry can neither be served nor evicted —
+        // drop it so the bytes come back and a retry can re-reserve.
+        state.cache.drop(frameIdx);
+        throw err;
+      }
       const decodeMs = performance.now() - t;
-      state.cache.markReady(frameIdx);
+      // `exact:false` = the source knows these pixels are some OTHER frame (a
+      // seek that timed out / landed short). Hand them back for this request but
+      // keep them out of the served cache, or read-ahead poisons every later
+      // pull of `frameIdx` with the errant frame.
+      if (res && res.exact === false) state.cache.markSuspect(frameIdx);
+      else state.cache.markReady(frameIdx);
       return { handle, decodeMs };
     });
     // Don't poison the chain on a single failure.
@@ -505,6 +526,7 @@ export class VideoPlaybackService {
   }
 
   private schedulePrefetch(state: ClipState, frameIdx: number): void {
+    if (state.offline) return; // offline consumers ask for exactly what they need
     if (state.pendingPrefetches.has(frameIdx)) return;
     // Use has() not lookup() — a prefetch peek is internal bookkeeping,
     // not a sink request, so it must not count toward hit/miss stats.
