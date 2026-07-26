@@ -121,6 +121,16 @@ const setStatus = (s: string) => { if (statusEl) statusEl.textContent = s; };
 let engine: ArrEngine | null = null;
 let enginePromise: Promise<ArrEngine> | null = null;
 
+/**
+ * The engine's CURRENT chain keys, tracked at page scope rather than per
+ * scenario. `CompFrameInfo.chainKeys` only rides a frame when the structure
+ * CHANGED (it's a per-frame JSON cost otherwise), and the engine persists
+ * across scenarios — so a scenario that re-loads a document the engine already
+ * has built raises no change and would otherwise see an empty key list. The
+ * native runner doesn't hit this only because it's a fresh process per run.
+ */
+let liveChainKeys: string[] = [];
+
 async function ensureEngine(width: number, height: number): Promise<ArrEngine> {
   if (enginePromise) {
     const e = await enginePromise;
@@ -178,7 +188,7 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
     // Held in an object, not plain `let`s: they're written from the engine
     // callbacks, which TS's control-flow analysis can't see — reading them in
     // the op loop would narrow to `never`.
-    const last: { info: CompFrameInfo | null; chainKeys: string[] } = { info: null, chainKeys: [] };
+    const last: { info: CompFrameInfo | null } = { info: null };
     let elapsedSec = 0;
 
     let resolveFrame: ((info: CompFrameInfo | null) => void) | null = null;
@@ -201,7 +211,7 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
       }, 30_000);
       resolveFrame = () => {
         clearTimeout(timer);
-        if (last.info?.chainKeys) last.chainKeys = last.info.chainKeys;
+        if (last.info?.chainKeys) liveChainKeys = last.info.chainKeys;
         res();
       };
       // Pin the step size explicitly. `setTime` CANNOT pace a comp-mode step:
@@ -284,8 +294,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
           holding: !!last.info?.holding,
           positionBeat: last.info?.positionBeat ?? 0,
           positionSec: last.info?.positionSec ?? 0,
-          layerCount: layerCountFrom(last.chainKeys),
-          chainKeys: last.chainKeys,
+          layerCount: layerCountFrom(liveChainKeys),
+          chainKeys: liveChainKeys,
         };
       }
     }

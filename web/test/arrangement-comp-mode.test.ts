@@ -9,6 +9,14 @@
  * pinned by the comp goldens (comp-goldens.test.ts ↔ test_comp_build) and the
  * native pixel test (test_comp_render), not here.
  *
+ * This suite drives the FULL app path: store → EngineBridge → engine worker →
+ * the DOM monitor. `arrangement-comp-mode-parity.test.ts` covers the same
+ * engine behaviours from the other side — scenarios straight into the comp
+ * executor, run against BOTH the wasm and the native backend, fixed-step. The
+ * overlap is deliberate, not duplication: a bug in the bridge's document
+ * mirroring or the monitor only shows up here, and a web/native divergence only
+ * shows up there. Neither replaces the other.
+ *
  * Scenario: three tracks —
  *   top    = solid_color [0.2, 0.4, 0.8]
  *   middle = solid_color [1, 0, 0], track level 0.5 (composite.blend opacity)

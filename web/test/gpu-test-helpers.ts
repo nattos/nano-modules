@@ -181,6 +181,13 @@ export function setBackend(backend: Backend): void {
   _ambientBackend = backend;
 }
 
+/** The backend a test is CURRENTLY dispatching on. Read at execution time —
+ *  sibling helper modules (comp-test-helpers) dispatch off this so a single
+ *  `forEachBackend` wrapper drives every kind of runner. */
+export function currentBackend(): Backend {
+  return _ambientBackend;
+}
+
 /**
  * Active fusion mode for the current `describe` block, set by
  * `forEachFusionMode`. Picked up by `runGpuEffectTest` (and friends)
