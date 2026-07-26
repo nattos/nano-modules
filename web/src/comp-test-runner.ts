@@ -76,6 +76,10 @@ export interface CompRunResult {
     clips: Record<string, PumpClipTelemetry>;
     /** Clip ids nothing could decode, with the reason — never a silent hole. */
     skipped: Record<string, string>;
+    frames: number;
+    /** Frames the Precise transport refused to advance because a clip's media
+     *  wasn't decoded yet — the stall metric. */
+    stalledFrames: number;
   };
 }
 
@@ -226,14 +230,16 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
     // the op loop would narrow to `never`.
     const last: { info: CompFrameInfo | null } = { info: null };
     let elapsedSec = 0;
+    let frames = 0;
+    let stalledFrames = 0;
 
     let resolveFrame: ((info: CompFrameInfo | null) => void) | null = null;
     e.onCompInfo = (info) => { last.info = info; };
-    e.onFrameSet = (frames) => {
+    e.onFrameSet = (bitmaps) => {
       // The bitmaps are checkerboarded and unusable for comparison — close them
       // so the page doesn't leak one per frame. Real pixels come from
       // readbackTrace at capture points.
-      for (const id in frames) frames[id].close();
+      for (const id in bitmaps) bitmaps[id].close();
       const r = resolveFrame;
       resolveFrame = null;
       r?.(last.info);
@@ -251,6 +257,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
         if (last.info?.scenes) liveScenes = JSON.parse(last.info.scenes);
         if (last.info?.scenesPending) livePendingScenes = JSON.parse(last.info.scenesPending);
         if (last.info?.videoDescs !== undefined) liveVideoDescs = last.info.videoDescs;
+        frames++;
+        if (last.info?.holding) stalledFrames++;
         res();
       };
       // Pin the step size explicitly. `setTime` CANNOT pace a comp-mode step:
@@ -366,7 +374,7 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
 
     e.onFrameSet = null;
     e.onCompInfo = null;
-    const video = { clips: pump.telemetry(), skipped: pump.skipped };
+    const video = { clips: pump.telemetry(), skipped: pump.skipped, frames, stalledFrames };
     await pump.dispose();
     const result: CompRunResult = { success: true, width, height, captures, video };
     if (outEl) outEl.textContent = JSON.stringify({ ...result, captures: Object.keys(captures) }, null, 1);

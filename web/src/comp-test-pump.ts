@@ -49,6 +49,9 @@ export interface PumpClipTelemetry {
   cacheHits: number;
   cacheMisses: number;
   hitRate: number;
+  /** Real decodes, pulls AND prefetches. The cost tracker's sample count is
+   *  exactly this: it records one pull per decode and nothing per cache hit. */
+  decodes: number;
   injects: number;
   cachedFrames: number;
   cacheBytes: number;
@@ -220,6 +223,7 @@ export class CompTestPump {
         cacheHits: s.cache.hits,
         cacheMisses: s.cache.misses,
         hitRate: s.cache.hitRate,
+        decodes: s.cost.samples,
         injects: c.injects,
         cachedFrames: s.cachedFrameIndices.length,
         cacheBytes: s.cache.bytes,

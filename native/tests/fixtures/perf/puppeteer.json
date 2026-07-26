@@ -1,0 +1,28 @@
+{
+ "sequential/a1": {
+  "hitRate": 0.996,
+  "injects": 120,
+  "cachedFrames": 57,
+  "decodes": 57,
+  "meanDecodeMs": 0,
+  "seekDecodeMs": 0.559,
+  "accessMode": "Sequential",
+  "costClass": "FastRandom"
+ },
+ "sequential/c1": {
+  "hitRate": 0.996,
+  "injects": 60,
+  "cachedFrames": 57,
+  "decodes": 57,
+  "meanDecodeMs": 0,
+  "seekDecodeMs": 0.527,
+  "accessMode": "Sequential",
+  "costClass": "FastRandom"
+ },
+ "precise/transport": {
+  "stallFraction": 0.004
+ },
+ "readahead/a1": {
+  "precacheAdherence": 0.996
+ }
+}

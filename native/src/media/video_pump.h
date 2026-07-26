@@ -74,8 +74,9 @@ class VideoPump {
     /// The size ScaleMode::None reasons about (the composition resolution).
     int logicalW = 0;
     int logicalH = 0;
-    /// Per-clip frame-cache budget.
-    int64_t cacheBudgetBytes = 64ll * 1024 * 1024;
+    /// Per-clip frame-cache budget. Matches FrameCache's web-side default so
+    /// residency (and therefore hit rate) is comparable between the hosts.
+    int64_t cacheBudgetBytes = 256ll * 1024 * 1024;
     /// Frames to precache per pull. 0 disables read-ahead — which is how the
     /// perf suite proves the hit-rate gate actually bites.
     int readAheadDepth = kReadAheadDepth;

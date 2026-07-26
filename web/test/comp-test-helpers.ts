@@ -64,6 +64,12 @@ export interface CompScenario {
    * Set automatically by `runCompScenario` for any clip carrying `mediaFile`.
    */
   libraries?: { id: string; label?: string; absolutePath: string }[];
+  /**
+   * Frames the decode pump precaches per pull — NATIVE ONLY (web's depth is a
+   * module constant, `READAHEAD_DEPTH`). 0 disables read-ahead, which is how
+   * you prove the perf suite's hit-rate gate actually bites.
+   */
+  readAheadDepth?: number;
   ignoreSolo?: boolean;
   ops: CompOp[];
 }
@@ -96,6 +102,8 @@ interface RawResult {
     /** clipId → why nothing could decode it. Never a silent hole. */
     skipped: Record<string, string>;
     totalDecodes?: number;
+    frames?: number;
+    stalledFrames?: number;
   };
 }
 
@@ -231,6 +239,9 @@ export class CompRun {
   get videoClips() { return this.raw.video?.clips ?? {}; }
   /** clipId → the reason nothing could decode it. */
   get videoSkipped() { return this.raw.video?.skipped ?? {}; }
+  /** Engine frames stepped, and how many the Precise transport held. */
+  get frames() { return this.raw.video?.frames ?? 0; }
+  get stalledFrames() { return this.raw.video?.stalledFrames ?? 0; }
 
   /** Fail loudly if any clip was skipped — a silent hole in the picture is the
    *  failure mode the skip list exists to prevent. */

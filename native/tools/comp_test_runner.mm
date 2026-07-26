@@ -275,6 +275,8 @@ int main(int argc, char** argv) {
 
     double hostTime = 0.0;
     uint32_t lastFlags = 0;
+    int frames = 0;
+    int stalledFrames = 0;
     std::string lastChainKeys = "[]";
 
     // The decode pump. comp never decodes: it publishes a desc set and blocks
@@ -318,6 +320,10 @@ int main(int argc, char** argv) {
       cx.transportResolve(dt);
       const int32_t handle = cx.render(inTex, outTex, W, H, dt);
       if (lastFlags & comp::kCompStructureChanged) lastChainKeys = cx.chainKeysJson();
+      frames++;
+      // A Precise hold is the transport refusing to advance because a clip's
+      // media isn't decoded yet — the stall metric the perf suite gates on.
+      if (lastFlags & comp::kCompHoldingPrecise) stalledFrames++;
       return handle;
     };
 
@@ -421,7 +427,10 @@ int main(int argc, char** argv) {
 
     // Decode telemetry rides the RESULT, not each capture: it's cumulative over
     // the whole run, which is what the perf comparison wants.
-    json video{{"totalDecodes", pump.totalDecodes()}, {"clips", json::object()},
+    json video{{"totalDecodes", pump.totalDecodes()},
+               {"frames", frames},
+               {"stalledFrames", stalledFrames},
+               {"clips", json::object()},
                {"skipped", json::object()}};
     for (const auto& [clipId, t] : pump.telemetry()) {
       video["clips"][clipId] = {
