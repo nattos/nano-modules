@@ -251,8 +251,19 @@ describe('Arrangement composition executor (GPU)', () => {
       // Re-resolve AFTER the last mutate (history rebuilds objects).
       const clip = store.trackById(tId).clips.find((c: any) => c.id === cId);
       const [solid, lfo, bc] = clip.sketch.devices;
-      Object.assign(solid.state ??= {}, { color: [1, 1, 1] });
-      Object.assign(lfo.state ??= {}, { rate: 2, amplitude: 1 });
+      // MID-GREY, not white: brightness swings both ways, and a white source
+      // clips the whole positive half of the swing — halving the signal this
+      // test is looking for.
+      Object.assign(solid.state ??= {}, { color: [0.5, 0.5, 0.5] });
+      // `rate` is NORMALIZED 0..1 over 0..10 Hz (env_lfo/main.cpp), not a
+      // frequency — `rate: 2` clamps to 1 and runs at 10 Hz, one full period per
+      // 100 ms. Against the 300 ms sampling below that is exactly 3 whole
+      // periods between samples, i.e. the SAME phase every time: measured
+      // through the fixed-step runner it reads a spread of 0, which is
+      // precisely the pinned-rail failure this test exists to catch. It only
+      // ever passed on scheduler jitter dithering the phase. At 1 Hz the phase
+      // steps 0.3 per sample and the sweep is unmissable (spread 255).
+      Object.assign(lfo.state ??= {}, { rate: 0.1, amplitude: 1 });
       clip.exports.push({ id: 'e1', railId, sourceDeviceId: lfo.id, sourceField: 'output', combine: 'add', magnitude: 'auto' });
       clip.reads ??= [];
       clip.reads.push({ id: 'r1', railId, targetDeviceId: bc.id, targetField: 'brightness', combine: 'replace', magnitude: 'auto' });
@@ -313,7 +324,10 @@ describe('Arrangement composition executor (GPU)', () => {
       Object.assign(c1.sketch.devices[0].state ??= {}, { color: [1, 1, 1] });
       const c2 = store.trackById(t2).clips[0];
       const lfo = c2.sketch.devices[0];
-      Object.assign(lfo.state ??= {}, { rate: 2, amplitude: 1 });
+      // 1 Hz, not `rate: 2` — see the note in the rails test above: `rate` is
+      // normalized 0..1 over 0..10 Hz, and 10 Hz aliases against the 300 ms
+      // sampling into a near-constant frame.
+      Object.assign(lfo.state ??= {}, { rate: 0.1, amplitude: 1 });
       c2.exports.push({ id: 'e1', railId, sourceDeviceId: lfo.id, sourceField: 'output', combine: 'add', magnitude: 'auto' });
       store.docRev++;
       // The store-level attach (the mixer-strip wire gesture lands here).

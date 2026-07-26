@@ -132,6 +132,9 @@ export const LAYER_TARGET_ID = '__layer__';
  * every time and the frame is perfectly constant — indistinguishable from a
  * pinned rail, which is the exact bug these fixtures exist to catch. Keep the
  * period comfortably longer than the sample interval.
+ *
+ * Measured through the fixed-step runner, sampling every 6 frames (0.1 s):
+ * 10 Hz and 5 Hz both read a spread of **0**; 2 Hz and 1 Hz read 255.
  */
 export const LFO_1HZ = { rate: 0.1, amplitude: 1 };
 
@@ -163,12 +166,16 @@ export function layeredCompositeDoc(): Json {
  * to apply that AFTER the wire fold on the same field, clobbering the writer
  * every frame. Rails sat pinned at base and read wires never moved their
  * targets, so the rendered frame was CONSTANT. A live wire must win.
+ *
+ * The source is MID-GREY on purpose: brightness swings both ways, and a white
+ * source clips the entire positive half of the swing — leaving the test blind
+ * to half of what it's measuring.
  */
 export function railReadWireDoc(): Json {
   const railId = 'rail-1';
   return mkComposition([
     mkTrack('t-1', [mkClip('c-1', 0, 16, [
-      mkDevice('d-solid', 'source.solid_color', { color: [1, 1, 1] }),
+      mkDevice('d-solid', 'source.solid_color', { color: [0.5, 0.5, 0.5] }),
       mkDevice('d-lfo', 'mod.source.lfo', LFO_1HZ),
       mkDevice('d-bc', 'color.tone.brightness_contrast'),
     ], {
