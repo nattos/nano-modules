@@ -84,8 +84,17 @@ public:
         return pixelFormatFromCode(c);
       }
       case 7:  return MTLPixelFormatRGBA8Unorm_sRGB;
+      // BC1 (DXT1) — the DXV decoder's staging format. Host-only: the GPU
+      // decompresses on sample, so nothing downstream ever sees this code.
+      case 8:  return MTLPixelFormatBC1_RGBA;
       default: return MTLPixelFormatRGBA8Unorm;
     }
+  }
+
+  /// Block-compressed formats can't be rendered to, written by a shader, or
+  /// uploaded by pixel row — every path below has to special-case them.
+  static bool isBlockCompressed(MTLPixelFormat pf) {
+    return pf == MTLPixelFormatBC1_RGBA;
   }
 
   void setDefaultTextureFormat(int32_t code) override {
@@ -106,9 +115,16 @@ public:
     // if the shader doesn't write to the texture. Exception: sRGB formats
     // don't support shader writes (matching WebGPU, which forbids sRGB
     // storage textures outright) — they're render+sample only.
-    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-    if (pf != MTLPixelFormatRGBA8Unorm_sRGB && pf != MTLPixelFormatBGRA8Unorm_sRGB) {
-      desc.usage |= MTLTextureUsageShaderWrite;
+    if (isBlockCompressed(pf)) {
+      // Sample-only: BC is neither renderable nor shader-writable. The
+      // hardware decompresses at sample time, so a blit pass reads it as an
+      // ordinary float texture.
+      desc.usage = MTLTextureUsageShaderRead;
+    } else {
+      desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      if (pf != MTLPixelFormatRGBA8Unorm_sRGB && pf != MTLPixelFormatBGRA8Unorm_sRGB) {
+        desc.usage |= MTLTextureUsageShaderWrite;
+      }
     }
     desc.storageMode = MTLStorageModeShared; // CPU-readable for readback
     id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc];
@@ -972,6 +988,7 @@ public:
       // branches on precision/encoding).
       case MTLPixelFormatRGBA8Unorm_sRGB: return 7;
       case MTLPixelFormatBGRA8Unorm_sRGB: return 7;
+      case MTLPixelFormatBC1_RGBA:        return 8;
       default:                            return 1;
     }
   }
@@ -1341,6 +1358,19 @@ public:
     auto rit = resources_.find(textureHandle);
     id<MTLTexture> tex = rit != resources_.end() ? (id<MTLTexture>)rit->second.obj : nil;
     if (!tex || !bytes) return;
+    if (isBlockCompressed([tex pixelFormat])) {
+      // Rows are BLOCKS, not pixels: BC1 is 8 bytes per 4×4 block, so
+      // bytesPerRow is blocksX*8 and the byte budget is blocksX*blocksY*8.
+      // A pixel-based stride here silently uploads garbage.
+      const uint32_t blocksX = (w + 3) / 4;
+      const uint32_t blocksY = (h + 3) / 4;
+      if (byteCount < blocksX * blocksY * 8) return;
+      [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
+             mipmapLevel:0
+               withBytes:bytes
+             bytesPerRow:blocksX * 8];
+      return;
+    }
     if (byteCount < w * h * 4) return;
     // Same hazard writeBuffer versions away, but shadowing a texture is too
     // expensive to do silently — warn instead (last-write-wins: every encoded

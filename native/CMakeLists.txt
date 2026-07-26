@@ -185,6 +185,21 @@ if(APPLE)
     "-framework MetalPerformanceShaders"
     "-framework Foundation"
   )
+
+  # --- Media (host-side video decode + cache policy) ---
+  # NEVER link this into anything that also builds for wasm: it touches the
+  # filesystem and the GPU backend, and src/sketch/comp/ is dual-compiled into
+  # executor.wasm. The DXV demuxer/LZ sources are the SAME portable C++ the
+  # dxv_decoder wasm module compiles — reused, not ported.
+  add_library(nano_media STATIC
+    src/media/dxv_source.cpp
+    wasm_modules/dxv_decoder/dxv_demux.cpp
+    wasm_modules/dxv_decoder/dxv_lz.cpp
+  )
+  target_include_directories(nano_media PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/wasm_modules/dxv_decoder)
+  target_link_libraries(nano_media PUBLIC gpu_backend)
 endif()
 
 # --- WASM Host library ---
@@ -1105,6 +1120,15 @@ if(APPLE)
       Catch2::Catch2WithMain
       "-framework Metal" "-framework Foundation")
     catch_discover_tests(test_comp_media_ref)
+
+    # Native DXV decode against the real test asset.
+    add_executable(test_dxv_source tests/test_dxv_source.cpp)
+    target_link_libraries(test_dxv_source PRIVATE
+      nano_media gpu_backend Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_dxv_source PRIVATE
+      TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
+    catch_discover_tests(test_dxv_source)
 
     add_executable(test_effect_render tests/test_effect_render.cpp)
     target_link_libraries(test_effect_render PRIVATE

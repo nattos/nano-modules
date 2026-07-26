@@ -215,6 +215,11 @@ enum class TextureFormat : int {
   /// storage writes to sRGB formats, so never bind one as a storage texture
   /// (encode manually into a plain RGBA8 instead).
   RGBA8_SRGB = 7,
+  /// BC1 (DXT1) block-compressed — the DXV decoder's staging format, HOST
+  /// ONLY. Effects must never create or receive one: it is sample-only (not
+  /// renderable, not shader-writable), and the host blits it to RGBA8 before
+  /// anything downstream sees a frame. Listed here so the code stays reserved.
+  BC1 = 8,
 };
 
 enum class FilterMode : int { Nearest = 0, Linear = 1 };
