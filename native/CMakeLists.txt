@@ -1014,6 +1014,25 @@ if(APPLE)
   target_compile_definitions(native_test_runner PRIVATE
     NANO_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
 
+  # The COMPOSITION-executor sibling of native_test_runner: a CompScenario JSON
+  # on stdin, a CompRunResult on stdout. Its web twin is
+  # web/src/comp-test-runner.ts, so one jest body drives both backends.
+  add_executable(comp_test_runner tools/comp_test_runner.mm)
+  target_include_directories(comp_test_runner PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(comp_test_runner PRIVATE
+    sketch_executor   # CompExecutor + ModuleRegistry + WasmEffectBundles
+    effect_runtime
+    gpu_backend
+    nlohmann_json::nlohmann_json
+    "-framework Metal"
+    "-framework Foundation"
+  )
+  target_compile_options(comp_test_runner PRIVATE -Wno-attributes)
+  target_compile_definitions(comp_test_runner PRIVATE
+    NANO_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
+
   # Structured published-state store + numeric readers (publishedScalar /
   # readTriggers): the per-frame paths that replaced the JSON round-trips.
   add_executable(test_published_state tests/test_published_state.cpp)
