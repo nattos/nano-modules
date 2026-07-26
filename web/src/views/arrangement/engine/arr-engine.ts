@@ -298,9 +298,19 @@ export class ArrEngine {
     this.proxy.setTime(seconds);
   }
 
-  /** Advance exactly one frame while paused (for precise/offline stepping). */
-  stepFrame() {
-    this.proxy.stepFrame();
+  /** Advance exactly one frame while paused (for precise/offline stepping).
+   *  `dtSec` pins the step size — required in comp mode, where the comp
+   *  transport owns the worker's elapsed clock. */
+  stepFrame(dtSec?: number) {
+    this.proxy.stepFrame(dtSec);
+  }
+
+  /** RAW RGBA8 pixels of a trace point's current texture, straight off the GPU.
+   *  `onFrame`/`onFrameSet` bitmaps go through TraceCapture (checkerboard +
+   *  forced opaque alpha), so they cannot be compared against a native
+   *  readback — this can. Used by the dual-backend comp test runner. */
+  readbackTrace(id: string): Promise<{ width: number; height: number; pixels: Uint8Array }> {
+    return this.proxy.readbackTrace(id);
   }
 
   resize(width: number, height: number) {

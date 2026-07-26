@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Comp Test Runner</title>
+  <style>
+    body { margin: 0; font-family: 'JetBrains Mono', monospace; background: #121418; color: #e6e6e6; padding: 16px; }
+    .muted { color: #888; font-size: 12px; }
+    pre { font-size: 11px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h2>Comp Test Runner
+    <span class="muted">— headless CompScenario driver; call window.__compRun(scenario)</span>
+  </h2>
+  <div id="status" class="muted">booting…</div>
+  <pre id="out"></pre>
+  <script type="module" src="src/comp-test-runner.ts"></script>
+</body>
+</html>

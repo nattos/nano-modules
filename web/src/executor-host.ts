@@ -967,7 +967,7 @@ export class WasmSketchExecutor {
 
   compOp(msg: { op: string; ownerId?: string; deviceId?: string; field?: string;
                 valueJson?: string; trackId?: string; level?: number; laneId?: string;
-                points?: number[]; sceneId?: string }): void {
+                points?: number[]; sceneId?: string; cls?: number }): void {
     const c = this.ensureComp();
     switch (msg.op) {
       case 'param':
@@ -1006,10 +1006,12 @@ export class WasmSketchExecutor {
             this.exports.comp_set_source_transform(c, cp, cl, jp, jl)));
         break;
       case 'launchScene':
-        // UI cell clicks are INSTANT-class (0): Live mode commits now.
+        // UI cell clicks are INSTANT-class (0): Live mode commits now. `cls` is
+        // only ever set by the comp test runner, which needs to exercise the
+        // LOOSE (1) handover path the autopilot/follow paths use.
         this.withBytes(msg.trackId ?? '', (tp, tl) =>
           this.withBytes(msg.sceneId ?? '', (sp, sl) =>
-            this.exports.comp_launch_scene(c, tp, tl, sp, sl, 0)));
+            this.exports.comp_launch_scene(c, tp, tl, sp, sl, msg.cls ?? 0)));
         break;
       case 'stopScene':
         this.withBytes(msg.trackId ?? '', (p, l) => this.exports.comp_stop_scene(c, p, l));

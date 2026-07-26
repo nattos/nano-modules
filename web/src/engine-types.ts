@@ -179,7 +179,12 @@ export type WorkerCommand =
   | { type: 'setTime'; seconds: number | null }
   // Advance exactly one frame (the IDE frame-step button). Meant to be sent
   // while paused; the worker simulates one tick with a fixed nominal dt.
-  | { type: 'stepFrame' }
+  // Advance exactly one frame while paused. `dtSec` pins the step size: in COMP
+  // mode the comp transport owns the playhead and overwrites the worker's
+  // `elapsed` each frame, so `setTime` can't be used to pace a step there (the
+  // derived dt collapses to 0). Omitted ⇒ the transport time drives it, or a
+  // nominal 1/60 when no transport is set.
+  | { type: 'stepFrame'; dtSec?: number }
   | { type: 'setSketchInput'; sketchId: string; bitmap: ImageBitmap | null }
   // A single shared "test input" frame used as the fallback input for EVERY
   // sketch that has no anchor and no per-sketch input — the offline/playground
@@ -223,6 +228,12 @@ export type WorkerCommand =
   // fields effect `moduleType` hides for `state`, via its registered
   // `eval_visibility` evaluator. Answered with a `fieldVisibility` event.
   | { type: 'requestFieldVisibility'; reqId: number; moduleType: string; state: Record<string, unknown> }
+  // RAW pixel readback of a trace point's current texture — straight RGBA8
+  // straight off the GPU. Distinct from `tracedFrames`, which goes through
+  // TraceCapture and composites over the transparency checkerboard with a
+  // forced opaque alpha (great for a monitor, useless for comparing against a
+  // native readback). Off the render path; answered with a `traceReadback`.
+  | { type: 'readbackTrace'; reqId: number; id: string }
   | { type: 'debugDump' }
   // ── Composition executor (arrangement comp mode) ──────────────────────────
   // Toggle comp mode: the worker drives the in-wasm composition executor
@@ -246,7 +257,10 @@ export type WorkerCommand =
         | 'launchScene' | 'stopScene' | 'stopAllScenes';
       ownerId?: string; deviceId?: string; field?: string; valueJson?: string;
       trackId?: string; level?: number; laneId?: string; points?: number[];
-      sceneId?: string };
+      // `cls` is the launch DEADLINE class (0 = instant, 1 = loose). Omitted by
+      // the UI (cell clicks are always instant); set by the comp test runner so
+      // scenarios can exercise the loose handover path.
+      sceneId?: string; cls?: number };
 
 /** Per-frame composition-executor report riding the 'frame' event (comp mode). */
 export interface CompFrameInfo {
@@ -317,6 +331,9 @@ export type WorkerEvent =
   // Reply to `requestFieldVisibility`. `hidden` is the hidden-field set, or
   // `null` when the effect declared no static visibility evaluator.
   | { type: 'fieldVisibility'; reqId: number; hidden: string[] | null }
+  // Reply to `readbackTrace`. `pixels` is straight RGBA8, row-major, tightly
+  // packed (width*height*4); empty when the trace id has no live texture.
+  | { type: 'traceReadback'; reqId: number; width: number; height: number; pixels: Uint8Array }
   | { type: 'debugDump'; data: any };
 
 /** A request to resolve one styled face. `key` is the engine face-registry key

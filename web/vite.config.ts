@@ -36,6 +36,7 @@ export default defineConfig({
         opfsThumbTestbed: resolve(__dirname, 'opfs-thumb-testbed.html'),
         warpTestbed: resolve(__dirname, 'warp-testbed.html'),
         videoCompositorTestbed: resolve(__dirname, 'video-compositor-testbed.html'),
+        compTestRunner: resolve(__dirname, 'comp-test-runner.html'),
       },
     },
   },

@@ -416,7 +416,7 @@ async function handleCommand(cmd: WorkerCommand) {
       transportSeconds = cmd.seconds;
       break;
     case 'stepFrame':
-      await stepOneFrame();
+      await stepOneFrame(cmd.dtSec);
       break;
     case 'setSketchInput':
       // Phase 7 wires this to the GPU; for now we just stash the bitmap so
@@ -512,6 +512,30 @@ async function handleCommand(cmd: WorkerCommand) {
         console.warn(`[visibility] eval failed for ${cmd.moduleType}:`, err);
       }
       post({ type: 'fieldVisibility', reqId: cmd.reqId, hidden });
+      break;
+    }
+    case 'readbackTrace': {
+      // RAW pixels for the dual-backend comp tests: `tracedFrames` goes through
+      // TraceCapture, which composites over the transparency checkerboard and
+      // forces alpha to 1 — so it can never be compared against the native
+      // runner's readbackTexture. This is the same GPU readback the effect
+      // test runner (public/gpu-test-runner.html) uses.
+      let pixels = new Uint8Array(0) as Uint8Array<ArrayBuffer>;
+      let width = 0, height = 0;
+      const handle = traceHandles.get(cmd.id) ?? -1;
+      const tex = handle >= 0 ? gpuHost?.getTextureByHandle(handle) : null;
+      if (tex && gpuHost) {
+        width = tex.width;
+        height = tex.height;
+        try {
+          pixels = (await gpuHost.readbackTexture(handle, width, height)) as Uint8Array<ArrayBuffer>;
+        } catch (err) {
+          console.warn(`[trace ${cmd.id}] readback failed:`, err);
+          width = height = 0;
+        }
+      }
+      post({ type: 'traceReadback', reqId: cmd.reqId, width, height, pixels },
+           pixels.byteLength > 0 ? [pixels.buffer] : []);
       break;
     }
     case 'debugDump': {
@@ -723,7 +747,7 @@ async function frame() {
 // is deterministic regardless of the wall-clock gap between clicks, and does
 // NOT re-arm the rAF loop (the engine stays paused). Guarded by frameInFlight
 // so it can't overlap an in-flight rAF frame.
-async function stepOneFrame() {
+async function stepOneFrame(stepDtSec?: number) {
   if (!running || frameInFlight) return;
   frameInFlight = true;
   try {
@@ -734,7 +758,15 @@ async function stepOneFrame() {
     // No transport set ⇒ a fixed nominal 1/60 nudge (the IDE frame-step button).
     let dt: number;
     let execDt: number;
-    if (transportSeconds != null) {
+    if (stepDtSec != null) {
+      // Explicit step size, and it WINS over transportSeconds: in comp mode the
+      // comp transport owns the playhead and rewrites `elapsed` from its own
+      // positionSec every frame, so a transport-derived dt would collapse to 0
+      // and the transport would never advance. This is the fixed-step path the
+      // dual-backend comp scenarios run on.
+      dt = execDt = stepDtSec;
+      elapsed += dt;
+    } else if (transportSeconds != null) {
       execDt = transportSeconds - elapsed;
       dt = Math.max(0, execDt);
       elapsed = transportSeconds;

@@ -44,6 +44,9 @@ export class EngineProxy {
   private debugDumpResolve: ((data: any) => void) | null = null;
   private fieldVisReqId = 0;
   private fieldVisResolvers = new Map<number, (hidden: string[] | null) => void>();
+  private traceReadbackReqId = 0;
+  private traceReadbackResolvers =
+    new Map<number, (r: { width: number; height: number; pixels: Uint8Array }) => void>();
 
   constructor(width: number, height: number, barrelMode = false) {
     this.worker = new Worker(
@@ -95,6 +98,14 @@ export class EngineProxy {
           if (resolve) {
             this.fieldVisResolvers.delete(event.reqId);
             resolve(event.hidden);
+          }
+          break;
+        }
+        case 'traceReadback': {
+          const resolve = this.traceReadbackResolvers.get(event.reqId);
+          if (resolve) {
+            this.traceReadbackResolvers.delete(event.reqId);
+            resolve({ width: event.width, height: event.height, pixels: event.pixels });
           }
           break;
         }
@@ -152,6 +163,21 @@ export class EngineProxy {
     });
   }
 
+  /** RAW RGBA8 readback of a trace point's texture (dual-backend comp tests).
+   *  Resolves to a zero-sized result if the worker drops the reply. */
+  readbackTrace(id: string): Promise<{ width: number; height: number; pixels: Uint8Array }> {
+    const reqId = ++this.traceReadbackReqId;
+    return new Promise((resolve) => {
+      this.traceReadbackResolvers.set(reqId, resolve);
+      setTimeout(() => {
+        if (this.traceReadbackResolvers.delete(reqId)) {
+          resolve({ width: 0, height: 0, pixels: new Uint8Array(0) });
+        }
+      }, 20_000);
+      this.send({ type: 'readbackTrace', reqId, id });
+    });
+  }
+
   changeInstanceType(sketchId: string, colIdx: number, chainIdx: number, newModuleType: string) {
     this.send({ type: 'changeInstanceType', sketchId, colIdx, chainIdx, newModuleType });
   }
@@ -180,9 +206,10 @@ export class EngineProxy {
     this.send({ type: 'setPaused', paused });
   }
 
-  /** Advance exactly one frame (intended while paused). */
-  stepFrame() {
-    this.send({ type: 'stepFrame' });
+  /** Advance exactly one frame (intended while paused). `dtSec` pins the step
+   *  size — required in comp mode, where the comp transport owns `elapsed`. */
+  stepFrame(dtSec?: number) {
+    this.send({ type: 'stepFrame', ...(dtSec !== undefined ? { dtSec } : {}) });
   }
 
   /**
