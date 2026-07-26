@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 
 #include "bridge/bridge_server.h"
+#include "bridge/library_paths.h"
 #include "bridge/preview_codec.h"
 #include "bridge/ws_server.h"
 #include "gpu/gpu_backend.h"
@@ -249,12 +250,26 @@ struct BarrelRuntime::Impl {
   std::chrono::steady_clock::time_point lastMidiLibPoll{};
   std::chrono::steady_clock::time_point lastMidiSimPoll{};
 
-  static std::string midiSidecarPath() {
+  // --- Library-path sync (same shape as the MIDI library) ---
+  std::string lastLibraryPathsJson;
+  std::chrono::steady_clock::time_point lastLibraryPathsPoll{};
+
+  static std::string supportDir() {
     const char* home = getenv("HOME");
     if (!home) return {};
     const std::string dir = std::string(home) + "/Library/Application Support/NanoBarrel";
     mkdir(dir.c_str(), 0755);
-    return dir + "/midi_devices.json";
+    return dir;
+  }
+
+  static std::string midiSidecarPath() {
+    const std::string dir = supportDir();
+    return dir.empty() ? std::string() : dir + "/midi_devices.json";
+  }
+
+  static std::string librarySidecarPath() {
+    const std::string dir = supportDir();
+    return dir.empty() ? std::string() : dir + "/library_paths.json";
   }
 
   /// Keep the native MIDI host fed: the device library rides
@@ -291,6 +306,27 @@ struct BarrelRuntime::Impl {
         nano_midi::MidiHost::instance().setSimOverrides(
             parsed.is_object() ? parsed : nlohmann::json::object());
       }
+    }
+  }
+
+  /// Keep the library-path resolver fed: the web mirrors its roots (those it
+  /// knows an absolute path for) to /global/library_paths. Same 1 Hz /
+  /// JSON-compare / sidecar shape as the MIDI library — a document's
+  /// library-relative media refs are useless without these.
+  void pollLibraryPaths(BridgeServer& server) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastLibraryPathsPoll <= std::chrono::seconds(1)) return;
+    lastLibraryPathsPoll = now;
+    std::string rows = server.get_at("/global/library_paths");
+    if (rows == lastLibraryPathsJson) return;
+    lastLibraryPathsJson = rows;
+    auto parsed = nlohmann::json::parse(rows, nullptr, false);
+    if (!parsed.is_array()) return;
+    nano_assets::LibraryPaths::instance().setRoots(parsed);
+    const std::string path = librarySidecarPath();
+    if (!path.empty()) {
+      std::ofstream f(path, std::ios::trunc);
+      if (f.good()) f << rows;
     }
   }
 
@@ -837,6 +873,26 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
       }
     }
     nano_midi::MidiHost::instance().start();
+
+    // Same seeding story for the library roots: without an editor connected
+    // there's no mirror, so a headless restart would resolve no media at all.
+    const std::string libExisting = server.get_at("/global/library_paths");
+    auto libExistingParsed = nlohmann::json::parse(libExisting, nullptr, false);
+    if (!libExistingParsed.is_array()) {
+      const std::string path = Impl::librarySidecarPath();
+      std::ifstream f(path);
+      if (f.good()) {
+        std::string blob((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+        auto parsed = nlohmann::json::parse(blob, nullptr, false);
+        if (parsed.is_array()) {
+          server.set_at("/global/library_paths", blob);
+          nano_assets::LibraryPaths::instance().setRoots(parsed);
+          impl_->lastLibraryPathsJson = server.get_at("/global/library_paths");
+          BRT_LOG("library: seeded %d root(s) from sidecar", (int)parsed.size());
+        }
+      }
+    }
   }
 
   BRT_LOG("acquired: %d effect(s) loaded", total);
@@ -987,6 +1043,7 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   // version bumps on hardware/sim/library change; a static table costs one
   // integer compare per frame.
   impl_->pollMidi(server);
+  impl_->pollLibraryPaths(server);
   {
     auto& mh = nano_midi::MidiHost::instance();
     const uint64_t mv = mh.version();

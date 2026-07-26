@@ -28,6 +28,7 @@ import { startBarrelProbe } from './barrel-probe';
 import { installModeOffers } from './live-offers';
 import { installDeviceDefineOffers } from './views/devices/define-offer';
 import { midiController } from './state/midi-controller';
+import { libraryPaths } from './state/library-paths';
 import { traceController } from './state/trace-controller';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllPlaygroundInstances } from './state/playground-store';
@@ -1158,10 +1159,25 @@ function connectBarrel(url: string) {
   };
   void bindMidiBridge();
 
+  // Library-path mirror: the roots we know an ABSOLUTE PATH for. The native
+  // side can't discover one (only a browser handle or the desktop app can), and
+  // without it a document's library-relative media refs resolve to nothing
+  // there. Unlike the MIDI library this needs no adopt-don't-clobber guard: an
+  // empty push is recoverable (the barrel keeps its sidecar until a real list
+  // arrives, and re-locating a folder is a two-click repair), whereas a wiped
+  // MIDI library silently kills every wire in the show.
+  const bindLibraryBridge = () => {
+    void libraryPaths.ensureLoaded().then(() => {
+      libraryPaths.bindBridge(rows => barrel.setGlobal('/global/library_paths', rows));
+    });
+  };
+  bindLibraryBridge();
+
   barrel.onOpen = () => {
     appController.setBarrelConnectionState('open');
     subscribe();
     void bindMidiBridge();
+    bindLibraryBridge(); // a restarted barrel needs the roots re-pushed
     // A (re)connected barrel may have restarted since our last pushes — its
     // preview_requests docs are skeleton-empty while our per-key dedup map
     // still holds the pre-disconnect JSON, which would suppress every re-push

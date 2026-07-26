@@ -33,12 +33,25 @@ void BridgeCore::handle_message(int client_id, const std::string& msg) {
     if (send_cb_) send_cb_(client_id, response.dump());
   }
   else if (action == "set") {
-    // Whitelisted client-writable GLOBAL paths: the web mirrors its MIDI
-    // device library (/global/midi_devices) + live simulation overrides
-    // (/global/midi_sim) so the native MIDI host works headless. Everything
-    // else stays client-read-only (plugin state goes through "patch").
+    // Whitelisted client-writable GLOBAL paths. The web owns this data and
+    // mirrors it down so the native side keeps working headless:
+    //   /global/midi_devices, /global/midi_sim  — device library + live sim
+    //     overrides, so the CoreMIDI host can map hardware with no editor.
+    //   /global/library_paths                   — the user's library roots WITH
+    //     absolute paths, so a document's library-relative media refs can be
+    //     turned into real files (the browser can't discover a path itself).
+    // Everything else stays client-read-only (plugin state goes through "patch").
+    static constexpr const char* kClientWritableGlobals[] = {
+        "/global/midi_",
+        "/global/library_paths",
+    };
     const std::string path = j.contains("path") ? j["path"].get<std::string>() : "";
-    if (path.rfind("/global/midi_", 0) != 0 || !j.contains("value")) return;
+    if (!j.contains("value")) return;
+    bool allowed = false;
+    for (const char* prefix : kClientWritableGlobals) {
+      if (path.rfind(prefix, 0) == 0) { allowed = true; break; }
+    }
+    if (!allowed) return;
     state_doc_.set_at(path, j["value"]);
   }
   else if (action == "patch") {

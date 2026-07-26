@@ -513,6 +513,17 @@ add_executable(test_json_doc tests/test_json_doc.cpp)
 target_link_libraries(test_json_doc PRIVATE json_utils Catch2::Catch2WithMain)
 catch_discover_tests(test_json_doc)
 
+add_executable(test_bridge_core tests/test_bridge_core.cpp)
+target_link_libraries(test_bridge_core PRIVATE bridge_core Catch2::Catch2WithMain)
+catch_discover_tests(test_bridge_core)
+
+# Library-root resolver (header-only, so nothing to link but json).
+add_executable(test_library_paths tests/test_library_paths.cpp)
+target_include_directories(test_library_paths PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_library_paths PRIVATE
+  nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_library_paths)
+
 add_executable(test_observer_registry tests/test_observer_registry.cpp)
 target_link_libraries(test_observer_registry PRIVATE state_system Catch2::Catch2WithMain)
 catch_discover_tests(test_observer_registry)
