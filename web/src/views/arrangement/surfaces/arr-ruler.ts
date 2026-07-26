@@ -281,17 +281,19 @@ export class ArrRuler extends MobxLitElement {
       ctx.fillRect(x1 - 2, 0, 2, h);
     }
 
-    // Beat/bar lines. Stride: only bar lines when zoomed out.
-    const stride = v.pxPerBeat >= 13 ? 1 : beatsPerBar;
-    const lines = grid.visibleBeatLines(w, beatsPerBar, stride);
+    // Bar / beat / subdivision lines, drawn at the SAME step the snap grid uses
+    // (v.snapStep) so the ruler shows exactly what a drag will land on.
+    const lines = grid.visibleBeatLines(w, beatsPerBar, v.snapStep);
     ctx.font =
       "9px 'JetBrains Mono','SF Mono',Menlo,monospace";
     ctx.textBaseline = 'bottom';
     for (const ln of lines) {
       if (ln.x < -40 || ln.x > w + 40) continue;
-      ctx.strokeStyle = ln.isBar ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.12)';
+      ctx.strokeStyle = ln.isBar
+        ? 'rgba(255,255,255,0.32)'
+        : ln.isBeat ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.07)';
       ctx.beginPath();
-      ctx.moveTo(Math.round(ln.x) + 0.5, ln.isBar ? 8 : 16);
+      ctx.moveTo(Math.round(ln.x) + 0.5, ln.isBar ? 8 : ln.isBeat ? 16 : 21);
       ctx.lineTo(Math.round(ln.x) + 0.5, h);
       ctx.stroke();
       if (ln.isBar) {

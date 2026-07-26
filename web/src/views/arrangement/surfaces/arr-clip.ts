@@ -26,6 +26,12 @@ import '../../../widgets/ui-icon';
 
 type DragMode = 'resize-l' | 'resize-r' | null;
 
+/** Pointer travel (px) before an edge-resize engages. Below this the gesture is
+ *  a plain click on the handle (which just focuses the clip + drops an edge
+ *  caret) — the 6px handles sit right at the clip border, so a twitch while
+ *  clicking used to trim the clip by a whole grid step. */
+const RESIZE_THRESHOLD_PX = 4;
+
 @customElement('arr-clip')
 export class ArrClip extends MobxLitElement {
   @property({ attribute: false }) trackId!: string;
@@ -216,6 +222,10 @@ export class ArrClip extends MobxLitElement {
   private mode: DragMode = null;
   private origStart = 0;
   private origLen = 0;
+  /** Armed-but-not-yet-engaged resize: the pointer-down x and whether the gesture
+   *  has passed the movement threshold. Until it has, NOTHING is written — a stray
+   *  1px twitch on a handle must never resize (nor open an undo entry). */
+  private resizeArm: { x0: number; engaged: boolean } | null = null;
 
   /** The host <arr-grid> (this clip lives in its shadow root). */
   private gridHost(): any {
@@ -734,9 +744,14 @@ export class ArrClip extends MobxLitElement {
     e.stopPropagation();
     const path = paths.clip(this.trackId, this.clip.id);
     if (e.shiftKey) {
-      store.toggleSelect(path);
+      // RANGE extend: box the region between the anchor clip and this one and
+      // select everything inside, so the drag below moves the whole range.
+      store.extendClipSelectionTo(path);
     } else if (this.grabWithinTimeBox(e)) {
-      store.selectClipOnly(path); // keep the box → split + move region
+      // Keep the box → split + move the region. Keep any multi-clip selection
+      // too (only re-focus), so grabbing one clip of a range doesn't drop the rest.
+      if (store.isSelected(path)) store.setPrimary(path);
+      else store.selectClipOnly(path);
     } else {
       // select() sets the caret-box over the clip (anchor=end, head=start):
       // play-from lands at the clip START (Space plays it, Cmd+L loops it) and
@@ -800,18 +815,30 @@ export class ArrClip extends MobxLitElement {
     this.beginDrag(e, mode);
   }
 
-  /** Edge-resize drag (move drags live in the grid; resizing never reparents). */
+  /** Edge-resize drag (move drags live in the grid; resizing never reparents).
+   *  Armed only — `store.beginGesture()` and the first write wait for the
+   *  movement threshold in onWinMove (see RESIZE_THRESHOLD_PX). */
   private beginDrag(e: PointerEvent, mode: DragMode) {
     this.mode = mode;
     this.origStart = this.clip.startBeat;
     this.origLen = this.clip.lengthBeat;
-    store.beginGesture(); // one coalesced undo entry for the whole resize
+    this.resizeArm = { x0: e.clientX, engaged: false };
     window.addEventListener('pointermove', this.onWinMove);
     window.addEventListener('pointerup', this.onWinUp);
   }
 
   private onWinMove = (e: PointerEvent) => {
     if (!this.mode) return;
+    const arm = this.resizeArm;
+    if (arm && !arm.engaged) {
+      // Engage only past a real drag. Matches the clip-move threshold in
+      // <arr-grid>, and — combined with snapping the resulting edge to the
+      // NEAREST grid line — means the edge can't budge until the cursor has
+      // crossed roughly half a grid cell.
+      if (Math.abs(e.clientX - arm.x0) < RESIZE_THRESHOLD_PX) return;
+      arm.engaged = true;
+      store.beginGesture(); // one coalesced undo entry for the whole resize
+    }
     const free = e.altKey;
     const q = (b: number) => this.hostQuantize(b, free);
     const grid = this.gridProvider();
@@ -861,8 +888,12 @@ export class ArrClip extends MobxLitElement {
   }
 
   private onWinUp = () => {
+    const engaged = this.resizeArm?.engaged ?? false;
     this.mode = null;
-    store.endGesture();
+    this.resizeArm = null;
+    // Only close a gesture we actually opened — a click that never crossed the
+    // threshold wrote nothing and must not push an (empty) undo entry.
+    if (engaged) store.endGesture();
     window.removeEventListener('pointermove', this.onWinMove);
     window.removeEventListener('pointerup', this.onWinUp);
     this.requestUpdate();

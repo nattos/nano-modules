@@ -40,6 +40,7 @@ import {
 // The bundled demo composition — NOT booted (the app starts empty); loaded only
 // on demand via `loadDemoComposition()` (a "Load demo" affordance + e2e fixtures).
 import { makeFakeComposition } from '../model/fake-data';
+import { gridStepBeats } from '../model/beat-grid';
 import { DocHistory } from './history';
 import { effects, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import type { CompositeNode } from '../engine/instance-keys';
@@ -1697,6 +1698,87 @@ export class ArrangementStore {
     });
   }
 
+  /** Make `path` the primary (inspector / drag focus) WITHOUT narrowing the
+   *  selection set — grabbing one clip of a multi-clip selection must keep the
+   *  others selected so the drag moves them all. */
+  setPrimary(path: string) {
+    runInAction(() => {
+      if (!this.selection.has(path)) return;
+      this.prunePanelPin(path);
+      this.primaryPath = path;
+      this.selectedWireId = null;
+      this.tapPopup = null;
+      this.chainFocusPath = null;
+      this.chainFieldKey = null;
+    });
+  }
+
+  /**
+   * Shift-click a CLIP: extend the selection from the current anchor to `path` as
+   * a real time×track REGION — the box spans both clips' full extents and every
+   * row between them, and every clip inside it is selected. That makes the
+   * follow-up header drag move the whole range (the time-box move path), which a
+   * bare `toggleSelect` never did.
+   *
+   * With no clip anchor yet (nothing selected, or a track/lane is primary) this
+   * degrades to plain `select(path)`.
+   */
+  extendClipSelectionTo(path: string) {
+    const target = this.clipByPath(path);
+    if (!target) return;
+    // A sequence clip's INTERIOR lane has its own local axis — never write the
+    // global caret from there (see `select`).
+    if (this.isSequenceLaneId(target.track.id)) { this.toggleSelect(path); return; }
+    const anchorPath = [...this.selection].find(
+      (p) => p !== path && p.startsWith('clip/') && !!this.clipByPath(p) &&
+             !this.isSequenceLaneId(p.split('/')[1]),
+    ) ?? (this.primaryPath?.startsWith('clip/') ? this.primaryPath : null);
+    const anchor = anchorPath ? this.clipByPath(anchorPath) : undefined;
+    if (!anchor) { this.select(path); return; }
+
+    // Time span: the union of both clips' extents. Row span: anchor row → target
+    // row (caretRowSpan walks the rows between them, so a 3-track gap is included).
+    const start = Math.min(anchor.clip.startBeat, target.clip.startBeat);
+    const end = Math.max(
+      anchor.clip.startBeat + anchor.clip.lengthBeat,
+      target.clip.startBeat + target.clip.lengthBeat,
+    );
+    // Play-from rides the box START (anchor holds the far edge) — pressing Space
+    // after a range select plays the content, not the silence past it.
+    this.setCaret({
+      anchorBeat: end, anchorTrackId: anchor.track.id,
+      headBeat: start, headTrackId: target.track.id,
+    });
+    this.selectClipsInCaret();
+    // Keep the clicked clip as the inspector focus (selectClipsInCaret's primary
+    // is document order, which reads as "the wrong clip" after a shift-click).
+    this.setPrimary(path);
+  }
+
+  /**
+   * Shift-click a TRACK header: extend the selection to the CONTIGUOUS RUN of
+   * rows between the current anchor track and `trackId` (all time), so the
+   * headers, the time box and the inspector all agree on the range. The
+   * track-row twin of `extendClipSelectionTo`; Cmd/Ctrl-click still toggles one
+   * track (see `toggleSelect`).
+   */
+  extendTrackSelectionTo(trackId: string) {
+    const rows = this.caretRows.filter((r) => r.laneId === '').map((r) => r.trackId);
+    const anchorId = this.selectedTrackIds[0] || this.caretAnchorTrackId;
+    const ai = rows.indexOf(anchorId);
+    const ti = rows.indexOf(trackId);
+    if (ai < 0 || ti < 0) { this.select(paths.track(trackId)); return; }
+    const run = rows.slice(Math.min(ai, ti), Math.max(ai, ti) + 1);
+    const full = compositionLengthBeats(this.composition);
+    runInAction(() => {
+      // An explicit box (movePlayhead:false) so widening the scope never yanks the
+      // play-from marker — exactly like selecting one track.
+      this.setTimeSelection(0, full, [anchorId, trackId], { movePlayhead: false });
+      this.selection = new Set(run.map((id) => paths.track(id)));
+      this.primaryPath = paths.track(trackId);
+    });
+  }
+
   toggleSelect(path: string) {
     runInAction(() => {
       const next = new Set(this.selection);
@@ -2563,14 +2645,11 @@ export class ArrangementStore {
 
   // ── Grid quantization ─────────────────────────────────────────────────
 
-  /** Adaptive snap step (beats): finer when zoomed in, coarser when out. */
+  /** Adaptive snap step (beats): finer when zoomed in, coarser when out. This is
+   *  the SAME step the grid lines are drawn at (`gridStepBeats`) — the visible
+   *  grid IS the snap grid, so a drag can never jump to a line you can't see. */
   get snapStep(): number {
-    const target = 22; // aim for ~22px between snap points
-    const raw = target / this.pxPerBeat;
-    for (const step of [0.25, 0.5, 1, 2, 4, 8, 16]) {
-      if (step >= raw) return step;
-    }
-    return 16;
+    return gridStepBeats(this.pxPerBeat, this.composition.meta.timeSignature[0]);
   }
 
   /** Quantize a beat to the snap grid; `free` (modifier held) bypasses it. */
@@ -2738,10 +2817,12 @@ export class ArrangementStore {
       this.caretAnchorLaneId = '';
       this.caretHeadLaneId = ''; // clip-row selection
       if (movePlayhead) {
-        // A real time drag: the box rides the caret (anchor=start, head=play-from=end).
+        // A real time drag: the box rides the caret. play-from (the head) takes the
+        // box START and the anchor the end — pressing Space after a drag plays the
+        // selected content, never the empty space past its right edge.
         this.timeBoxSpan = null;
-        this.caretAnchorBeat = Math.max(0, Math.min(start, end));
-        this.playFromBeat = Math.max(start, end);
+        this.caretAnchorBeat = Math.max(0, Math.max(start, end));
+        this.playFromBeat = Math.max(0, Math.min(start, end));
         if (!this.playing) this.positionBeat = this.playFromBeat;
       } else {
         // SELECTING a track/group: span all its time as an EXPLICIT box that does NOT
@@ -2964,18 +3045,17 @@ export class ArrangementStore {
       'move-time-box',
     );
 
-    // 3. The caret/box follows the moved content (live UI state). Preserve the
-    // caret's ORIENTATION (a clip select anchors at the END with play-from at
-    // the START — the follow must not flip it back to play-from-at-end), and
-    // slide an EXPLICIT timeBoxSpan too (a track-selection box).
+    // 3. The caret/box follows the moved content (live UI state). play-from lands
+    // on the box START (the anchor takes the end) — the invariant everywhere a box
+    // is made, so a drag can never strand the marker past the content it moved.
+    // An EXPLICIT timeBoxSpan (a track-selection box) slides too.
     runInAction(() => {
       const movedScope = scopeIds.length ? scope.map(destFor) : [];
       const ns = Math.max(0, a + deltaBeat);
       const ne = ns + (b - a);
       if (this.timeBoxSpan) this.timeBoxSpan = { start: ns, end: ne };
-      const flipped = this.caretAnchorBeat > this.playFromBeat;
-      this.caretAnchorBeat = flipped ? ne : ns;
-      this.playFromBeat = flipped ? ns : ne;
+      this.caretAnchorBeat = ne;
+      this.playFromBeat = ns;
       this.caretAnchorTrackId = movedScope[0] ?? '';
       this.caretHeadTrackId = movedScope[movedScope.length - 1] ?? '';
     });

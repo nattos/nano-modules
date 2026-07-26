@@ -183,6 +183,18 @@ function isScalarSchemaField(def: any): boolean {
       || t === 'string' || t === 'event';
 }
 
+/**
+ * Should an enum's row-of-buttons editor flow onto multiple rows? An inspector
+ * column is ~280px wide, so beyond a handful of segments (or ~30 characters of
+ * labels) every option ellipsises to noise — e.g. core.transport.follow's
+ * 8-way Action selector. Effects can still force it via `selectField(..., wrap)`;
+ * this is the automatic floor so no schema has to remember.
+ */
+function selectorNeedsWrap(options: Array<{ label: string }>): boolean {
+  if (options.length > 5) return true;
+  return options.reduce((n, o) => n + o.label.length, 0) > 30;
+}
+
 /** Callbacks from edit-tab for column-level interactions. */
 export interface ColumnGroupCallbacks {
   onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number): void;
@@ -2093,14 +2105,18 @@ export class ColumnGroup extends MobxLitElement {
         // Int fields carrying an `options` list become dropdown
         // selects (state::Schema::selectField on the C++ side).
         if (d.type === 'int' && Array.isArray(d.options) && d.options.length > 0) {
+          const options = d.options.map((o: any) => ({
+            label: String(o?.label ?? o?.value ?? ''),
+            value: typeof o?.value === 'number' ? o.value : 0,
+          }));
           push({
             type: 'select', label, path: name,
-            options: d.options.map((o: any) => ({
-              label: String(o?.label ?? o?.value ?? ''),
-              value: typeof o?.value === 'number' ? o.value : 0,
-            })),
+            options,
             default: typeof d.default === 'number' ? d.default : (d.options[0]?.value ?? 0),
-            wrap: d.wrap === true,
+            // Schema opt-in, OR auto for enums too wide for one strip: squeezing
+            // 8 options into an inspector column ellipsises every label to two
+            // characters. `wrap` flows them onto extra rows instead.
+            wrap: d.wrap === true || selectorNeedsWrap(options),
             description: typeof d.description === 'string' ? d.description : undefined,
           });
           continue;

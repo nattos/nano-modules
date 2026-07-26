@@ -175,11 +175,14 @@ export class ArrAutomationEditor extends MobxLitElement {
         // the scroll-jank + "grid lines everywhere" mess). And, like the main grid,
         // drop per-beat lines when zoomed out so a lane isn't a wall of lines.
         const cw = (g.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null)?.clientWidth ?? 0;
-        const stride = store.pxPerBeat >= 13 ? 1 : bpb;
-        const startB = Math.max(0, Math.floor(grid.xToBeat(0)));
-        const endB = Math.min(Math.floor(span + 1e-6), Math.ceil(grid.xToBeat(cw)) + 1);
+        const step = store.snapStep; // == the drawn main-grid step (gridStepBeats)
+        const startB = Math.max(0, grid.xToBeat(0));
+        const endB = Math.min(span, grid.xToBeat(cw) + step);
         const lines: Array<{ x: number; bar: boolean }> = [];
-        for (let b = Math.ceil(startB / stride) * stride; b <= endB; b += stride) lines.push({ x: b, bar: b % bpb === 0 });
+        for (let k = Math.ceil(startB / step); k * step <= endB + 1e-9; k++) {
+          const b = k * step;
+          lines.push({ x: b, bar: Math.abs(b / bpb - Math.round(b / bpb)) < 1e-6 });
+        }
         g.gridLines = lines;
         // The playhead time/value cursor only shows when the caret is on this
         // lane's track (otherwise it reads as a confusing line on every lane).

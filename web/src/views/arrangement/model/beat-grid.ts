@@ -109,6 +109,28 @@ export class WarpCurve {
   }
 }
 
+/** Minimum on-screen spacing (px) between adjacent grid lines / snap points. */
+export const GRID_MIN_PX = 22;
+
+/**
+ * THE grid step, in beats — the single source of truth for BOTH the drawn grid
+ * lines and the snap quantization, so what you see is exactly what you snap to.
+ * (Two independent ladders used to drift apart: lines every beat while snapping
+ * to ¼ beats, so a "1px" drag could jump the edge by a quarter beat.)
+ *
+ * The ladder halves below a beat and then climbs in BARS (Live's 1/16 … ¼ note,
+ * 1 bar, 2 bars, …), so every line is either a beat subdivision or a downbeat —
+ * never an off-bar multiple that reads as noise under the bar lines.
+ */
+export function gridStepBeats(pxPerBeat: number, beatsPerBar: number): number {
+  const bpb = Math.max(1, beatsPerBar);
+  const min = GRID_MIN_PX / Math.max(1e-6, pxPerBeat); // beats needed for MIN px
+  for (const s of [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1]) if (s >= min) return s;
+  let step = bpb;
+  while (step < min) step *= 2;
+  return step;
+}
+
 /** View transform: warp curve + zoom (px per beat) + horizontal scroll. */
 export class BeatGrid {
   constructor(
@@ -132,21 +154,34 @@ export class BeatGrid {
   }
 
   /**
-   * Integer beat lines visible in [0, widthPx], as {beat, x, isBar}. `beatsPerBar`
-   * marks downbeats. Steps by `stride` beats to avoid over-dense lines when
-   * zoomed out.
+   * Grid lines visible in [0, widthPx], as {beat, x, isBar, isBeat}. `step` is the
+   * spacing in beats (see `gridStepBeats` — the same value the snap quantizer
+   * uses, so the drawn grid IS the snap grid); it may be fractional. `beatsPerBar`
+   * marks downbeats, and `isBeat` marks whole beats (false for subdivisions), so
+   * callers can draw three weights.
    */
   visibleBeatLines(
     widthPx: number,
     beatsPerBar: number,
-    stride = 1,
-  ): Array<{ beat: number; x: number; isBar: boolean }> {
-    const startBeat = Math.max(0, Math.floor(this.xToBeat(0)));
-    const endBeat = Math.ceil(this.xToBeat(widthPx));
-    const lines: Array<{ beat: number; x: number; isBar: boolean }> = [];
-    const first = Math.floor(startBeat / stride) * stride;
-    for (let b = first; b <= endBeat; b += stride) {
-      lines.push({ beat: b, x: this.beatToX(b), isBar: b % beatsPerBar === 0 });
+    step = 1,
+  ): Array<{ beat: number; x: number; isBar: boolean; isBeat: boolean }> {
+    const s = step > 1e-9 ? step : 1;
+    const bpb = Math.max(1, beatsPerBar);
+    const startBeat = Math.max(0, this.xToBeat(0));
+    const endBeat = this.xToBeat(widthPx);
+    const lines: Array<{ beat: number; x: number; isBar: boolean; isBeat: boolean }> = [];
+    // Index off `s` rather than accumulating, so a fractional step can't drift.
+    const k0 = Math.floor(startBeat / s);
+    const isMultiple = (v: number, of: number) =>
+      Math.abs(v / of - Math.round(v / of)) < 1e-6;
+    for (let k = k0; ; k++) {
+      const b = k * s;
+      if (b > endBeat + 1e-9) break;
+      if (b < -1e-9) continue;
+      lines.push({
+        beat: b, x: this.beatToX(b),
+        isBar: isMultiple(b, bpb), isBeat: isMultiple(b, 1),
+      });
     }
     return lines;
   }

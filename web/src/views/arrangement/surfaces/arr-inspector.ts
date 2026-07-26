@@ -352,9 +352,12 @@ export class ArrInspector extends MobxLitElement {
       margin: 8px 0 2px;
       letter-spacing: 0.02em;
     }
-    /* Let the chain scroll past its last card (the inspector is the scroller). */
     .transport-head { margin-top: 4px; }
-    .transport-chain { margin-bottom: 6px; }
+    /* The transport chain sits MID-PANEL (play mode + the rest follow it), so it
+       must NOT take the main chain's scroll-past-the-end pad below — that 40vh gap
+       pushed everything under it below the fold. Needs the element+both-classes
+       specificity to beat the column-group.chain rule regardless of order. */
+    column-group.chain.transport-chain { margin-bottom: 6px; }
     /* The play-mode block is the FALLBACK while a transport controller drives —
        visible but visually secondary. */
     .transport-overridden .dimmed { opacity: 0.45; }

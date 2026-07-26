@@ -123,9 +123,10 @@ export class ArrSeqLane extends MobxLitElement {
     ctx.clearRect(0, 0, w, h);
     const grid = this.view.grid();
     const bpb = this.view.beatsPerBar;
-    for (const line of grid.visibleBeatLines(w, bpb)) {
+    // Same step as this view's snap grid, so the interior lane snaps to what it draws.
+    for (const line of grid.visibleBeatLines(w, bpb, this.view.snapStep)) {
       ctx.strokeStyle = line.isBar ? 'var(--app-tint-3)' : 'var(--app-tint-2)';
-      ctx.globalAlpha = line.isBar ? 0.55 : 0.25;
+      ctx.globalAlpha = line.isBar ? 0.55 : line.isBeat ? 0.25 : 0.14;
       ctx.beginPath();
       ctx.moveTo(Math.round(line.x) + 0.5, 0);
       ctx.lineTo(Math.round(line.x) + 0.5, h);

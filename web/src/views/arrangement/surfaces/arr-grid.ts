@@ -1081,10 +1081,13 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const beatsPerBar = store.composition.meta.timeSignature[0];
 
-    const stride = store.pxPerBeat >= 13 ? 1 : beatsPerBar;
-    for (const ln of grid.visibleBeatLines(w, beatsPerBar, stride)) {
+    // The drawn grid uses the SAME step as store.snapStep — every line is a snap
+    // point and every snap point is a line (see gridStepBeats).
+    for (const ln of grid.visibleBeatLines(w, beatsPerBar, store.snapStep)) {
       if (ln.x < 0 || ln.x > w) continue;
-      ctx.strokeStyle = ln.isBar ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.07)';
+      ctx.strokeStyle = ln.isBar
+        ? 'rgba(255,255,255,0.16)'
+        : ln.isBeat ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.04)';
       ctx.beginPath();
       ctx.moveTo(Math.round(ln.x) + 0.5, 0);
       ctx.lineTo(Math.round(ln.x) + 0.5, h);
@@ -1180,8 +1183,10 @@ export class ArrGrid extends MobxLitElement {
   private headerDrag: { y0: number; trackId: string } | null = null;
 
   private onHeaderDown(e: PointerEvent, track: Track) {
-    // Select immediately (a plain click just selects).
-    if (e.shiftKey) store.toggleSelect(paths.track(track.id));
+    // Select immediately (a plain click just selects). Shift = extend the range
+    // to this row; Cmd/Ctrl = toggle this one track out of / into the set.
+    if (e.shiftKey) store.extendTrackSelectionTo(track.id);
+    else if (e.metaKey || e.ctrlKey) store.toggleSelect(paths.track(track.id));
     else store.select(paths.track(track.id));
     // Arm a reorder drag — but not from an inline rename field or a control,
     // and never for the main bus (pinned).
@@ -1721,8 +1726,13 @@ export class ArrGrid extends MobxLitElement {
     const grid = buildBeatGrid();
     const cur = grid.xToBeat(e.clientX - d.laneLeft);
     const free = e.altKey;
-    const headBeat = cur < 0 ? 0 : store.quantize(cur, free);
-    const anchorBeat = store.quantize(d.startBeat, free);
+    const curBeat = cur < 0 ? 0 : store.quantize(cur, free);
+    const startBeat = store.quantize(d.startBeat, free);
+    // The BEAT head is always the box's LEFT edge (the anchor holds the far edge),
+    // regardless of drag direction: play-from must sit at the start of what you
+    // just selected, so Space plays the content instead of the space after it.
+    const headBeat = Math.min(startBeat, curBeat);
+    const anchorBeat = Math.max(startBeat, curBeat);
     // Vertical span: anchor ROW → the row currently under the cursor (tracks, groups
     // AND automation lanes). A bus row resolves to the global all-tracks scope.
     const headRow = this.rowAtClientY(e.clientY);

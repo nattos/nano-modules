@@ -9,7 +9,7 @@
 
 import { makeAutoObservable } from 'mobx';
 import { store } from '../state/store';
-import { BeatGrid, WarpCurve } from '../model/beat-grid';
+import { BeatGrid, WarpCurve, gridStepBeats } from '../model/beat-grid';
 import { buildBeatGrid } from './grid-shared';
 
 export interface RulerView {
@@ -29,6 +29,9 @@ export interface RulerView {
   /** Optional main-timeline chrome (null ⇒ not drawn). */
   readonly loop: { start: number; end: number } | null;
   readonly timeSel: { start: number; end: number } | null;
+
+  /** Grid spacing (beats) — drives BOTH the drawn lines and `quantize`. */
+  readonly snapStep: number;
 
   setZoom(pxPerBeat: number): void;
   setScrollUnits(units: number): void;
@@ -52,6 +55,7 @@ export const mainTimelineView: RulerView = {
   get playFromBeat() { return store.playFromBeat; },
   get loop() { return store.loopEnabled ? { start: store.loopStartBeat, end: store.loopEndBeat } : null; },
   get timeSel() { return store.hasTimeSelection ? { start: store.timeSelStart!, end: store.timeSelEnd } : null; },
+  get snapStep() { return store.snapStep; },
   setZoom: (px) => store.setZoom(px),
   setScrollUnits: (u) => store.setScrollUnits(u),
   zoomAnchored: (f, x) => store.zoomAnchored(f, x),
@@ -154,11 +158,13 @@ export class ClipTimelineView implements RulerView {
     this.selAnchorBeat = Math.max(0, Math.min(this.spanBeats, anchorBeat));
     this.selHeadBeat = head;
   }
-  /** Snap to the clip-local grid (≈22px between snaps, like the main grid). */
+  /** Clip-local grid spacing (beats) — the same ladder the main grid uses, so the
+   *  drawn lines and the snap points agree here too. */
+  get snapStep(): number { return gridStepBeats(this.pxPerBeat, this.beatsPerBar); }
+
+  /** Snap to the clip-local grid (the step the ruler draws). */
   quantize(beat: number): number {
-    const raw = 22 / this.pxPerBeat;
-    let step = 16;
-    for (const s of [0.25, 0.5, 1, 2, 4, 8, 16]) if (s >= raw) { step = s; break; }
+    const step = this.snapStep;
     return Math.max(0, Math.round(beat / step) * step);
   }
 
