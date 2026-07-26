@@ -42,6 +42,7 @@ NANO_DECLARE_INSTANCE_EFFECT(monolith)
 NANO_DECLARE_INSTANCE_EFFECT(plume)
 NANO_DECLARE_INSTANCE_EFFECT(plume_field)
 NANO_DECLARE_INSTANCE_EFFECT(helio_field)
+NANO_DECLARE_INSTANCE_EFFECT(dust_halo)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
@@ -434,6 +435,27 @@ void nano_module_main() {
         "storms,flare,excitable,criticality,aurora",
         "la-sun",
         NANO_INSTANCE_LIFECYCLE(helio_field),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.sdf.dust_halo",
+        "Dust Halo",
+        "Intermediate stage on the `sdf_field` rail: wires between an "
+        "SDF provider and its renderer and adds shaped dust to the "
+        "field passing through — a cloud of sharp glinting motes "
+        "hovering off the body with a tunable gap. One shape control "
+        "set spans a tilted hovering cap (a beret), a full spherical "
+        "shell, and a planetary ring. Motes orbit the halo axis with "
+        "Keplerian shear and tumble for twinkle; their aggregate "
+        "density scatters the downstream fog and dims the sun softly. "
+        "Upstream dust is merged, not replaced. Video passes through "
+        "untouched.",
+        "source",
+        "3d,sdf,field,sdf-field,dust,particles,motes,halo,ring,rings,"
+        "planetary,shell,orbit,glint,sparkle,beret,cloud,band",
+        "la-circle-notch",
+        NANO_INSTANCE_LIFECYCLE(dust_halo),
     });
 }
 

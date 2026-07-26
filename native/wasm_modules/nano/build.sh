@@ -152,6 +152,18 @@ python3 ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
   "helio_field_shell=$TMP_DIR/helio_field_shell.spv"
 echo "  helio_field shaders compiled (SPV: dynamics + storm + dust + shell + prefill reuse)"
 
+# dust_halo — intermediate sdf_field stage: shaped dust (beret/shell/ring)
+# added to a passing field. Only the generator is new; passthrough,
+# density accumulate, fold, and clear reuse plume's / helio_field's SPVs.
+compile_shaders_compute_var_spv dust_halo halo_gen
+python3 ../_emit_spv_header.py "$TMP_DIR/dust_halo_shaders.h" \
+  "dust_halo_prefill=$TMP_DIR/plume_prefill.spv" \
+  "dust_halo_gen=$TMP_DIR/dust_halo_halo_gen.spv" \
+  "dust_halo_accum=$TMP_DIR/helio_field_dust_accum.spv" \
+  "dust_halo_fold=$TMP_DIR/helio_field_dust_fold.spv" \
+  "dust_halo_clear=$TMP_DIR/plume_dust_clear.spv"
+echo "  dust_halo shaders compiled (SPV: halo_gen + prefill/accum/fold/clear reuse)"
+
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update
 compile_shaders_compute_var_spv flow_swarm prefill
@@ -546,6 +558,7 @@ wasm_build \
   ../monolith/main.cpp \
   ../plume/main.cpp \
   ../plume_field/main.cpp \
-  ../helio_field/main.cpp
+  ../helio_field/main.cpp \
+  ../dust_halo/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
