@@ -41,6 +41,7 @@ NANO_DECLARE_INSTANCE_EFFECT(envelope_warp)
 NANO_DECLARE_INSTANCE_EFFECT(monolith)
 NANO_DECLARE_INSTANCE_EFFECT(plume)
 NANO_DECLARE_INSTANCE_EFFECT(plume_field)
+NANO_DECLARE_INSTANCE_EFFECT(helio_field)
 // is_identity is not part of NANO_DECLARE_INSTANCE_EFFECT; declare it so the
 // registration can pass &line_reconstruct::is_identity (strength 0 = bypass).
 namespace line_reconstruct { int32_t is_identity(void* self); }
@@ -410,6 +411,25 @@ void nano_module_main() {
         "generator,3d,sdf,field,provider,producer,sdf-field,shell,ridges,morph,procedural,simulation,erosion,tracers,streamlines",
         "la-globe",
         NANO_INSTANCE_LIFECYCLE(plume_field),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.sdf.helio_field",
+        "Helio Field",
+        "Simulated sun as an SDF provider: a 2D magnetohydrodynamic "
+        "simulation on the sphere — a fluid stirred by granulation and "
+        "sheared by differential rotation carries a frozen-in magnetic "
+        "field whose lines ARE the surface: ridges ride the live field "
+        "lines, combed into filaments by magnetic tension, bunched and "
+        "swirled into eddies. Publishes on the `sdf_field` rail; wire "
+        "into an SDF renderer downstream (e.g. Plume). Video passes "
+        "through untouched.",
+        "source",
+        "generator,3d,sdf,field,provider,producer,sdf-field,simulation,"
+        "sun,solar,magnetic,mhd,field-lines,eddies,advection,fluid",
+        "la-sun",
+        NANO_INSTANCE_LIFECYCLE(helio_field),
     });
 }
 

@@ -126,6 +126,18 @@ python3 ../_emit_spv_header.py "$TMP_DIR/plume_field_shaders.h" \
   "plume_field_sim_resolve=$TMP_DIR/plume_field_sim_resolve.spv"
 echo "  plume shaders compiled (SPV: shell + bake + compose + march + prefill + slice_debug + gi + fog + composite + sim)"
 
+# helio_field — simulated sun on the sdf_field rail: 2D MHD-lite (fluid +
+# magnetic potential) on an oct map, shell ridges derived from the live
+# field lines. Reuses plume's compiled prefill SPV (passthrough) and the
+# shared plume_gen bake shader (registered via field_gen.h moduleInit).
+compile_shaders_compute_var_spv helio_field dynamics
+compile_shaders_compute_var_spv helio_field shell
+python3 ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
+  "helio_field_prefill=$TMP_DIR/plume_prefill.spv" \
+  "helio_field_dynamics=$TMP_DIR/helio_field_dynamics.spv" \
+  "helio_field_shell=$TMP_DIR/helio_field_shell.spv"
+echo "  helio_field shaders compiled (SPV: dynamics + shell + prefill reuse)"
+
 # flow_swarm — flow-field-driven GPU particle swarm (consumes a flow_field rail).
 compile_shaders_compute_var_spv flow_swarm update
 compile_shaders_compute_var_spv flow_swarm prefill
@@ -519,6 +531,7 @@ wasm_build \
   ../envelope_warp/main.cpp \
   ../monolith/main.cpp \
   ../plume/main.cpp \
-  ../plume_field/main.cpp
+  ../plume_field/main.cpp \
+  ../helio_field/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"
