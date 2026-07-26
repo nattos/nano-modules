@@ -10,6 +10,7 @@
 import { idbGet, idbPut, idbDelete, STORE_WORKSPACE } from '../../../state/idb-store';
 import { DirectoryBackend } from './backend';
 import { HandleRef, makeHandleRef, resolveDirRef } from '../../../state/handle-ref';
+import type { PathsDirectoryHandle } from '../../../state/paths';
 
 const CURRENT_KEY = 'current';
 
@@ -22,7 +23,7 @@ interface WorkspaceHandleRecord {
 }
 
 /** Remember a workspace so it can be re-mounted after reload. */
-export async function rememberWorkspace(dir: FileSystemDirectoryHandle, label: string): Promise<void> {
+export async function rememberWorkspace(dir: PathsDirectoryHandle, label: string): Promise<void> {
   const ref = await makeHandleRef(dir);
   const rec: WorkspaceHandleRecord = { id: CURRENT_KEY, ref, label, mountedAt: Date.now() };
   await idbPut(STORE_WORKSPACE, rec);

@@ -5,11 +5,12 @@
  * (`<name>.nano-arr`, a serialized `Composition`) in a user-mounted workspace
  * directory. The persistence pivot away from IndexedDB-stored documents.
  *
- * Both the File System Access picker and the Origin-Private File System (OPFS)
- * hand back a `FileSystemDirectoryHandle`, so a single `DirectoryBackend`
- * serves both — the factories differ only in how they obtain the handle and
- * whether a permission grant is required:
- *   - `mountViaPicker()`  — real `showDirectoryPicker()` (users; needs permission)
+ * The File System Access picker, the Origin-Private File System (OPFS) and
+ * Electron's fs-backed handles all satisfy `PathsDirectoryHandle`
+ * (`state/paths.ts`), so a single `DirectoryBackend` serves all three — the
+ * factories differ only in how they obtain the handle and whether a permission
+ * grant is required:
+ *   - `mountViaPicker()`  — the shared picker (native dialog under Electron, FSA on the web)
  *   - `mountOpfs()`       — `navigator.storage.getDirectory()` (headless tests; no prompt)
  *
  * The picked directory handle is persisted via `workspace-store.ts` so the same
@@ -17,6 +18,11 @@
  */
 
 import { toJS } from 'mobx';
+import {
+  showDirectoryPicker,
+  type PathsDirectoryHandle,
+  type PathsFileHandle,
+} from '../../../state/paths';
 import { ENGINE_VERSION } from '../../../version';
 import type { Clip, Composition, Track } from '../model/composition';
 import { emptyComposition } from '../model/composition';
@@ -143,25 +149,25 @@ export function deserializeComposition(text: string): Composition {
 }
 
 /**
- * A `WorkspaceBackend` over any `FileSystemDirectoryHandle`. Used identically
+ * A `WorkspaceBackend` over any directory handle (see `state/paths.ts`). Used identically
  * for a user-picked folder and an OPFS directory.
  */
 export class DirectoryBackend implements WorkspaceBackend {
   constructor(
-    public readonly dir: FileSystemDirectoryHandle,
+    public readonly dir: PathsDirectoryHandle,
     public readonly label: string,
   ) {}
 
   async list(): Promise<WorkspaceEntry[]> {
     const out: WorkspaceEntry[] = [];
     // Recurse subfolders so the Workspace tab can group files by directory.
-    const walk = async (dir: FileSystemDirectoryHandle, prefix: string): Promise<void> => {
+    const walk = async (dir: PathsDirectoryHandle, prefix: string): Promise<void> => {
       // `values()` is an async iterator over the directory's child handles.
-      for await (const handle of (dir as any).values() as AsyncIterable<FileSystemHandle>) {
+      for await (const handle of dir.values()) {
         if (handle.kind === 'file' && handle.name.endsWith(ARRANGEMENT_EXT)) {
           const base = handle.name.slice(0, -ARRANGEMENT_EXT.length);
           let modified = 0;
-          try { modified = (await (handle as FileSystemFileHandle).getFile()).lastModified; } catch { /* keep 0 */ }
+          try { modified = (await (handle as PathsFileHandle).getFile()).lastModified; } catch { /* keep 0 */ }
           out.push({
             name: prefix ? `${prefix}/${base}` : base,
             fileName: handle.name,
@@ -169,7 +175,7 @@ export class DirectoryBackend implements WorkspaceBackend {
             modified,
           });
         } else if (handle.kind === 'directory' && !handle.name.startsWith('.')) {
-          await walk(handle as FileSystemDirectoryHandle, prefix ? `${prefix}/${handle.name}` : handle.name);
+          await walk(handle as PathsDirectoryHandle, prefix ? `${prefix}/${handle.name}` : handle.name);
         }
       }
     };
@@ -217,8 +223,8 @@ export class DirectoryBackend implements WorkspaceBackend {
     await dir.removeEntry(parts[parts.length - 1]);
   }
 
-  /** Walk a `/`-separated relative path to its `FileSystemFileHandle`. */
-  private async fileHandle(name: string, create = false): Promise<FileSystemFileHandle> {
+  /** Walk a `/`-separated relative path to its file handle. */
+  private async fileHandle(name: string, create = false): Promise<PathsFileHandle> {
     const parts = fileNameFor(name).split('/').filter(Boolean);
     let dir = this.dir;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -237,13 +243,12 @@ export class DirectoryBackend implements WorkspaceBackend {
   }
 }
 
-/** Mount a workspace by prompting the user to pick a folder. Needs a gesture. */
+/** Mount a workspace by prompting the user to pick a folder. Needs a gesture.
+ *  Routes through the shared picker, so Electron gets the native dialog (and an
+ *  fs-backed handle) with no branch here. */
 export async function mountViaPicker(): Promise<DirectoryBackend> {
-  const picker = (window as any).showDirectoryPicker;
-  if (typeof picker !== 'function') {
-    throw new Error('File System Access API (showDirectoryPicker) is unavailable');
-  }
-  const dir: FileSystemDirectoryHandle = await picker({ mode: 'readwrite' });
+  const dir = await showDirectoryPicker();
+  if (!dir) throw new Error('No folder selected');
   return new DirectoryBackend(dir, dir.name || 'workspace');
 }
 

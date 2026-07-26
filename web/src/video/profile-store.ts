@@ -99,7 +99,7 @@ export class CoalescingWriter<T> {
  *  ONLY metadata that's safe to read without triggering a content
  *  download (cloud-drive friendly). */
 export async function deriveSourceKey(
-  source: File | FileSystemFileHandle,
+  source: File | { getFile(): Promise<File> },
 ): Promise<{ sourceKey: string; file: File }> {
   const file = source instanceof File ? source : await source.getFile();
   const key = `${file.name}|${file.size}|${file.lastModified}`;

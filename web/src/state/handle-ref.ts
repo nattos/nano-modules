@@ -10,17 +10,27 @@
  *   - `direct` : a standalone `FileSystemHandle` (the fallback when the target
  *                isn't under any known library path).
  *
- * `makeHandleRef` uses `FileSystemDirectoryHandle.resolve()` to discover whether
- * a handle lives under a library path (it returns the relative path components,
+ * `makeHandleRef` uses `PathsDirectoryHandle.resolve()` to discover whether a
+ * handle lives under a library path (it returns the relative path components,
  * or null). Everything that persists a handle — media, workspaces — should go
  * through here so a single library re-grant rehydrates all of it.
+ *
+ * A `lib` ref is also the only shape that can be written into a saved document:
+ * it's plain data, whereas a handle JSON-stringifies to `{}`. See
+ * `Clip.source.ref`.
  */
 
 import { libraryPaths } from './library-paths';
+import {
+  getHandleFromAbsPath,
+  type PathsDirectoryHandle,
+  type PathsFileHandle,
+  type PathsHandle,
+} from './paths';
 
 export type HandleRef =
   | { kind: 'lib'; libraryId: string; path: string[] }
-  | { kind: 'direct'; handle: FileSystemHandle };
+  | { kind: 'direct'; handle: PathsHandle };
 
 /**
  * Query — and optionally request — permission on a handle. Query-only by
@@ -29,7 +39,7 @@ export type HandleRef =
  * permission model (OPFS) are treated as granted.
  */
 export async function ensurePermission(
-  handle: FileSystemHandle,
+  handle: PathsHandle,
   mode: 'read' | 'readwrite' = 'readwrite',
   prompt = false,
 ): Promise<boolean> {
@@ -45,10 +55,13 @@ export async function ensurePermission(
  * most specific = shortest relative path) when the handle lives under a library
  * path; otherwise a direct handle ref.
  */
-export async function makeHandleRef(handle: FileSystemHandle): Promise<HandleRef> {
+export async function makeHandleRef(handle: PathsHandle): Promise<HandleRef> {
   await libraryPaths.ensureLoaded();
   let best: { libraryId: string; path: string[] } | null = null;
   for (const lib of libraryPaths.paths) {
+    // A path-only library (hand-entered, no handle) has nothing to resolve
+    // against — it exists so the NATIVE side can resolve, not this one.
+    if (!lib.handle) continue;
     let rel: string[] | null = null;
     try {
       rel = await lib.handle.resolve(handle); // null if not a descendant
@@ -63,10 +76,10 @@ export async function makeHandleRef(handle: FileSystemHandle): Promise<HandleRef
 
 /** Walk `path` (relative components) under `dir` to a file/dir handle. */
 async function walkTo(
-  dir: FileSystemDirectoryHandle,
+  dir: PathsDirectoryHandle,
   path: string[],
   kind: 'file' | 'directory',
-): Promise<FileSystemHandle> {
+): Promise<PathsHandle> {
   if (path.length === 0) return dir; // the directory itself (resolve() returns [])
   let cur = dir;
   for (let i = 0; i < path.length - 1; i++) {
@@ -92,7 +105,7 @@ export async function resolveHandleRef(
   ref: HandleRef,
   kind: 'file' | 'directory',
   opts: ResolveOpts = {},
-): Promise<FileSystemHandle | null> {
+): Promise<PathsHandle | null> {
   const mode = opts.mode ?? 'readwrite';
   if (ref.kind === 'direct') {
     if (!(await ensurePermission(ref.handle, mode, opts.prompt))) return null;
@@ -101,9 +114,17 @@ export async function resolveHandleRef(
   await libraryPaths.ensureLoaded();
   const lib = libraryPaths.get(ref.libraryId);
   if (!lib) return null; // library was removed → reference invalidated
-  if (!(await ensurePermission(lib.handle, mode, opts.prompt))) return null;
+  // No handle, but we know where it lives and we have a real filesystem —
+  // synthesize one. This is what makes a hand-entered absolute path resolve.
+  const dir =
+    lib.handle ??
+    (lib.absolutePath
+      ? ((await getHandleFromAbsPath(lib.absolutePath)) as PathsDirectoryHandle | undefined)
+      : undefined);
+  if (!dir || dir.kind !== 'directory') return null;
+  if (!(await ensurePermission(dir, mode, opts.prompt))) return null;
   try {
-    return await walkTo(lib.handle, ref.path, kind);
+    return await walkTo(dir, ref.path, kind);
   } catch {
     return null; // path no longer exists under the library
   }
@@ -113,16 +134,16 @@ export async function resolveHandleRef(
 export async function resolveFileRef(
   ref: HandleRef,
   opts?: ResolveOpts,
-): Promise<FileSystemFileHandle | null> {
-  return (await resolveHandleRef(ref, 'file', opts)) as FileSystemFileHandle | null;
+): Promise<PathsFileHandle | null> {
+  return (await resolveHandleRef(ref, 'file', opts)) as PathsFileHandle | null;
 }
 
 /** Typed convenience: resolve to a directory handle. */
 export async function resolveDirRef(
   ref: HandleRef,
   opts?: ResolveOpts,
-): Promise<FileSystemDirectoryHandle | null> {
-  return (await resolveHandleRef(ref, 'directory', opts)) as FileSystemDirectoryHandle | null;
+): Promise<PathsDirectoryHandle | null> {
+  return (await resolveHandleRef(ref, 'directory', opts)) as PathsDirectoryHandle | null;
 }
 
 /** A short human description of where a ref points (for relink UIs). */

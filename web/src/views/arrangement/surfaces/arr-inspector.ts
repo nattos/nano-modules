@@ -11,7 +11,13 @@ import { html, css, nothing, TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store, paths } from '../state/store';
-import { libraryPaths } from '../../../state/library-paths';
+import { libraryPaths, type LibraryPath } from '../../../state/library-paths';
+import {
+  handlesFromDataTransfer,
+  isElectron,
+  showDirectoryPicker,
+  type PathsDirectoryHandle,
+} from '../../../state/paths';
 import { sequenceLaneOf, sequenceInteriorBeats, clipProcessesTexture, clipTransportDriven, clipHasTransportSection, resolveSourceTransform, sceneChannelAssignments, BLEND_MODE_NAMES, type Clip, type Track, type ExportResolutionMode, type ExportFpsMode } from '../model/composition';
 import './source-transform-widget';
 import './arr-mixer-strip';
@@ -506,6 +512,42 @@ export class ArrInspector extends MobxLitElement {
       font-size: var(--app-fs-xs);
       line-height: 1.4;
       margin-bottom: 6px;
+    }
+    .lib-row {
+      margin-bottom: 6px;
+    }
+    .lib-badge {
+      font-size: var(--app-fs-xs);
+      border-radius: 2px;
+      padding: 0 3px;
+      margin-left: 3px;
+      white-space: nowrap;
+    }
+    .lib-badge.ok {
+      color: var(--app-hi-color2);
+      background: var(--app-tint-1);
+    }
+    .lib-badge.off {
+      color: var(--app-text-color2);
+      opacity: 0.5;
+      text-decoration: line-through;
+    }
+    .lib-abs {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      margin: 2px 0 0 18px;
+    }
+    .lib-abs-input {
+      flex: 1;
+      min-width: 0;
+      font-family: var(--app-font-mono, monospace);
+      font-size: var(--app-fs-xs);
+      color: var(--app-text-color);
+      background: var(--app-bg-color1);
+      border: 1px solid var(--app-line-color);
+      border-radius: 2px;
+      padding: 1px 4px;
     }
     .confirm-pop {
       position: fixed;
@@ -1596,35 +1638,73 @@ export class ArrInspector extends MobxLitElement {
             Root folders the app can resolve files under. File &amp; workspace
             references are stored relative to these, so one permission grant covers
             everything beneath. Drag folders here to add them.
+            <br />
+            An <b>absolute path</b> is what the native engine resolves with — the
+            browser can't discover one, so set it here or run the desktop app.
           </div>
           <div class="ws-list">
             ${libraryPaths.paths.length === 0
               ? html`<div class="dash-empty" style="padding:6px 0">No library paths yet.</div>`
-              : libraryPaths.paths.map(
-                  (p) => html`<div class="ws-file">
-                    <ui-icon icon="la-folder"></ui-icon>
-                    <span class="ws-name" title=${p.label}>${p.label}</span>
-                    <button
-                      class="ws-del"
-                      title="Remove library path"
-                      @click=${(ev: PointerEvent) =>
-                        this.openConfirm(ev, {
-                          message: `Remove "${p.label}"? This invalidates any files referenced under it (you'd need to relink them).`,
-                          confirmLabel: 'Remove',
-                          onYes: () => libraryPaths.remove(p.id),
-                        })}
-                    ><ui-icon icon="la-trash"></ui-icon></button>
-                  </div>`,
-                )}
+              : libraryPaths.paths.map((p) => this.renderLibraryPath(p))}
           </div>
           <div class="ws-toolbar" style="margin-top:6px">
             <button class="btn" @click=${() => this.addLibraryPath()}>
               <ui-icon icon="la-folder-plus"></ui-icon> Add library path…
             </button>
+            <button class="btn" @click=${() => this.addAbsoluteLibraryPath()}>
+              <ui-icon icon="la-keyboard"></ui-icon> Add by path…
+            </button>
           </div>
         </div>
       </div>
     `;
+  }
+
+  /**
+   * One library-path row. The badges are the important part: a handle-only row
+   * works on the web but is invisible to the native engine, and a path-only row
+   * is the reverse — without saying so, a row that silently half-works looks
+   * broken.
+   */
+  private renderLibraryPath(p: LibraryPath): TemplateResult {
+    const hasHandle = !!p.handle;
+    const abs = p.absolutePath ?? '';
+    return html`<div class="lib-row">
+      <div class="ws-file">
+        <ui-icon icon="la-folder"></ui-icon>
+        <span class="ws-name" title=${p.label}>${p.label}</span>
+        <span class="lib-badge ${hasHandle ? 'ok' : 'off'}" title=${hasHandle
+          ? 'Granted in this browser — resolves locally.'
+          : 'No browser handle — this row only helps the native engine.'}>browser</span>
+        <span class="lib-badge ${abs ? 'ok' : 'off'}" title=${abs
+          ? 'Has an absolute path — the native engine can resolve it.'
+          : 'No absolute path — the native engine cannot resolve files here.'}>native</span>
+        <button
+          class="ws-del"
+          title="Remove library path"
+          @click=${(ev: PointerEvent) =>
+            this.openConfirm(ev, {
+              message: `Remove "${p.label}"? This invalidates any files referenced under it (you'd need to relink them).`,
+              confirmLabel: 'Remove',
+              onYes: () => libraryPaths.remove(p.id),
+            })}
+        ><ui-icon icon="la-trash"></ui-icon></button>
+      </div>
+      <div class="lib-abs">
+        <input
+          class="lib-abs-input"
+          .value=${abs}
+          placeholder="/absolute/path/to/folder"
+          spellcheck="false"
+          @change=${(e: Event) =>
+            libraryPaths.setAbsolutePath(p.id, (e.target as HTMLInputElement).value.trim())}
+        />
+        ${isElectron()
+          ? html`<button class="btn" title="Pick this folder to record where it lives"
+              @click=${() => libraryPaths.locate(p.id)}>Locate…</button>`
+          : nothing}
+      </div>
+    </div>`;
   }
 
   private onLibraryDragOver = (e: DragEvent) => {
@@ -1638,33 +1718,34 @@ export class ArrInspector extends MobxLitElement {
   private onLibraryDrop = async (e: DragEvent) => {
     const dt = e.dataTransfer;
     if (!dt) return;
-    // Capture handle promises synchronously — DataTransfer clears once we await.
-    const handlePromises = Array.from(dt.items || [])
-      .filter((it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function')
-      .map((it) =>
-        ((it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>).catch(() => null),
-      );
-    if (!handlePromises.length) return;
+    // Must start reading the DataTransfer synchronously — it clears once we await.
+    const pending = handlesFromDataTransfer(dt);
     e.preventDefault();
     e.stopPropagation();
     this.libDragOver = false;
-    const handles = await Promise.all(handlePromises);
-    for (const h of handles) {
-      if (h && h.kind === 'directory') await libraryPaths.add(h as FileSystemDirectoryHandle);
+    for (const h of await pending) {
+      if (h.kind === 'directory') await libraryPaths.add(h as PathsDirectoryHandle);
     }
   };
 
   private async addLibraryPath() {
-    const picker = (window as any).showDirectoryPicker;
-    if (typeof picker !== 'function') {
-      console.warn('[library-paths] showDirectoryPicker unavailable');
-      return;
-    }
     try {
-      const dir: FileSystemDirectoryHandle = await picker({ mode: 'readwrite' });
-      await libraryPaths.add(dir);
+      const dir = await showDirectoryPicker();
+      if (dir) await libraryPaths.add(dir);
     } catch (err) {
       if ((err as Error)?.name !== 'AbortError') console.warn('[library-paths] add failed', err);
+    }
+  }
+
+  /** Add by typing a path — the only way to give the native engine a root when
+   *  running in a browser, which can't discover absolute paths. */
+  private async addAbsoluteLibraryPath() {
+    const abs = window.prompt('Absolute path to the library folder:')?.trim();
+    if (!abs) return;
+    try {
+      await libraryPaths.addAbsolute(abs);
+    } catch (err) {
+      console.warn('[library-paths] add by path failed', err);
     }
   }
 

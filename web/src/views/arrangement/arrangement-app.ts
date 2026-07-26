@@ -23,6 +23,11 @@ import { generatorThumbDisk } from './media/generator-thumb-disk';
 import { importVideoFile } from './media/drop-import';
 import { linkMedia } from './workspace/media-store';
 import { DirectoryBackend } from './workspace/backend';
+import {
+  handlesFromDataTransfer,
+  type PathsDirectoryHandle,
+  type PathsFileHandle,
+} from '../../state/paths';
 import { snackbars } from '../../widgets/snackbars';
 import '../../widgets/snackbars';
 
@@ -331,25 +336,17 @@ export class ArrangementApp extends MobxLitElement {
     if (!dt) return;
     // Capture everything synchronously — `DataTransfer` is cleared once we await.
     const files = dt.files;
-    const handlePromises = Array.from(dt.items || [])
-      .filter((it) => it.kind === 'file' && typeof (it as any).getAsFileSystemHandle === 'function')
-      .map((it) =>
-        ((it as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>).catch(() => null),
-      );
-    if (!files?.length && !handlePromises.length) return;
+    const handlesPending = handlesFromDataTransfer(dt);
+    if (!files?.length) return;
     e.preventDefault();
 
     // A dropped FOLDER switches the workspace (rather than importing media).
-    if (handlePromises.length) {
-      const handles = await Promise.all(handlePromises);
-      const dir = handles.find(
-        (h): h is FileSystemDirectoryHandle => !!h && h.kind === 'directory',
-      );
-      if (dir) {
-        await store.mountWorkspace(new DirectoryBackend(dir, dir.name || 'workspace'));
-        store.setRightTab('workspace');
-        return;
-      }
+    const handles = await handlesPending;
+    const dir = handles.find((h): h is PathsDirectoryHandle => h.kind === 'directory');
+    if (dir) {
+      await store.mountWorkspace(new DirectoryBackend(dir, dir.name || 'workspace'));
+      store.setRightTab('workspace');
+      return;
     }
 
     if (!files || files.length === 0) return;
@@ -365,8 +362,7 @@ export class ArrangementApp extends MobxLitElement {
     // Prefer dropped FILE HANDLES (Chrome): linkMedia persists them (library-
     // relative when possible) so the source RELINKS after reload. Without a
     // handle (Safari) we fall back to the plain File (session-only blob URL).
-    const fileHandles = (await Promise.all(handlePromises))
-      .filter((h): h is FileSystemFileHandle => !!h && h.kind === 'file');
+    const fileHandles = handles.filter((h): h is PathsFileHandle => h.kind === 'file');
     const imports: Array<{ file: File; sourceKey: string }> = [];
     if (fileHandles.length) {
       for (const h of fileHandles) {

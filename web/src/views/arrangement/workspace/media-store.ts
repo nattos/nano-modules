@@ -11,6 +11,7 @@
 import { idbGet, idbPut, idbGetAll, idbDelete, STORE_MEDIA } from '../../../state/idb-store';
 import { deriveSourceKey } from '../../../video/profile-store';
 import { HandleRef, makeHandleRef, resolveFileRef } from '../../../state/handle-ref';
+import { deserializeHandle, type PathsFileHandle } from '../../../state/paths';
 
 export interface MediaHandleRecord {
   sourceKey: string; // 'name|size|lastModified'
@@ -26,7 +27,7 @@ export interface MediaHandleRecord {
  * Link a media file handle, returning the stable sourceKey an arrangement
  * stores. Idempotent: relinking the same file overwrites the record.
  */
-export async function linkMedia(handle: FileSystemFileHandle): Promise<string> {
+export async function linkMedia(handle: PathsFileHandle): Promise<string> {
   const { sourceKey, file } = await deriveSourceKey(handle);
   const ref = await makeHandleRef(handle);
   const rec: MediaHandleRecord = {
@@ -43,7 +44,15 @@ export async function linkMedia(handle: FileSystemFileHandle): Promise<string> {
 
 /** Look up the persisted record for a sourceKey, or null on miss. */
 export async function resolveMedia(sourceKey: string): Promise<MediaHandleRecord | null> {
-  return (await idbGet<MediaHandleRecord>(STORE_MEDIA, sourceKey)) ?? null;
+  const rec = (await idbGet<MediaHandleRecord>(STORE_MEDIA, sourceKey)) ?? null;
+  // Structured clone strips an fs-backed handle's prototype — rehydrate before
+  // anyone tries to call a method on it.
+  if (rec?.ref?.kind === 'direct') {
+    const handle = deserializeHandle(rec.ref.handle);
+    if (!handle) return null;
+    rec.ref = { ...rec.ref, handle };
+  }
+  return rec;
 }
 
 /**

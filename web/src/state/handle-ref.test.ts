@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeHandleRef, resolveHandleRef, resolveFileRef, describeRef } from './handle-ref';
 import { libraryPaths } from './library-paths';
 
@@ -104,5 +104,58 @@ describe('handle-ref', () => {
     ];
     const ref = await makeHandleRef(file as any);
     expect(ref).toEqual({ kind: 'lib', libraryId: 'INNER', path: ['intro.nano-arr'] });
+  });
+
+  // ── path-only libraries (hand-entered absolute path, no handle) ──
+  describe('path-only libraries', () => {
+    afterEach(() => { delete (globalThis as any).require; });
+
+    it('makeHandleRef ignores them — there is nothing to resolve against', async () => {
+      const { lib, file } = buildLib();
+      (libraryPaths as any).paths = [
+        { id: 'PATHONLY', absolutePath: '/Volumes/media', label: 'media', addedAt: 0 },
+        { id: 'L1', handle: lib, label: 'lib', addedAt: 1 },
+      ];
+      const ref = await makeHandleRef(file as any);
+      expect(ref).toEqual({ kind: 'lib', libraryId: 'L1', path: ['scenes', 'intro.nano-arr'] });
+    });
+
+    it('resolveHandleRef synthesizes a handle from the absolute path under Electron', async () => {
+      // The point of the whole feature: a library with no browser grant still
+      // resolves once a real filesystem is available.
+      const files = new Map([['/Volumes/media/scenes/intro.nano-arr', 'x']]);
+      (globalThis as any).require = (mod: string) => {
+        if (mod !== 'fs') throw new Error(mod);
+        return {
+          promises: {
+            stat: async (p: string) => {
+              const path = p.replace(/\/+$/, '') || '/';
+              if (files.has(path)) return { isDirectory: () => false, isFile: () => true, mtimeMs: 0 };
+              for (const f of files.keys()) {
+                if (f.startsWith(`${path}/`)) return { isDirectory: () => true, isFile: () => false, mtimeMs: 0 };
+              }
+              const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e;
+            },
+          },
+        };
+      };
+      (libraryPaths as any).paths = [
+        { id: 'PATHONLY', absolutePath: '/Volumes/media', label: 'media', addedAt: 0 },
+      ];
+      const got = await resolveFileRef({
+        kind: 'lib', libraryId: 'PATHONLY', path: ['scenes', 'intro.nano-arr'],
+      });
+      expect(got).not.toBeNull();
+      expect(got!.name).toBe('intro.nano-arr');
+    });
+
+    it('resolves to null off Electron (no filesystem to reach)', async () => {
+      (libraryPaths as any).paths = [
+        { id: 'PATHONLY', absolutePath: '/Volumes/media', label: 'media', addedAt: 0 },
+      ];
+      expect(await resolveFileRef({
+        kind: 'lib', libraryId: 'PATHONLY', path: ['scenes', 'intro.nano-arr'],
+      })).toBeNull();
+    });
   });
 });
