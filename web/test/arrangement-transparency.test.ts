@@ -66,6 +66,13 @@ describe('Arrangement source-clip transparency (GPU)', () => {
       store.addClipDeviceType(a[1], a[2], 'source.noise');
       store.addClipDeviceType(a[1], a[2], 'warp.crop');
       const cr = store.clipByPath(path).clip.sketch.devices.find((d: any) => d.moduleType === 'warp.crop');
+      // `mode` MUST be Inset (1) FIRST. warp.crop defaults to Span, whose own
+      // defaults (centre 0, width/height 1) keep the whole frame — so setting
+      // only the four insets crops NOTHING, the clip stays fully opaque, and
+      // the assertion below passes on the clip's own noise instead of the
+      // track below it. (Caught by the dual-backend port of this suite, which
+      // reads raw pixels: `arrangement-transparency-parity.test.ts`.)
+      store.setClipDeviceField(a[1], a[2], cr.id, 'mode', 1);
       for (const k of ['inset_left', 'inset_right', 'inset_top', 'inset_bottom']) {
         store.setClipDeviceField(a[1], a[2], cr.id, k, 0.45);
       }

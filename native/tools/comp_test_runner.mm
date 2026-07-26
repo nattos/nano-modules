@@ -19,6 +19,7 @@
 //     "ops": [
 //       { "seek": 4.0 },
 //       { "play": { "frames": 30, "dtSec": 0.016666 } },
+//       { "step": { "frames": 30, "dtSec": 0.016666 } },  // paced, still PAUSED
 //       { "launch": { "trackId": "st", "sceneId": "s1", "mode": "loose" } },
 //       { "setParam": { "ownerId": "c1", "deviceId": "d1",
 //                       "field": "brightness", "value": 0.5 } },
@@ -32,7 +33,8 @@
 //   { success, width, height,
 //     captures: { name: { pixelsBase64, width, height, samples,
 //                         hasContent, holding, positionBeat, layerCount,
-//                         chainKeys, railValues } },
+//                         chainKeys, sceneStates, pendingScenes,
+//                         transport, videoDescs } },
 //     error? }
 //
 // `play` is FIXED-STEP by construction — every frame advances by exactly
@@ -46,6 +48,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -144,6 +147,31 @@ bool setBypassedById(json& node, const std::string& id, bool on) {
     if ((child.is_object() || child.is_array()) && setBypassedById(child, id, on)) return true;
   }
   return false;
+}
+
+/**
+ * This frame's resolved transport rows, keyed by clip id — the runner's view of
+ * what a transport-controller effect PUBLISHED (`transport_time_sec` and
+ * friends), which is the whole point of the transport suite.
+ *
+ * An INVALID row (the section instance isn't live yet) serialises `timeSec` as
+ * null on both sides: nlohmann writes NaN as null, and so does JSON.stringify,
+ * so the web twin needs no special case to agree.
+ */
+json transportJson(comp::CompExecutor& cx) {
+  json out = json::object();
+  const auto order = cx.transportOrder();
+  const auto& rows = cx.transportResolved();
+  for (size_t i = 0; i < order.size() && i < rows.size(); i++) {
+    const auto& r = rows[i];
+    out[order[i]] = {
+        {"timeSec", r.valid ? r.timeSec : std::numeric_limits<double>::quiet_NaN()},
+        {"active", r.active},
+        {"rate", r.rate},
+        {"ended", r.ended},
+    };
+  }
+  return out;
 }
 
 /** Every distinct instance key in the chain-keys readback — the native
@@ -246,6 +274,14 @@ int main(int argc, char** argv) {
       }
       cx.registerCapabilities(moduleType, caps);
     }
+
+    // Bind the seekable-streams registry into every loaded bundle (and every
+    // one loaded later). Without this the effect-facing `streams` module reads
+    // an absent table, which is SILENT: a transport controller sees parent
+    // position 0 forever and publishes a frozen `transport_time_sec` while its
+    // analytically-differenced `rate` still looks perfectly correct. Same call
+    // test_comp_render.cpp's Harness makes.
+    bundles.setStreamsTable(&cx.streamsTableMutable(), &cx.warpClock());
 
     // Media resolution. A scenario document is authored the way a SAVED one
     // looks — `clip.source.ref`, no runtime `url` — so without the roots and
@@ -418,6 +454,16 @@ int main(int argc, char** argv) {
           for (int i = 0; i < frames; i++) stepFrame(dt);
           cx.pause();
 
+        } else if (op.contains("step")) {
+          // Frames with the transport left PAUSED — the "does it freeze?" leg.
+          // Distinct from `play` on purpose: a paced step whose beat must NOT
+          // advance is the only way to tell a frozen publisher from one that is
+          // merely being sampled at the same phase every time.
+          const auto& p = op["step"];
+          const int n = p.value("frames", 1);
+          const double dt = p.value("dtSec", 1.0 / 60.0);
+          for (int i = 0; i < n; i++) stepFrame(dt);
+
         } else if (op.contains("launch")) {
           const auto& l = op["launch"];
           const int cls = l.value("mode", std::string("instant")) == "loose"
@@ -490,6 +536,11 @@ int main(int argc, char** argv) {
               {"sceneStates", json::parse(cx.sceneStatesJson(), nullptr, false)},
               // trackId → incoming {sceneId, ...} while a handover is deferred.
               {"pendingScenes", json::parse(cx.pendingScenesJson(), nullptr, false)},
+              // clipId → the transport-controller row it published this frame.
+              {"transport", transportJson(cx)},
+              // The decode pump's active set — `prime` distinguishes the LIVE
+              // clip from a warm sibling being pre-rolled.
+              {"videoDescs", json::parse(cx.videoDescsJson(), nullptr, false)},
           };
         }
       }

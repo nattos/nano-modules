@@ -34,6 +34,7 @@ const COMPOSITE_ID = 'arr-composite';
 export type CompOp =
   | { seek: number }
   | { play: { frames: number; dtSec?: number } }
+  | { step: { frames: number; dtSec?: number } }
   | { launch: { trackId: string; sceneId: string; mode?: 'instant' | 'loose' } }
   | { stopScene: { trackId: string } }
   | { setParam: { ownerId: string; deviceId: string; field: string; value: unknown } }
@@ -69,6 +70,16 @@ export interface ExportResult {
   frameStats: ExportFrameStat[];
 }
 
+/** One clip's resolved transport row — what its controller effect published. */
+export interface TransportRow {
+  /** null when the row is INVALID (the section instance isn't live yet). NaN
+   *  serialises to null through JSON on both hosts, so the shape agrees. */
+  timeSec: number | null;
+  active: number;
+  rate: number | null;
+  ended: number;
+}
+
 export interface CompCapture {
   pixelsBase64: string;
   width: number;
@@ -82,6 +93,8 @@ export interface CompCapture {
   chainKeys: string[];
   sceneStates: Record<string, unknown>;
   pendingScenes: Record<string, unknown>;
+  transport: Record<string, TransportRow>;
+  videoDescs: Record<string, unknown>[];
 }
 
 export interface CompRunResult {
@@ -175,6 +188,35 @@ let livePendingScenes: Record<string, unknown> = {};
  * render no video at all while every other assertion still passed.
  */
 let liveVideoDescs = '[]';
+/** And the transport ROW ORDER, which only rides a frame on
+ *  kCompTransportSetChanged. The times themselves ride every frame that has
+ *  rows at all, so they need no mirror — but they do need clearing when the
+ *  driven set empties, which is why the assignment below is unconditional. */
+let liveTransportOrder: string[] = [];
+let liveTransportTimes: Float64Array = new Float64Array(0);
+
+/**
+ * Fold the stride-8 times channel into the per-clip rows the capture reports.
+ * Mirrors `transportJson()` in comp_test_runner.mm, INCLUDING the NaN → null
+ * mapping: nlohmann serialises NaN as null, and this result crosses a
+ * structured clone (which would preserve NaN), so the mapping has to be
+ * explicit here or the two backends would disagree on an invalid row.
+ */
+function transportRowsFrom(
+  order: string[], times: Float64Array,
+): Record<string, TransportRow> {
+  const out: Record<string, TransportRow> = {};
+  const nz = (v: number) => (Number.isNaN(v) ? null : v);
+  for (let i = 0; i < order.length && i * 8 + 8 <= times.length; i++) {
+    out[order[i]] = {
+      timeSec: nz(times[i * 8]),
+      active: times[i * 8 + 1],
+      rate: nz(times[i * 8 + 2]),
+      ended: times[i * 8 + 7],
+    };
+  }
+  return out;
+}
 
 async function ensureEngine(width: number, height: number): Promise<ArrEngine> {
   if (enginePromise) {
@@ -277,6 +319,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
         if (last.info?.scenes) liveScenes = JSON.parse(last.info.scenes);
         if (last.info?.scenesPending) livePendingScenes = JSON.parse(last.info.scenesPending);
         if (last.info?.videoDescs !== undefined) liveVideoDescs = last.info.videoDescs;
+        if (last.info?.transportOrder) liveTransportOrder = last.info.transportOrder;
+        liveTransportTimes = last.info?.transportTimes ?? new Float64Array(0);
         frames++;
         if (last.info?.holding) stalledFrames++;
         res();
@@ -383,6 +427,13 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
         for (let i = 0; i < op.play.frames; i++) await step(dt);
         e.compControl({ op: 'pause' });
 
+      } else if ('step' in op) {
+        // Paced frames with the transport left PAUSED. Distinct from `play` on
+        // purpose: a step whose beat must NOT advance is the only way to tell a
+        // frozen publisher from one merely sampled at the same phase each time.
+        const dt = op.step.dtSec ?? 1 / 60;
+        for (let i = 0; i < op.step.frames; i++) await step(dt);
+
       } else if ('launch' in op) {
         e.compOp({
           op: 'launchScene',
@@ -449,6 +500,8 @@ export async function runCompScenario(scenario: CompScenario): Promise<CompRunRe
           chainKeys: liveChainKeys,
           sceneStates: liveScenes,
           pendingScenes: livePendingScenes,
+          transport: transportRowsFrom(liveTransportOrder, liveTransportTimes),
+          videoDescs: JSON.parse(liveVideoDescs || '[]'),
         };
       }
     }

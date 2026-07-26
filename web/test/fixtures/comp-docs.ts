@@ -222,6 +222,125 @@ export function videoDoc(mediaFile = 'test_dxv.mov', over: Json = {}): Json {
   ]);
 }
 
+/**
+ * A clip's TRANSPORT section: a separate mini-sketch of controller devices that
+ * retime the clip's content (`composition.ts Clip.transport`, `ClipM::transport`).
+ * Never `sketch` — wires don't cross between the two, and a controller placed in
+ * the pixel chain would simply never be resolved.
+ */
+export function mkTransport(devices: Json[]): Json {
+  return { devices, wires: [] };
+}
+
+/**
+ * One clip driven by `core.transport.time` at `speed`, over a solid red source.
+ *
+ * The controller publishes `transport_time_sec` from the clip's ELAPSED parent
+ * seconds (transport_core evalFrame), so with no media under it the content is
+ * unbounded (`videoDurSec` falls back to 1e9) and the published time is exactly
+ * `speed × elapsed` — no loop wrap to reason about. It is also identity on
+ * pixels by construction, which is the other half of what the suite asserts.
+ */
+export function transportTimeDoc(speed = 2): Json {
+  return mkComposition([
+    mkTrack('t-1', [mkClip('c-1', 0, 64, [
+      mkDevice('d-solid', 'source.solid_color', { color: [0.8, 0, 0] }),
+    ], {
+      transport: mkTransport([mkDevice('d-time', 'core.transport.time', { speed })]),
+    })]),
+  ]);
+}
+
+/**
+ * A noise backdrop on the top track, and a CROPPED noise source clip on the
+ * track below it (drawn on top — tracks composite downward).
+ *
+ * Outside the crop the lower clip is TRANSPARENT, so the composite there must
+ * reveal the backdrop's noise. The regression: `composite.blend` used to force
+ * the layer opaque, baking those regions to flat black — which reads as a
+ * region luma spread of ~0 while the middle of the frame still looks fine.
+ */
+export function croppedOverlayDoc(inset = 0.45): Json {
+  const crop = {
+    // `mode` MUST be Inset (1). warp.crop defaults to Span, whose own defaults
+    // (centre 0, width/height 1) keep the whole frame — so a state that sets
+    // only the four insets crops NOTHING and the clip stays fully opaque. The
+    // web-only ancestor of this suite did exactly that, which made its
+    // "the corner is varied" assertion pass on the clip's own uncropped noise.
+    mode: 1,
+    inset_left: inset, inset_right: inset, inset_top: inset, inset_bottom: inset,
+  };
+  return mkComposition([
+    mkTrack('t-back', [mkClip('c-back', 40, 8, [
+      mkDevice('d-back', 'source.noise'),
+    ])]),
+    mkTrack('t-crop', [mkClip('c-crop', 40, 8, [
+      mkDevice('d-noise', 'source.noise'),
+      mkDevice('d-crop', 'warp.crop', crop),
+    ])]),
+  ]);
+}
+
+/**
+ * A SEQUENCE clip: an interior mini-timeline in its own addressable lane
+ * (`composition.ts Clip.sequence`, `ClipM::sequence`). Shaped exactly as ⌘J
+ * Consolidate builds it — `makeSequenceLane` + interior clips rebased to
+ * lane-local beats — because the interior clock is what the engine walks, not
+ * the editor command that produced it.
+ *
+ * EXACTLY ONE LEVEL: `parseTrack` drops `sequence` at depth >= 1 on both sides.
+ */
+export function mkSequenceLane(id: string, clips: Json[], kind: 'track' | 'scene' = 'track'): Json {
+  return {
+    id,
+    name: 'Sequence',
+    kind,
+    parentId: null,
+    level: 1,
+    sketch: { devices: [] },
+    automation: [],
+    clips,
+  };
+}
+
+export function mkSequenceClip(
+  id: string, startBeat: number, lengthBeat: number, lane: Json, over: Json = {},
+): Json {
+  return mkClip(id, startBeat, lengthBeat, [], { kind: 'sequence', sequence: lane, ...over });
+}
+
+/**
+ * Two generator sub-clips inside one sequence clip spanning [40, 48). Interior
+ * beat 1 is inside sub-clip A, interior beat 5 inside B — crossing between them
+ * is the "second interior clip is sometimes transparent" regression.
+ *
+ * The two use DIFFERENT generators so a capture can tell which one rendered
+ * from pixels alone, not merely from the chain keys.
+ */
+export function sequenceDoc(): Json {
+  return mkComposition([
+    mkTrack('t-seq', [
+      mkSequenceClip('c-seq', 40, 8, mkSequenceLane('lane-1', [
+        mkClip('sub-a', 0, 4, [mkDevice('d-a', 'source.solid_color', { color: [1, 0, 0] })]),
+        mkClip('sub-b', 4, 4, [mkDevice('d-b', 'source.solid_color', { color: [0, 1, 0] })]),
+      ])),
+    ]),
+  ]);
+}
+
+/** The same interior shape, but with two real VIDEO sub-clips — the pump has to
+ *  play exactly the live one and PRIME its sibling, not run two decoders. */
+export function videoSequenceDoc(mediaFile = 'test_dxv.mov'): Json {
+  return mkComposition([
+    mkTrack('t-seq', [
+      mkSequenceClip('c-seq', 0, 8, mkSequenceLane('lane-1', [
+        videoClip('sub-a', 0, 4, mediaFile),
+        videoClip('sub-b', 4, 4, mediaFile),
+      ])),
+    ]),
+  ]);
+}
+
 /** A scene track (`kind: 'scene'`) — its clips are launchable cells, not
  *  timeline content. Mirrors `store.addSceneTrack()`. */
 export function mkSceneTrack(id: string, clips: Json[], over: Json = {}): Json {

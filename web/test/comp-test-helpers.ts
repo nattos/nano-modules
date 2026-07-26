@@ -42,6 +42,8 @@ const NATIVE_COMP_RUNNER = path.resolve(
 export type CompOp =
   | { seek: number }
   | { play: { frames: number; dtSec?: number } }
+  /** Paced frames with the transport PAUSED — "does it freeze?" */
+  | { step: { frames: number; dtSec?: number } }
   | { launch: { trackId: string; sceneId: string; mode?: 'instant' | 'loose' } }
   | { stopScene: { trackId: string } }
   | { setParam: { ownerId: string; deviceId: string; field: string; value: unknown } }
@@ -96,6 +98,25 @@ interface RawCapture {
   chainKeys: string[];
   sceneStates: Record<string, any>;
   pendingScenes: Record<string, any>;
+  transport: Record<string, TransportRow>;
+  videoDescs: VideoDesc[];
+}
+
+/** One clip's resolved transport row — what its controller effect published. */
+export interface TransportRow {
+  /** null ⇒ the row is INVALID (no live section instance yet). */
+  timeSec: number | null;
+  active: number;
+  rate: number | null;
+  ended: number;
+}
+
+/** One entry of the decode pump's active set (`comp_video_descs_json`). */
+export interface VideoDesc {
+  clipId: string;
+  /** True for a WARM sibling being pre-rolled rather than played. */
+  prime?: boolean;
+  [k: string]: unknown;
 }
 
 interface RawResult {
@@ -144,6 +165,25 @@ export class CompCapture {
   get sceneStates() { return this.raw.sceneStates ?? {}; }
   /** trackId → incoming scene while a gapless handover is still deferred. */
   get pendingScenes() { return this.raw.pendingScenes ?? {}; }
+
+  /** clipId → the transport row its controller published this frame. */
+  get transport() { return this.raw.transport ?? {}; }
+  /** The decode pump's active set for this frame. */
+  get videoDescs() { return this.raw.videoDescs ?? []; }
+
+  /**
+   * `clipId`'s published transport time, or null when the row is missing or
+   * invalid — the difference matters: a MISSING row means the clip isn't driven
+   * at all, an invalid one means its section instance isn't live yet.
+   */
+  transportTime(clipId: string): number | null {
+    return this.transport[clipId]?.timeSec ?? null;
+  }
+
+  /** This frame's pump desc for `clipId`, or null. */
+  descFor(clipId: string): VideoDesc | null {
+    return this.videoDescs.find((d) => d.clipId === clipId) ?? null;
+  }
 
   /** The scene currently playing on `trackId`, or null. */
   playingScene(trackId: string): string | null {
@@ -198,6 +238,28 @@ export class CompCapture {
         const x = Math.min(this.width - 1, Math.floor((this.width * i) / (n + 1)));
         const y = Math.min(this.height - 1, Math.floor((this.height * j) / (n + 1)));
         const p = this.pixelAt(x, y);
+        ls.push(0.299 * p.r + 0.587 * p.g + 0.114 * p.b);
+      }
+    }
+    return Math.max(...ls) - Math.min(...ls);
+  }
+
+  /**
+   * The same measure over a SUB-RECTANGLE in fractional coordinates — the
+   * transparency suite's question is about one quadrant, not the whole frame
+   * (a composite that's varied in the middle and flat black in the corner has a
+   * perfectly healthy whole-frame spread).
+   */
+  regionLumaSpread(fx0: number, fy0: number, fx1: number, fy1: number, n = 5): number {
+    if (this.pixels.length === 0) return 0;
+    const ls: number[] = [];
+    const at = (f: number, size: number) =>
+      Math.max(0, Math.min(size - 1, Math.floor(size * f)));
+    for (let i = 0; i <= n; i++) {
+      for (let j = 0; j <= n; j++) {
+        const p = this.pixelAt(
+          at(fx0 + ((fx1 - fx0) * i) / n, this.width),
+          at(fy0 + ((fy1 - fy0) * j) / n, this.height));
         ls.push(0.299 * p.r + 0.587 * p.g + 0.114 * p.b);
       }
     }
