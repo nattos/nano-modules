@@ -16,7 +16,8 @@
 // output resolution (sub-texel error the renderer's handoff band eats).
 //
 // Channels: .r = h (world units, ≥ 0), .g = crest (line strength + storm
-// heat afterglow), .ba = 0.
+// heat afterglow), .b = storm activation u (the rail leaves .ba to the
+// provider; a downstream material can read the live burn), .a = 0.
 
 #include "../plume/common.hlsl"
 
@@ -99,5 +100,5 @@ void main(uint3 gid : SV_DispatchThreadID) {
           + storm_amp * storm.x * ridge;
   float crest = saturate(lines + storm.x + heat_gain * storm.z);
 
-  shellTex[gid.xy] = float4(h, crest, 0.0, 0.0);
+  shellTex[gid.xy] = float4(h, crest, storm.x, 0.0);
 }

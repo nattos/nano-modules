@@ -391,9 +391,20 @@ static bool runField(State* s) {
   du.emerge_phase = (float)s->emerge_phase;
   du.resist = std::fmin(0.25f, 1.2f * dt_sim);
   du.force_eps = 15.0f / (float)kSimRes;
-  du.resist_w = std::fmin(0.15f, 0.5f * dt_sim);
+  // Sized so the loading↔dissipation equilibrium kink level sits MID
+  // threshold range: that's what gives Excitability true subcritical
+  // states (low = never fires, not just "fires rarely") instead of the
+  // pure-SOC regime where every threshold converges to the same rate.
+  du.resist_w = std::fmin(0.3f, 1.5f * dt_sim);
   du.visc = std::fmin(0.85f, 30.0f * dt_sim);
-  du.recon = std::fmin(0.2f, 2.0f * dt_sim);
+  // Reconnection efficiency runs INVERSE to Excitability — this is what
+  // makes the dial actually span the SOC regimes: the self-organized
+  // steady state is set by energy in vs energy released per storm, not
+  // by the ignition threshold alone. Low excite: storms fully consume
+  // their kink (rare, complete, self-quenching). High excite: storms
+  // barely release fuel, so the same kinks re-ignite — self-resonant.
+  du.recon = std::fmin(0.2f, 2.0f * dt_sim) *
+             (0.15f + 1.0f * (1.0f - s->excite));
   s->ub_dyn.writeOne(du);
 
   const bool reset = s->reset_pending;
@@ -423,12 +434,12 @@ static bool runField(State* s) {
   // Threshold mapping calibrated against the measured kink distribution
   // (background turbulence ~0.2, p90 ~0.5, genuine sheets 1+): excite
   // 0.5 sits at ~p99 (rare discrete storms), 0.9 near p90 (resonant).
-  su.thresh = 0.15f + 3.8f * (1.0f - s->excite) * (1.0f - s->excite);
-  su.prop = 2.0f;
+  su.thresh = 0.25f + 3.0f * (1.0f - s->excite) * (1.0f - s->excite);
+  su.prop = 1.4f;
   su.burn = 8.0f;
   su.cool = 2.5f;
-  su.charge = 1.2f;
-  su.recover = 0.1f + 1.4f * (1.0f - s->calm);
+  su.charge = 1.8f;
+  su.recover = 0.08f + 1.2f * (1.0f - s->calm);
   su.kink_gain = 3.0f;
   su.force_eps = 15.0f / (float)kSimRes;
   su.sim_res = (float)kSimRes;

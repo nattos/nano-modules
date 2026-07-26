@@ -63,7 +63,11 @@ float4 storm_at(float3 d) { return stormPrev.SampleLevel(samp, nano_oct_encode(d
 void main(uint3 gid : SV_DispatchThreadID) {
   int r = int(sim_res);
   if (gid.x >= (uint)r || gid.y >= (uint)r) return;
-  if (reset > 0.5) { stormNext[gid.xy] = float4(0.0, 0.0, 0.0, 0.0); return; }
+  // Born refractory (v = 1): a fresh sun's initial field is full of
+  // sheets, and without the dead time it flash-burns globally on frame
+  // one. This way the field loads first and the first storms arrive on
+  // the natural rhythm.
+  if (reset > 0.5) { stormNext[gid.xy] = float4(0.0, 1.0, 0.0, 0.0); return; }
   float2 uv = (float2(gid.xy) + 0.5) / sim_res;
   float3 dir = nano_oct_decode(uv);
 
