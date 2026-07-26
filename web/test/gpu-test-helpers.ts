@@ -222,13 +222,19 @@ export function forEachFusionMode(
   modes: FusionMode[] = ['force-off', 'force-on', 'auto'],
 ): void {
   for (const mode of modes) {
-    const prev = _ambientFusionMode;
-    _ambientFusionMode = mode;
-    try {
+    // Same registration-time/execution-time hazard forEachBackend documents,
+    // and this helper used to have it: setting `_ambientFusionMode` around the
+    // synchronous `body()` call only covers REGISTRATION. Jest registers every
+    // describe/it up front and runs the async `it` bodies afterwards, by which
+    // point the loop has restored the previous value — so all three labelled
+    // passes were really executing under the default 'auto', and the
+    // standalone-vs-fused comparison the labels promise never happened.
+    // beforeAll re-establishes the mode right before this group's tests run.
+    describe(`[fusion:${mode}]`, () => {
+      beforeAll(() => { _ambientFusionMode = mode; });
+      afterAll(() => { _ambientFusionMode = 'auto'; });
       body(mode);
-    } finally {
-      _ambientFusionMode = prev;
-    }
+    });
   }
 }
 

@@ -1,4 +1,4 @@
-import { runGpuChainTest, forEachFusionMode } from './gpu-test-helpers';
+import { runGpuChainTest, forEachFusionMode, forEachBackend } from './gpu-test-helpers';
 
 // Strict-output top + mapper-tail fusion tests, built on the
 // test-only generator fuse_solid (writes uniform color to every
@@ -12,7 +12,8 @@ import { runGpuChainTest, forEachFusionMode } from './gpu-test-helpers';
 // runs in all three modes and the same assertions must hold byte-
 // identical (the parity guarantee).
 
-forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () => {
+forEachBackend((backend) =>
+forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode}, ${backend})`, () => {
   jest.setTimeout(30000);
 
   it('single fuse_solid stage produces a flat uniform color', async () => {
@@ -99,4 +100,4 @@ forEachFusionMode((mode) => describe(`Fusion strict-output top (${mode})`, () =>
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ r: 255, g: 0, b: 128, a: 255 }, 2);
   });
-}));
+})));

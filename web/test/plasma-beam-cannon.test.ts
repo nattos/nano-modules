@@ -1,4 +1,4 @@
-import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuTest, runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `source.light.plasma_beam_cannon` against the `lights` bundle.
 //
@@ -9,7 +9,8 @@ import { runGpuTest, runGpuEffectTest } from './gpu-test-helpers';
 //
 // Note: the test runner ticks at dt=0.016s for `ticks` iterations.
 
-describe('Plasma Beam Cannon Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Plasma Beam Cannon Effect E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and I/O', async () => {
@@ -68,6 +69,12 @@ describe('Plasma Beam Cannon Effect E2E', () => {
       inputColor: [0.0, 0.0, 0.0, 1.0],
       ticks: 30,                   // ~0.5s of ticking
       params: [
+        // auto_mode Random — `auto_rate` alone does nothing. The shared
+        // fx::AutoTrigger fields default `auto_mode` to Off so a freshly
+        // dropped effect stays quiet until something is wired in, and this
+        // suite predates that selector: it set the rate on an effect that was
+        // never going to self-fire, so the frame stayed solid black.
+        ['auto_mode', 1],
         ['auto_rate', 1.0],        // ~59 Hz Poisson → triggers near-immediately
         ['beam_color', [1.0, 1.0, 1.0]],
         ['intensity', 1.0],
@@ -237,6 +244,7 @@ describe('Plasma Beam Cannon Effect E2E', () => {
       width: 64, height: 64,
       inputColor: [0.0, 0.0, 0.0, 1.0] as [number, number, number, number],
       params: [
+        ['auto_mode', 1],            // Random — see the auto_rate note above
         ['auto_rate', 1.0],          // fast auto-fire → many cycles
         ['attack_s', 0.02],
         ['decay_s', 0.02],
@@ -391,4 +399,5 @@ describe('Plasma Beam Cannon Effect E2E', () => {
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ r: 102, g: 102, b: 102, a: 255 }, 6);
   });
+});
 });

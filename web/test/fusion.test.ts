@@ -1,4 +1,4 @@
-import { runGpuChainTest, forEachFusionMode } from './gpu-test-helpers';
+import { runGpuChainTest, forEachFusionMode, forEachBackend } from './gpu-test-helpers';
 
 // Multi-stage fusion tests, built on the test-only mappers fuse_add
 // and fuse_mul (predictable per-pixel math: clamp(c.rgb + offset),
@@ -8,7 +8,11 @@ import { runGpuChainTest, forEachFusionMode } from './gpu-test-helpers';
 // proving byte-identity between the standalone and fused paths
 // regardless of run length.
 
-forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
+// Both backends: the native chain path runs the same SketchExecutor +
+// fusion planner the web dispatcher mirrors, so the goldens below are a
+// real cross-backend claim about the fused kernels, not just the math.
+forEachBackend((backend) =>
+forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode}, ${backend})`, () => {
   jest.setTimeout(30000);
 
   it('single fuse_add stage: input + offset', async () => {
@@ -122,4 +126,4 @@ forEachFusionMode((mode) => describe(`Fusion multi-stage (${mode})`, () => {
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ r: 128, g: 0, b: 255, a: 255 }, 2);
   });
-}));
+})));

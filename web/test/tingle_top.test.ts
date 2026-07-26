@@ -1,4 +1,4 @@
-import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runGpuEffectTest, Frame, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for source.light.tingle_top — sparkles bundled at the top of each
 // bar while gated, draining downward on release. The GPU particle pool cycles
@@ -6,7 +6,8 @@ import { runGpuEffectTest, Frame } from './gpu-test-helpers';
 // just bright pixels, so the gated-at-top vs released-fills-down envelope is
 // visible as where the bright coverage lands vertically.
 
-describe('Tingle Top Effect E2E', () => {
+forEachBackend((backend) => {
+describe(`Tingle Top Effect E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const W = 128, H = 128;
@@ -156,10 +157,14 @@ describe('Tingle Top Effect E2E', () => {
     const frame = await runGpuEffectTest({
       module: 'source.light.tingle_top', bundle: 'lights',
       width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
-      ticks: 30, params: params([['auto_rate', 0.6], ['min_sustain_s', 0.2]]),
+            // auto_mode Random: `auto_rate` on its own is inert, since
+      // fx::AutoTrigger defaults the mode to Off (a fresh drop stays quiet).
+      ticks: 30, params: params([['auto_mode', 1], ['auto_rate', 0.6],
+                                 ['min_sustain_s', 0.2]]),
       dumpName: 'tingle_top_auto',
     });
     expect(frame.success).toBe(true);
     expect(brightBand(frame, 0.0, 0.6)).toBeGreaterThan(0.005);
   });
+});
 });

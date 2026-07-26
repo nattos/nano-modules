@@ -1,9 +1,10 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect E2E for the `legacy` bundle (com.nano.legacy) — ports of shipped
 // NanoGraph effects. Point at a running dev server via GPU_TEST_BASE_URL.
 
-describe('Bicolor Gradient (color.legacy.bicolor_grad) E2E', () => {
+forEachBackend((backend) => {
+describe(`Bicolor Gradient (color.legacy.bicolor_grad) E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and its parameters', async () => {
@@ -62,8 +63,10 @@ describe('Bicolor Gradient (color.legacy.bicolor_grad) E2E', () => {
     }
   });
 });
+});
 
-describe('Glisten (filter.legacy.glisten) E2E', () => {
+forEachBackend((backend) => {
+describe(`Glisten (filter.legacy.glisten) E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and its parameters', async () => {
@@ -151,8 +154,10 @@ describe('Glisten (filter.legacy.glisten) E2E', () => {
     }
   });
 });
+});
 
-describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
+forEachBackend((backend) => {
+describe(`Double Chamber (source.legacy.double_chamber) E2E (${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and its parameters', async () => {
@@ -256,6 +261,23 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     const maxR = Math.max(...frame.samples.map(s => s.r));
     expect(maxR).toBeGreaterThan(8);  // bridger chords drew light
   });
+});
+});
+
+// PUPPETEER ONLY — the same recorded gap double-chamber-interactions.test.ts
+// carries, and the only case in this file that needs cross-frame sim state to
+// ADVANCE rather than merely exist. Natively the two runs below come back
+// byte-identical (2756 lit pixels each, max radius 43 of a 55 threshold), i.e.
+// boundary_death changes nothing because the particles never drift out to the
+// boundary in the first place — the persistent particle buffer isn't carrying
+// state across ticks. The four cases above still run on both backends and prove
+// the effect loads, renders particles, tracers and bridgers; what doesn't
+// survive natively is multi-frame integration. Suspect the known native
+// compute-effect gotchas (hardcoded 8×8 threadgroups, persistent-buffer sim
+// state) rather than anything here; flip to the default list once that's fixed.
+forEachBackend((backend) => {
+describe(`Double Chamber multi-frame integration (${backend})`, () => {
+  jest.setTimeout(30000);
 
   it('boundary_death confines the cloud (proportional kill at the boundary)', async () => {
     // Isolate boundary_death by turning the soft boundary FORCE off, so the
@@ -309,3 +331,4 @@ describe('Double Chamber (source.legacy.double_chamber) E2E', () => {
     expect(onOuter).toBeLessThan(offOuter * 0.5);     // death-on confines it
   });
 });
+}, ['puppeteer']);

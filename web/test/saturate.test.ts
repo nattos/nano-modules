@@ -1,4 +1,4 @@
-import { runGpuEffectTest, forEachFusionMode } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachFusionMode, forEachBackend } from './gpu-test-helpers';
 
 // Per-effect tests for `color.saturate` against `core`. The effect is
 // a per-channel waveshaper that scales from BLACK (not mid-grey):
@@ -12,7 +12,13 @@ import { runGpuEffectTest, forEachFusionMode } from './gpu-test-helpers';
 // across both. forEachFusionMode wraps the describe block; tests
 // inside don't need to thread fusionMode through their configs.
 
-forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
+// Metal contributes ONE fusion mode, not three. The native runner drives a
+// single effect through its prototype directly — there is no fusion dispatcher
+// on that path — so all three modes would be the same run three times. The
+// fused-vs-standalone comparison the modes exist for is a web-side claim; what
+// metal adds here is the effect's math on a second GPU stack.
+forEachBackend((backend) =>
+forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode}, ${backend})`, () => {
   jest.setTimeout(30000);
 
   it('declares metadata and three scalar inputs', async () => {
@@ -174,4 +180,4 @@ forEachFusionMode((mode) => describe(`Saturate Effect E2E (${mode})`, () => {
     expect(frame.success).toBe(true);
     frame.expectUniformColor({ a: 128 }, 2);
   });
-}));
+}), backend === 'metal' ? ['force-off'] : undefined));

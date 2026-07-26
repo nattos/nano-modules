@@ -11,6 +11,17 @@ import { runGpuChainTest, forEachFusionMode } from './gpu-test-helpers';
 // dedicated trace texture per step, threads it through the
 // dispatcher (or copyTextureToTexture in the standalone path), and
 // surfaces the readback via Frame.tracePixels / Frame.traceFrame.
+//
+// PUPPETEER-ONLY, and this is a recorded gap rather than an oversight. The web
+// chain runner (public/gpu-test-runner.html) walks the chain and drives the
+// fusion dispatcher itself, which is what lets it allocate a trace texture per
+// step and hand the dispatcher per-stage trace handles. The native chain path
+// goes through SketchExecutor, which has no per-stage trace capture to bind —
+// so `traceSteps` would silently come back empty rather than fail. Enabling
+// metal here means teaching SketchExecutor to expose that seam, which is a
+// change to the executor, not to this suite. Its SIBLINGS (fusion.test.ts,
+// fusion-strictout.test.ts) do run on both backends, so the fused kernels
+// themselves are covered cross-backend; only the trace variant isn't.
 
 forEachFusionMode((mode) => describe(`Fusion trace variants (${mode})`, () => {
   jest.setTimeout(30000);
