@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
@@ -8,10 +8,17 @@ import type { Sketch } from '../src/sketch-types';
  * glitch). Exercised on a source.grid chain; the effect is a pure function of
  * `sweep`, so a fixed sweep pins one deterministic step.
  */
-describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
-  jest.setTimeout(60000);
+/** The solid probe colour both halves of this suite feed in. */
+const SOLID: [number, number, number, number] = [0.15, 0.30, 0.55, 1.0];
 
-  const SOLID: [number, number, number, number] = [0.15, 0.30, 0.55, 1.0];
+// The metadata case is effect-level and runs on BOTH backends — it pins the
+// schema this effect publishes, which is exactly where a host-side derivation
+// can diverge. Everything below drives runEngineTest (the engine harness page:
+// executor.wasm, wires, trace points), which has no native runner; the comp
+// runner is the native equivalent and a native sketch host is a follow-up.
+forEachBackend((backend) => {
+describe(`Stutter Scale (warp.legacy.stutter_scale) E2E schema (${backend})`, () => {
+  jest.setTimeout(60000);
 
   it('declares metadata and its parameters', async () => {
     const frame = await runGpuEffectTest({
@@ -28,6 +35,11 @@ describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
       expect(names).toContain(n);
     }
   });
+});
+});
+
+describe('Stutter Scale (warp.legacy.stutter_scale) E2E', () => {
+  jest.setTimeout(60000);
 
   const runChain = (id: string, params: Record<string, number>, dump: string) => {
     const sketch: Sketch = {

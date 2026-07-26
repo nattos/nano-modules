@@ -1,4 +1,4 @@
-import { runGpuEffectTest } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend } from './gpu-test-helpers';
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
@@ -16,7 +16,8 @@ import type { Sketch } from '../src/sketch-types';
  * The state machine advances on tick(dt); the runner uses dt = 0.016 s, and
  * `renderEachTick` advances persistent state per frame.
  */
-describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
+forEachBackend((backend) => {
+describe(`Zoom Scroller (warp.legacy.zoom_scroller) E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const SOLID: [number, number, number, number] = [0.15, 0.30, 0.55, 1.0];
@@ -100,6 +101,16 @@ describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E', () => {
     expect(hairline).toBeGreaterThan(0);      // a faint hairline still draws
     expect(gone).toBe(0);                     // width 0 → fully disappears
   });
+
+});
+});
+
+// The cases below drive runEngineTest — the engine harness page (executor.wasm,
+// wires, trace points) — which has no native runner, so they stay puppeteer-only.
+// The comp runner is the native equivalent for engine-level work, and a native
+// sketch host is an explicit follow-up.
+describe('Zoom Scroller (warp.legacy.zoom_scroller) E2E (engine path)', () => {
+  jest.setTimeout(60000);
 
   it('zooms a structured input (different scales differ)', async () => {
     // source.grid → zoom_scroller. Pin the zoom to two very different levels via

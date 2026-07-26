@@ -1,4 +1,4 @@
-import { runGpuEffectTest, Frame } from './gpu-test-helpers';
+import { runGpuEffectTest, forEachBackend, Frame } from './gpu-test-helpers';
 import { runEngineTest } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
@@ -9,11 +9,14 @@ import type { Sketch } from '../src/sketch-types';
 // black input the blob's generated colour is just bright pixels, so "where the
 // bloom lands vertically" reads the grow → burst-expand envelope.
 
-describe('Chroma Wave Effect E2E', () => {
+/** Shared by the effect half and the engine half below. */
+const luma = (p: { r: number; g: number; b: number }) => 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+
+forEachBackend((backend) => {
+describe(`Chroma Wave Effect E2E (${backend})`, () => {
   jest.setTimeout(60000);
 
   const W = 128, H = 128;
-  const luma = (p: { r: number; g: number; b: number }) => 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
 
   // Fraction of bright pixels in the vertical band [y0, y1).
   const brightBand = (f: Frame, y0: number, y1: number): number => {
@@ -297,6 +300,47 @@ describe('Chroma Wave Effect E2E', () => {
     expect(hueVariance(high)).toBeGreaterThan(hueVariance(lo) + 0.03);
   });
 
+  it('hue twist shifts the hue where it lands on a primary', async () => {
+    // A nearly-constant-hue blob parked at red (base_hue 0, tiny hue_span).
+    // hue_shift_r twists the wheel at the red point, so the bloom's mean hue
+    // moves away from red. (g/b shifts are 0, so off-red hues stay put.)
+    const run = (shiftR: number) => runGpuEffectTest({
+      module: 'source.light.chroma_wave', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 14, params: params([['default_gate_state', 1], ['charge_s', 0.2],
+                                  ['base_hue', 0.0], ['hue_span', 0.02],
+                                  ['grade_freq_hold', 0.5], ['saturation', 0.9],
+                                  ['hue_shift_r', shiftR]]),
+      dumpName: `chroma_wave_huetwist_${shiftR}`,
+    });
+    const off = await run(0.0);
+    const twisted = await run(0.33);
+    expect(off.success && twisted.success).toBe(true);
+    expect(hueDist(meanHue(off), meanHue(twisted))).toBeGreaterThan(0.1);
+  });
+
+  it('intensity 0 renders passthrough even while charging', async () => {
+    const frame = await runGpuEffectTest({
+      module: 'source.light.chroma_wave', bundle: 'lights',
+      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
+      ticks: 10, params: params([['default_gate_state', 1], ['intensity', 0]]),
+      dumpName: 'chroma_wave_intensity0',
+    });
+    expect(frame.success).toBe(true);
+    frame.expectUniformColor({ r: 0, g: 0, b: 0, a: 255 }, 4);
+  });
+});
+});
+
+
+// The two engine cases, PUPPETEER ONLY: both go through runEngineTest — the
+// engine harness page (executor.wasm, wires, sidechannel bus, trace points) —
+// which has no native runner. They are the ones that need chroma_wave WIRED to
+// something downstream, which is engine-level rather than effect-level; the
+// comp runner is the native equivalent and a native sketch host is a follow-up.
+describe('Chroma Wave Effect E2E (engine path)', () => {
+  jest.setTimeout(60000);
+
   it('emits motion vectors that reshape a downstream motion_blur', async () => {
     // Chain: black bg → chroma_wave → motion_blur. The bursting blobs expand,
     // so chroma_wave publishes radial-outward velocity on render_outputs/motion.
@@ -404,35 +448,5 @@ describe('Chroma Wave Effect E2E', () => {
     // composite over the input), so the gate demonstrably decided the content.
     const bgCorner = unwired.trace('out').pixelAt(3, 3);
     expect(bgCorner.r).toBeGreaterThan(60);
-  });
-
-  it('hue twist shifts the hue where it lands on a primary', async () => {
-    // A nearly-constant-hue blob parked at red (base_hue 0, tiny hue_span).
-    // hue_shift_r twists the wheel at the red point, so the bloom's mean hue
-    // moves away from red. (g/b shifts are 0, so off-red hues stay put.)
-    const run = (shiftR: number) => runGpuEffectTest({
-      module: 'source.light.chroma_wave', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
-      ticks: 14, params: params([['default_gate_state', 1], ['charge_s', 0.2],
-                                  ['base_hue', 0.0], ['hue_span', 0.02],
-                                  ['grade_freq_hold', 0.5], ['saturation', 0.9],
-                                  ['hue_shift_r', shiftR]]),
-      dumpName: `chroma_wave_huetwist_${shiftR}`,
-    });
-    const off = await run(0.0);
-    const twisted = await run(0.33);
-    expect(off.success && twisted.success).toBe(true);
-    expect(hueDist(meanHue(off), meanHue(twisted))).toBeGreaterThan(0.1);
-  });
-
-  it('intensity 0 renders passthrough even while charging', async () => {
-    const frame = await runGpuEffectTest({
-      module: 'source.light.chroma_wave', bundle: 'lights',
-      width: W, height: H, inputColor: [0, 0, 0, 1], renderEachTick: true,
-      ticks: 10, params: params([['default_gate_state', 1], ['intensity', 0]]),
-      dumpName: 'chroma_wave_intensity0',
-    });
-    expect(frame.success).toBe(true);
-    frame.expectUniformColor({ r: 0, g: 0, b: 0, a: 255 }, 4);
   });
 });
