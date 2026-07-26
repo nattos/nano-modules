@@ -37,10 +37,12 @@ float hg_rand(uint i, uint ch) {
   return float(nano_uhash(i * 16u + ch + 77771u)) * (1.0 / 4294967296.0);
 }
 
-// Density-shaping warp: 0 = uniform (hard slab edges), 1 = smoothstep
-// warp (dense middle, both edges feathered).
-float hg_shape(float u, float k) {
-  return lerp(u, u * u * (3.0 - 2.0 * u), k);
+// Density-shaping warp: 0 = uniform (hard slab edges), 1 = triangular
+// (dense middle, density ramping linearly to zero at both edges). A
+// smoothstep warp would do the OPPOSITE — sample density goes as
+// 1/warp', which vanishes mid-band and spikes at the edges.
+float hg_shape(float u, float u2, float k) {
+  return lerp(u, 0.5 * (u + u2), k);
 }
 
 [numthreads(64, 1, 1)]
@@ -60,13 +62,14 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // --- Synthesize halo mote `tid` ---
   float R = axis_b2.w;
-  float r = R + radial.x + hg_shape(hg_rand(tid, 0u), radial.z) * radial.y;
+  float r = R + radial.x
+          + hg_shape(hg_rand(tid, 0u), hg_rand(tid, 12u), radial.z) * radial.y;
 
   float w_kep = pow(max((R + radial.x) / max(r, 1e-4), 0.05), 1.5);
   float az = 6.2831853 * hg_rand(tid, 1u) + motion.x * w_kep;
 
   float w_eff = band.y * (1.0 - band.w * 0.85 * sin(az) * sin(az));
-  float sp = hg_shape(hg_rand(tid, 2u), band.z) * 2.0 - 1.0;
+  float sp = hg_shape(hg_rand(tid, 2u), hg_rand(tid, 13u), band.z) * 2.0 - 1.0;
   float th = band.x + sp * w_eff;
 
   float3 dir = axis_a.xyz * cos(th)

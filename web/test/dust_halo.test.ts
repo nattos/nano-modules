@@ -83,6 +83,13 @@ describe('source.sdf.dust_halo E2E', () => {
     r.phases[1].trace('out').expectSameAs(r.phases[0].trace('out'), 1);
   });
 
+  it('drift carries the motes', async () => {
+    const r = await run('halo_drift', { amount: 0.8, drift: 0.8 }, [10, 30]);
+    // The drift clock runs on wall dt (the sun stays frozen — its own
+    // clock is sim-scaled): the same cloud, orbited between captures.
+    r.phases[1].trace('out').expectDifferentFrom(r.phases[0].trace('out'), 60);
+  });
+
   it('a ring is not a beret', async () => {
     const beret = await run('halo_beret', { amount: 0.7 }, [10]);
     const ring = await run('halo_ring',
