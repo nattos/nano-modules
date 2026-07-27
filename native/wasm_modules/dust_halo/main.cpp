@@ -45,7 +45,7 @@ struct HaloGenUniforms {
 };
 static_assert(sizeof(HaloGenUniforms) == 96, "HaloGenUniforms mismatch");
 
-struct DustAccumUniforms { float count, _p0, _p1, _p2; };
+struct DustAccumUniforms { float count, stride, gain, _p2; };
 static_assert(sizeof(DustAccumUniforms) == 16, "DustAccumUniforms mismatch");
 
 struct DustFoldUniforms { float norm, _p0, _p1, _p2; };
@@ -426,7 +426,14 @@ static bool runField(State* s) {
       cp.dispatch((vcount + 63) / 64);
       cp.end();
     }
-    DustAccumUniforms cu = { (float)gen, 0.f, 0.f, 0.f };  // head only
+    // Head only (upstream motes carry their density in the upstream
+    // grid), decimated: mean-preserving stride + weight, in step with
+    // helio's accumulate (see dust_accum.hlsl).
+    const int kAccumCap = 24576;
+    const int a_stride = (gen + kAccumCap - 1) / kAccumCap;
+    const int a_count = (gen + a_stride - 1) / a_stride;
+    DustAccumUniforms cu = { (float)a_count, (float)a_stride,
+                             (float)gen / (float)a_count, 0.f };
     s->ub_accum.writeOne(cu);
     {
       auto cp = gpu::ComputePass::begin();
@@ -434,7 +441,7 @@ static bool runField(State* s) {
       cp.setBuffer(s->dust_buf, 0);
       cp.setBuffer(s->accum_buf, 1);
       cp.setBuffer(s->ub_accum, 2);
-      cp.dispatch((gen + 63) / 64);
+      cp.dispatch((a_count + 63) / 64);
       cp.end();
     }
     // 20 motes saturate a voxel — kept in step with helio's fold gain.

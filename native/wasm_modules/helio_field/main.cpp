@@ -71,7 +71,7 @@ struct DustSimUniforms {
 };
 static_assert(sizeof(DustSimUniforms) == 48, "DustSimUniforms layout mismatch");
 
-struct DustAccumUniforms { float count, _p0, _p1, _p2; };
+struct DustAccumUniforms { float count, stride, gain, _p2; };
 static_assert(sizeof(DustAccumUniforms) == 16, "DustAccumUniforms mismatch");
 
 struct DustFoldUniforms { float norm, _p0, _p1, _p2; };
@@ -825,7 +825,15 @@ static bool runField(State* s) {
       cp.dispatch((vcount + 63) / 64);
       cp.end();
     }
-    DustAccumUniforms cu = { (float)dust_count, 0.f, 0.f, 0.f };
+    // Decimated: the influence field only needs a SAMPLE of the cloud
+    // (mean-preserving stride + weight — see dust_accum.hlsl). Dense
+    // clumps otherwise serialize their trilinear atomics on a handful
+    // of voxels.
+    const int kAccumCap = 24576;
+    const int a_stride = (dust_count + kAccumCap - 1) / kAccumCap;
+    const int a_count = (dust_count + a_stride - 1) / a_stride;
+    DustAccumUniforms cu = { (float)a_count, (float)a_stride,
+                             (float)dust_count / (float)a_count, 0.f };
     s->ub_dust_accum.writeOne(cu);
     {
       auto cp = gpu::ComputePass::begin();
@@ -833,7 +841,7 @@ static bool runField(State* s) {
       cp.setBuffer(s->dust_parts, 0);
       cp.setBuffer(s->dust_accum, 1);
       cp.setBuffer(s->ub_dust_accum, 2);
-      cp.dispatch((dust_count + 63) / 64);
+      cp.dispatch((a_count + 63) / 64);
       cp.end();
     }
     // Full density at ~10 motes/voxel (each deposits 256 fixed-point).
