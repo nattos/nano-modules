@@ -166,14 +166,46 @@ void main(uint3 gid : SV_DispatchThreadID) {
               abs(ps.z) < PLM_EXT0) {
             float4 g2 = sdfVol.SampleLevel(linearSamp, plm_world_to_uvw(ps), 0);
             ds = g2.r * misc.x;
-            // Dust clumps dim the sun shafts too (soft, 2-tap estimate).
-            occ *= exp2(-3.0 * g2.a);
           }
           else
             ds = length(ps) - cam_p.w;
           occ *= saturate(ds * wid + 0.5);
         }
         occ = lerp(1.0, occ, smoothstep(0.0, 0.15, scs));
+      }
+
+      // Dust shadow: the provider dust is a DISTRIBUTED medium, so its
+      // sun occlusion must be an optical-depth INTEGRAL. Point taps
+      // pinned at the body crossing (the old 2-tap product) print
+      // displaced hard copies of the cloud's cross-section — a dust
+      // ring cast nested crescent sheets into the fog. Instead: clip
+      // the sun ray to the density grid box and take 2 stratified taps
+      // whose in-segment phase is re-jittered EVERY STEP (golden-ratio
+      // stride), so across the 36-step integral the torus is sampled
+      // densely — one smooth curtain, dithered into noise the tent
+      // upsample absorbs.
+      if (sun_p.w > 1e-3) {
+        float3 sd = sun_p.xyz;
+        float3 sds = float3(abs(sd.x) < 1e-5 ? 1e-5 : sd.x,
+                            abs(sd.y) < 1e-5 ? 1e-5 : sd.y,
+                            abs(sd.z) < 1e-5 ? 1e-5 : sd.z);
+        float3 ext = float3(PLM_EXT0, PLM_EXT0, PLM_EXT0);
+        float3 ta = (-ext - p) / sds;
+        float3 tb = ( ext - p) / sds;
+        float3 tmn = min(ta, tb), tmx = max(ta, tb);
+        float sin0 = max(max(max(tmn.x, tmn.y), tmn.z), 0.05);
+        float sout = min(min(tmx.x, tmx.y), tmx.z);
+        if (sout > sin0) {
+          float jf = frac(jitter + 0.6180339887 * float(i));
+          float dtau_d = 0.0;
+          [unroll] for (int m = 0; m < 2; m++) {
+            float sf = (float(m) + jf) * 0.5;
+            float3 pd = p + sd * lerp(sin0, sout, sf);
+            dtau_d += sdfVol.SampleLevel(linearSamp,
+                                         plm_world_to_uvw(pd), 0).a;
+          }
+          occ *= exp2(-4.0 * 0.5 * dtau_d * (sout - sin0));
+        }
       }
 
       float3 gi = float3(0.0, 0.0, 0.0);
