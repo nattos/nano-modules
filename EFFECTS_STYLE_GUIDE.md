@@ -701,6 +701,27 @@ Concrete rules:
 - Anisotropic effects (motion blur, directional gradient) should sample with units that are the same in u and v even when the viewport isn't square.
 - When you sample neighbours in a shader, scale offsets by viewport size: `vec2 px = vec2(1.0/W, 1.0/H);`. Don't use a single `px` value.
 
+### 1.4b If a param MUST be in pixels, scale it by `host::pxScale(vp_h)`
+
+Sometimes pixels are the honest unit — a font size, a wrap width, a stroke weight.
+Those params are still **not** raw output pixels: the arrangement preview renders a
+scaled-down proxy of the composition (its engine edge is capped) while an export
+renders at full resolution, so a raw-pixel value is a different fraction of the
+frame in each. That's how a title ends up positioned differently in the export
+than in the monitor.
+
+```cpp
+void render(void* self, int vp_w, int vp_h) {
+  const float px = host::pxScale(vp_h);   // authored px → render-target px
+  const float size = s->size * px;        // s->size means "px at 1080p"
+```
+
+`host::pxScale` reads the host's declared reference height (`FrameState.reference_h`
+— the composition's own output height, 0 when the viewport *is* the output, in
+which case the scale is exactly 1). Say so in the field help: *"pixels at 1080p"*.
+See `wasm_modules/text/main.cpp` (size + max_width) and `richtext/main.cpp` (folded
+into the Blitz zoom, so the layout magnifies instead of reflowing).
+
 ### 1.5 Anchors and pivots — the cover-square convention
 
 For *transform-style* parameters (scale center, rotation pivot, polar origin, lens distortion center), use **signed-normalized coordinates inside a 1:1 cover-fit square**:
