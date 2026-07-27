@@ -96,13 +96,23 @@ void main(uint3 gid : SV_DispatchThreadID) {
                    : max((c + black) / (1.0 + black), 0.0);
 
   float3 outc = lerp(bg.rgb, c, opacity);
-  // ±half-LSB output dither. The soft looks are built from huge shallow
-  // gradients (fog haze, grazing-sun key rolloff), and the downstream
-  // 8-bit output quantizes them into visible contour bands — one gray
-  // level every ~10 px reads as banding on a dark display. Dithering
-  // before that rounding breaks the contours into invisible grain; IGN
-  // keeps neighboring pixels maximally spread, and the pattern is static
-  // (stable in motion). Costs one hash.
-  outc += (nano_ign(float2(gid.xy)) - 0.5) * (1.0 / 255.0);
+  // Triangular-PDF output dither, ±1 LSB. The soft looks are built from
+  // huge shallow gradients (fog haze, grazing-sun key rolloff), and the
+  // downstream 8-bit output quantizes them into visible contour bands —
+  // the fog's iso-brightness lines read as "ringing" arcs around the
+  // body. Uniform ±half-LSB is the bare minimum and its residual noise
+  // modulation still traces the contours — worse, any smoothing in the
+  // display/export path (scaled preview, screenshot resample) filters
+  // the noise faster than the staircase and the terraces reappear.
+  // Triangular (two decorrelated taps) linearizes the quantizer with
+  // constant noise variance, so the contours stay hidden with margin.
+  // One IGN tap (perceptually spread) + one white tap (IGN alone is
+  // quasi-periodic — its own ripple family reads as arcs under gain,
+  // and its purely high-frequency energy is the first thing a resample
+  // filters out; white noise keeps masking power after smoothing).
+  // Static pattern (stable in motion); costs two hashes.
+  float dn = nano_ign(float2(gid.xy)) +
+             nano_hash21(float2(gid.xy) + float2(97.0, 71.0)) - 1.0;
+  outc += dn * (1.0 / 255.0);
   outTex[gid.xy] = float4(outc, max(bg.a, cover * opacity));
 }
