@@ -10,10 +10,19 @@
 // occluders, and composite blends the layer depth-aware. Shading is
 // computed ONCE per particle (the footprint is a few pixels of one tiny
 // mote — per-pixel variation would be invisible): a two-sided diffuse
-// presence, a tight sun GLINT off the particle's normal (the rail's
-// normal is the particle's orientation — providers tumble it for
-// twinkle), the grid soft shadow, and the GI field. Exposure + shoulder
-// match the march so dust grades identically through composite.
+// presence, a sun GLINT off the particle's normal (the rail's normal is
+// the particle's orientation — providers tumble it for twinkle), the
+// grid soft shadow, and the GI field. Exposure + shoulder match the
+// march so dust grades identically through composite.
+//
+// Dust has its OWN material, decoupled from the body's porcelain:
+// albedo.rgb is the dust color and misc.y is METALLIC — one slider from
+// chalk to glitter. As metal rises the diffuse presence fades (a metal
+// has no diffuse) while the facet glint grows, tightens, and takes the
+// dust color (a metal's reflection is tinted; a dielectric's is white).
+// GI stays tinted-full at any metal: for a speck it reads as the flake
+// reflecting its environment, and it keeps metallic dust from becoming
+// holes in shadow.
 
 #define DUST_UB_REG b6
 #include "dust_common.hlsl"
@@ -73,14 +82,24 @@ void main(uint3 gid : SV_DispatchThreadID) {
     gi = radVol.SampleLevel(linSamp, plm_world_to_uvw(pos), 0).rgb
        * shade_p.z;
 
+  // Diffuse presence fades with metallic but keeps a floor — a metal
+  // flake between flashes is a dark colored speck, not a hole.
+  float metal = misc.y;
+  float dw = lerp(0.68, 0.15, metal);
+  float3 c = albedo.rgb * (dw * (key + fill) + gi);
+
   // Glint: a Blinn lobe off the oriented normal — wide enough that a
   // useful fraction of random facets catch it, tight enough to flash.
-  float3 c = albedo.rgb * (0.68 * (key + fill) + gi);
-  if (misc.y > 0.001) {
+  // Metallic drives it whole: gain AND tightness rise together (soft
+  // satin sheen low, hard glitter high), and the lobe color slides from
+  // dielectric white to the tinted dust color.
+  if (metal > 0.001) {
     float3 Hv = normalize(sun_p.xyz - rd);
-    float spec_pow = exp2(2.5 + 4.5 * (1.0 - misc.z));
-    float spec = misc.y * 2.5 * pow(saturate(abs(dot(N, Hv))), spec_pow);
-    c += spec * sun_p.w * (0.15 + 0.85 * sh);
+    float spec_pow = exp2(4.0 + 2.5 * metal);
+    float spec = metal * (1.5 + 2.5 * metal)
+               * pow(saturate(abs(dot(N, Hv))), spec_pow);
+    c += lerp(float3(1.0, 1.0, 1.0), albedo.rgb, metal)
+       * (spec * sun_p.w * (0.15 + 0.85 * sh));
   }
 
   // Exposure + gentle shoulder, matching march.hlsl's scene-mode output.

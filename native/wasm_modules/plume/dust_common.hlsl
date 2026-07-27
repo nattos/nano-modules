@@ -26,10 +26,10 @@ cbuffer DustSplatUniforms : register(DUST_UB_REG) {
   float4 cam_row2;   // view fwd (world),   w = cam_pos.z
   float4 cam_p;      // focal, cover_ax, cover_ay, dust_count
   float4 sun_p;      // sun dir (world, toward light), w = intensity
-  float4 albedo;     // rgb, w = exposure gain
+  float4 albedo;     // dust material rgb, w = exposure gain
   float4 vp;         // w, h, 1/w, 1/h
   float4 shade_p;    // shadow, ambient, bounce, inv_lip
-  float4 misc;       // px_world (per unit t), reflect, roughness, 0
+  float4 misc;       // px_world (per unit t), dust metallic, 0, 0
 };
 
 // Footprint radius cap, pixels — bounds the per-thread pixel loop.

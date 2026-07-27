@@ -103,7 +103,7 @@ struct DustSplatUniforms {
   float albedo[4];     // rgb, w = exposure gain
   float vp[4];         // w, h, 1/w, 1/h
   float shade_p[4];    // shadow, ambient, bounce, inv_lip
-  float misc[4];       // px_world, reflect, roughness, 0
+  float misc[4];       // px_world, dust metallic, 0, 0
 };
 static_assert(sizeof(DustSplatUniforms) == 144,
               "DustSplatUniforms layout mismatch");
@@ -188,6 +188,8 @@ struct State {
   float albedo_r = 0.85f, albedo_g = 0.85f, albedo_b = 0.87f;
   float reflect_k = 0.25f;
   float roughness = 0.4f;
+  float dust_r = 0.85f, dust_g = 0.85f, dust_b = 0.87f;
+  float dust_metal = 0.3f;
   float transmission = 0.3f;
   float thickness = 0.5f;
   float opacity = 1.0f;
@@ -303,7 +305,10 @@ void module_init() {
           "glint on the plates, tight when smooth and broad when rough. "
           "*Translucency* lets light pass through thin plates so their "
           "edges glow when backlit (sun azimuth toward ±180); *Thickness* "
-          "sets how deep light penetrates before dying out.")
+          "sets how deep light penetrates before dying out. Rail dust has "
+          "its OWN material: *Dust Color*, and *Dust Metallic* running "
+          "chalk to glitter — matte specks at 0, dark mirror flakes at 1 "
+          "that flash a color-tinted glint as they tumble.")
       .rgbField("albedo", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
           .label("Albedo", "Alb")
       .floatField("reflect", 0.25f, 0.f, 1.f, state::PrimaryInput)
@@ -314,6 +319,10 @@ void module_init() {
           .label("Translucency", "Trans")
       .floatField("thickness", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Thickness", "Thick")
+      .rgbField("dust_color", 0.85f, 0.85f, 0.87f, state::PrimaryInput)
+          .label("Dust Color", "DustC")
+      .floatField("dust_metallic", 0.3f, 0.f, 1.f, state::PrimaryInput)
+          .label("Dust Metallic", "DustM")
       .floatField("opacity", 1.0f, 0.f, 1.f, state::PrimaryInput)
           .label("Opacity", "Opac")
       // --- Render ---
@@ -591,6 +600,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     }
     else if (state::pathIs(p, l, "reflect"))     s->reflect_k = state::patchFloat(i);
     else if (state::pathIs(p, l, "roughness"))   s->roughness = state::patchFloat(i);
+    else if (state::pathIs(p, l, "dust_color")) {
+      auto v = state::patchVec3(i);
+      s->dust_r = v.x; s->dust_g = v.y; s->dust_b = v.z;
+    }
+    else if (state::pathIs(p, l, "dust_metallic")) s->dust_metal = state::patchFloat(i);
     else if (state::pathIs(p, l, "transmission")) s->transmission = state::patchFloat(i);
     else if (state::pathIs(p, l, "thickness"))   s->thickness = state::patchFloat(i);
     else if (state::pathIs(p, l, "opacity"))     s->opacity = state::patchFloat(i);
@@ -946,15 +960,14 @@ void render(void* self, int vp_w, int vp_h) {
     }
     du.cam_p[0] = focal; du.cam_p[1] = cs.ax; du.cam_p[2] = cs.ay;
     du.cam_p[3] = (float)field.dust_count;
-    du.albedo[0] = s->albedo_r; du.albedo[1] = s->albedo_g;
-    du.albedo[2] = s->albedo_b; du.albedo[3] = expo;
+    du.albedo[0] = s->dust_r; du.albedo[1] = s->dust_g;
+    du.albedo[2] = s->dust_b; du.albedo[3] = expo;
     du.shade_p[0] = s->shadow;
     du.shade_p[1] = s->ambient;
     du.shade_p[2] = gi_on ? 1.2f * s->bounce : 0.0f;
     du.shade_p[3] = 1.0f / field.lip;
     du.misc[0] = mu.fine_p[1];   // px_world
-    du.misc[1] = s->reflect_k;
-    du.misc[2] = s->roughness;
+    du.misc[1] = s->dust_metal;
     s->ub_dust.writeOne(du);
     const int pgroups = (field.dust_count + 63) / 64;
     {
