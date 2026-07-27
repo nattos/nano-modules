@@ -837,7 +837,9 @@ static bool runField(State* s) {
       cp.end();
     }
     // Full density at ~10 motes/voxel (each deposits 256 fixed-point).
-    DustFoldUniforms fu = { 1.0f / (256.0f * 10.0f), 0.f, 0.f, 0.f };
+    // 20 motes saturate a voxel — halved density gain so clump influence
+    // (fog scatter, sun dtau) grades softly instead of blobbing at 128³.
+    DustFoldUniforms fu = { 1.0f / (256.0f * 20.0f), 0.f, 0.f, 0.f };
     s->ub_dust_fold.writeOne(fu);
     {
       auto cp = gpu::ComputePass::begin();

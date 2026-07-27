@@ -437,7 +437,8 @@ static bool runField(State* s) {
       cp.dispatch((gen + 63) / 64);
       cp.end();
     }
-    DustFoldUniforms fu = { 1.0f / (256.0f * 10.0f), 0.f, 0.f, 0.f };
+    // 20 motes saturate a voxel — kept in step with helio's fold gain.
+    DustFoldUniforms fu = { 1.0f / (256.0f * 20.0f), 0.f, 0.f, 0.f };
     s->ub_fold.writeOne(fu);
     {
       auto cp = gpu::ComputePass::begin();

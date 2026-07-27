@@ -32,14 +32,27 @@ cbuffer DustSplatUniforms : register(DUST_UB_REG) {
   float4 misc;       // px_world (per unit t), reflect, roughness, 0
 };
 
-// Footprint radius bounds, pixels. The floor guarantees a sub-pixel
-// particle PRESENCE: at half a pixel-diagonal the nearest pixel center is
-// always inside the disc, so a mote never blinks out crossing a pixel
-// corner (at 0.5 the corner dead zone swallowed ~21% of them); near a
-// pixel edge it may win 2 px. Never faded either way — sharp, always
-// there. The cap bounds the per-thread pixel loop.
-static const float DUST_MIN_PX = 0.7072;
+// Footprint radius cap, pixels — bounds the per-thread pixel loop.
+// There is no radius floor: sub-pixel presence is carried by COVERAGE
+// (du_cov below), not by inflating the disc.
 static const float DUST_MAX_PX = 8.0;
+
+// Feather reach beyond the disc edge, pixels. At half a pixel-diagonal
+// the nearest pixel center is always inside the footprint, so a mote
+// never blinks out crossing a pixel corner — presence is guaranteed by
+// a fading alpha instead of a full-brightness pixel.
+static const float DUST_FEATHER = 0.7072;
+
+// Per-pixel coverage of the disc at center-distance `dist`: an area term
+// (a sub-pixel disc truly covers ~pi*rp^2 of its one pixel) times a
+// feathered edge (larger discs get an anti-aliased rim instead of a
+// pixel-center step). Both passes and composite share this contract:
+// pass 1 accumulates it per pixel, composite uses the clamped sum as the
+// dust layer's alpha.
+float du_cov(float dist, float rp) {
+  float area = saturate(3.14159265 * rp * rp);
+  return area * saturate(rp + DUST_FEATHER - dist);
+}
 
 // Particle -> screen. ctr is the footprint center in PIXEL coordinates,
 // t the camera distance (the march's ray parameter — rays are unit
@@ -65,7 +78,7 @@ bool du_project(uint tid, out float3 pos, out float3 nrm, out float seed,
   float2 ndc = float2(dot(rel, cam_row0.xyz), dot(rel, cam_row1.xyz))
              / w * (2.0 * cam_p.x) * float2(cam_p.y, cam_p.z);
   ctr = float2(0.5 * (ndc.x + 1.0), 0.5 * (1.0 - ndc.y)) * vp.xy;
-  rp = clamp(r0.w / (misc.x * t), DUST_MIN_PX, DUST_MAX_PX);
+  rp = min(r0.w / (misc.x * t), DUST_MAX_PX);
   return true;
 }
 

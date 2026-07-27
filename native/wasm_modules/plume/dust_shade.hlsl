@@ -3,13 +3,17 @@
 // Same per-particle iteration as pass 1; a thread writes a pixel only
 // where the depth buffer holds ITS depth bits — exactly one writer per
 // pixel (two particles at bit-identical depth both "win", and then write
-// the same depth and near-identical color — benign). Shading is computed
-// ONCE per particle (the footprint is a few pixels of one tiny mote —
-// per-pixel variation would be invisible): a two-sided diffuse presence,
-// a tight sun GLINT off the particle's normal (the rail's normal is the
-// particle's orientation — providers tumble it for twinkle), the grid
-// soft shadow, and the GI field. Exposure + shoulder match the march so
-// dust grades identically through composite.
+// the same depth and near-identical color — benign). Output is the
+// dedicated DUST LAYER (color only — depth stays in the resolve buffer,
+// alpha comes from pass 1's coverage sum): the scene buffer keeps the
+// pure surface depth, so the half-res fog march never sees point
+// occluders, and composite blends the layer depth-aware. Shading is
+// computed ONCE per particle (the footprint is a few pixels of one tiny
+// mote — per-pixel variation would be invisible): a two-sided diffuse
+// presence, a tight sun GLINT off the particle's normal (the rail's
+// normal is the particle's orientation — providers tumble it for
+// twinkle), the grid soft shadow, and the GI field. Exposure + shoulder
+// match the march so dust grades identically through composite.
 
 #define DUST_UB_REG b6
 #include "dust_common.hlsl"
@@ -19,7 +23,7 @@ Texture3D<float4>      sdfVol   : register(t1);
 Texture3D<float4>      radVol   : register(t2);
 SamplerState           linSamp  : register(s3);
 StructuredBuffer<uint> depthBuf : register(t4);
-RWTexture2D<float4>    outScene : register(u5);
+RWTexture2D<float4>    outDust  : register(u5);
 
 [numthreads(64, 1, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -85,17 +89,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   // --- Write the pixels this particle won ---
   int W = (int)vp.x, H = (int)vp.y;
-  int x0 = max((int)floor(ctr.x - rp), 0);
-  int x1 = min((int)floor(ctr.x + rp), W - 1);
-  int y0 = max((int)floor(ctr.y - rp), 0);
-  int y1 = min((int)floor(ctr.y + rp), H - 1);
+  float reach = rp + DUST_FEATHER;
+  int x0 = max((int)floor(ctr.x - reach), 0);
+  int x1 = min((int)floor(ctr.x + reach), W - 1);
+  int y0 = max((int)floor(ctr.y - reach), 0);
+  int y1 = min((int)floor(ctr.y + reach), H - 1);
   uint du = asuint(t);
   for (int py = y0; py <= y1; py++) {
     for (int px = x0; px <= x1; px++) {
       float2 d = float2(px, py) + 0.5 - ctr;
-      if (dot(d, d) > rp * rp) continue;
+      if (du_cov(length(d), rp) <= 0.0) continue;
       if (depthBuf[py * W + px] != du) continue;
-      outScene[int2(px, py)] = float4(c, t);
+      outDust[int2(px, py)] = float4(c, 1.0);
     }
   }
 }

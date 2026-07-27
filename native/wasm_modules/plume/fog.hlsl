@@ -130,9 +130,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
     // Dust clumps scatter like local pockets of shell haze — scaled by
     // the same Fog knob so dust-in-fog obeys the atmosphere controls.
+    // The gain is deliberately gentle: this term is the CLOUD's aggregate
+    // influence, and at 128³ it must read as soft haze, not voxel blobs.
     float sigma = fog_p.x * exp2(-max(d, 0.0) * fog_p.y)
                 + fog_p.z * 0.22
-                + fog_p.x * 0.6 * dust_d;
+                + fog_p.x * 0.45 * dust_d;
     if (sigma > 1e-4) {
       // Direct sun occlusion: sample the SDF around the point where THIS
       // sun ray crosses the object — its closest approach to the origin —

@@ -87,8 +87,11 @@ struct FogUniforms {
 };
 static_assert(sizeof(FogUniforms) == 144, "FogUniforms layout mismatch");
 
-struct CompUniforms { float opacity, has_bg, exposure, black; };
-static_assert(sizeof(CompUniforms) == 16, "CompUniforms layout mismatch");
+struct CompUniforms {
+  float opacity, has_bg, exposure, black;
+  float dust_on, t_far, _p0, _p1;
+};
+static_assert(sizeof(CompUniforms) == 32, "CompUniforms layout mismatch");
 
 // Shared by both dust splat passes (dust_common.hlsl).
 struct DustSplatUniforms {
@@ -152,6 +155,9 @@ struct State {
   gpu::Texture scene_tex;                  // vp RGBA16F: color + hit distance
   gpu::Texture fog_tex;                    // vp/2 RGBA16F: in-scatter + trans
   gpu::Buffer dust_depth_buf;              // vp uints: splat depth resolve
+  gpu::Buffer dust_cov_buf;                // vp uints: 8.8 coverage sums
+  gpu::Texture dust_tex;                   // vp RGBA16F: winner color layer
+  gpu::Buffer dust_stub_buf;               // 16B storage: unbound-slot filler
   gpu::Buffer ub_dust, ub_dust_clear;
   int dust_buf_px = 0;
   gpu::Sampler samp_clamp;
@@ -442,7 +448,10 @@ void module_init() {
       .tex2d(2)
       .sampler(3)
       .storageTex2d(4)
-      .uniform(5));
+      .uniform(5)
+      .tex2d(6)          // dust layer (zero_tex when dust is off)
+      .storage(7)        // dust depth (stub when off)
+      .storage(8));      // dust coverage (stub when off)
   s_pso_dust_clear = gpu::Device::createComputePSO(cs_dclear, "main",
       gpu::Bindings()
       .storageRW(0)
@@ -452,7 +461,8 @@ void module_init() {
       .storage(0)        // dust particles (rail buffer)
       .tex2d(1)          // scene (.a = surface depth)
       .storageRW(2)      // depth resolve (atomics)
-      .uniform(3));
+      .uniform(3)
+      .storageRW(4));    // coverage accumulator (atomics)
   s_pso_dust_shade = gpu::Device::createComputePSO(cs_dshade, "main",
       gpu::Bindings()
       .storage(0)        // dust particles
@@ -485,6 +495,7 @@ void* create() {
                                          gpu::BufferUsage::Uniform);
   s->ub_dust_clear = gpu::Device::createBuffer(sizeof(DustClearUniforms),
                                                gpu::BufferUsage::Uniform);
+  s->dust_stub_buf = gpu::Device::createBuffer(16, gpu::BufferUsage::Storage);
   s->zero_vol = gpu::Device::createTexture3D(1, 1, 1, gpu::TextureFormat::RGBA16F);
   s->zero_tex = gpu::Device::createTexture(1, 1, gpu::TextureFormat::RGBA16F);
   if (s->zero_tex.valid())
@@ -507,6 +518,9 @@ void destroy(void* self) {
   s->scene_tex.release();
   s->fog_tex.release();
   s->dust_depth_buf.release();
+  s->dust_cov_buf.release();
+  s->dust_tex.release();
+  s->dust_stub_buf.release();
   s->ub_dust.release();
   s->ub_dust_clear.release();
   for (int i = 0; i < 3; i++) s->rad_vol[i].release();
@@ -814,9 +828,16 @@ void render(void* self, int vp_w, int vp_h) {
       s->dust_depth_buf.release();
       s->dust_depth_buf = gpu::Device::createBuffer(
           (long long)px * 4, gpu::BufferUsage::Storage);
+      s->dust_cov_buf.release();
+      s->dust_cov_buf = gpu::Device::createBuffer(
+          (long long)px * 4, gpu::BufferUsage::Storage);
+      s->dust_tex.release();
+      s->dust_tex = gpu::Device::createTexture(vp_w, vp_h,
+                                               gpu::TextureFormat::RGBA16F);
       s->dust_buf_px = px;
     }
-    dust_on = s->dust_depth_buf.valid();
+    dust_on = s->dust_depth_buf.valid() && s->dust_cov_buf.valid() &&
+              s->dust_tex.valid();
   }
 
   // --- Camera: orbit yaw accumulator + tilt, framing-hold dolly ---
@@ -907,9 +928,11 @@ void render(void* self, int vp_w, int vp_h) {
     cp.end();
   }
 
-  // --- Dust splats: nearest-particle depth resolve, then the winner
-  // shades into the scene buffer (color + its depth — fog then stops at
-  // dust exactly like at the surface). ---
+  // --- Dust splats: nearest-particle depth + coverage resolve, then the
+  // winner shades into the dedicated dust LAYER. The scene buffer keeps
+  // the pure surface depth — the half-res fog march never sees point
+  // occluders (one speck must not truncate a whole fog texel), and
+  // composite seats each speck in the fog by its own depth instead. ---
   if (dust_on) {
     DustClearUniforms dcu = { (float)(vp_w * vp_h), 1.f, 0.f, 0.f };
     s->ub_dust_clear.writeOne(dcu);
@@ -942,6 +965,18 @@ void render(void* self, int vp_w, int vp_h) {
       cp.dispatch((vp_w * vp_h + 63) / 64);
       cp.end();
     }
+    // Coverage clears to zero — the uniform rewrite is safe mid-frame
+    // (the backend versions the backing buffer per dispatch).
+    DustClearUniforms dcz = { (float)(vp_w * vp_h), 0.f, 0.f, 0.f };
+    s->ub_dust_clear.writeOne(dcz);
+    {
+      auto cp = gpu::ComputePass::begin();
+      cp.setPSO(s_pso_dust_clear);
+      cp.setBuffer(s->dust_cov_buf, 0);
+      cp.setBuffer(s->ub_dust_clear, 1);
+      cp.dispatch((vp_w * vp_h + 63) / 64);
+      cp.end();
+    }
     {
       auto cp = gpu::ComputePass::begin();
       cp.setPSO(s_pso_dust_depth);
@@ -949,6 +984,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setTexture(s->scene_tex, 1, 0);
       cp.setBuffer(s->dust_depth_buf, 2);
       cp.setBuffer(s->ub_dust, 3);
+      cp.setBuffer(s->dust_cov_buf, 4);
       cp.dispatch(pgroups);
       cp.end();
     }
@@ -960,7 +996,7 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setTexture(rad_cur, 2, 0);
       cp.setSampler(s->samp_clamp, 3);
       cp.setBuffer(s->dust_depth_buf, 4);
-      cp.setTexture(s->scene_tex, 5, 1);
+      cp.setTexture(s->dust_tex, 5, 1);
       cp.setBuffer(s->ub_dust, 6);
       cp.dispatch(pgroups);
       cp.end();
@@ -1012,7 +1048,12 @@ void render(void* self, int vp_w, int vp_h) {
   }
 
   if (scene_path) {
-    CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, expo, black };
+    // t_far: where miss rays effectively stop integrating fog (haze
+    // hugs the body, so ~the camera-to-origin distance plus a couple of
+    // world units covers the dense span). Only steers the front/back
+    // apportioning of fog onto dust — coarse is fine.
+    CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, expo, black,
+                        dust_on ? 1.0f : 0.0f, cam_d + 2.0f, 0.f, 0.f };
     s->ub_comp.writeOne(cu);
     {
       auto cp = gpu::ComputePass::begin();
@@ -1023,6 +1064,9 @@ void render(void* self, int vp_w, int vp_h) {
       cp.setSampler(s->samp_clamp, 3);
       cp.setTexture(out, 4, 1);
       cp.setBuffer(s->ub_comp, 5);
+      cp.setTexture(dust_on ? s->dust_tex : s->zero_tex, 6, 0);
+      cp.setBuffer(dust_on ? s->dust_depth_buf : s->dust_stub_buf, 7);
+      cp.setBuffer(dust_on ? s->dust_cov_buf : s->dust_stub_buf, 8);
       cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
       cp.end();
     }
