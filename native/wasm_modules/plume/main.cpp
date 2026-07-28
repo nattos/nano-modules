@@ -67,12 +67,13 @@ struct MarchUniforms {
   float vp[4];         // w, h, 1/w, 1/h
   float shade_p[4];    // shadow, ao, ambient, rim
   float fine_p[4];     // R (base radius), px_world (per unit t), inv_lip, bounce
-  float misc[4];       // scene_mode, 0, 0, 0
+  float misc[4];       // scene_mode, band widen, crest gain, wrap amount
   float mat[4];        // reflect, roughness, transmission, thickness
   float misc2[4];      // wrap lit-gate, exposure gain, black level,
                        // shell texel width (world units)
+  float grade[4];      // srgb encode, 0, 0, 0
 };
-static_assert(sizeof(MarchUniforms) == 192, "MarchUniforms layout mismatch");
+static_assert(sizeof(MarchUniforms) == 208, "MarchUniforms layout mismatch");
 
 struct FogUniforms {
   float cam_row0[4];
@@ -89,7 +90,7 @@ static_assert(sizeof(FogUniforms) == 144, "FogUniforms layout mismatch");
 
 struct CompUniforms {
   float opacity, has_bg, exposure, black;
-  float dust_on, t_far, _p0, _p1;
+  float dust_on, t_far, srgb, _p1;
 };
 static_assert(sizeof(CompUniforms) == 32, "CompUniforms layout mismatch");
 
@@ -195,6 +196,7 @@ struct State {
   float opacity = 1.0f;
   float exposure = 0.5f;
   float black_lvl = 0.0f;
+  bool srgb = false;
   int debug_view = DBG_OFF;
   float debug_slice = 0.5f;
 
@@ -331,11 +333,18 @@ void module_init() {
           "Camera-style output grade. *Exposure* is gain ahead of the "
           "tonemapper (±2 stops) — highlights roll off instead of "
           "clipping. *Black Level* lifts the floor toward a hazy film "
-          "gray (right) or crushes the darks to true black (left).")
+          "gray (right) or crushes the darks to true black (left). "
+          "Plume shades in LINEAR light; by default the tonemapped "
+          "result is written raw into the display-referred chain — the "
+          "shipped look, tuned against that path. *sRGB Output* encodes "
+          "with the sRGB curve instead, for colour-managed comps: mids "
+          "lift noticeably, so expect to re-grade Exposure.")
       .floatField("exposure", 0.5f, 0.f, 1.f, state::PrimaryInput)
           .label("Exposure", "Expo")
       .floatField("black", 0.0f, -1.f, 1.f, state::PrimaryInput)
           .label("Black Level", "Black")
+      .boolField("srgb", false, state::SecondaryInput)
+          .label("sRGB Output", "sRGB")
       // --- Debug ---
       .group("debug", "Debug")
       .selectField("debug_view", DBG_OFF, state::SecondaryInput,
@@ -610,6 +619,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "opacity"))     s->opacity = state::patchFloat(i);
     else if (state::pathIs(p, l, "exposure"))    s->exposure = state::patchFloat(i);
     else if (state::pathIs(p, l, "black"))       s->black_lvl = state::patchFloat(i);
+    else if (state::pathIs(p, l, "srgb"))        s->srgb = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_view"))  s->debug_view = state::patchInt(i);
     else if (state::pathIs(p, l, "debug_slice")) s->debug_slice = state::patchFloat(i);
     // sdf_field_in scalar leaves (the wired provider's declaration).
@@ -922,6 +932,7 @@ void render(void* self, int vp_w, int vp_h) {
   // from the field's DECLARED shell_res (a provider's map may differ
   // from plume's own PLM_SHELL_RES).
   mu.misc2[3] = field.radius * 6.2832f / (2.0f * field.shell_res);
+  mu.grade[0] = s->srgb ? 1.0f : 0.0f;
   mu.mat[0] = s->reflect_k;
   mu.mat[1] = s->roughness;
   mu.mat[2] = s->transmission;
@@ -1066,7 +1077,8 @@ void render(void* self, int vp_w, int vp_h) {
     // world units covers the dense span). Only steers the front/back
     // apportioning of fog onto dust — coarse is fine.
     CompUniforms cu = { s->opacity, in.valid() ? 1.0f : 0.0f, expo, black,
-                        dust_on ? 1.0f : 0.0f, cam_d + 2.0f, 0.f, 0.f };
+                        dust_on ? 1.0f : 0.0f, cam_d + 2.0f,
+                        s->srgb ? 1.0f : 0.0f, 0.f };
     s->ub_comp.writeOne(cu);
     {
       auto cp = gpu::ComputePass::begin();

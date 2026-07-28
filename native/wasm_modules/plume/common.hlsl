@@ -31,4 +31,15 @@ float3 plm_voxel_to_world(int3 v) {
          * (2.0 * PLM_EXT0);
 }
 
+// Linear -> sRGB OETF (exact piecewise curve). The chain's rgba8 frames
+// are display-referred; plume grades in linear light and by default hands
+// that straight through — this is the optional bridge (the Render group's
+// sRGB Output knob), applied to plume's own color only, never the bg.
+float3 plm_srgb_encode(float3 c) {
+  c = max(c, 0.0);
+  return lerp(12.92 * c,
+              1.055 * pow(c, 1.0 / 2.4) - 0.055,
+              step(0.0031308, c));
+}
+
 #endif // PLUME_COMMON_HLSL

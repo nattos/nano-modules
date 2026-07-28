@@ -7,6 +7,7 @@
 // global opacity.
 
 #include "nano_hash.hlsl"
+#include "common.hlsl"
 
 Texture2D<float4>   sceneTex   : register(t0);
 Texture2D<float4>   fogTex     : register(t1);
@@ -24,7 +25,8 @@ cbuffer CompUniforms : register(b5) {
   float black;      // black level: >0 lift, <0 crush
   float dust_on;    // dust layer valid this frame
   float t_far;      // approx fog integration end on miss rays (see below)
-  float _p0, _p1;
+  float srgb;       // encode plume's color with the sRGB OETF
+  float _p1;
 };
 
 [numthreads(8, 8, 1)]
@@ -94,6 +96,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // reshapes the gradients.
   c = black >= 0.0 ? black + (1.0 - black) * c
                    : max((c + black) / (1.0 + black), 0.0);
+  // Optional sRGB encode — same placement contract as march.hlsl's direct
+  // path: after the grade, before the bg crossfade and the dither.
+  if (srgb > 0.5) c = plm_srgb_encode(c);
 
   float3 outc = lerp(bg.rgb, c, opacity);
   // Triangular-PDF output dither, ±1 LSB. The soft looks are built from

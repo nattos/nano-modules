@@ -37,6 +37,7 @@ cbuffer MarchUniforms : register(b5) {
   float4 mat;         // reflect, roughness, transmission, thickness
   float4 misc2;       // wrap lit-gate, exposure gain, black level,
                       // shell texel width (world units)
+  float4 grade;       // srgb encode, 0, 0, 0
 };
 
 bool plm_box(float3 ro, float3 rd, out float t0, out float t1) {
@@ -279,6 +280,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // reshapes the gradients. (The fog pipeline grades in composite.hlsl.)
   float b = misc2.z;
   c = b >= 0.0 ? b + (1.0 - b) * c : max((c + b) / (1.0 + b), 0.0);
+  // Optional sRGB encode — plume's color only, after the grade (the grade
+  // knobs keep their tuned linear-space feel), before the opacity fade
+  // (the bg is already display-referred; the crossfade happens in the
+  // chain's own space) and the dither (which must sit at the quantizer).
+  if (grade.x > 0.5) c = plm_srgb_encode(c);
   float w_op = albedo.w;
   // ±half-LSB output dither on the direct (fog-off) path — the fog
   // pipeline's composite.hlsl dithers its own final write; see there.
