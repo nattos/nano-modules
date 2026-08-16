@@ -29,6 +29,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_bass_sim)
 NANO_DECLARE_INSTANCE_EFFECT(triangulate)
 NANO_DECLARE_INSTANCE_EFFECT(plane_shear)
 NANO_DECLARE_INSTANCE_EFFECT(tri_shear)
+NANO_DECLARE_INSTANCE_EFFECT(recompose)
 NANO_DECLARE_INSTANCE_EFFECT(shape_burst)
 NANO_DECLARE_INSTANCE_EFFECT(pixel_ocean)
 NANO_DECLARE_INSTANCE_EFFECT(pixel_descent)
@@ -248,6 +249,17 @@ void nano_module_main() {
         "shear,rift,triangle,tri,three,plane,split,slice,warp,glitch,hough,seam",
         "la-play",
         NANO_INSTANCE_LIFECYCLE(tri_shear),
+    });
+
+    nano::registerEffect({
+        2,
+        "warp.recompose",
+        "Recompose",
+        "Rule-of-thirds compositional rebalancer. Analyzes the incoming frame on the GPU for where its visual weight actually sits — a saliency field blending edge detail, deviation from the frame's average brightness, and colour saturation — then measures how far that centre of mass sits from the nearest rule-of-thirds intersection, and how far the 3x3 mass distribution sits from an ideal layout. It slices the frame into the nine thirds cells and translates each one independently to push the composition toward balance: a shared correction that provably lands the centre of mass on the power point at full strength, plus a mass-weighted-mean-removed per-cell redistribution, so the Spread control changes the character without ever disturbing that guarantee. Correction is signed — 0 is an exact passthrough, 1 is fully balanced, negative deliberately un-balances — with a separate overshoot multiplier and an axis restrict. The analysis is stiff: held between updates and re-solved at a configurable rate (0 = frozen, manual Trigger only), with temporal smoothing on the solved offsets. Rift gaps, viewport-border reveals, and cell overlaps each have selectable fills/blends. The measured imbalance is published as three scalar modulation outputs.",
+        "warp",
+        "composition,rule-of-thirds,thirds,balance,rebalance,saliency,analysis,slice,grid,reframe,warp,modulation",
+        "la-th",
+        NANO_INSTANCE_LIFECYCLE(recompose),
     });
 
     nano::registerEffect({

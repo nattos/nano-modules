@@ -1232,6 +1232,19 @@ if(APPLE)
     catch_discover_tests(test_tri_shear)
   endif()
 
+  # End-to-end GPU render of warp.recompose (nano.wasm) on a real Metal backend.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    add_executable(test_recompose tests/test_recompose.cpp)
+    target_link_libraries(test_recompose PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_recompose PRIVATE
+      NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    target_compile_options(test_recompose PRIVATE -Wno-attributes)
+    catch_discover_tests(test_recompose)
+  endif()
+
   # End-to-end GPU render of warp.envelope (nano.wasm) on a real Metal backend.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
     add_executable(test_envelope_warp tests/test_envelope_warp.cpp)

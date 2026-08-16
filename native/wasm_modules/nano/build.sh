@@ -388,6 +388,19 @@ compile_shaders_compute_var_spv tri_shear render
 _emit_spv_header_var tri_shear accumulate solve render
 echo "  tri_shear shaders compiled (SPV: accumulate + solve + render)"
 
+# recompose — rule-of-thirds compositional rebalancer. Four passes sharing
+# common.hlsl:
+#   accumulate — coarse-grid global normalizers (mean luma, sd, gradient, chroma).
+#   weigh      — re-samples the grid → saliency centroid + the 9 cell masses.
+#   solve      — single-thread reduce → smoothed centroid, imbalance, 9 offsets.
+#   render     — per-pixel inverse map against the 9 translated thirds cells.
+compile_shaders_compute_var_spv recompose accumulate
+compile_shaders_compute_var_spv recompose weigh
+compile_shaders_compute_var_spv recompose solve
+compile_shaders_compute_var_spv recompose render
+_emit_spv_header_var recompose accumulate weigh solve render
+echo "  recompose shaders compiled (SPV: accumulate + weigh + solve + render)"
+
 # shape_burst — triggered expanding-ring generator. Two compute passes sharing
 # common.hlsl: `compute` rasterizes concentric circle/square/triangle rings over
 # a background (black / transparent / custom / input); `motion` writes the
@@ -545,6 +558,7 @@ wasm_build \
   ../triangulate/main.cpp \
   ../plane_shear/main.cpp \
   ../tri_shear/main.cpp \
+  ../recompose/main.cpp \
   ../shape_burst/main.cpp \
   ../peak_decay/main.cpp \
   ../pixel_ocean/main.cpp \
