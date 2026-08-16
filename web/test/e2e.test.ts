@@ -185,7 +185,9 @@ describe('NanoLooper Web Harness E2E', () => {
     const meta = await page.evaluate(() => (window as any).__host?.metadata);
     expect(meta).toBeDefined();
     expect(meta.id).toBe('control.nanolooper');
-    expect(meta.version).toBe('1.0.0');
+    // Source of truth: `state::init(id, {1, 2, 0}, schema)` in
+    // native/wasm_modules/nanolooper/main.cpp — bump both together.
+    expect(meta.version).toBe('1.2.0');
   });
 
   it('frame count increases over time', async () => {

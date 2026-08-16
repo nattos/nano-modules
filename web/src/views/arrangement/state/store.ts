@@ -2245,6 +2245,14 @@ export class ArrangementStore {
     else { this.activeRightTab = tab; this.sideCollapsed = false; }
     this.requestLayoutSave();
   }
+  /** Reveal a tab. Unlike `setRightTab` this never collapses — use it for
+   *  programmatic "show me the Workspace" jumps (folder drop / picker), where
+   *  the toggle would hide the panel exactly when the tab is already active. */
+  showRightTab(tab: RightTab) {
+    this.activeRightTab = tab;
+    this.sideCollapsed = false;
+    this.requestLayoutSave();
+  }
   setSideCollapsed(collapsed: boolean) {
     this.sideCollapsed = collapsed;
     this.requestLayoutSave();

@@ -168,15 +168,28 @@ describe('source.mesh.monolith E2E', () => {
   });
 
   it('fog scale decouples the haze from the backdrop', async () => {
-    // Gradient input (fog color sample varies spatially): zooming the
-    // sample must change the fogged body off-center; corners untouched.
+    // Gradient input, so the fog's scene sample varies spatially (bright at
+    // the left edge → dark at the right). Aligned, the haze carries that
+    // ramp straight through the body; zoomed, every body pixel samples
+    // nearer the gradient's CENTRE, so the ramp COLLAPSES — that flattening
+    // is the decoupling. Probe the ramp across the body rather than one
+    // pixel: fog fraction is thin near the top of the frame (the height ramp
+    // is thinnest there and depth haze hasn't built up), so a single upper
+    // pixel moves by ~2 — under the noise floor — while the ramp signal is
+    // a consistent ~7 across the whole lower body.
     const base = { ...STATIC, size: 1.0, fog: 1.0 };
     const aligned = await render('mono_fogscale_0', base, { gradientInput: true });
     const zoomed = await render('mono_fogscale_1',
       { ...base, fog_scale: 1.0 }, { gradientInput: true });
-    const pa = aligned.trace('out').pixelAt(40, 26);
-    const pz = zoomed.trace('out').pixelAt(40, 26);
-    expect(Math.abs(lum(pz) - lum(pa))).toBeGreaterThan(5);
+    // x = 36/58 sit well inside the slab (it spans x ≈ 31…64) at these rows.
+    const ramp = (r: any, y: number) =>
+      lum(r.trace('out').pixelAt(36, y)) - lum(r.trace('out').pixelAt(58, y));
+    for (const y of [50, 60, 74]) {
+      // The haze reads the backdrop 1:1 — bright left, dark right.
+      expect(ramp(aligned, y)).toBeGreaterThan(8);
+      // Zooming the sample flattens it toward the centre value.
+      expect(ramp(aligned, y) - ramp(zoomed, y)).toBeGreaterThan(4);
+    }
     // Uncovered pixels identical between the two runs.
     const ca = aligned.trace('out').pixelAt(3, 3);
     const cz = zoomed.trace('out').pixelAt(3, 3);

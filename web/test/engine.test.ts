@@ -57,7 +57,12 @@ describe('Engine Worker E2E', () => {
 
       const st = result.state.plugins.find((p: any) => p.id === 'debug.spinningtris');
       expect(st).toBeTruthy();
-      expect(st.key).toBe('debug.spinningtris@0');
+      // Bundle warmup claims `@0` as a SCHEMA-ONLY registration, so the live
+      // (rendering) host the bridge hands back is `@1`; `instantiateEffect`
+      // aliases `@0` onto it in `realModules` so instance-key lookups — like
+      // the `plugin_output` trace above — still resolve. The id-deduped plugin
+      // list reports the live key.
+      expect(st.key).toBe('debug.spinningtris@1');
       expect(st.params.length).toBe(2);
       const paramNames = st.params.map((p: any) => p.name).sort();
       expect(paramNames).toEqual(['speed', 'triangles']);

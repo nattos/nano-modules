@@ -346,7 +346,7 @@ export class ArrangementApp extends MobxLitElement {
     const dir = handles.find((h): h is PathsDirectoryHandle => h.kind === 'directory');
     if (dir) {
       await store.mountWorkspace(new DirectoryBackend(dir, dir.name || 'workspace'));
-      store.setRightTab('workspace');
+      store.showRightTab('workspace');
       return;
     }
 

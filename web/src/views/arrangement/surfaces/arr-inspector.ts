@@ -1387,7 +1387,7 @@ export class ArrInspector extends MobxLitElement {
   private async pickFolder() {
     try {
       await store.mountFolderViaPicker();
-      store.setRightTab('workspace');
+      store.showRightTab('workspace');
     } catch (err) {
       // AbortError = user cancelled the picker; anything else is worth a note.
       if ((err as Error)?.name !== 'AbortError') console.warn('[workspace] mount failed', err);

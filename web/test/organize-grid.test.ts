@@ -135,7 +135,10 @@ describe('instances tab thumbnail grid', () => {
           thumb,
         };
       });
-      const et = tab.shadowRoot.querySelector('.name-row editable-text');
+      // Scope to the SIDECHANNEL rename field (#sc-name) — the instance
+      // inspector renders its own '.name-row editable-text' (#inst-name),
+      // and an instance is selected by default.
+      const et = tab.shadowRoot.querySelector('.name-row editable-text#sc-name');
       return { cards, inputValue: et ? et.value : null };
     })()`) as Promise<{
       cards: Array<{ name: string; info: string; selected: boolean;

@@ -2,11 +2,12 @@
  * Main sketch monitor E2E (resolume shell, playground mode).
  *
  * The monitor's `edit_preview` trace is owned by edit-tab and registered for the
- * tab's whole lifetime, re-targeted reactively: it shows the selected
- * selectable's texture if it has one, otherwise the sketch's FINAL output. The
- * registration is never dropped on deselect — which is the regression this
- * guards: previously a selection-scoped monitor's unmount unregistered the
- * shared `edit_preview` id, so the monitor went blank/checkerboard on deselect.
+ * tab's whole lifetime, always pointed at the sketch's FINAL output — selecting
+ * a card no longer retargets it to that card's chain-output texture. The
+ * registration is never dropped on selection change or deselect — which is the
+ * regression this guards: previously a selection-scoped monitor's unmount
+ * unregistered the shared `edit_preview` id, so the monitor went
+ * blank/checkerboard on deselect.
  */
 const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
 
@@ -78,11 +79,13 @@ describe('main sketch monitor fallback', () => {
     expect(initial.target).toBe('sketch_output');
     expect(initial.nonBlank).toBe(true);
 
-    // Select an image effect → monitor follows it to that effect's output texture.
+    // Select an image effect. The monitor deliberately does NOT retarget to
+    // that card's chain-output texture (see sketch-app's `traceTarget`) — it
+    // stays on the sketch's final output, and must stay painted.
     await page.evaluate(`window.appController.select('effect/sk_mon/0/0')`);
     await new Promise(r => setTimeout(r, 1200));
     const selected = await probe();
-    expect(selected.target).toBe('chain_entry');
+    expect(selected.target).toBe('sketch_output');
     expect(selected.nonBlank).toBe(true);
 
     // Select the LFO (a texture-passthrough node with no image output) → the

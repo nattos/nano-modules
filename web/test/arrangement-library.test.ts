@@ -38,14 +38,16 @@ describe('Library paths + HandleRef', () => {
       const back = await (window as any).__handleRef.resolveFileRef(ref);
       const text = back ? await (await back.getFile()).text() : null;
 
-      // media-store round-trip
-      const key = await (window as any).__mediaStore.linkMedia(fh);
-      const rec = await (window as any).__mediaStore.resolveMedia(key);
-      const file = await (window as any).__mediaStore.openMedia(key);
+      // media-store round-trip. linkMedia returns {sourceKey, docRef} — the
+      // sourceKey is the IDB key, docRef the portable ref written into the doc.
+      const { sourceKey, docRef } = await (window as any).__mediaStore.linkMedia(fh);
+      const rec = await (window as any).__mediaStore.resolveMedia(sourceKey);
+      const file = await (window as any).__mediaStore.openMedia(sourceKey);
       return {
         refKind: ref.kind, refPath: ref.path,
         text,
         mediaRefKind: rec?.ref?.kind,
+        docRefPath: docRef?.path,
         fileText: file ? await file.text() : null,
       };
     });
@@ -53,6 +55,7 @@ describe('Library paths + HandleRef', () => {
     expect(r.refPath).toEqual(['media', 'clip.bin']);
     expect(r.text).toBe('hello-media');
     expect(r.mediaRefKind).toBe('lib');
+    expect(r.docRefPath).toEqual(['media', 'clip.bin']);
     expect(r.fileText).toBe('hello-media');
   }, 30000);
 
@@ -71,7 +74,7 @@ describe('Library paths + HandleRef', () => {
   it('adds a library path from a folder dropped on the Settings drop zone', async () => {
     const added = await page.evaluate(async () => {
       const store = (window as any).arrangementStore;
-      store.setRightTab('settings');
+      store.showRightTab('settings');
       await new Promise((r) => requestAnimationFrame(() => r(null)));
       const insp: any = document.querySelector('arrangement-app')!.shadowRoot!
         .querySelector('arr-inspector');

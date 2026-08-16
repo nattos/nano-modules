@@ -34,7 +34,7 @@ describe('Arrangement workspace', () => {
       await backend.write('scenes/verse', mod.deserializeComposition('{}'));
 
       await store.mountWorkspace(backend);
-      store.setRightTab('workspace');
+      store.showRightTab('workspace');
 
       const names = store.workspaceEntries.map((e: any) => e.name).sort();
       const dirs = store.workspaceEntries.map((e: any) => e.dir).sort();
@@ -73,13 +73,13 @@ describe('Arrangement workspace', () => {
     await page.evaluate(async () => {
       const store = (window as any).arrangementStore;
       const mod = (window as any).__workspaceBackend;
-      store.setRightTab('workspace');
+      store.showRightTab('workspace');
       const be = await mod.mountOpfs('react-' + Math.floor(performance.now()));
       await be.write('alpha', mod.deserializeComposition('{}'));
       await be.write('beta', mod.deserializeComposition('{}'));
       await store.mountWorkspace(be);
     });
-    // Files appear with NO extra setRightTab call → reactivity works.
+    // Files appear with NO extra showRightTab call → reactivity works.
     await page.waitForFunction(() => {
       const insp = document.querySelector('arrangement-app')?.shadowRoot
         ?.querySelector('arr-inspector')?.shadowRoot;
