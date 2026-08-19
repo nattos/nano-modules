@@ -25,6 +25,12 @@ export interface SketchUiState {
   scrollTop?: number;
   /** Last horizontal scroll offset of the columns editor, in px. */
   scrollLeft?: number;
+  /** Sidecar canvas zoom (1 = default, where the scroll link is exact). */
+  canvasZoom?: number;
+  /** Sidecar canvas vertical scroll, kept while it's unlinked from the list. */
+  canvasScrollTop?: number;
+  /** Whether the canvas scroll still follows the list (zooming unlinks it). */
+  canvasLinked?: boolean;
 }
 
 interface SketchUiStateRecord extends SketchUiState {

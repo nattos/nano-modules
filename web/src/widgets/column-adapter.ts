@@ -149,6 +149,12 @@ export interface ColumnController {
   beginInsertEffect(sketchId: string, colIdx: number, insertIdx: number, moduleType: string): { edit: EditHandle; instanceKey: string };
   updateInsertEffect(edit: EditHandle, sketchId: string, colIdx: number, insertIdx: number, instanceKey: string, newModuleType: string): void;
   cancelInsertEffect(edit: EditHandle): void;
+  /** Sidecar-canvas insertion (optional — only surfaces that HAVE a canvas
+   *  implement these; the placement is what makes the entry a canvas node). */
+  beginInsertCanvasEffect?(sketchId: string, pos: { x: number; y: number }, moduleType: string):
+    { edit: EditHandle; instanceKey: string; chainIdx: number };
+  updateInsertCanvasEffect?(edit: EditHandle, sketchId: string, instanceKey: string,
+                            pos: { x: number; y: number }, newModuleType: string): void;
   /** Move the effect at `from` so it lands at insertion index `to` (caps.reorder). */
   moveEffect?(sketchId: string, colIdx: number, from: number, to: number): void;
 

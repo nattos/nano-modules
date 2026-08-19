@@ -42,6 +42,18 @@ import './columns-view';
 import './column-group';
 import { ideColumnAdapter } from '../state/ide-column-adapter';
 import './taps-overlay';
+import { InspectorCache } from './inspector-cache';
+import { activeCanvasView } from './field-anchor-lookup';
+import type { SketchCanvasView } from '../views/canvas/sketch-canvas-view';
+
+/** The sidecar canvas under a viewport point, or null. */
+function canvasViewAtPoint(x: number, y: number): SketchCanvasView | null {
+  const view = activeCanvasView() as SketchCanvasView | null;
+  if (!view) return null;
+  const r = view.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom ? view : null;
+}
+import { publishScroll, subscribeScroll } from './scroll-link';
 import { editorRegistry } from '../editor-registry';
 import { isTypingInEditable, isFieldControlFocused } from '../utils/keyboard';
 import { handleCommonEditShortcut } from '../utils/common-edit-shortcuts';
@@ -60,7 +72,7 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   // Cached column-group elements by column index.
   private columnCache = new Map<number, HTMLElement>();
   // Cached inspector elements by instance key.
-  private inspectorCache = new Map<string, HTMLElement>();
+  private readonly inspectorCache = new InspectorCache();
 
   // The sketch the caches above were built for. Both caches hold per-sketch
   // elements (column-groups carry their sketchId; inspectors bind instance
@@ -79,6 +91,10 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   private dragSourceIdxs: number[] = [];
   private dragOp: PointerDragOp | null = null;
   private dragHoverTarget: { colIdx: number; insertIdx: number } | null = null;
+  /** Set while the drag hovers the sidecar canvas: the drop MOVES the card
+   *  onto it (keeping its instance_key, so its wires survive) instead of
+   *  reordering the linear list. Canvas coordinates, resolved on release. */
+  private dragCanvasDrop: { clientX: number; clientY: number } | null = null;
   // True while a card reorder is in flight — drives the floating compact
   // headers popup (see renderReorderPopup). Not observable; toggled with an
   // explicit requestUpdate() so the popup mounts/unmounts on drag start/end.
@@ -235,9 +251,25 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     .reorder-popup-marker.visible { display: block; }
   `;
 
+  /** Scroll position last written by the canvas link, held until its (async)
+   *  scroll event arrives so we don't echo it straight back. */
+  private echoScrollTop: number | null = null;
+  private unsubScroll: (() => void) | null = null;
+
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('keydown', this.handleGlobalKeyDown);
+    // Follow the sidecar canvas when it scrolls (the reverse direction lives in
+    // onColumnsScroll). Re-entrancy is broken by the applying flag on each side.
+    this.unsubScroll = subscribeScroll((source, top) => {
+      if (source !== 'canvas') return;
+      const cv = this.renderRoot.querySelector('columns-view') as ColumnsView | null;
+      if (!cv) return;
+      const off = cv.getScrollOffset();
+      if (Math.abs(off.top - top) < 0.5) return;
+      this.echoScrollTop = top;
+      cv.setScrollOffset(top, off.left);
+    });
   }
 
   disconnectedCallback() {
@@ -246,6 +278,8 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     // Abort any in-flight reorder so its window listeners + Escape handler don't
     // outlive the element (dispose → cancel → cleanupDrag).
     this.dragOp?.dispose();
+    this.unsubScroll?.();
+    this.unsubScroll = null;
     // Persist the final scroll position before the DOM goes away, then forget
     // the tracked sketch so a reconnect (element reused on tab toggle) restores
     // fresh rather than assuming the columns-view kept its offset.
@@ -276,10 +310,16 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
 
   /** Mirror the columns-view's scroll offset and debounce-persist it. */
   private onColumnsScroll = (e: Event) => {
+    const off = (e.currentTarget as ColumnsView).getScrollOffset();
+    // Publish even for our own restore writes — the sidecar canvas has to
+    // follow a restored position too, and re-entrancy is guarded on its side.
+    const isEcho = this.echoScrollTop !== null
+      && Math.abs(off.top - this.echoScrollTop) < 0.5;
+    this.echoScrollTop = null;
+    if (!isEcho) publishScroll('linear', off.top);
     // Our own restore writes scrollTop; ignore those so they don't save partial
     // offsets or cancel the restore retry.
     if (this.suppressScrollSave) return;
-    const off = (e.currentTarget as ColumnsView).getScrollOffset();
     this.lastScrollTop = off.top;
     this.lastScrollLeft = off.left;
     // A real user scroll ends any in-flight restore.
@@ -343,10 +383,6 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   }
 
   private clearSketchCaches() {
-    for (const [, el] of this.inspectorCache) {
-      const factory = editorRegistry.getInspectorFactory((el as any).moduleType ?? '');
-      factory?.destroy(el);
-    }
     this.inspectorCache.clear();
     this.columnCache.clear();
   }
@@ -668,27 +704,7 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   }
 
   getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null {
-    const inspectorFactory = editorRegistry.getInspectorFactory(moduleType);
-    if (!inspectorFactory) return null;
-
-    let el = this.inspectorCache.get(instanceKey);
-    // Recreate when the instance's module TYPE changed under the same key: the
-    // "add" flow inserts a default effect and then changes the type (reusing the
-    // instanceKey), so a cache keyed only on instanceKey would keep showing the
-    // old type's inspector until a reload.
-    if (el && (el as any).moduleType !== moduleType) {
-      editorRegistry.getInspectorFactory((el as any).moduleType ?? '')?.destroy(el);
-      this.inspectorCache.delete(instanceKey);
-      el = undefined;
-    }
-    if (!el) {
-      el = inspectorFactory.create(instanceKey, binding);
-      (el as any).moduleType = moduleType;
-      this.inspectorCache.set(instanceKey, el);
-    } else {
-      (el as any).binding = binding;
-    }
-    return el;
+    return this.inspectorCache.get(instanceKey, moduleType, binding);
   }
 
   // ========================================================================
@@ -704,6 +720,15 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     for (const [, el] of this.columnCache) (el as ColumnGroup).hideInsertMarker?.();
     this.hidePopupMarker();
     this.dragHoverTarget = null;
+    this.dragCanvasDrop = null;
+
+    // 0) Over the sidecar canvas? A single card dragged there MOVES to it.
+    //    Checked first: it's in the other panel, so it can't overlap the rest.
+    const canvas = canvasViewAtPoint(px, py);
+    if (canvas && this.dragSourceIdxs.length === 1) {
+      this.dragCanvasDrop = { clientX: px, clientY: py };
+      return;
+    }
 
     // 1) Over the floating compact-headers popup?
     const popup = this.renderRoot.querySelector('.reorder-popup') as HTMLElement | null;
@@ -787,6 +812,21 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   /** Commit the drop — splice the dragged module(s) to the hovered insert index
    *  as a contiguous block, then move the selection with them. */
   private commitDrop() {
+    // Dropped on the sidecar canvas: move the card there, at that point.
+    if (this.dragSketchId && this.dragCanvasDrop) {
+      const sketchId = this.dragSketchId;
+      const chainIdx = this.dragSourceIdx;
+      const { clientX, clientY } = this.dragCanvasDrop;
+      const view = canvasViewAtPoint(clientX, clientY);
+      this.cleanupDrag();
+      if (view) {
+        // Drop by the card's TOP-LEFT, offset so the card lands under the
+        // cursor rather than with its corner pinned to it.
+        const p = view.viewportToCanvas(clientX - 40, clientY - 10);
+        appController.moveEffectToCanvas(sketchId, chainIdx, p);
+      }
+      return;
+    }
     if (!this.dragSketchId || !this.dragHoverTarget) { this.cleanupDrag(); return; }
 
     const sketchId = this.dragSketchId;
@@ -806,17 +846,7 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     const clickedPosInBlock = Math.max(0, sourceIdxs.indexOf(clickedIdx));
     this.cleanupDrag();
 
-    appController.mutate(
-      sourceIdxs.length > 1 ? `Move ${sourceIdxs.length} effects` : 'Move effect',
-      draft => {
-        const sk = draft.sketches[sketchId];
-        if (!sk) return;
-        const chain = ensureChain(sk);
-        const removed = sourceIdxs.map(i => chain[i]).filter(Boolean);
-        // Splice out from highest index down so the lower indices stay valid.
-        for (let k = sourceIdxs.length - 1; k >= 0; k--) chain.splice(sourceIdxs[k], 1);
-        chain.splice(adjusted, 0, ...removed);
-      });
+    appController.moveEffects(sketchId, sourceIdxs, targetInsertIdx);
 
     // Selection follows the moved effects to their new positions.
     const newPaths = sourceIdxs.map((_, k) => effectPath(sketchId, colIdx, adjusted + k));
@@ -836,6 +866,7 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
     this.dragSourceIdxs = [];
     this.dragOp = null;
     this.dragHoverTarget = null;
+    this.dragCanvasDrop = null;
     // Tear down the floating popup.
     if (this.dragActive) {
       this.dragActive = false;

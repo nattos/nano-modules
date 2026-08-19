@@ -85,6 +85,8 @@ const controller: ColumnController = {
   updateInsertEffect: (e: EditHandle, s, c, idx, key, t) =>
     appController.updateInsertEffect(e as LongEdit, s, c, idx, key, t),
   cancelInsertEffect: (e: EditHandle) => appController.cancelInsertEffect(e as LongEdit),
+  beginInsertCanvasEffect: appController.beginInsertCanvasEffect.bind(appController),
+  updateInsertCanvasEffect: appController.updateInsertCanvasEffect.bind(appController),
 
   snapshotEffect: (s, k): EffectClipboard | null => appController.snapshotEffect(s, k),
   insertEffectFromClipboard: (s, c, idx, payload: EffectClipboard) =>

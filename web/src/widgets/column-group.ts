@@ -91,6 +91,34 @@ function shortName(id: string) { return id.split('.').pop() ?? id; }
 /** Default sidecar-canvas card width, when a placement doesn't pin one. */
 export const CANVAS_CARD_WIDTH = 264;
 
+/** A category chip was dropped on the sidecar canvas (see onDragUp). */
+export const CANVAS_CHIP_DROP = 'nano-canvas-chip-drop';
+
+/**
+ * Whether a viewport point lies over a mounted sidecar canvas. Found by walking
+ * shadow roots from the document — the canvas lives several roots deep (app →
+ * app-shell → right panel), and resolving it this way keeps this widget free of
+ * any view import, so it stays reusable outside the IDE.
+ */
+function pointOverSketchCanvas(x: number, y: number): boolean {
+  const find = (root: ParentNode, depth: number): Element | null => {
+    if (depth > 6) return null;
+    const hit = root.querySelector?.('sketch-canvas-view');
+    if (hit) return hit;
+    for (const el of root.querySelectorAll?.('*') ?? []) {
+      const sr = (el as HTMLElement).shadowRoot;
+      if (!sr) continue;
+      const found = find(sr, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  const view = find(document, 0);
+  if (!view) return false;
+  const r = view.getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
 /** Gap between a field's left edge and its canvas input pip. */
 const CANVAS_PIP_GAP = 13;
 
@@ -280,7 +308,12 @@ export class ColumnGroup extends MobxLitElement {
    * placeholder effect (vs. retyping an existing one). The whole insertion rides
    * `typeLongEdit` so it commits as one undo point and disappears on cancel.
    */
-  private insertCtx: { instanceKey: string; insertIdx: number; prefill?: string } | null = null;
+  private insertCtx: {
+    instanceKey: string; insertIdx: number; prefill?: string;
+    /** Set for a SIDECAR-CANVAS insertion: previews re-point the canvas recipe
+     *  (tail-append + placement) instead of the linear splice. */
+    canvasPos?: { x: number; y: number };
+  } | null = null;
   /**
    * Bumped every time a NEW type-edit session begins (retype or insert).
    * Terminal smart-input events (preview/commit/cancel/delete-request) close
@@ -1629,14 +1662,46 @@ export class ColumnGroup extends MobxLitElement {
     this.editingTypeChainIdx = -1;
   }
 
+  /** Re-point the in-flight insertion at `effectId` — canvas or linear. */
+  private updateInsertPreview(effectId: string) {
+    const ctx = this.insertCtx!;
+    if (ctx.canvasPos && this.ctl.updateInsertCanvasEffect) {
+      this.ctl.updateInsertCanvasEffect(
+        this.typeLongEdit!, this.sketchId, ctx.instanceKey, ctx.canvasPos, effectId);
+      return;
+    }
+    this.ctl.updateInsertEffect(
+      this.typeLongEdit!, this.sketchId, this.colIdx, ctx.insertIdx,
+      ctx.instanceKey, effectId);
+  }
+
+  /**
+   * Begin inserting a node on the sidecar canvas at `pos` — the canvas twin of
+   * `beginInsertAt`. Same continuous-edit contract: the placeholder previews
+   * live, Escape removes it with no history, accept lands one "Add <type>".
+   */
+  beginCanvasInsertAt(pos: { x: number; y: number }, category?: string) {
+    if (!this.ctl.beginInsertCanvasEffect) return;
+    this.finishPendingEdit();
+    const type = category ? this.categoryDefault(category) : this.newDefaultType();
+    const { edit, instanceKey, chainIdx } =
+      this.ctl.beginInsertCanvasEffect(this.sketchId, pos, type);
+    this.typeLongEdit = edit as any;
+    this.insertCtx = {
+      instanceKey, insertIdx: chainIdx,
+      prefill: category ? `${category}.` : '', canvasPos: pos };
+    this.editingTypeChainIdx = chainIdx;
+    this.editSession++;
+    this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${chainIdx}`);
+    this.requestUpdate();
+  }
+
   private handleTypePreview(chainIdx: number, session: number, effectId: string) {
     if (session !== this.editSession) return; // stale — a newer session has since begun
     if (this.insertCtx) {
       // Insertion: the long edit already exists (it added the placeholder) —
       // just re-point it at the previewed type.
-      this.ctl.updateInsertEffect(
-        this.typeLongEdit!, this.sketchId, this.colIdx, this.insertCtx.insertIdx,
-        this.insertCtx.instanceKey, effectId);
+      this.updateInsertPreview(effectId);
     } else if (!this.typeLongEdit) {
       this.typeLongEdit = this.ctl.beginChangeEffectType(
         this.sketchId, this.colIdx, chainIdx, effectId);
@@ -1650,9 +1715,7 @@ export class ColumnGroup extends MobxLitElement {
     if (session !== this.editSession) return;
     if (this.insertCtx) {
       // Commit the insertion at the chosen type → one "Add <type>" undo point.
-      this.ctl.updateInsertEffect(
-        this.typeLongEdit!, this.sketchId, this.colIdx, this.insertCtx.insertIdx,
-        this.insertCtx.instanceKey, effectId);
+      this.updateInsertPreview(effectId);
       this.typeLongEdit!.accept();
     } else if (this.typeLongEdit) {
       // Update to final value, then accept (creates single undo point)
@@ -2836,6 +2899,8 @@ export class ColumnGroup extends MobxLitElement {
     topLevel?: boolean;     // chip: insert from the top level (the "New" chip)
     startX: number; startY: number;
     active: boolean;        // crossed the move threshold
+    /** Chip dragged over the sidecar canvas: the drop inserts THERE. */
+    canvasDrop?: { clientX: number; clientY: number };
     targetIdx: number;      // current insertion index under the pointer
   } | null = null;
 
@@ -2876,12 +2941,16 @@ export class ColumnGroup extends MobxLitElement {
       if (d.kind === 'card') this.markDragging(d.from, true);
     }
     // Dragging a NEW effect (chip) out of the sketch column area cancels the
-    // insertion — clear the target and hide the marker so a drop does nothing.
+    // insertion — UNLESS it's over the sidecar canvas, which accepts the drop
+    // and places the node at that point instead.
     if (d.kind === 'chip' && !this.isPointerInSketchArea(e.clientX, e.clientY)) {
       d.targetIdx = -1;
+      d.canvasDrop = pointOverSketchCanvas(e.clientX, e.clientY)
+        ? { clientX: e.clientX, clientY: e.clientY } : undefined;
       this.hideInsertMarker();
       return;
     }
+    d.canvasDrop = undefined;
     const pts = this.getInsertionPoints();
     if (pts.length === 0) return;
     let best = pts[0];
@@ -2901,6 +2970,16 @@ export class ColumnGroup extends MobxLitElement {
     this.hideInsertMarker();
     if (d?.kind === 'card') this.markDragging(d.from, false);
     if (!d) return;
+    if (d.canvasDrop) {
+      // Hand off to whichever surface owns the canvas. A window event rather
+      // than a direct call so this widget stays free of view imports.
+      window.dispatchEvent(new CustomEvent(CANVAS_CHIP_DROP, { detail: {
+        sketchId: this.sketchId,
+        clientX: d.canvasDrop.clientX, clientY: d.canvasDrop.clientY,
+        category: d.topLevel ? undefined : d.category,
+      } }));
+      return;
+    }
     if (!d.active) {
       // A plain click (no drag): a chip inserts at the default point; a card
       // header just selects (already handled on pointerdown).

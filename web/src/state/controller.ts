@@ -508,6 +508,54 @@ export class AppController {
     return { edit, instanceKey };
   }
 
+  /**
+   * Recipe for inserting a new SIDECAR-CANVAS node. Appends at the chain tail
+   * (holding the partition invariant, so no linear chain index shifts) and
+   * stamps the placement that makes it a canvas entry.
+   */
+  private insertCanvasEffectRecipe(
+      sketchId: string, moduleType: string, instanceKey: string,
+      pos: { x: number; y: number }) {
+    return (draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      ensureChain(sk).push({
+        type: 'module',
+        module_type: moduleType,
+        instance_key: instanceKey,
+        canvas: { x: pos.x, y: pos.y },
+      });
+      sk.instances = sk.instances ?? {};
+      sk.instances[instanceKey] = {
+        module_type: moduleType,
+        state: this.initialStateForModule(moduleType),
+        version: this.versionForModule(moduleType),
+      };
+      this.reorderExec(draft, sketchId);
+    };
+  }
+
+  /** Begin inserting a canvas node as a continuous edit — the canvas twin of
+   *  `beginInsertEffect`, same accept/cancel semantics. */
+  beginInsertCanvasEffect(sketchId: string, pos: { x: number; y: number }, moduleType: string):
+      { edit: LongEdit; instanceKey: string; chainIdx: number } {
+    const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
+    const chainIdx = sketchChain(appState.database.sketches[sketchId] ?? {} as any).length;
+    const edit = this.history.beginLongEdit(
+      `Add ${shortName(moduleType)}`,
+      this.insertCanvasEffectRecipe(sketchId, moduleType, instanceKey, pos));
+    this.syncSketchesToEngine();
+    return { edit, instanceKey, chainIdx };
+  }
+
+  /** Update the previewed type of an in-progress CANVAS insertion (no undo point). */
+  updateInsertCanvasEffect(edit: LongEdit, sketchId: string, instanceKey: string,
+                           pos: { x: number; y: number }, newModuleType: string) {
+    edit._setDescription(`Add ${shortName(newModuleType)}`);
+    edit.update(this.insertCanvasEffectRecipe(sketchId, newModuleType, instanceKey, pos));
+    this.syncSketchesToEngine();
+  }
+
   /** Update the previewed type of an in-progress effect insertion (no undo point). */
   updateInsertEffect(edit: LongEdit, sketchId: string, _colIdx: number, insertIdx: number, instanceKey: string, newModuleType: string) {
     edit._setDescription(`Add ${shortName(newModuleType)}`);
@@ -1843,6 +1891,28 @@ export class AppController {
       chain.splice(Math.max(0, Math.min(insertIdx, linearCount)), 0, entry);
       this.reorderExec(draft, sketchId);
     });
+  }
+
+  /**
+   * Move chain entries to `insertIdx` as one contiguous block (drag-to-reorder).
+   * `insertIdx` is a gap index in the CURRENT chain; the landing position is
+   * adjusted for the entries removed above it. Returns where the block landed.
+   */
+  moveEffects(sketchId: string, sourceIdxs: number[], insertIdx: number): number {
+    const idxs = [...new Set(sourceIdxs)].sort((a, b) => a - b);
+    const countBefore = idxs.filter(i => i < insertIdx).length;
+    const adjusted = insertIdx - countBefore;
+    this.mutate(idxs.length > 1 ? `Move ${idxs.length} effects` : 'Move effect', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      const removed = idxs.map(i => chain[i]).filter(Boolean);
+      // Splice out from the highest index down so the lower ones stay valid.
+      for (let k = idxs.length - 1; k >= 0; k--) chain.splice(idxs[k], 1);
+      chain.splice(adjusted, 0, ...removed);
+      this.reorderExec(draft, sketchId);
+    });
+    return adjusted;
   }
 
   /** Move a canvas card to a new position (long-edit trio for live drags). */

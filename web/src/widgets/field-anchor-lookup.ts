@@ -55,6 +55,17 @@ export function activeEditorColumnsRoot(): ShadowRoot | null {
   return cv?.shadowRoot ?? null;
 }
 
+/** The sidecar canvas element for the active surface (it lives in the shell's
+ *  right panel, so a plain document query can't reach it). */
+export function activeCanvasView(): HTMLElement | null {
+  return (activeShell()?.querySelector('sketch-canvas-view') as HTMLElement | null) ?? null;
+}
+
+/** The active surface's linear column-group (the effects list). */
+export function activeLinearColumnGroup(): HTMLElement | null {
+  return (activeEditorColumnsRoot()?.querySelector('column-group') as HTMLElement | null) ?? null;
+}
+
 function activeShell(): ShadowRoot | null | undefined {
   const app = document.querySelector('sketch-app') ?? document.querySelector('effect-ide-app');
   return app?.shadowRoot?.querySelector('app-shell')?.shadowRoot;
