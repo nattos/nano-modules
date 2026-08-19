@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nano Repatch is a node-based visual programming environment for real-time audio/graphics synthesis, built as a web app. The core engine is called **Structor** — a statically analyzable execution graph system with universal broadcast semantics.
+Nano Repatch is a live visual-synthesis environment. A **sketch** is a chain of wasm **effects**
+with **wires** modulating their parameters; one shared C++ executor runs it on Metal (the Resolume
+barrel/FFGL plugin) and on WebGPU (the web app), from the same document. The web app is the editor —
+a linear effects list, an arrangement timeline, and a freeform sidecar canvas beside the list.
 
 ## Commands
 
@@ -37,42 +40,59 @@ Effect shaders compile with **DXC** (`dxc` must be on PATH).
 
 ## Architecture
 
-### Multi-threaded Design
+### Threading
 
-The app runs across four threads communicating via `postMessage`:
+- **Main thread**: UI (Lit web components + MobX reactivity via `MobxLitElement`) and document
+  state (`state/controller.ts`'s `AppController`, `state/app-state.ts`'s `appState`).
+- **Engine worker** (`engine-worker.ts`): owns `executor.wasm` through `executor-host.ts` and runs
+  the render loop. The main thread talks to it via `engine-proxy.ts`; per-frame results come back on
+  diff channels (`pluginStatesDiff`, `modulationDataDiff`, traced frames).
 
-- **Main thread**: UI (Lit web components + MobX reactivity), state management (`AppController`, `LocalController`)
-- **CompilerWorker**: Compiles UI graph state into executable `GraphDefinition`
-- **ExecutorWorker**: Runs `GraphExecutor` loop with dirty-tracking
-- **Wire Layout Worker**: Calculates wire routing paths
+MobX proxies cannot cross `postMessage` — sanitize with `JSON.parse(JSON.stringify(toJS(data)))`
+before sending.
 
-### Worker Isolation Rules
+### State architecture
 
-Node definitions split logic from UI to avoid circular imports in worker bundles:
-- `nodes.ts` — Pure logic, shared with workers. No DOM/Lit/window imports.
-- `ui-registration.ts` — Registers UI editors/renderers to node definitions. Only imported from `controllers.ts` (main thread).
+`appState` splits into `database` (the persisted document: `sketches`, each a
+`{chain, wires, instances}` per `sketch-types.ts`) and `local` (UI-only: selection, mode flags,
+engine telemetry, `userSettings`).
 
-### Serialization Boundary
+All document edits go through `AppController.mutate(description, recipe)` — immer + a history
+manager. Long-running gestures (slider drags, insert-then-pick-a-type) use `beginLongEdit`, which
+previews live and lands as ONE undo point, or `cancel()`s leaving no history. Derived document
+state is refreshed EXPLICITLY at the end of each recipe (see `reorderExec`), never from a reaction:
+MobX reactions are for UI only.
 
-MobX proxies cannot cross `postMessage`. Always sanitize with `JSON.parse(JSON.stringify(toJS(data)))` before sending to workers.
+### Editor UI stack
 
-### Core Data Model
+`sketch-app` / `effect-ide-app` → `app-shell` (tab rail + left panel + splitter + right panel) →
+`sketch-column-editor` → `columns-view` (scroll container) → `column-group` (effect cards, field
+widgets, inspectors, ports). `taps-overlay` draws wires as SVG arcs over it, resolving endpoints
+per rAF from DOM rects (`field-anchor-lookup.ts`, `field-layout-manager.ts`).
 
-- **Structor**: Runtime data unit (atomic value, array, record, or functor)
-- **StructorType**: Static type counterpart for compile-time analysis
-- **Broadcast**: Universal operation for declarative data reshaping — nodes write scalar logic, the broadcast engine handles vectorization
-- **Grab Bag Inputs**: Each node receives a single `StructorRecord` with all connected inputs (named `fields` + ordered `untagged`)
+A tab may set `renderRight` to take over the right panel while keeping the left editor mounted —
+that is how the Devices tab and the sidecar canvas both work, and it is what lets wires be dragged
+between the two panels. When something takes the monitor area, the output pops out to
+`devices-float-monitor`.
 
-### State Architecture
+### Sidecar canvas
 
-- **AppController**: Graph state (nodes, connections), undo/redo (immer + command pattern), serialization
-- **LocalController**: UI state (selection, viewport, metrics)
-- **RuntimeManager**: Orchestrates workers and execution
-- **TUIConfig vs TCompiledConfig**: Inspector-editable state vs processed runtime state. Always use `<TUIConfig, TCompiledConfig>` generics in `defineNode`.
+A freeform node surface beside the linear effects list. It is a PARTITION of the same `chain`, not
+a second array: an entry carrying a `canvas: {x,y}` placement is a canvas node, and those are kept
+at the chain TAIL so canvas editing never shifts a linear chain index (monitor trace ids
+`ce:<col>/<idx>` and implicit rail ids bake them in). It renders through a second `<column-group>`
+in `layoutMode="canvas"`.
 
-### "Hero Node" Side-Channel
+Execution order is computed by the UI (`state/exec-order.ts`, a topo-sort over the wires with
+linear adjacency as a hard constraint) and stored as `Sketch.execOrder`; the executor only repairs
+and replays it (`sketch_canvas::resolveExecOrder`, lock-step with `repairExecOrder`, pinned by
+`web/test/fixtures/exec-order-cases.json`). The key omits itself whenever it equals chain order, so
+canvas-free sketches serialize unchanged. Wire causality — `delayed` — is read from position in
+THAT order, not from chain position.
 
-High-frequency visualization data (FFT, envelopes) bypasses MobX via a `ui` output property. Editor components poll `runtimeManager.uiStates.get(nodeId)` via `requestAnimationFrame`.
+A canvas stage never touches the linear image chain: it reads its own wired texture input (falling
+back to the sketch input) and never advances the column's texture cursor. See `canvasStageInput` /
+`publishStage` in `sketch_executor.cpp`, and `native/src/sketch/sketch_canvas.h`.
 
 ### Native barrel + WASM effect bundles
 
@@ -115,9 +135,10 @@ Key rules:
 
 ### Wire modulation + telemetry
 
-Wires modulate a scalar input from a producer output. The whole transform pipeline lives in ONE
-lock-step file `native/src/sketch/tap_mod.h` ↔ `web/src/tap-mod.ts` — keep them byte-identical
-(shared goldens: `test_tap_mod.cpp` + `tap-mod.test.ts`). Pipeline per wire: `applyTapMod` (remap
+Wires modulate a scalar input from a producer output. The whole transform pipeline lives in
+`native/src/sketch/tap_mod.h`, which the web side reaches through `executor.wasm` — there is no TS
+twin (the former `web/src/tap-mod.ts` was deleted; goldens are `test_tap_mod.cpp` plus the
+behavioural web tests `mod-remap`/`mod-motion`). Pipeline per wire: `applyTapMod` (remap
 curves, then `scale` applied **last** — in modulation space) → `applyMagnitude`/`combineTap` (fold
 into the dest field's `[min,max]` per the combine mode + signed/unsigned `magnitude`). An output's
 declared `floatField` min/max **is** its modulation-range contract (per-effect param changes like LFO
@@ -129,31 +150,38 @@ To surface modulation in the UI, the executor records per modulated input `{valu
 `pluginStatesDiff`) to `appState.local.engine.modulationData`; sliders read it via
 `FieldBinding.getModulation()` and draw a band + neutral-anchored fill.
 
-## Node Development
+## Effect development
 
-Nodes are defined with `defineNode`/`definePrimitiveNode` from `src/structor/type-helpers.ts`:
+A sketch is a chain of wasm EFFECTS, not a graph of TS nodes. Effects live in
+`native/wasm_modules/<name>/`, declare their parameters through `state::Schema` (which is what the
+editor renders and what the executor's port/channel selection reads), and are built per bundle.
+Schema conventions that the host depends on:
 
-- `execute` must return a record matching `outputs` (e.g., `{ result: 5 }`)
-- With `autoBroadcast: true`, `execute` receives scalars — the system iterates over vectors automatically
-- Config schemas use spread syntax (`{ ...numberType, defaultValue: 60 }`), NOT `{ type: numberType }`
-- Define inputs with `defaultValue` for virtual inputs — don't duplicate in both `inputs` and `config`
-- Register nodes in `ALL_PRIMITIVES` in `src/structor/primitives.ts`
-- Stateful nodes: use `createState` + `initialized` flag to avoid ghost triggers on first frame
+- `io` bits: 1 = input, 2 = output, 4 = primary. A `texture` field with `io & 2` is what makes an
+  effect an image producer (`RegisteredModule::hasTextureOutput`); without one it ticks and
+  publishes scalars but renders nothing and passes the image through.
+- A float field carrying `magnitude` is a MODULATION CHANNEL; the `io & 4` one is primary. That
+  marker drives both the executor's modulation auto-connect and the editor's port picking
+  (`web/src/state/schema-channels.ts` — keep the two in lock-step).
 
 ## Testing
 
 - **Vitest** unit tests: co-located as `*.test.ts` in `web/src/`. Config in `web/vite.config.ts`.
 - **Jest+Puppeteer** E2E tests: in `web/test/`. Do not mix Jest/Vitest syntax. GPU e2e point at a running dev server via `GPU_TEST_BASE_URL`.
 - **Catch2** native tests: `native/tests/` (e.g. `test_effect_render.cpp` drives effects through `SketchExecutor` and asserts pixels); run via `ctest --test-dir build`.
-- E2E tests use `window.testing.appController` for programmatic state setup. Use `page.evaluate()` for shadow DOM traversal.
-- Virtual inputs in tests: `executor.setNodeConfig(id, { values: { trigger: ... } })` — use the `values` sub-key.
+- E2E tests set up state through `window.appController` / `window.appState` in `page.evaluate()`;
+  walk shadow roots to reach anything in the editor. NEVER `import('/src/...')` in a page probe —
+  Vite serves a second module instance and you get a different singleton.
+- The app picks its surface AT BOOT from the persisted `appMode`; `?playground` / `?barrel` are the
+  only ways to force one. Setting `appMode` at runtime does not remount.
 - Environment mocks (Canvas, MIDI, AudioContext, Monaco) configured in `src/vitest.setup.ts`.
 
 ## Key Pitfalls
 
-- `GraphExecutor.setNodeConfig` does shallow merge of top-level keys — never replace the entire config object with a partial update
-- Moving a region must recursively move/push all children and their contents
-- Collapsed region detection requires checking `MetricsProvider` (visibility can be `'auto'`)
+- Anything that reads an append index or a "last card" index for the LINEAR list must use
+  `linearChainLength()`, never `sketchChain(...).length` — the tail of the chain is the canvas.
+- A programmatic scroll write echoes back as a scroll EVENT one frame later, so an "applying" flag
+  set and cleared around the assignment never suppresses it; remember the value written instead.
 - AudioContext state must be mirrored from main thread to worker via explicit messages — don't trust worker's view
 - Nodes with dynamic ports need `shouldRecompileOnConfigChange` returning `true` to trigger topology updates
 - Feedback loops use `cycleBreakingPorts` + two-phase execution (`execute` then `consolidate`)

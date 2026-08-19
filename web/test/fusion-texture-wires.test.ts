@@ -175,4 +175,70 @@ describe('Texture wires × fusion × enable (E2E)', () => {
     expect(result.success).toBe(true);
     result.trace('out').expectPixelAt(32, 32, { r: 255, g: 0, b: 0 }, 6);
   });
+
+  it('routes the image through a SIDECAR-CANVAS node and back', async () => {
+    // Same computation as red → invert → invert (= red), except the first
+    // invert lives on the canvas and is reached only by texture wires. The
+    // merged execution order interleaves it between the two linear entries.
+    // If a canvas stage took the linear texture cursor instead of its wired
+    // input — or published back onto it — this would not come out red.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'red@0',
+          params: { color: [1.0, 0.0, 0.0] } },
+        { type: 'module', module_type: 'color.invert', instance_key: 'inv@1', params: {} },
+        { type: 'module', module_type: 'color.invert', instance_key: 'cv@0', params: {},
+          canvas: { x: 40, y: 40 } },
+      ],
+      wires: [
+        { id: 'w0', src: { instanceKey: 'red@0', field: 'tex_out' },
+          dest: { instanceKey: 'cv@0', field: 'tex_in' } },
+        { id: 'w1', src: { instanceKey: 'cv@0', field: 'tex_out' },
+          dest: { instanceKey: 'inv@1', field: 'tex_in' } },
+      ],
+      execOrder: ['red@0', 'cv@0', 'inv@1'],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      commands: [{ type: 'createSketch', sketchId: 'ftw_canvas', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'ftw_canvas' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'ftw_canvas_branch',
+    });
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 255, g: 0, b: 0 }, 6);
+  });
+
+  it('leaves the image untouched by an UNWIRED canvas node', async () => {
+    // The cursor-isolation contract: a canvas node renders (its input is the
+    // sketch input) but is off the image chain, so the output is exactly what
+    // the linear list produced — red, not the canvas node's inverted frame.
+    const sketch: Sketch = {
+      anchor: null,
+      chain: [
+        { type: 'module', module_type: 'source.solid_color', instance_key: 'red@0',
+          params: { color: [1.0, 0.0, 0.0] } },
+        { type: 'module', module_type: 'color.invert', instance_key: 'cv@0', params: {},
+          canvas: { x: 10, y: 10 } },
+      ],
+      // Ordered LAST, where a stage that published to the cursor would win.
+      execOrder: ['red@0', 'cv@0'],
+    } as Sketch;
+
+    const result = await runEngineTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      commands: [{ type: 'createSketch', sketchId: 'ftw_iso', sketch }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'ftw_iso' } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: 'ftw_canvas_isolated',
+    });
+    expect(result.success).toBe(true);
+    result.trace('out').expectPixelAt(32, 32, { r: 255, g: 0, b: 0 }, 6);
+  });
 });
