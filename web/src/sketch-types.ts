@@ -31,6 +31,24 @@ export interface Sketch {
    * tap-mod math). Texture/struct wires carry only the connection.
    */
   wires?: Wire[];
+  /**
+   * Merged execution order as a list of `instance_key`s — the UI-computed
+   * topological sort over `chain` + `wires` that the executor uses INSTEAD of
+   * plain chain order. The linear partition's relative order is a hard
+   * constraint; sidecar-canvas entries (`ModuleEntry.canvas`) interleave into it
+   * wherever their wires demand, so a canvas node can feed a linear effect
+   * same-frame and vice versa.
+   *
+   * OMITTED whenever it would equal plain chain order — which is always true for
+   * a sketch with no canvas entries, so existing sketches serialize unchanged
+   * and the executor's fast path is untouched. A stale or partial list is
+   * repaired (not trusted) by `repairExecOrder`, whose rule the native side
+   * mirrors in `sketch_canvas::resolveExecOrder`.
+   *
+   * Causality (`Sketch.wires`) is derived from position in THIS order, not from
+   * chain order.
+   */
+  execOrder?: string[];
   /** Per-instance state, keyed by instance_key. Canonical source of truth for all field values. */
   instances?: Record<string, InstanceState>;
   /**
@@ -209,6 +227,25 @@ export interface ModuleEntry {
   params?: Record<string, number>;
   /** Engine-level per-parameter options (smoothing, …), keyed by field path. */
   fieldOptions?: Record<string, FieldOptions>;
+  /**
+   * Sidecar-canvas placement. The PRESENCE of this key is what makes an entry a
+   * canvas node rather than a member of the linear effect list — the canvas is a
+   * partition of the same `chain`, not a second array. Canvas entries are kept
+   * at the TAIL of `chain` (see `normalizeSketchChains`) so adding or removing
+   * one never shifts a linear entry's chain index — which matters because chain
+   * indices are baked into monitor trace ids (`ce:<col>/<idx>`) and the
+   * augmenter's implicit rail ids (`__implicit__/<col>/<idx>/<field>`).
+   * Absent on every linear entry, so untouched sketches serialize unchanged.
+   */
+  canvas?: CanvasPlacement;
+}
+
+/** Where a sidecar-canvas node sits on the canvas, in unzoomed canvas px. */
+export interface CanvasPlacement {
+  x: number;
+  y: number;
+  /** Card width; absent = the canvas default. */
+  w?: number;
 }
 
 /**
@@ -254,7 +291,26 @@ function legacyColumnsChain(sketch: Sketch): ChainEntry[] {
  * NanoBarrel snapshot, fixture creation.
  */
 export function normalizeSketchChains(sketch: Sketch): Sketch {
-  const chain = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
+  const modules = sketchChain(sketch).filter(e => e && (e as any).type === 'module') as ChainEntry[];
+  // Sidecar-canvas partition. First sanitize each entry's placement — a
+  // malformed `canvas` DEMOTES the entry to linear rather than being kept as a
+  // half-valid canvas node, so the failure is visible instead of silent. Then
+  // STABLE-partition: linear entries first, canvas entries at the tail. That
+  // invariant is what keeps linear chain indices immune to canvas editing
+  // (monitor trace ids and implicit rail ids bake them in), and re-applying it
+  // on every ingest self-heals any document that violates it. Entries are
+  // reused by identity when nothing changed, so clean sketches stay untouched.
+  const sanitized = modules.map(e => {
+    if (!('canvas' in (e as any))) return e;
+    const raw = (e as any).canvas;
+    const clean = sanitizeCanvasPlacement(raw);
+    if (clean) return clean === raw ? e : { ...e, canvas: clean };
+    const { canvas: _drop, ...bare } = e as any;
+    return bare as ChainEntry;
+  });
+  const chain = sanitized.some(isCanvasEntry)
+    ? [...sanitized.filter(e => !isCanvasEntry(e)), ...sanitized.filter(isCanvasEntry)]
+    : sanitized;
   const { columns, ...rest } = sketch as any;   // drop any legacy columns blob
   const result = { ...rest, chain } as Sketch;
   // Scrub any malformed output-format numbers a prior session may have persisted
@@ -281,6 +337,13 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
         return { ...w, id: nid };
       });
   }
+  // Repair (never trust) the stored execution order, and DELETE it when it
+  // equals plain chain order — which is always the case for a sketch with no
+  // canvas entries, so untouched sketches serialize byte-identically and the
+  // executor keeps its plain-chain-order fast path.
+  const order = repairExecOrder(chain, (result as any).execOrder);
+  if (execOrderIsChainOrder(chain, order)) delete result.execOrder;
+  else result.execOrder = order;
   return result;
 }
 
@@ -308,6 +371,97 @@ export function ensureChain(sketch: Sketch): ChainEntry[] {
 /** Read the chain entry at `chainIdx`, tolerating an undefined sketch. */
 export function chainEntryAt(sketch: Sketch | undefined, chainIdx: number): ChainEntry | undefined {
   return sketch ? sketchChain(sketch)[chainIdx] : undefined;
+}
+
+// --- Sidecar canvas partition ---
+//
+// The canvas is a PARTITION of the single `chain`, not a second array: an entry
+// with a `canvas` placement is a canvas node, everything else is part of the
+// linear effect list. `normalizeSketchChains` keeps canvas entries at the tail,
+// so a `chainIdx` remains a stable global address for both surfaces — which is
+// what lets the field/selection/trace key formats stay untouched.
+
+/** Whether a chain entry lives on the sidecar canvas (vs the linear list). */
+export function isCanvasEntry(entry: ChainEntry | undefined): boolean {
+  return !!entry && !!(entry as ModuleEntry).canvas;
+}
+
+/**
+ * Coerce a possibly-malformed canvas placement into safe, persistable values.
+ * Non-finite numbers (NaN/±Infinity) serialize to JSON `null`, so a placement
+ * that round-tripped through a bad edit must not reach the renderer. Returns
+ * the SAME object when it is already clean, so normalization preserves identity
+ * (and therefore byte-identical serialization) for untouched entries.
+ * `undefined` means "not a usable placement" — the caller demotes the entry to
+ * the linear list rather than keeping a half-valid canvas node.
+ */
+export function sanitizeCanvasPlacement(v: unknown): CanvasPlacement | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const c = v as CanvasPlacement;
+  if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) return undefined;
+  const wOk = c.w === undefined || (Number.isFinite(c.w) && (c.w as number) > 0);
+  if (wOk) return c;
+  return { x: c.x, y: c.y };
+}
+
+/** The linear effect list — the sketch's pixel path, in chain order. */
+export function linearChain(sketch: Sketch): ChainEntry[] {
+  return sketchChain(sketch).filter(e => !isCanvasEntry(e));
+}
+
+/** The sidecar-canvas nodes, in chain order. */
+export function canvasChain(sketch: Sketch): ChainEntry[] {
+  return sketchChain(sketch).filter(isCanvasEntry);
+}
+
+/**
+ * How many entries the LINEAR list holds. Use this — never
+ * `sketchChain(sketch).length` — anywhere an append index or a last-card index
+ * is meant to address the linear list, or the arithmetic silently lands on a
+ * canvas entry.
+ */
+export function linearChainLength(sketch: Sketch): number {
+  let n = 0;
+  for (const e of sketchChain(sketch)) if (!isCanvasEntry(e)) n++;
+  return n;
+}
+
+/**
+ * Repair a stored {@link Sketch.execOrder} against the actual chain: keep the
+ * stored keys that still exist, in stored order, dropping duplicates; then
+ * append every chain entry the list didn't mention, in chain order.
+ *
+ * Total and deterministic — a stale, partial or foreign order degrades
+ * gracefully instead of mis-ordering. This is the ONE rule duplicated across the
+ * TS/C++ boundary: the native twin is `sketch_canvas::resolveExecOrder` in
+ * native/src/sketch/sketch_canvas.h, pinned by the shared fixture
+ * web/test/fixtures/exec-order-cases.json. Keep the two in lock-step.
+ */
+export function repairExecOrder(chain: ChainEntry[], stored: unknown): string[] {
+  const present = new Set<string>();
+  for (const e of chain) present.add(e.instance_key);
+  const out: string[] = [];
+  const taken = new Set<string>();
+  if (Array.isArray(stored)) {
+    for (const k of stored) {
+      if (typeof k !== 'string' || !present.has(k) || taken.has(k)) continue;
+      taken.add(k);
+      out.push(k);
+    }
+  }
+  for (const e of chain) {
+    if (taken.has(e.instance_key)) continue;
+    taken.add(e.instance_key);
+    out.push(e.instance_key);
+  }
+  return out;
+}
+
+/** Whether `order` is just plain chain order (in which case it isn't stored). */
+export function execOrderIsChainOrder(chain: ChainEntry[], order: readonly string[]): boolean {
+  if (order.length !== chain.length) return false;
+  for (let i = 0; i < chain.length; i++) if (order[i] !== chain[i].instance_key) return false;
+  return true;
 }
 
 // --- UI-only per-instance state ---

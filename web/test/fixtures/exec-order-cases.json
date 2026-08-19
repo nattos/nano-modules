@@ -1,0 +1,154 @@
+{
+  "_comment": [
+    "Shared goldens for the merged execution order + wire causality.",
+    "Read by web/src/state/exec-order.test.ts (vitest) AND",
+    "native/tests/test_exec_order.cpp (Catch2), so the one rule duplicated across",
+    "the TS/C++ boundary — repairExecOrder / sketch_canvas::resolveExecOrder — can",
+    "never drift. Entries marked canvas:true carry a ModuleEntry.canvas placement.",
+    "expectedOrder is the UI topo-sort result; expectedDelayed lists the wire ids",
+    "that read LAST frame's value under that order (pos(src) >= pos(dest))."
+  ],
+  "cases": [
+    {
+      "name": "plain linear chain — order is chain order, execOrder omitted",
+      "chain": [
+        { "key": "a", "canvas": false },
+        { "key": "b", "canvas": false },
+        { "key": "c", "canvas": false }
+      ],
+      "wires": [{ "id": "w1", "src": "a", "dest": "b" }],
+      "expectedOrder": ["a", "b", "c"],
+      "expectedDelayed": [],
+      "expectOmitted": true
+    },
+    {
+      "name": "canvas node feeding an early linear effect is hoisted above it",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "l1", "canvas": false },
+        { "key": "cv", "canvas": true }
+      ],
+      "wires": [{ "id": "w1", "src": "cv", "dest": "l0" }],
+      "expectedOrder": ["cv", "l0", "l1"],
+      "expectedDelayed": [],
+      "expectOmitted": false
+    },
+    {
+      "name": "canvas node reading a late linear effect sinks below it",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "l1", "canvas": false },
+        { "key": "cv", "canvas": true }
+      ],
+      "wires": [{ "id": "w1", "src": "l1", "dest": "cv" }],
+      "expectedOrder": ["l0", "l1", "cv"],
+      "expectedDelayed": [],
+      "expectOmitted": true
+    },
+    {
+      "name": "canvas node between two linear effects — interleaved in one order",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "l1", "canvas": false },
+        { "key": "cv", "canvas": true }
+      ],
+      "wires": [
+        { "id": "w1", "src": "l0", "dest": "cv" },
+        { "id": "w2", "src": "cv", "dest": "l1" }
+      ],
+      "expectedOrder": ["l0", "cv", "l1"],
+      "expectedDelayed": [],
+      "expectOmitted": false
+    },
+    {
+      "name": "backwards wire between two LINEAR effects — hard order wins, wire delays",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "l1", "canvas": false }
+      ],
+      "wires": [{ "id": "w1", "src": "l1", "dest": "l0" }],
+      "expectedOrder": ["l0", "l1"],
+      "expectedDelayed": ["w1"],
+      "expectOmitted": true
+    },
+    {
+      "name": "canvas feedback cycle breaks deterministically at the lower-ranked node",
+      "chain": [
+        { "key": "p", "canvas": true },
+        { "key": "q", "canvas": true }
+      ],
+      "wires": [
+        { "id": "w1", "src": "p", "dest": "q" },
+        { "id": "w2", "src": "q", "dest": "p" }
+      ],
+      "expectedOrder": ["p", "q"],
+      "expectedDelayed": ["w2"],
+      "expectOmitted": true
+    },
+    {
+      "name": "self-wire is inherently delayed and imposes no order",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "cv", "canvas": true }
+      ],
+      "wires": [{ "id": "w1", "src": "cv", "dest": "cv" }],
+      "expectedOrder": ["l0", "cv"],
+      "expectedDelayed": ["w1"],
+      "expectOmitted": true
+    },
+    {
+      "name": "external midi source imposes no ordering constraint",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "cv", "canvas": true }
+      ],
+      "wires": [{ "id": "w1", "src": "midi:dev/1", "dest": "cv" }],
+      "expectedOrder": ["l0", "cv"],
+      "expectedDelayed": [],
+      "expectOmitted": true
+    },
+    {
+      "name": "canvas chain of three resolves through its wires, not its chain order",
+      "chain": [
+        { "key": "l0", "canvas": false },
+        { "key": "x", "canvas": true },
+        { "key": "y", "canvas": true },
+        { "key": "z", "canvas": true }
+      ],
+      "wires": [
+        { "id": "w1", "src": "z", "dest": "y" },
+        { "id": "w2", "src": "y", "dest": "x" },
+        { "id": "w3", "src": "x", "dest": "l0" }
+      ],
+      "expectedOrder": ["z", "y", "x", "l0"],
+      "expectedDelayed": [],
+      "expectOmitted": false
+    }
+  ],
+  "repairCases": [
+    {
+      "name": "absent order falls back to chain order",
+      "chain": ["a", "b", "c"],
+      "stored": null,
+      "expected": ["a", "b", "c"]
+    },
+    {
+      "name": "stale keys dropped, missing keys appended in chain order",
+      "chain": ["a", "b", "c"],
+      "stored": ["c", "gone", "a"],
+      "expected": ["c", "a", "b"]
+    },
+    {
+      "name": "duplicates collapse to the first occurrence",
+      "chain": ["a", "b"],
+      "stored": ["b", "b", "a", "b"],
+      "expected": ["b", "a"]
+    },
+    {
+      "name": "empty stored order is chain order",
+      "chain": ["a", "b"],
+      "stored": [],
+      "expected": ["a", "b"]
+    }
+  ]
+}

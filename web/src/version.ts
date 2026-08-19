@@ -11,7 +11,12 @@
  * see InstanceState.version, sourced from the effect's state::init version and
  * its module's setModuleVersion in host.h.)
  */
-export const ENGINE_VERSION: [number, number, number] = [1, 0, 0];
+// 1.1.0 — sidecar canvas: `ModuleEntry.canvas` partitions the chain and
+// `Sketch.execOrder` overrides execution order. Both keys are OMITTED unless a
+// sketch actually uses the canvas, so 1.0.0 documents round-trip unchanged; but
+// a 1.0.0 build loading a 1.1.0 canvas sketch would treat canvas entries as
+// trailing LINEAR effects and let them hijack the pixel path — hence the minor.
+export const ENGINE_VERSION: [number, number, number] = [1, 1, 0];
 
 /** Parse a "major.minor.patch" string into a 3-tuple; non-numeric parts → 0. */
 export function parseVersion(v: string | null | undefined): [number, number, number] {

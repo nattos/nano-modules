@@ -21,8 +21,9 @@ import {
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
-import { normalizeSketchChains, sketchChain, ensureChain, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
+import { computeExecOrder } from './exec-order';
 import { midiController } from './midi-controller';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
@@ -235,6 +236,12 @@ export class AppController {
       }
       this.requestLiveCacheSave();
       this.maybePushBarrelSketch();
+      // Dev/test tripwire for a FORGOTTEN reorderExec call site. The stored
+      // execution order is derived state, so after any committed mutation it
+      // must already equal what computeExecOrder produces. This only OBSERVES —
+      // it never repairs — so a miss surfaces as a loud warning here and in the
+      // unit tests instead of as a silently stale order the executor replays.
+      if (import.meta.env?.DEV) this.warnIfExecOrderStale(patches);
       // Instance create/delete can also arrive via undo/redo, which
       // bypasses the explicit CRUD methods — keep the list mirrored.
       if (this.playgroundMode) this.refreshPlaygroundInstanceList();
@@ -379,6 +386,7 @@ export class AppController {
       // Create instance state in the sketch
       sketch.instances = sketch.instances ?? {};
       sketch.instances[instanceKey] = { module_type: moduleType, state: defaultState, version };
+      this.reorderExec(draft, sketchId);
     });
   }
 
@@ -443,6 +451,30 @@ export class AppController {
   }
 
   /** Recipe for inserting a new effect (shared by the insert long edit). */
+  /**
+   * Recompute the sketch's merged execution order (`Sketch.execOrder`) inside
+   * the current draft. Call this as the LAST statement of every recipe that
+   * changes the chain or the wires — explicitly, from the action that mutates,
+   * never from a reaction.
+   *
+   * Writes only when the order actually changed, and DELETES the key when it
+   * degenerates to plain chain order (always so for a sketch with no canvas
+   * entries) — so ordinary sketches produce no patch, no barrel push and no
+   * serialization churn from this at all.
+   */
+  private reorderExec(draft: DatabaseState, sketchId: string) {
+    const sk = draft.sketches[sketchId];
+    if (!sk) return;
+    const order = computeExecOrder(sk);
+    if (execOrderIsChainOrder(sketchChain(sk), order)) {
+      if (sk.execOrder) delete sk.execOrder;
+      return;
+    }
+    const cur = sk.execOrder;
+    if (cur && cur.length === order.length && cur.every((k, i) => k === order[i])) return;
+    sk.execOrder = order;
+  }
+
   private insertEffectRecipe(sketchId: string, insertIdx: number, moduleType: string, instanceKey: string) {
     return (draft: DatabaseState) => {
       const sk = draft.sketches[sketchId];
@@ -454,6 +486,7 @@ export class AppController {
       });
       sk.instances = sk.instances ?? {};
       sk.instances[instanceKey] = { module_type: moduleType, state: this.initialStateForModule(moduleType), version: this.versionForModule(moduleType) };
+      this.reorderExec(draft, sketchId);
     };
   }
 
@@ -510,6 +543,7 @@ export class AppController {
             w => w.src.instanceKey !== key && w.dest.instanceKey !== key);
         }
       }
+      this.reorderExec(draft, sketchId);
     });
   }
 
@@ -539,6 +573,7 @@ export class AppController {
         sk.wires = sk.wires.filter(
           w => !removedKeys.has(w.src.instanceKey) && !removedKeys.has(w.dest.instanceKey));
       }
+      this.reorderExec(draft, sketchId);
     });
   }
 
@@ -670,6 +705,7 @@ export class AppController {
       });
       sk.instances = sk.instances ?? {};
       sk.instances[instanceKey] = { module_type: payload.moduleType, state, version: this.versionForModule(payload.moduleType) };
+      this.reorderExec(draft, sketchId);
     });
     // Select the freshly pasted card (queues if it hasn't rendered yet).
     this.select(`effect/${sketchId}/${colIdx}/${insertIdx}`);
@@ -718,6 +754,7 @@ export class AppController {
         sk.wires = sk.wires ?? [];
         sk.wires.push(...wires);
       }
+      this.reorderExec(draft, sketchId);
     });
     // Select the pasted block: first card primary (queues until rendered),
     // whole block in the multi-selection.
@@ -1360,6 +1397,30 @@ export class AppController {
 
   /** Top-level `sketches.<id>` keys touched by `patches` that are also
    *  tracked live sketches — see `PostRecordHook`'s doc comment. */
+  /** See the postRecordHook tripwire. Dev/test only; never repairs. */
+  private warnIfExecOrderStale(patches: Patch[]) {
+    const ids = new Set<string>();
+    for (const p of patches) {
+      if (p.path[0] === 'sketches' && typeof p.path[1] === 'string') ids.add(p.path[1]);
+    }
+    for (const id of ids) {
+      const sk = appState.database.sketches[id];
+      if (!sk) continue;
+      const order = computeExecOrder(sk);
+      const want = execOrderIsChainOrder(sketchChain(sk), order) ? undefined : order;
+      const cur = sk.execOrder;
+      const fresh = want === undefined
+        ? !cur
+        : !!cur && cur.length === want.length && cur.every((k, i) => k === want[i]);
+      if (!fresh) {
+        console.warn(
+          `[exec-order] sketch "${id}" has a stale execOrder — some mutation `
+          + 'changed the chain or wires without calling reorderExec.',
+          { stored: cur ? [...cur] : undefined, expected: want });
+      }
+    }
+  }
+
   private touchedLiveSketchIds(patches: Patch[]): string[] {
     if (this.liveSketchIds.size === 0) return [];
     const ids = new Set<string>();
@@ -2024,6 +2085,7 @@ export class AppController {
         // dashboard mute heuristic are unaffected; we set it explicitly here.
         combine: 'add',
       });
+      this.reorderExec(draft, sketchId);
     });
   }
 
@@ -2093,6 +2155,7 @@ export class AppController {
       const sk = draft.sketches[sketchId];
       if (!sk?.wires) return;
       sk.wires = sk.wires.filter(w => w.id !== wireId);
+      this.reorderExec(draft, sketchId);
     });
   }
 
@@ -2106,6 +2169,9 @@ export class AppController {
       const w = draft.sketches[sketchId]?.wires?.find(w => w.id === wireId);
       if (!w) return;
       Object.assign(w, patch);
+      // Only a RETARGET moves an endpoint and can change the order; mod/combine
+      // patches (which stream during slider drags) must not pay for the sort.
+      if (patch.src || patch.dest) this.reorderExec(draft, sketchId);
     };
   }
 
