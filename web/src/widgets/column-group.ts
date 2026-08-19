@@ -313,6 +313,8 @@ export class ColumnGroup extends MobxLitElement {
     /** Set for a SIDECAR-CANVAS insertion: previews re-point the canvas recipe
      *  (tail-append + placement) instead of the linear splice. */
     canvasPos?: { x: number; y: number };
+    /** Set when this insertion SPLICES an existing wire (double-click a wire). */
+    onWire?: { wireId: string; wireIds: [string, string] };
   } | null = null;
   /**
    * Bumped every time a NEW type-edit session begins (retype or insert).
@@ -1665,6 +1667,12 @@ export class ColumnGroup extends MobxLitElement {
   /** Re-point the in-flight insertion at `effectId` — canvas or linear. */
   private updateInsertPreview(effectId: string) {
     const ctx = this.insertCtx!;
+    if (ctx.onWire && ctx.canvasPos && this.ctl.updateInsertOnWire) {
+      this.ctl.updateInsertOnWire(
+        this.typeLongEdit!, this.sketchId, ctx.onWire.wireId, ctx.instanceKey,
+        ctx.canvasPos, ctx.onWire.wireIds, effectId);
+      return;
+    }
     if (ctx.canvasPos && this.ctl.updateInsertCanvasEffect) {
       this.ctl.updateInsertCanvasEffect(
         this.typeLongEdit!, this.sketchId, ctx.instanceKey, ctx.canvasPos, effectId);
@@ -1694,6 +1702,28 @@ export class ColumnGroup extends MobxLitElement {
     this.editSession++;
     this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${chainIdx}`);
     this.requestUpdate();
+  }
+
+  /**
+   * Begin a wire SPLICE: the controller inserts the node and rewires, this opens
+   * the type picker on it. Returns false when no module can carry the wire, so
+   * the caller can say so instead of leaving a half-connected node.
+   */
+  beginInsertOnWireAt(wireId: string, pos: { x: number; y: number }): boolean {
+    if (!this.ctl.beginInsertOnWire) return false;
+    this.finishPendingEdit();
+    const started = this.ctl.beginInsertOnWire(this.sketchId, wireId, pos);
+    if (!started) return false;
+    this.typeLongEdit = started.edit as any;
+    this.insertCtx = {
+      instanceKey: started.instanceKey, insertIdx: started.chainIdx,
+      prefill: '', canvasPos: pos, onWire: { wireId, wireIds: started.wireIds },
+    };
+    this.editingTypeChainIdx = started.chainIdx;
+    this.editSession++;
+    this.ctl.select(`effect/${this.sketchId}/${this.colIdx}/${started.chainIdx}`);
+    this.requestUpdate();
+    return true;
   }
 
   private handleTypePreview(chainIdx: number, session: number, effectId: string) {

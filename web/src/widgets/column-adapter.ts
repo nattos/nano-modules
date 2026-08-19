@@ -155,6 +155,14 @@ export interface ColumnController {
     { edit: EditHandle; instanceKey: string; chainIdx: number };
   updateInsertCanvasEffect?(edit: EditHandle, sketchId: string, instanceKey: string,
                             pos: { x: number; y: number }, newModuleType: string): void;
+  /** Splice a new node into an existing wire (double-click a wire). Null when
+   *  no available module can carry that wire's data in both directions. */
+  beginInsertOnWire?(sketchId: string, wireId: string, pos: { x: number; y: number }):
+    { edit: EditHandle; instanceKey: string; chainIdx: number;
+      wireIds: [string, string] } | null;
+  updateInsertOnWire?(edit: EditHandle, sketchId: string, wireId: string, instanceKey: string,
+                      pos: { x: number; y: number }, wireIds: [string, string],
+                      newModuleType: string): void;
   /** Move the effect at `from` so it lands at insertion index `to` (caps.reorder). */
   moveEffect?(sketchId: string, colIdx: number, from: number, to: number): void;
 

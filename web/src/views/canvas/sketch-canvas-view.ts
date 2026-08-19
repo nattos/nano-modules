@@ -22,6 +22,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
 import { appController } from '../../state/controller';
+import { snackbars } from '../../widgets/snackbars';
 import { canvasChain, sketchChain, type ChainEntry } from '../../sketch-types';
 import { loadSketchUiState, saveSketchUiState } from '../../state/sketch-ui-store';
 import { PointerDragOp } from '../../utils/pointer-drag-op';
@@ -384,6 +385,45 @@ export class SketchCanvasView extends MobxLitElement {
     group?.beginCanvasInsertAt(
       this.viewportToCanvas(e.detail.clientX, e.detail.clientY), e.detail.category);
   };
+
+  /**
+   * Splice a node into `wireId` at a viewport point (double-click on a wire).
+   * Delegates the document edit to the controller and the type-picker session
+   * to <column-group>, so it behaves exactly like any other insertion.
+   */
+  beginInsertOnWire(wireId: string, clientX: number, clientY: number) {
+    const sketchId = this.sketchId;
+    const group = this.renderRoot.querySelector('column-group') as ColumnGroup | null;
+    if (!sketchId || !group) return;
+    const pos = this.pointInsideViewport(clientX, clientY)
+      ? this.viewportToCanvas(clientX, clientY)
+      : this.freeSpotNearWire(sketchId, wireId);
+    if (!group.beginInsertOnWireAt(wireId, pos)) {
+      snackbars.show({
+        message: 'No available effect can pass that wire through.',
+        dedupeKey: 'canvas-splice-no-port',
+      });
+    }
+  }
+
+  private pointInsideViewport(x: number, y: number): boolean {
+    const r = this.viewportEl()?.getBoundingClientRect();
+    return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  /**
+   * Placement for a splice started from OUTSIDE the canvas (the wire was
+   * double-clicked over the effects list): below the lowest existing card, at
+   * the canvas's left edge, so it's visible without overlapping anything.
+   */
+  private freeSpotNearWire(sketchId: string, _wireId: string): { x: number; y: number } {
+    const sketch = appState.database.sketches[sketchId];
+    let bottom = 0;
+    for (const e of sketch ? canvasChain(sketch) : []) {
+      bottom = Math.max(bottom, e.canvas!.y + CARD_EXTENT);
+    }
+    return { x: 40, y: bottom + 20 };
+  }
 
   // --- Persistence -------------------------------------------------------
 

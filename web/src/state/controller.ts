@@ -24,6 +24,7 @@ import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, Sketch
 import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
 import { computeExecOrder } from './exec-order';
+import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, wireKindOfField, type WireKind } from './schema-channels';
 import { midiController } from './midi-controller';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
@@ -554,6 +555,128 @@ export class AppController {
     edit._setDescription(`Add ${shortName(newModuleType)}`);
     edit.update(this.insertCanvasEffectRecipe(sketchId, newModuleType, instanceKey, pos));
     this.syncSketchesToEngine();
+  }
+
+  /**
+   * Splice a NEW node into an existing wire: the producer feeds the new node,
+   * and the new node feeds the original consumer. All of it — the node, the
+   * removal, both new wires — rides ONE recipe so the whole splice previews
+   * live and Escape backs the entire thing out with no undo point.
+   *
+   * Returns null when the chosen module has no port pair that can carry this
+   * wire's data; the caller must abandon rather than leave a half-connected node.
+   */
+  private insertOnWireRecipe(
+      sketchId: string, wireId: string, moduleType: string, instanceKey: string,
+      pos: { x: number; y: number }, wireIds: [string, string]) {
+    return (draft: DatabaseState) => {
+      const sk = draft.sketches[sketchId];
+      const orig = sk?.wires?.find(w => w.id === wireId);
+      if (!sk || !orig) return;
+      const ports = passthroughPorts(
+        this.pluginSchema(moduleType), this.wireKind(sk, orig));
+      if (!ports) return;
+
+      ensureChain(sk).push({
+        type: 'module', module_type: moduleType, instance_key: instanceKey,
+        canvas: { x: pos.x, y: pos.y },
+      });
+      sk.instances = sk.instances ?? {};
+      sk.instances[instanceKey] = {
+        module_type: moduleType,
+        state: this.initialStateForModule(moduleType),
+        version: this.versionForModule(moduleType),
+      };
+
+      // The SECOND wire inherits the shaping the user tuned, so it still lands
+      // on the same dest field the same way; the FIRST passes through untouched
+      // (matching what the executor's own modulation auto-connect does), so
+      // inserting a shaper doesn't double-scale.
+      sk.wires = (sk.wires ?? []).filter(w => w.id !== wireId);
+      sk.wires.push({
+        id: wireIds[0],
+        src: { ...orig.src },
+        dest: { instanceKey, field: ports.input },
+        magnitude: 'absolute',
+      });
+      sk.wires.push({
+        id: wireIds[1],
+        src: { instanceKey, field: ports.output },
+        dest: { ...orig.dest },
+        ...(orig.mod ? { mod: JSON.parse(JSON.stringify(orig.mod)) } : {}),
+        ...(orig.combine ? { combine: orig.combine } : {}),
+        ...(orig.mixFactor !== undefined ? { mixFactor: orig.mixFactor } : {}),
+        ...(orig.magnitude ? { magnitude: orig.magnitude } : {}),
+      });
+      this.reorderExec(draft, sketchId);
+    };
+  }
+
+  /** Schema of a module type, as the column adapters read it. */
+  private pluginSchema(moduleType: string): Record<string, any> | undefined {
+    return appState.local.plugins.find(p => p.id === moduleType)?.schema as any;
+  }
+
+  /** What a wire carries, from its PRODUCER field's declared type. */
+  private wireKind(sketch: Sketch, wire: Wire): WireKind {
+    const src = sketchChain(sketch).find(e => e.instance_key === wire.src.instanceKey);
+    return src ? wireKindOfField(this.pluginSchema(src.module_type), wire.src.field) : null;
+  }
+
+  /**
+   * Begin splicing a node into `wireId` as a continuous edit (double-click a
+   * wire). Returns null when nothing can carry the wire — the caller shows the
+   * "no compatible port" message and leaves the wire alone.
+   */
+  beginInsertOnWire(sketchId: string, wireId: string, pos: { x: number; y: number }):
+      { edit: LongEdit; instanceKey: string; chainIdx: number;
+        wireIds: [string, string] } | null {
+    const sketch = appState.database.sketches[sketchId];
+    const orig = sketch?.wires?.find(w => w.id === wireId);
+    if (!sketch || !orig) return null;
+    const kind = this.wireKind(sketch, orig);
+    const moduleType = this.defaultPassthroughType(kind);
+    if (!moduleType) return null;
+
+    const instanceKey = `virtual_${shortName(moduleType)}@${Date.now()}`;
+    const wireIds: [string, string] = [
+      `wire_${Date.now().toString(36)}_${this.nextWireId++}`,
+      `wire_${Date.now().toString(36)}_${this.nextWireId++}`,
+    ];
+    const chainIdx = sketchChain(sketch).length;
+    const edit = this.history.beginLongEdit(
+      `Add ${shortName(moduleType)}`,
+      this.insertOnWireRecipe(sketchId, wireId, moduleType, instanceKey, pos, wireIds));
+    this.syncSketchesToEngine();
+    return { edit, instanceKey, chainIdx, wireIds };
+  }
+
+  /** Re-point an in-flight wire splice at a different module type. */
+  updateInsertOnWire(edit: LongEdit, sketchId: string, wireId: string, instanceKey: string,
+                     pos: { x: number; y: number }, wireIds: [string, string],
+                     newModuleType: string) {
+    edit._setDescription(`Add ${shortName(newModuleType)}`);
+    edit.update(this.insertOnWireRecipe(
+      sketchId, wireId, newModuleType, instanceKey, pos, wireIds));
+    this.syncSketchesToEngine();
+  }
+
+  /** First available module that can pass `kind` straight through — the
+   *  placeholder the splice opens with, before the user picks a real type. */
+  private defaultPassthroughType(kind: WireKind): string | null {
+    if (!kind) return null;
+    let fallback: string | null = null;
+    for (const p of appState.local.plugins) {
+      const schema = p.schema as any;
+      if (!passthroughPorts(schema, kind)) continue;
+      // Prefer a module that declares a real modulation CHANNEL in both
+      // directions (a shaper) over one that merely happens to have a float in
+      // and out — splicing a shaper is what the gesture almost always means.
+      if (kind !== 'float'
+          || (modChannel(schema, IO_INPUT) && modChannel(schema, IO_OUTPUT))) return p.id;
+      fallback ??= p.id;
+    }
+    return fallback;
   }
 
   /** Update the previewed type of an in-progress effect insertion (no undo point). */

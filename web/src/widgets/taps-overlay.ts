@@ -18,9 +18,26 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController, wireSelectablePath } from '../state/controller';
 import type { Sketch } from '../sketch-types';
-import { sketchChain } from '../sketch-types';
+import { isCanvasEntry, sketchChain } from '../sketch-types';
 import { layoutFloaters, type Floater } from './floating-layout';
-import { activeEditorColumnsRoots, fieldHitIn, fieldOptionPipIn } from './field-anchor-lookup';
+import { activeCanvasView, activeEditorColumnsRoots, fieldHitIn, fieldOptionPipIn } from './field-anchor-lookup';
+
+/** The bit of <sketch-canvas-view> this overlay needs, kept structural so the
+ *  widget layer takes no dependency on the view module. */
+interface Connection {
+  id: string;
+  from: string;
+  to: string;
+  delayed: boolean;
+  wireId: string;
+  /** Set when exactly ONE end is a sidecar-canvas card: which end, and its
+   *  chain index (so clicking its proxy pip can select the card). */
+  proxy?: { end: 'from' | 'to'; chainIdx: number };
+}
+
+interface SketchCanvasHost extends HTMLElement {
+  beginInsertOnWire?(wireId: string, clientX: number, clientY: number): void;
+}
 import { execPositions, wireIsDelayed } from '../state/exec-order';
 import { tapsConnect } from './taps-connect';
 import './spark-chart';
@@ -44,6 +61,11 @@ function arcBezier(a: Pt, b: Pt): Bezier {
     p3: b,
   };
 }
+
+/** Inset of a proxy pip from the editor's right edge, and the vertical spread
+ *  applied when several land on the same row. */
+const PROXY_MARGIN = 10;
+const PROXY_SPREAD = 12;
 
 const bezPath = (z: Bezier): string =>
   `M ${z.p0.x} ${z.p0.y} C ${z.c1.x} ${z.c1.y} ${z.c2.x} ${z.c2.y} ${z.p3.x} ${z.p3.y}`;
@@ -169,6 +191,16 @@ export class TapsOverlay extends MobxLitElement {
     .wire-arc.delayed.seg-a { animation: wire-relay-a 1.4s linear infinite; }
     .wire-arc.delayed.seg-b { animation: wire-relay-b 1.4s linear infinite; }
     .wire-dot { fill: var(--app-hi-color1, #ff4500); opacity: 0.9; }
+    /* Terminus of a wire whose far end is a card on the CLOSED sidecar canvas.
+     * The only interactive thing in this svg besides .wire-hit — click it to
+     * open the canvas on that card. */
+    .wire-proxy-pip {
+      fill: var(--app-bg-color1); stroke: var(--app-hi-color2, #4169E1);
+      stroke-width: 2; pointer-events: all; cursor: pointer;
+    }
+    .wire-proxy-pip:hover, .wire-proxy-pip.selected {
+      fill: var(--app-hi-color2, #4169E1);
+    }
     /* Selected wire: solid, bright, no marching ants — double-click to break. */
     .wire-arc.selected { stroke: var(--app-hi-color1, #ff4500); opacity: 1;
       stroke-width: 2.5; stroke-dasharray: none; animation: none; }
@@ -256,6 +288,33 @@ export class TapsOverlay extends MobxLitElement {
   }
 
   /**
+   * Double-clicking a wire SPLICES a new node into it — the producer feeds the
+   * new node, the new node feeds the original consumer, with the wire's tuned
+   * shaping carried onto the second half. The node lands on the sidecar canvas
+   * (opening it if needed) with its type picker open, all as one continuous
+   * edit: Escape backs out the node AND the rewiring, leaving the original wire
+   * exactly as it was.
+   *
+   * This REPLACES double-click-to-delete. Breaking a wire is still Delete on a
+   * selected wire, or the × in the dest field's Wires section.
+   */
+  private onWireDblClick(e: MouseEvent, wireId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    appController.setSketchCanvasOpen(true);
+    // The canvas may only now be mounting, so place on the next frames.
+    const place = (tries: number) => {
+      const view = activeCanvasView() as SketchCanvasHost | null;
+      if (!view?.beginInsertOnWire) {
+        if (tries > 0) requestAnimationFrame(() => place(tries - 1));
+        return;
+      }
+      view.beginInsertOnWire(wireId, e.clientX, e.clientY);
+    };
+    requestAnimationFrame(() => place(60));
+  }
+
+  /**
    * Field→field wires to visualize. Endpoints are field keys
    * `${sketchId}/${col}/${chain}/${field}` (the format `fieldHit` consumes).
    * `delayed` marks a wire whose source runs at/after its dest in the merged
@@ -264,27 +323,38 @@ export class TapsOverlay extends MobxLitElement {
    * than re-deriving it; see the `delayed` computation in
    * native/src/sketch/sketch_executor.cpp and state/exec-order.ts.
    */
-  private connections(sketch: Sketch): { id: string; from: string; to: string; delayed: boolean; wireId: string }[] {
+  private connections(sketch: Sketch): Connection[] {
     const sk = this.sketchId;
-    const out: { id: string; from: string; to: string; delayed: boolean; wireId: string }[] = [];
+    const out: Connection[] = [];
 
     // instanceKey → "col/chain". Single linear stack now → col index is always 0
     // (kept in the key to match the DOM hit-box `data-col-idx`).
     const loc = new Map<string, string>();
+    const onCanvas = new Map<string, number>();   // key → chain index, canvas only
     sketchChain(sketch).forEach((e, chi) => {
-      if (e.type === 'module') loc.set(e.instance_key, `0/${chi}`);
+      if (e.type !== 'module') return;
+      loc.set(e.instance_key, `0/${chi}`);
+      if (isCanvasEntry(e)) onCanvas.set(e.instance_key, chi);
     });
     const pos = execPositions(sketch);
 
     for (const wire of sketch.wires ?? []) {
       const sl = loc.get(wire.src.instanceKey), dl = loc.get(wire.dest.instanceKey);
       if (!sl || !dl) continue;
+      const srcCanvas = onCanvas.get(wire.src.instanceKey);
+      const destCanvas = onCanvas.get(wire.dest.instanceKey);
       out.push({
         id: `wire:${wire.id}`,
         from: `${sk}/${sl}/${wire.src.field}`,
         to: `${sk}/${dl}/${wire.dest.field}`,
         delayed: wireIsDelayed(pos, wire.src.instanceKey, wire.dest.instanceKey),
         wireId: wire.id,
+        // Exactly ONE end on the canvas, while the canvas is closed → that end
+        // has no card in the DOM, so the arc terminates at a proxy pip on the
+        // editor's right margin instead of vanishing.
+        proxy: (srcCanvas === undefined) === (destCanvas === undefined) ? undefined
+          : { end: srcCanvas !== undefined ? 'from' : 'to',
+              chainIdx: (srcCanvas ?? destCanvas)! },
       });
     }
     return out;
@@ -327,6 +397,9 @@ export class TapsOverlay extends MobxLitElement {
     if (conns.length === 0 && !cardContent) return html`<svg class="lines"></svg>`;
 
     const selectedPath = appState.local.selection?.path ?? '';
+    // Proxy pips stand in for canvas cards only while the canvas is CLOSED;
+    // once it's open both ends have real anchors.
+    const proxies = !appState.local.userSettings.sketchCanvasOpen;
     return html`
       <svg class="lines">
         ${conns.map(cn => {
@@ -335,25 +408,43 @@ export class TapsOverlay extends MobxLitElement {
           // double click BREAKS it.
           const sel = wireSelectablePath(this.sketchId, cn.wireId) === selectedPath;
           const selCls = sel ? 'selected' : '';
-          const hit = svg`<path class="arc-path wire-hit" data-from=${cn.from} data-to=${cn.to}
+          const proxyEnd = proxies && cn.proxy ? cn.proxy.end : undefined;
+          // The visible terminus when the far end's card is on the closed
+          // canvas. Rendered for delayed wires too — a feedback wire into the
+          // canvas needs a way back just as much.
+          const proxyPip = proxyEnd ? svg`
+            <circle class="wire-proxy-pip ${sel ? 'selected' : ''}" r="5"
+              data-from=${cn.from} data-to=${cn.to}
+              data-proxy-end=${proxyEnd} data-wire-id=${cn.wireId}
+              @click=${() => this.onProxyPipClick(cn.proxy!.chainIdx)}>
+              <title>On the sidecar canvas — click to open it</title>
+            </circle>` : nothing;
+          const hit = svg`<path class="arc-path wire-hit"
+            data-proxy-end=${proxyEnd ?? nothing}
+            data-from=${cn.from} data-to=${cn.to}
             @click=${() => appController.select(wireSelectablePath(this.sketchId, cn.wireId))}
-            @dblclick=${() => appController.removeWire(this.sketchId, cn.wireId)}></path>`;
+            @dblclick=${(e: MouseEvent) => this.onWireDblClick(e, cn.wireId)}></path>`;
           // A 1-frame-delayed (feedback) wire: drawn in two halves that animate
           // alternately, with a dot at the relay point — and in the output-pip red.
           if (cn.delayed) {
             return svg`<g class="wire-group">
               ${hit}
               <path class="arc-path wire-arc delayed seg-a ${selCls}" data-seg="0"
+                data-proxy-end=${proxyEnd ?? nothing}
                 data-from=${cn.from} data-to=${cn.to}></path>
               <path class="arc-path wire-arc delayed seg-b ${selCls}" data-seg="1"
+                data-proxy-end=${proxyEnd ?? nothing}
                 data-from=${cn.from} data-to=${cn.to}></path>
               <circle class="wire-dot ${selCls}" r="3" data-from=${cn.from} data-to=${cn.to}></circle>
+              ${proxyPip}
             </g>`;
           }
           return svg`<g class="wire-group">
             ${hit}
             <path class="arc-path wire-arc ${selCls}" data-conn-id=${cn.id}
+              data-proxy-end=${proxyEnd ?? nothing}
               data-from=${cn.from} data-to=${cn.to}></path>
+            ${proxyPip}
           </g>`;
         })}
         <line class="connect-line" style="display:none"></line>
@@ -385,9 +476,13 @@ export class TapsOverlay extends MobxLitElement {
    * once we're drawing in viewport space.
    */
   private roots(): ShadowRoot[] {
+    // The local columns-view first (this overlay's own panel), then every root
+    // the active surface exposes — which adds the sidecar canvas, and covers
+    // the case where this overlay isn't a sibling of the columns-view it draws
+    // for. Cheap: both are single querySelector walks per rAF.
+    const out: ShadowRoot[] = [];
     const local = this.columnsRoot();
-    if (!this.viewportFixed) return local ? [local] : [];
-    const out = local ? [local] : [];
+    if (local) out.push(local);
     for (const r of activeEditorColumnsRoots()) if (!out.includes(r)) out.push(r);
     return out;
   }
@@ -481,18 +576,25 @@ export class TapsOverlay extends MobxLitElement {
   private drawArcs(svg: SVGElement, overlayRect: DOMRect) {
     // READ phase — no DOM writes, so only the first rect query forces a reflow.
     const paths = Array.from(svg.querySelectorAll('path.arc-path')) as SVGPathElement[];
-    const arcs = paths.map(p => ({
-      p,
-      a: this.fieldCenter(p.dataset.from ?? '', overlayRect),
-      b: this.fieldCenter(p.dataset.to ?? '', overlayRect),
-      seg: p.dataset.seg,
-    }));
+    // A wire with one end on the CLOSED canvas has no anchor there; substitute
+    // a point on the right margin, level with the end that IS visible.
+    const ends = (el: SVGElement) => {
+      let a = this.fieldCenter(el.dataset.from ?? '', overlayRect);
+      let b = this.fieldCenter(el.dataset.to ?? '', overlayRect);
+      const proxyEnd = el.dataset.proxyEnd;
+      if (proxyEnd === 'from' && !a && b) a = this.proxyPoint(b, overlayRect);
+      else if (proxyEnd === 'to' && !b && a) b = this.proxyPoint(a, overlayRect);
+      return { a, b };
+    };
+    const arcs = paths.map(p => ({ p, ...ends(p), seg: p.dataset.seg }));
     const dots = Array.from(svg.querySelectorAll('circle.wire-dot')) as SVGCircleElement[];
-    const dotData = dots.map(dot => ({
-      dot,
-      a: this.fieldCenter(dot.dataset.from ?? '', overlayRect),
-      b: this.fieldCenter(dot.dataset.to ?? '', overlayRect),
-    }));
+    const dotData = dots.map(dot => ({ dot, ...ends(dot) }));
+    // Proxy pips, ordered by wire id so a deterministic spread can separate any
+    // that land on the same row (and so they don't jitter frame to frame).
+    const pipData = (Array.from(
+        svg.querySelectorAll('circle.wire-proxy-pip')) as SVGCircleElement[])
+      .map(pip => ({ pip, ...ends(pip), wireId: pip.dataset.wireId ?? '' }))
+      .sort((x, y) => x.wireId.localeCompare(y.wireId));
 
     // WRITE phase.
     for (const { p, a, b, seg } of arcs) {
@@ -511,6 +613,18 @@ export class TapsOverlay extends MobxLitElement {
       dot.setAttribute('cx', String(m.x));
       dot.setAttribute('cy', String(m.y));
     }
+    // Proxy pips: the visible terminus of a wire into the closed canvas.
+    const usedY: number[] = [];
+    for (const { pip, a, b } of pipData) {
+      const end = pip.dataset.proxyEnd === 'from' ? a : b;
+      if (!end) { pip.style.display = 'none'; continue; }
+      pip.style.display = '';
+      let y = end.y;
+      while (usedY.some(u => Math.abs(u - y) < PROXY_SPREAD)) y += PROXY_SPREAD;
+      usedY.push(y);
+      pip.setAttribute('cx', String(end.x));
+      pip.setAttribute('cy', String(y));
+    }
   }
 
   /** Overlay-relative center of a field's connection anchor: its tap-port
@@ -522,6 +636,25 @@ export class TapsOverlay extends MobxLitElement {
     if (!hit) return null;
     const r = hit.getBoundingClientRect();
     return { x: r.left + r.width / 2 - overlayRect.left, y: r.top + r.height / 2 - overlayRect.top };
+  }
+
+  /**
+   * Where a wire whose far end is a hidden canvas card terminates: a pip on the
+   * editor's RIGHT margin, level with the end that IS visible. Clamped into the
+   * visible band so a wire to a card scrolled off-screen still shows a reachable
+   * pip rather than running away.
+   */
+  private proxyPoint(anchor: { x: number; y: number }, overlayRect: DOMRect) {
+    return {
+      x: overlayRect.width - PROXY_MARGIN,
+      y: Math.min(Math.max(anchor.y, PROXY_MARGIN), overlayRect.height - PROXY_MARGIN),
+    };
+  }
+
+  /** Clicking a proxy pip opens the canvas and selects the card it stands for. */
+  private onProxyPipClick(chainIdx: number) {
+    appController.setSketchCanvasOpen(true);
+    appController.select(`effect/${this.sketchId}/0/${chainIdx}`);
   }
 
   /** Live rubber-band line while a click/drag-to-connect is in progress. */
