@@ -1,6 +1,7 @@
 #include "sketch/sketch_executor.h"
 
 #include "sketch/sketch_augment.h"
+#include "sketch/sketch_canvas.h"
 #include "sketch/tap_mod.h"
 #include "sketch/param_smoothing.h"
 #include "sketch/host_blend.h"
@@ -481,6 +482,18 @@ std::string SketchExecutor::computeStructSig(const json& columns,
   for (size_t c = 0; c < columns.size(); ++c) {
     const json& col = columns[c];
     sig += "c\n";  // column delimiter — a moved column boundary is structural
+    // Execution order is structural: reordering the plan changes which stages
+    // fuse and which wires are delayed, so an order-only edit must rebuild.
+    // Absent (the ordinary case) contributes nothing, keeping the sig identical
+    // to before for every canvas-free sketch.
+    {
+      auto eo = col.find("execOrder");
+      if (eo != col.end() && eo->is_array()) {
+        sig += "o:";
+        for (const auto& v : *eo) { sig += std::to_string(v.get<size_t>()); sig.push_back(','); }
+        sig.push_back('\n');
+      }
+    }
     const json& chain = refOr(col, "chain", kEmptyArr, true);
     for (size_t i = 0; i < chain.size(); ++i) {
       const auto& e = chain[i];
@@ -612,7 +625,24 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
     indexRails(sketchRails);
 
     const json& chain = refOr(col, "chain", kEmptyArr, true);
-    for (size_t i = 0; i < chain.size(); ++i) {
+    // Walk in EXECUTION order, not chain order. The frame loop only ever walks
+    // `resolvable`/`groups`, so reordering here is the whole of the order
+    // override — PlanEntry::chainIdx already decoupled plan position from chain
+    // position. Absent override → plain chain order, bit-for-bit as before.
+    std::vector<size_t> execIdx;
+    {
+      auto eo = col.find("execOrder");
+      if (eo != col.end() && eo->is_array()) {
+        for (const auto& v : *eo)
+          if (v.is_number_unsigned() && v.get<size_t>() < chain.size())
+            execIdx.push_back(v.get<size_t>());
+      }
+      if (execIdx.size() != chain.size()) {   // absent or unusable
+        execIdx.clear();
+        for (size_t i = 0; i < chain.size(); ++i) execIdx.push_back(i);
+      }
+    }
+    for (size_t i : execIdx) {
       const auto& entry = chain[i];
       std::string mt = entry.value("module_type", std::string());
       const RegisteredModule* reg = findSchema(mt);
@@ -644,7 +674,18 @@ void SketchExecutor::buildPlan(const json& columns, const json& instances,
         }
       }
       if (!fusionEnabled_) e = false;   // force-off (test hook)
-      pc.resolvable.push_back({i, std::move(mt), std::move(instKey), reg, e});
+      // A canvas node's input comes from a WIRE, so a run of consecutive canvas
+      // entries isn't a chain and can't be folded into one kernel — proving
+      // wire-adjacency would take real dataflow analysis. Never fuse them.
+      //
+      // With canvas entries ineligible, two LINEAR entries adjacent in
+      // `resolvable` are necessarily chain-adjacent: the merged order preserves
+      // linear relative order and only interleaves canvas entries between them.
+      // So the group planner's "consecutive run" premise still holds exactly.
+      const bool isCanvas = sketch_canvas::isCanvasEntry(entry);
+      if (isCanvas) e = false;
+      if (!isCanvas) pc.lastLinearK = pc.resolvable.size();
+      pc.resolvable.push_back({i, std::move(mt), std::move(instKey), reg, e, isCanvas});
     }
   }
 }
@@ -852,6 +893,12 @@ int32_t SketchExecutor::execute(
       const json& modInstances = refOr(rawSketch, "instances", kEmptyObj, false);
       for (size_t i = 0; i < chain.size(); ++i) {
         if (!chain[i].is_object() || !chain[i].contains("instance_key")) continue;
+        // Auto-connect is a POSITIONAL affordance ("dropped a shaper right
+        // after a source"), and the sidecar canvas has no meaningful "right
+        // after" — a canvas shaper's backward scan would land on whatever
+        // linear effect happens to be last, which reads as a bug. The canvas is
+        // explicit-wires-only, in both directions.
+        if (sketch_canvas::isCanvasEntry(chain[i])) continue;
         if (!readEnable(modInstances, chain[i].value("instance_key", std::string())))
           continue;  // a disabled shaper takes no auto-connect
         const RegisteredModule* sreg =
@@ -865,6 +912,10 @@ int32_t SketchExecutor::execute(
         for (int j = static_cast<int>(i) - 1; j >= 0; --j) {
           if (chain[j].is_object() && chain[j].contains("module_type") &&
               chain[j].contains("instance_key")) {
+            // Redundant while canvas entries are tail-partitioned (a linear
+            // consumer never scans back into them), but stated anyway so the
+            // rule holds if that invariant is ever relaxed.
+            if (sketch_canvas::isCanvasEntry(chain[j])) continue;
             if (!readEnable(modInstances, chain[j].value("instance_key", std::string())))
               continue;  // skip disabled producers
             p = j; break;
@@ -899,6 +950,16 @@ int32_t SketchExecutor::execute(
         });
       }
     }
+
+    // --- Merged execution order (sidecar canvas) --------------------------
+    // The UI topo-sorts chain + wires and stores the result; we only repair and
+    // replay it. `execIdx` is that order as chain indices, `execPos` its
+    // inverse — and causality is read from execPos, NOT from chain position,
+    // since a canvas node can be interleaved anywhere.
+    const std::vector<size_t> execIdx = sketch_canvas::resolveExecOrder(
+        chain, rawSketch.value("execOrder", json()));
+    std::vector<size_t> execPos(chain.size(), 0);
+    for (size_t r = 0; r < execIdx.size(); ++r) execPos[execIdx[r]] = r;
 
     if (!effWires.empty()) {
       std::unordered_map<std::string, size_t> byKey;
@@ -1025,12 +1086,15 @@ int32_t SketchExecutor::execute(
         } else {
           continue;  // unsupported source type — drop the wire
         }
-        // Positional causality (web's delayed flag): a producer at/below the
-        // consumer in the chain feeds the PREVIOUS frame's value (also how
-        // feedback cycles are broken). The executor processes top-to-bottom, so
-        // when si >= di the consumer reads before the producer writes — mark
-        // both taps delayed so they route through the persistent delay maps.
-        const bool delayed = si->second >= di->second;
+        // Positional causality (web's delayed flag): a producer at/after the
+        // consumer in the EXECUTION order feeds the PREVIOUS frame's value
+        // (also how feedback cycles are broken). We walk the plan in execution
+        // order, so when the producer's rank is >= the consumer's the consumer
+        // reads before the producer writes — mark both taps delayed so they
+        // route through the persistent delay maps. Lock-step twin: the
+        // `wireIsDelayed` rule in web/src/state/exec-order.ts, which reads the
+        // same stored order back for <taps-overlay>'s delayed markers.
+        const bool delayed = execPos[si->second] >= execPos[di->second];
         rails.push_back(json{{"id", wid}, {"dataType", railDataType}});
         json wtap{{"direction", "write"}, {"railId", wid}, {"fieldPath", srcField}};
         if (delayed) wtap["delayed"] = true;
@@ -1099,6 +1163,10 @@ int32_t SketchExecutor::execute(
 
     json col{{"chain", std::move(chain)}};
     if (!rails.empty()) col["rails"] = std::move(rails);
+    // Carry the resolved order (as chain indices) to buildPlan. Omitted when it
+    // is plain chain order — which is every canvas-free sketch — so the cached
+    // exec doc and its structural signature are byte-identical to before.
+    if (!sketch_canvas::isIdentityOrder(execIdx)) col["execOrder"] = execIdx;
     normalizedStorage["columns"] = json::array({std::move(col)});
     rawPtr = &normalizedStorage;
   }
@@ -1364,7 +1432,7 @@ int32_t SketchExecutor::execute(
       cachedState = state;
     };
 
-    auto runStandalone = [&](size_t k, bool isLastGroupInCol) {
+    auto runStandalone = [&](size_t k) {
       const PlanEntry& pe = R[k];
       size_t i = pe.chainIdx;
       const auto& entry = chain[i];
@@ -1375,11 +1443,34 @@ int32_t SketchExecutor::execute(
       EffectRef inst = instanceRef(mt, nsPrefix_ + instKey);
       if (!inst.valid()) return;
 
+      // A sidecar-canvas node runs INTERLEAVED with the linear list (the merged
+      // execution order), but it is NOT part of the image chain: its input comes
+      // from its own texture wires and its output goes only to whatever wires
+      // read it. So it reads `stageInput` rather than the column cursor, and it
+      // never publishes — `colInput`, `finalHandle` and `anyDispatched` stay
+      // linear-only, which is what keeps an all-canvas sketch correctly
+      // returning its input untouched.
+      const bool isCanvas = pe.isCanvas;
+      const int32_t stageInput = isCanvas
+          ? canvasStageInput(entry, reg, railsById, railTextures, execInput)
+          : colInput;
+      auto publishStage = [&](int32_t out, bool dispatched) {
+        if (isCanvas) return;
+        if (dispatched) anyDispatched = true;
+        finalHandle = out;
+        colInput = out;   // the next linear stage reads this stage's result
+      };
+
       // For a passthrough stage that is the column's FINAL output, the result
       // must land in `outputHandle` (the caller's bound output texture) — the
       // barrel blits that texture, not an arbitrary intermediate. Mid-chain
-      // passthroughs just alias colInput (the next stage reads it directly).
-      const bool isFinalStage = isLastCol && isLastGroupInCol;
+      // passthroughs just alias the stage input (the next stage reads it).
+      // The column's image ends at its last LINEAR stage. With no canvas entries
+      // that IS the last group, so this is behavior-preserving; with them the
+      // merged order can end on a canvas node, which must not claim the output
+      // texture. (The fused path keeps its own last-group test; fused groups
+      // are linear-only by construction.)
+      const bool isFinalStage = isLastCol && !isCanvas && (k == pc.lastLinearK);
       auto passthroughOutput = [&](int32_t src) -> int32_t {
         // No real input (e.g. a bypassed generator with nothing above): emit a
         // clean cleared frame so the next stage / column output isn't a stale
@@ -1411,7 +1502,7 @@ int32_t SketchExecutor::execute(
                                         : readEnable(instances, instKey);
       inst.doSetActive(enabled);
       if (!enabled) {
-        int32_t out = passthroughOutput(colInput);
+        int32_t out = passthroughOutput(stageInput);
         // A texture wire from a bypassed effect's output still carries the
         // image the bypass forwards (this stage's passthrough), so downstream
         // consumers see exactly what the next chain stage sees — not a dormant
@@ -1440,10 +1531,9 @@ int32_t SketchExecutor::execute(
           }
         }
         if (chainEntryHook_) {
-          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+          chainEntryHook_((int)colIdx, (int)i, stageInput, out, W, H);
         }
-        finalHandle = out;
-        colInput = out;   // next stage reads the passthrough result
+        publishStage(out, /*dispatched=*/false);   // next stage reads the passthrough result
         return;
       }
 
@@ -1487,7 +1577,7 @@ int32_t SketchExecutor::execute(
           // from earlier stages are already captured.
           int32_t src = wireTextureForField(entry, "send_in",
                                             railsById, railTextures);
-          if (src <= 0) src = colInput;
+          if (src <= 0) src = stageInput;
           if (src > 0) {
             sidechannel_bus::publish(ch.c_str(), src, W, H, busTag_.c_str());
           }
@@ -1528,7 +1618,7 @@ int32_t SketchExecutor::execute(
         if (!blitted) gpu_clear_texture(fx, 0.0f, 0.0f, 0.0f, 0.0f);
         if (partial) {
           if (!blend_) blend_ = std::make_unique<WetDryBlend>();
-          if (!blend_->encode(colInput, fx, out, opacity, W, H, scBlendMode,
+          if (!blend_->encode(stageInput, fx, out, opacity, W, H, scBlendMode,
                               readXfadeShape(instances, instKey))) {
             // Couldn't build the blend pass — show the channel at full
             // strength rather than nothing.
@@ -1544,11 +1634,9 @@ int32_t SketchExecutor::execute(
                          railsById, railTextures, railFloats, railScalars, railBuffers,
                          nullptr);
         if (chainEntryHook_) {
-          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+          chainEntryHook_((int)colIdx, (int)i, stageInput, out, W, H);
         }
-        anyDispatched = true;
-        finalHandle = out;
-        colInput = out;
+        publishStage(out, /*dispatched=*/true);
         return;
       }
 
@@ -1662,7 +1750,7 @@ int32_t SketchExecutor::execute(
       if (tapsAllowSkip && !hasAuto && blendMode == 0 && !transportSection &&
           !entryHasSmoothing(entry) && inst.isIdentity()) {
         ++stats_.identitySkipped;
-        int32_t out = passthroughOutput(colInput);
+        int32_t out = passthroughOutput(stageInput);
         if (hasTaps) {
           // No modulated relays here: read-tapped entries never reach this
           // skip, and the skippable producers' values come from doc state /
@@ -1674,10 +1762,9 @@ int32_t SketchExecutor::execute(
                            nullptr);
         }
         if (chainEntryHook_) {
-          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+          chainEntryHook_((int)colIdx, (int)i, stageInput, out, W, H);
         }
-        finalHandle = out;
-        colInput = out;   // next stage reads the passthrough result
+        publishStage(out, /*dispatched=*/false);   // next stage reads the passthrough result
         return;
       }
 
@@ -1690,7 +1777,7 @@ int32_t SketchExecutor::execute(
       //       set, which still routes through the host blend (mode math +
       //       source-over at full coverage).
       // 0<o<1 → render into a scratch texture, then host-blend it with the
-      //       column input: Normal = mix(colInput, fx, opacity); other modes =
+      //       column input: Normal = mix(stageInput, fx, opacity); other modes =
       //       composite.blend's math (see host_blend.h).
       // Modulated opacity is clamped to [0,1] at consumption; the static path
       // stays unclamped/unchanged (its exact value feeds computeStructSig).
@@ -1707,7 +1794,7 @@ int32_t SketchExecutor::execute(
       inst.setWillRender(willRender);
 
       if (!willRender) {
-        inst.setTextureField("tex_in", colInput);
+        inst.setTextureField("tex_in", stageInput);
         inst.setFieldConnected("tex_in", true, false);
         std::unordered_map<std::string, float> modScalars;
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
@@ -1722,17 +1809,16 @@ int32_t SketchExecutor::execute(
         // A buffer-producing modulation source (e.g. debug.particles_emitter) has
         // no texture output, but its render() UPLOADS its GPU buffers — run it so
         // downstream readers see fresh data. It doesn't touch the chain texture,
-        // so the passthrough below still forwards colInput untouched.
+        // so the passthrough below still forwards stageInput untouched.
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
         captureWriteTaps(inst.h, entry, instKey, instances,
                          railsById, railTextures, railFloats, railScalars, railBuffers,
                          &modScalars);
-        int32_t out = passthroughOutput(colInput);
+        int32_t out = passthroughOutput(stageInput);
         if (chainEntryHook_) {
-          chainEntryHook_((int)colIdx, (int)i, colInput, out, W, H);
+          chainEntryHook_((int)colIdx, (int)i, stageInput, out, W, H);
         }
-        finalHandle = out;
-        colInput = out;   // next stage reads the passthrough result
+        publishStage(out, /*dispatched=*/false);   // next stage reads the passthrough result
         return;
       }
 
@@ -1743,7 +1829,7 @@ int32_t SketchExecutor::execute(
       int32_t fxHandle = partial ? nextIntermediate(W, H) : outHandle;
 
       // -- Wire primary channels --
-      inst.setTextureField("tex_in",  colInput);
+      inst.setTextureField("tex_in",  stageInput);
       inst.setTextureField("tex_out", fxHandle);
       inst.setFieldConnected("tex_in",  true,  false);
       inst.setFieldConnected("tex_out", false, true);
@@ -1775,7 +1861,7 @@ int32_t SketchExecutor::execute(
       // otherwise, so this is also what makes renderTarget() valid at all). --
       {
         std::vector<int32_t> slots;
-        slots.push_back(colInput);
+        slots.push_back(stageInput);
         if (reg) {
           // A wire-bound input overrides its schema slot. The dest field may be
           // the schema's NAMED input field (e.g. "tex_a" → slot 0) or a NUMERIC
@@ -1811,7 +1897,7 @@ int32_t SketchExecutor::execute(
 
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
-        if (!blend_->encode(colInput, fxHandle, outHandle, opacity, W, H,
+        if (!blend_->encode(stageInput, fxHandle, outHandle, opacity, W, H,
                             blendMode, readXfadeShape(instances, instKey))) {
           // Couldn't build the blend pass — show the effect at full strength
           // rather than nothing.
@@ -1820,12 +1906,10 @@ int32_t SketchExecutor::execute(
       }
 
       if (chainEntryHook_) {
-        chainEntryHook_((int)colIdx, (int)i, colInput, outHandle, W, H);
+        chainEntryHook_((int)colIdx, (int)i, stageInput, outHandle, W, H);
       }
 
-      anyDispatched = true;
-      finalHandle = outHandle;
-      colInput = outHandle;
+      publishStage(outHandle, /*dispatched=*/true);
     };
 
     auto runFusedGroup = [&](const Group& g, bool isLastGroupInCol) {
@@ -1848,10 +1932,10 @@ int32_t SketchExecutor::execute(
         allStages.push_back(inst);
       }
       if (!stagesOK) {
-        for (size_t k = g.firstK; k <= g.lastK; ++k) {
-          bool last = (k == g.lastK) && isLastGroupInCol;
-          runStandalone(k, last);
-        }
+        // runStandalone decides final-stage-ness itself, from the plan's last
+        // LINEAR entry — which is the authoritative test now that the merged
+        // order can interleave canvas nodes.
+        for (size_t k = g.firstK; k <= g.lastK; ++k) runStandalone(k);
         return;
       }
 
@@ -1949,10 +2033,10 @@ int32_t SketchExecutor::execute(
       if (pso <= 0) {
         // Codegen / compile failed — fall back to per-entry path for
         // every stage in this group so we at least produce output.
-        for (size_t k = g.firstK; k <= g.lastK; ++k) {
-          bool last = (k == g.lastK) && isLastGroupInCol;
-          runStandalone(k, last);
-        }
+        // runStandalone decides final-stage-ness itself, from the plan's last
+        // LINEAR entry — which is the authoritative test now that the merged
+        // order can interleave canvas nodes.
+        for (size_t k = g.firstK; k <= g.lastK; ++k) runStandalone(k);
         return;
       }
 
@@ -2020,7 +2104,7 @@ int32_t SketchExecutor::execute(
         runFusedGroup(g, isLastGroupInCol);
       } else {
         // size 1 — non-eligible or single-eligible (no fusion savings)
-        runStandalone(g.firstK, isLastGroupInCol);
+        runStandalone(g.firstK);
       }
     }
 
@@ -2474,6 +2558,45 @@ void SketchExecutor::drainTriggerRing(const RegisteredModule* reg,
     trigger_bus::emit(trigger_bus::kGlobalRail, channel, on, velocity,
                       instKey.c_str(), strict, deadlineMs);
   }
+}
+
+/**
+ * The input texture for a sidecar-canvas stage.
+ *
+ * A canvas node is off the linear image chain, so it cannot take the column
+ * cursor — that would make its meaning depend on where the merged order happened
+ * to place it. It takes its explicitly wired texture input instead, trying the
+ * names the editor can emit for slot 0, and falls back to the sketch's own
+ * input.
+ *
+ * `execInput` is the right fallback (rather than a cleared texture) on three
+ * counts: it is always defined at this point in the frame, it is
+ * position-independent — so drawing an unrelated wire can never change what an
+ * unwired node sees — and it matches what dropping the same effect at the TOP of
+ * the linear chain does, which keeps "drag a card out to the canvas" visually
+ * continuous. When there is no input at all (a generator-only sketch,
+ * execInput < 0) the bind is skipped and the field stays unbound, exactly as it
+ * already is for the first linear stage.
+ */
+int32_t SketchExecutor::canvasStageInput(
+    const json& entry,
+    const RegisteredModule* reg,
+    const std::unordered_map<std::string, json>& railsById,
+    const std::unordered_map<std::string,
+      std::unordered_map<std::string, int32_t>>& railTextures,
+    int32_t execInput) {
+  int32_t t = wireTextureForField(entry, "tex_in", railsById, railTextures);
+  if (t > 0) return t;
+  t = wireTextureForField(entry, "0", railsById, railTextures);
+  if (t > 0) return t;
+  // A module whose slot-0 input isn't named tex_in (e.g. a compositor's tex_a).
+  if (reg && !reg->slotInputTextureFields.empty() &&
+      !reg->slotInputTextureFields[0].empty()) {
+    t = wireTextureForField(entry, reg->slotInputTextureFields[0].c_str(),
+                            railsById, railTextures);
+    if (t > 0) return t;
+  }
+  return execInput;
 }
 
 int32_t SketchExecutor::wireTextureForField(

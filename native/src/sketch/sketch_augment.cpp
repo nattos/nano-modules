@@ -1,4 +1,5 @@
 #include "sketch/sketch_augment.h"
+#include "sketch/sketch_canvas.h"
 
 #include <string>
 #include <unordered_map>
@@ -224,6 +225,10 @@ void augmentColumn(json& sketch, int colIdx,
   for (size_t i = 0; i < chain.size(); ++i) {
     auto& entry = chain[i];
     if (!entry.is_object() || entry.value("type", std::string()) != "module") continue;
+    // The sidecar canvas is explicit-wires-only: implicit struct connections are
+    // a POSITIONAL affordance ("nearest compatible producer above"), and a
+    // freeform canvas node has no meaningful "above". See sketch_canvas.h.
+    if (sketch_canvas::isCanvasEntry(entry)) continue;
     if (isBypassed(entry)) continue;   // disabled consumer takes no implicit rail
     const std::string moduleType = entry.value("module_type", std::string());
     auto schemaIt = schemas.find(moduleType);
@@ -258,6 +263,11 @@ void augmentColumn(json& sketch, int colIdx,
       for (int j = static_cast<int>(i) - 1; j >= 0 && producerChainIdx < 0; --j) {
         const auto& pe = chain[j];
         if (!pe.is_object() || pe.value("type", std::string()) != "module") continue;
+        // Redundant while canvas entries are tail-partitioned (a linear consumer
+        // never scans back into them), but stated so the rule survives a change
+        // to that invariant — and so implicit rail ids, which bake the producer's
+        // chain index, can only ever name a LINEAR producer.
+        if (sketch_canvas::isCanvasEntry(pe)) continue;
         if (isBypassed(pe)) continue;   // see through disabled producers
         const std::string pmt = pe.value("module_type", std::string());
         auto pschemaIt = schemas.find(pmt);

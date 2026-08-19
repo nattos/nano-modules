@@ -396,3 +396,20 @@ TEST_CASE("a clip's SECOND generator stays in the chain", "[comp]") {
         "arr_bg", "clip_c1_g1", "clip_c1_fx", "clip_c1_blend"});
   }
 }
+
+TEST_CASE("comp-built sketches carry no sidecar-canvas keys", "[comp]") {
+  // The arrangement builds purely LINEAR chains, and its output is a
+  // byte-for-byte golden shared with web/src/views/arrangement/engine/. The
+  // sidecar canvas adds two optional keys to the sketch schema (ModuleEntry
+  // `canvas` and Sketch `execOrder`); neither may ever appear here, or the
+  // goldens drift and comp clips silently gain canvas semantics.
+  const comp::Catalog cat = catalogFrom(loadFixture("build.json"));
+  const auto b = buildOne(compWithDevices({{"g1", "source.solid_color"},
+                                           {"fx", "color.invert"}}), cat);
+  REQUIRE(b.hasContent);
+  CHECK_FALSE(b.sketch.contains("execOrder"));
+  for (const auto& e : b.sketch["chain"]) {
+    INFO("entry " << e.value("instance_key", std::string()));
+    CHECK_FALSE(e.contains("canvas"));
+  }
+}

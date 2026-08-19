@@ -515,9 +515,18 @@ class SketchExecutor {
     std::string instanceKey;
     const RegisteredModule* reg; // schema/metadata for this chain entry
     bool eligible;               // fusion-eligible at plan-build time
+    // Sidecar-canvas node (see sketch_canvas.h): runs for its scalars/textures
+    // but is OFF the linear image chain — it never advances the column's texture
+    // cursor and never fuses.
+    bool isCanvas;
   };
   struct PlanColumn {
+    // In EXECUTION order (which is chain order unless the sketch stores an
+    // override), not chain order. PlanEntry::chainIdx keeps the addressing.
     std::vector<PlanEntry> resolvable;
+    // Index into `resolvable` of the last LINEAR entry — the stage that produces
+    // the column's final image. npos when the column is all canvas.
+    size_t lastLinearK = static_cast<size_t>(-1);
     std::unordered_map<std::string, nlohmann::json> railsById;  // column-local + sketch-wide
   };
   std::vector<PlanColumn> plan_;
@@ -650,6 +659,16 @@ class SketchExecutor {
   // texture-leaf resolution for callers that need a wired texture OUTSIDE the
   // stage's own tap application — the sidechannel send servicing, which
   // publishes before the render path runs.
+  // Input texture for a sidecar-canvas stage: its explicitly wired texture
+  // input, else the sketch's own input. See the definition for why.
+  int32_t canvasStageInput(
+      const nlohmann::json& entry,
+      const RegisteredModule* reg,
+      const std::unordered_map<std::string, nlohmann::json>& railsById,
+      const std::unordered_map<std::string,
+        std::unordered_map<std::string, int32_t>>& railTextures,
+      int32_t execInput);
+
   int32_t wireTextureForField(
       const nlohmann::json& entry,
       const char* fieldPath,
