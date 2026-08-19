@@ -210,6 +210,11 @@ export interface UserSettings {
   /** Width in pixels of the Resolume sketch-IDE edit tab's left panel. */
   editLeftPanelWidth: number;
   /**
+   * Whether the sidecar canvas is open in the edit tab. When it is, the canvas
+   * takes over the right panel and the output monitor floats bottom-right.
+   */
+  sketchCanvasOpen: boolean;
+  /**
    * Per-sidechannel display-name override templates, keyed by channel name
    * ("1".."8" or a custom text name). Within a template every "#" expands to
    * the channel's DEFAULT label ("3 — Instance 1"); an absent/empty entry

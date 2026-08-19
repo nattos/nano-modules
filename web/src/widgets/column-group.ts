@@ -14,7 +14,7 @@ import { html, css, nothing, svg, TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import type { Sketch, SketchColumn, ChainEntry, ModuleEntry, Wire, FieldConnectInfo, SketchOutputFormat, SketchResolutionOverride } from '../sketch-types';
-import { sketchChain, chainEntryAt, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat, isDeviceOff } from '../sketch-types';
+import { sketchChain, chainEntryAt, isCanvasEntry, linearChainLength, isEffectCollapsed, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, RESERVED_FIELD_DEFS, BLEND_MODE_NAMES, isDefaultOutputFormat, isDeviceOff } from '../sketch-types';
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
@@ -87,6 +87,9 @@ function arcBezierPath(a: Pt, b: Pt): string {
 }
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
+
+/** Default sidecar-canvas card width, when a placement doesn't pin one. */
+export const CANVAS_CARD_WIDTH = 264;
 
 /**
  * Whether an effect produces an image — i.e. its schema declares a `texture`
@@ -219,6 +222,13 @@ export class ColumnGroup extends MobxLitElement {
   /** Injected data/controller/taps seam. The effect IDE passes `ideColumnAdapter`
    *  (all caps on → original behavior); other surfaces pass their own. */
   @property({ attribute: false }) adapter: ColumnAdapter | null = null;
+  /**
+   * Which surface this instance renders: the linear effect list, or the sidecar
+   * canvas. Both mount over the SAME sketch and the same `colIdx`, each drawing
+   * only its own partition of the chain — so their field keys are disjoint and
+   * every anchor/selection/mutation path stays exactly as it was.
+   */
+  @property() layoutMode: 'linear' | 'canvas' = 'linear';
 
   /** Shorthands for the injected adapter facets (assumes `adapter` is set). */
   private get ds() { return this.adapter!.data; }
@@ -672,6 +682,20 @@ export class ColumnGroup extends MobxLitElement {
       opacity: 0.9;
     }
 
+    /* --- Sidecar canvas: freeform card placement --- */
+    .column.canvas-surface {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .canvas-card {
+      position: absolute;
+      /* Cards sit above the wire layer's arcs but below the floating panels. */
+      z-index: 1;
+    }
+    /* The canvas has no flow body, so a card must size itself. */
+    .canvas-card .effect-card { width: 100%; }
+
     /* --- Wire arcs (in-column overlay, shown in wires mode) --- */
     .wire-lines {
       position: absolute;
@@ -965,6 +989,11 @@ export class ColumnGroup extends MobxLitElement {
     marker?.classList.remove('visible');
   }
 
+  /** Whether this entry belongs to the surface we're rendering. */
+  private inThisLayout(entry: ChainEntry): boolean {
+    return isCanvasEntry(entry) === (this.layoutMode === 'canvas');
+  }
+
   render() {
     const sketch = this.ds.getSketch(this.sketchId);
     if (!sketch || this.colIdx !== 0) {
@@ -972,11 +1001,28 @@ export class ColumnGroup extends MobxLitElement {
     }
 
     // Single linear stack: synthesize a column view over the canonical chain so
-    // the rest of this widget (built around SketchColumn) keeps working.
+    // the rest of this widget (built around SketchColumn) keeps working. The
+    // chain is NOT filtered here — renderChain skips the entries belonging to
+    // the other surface while keeping the true chain index, which is what lets
+    // every `${sketchId}/${colIdx}/${chainIdx}/…` key, selection path and trace
+    // id keep addressing both surfaces from one namespace.
     const column: SketchColumn = { name: 'main', chain: sketchChain(sketch) };
 
     // Touch layout generation for reactive updates
     const _layoutGen = this.layoutManager.generation;
+
+    // Canvas mode: cards are absolutely positioned from their stored placement,
+    // so the flow body, the chain I/O markers, the reorder marker, the insert
+    // header and the gutter pip strip all belong to the linear surface only
+    // (canvas cards carry their own ports instead).
+    if (this.layoutMode === 'canvas') {
+      return html`
+        <div class="column canvas-surface">
+          ${this.renderChain(sketch, column)}
+          ${this.renderSelectedWirePanel(sketch)}
+        </div>
+      `;
+    }
 
     return html`
       <div class="column" style="position:relative">
@@ -1006,10 +1052,26 @@ export class ColumnGroup extends MobxLitElement {
       const r = this.callbacks?.renderInterstitial?.(this.sketchId, gap);
       if (r) items.push(r);
     };
+    if (this.layoutMode === 'canvas') {
+      // Freeform: each card sits at its stored placement. `i` stays the TRUE
+      // chain index, so anchors, selection and mutations are unchanged.
+      for (let i = 0; i < column.chain.length; i++) {
+        const entry = column.chain[i];
+        if (!this.inThisLayout(entry)) continue;
+        const pos = entry.canvas!;
+        items.push(html`
+          <div class="canvas-card" data-chain-idx=${i}
+            style="left:${pos.x}px;top:${pos.y}px;width:${pos.w ?? CANVAS_CARD_WIDTH}px">
+            ${this.renderEffectCard(i, entry)}
+          </div>`);
+      }
+      return items;
+    }
     // Implicit texture input marker on top — not stored in chain.
     items.push(this.renderInputMarker(column));
     inter(0);
     for (let i = 0; i < column.chain.length; i++) {
+      if (!this.inThisLayout(column.chain[i])) continue;
       items.push(this.renderEffectCard(i, column.chain[i]));
       inter(i + 1);
     }
@@ -2229,6 +2291,7 @@ export class ColumnGroup extends MobxLitElement {
     for (let i = 0; i < column.chain.length; i++) {
       const entry = column.chain[i];
       if (entry.type !== 'module') continue;
+      if (!this.inThisLayout(entry)) continue;   // the other surface draws its own
       const outputFieldNames = this.getOutputFieldNames(entry);
       // Collect fields needing a pip: smoothing-enabled (extend as more
       // engine-level options arrive) plus any field a wire touches.
@@ -2571,9 +2634,12 @@ export class ColumnGroup extends MobxLitElement {
     const sketch = this.ds.getSketch(this.sketchId);
     const chain = sketch ? sketchChain(sketch) : [];
     for (let i = 0; i < chain.length; i++) {
+      if (isCanvasEntry(chain[i])) continue;
       if (this.ctl.isSelected(`effect/${this.sketchId}/${this.colIdx}/${i}`)) return i + 1;
     }
-    return chain.length;
+    // Append at the END OF THE LINEAR LIST — never past it, or the insert lands
+    // among the tail-partitioned canvas entries.
+    return sketch ? linearChainLength(sketch) : 0;
   }
 
   /** Best temporary effect id for a category (preferred default → first in
@@ -3125,7 +3191,10 @@ export class ColumnGroup extends MobxLitElement {
    */
   private registerChainMarkerSelectable(path: string, label: string, side: 'input' | 'output') {
     const sketch = this.ds.getSketch(this.sketchId);
-    const chainLen = sketch ? sketchChain(sketch).length : 0;
+    // The implicit I/O markers bracket the LINEAR list — the sketch's pixel
+    // path. Counting the whole chain would point the output marker at a
+    // sidecar-canvas node, which renders no part of the image.
+    const chainLen = sketch ? linearChainLength(sketch) : 0;
     const chainIdx = side === 'input' ? 0 : Math.max(0, chainLen - 1);
     const traceId = `trace_${this.sketchId}/${this.colIdx}/${side}`;
     const target: TracePoint['target'] = {

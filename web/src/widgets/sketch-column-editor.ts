@@ -368,6 +368,15 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
       appController.setTappingMode(!appState.local.tappingMode);
       return;
     }
+    // `C` opens/closes the sidecar canvas — a sibling of W, same shape.
+    // Bare key only: a ⌘C/^C that handleCommonEditShortcut declined (nothing
+    // copyable) must not fall through and toggle the canvas instead.
+    if ((e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      appController.setSketchCanvasOpen(
+        !appState.local.userSettings.sketchCanvasOpen);
+      return;
+    }
     // `?` toggles help mode (global, when not typing) — a sibling of W, same
     // key across all surfaces.
     if (e.key === '?') {

@@ -21,7 +21,7 @@ import {
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
-import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
+import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
 import { computeExecOrder } from './exec-order';
 import { midiController } from './midi-controller';
@@ -1793,6 +1793,74 @@ export class AppController {
       const p = appState.local.selection?.path;
       if (p && (p.startsWith('field/') || p.startsWith('rail/'))) this.select(null);
     }
+  }
+
+  /** Open/close the sidecar canvas (persisted; the edit tab reads it). */
+  setSketchCanvasOpen(on: boolean) {
+    this.setUserSetting('sketchCanvasOpen', on);
+  }
+
+  // --- Moving effects between the linear list and the sidecar canvas -------
+  //
+  // Both directions keep the entry's `instance_key`, so every wire touching it
+  // — and all of its instance state — survives the move untouched. Only the
+  // partition changes, plus the execution order it implies.
+
+  /**
+   * Move a linear effect onto the sidecar canvas at `pos`.
+   *
+   * The entry is re-appended at the chain TAIL to hold the partition invariant.
+   * That shifts the chain index of everything below its old slot, exactly as a
+   * delete would — trace ids and implicit rail ids move with it.
+   */
+  moveEffectToCanvas(sketchId: string, chainIdx: number, pos: { x: number; y: number; w?: number }) {
+    this.mutate('Move to canvas', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      const entry = chain[chainIdx];
+      if (entry?.type !== 'module' || isCanvasEntry(entry)) return;
+      chain.splice(chainIdx, 1);
+      entry.canvas = { x: pos.x, y: pos.y, ...(pos.w ? { w: pos.w } : {}) };
+      chain.push(entry);
+      this.reorderExec(draft, sketchId);
+    });
+  }
+
+  /** Move a canvas node back into the linear list at `insertIdx`. */
+  moveEffectToLinear(sketchId: string, chainIdx: number, insertIdx: number) {
+    this.mutate('Move to chain', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      const chain = ensureChain(sk);
+      const entry = chain[chainIdx];
+      if (entry?.type !== 'module' || !isCanvasEntry(entry)) return;
+      chain.splice(chainIdx, 1);
+      delete entry.canvas;
+      // Clamp into the LINEAR span — dropping past it would land the entry
+      // among the tail-partitioned canvas nodes and silently re-canvas it.
+      const linearCount = chain.filter(e => !isCanvasEntry(e)).length;
+      chain.splice(Math.max(0, Math.min(insertIdx, linearCount)), 0, entry);
+      this.reorderExec(draft, sketchId);
+    });
+  }
+
+  /** Move a canvas card to a new position (long-edit trio for live drags). */
+  private canvasPosRecipe(sketchId: string, chainIdx: number, pos: { x: number; y: number }) {
+    return (draft: DatabaseState) => {
+      const entry = ensureChain(draft.sketches[sketchId] ?? ({} as any))?.[chainIdx];
+      if (!entry || !isCanvasEntry(entry)) return;
+      entry.canvas = { ...entry.canvas!, x: pos.x, y: pos.y };
+    };
+  }
+
+  beginSetCanvasPos(sketchId: string, chainIdx: number, pos: { x: number; y: number }): LongEdit {
+    return this.history.beginLongEdit(
+      'Move card', this.canvasPosRecipe(sketchId, chainIdx, pos));
+  }
+
+  updateSetCanvasPos(edit: LongEdit, sketchId: string, chainIdx: number, pos: { x: number; y: number }) {
+    edit.update(this.canvasPosRecipe(sketchId, chainIdx, pos));
   }
 
   /** Toggle "?" help mode (inline effect help text + section help). */

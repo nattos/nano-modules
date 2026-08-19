@@ -25,6 +25,7 @@ import './app-settings';
 import './reconcile-dialog';
 import './devices/devices-tab';
 import './devices/devices-float-monitor';
+import './canvas/sketch-canvas-view';
 import './devices/device-wire-overlay';
 
 @customElement('sketch-app')
@@ -44,6 +45,10 @@ export class SketchApp extends MobxLitElement {
 
   render() {
     const sketchId = appState.local.editingSketchId;
+    // The sidecar canvas takes over the right panel while the Edit tab is
+    // active — the same seam Devices uses, and for the same reason: the left
+    // editor must stay mounted so wires can be dragged between the two panels.
+    const canvasOpen = appState.local.userSettings.sketchCanvasOpen === true;
     // Main monitor always shows the sketch output. Selecting an effect card no
     // longer retargets the monitor to that card's chain-output texture.
     const traceTarget = { type: 'sketch_output', sketchId } as any;
@@ -58,6 +63,9 @@ export class SketchApp extends MobxLitElement {
             emptyMessage="No sketch selected for editing. Go to Instances and pick one."
           ></sketch-column-editor>
         `,
+          renderRight: canvasOpen
+            ? () => html`<sketch-canvas-view .sketchId=${sketchId}></sketch-canvas-view>`
+            : undefined,
         },
         {
           // Devices keeps the sketch editor in the left panel (same instance
@@ -87,14 +95,17 @@ export class SketchApp extends MobxLitElement {
       `,
     };
 
-    const devicesActive =
-      (appState.local.userSettings.activeTab ?? 'edit') === 'devices';
+    const activeTab = appState.local.userSettings.activeTab ?? 'edit';
+    const devicesActive = activeTab === 'devices';
+    // Whenever something else owns the monitor AREA, the output pops out to the
+    // bottom-right overlay. It reuses the SAME 'edit_preview' trace point the
+    // inline monitor uses, and renderRight replaces renderMonitor, so there is
+    // never a double mount and no extra readback.
+    const monitorFloats = devicesActive || (canvasOpen && activeTab === 'edit');
     return html`
       <app-shell .config=${config}></app-shell>
-      ${devicesActive ? html`
-        <devices-float-monitor></devices-float-monitor>
-        <device-wire-overlay></device-wire-overlay>
-      ` : nothing}
+      ${monitorFloats ? html`<devices-float-monitor></devices-float-monitor>` : nothing}
+      ${devicesActive ? html`<device-wire-overlay></device-wire-overlay>` : nothing}
       <snackbar-host></snackbar-host>
       <reconcile-dialog></reconcile-dialog>
     `;
