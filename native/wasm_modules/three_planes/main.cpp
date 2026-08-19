@@ -71,6 +71,7 @@ struct State {
   float halo_radius  = 0.30f;
   float halo_gain    = 0.55f;
   float halo_falloff = 0.45f;
+  float halo_smooth  = 0.35f;
   float fill_gain    = 0.22f;
 
   // --- Grade ---
@@ -283,6 +284,11 @@ void module_init() {
                   nullptr, 0.f, nullptr,
                   "0 = tight and punchy, 1 = wide and soft.")
         .label("Halo Falloff", "Fall")
+      .floatField("halo_smooth", 0.35f, 0.f, 1.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Rounds the distance field's medial-axis crease, as a "
+                  "fraction of the halo radius. 0 shows the raw ridge.")
+        .label("Halo Smoothing", "Smooth")
       .floatField("fill_gain", 0.22f, 0.f, 2.f, state::SecondaryInput)
         .label("Fill Gain", "Fill G")
 
@@ -457,6 +463,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "halo_radius"))     s->halo_radius = state::patchFloat(i);
     else if (state::pathIs(p, l, "halo_gain"))       s->halo_gain = state::patchFloat(i);
     else if (state::pathIs(p, l, "halo_falloff"))    s->halo_falloff = state::patchFloat(i);
+    else if (state::pathIs(p, l, "halo_smooth"))     s->halo_smooth = state::patchFloat(i);
     else if (state::pathIs(p, l, "fill_gain"))       s->fill_gain = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "chroma_bleed"))    s->chroma_bleed = state::patchFloat(i);
@@ -508,6 +515,8 @@ void render(void* self, int vp_w, int vp_h) {
 
   // One pixel measured in cover-square units is 2 / max(W, H); widen it a
   // touch so the edge lands soft rather than stair-stepped.
+  u.fills[3] = s->halo_smooth;
+
   const float px = 2.0f / float(vp_w > vp_h ? vp_w : vp_h);
   const auto  cs = fx::coverSquare(vp_w, vp_h);
 

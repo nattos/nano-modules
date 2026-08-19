@@ -895,6 +895,17 @@ out = nano_vcr_grade(acc, uv, grade)
 `core_whiten` blows the line core toward white and leaves the colour in the halo
 — that single knob is what makes it read as neon rather than vector art.
 
+**Two fields, not one.** The outline and interior coverage use the exact signed
+distance, but the halo must NOT: `min()` over the four edges is only C0 where two
+are equidistant, so `exp(-|sd|/r)` inherits the field's medial axis and Mach-bands
+a visible crease out of every corner. The halo folds the edge distances with a
+log-sum-exp soft minimum instead (`halo_smooth`, as a fraction of the halo
+radius). It is C-infinity, and its bias is self-limiting — where one edge
+dominates it returns the true minimum exactly, so it rounds the crease and leaves
+the tuned falloff alone. A plain sum of per-edge kernels is the same softmin with
+the temperature pinned to `r`: equally smooth, but it under-reads distance by
+`r*ln(4)` and washes the figure out.
+
 **Camera.** Squares in the model XZ plane at `y = -spacing, 0, +spacing`; the
 origin is the middle plane's centre, so orbit is about the right point for free.
 Orthographic, so projection is one affine map — no divide, no near plane.
