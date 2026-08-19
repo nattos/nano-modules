@@ -80,8 +80,14 @@ export function passthroughPorts(schema: Schema, kind: WireKind):
     input = modChannel(schema, IO_INPUT) || firstFieldOfType(schema, 'float', IO_INPUT);
     output = modChannel(schema, IO_OUTPUT) || firstFieldOfType(schema, 'float', IO_OUTPUT);
   } else if (kind === 'texture') {
+    // A module carries images only if it declares a texture OUTPUT — that's the
+    // same test the executor uses for hasTextureOutput. Given one, an
+    // undeclared input falls back to the conventional `tex_in` (the executor
+    // binds slot 0 there regardless); without one, refuse rather than bind a
+    // texture wire to fields the module doesn't have.
+    output = firstFieldOfType(schema, 'texture', IO_OUTPUT);
+    if (!output) return null;
     input = firstFieldOfType(schema, 'texture', IO_INPUT) || 'tex_in';
-    output = firstFieldOfType(schema, 'texture', IO_OUTPUT) || 'tex_out';
   } else {
     input = firstFieldOfType(schema, ['object', 'array'], IO_INPUT);
     output = firstFieldOfType(schema, ['object', 'array'], IO_OUTPUT);

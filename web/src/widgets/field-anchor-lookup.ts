@@ -50,8 +50,14 @@ export function fieldOptionPipIn(cvRoot: ShadowRoot, fieldKey: string): HTMLElem
  * tab at a time, so the left panel holds at most one editor.
  */
 export function activeEditorColumnsRoot(): ShadowRoot | null {
-  const cv = activeShell()?.querySelector('.left-panel sketch-column-editor')
-    ?.shadowRoot?.querySelector('columns-view');
+  const shell = activeShell();
+  // The unified surface mounts the editor directly; the effect IDE's Project
+  // Editor tab wraps it one shadow root deeper. Look through the wrapper rather
+  // than making every surface flatten its layout for this lookup's benefit.
+  const editor = shell?.querySelector('.left-panel sketch-column-editor')
+    ?? shell?.querySelector('.left-panel ide-project-editor')
+         ?.shadowRoot?.querySelector('sketch-column-editor');
+  const cv = editor?.shadowRoot?.querySelector('columns-view');
   return cv?.shadowRoot ?? null;
 }
 

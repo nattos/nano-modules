@@ -23,6 +23,7 @@ import '../../widgets/sketch-monitor';
 import '../../widgets/snackbars';
 import '../devices/devices-tab';
 import '../devices/devices-float-monitor';
+import '../canvas/sketch-canvas-view';
 import '../devices/device-wire-overlay';
 
 @customElement('effect-ide-app')
@@ -74,6 +75,7 @@ export class EffectIdeApp extends MobxLitElement {
 
   render() {
     const sel = appState.local.userSettings.selectedProjectId;
+    const canvasOpen = appState.local.userSettings.sketchCanvasOpen === true;
     const fps = appState.local.engine.fps;
     const error = appState.local.engine.error;
     const effectCount = appState.local.availableEffects.length;
@@ -81,7 +83,15 @@ export class EffectIdeApp extends MobxLitElement {
     const config: ShellConfig = {
       tabs: [
         { id: 'explorer', icon: 'la-folder', title: 'Explorer', kind: 'inline', render: () => html`<ide-explorer></ide-explorer>` },
-        { id: 'project_editor', icon: 'la-stream', title: 'Project Editor', kind: 'inline', render: () => html`<ide-project-editor></ide-project-editor>` },
+        {
+          id: 'project_editor', icon: 'la-stream', title: 'Project Editor', kind: 'inline',
+          render: () => html`<ide-project-editor></ide-project-editor>`,
+          // Sidecar canvas takes over the monitor area (same seam as Devices);
+          // the editor stays in the left panel so wires drag between panels.
+          renderRight: canvasOpen
+            ? () => html`<sketch-canvas-view .sketchId=${sel}></sketch-canvas-view>`
+            : undefined,
+        },
         {
           // Same layout as the unified surface's Devices tab: the project's
           // sketch editor stays in the left panel (rendered DIRECTLY — not via
@@ -116,16 +126,19 @@ export class EffectIdeApp extends MobxLitElement {
       `,
     };
 
-    const devicesActive = appState.local.userSettings.ideLeftTab === 'devices';
+    const leftTab = appState.local.userSettings.ideLeftTab;
+    const devicesActive = leftTab === 'devices';
+    // Whenever something else owns the monitor AREA, the output floats out —
+    // reusing this surface's own trace point, so no extra registration.
+    const monitorFloats = devicesActive || (canvasOpen && leftTab === 'project_editor');
     return html`
       <app-shell .config=${config}></app-shell>
-      ${devicesActive ? html`
+      ${monitorFloats ? html`
         <devices-float-monitor
           .sketchId=${sel ?? ''}
           .traceId=${`ide_preview:${sel}`}
-        ></devices-float-monitor>
-        <device-wire-overlay></device-wire-overlay>
-      ` : nothing}
+        ></devices-float-monitor>` : nothing}
+      ${devicesActive ? html`<device-wire-overlay></device-wire-overlay>` : nothing}
       <snackbar-host></snackbar-host>
     `;
   }
