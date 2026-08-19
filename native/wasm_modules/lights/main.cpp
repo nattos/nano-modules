@@ -25,6 +25,7 @@ NANO_DECLARE_INSTANCE_EFFECT(block_dehance)
 NANO_DECLARE_INSTANCE_EFFECT(tingle_top)
 NANO_DECLARE_INSTANCE_EFFECT(chroma_wave)
 NANO_DECLARE_INSTANCE_EFFECT(flicker_grid)
+NANO_DECLARE_INSTANCE_EFFECT(three_planes)
 
 extern "C" {
 
@@ -177,6 +178,17 @@ void nano_module_main() {
         "flicker,grid,led,column,strobe,pulse,luma,temporal",
         "la-th-large",
         NANO_INSTANCE_LIFECYCLE(flicker_grid),
+    });
+
+    nano::registerEffect({
+        2,
+        "source.mesh.three_planes",
+        "Three Planes",
+        "Three isometric planes stacked like a 3D chess board, shaded as VCR-era neon. The CPU projects twelve corner points per frame (orthographic, so orbiting never adds perspective) and one fullscreen pass shades every plane at once from an exact signed distance field — so the halo is a smooth function of true distance with correctly rounded corners, and its radius is free to widen. Each plane is empty, neon-filled, or a black mask that eats the glow of everything beneath it while keeping its own outline. Publishes per-plane screen Y (azimuth-independent) and silhouette half-height as rails.",
+        "source",
+        "isometric,neon,vcr,glow,stack,layer,sdf,show,meter",
+        "la-layer-group",
+        NANO_INSTANCE_LIFECYCLE(three_planes),
     });
 }
 

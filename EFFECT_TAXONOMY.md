@@ -35,6 +35,7 @@ All source effects now declare the `Generator` capability (separate from the
 | `source.pixel.ocean` | Pixel Ocean | *(new)* | nano | Y | pixel-art wave sprites |
 | `source.pixel.rift` | Pixel Rift | *(new)* | nano | Y | ocean waves crossing a hidden mid-rift |
 | `source.shape_fold` | Shape Fold | `video.shape_fold` | nano | Y | was video.* |
+| `source.mesh.three_planes` | Three Planes | *(new)* | lights | Y | isometric neon stack; SDF-shaded, publishes plane Y rails |
 | `source.solid_color` | Solid Color | `generator.solid_color` | core,testonly | Y |  |
 | `source.text.plain` | Text | `gen.text` | text | Y |  |
 | `source.text.rich` | Rich Text | `gen.richtext` | richtext | Y |  |

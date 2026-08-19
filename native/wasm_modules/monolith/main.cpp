@@ -8,8 +8,13 @@
  * massive-towering-space-structure look: the default material is a near
  * void-black slab that reads entirely through its specular response.
  *
- * Architecture (the platform has NO z-buffer and raster fragment shaders
- * CANNOT sample textures, so all texture-dependent shading is compute):
+ * Architecture (the platform has NO z-buffer, so draw order has to be solved
+ * closed-form; texture-dependent shading is done in compute here for that
+ * reason, NOT because raster can't sample — effect render PSOs declare their
+ * bindings vertex+fragment visible on both backends, so a fragment shader may
+ * sample textures. If you hit a failure that looks like it can't, check for a
+ * compute-authored shader reused in a fragment stage: a compute entry point
+ * must use textureSampleLevel, since it has no implicit derivatives):
  *
  *   CPU (per frame): rotate -> camera (vantage/loom) -> project; emit
  *   FRONT faces only into per-copy vertex buffers (true homogeneous clip

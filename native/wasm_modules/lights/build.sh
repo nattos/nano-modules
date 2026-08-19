@@ -19,6 +19,7 @@ compile_shaders_compute_spv dispersion         render
 compile_shaders_compute_spv plasma_beam_cannon render
 compile_shaders_compute_spv orthomod           render
 compile_shaders_compute_spv lights_sim           render
+compile_shaders_compute_spv three_planes         render
 
 # soft_glow has two compute shaders — color (rgba8) and motion
 # (rgba16f). Separate variants because naga substitutes one storage-
@@ -102,6 +103,7 @@ wasm_build \
   ../block_dehance/main.cpp \
   ../tingle_top/main.cpp \
   ../chroma_wave/main.cpp \
-  ../flicker_grid/main.cpp
+  ../flicker_grid/main.cpp \
+  ../three_planes/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

@@ -860,6 +860,61 @@ I/O:
 
 ---
 
+## Layer³ (three-floor event)
+
+### source.mesh.three_planes
+
+Three isometric quads stacked like a 3D chess board, shaded as VCR-era neon.
+The signature visual for **Layer³**, an event at a three-floor venue. The 4 LED
+bars mirror the three levels, but that mapping is done externally — as is the
+peak-holding EV meter, the camera-orbit envelope, and any image composited above
+the top plane. The effect renders the stack and publishes the rails.
+
+**Why a fullscreen SDF pass, not three additive draws.** Rasterising works in
+principle (`dst = E + dst*(1-A)` is premultiplied alpha-over, and the stack
+order is known), but a single plane needs its halo *additive* over what's
+beneath and its black body *multiplicative* — two blend equations, so six draws.
+The grade then forces a fullscreen resolve pass over an HDR accumulator anyway.
+Against that, one compute pass with no intermediate wins outright, and it also
+gets: a halo radius that is a free uniform rather than baked geometry, exact
+Euclidean distance at corners (the "morphological smoothness" requirement), and
+a three-offset chroma split that costs three cheap re-evaluations instead of
+three passes.
+
+**The resolve** — per pixel, bottom-to-top, and the whole reason for the design:
+
+```
+acc = tex_in * input_opacity
+for i in 1..3:
+    acc *= (1 - A_i)   // black body eats lower planes AND their halos
+    acc += E_i         // its own outline + halo still emits, over that black
+out = nano_vcr_grade(acc, uv, grade)
+```
+
+`fill` is signed, so a plane is neon-filled (`+`) or a mask (`-`), never both.
+`core_whiten` blows the line core toward white and leaves the colour in the halo
+— that single knob is what makes it read as neon rather than vector art.
+
+**Camera.** Squares in the model XZ plane at `y = -spacing, 0, +spacing`; the
+origin is the middle plane's centre, so orbit is about the right point for free.
+Orthographic, so projection is one affine map — no divide, no near plane.
+Elevation defaults to 35.264° (true isometric). Because the plane centres sit on
+the orbit axis, `planeN_y` is **azimuth-independent**; the silhouette half-height
+is not, hence both rails.
+
+**Rails.** `plane{1,2,3}_y` (cover-square, signed) and `plane{1,2,3}_half_h`.
+Both are viewport-free closed forms, so they are computed and published without
+any GPU readback — from `tick()` (so taps see this frame's value) and from
+`render()` (so a host that renders without ticking still gets live rails).
+
+**Look.** The grade lives in the shared `shaders_common/nano_vcr.hlsl`:
+HDR highlight bleach → warmth → asymmetric per-channel soft clip (which *is* the
+tone map) → filmic toe/shoulder → scanlines + grain. Factored out so a future
+post-process sibling can wear the identical look over a `fx::FastBlur` glow
+pyramid; only the halo generation differs.
+
+---
+
 ## Complicator FX (post-process)
 
 *"fx.wave_traveling_down" from the original list was a duplicate of motion-rain — already absorbed into `source.light.motion_blobs` (with `spawn_edge=top, traverse_speed > 0`).*
