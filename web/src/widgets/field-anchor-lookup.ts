@@ -50,18 +50,38 @@ export function fieldOptionPipIn(cvRoot: ShadowRoot, fieldKey: string): HTMLElem
  * tab at a time, so the left panel holds at most one editor.
  */
 export function activeEditorColumnsRoot(): ShadowRoot | null {
-  const app = document.querySelector('sketch-app') ?? document.querySelector('effect-ide-app');
-  const shell = app?.shadowRoot?.querySelector('app-shell');
-  const editor = shell?.shadowRoot?.querySelector('.left-panel sketch-column-editor');
-  const cv = editor?.shadowRoot?.querySelector('columns-view');
+  const cv = activeShell()?.querySelector('.left-panel sketch-column-editor')
+    ?.shadowRoot?.querySelector('columns-view');
   return cv?.shadowRoot ?? null;
 }
 
-/** Best anchor for a field in the active editor: tap hit, else gutter pip. */
+function activeShell(): ShadowRoot | null | undefined {
+  const app = document.querySelector('sketch-app') ?? document.querySelector('effect-ide-app');
+  return app?.shadowRoot?.querySelector('app-shell')?.shadowRoot;
+}
+
+/**
+ * Every root that can hold effect cards for the active surface: the left
+ * panel's linear list, plus the sidecar canvas when it's open. A field key is
+ * a global address (`chainIdx` spans both partitions), so a lookup has to try
+ * both — which is what lets one wire layer span the two panels.
+ */
+export function activeEditorColumnsRoots(): ShadowRoot[] {
+  const roots: ShadowRoot[] = [];
+  const list = activeEditorColumnsRoot();
+  if (list) roots.push(list);
+  const canvas = activeShell()?.querySelector('sketch-canvas-view')?.shadowRoot;
+  if (canvas) roots.push(canvas);
+  return roots;
+}
+
+/** Best anchor for a field on ANY of the active surface's roots. */
 export function activeEditorFieldAnchor(key: string): HTMLElement | null {
-  const root = activeEditorColumnsRoot();
-  if (!root) return null;
-  return fieldHitIn(root, key) ?? fieldOptionPipIn(root, key);
+  for (const root of activeEditorColumnsRoots()) {
+    const el = fieldHitIn(root, key) ?? fieldOptionPipIn(root, key);
+    if (el) return el;
+  }
+  return null;
 }
 
 /**

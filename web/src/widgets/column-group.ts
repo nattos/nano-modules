@@ -91,6 +91,16 @@ function shortName(id: string) { return id.split('.').pop() ?? id; }
 /** Default sidecar-canvas card width, when a placement doesn't pin one. */
 export const CANVAS_CARD_WIDTH = 264;
 
+/** Gap between a field's left edge and its canvas input pip. */
+const CANVAS_PIP_GAP = 13;
+
+/** Engine-reserved wire DESTS that have no schema field: their header control
+ *  is measured directly, the same way renderTapOverlay does it. */
+const RESERVED_PORTS: ReadonlyArray<readonly [string, string]> = [
+  ['.device-bypass-btn', '__enable__'],
+  ['.device-opacity-slider', '__opacity__'],
+];
+
 /**
  * Whether an effect produces an image — i.e. its schema declares a `texture`
  * field with the Output bit (io & 2). Mirrors the executor's texture-passthrough
@@ -681,6 +691,26 @@ export class ColumnGroup extends MobxLitElement {
       border-top-color: var(--device-sel-border);
       opacity: 0.9;
     }
+
+    /* --- Sidecar canvas: ports --- */
+    /* The ports layer spans the card so pips can hang off both edges. */
+    .canvas-ports { position: absolute; inset: 0; pointer-events: none; }
+    .canvas-ports .canvas-pip { pointer-events: auto; }
+    .canvas-in-ports { position: absolute; inset: 0; }
+    /* Positioned by their field's left edge and row CENTRE, hence the pull-up. */
+    .canvas-in-ports .canvas-pip { position: absolute; transform: translateY(-50%); }
+    /* Output labels sit in a column hanging off the card's right edge. */
+    .canvas-out-ports {
+      position: absolute; left: 100%; top: 8px;
+      display: flex; flex-direction: column; gap: 2px;
+      padding-left: 8px; min-width: 76px; pointer-events: auto;
+    }
+    .canvas-out-row { display: flex; align-items: center; gap: 6px; height: 16px; }
+    .canvas-out-label {
+      font-size: var(--app-fs-sm); color: var(--app-text-color2);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96px;
+    }
+    .canvas-out-ports .canvas-pip { position: static; flex: none; }
 
     /* --- Sidecar canvas: freeform card placement --- */
     .column.canvas-surface {
@@ -1519,8 +1549,12 @@ export class ColumnGroup extends MobxLitElement {
               style=${bypass ? 'opacity:0.4' : ''}>
               ${this.renderFieldWidgets(chainIdx, entry)}
             </div>
-            ${this.renderTraceCardRow(chainIdx, entry)}
-            ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
+            ${this.layoutMode === 'canvas'
+              ? this.renderCanvasPorts(chainIdx, entry)
+              : html`
+                ${this.renderTraceCardRow(chainIdx, entry)}
+                ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
+              `}
           `}
         </div>
       </div>
@@ -1779,6 +1813,98 @@ export class ColumnGroup extends MobxLitElement {
       }
     }
     return rows;
+  }
+
+  /**
+   * Sidecar-canvas ports: input pips down the LEFT edge, output labels + pips
+   * down a narrow column on the RIGHT. Always visible — the canvas IS the wiring
+   * surface, so it doesn't hide behind wires mode.
+   *
+   * Deliberately NOT renderTapOverlay: that lays full-row hit BOXES over the
+   * field widgets, which is exactly why it's gated on tapping mode — always-on
+   * row hits would make every slider undraggable. These are 10px dots beside the
+   * card instead, measured from the same FieldLayoutManager rects.
+   *
+   * Each pip carries BOTH lookup shapes: the `data-{sketch-id,col-idx,chain-idx,
+   * field-path,is-output}` set that taps-connect's hit test + hitToInfo consume,
+   * and `data-field-key` for field-anchor-lookup's arc anchoring. Handlers are
+   * the linear surface's, verbatim.
+   */
+  private renderCanvasPorts(chainIdx: number, entry: ModuleEntry) {
+    const innerEl = this.renderRoot.querySelector(
+      `[data-card-key="${this.sketchId}/${this.colIdx}/${chainIdx}"]`
+    )?.closest('.effect-card-inner') as HTMLElement | null;
+    if (!innerEl) return html`<div class="canvas-ports"></div>`;
+
+    const selectedPath = this.ctl.selectedFieldKey();
+    const schema = this.ds.getPlugin(entry.module_type, entry.instance_key)?.schema ?? {};
+    const outputFieldNames = this.getOutputFieldNames(entry);
+    const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
+
+    const pip = (key: string, fieldPath: string, isOutput: boolean,
+                 schemaDef: any | null, style: string) => {
+      this.registerFieldSelectable(key, chainIdx, entry, fieldPath, isOutput);
+      return html`
+        <div class="field-option-pip connectable canvas-pip ${isOutput ? 'output' : ''}"
+          ?selected=${selectedPath === key}
+          data-field-key=${key}
+          data-sketch-id=${this.sketchId}
+          data-col-idx=${this.colIdx}
+          data-chain-idx=${chainIdx}
+          data-field-path=${fieldPath}
+          data-is-output=${isOutput ? 'true' : 'false'}
+          style=${style}
+          @pointerdown=${(e: PointerEvent) => this.onTapHitPointerDown(
+            e, key, fieldPath, isOutput, schemaDef, chainIdx)}
+          @click=${(e: Event) => this.onTapOverlayClick(
+            key, fieldPath, isOutput, schemaDef, chainIdx, e)}></div>`;
+    };
+
+    // LEFT: one pip per rendered input field, sitting just outside that field's
+    // own left edge — so a grid of knobs gets a pip per knob rather than a pile
+    // of them on the card margin.
+    const pipPos = (left: number, centerY: number) =>
+      `left:${left - CANVAS_PIP_GAP}px;top:${centerY}px`;
+    const inPips: TemplateResult[] = [];
+    for (const key of this.layoutManager.keysUntracked()) {
+      if (!key.startsWith(keyPrefix)) continue;
+      const fieldPath = key.slice(keyPrefix.length);
+      if (outputFieldNames.has(fieldPath)) continue;   // outputs live on the right
+      const rect = this.layoutManager.getRelativeRect(key, innerEl);
+      if (!rect) continue;
+      inPips.push(pip(key, fieldPath, false, (schema as any)[fieldPath] ?? null,
+        pipPos(rect.left, rect.top + rect.height / 2)));
+    }
+    // ...plus the engine-reserved header controls, which are wire DESTS but not
+    // schema fields (so they have no layout key). Same measurement the linear
+    // tap overlay does at its tail.
+    for (const [sel, fieldPath] of RESERVED_PORTS) {
+      const el = innerEl.querySelector(sel) as HTMLElement | null;
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0) continue;
+      const base = innerEl.getBoundingClientRect();
+      inPips.push(pip(`${keyPrefix}${fieldPath}`, fieldPath, false,
+        RESERVED_FIELD_DEFS[fieldPath],
+        pipPos(r.left - base.left, r.top - base.top + r.height / 2)));
+    }
+
+    // RIGHT: a label per schema-declared output, each with its pip. Labels only
+    // — no trace cards; the canvas is about routing, not previewing.
+    const outputs = this.collectModuleOutputs(entry);
+    return html`
+      <div class="canvas-ports">
+        <div class="canvas-in-ports">${inPips}</div>
+        ${outputs.length === 0 ? nothing : html`
+          <div class="canvas-out-ports">
+            ${outputs.map(o => html`
+              <div class="canvas-out-row">
+                <span class="canvas-out-label" title=${o.kindLabel}>${o.displayName}</span>
+                ${pip(`${keyPrefix}${o.fieldPath}`, o.fieldPath, true, o.schemaDef, '')}
+              </div>`)}
+          </div>`}
+      </div>
+    `;
   }
 
   private renderTapOverlay(chainIdx: number, entry: ModuleEntry) {

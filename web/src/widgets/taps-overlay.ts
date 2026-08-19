@@ -20,7 +20,8 @@ import { appController, wireSelectablePath } from '../state/controller';
 import type { Sketch } from '../sketch-types';
 import { sketchChain } from '../sketch-types';
 import { layoutFloaters, type Floater } from './floating-layout';
-import { fieldHitIn, fieldOptionPipIn } from './field-anchor-lookup';
+import { activeEditorColumnsRoots, fieldHitIn, fieldOptionPipIn } from './field-anchor-lookup';
+import { execPositions, wireIsDelayed } from '../state/exec-order';
 import { tapsConnect } from './taps-connect';
 import './spark-chart';
 
@@ -66,6 +67,14 @@ function splitBezier(z: Bezier): { first: Bezier; second: Bezier; mid: Pt } {
 @customElement('taps-overlay')
 export class TapsOverlay extends MobxLitElement {
   @property({ type: String }) sketchId = '';
+  /**
+   * Draw in VIEWPORT space instead of inside the editor panel. Set while the
+   * sidecar canvas is open: a canvas↔list wire spans two panels, and the panel
+   * this overlay lives in clips its overflow. One fixed layer draws them all —
+   * two overlays would double-draw any wire with both ends visible and then
+   * need arbitration for the hit path and the selection click.
+   */
+  @property({ type: Boolean, reflect: true }) viewportFixed = false;
 
   private rafId = 0;
 
@@ -136,6 +145,12 @@ export class TapsOverlay extends MobxLitElement {
       pointer-events: none;
       overflow: hidden;
       z-index: 30;
+    }
+    /* Escape the panel's overflow clip so cross-panel arcs are visible. Above
+     * the panels, below the floating monitor (z-index 200). */
+    :host([viewportfixed]) {
+      position: fixed;
+      z-index: 150;
     }
     .lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible;
       pointer-events: none; }
@@ -224,8 +239,11 @@ export class TapsOverlay extends MobxLitElement {
 
   /** The field's option pip in the gutter (anchor for the card). */
   private fieldOptionPip(fieldKey: string): HTMLElement | null {
-    const cvRoot = this.columnsRoot();
-    return cvRoot ? fieldOptionPipIn(cvRoot, fieldKey) : null;
+    for (const root of this.roots()) {
+      const el = fieldOptionPipIn(root, fieldKey);
+      if (el) return el;
+    }
+    return null;
   }
 
   /**
@@ -240,31 +258,32 @@ export class TapsOverlay extends MobxLitElement {
   /**
    * Field→field wires to visualize. Endpoints are field keys
    * `${sketchId}/${col}/${chain}/${field}` (the format `fieldHit` consumes).
-   * `delayed` marks a wire whose source is at/below its dest (1-frame delay).
+   * `delayed` marks a wire whose source runs at/after its dest in the merged
+   * EXECUTION order (1-frame delay). That order — not chain position — is what
+   * the executor uses, so this reads it back from the same stored list rather
+   * than re-deriving it; see the `delayed` computation in
+   * native/src/sketch/sketch_executor.cpp and state/exec-order.ts.
    */
   private connections(sketch: Sketch): { id: string; from: string; to: string; delayed: boolean; wireId: string }[] {
     const sk = this.sketchId;
     const out: { id: string; from: string; to: string; delayed: boolean; wireId: string }[] = [];
 
-    // instanceKey → "col/chain" + global stack position (for delay inference).
-    // Single linear stack now → col index is always 0 (kept in the key to match
-    // the DOM hit-box `data-col-idx`).
+    // instanceKey → "col/chain". Single linear stack now → col index is always 0
+    // (kept in the key to match the DOM hit-box `data-col-idx`).
     const loc = new Map<string, string>();
-    const pos = new Map<string, number>();
-    let order = 0;
     sketchChain(sketch).forEach((e, chi) => {
-      if (e.type === 'module') { loc.set(e.instance_key, `0/${chi}`); pos.set(e.instance_key, order++); }
+      if (e.type === 'module') loc.set(e.instance_key, `0/${chi}`);
     });
+    const pos = execPositions(sketch);
 
     for (const wire of sketch.wires ?? []) {
       const sl = loc.get(wire.src.instanceKey), dl = loc.get(wire.dest.instanceKey);
       if (!sl || !dl) continue;
-      const sp = pos.get(wire.src.instanceKey) ?? 0, dp = pos.get(wire.dest.instanceKey) ?? 0;
       out.push({
         id: `wire:${wire.id}`,
         from: `${sk}/${sl}/${wire.src.field}`,
         to: `${sk}/${dl}/${wire.dest.field}`,
-        delayed: sp >= dp,
+        delayed: wireIsDelayed(pos, wire.src.instanceKey, wire.dest.instanceKey),
         wireId: wire.id,
       });
     }
@@ -353,8 +372,24 @@ export class TapsOverlay extends MobxLitElement {
 
   /** The tap-port hit-box element for a field key `<sketch>/<col>/<chain>/<field>`. */
   private fieldHit(key: string): HTMLElement | null {
-    const cvRoot = this.columnsRoot();
-    return cvRoot ? fieldHitIn(cvRoot, key) : null;
+    for (const root of this.roots()) {
+      const el = fieldHitIn(root, key);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Roots that can hold this sketch's cards. The local columns-view always (so
+   * the canvas-closed path is byte-identical to before); the sidecar canvas too
+   * once we're drawing in viewport space.
+   */
+  private roots(): ShadowRoot[] {
+    const local = this.columnsRoot();
+    if (!this.viewportFixed) return local ? [local] : [];
+    const out = local ? [local] : [];
+    for (const r of activeEditorColumnsRoots()) if (!out.includes(r)) out.push(r);
+    return out;
   }
 
   private position() {

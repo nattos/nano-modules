@@ -459,7 +459,9 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
             if (e.target === e.currentTarget) appController.select(null);
           }}
         ></columns-view>
-        <taps-overlay .sketchId=${sketchId}></taps-overlay>
+        <taps-overlay .sketchId=${sketchId}
+          ?viewportFixed=${appState.local.userSettings.sketchCanvasOpen === true}
+        ></taps-overlay>
       </div>`)}
       ${this.dragActive ? this.renderReorderPopup(sketchId) : nothing}
     `;
