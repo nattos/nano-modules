@@ -250,8 +250,21 @@ export class TapsOverlay extends MobxLitElement {
      * dashed). pointer-events:stroke works even though the parent svg is
      * pointer-events:none (a descendant may opt back in). Click selects the wire;
      * double-click breaks it. */
+    /* Two click targets per wire, because this layer sits ABOVE the cards
+     * (viewport-fixed once the sidecar canvas is open) and an unclipped fat
+     * stroke crossing a card swallowed every click meant for the header, a
+     * slider or a port underneath it:
+     *   .wire-hit       — 14px, CLIPPED to the gaps between cards (hitClipPath).
+     *                     Generous targeting wherever the wire is the only
+     *                     thing there.
+     *   .wire-hit.fine  — 6px, unclipped. Over a card you have to actually aim
+     *                     at the drawn line, which reads as deliberate; the
+     *                     card keeps every other pixel it owns. Without it a
+     *                     wire that runs card-to-card is simply unselectable.
+     * Both carry the same handlers and the same (end-trimmed) geometry. */
     .wire-hit { fill: none; stroke: transparent; stroke-width: 14;
-      pointer-events: stroke; cursor: pointer; }
+      pointer-events: stroke; cursor: pointer; clip-path: url(#wire-hit-clip); }
+    .wire-hit.fine { stroke-width: 6; clip-path: none; }
     .wire-group:hover .wire-arc { stroke: var(--app-hi-color1, #ff4500); opacity: 0.95; }
     .field-card {
       position: absolute; left: 0; top: 0;
@@ -460,6 +473,11 @@ export class TapsOverlay extends MobxLitElement {
     const proxies = !appState.local.userSettings.sketchCanvasOpen;
     return html`
       <svg class="lines">
+        <defs>
+          <clipPath id="wire-hit-clip" clipPathUnits="userSpaceOnUse">
+            <path class="hit-clip" clip-rule="evenodd" d=""></path>
+          </clipPath>
+        </defs>
         ${conns.map(cn => {
           // Each wire has a fat companion hit path in front of the thin visible
           // arc: single click SELECTS the wire (so it isn't deleted by accident),
@@ -477,11 +495,13 @@ export class TapsOverlay extends MobxLitElement {
               @click=${() => this.onProxyPipClick(cn.proxy!.chainIdx)}>
               <title>On the sidecar canvas — click to open it</title>
             </circle>` : nothing;
-          const hit = svg`<path class="arc-path wire-hit"
-            data-proxy-end=${proxyEnd ?? nothing}
-            data-from=${cn.from} data-to=${cn.to}
-            @click=${(e: MouseEvent) => this.onWireClick(e, cn.wireId)}
-            @dblclick=${(e: MouseEvent) => this.onWireDblClick(e, cn.wireId)}></path>`;
+          const hitPath = (fine: boolean) => svg`
+            <path class="arc-path wire-hit ${fine ? 'fine' : ''}"
+              data-proxy-end=${proxyEnd ?? nothing}
+              data-from=${cn.from} data-to=${cn.to}
+              @click=${(e: MouseEvent) => this.onWireClick(e, cn.wireId)}
+              @dblclick=${(e: MouseEvent) => this.onWireDblClick(e, cn.wireId)}></path>`;
+          const hit = svg`${hitPath(false)}${hitPath(true)}`;
           // A 1-frame-delayed (feedback) wire: drawn in two halves that animate
           // alternately, with a dot at the relay point — and in the output-pip red.
           if (cn.delayed) {
@@ -650,8 +670,34 @@ export class TapsOverlay extends MobxLitElement {
    * click-to-connect) each of those reflows re-lays-out the heavy inspector
    * card, which tanked the framerate. Batched, the whole pass costs one reflow.
    */
+  /**
+   * The region where a wire is clickable: the whole overlay MINUS every card.
+   * An even-odd path — the outer rect, then one rect per card, which cancel
+   * into holes. Rebuilt each rAF alongside the arc geometry (cards move with
+   * scroll, zoom and drags), in the same READ phase, so it costs no extra
+   * reflow.
+   */
+  private hitClipPath(overlayRect: DOMRect): string {
+    const rect = (x: number, y: number, w: number, h: number) =>
+      `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`;
+    let d = rect(0, 0, overlayRect.width, overlayRect.height);
+    for (const root of this.roots()) {
+      for (const el of root.querySelectorAll('column-group')) {
+        for (const card of (el as HTMLElement).shadowRoot
+                            ?.querySelectorAll('.effect-card') ?? []) {
+          const r = (card as HTMLElement).getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          d += ' ' + rect(r.left - overlayRect.left, r.top - overlayRect.top,
+                          r.width, r.height);
+        }
+      }
+    }
+    return d;
+  }
+
   private drawArcs(svg: SVGElement, overlayRect: DOMRect) {
     // READ phase — no DOM writes, so only the first rect query forces a reflow.
+    const clipD = this.hitClipPath(overlayRect);
     const paths = Array.from(svg.querySelectorAll('path.arc-path')) as SVGPathElement[];
     // A wire with one end on the CLOSED canvas has no anchor there; substitute
     // a point on the right margin, level with the end that IS visible.
@@ -674,6 +720,8 @@ export class TapsOverlay extends MobxLitElement {
       .sort((x, y) => x.wireId.localeCompare(y.wireId));
 
     // WRITE phase.
+    (svg.querySelector('path.hit-clip') as SVGPathElement | null)
+      ?.setAttribute('d', clipD);
     for (const { p, a, b, seg } of arcs) {
       if (!a || !b) { p.style.display = 'none'; continue; }
       p.style.display = '';

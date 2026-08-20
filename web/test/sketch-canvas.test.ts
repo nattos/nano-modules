@@ -245,6 +245,97 @@ describe('sidecar canvas', () => {
     expect(card.bottom).toBeGreaterThanOrEqual(pt.y);
   });
 
+  it('connects a canvas port to a linear param with wire mode OFF', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true, /*tapping=*/false);
+    await page.evaluate(`window.appController.mutate('clear', d => {
+      d.sketches['sk_cv'].wires = []; })`);
+    await new Promise(r => setTimeout(r, 400));
+
+    // The list's field hit-boxes are W-gated (they cover whole rows, so
+    // always-on ones would make every slider undraggable) — but they open for
+    // the DURATION of a connect gesture, which is what lets a canvas port reach
+    // a linear param without the editor being held in wire mode.
+    expect(await page.evaluate(countOf('.tap-overlay-hit'))).toBe(0);
+
+    const pip = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.classList && el.classList.contains('canvas-pip') &&
+            el.dataset.isOutput === 'true') {
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+      }
+      return null;
+    })()`) as any;
+    await page.mouse.click(pip.x, pip.y);
+    await new Promise(r => setTimeout(r, 400));
+
+    const target = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.classList && el.classList.contains('tap-overlay-hit') &&
+            el.dataset.fieldPath === 'brightness') {
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+      }
+      return null;
+    })()`) as any;
+    expect(target).not.toBeNull();     // the list opened up for the gesture
+    await page.mouse.click(target.x, target.y);
+    await new Promise(r => setTimeout(r, 600));
+
+    expect(await page.evaluate(`(() => {
+      const w = (window.appState.database.sketches['sk_cv'].wires || [])[0];
+      return w ? w.src.instanceKey + '.' + w.src.field + '->' +
+                 w.dest.instanceKey + '.' + w.dest.field : null;
+    })()`)).toBe('lfo@0.output->bc@0.brightness');
+    // ...and the list closes again the moment the gesture ends.
+    expect(await page.evaluate(countOf('.tap-overlay-hit'))).toBe(0);
+  });
+
+  it('snaps a dragged canvas card to a linear card s edge', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+
+    const geom = await page.evaluate(`(() => { ${WALK}
+      let card = null;
+      for (const el of walk(document)) if (el.classList && el.classList.contains('canvas-card')) { card = el; break; }
+      const app = document.querySelector('sketch-app').shadowRoot
+        .querySelector('app-shell').shadowRoot;
+      const cg = app.querySelector('.left-panel sketch-column-editor').shadowRoot
+        .querySelector('columns-view').shadowRoot.querySelector('column-group');
+      const lin = [...cg.shadowRoot.querySelectorAll('.effect-card')]
+        .map(e => e.getBoundingClientRect().top);
+      const hr = card.querySelector('.effect-card-header').getBoundingClientRect();
+      return { hx: hr.left + hr.width / 2, hy: hr.top + hr.height / 2,
+               cardTop: card.getBoundingClientRect().top, lin };
+    })()`) as any;
+    expect(geom.lin.length).toBeGreaterThan(1);
+
+    // Aim the canvas card's top 5px PAST the second list card's top — inside
+    // the snap tolerance, so it should land exactly on it.
+    const want = geom.lin[1];
+    const dy = (want + 5) - geom.cardTop;
+    await page.mouse.move(geom.hx, geom.hy);
+    await page.mouse.down();
+    await page.mouse.move(geom.hx, geom.hy + 8, { steps: 3 });   // pass the threshold
+    await page.mouse.move(geom.hx, geom.hy + dy, { steps: 8 });
+    await new Promise(r => setTimeout(r, 300));
+    // The guide is showing while the snap holds.
+    expect(await page.evaluate(countOf('.guide.h'))).toBe(1);
+    await page.mouse.up();
+    await new Promise(r => setTimeout(r, 500));
+
+    const landed = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) if (el.classList && el.classList.contains('canvas-card'))
+        return el.getBoundingClientRect().top;
+      return null;
+    })()`) as any;
+    expect(Math.abs(landed - want)).toBeLessThan(1);
+    expect(await page.evaluate(countOf('.guide.h'))).toBe(0);
+  });
+
   it('moves a card between the list and the canvas, keeping its wires', async () => {
     page.removeAllListeners('console');
     await seed(page, true);

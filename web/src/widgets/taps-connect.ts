@@ -23,6 +23,7 @@ import type { FieldConnectInfo, Sketch } from '../sketch-types';
 import { chainEntryAt, RESERVED_FIELD_DEFS } from '../sketch-types';
 import type { PluginInfo, ColumnTaps } from './column-adapter';
 import { PointerDragOp } from '../utils/pointer-drag-op';
+import { observable, runInAction } from 'mobx';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 
@@ -61,12 +62,33 @@ function deepElementFromPoint(x: number, y: number): Element | null {
   return el;
 }
 
+/**
+ * True while ANY connect gesture is in flight — an OBSERVABLE flag, so a
+ * surface can open drop targets for the gesture's duration (the effects list
+ * renders its field hit-boxes on this, which is what lets a canvas port reach a
+ * linear param without the editor being held in wire mode).
+ *
+ * Deliberately NOT `state` itself: that object's pointer coords change every
+ * pointermove, so a render tracking it would rebuild the whole card stack per
+ * frame. This flips exactly twice per gesture.
+ */
+const gestureActive = observable.box(false);
+export function connectGestureActive(): boolean { return gestureActive.get(); }
+
 function hitKey(hit: HTMLElement): string {
   return `${hit.dataset.sketchId}/${hit.dataset.colIdx}/${hit.dataset.chainIdx}/${hit.dataset.fieldPath}`;
 }
 
 export class WireConnect implements ColumnTaps {
   state: ConnectState | null = null;
+
+  /** The only place `state` is written, so `gestureActive` can't drift from it. */
+  private setState(s: ConnectState | null) {
+    this.state = s;
+    if (gestureActive.get() !== (s !== null)) {
+      runInAction(() => gestureActive.set(s !== null));
+    }
+  }
 
   /** The gesture currently in CLICK mode (picked up, awaiting a target click), or
    *  null. Lets a target OUTSIDE the column-group (e.g. a return-rail lane) complete
@@ -233,7 +255,7 @@ export class WireConnect implements ColumnTaps {
     new PointerDragOp(e, srcEl, {
       threshold: 5,
       move: (me) => {
-        if (!this.state) this.state = { ...base };
+        if (!this.state) this.setState({ ...base });
         this.updatePointer(me.clientX, me.clientY);
       },
       accept: (me) => {
@@ -259,7 +281,7 @@ export class WireConnect implements ColumnTaps {
 
   private start(s: ConnectState) {
     this.end();
-    this.state = s;
+    this.setState(s);
   }
 
   private installClickListeners() {
@@ -342,7 +364,7 @@ export class WireConnect implements ColumnTaps {
   cancel() { this.end(); }
 
   private end() {
-    this.state = null;
+    this.setState(null);
     if (WireConnect.active === this) WireConnect.active = null;
     if (this.dropRaf) { cancelAnimationFrame(this.dropRaf); this.dropRaf = 0; }
     this.lastDropEl?.removeAttribute('tap-drop-target');

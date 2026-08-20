@@ -273,11 +273,24 @@ export class SketchCanvasView extends MobxLitElement {
 
   // --- Card drag + snapping ----------------------------------------------
 
+  /**
+   * Screen position of canvas (0,0). Canvas cards are absolutely positioned
+   * against <column-group>'s OWN `.canvas-surface`, which sits inside this
+   * view's `.surface` padding — so measuring `.surface` lands one `--app-sp-6`
+   * high and everything derived from it (insert points, alignment guides) is
+   * off by that much. Falls back to `.surface` before the group has rendered.
+   */
+  private canvasOrigin(): DOMRect | null {
+    const group = this.renderRoot.querySelector('column-group');
+    const el = (group?.shadowRoot?.querySelector('.canvas-surface')
+                ?? this.renderRoot.querySelector('.surface')) as HTMLElement | null;
+    return el?.getBoundingClientRect() ?? null;
+  }
+
   /** Viewport-space point → canvas coordinates (undo the scale and padding). */
   viewportToCanvas(clientX: number, clientY: number): { x: number; y: number } {
-    const surf = this.renderRoot.querySelector('.surface') as HTMLElement | null;
-    if (!surf) return { x: 0, y: 0 };
-    const r = surf.getBoundingClientRect();
+    const r = this.canvasOrigin();
+    if (!r) return { x: 0, y: 0 };
     return { x: (clientX - r.left) / this.zoom, y: (clientY - r.top) / this.zoom };
   }
 
@@ -304,7 +317,34 @@ export class SketchCanvasView extends MobxLitElement {
       const h = el.getBoundingClientRect().height / this.zoom;
       if (h > 0) ys.push(parseFloat(el.style.top) + h + SNAP_GAP);
     }
+    ys.push(...this.linearCardYs());
     return { xs, ys };
+  }
+
+  /**
+   * The effects LIST's card edges — top and bottom — mapped into canvas space.
+   * This is the alignment that makes the sidecar metaphor read: a node lines up
+   * with the effect it modulates.
+   *
+   * Mapped through the live viewport, so while the scroll link holds (linked at
+   * zoom 1) canvas Y and list scroll space stay in step and the alignment is
+   * durable; unlinked or zoomed it's a point-in-time alignment — still exactly
+   * what the user sees under the guide while dragging, and self-limiting, since
+   * a line only snaps within SNAP_PX of where the card already is.
+   */
+  private linearCardYs(): number[] {
+    const origin = this.canvasOrigin();
+    const group = activeLinearColumnGroup();
+    const cards = group?.shadowRoot?.querySelectorAll('.effect-card');
+    if (!origin || !cards?.length) return [];
+    const top = origin.top;
+    const ys: number[] = [];
+    for (const el of cards) {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      if (r.height <= 0) continue;
+      ys.push((r.top - top) / this.zoom, (r.bottom - top) / this.zoom);
+    }
+    return ys;
   }
 
   private cardEls(): HTMLElement[] {

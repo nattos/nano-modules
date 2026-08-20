@@ -19,6 +19,7 @@ import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
 import { FieldLayoutManager } from './field-layout-manager';
+import { connectGestureActive } from './taps-connect';
 import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
 import type { TracePoint } from '../engine-types';
@@ -1588,7 +1589,8 @@ export class ColumnGroup extends MobxLitElement {
               ? this.renderCanvasPorts(chainIdx, entry)
               : html`
                 ${this.renderTraceCardRow(chainIdx, entry)}
-                ${tappingMode ? this.renderTapOverlay(chainIdx, entry) : nothing}
+                ${tappingMode || connectGestureActive()
+                    ? this.renderTapOverlay(chainIdx, entry) : nothing}
               `}
           `}
         </div>
