@@ -72,19 +72,51 @@ const bezPath = (z: Bezier): string =>
 
 function arcPath(a: Pt, b: Pt): string { return bezPath(arcBezier(a, b)); }
 
-const midpoint = (p: Pt, q: Pt): Pt => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+const lerpPt = (p: Pt, q: Pt, t: number): Pt =>
+  ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
 
-/** Split a cubic bezier at t=0.5 (de Casteljau) → two halves + the join point. */
-function splitBezier(z: Bezier): { first: Bezier; second: Bezier; mid: Pt } {
-  const a = midpoint(z.p0, z.c1), b = midpoint(z.c1, z.c2), c = midpoint(z.c2, z.p3);
-  const d = midpoint(a, b), e = midpoint(b, c);
-  const f = midpoint(d, e);
+/** Split a cubic bezier at `t` (de Casteljau) → the two halves + the join point. */
+function splitAt(z: Bezier, t: number): { first: Bezier; second: Bezier; mid: Pt } {
+  const a = lerpPt(z.p0, z.c1, t), b = lerpPt(z.c1, z.c2, t), c = lerpPt(z.c2, z.p3, t);
+  const d = lerpPt(a, b, t), e = lerpPt(b, c, t);
+  const f = lerpPt(d, e, t);
   return {
     first: { p0: z.p0, c1: a, c2: d, p3: f },
     second: { p0: f, c1: e, c2: c, p3: z.p3 },
     mid: f,
   };
 }
+
+/** Split at the midpoint — the two halves a delayed wire animates alternately. */
+function splitBezier(z: Bezier) { return splitAt(z, 0.5); }
+
+/**
+ * Arc length approximated from the control polygon — accurate enough to turn a
+ * pixel clearance into a curve parameter, and unlike `getTotalLength()` it
+ * needs no live path (measuring one mid-write would force a reflow per wire,
+ * which is exactly what drawArcs' two-phase structure exists to avoid).
+ */
+function bezLength(z: Bezier): number {
+  const d = (p: Pt, q: Pt) => Math.hypot(q.x - p.x, q.y - p.y);
+  return (d(z.p0, z.p3) + d(z.p0, z.c1) + d(z.c1, z.c2) + d(z.c2, z.p3)) / 2;
+}
+
+/** `z` with roughly `clear` px trimmed off EACH end. */
+function trimBezier(z: Bezier, clear: number): Bezier {
+  const t = Math.min(clear / Math.max(bezLength(z), 1), 0.35);
+  // After dropping [0,t] the remainder is reparameterized over [t,1], so the
+  // original 1-t lands at (1-2t)/(1-t).
+  return splitAt(splitAt(z, t).second, (1 - 2 * t) / (1 - t)).first;
+}
+
+/**
+ * How far the fat click target stops short of each endpoint. The hit path is a
+ * 14px stroke landing dead-centre on the very pip the wire connects to, and
+ * with the sidecar canvas open this overlay is a viewport-FIXED layer above the
+ * cards — so an untrimmed hit swallowed every click aimed at a canvas port and
+ * opened the wire's popup instead of starting a connection.
+ */
+const WIRE_HIT_END_CLEAR = 16;
 
 @customElement('taps-overlay')
 export class TapsOverlay extends MobxLitElement {
@@ -241,8 +273,16 @@ export class TapsOverlay extends MobxLitElement {
       white-space: nowrap; color: var(--app-text-color1, #ddd); }
   `;
 
-  /** Draw wire arcs while in wire mode. */
-  private get showArcs(): boolean { return appState.local.tappingMode; }
+  /** Draw wire arcs while in wire mode — or whenever the sidecar canvas is open.
+   *  The canvas IS a wiring surface (its ports are always-live pips, not
+   *  W-gated row hit-boxes), so its wires — and the cross-panel ones — have to
+   *  be drawn without the user holding the editor in wire mode. The LINEAR
+   *  list keeps its W gate: its tap hit-boxes cover whole field rows, and
+   *  always-on ones would make every slider undraggable. */
+  private get showArcs(): boolean {
+    return appState.local.tappingMode
+        || appState.local.userSettings.sketchCanvasOpen === true;
+  }
 
   /** The overlay does anything (arcs or card) — drives the rAF positioning. */
   private get active(): boolean {
@@ -285,6 +325,24 @@ export class TapsOverlay extends MobxLitElement {
    */
   private cardAnchorEl(fieldKey: string): HTMLElement | null {
     return this.fieldHit(fieldKey) ?? this.fieldOptionPip(fieldKey);
+  }
+
+  /**
+   * Where the card should sit when the selection came from clicking a WIRE:
+   * the click point itself, in viewport coordinates. A wire runs between two
+   * cards that may be panels apart (and, with the canvas open, in different
+   * scroll spaces), so anchoring its popup to the dest field's column drops it
+   * somewhere the user never looked. Kept with the selection path so a stale
+   * point can never leak onto the next selection.
+   */
+  private cardPoint: { path: string; x: number; y: number } | null = null;
+
+  /** Single click on a wire: select it, remembering WHERE it was clicked so the
+   *  popup lands under the pointer rather than beside the dest field's column. */
+  private onWireClick(e: MouseEvent, wireId: string) {
+    const path = wireSelectablePath(this.sketchId, wireId);
+    this.cardPoint = { path, x: e.clientX, y: e.clientY };
+    appController.select(path);
   }
 
   /**
@@ -422,7 +480,7 @@ export class TapsOverlay extends MobxLitElement {
           const hit = svg`<path class="arc-path wire-hit"
             data-proxy-end=${proxyEnd ?? nothing}
             data-from=${cn.from} data-to=${cn.to}
-            @click=${() => appController.select(wireSelectablePath(this.sketchId, cn.wireId))}
+            @click=${(e: MouseEvent) => this.onWireClick(e, cn.wireId)}
             @dblclick=${(e: MouseEvent) => this.onWireDblClick(e, cn.wireId)}></path>`;
           // A 1-frame-delayed (feedback) wire: drawn in two halves that animate
           // alternately, with a dot at the relay point — and in the output-pip red.
@@ -496,7 +554,26 @@ export class TapsOverlay extends MobxLitElement {
     const floaters: Floater[] = [];
     const card = this.renderRoot.querySelector('.field-card') as HTMLElement | null;
     const fieldKey = this.cardFieldKey();
-    if (card && fieldKey) {
+    // A wire selected BY CLICKING it anchors its popup to the click point (see
+    // cardPoint). Guarded on the selection path, so the point dies with the
+    // selection it was captured for; any other route to a wire selection
+    // (keyboard, proxy pip) falls through to the dest-field anchor below.
+    const pt = this.cardPoint?.path === (appState.local.selection?.path ?? '')
+      ? this.cardPoint : null;
+    if (card && fieldKey && pt) {
+      card.style.visibility = 'visible';
+      const cw = card.offsetWidth, ch = card.offsetHeight;
+      const px = pt.x - overlayRect.left, py = pt.y - overlayRect.top;
+      // Beside the pointer, preferring the right — flipped left when the card
+      // wouldn't fit, so the clamp below never slides it back over the wire.
+      const fitsRight = pt.x + 12 + cw <= overlayRect.right;
+      floaters.push({
+        id: '__card__',
+        anchorX: fitsRight ? px + 12 + cw / 2 : px - 12 - cw / 2,
+        anchorY: py,
+        width: cw, height: ch, weightX: 2, weightY: 1,
+      });
+    } else if (card && fieldKey) {
       const hit = this.cardAnchorEl(fieldKey);
       // Hide the card until we have an anchor, so it never flashes at (0,0).
       card.style.visibility = hit ? 'visible' : 'hidden';
@@ -600,6 +677,11 @@ export class TapsOverlay extends MobxLitElement {
     for (const { p, a, b, seg } of arcs) {
       if (!a || !b) { p.style.display = 'none'; continue; }
       p.style.display = '';
+      // The click target stops short of both ports (see WIRE_HIT_END_CLEAR).
+      if (p.classList.contains('wire-hit')) {
+        p.setAttribute('d', bezPath(trimBezier(arcBezier(a, b), WIRE_HIT_END_CLEAR)));
+        continue;
+      }
       // `data-seg` 0/1 → one half of a delayed wire's split bezier; absent → full arc.
       if (seg === undefined) { p.setAttribute('d', arcPath(a, b)); continue; }
       const split = splitBezier(arcBezier(a, b));

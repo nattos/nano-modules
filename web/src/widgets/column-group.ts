@@ -2139,10 +2139,19 @@ export class ColumnGroup extends MobxLitElement {
       });
       return;
     }
+    // On the CANVAS a pip is a port, nothing else — clicking one picks the field
+    // up for click-to-connect straight away. The linear list keeps
+    // select-then-pick-up, where the same click is also how you open a field's
+    // options card; a canvas card has no gutter, so its pips would otherwise
+    // swallow the first click into a popup floating over the linear column.
+    const canvasPort = this.layoutMode === 'canvas';
     // Non-destructive: first click SELECTS the field (no tap created). Clicking
     // the already-selected field again picks it up for click-to-connect.
-    if (this.ctl.selectedFieldKey() === key) {
-      const hit = this.renderRoot.querySelector(
+    if (canvasPort || this.ctl.selectedFieldKey() === key) {
+      // The clicked element itself when we have it (a canvas pip is its own
+      // endpoint); the field's hit-box / pip otherwise.
+      const hit = (e?.currentTarget as HTMLElement | undefined)
+        ?? this.renderRoot.querySelector(
         `.tap-overlay-hit[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"],
          .field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
       const r = hit?.getBoundingClientRect();

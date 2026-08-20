@@ -18,7 +18,7 @@ const findAll = (sel: string) => `(() => { ${WALK}
 })()`;
 const countOf = (sel: string) => `${findAll(sel)}.length`;
 
-async function seed(page: any, canvasOpen: boolean) {
+async function seed(page: any, canvasOpen: boolean, tapping = true) {
   await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
   await new Promise(r => setTimeout(r, 3000));
   await page.evaluate(`(async () => {
@@ -44,7 +44,7 @@ async function seed(page: any, canvasOpen: boolean) {
     });
     ac.setActiveTab('edit');
     ac.editSketch('sk_cv');
-    ac.setTappingMode(true);
+    ac.setTappingMode(${tapping});
     ac.setSketchCanvasOpen(${canvasOpen});
   })()`);
   await new Promise(r => setTimeout(r, 2000));
@@ -140,6 +140,109 @@ describe('sidecar canvas', () => {
       `window.appState.local.selection?.path ?? null`)).toBe('effect/sk_cv/0/2');
     // ...and the pip retires, since both ends now have real anchors.
     expect(await page.evaluate(countOf('.wire-proxy-pip'))).toBe(0);
+  });
+
+  it('draws wires with wire-mode OFF while the canvas is open', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true, /*tapping=*/false);
+
+    // The canvas is itself a wiring surface, so W stops gating the arcs: the
+    // list<->canvas wire has to stay visible for the canvas to be readable.
+    expect(await page.evaluate(`window.appState.local.tappingMode`)).toBe(false);
+    const arcs = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName !== 'TAPS-OVERLAY') continue;
+        const ps = [...el.shadowRoot.querySelectorAll('path.wire-arc')]
+          .filter(p => p.style.display !== 'none' && (p.getAttribute('d') || '').startsWith('M '));
+        if (ps.length) return ps.length;
+      }
+      return 0;
+    })()`);
+    expect(arcs).toBeGreaterThan(0);
+  });
+
+  it('starts click-to-connect straight from a canvas pip', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true, /*tapping=*/false);
+
+    // A canvas pip is a PORT, not a selection handle — one click picks the field
+    // up. (It also has to WIN that click: the fixed wire layer sits above the
+    // cards, so its hit path is trimmed clear of both endpoints.)
+    const pip = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.classList && el.classList.contains('canvas-pip') &&
+            el.dataset.isOutput === 'true') {
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+      }
+      return null;
+    })()`) as any;
+    expect(pip).not.toBeNull();
+
+    await page.mouse.click(pip.x, pip.y);
+    await new Promise(r => setTimeout(r, 300));
+    await page.mouse.move(pip.x - 220, pip.y + 140);   // rubber-band follows
+    await new Promise(r => setTimeout(r, 300));
+
+    const state = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName !== 'TAPS-OVERLAY') continue;
+        const line = el.shadowRoot.querySelector('line.connect-line');
+        if (!line) continue;
+        return { card: !!el.shadowRoot.querySelector('.field-card'),
+                 connecting: getComputedStyle(line).display !== 'none' };
+      }
+      return null;
+    })()`) as any;
+    // No options popup — a live connect gesture instead.
+    expect(state.card).toBe(false);
+    expect(state.connecting).toBe(true);
+  });
+
+  it('anchors a clicked wire s popup at the click point', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+
+    // The wire spans two panels; anchoring its card to the DEST field s column
+    // put it far from where the user clicked.
+    const pt = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName !== 'TAPS-OVERLAY') continue;
+        const p = el.shadowRoot.querySelector('path.wire-hit');
+        if (!p || !(p.getAttribute('d') || '').startsWith('M ')) continue;
+        const m = p.getPointAtLength(p.getTotalLength() / 2);
+        const b = el.shadowRoot.querySelector('svg.lines').getBoundingClientRect();
+        return { x: b.left + m.x, y: b.top + m.y };
+      }
+      return null;
+    })()`) as any;
+    expect(pt).not.toBeNull();
+
+    await page.mouse.click(pt.x, pt.y);
+    await new Promise(r => setTimeout(r, 600));
+
+    const card = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName !== 'TAPS-OVERLAY') continue;
+        const c = el.shadowRoot.querySelector('.field-card');
+        if (!c) continue;
+        const r = c.getBoundingClientRect();
+        return { left: r.left, top: r.top, bottom: r.bottom,
+                 vis: getComputedStyle(c).visibility };
+      }
+      return null;
+    })()`) as any;
+    expect(await page.evaluate(
+      `window.appState.local.selection?.path ?? null`)).toBe('wire/sk_cv/w0');
+    expect(card).not.toBeNull();
+    expect(card.vis).toBe('visible');
+    // Beside the pointer, not beside the linear column: its left edge sits just
+    // right of the click and it straddles the click s row.
+    expect(card.left).toBeGreaterThan(pt.x);
+    expect(card.left - pt.x).toBeLessThan(40);
+    expect(card.top).toBeLessThanOrEqual(pt.y);
+    expect(card.bottom).toBeGreaterThanOrEqual(pt.y);
   });
 
   it('moves a card between the list and the canvas, keeping its wires', async () => {
