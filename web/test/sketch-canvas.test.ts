@@ -50,6 +50,19 @@ async function seed(page: any, canvasOpen: boolean, tapping = true) {
   await new Promise(r => setTimeout(r, 2000));
 }
 
+/** Push a second canvas node into the seeded sketch, at a stored placement. */
+async function addCanvasCard(page: any, key: string, x: number, y: number) {
+  await page.evaluate((k: string, px: number, py: number) => {
+    (window as any).appController.mutate('add', (d: any) => {
+      const sk = d.sketches['sk_cv'];
+      sk.chain.push({ type: 'module', module_type: 'mod.source.lfo',
+                      instance_key: k, canvas: { x: px, y: py } });
+      sk.instances[k] = { module_type: 'mod.source.lfo', state: {} };
+    });
+  }, key, x, y);
+  await new Promise(r => setTimeout(r, 600));
+}
+
 describe('sidecar canvas', () => {
   jest.setTimeout(60000);
 
@@ -357,5 +370,91 @@ describe('sidecar canvas', () => {
     await new Promise(r => setTimeout(r, 500));
     expect(await summary()).toEqual({
       chain: ['src@0', 'bc@0', 'lfo@0@c'], wires: ['lfo@0->bc@0'] });
+  });
+
+  it('rubber-bands a region of the canvas into a multi-selection', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+    await addCanvasCard(page, 'lfo@1', 60, 320);
+
+    const rects = await page.evaluate(`(() => { ${WALK}
+      const out = [];
+      for (const el of walk(document)) if (el.classList && el.classList.contains('canvas-card')) {
+        const r = el.getBoundingClientRect();
+        out.push({ idx: el.dataset.chainIdx, left: r.left, top: r.top,
+                   right: r.right, bottom: r.bottom });
+      }
+      return out;
+    })()`) as any;
+    expect(rects.length).toBe(2);
+
+    // Band from empty space above-left of the first card down past the second.
+    const x0 = rects[0].left - 20, y0 = rects[0].top - 20;
+    const x1 = Math.max(rects[0].right, rects[1].right) + 10;
+    const y1 = Math.max(rects[0].bottom, rects[1].bottom) + 10;
+    await page.mouse.move(x0, y0);
+    await page.mouse.down();
+    await page.mouse.move(x0 + 10, y0 + 10, { steps: 3 });
+    await page.mouse.move(x1, y1, { steps: 8 });
+    await new Promise(r => setTimeout(r, 200));
+    // The band is drawn, and both cards are already highlighted mid-gesture.
+    expect(await page.evaluate(countOf('.marquee'))).toBe(1);
+    await page.mouse.up();
+    await new Promise(r => setTimeout(r, 300));
+
+    expect(await page.evaluate(countOf('.marquee'))).toBe(0);
+    expect(await page.evaluate(
+      `[...window.appState.local.multiSelection].sort()`))
+      .toEqual(['effect/sk_cv/0/2', 'effect/sk_cv/0/3']);
+    // Both cards paint as selected — the multi-selection reaches the canvas
+    // <column-group> through the same adapter the list uses.
+    expect(await page.evaluate(
+      `${findAll('.canvas-card .effect-card[selected]')}.length`)).toBe(2);
+
+    // A click on empty canvas clears it again (no band, no drag).
+    await page.mouse.click(x0, y0);
+    await new Promise(r => setTimeout(r, 300));
+    expect(await page.evaluate(`window.appState.local.multiSelection.length`)).toBe(0);
+  });
+
+  it('drags a rubber-banded group as one, in one undo step', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+    await addCanvasCard(page, 'lfo@1', 60, 320);
+
+    // Select both directly — the band gesture itself is covered above.
+    await page.evaluate(`window.appController.selectEffectGroup(
+      ['effect/sk_cv/0/2', 'effect/sk_cv/0/3'], 'effect/sk_cv/0/2')`);
+    await new Promise(r => setTimeout(r, 300));
+
+    const hr = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) if (el.classList && el.classList.contains('canvas-card')) {
+        const r = el.querySelector('.effect-card-header').getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      return null;
+    })()`) as any;
+
+    const posOf = () => page.evaluate(
+      `window.appState.database.sketches['sk_cv'].chain.filter(e => e.canvas)
+         .map(e => e.canvas.x + ',' + e.canvas.y)`);
+    expect(await posOf()).toEqual(['60,40', '60,320']);
+
+    // Drag far enough right that no snap line is in reach, so the delta is exact.
+    await page.mouse.move(hr.x, hr.y);
+    await page.mouse.down();
+    await page.mouse.move(hr.x + 10, hr.y, { steps: 3 });
+    await page.mouse.move(hr.x + 200, hr.y, { steps: 8 });
+    await new Promise(r => setTimeout(r, 200));
+    await page.mouse.up();
+    await new Promise(r => setTimeout(r, 500));
+
+    // Both moved by the SAME delta — the group keeps its arrangement.
+    expect(await posOf()).toEqual(['260,40', '260,320']);
+
+    // ...and it lands as a single undo point, restoring both.
+    await page.evaluate(`window.appController.undo()`);
+    await new Promise(r => setTimeout(r, 500));
+    expect(await posOf()).toEqual(['60,40', '60,320']);
   });
 });

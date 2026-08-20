@@ -21,11 +21,12 @@ import { html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
-import { appController } from '../../state/controller';
+import { appController, type CanvasMove } from '../../state/controller';
 import { snackbars } from '../../widgets/snackbars';
 import { canvasChain, sketchChain, type ChainEntry } from '../../sketch-types';
 import { loadSketchUiState, saveSketchUiState } from '../../state/sketch-ui-store';
-import { PointerDragOp } from '../../utils/pointer-drag-op';
+import { effectPath, parseEffectPath } from '../../state/effects-payload';
+import { CancelReason, PointerDragOp } from '../../utils/pointer-drag-op';
 import { linearScrollTop, publishScroll, subscribeScroll } from '../../widgets/scroll-link';
 import { CANVAS_CARD_WIDTH, CANVAS_CHIP_DROP, type ColumnGroup, type ColumnGroupCallbacks } from '../../widgets/column-group';
 import { activeLinearColumnGroup } from '../../widgets/field-anchor-lookup';
@@ -76,6 +77,8 @@ export class SketchCanvasView extends MobxLitElement {
   @state() private linked = true;
   /** Active alignment guides while dragging a card, in canvas coordinates. */
   @state() private guides: { x: number | null; y: number | null } = { x: null, y: null };
+  /** Rubber-band rectangle, in coordinates relative to this host. */
+  @state() private marquee: { left: number; top: number; w: number; h: number } | null = null;
 
   /** Cards drag freely here; custom inspectors cache per surface. */
   private readonly inspectorCache = new InspectorCache();
@@ -142,6 +145,15 @@ export class SketchCanvasView extends MobxLitElement {
     }
     .guide.v { top: 0; bottom: 0; width: 1px; }
     .guide.h { left: 0; right: 0; height: 1px; }
+    /* Rubber band. Lives in HOST space, not on the scaled surface, so its
+       hairline stays a hairline at every zoom. */
+    .marquee {
+      position: absolute;
+      z-index: 30;
+      pointer-events: none;
+      border: 1px solid var(--app-hi-color2, #4169E1);
+      background: color-mix(in srgb, var(--app-hi-color2, #4169E1) 12%, transparent);
+    }
     .reset {
       position: absolute;
       right: 12px; top: 12px;
@@ -299,13 +311,13 @@ export class SketchCanvasView extends MobxLitElement {
    * lanes: the point is for a node to line up with its neighbours (and, while
    * the scroll link holds, with the linear effect it modulates).
    */
-  private snapLines(exceptChainIdx: number): SnapLines {
+  private snapLines(exclude: Set<number>): SnapLines {
     const sketch = this.sketchId ? appState.database.sketches[this.sketchId] : null;
     const xs: number[] = [];
     const ys: number[] = [];
     if (!sketch) return { xs, ys };
     sketchChain(sketch).forEach((e: ChainEntry, i) => {
-      if (i === exceptChainIdx || !e.canvas) return;
+      if (exclude.has(i) || !e.canvas) return;
       const w = e.canvas.w ?? CANVAS_CARD_WIDTH;
       xs.push(e.canvas.x, e.canvas.x + w + SNAP_GAP);
       ys.push(e.canvas.y);
@@ -313,7 +325,7 @@ export class SketchCanvasView extends MobxLitElement {
     // Card BOTTOMS need a measured height, so read them off the DOM.
     for (const el of this.cardEls()) {
       const idx = Number(el.dataset.chainIdx);
-      if (idx === exceptChainIdx) continue;
+      if (exclude.has(idx)) continue;
       const h = el.getBoundingClientRect().height / this.zoom;
       if (h > 0) ys.push(parseFloat(el.style.top) + h + SNAP_GAP);
     }
@@ -364,16 +376,50 @@ export class SketchCanvasView extends MobxLitElement {
     return best === null ? { v, hit: null } : { v: best, hit: best };
   }
 
+  /**
+   * The canvas cards being dragged when the drag starts on `chainIdx`: the whole
+   * multi-selected GROUP when the clicked card belongs to one (the marquee's
+   * whole point — grab a region and shove it aside), else just that card.
+   * Members that aren't canvas nodes of this sketch are dropped, so a group
+   * spanning both surfaces still drags its canvas half sanely.
+   */
+  private dragGroupIdxs(sketchId: string, chainIdx: number): number[] {
+    const clicked = effectPath(sketchId, 0, chainIdx);
+    const multi = appState.local.multiSelection;
+    if (multi.length < 2 || !multi.includes(clicked)) return [chainIdx];
+    const sketch = appState.database.sketches[sketchId];
+    const chain = sketch ? sketchChain(sketch) : [];
+    const idxs = multi
+      .map(parseEffectPath)
+      .filter(p => !!p && p.sketchId === sketchId && p.colIdx === 0
+                   && !!chain[p!.chainIdx]?.canvas)
+      .map(p => p!.chainIdx)
+      .sort((a, b) => a - b);
+    return idxs.length > 0 ? idxs : [chainIdx];
+  }
+
   /** Begin dragging a canvas card by its header (routed from <column-group>). */
   private beginCardDrag(e: PointerEvent, chainIdx: number) {
     const sketchId = this.sketchId;
     const sketch = sketchId ? appState.database.sketches[sketchId] : null;
     const entry = sketch ? sketchChain(sketch)[chainIdx] : null;
     if (!sketchId || !entry?.canvas) return;
-    const start = { x: entry.canvas.x, y: entry.canvas.y };
+    const chain = sketchChain(sketch!);
+    const idxs = this.dragGroupIdxs(sketchId, chainIdx);
+    const isGroup = idxs.length > 1;
+    // Every member's starting placement — the snapped delta is applied to all of
+    // them, so the group keeps its internal arrangement exactly.
+    const starts = new Map(idxs.map(i => [i, { x: chain[i].canvas!.x, y: chain[i].canvas!.y }]));
+    const start = starts.get(chainIdx)!;
     const origin = { x: e.clientX, y: e.clientY };
-    const lines = this.snapLines(chainIdx);
-    const edit = appController.beginSetCanvasPos(sketchId, chainIdx, start);
+    // Snapping is measured off the CLICKED card only (one guide pair, not one
+    // per member), against the lines of everything outside the group.
+    const lines = this.snapLines(new Set(idxs));
+    const movesTo = (x: number, y: number): CanvasMove[] =>
+      idxs.map(i => ({ chainIdx: i,
+                       x: starts.get(i)!.x + (x - start.x),
+                       y: starts.get(i)!.y + (y - start.y) }));
+    const edit = appController.beginSetCanvasPos(sketchId, movesTo(start.x, start.y));
 
     this.dragOp?.dispose();
     this.dragOp = new PointerDragOp(e, this, {
@@ -383,23 +429,102 @@ export class SketchCanvasView extends MobxLitElement {
         const sx = this.snap(rawX, lines.xs);
         const sy = this.snap(rawY, lines.ys);
         this.guides = { x: sx.hit, y: sy.hit };
-        appController.updateSetCanvasPos(edit, sketchId, chainIdx, { x: sx.v, y: sy.v });
+        appController.updateSetCanvasPos(edit, sketchId, movesTo(sx.v, sy.v));
       },
       accept: (ev: PointerEvent) => {
         this.guides = { x: null, y: null };
         // Dropped back over the effects LIST: this stops being a position edit
         // and becomes a partition move. Cancel the placement (no undo point for
-        // the drag) and re-splice the entry into the linear chain instead.
+        // the drag) and re-splice the entries into the linear chain instead.
         const insertIdx = linearInsertIdxAt(ev.clientX, ev.clientY);
         if (insertIdx !== null) {
           edit.cancel();
-          appController.moveEffectToLinear(sketchId, chainIdx, insertIdx);
+          appController.moveEffectsToLinear(sketchId, idxs, insertIdx);
           return;
         }
         edit.accept();
       },
-      cancel: () => { this.guides = { x: null, y: null }; edit.cancel(); },
+      cancel: (reason) => {
+        this.guides = { x: null, y: null };
+        edit.cancel();
+        // A plain click (never passed the threshold) on a group member collapses
+        // the group to that card. <column-group> deliberately defers the
+        // collapse on pointerdown so a group drag can start; this is where we
+        // learn it wasn't a drag. Mirrors the linear list's reorder gesture.
+        if (reason === CancelReason.NoChange && isGroup) {
+          appController.select(effectPath(sketchId, 0, chainIdx));
+        }
+      },
     });
+  }
+
+  // --- Rubber-band selection ---------------------------------------------
+
+  /**
+   * Press on empty canvas and drag: select every card the band touches. This is
+   * how you clear room — grab a region, then drag any member to move the whole
+   * set (see dragGroupIdxs).
+   *
+   * Shift / Cmd-Ctrl ADD to the selection that was live when the band started;
+   * a plain band replaces it. A press that never becomes a drag deselects,
+   * matching the effects list's click-on-empty-space behaviour.
+   */
+  private onSurfacePointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    // Anything with its own meaning — a card, a port pip, the reset control —
+    // handles its own pointer; only bare surface starts a band.
+    const onChrome = e.composedPath().some(n => n instanceof HTMLElement
+      && (n.classList?.contains('effect-card') || n.classList?.contains('reset')));
+    if (onChrome) return;
+    const sketchId = this.sketchId;
+    if (!sketchId) return;
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    const base = additive ? [...appState.local.multiSelection] : [];
+    const origin = { x: e.clientX, y: e.clientY };
+    let applied = '';
+
+    this.dragOp?.dispose();
+    this.dragOp = new PointerDragOp(e, this, {
+      move: (ev: PointerEvent) => {
+        const host = this.getBoundingClientRect();
+        const rect = {
+          left: Math.min(origin.x, ev.clientX), right: Math.max(origin.x, ev.clientX),
+          top: Math.min(origin.y, ev.clientY), bottom: Math.max(origin.y, ev.clientY),
+        };
+        this.marquee = { left: rect.left - host.left, top: rect.top - host.top,
+                         w: rect.right - rect.left, h: rect.bottom - rect.top };
+        const paths = [...base];
+        for (const idx of this.cardIdxsIn(rect)) {
+          const path = effectPath(sketchId, 0, idx);
+          if (!paths.includes(path)) paths.push(path);
+        }
+        // Only write when the SET changes — a band sweep fires a move per frame
+        // and each write re-renders every card.
+        const key = paths.join('|');
+        if (key === applied) return;
+        applied = key;
+        if (paths.length === 0) appController.select(null);
+        else appController.selectEffectGroup(paths, paths[paths.length - 1]);
+      },
+      accept: () => { this.marquee = null; },
+      cancel: (reason) => {
+        this.marquee = null;
+        if (reason === CancelReason.NoChange && !additive) appController.select(null);
+      },
+    });
+  };
+
+  /** Chain indices of the canvas cards intersecting a viewport-space rect. */
+  private cardIdxsIn(rect: { left: number; right: number; top: number; bottom: number }): number[] {
+    const idxs: number[] = [];
+    for (const el of this.cardEls()) {
+      const r = el.getBoundingClientRect();
+      if (r.right < rect.left || r.left > rect.right
+          || r.bottom < rect.top || r.top > rect.bottom) continue;
+      const idx = Number(el.dataset.chainIdx);
+      if (Number.isFinite(idx)) idxs.push(idx);
+    }
+    return idxs.sort((a, b) => a - b);
   }
 
   /**
@@ -536,7 +661,8 @@ export class SketchCanvasView extends MobxLitElement {
     const surfaceW = 2400;
 
     return html`
-      <div class="viewport" @scroll=${this.onScroll} @dblclick=${this.onSurfaceDblClick}>
+      <div class="viewport" @scroll=${this.onScroll} @dblclick=${this.onSurfaceDblClick}
+        @pointerdown=${this.onSurfacePointerDown}>
         <div class="sizer" style="width:${surfaceW * z}px;height:${this.contentH * z}px">
           <div class="surface"
             style="width:${surfaceW}px;height:${this.contentH}px;transform:scale(${z})">
@@ -563,6 +689,9 @@ export class SketchCanvasView extends MobxLitElement {
             <span>${Math.round(z * 100)}%</span><span>Reset</span>
           </div>`}
       </div>
+      ${this.marquee === null ? nothing : html`
+        <div class="marquee" style="left:${this.marquee.left}px;top:${this.marquee.top}px;
+          width:${this.marquee.w}px;height:${this.marquee.h}px"></div>`}
     `;
   }
 }

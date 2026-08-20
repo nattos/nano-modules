@@ -20,7 +20,7 @@ import {
 } from './effects-payload';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
-import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat } from '../sketch-types';
+import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat, ModuleEntry } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
 import { computeExecOrder } from './exec-order';
@@ -67,6 +67,9 @@ export const DASHBOARD_KNOB_COUNT = 8;
 
 /** Fixed output-trace count (mirrors N_OUT in native/wasm_modules/sketch_output). */
 export const SKETCH_OUTPUT_TRACE_COUNT = 8;
+
+/** One card's target placement in a canvas move (see `beginSetCanvasPos`). */
+export interface CanvasMove { chainIdx: number; x: number; y: number; }
 
 export class AppController {
   public readonly history: HistoryManager;
@@ -2000,20 +2003,36 @@ export class AppController {
 
   /** Move a canvas node back into the linear list at `insertIdx`. */
   moveEffectToLinear(sketchId: string, chainIdx: number, insertIdx: number) {
-    this.mutate('Move to chain', draft => {
-      const sk = draft.sketches[sketchId];
-      if (!sk) return;
-      const chain = ensureChain(sk);
-      const entry = chain[chainIdx];
-      if (entry?.type !== 'module' || !isCanvasEntry(entry)) return;
-      chain.splice(chainIdx, 1);
-      delete entry.canvas;
-      // Clamp into the LINEAR span — dropping past it would land the entry
-      // among the tail-partitioned canvas nodes and silently re-canvas it.
-      const linearCount = chain.filter(e => !isCanvasEntry(e)).length;
-      chain.splice(Math.max(0, Math.min(insertIdx, linearCount)), 0, entry);
-      this.reorderExec(draft, sketchId);
-    });
+    this.moveEffectsToLinear(sketchId, [chainIdx], insertIdx);
+  }
+
+  /**
+   * Move canvas nodes back into the linear list at `insertIdx`, as one block in
+   * chain order. `insertIdx` needs no adjustment for the removals: every canvas
+   * entry sits at the chain TAIL, past the whole linear span.
+   */
+  moveEffectsToLinear(sketchId: string, chainIdxs: number[], insertIdx: number) {
+    const idxs = [...new Set(chainIdxs)].sort((a, b) => a - b);
+    this.mutate(idxs.length > 1 ? `Move ${idxs.length} effects to chain` : 'Move to chain',
+      draft => {
+        const sk = draft.sketches[sketchId];
+        if (!sk) return;
+        const chain = ensureChain(sk);
+        const movable = (i: number) => {
+          const e = chain[i];
+          return e?.type === 'module' && isCanvasEntry(e) ? e : null;
+        };
+        const moved = idxs.map(movable).filter((e): e is ModuleEntry => !!e);
+        if (moved.length === 0) return;
+        // Splice out from the highest index down so the lower ones stay valid.
+        for (let k = idxs.length - 1; k >= 0; k--) if (movable(idxs[k])) chain.splice(idxs[k], 1);
+        for (const e of moved) delete e.canvas;
+        // Clamp into the LINEAR span — dropping past it would land the entries
+        // among the tail-partitioned canvas nodes and silently re-canvas them.
+        const linearCount = chain.filter(e => !isCanvasEntry(e)).length;
+        chain.splice(Math.max(0, Math.min(insertIdx, linearCount)), 0, ...moved);
+        this.reorderExec(draft, sketchId);
+      });
   }
 
   /**
@@ -2038,22 +2057,27 @@ export class AppController {
     return adjusted;
   }
 
-  /** Move a canvas card to a new position (long-edit trio for live drags). */
-  private canvasPosRecipe(sketchId: string, chainIdx: number, pos: { x: number; y: number }) {
+  /** Move canvas cards to new positions (long-edit trio for live drags). Takes
+   *  the whole set at once so a group drag lands as ONE undo point. */
+  private canvasPosRecipe(sketchId: string, moves: CanvasMove[]) {
     return (draft: DatabaseState) => {
-      const entry = ensureChain(draft.sketches[sketchId] ?? ({} as any))?.[chainIdx];
-      if (!entry || !isCanvasEntry(entry)) return;
-      entry.canvas = { ...entry.canvas!, x: pos.x, y: pos.y };
+      const chain = ensureChain(draft.sketches[sketchId] ?? ({} as any));
+      for (const m of moves) {
+        const entry = chain?.[m.chainIdx];
+        if (!entry || !isCanvasEntry(entry)) continue;
+        entry.canvas = { ...entry.canvas!, x: m.x, y: m.y };
+      }
     };
   }
 
-  beginSetCanvasPos(sketchId: string, chainIdx: number, pos: { x: number; y: number }): LongEdit {
+  beginSetCanvasPos(sketchId: string, moves: CanvasMove[]): LongEdit {
     return this.history.beginLongEdit(
-      'Move card', this.canvasPosRecipe(sketchId, chainIdx, pos));
+      moves.length > 1 ? `Move ${moves.length} cards` : 'Move card',
+      this.canvasPosRecipe(sketchId, moves));
   }
 
-  updateSetCanvasPos(edit: LongEdit, sketchId: string, chainIdx: number, pos: { x: number; y: number }) {
-    edit.update(this.canvasPosRecipe(sketchId, chainIdx, pos));
+  updateSetCanvasPos(edit: LongEdit, sketchId: string, moves: CanvasMove[]) {
+    edit.update(this.canvasPosRecipe(sketchId, moves));
   }
 
   /** Toggle "?" help mode (inline effect help text + section help). */
