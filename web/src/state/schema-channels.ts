@@ -11,6 +11,8 @@
  * different field than the one auto-connect would have chosen.
  */
 
+import { RESERVED_FIELD_DEFS } from '../sketch-types';
+
 /** Schema io bits: 1 = input, 2 = output, 4 = primary. */
 export const IO_INPUT = 1;
 export const IO_OUTPUT = 2;
@@ -21,8 +23,14 @@ type Schema = Record<string, any> | undefined;
 /** The data class a wire carries, derived from its PRODUCER field's schema. */
 export type WireKind = 'float' | 'texture' | 'struct' | null;
 
+/**
+ * The data class of one endpoint's field. The reserved card controls
+ * (`__opacity__` / `__enable__`) aren't in any module's schema but are ordinary
+ * float destinations — without the fallback, healing a wire onto a card's
+ * opacity would look like a type mismatch.
+ */
 export function wireKindOfField(schema: Schema, field: string): WireKind {
-  const d = schema?.[field];
+  const d = schema?.[field] ?? RESERVED_FIELD_DEFS[field];
   const t = d?.type;
   if (t === 'float') return 'float';
   if (t === 'texture') return 'texture';

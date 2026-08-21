@@ -22,7 +22,7 @@ import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat, ModuleEntry } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
-import { midiInstanceIdFromKey, midiInstanceKey } from '../midi/midi-types';
+import { midiInstanceIdFromKey, midiInstanceKey, isMidiInstanceKey } from '../midi/midi-types';
 import { computeExecOrder } from './exec-order';
 import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, wireKindOfField, type WireKind } from './schema-channels';
 import { midiController } from './midi-controller';
@@ -703,22 +703,77 @@ export class AppController {
       const entry = chain[chainIdx];
       if (entry?.type === 'module') {
         const key = entry.instance_key;
+        // Wires FIRST — healing types its endpoints against the chain, which
+        // still holds this entry.
+        sk.wires = this.rewireAroundRemoved(sk, [key]);
         chain.splice(chainIdx, 1);
         // Clean up instance state
         if (sk.instances) {
           delete sk.instances[key];
         }
-        // Drop any wires that referenced this instance. Otherwise they dangle:
-        // the executor silently skips a wire whose endpoint has no live source,
-        // so a later same-type effect (which gets a NEW instance_key) never
-        // re-attaches, and the orphaned wire looks like a broken connection.
-        if (sk.wires) {
-          sk.wires = sk.wires.filter(
-            w => w.src.instanceKey !== key && w.dest.instanceKey !== key);
-        }
       }
       this.reorderExec(draft, sketchId);
     });
+  }
+
+  /**
+   * The wire list after removing `removedKeys` (in chain order), HEALED where
+   * it can be: an instance with exactly ONE incoming and ONE outgoing wire of
+   * matching data kind has the two fused into one, running from its producer
+   * straight on to its consumer. Deleting a node out of a chain is then the
+   * exact inverse of splicing one in with `insertOnWireRecipe` — you get the
+   * routing you had before the splice back.
+   *
+   * Every other wire touching a removed instance is dropped. Otherwise they
+   * dangle: the executor silently skips a wire whose endpoint has no live
+   * source, so a later same-type effect (which gets a NEW instance_key) never
+   * re-attaches, and the orphaned wire looks like a broken connection.
+   *
+   * Keys are healed one at a time against the running list, so deleting a RUN
+   * of chained nodes composes — the bridge left by the first becomes the
+   * incoming wire of the second, and each hop's types are checked in turn.
+   */
+  private rewireAroundRemoved(sk: Sketch, removedKeys: string[]): Wire[] {
+    // Module types captured up front: callers splice the chain after this runs,
+    // and both ends of a bridge have to be typed against the pre-removal doc.
+    const typeByKey = new Map<string, string>();
+    for (const e of sketchChain(sk)) {
+      if (e.type === 'module') typeByKey.set(e.instance_key, e.module_type);
+    }
+    const kindOf = (ep: { instanceKey: string; field: string }): WireKind => {
+      // A device source is an external scalar rail with no chain entry.
+      if (isMidiInstanceKey(ep.instanceKey)) return 'float';
+      const moduleType = typeByKey.get(ep.instanceKey);
+      return moduleType ? wireKindOfField(this.pluginSchema(moduleType), ep.field) : null;
+    };
+
+    let wires: Wire[] = [...(sk.wires ?? [])];
+    for (const key of removedKeys) {
+      // A self-loop counts as neither an in nor an out — it just goes.
+      wires = wires.filter(w => !(w.src.instanceKey === key && w.dest.instanceKey === key));
+      const incoming = wires.filter(w => w.dest.instanceKey === key);
+      const outgoing = wires.filter(w => w.src.instanceKey === key);
+      const [inc] = incoming;
+      const [out] = outgoing;
+      // "Reasonably similar types" = the same data class on both open ends. A
+      // float feeding a texture input can't be bridged, so those wires just go.
+      const srcKind = incoming.length === 1 && outgoing.length === 1 ? kindOf(inc.src) : null;
+      const heal = !!srcKind && srcKind === kindOf(out.dest);
+      wires = wires.flatMap(w => {
+        if (heal && w === inc) return [];
+        if (heal && w === out) {
+          // Keep the OUTGOING wire — its id, and the shaping the user tuned on
+          // it, still land on the same dest field the same way. That mirrors
+          // the splice, which put the shaping on its second wire. Re-sourcing
+          // in place (rather than minting a wire) also keeps this recipe pure:
+          // fresh ids would differ every time immer replays it.
+          return [{ ...w, src: { instanceKey: inc.src.instanceKey, field: inc.src.field } }];
+        }
+        if (w.src.instanceKey === key || w.dest.instanceKey === key) return [];
+        return [w];
+      });
+    }
+    return wires;
   }
 
   /**
@@ -735,17 +790,19 @@ export class AppController {
       const sk = draft.sketches[sketchId];
       if (!sk) return;
       const chain = ensureChain(sk);
-      const removedKeys = new Set<string>();
+      // Heal in CHAIN order (idxs runs descending, for the splices) so a
+      // deleted run composes front-to-back; and before any splice, so the
+      // bridges can still read the entries' schemas.
+      const removedKeys = [...idxs].reverse()
+        .map(i => chain[i])
+        .filter(e => e?.type === 'module')
+        .map(e => e.instance_key);
+      if (removedKeys.length > 0) sk.wires = this.rewireAroundRemoved(sk, removedKeys);
       for (const chainIdx of idxs) {
         const entry = chain[chainIdx];
         if (entry?.type !== 'module') continue;
-        removedKeys.add(entry.instance_key);
         chain.splice(chainIdx, 1);
         if (sk.instances) delete sk.instances[entry.instance_key];
-      }
-      if (sk.wires && removedKeys.size > 0) {
-        sk.wires = sk.wires.filter(
-          w => !removedKeys.has(w.src.instanceKey) && !removedKeys.has(w.dest.instanceKey));
       }
       this.reorderExec(draft, sketchId);
     });
