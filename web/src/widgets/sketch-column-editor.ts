@@ -73,6 +73,8 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
   private columnCache = new Map<number, HTMLElement>();
   // Cached inspector elements by instance key.
   private readonly inspectorCache = new InspectorCache();
+  /** Gear-panel extras — a separate cache so it can't collide with the body inspector. */
+  private readonly optionsCache = new InspectorCache('options');
 
   // The sketch the caches above were built for. Both caches hold per-sketch
   // elements (column-groups carry their sketchId; inspectors bind instance
@@ -384,6 +386,7 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
 
   private clearSketchCaches() {
     this.inspectorCache.clear();
+    this.optionsCache.clear();
     this.columnCache.clear();
   }
 
@@ -705,6 +708,10 @@ export class SketchColumnEditor extends MobxLitElement implements ColumnHost, Co
 
   getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null {
     return this.inspectorCache.get(instanceKey, moduleType, binding);
+  }
+
+  getOptionsElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null {
+    return this.optionsCache.get(instanceKey, moduleType, binding);
   }
 
   // ========================================================================

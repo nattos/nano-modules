@@ -82,10 +82,14 @@ export class SketchCanvasView extends MobxLitElement {
 
   /** Cards drag freely here; custom inspectors cache per surface. */
   private readonly inspectorCache = new InspectorCache();
+  /** Gear-panel extras — a separate cache so it can't collide with the body inspector. */
+  private readonly optionsCache = new InspectorCache('options');
   private readonly cardCallbacks: ColumnGroupCallbacks = {
     onCardPointerDown: (e, _sketchId, _colIdx, chainIdx) => this.beginCardDrag(e, chainIdx),
     getInspectorElement: (instanceKey, moduleType, binding) =>
       this.inspectorCache.get(instanceKey, moduleType, binding),
+    getOptionsElement: (instanceKey, moduleType, binding) =>
+      this.optionsCache.get(instanceKey, moduleType, binding),
   };
 
   private unsubScroll: (() => void) | null = null;
@@ -188,6 +192,7 @@ export class SketchCanvasView extends MobxLitElement {
     window.removeEventListener(CANVAS_CHIP_DROP, this.onChipDrop as EventListener);
     this.dragOp?.dispose();
     this.inspectorCache.clear();
+    this.optionsCache.clear();
     this.flushUiState();
   }
 

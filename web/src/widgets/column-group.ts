@@ -241,6 +241,12 @@ function selectorNeedsWrap(options: Array<{ label: string }>): boolean {
 export interface ColumnGroupCallbacks {
   onCardPointerDown(e: PointerEvent, sketchId: string, colIdx: number, chainIdx: number): void;
   getInspectorElement(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null;
+  /**
+   * Extra controls for the card's GEAR panel, from the editorRegistry `options`
+   * slot — appended under the blend + crossfade shapes. Null when the module
+   * type registers none, which is the common case.
+   */
+  getOptionsElement?(instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null;
   onGutterWidthChanged?(): void;
   /**
    * Optional placeholder row drawn in the gap BEFORE chain card `gapIndex`
@@ -1591,6 +1597,7 @@ export class ColumnGroup extends MobxLitElement {
                 .defaultValue=${0}
                 .binding=${this.deviceBinding(chainIdx, entry)}
               ></xfade-curve>
+              ${this.renderEffectOptionsExtra(chainIdx, entry)}
             </div>
           ` : nothing}
           ${isCollapsed ? nothing : html`
@@ -2187,6 +2194,23 @@ export class ColumnGroup extends MobxLitElement {
     this.ctl.selectField(key);
   }
 
+  /**
+   * Module-specific extras for the gear options row, below blend + crossfade.
+   *
+   * Unlike a custom inspector (which REPLACES the card body), this only appends
+   * — the body still renders the effect's schema fields. Bound with the same
+   * schema-backed binding the body uses, not `deviceBinding`, so a widget here
+   * addresses the effect's own fields rather than the reserved `__` keys.
+   */
+  private renderEffectOptionsExtra(chainIdx: number, entry: ModuleEntry) {
+    const get = this.callbacks?.getOptionsElement;
+    if (!get) return nothing;
+    const plugin = this.ds.getPlugin(entry.module_type, entry.instance_key);
+    const el = get.call(this.callbacks, entry.instance_key, entry.module_type,
+                        this.buildFieldBinding(chainIdx, entry, plugin));
+    return el ? html`${el}` : nothing;
+  }
+
   private renderFieldWidgets(chainIdx: number, entry: ModuleEntry) {
     // util.dashboard: a distinct kind of effect with a bespoke knob-row body.
     if (entry.module_type === DASHBOARD_MODULE_TYPE) {
@@ -2313,6 +2337,15 @@ export class ColumnGroup extends MobxLitElement {
       },
       setValue: (fieldPath: string, value: any) => {
         this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+      },
+      setShapeValue: (fieldPath: string, value: number) => {
+        // Falls back to a plain param write on a surface that doesn't plumb the
+        // wire-pruning variant — the value still lands, the stale wires stay.
+        if (this.ctl.setEffectVisibilityParam) {
+          this.ctl.setEffectVisibilityParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+        } else {
+          this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+        }
       },
       beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {
         const edit = this.ctl.beginSetEffectParam(

@@ -23,6 +23,12 @@ import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat, ModuleEntry } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey, isMidiInstanceKey } from '../midi/midi-types';
+import { hiddenFieldsFor } from './field-visibility';
+// Side-effect import: registers the math nodes' synchronous visibility rule.
+// It belongs here rather than beside their editor widget because BOTH the card
+// rendering and setEffectVisibilityParam's wire pruning depend on it, and the
+// controller is loaded by everything that needs either.
+import './math-nodes';
 import { computeExecOrder } from './exec-order';
 import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, wireKindOfField, type WireKind } from './schema-channels';
 import { midiController } from './midi-controller';
@@ -1164,6 +1170,46 @@ export class AppController {
       if (inst) {
         inst.state[paramKey] = value;
       }
+    });
+    this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
+  }
+
+  /**
+   * Set a param that changes which FIELDS the card shows — today the math
+   * nodes' `input_count` — and drop any wires landing on a field the new value
+   * hides, in the SAME undo step.
+   *
+   * Deleting them rather than leaving them is deliberate. The effect already
+   * ignores an input past its count, so this isn't about the value; but an
+   * orphaned wire still contributes an EXEC-ORDER edge (exec-order.ts keys on
+   * instanceKey alone, never the field) and still draws an arc to a pip that no
+   * longer renders. Growing the count back does not bring the wires back — the
+   * stored input VALUES do survive, since nothing prunes hidden state keys.
+   */
+  setEffectVisibilityParam(
+    sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+    const sketch = appState.database.sketches[sketchId];
+    const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
+    if (!entry || entry.type !== 'module') return;
+    const key = entry.instance_key;
+    const moduleType = entry.module_type;
+
+    this.mutate(`Set ${paramKey}`, draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      sk.instances = sk.instances ?? {};
+      const inst = sk.instances[key];
+      if (!inst) return;
+      inst.state[paramKey] = value;
+
+      // Resolve visibility against the state as it will be AFTER the write —
+      // `inst.state` is the immer draft, so it already carries the new value.
+      const hidden = new Set(hiddenFieldsFor(moduleType, inst.state) ?? []);
+      if (hidden.size > 0) {
+        sk.wires = (sk.wires ?? []).filter(
+          w => !(w.dest.instanceKey === key && hidden.has(w.dest.field)));
+      }
+      this.reorderExec(draft, sketchId);
     });
     this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
   }

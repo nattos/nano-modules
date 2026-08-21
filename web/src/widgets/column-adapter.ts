@@ -134,6 +134,13 @@ export interface ColumnController {
 
   // params / device controls
   setEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): void;
+  /**
+   * Set a param that changes which FIELDS the card shows (the math nodes'
+   * `input_count`), dropping wires onto fields it hides in the same undo step.
+   * Optional: a surface that omits it falls back to a plain `setEffectParam`,
+   * which changes the value but leaves the orphaned wires behind.
+   */
+  setEffectVisibilityParam?(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number): void;
   beginSetEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): EditHandle;
   updateSetEffectParam(edit: EditHandle, sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): void;
   beginSetEffectParams(sketchId: string, colIdx: number, chainIdx: number, values: Record<string, ParamValue>): EditHandle;

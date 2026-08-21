@@ -40,6 +40,14 @@ export interface FieldBinding {
   setValue(fieldPath: string, value: any): void;
 
   /**
+   * Write a field that changes which OTHER fields the card shows — the math
+   * nodes' `input_count`. Drops wires landing on fields the new value hides, in
+   * the same undo step, so no arc is left pointing at a pip that no longer
+   * renders. Optional: widgets should fall back to `setValue` if absent.
+   */
+  setShapeValue?(fieldPath: string, value: number): void;
+
+  /**
    * Begin a continuous edit (e.g., slider drag). Updates are previewed live
    * without creating undo points. Returns a handle for updating / finishing.
    */

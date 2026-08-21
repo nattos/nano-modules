@@ -29,7 +29,7 @@ import { exportController } from '../engine/export-controller';
 import { renderPlayModeControls, playModeControlsStyles } from './play-mode-controls';
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { ColumnGroupCallbacks } from '../../../widgets/column-group';
-import { editorRegistry } from '../../../editor-registry';
+import { InspectorCache } from '../../../widgets/inspector-cache';
 import '../../../editors/all-inspectors'; // self-registering custom inspectors (envelope, adsr, …)
 import '../../../widgets/column-group';
 import '../../../widgets/ui-icon';
@@ -88,35 +88,24 @@ export class ArrInspector extends MobxLitElement {
     return a;
   }
   /** Custom inspector elements (envelope, adsr, …) cached by engine instance key,
-   *  re-bound each render — mirrors edit-tab's getInspectorElement. The binding
-   *  passed in is whatever the active panel built: a single-clip binding OR the
-   *  multi-edit fan-out binding (which reports isMixed/inUseValues), so custom
-   *  editors get multi-clip fan-out for free and can opt into mixed indication. */
-  private inspectorCache = new Map<string, HTMLElement & { moduleType?: string; binding?: FieldBinding }>();
+   *  re-bound each render — the same InspectorCache the sketch editor and the
+   *  sidecar canvas use, so the "module type changed under this key after a
+   *  retype" rebuild lives in exactly one place. The binding passed in is
+   *  whatever the active panel built: a single-clip binding OR the multi-edit
+   *  fan-out binding (which reports isMixed/inUseValues), so custom editors get
+   *  multi-clip fan-out for free and can opt into mixed indication. */
+  private inspectorCache = new InspectorCache();
+  /** Gear-panel extras — a separate cache so it can't collide with the body inspector. */
+  private optionsCache = new InspectorCache('options');
   /** column-group callbacks (instance-scoped so the inspector cache lives here).
    *  Shared by the clip / track / multi panels — one cache, keyed by the unique
    *  engine instance key. */
   private columnCallbacks: ColumnGroupCallbacks = {
     onCardPointerDown: () => {},
-    getInspectorElement: (instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null => {
-      const factory = editorRegistry.getInspectorFactory(moduleType);
-      if (!factory) return null;
-      let el = this.inspectorCache.get(instanceKey);
-      // The same key may host a different module type after a retype — rebuild.
-      if (el && el.moduleType !== moduleType) {
-        editorRegistry.getInspectorFactory(el.moduleType ?? '')?.destroy(el);
-        this.inspectorCache.delete(instanceKey);
-        el = undefined;
-      }
-      if (!el) {
-        el = factory.create(instanceKey, binding) as HTMLElement & { moduleType?: string; binding?: FieldBinding };
-        el.moduleType = moduleType;
-        this.inspectorCache.set(instanceKey, el);
-      } else {
-        el.binding = binding; // rebind (single ⇄ multi panel, or live binding swap)
-      }
-      return el;
-    },
+    getInspectorElement: (instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null =>
+      this.inspectorCache.get(instanceKey, moduleType, binding),
+    getOptionsElement: (instanceKey: string, moduleType: string, binding: FieldBinding): HTMLElement | null =>
+      this.optionsCache.get(instanceKey, moduleType, binding),
     // Multi-edit only: a collapsed "N other effects" row in a gap that holds
     // ragged (non-common) effects. Selectable into chainFocusPath; Backspace
     // then fans the delete out across the selected clips (deleteMultiRaggedGap).

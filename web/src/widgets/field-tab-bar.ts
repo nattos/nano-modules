@@ -27,6 +27,11 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
   /** Let the options flow onto multiple rows instead of one squeezed strip.
    *  Reflected so the `:host([wrap])` rules below can restyle the layout. */
   @property({ type: Boolean, reflect: true }) wrap = false;
+  /** This field changes which OTHER fields the card shows (the math nodes'
+   *  `input_count`), so writes route through the binding's shape path, which
+   *  also prunes wires onto fields the new value hides. Opt-in: an ordinary
+   *  enum field must NOT set this. */
+  @property({ type: Boolean }) shapeField = false;
 
   get controlledFields() { return [this.fieldPath]; }
   getControlElements(): HTMLElement[] {
@@ -57,6 +62,10 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
     // Pass the option's typed value (number, usually) — never the
     // string-coerced label. Same lesson as <field-select>: serialised
     // state and on_state_patched both expect typed values.
+    if (this.shapeField && this.binding?.setShapeValue && typeof opt.value === 'number') {
+      this.binding.setShapeValue(this.fieldPath, opt.value);
+      return;
+    }
     this.binding?.setValue(this.fieldPath, opt.value);
   }
 

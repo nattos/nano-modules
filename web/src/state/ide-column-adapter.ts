@@ -94,6 +94,8 @@ const controller: ColumnController = {
   isEffectInGroup: (path) => appController.isEffectInGroup(path),
 
   setEffectParam: (s, c, ch, k, v: ParamValue) => appController.setEffectParam(s, c, ch, k, v),
+  setEffectVisibilityParam: (s, c, ch, k, v: number) =>
+    appController.setEffectVisibilityParam(s, c, ch, k, v),
   beginSetEffectParam: (s, c, ch, k, v: ParamValue) => appController.beginSetEffectParam(s, c, ch, k, v),
   updateSetEffectParam: (e: EditHandle, s, c, ch, k, v: ParamValue) =>
     appController.updateSetEffectParam(e as LongEdit, s, c, ch, k, v),

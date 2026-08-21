@@ -23,3 +23,4 @@ import './paramlinker-editor';
 import './sidechannel-inspector';
 import './nanolooper-inspector';
 import './lens-inspector';
+import './input-count-options';
