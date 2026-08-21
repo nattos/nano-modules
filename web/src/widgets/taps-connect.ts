@@ -49,6 +49,12 @@ interface ConnectState {
 
 interface Target { key: string; info: FieldConnectInfo }
 
+/** Everything that can receive a wire end: a field's tap-port hit-box (the
+ *  expanded card, and — mid-gesture — a sidecar-canvas card) or a port pip (a
+ *  canvas card's always-on ports, a collapsed card's splayed options). Both
+ *  carry the same `data-*` connect dataset. */
+const DROP_SELECTOR = '.tap-overlay-hit, .field-option-pip.connectable';
+
 /** Pierce shadow roots to find the deepest element at a viewport point. */
 function deepElementFromPoint(x: number, y: number): Element | null {
   let el: Element | null = document.elementFromPoint(x, y);
@@ -202,9 +208,7 @@ export class WireConnect implements ColumnTaps {
   private resolveTargetAt(x: number, y: number): Target | null {
     const el = deepElementFromPoint(x, y);
     if (!el) return null;
-    // A field's tap-port hit-box (expanded card) OR a collapsed card's splayed
-    // option pip — both carry the same data-* connect dataset.
-    const hit = el.closest?.('.tap-overlay-hit, .field-option-pip.connectable') as HTMLElement | null;
+    const hit = el.closest?.(DROP_SELECTOR) as HTMLElement | null;
     if (!hit) return null;
     const info = this.hitToInfo(hit);
     return info ? { key: hitKey(hit), info } : null;
@@ -314,7 +318,9 @@ export class WireConnect implements ColumnTaps {
 
   private refreshDropTarget(x: number, y: number) {
     const el = deepElementFromPoint(x, y);
-    const drop = el?.closest?.('.tap-overlay-hit') as HTMLElement | null;
+    // Same selector the drop itself resolves against — highlighting only row
+    // hit-boxes left every canvas port silently un-lit under the pointer.
+    const drop = el?.closest?.(DROP_SELECTOR) as HTMLElement | null;
     if (drop === this.lastDropEl) return;
     this.lastDropEl?.removeAttribute('tap-drop-target');
     if (drop) drop.setAttribute('tap-drop-target', '');

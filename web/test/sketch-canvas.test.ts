@@ -495,4 +495,145 @@ describe('sidecar canvas', () => {
     for (const r of labelled) expect(Math.abs(r.pip.cy - r.label.cy)).toBeLessThanOrEqual(1);
     expect(new Set(labelled.map((r: any) => r.pip.x)).size).toBe(1);
   });
+
+  it('moves a card s port pips with its fields when the gear panel opens', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+
+    // A canvas card is absolutely positioned inside a fixed-size surface, so
+    // growing it resizes NOTHING the layout manager observes. Pip offsets are
+    // computed while RENDERING — against the layout that render is about to
+    // replace — so without a post-commit re-measure they sit at the old rows
+    // until some unrelated render happens by.
+    //
+    // The invariant, before and after: every port dot is centred on the row it
+    // belongs to. Each pip is checked against its OWN anchor (the field editor
+    // the layout manager holds for its key, or the header control for the two
+    // engine-reserved ports), so nothing here depends on guessing how far the
+    // gear panel pushes things down.
+    const misaligned = `(() => { ${WALK}
+      const reserved = { __enable__: '.device-bypass-btn', __opacity__: '.device-opacity-slider' };
+      let lm = null;
+      for (const el of walk(document)) {
+        if (el.tagName === 'COLUMN-GROUP' && el.layoutMode === 'canvas') lm = el.layoutManager;
+      }
+      if (!lm) return ['no canvas column-group'];
+      const mid = (n) => { const r = n.getBoundingClientRect(); return r.top + r.height / 2; };
+      const bad = [];
+      let seen = 0;
+      for (const el of walk(document)) {
+        if (!el.matches || !el.matches('.canvas-in-ports .canvas-pip')) continue;
+        seen++;
+        const fieldPath = el.dataset.fieldPath;
+        const anchor = reserved[fieldPath]
+          ? el.closest('.effect-card-inner').querySelector(reserved[fieldPath])
+          : lm.entries.get(el.dataset.fieldKey)?.element;
+        if (!anchor) { bad.push(fieldPath + ':no-anchor'); continue; }
+        const off = mid(el) - mid(anchor);
+        if (Math.abs(off) > 1) bad.push(fieldPath + ':' + Math.round(off));
+      }
+      if (!seen) return ['no input pips'];
+      return bad;
+    })()`;
+
+    expect(await page.evaluate(misaligned)).toEqual([]);
+
+    const gear = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (!el.matches || !el.matches('.canvas-card .device-gear-btn')) continue;
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      return null;
+    })()`) as any;
+    expect(gear).not.toBeNull();
+
+    // Open the gear panel — the card grows and every field row slides down.
+    await page.mouse.click(gear.x, gear.y);
+    await new Promise(r => setTimeout(r, 400));
+    expect(await page.evaluate(misaligned)).toEqual([]);
+
+    // ...and closing it again puts them back.
+    await page.mouse.click(gear.x, gear.y);
+    await new Promise(r => setTimeout(r, 400));
+    expect(await page.evaluate(misaligned)).toEqual([]);
+  });
+
+  it('keeps a selected canvas card opaque', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+
+    const innerBg = `(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (!el.matches || !el.matches('.canvas-card .effect-card-inner')) continue;
+        const cs = getComputedStyle(el);
+        return { color: cs.backgroundColor, image: cs.backgroundImage,
+                 selected: !!el.closest('.effect-card[selected]') };
+      }
+      return null;
+    })()`;
+
+    const plain = await page.evaluate(innerBg) as any;
+    expect(plain.selected).toBe(false);
+
+    await page.evaluate(`window.appController.select('effect/sk_cv/0/2')`);
+    await new Promise(r => setTimeout(r, 400));
+
+    const sel = await page.evaluate(innerBg) as any;
+    expect(sel.selected).toBe(true);
+    // The selection tint LAYERS over the card body rather than replacing it —
+    // replacing it made a canvas card see-through, since unlike a list card it
+    // has the wire layer and the canvas surface behind it.
+    expect(sel.color).toBe(plain.color);
+    expect(sel.color).not.toMatch(/rgba\(.*0\.\d+\)/);
+    expect(sel.image).toContain('gradient');
+  });
+
+  it('opens field hit-boxes on canvas cards while a connect gesture is live', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true, /*tapping=*/false);
+
+    const canvasHits = `${findAll('.tap-overlay-hit')}.filter(h => h.closest('.canvas-card')).length`;
+    // Wires mode is OFF and nothing is in flight: only the always-on port dots.
+    expect(await page.evaluate(canvasHits)).toBe(0);
+
+    const pip = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.classList && el.classList.contains('canvas-pip') &&
+            el.dataset.isOutput === 'true') {
+          const r = el.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+      }
+      return null;
+    })()`) as any;
+    await page.mouse.click(pip.x, pip.y);
+    await new Promise(r => setTimeout(r, 400));
+
+    // Picked up: every input row on the canvas card is now a target, so a drop
+    // doesn't demand 10px of aim at the pip.
+    expect(await page.evaluate(canvasHits)).toBeGreaterThan(0);
+
+    const hit = await page.evaluate(`(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (!el.matches || !el.matches('.tap-overlay-hit')) continue;
+        if (!el.closest('.canvas-card')) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) continue;
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      return null;
+    })()`) as any;
+    expect(hit).not.toBeNull();
+
+    await page.mouse.move(hit.x, hit.y);
+    await new Promise(r => setTimeout(r, 300));
+    expect(await page.evaluate(
+      `${countOf('.tap-overlay-hit[tap-drop-target]')}`)).toBe(1);
+
+    await page.keyboard.press('Escape');
+    await new Promise(r => setTimeout(r, 400));
+    // Gesture over — the rows fold back away and leave the sliders draggable.
+    expect(await page.evaluate(canvasHits)).toBe(0);
+  });
 });

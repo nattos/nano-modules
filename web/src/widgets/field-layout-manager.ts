@@ -178,8 +178,37 @@ export class FieldLayoutManager {
     this.observedContainer = null;
   }
 
+  private extraObserver: ResizeObserver | null = null;
+  private observedExtras: HTMLElement[] = [];
+
+  /**
+   * Also recalculate when any of `els` resizes.
+   *
+   * The container observer alone is BLIND on a surface whose container has a
+   * fixed size and whose cards are absolutely positioned inside it — the sidecar
+   * canvas. There a card can grow by 200px without the container moving a pixel,
+   * so nothing ever schedules a recalculate and every anchor inside it silently
+   * goes stale. Hand those cards here.
+   *
+   * Idempotent per element SET, for the reason `observeContainer` documents: a
+   * fresh `observe()` always fires an initial callback, so re-observing the same
+   * elements on every render would schedule a recalculate every frame.
+   */
+  observeExtras(els: HTMLElement[]) {
+    if (els.length === this.observedExtras.length &&
+        els.every((el, i) => el === this.observedExtras[i])) return;
+    this.observedExtras = els;
+    this.extraObserver?.disconnect();
+    if (!els.length) return;
+    this.extraObserver ??= new ResizeObserver(() => this.scheduleRecalculate());
+    for (const el of els) this.extraObserver.observe(el);
+  }
+
   dispose() {
     this.unobserveContainer();
+    this.extraObserver?.disconnect();
+    this.extraObserver = null;
+    this.observedExtras = [];
     runInAction(() => {
       this.entries.clear();
     });

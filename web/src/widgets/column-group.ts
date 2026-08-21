@@ -18,7 +18,7 @@ import { sketchChain, chainEntryAt, isCanvasEntry, linearChainLength, isEffectCo
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
-import { FieldLayoutManager } from './field-layout-manager';
+import { FieldLayoutManager, type FieldRect } from './field-layout-manager';
 import { connectGestureActive } from './taps-connect';
 import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
@@ -122,6 +122,22 @@ function pointOverSketchCanvas(x: number, y: number): boolean {
 
 /** Gap between a field's left edge and its canvas input pip. */
 const CANVAS_PIP_GAP = 13;
+
+/** Where a canvas input pip sits, given its field's rect within the card. */
+const canvasPipStyle = (r: FieldRect) =>
+  `left:${r.left - CANVAS_PIP_GAP}px;top:${r.top + r.height / 2}px`;
+
+/** A reserved header control's rect within the card, or null when it isn't
+ *  rendered (a collapsed card, a marker without the control). */
+function reservedPortRect(innerEl: HTMLElement, sel: string): FieldRect | null {
+  const el = innerEl.querySelector(sel) as HTMLElement | null;
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0) return null;
+  const base = innerEl.getBoundingClientRect();
+  return { top: r.top - base.top, left: r.left - base.left,
+           width: r.width, height: r.height };
+}
 
 /** Engine-reserved wire DESTS that have no schema field: their header control
  *  is measured directly, the same way renderTapOverlay does it. */
@@ -589,9 +605,14 @@ export class ColumnGroup extends MobxLitElement {
       font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
     }
+    /* The selection tint is translucent, so it LAYERS over the device body
+     * instead of replacing it. Replacing it left a selected CANVAS card 88%
+     * see-through — the linear list always has an opaque panel behind a card,
+     * the canvas has the wire layer and the surface showing through. */
     .effect-card[selected] .effect-card-inner,
     .chain-marker[selected] .chain-marker-inner {
-      background: var(--device-sel-bg);
+      background: linear-gradient(var(--device-sel-bg), var(--device-sel-bg)),
+                  var(--device-bg);
       border-color: var(--device-sel-border);
     }
     .trace-card-row[selected] {
@@ -736,7 +757,9 @@ export class ColumnGroup extends MobxLitElement {
 
     /* --- Sidecar canvas: ports --- */
     /* The ports layer spans the card so pips can hang off both edges. */
-    .canvas-ports { position: absolute; inset: 0; pointer-events: none; }
+    /* Above .tap-overlay-container (z-index 10), which the canvas now also
+     * renders during a connect gesture — a port must stay clickable through it. */
+    .canvas-ports { position: absolute; inset: 0; pointer-events: none; z-index: 11; }
     .canvas-ports .canvas-pip { pointer-events: auto; }
     .canvas-in-ports { position: absolute; inset: 0; }
     /* Positioned by their field's left edge and row CENTRE, hence the pull-up. */
@@ -966,6 +989,13 @@ export class ColumnGroup extends MobxLitElement {
       box-shadow: 0 0 0 2px rgba(255,255,255,0.25), 0 0 4px var(--app-ok);
     }
     .field-option-pip[selected]::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.85); }
+    /* Mid-gesture drop target — the pip counterpart of .tap-overlay-hit's. */
+    .field-option-pip[tap-drop-target]::after {
+      box-shadow: 0 0 0 3px var(--app-hi-color2, #4169E1);
+    }
+    .field-option-pip.output[tap-drop-target]::after {
+      box-shadow: 0 0 0 3px var(--app-hi-color1, #ff4500);
+    }
     /* A wired field's pip follows the rail convention: blue for inputs, red for
      * outputs (vs the option green). */
     .field-option-pip.wired::after {
@@ -1011,7 +1041,57 @@ export class ColumnGroup extends MobxLitElement {
 
     const column = this.renderRoot.querySelector('.column') as HTMLElement | null;
     if (column) this.layoutManager.observeContainer(column);
+    // The canvas surface is a fixed-size box of absolutely positioned cards, so
+    // `column` never resizes with them — the cards have to be watched directly.
+    if (this.layoutMode === 'canvas') {
+      this.layoutManager.observeExtras(Array.from(
+        this.renderRoot.querySelectorAll('.canvas-card .effect-card-inner')) as HTMLElement[]);
+    }
+    this.placeCanvasPips();
     this.scanAndRegisterFields();
+  }
+
+  /**
+   * Re-place the canvas port pips against the COMMITTED layout.
+   *
+   * `renderCanvasPorts` derives each pip's offset by measuring its field during
+   * render — i.e. against the layout that same render is about to replace. So
+   * anything that moves a field WITHIN its card (opening the gear panel,
+   * collapsing, an inspector swapping its rows, a field-visibility change) emits
+   * pips at the old positions. On the linear surface the column's own height
+   * moves with the card, so the layout manager's ResizeObserver notices and a
+   * re-render catches up; a canvas card is absolutely positioned inside a
+   * fixed-size surface, so NOTHING resizes and the pips simply stay behind until
+   * some unrelated render happens by.
+   *
+   * Measuring again here, after Lit has committed, closes both gaps in the same
+   * frame. Cheap: canvas surfaces only, and only for pips that are on screen.
+   *
+   * It is not sufficient on its own: a card whose CHILDREN render late (the
+   * gear panel's crossfade curve is its own element, so at this point it is
+   * still an empty 0px box) settles after we measure. `observeExtras` above
+   * catches that second beat.
+   */
+  private placeCanvasPips() {
+    if (this.layoutMode !== 'canvas') return;
+    for (const el of this.renderRoot.querySelectorAll('.canvas-in-ports .canvas-pip')) {
+      const pip = el as HTMLElement;
+      const innerEl = pip.closest('.effect-card-inner') as HTMLElement | null;
+      if (!innerEl) continue;
+      const rect = this.canvasPipAnchorRect(pip, innerEl);
+      if (rect) pip.setAttribute('style', canvasPipStyle(rect));
+    }
+  }
+
+  /** The rect a canvas input pip hangs off: its field editor's, or — for the
+   *  engine-reserved header ports, which have no layout key — the control's. */
+  private canvasPipAnchorRect(pip: HTMLElement, innerEl: HTMLElement): FieldRect | null {
+    const key = pip.dataset.fieldKey;
+    const byField = key ? this.layoutManager.getRelativeRect(key, innerEl) : null;
+    if (byField) return byField;
+    const fieldPath = pip.dataset.fieldPath;
+    const reserved = RESERVED_PORTS.find(([, f]) => f === fieldPath);
+    return reserved ? reservedPortRect(innerEl, reserved[0]) : null;
   }
 
   private wireRaf = 0;
@@ -1607,7 +1687,15 @@ export class ColumnGroup extends MobxLitElement {
               ${this.renderFieldWidgets(chainIdx, entry)}
             </div>
             ${this.layoutMode === 'canvas'
-              ? this.renderCanvasPorts(chainIdx, entry)
+              ? html`
+                ${this.renderCanvasPorts(chainIdx, entry)}
+                ${/* A canvas port is a 10px dot; mid-gesture the whole field row
+                    * becomes a target too, so a drop doesn't demand pixel aim.
+                    * Gated on the GESTURE, not on wires mode: the canvas is
+                    * already a wiring surface, and always-on row hits would make
+                    * every slider on it undraggable. */
+                  connectGestureActive() ? this.renderTapOverlay(chainIdx, entry) : nothing}
+              `
               : html`
                 ${this.renderTraceCardRow(chainIdx, entry)}
                 ${tappingMode || connectGestureActive()
@@ -1979,9 +2067,9 @@ export class ColumnGroup extends MobxLitElement {
 
     // LEFT: one pip per rendered input field, sitting just outside that field's
     // own left edge — so a grid of knobs gets a pip per knob rather than a pile
-    // of them on the card margin.
-    const pipPos = (left: number, centerY: number) =>
-      `left:${left - CANVAS_PIP_GAP}px;top:${centerY}px`;
+    // of them on the card margin. These offsets are measured against the layout
+    // this render is about to REPLACE; `placeCanvasPips` re-measures once the
+    // DOM has committed, so what lands here is only the opening bid.
     const inPips: TemplateResult[] = [];
     for (const key of this.layoutManager.keysUntracked()) {
       if (!key.startsWith(keyPrefix)) continue;
@@ -1990,20 +2078,16 @@ export class ColumnGroup extends MobxLitElement {
       const rect = this.layoutManager.getRelativeRect(key, innerEl);
       if (!rect) continue;
       inPips.push(pip(key, fieldPath, false, (schema as any)[fieldPath] ?? null,
-        pipPos(rect.left, rect.top + rect.height / 2)));
+        canvasPipStyle(rect)));
     }
     // ...plus the engine-reserved header controls, which are wire DESTS but not
     // schema fields (so they have no layout key). Same measurement the linear
     // tap overlay does at its tail.
     for (const [sel, fieldPath] of RESERVED_PORTS) {
-      const el = innerEl.querySelector(sel) as HTMLElement | null;
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width <= 0) continue;
-      const base = innerEl.getBoundingClientRect();
+      const rect = reservedPortRect(innerEl, sel);
+      if (!rect) continue;
       inPips.push(pip(`${keyPrefix}${fieldPath}`, fieldPath, false,
-        RESERVED_FIELD_DEFS[fieldPath],
-        pipPos(r.left - base.left, r.top - base.top + r.height / 2)));
+        RESERVED_FIELD_DEFS[fieldPath], canvasPipStyle(rect)));
     }
 
     // RIGHT: a pip per schema-declared output, in a column off the card's right
