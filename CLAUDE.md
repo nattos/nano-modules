@@ -163,6 +163,12 @@ Schema conventions that the host depends on:
 - A float field carrying `magnitude` is a MODULATION CHANNEL; the `io & 4` one is primary. That
   marker drives both the executor's modulation auto-connect and the editor's port picking
   (`web/src/state/schema-channels.ts` — keep the two in lock-step).
+- A schema is published once per module TYPE (`module_init` takes no `self`), so anything that
+  varies per instance must be a VALUE, not a shape. Mode-dependent field sets declare the union
+  and hide the inactive ones; the hidden set is resolved PER INSTANCE by
+  `web/src/state/field-visibility.ts` (the `hidden` flags on `plugins[].schema` are only a
+  type-level fallback). Variable arity works the same way — a fixed bank plus an `input_count`
+  field, as in `mod_math/`. See EFFECTS_STYLE_GUIDE.md.
 
 ## Testing
 

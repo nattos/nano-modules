@@ -110,6 +110,19 @@ Why this shape:
 - `on_state_ready` fires after the executor replays serialized state, so the IDE only ever paints the post-restoration schema. The user never sees a transient "all fields visible" frame.
 - Setting hidden is a pure UI overlay — `notifyStatePatched`, rail routing, and bridge-core state continue to work for hidden fields exactly as if they were visible.
 
+The hidden SET, unlike the schema, is per INSTANCE, and the editor resolves it that way: each live instance's set ships keyed by `instance_key` and `ideColumnAdapter.getPlugin(moduleType, instanceKey)` overlays it per card, so two cards of one type in different modes never share an answer. (The `hidden` flags on the broadcast `plugins[].schema` are a type-level, first-host-wins approximation, kept only as the fallback for an instance that hasn't executed yet.)
+
+**Variable arity — a count field, not a variable schema**
+
+An effect whose *number* of inputs the user picks is the same pattern taken one step further: declare a fixed bank at the maximum (`input_1` … `input_8`), plus an `input_count` field the effect reads, and fold only the first N. There is no alternative — `module_init` takes no `self`, the executor caches schemas by `module_type`, and `slot.registeredSchemas` skips the second instance of a type outright, so arity can only ever be a value, never a shape. `mod.shaper.add` and its siblings (`native/wasm_modules/mod_math/main.cpp`) are the reference.
+
+Two rules that fall out of it, both on the web side:
+
+- **The count's visibility rule is synchronous TypeScript**, registered with `registerVisibilityRule` in `web/src/state/field-visibility.ts` and derived purely from the instance's persisted state. `eval_visibility` would work too, but it is a worker round trip — the card would paint all 8 rows and then reflow. A rule resolves on the FIRST render.
+- **The count control belongs in the card's gear panel**, via the editorRegistry `options` slot, not among the parameter rows. It changes the card's shape rather than a value; sitting among the inputs it governs, it reads as one of them. Write it through `FieldBinding.setShapeValue`, which also drops wires landing on fields the new count hides — an orphaned wire still contributes an exec-order edge and still draws an arc to a pip that no longer renders.
+
+Unwired inputs should rest at the op's IDENTITY, not at zero. Resting a Multiply's spare inputs at 0 makes it publish 0 until every one is wired, which reads as a broken node.
+
 **`selectField`** — single-choice integer with named options. Renders as a row of buttons in the inspector (pass `wrap=true` for large sets like blend modes so they flow onto multiple rows — see `composite.blend`). Use it for mode selectors, algorithm pickers, and anything else with a small fixed set of named values. Schema-wise it's `type:int` plus an `options:[{label,value},…]` array.
 
 **`fontField`** — a string field the IDE renders as a searchable font-family picker (vs a plain `textField`). Read it like any string via `patchString`.
