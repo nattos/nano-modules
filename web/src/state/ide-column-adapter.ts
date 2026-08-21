@@ -10,6 +10,7 @@
 import { appState } from './app-state';
 import { appController } from './controller';
 import { tapsConnect } from '../widgets/taps-connect';
+import { applyHidden, hiddenFieldsFor } from './field-visibility';
 import type {
   ColumnAdapter,
   ColumnCapabilities,
@@ -32,6 +33,21 @@ const ALL_CAPS: ColumnCapabilities = {
   clipboard: true,
 };
 
+/**
+ * The authored state of an instance, found by key alone. `getPlugin` receives no
+ * sketch id, and an instance key is unique across the document, so this scans —
+ * cheap in practice (the editor holds a handful of sketches) and it reads the
+ * DOCUMENT rather than live engine state, which is what makes the synchronous
+ * visibility rules resolve on the very first render.
+ */
+function instanceStateFor(instanceKey: string): Record<string, any> | undefined {
+  for (const sketch of Object.values(appState.database.sketches)) {
+    const inst = sketch?.instances?.[instanceKey];
+    if (inst) return inst.state;
+  }
+  return undefined;
+}
+
 const data: ColumnDataSource = {
   get caps() { return ALL_CAPS; },
   get tappingMode() { return appState.local.tappingMode; },
@@ -39,8 +55,19 @@ const data: ColumnDataSource = {
   get availableEffects(): AvailableEffect[] { return appState.local.availableEffects; },
   get barrelMode(): boolean { return appState.local.barrelMode; },
   getSketch(sketchId: string): Sketch | undefined { return appState.database.sketches[sketchId]; },
-  getPlugin(moduleType: string): PluginInfo | undefined {
-    return appState.local.plugins.find((p) => p.id === moduleType);
+  getPlugin(moduleType: string, instanceKey?: string): PluginInfo | undefined {
+    const base = appState.local.plugins.find((p) => p.id === moduleType);
+    if (!base || !instanceKey) return base;
+    // Resolve conditional visibility for THIS card, so two same-type effects in
+    // one chain (two shapers in different modes, two math nodes with different
+    // input counts) don't share one hidden set. `plugins[]` is per module type;
+    // only the overlay is per instance. Returns `base` untouched for the
+    // overwhelmingly common effect with no conditional fields.
+    const hidden = hiddenFieldsFor(
+      moduleType,
+      instanceStateFor(instanceKey),
+      appState.local.engine.hiddenFields?.[instanceKey]);
+    return applyHidden(base, hidden);
   },
   pluginState(instanceKey: string): Record<string, any> | undefined {
     return appState.local.engine.pluginStates[instanceKey];

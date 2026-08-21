@@ -1831,11 +1831,17 @@ function broadcastState() {
         }
       }
 
-      // Apply the host's `hiddenFields` overlay onto the broadcast
-      // schema. The schema in bridge core is full-fat (every field the
-      // effect ever exposes); the host stamps `hidden:true` on the
-      // ones the effect has currently marked hidden via
-      // `state::setFieldHidden`. The IDE inspector skips hidden fields.
+      // Apply a host's `hiddenFields` overlay onto the broadcast schema. The
+      // schema in bridge core is full-fat (every field the effect ever
+      // exposes); this stamps `hidden:true` on the ones the effect has marked
+      // hidden via `state::setFieldHidden`. The IDE inspector skips hidden
+      // fields.
+      //
+      // NOTE this is TYPE-level and first-host-wins — `matchedHost` is whichever
+      // instance of the type was found first, so two cards of one type in
+      // different modes would share one answer. It survives as the FALLBACK for
+      // instances that haven't executed yet; the per-instance `hiddenFields` map
+      // posted below is authoritative wherever it has an entry.
       let schema: any = entry.schema ?? matchedHost?.schema ?? {};
       if (matchedHost && matchedHost.hiddenFields.size > 0) {
         const overlaid: Record<string, any> = {};
@@ -1888,7 +1894,14 @@ function broadcastState() {
   }
 
   const sketchState = bridgeCore.getAt('/sketch_state') ?? {};
-  post({ type: 'state', state: { plugins, sketches: sketchRecord, sketchState } });
+  // Per-INSTANCE visibility overlay. The `hidden` flags stamped onto
+  // plugins[].schema above are type-level (one arbitrary host of the type wins),
+  // which is only right when every card of a type is in the same mode; this map
+  // lets the editor resolve each card independently and overrides those flags
+  // wherever it has an answer. Rides the state broadcast, not a per-frame diff
+  // channel — visibility changes are rare.
+  const hiddenFields = activeExecutor()?.getHiddenFields() ?? {};
+  post({ type: 'state', state: { plugins, sketches: sketchRecord, sketchState, hiddenFields } });
 }
 
 // ========================================================================

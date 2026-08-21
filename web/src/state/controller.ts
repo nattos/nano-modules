@@ -1835,7 +1835,13 @@ export class AppController {
       }
     }
 
-    runInAction(() => { appState.local.plugins = engineState.plugins; });
+    runInAction(() => {
+      appState.local.plugins = engineState.plugins;
+      // Per-instance visibility overlay. Assigned wholesale (not merged) so an
+      // instance that stops hiding anything drops out of the map rather than
+      // keeping a stale set.
+      appState.local.engine.hiddenFields = engineState.hiddenFields ?? {};
+    });
 
     for (const [id, sketch] of Object.entries(engineState.sketches)) {
       if (!(id in appState.database.sketches)) {

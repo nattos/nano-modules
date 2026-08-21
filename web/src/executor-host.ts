@@ -413,6 +413,30 @@ export class WasmSketchExecutor {
     return result;
   }
 
+  /**
+   * The UI-visibility overlay each live instance has set via
+   * `state::setFieldHidden`, keyed by instance_key — same shape as
+   * getPluginStates(), so the worker ships it the same way.
+   *
+   * Per INSTANCE, deliberately: the schema itself is per module type, but the
+   * hidden set is not. Two cards of one type in different modes (or with
+   * different input counts) each own their own set, and each WasmHost already
+   * tracks its own.
+   *
+   * EVERY live instance gets an entry, including an EMPTY one. Presence is the
+   * signal that this instance has executed and this is its answer — an empty
+   * array means "hides nothing", which must still override a stale type-level
+   * flag contributed by some other instance of the same type. Omitting empties
+   * would make that indistinguishable from "never executed".
+   */
+  getHiddenFields(): Record<string, string[]> {
+    const result: Record<string, string[]> = {};
+    for (const [key, inst] of this.instances) {
+      result[key] = inst.host.hiddenFields ? [...inst.host.hiddenFields] : [];
+    }
+    return result;
+  }
+
   // Reusable scratch buffer in the executor's linear memory for the modulation
   // JSON readback (grown on demand). malloc can detach the ArrayBuffer, so the
   // pointer is re-validated by reading right after the call that fills it.

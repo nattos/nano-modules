@@ -83,6 +83,14 @@ export interface EngineState {
   plugins: PluginInfo[];
   sketches: Record<string, Sketch>;
   sketchState: Record<string, any>;
+  /**
+   * UI-visibility overlay per INSTANCE (instance_key -> hidden field names), as
+   * set by each effect through `state::setFieldHidden`. Only instances with a
+   * non-empty set appear. `plugins[].schema` also carries `hidden` flags, but
+   * those are type-level (first live host of the type wins) — this map is what
+   * lets two cards of one type in different modes resolve independently.
+   */
+  hiddenFields?: Record<string, string[]>;
 }
 
 // --- Debug stats (frame-scoped instrumentation) ---

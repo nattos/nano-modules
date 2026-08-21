@@ -30,6 +30,7 @@ import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
 import { effectCatalog, catalogEffect, VIDEO_SOURCE_TYPE } from '../engine/effect-catalog';
 import { clipInstanceKey, trackInstanceKey, transportInstanceKey, trackTransportInstanceKey } from '../engine/instance-keys';
+import { applyHidden } from '../../../state/field-visibility';
 
 /**
  * Stable fingerprint of a candidate device state for the static-visibility
@@ -85,31 +86,23 @@ function resolveStaticHiddenMulti(moduleType: string, states: Record<string, unk
   return sets[0].filter((f) => sets.every((s) => s.includes(f)));
 }
 
-/**
- * Return `plugin` with the conditional-visibility overlay applied.
+/*
+ * The conditional-visibility overlay itself lives in state/field-visibility.ts,
+ * shared with the sketch editor's adapter. How the hidden set is SOURCED still
+ * differs here:
  *
  * 1. `staticHidden` (the effect's `eval_visibility` resolved for THIS target's
- *    actual state) is AUTHORITATIVE when present — it overrides any live `hidden`
- *    flags, which for a multi-select are the last-instance-wins single mode, not
- *    the per-clip union. Every dynamic-visibility effect declares the evaluator,
- *    so this is the path for any clip with conditional fields, on or off playhead.
- * 2. Otherwise, when the live schema already carries `hidden` flags (an
- *    on-playhead instance executed + fired on_state_ready), trust it as-is.
- * 3. Otherwise — no static evaluator and no live flags — render the schema as-is
- *    (an effect with no conditional visibility, or a transient before the static
- *    query lands; the tracked reads in the resolver re-render when it does).
+ *    actual state) is AUTHORITATIVE when present — it overrides any live
+ *    `hidden` flags, which for a multi-select are the last-instance-wins single
+ *    mode, not the per-clip union. Every dynamic-visibility effect declares the
+ *    evaluator, so this is the path for any clip with conditional fields, on or
+ *    off playhead.
+ * 2. Otherwise the schema's own `hidden` flags stand (an on-playhead instance
+ *    executed + fired on_state_ready).
+ * 3. Otherwise the schema renders as-is — no conditional visibility, or a
+ *    transient before the static query lands; the tracked reads in the resolver
+ *    re-render when it does.
  */
-function applyHidden(moduleType: string, plugin: PluginInfo, staticHidden: string[] | null): PluginInfo {
-  if (!staticHidden) return plugin;
-  const schema = (plugin.schema ?? {}) as Record<string, any>;
-  const set = new Set(staticHidden);
-  const overlaid: Record<string, any> = {};
-  for (const [k, d] of Object.entries(schema)) {
-    const wantHidden = set.has(k);
-    overlaid[k] = (!!d?.hidden === wantHidden) ? d : { ...d, hidden: wantHidden };
-  }
-  return { ...plugin, schema: overlaid } as PluginInfo;
-}
 
 const CAPS: ColumnCapabilities = {
   // Tracing on → output trace cards render, exposing output fields as connectable
@@ -654,7 +647,7 @@ export class ArrColumnAdapter implements ColumnAdapter {
       // available, else the live/last-known set. `instanceKey` pins it to THIS
       // device so two same-type effects in one chain resolve independently.
       const staticHidden = this.target.staticHiddenFor?.(moduleType, instanceKey) ?? null;
-      return applyHidden(moduleType, base, staticHidden);
+      return applyHidden(base, staticHidden);
     },
     // instanceKey is the device id; translate to the engine key the live output
     // state is published under, then read the store (so output traces animate).

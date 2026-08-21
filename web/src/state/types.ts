@@ -285,6 +285,14 @@ export interface EngineStatus {
    */
   modulationData: Record<string, Record<string, { value: number; min: number; max: number; neutral: number }>>;
   /**
+   * UI-visibility overlay per INSTANCE (instance_key -> hidden field names),
+   * from each effect's `state::setFieldHidden` calls. Read through
+   * `state/field-visibility.ts` so two cards of one module type in different
+   * modes resolve independently — the schema in `plugins[]` is per TYPE and its
+   * own `hidden` flags are only a first-host-wins approximation.
+   */
+  hiddenFields: Record<string, string[]>;
+  /**
    * Latest per-frame debug stats. Only populated while the Debug Info
    * sidebar tab is active (the tab toggles `engine.setDebugMode`).
    */
