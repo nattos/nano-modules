@@ -91,9 +91,9 @@ struct CompositeUniforms {
   float halo_gain;
   float _pad0;
   float _pad1;
-  float grade[12];
+  float grade[16];
 };
-static_assert(sizeof(CompositeUniforms) == 80, "composite.hlsl cbuffer mismatch");
+static_assert(sizeof(CompositeUniforms) == 96, "composite.hlsl cbuffer mismatch");
 
 struct State {
   // --- Halo ---
@@ -101,7 +101,7 @@ struct State {
   float halo_radius     = 0.30f;
   float halo_falloff    = 0.45f;
   float halo_compensate = 1.00f;
-  float threshold       = 0.55f;
+  float threshold       = 0.25f;
   float knee            = 0.50f;
   float outline         = 0.00f;
   float glow_saturation = 1.30f;
@@ -118,6 +118,9 @@ struct State {
   float toe             = 0.25f;
   float shoulder        = 0.50f;
   float highlight_desat = 0.70f;
+  float highlight_tint[3] = {1.00f, 0.22f, 0.62f};
+  float highlight_tint_amount = 0.0f;
+  float highlight_tint_pivot  = 1.0f;
   float chroma_bleed    = 0.25f;
   float scanline        = 0.12f;
   int   scanline_count  = 240;
@@ -260,7 +263,9 @@ void module_init() {
         .groupHelp(
           "**Threshold** and **Knee** decide what is allowed to glow; turn on "
           "*Show Emitter* in Debug and set them there rather than guessing "
-          "through the grade. **Outline** then chooses between blooming those "
+          "through the grade. Remember the input is usually already tone "
+          "mapped, so its brightest pixel is 1.0 and a threshold near that "
+          "leaves nothing. **Outline** then chooses between blooming those "
           "bright areas whole (0) and blooming only their edges (1).\n\n"
           "**Halo Radius** slides weight across the pyramid's octaves, so it "
           "modulates smoothly and never pops a level in. By default the glow "
@@ -276,7 +281,12 @@ void module_init() {
         .label("Halo Gain", "Halo")
       .floatField("halo_radius", 0.30f, 0.f, 1.f, state::PrimaryInput)
         .label("Halo Radius", "Halo R")
-      .floatField("threshold", 0.55f, 0.f, 2.f, state::PrimaryInput)
+      .floatField("threshold", 0.25f, 0.f, 2.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How bright a pixel has to be before it glows. The range "
+                  "runs past 1.0 for HDR chains, but an ordinary tone-mapped "
+                  "image tops out AT 1.0 — set this high on one and almost "
+                  "nothing survives to glow.")
         .label("Threshold", "Thresh")
       .floatField("outline", 0.00f, 0.f, 1.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
@@ -344,6 +354,23 @@ void module_init() {
         .label("Shoulder", "Shldr")
       .floatField("highlight_desat", 0.70f, 0.f, 1.f, state::SecondaryInput)
         .label("Highlight Desat", "HiDesat")
+      .rgbField("highlight_tint", 1.00f, 0.22f, 0.62f, state::SecondaryInput)
+        .label("Highlight Tint", "Hi Tint")
+      .floatField("highlight_tint_amount", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Colours the blown-out cores that Highlight Desat just "
+                  "bleached white. The swatch is what a fully clipped pixel "
+                  "BECOMES, so what you pick is what you get — dim it for a "
+                  "deeper, more saturated core, keep it hot for a tinted "
+                  "white one.")
+        .label("Highlight Tint Amount", "Tint Amt")
+      .floatField("highlight_tint_pivot", 1.0f, 0.2f, 4.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Where the tint starts biting, and how much of the image it "
+                  "catches. 1.0 is exactly at clipping and the tint arrives "
+                  "fully a stop above that; drop it to pull colour into "
+                  "highlights that would have survived the tone map intact.")
+        .label("Tint Pivot", "Pivot")
       .floatField("scanline", 0.12f, 0.f, 1.f, state::SecondaryInput)
         .label("Scanlines", "Scan")
       .intField("scanline_count", 240, 30, 720, state::SecondaryInput, 0, "lines")
@@ -487,6 +514,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "toe"))             s->toe = state::patchFloat(i);
     else if (state::pathIs(p, l, "shoulder"))        s->shoulder = state::patchFloat(i);
     else if (state::pathIs(p, l, "highlight_desat")) s->highlight_desat = state::patchFloat(i);
+    else if (state::pathIs(p, l, "highlight_tint")) {
+      auto v = state::patchVec3(i);
+      s->highlight_tint[0] = v.x; s->highlight_tint[1] = v.y; s->highlight_tint[2] = v.z;
+    }
+    else if (state::pathIs(p, l, "highlight_tint_amount")) s->highlight_tint_amount = state::patchFloat(i);
+    else if (state::pathIs(p, l, "highlight_tint_pivot"))  s->highlight_tint_pivot = state::patchFloat(i);
     else if (state::pathIs(p, l, "scanline"))        s->scanline = state::patchFloat(i);
     else if (state::pathIs(p, l, "scanline_count"))  s->scanline_count = state::patchInt(i);
     else if (state::pathIs(p, l, "grain"))           s->grain = state::patchFloat(i);
@@ -661,7 +694,11 @@ void render(void* self, int vp_w, int vp_h) {
   cu.grade[9]  = s->grain;
   // Absolute host time, not an accumulator — see TimeIndependent above.
   cu.grade[10] = float(std::fmod(host::time() * 997.0, 4096.0));
-  cu.grade[11] = 0.0f;
+  cu.grade[11] = s->highlight_tint_pivot;
+  cu.grade[12] = s->highlight_tint[0];
+  cu.grade[13] = s->highlight_tint[1];
+  cu.grade[14] = s->highlight_tint[2];
+  cu.grade[15] = s->highlight_tint_amount;
   s->composite_buf.writeOne(cu);
 
   {

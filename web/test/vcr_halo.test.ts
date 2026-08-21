@@ -216,6 +216,72 @@ describe(`VCR Halo E2E (${backend})`, () => {
     expect(maxSplit(on)).toBeGreaterThan(maxSplit(off) + 20);
   });
 
+  // The highlight tint lives in the shared nano_vcr grade, so these two cases
+  // cover it for source.mesh.three_planes as well. What makes it worth an
+  // exact test is that the obvious implementation does NOT work: the soft clip
+  // saturates around 1.1, so a tint that merely scales a blown pixel keeps
+  // every channel over the knee and still resolves to white. The target has to
+  // be absolute.
+  it('the highlight tint recolours what is near clipping', async () => {
+    // input_gain 2.5 on a 0.9 grey puts the accumulator at 2.25 — a stop over
+    // the pivot, so the tint arrives in full.
+    const common: [string, number | number[]][] = [
+      ...QUIET, ['halo_gain', 0], ['input_gain', 2.5],
+      ['warmth', 0], ['drive', 0], ['toe', 0], ['shoulder', 0],
+      ['highlight_tint', [0.9, 0.05, 0.15]],
+    ];
+    const off = await runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0.9, 0.9, 0.9, 1],
+      params: [...common, ['highlight_tint_amount', 0]] as any,
+      dumpName: 'vcr_halo_tint_off',
+    });
+    const on = await runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0.9, 0.9, 0.9, 1],
+      params: [...common, ['highlight_tint_amount', 1]] as any,
+      dumpName: 'vcr_halo_tint_on',
+    });
+    expect(off.success && on.success).toBe(true);
+
+    const a = off.pixelAt(W >> 1, H >> 1), b = on.pixelAt(W >> 1, H >> 1);
+    // Untinted, 2.25 clips to white on every channel.
+    expect(a.r).toBeGreaterThan(240);
+    expect(a.b).toBeGreaterThan(240);
+    // Tinted, the weak channels have to come down BELOW the soft clip's knee,
+    // which is the entire point.
+    expect(b.r).toBeGreaterThan(200);
+    expect(b.b).toBeLessThan(140);
+    expect(b.r - b.b).toBeGreaterThan(80);
+  });
+
+  it('...and leaves anything under the pivot alone', async () => {
+    // Same knobs, but the accumulator now lands at 0.5 — well under the pivot,
+    // so the tint must be a no-op rather than a global colour cast.
+    const common: [string, number | number[]][] = [
+      ...QUIET, ['halo_gain', 0], ['input_gain', 1.0],
+      ['warmth', 0], ['drive', 0], ['toe', 0], ['shoulder', 0],
+      ['highlight_tint', [0.9, 0.05, 0.15]],
+    ];
+    const off = await runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0.5, 0.5, 0.5, 1],
+      params: [...common, ['highlight_tint_amount', 0]] as any,
+      dumpName: 'vcr_halo_tint_lo_off',
+    });
+    const on = await runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0.5, 0.5, 0.5, 1],
+      params: [...common, ['highlight_tint_amount', 1]] as any,
+      dumpName: 'vcr_halo_tint_lo_on',
+    });
+    expect(off.success && on.success).toBe(true);
+    const a = off.pixelAt(W >> 1, H >> 1), b = on.pixelAt(W >> 1, H >> 1);
+    expect(Math.abs(a.r - b.r)).toBeLessThanOrEqual(1);
+    expect(Math.abs(a.g - b.g)).toBeLessThanOrEqual(1);
+    expect(Math.abs(a.b - b.b)).toBeLessThanOrEqual(1);
+  });
+
   it('debug views isolate the halo and the emitter', async () => {
     const halo = await barsThen([...QUIET, ['debug_show_halo', 1],
                                  ['halo_gain', 1], ['halo_compensate', 0],

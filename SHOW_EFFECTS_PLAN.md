@@ -919,10 +919,28 @@ any GPU readback — from `tick()` (so taps see this frame's value) and from
 `render()` (so a host that renders without ticking still gets live rails).
 
 **Look.** The grade lives in the shared `shaders_common/nano_vcr.hlsl`:
-HDR highlight bleach → warmth → asymmetric per-channel soft clip (which *is* the
-tone map) → filmic toe/shoulder → scanlines + grain. Factored out so the
-post-process sibling below wears the identical look; only the halo generation
-differs.
+HDR highlight bleach → **highlight tint** → warmth → asymmetric per-channel soft
+clip (which *is* the tone map) → filmic toe/shoulder → scanlines + grain.
+Factored out so the post-process sibling below wears the identical look; only
+the halo generation differs.
+
+**Highlight tint** is the bleach run backwards, on the same region: the cores
+that `core_whiten` + `highlight_desat` just flattened to white get pulled to a
+chosen colour instead. Two things about it are non-obvious and both were found
+the hard way:
+
+- The tint is an **absolute** colour, not a multiplier and not scaled by the
+  pixel's own peak. `nano_vcr_softclip` at any real drive saturates by about
+  1.1, so anything still above that resolves to white whatever hue it nominally
+  carries — a multiplicative tint keeps every channel hot and therefore keeps
+  clipping. The only way to make a blown core read as a colour is to bring its
+  weak channels *below* the knee, so the tint replaces rather than scales. The
+  useful side effect is that the swatch reads as the result: pick the colour you
+  want the tube to be, and dim it for a deeper one.
+- The ramp is a smoothstep over `pivot → 1.5*pivot`, not a full stop. Past ~1.1
+  the tone map has already flattened everything, so a wide ramp spends its range
+  on pixels that are indistinguishable from each other and leaves a white fringe
+  between the tinted core and the halo.
 
 ---
 
@@ -999,10 +1017,15 @@ adds one tap per up pass (0.252). Halo Gain at 0 skips the chain for ~45% off.
 **Known limits, all inherent to convolving instead of measuring distance:**
 - It shimmers under motion where the analytic version is rock steady (accepted).
 - It cannot recover colour the source already bleached out: feed it a white-hot
-  neon core and the halo comes back white. Feed it the *un*-bleached image, or
-  use Glow Tint.
+  neon core and the halo comes back white. Feed it the *un*-bleached image, use
+  Glow Tint on the emitter, or use the shared **Highlight Tint** to re-colour the
+  clipped cores after the fact (usually with Pivot pulled under 1.0, since a
+  tone-mapped input never gets far above it).
 - On thick, already-bright content the default gain clips. Threshold up or
   Outline up is the answer, and both are on the front page of the group help.
+- Threshold is in HDR units but the input usually is not: a tone-mapped image
+  tops out at 1.0, so a "sensible" bloom threshold of 0.55 leaves almost nothing
+  to glow. Default is 0.25 for that reason.
 
 ---
 

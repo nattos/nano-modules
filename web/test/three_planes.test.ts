@@ -63,6 +63,35 @@ describe(`Three Planes E2E (${backend})`, () => {
     expect(frame.metadata?.id).toBe(MODULE);
   });
 
+  // The highlight tint is the shared nano_vcr knob (see vcr_halo.test.ts for
+  // its exact behaviour); this only checks it is wired through here — the
+  // white-hot line cores must take the tint while the halos keep their own
+  // per-plane colour.
+  it('the highlight tint colours the white-hot line cores', async () => {
+    const mk = (amount: number, name: string) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0, 0, 0, 1],
+      params: [...QUIET, ['highlight_tint_amount', amount],
+               ['highlight_tint', [0.10, 0.85, 0.25]]] as any,
+      dumpName: name,
+    });
+    const off = await mk(0, 'three_planes_tint_off');
+    const on  = await mk(1, 'three_planes_tint_on');
+    expect(off.success && on.success).toBe(true);
+
+    // Probe the brightest pixel of the UNTINTED frame — that is a line core,
+    // and it is the pixel guaranteed to be over the pivot. Picking the
+    // brightest of the tinted frame instead would find whatever stayed white.
+    let best = -1, bx = 0, by = 0;
+    off.forEachPixel((p, x, y) => {
+      if (luma(p) > best) { best = luma(p); bx = x; by = y; }
+    });
+    const a = off.pixelAt(bx, by), b = on.pixelAt(bx, by);
+    expect(Math.abs(a.r - a.b)).toBeLessThan(40);   // white-hot to start with
+    expect(b.g).toBeGreaterThan(b.r + 60);
+    expect(b.g).toBeGreaterThan(b.b + 60);
+  });
+
   it('renders three planes stacked in the middle of the frame', async () => {
     const frame = await runGpuEffectTest({
       module: MODULE, bundle: BUNDLE, width: W, height: H,

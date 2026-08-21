@@ -44,9 +44,9 @@ struct Uniforms {
   float neon1[4];           // row 11:    halo gain, falloff, corner r, aa width
   float misc[4];            // row 12:    fill gain, chroma bleed, input opacity, debug
   float view[4];            // row 13:    vp_w, vp_h, aspect_x, aspect_y
-  float grade[12];          // rows 14-16: VcrGrade
+  float grade[16];          // rows 14-16: VcrGrade
 };
-static_assert(sizeof(Uniforms) == 272, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 288, "Uniforms layout mismatch with render.hlsl");
 
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
@@ -82,6 +82,9 @@ struct State {
   float toe             = 0.25f;
   float shoulder        = 0.50f;
   float highlight_desat = 0.70f;
+  float highlight_tint[3] = {1.00f, 0.22f, 0.62f};
+  float highlight_tint_amount = 0.0f;
+  float highlight_tint_pivot  = 1.0f;
   float chroma_bleed    = 0.25f;
   float scanline        = 0.12f;
   int   scanline_count  = 240;
@@ -320,6 +323,23 @@ void module_init() {
         .label("Shoulder", "Shldr")
       .floatField("highlight_desat", 0.70f, 0.f, 1.f, state::SecondaryInput)
         .label("Highlight Desat", "HiDesat")
+      .rgbField("highlight_tint", 1.00f, 0.22f, 0.62f, state::SecondaryInput)
+        .label("Highlight Tint", "Hi Tint")
+      .floatField("highlight_tint_amount", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Colours the blown-out cores that Highlight Desat just "
+                  "bleached white. The swatch is what a fully clipped pixel "
+                  "BECOMES, so what you pick is what you get — dim it for a "
+                  "deeper, more saturated core, keep it hot for a tinted "
+                  "white one.")
+        .label("Highlight Tint Amount", "Tint Amt")
+      .floatField("highlight_tint_pivot", 1.0f, 0.2f, 4.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Where the tint starts biting, and how much of the image it "
+                  "catches. 1.0 is exactly at clipping and the tint arrives "
+                  "fully a stop above that; drop it to pull colour into "
+                  "highlights that would have survived the tone map intact.")
+        .label("Tint Pivot", "Pivot")
       .floatField("scanline", 0.12f, 0.f, 1.f, state::SecondaryInput)
         .label("Scanlines", "Scan")
       .intField("scanline_count", 240, 30, 720, state::SecondaryInput, 0, "lines")
@@ -474,6 +494,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "toe"))             s->toe = state::patchFloat(i);
     else if (state::pathIs(p, l, "shoulder"))        s->shoulder = state::patchFloat(i);
     else if (state::pathIs(p, l, "highlight_desat")) s->highlight_desat = state::patchFloat(i);
+    else if (state::pathIs(p, l, "highlight_tint")) {
+      auto v = state::patchVec3(i);
+      s->highlight_tint[0] = v.x; s->highlight_tint[1] = v.y; s->highlight_tint[2] = v.z;
+    }
+    else if (state::pathIs(p, l, "highlight_tint_amount")) s->highlight_tint_amount = state::patchFloat(i);
+    else if (state::pathIs(p, l, "highlight_tint_pivot"))  s->highlight_tint_pivot = state::patchFloat(i);
     else if (state::pathIs(p, l, "scanline"))        s->scanline = state::patchFloat(i);
     else if (state::pathIs(p, l, "scanline_count"))  s->scanline_count = state::patchInt(i);
     else if (state::pathIs(p, l, "grain"))           s->grain = state::patchFloat(i);
@@ -552,7 +578,11 @@ void render(void* self, int vp_w, int vp_h) {
   // Derived from ABSOLUTE host time, not an accumulator, so the effect stays
   // TimeIndependent: a scrub lands on the right frame with the right grain.
   u.grade[10] = float(std::fmod(host::time() * 997.0, 4096.0));
-  u.grade[11] = 0.0f;
+  u.grade[11] = s->highlight_tint_pivot;
+  u.grade[12] = s->highlight_tint[0];
+  u.grade[13] = s->highlight_tint[1];
+  u.grade[14] = s->highlight_tint[2];
+  u.grade[15] = s->highlight_tint_amount;
 
   s->uniform_buf.writeOne(u);
 
