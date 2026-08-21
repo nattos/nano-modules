@@ -739,14 +739,28 @@ export class ColumnGroup extends MobxLitElement {
     .canvas-out-ports {
       position: absolute; left: 100%; top: 8px;
       display: flex; flex-direction: column; gap: 2px;
-      padding-left: 8px; min-width: 76px; pointer-events: auto;
+      padding-left: 8px; min-width: 76px; max-width: 140px; pointer-events: auto;
     }
+    /* A lone output needs no label, so the pip closes right up to the card —
+     * landing the same 8px off the edge as an input pip on the other side
+     * (CANVAS_PIP_GAP less the pip's own 5px dot inset). */
+    .canvas-out-ports.bare { min-width: 0; max-width: none; padding-left: 3px; }
     .canvas-out-row { display: flex; align-items: center; gap: 6px; height: 16px; }
+    /* Labels are right-aligned and share the column's width, which is what puts
+     * every pip on ONE vertical line however long the names run. */
     .canvas-out-label {
+      flex: 1; min-width: 0; text-align: right;
       font-size: var(--app-fs-sm); color: var(--app-text-color2);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .canvas-out-ports .canvas-pip { position: static; flex: none; }
+    /* These pips are laid out by their ROW, not absolutely placed like the input
+     * ones, so the base class's centring pull-up comes back off and the box
+     * matches the row height. Staying POSITIONED is load-bearing: the
+     * dot is an absolute ::after at top:50%, which without a positioned pip
+     * resolves against the whole column and strands every dot at its midpoint. */
+    .canvas-out-ports .canvas-pip {
+      position: relative; flex: none; transform: none; height: 16px;
+    }
 
     /* --- Sidecar canvas: freeform card placement --- */
     .column.canvas-surface {
@@ -1937,11 +1951,12 @@ export class ColumnGroup extends MobxLitElement {
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
 
     const pip = (key: string, fieldPath: string, isOutput: boolean,
-                 schemaDef: any | null, style: string) => {
+                 schemaDef: any | null, style: string, title = '') => {
       this.registerFieldSelectable(key, chainIdx, entry, fieldPath, isOutput);
       return html`
         <div class="field-option-pip connectable canvas-pip ${isOutput ? 'output' : ''}"
           ?selected=${selectedPath === key}
+          title=${title}
           data-field-key=${key}
           data-sketch-id=${this.sketchId}
           data-col-idx=${this.colIdx}
@@ -1984,18 +1999,24 @@ export class ColumnGroup extends MobxLitElement {
         pipPos(r.left - base.left, r.top - base.top + r.height / 2)));
     }
 
-    // RIGHT: a label per schema-declared output, each with its pip. Labels only
-    // — no trace cards; the canvas is about routing, not previewing.
+    // RIGHT: a pip per schema-declared output, in a column off the card's right
+    // edge. Labels only — no trace cards; the canvas is about routing, not
+    // previewing. A SINGLE output is left unlabelled: what one output of a card
+    // is, is obvious, and the name is just noise floating in the canvas (it's
+    // still on the pip's tooltip). Two or more genuinely need telling apart.
     const outputs = this.collectModuleOutputs(entry);
+    const bare = outputs.length === 1;
     return html`
       <div class="canvas-ports">
         <div class="canvas-in-ports">${inPips}</div>
         ${outputs.length === 0 ? nothing : html`
-          <div class="canvas-out-ports">
+          <div class="canvas-out-ports ${bare ? 'bare' : ''}">
             ${outputs.map(o => html`
               <div class="canvas-out-row">
-                <span class="canvas-out-label" title=${o.kindLabel}>${o.displayName}</span>
-                ${pip(`${keyPrefix}${o.fieldPath}`, o.fieldPath, true, o.schemaDef, '')}
+                ${bare ? nothing : html`
+                  <span class="canvas-out-label" title=${o.kindLabel}>${o.displayName}</span>`}
+                ${pip(`${keyPrefix}${o.fieldPath}`, o.fieldPath, true, o.schemaDef, '',
+                      bare ? `${o.displayName} (${o.kindLabel})` : '')}
               </div>`)}
           </div>`}
       </div>

@@ -51,17 +51,33 @@ async function seed(page: any, canvasOpen: boolean, tapping = true) {
 }
 
 /** Push a second canvas node into the seeded sketch, at a stored placement. */
-async function addCanvasCard(page: any, key: string, x: number, y: number) {
-  await page.evaluate((k: string, px: number, py: number) => {
+async function addCanvasCard(page: any, key: string, x: number, y: number,
+                             moduleType = 'mod.source.lfo') {
+  await page.evaluate((k: string, px: number, py: number, mt: string) => {
     (window as any).appController.mutate('add', (d: any) => {
       const sk = d.sketches['sk_cv'];
-      sk.chain.push({ type: 'module', module_type: 'mod.source.lfo',
+      sk.chain.push({ type: 'module', module_type: mt,
                       instance_key: k, canvas: { x: px, y: py } });
-      sk.instances[k] = { module_type: 'mod.source.lfo', state: {} };
+      sk.instances[k] = { module_type: mt, state: {} };
     });
-  }, key, x, y);
+  }, key, x, y, moduleType);
   await new Promise(r => setTimeout(r, 600));
 }
+
+/** Every canvas output pip, with its row's label (null when unlabelled). */
+const outPortGeom = `(() => { ${WALK}
+  const rows = [];
+  for (const el of walk(document)) {
+    if (!el.matches || !el.matches('.canvas-out-row')) continue;
+    const lab = el.querySelector('.canvas-out-label');
+    const pip = el.querySelector('.canvas-pip');
+    const mid = (n) => { const r = n.getBoundingClientRect();
+                         return { cy: Math.round(r.top + r.height / 2), x: Math.round(r.left) }; };
+    rows.push({ label: lab ? mid(lab) : null, text: lab ? lab.textContent : null,
+                pip: pip ? mid(pip) : null });
+  }
+  return rows;
+})()`;
 
 describe('sidecar canvas', () => {
   jest.setTimeout(60000);
@@ -456,5 +472,27 @@ describe('sidecar canvas', () => {
     await page.evaluate(`window.appController.undo()`);
     await new Promise(r => setTimeout(r, 500));
     expect(await posOf()).toEqual(['60,40', '60,320']);
+  });
+
+  it('labels canvas outputs only when there is more than one, pips on one line', async () => {
+    page.removeAllListeners('console');
+    await seed(page, true);
+
+    // The seeded canvas card is an LFO: one output, so no label — what the one
+    // output of a card is, is obvious, and the name would just float in space.
+    let rows = await page.evaluate(outPortGeom);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].label).toBeNull();
+
+    // mod.source.time declares two (output + value), which DO need telling
+    // apart. Each pip centres on its own label's line — the dot is an absolute
+    // ::after, so an unpositioned pip strands every dot at the column's
+    // midpoint — and they all share one x, however long the names run.
+    await addCanvasCard(page, 'time@0', 300, 40, 'mod.source.time');
+    rows = await page.evaluate(outPortGeom);
+    const labelled = rows.filter((r: any) => r.label);
+    expect(labelled.length).toBeGreaterThan(1);
+    for (const r of labelled) expect(Math.abs(r.pip.cy - r.label.cy)).toBeLessThanOrEqual(1);
+    expect(new Set(labelled.map((r: any) => r.pip.x)).size).toBe(1);
   });
 });
