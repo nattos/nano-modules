@@ -36,6 +36,7 @@ All source effects now declare the `Generator` capability (separate from the
 | `source.pixel.rift` | Pixel Rift | *(new)* | nano | Y | ocean waves crossing a hidden mid-rift |
 | `source.shape_fold` | Shape Fold | `video.shape_fold` | nano | Y | was video.* |
 | `source.mesh.three_planes` | Three Planes | *(new)* | lights | Y | isometric neon stack; SDF-shaded, publishes plane Y rails |
+| `filter.glow.vcr_halo` | VCR Halo | *(new)* | lights | Y | neon glow pyramid + shared nano_vcr grade; three_planes' look on any image |
 | `source.solid_color` | Solid Color | `generator.solid_color` | core,testonly | Y |  |
 | `source.text.plain` | Text | `gen.text` | text | Y |  |
 | `source.text.rich` | Rich Text | `gen.richtext` | richtext | Y |  |

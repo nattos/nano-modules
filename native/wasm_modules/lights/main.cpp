@@ -26,6 +26,7 @@ NANO_DECLARE_INSTANCE_EFFECT(tingle_top)
 NANO_DECLARE_INSTANCE_EFFECT(chroma_wave)
 NANO_DECLARE_INSTANCE_EFFECT(flicker_grid)
 NANO_DECLARE_INSTANCE_EFFECT(three_planes)
+NANO_DECLARE_INSTANCE_EFFECT(vcr_halo)
 
 extern "C" {
 
@@ -189,6 +190,17 @@ void nano_module_main() {
         "isometric,neon,vcr,glow,stack,layer,sdf,show,meter",
         "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(three_planes),
+    });
+
+    nano::registerEffect({
+        2,
+        "filter.glow.vcr_halo",
+        "VCR Halo",
+        "The Three Planes look applied to an arbitrary image: a multi-octave neon glow pyramid plus the shared VCR dehancement tail (highlight bleach, asymmetric soft clip, filmic toe/shoulder, horizontal chroma split, scanlines, grain). Halo Radius slides weight across the pyramid's octaves rather than switching levels, so it modulates continuously and a wide halo costs barely more than a narrow one. Outline band-passes the emitter so a filled shape glows at its edge like neon tubing instead of blooming as a soft lump. Shares nano_vcr.hlsl with source.mesh.three_planes, so matching the grade knobs matches the look.",
+        "filter",
+        "glow,bloom,halo,neon,vcr,vhs,dehance,grade,scanline,grain,show",
+        "la-lightbulb",
+        NANO_INSTANCE_LIFECYCLE(vcr_halo),
     });
 }
 

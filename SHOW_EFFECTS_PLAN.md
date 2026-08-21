@@ -920,9 +920,89 @@ any GPU readback — from `tick()` (so taps see this frame's value) and from
 
 **Look.** The grade lives in the shared `shaders_common/nano_vcr.hlsl`:
 HDR highlight bleach → warmth → asymmetric per-channel soft clip (which *is* the
-tone map) → filmic toe/shoulder → scanlines + grain. Factored out so a future
-post-process sibling can wear the identical look over a `fx::FastBlur` glow
-pyramid; only the halo generation differs.
+tone map) → filmic toe/shoulder → scanlines + grain. Factored out so the
+post-process sibling below wears the identical look; only the halo generation
+differs.
+
+---
+
+### `filter.glow.vcr_halo` — "VCR Halo" *(the post-process sibling)*
+
+The same look pointed at an arbitrary image. Everything downstream of the halo is
+literally the same code — one `nano_vcr_grade()` call over a linear HDR
+accumulator, with the channel split done by sampling the accumulator at three
+horizontal offsets. What differs is where the halo comes from, and that
+difference is the whole design.
+
+**Convolution, as a weighted octave stack.** Four passes: prefilter (full res →
+half res, 13-tap down + soft-knee threshold + chroma boost + tint), a down chain,
+a progressive up chain that folds each octave in on the way back, and a fullscreen
+composite. That gives
+
+```
+S[N-1] = w[N-1]·D[N-1]
+S[k]   = tent(S[k+1]) + w[k]·band(k)
+glow   = S[0]  ==  Σ_k w[k]·kernel_k(emitter)
+```
+
+which is the same shape as the analytic `Σ_j a_j·exp(-d/(R·s_j))` — a weighted
+stack of kernels at geometrically spaced radii. The analytic version places the
+radii exactly; here they are pinned to octaves and **Halo Radius slides weight
+between neighbours instead**, as a Gaussian lobe in `log2(radius)`. That is what
+keeps the radius continuously modulatable: weight leaves one octave exactly as
+fast as it arrives at the next, so no level ever pops in. The radius curve is
+deliberately the same `0.006·40^t` as three_planes', converted to pixels, so the
+two sliders agree on what "0.4" means.
+
+**Radius compensation — the one thing the convolution has to be told.**
+three_planes evaluates `exp(-d/r)` against distance, so the halo is at full
+strength on the line however wide it is. A convolution spreads a fixed amount of
+light, and for a thin line an isotropic blur's peak falls as `1/r` — so plain
+energy normalisation makes the glow *fade out* exactly as you ask for more of it.
+Scaling the gain by `r/r_ref` restores it. It is not universal (it over-brightens
+a large bright field, whose blurred peak was already radius-independent), so it is
+a knob at 1.0 rather than a constant.
+
+**Outline is a Laplacian pyramid, not a fixed high-pass.** A convolution has no
+notion of where an outline *is*, so a filled shape blooms as a soft lump. The fix
+is to band-pass the emitter — but band-pass *at what scale*? Doing it in the
+prefilter (centre tap vs the 13-tap average) measures a ~2px rim at every
+resolution and every radius, which is invisible the moment the halo is wide. So
+the subtraction happens per-octave in the up chain instead:
+`band(k) = max(D[k] − stretch(D[k+1]), 0)`. The detected edge is then as wide as
+the octave, and therefore tracks Halo Radius, since that is what decides which
+octaves carry weight. At full outline the coarsest level's low-pass residue is
+dropped as well, so a flat field yields exactly zero.
+
+**Cost.** `benchmark_barrel` grew `--module` / `--bundle` / `--state` so any
+effect can be measured; the numbers below are the marginal ms per *added*
+instance (slope over n = 1, 2, 4, 8, so the fixed GL-blit harness cost cancels):
+
+| effect | 1080p | 4K |
+| --- | --- | --- |
+| `filter.blur.fast` | 0.118 | 0.469 |
+| `filter.local_contrast` | 0.145 | 0.657 |
+| **`filter.glow.vcr_halo`** | **0.219** | **0.941** |
+| `source.mesh.three_planes` | 0.440 | 1.925 |
+| `filter.blur.gaussian` | 1.353 | 10.208 |
+
+So ~2× a dual-filter blur, ~6–11× cheaper than a gaussian, and — the surprise —
+**half the cost of the analytic sibling**, whose one fullscreen pass evaluates
+twelve segment distances three times over for the chroma split.
+
+Cost is essentially **flat in radius** (0.237 at radius 0, 0.196 at radius 1).
+Levels below a thousandth of the peak weight are skipped, but a geometric
+pyramid's tail was nearly free to begin with. Flat is the property that matters
+for a live rig: sweeping the halo from an envelope cannot spike a frame. `outline`
+adds one tap per up pass (0.252). Halo Gain at 0 skips the chain for ~45% off.
+
+**Known limits, all inherent to convolving instead of measuring distance:**
+- It shimmers under motion where the analytic version is rock steady (accepted).
+- It cannot recover colour the source already bleached out: feed it a white-hot
+  neon core and the halo comes back white. Feed it the *un*-bleached image, or
+  use Glow Tint.
+- On thick, already-bright content the default gain clips. Threshold up or
+  Outline up is the answer, and both are on the front page of the group help.
 
 ---
 

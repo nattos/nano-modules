@@ -21,6 +21,14 @@ compile_shaders_compute_spv orthomod           render
 compile_shaders_compute_spv lights_sim           render
 compile_shaders_compute_spv three_planes         render
 
+# vcr_halo: prefilter -> down chain -> progressive up chain -> composite.
+compile_shaders_compute_var_spv vcr_halo prefilter
+compile_shaders_compute_var_spv vcr_halo down
+compile_shaders_compute_var_spv vcr_halo up
+compile_shaders_compute_var_spv vcr_halo composite
+_emit_spv_header_var vcr_halo prefilter down up composite
+echo "  vcr_halo shaders compiled (SPV: prefilter + down + up + composite)"
+
 # soft_glow has two compute shaders — color (rgba8) and motion
 # (rgba16f). Separate variants because naga substitutes one storage-
 # texture format per shader module.
@@ -104,6 +112,7 @@ wasm_build \
   ../tingle_top/main.cpp \
   ../chroma_wave/main.cpp \
   ../flicker_grid/main.cpp \
-  ../three_planes/main.cpp
+  ../three_planes/main.cpp \
+  ../vcr_halo/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

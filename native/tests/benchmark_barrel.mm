@@ -6,9 +6,23 @@
 //
 // Usage:
 //   benchmark_barrel [--effects N] [--frames N] [--width W] [--height H]
+//                    [--module <effect id>] [--bundle <path to .wasm>]
 //
 // Defaults: 10 effects, 600 frames, 1920×1080. Prints total wall time,
 // average FPS, and the min/median/p95/max per-frame time.
+//
+// --state '{"halo_radius":0.9}' overrides schema defaults on every instance,
+// so a parameter's cost curve can be measured directly.
+//
+// --module benchmarks a chain of some OTHER effect at its schema defaults
+// (rather than brightness_contrast), and --bundle loads an additional wasm
+// bundle first so effects outside core.wasm can be named. Pair it with
+// `--effects 1` and compare against a brightness_contrast run to separate an
+// effect's own GPU cost from the fixed per-frame harness cost:
+//
+//   benchmark_barrel --effects 1 --frames 300 --quiet
+//   benchmark_barrel --effects 1 --frames 300 --quiet \
+//     --bundle ../build/wasm/lights.wasm --module filter.glow.vcr_halo
 //
 // What we deliberately match vs. the plugin:
 //  - Same NSOpenGLContext + InteropTexture pair (so the GL↔Metal blit
@@ -81,6 +95,9 @@ struct Args {
   bool quiet     = false;
   bool assertMode = false;
   bool wasm      = false;  // --wasm: drive executor.wasm instead of in-process
+  std::string module;      // --module: effect id to chain (default: brightness_contrast)
+  std::string bundle;      // --bundle: extra wasm bundle to load before core
+  std::string state;       // --state: JSON object applied to every instance
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -97,6 +114,9 @@ Args parseArgs(int argc, char** argv) {
     else if (!std::strcmp(k, "--quiet"))  a.quiet = true;
     else if (!std::strcmp(k, "--assert")) a.assertMode = true;
     else if (!std::strcmp(k, "--wasm"))   a.wasm = true;
+    else if (!std::strcmp(k, "--module") && i + 1 < argc) a.module = argv[++i];
+    else if (!std::strcmp(k, "--bundle") && i + 1 < argc) a.bundle = argv[++i];
+    else if (!std::strcmp(k, "--state")  && i + 1 < argc) a.state  = argv[++i];
   }
   return a;
 }
@@ -122,6 +142,34 @@ json buildSketch(const std::vector<std::pair<float, float>>& params) {
         {"contrast",   params[i].second},
       }},
     };
+  }
+  return {
+    {"anchor", nullptr},
+    {"columns", json::array({{
+      {"name", "Column 1"},
+      {"chain", chain},
+    }})},
+    {"instances", instances},
+  };
+}
+
+// Perf-mode chain of an ARBITRARY effect at its schema defaults. No per-stage
+// state, because the point is to measure one effect's cost as shipped — and
+// most effects have no equivalent of brightness_contrast's "mild but nonzero"
+// knob to pick anyway.
+json buildSketchForModule(int effectCount, const std::string& moduleType,
+                          const json& instanceState) {
+  json chain = json::array();
+  json instances = json::object();
+  for (int i = 0; i < effectCount; ++i) {
+    std::string key = "e" + std::to_string(i);
+    chain.push_back({
+      {"type", "module"},
+      {"module_type", moduleType},
+      {"instance_key", key},
+      {"taps", json::array()},
+    });
+    instances[key] = {{"module_type", moduleType}, {"state", instanceState}};
   }
   return {
     {"anchor", nullptr},
@@ -609,6 +657,11 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "failed to load core.wasm effects\n");
       return 1;
     }
+    if (!args.bundle.empty() &&
+        bundles->loadBundleFile(args.bundle.c_str(), *registry, gpu.get(), nullptr) < 1) {
+      std::fprintf(stderr, "failed to load bundle %s\n", args.bundle.c_str());
+      return 1;
+    }
     auto executor = std::make_unique<sketch_executor::SketchExecutor>(
         rt.get(), registry.get(), gpu.get());
 
@@ -648,7 +701,17 @@ int main(int argc, char** argv) {
         args.width, args.height);
 
     // -- Sketch JSON -------------------------------------------------
-    json sketch = buildSketch(args.effects);
+    json instanceState = json::object();
+    if (!args.state.empty()) {
+      instanceState = json::parse(args.state, nullptr, /*allow_exceptions*/false);
+      if (!instanceState.is_object()) {
+        std::fprintf(stderr, "--state must be a JSON object\n");
+        return 1;
+      }
+    }
+    json sketch = args.module.empty()
+        ? buildSketch(args.effects)
+        : buildSketchForModule(args.effects, args.module, instanceState);
     // The sketch is constant across the run; the wasm path re-marshals this
     // serialized form into linear memory each frame (as the barrel does).
     std::string sketchJson = sketch.dump();
