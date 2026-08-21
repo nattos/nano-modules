@@ -122,6 +122,7 @@ wasm_build \
   ../twitch_mask/main.cpp \
   ../mod_remap/main.cpp \
   ../mod_combine/main.cpp \
+  ../mod_math/main.cpp \
   ../mod_flip/main.cpp \
   ../mod_latch/main.cpp \
   ../mod_time/main.cpp \

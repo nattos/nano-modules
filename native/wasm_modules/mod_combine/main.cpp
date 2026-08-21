@@ -23,29 +23,15 @@
 
 #include <host.h>
 #include <val.h>
+#include <mod_math_ops.h>
 #include <cmath>
 
 namespace mod_combine {
 
-// Binary op selector — enum order IS the serialized select value; append new
-// ops at the end (never renumber) to keep it a PATCH-level change.
-enum Op : int {
-  OpAdd = 0,
-  OpSubtract,
-  OpMultiply,
-  OpDivide,
-  OpMin,
-  OpMax,
-  OpAverage,
-  OpDifference,
-  OpScreen,
-  OpPower,
-  OpModulo,
-  OpGreater,
-  OpLess,
-  OpHypot,
-  OpQuantize,
-};
+// The op table (enum + applyOp) is shared with the split-out math nodes in
+// mod_math/ — see include/mod_math_ops.h. Pulled in unqualified so the schema
+// and switch below keep reading as plain `OpAdd` / `applyOp(...)`.
+using namespace mod_math_ops;
 
 // Per-instance state. One per chain entry. Mirrors the schema field-for-field.
 struct State {
@@ -58,33 +44,6 @@ struct State {
   float scale   = 1.0f;
   bool  saturate = false;
 };
-
-// Run the binary op on the pre-gained inputs. Divide / modulo / power / hypot
-// are guarded so no NaN/Inf can leak into the downstream wire fold; the caller
-// also isfinite-sanitizes the final value as a backstop.
-static float applyOp(int op, float a, float b) {
-  const float eps = 1e-6f;
-  switch (op) {
-    case OpAdd:        return a + b;
-    case OpSubtract:   return a - b;
-    case OpMultiply:   return a * b;
-    case OpDivide:     return a / ((std::fabs(b) < eps) ? (b >= 0.0f ? eps : -eps) : b);
-    case OpMin:        return std::fmin(a, b);
-    case OpMax:        return std::fmax(a, b);
-    case OpAverage:    return 0.5f * (a + b);
-    case OpDifference: return std::fabs(a - b);
-    case OpScreen:     return 1.0f - (1.0f - a) * (1.0f - b);
-    case OpPower:      return std::pow(std::fmax(a, 0.0f), b);
-    case OpModulo:     return (std::fabs(b) < eps) ? 0.0f : (a - b * std::floor(a / b));
-    case OpGreater:    return a > b ? 1.0f : 0.0f;
-    case OpLess:       return a < b ? 1.0f : 0.0f;
-    case OpHypot:      return std::sqrt(a * a + b * b);
-    // Snap A to the nearest multiple of B ("steps"). A vanishing step size
-    // means infinite resolution — pass A through rather than divide by ~0.
-    case OpQuantize:   return (std::fabs(b) < eps) ? a : b * std::floor(a / b + 0.5f);
-    default:           return a + b;
-  }
-}
 
 // Combine the two inputs and publish `output`.
 static void recompute(State& s) {

@@ -125,6 +125,23 @@ namespace twitch_mask { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_remap)
 NANO_DECLARE_INSTANCE_EFFECT(mod_combine)
+// The split-out math shapers (mod_math/main.cpp) — one namespace per op,
+// all sharing one implementation and the op table in include/mod_math_ops.h.
+NANO_DECLARE_INSTANCE_EFFECT(mod_add)
+NANO_DECLARE_INSTANCE_EFFECT(mod_subtract)
+NANO_DECLARE_INSTANCE_EFFECT(mod_multiply)
+NANO_DECLARE_INSTANCE_EFFECT(mod_divide)
+NANO_DECLARE_INSTANCE_EFFECT(mod_min)
+NANO_DECLARE_INSTANCE_EFFECT(mod_max)
+NANO_DECLARE_INSTANCE_EFFECT(mod_average)
+NANO_DECLARE_INSTANCE_EFFECT(mod_difference)
+NANO_DECLARE_INSTANCE_EFFECT(mod_screen)
+NANO_DECLARE_INSTANCE_EFFECT(mod_power)
+NANO_DECLARE_INSTANCE_EFFECT(mod_modulo)
+NANO_DECLARE_INSTANCE_EFFECT(mod_greater)
+NANO_DECLARE_INSTANCE_EFFECT(mod_less)
+NANO_DECLARE_INSTANCE_EFFECT(mod_hypot)
+NANO_DECLARE_INSTANCE_EFFECT(mod_quantize)
 
 NANO_DECLARE_INSTANCE_EFFECT(mod_flip)
 NANO_DECLARE_INSTANCE_EFFECT(mod_latch)
@@ -698,6 +715,160 @@ void nano_module_main() {
         "modulation,combine,math,binary,add,multiply,mix,shaper",
         "la-calculator",
         NANO_INSTANCE_LIFECYCLE(mod_combine),
+    });
+
+    // The split-out math shapers — one op each, no selector, and 2-8 inputs
+    // folded left to right (see mod_math/main.cpp). Deliberately simpler than
+    // Combine above: gains and post scale/bias live on the WIRE instead.
+    nano::registerEffect({
+        2,
+        "mod.shaper.add",
+        "Add",
+        "Sums 2-8 modulation signals. The input count is adjustable from the card's gear icon",
+        "mod",
+        "modulation,math,add,sum,plus,combine",
+        "la-plus",
+        NANO_INSTANCE_LIFECYCLE(mod_add),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.subtract",
+        "Subtract",
+        "Subtracts each modulation input from the running result, left to right (in1 - in2 - in3 ...)",
+        "mod",
+        "modulation,math,subtract,minus,difference",
+        "la-minus",
+        NANO_INSTANCE_LIFECYCLE(mod_subtract),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.multiply",
+        "Multiply",
+        "Multiplies 2-8 modulation signals together — ring-mod flicker, or one signal gating another",
+        "mod",
+        "modulation,math,multiply,times,product,ring,gate",
+        "la-times",
+        NANO_INSTANCE_LIFECYCLE(mod_multiply),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.divide",
+        "Divide",
+        "Divides the running result by each modulation input in turn; guarded against division by zero",
+        "mod",
+        "modulation,math,divide,ratio",
+        "la-divide",
+        NANO_INSTANCE_LIFECYCLE(mod_divide),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.min",
+        "Min",
+        "Takes the smallest of 2-8 modulation signals — a soft gate that can't rise until every input does",
+        "mod",
+        "modulation,math,min,minimum,smallest,gate",
+        "la-angle-down",
+        NANO_INSTANCE_LIFECYCLE(mod_min),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.max",
+        "Max",
+        "Takes the largest of 2-8 modulation signals — merges several triggers without them summing past the top",
+        "mod",
+        "modulation,math,max,maximum,largest,merge",
+        "la-angle-up",
+        NANO_INSTANCE_LIFECYCLE(mod_max),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.average",
+        "Average",
+        "The mean of 2-8 modulation signals — a smoother blend than Add that stays inside the range",
+        "mod",
+        "modulation,math,average,mean,blend,mix",
+        "la-equals",
+        NANO_INSTANCE_LIFECYCLE(mod_average),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.difference",
+        "Difference",
+        "The absolute distance between modulation signals — two near-equal rates produce a slow beat",
+        "mod",
+        "modulation,math,difference,distance,abs,beat",
+        "la-not-equal",
+        NANO_INSTANCE_LIFECYCLE(mod_difference),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.screen",
+        "Screen",
+        "Inverse-multiply blend of modulation signals: they accumulate toward 1 but never overshoot it",
+        "mod",
+        "modulation,math,screen,blend,light",
+        "la-adjust",
+        NANO_INSTANCE_LIFECYCLE(mod_screen),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.power",
+        "Power",
+        "Raises the running result to each modulation input — bends a linear source into a curve",
+        "mod",
+        "modulation,math,power,exponent,curve,ease",
+        "la-superscript",
+        NANO_INSTANCE_LIFECYCLE(mod_power),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.modulo",
+        "Modulo",
+        "Remainder after dividing by each modulation input — wraps a rising signal into a repeating sawtooth",
+        "mod",
+        "modulation,math,modulo,mod,wrap,remainder,saw",
+        "la-percent",
+        NANO_INSTANCE_LIFECYCLE(mod_modulo),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.greater",
+        "Greater Than",
+        "Emits a hard 1 while the running result is above the next modulation input — a comparison gate",
+        "mod",
+        "modulation,math,greater,compare,gate,threshold",
+        "la-greater-than",
+        NANO_INSTANCE_LIFECYCLE(mod_greater),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.less",
+        "Less Than",
+        "Emits a hard 1 while the running result is below the next modulation input — a comparison gate",
+        "mod",
+        "modulation,math,less,compare,gate,threshold",
+        "la-less-than",
+        NANO_INSTANCE_LIFECYCLE(mod_less),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.hypot",
+        "Hypot",
+        "Vector length of the modulation inputs, sqrt(a^2 + b^2 + ...) — their combined magnitude",
+        "mod",
+        "modulation,math,hypot,length,magnitude,vector",
+        "la-ruler-combined",
+        NANO_INSTANCE_LIFECYCLE(mod_hypot),
+    });
+    nano::registerEffect({
+        2,
+        "mod.shaper.quantize",
+        "Quantize",
+        "Snaps the running result to the nearest multiple of each modulation input — staircase motion",
+        "mod",
+        "modulation,math,quantize,step,snap,crush,stair",
+        "la-signal",
+        NANO_INSTANCE_LIFECYCLE(mod_quantize),
     });
 
     nano::registerEffect({
