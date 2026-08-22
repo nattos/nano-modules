@@ -636,4 +636,65 @@ describe('sidecar canvas', () => {
     // Gesture over — the rows fold back away and leave the sliders draggable.
     expect(await page.evaluate(canvasHits)).toBe(0);
   });
+  it('toggles the canvas from the tab rail C pill', async () => {
+    // Seeded CLOSED — the pill has to be the thing that opens it.
+    await seed(page, false);
+
+    const pill = `(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName !== 'APP-TAB-BAR') continue;
+        const b = el.shadowRoot.querySelector('.mode-btn');
+        if (!b) return { bar: true, btn: false };
+        const r = b.getBoundingClientRect();
+        return { bar: true, btn: true, text: b.textContent.trim(),
+                 active: b.hasAttribute('active'),
+                 color: getComputedStyle(b).color,
+                 x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      return { bar: false };
+    })()`;
+
+    const off = await page.evaluate(pill) as any;
+    expect(off.bar).toBe(true);
+    expect(off.btn).toBe(true);
+    expect(off.text).toBe('C');
+    expect(off.active).toBe(false);
+    // It has to FIT the 48px rail, or it overhangs the panel edge.
+    expect(off.x).toBeLessThan(48);
+
+    await page.mouse.click(off.x, off.y);
+    await new Promise(r => setTimeout(r, 800));
+    const on = await page.evaluate(pill) as any;
+    expect(on.active).toBe(true);
+    // Lit blue — the rail's own accent, NOT the arrangement W pill's orange.
+    expect(on.color).toBe('rgb(65, 105, 225)');
+    expect(await page.evaluate(
+      `window.appState.local.userSettings.sketchCanvasOpen`)).toBe(true);
+    expect(await page.evaluate(countOf('sketch-canvas-view'))).toBe(1);
+
+    // And back. The pill and the `C` key drive the same setting, so the pill
+    // must reflect a change it didn't make.
+    await page.keyboard.press('c');
+    await new Promise(r => setTimeout(r, 800));
+    expect((await page.evaluate(pill) as any).active).toBe(false);
+    expect(await page.evaluate(countOf('sketch-canvas-view'))).toBe(0);
+  });
+
+  it('drops the C pill on tabs that cannot host the canvas', async () => {
+    await seed(page, true);
+    const pillCount = `(() => { ${WALK}
+      for (const el of walk(document)) {
+        if (el.tagName === 'APP-TAB-BAR') return el.shadowRoot.querySelectorAll('.mode-btn').length;
+      }
+      return -1;
+    })()`;
+    expect(await page.evaluate(pillCount)).toBe(1);
+    // Devices already owns the right panel, so C would mean nothing there.
+    await page.evaluate(`window.appController.setActiveTab('devices')`);
+    await new Promise(r => setTimeout(r, 800));
+    expect(await page.evaluate(pillCount)).toBe(0);
+    await page.evaluate(`window.appController.setActiveTab('edit')`);
+    await new Promise(r => setTimeout(r, 800));
+    expect(await page.evaluate(pillCount)).toBe(1);
+  });
 });

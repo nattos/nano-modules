@@ -32,8 +32,32 @@ import { CANVAS_CARD_WIDTH, CANVAS_CHIP_DROP, type ColumnGroup, type ColumnGroup
 import { activeLinearColumnGroup } from '../../widgets/field-anchor-lookup';
 import { InspectorCache } from '../../widgets/inspector-cache';
 import { ideColumnAdapter } from '../../state/ide-column-adapter';
+import type { AppToggleDef } from '../../widgets/app-tab-bar';
 
 import '../../widgets/column-group';
+
+/**
+ * The rail's `C` mode pill, for whichever surface hosts the canvas.
+ *
+ * Lives here rather than in each surface so the two can't drift apart on the
+ * icon, the accent or the setting it writes — and so it stays next to the
+ * `C` key handler's twin in sketch-column-editor.ts.
+ *
+ * Blue (the rail's own active accent) rather than the arrangement W pill's
+ * orange: the canvas is a surface, not a wiring mode, and the two must not
+ * read as the same thing sitting a few pixels apart.
+ */
+export function canvasModeToggle(): AppToggleDef {
+  const open = appState.local.userSettings.sketchCanvasOpen === true;
+  return {
+    id: 'canvas',
+    icon: 'la-object-group',
+    letter: 'C',
+    title: 'Canvas — open the sidecar node canvas (C)',
+    active: open,
+    onToggle: () => appController.setSketchCanvasOpen(!open),
+  };
+}
 
 /** Scroll-past-the-end tail, mirroring columns-view.updateContentHeight(). */
 const TAIL_MIN = 120;

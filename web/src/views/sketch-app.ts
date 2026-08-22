@@ -26,6 +26,7 @@ import './reconcile-dialog';
 import './devices/devices-tab';
 import './devices/devices-float-monitor';
 import './canvas/sketch-canvas-view';
+import { canvasModeToggle } from './canvas/sketch-canvas-view';
 import './devices/device-wire-overlay';
 
 @customElement('sketch-app')
@@ -66,6 +67,9 @@ export class SketchApp extends MobxLitElement {
           renderRight: canvasOpen
             ? () => html`<sketch-canvas-view .sketchId=${sketchId}></sketch-canvas-view>`
             : undefined,
+          // Only Edit hosts the canvas — Devices already owns the right panel,
+          // so the pill rides this tab rather than the shell.
+          toggles: [canvasModeToggle()],
         },
         {
           // Devices keeps the sketch editor in the left panel (same instance

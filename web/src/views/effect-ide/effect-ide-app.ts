@@ -24,6 +24,7 @@ import '../../widgets/snackbars';
 import '../devices/devices-tab';
 import '../devices/devices-float-monitor';
 import '../canvas/sketch-canvas-view';
+import { canvasModeToggle } from '../canvas/sketch-canvas-view';
 import '../devices/device-wire-overlay';
 
 @customElement('effect-ide-app')
@@ -91,6 +92,7 @@ export class EffectIdeApp extends MobxLitElement {
           renderRight: canvasOpen
             ? () => html`<sketch-canvas-view .sketchId=${sel}></sketch-canvas-view>`
             : undefined,
+          toggles: [canvasModeToggle()],
         },
         {
           // Same layout as the unified surface's Devices tab: the project's

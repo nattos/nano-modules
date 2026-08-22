@@ -17,7 +17,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { UserSettings } from '../state/types';
-import type { AppTabDef } from './app-tab-bar';
+import type { AppTabDef, AppToggleDef } from './app-tab-bar';
 
 import './app-tab-bar';
 import './splitter';
@@ -32,6 +32,12 @@ export interface ShellTabConfig extends AppTabDef {
    * device grid and the editor's fields).
    */
   renderRight?: () => TemplateResult;
+  /**
+   * Mode pills for the tab rail, live only while THIS tab is active — a mode
+   * that changes nothing on the other tabs shouldn't sit lit next to them.
+   * Built fresh each render, so `active` tracks the observable it reads.
+   */
+  toggles?: AppToggleDef[];
 }
 
 export interface ShellConfig {
@@ -117,6 +123,7 @@ export class AppShell extends MobxLitElement {
       <app-tab-bar
         .tabs=${cfg.tabs}
         .activeId=${active?.id ?? ''}
+        .toggles=${active?.toggles ?? []}
         @tab-select=${(e: CustomEvent<{ id: string }>) => onSelect(e.detail.id)}
       ></app-tab-bar>
       ${active?.kind === 'full-takeover'
