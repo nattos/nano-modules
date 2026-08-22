@@ -113,13 +113,38 @@ describe('patternFrame', () => {
     expect(patternFrame('pulse', 200, 2)[0]).toBe(0);
   });
 
-  it('beatsync mimic varies velocity rather than pinning full', () => {
-    const seen = new Set<number>();
-    for (let t = 0; t < 8000; t += 500) {
-      const v = patternFrame('beatsync', t, 4)[0];
-      if (v > 0) seen.add(v);
+  it('beat pattern puts ch 1 on the beat and arps ch 2-4 between', () => {
+    const lit = (t: number) => [...patternFrame('beatsync', t, 4)].findIndex(v => v > 0);
+    // Every quarter (4 x 125 ms) is ch 1; the three 16ths between it are not.
+    expect(lit(5)).toBe(0);
+    expect(lit(505)).toBe(0);
+    expect(lit(1005)).toBe(0);
+    for (const t of [130, 255, 380]) expect(lit(t)).toBeGreaterThan(0);
+    // ... and those three are distinct channels within one beat.
+    expect(new Set([lit(130), lit(255), lit(380)]).size).toBe(3);
+  });
+
+  it('beat gates are one 16th long — a hit, not a hold', () => {
+    // 125 ms grid at 0.9 duty: lit for ~112 ms, dark for the rest of the step.
+    expect(patternFrame('beatsync', 100, 4)[0]).toBeGreaterThan(0);
+    expect(patternFrame('beatsync', 120, 4).every(v => v === 0)).toBe(true);
+  });
+
+  it('beat pattern stays on the four roles beatsync actually sends', () => {
+    // A 16-channel card must not light channels the real source never uses.
+    for (let t = 0; t < 4000; t += 7) {
+      for (const [i, v] of patternFrame('beatsync', t, 16).entries()) {
+        if (i >= 4) expect(v).toBe(0);
+      }
     }
-    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it('beat pattern varies velocity rather than pinning full', () => {
+    const seen = new Set<number>();
+    for (let t = 0; t < 8000; t += 5) {
+      for (const v of patternFrame('beatsync', t, 4)) if (v > 0) seen.add(v);
+    }
+    expect(seen.size).toBeGreaterThan(2);
     expect(Math.max(...seen)).toBeLessThanOrEqual(255);
   });
 

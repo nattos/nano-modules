@@ -46,13 +46,28 @@ export interface BridgeStatus {
   error: string;
 }
 
-export interface TestPatternRequest {
-  pattern: TestPattern;
+/** Where a test pattern is aimed: the card's own Art-Net address. */
+export interface TestPatternAddress {
   net: number;
   subnet: number;
   universe: number;
   count: number;
-  dest: 'mirror' | 'broadcast';
+}
+
+export type TestDest = 'mirror' | 'broadcast';
+
+/** The generator's live settings. Session-scoped and held HERE, not in the
+ *  card's gear panel: closing the panel, switching tabs or editing another
+ *  sketch tears that element down, and a transmitter that stopped whenever its
+ *  UI unmounted was unusable for the thing it exists for — leaving a pattern
+ *  running while you go wire it up. */
+export interface TestPatternState {
+  running: boolean;
+  pattern: TestPattern;
+  dest: TestDest;
+  /** Which `control.artnet` card started it — the others show Send, not Stop. */
+  instanceKey: string;
+  address: TestPatternAddress | null;
 }
 
 type Hot = {
@@ -68,6 +83,9 @@ export class ArtnetClient {
   private status: BridgeStatus = { listening: false, port: 0, mirrorPort: 0, error: '' };
   /** Bumps on every arriving frame so UI can cheaply poll for freshness. */
   private revision = 0;
+  private test: TestPatternState = {
+    running: false, pattern: 'chase', dest: 'mirror', instanceKey: '', address: null,
+  };
 
   constructor(hot: unknown) {
     // `import.meta.hot` is undefined outside a dev server — the whole feature
@@ -90,6 +108,15 @@ export class ArtnetClient {
       this.revision++;
     });
     this.hot.send(EV_HELLO);
+    // Nothing on the server tracks which browser asked for a pattern, so a
+    // reload or a closed tab would leave it transmitting with no way to stop
+    // it short of restarting the dev server. `pagehide` covers both (and fires
+    // where `beforeunload` doesn't, on mobile / bfcache).
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', () => {
+        if (this.test.running) this.stopTestPattern();
+      });
+    }
   }
 
   /** False in a production build or with no dev server — callers should hide
@@ -123,13 +150,41 @@ export class ArtnetClient {
     this.enginePush(json);
   }
 
-  /** Start a test pattern on the dev server's transmitter. */
-  startTestPattern(req: TestPatternRequest): void {
-    this.hot?.send(EV_TEST, { action: 'start', ...req });
+  /** The generator's session-scoped settings — see `TestPatternState`. */
+  get testState(): Readonly<TestPatternState> { return this.test; }
+
+  /** Pick the pattern / destination. Changing either while one is running
+   *  restarts the generator on the new setting rather than waiting for Stop —
+   *  and a destination change blacks out the old one on the way (the server's
+   *  stop does that), so nothing is left latched on the port we just left. */
+  setTestPattern(pattern: TestPattern): void {
+    this.test.pattern = pattern;
+    if (this.test.running) this.startTestPattern(this.test.instanceKey, this.test.address);
+  }
+  setTestDest(dest: TestDest): void {
+    if (this.test.dest === dest) return;
+    this.test.dest = dest;
+    if (this.test.running) this.startTestPattern(this.test.instanceKey, this.test.address);
+  }
+
+  /** Start (or re-aim) the dev server's transmitter for one card. */
+  startTestPattern(instanceKey: string, address: TestPatternAddress | null): void {
+    if (!this.hot || !address) return;
+    this.test.running = true;
+    this.test.instanceKey = instanceKey;
+    this.test.address = { ...address };
+    this.hot.send(EV_TEST, {
+      action: 'start',
+      pattern: this.test.pattern,
+      dest: this.test.dest,
+      ...address,
+    });
   }
 
   /** Stop it — the server blacks out the universe on the way down. */
   stopTestPattern(): void {
+    this.test.running = false;
+    this.test.instanceKey = '';
     this.hot?.send(EV_TEST, { action: 'stop' });
   }
 }

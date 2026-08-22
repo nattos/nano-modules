@@ -131,6 +131,13 @@ Two consequences for the consumer, both of which nano relies on:
 * **The 90 ms hold IS the decay envelope.** nano adds no smoothing of its own — a `control.artnet`
   channel is the sender's shape, verbatim, and any further shaping is the sketch's business.
 
+**The `Beat` test pattern models this side.** The web IDE's dev-server generator (gear panel on a
+`control.artnet` card, dev only — `web/src/artnet/artnet-packet.ts`) sends DMX 1 on every quarter
+and arps DMX 2-4 across the three 16ths between, at 120 BPM, each gate one 16th long at the same
+0.9 duty. It stays on those four channels however many the card shows, because four is what this
+sender sends. It is a stand-in for wiring a sketch up with no beatsync running — not a spec: if the
+gate length or the role order here changes, this is the paragraph to change with it.
+
 **Silence is not blackout.** DMX carries only the current level, retransmitted forever, so a
 universe that goes quiet keeps its last values on our side; we report `age_ms` rather than
 inventing a decay. A universe never heard at all is different again: `control.artnet` injects

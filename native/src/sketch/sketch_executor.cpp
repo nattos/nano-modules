@@ -50,6 +50,12 @@ struct EffectRef {
   void setParamFloat(const std::string& p, float v) const {
     effrt_set_param_float(h, p.data(), (int32_t)p.size(), v);
   }
+  // Publish a value into the instance's set_val map on the effect's behalf —
+  // host-sourced OUTPUTS (injected scalars) that never reach the effect. See
+  // effrt.h.
+  void publishScalar(const std::string& p, float v) const {
+    effrt_publish_scalar(h, p.data(), (int32_t)p.size(), (double)v);
+  }
   void setParamJson(const std::string& p, const std::string& j) const {
     effrt_set_param_json(h, p.data(), (int32_t)p.size(), j.data(), (int32_t)j.size());
   }
@@ -1559,6 +1565,22 @@ int32_t SketchExecutor::execute(
       // -- Apply persisted instance state from the sketch (no-copy lookup) --
       if (const json* st = findState(instances, instKey)) {
         maybeApplyState(inst, instKey, *st);
+      }
+
+      // -- Host-injected scalars (setInjectedScalar / setInjectedScalars: the
+      // barrel's Resolume macro knobs, control.artnet's live DMX channels).
+      // captureWriteTaps folds these into WIRES straight out of
+      // injectedScalars_, but a wire is not the only consumer: the IDE's
+      // output-trace charts read live outputs out of PUBLISHED state, and
+      // these values never pass through the effect at all — they ride outside
+      // the doc by design, and an identity card is alias-skipped below before
+      // it would ever tick. So publish them here on the effect's behalf, the
+      // same echo util.sidechannel_scalar_in performs from inside its tick.
+      if (!injectedScalars_.empty()) {
+        auto inj = injectedScalars_.find(instKey);
+        if (inj != injectedScalars_.end()) {
+          for (const auto& [field, v] : inj->second) inst.publishScalar(field, v);
+        }
       }
 
       // -- Sidechannel bus (host-serviced; see sidechannel_bus.h). --

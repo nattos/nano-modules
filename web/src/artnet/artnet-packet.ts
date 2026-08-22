@@ -118,6 +118,9 @@ const GATE_MS = 90;
 const GATE_DUTY = 0.9;
 /** One "hit" every 500 ms — a plain 120 BPM quarter note. */
 const BEAT_MS = 500;
+/** The beat pattern's grid. A gate is one 16th long (minus the duty gap), so
+ *  consecutive steps read as separate hits rather than one held level. */
+const SIXTEENTH_MS = BEAT_MS / 4;
 
 /**
  * The channel bytes a pattern shows at time `tMs` (monotonic ms since start).
@@ -163,21 +166,42 @@ export function patternFrame(pattern: TestPattern, tMs: number, count: number): 
     }
 
     case 'beatsync': {
-      // The real source's shape: independent per-channel gates at different
-      // rates, with varying velocity. Deterministic (no RNG) so a capture is
-      // reproducible — the roles just run on coprime-ish periods.
-      const periods = [BEAT_MS, BEAT_MS * 2, BEAT_MS * 3, BEAT_MS * 4];
-      for (let i = 0; i < n; i++) {
-        const period = periods[i % periods.length];
-        const phase = tMs % period;
-        if (phase < GATE_MS * GATE_DUTY) {
-          // Velocity walks 0.35..1.0 so the dynamics are visible rather than
-          // every hit pinning the channel at full.
-          const hit = Math.floor(tMs / period);
-          const vel = 0.35 + 0.65 * ((hit * 7 + i * 3) % 10) / 9;
-          out[i] = Math.round(vel * 255);
-        }
+      // What beatsync sends, in shape: a beat-locked trigger stream, not a
+      // free-running LFO. Ch 1 fires on every quarter — the kick, the thing
+      // you actually feel — and Ch 2-4 arp the three 16ths in between, so a
+      // wire off any of them sees a rhythm rather than a blur.
+      //
+      // Four channels, deliberately, however many the card shows: the real
+      // source sends four ROLES (heavy / regular / decor / uniform, in that
+      // fixed order — see native/docs/ARTNET_CAPTURE.md). Lighting the rest
+      // would make a 16-channel card look like a feed it will never get.
+      //
+      // Deterministic — no RNG — so a capture replays identically and a test
+      // can assert any instant.
+      const step = Math.floor(tMs / SIXTEENTH_MS);   // 16ths since start
+      const inBeat = step & 3;                        // 0 = on the beat
+      const beat = step >> 2;
+      // The gate: one 16th, opened at the step boundary. Everything else in
+      // this pattern decides WHICH channel — this decides whether any is lit.
+      if (tMs - step * SIXTEENTH_MS >= SIXTEENTH_MS * GATE_DUTY) break;
+
+      let ch: number;
+      let vel: number;
+      if (inBeat === 0) {
+        ch = 0;
+        // Accent the downbeat of each 4/4 bar; the other quarters sit under it
+        // so a level meter shows the bar, not just a metronome.
+        vel = (beat & 3) === 0 ? 1.0 : 0.8;
+      } else {
+        // Rotate the arp one channel per beat, so the three offbeat 16ths walk
+        // 2-3-4, 3-4-2, 4-2-3 ... rather than repeating the same figure.
+        ch = 1 + ((inBeat - 1 + beat) % 3);
+        // Offbeats are quieter, and the last 16th of the beat quieter still —
+        // enough dynamic range that a wire's modulation band has somewhere to
+        // move.
+        vel = 0.65 - 0.1 * (inBeat - 1);
       }
+      if (ch < n) out[ch] = Math.round(vel * 255);
       break;
     }
   }

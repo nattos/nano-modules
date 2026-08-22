@@ -1483,6 +1483,16 @@ export class WasmSketchExecutor {
         new DataView(this.memory.buffer).setFloat64(outPtr, num, true);
         return 1;
       },
+      // Publish one scalar into an instance's live state ON THE EFFECT'S
+      // BEHALF (mirror effrt_publish_scalar). Host-sourced outputs — the
+      // barrel's macro knobs, control.artnet's DMX channels — are injected
+      // scalars that never pass through the effect, so nothing else ever puts
+      // them where the output-trace charts look.
+      publish_scalar: (h: number, fieldPtr: number, fieldLen: number, v: number) => {
+        const i = this.resolve(h); if (!i) return;
+        const ps = i.host.pluginState as Record<string, unknown> | undefined;
+        if (ps) ps[this.readString(fieldPtr, fieldLen)] = v;
+      },
       // Numeric trigger-ring read (mirror effrt_read_triggers): 5 doubles per
       // event — seq, on(0/1), channel(NaN=unpublished), velocity(default 1),
       // deadline_ms(0=any; >0=strict; strict-no-deadline→100). Returns the

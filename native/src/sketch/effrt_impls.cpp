@@ -127,6 +127,15 @@ int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_le
   return i->publishedScalar(field, field_len, out) ? 1 : 0;
 }
 
+void effrt_publish_scalar(int32_t inst, const char* field, int32_t field_len,
+                          double v) {
+  auto* i = resolve(inst);
+  if (!i || !field || field_len <= 0) return;
+  // Straight into the set_val map — indistinguishable, downstream, from the
+  // effect having published it itself. See effrt.h for who needs that.
+  i->hostSetVal(std::string_view(field, (size_t)field_len), nlohmann::json(v));
+}
+
 int32_t effrt_read_triggers(int32_t inst, double* out, int32_t cap) {
   auto* i = resolve(inst);
   if (!i || !out || cap <= 0) return -1;

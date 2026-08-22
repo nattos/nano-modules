@@ -495,3 +495,52 @@ TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", 
   INFO("out_0 modulation value " << v << " (knob_0 = 0.5 folded into [0,1])");
   CHECK(std::abs(v - 0.5) < 0.1);
 }
+
+// An Art-Net card's channels come from the HOST (the ArtNetHost listener on
+// native, the dev server's bridge on web) as injected scalars, which ride
+// outside the sketch doc and never pass through the effect. Wires read them
+// straight out of injectedScalars_, but the editor's output-trace charts read
+// PUBLISHED state — and an identity card is alias-skipped before it could ever
+// tick and publish. The executor publishes them on the effect's behalf
+// (effrt_publish_scalar); without that the trace pins at 0 while the wire moves.
+TEST_CASE("host-injected scalars reach an instance's published state", "[executor_wasm]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  const std::string sketch = R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "control.artnet", "instance_key": "an@0" }
+    ],
+    "instances": {
+      "an@0": { "module_type": "control.artnet",
+                "state": { "universe": 1, "channel_count": 2 } }
+    }
+  })JSON";
+
+  const uint32_t W = 16, H = 16, RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  std::vector<uint8_t> inPix(W * H * 4, 255);
+  backend->writeTexture(inTex, W, H, inPix.data(), (uint32_t)inPix.size());
+
+  SketchExecutor ex(&rt, &registry, backend.get());
+  ex.setInjectedScalar("an@0", "ch_0", 0.75f);
+  auto j = nlohmann::json::parse(sketch);
+  ex.execute(j, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, true);
+  backend->submit();
+
+  auto* inst = rt.findInstance("control.artnet", "an@0");
+  REQUIRE(inst != nullptr);
+  auto published = nlohmann::json::parse(inst->publishedStateJson(), nullptr, false);
+  REQUIRE(published.is_object());
+  INFO("published state " << published.dump());
+  CHECK(std::abs(published.value("ch_0", -1.0) - 0.75) < 1e-4);
+  // Untouched channels stay absent rather than publishing a fabricated 0 —
+  // an unfed channel is dormant, exactly as a never-heard universe is.
+  CHECK_FALSE(published.contains("ch_1"));
+}

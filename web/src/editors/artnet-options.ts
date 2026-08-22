@@ -15,6 +15,11 @@
  * server's UDP bridge isn't there (a production build, or Live mode, where the
  * native listener inside the shared server is authoritative). Better to show
  * nothing than an affordance that can't work.
+ *
+ * Its settings — pattern, destination, whether it's running — belong to
+ * `artnetClient` for the session, not to this element. You close the gear panel
+ * to go wire the channels up, and that used to unmount the element and stop the
+ * signal at the moment you needed it.
  */
 
 import { html, css, nothing } from 'lit';
@@ -22,7 +27,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
 import type { FieldBinding } from '../widgets/field-editor';
-import { artnetClient } from '../artnet/artnet-client';
+import { artnetClient, type TestDest, type TestPatternAddress } from '../artnet/artnet-client';
 import { ARTNET_MAX_FIELDS, ARTNET_MODULE_TYPE } from '../artnet/artnet-lowering';
 import { TEST_PATTERNS, universeKey, type TestPattern } from '../artnet/artnet-packet';
 import '../widgets/field-tab-bar';
@@ -49,11 +54,11 @@ const POLL_MS = 250;
 export class ArtnetOptions extends MobxLitElement {
   @property({ attribute: false }) binding: FieldBinding | null = null;
 
-  @state() private running = false;
-  @state() private dest: 'mirror' | 'broadcast' = 'mirror';
-  @state() private pattern: TestPattern = 'chase';
   /** Bumped by the poll timer purely to force a re-render of the live status —
-   *  the client's tables are plain Maps, not observables. */
+   *  the client's tables are plain Maps, not observables. Pattern / dest /
+   *  running are NOT held here: they live on `artnetClient` for the session, so
+   *  closing this panel (or switching tabs, or editing another sketch) doesn't
+   *  tear the transmitter down with the element. */
   @state() private tick = 0;
 
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -79,19 +84,20 @@ export class ArtnetOptions extends MobxLitElement {
   connectedCallback(): void {
     super.connectedCallback();
     if (artnetClient.isAvailable) {
-      this.timer = setInterval(() => { this.tick++; }, POLL_MS);
+      this.timer = setInterval(() => { this.tick++; this.followAddress(); }, POLL_MS);
     }
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    // A pattern left running after the card goes away would keep transmitting
-    // with nothing on screen to stop it.
-    if (this.running) this.stopTest();
+    // Deliberately does NOT stop the pattern: you close the gear panel to go
+    // wire the channels up, which is exactly when you want the signal flowing.
+    // It stops on Stop, on another card taking over, or on page unload
+    // (ArtnetClient's pagehide) — and the dev server blacks out on the way.
   }
 
-  private address() {
+  private address(): TestPatternAddress {
     const b = this.binding;
     const num = (path: string, fallback: number) => {
       const v = b?.getValue(path);
@@ -105,37 +111,38 @@ export class ArtnetOptions extends MobxLitElement {
     };
   }
 
+  /** True when the running pattern is THIS card's — a second Art-Net card
+   *  offers Send (which takes the transmitter over), not Stop. */
+  private get isMine(): boolean {
+    const t = artnetClient.testState;
+    return t.running && t.instanceKey === this.binding?.instanceKey;
+  }
+
   private startTest() {
-    const addr = this.address();
-    artnetClient.startTestPattern({ ...addr, pattern: this.pattern, dest: this.dest });
-    this.running = true;
+    artnetClient.startTestPattern(this.binding?.instanceKey ?? '', this.address());
+    this.requestUpdate();
   }
 
   private stopTest() {
     artnetClient.stopTestPattern();
-    this.running = false;
+    this.requestUpdate();
   }
 
   private toggleTest() {
-    if (this.running) this.stopTest();
+    if (this.isMine) this.stopTest();
     else this.startTest();
   }
 
-  /** Picking a different pattern while one is running swaps it live — the
-   *  generator is restarted rather than left on the old pattern until Stop. */
-  private pickPattern(p: TestPattern) {
-    this.pattern = p;
-    if (this.running) this.startTest();
-  }
-
-  /** Same for the destination: switching mirror↔broadcast mid-run must black
-   *  out the universe we were lighting before moving to the other one. */
-  private pickDest(d: 'mirror' | 'broadcast') {
-    if (this.dest === d) return;
-    const wasRunning = this.running;
-    if (wasRunning) this.stopTest();
-    this.dest = d;
-    if (wasRunning) this.startTest();
+  /** Retarget a running pattern when the card it belongs to is re-addressed —
+   *  editing Universe with the generator on should move the signal, not leave
+   *  it lighting the universe you just left. */
+  private followAddress() {
+    if (!this.isMine) return;
+    const a = this.address();
+    const cur = artnetClient.testState.address;
+    if (cur && cur.net === a.net && cur.subnet === a.subnet
+        && cur.universe === a.universe && cur.count === a.count) return;
+    this.startTest();
   }
 
   private renderStatus() {
@@ -173,6 +180,7 @@ export class ArtnetOptions extends MobxLitElement {
   render() {
     const b = this.binding;
     if (!b) return html``;
+    const test = artnetClient.testState;
     return html`
       <field-tab-bar
         .fieldPath=${'channel_count'}
@@ -191,27 +199,31 @@ export class ArtnetOptions extends MobxLitElement {
           <div class="row">
             ${TEST_PATTERNS.map(p => html`
               <ui-button
-                ?active=${this.pattern === p}
-                @click=${() => this.pickPattern(p)}
+                ?active=${test.pattern === p}
+                @click=${() => { artnetClient.setTestPattern(p); this.requestUpdate(); }}
               >${PATTERN_LABELS[p]}</ui-button>
             `)}
           </div>
           <div class="row">
-            <ui-button
-              ?active=${this.dest === 'mirror'}
-              @click=${() => this.pickDest('mirror')}
-              title="Send on the mirror port — only nano hears it, Resolume does not react"
-            >Mirror</ui-button>
-            <ui-button
-              ?active=${this.dest === 'broadcast'}
-              @click=${() => this.pickDest('broadcast')}
-              title="Broadcast on 6454 to the whole LAN — Resolume receives this too and may fire clips"
-            >Broadcast</ui-button>
-            <ui-button @click=${() => this.toggleTest()}>
-              ${this.running ? 'Stop' : 'Send'}
+            ${(['mirror', 'broadcast'] as TestDest[]).map(d => html`
+              <ui-button
+                ?active=${test.dest === d}
+                @click=${() => { artnetClient.setTestDest(d); this.requestUpdate(); }}
+                title=${d === 'mirror'
+                  ? 'Send on the mirror port — only nano hears it, Resolume does not react'
+                  : 'Broadcast on 6454 to the whole LAN — Resolume receives this too and may fire clips'}
+              >${d === 'mirror' ? 'Mirror' : 'Broadcast'}</ui-button>
+            `)}
+            <ui-button ?active=${this.isMine} @click=${() => this.toggleTest()}>
+              ${this.isMine ? 'Stop' : 'Send'}
             </ui-button>
           </div>
-          ${this.dest === 'broadcast' ? html`
+          ${test.running && !this.isMine ? html`
+            <div class="status warn">
+              running on another Art-Net card (universe ${test.address?.universe ?? '?'}) —
+              Send moves it here
+            </div>` : nothing}
+          ${test.dest === 'broadcast' ? html`
             <div class="status warn">
               broadcasts to the LAN on 6454 — Resolume receives this and may fire clips
             </div>` : nothing}

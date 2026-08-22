@@ -72,6 +72,18 @@ EFFRT_IMPORT("published_scalar")
 int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_len,
                                double* out);
 
+// Publish ONE scalar into the instance's published state ON THE EFFECT'S
+// BEHALF — the same map state::setVal writes from inside an effect, and what
+// the IDE's output-trace charts read. For host-sourced OUTPUT values that
+// never pass through the effect at all: the barrel's Resolume macro knobs and
+// control.artnet's live DMX channels arrive as injected scalars (outside the
+// doc, by design), and an identity card is alias-skipped before it would ever
+// tick, so nothing else would ever publish them. Wires don't need this — they
+// read injectedScalars_ directly — telemetry does.
+EFFRT_IMPORT("publish_scalar")
+void effrt_publish_scalar(int32_t inst, const char* field, int32_t field_len,
+                          double v);
+
 // Numeric trigger-ring read: copies up to `cap` events from the instance's
 // published "triggers" ring into out[], oldest-first, 5 doubles per event:
 //   [0] seq   [1] on (0/1)   [2] channel (NaN when unpublished — consumers
