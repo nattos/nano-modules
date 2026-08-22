@@ -180,6 +180,7 @@ export class ArtnetOptions extends MobxLitElement {
         .options=${COUNT_OPTIONS}
         .defaultValue=${4}
         ?shapeField=${true}
+        ?wrap=${true}
         .binding=${b}
       ></field-tab-bar>
 

@@ -118,6 +118,9 @@ export class LensInspector extends MobxLitElement {
       display: inline-flex; flex: 1; min-width: 0; flex-wrap: wrap; justify-content: center;
       border: 1px solid var(--app-tint-4); border-radius: 4px;
       overflow: hidden; background: var(--app-bg-color1);
+      /* Same reason as <field-tab-bar>: a segment strip's min-content width
+       * must not become the card's floor. */
+      contain: inline-size;
     }
     .tabs button {
       flex: 0 1 auto; min-width: 0; background: transparent; border: none;

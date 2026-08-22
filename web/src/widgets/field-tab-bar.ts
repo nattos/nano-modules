@@ -98,6 +98,16 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
       border-radius: 4px;
       overflow: hidden;
       background: var(--app-bg-color1);
+      /* The strip must never widen the card it sits in. min-width:0 only lets a
+       * flex item shrink; the container's MIN-CONTENT width is still the sum of
+       * every segment's padding + border + shortest text, which for a 16-option
+       * bar is ~300px — and an effect column is shrink-to-fit around its
+       * content, so that floor became the card's width and the chain scrolled
+       * sideways. Inline-size containment computes this box's intrinsic width as
+       * if it were empty, so the segments size to whatever width the card has
+       * and ellipsise (or wrap) inside it. Truncated labels beat a card that
+       * won't narrow. */
+      contain: inline-size;
     }
     button {
       flex: 1 1 0;
