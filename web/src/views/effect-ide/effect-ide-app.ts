@@ -24,7 +24,7 @@ import '../../widgets/snackbars';
 import '../devices/devices-tab';
 import '../devices/devices-float-monitor';
 import '../canvas/sketch-canvas-view';
-import { canvasModeToggle } from '../canvas/sketch-canvas-view';
+import { canvasModeToggle, wiresModeToggle } from '../../widgets/rail-modes';
 import '../devices/device-wire-overlay';
 
 @customElement('effect-ide-app')
@@ -92,7 +92,7 @@ export class EffectIdeApp extends MobxLitElement {
           renderRight: canvasOpen
             ? () => html`<sketch-canvas-view .sketchId=${sel}></sketch-canvas-view>`
             : undefined,
-          toggles: [canvasModeToggle()],
+          toggles: [wiresModeToggle(), canvasModeToggle()],
         },
         {
           // Same layout as the unified surface's Devices tab: the project's
@@ -108,6 +108,7 @@ export class EffectIdeApp extends MobxLitElement {
           ></sketch-column-editor>
         `,
           renderRight: () => html`<devices-tab></devices-tab>`,
+          toggles: [wiresModeToggle()],
         },
         { id: 'debug_info', icon: 'la-bug', title: 'Debug Info', kind: 'inline', render: () => html`<ide-debug-info></ide-debug-info>` },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },

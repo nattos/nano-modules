@@ -26,7 +26,7 @@ import './reconcile-dialog';
 import './devices/devices-tab';
 import './devices/devices-float-monitor';
 import './canvas/sketch-canvas-view';
-import { canvasModeToggle } from './canvas/sketch-canvas-view';
+import { canvasModeToggle, wiresModeToggle } from '../widgets/rail-modes';
 import './devices/device-wire-overlay';
 
 @customElement('sketch-app')
@@ -69,7 +69,7 @@ export class SketchApp extends MobxLitElement {
             : undefined,
           // Only Edit hosts the canvas — Devices already owns the right panel,
           // so the pill rides this tab rather than the shell.
-          toggles: [canvasModeToggle()],
+          toggles: [wiresModeToggle(), canvasModeToggle()],
         },
         {
           // Devices keeps the sketch editor in the left panel (same instance
@@ -83,6 +83,10 @@ export class SketchApp extends MobxLitElement {
           ></sketch-column-editor>
         `,
           renderRight: () => html`<devices-tab></devices-tab>`,
+          // W but no C: wires are the whole point of this tab (they drag
+          // between a device control and an editor field), while the canvas
+          // has nowhere to open — the device grid holds the right panel.
+          toggles: [wiresModeToggle()],
         },
         { id: 'settings', icon: 'la-cog', title: 'Settings', kind: 'full-takeover', render: () => html`<app-settings></app-settings>` },
       ],
