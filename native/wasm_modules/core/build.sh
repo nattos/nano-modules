@@ -85,6 +85,7 @@ wasm_build \
   ../video_layer/main.cpp \
   ../paramlinker/main.cpp \
   ../barrel_macros/main.cpp \
+  ../artnet_in/main.cpp \
   ../dashboard/main.cpp \
   ../sketch_output/main.cpp \
   ../sidechannel_out/main.cpp \

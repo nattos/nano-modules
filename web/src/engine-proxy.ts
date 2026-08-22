@@ -284,6 +284,13 @@ export class EngineProxy {
     this.send({ type: 'setExternalScalars', json });
   }
 
+  /** Push host-injected scalars for IN-CHAIN instances (Art-Net channels
+   *  driving a `control.artnet` card) — see the `setInjectedScalars` command
+   *  in engine-types.ts. Replace-all. */
+  setInjectedScalars(json: string) {
+    this.send({ type: 'setInjectedScalars', json });
+  }
+
   setFusionMode(mode: 'auto' | 'force-on' | 'force-off') {
     this.send({ type: 'setFusionMode', mode });
   }

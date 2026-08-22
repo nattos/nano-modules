@@ -28,6 +28,9 @@ NANO_DECLARE_INSTANCE_EFFECT(paramlinker)
 NANO_DECLARE_INSTANCE_EFFECT(barrel_macros)
 namespace barrel_macros { int32_t is_identity(void* self); }
 
+NANO_DECLARE_INSTANCE_EFFECT(artnet_in)
+namespace artnet_in { int32_t is_identity(void* self); }
+
 NANO_DECLARE_INSTANCE_EFFECT(dashboard)
 namespace dashboard { int32_t is_identity(void* self); }
 
@@ -274,6 +277,18 @@ void nano_module_main() {
         "la-cubes",
         NANO_INSTANCE_LIFECYCLE(barrel_macros),
         &barrel_macros::is_identity,
+    });
+
+    nano::registerEffect({
+        2,
+        "control.artnet",
+        "Art-Net In",
+        "Exposes incoming Art-Net/DMX channels as tappable float outputs",
+        "control",
+        "artnet,dmx,lighting,trigger,control,rail",
+        "la-broadcast-tower",
+        NANO_INSTANCE_LIFECYCLE(artnet_in),
+        &artnet_in::is_identity,
     });
 
     nano::registerEffect({

@@ -72,6 +72,7 @@ interface ExecutorExports {
   executor_set_time?(ex: number, sec: number): void;
   executor_set_automation(ex: number, json: number, len: number): void;
   executor_set_external_scalars(ex: number, json: number, len: number): void;
+  executor_set_injected_scalars(ex: number, json: number, len: number): void;
   executor_debug_stats(ex: number, out: number): void;
   executor_modulation_json(ex: number, out: number, cap: number): number;
   executor_set_bus_tag(ex: number, tag: number, len: number): void;
@@ -193,6 +194,8 @@ export class WasmSketchExecutor {
   private fusionEnabled = true;
   /** Last external-scalar table (setExternalScalars), re-applied to new slots. */
   private externalScalarsJson = '';
+  /** Last injected-scalar table (setInjectedScalars), re-applied to new slots. */
+  private injectedScalarsJson = '';
 
   // Per-frame debug counters, accumulated across every sketch's executor_execute
   // and drained by consumeDebugStats() (called once per frame). The C++ executor
@@ -518,6 +521,16 @@ export class WasmSketchExecutor {
         this.exports.executor_set_external_scalars(exPtr, esPtr, esBytes.length);
         this.exports.free(esPtr);
       }
+      // Same for host-injected scalars (Art-Net channels, barrel macros):
+      // they re-push only when the source changes, so a slot created between
+      // two changes would read 0 until the next one.
+      if (this.injectedScalarsJson) {
+        const isBytes = encoder.encode(this.injectedScalarsJson);
+        const isPtr = this.exports.malloc(isBytes.length);
+        new Uint8Array(this.memory.buffer, isPtr, isBytes.length).set(isBytes);
+        this.exports.executor_set_injected_scalars(exPtr, isPtr, isBytes.length);
+        this.exports.free(isPtr);
+      }
       // Tag the executor's sidechannel-bus writes with its sketch id (the UI
       // maps it to the playground instance label for channel names).
       const tagBytes = encoder.encode(sketchId);
@@ -657,6 +670,23 @@ export class WasmSketchExecutor {
     new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
     for (const slot of this.slots.values()) {
       this.exports.executor_set_external_scalars(slot.exPtr, ptr, bytes.length);
+    }
+    this.exports.free(ptr);
+  }
+
+  /** Push host-injected scalars for IN-CHAIN instances to every live slot
+   *  (`{"<instanceKey>": {"ch_0": 0.42}}`). Unlike external scalars these
+   *  target instances that ARE in the chain — a `control.artnet` card's
+   *  channels — and land ahead of the doc's instance state, so the sketch doc
+   *  is never touched. Replace-all: an instance absent from the table stops
+   *  being driven. Remembered and re-applied to slots created later. */
+  setInjectedScalars(json: string): void {
+    this.injectedScalarsJson = json;
+    const bytes = encoder.encode(json);
+    const ptr = this.exports.malloc(bytes.length);
+    new Uint8Array(this.memory.buffer, ptr, bytes.length).set(bytes);
+    for (const slot of this.slots.values()) {
+      this.exports.executor_set_injected_scalars(slot.exPtr, ptr, bytes.length);
     }
     this.exports.free(ptr);
   }

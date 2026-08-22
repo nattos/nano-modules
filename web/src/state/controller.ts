@@ -29,6 +29,7 @@ import { hiddenFieldsFor } from './field-visibility';
 // rendering and setEffectVisibilityParam's wire pruning depend on it, and the
 // controller is loaded by everything that needs either.
 import './math-nodes';
+import './artnet-node';
 import { computeExecOrder } from './exec-order';
 import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, wireKindOfField, type WireKind } from './schema-channels';
 import { midiController } from './midi-controller';

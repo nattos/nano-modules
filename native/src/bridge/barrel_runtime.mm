@@ -27,6 +27,7 @@
 #include "bridge/ws_server.h"
 #include "gpu/gpu_backend.h"
 #include "midi/midi_host.h"
+#include "artnet/artnet_host.h"
 #include "runtime/effect_runtime.h"
 #include "sketch/module_registry.h"
 #include "sketch/sidechannel_bus.h"
@@ -241,6 +242,10 @@ struct BarrelRuntime::Impl {
     // Last-applied MidiHost table version — setExternalScalars only re-runs
     // when a device value / sim override / library rematch actually changed.
     uint64_t lastMidiVersion = 0;
+    // Last-applied ArtNetHost version — same gate. The host bumps only when a
+    // DMX channel byte actually changes, so an idle (but still transmitting at
+    // 100 Hz) rig costs one integer compare per frame.
+    uint64_t lastArtnetVersion = 0;
   };
   std::unordered_map<std::string, PerExecutor> executors;
 
@@ -1050,6 +1055,45 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     if (mv != pe.lastMidiVersion) {
       pe.lastMidiVersion = mv;
       pe.executor->setExternalScalars(mh.externalScalars());
+    }
+  }
+
+  // Art-Net channels → any control.artnet instance's injected scalars.
+  //
+  // The listener is started lazily here rather than at runtime construction so
+  // a barrel that never uses Art-Net never opens a socket. start() is
+  // idempotent and after the first call is an atomic load.
+  //
+  // This path deliberately involves NOTHING else: no BridgeServer state, no
+  // editor, no dev server. A barrel running headless in Resolume with nobody
+  // connected must still be driven by the wire, which is the whole point.
+  {
+    auto& ah = artnet::ArtNetHost::instance();
+    ah.start();
+    const uint64_t av = ah.version();
+    if (av != pe.lastArtnetVersion && pe.sketch.contains("instances") &&
+        pe.sketch["instances"].is_object()) {
+      pe.lastArtnetVersion = av;
+      for (auto& [ikey, inst] : pe.sketch["instances"].items()) {
+        if (!inst.is_object()) continue;
+        if (inst.value("module_type", std::string()) != "control.artnet") continue;
+        // Field VALUES live under the instance's "state" object; only
+        // module_type sits at the top level.
+        auto sit = inst.find("state");
+        if (sit == inst.end() || !sit->is_object()) continue;
+        const nlohmann::json& st = *sit;
+        const int count = std::clamp(st.value("channel_count", 4), 1, 16);
+        float ch[16] = {};
+        // A universe we have never heard leaves the instance alone: its
+        // authored values stand, exactly as an unseeded wire rail does. Zeroing
+        // here would be a blackout nobody sent.
+        if (!ah.sample(st.value("net", 0), st.value("subnet", 0),
+                       st.value("universe", 1), st.value("base_channel", 1),
+                       count, ch))
+          continue;
+        for (int i = 0; i < count; ++i)
+          pe.executor->setInjectedScalar(ikey, "ch_" + std::to_string(i), ch[i]);
+      }
     }
   }
 

@@ -22,6 +22,7 @@ import { initFontProvider, requestFont } from './font-access';
 import { loadUserSettings } from './state/user-settings';
 import { loadAllProjects } from './state/project-store';
 import { midiController } from './state/midi-controller';
+import { artnetClient } from './artnet/artnet-client';
 import { idbGetAll, idbGet, STORE_PROJECTS, STORE_SETTINGS, STORE_SKETCH_INPUTS } from './state/idb-store';
 
 export interface BootOptions {
@@ -83,6 +84,7 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   (window as any).appController = appController;
   (window as any).appState = appState;
   (window as any).midiController = midiController;
+  (window as any).artnetClient = artnetClient;
   (window as any).debugDumpState = () => toJS(appState);
   (window as any).debugPrintState = () => {
     console.log(JSON.stringify(toJS(appState), undefined, 2));
@@ -164,6 +166,20 @@ export async function boot(opts: BootOptions = {}): Promise<BootResult> {
   // barrel mode (the idle worker ignores it); the live-mode bridge push is a
   // separate channel.
   midiController.bindEnginePush(json => engine.setExternalScalars(json));
+  // Art-Net channels reach the local executor as INJECTED scalars (the cards
+  // are in-chain, unlike MIDI devices). Dev-server only — `artnetClient` is
+  // inert without one, and in Live mode the native listener inside the shared
+  // server is authoritative anyway. Polled on a rAF rather than pushed per
+  // datagram: the bridge already coalesces, and a static feed costs one string
+  // compare.
+  if (artnetClient.isAvailable) {
+    artnetClient.bindEnginePush(json => engine.setInjectedScalars(json));
+    const pumpArtnet = () => {
+      artnetClient.pushInjectedScalars();
+      requestAnimationFrame(pumpArtnet);
+    };
+    requestAnimationFrame(pumpArtnet);
+  }
   // Record the surface actually booting into `appMode`, regardless of what
   // was last persisted — this reflects the resolved mode (settings, or a
   // boot-time override); `appMode` remembers it for the Settings tab's

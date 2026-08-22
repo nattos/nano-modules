@@ -116,6 +116,20 @@ void executor_set_external_scalars(SketchExecutor* ex, const char* json, int32_t
   ex->setExternalScalars(j.is_discarded() ? nlohmann::json::object() : j);
 }
 
+// Push host-injected scalars for IN-CHAIN instances for the next execute():
+// `{"<instanceKey>": {"ch_0": 0.42, ...}, ...}`. Unlike external scalars these
+// target instances that ARE in the chain — the host driving a control.artnet
+// card's channels, or a control.barrel_macros card's knobs — and land ahead of
+// the doc's instance state in captureWriteTaps, so no doc mutation is needed
+// (which would defeat the clean-frame exec-doc cache). Replaces the previous
+// set; "{}" clears.
+EXEC_EXPORT("executor_set_injected_scalars")
+void executor_set_injected_scalars(SketchExecutor* ex, const char* json, int32_t len) {
+  if (!ex) return;
+  auto j = nlohmann::json::parse(std::string(json, len), nullptr, false);
+  ex->setInjectedScalars(j.is_discarded() ? nlohmann::json::object() : j);
+}
+
 // Push the absolute transport time (seconds) for the NEXT execute() — drives
 // deterministic effect seeks (backward jump + clip activation). Optional: a host that
 // never calls it leaves the executor at 0 (no jump seeks). See SketchExecutor::setFrameTime.

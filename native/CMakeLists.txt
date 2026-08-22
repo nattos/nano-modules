@@ -1007,7 +1007,8 @@ if(APPLE)
   # wasm_host/text_engine/spv_to_msl transitively.
   target_sources(bridge_server PRIVATE
     src/bridge/barrel_runtime.mm
-    src/midi/midi_host.mm)
+    src/midi/midi_host.mm
+    src/artnet/artnet_host.cpp)
   target_link_libraries(bridge_server PRIVATE sketch_executor "-framework CoreMIDI")
   set_source_files_properties(src/bridge/barrel_runtime.mm src/midi/midi_host.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -1023,6 +1024,18 @@ if(APPLE)
       "-framework CoreMIDI" "-framework CoreFoundation" "-framework Foundation")
     set_source_files_properties(src/midi/midi_host.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     catch_discover_tests(test_midi_host)
+  endif()
+
+  # Headless ArtNetHost goldens (parse/route/version-gate; never binds a
+  # socket — packets go in through ingestForTest). Compiles artnet_host.cpp
+  # directly for the same reason test_midi_host does: it lives in
+  # bridge_server, which a test can't link.
+  if(TARGET Catch2::Catch2WithMain)
+    add_executable(test_artnet_host tests/test_artnet_host.cpp src/artnet/artnet_host.cpp)
+    target_include_directories(test_artnet_host PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_artnet_host PRIVATE
+      nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+    catch_discover_tests(test_artnet_host)
   endif()
 
   # Config-driven CLI test runner — JSON config on stdin, JSON pixel

@@ -215,6 +215,7 @@ export type WorkerCommand =
   // absent values leave their wires dormant. Replaces the previous
   // table; '{}' clears.
   | { type: 'setExternalScalars'; json: string }
+  | { type: 'setInjectedScalars'; json: string }
   // Toggle debug-stats collection. When on, the worker tracks
   // per-frame counters (effects executed, dispatches issued, fused
   // runs, dispatches saved) and ships them on each frame event.

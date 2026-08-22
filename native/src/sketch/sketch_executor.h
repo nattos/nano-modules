@@ -162,6 +162,29 @@ class SketchExecutor {
   void clearInjectedScalars() { injectedScalars_.clear(); }
 
   /**
+   * REPLACE the whole injected-scalar table at once:
+   * `{"<instanceKey>": {"ch_0": 0.4, ...}, ...}`. The table-shaped sibling of
+   * setInjectedScalar, for hosts that reach the executor across a boundary a
+   * per-field call can't cross cheaply — the web pushes one JSON blob through
+   * `executor_set_injected_scalars` rather than one call per channel per frame.
+   *
+   * Replace-all, so an instance that stops being fed stops injecting (with the
+   * per-field setter a removed source would keep its last value forever). A
+   * host uses one style or the other, not both: this clears what the per-field
+   * setter wrote.
+   */
+  void setInjectedScalars(const nlohmann::json& table) {
+    injectedScalars_.clear();
+    if (!table.is_object()) return;
+    for (const auto& [instanceKey, fields] : table.items()) {
+      if (!fields.is_object()) continue;
+      for (const auto& [field, value] : fields.items())
+        if (value.is_number())
+          injectedScalars_[instanceKey][field] = value.get<float>();
+    }
+  }
+
+  /**
    * Host-injected FRAME texture for an in-chain instance — the video pump
    * handing a decoded frame to a `source.video.file` entry.
    *
