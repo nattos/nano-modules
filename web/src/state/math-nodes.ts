@@ -1,13 +1,14 @@
 /**
- * The split-out modulation math nodes (`mod.shaper.add`, `.multiply`, …) as the
- * EDITOR sees them.
+ * VARIABLE-ARITY nodes as the EDITOR sees them: the split-out modulation math
+ * nodes (`mod.shaper.add`, `.multiply`, …) and `mod.shaper.switch`.
  *
- * These effects declare a fixed bank of 8 inputs plus an `input_count` field
- * saying how many actually participate, because a schema is published once per
- * module type and so arity can only ever be a value, not a shape (see
- * native/wasm_modules/mod_math/main.cpp). Everything here is the UI half of that
- * arrangement: which ids are math nodes, and the synchronous rule that turns a
- * stored count into the set of fields to hide.
+ * They declare a fixed bank of 8 inputs plus an `input_count` field saying how
+ * many actually participate, because a schema is published once per module type
+ * and so arity can only ever be a value, not a shape (see
+ * native/wasm_modules/mod_math/main.cpp and mod_switch/main.cpp). Everything
+ * here is the UI half of that arrangement: which ids carry a count, and the
+ * synchronous rule that turns a stored count into the set of fields to hide.
+ * The two families differ only in their field prefix (`input_` vs `case_`).
  *
  * The rule is synchronous and reads the DOCUMENT, so a card shows the right
  * number of inputs on its very first render — no engine round trip, no reflow
@@ -83,3 +84,40 @@ export function mathHiddenFields(state: Record<string, any> | undefined): string
 for (const moduleType of MATH_MODULE_TYPES) {
   registerVisibilityRule(moduleType, mathHiddenFields);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// mod.shaper.switch — the same arity arrangement, different field prefix.
+//
+// It is not a math node (its cases are polymorphic `any` ports, not floats), but
+// the SHAPE problem is identical: a fixed bank of 8 plus a count value, because
+// arity can no more be a schema shape than type can. Sharing the mechanism here
+// keeps one answer to "how does a card change its own field set".
+// ──────────────────────────────────────────────────────────────────────────
+
+export const SWITCH_MODULE_TYPE = 'mod.shaper.switch';
+
+/** Mirrors `kMaxCases` / the `input_count` minimum in mod_switch/main.cpp. */
+export const SWITCH_MAX_CASES = 8;
+export const SWITCH_MIN_CASES = 2;
+
+/** The field name for the Nth case, 1-based — `case_1` … `case_8`. */
+export function switchCaseField(n: number): string {
+  return `case_${n}`;
+}
+
+/** The active case count from an instance's state, clamped to the schema range. */
+export function switchCaseCount(state: Record<string, any> | undefined): number {
+  const raw = state?.input_count;
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.round(raw) : SWITCH_MIN_CASES;
+  return Math.min(SWITCH_MAX_CASES, Math.max(SWITCH_MIN_CASES, n));
+}
+
+/** Cases past the count, plus `input_count` itself (a gear-panel control). */
+export function switchHiddenFields(state: Record<string, any> | undefined): string[] {
+  const count = switchCaseCount(state);
+  const hidden = ['input_count'];
+  for (let n = count + 1; n <= SWITCH_MAX_CASES; n++) hidden.push(switchCaseField(n));
+  return hidden;
+}
+
+registerVisibilityRule(SWITCH_MODULE_TYPE, switchHiddenFields);

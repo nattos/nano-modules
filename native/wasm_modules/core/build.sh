@@ -140,6 +140,7 @@ wasm_build \
   ../mod_invert/main.cpp \
   ../env_lfo/main.cpp \
   ../color_const/main.cpp \
+  ../mod_switch/main.cpp \
   ../env_adsr/main.cpp \
   ../trigger_beat/main.cpp \
   ../trigger_out/main.cpp

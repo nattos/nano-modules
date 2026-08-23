@@ -182,6 +182,10 @@ NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
 // A colour as a wire source — the first vec-rail PRODUCER in the tree (every
 // other vec/rgb field is an input). See color_const/main.cpp.
 NANO_DECLARE_INSTANCE_EFFECT(color_const)
+
+// Pick one of N inputs, whatever they carry — the polymorphic (`any`) node the
+// whole raw/any/vec sequence exists for. See mod_switch/main.cpp.
+NANO_DECLARE_INSTANCE_EFFECT(mod_switch)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
@@ -1045,6 +1049,19 @@ void nano_module_main() {
         "color,colour,swatch,constant,source,modulation,palette",
         "la-palette",
         NANO_INSTANCE_LIFECYCLE(color_const),
+    });
+
+    // ONE switch for every wireable type, rather than one card per type. Its
+    // cases are `any` ports, resolved per instance from whatever is wired.
+    nano::registerEffect({
+        2,
+        "mod.shaper.switch",
+        "Switch",
+        "Picks one of N inputs and passes it through — numbers, colours or video, whatever you wire in. Select sweeps 0..1 across however many cases you have, and auto-wires from a preceding modulation source. 2-8 cases from the gear icon. Pure data module.",
+        "mod",
+        "switch,select,mux,choose,route,case,modulation,polymorphic",
+        "la-random",
+        NANO_INSTANCE_LIFECYCLE(mod_switch),
     });
 
     nano::registerEffect({

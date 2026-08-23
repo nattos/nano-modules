@@ -1241,6 +1241,18 @@ if(APPLE)
     target_compile_options(test_vec_rail PRIVATE -Wno-attributes)
     catch_discover_tests(test_vec_rail)
 
+    # mod.shaper.switch natively — the polymorphic card the raw/any/vec work
+    # exists for. Web twin: web/test/mod-switch.test.ts.
+    add_executable(test_mod_switch tests/test_mod_switch.cpp)
+    target_link_libraries(test_mod_switch PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_mod_switch PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_mod_switch PRIVATE -Wno-attributes)
+    catch_discover_tests(test_mod_switch)
+
     # Clean-frame exec-doc cache goldens (wire liveness, injected scalars,
     # enable toggles, structural rebuilds).
     add_executable(test_exec_doc_cache tests/test_exec_doc_cache.cpp)
