@@ -12,8 +12,8 @@ using nlohmann::json;
 bool isStructuredSchemaTypeDef(const json& def) {
   if (!def.is_object()) return false;
   std::string type = def.value("type", std::string());
-  return type == "object" || type == "array"
-      || type == "float2"  || type == "float3" || type == "float4";
+  // COMPOSITES ONLY — see the header for why vecs are deliberately absent.
+  return type == "object" || type == "array";
 }
 
 // ----- Compatibility check (port of schema-compat.ts) ----------------

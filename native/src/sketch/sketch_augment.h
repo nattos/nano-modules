@@ -28,9 +28,29 @@
 namespace sketch_augment {
 
 /**
- * True for schema field type defs that need struct-rail transport
- * (anything that isn't a primitive scalar / texture leaf). Mirrors
- * `isStructuredSchemaTypeDef` in controller.ts.
+ * True for schema field type defs eligible for an IMPLICIT struct rail:
+ * composites only — `object` and `array`.
+ *
+ * Vectors (`float2/3/4`) are deliberately excluded, though they are
+ * "structured" in every other sense (the editor gives them a port widget
+ * rather than a slider, and `isRailCompatible` transports them happily on an
+ * explicit wire). The implicit rule is POSITIONAL — "nearest compatible
+ * producer above" — and that is only safe when a match means something. A
+ * composite's shape is specific: a particles buffer matches a particles
+ * consumer and nothing else. A bare `float3` matches every other `float3` in
+ * the tree — a tint, a gradient stop, a position, a scale — so the rule would
+ * connect fields that merely share an arity.
+ *
+ * This was latent rather than theoretical: vecs were listed here from the
+ * start, and stayed inert only because nothing in the tree published one.
+ * `mod.source.color` became the first vec producer and the rule started
+ * firing — synthesising a rail plus both taps that then carried NOTHING,
+ * because a struct rail transports its scalar/texture/buffer leaves and
+ * `collectScalarLeaves` has no float3 case. A port that reads as connected
+ * and moves no value is worse than either honest answer.
+ *
+ * Colour crosses a wire the user drew, as a `vec` rail (see the `float2/3/4`
+ * branch of rail lowering in sketch_executor.cpp).
  */
 bool isStructuredSchemaTypeDef(const nlohmann::json& def);
 

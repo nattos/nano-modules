@@ -1206,6 +1206,13 @@ if(APPLE)
     target_compile_options(test_raw_input PRIVATE -Wno-attributes)
     catch_discover_tests(test_raw_input)
 
+    # Which field types get an IMPLICIT (positional) rail — composites yes,
+    # vecs no. Pure logic; links only the augmenter.
+    add_executable(test_implicit_rails tests/test_implicit_rails.cpp)
+    target_link_libraries(test_implicit_rails PRIVATE
+      sketch_augment Catch2::Catch2WithMain)
+    catch_discover_tests(test_implicit_rails)
+
     # `any` port resolution, replaying the SAME fixture as the TS twin
     # (schema-channels.test.ts). Pure logic — no GPU, no bundles.
     add_executable(test_wire_types tests/test_wire_types.cpp)
