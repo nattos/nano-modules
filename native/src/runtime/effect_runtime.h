@@ -235,6 +235,10 @@ class EffectInstance : public wasm::EffectHostSink {
   // no JSON assembly/parse on the per-frame wire path. Returns false when the
   // field was never published or isn't scalar.
   bool publishedScalar(const char* field, int len, double* out) const;
+  // Vector twin of publishedScalar (backs effrt_published_array): copies up to
+  // `cap` components of a published numeric array into out[], returning the
+  // count. 0 when the field is absent, not an array, or has no numeric entries.
+  int publishedArray(const char* field, int len, double* out, int cap) const;
   // Numeric trigger-ring read (backs effrt_read_triggers): copies up to `cap`
   // events from the published "triggers" array into out[], oldest-first,
   // 5 doubles per event — see effrt.h for the layout contract. Returns the

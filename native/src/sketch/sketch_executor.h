@@ -713,6 +713,11 @@ class SketchExecutor {
         std::unordered_map<std::string, float>>& railScalars,
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railBuffers,
+      // Vec-rail component arrays captured live from producers this frame
+      // (railId → components). Vec rails carry a colour/vector value whole;
+      // there is no per-component fold, so unlike railFloats there is no
+      // modulation band and no combine.
+      const std::unordered_map<std::string, std::vector<float>>& railVecs,
       const nlohmann::json& sketchInstances,
       const std::string& instanceKey,
       // When non-null, records each modulated FLOAT field's final post-fold
@@ -796,6 +801,9 @@ class SketchExecutor {
         std::unordered_map<std::string, float>>& railScalars,
       std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railBuffers,
+      // Vec-rail components: the producer's published component array, read via
+      // effrt_published_array. Whole-value, no fold — see applyReadTaps.
+      std::unordered_map<std::string, std::vector<float>>& railVecs,
       // Read-tap-modulated scalars from applyReadTaps this frame. A field that
       // is BOTH read-tapped and write-tapped (a "relay" field, e.g. a dashboard
       // knob driven by an LFO) publishes this modulated value instead of its

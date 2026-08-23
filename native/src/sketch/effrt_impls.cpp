@@ -127,6 +127,27 @@ int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_le
   return i->publishedScalar(field, field_len, out) ? 1 : 0;
 }
 
+int32_t effrt_published_array(int32_t inst, const char* field, int32_t field_len,
+                              double* out, int32_t cap) {
+  auto* i = resolve(inst);
+  if (!i || !field || field_len <= 0 || !out || cap <= 0) return 0;
+  if (g_publishedStateFn) {
+    // Test provider (JSON) — cold path, parity with published_scalar.
+    auto j = nlohmann::json::parse(g_publishedStateFn(i), nullptr, false);
+    if (!j.is_object()) return 0;
+    auto it = j.find(std::string(field, (size_t)field_len));
+    if (it == j.end() || !it->is_array()) return 0;
+    int32_t n = 0;
+    for (const auto& c : *it) {
+      if (n >= cap) break;
+      if (c.is_number())       out[n++] = c.get<double>();
+      else if (c.is_boolean()) out[n++] = c.get<bool>() ? 1.0 : 0.0;
+    }
+    return n;
+  }
+  return i->publishedArray(field, field_len, out, cap);
+}
+
 void effrt_publish_scalar(int32_t inst, const char* field, int32_t field_len,
                           double v) {
   auto* i = resolve(inst);

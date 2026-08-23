@@ -1138,6 +1138,14 @@ int32_t SketchExecutor::execute(
         json railDataType;
         if (ftype == "float" || ftype == "texture") {
           railDataType = ftype;  // string dataType
+        } else if (ftype == "float2" || ftype == "float3" || ftype == "float4") {
+          // Vec rail: dataType {kind:"vec", n}. Carries the producer's published
+          // component array straight onto the consumer's field — no per-component
+          // magnitude fold and no modulation band, because a colour has no
+          // meaningful [min,max] contract to map into. Vec rails are RAW by
+          // construction, in the same sense as `raw` scalar fields.
+          railDataType = json{{"kind", "vec"},
+                              {"n", ftype == "float2" ? 2 : (ftype == "float3" ? 3 : 4)}};
         } else if (ftype == "object" || ftype == "array") {
           // Struct rail: dataType {kind:"struct", schema:<producer field def>},
           // matching sketch_augment's implicit struct rails so the shared
@@ -1390,6 +1398,10 @@ int32_t SketchExecutor::execute(
       std::unordered_map<std::string, float>> railScalars;
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>> railBuffers;
+    // Vec-rail components (railId → components), captured whole from the
+    // producer's published array. No fold, no band: a colour has no [min,max]
+    // modulation contract to map into.
+    std::unordered_map<std::string, std::vector<float>> railVecs;
 
     // Seed EXTERNAL float rails (out-of-chain sources, e.g. MIDI device
     // controls) from the host's setExternalScalars table. No producer entry
@@ -1709,7 +1721,7 @@ int32_t SketchExecutor::execute(
         inst.setTextureField("tex_out", fx);
         markWriteTapOutputsConnected(inst.h, entry);
         captureWriteTaps(inst.h, entry, instKey, instances,
-                         railsById, railTextures, railFloats, railScalars, railBuffers,
+                         railsById, railTextures, railFloats, railScalars, railBuffers, railVecs,
                          nullptr);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, stageInput, out, W, H);
@@ -1836,7 +1848,7 @@ int32_t SketchExecutor::execute(
           // export no is_identity, so they always take the standalone path
           // where serviceScalarBus folds into modScalars).
           captureWriteTaps(inst.h, entry, instKey, instances,
-                           railsById, railTextures, railFloats, railScalars, railBuffers,
+                           railsById, railTextures, railFloats, railScalars, railBuffers, railVecs,
                            nullptr);
         }
         if (chainEntryHook_) {
@@ -1876,7 +1888,7 @@ int32_t SketchExecutor::execute(
         inst.setFieldConnected("tex_in", true, false);
         std::unordered_map<std::string, float> modScalars;
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                      railScalars, railBuffers, instances, instKey, &modScalars);
+                      railScalars, railBuffers, railVecs, instances, instKey, &modScalars);
         applyAutomation(inst.h, entry, instances, instKey, &modScalars);
         applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
         markWriteTapOutputsConnected(inst.h, entry);
@@ -1890,7 +1902,7 @@ int32_t SketchExecutor::execute(
         // so the passthrough below still forwards stageInput untouched.
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
         captureWriteTaps(inst.h, entry, instKey, instances,
-                         railsById, railTextures, railFloats, railScalars, railBuffers,
+                         railsById, railTextures, railFloats, railScalars, railBuffers, railVecs,
                          &modScalars);
         int32_t out = passthroughOutput(stageInput);
         if (chainEntryHook_) {
@@ -1925,7 +1937,7 @@ int32_t SketchExecutor::execute(
 
       std::unordered_map<std::string, float> modScalars;
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                    railScalars, railBuffers, instances, instKey, &modScalars);
+                    railScalars, railBuffers, railVecs, instances, instKey, &modScalars);
       applyAutomation(inst.h, entry, instances, instKey, &modScalars);
       applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
       markWriteTapOutputsConnected(inst.h, entry);
@@ -1970,7 +1982,7 @@ int32_t SketchExecutor::execute(
       ++stats_.standaloneDispatches;   // a real per-stage render() dispatch
 
       captureWriteTaps(inst.h, entry, instKey, instances,
-                       railsById, railTextures, railFloats, railScalars, railBuffers,
+                       railsById, railTextures, railFloats, railScalars, railBuffers, railVecs,
                        &modScalars);
 
       if (partial) {
@@ -2463,6 +2475,7 @@ void SketchExecutor::applyReadTaps(
       std::unordered_map<std::string, float>>& railScalars,
     const std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railBuffers,
+    const std::unordered_map<std::string, std::vector<float>>& railVecs,
     const json& sketchInstances,
     const std::string& instanceKey,
     std::unordered_map<std::string, float>* outModulatedScalars) {
@@ -2528,6 +2541,19 @@ void SketchExecutor::applyReadTaps(
         inst.setFieldConnected(fieldPath, true, false);
         // Hand the smoothing pass this field's post-modulation target.
         if (outModulatedScalars) (*outModulatedScalars)[fieldPath] = combined;
+      }
+      continue;
+    }
+
+    // Vec read: the producer's components land on the dest field whole. No
+    // fold — a vec has no per-component [min,max] modulation contract, so
+    // there is no magnitude mapping, no combine and no band. Multiple wires
+    // into one vec input are therefore last-write-wins rather than stacking.
+    if (dataType.is_object() && dataType.value("kind", std::string()) == "vec") {
+      auto vit = railVecs.find(railId);
+      if (vit != railVecs.end() && !vit->second.empty()) {
+        inst.setParamArray(fieldPath, vit->second);
+        inst.setFieldConnected(fieldPath, true, false);
       }
       continue;
     }
@@ -2878,6 +2904,7 @@ void SketchExecutor::captureWriteTaps(
       std::unordered_map<std::string, float>>& railScalars,
     std::unordered_map<std::string,
       std::unordered_map<std::string, int32_t>>& railBuffers,
+    std::unordered_map<std::string, std::vector<float>>& railVecs,
     const std::unordered_map<std::string, float>* modulatedScalars,
     int32_t aliasedTexOut) {
   const EffectRef inst{inst_handle};
@@ -2893,6 +2920,40 @@ void SketchExecutor::captureWriteTaps(
     // — the consumer above already read last frame's value; texture: defer a
     // retained copy to frame end). See delayedRailFloats_ doc.
     const bool delayed = tap.value("delayed", false);
+
+    // Vec write: capture the producer's published component array whole.
+    // Source order mirrors the float branch — the sketch's instance-state
+    // mirror first (authored values, host-restored state), then the producer's
+    // LIVE published array, which is the only source on a cached exec doc.
+    if (dataType.is_object() && dataType.value("kind", std::string()) == "vec") {
+      const int n = dataType.value("n", 4);
+      std::vector<float> comps;
+      if (sketchInstances.is_object() &&
+          sketchInstances.contains(producerInstanceKey)) {
+        const auto& st = sketchInstances[producerInstanceKey]
+                            .value("state", json::object());
+        if (st.is_object() && st.contains(fieldPath) && st[fieldPath].is_array()) {
+          for (const auto& c : st[fieldPath]) {
+            if ((int)comps.size() >= n) break;
+            if (c.is_number()) comps.push_back((float)c.get<double>());
+          }
+        }
+      }
+      if (comps.empty()) {
+        double buf[4] = {0, 0, 0, 0};
+        const int got = effrt_published_array(inst_handle, fieldPath.data(),
+                                              (int32_t)fieldPath.size(), buf,
+                                              n < 4 ? n : 4);
+        for (int i = 0; i < got; ++i) comps.push_back((float)buf[i]);
+      }
+      // An unseeded vec rail leaves the consumer's read tap skipped — the same
+      // dormant-wire contract float rails have.
+      if (!comps.empty()) {
+        railVecs[railId] = std::move(comps);
+        inst.setFieldConnected(fieldPath, false, true);
+      }
+      continue;
+    }
 
     if (dataType.is_string() && dataType.get<std::string>() == "float") {
       bool hasScalar = false;

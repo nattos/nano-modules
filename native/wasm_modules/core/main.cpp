@@ -178,6 +178,10 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_threshold)
 NANO_DECLARE_INSTANCE_EFFECT(mod_invert)
 
 NANO_DECLARE_INSTANCE_EFFECT(env_lfo)
+
+// A colour as a wire source — the first vec-rail PRODUCER in the tree (every
+// other vec/rgb field is an input). See color_const/main.cpp.
+NANO_DECLARE_INSTANCE_EFFECT(color_const)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
@@ -1028,6 +1032,19 @@ void nano_module_main() {
         nullptr,            // on_active
         env_lfo::seek,      // backward-seekable: recompute phase from absolute time
         &env_lfo::eval_visibility,  // static visibility evaluator (rate vs period)
+    });
+
+    // A colour you can wire. Exists because colours became wireable and nothing
+    // produced one — every other vec/rgb field in the tree is an input.
+    nano::registerEffect({
+        2,
+        "mod.source.color",
+        "Colour",
+        "A colour as a wire source: pick a swatch and route it into any colour parameter (a fill, a tint, a gradient stop). Both an input and an output, so it also passes another colour source through. Pure data module.",
+        "mod",
+        "color,colour,swatch,constant,source,modulation,palette",
+        "la-palette",
+        NANO_INSTANCE_LIFECYCLE(color_const),
     });
 
     nano::registerEffect({

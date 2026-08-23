@@ -1483,6 +1483,30 @@ export class WasmSketchExecutor {
         new DataView(this.memory.buffer).setFloat64(outPtr, num, true);
         return 1;
       },
+      // The VECTOR twin (mirror effrt_published_array): copies up to `cap`
+      // components of a published numeric array into out[], returning the count.
+      // Vec values publish as arrays, which published_scalar deliberately
+      // refuses, so this is what lets a colour flow out of a producer onto a
+      // rail. Non-numeric entries are skipped rather than aborting the read,
+      // matching the native runtime.
+      published_array: (h: number, fieldPtr: number, fieldLen: number,
+                        outPtr: number, cap: number): number => {
+        const i = this.resolve(h);
+        const ps = i?.host.pluginState;
+        if (!ps || typeof ps !== 'object' || cap <= 0) return 0;
+        const v = (ps as Record<string, unknown>)[this.readString(fieldPtr, fieldLen)];
+        if (!Array.isArray(v)) return 0;
+        const dv = new DataView(this.memory.buffer);
+        let n = 0;
+        for (const c of v) {
+          if (n >= cap) break;
+          const num = typeof c === 'number' ? c : typeof c === 'boolean' ? (c ? 1 : 0) : null;
+          if (num === null) continue;
+          dv.setFloat64(outPtr + n * 8, num, true);
+          n++;
+        }
+        return n;
+      },
       // Publish one scalar into an instance's live state ON THE EFFECT'S
       // BEHALF (mirror effrt_publish_scalar). Host-sourced outputs — the
       // barrel's macro knobs, control.artnet's DMX channels — are injected

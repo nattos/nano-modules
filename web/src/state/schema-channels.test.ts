@@ -65,6 +65,13 @@ describe('wireKindOfField', () => {
   it('reports a polymorphic field as unresolved rather than guessing', () => {
     expect(wireKindOfField({ c: { type: 'any', io: 9 } }, 'c')).toBe('any');
   });
+
+  it('classifies vectors and colours as one vec class', () => {
+    // Widths collapse here; the executor's rail records the component count.
+    expect(wireKindOfField({ c: { type: 'float3', io: 2 } }, 'c')).toBe('vec');
+    expect(wireKindOfField({ c: { type: 'float2', io: 2 } }, 'c')).toBe('vec');
+    expect(wireKindOfField({ c: { type: 'float4', io: 2 } }, 'c')).toBe('vec');
+  });
 });
 
 /**
@@ -102,6 +109,26 @@ describe('passthroughPorts', () => {
 
   it('routes a texture wire through the texture ports', () => {
     expect(passthroughPorts(filter, 'texture')).toEqual({ input: 'tex_in', output: 'tex_out' });
+  });
+
+  it('routes a vec wire through the vec ports', () => {
+    const relay = { color: { type: 'float3', io: 7, order: 0 } };   // in|out|primary
+    expect(passthroughPorts(relay, 'vec')).toEqual({ input: 'color', output: 'color' });
+  });
+
+  it('splices any wire through a polymorphic node', () => {
+    // `any` ports carry whatever they are handed, so they match every concrete
+    // class — that is what lets one Switch sit on a float wire or a texture one.
+    const poly = {
+      select: { type: 'float', io: 5, magnitude: 'unsigned', order: 0 },
+      case_1: { type: 'any', io: 9, order: 1 },
+      output: { type: 'any', io: 6, order: 2 },
+    };
+    expect(passthroughPorts(poly, 'texture')).toEqual({ input: 'case_1', output: 'output' });
+    expect(passthroughPorts(poly, 'vec')).toEqual({ input: 'case_1', output: 'output' });
+    // ...but an UNRESOLVED wire has no class to match, so there is nothing to
+    // splice it through.
+    expect(passthroughPorts(poly, 'any')).toBeNull();
   });
 
   it('refuses a module that cannot carry the wire in BOTH directions', () => {

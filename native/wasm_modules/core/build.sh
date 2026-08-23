@@ -139,6 +139,7 @@ wasm_build \
   ../mod_threshold/main.cpp \
   ../mod_invert/main.cpp \
   ../env_lfo/main.cpp \
+  ../color_const/main.cpp \
   ../env_adsr/main.cpp \
   ../trigger_beat/main.cpp \
   ../trigger_out/main.cpp

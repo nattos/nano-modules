@@ -97,6 +97,14 @@ int32_t w_published_scalar(wasm_exec_env_t env, int32_t h, int32_t f, int32_t fl
   return has;
 }
 
+int32_t w_published_array(wasm_exec_env_t env, int32_t h, int32_t f, int32_t fl,
+                          int32_t outOff, int32_t cap) {
+  char* field = appBuf(env, f, fl);
+  char* out = appBuf(env, outOff, cap * (int32_t)sizeof(double));
+  if (!field || !out) return 0;
+  return effrt_published_array(h, field, fl, reinterpret_cast<double*>(out), cap);
+}
+
 int32_t w_read_triggers(wasm_exec_env_t env, int32_t h, int32_t outOff, int32_t cap) {
   char* out = appBuf(env, outOff, cap * 5 * (int32_t)sizeof(double));
   return out ? effrt_read_triggers(h, reinterpret_cast<double*>(out), cap) : -1;
@@ -142,6 +150,7 @@ NativeSymbol g_effrt_symbols[] = {
     {"set_field_connected", reinterpret_cast<void*>(w_set_field_connected), "(iiiii)", nullptr},
     {"set_will_render", reinterpret_cast<void*>(w_set_will_render), "(ii)", nullptr},
     {"published_scalar", reinterpret_cast<void*>(w_published_scalar), "(iiii)i", nullptr},
+    {"published_array", reinterpret_cast<void*>(w_published_array), "(iiiii)i", nullptr},
     {"read_triggers", reinterpret_cast<void*>(w_read_triggers), "(iii)i", nullptr},
     {"tick", reinterpret_cast<void*>(w_tick), "(iF)", nullptr},
     {"render", reinterpret_cast<void*>(w_render), "(iii)", nullptr},

@@ -303,6 +303,22 @@ bool EffectInstance::publishedScalar(const char* field, int len, double* out) co
   if (v.is_number())  { *out = v.get<double>(); return true; }
   return false;  // non-scalar (object/array/string/null)
 }
+int EffectInstance::publishedArray(const char* field, int len, double* out,
+                                   int cap) const {
+  if (!out || cap <= 0) return 0;
+  auto it = published_.find(std::string(field, (size_t)len));
+  if (it == published_.end() || !it->second.is_array()) return 0;
+  int n = 0;
+  for (const auto& c : it->second) {
+    if (n >= cap) break;
+    // Skip non-numeric entries rather than aborting: a partially-malformed
+    // publish should degrade to the components it did get right, matching how
+    // publishedScalar treats a wrong-typed field as "nothing published".
+    if (c.is_number())       out[n++] = c.get<double>();
+    else if (c.is_boolean()) out[n++] = c.get<bool>() ? 1.0 : 0.0;
+  }
+  return n;
+}
 int readTriggersFromRing(const nlohmann::json& ring, double* out, int cap) {
   if (!ring.is_array() || !out || cap <= 0) return 0;
   int n = 0;

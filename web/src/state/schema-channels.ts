@@ -27,7 +27,7 @@ type Schema = Record<string, any> | undefined;
  * actually be: the executor resolves it to one of the others at lowering time,
  * and {@link resolveWireKind} is the editor's twin of that walk.
  */
-export type WireKind = 'float' | 'texture' | 'struct' | 'any' | null;
+export type WireKind = 'float' | 'texture' | 'struct' | 'vec' | 'any' | null;
 
 /**
  * The data class of one endpoint's field. The reserved card controls
@@ -45,6 +45,10 @@ export function wireKindOfField(schema: Schema, field: string): WireKind {
   if (t === 'float') return 'float';
   if (t === 'texture') return 'texture';
   if (t === 'object' || t === 'array') return 'struct';
+  // Vectors and colours. All four widths share one class here; the executor's
+  // rail records the component count, and connect-time compatibility is the
+  // caller's business (a float3 into a float4 is not a wire).
+  if (t === 'float2' || t === 'float3' || t === 'float4') return 'vec';
   if (t === 'any') return 'any';
   return null;
 }
@@ -177,6 +181,10 @@ export function passthroughPorts(schema: Schema, kind: WireKind):
     output = firstFieldOfType(schema, 'texture', IO_OUTPUT);
     if (!output) return null;
     input = firstFieldOfType(schema, 'texture', IO_INPUT) || 'tex_in';
+  } else if (kind === 'vec') {
+    const VEC = ['float2', 'float3', 'float4'];
+    input = firstFieldOfType(schema, VEC, IO_INPUT);
+    output = firstFieldOfType(schema, VEC, IO_OUTPUT);
   } else {   // struct
     input = firstFieldOfType(schema, ['object', 'array'], IO_INPUT);
     output = firstFieldOfType(schema, ['object', 'array'], IO_OUTPUT);

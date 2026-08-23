@@ -1229,6 +1229,18 @@ if(APPLE)
     target_compile_options(test_any_ports PRIVATE -Wno-attributes)
     catch_discover_tests(test_any_ports)
 
+    # Vec (colour) rails: a float3 crossing a wire, asserted on pixels since a
+    # vec rail carries no modulation band to read.
+    add_executable(test_vec_rail tests/test_vec_rail.cpp)
+    target_link_libraries(test_vec_rail PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_vec_rail PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_vec_rail PRIVATE -Wno-attributes)
+    catch_discover_tests(test_vec_rail)
+
     # Clean-frame exec-doc cache goldens (wire liveness, injected scalars,
     # enable toggles, structural rebuilds).
     add_executable(test_exec_doc_cache tests/test_exec_doc_cache.cpp)

@@ -72,6 +72,18 @@ EFFRT_IMPORT("published_scalar")
 int32_t effrt_published_scalar(int32_t inst, const char* field, int32_t field_len,
                                double* out);
 
+// The VECTOR twin of published_scalar: copies up to `cap` components of a
+// published numeric ARRAY into out[], returning the count written (0 when the
+// field is absent, not an array, or empty). Same string-free per-frame contract.
+//
+// Vec rails need this because a vec value is published as a JSON array, and
+// published_scalar deliberately refuses non-scalars. `set_param_array` — the
+// write half — already existed; this is what lets a vec value flow BACK out of
+// a producer and onto a rail.
+EFFRT_IMPORT("published_array")
+int32_t effrt_published_array(int32_t inst, const char* field, int32_t field_len,
+                              double* out, int32_t cap);
+
 // Publish ONE scalar into the instance's published state ON THE EFFECT'S
 // BEHALF — the same map state::setVal writes from inside an effect, and what
 // the IDE's output-trace charts read. For host-sourced OUTPUT values that
