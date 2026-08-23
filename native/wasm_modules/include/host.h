@@ -714,6 +714,33 @@ public:
     return *this;
   }
 
+  /// Mark the field JUST declared as RAW (chained modifier — call it
+  /// immediately after a *Field, like label()). Reopens the closing brace,
+  /// injects `"raw":true`, re-closes.
+  ///
+  /// Raw declares that this input's `[min,max]` is a UI affordance, NOT a
+  /// modulation-range contract: a wire hands over the value it produced instead
+  /// of folding it into the declared range. Use it wherever the number means
+  /// something literal — a quantize step size, a count, a threshold compared
+  /// against another signal — and mapping 0..1 across the range would invent a
+  /// scaling nobody asked for.
+  ///
+  /// Scope is deliberately narrow: raw suppresses the MAGNITUDE fold only
+  /// (applyMagnitude + the dest-range mapping). The wire's own shaping stages —
+  /// envelope, remap, scale, delay — and the `combine` mode still apply, because
+  /// those are properties of the WIRE the user tuned, not of this field. A raw
+  /// input with no authored value and one wire therefore receives the upstream
+  /// value verbatim (tap_mod.h's combineTap passes through when there is no
+  /// existing value to fold against), which is the case that matters.
+  ///
+  /// The editor reads this too: the wire inspector drops its Magnitude row for a
+  /// raw destination, since the control would no longer do anything.
+  Schema& raw() {
+    if (len_ > 0 && buf_[len_ - 1] == '}') len_--;   // reopen the just-closed field
+    appendRaw(",\"raw\":true}");
+    return *this;
+  }
+
   /// Begin a parameter GROUP (a first-class section — a natural home for
   /// section-level metadata). STICKY: every field declared afterward is tagged
   /// with this group `id` until the next group() (or group("")/endGroup() to

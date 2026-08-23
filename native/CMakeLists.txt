@@ -1193,6 +1193,19 @@ if(APPLE)
     target_compile_options(test_external_scalars PRIVATE -Wno-attributes)
     catch_discover_tests(test_external_scalars)
 
+    # The `raw` input contract: a raw dest skips the wire's magnitude fold.
+    # Needs testonly for debug.raw_probe and core for solid_color + the LFO.
+    add_executable(test_raw_input tests/test_raw_input.cpp)
+    target_link_libraries(test_raw_input PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_raw_input PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+      TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    target_compile_options(test_raw_input PRIVATE -Wno-attributes)
+    catch_discover_tests(test_raw_input)
+
     # Clean-frame exec-doc cache goldens (wire liveness, injected scalars,
     # enable toggles, structural rebuilds).
     add_executable(test_exec_doc_cache tests/test_exec_doc_cache.cpp)

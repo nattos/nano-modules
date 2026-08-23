@@ -3432,9 +3432,24 @@ export class ColumnGroup extends MobxLitElement {
     // the executor, which runs the tap-mod math only on the scalar path. A
     // scalar field is a single number/bool; vectors/textures/structs carry only
     // the connection.
-    const schemaType = (plugin?.schema?.[fieldPath] as { type?: string } | undefined)?.type;
-    const isScalar = schemaType === 'float' || schemaType === 'int' || schemaType === 'bool'
-      || fieldDef?.type === 'slider' || fieldDef?.type === 'number';
+    //
+    // Both gates read the wire's DEST field, because that is where the fold the
+    // inspector configures actually happens — not necessarily this card's field.
+    // The two coincide when you open the panel from the receiving end and
+    // diverge when you open it from the SOURCE, which is why this used to be
+    // wrong: a raw (or non-scalar) destination still offered Magnitude when
+    // viewed from the producer's card.
+    const localDef = (plugin?.schema?.[fieldPath] ?? RESERVED_FIELD_DEFS[fieldPath]) as
+        { type?: string; raw?: boolean } | undefined;
+    const destDefFor = (w: Wire): { type?: string; raw?: boolean } | undefined => {
+      if (w.dest.instanceKey === myKey && w.dest.field === fieldPath) return localDef;
+      const destEntry = (sketch ? sketchChain(sketch) : []).find(
+        e => e.type === 'module' && e.instance_key === w.dest.instanceKey) as ModuleEntry | undefined;
+      if (!destEntry) return undefined;
+      return (this.ds.getPlugin(destEntry.module_type, destEntry.instance_key)
+                ?.schema?.[w.dest.field] ?? RESERVED_FIELD_DEFS[w.dest.field]) as
+          { type?: string; raw?: boolean } | undefined;
+    };
     const wiresSection = html`
       <div class="section-header" style="margin-top:8px">Wires</div>
       ${wires.length === 0
@@ -3442,6 +3457,13 @@ export class ColumnGroup extends MobxLitElement {
         : wires.map(w => {
             const isSrc = w.src.instanceKey === myKey && w.src.field === fieldPath;
             const other = isSrc ? w.dest : w.src;
+            // The legacy params path (no schema) only ever describes THIS card's
+            // field, so its slider/number fallback applies only when this card
+            // is the destination.
+            const destDef = destDefFor(w);
+            const destScalar = destDef?.type === 'float' || destDef?.type === 'int'
+              || destDef?.type === 'bool'
+              || (!isSrc && (fieldDef?.type === 'slider' || fieldDef?.type === 'number'));
             // MIDI sources live outside the chain (`midi:<uuid>` + endpoint):
             // show `midi:<endpoint> [device name]` instead of the raw uuid key.
             let otherLabel: string;
@@ -3470,7 +3492,7 @@ export class ColumnGroup extends MobxLitElement {
                   title="Remove wire"
                   @click=${() => this.ctl.removeWire(sId, w.id)}>×</button>
               </div>
-              ${isScalar ? this.renderWireModInspector(w) : nothing}
+              ${destScalar ? this.renderWireModInspector(w, !!destDef?.raw) : nothing}
             `;
           })}
     `;
@@ -3488,7 +3510,7 @@ export class ColumnGroup extends MobxLitElement {
    * edits route through the ColumnController seam (the arrangement supplies
    * a different adapter).
    */
-  private renderWireModInspector(wire: Wire) {
+  private renderWireModInspector(wire: Wire, rawDest = false) {
     const sId = this.sketchId, wireId = wire.id;
     const binding = wireModBinding(`wire/${sId}/${wireId}`, {
       getWire: () => this.ds.getSketch(sId)?.wires?.find(w => w.id === wireId),
@@ -3496,7 +3518,7 @@ export class ColumnGroup extends MobxLitElement {
       beginUpdateWire: (patch) => this.ctl.beginUpdateWire(sId, wireId, patch),
       updateUpdateWire: (edit, patch) => this.ctl.updateUpdateWire(edit, sId, wireId, patch),
     });
-    return renderWireModInspector(wire, binding);
+    return renderWireModInspector(wire, binding, rawDest);
   }
 
   /**

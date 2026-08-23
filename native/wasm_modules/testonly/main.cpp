@@ -104,6 +104,9 @@ namespace streams_probe { int32_t is_identity(void* self); }
 
 NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 
+// `raw` input contract probe: two identical [-1,1] inputs, one raw, one not.
+NANO_DECLARE_INSTANCE_EFFECT(raw_probe)
+
 extern "C" {
 
 NANO_EXPORT_ABI_VERSION()
@@ -502,6 +505,19 @@ void nano_module_main() {
         "la-stream",
         NANO_INSTANCE_LIFECYCLE(streams_probe),
         &streams_probe::is_identity,
+    });
+
+    // `raw` input contract probe — two identical [-1,1] inputs, one marked raw,
+    // so a wire's magnitude fold is observable by its absence.
+    nano::registerEffect({
+        2,
+        "debug.raw_probe",
+        "Raw Probe",
+        "Two identical [-1,1] inputs, one raw — pins the raw contract (test only)",
+        "debug",
+        "test,raw,wire,magnitude",
+        "la-vial",
+        NANO_INSTANCE_LIFECYCLE(raw_probe),
     });
 
     // Registered LAST: trap_test's module_init deliberately traps. A trapped

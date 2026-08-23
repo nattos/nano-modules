@@ -94,7 +94,8 @@ export function wireModBinding(bindingKey: string, ops: WireModOps): FieldBindin
  * Built from the shared field editors via a FieldBinding (so long edits +
  * styling come for free) — the scalar twin of the old per-tap mod inspector.
  */
-export function renderWireModInspector(wire: Wire, binding: FieldBinding): TemplateResult {
+export function renderWireModInspector(
+    wire: Wire, binding: FieldBinding, rawDest = false): TemplateResult {
   const remap = wire.mod?.remap;
   const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
   const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
@@ -113,8 +114,15 @@ export function renderWireModInspector(wire: Wire, binding: FieldBinding): Templ
   // generic blocks (both driven by the one shared wire binding).
   const envEnabled = !!(wire.mod?.envelope && wire.mod.envelope.length >= 6);
 
+  // A `raw` destination (schema "raw":true — host.h's Schema::raw()) declares
+  // that its [min,max] is a UI affordance rather than a modulation contract, so
+  // the executor skips the magnitude fold for it entirely. The control would sit
+  // there doing nothing, so drop the row. Only Magnitude goes: the wire's own
+  // shaping stages and combine still apply to a raw dest, matching the
+  // executor's lowering (sketch_executor.cpp's destIsRaw).
   const headFields: InspectorFieldDef[] = [
-    { type: 'select', label: 'Magnitude', path: 'magnitude', options: magOpts, default: 'auto' },
+    ...(rawDest ? [] : [{ type: 'select', label: 'Magnitude', path: 'magnitude',
+                         options: magOpts, default: 'auto' } as InspectorFieldDef]),
     { type: 'boolean', label: 'Envelope', path: 'envelopeEnabled', default: false },
   ];
 

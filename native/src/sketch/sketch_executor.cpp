@@ -1008,6 +1008,20 @@ int32_t SketchExecutor::execute(
         }
         return std::string();   // input unwired → unknown (defaults unsigned)
       };
+      // Is a wire's DESTINATION field declared `raw` (schema "raw":true, from
+      // host.h's Schema::raw())? A raw input's [min,max] is a UI affordance, not
+      // a modulation-range contract, so the magnitude fold is skipped and the
+      // wire's shaped value reaches the field as-is. Same effect as the wire's
+      // own `absolute` mode, but declared by the FIELD rather than chosen per
+      // wire — which is why it's resolved here, once, for both rail kinds below.
+      auto destIsRaw = [&](size_t chainIdx, const std::string& field) -> bool {
+        const RegisteredModule* r =
+            findSchema(chain[chainIdx].value("module_type", std::string()));
+        if (!r || !r->schemaFields.is_object()) return false;
+        auto fit = r->schemaFields.find(field);
+        return fit != r->schemaFields.end() && fit->is_object() &&
+               fit->value("raw", false);
+      };
       for (const auto& w : effWires) {
         if (!w.is_object()) continue;
         const json src = w.value("src", json::object());
@@ -1038,7 +1052,7 @@ int32_t SketchExecutor::execute(
           rtap["srcMin"] = 0.0;
           rtap["srcMax"] = 1.0;
           std::string mag = w.value("magnitude", std::string("auto"));
-          if (mag != "absolute") {
+          if (!destIsRaw(di->second, dstField) && mag != "absolute") {
             if (mag == "auto") {
               mag = "unsigned";
             } else if (mag == "signed") {
@@ -1115,9 +1129,11 @@ int32_t SketchExecutor::execute(
         // Magnitude mapping (scalar wires only). The web's resolveScalarWire
         // default is `auto`: map the shaped value into the DEST field's
         // [min,max] per the source field's signed/unsigned declaration. Only
-        // `absolute` falls back to the plain combineTap fold. Resolve it here
-        // (registry available) and stash the concrete params on the read tap;
-        // applyReadTaps replays applyMagnitude with them. Texture wires skip it.
+        // `absolute` falls back to the plain combineTap fold — and so does a
+        // `raw` DEST, which declares the same opt-out at the field instead of
+        // per wire. Resolve it here (registry available) and stash the concrete
+        // params on the read tap; applyReadTaps replays applyMagnitude with
+        // them. Texture wires skip it.
         if (ftype == "float") {
           // Source output's declared value range — the sweep range the editor's
           // modulation band samples (Phase: modulationData). srcDef is the
@@ -1125,7 +1141,7 @@ int32_t SketchExecutor::execute(
           rtap["srcMin"] = srcDef.is_object() ? srcDef.value("min", 0.0) : 0.0;
           rtap["srcMax"] = srcDef.is_object() ? srcDef.value("max", 1.0) : 1.0;
           std::string mag = w.value("magnitude", std::string("auto"));
-          if (mag != "absolute") {
+          if (!destIsRaw(di->second, dstField) && mag != "absolute") {
             // Source output field's effective polarity ("" when none). Follows a
             // shaper output's `magnitude:"inherit"` back to the source that drives
             // its input, so a polarity propagates down a chain of shapers.

@@ -128,6 +128,14 @@ export class DeviceWiresPanel extends MobxLitElement {
     return `${moduleName}.${fieldName}`;
   }
 
+  /** Is the wire's dest field declared `raw`? Raw inputs opt out of the
+   *  magnitude fold (see host.h's Schema::raw()), so the inspector drops that
+   *  row. Same schema lookup destLabel uses. */
+  private destIsRaw(row: DeviceWireRow): boolean {
+    return !!appState.local.plugins.find(p => p.id === row.dest.module_type)
+        ?.schema?.[row.wire.dest.field]?.raw;
+  }
+
   /** Open the dest instance (if not already being edited), select the dest
    *  field (surfaces its floating card), scroll to it and flash it. */
   private locate(sketchId: string, row: DeviceWireRow) {
@@ -181,7 +189,8 @@ export class DeviceWiresPanel extends MobxLitElement {
               @click=${() => appController.removeWire(g.sketchId, row.wire.id)}>×</button>
           </div>
           ${renderWireModInspector(row.wire,
-            wireModBinding(`devwire/${g.sketchId}/${row.wire.id}`, this.wireOps(g.sketchId, row.wire.id)))}
+            wireModBinding(`devwire/${g.sketchId}/${row.wire.id}`, this.wireOps(g.sketchId, row.wire.id)),
+            this.destIsRaw(row))}
         `)}
       `)}
     `;
