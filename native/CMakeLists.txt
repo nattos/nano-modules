@@ -1206,6 +1206,29 @@ if(APPLE)
     target_compile_options(test_raw_input PRIVATE -Wno-attributes)
     catch_discover_tests(test_raw_input)
 
+    # `any` port resolution, replaying the SAME fixture as the TS twin
+    # (schema-channels.test.ts). Pure logic — no GPU, no bundles.
+    add_executable(test_wire_types tests/test_wire_types.cpp)
+    target_link_libraries(test_wire_types PRIVATE
+      json_utils Catch2::Catch2WithMain)
+    target_include_directories(test_wire_types PRIVATE src)
+    target_compile_definitions(test_wire_types PRIVATE
+      WIRE_TYPE_FIXTURE="${CMAKE_SOURCE_DIR}/../web/test/fixtures/wire-type-cases.json")
+    catch_discover_tests(test_wire_types)
+
+    # `any` ports END TO END: the resolver is actually wired into rail lowering,
+    # and the rail it picks carries the data. Needs testonly (debug.any_probe).
+    add_executable(test_any_ports tests/test_any_ports.cpp)
+    target_link_libraries(test_any_ports PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_any_ports PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
+      TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
+    target_compile_options(test_any_ports PRIVATE -Wno-attributes)
+    catch_discover_tests(test_any_ports)
+
     # Clean-frame exec-doc cache goldens (wire liveness, injected scalars,
     # enable toggles, structural rebuilds).
     add_executable(test_exec_doc_cache tests/test_exec_doc_cache.cpp)

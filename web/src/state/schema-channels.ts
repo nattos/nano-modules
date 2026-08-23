@@ -20,14 +20,24 @@ export const IO_PRIMARY = 4;
 
 type Schema = Record<string, any> | undefined;
 
-/** The data class a wire carries, derived from its PRODUCER field's schema. */
-export type WireKind = 'float' | 'texture' | 'struct' | null;
+/**
+ * The data class a wire carries, derived from its PRODUCER field's schema.
+ *
+ * `'any'` is the UNRESOLVED state of a polymorphic port, not a class a rail can
+ * actually be: the executor resolves it to one of the others at lowering time,
+ * and {@link resolveWireKind} is the editor's twin of that walk.
+ */
+export type WireKind = 'float' | 'texture' | 'struct' | 'any' | null;
 
 /**
  * The data class of one endpoint's field. The reserved card controls
  * (`__opacity__` / `__enable__`) aren't in any module's schema but are ordinary
  * float destinations — without the fallback, healing a wire onto a card's
  * opacity would look like a type mismatch.
+ *
+ * Returns `'any'` for a POLYMORPHIC field, whose real class depends on what is
+ * wired to it and so cannot be answered from a schema alone. Callers that need
+ * the resolved answer use {@link resolveWireKind}, which walks the graph.
  */
 export function wireKindOfField(schema: Schema, field: string): WireKind {
   const d = schema?.[field] ?? RESERVED_FIELD_DEFS[field];
@@ -35,7 +45,67 @@ export function wireKindOfField(schema: Schema, field: string): WireKind {
   if (t === 'float') return 'float';
   if (t === 'texture') return 'texture';
   if (t === 'object' || t === 'array') return 'struct';
+  if (t === 'any') return 'any';
   return null;
+}
+
+/** One endpoint of a wire, as both the document and this module address it. */
+export interface WireEndpoint { instanceKey: string; field: string }
+/** The subset of a wire this resolver reads. */
+export interface WireEdge { src: WireEndpoint; dest: WireEndpoint }
+
+/**
+ * The CONCRETE data class behind a producer output, following `any` fields back
+ * through the wire graph.
+ *
+ * LOCK-STEP port of `resolveWireDef` in native/src/sketch/sketch_executor.cpp's
+ * wire lowering — the executor decides what rail a wire actually becomes, and if
+ * this disagrees the editor shows a connection the engine dropped (or refuses
+ * one it would have made). Keep the two rules identical.
+ *
+ * The tie-break, when a node's `any` inputs are wired to different types: the
+ * LOWEST-numbered wired input decides ("case 1 picks the type"), ordered by the
+ * schema's `order` key. Deliberately not a type-ordering table — a shared
+ * ordering would be a second thing to keep in lock-step across the two
+ * languages, which is exactly the shape of bug that has bitten here before.
+ *
+ * Returns null when unresolvable: nothing wired behind the `any` yet, or a
+ * cycle. The executor drops such a wire, so the editor treats it as untyped.
+ *
+ * @param schemaOf  module schema by INSTANCE key (callers hold the chain).
+ * @param wires     every wire in the sketch.
+ */
+export function resolveWireKind(
+  schemaOf: (instanceKey: string) => Schema,
+  wires: readonly WireEdge[],
+  instanceKey: string,
+  field: string,
+  depth = 0,
+): WireKind {
+  if (depth > 16) return null;
+  // A device control (`midi:<uuid>`) has no chain entry; those rails are always
+  // float, matching the executor's external-rail branch.
+  if (instanceKey.startsWith('midi:')) return 'float';
+  const schema = schemaOf(instanceKey);
+  const kind = wireKindOfField(schema, field);
+  if (kind !== 'any') return kind;                    // concrete — done
+  // An `any` OUTPUT takes its class from this node's own `any` INPUTS, in
+  // declaration order, first RESOLVED one wins.
+  const ins = Object.entries(schema ?? {})
+    .filter(([, d]) => d && typeof d === 'object'
+      && (d as any).type === 'any' && (((d as any).io ?? 0) & IO_INPUT) !== 0)
+    .sort(([an, ad], [bn, bd]) => {
+      const ao = (ad as any).order ?? 1e6, bo = (bd as any).order ?? 1e6;
+      return ao !== bo ? ao - bo : an.localeCompare(bn);
+    });
+  for (const [name] of ins) {
+    for (const w of wires) {
+      if (w.dest.instanceKey !== instanceKey || w.dest.field !== name) continue;
+      const sub = resolveWireKind(schemaOf, wires, w.src.instanceKey, w.src.field, depth + 1);
+      if (sub) return sub;
+    }
+  }
+  return null;                                        // no input wired → unknown
 }
 
 /**
@@ -82,6 +152,17 @@ function firstFieldOfType(schema: Schema, type: string | string[], ioBit: number
 export function passthroughPorts(schema: Schema, kind: WireKind):
     { input: string; output: string } | null {
   if (!schema || !kind) return null;
+  // An UNRESOLVED wire has no class to match ports against, so there is nothing
+  // to splice it through. (A wire is only 'any' when nothing concrete is wired
+  // behind it — the executor drops those too.)
+  if (kind === 'any') return null;
+  // A POLYMORPHIC node carries whatever it is handed, so its `any` ports match
+  // every concrete kind. Checked first: a node declaring both (say `any` cases
+  // plus a float selector) should splice through the port that can actually
+  // carry the wire, not the one that merely shares its type.
+  const anyIn = firstFieldOfType(schema, 'any', IO_INPUT);
+  const anyOut = firstFieldOfType(schema, 'any', IO_OUTPUT);
+  if (anyIn && anyOut) return { input: anyIn, output: anyOut };
   let input = '';
   let output = '';
   if (kind === 'float') {
@@ -96,7 +177,7 @@ export function passthroughPorts(schema: Schema, kind: WireKind):
     output = firstFieldOfType(schema, 'texture', IO_OUTPUT);
     if (!output) return null;
     input = firstFieldOfType(schema, 'texture', IO_INPUT) || 'tex_in';
-  } else {
+  } else {   // struct
     input = firstFieldOfType(schema, ['object', 'array'], IO_INPUT);
     output = firstFieldOfType(schema, ['object', 'array'], IO_OUTPUT);
   }

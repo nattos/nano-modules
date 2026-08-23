@@ -107,6 +107,9 @@ NANO_DECLARE_INSTANCE_EFFECT(motion_blur)
 // `raw` input contract probe: two identical [-1,1] inputs, one raw, one not.
 NANO_DECLARE_INSTANCE_EFFECT(raw_probe)
 
+// Polymorphic (`any`) port probe: reports which rail kind it was handed.
+NANO_DECLARE_INSTANCE_EFFECT(any_probe)
+
 extern "C" {
 
 NANO_EXPORT_ABI_VERSION()
@@ -518,6 +521,19 @@ void nano_module_main() {
         "test,raw,wire,magnitude",
         "la-vial",
         NANO_INSTANCE_LIFECYCLE(raw_probe),
+    });
+
+    // Polymorphic port probe — `any` inputs that report the rail kind the
+    // executor's lowering actually resolved them to.
+    nano::registerEffect({
+        2,
+        "debug.any_probe",
+        "Any Probe",
+        "Polymorphic `any` ports that report which rail kind arrived (test only)",
+        "debug",
+        "test,any,wire,polymorphic",
+        "la-vial",
+        NANO_INSTANCE_LIFECYCLE(any_probe),
     });
 
     // Registered LAST: trap_test's module_init deliberately traps. A trapped

@@ -524,6 +524,34 @@ public:
     return *this;
   }
 
+  /// POLYMORPHIC leaf: a port whose data class is decided per INSTANCE, by
+  /// whatever is wired to it, rather than by this schema.
+  ///
+  /// A schema is published once per module TYPE (module_init takes no `self`),
+  /// so a node whose case type varies from card to card cannot state that type
+  /// here. `any` says "resolve me from the wire graph": the executor's lowering
+  /// walks back from the producer to the first CONCRETE type and builds a rail
+  /// of that kind (resolveWireType in sketch_executor.cpp). Everything
+  /// downstream sees an ordinary float / texture / vec / struct rail — the
+  /// polymorphism ends at lowering and never reaches the per-frame path.
+  ///
+  /// An `any` field has no declared range, so it is `raw` by construction (see
+  /// raw()) — there is nothing for a magnitude fold to map into. It also has no
+  /// authored value or editor widget: it carries a CONNECTION, not a value.
+  ///
+  /// Chains resolve transitively (`any` → `any` → concrete), depth-guarded. When
+  /// several `any` inputs on one node disagree, the LOWEST-numbered wired one
+  /// decides — see the tie-break note in sketch_executor.cpp, and keep it in
+  /// lock-step with web/src/state/schema-channels.ts.
+  Schema& anyField(const char* name, int io) {
+    beginField(name);
+    appendRaw("\"type\":\"any\",\"raw\":true,\"io\":");
+    appendInt(io);
+    appendOrder();
+    appendRaw("}");
+    return *this;
+  }
+
   Schema& textureField(const char* name, int io) {
     beginField(name);
     appendRaw("\"type\":\"texture\",\"io\":");

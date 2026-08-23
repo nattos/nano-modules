@@ -31,7 +31,7 @@ import { hiddenFieldsFor } from './field-visibility';
 import './math-nodes';
 import './artnet-node';
 import { computeExecOrder } from './exec-order';
-import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, wireKindOfField, type WireKind } from './schema-channels';
+import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, resolveWireKind, wireKindOfField, type WireKind } from './schema-channels';
 import { midiController } from './midi-controller';
 // Relocated to sketch-types (decouples <column-group> from this module); re-exported here for back-compat.
 export { DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE } from '../sketch-types';
@@ -334,6 +334,10 @@ export class AppController {
     }
     for (const [name, field] of Object.entries(schema)) {
       if (field?.type === 'texture') continue;            // wiring, not state
+      // Same reason: an `any` port carries a CONNECTION, not a value. It has no
+      // declared type and so no meaningful default to seed, and the editor
+      // renders it as a port rather than a widget.
+      if (field?.type === 'any') continue;
       if (field?.type === 'help') continue;               // UI-only doc (see helpFieldNames)
       if (outputs.has(name)) continue;                    // live output, not state
       if (field?.default !== undefined) state[name] = field.default;
@@ -627,10 +631,31 @@ export class AppController {
     return appState.local.plugins.find(p => p.id === moduleType)?.schema as any;
   }
 
-  /** What a wire carries, from its PRODUCER field's declared type. */
+  /**
+   * Schema lookup by INSTANCE key — what {@link resolveWireKind} needs to walk
+   * a sketch's wire graph.
+   */
+  private schemaByInstance(sketch: Sketch): (instanceKey: string) => Record<string, any> | undefined {
+    const byKey = new Map<string, string>();
+    for (const e of sketchChain(sketch)) {
+      if (e.type === 'module') byKey.set(e.instance_key, e.module_type);
+    }
+    return (k: string) => {
+      const mt = byKey.get(k);
+      return mt ? this.pluginSchema(mt) : undefined;
+    };
+  }
+
+  /**
+   * What a wire carries. Resolved through the graph, not read off the producer's
+   * schema alone: a polymorphic (`any`) producer only knows its class from
+   * whatever is wired behind it, and the executor resolves it the same way at
+   * lowering time. Null when nothing concrete is behind it — the executor drops
+   * such a wire, so the editor must not claim it has a type.
+   */
   private wireKind(sketch: Sketch, wire: Wire): WireKind {
-    const src = sketchChain(sketch).find(e => e.instance_key === wire.src.instanceKey);
-    return src ? wireKindOfField(this.pluginSchema(src.module_type), wire.src.field) : null;
+    return resolveWireKind(this.schemaByInstance(sketch), sketch.wires ?? [],
+                           wire.src.instanceKey, wire.src.field);
   }
 
   /**
@@ -747,8 +772,19 @@ export class AppController {
     for (const e of sketchChain(sk)) {
       if (e.type === 'module') typeByKey.set(e.instance_key, e.module_type);
     }
-    const kindOf = (ep: { instanceKey: string; field: string }): WireKind => {
-      // A device source is an external scalar rail with no chain entry.
+    const schemaOf = (k: string) => {
+      const mt = typeByKey.get(k);
+      return mt ? this.pluginSchema(mt) : undefined;
+    };
+    // PRODUCER side: resolved through the graph, because a polymorphic output's
+    // class comes from whatever is wired behind it, not from its own schema.
+    // Never returns 'any' — it either resolves or gives up.
+    const srcKindOf = (ep: { instanceKey: string; field: string },
+                      ws: readonly Wire[]): WireKind =>
+      resolveWireKind(schemaOf, ws, ep.instanceKey, ep.field);
+    // CONSUMER side: read from the schema. A device source is an external scalar
+    // rail with no chain entry.
+    const destKindOf = (ep: { instanceKey: string; field: string }): WireKind => {
       if (isMidiInstanceKey(ep.instanceKey)) return 'float';
       const moduleType = typeByKey.get(ep.instanceKey);
       return moduleType ? wireKindOfField(this.pluginSchema(moduleType), ep.field) : null;
@@ -764,8 +800,12 @@ export class AppController {
       const [out] = outgoing;
       // "Reasonably similar types" = the same data class on both open ends. A
       // float feeding a texture input can't be bridged, so those wires just go.
-      const srcKind = incoming.length === 1 && outgoing.length === 1 ? kindOf(inc.src) : null;
-      const heal = !!srcKind && srcKind === kindOf(out.dest);
+      // A POLYMORPHIC destination is the exception: it accepts every class, so
+      // it bridges to whatever the producer resolved to.
+      const srcKind = incoming.length === 1 && outgoing.length === 1
+          ? srcKindOf(inc.src, wires) : null;
+      const destKind = srcKind ? destKindOf(out.dest) : null;
+      const heal = !!srcKind && (destKind === srcKind || destKind === 'any');
       wires = wires.flatMap(w => {
         if (heal && w === inc) return [];
         if (heal && w === out) {
@@ -2999,7 +3039,11 @@ export class AppController {
           io.push({ index: io.length, name, kind: dir, role });
         } else if (field?.type === 'object' || field?.type === 'array'
                 || field?.type === 'float2' || field?.type === 'float3'
-                || field?.type === 'float4') {
+                || field?.type === 'float4'
+                // A polymorphic port is a connection, never a barrel param —
+                // classify it with the other structured io rather than letting
+                // it fall through and become a Standard float knob.
+                || field?.type === 'any') {
           if (ioFlags & 2) {
             const role = (ioFlags & 4) ? 0 : 1;
             io.push({ index: io.length, name, kind: 2, role });

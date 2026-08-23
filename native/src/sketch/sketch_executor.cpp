@@ -2,6 +2,7 @@
 
 #include "sketch/sketch_augment.h"
 #include "sketch/sketch_canvas.h"
+#include "sketch/wire_types.h"
 #include "sketch/tap_mod.h"
 #include "sketch/param_smoothing.h"
 #include "sketch/host_blend.h"
@@ -1008,6 +1009,34 @@ int32_t SketchExecutor::execute(
         }
         return std::string();   // input unwired → unknown (defaults unsigned)
       };
+      // Resolve the CONCRETE data type behind a producer output, following
+      // `any` fields back through the wire graph.
+      //
+      // An `any` field declares no type of its own (host.h's anyField): a schema
+      // is published once per module TYPE, so a polymorphic node can only say
+      // "whatever is wired to me". This walks back to the first concrete answer
+      // and hands the lowering an ordinary type string — which is why nothing
+      // downstream ever sees `any`. The polymorphism is resolved ONCE, here, on
+      // the structural (dirty-frame) path, and the cached exec doc carries the
+      // concrete result; the per-frame rail plumbing is untouched.
+      //
+      // TIE-BREAK: when a node's `any` inputs are wired to different types, the
+      // lowest-numbered wired one decides — "case 1 picks the type". Chosen over
+      // a type-ordering table deliberately: this rule also runs in
+      // web/src/state/schema-channels.ts, and a shared ordering table would be a
+      // second thing to keep in lock-step (the alphabetical-params bug was
+      // exactly that shape). One comparison per language, and it stays stable as
+      // new types are added.
+      //
+      // Schema-fields lookup by instance key, for the `any` resolver below.
+      auto schemaFieldsFor = [&](const std::string& key) -> const json* {
+        auto kit = byKey.find(key);
+        if (kit == byKey.end()) return nullptr;
+        const RegisteredModule* r =
+            findSchema(chain[kit->second].value("module_type", std::string()));
+        if (!r || !r->schemaFields.is_object()) return nullptr;
+        return &r->schemaFields;
+      };
       // Is a wire's DESTINATION field declared `raw` (schema "raw":true, from
       // host.h's Schema::raw())? A raw input's [min,max] is a UI affordance, not
       // a modulation-range contract, so the magnitude fold is skipped and the
@@ -1094,6 +1123,17 @@ int32_t SketchExecutor::execute(
             srcDef = *fit;
             ftype = fit->value("type", std::string());
           }
+        }
+        // A polymorphic producer resolves to a concrete def here, once, before
+        // anything else looks at it — so `railDataType` below is always an
+        // ordinary type and every downstream consumer is unchanged. The def
+        // (not just the type) is replaced too: the struct branch uses it as the
+        // rail's leaf schema, and the float branch reads its declared range for
+        // the modulation band. Unresolved (`any` with nothing wired behind it)
+        // leaves ftype empty and falls through to the drop below.
+        if (ftype == "any") {
+          srcDef = wire_types::resolveWireDef(schemaFieldsFor, effWires, srcKey, srcField);
+          ftype = srcDef.is_object() ? srcDef.value("type", std::string()) : std::string();
         }
         json railDataType;
         if (ftype == "float" || ftype == "texture") {

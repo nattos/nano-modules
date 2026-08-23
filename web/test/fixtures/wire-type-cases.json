@@ -1,0 +1,177 @@
+{
+  "_comment": [
+    "Shared goldens for resolving a wire's CONCRETE data class through `any`",
+    "(polymorphic) ports. Read by web/src/state/schema-channels.test.ts (vitest)",
+    "AND native/tests/test_wire_types.cpp (Catch2), so the one rule duplicated",
+    "across the TS/C++ boundary — resolveWireKind / wire_types::resolveWireDef —",
+    "can never drift. If they disagree, the editor draws a connection the engine",
+    "dropped, or refuses one it would have made.",
+    "",
+    "`schemas` maps a module type to its schema FIELDS object (io bits: 1=input,",
+    "2=output, 4=primary; `order` is declaration order). `chain` maps an instance",
+    "key to its module type. `query` is the producer endpoint being resolved, and",
+    "`expected` is the resolved class — null when unresolvable, which is the",
+    "executor's signal to drop the wire."
+  ],
+  "schemas": {
+    "src.float": {
+      "output": { "type": "float", "io": 6, "min": 0, "max": 1, "order": 0 }
+    },
+    "src.texture": {
+      "tex_in":  { "type": "texture", "io": 5, "order": 0 },
+      "tex_out": { "type": "texture", "io": 6, "order": 1 }
+    },
+    "src.struct": {
+      "particles_out": { "type": "object", "io": 6, "order": 0 }
+    },
+    "poly.switch": {
+      "select":  { "type": "float", "io": 5, "magnitude": "unsigned", "min": 0, "max": 1, "order": 0 },
+      "case_1":  { "type": "any", "raw": true, "io": 9, "order": 1 },
+      "case_2":  { "type": "any", "raw": true, "io": 9, "order": 2 },
+      "case_3":  { "type": "any", "raw": true, "io": 9, "order": 3 },
+      "output":  { "type": "any", "raw": true, "io": 6, "order": 4 }
+    },
+    "poly.reversed": {
+      "_comment": "declaration order deliberately disagrees with name order",
+      "zeta":   { "type": "any", "raw": true, "io": 9, "order": 1 },
+      "alpha":  { "type": "any", "raw": true, "io": 9, "order": 2 },
+      "output": { "type": "any", "raw": true, "io": 6, "order": 3 }
+    }
+  },
+  "cases": [
+    {
+      "name": "a concrete producer resolves to itself",
+      "chain": { "f": "src.float" },
+      "wires": [],
+      "query": { "instanceKey": "f", "field": "output" },
+      "expected": "float"
+    },
+    {
+      "name": "an `any` output takes the class of its wired case",
+      "chain": { "f": "src.float", "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "f", "field": "output" },
+          "dest": { "instanceKey": "sw", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": "float"
+    },
+    {
+      "name": "textures resolve the same way — the class is not float-special",
+      "chain": { "t": "src.texture", "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "t", "field": "tex_out" },
+          "dest": { "instanceKey": "sw", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": "texture"
+    },
+    {
+      "name": "structs resolve too",
+      "chain": { "s": "src.struct", "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "s", "field": "particles_out" },
+          "dest": { "instanceKey": "sw", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": "struct"
+    },
+    {
+      "name": "an unwired `any` is unresolvable — the wire gets dropped",
+      "chain": { "sw": "poly.switch" },
+      "wires": [],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": null
+    },
+    {
+      "name": "the SELECTOR being wired does not give the node a type",
+      "chain": { "f": "src.float", "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "f", "field": "output" },
+          "dest": { "instanceKey": "sw", "field": "select" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": null
+    },
+    {
+      "name": "TIE-BREAK: lowest-numbered wired case wins, whatever the wire order",
+      "chain": { "f": "src.float", "t": "src.texture", "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "t", "field": "tex_out" },
+          "dest": { "instanceKey": "sw", "field": "case_3" } },
+        { "src": { "instanceKey": "f", "field": "output" },
+          "dest": { "instanceKey": "sw", "field": "case_2" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": "float"
+    },
+    {
+      "name": "TIE-BREAK ordering is DECLARATION order, not alphabetical",
+      "chain": { "f": "src.float", "t": "src.texture", "p": "poly.reversed" },
+      "wires": [
+        { "src": { "instanceKey": "f", "field": "output" },
+          "dest": { "instanceKey": "p", "field": "alpha" } },
+        { "src": { "instanceKey": "t", "field": "tex_out" },
+          "dest": { "instanceKey": "p", "field": "zeta" } }
+      ],
+      "query": { "instanceKey": "p", "field": "output" },
+      "expected": "texture"
+    },
+    {
+      "name": "`any` chains transitively through several polymorphic nodes",
+      "chain": { "t": "src.texture", "a": "poly.switch", "b": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "t", "field": "tex_out" },
+          "dest": { "instanceKey": "a", "field": "case_1" } },
+        { "src": { "instanceKey": "a", "field": "output" },
+          "dest": { "instanceKey": "b", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "b", "field": "output" },
+      "expected": "texture"
+    },
+    {
+      "name": "an earlier case wired to an UNRESOLVABLE node does not veto a later one",
+      "chain": { "f": "src.float", "dead": "poly.switch", "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "dead", "field": "output" },
+          "dest": { "instanceKey": "sw", "field": "case_1" } },
+        { "src": { "instanceKey": "f", "field": "output" },
+          "dest": { "instanceKey": "sw", "field": "case_2" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": "float"
+    },
+    {
+      "name": "a cycle through `any` ports terminates instead of recursing forever",
+      "chain": { "a": "poly.switch", "b": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "a", "field": "output" },
+          "dest": { "instanceKey": "b", "field": "case_1" } },
+        { "src": { "instanceKey": "b", "field": "output" },
+          "dest": { "instanceKey": "a", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "a", "field": "output" },
+      "expected": null
+    },
+    {
+      "name": "a device control resolves to float — it has no chain entry",
+      "chain": { "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "midi:dev-1", "field": "b0/e05/turn" },
+          "dest": { "instanceKey": "sw", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": "float"
+    },
+    {
+      "name": "an unknown producer key is unresolvable, not a crash",
+      "chain": { "sw": "poly.switch" },
+      "wires": [
+        { "src": { "instanceKey": "ghost", "field": "output" },
+          "dest": { "instanceKey": "sw", "field": "case_1" } }
+      ],
+      "query": { "instanceKey": "sw", "field": "output" },
+      "expected": null
+    }
+  ]
+}

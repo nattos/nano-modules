@@ -5,8 +5,10 @@
  * pin the selection rule: magnitude-marked float, primary bit winning.
  */
 import { describe, it, expect } from 'vitest';
-import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, wireKindOfField }
-  from './schema-channels';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { IO_INPUT, IO_OUTPUT, modChannel, passthroughPorts, resolveWireKind,
+         wireKindOfField, type WireEdge } from './schema-channels';
 
 const shaper = {
   input: { type: 'float', io: 5, magnitude: 'inherit' },   // in | primary
@@ -59,6 +61,30 @@ describe('wireKindOfField', () => {
     expect(wireKindOfField({ s: { type: 'string', io: 2 } }, 's')).toBeNull();
     expect(wireKindOfField(filter, 'nope')).toBeNull();
   });
+
+  it('reports a polymorphic field as unresolved rather than guessing', () => {
+    expect(wireKindOfField({ c: { type: 'any', io: 9 } }, 'c')).toBe('any');
+  });
+});
+
+/**
+ * The shared goldens, replayed by native/tests/test_wire_types.cpp too. If these
+ * two ever disagree the editor draws a connection the engine dropped (or refuses
+ * one it would have made) — a divergence nothing else would catch.
+ */
+describe('resolveWireKind (shared fixture)', () => {
+  const fx = JSON.parse(readFileSync(
+    fileURLToPath(new URL('../../test/fixtures/wire-type-cases.json', import.meta.url)),
+    'utf8'));
+
+  for (const c of fx.cases as any[]) {
+    it(c.name, () => {
+      const schemaOf = (key: string) => fx.schemas[c.chain[key]];
+      const got = resolveWireKind(schemaOf, c.wires as WireEdge[],
+                                  c.query.instanceKey, c.query.field);
+      expect(got).toBe(c.expected);
+    });
+  }
 });
 
 describe('passthroughPorts', () => {
