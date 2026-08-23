@@ -123,12 +123,61 @@ const BEAT_MS = 500;
 const SIXTEENTH_MS = BEAT_MS / 4;
 
 /**
+ * VELOCITY SQUASH — five positions, applied to every channel value a pattern
+ * produces, mirroring `velSquash` in audiooptim's `v3_live.mm` so the mimic and
+ * the real sender shape a hit the same way.
+ *
+ * IT ONLY EVER SQUASHES UPWARD, and that is the whole shape of the control.
+ * Both ends are pinned — y(0)=0 and y(1)=1 — so blackout and full stay exactly
+ * where they are and only the middle of the range moves: a position lifts the
+ * quiet hits into view and can never dim the loud ones. That is the direction
+ * the complaint runs, because a beat pattern's offbeats sit at 0.45-0.65 and
+ * the top of the range is the part nothing reaches.
+ *
+ * The middle three are ONE family, a gamma halved per position: y = x^(2^-n),
+ * n = 1..3. Position 4 is that family's LIMIT rather than a separate idea — as
+ * the exponent goes to 0, x^g goes to 1 for every x above 0 — which is why the
+ * ladder ends in a step instead of stopping at an arbitrary exponent. In
+ * practice that makes it "every gate at full", which is the `flat` pattern's
+ * wire check arriving as the end of a ladder rather than as a mode of its own.
+ *
+ * Position 0 returns the argument UNTOUCHED rather than raising it to the power
+ * 1, so a generator nobody has aimed this at is bit-for-bit the generator that
+ * existed before the control did.
+ */
+export const VEL_SQUASH_NAMES = ['linear', 'x^1/2', 'x^1/4', 'x^1/8', 'binary'] as const;
+export const VEL_SQUASH_N = VEL_SQUASH_NAMES.length;
+
+/** Clamp a stored/received position onto a real rung of the ladder. */
+export function clampVelSquash(pos: number): number {
+  if (!Number.isFinite(pos)) return 0;
+  return Math.max(0, Math.min(VEL_SQUASH_N - 1, Math.round(pos)));
+}
+
+/** One value through the ladder. `v` is normalised 0..1, not a DMX byte. */
+export function velSquash(v: number, pos: number): number {
+  const n = clampVelSquash(pos);
+  if (n <= 0 || !(v > 0)) return v > 0 ? v : 0;
+  const c = Math.min(1, v);
+  if (n >= VEL_SQUASH_N - 1) return 1;
+  return Math.pow(c, 1 / (1 << n));
+}
+
+/**
  * The channel bytes a pattern shows at time `tMs` (monotonic ms since start).
  *
  * Pure function of time, so the generator has no state to drift and a test can
  * assert any instant without running a clock.
+ *
+ * `squash` shapes every byte on the way out (see `velSquash`). It runs here,
+ * once, rather than inside each pattern arm, because it is a property of the
+ * TRANSMITTER and not of one pattern's rhythm — and because the pinned ends
+ * make it inert on the gate-only patterns (`flat` / `pulse` / `chase` are 0 or
+ * 255 and stay so), so only the two arms that carry a level actually move.
  */
-export function patternFrame(pattern: TestPattern, tMs: number, count: number): Uint8Array {
+export function patternFrame(
+  pattern: TestPattern, tMs: number, count: number, squash = 0,
+): Uint8Array {
   const n = Math.max(1, Math.min(count, ARTNET_MAX_CHANNELS));
   const out = new Uint8Array(n);
 
@@ -203,6 +252,14 @@ export function patternFrame(pattern: TestPattern, tMs: number, count: number): 
       }
       if (ch < n) out[ch] = Math.round(vel * 255);
       break;
+    }
+  }
+
+  const pos = clampVelSquash(squash);
+  if (pos > 0) {
+    for (let i = 0; i < n; i++) {
+      if (out[i] === 0 || out[i] === 255) continue;   // pinned; no rounding drift
+      out[i] = Math.round(velSquash(out[i] / 255, pos) * 255);
     }
   }
   return out;

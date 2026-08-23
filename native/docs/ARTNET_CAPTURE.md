@@ -138,6 +138,16 @@ and arps DMX 2-4 across the three 16ths between, at 120 BPM, each gate one 16th 
 sender sends. It is a stand-in for wiring a sketch up with no beatsync running — not a spec: if the
 gate length or the role order here changes, this is the paragraph to change with it.
 
+**`Squash` on that panel mirrors beatsync's own velocity squash** (`v` on its Groove Triggers
+screen): five positions — `linear` / `x^1/2` / `x^1/4` / `x^1/8` / `binary` — applied to every
+value the generator emits. Both ends are pinned, so it only ever squashes UPWARD: a position lifts
+the quiet hits and can never dim the loud ones, which is the direction the complaint runs when the
+offbeats sit at 0.45-0.65. The middle three are one gamma family halved per rung and the last is
+that family's limit (as the exponent goes to 0, `x^g` goes to 1 for every `x` above 0), so the
+ladder ends in a step rather than at an arbitrary exponent. Position 0 leaves the bytes untouched.
+It is a property of the transmitter, not of one pattern, so it applies to all five — but the
+gate-only ones (`flat` / `pulse` / `chase`) are already at 0 or 255 and cannot move.
+
 **Silence is not blackout.** DMX carries only the current level, retransmitted forever, so a
 universe that goes quiet keeps its last values on our side; we report `age_ms` rather than
 inventing a decay. A universe never heard at all is different again: `control.artnet` injects

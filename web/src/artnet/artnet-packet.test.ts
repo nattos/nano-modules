@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  decodeArtDmx, encodeArtDmx, patternFrame, portAddress, universeKey,
+  clampVelSquash, decodeArtDmx, encodeArtDmx, patternFrame, portAddress,
+  universeKey, velSquash, VEL_SQUASH_N,
 } from './artnet-packet';
 
 /** Build a raw frame the way a sender does, for decode tests. */
@@ -151,6 +152,83 @@ describe('patternFrame', () => {
   it('never exceeds the requested channel count', () => {
     for (const p of ['chase', 'pulse', 'ramp', 'flat', 'beatsync'] as const) {
       expect(patternFrame(p, 777, 3).length).toBe(3);
+    }
+  });
+});
+
+describe('velSquash', () => {
+  it('is inert at position 0 — bit-for-bit the generator before the control', () => {
+    for (const v of [0, 0.13, 0.45, 0.8, 1]) expect(velSquash(v, 0)).toBe(v);
+    for (let t = 0; t < 4000; t += 11) {
+      expect([...patternFrame('beatsync', t, 4, 0)])
+        .toEqual([...patternFrame('beatsync', t, 4)]);
+    }
+  });
+
+  it('pins both ends at every position', () => {
+    for (let n = 0; n < VEL_SQUASH_N; n++) {
+      expect(velSquash(0, n)).toBe(0);
+      expect(velSquash(1, n)).toBe(1);
+    }
+  });
+
+  it('only ever squashes UPWARD, monotonically along the ladder', () => {
+    const v = 0.3;
+    let prev = velSquash(v, 0);
+    for (let n = 1; n < VEL_SQUASH_N; n++) {
+      const cur = velSquash(v, n);
+      expect(cur).toBeGreaterThan(prev);
+      expect(cur).toBeLessThanOrEqual(1);
+      prev = cur;
+    }
+  });
+
+  it('is one gamma family halved per rung, ending in its limit', () => {
+    expect(velSquash(0.25, 1)).toBeCloseTo(Math.pow(0.25, 1 / 2), 6);
+    expect(velSquash(0.25, 2)).toBeCloseTo(Math.pow(0.25, 1 / 4), 6);
+    expect(velSquash(0.25, 3)).toBeCloseTo(Math.pow(0.25, 1 / 8), 6);
+    // The last rung is the family's LIMIT, not another exponent: anything above
+    // zero reads full.
+    expect(velSquash(0.01, VEL_SQUASH_N - 1)).toBe(1);
+  });
+
+  it('clamps a position from outside the ladder onto a real rung', () => {
+    expect(clampVelSquash(-3)).toBe(0);
+    expect(clampVelSquash(99)).toBe(VEL_SQUASH_N - 1);
+    expect(clampVelSquash(NaN)).toBe(0);
+    expect(velSquash(0.4, 99)).toBe(1);
+  });
+});
+
+describe('patternFrame squash', () => {
+  it('lifts the beat pattern\'s quiet hits without dimming the loud ones', () => {
+    const levels = (squash: number) => {
+      const seen = new Set<number>();
+      for (let t = 0; t < 8000; t += 5) {
+        for (const v of patternFrame('beatsync', t, 4, squash)) if (v > 0) seen.add(v);
+      }
+      return [...seen].sort((a, b) => a - b);
+    };
+    const raw = levels(0);
+    const lifted = levels(2);
+    expect(Math.min(...lifted)).toBeGreaterThan(Math.min(...raw));
+    expect(Math.max(...lifted)).toBe(255);          // the full hits stay full
+    expect(lifted.every(v => v <= 255)).toBe(true);
+  });
+
+  it('is inert on the gate-only patterns — both ends are pinned', () => {
+    for (const p of ['flat', 'pulse', 'chase'] as const) {
+      for (let t = 0; t < 2200; t += 13) {
+        expect([...patternFrame(p, t, 4, 3)]).toEqual([...patternFrame(p, t, 4, 0)]);
+      }
+    }
+  });
+
+  it('the last rung is every gate at full', () => {
+    for (let t = 0; t < 4000; t += 5) {
+      for (const v of patternFrame('beatsync', t, 4, VEL_SQUASH_N - 1)) {
+        expect(v === 0 || v === 255).toBe(true);
+      }
     }
   });
 });

@@ -16,7 +16,7 @@
  * native listener inside the shared server is authoritative). Better to show
  * nothing than an affordance that can't work.
  *
- * Its settings — pattern, destination, whether it's running — belong to
+ * Its settings — pattern, squash, destination, whether it's running — belong to
  * `artnetClient` for the session, not to this element. You close the gear panel
  * to go wire the channels up, and that used to unmount the element and stop the
  * signal at the moment you needed it.
@@ -29,7 +29,9 @@ import { editorRegistry } from '../editor-registry';
 import type { FieldBinding } from '../widgets/field-editor';
 import { artnetClient, type TestDest, type TestPatternAddress } from '../artnet/artnet-client';
 import { ARTNET_MAX_FIELDS, ARTNET_MODULE_TYPE } from '../artnet/artnet-lowering';
-import { TEST_PATTERNS, universeKey, type TestPattern } from '../artnet/artnet-packet';
+import {
+  TEST_PATTERNS, universeKey, VEL_SQUASH_NAMES, type TestPattern,
+} from '../artnet/artnet-packet';
 import '../widgets/field-tab-bar';
 import '../widgets/ui-button';
 
@@ -45,6 +47,11 @@ const PATTERN_LABELS: Record<TestPattern, string> = {
   flat: 'Flat',
   beatsync: 'Beat',
 };
+
+/** The squash ladder, as the panel labels it. The middle three name the
+ *  exponent rather than a mood, because that is the only thing that makes the
+ *  ladder legible as one family halved per rung. */
+const SQUASH_LABELS: readonly string[] = ['Linear', '\u00bd', '\u00bc', '\u215b', 'Binary'];
 
 /** How often the status line re-reads the bridge. The card doesn't need
  *  per-frame precision; it needs to stop saying "live" once a feed dies. */
@@ -202,6 +209,18 @@ export class ArtnetOptions extends MobxLitElement {
                 ?active=${test.pattern === p}
                 @click=${() => { artnetClient.setTestPattern(p); this.requestUpdate(); }}
               >${PATTERN_LABELS[p]}</ui-button>
+            `)}
+          </div>
+          <div class="row">
+            <span class="label">Squash</span>
+            ${VEL_SQUASH_NAMES.map((name, i) => html`
+              <ui-button
+                ?active=${test.squash === i}
+                @click=${() => { artnetClient.setTestSquash(i); this.requestUpdate(); }}
+                title=${i === 0
+                  ? 'Velocities exactly as the pattern produces them'
+                  : `Lift quiet hits toward full (${name}) — the loud ones never move`}
+              >${SQUASH_LABELS[i]}</ui-button>
             `)}
           </div>
           <div class="row">

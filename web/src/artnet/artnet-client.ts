@@ -20,7 +20,7 @@
 
 import { appState } from '../state/app-state';
 import { buildInjectedScalars } from './artnet-lowering';
-import type { TestPattern } from './artnet-packet';
+import { clampVelSquash, type TestPattern } from './artnet-packet';
 
 const EV_HELLO = 'nano:artnet:hello';
 const EV_TEST = 'nano:artnet:test';
@@ -64,6 +64,8 @@ export type TestDest = 'mirror' | 'broadcast';
 export interface TestPatternState {
   running: boolean;
   pattern: TestPattern;
+  /** Velocity-squash position, 0 = linear. Upward-only; see `velSquash`. */
+  squash: number;
   dest: TestDest;
   /** Which `control.artnet` card started it — the others show Send, not Stop. */
   instanceKey: string;
@@ -84,7 +86,8 @@ export class ArtnetClient {
   /** Bumps on every arriving frame so UI can cheaply poll for freshness. */
   private revision = 0;
   private test: TestPatternState = {
-    running: false, pattern: 'chase', dest: 'mirror', instanceKey: '', address: null,
+    running: false, pattern: 'chase', squash: 0, dest: 'mirror',
+    instanceKey: '', address: null,
   };
 
   constructor(hot: unknown) {
@@ -161,6 +164,15 @@ export class ArtnetClient {
     this.test.pattern = pattern;
     if (this.test.running) this.startTestPattern(this.test.instanceKey, this.test.address);
   }
+  /** Move the velocity squash. Like the pattern, it restarts a running
+   *  generator rather than waiting for Stop — the point of the control is to
+   *  hear the difference while the signal is flowing. */
+  setTestSquash(pos: number): void {
+    const n = clampVelSquash(pos);
+    if (this.test.squash === n) return;
+    this.test.squash = n;
+    if (this.test.running) this.startTestPattern(this.test.instanceKey, this.test.address);
+  }
   setTestDest(dest: TestDest): void {
     if (this.test.dest === dest) return;
     this.test.dest = dest;
@@ -176,6 +188,7 @@ export class ArtnetClient {
     this.hot.send(EV_TEST, {
       action: 'start',
       pattern: this.test.pattern,
+      squash: this.test.squash,
       dest: this.test.dest,
       ...address,
     });

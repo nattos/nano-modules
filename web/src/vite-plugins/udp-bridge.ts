@@ -49,8 +49,8 @@
 import type { Plugin, ViteDevServer } from 'vite';
 import { createSocket, type Socket } from 'node:dgram';
 import {
-  ARTNET_MIRROR_PORT, ARTNET_PORT, decodeArtDmx, encodeArtDmx, patternFrame,
-  universeKey, type TestPattern,
+  ARTNET_MIRROR_PORT, ARTNET_PORT, clampVelSquash, decodeArtDmx, encodeArtDmx,
+  patternFrame, universeKey, VEL_SQUASH_NAMES, type TestPattern,
 } from '../artnet/artnet-packet';
 
 /** Client → server: ask for status + a fresh snapshot. */
@@ -84,6 +84,8 @@ interface TestConfig {
   subnet: number;
   universe: number;
   count: number;
+  /** Velocity-squash position, 0 = linear/untouched. See `velSquash`. */
+  squash: number;
   /** 'mirror' → the mirror port, ours alone. 'broadcast' → :6454 on the subnet
    *  broadcast, which Resolume also receives and may act on. */
   dest: 'mirror' | 'broadcast';
@@ -235,12 +237,17 @@ export function udpBridgePlugin(): Plugin {
     txStart = Date.now();
     txSeq = 1;
     const port = cfg.dest === 'mirror' ? ARTNET_MIRROR_PORT : ARTNET_PORT;
+    // The squash is on this line because it silently reshapes every velocity
+    // the generator emits: a position left on from an earlier session is the
+    // one you report on while believing you are watching the default.
     server.config.logger.info(
       `[artnet] test pattern '${cfg.pattern}' → ${cfg.host}:${port} ` +
-      `net ${cfg.net} sub ${cfg.subnet} uni ${cfg.universe}`);
+      `net ${cfg.net} sub ${cfg.subnet} uni ${cfg.universe} ` +
+      `squash ${VEL_SQUASH_NAMES[cfg.squash]}`);
     txTimer = setInterval(() => {
       if (!txConfig || !tx) return;
-      const bytes = patternFrame(txConfig.pattern, Date.now() - txStart, txConfig.count);
+      const bytes = patternFrame(
+        txConfig.pattern, Date.now() - txStart, txConfig.count, txConfig.squash);
       const p = encodeArtDmx(txConfig.net, txConfig.subnet, txConfig.universe, bytes, txSeq);
       txSeq = txSeq >= 255 ? 1 : txSeq + 1;   // 0 would mean "sequencing off"
       try { tx.send(p, port, txConfig.host); } catch { /* nothing listening */ }
@@ -276,6 +283,7 @@ export function udpBridgePlugin(): Plugin {
           subnet: Number(data.subnet) || 0,
           universe: Number(data.universe ?? 1) || 0,
           count: Math.max(1, Math.min(Number(data.count) || 4, 512)),
+          squash: clampVelSquash(Number(data.squash) || 0),
           dest: data.dest === 'broadcast' ? 'broadcast' : 'mirror',
           host: typeof data.host === 'string' && data.host
             ? data.host : '255.255.255.255',
