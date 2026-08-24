@@ -186,6 +186,10 @@ NANO_DECLARE_INSTANCE_EFFECT(color_const)
 // Pick one of N inputs, whatever they carry — the polymorphic (`any`) node the
 // whole raw/any/vec sequence exists for. See mod_switch/main.cpp.
 NANO_DECLARE_INSTANCE_EFFECT(mod_switch)
+
+// Cut one modulation signal into N windowed, individually-shaped outputs — the
+// fan-out shaper. See mod_slice/main.cpp.
+NANO_DECLARE_INSTANCE_EFFECT(mod_slice)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
@@ -1062,6 +1066,19 @@ void nano_module_main() {
         "switch,select,mux,choose,route,case,modulation,polymorphic",
         "la-random",
         NANO_INSTANCE_LIFECYCLE(mod_switch),
+    });
+
+    // One signal in, N windowed outputs — the only card that SPLITS modulation
+    // rather than transforming it 1:1 (a wire can already do the 1:1 remap).
+    nano::registerEffect({
+        2,
+        "mod.shaper.slice",
+        "Slice",
+        "Cuts one modulation signal into N outputs, each with its own window on the input range and its own drawn curve. Sweep the input and the outputs fire in sequence — Gate for a chase, Hold for a build. Auto-wires from a preceding modulation source. 2-8 outputs from the gear icon. Pure data module.",
+        "mod",
+        "slice,crop,split,band,window,chase,stagger,fanout,spread,curve,modulation,shaper",
+        "la-stream",
+        NANO_INSTANCE_LIFECYCLE(mod_slice),
     });
 
     nano::registerEffect({

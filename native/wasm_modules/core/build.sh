@@ -141,6 +141,7 @@ wasm_build \
   ../env_lfo/main.cpp \
   ../color_const/main.cpp \
   ../mod_switch/main.cpp \
+  ../mod_slice/main.cpp \
   ../env_adsr/main.cpp \
   ../trigger_beat/main.cpp \
   ../trigger_out/main.cpp

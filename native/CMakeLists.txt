@@ -1260,6 +1260,18 @@ if(APPLE)
     target_compile_options(test_mod_switch PRIVATE -Wno-attributes)
     catch_discover_tests(test_mod_switch)
 
+    # mod.shaper.slice: windowed fan-out (lane boundaries, Gate vs Hold,
+    # per-lane curves, arity). Outputs read back through dashboard knobs.
+    add_executable(test_mod_slice tests/test_mod_slice.cpp)
+    target_link_libraries(test_mod_slice PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_mod_slice PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_mod_slice PRIVATE -Wno-attributes)
+    catch_discover_tests(test_mod_slice)
+
     # Clean-frame exec-doc cache goldens (wire liveness, injected scalars,
     # enable toggles, structural rebuilds).
     add_executable(test_exec_doc_cache tests/test_exec_doc_cache.cpp)
