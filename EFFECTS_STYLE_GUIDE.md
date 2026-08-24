@@ -123,6 +123,17 @@ Two rules that fall out of it, both on the web side:
 
 Unwired inputs should rest at the op's IDENTITY, not at zero. Resting a Multiply's spare inputs at 0 makes it publish 0 until every one is wired, which reads as a broken node.
 
+A count can govern **outputs** as well as inputs — `mod.shaper.slice` counts lanes, and a
+lane owns a window, a curve and an `out_i`. Two rules only show up in that direction:
+
+- **A deactivated output must publish 0, not stop publishing.** A published value PERSISTS,
+  so a lane that merely stops writing keeps driving whatever is still wired to it after the
+  count comes down. Loop the full bank and write `0` past the count.
+- **`setEffectVisibilityParam` prunes wires at BOTH ends**, and `collectModuleOutputs` skips a
+  hidden output — but marks it `seen` first, or the legacy `plugin.io` fallback re-adds it under
+  its raw field name. Where a count implies sibling values (Slice re-spreads its windows),
+  pass them as `setShapeValue`'s `extra` so the whole gesture is one undo entry.
+
 **`selectField`** — single-choice integer with named options. Renders as a row of buttons in the inspector (pass `wrap=true` for large sets like blend modes so they flow onto multiple rows — see `composite.blend`). Use it for mode selectors, algorithm pickers, and anything else with a small fixed set of named values. Schema-wise it's `type:int` plus an `options:[{label,value},…]` array.
 
 **`fontField`** — a string field the IDE renders as a searchable font-family picker (vs a plain `textField`). Read it like any string via `patchString`.
