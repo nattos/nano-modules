@@ -99,7 +99,14 @@ All source effects now declare the `Generator` capability (separate from the
 | `motion.field` | Motion Field | `video.motion_field` | nano |  |  |
 | `motion.local_delay` | Local Delay | `video.local_delay` | nano |  | JUDGMENT: motion-driven delay |
 
-## mod  (8)
+## mod  (9 listed)
+
+> The counts and the `Total` above are a snapshot of the rename, not a live
+> census: several effects registered since (the 15 `mod.shaper.*` math ops,
+> `mod.shaper.switch`, `mod.source.color`, …) were never added here. The core
+> bundle alone registers 83. Treat the ids below as authoritative and the
+> arithmetic as historical.
+
 
 | new id | display | ← old id | bundle | gen.cap | note |
 |---|---|---|---|---|---|
@@ -107,6 +114,7 @@ All source effects now declare the `Generator` capability (separate from the
 | `mod.shaper.envelope` | Envelope | `mod.envelope` | core,testonly |  | shortened display |
 | `mod.shaper.remap` | Remap | `mod.remap` | core,testonly |  | shortened display |
 | `mod.shaper.smooth` | Smooth | `mod.smooth` | core,testonly |  | shortened display |
+| `mod.shaper.slice` | Slice | *(new)* | core |  | one signal → N windowed, individually-curved outputs |
 | `mod.shaper.spectral` | Spectral Curve | `mod.spectral` | nano |  |  |
 | `mod.source.adsr` | ADSR | `data.adsr` | core,testonly |  |  |
 | `mod.source.lfo` | LFO | `data.lfo` | core,testonly |  |  |

@@ -1983,8 +1983,11 @@ export class ColumnGroup extends MobxLitElement {
       // A hidden output has no trace row. `getPlugin` hands back the schema with
       // this instance's hidden overlay applied, so a card that counts its own
       // outputs (mod.shaper.slice's lanes) shows exactly the pips it has.
-      if (d?.hidden) continue;
+      // Mark it seen FIRST: the legacy `plugin.io` fallback below re-adds any
+      // output the schema pass didn't claim, which would resurrect the hidden
+      // lane under its raw field name.
       seen.add(name);
+      if (d?.hidden) continue;
       rows.push({
         fieldPath: name,
         displayName: schemaFieldDisplayName(d, name),
