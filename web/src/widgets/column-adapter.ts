@@ -140,7 +140,7 @@ export interface ColumnController {
    * Optional: a surface that omits it falls back to a plain `setEffectParam`,
    * which changes the value but leaves the orphaned wires behind.
    */
-  setEffectVisibilityParam?(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number): void;
+  setEffectVisibilityParam?(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number, extra?: Record<string, number>): void;
   beginSetEffectParam(sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): EditHandle;
   updateSetEffectParam(edit: EditHandle, sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: ParamValue): void;
   beginSetEffectParams(sketchId: string, colIdx: number, chainIdx: number, values: Record<string, ParamValue>): EditHandle;

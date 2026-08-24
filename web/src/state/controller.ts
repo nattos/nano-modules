@@ -1216,8 +1216,8 @@ export class AppController {
   }
 
   /**
-   * Set a param that changes which FIELDS the card shows — today the math
-   * nodes' `input_count` — and drop any wires landing on a field the new value
+   * Set a param that changes which FIELDS the card shows — the variable-arity
+   * nodes' `input_count` — and drop any wire touching a field the new value
    * hides, in the SAME undo step.
    *
    * Deleting them rather than leaving them is deliberate. The effect already
@@ -1226,9 +1226,20 @@ export class AppController {
    * instanceKey alone, never the field) and still draws an arc to a pip that no
    * longer renders. Growing the count back does not bring the wires back — the
    * stored input VALUES do survive, since nothing prunes hidden state keys.
+   *
+   * BOTH ends are checked, not just the dest. For the math nodes and the switch
+   * every counted field is an input, so dest-only was enough; Slice's count also
+   * governs its lane OUTPUTS, and a wire leaving a pip that no longer renders is
+   * exactly as orphaned as one arriving at it.
+   *
+   * `extra` writes sibling params in the same step, for a count whose new value
+   * implies new values elsewhere (Slice re-spreads its lane windows). They are
+   * applied BEFORE visibility is resolved, which is harmless — the hidden set is
+   * a function of the count alone — and keeps the whole gesture one undo entry.
    */
   setEffectVisibilityParam(
-    sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number) {
+    sketchId: string, colIdx: number, chainIdx: number, paramKey: string, value: number,
+    extra?: Record<string, ParamValue>) {
     const sketch = appState.database.sketches[sketchId];
     const entry = (sketch ? sketchChain(sketch)[chainIdx] : undefined);
     if (!entry || entry.type !== 'module') return;
@@ -1242,17 +1253,22 @@ export class AppController {
       const inst = sk.instances[key];
       if (!inst) return;
       inst.state[paramKey] = value;
+      for (const k in extra ?? {}) inst.state[k] = extra![k];
 
       // Resolve visibility against the state as it will be AFTER the write —
       // `inst.state` is the immer draft, so it already carries the new value.
       const hidden = new Set(hiddenFieldsFor(moduleType, inst.state) ?? []);
       if (hidden.size > 0) {
         sk.wires = (sk.wires ?? []).filter(
-          w => !(w.dest.instanceKey === key && hidden.has(w.dest.field)));
+          w => !((w.dest.instanceKey === key && hidden.has(w.dest.field)) ||
+                 (w.src.instanceKey === key && hidden.has(w.src.field))));
       }
       this.reorderExec(draft, sketchId);
     });
     this.engine?.setParam(sketchId, colIdx, chainIdx, paramKey, value);
+    for (const k in extra ?? {}) {
+      this.engine?.setParam(sketchId, colIdx, chainIdx, k, extra![k]);
+    }
   }
 
   /** Recipe for setting a param value (shared by continuous edit methods). */

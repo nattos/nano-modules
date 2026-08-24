@@ -52,6 +52,11 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
   private get mixed(): boolean {
     return this.binding?.isMixed?.(this.fieldPath) ?? false;
   }
+  /** Sibling values to write alongside a `shapeField` pick, in the same undo
+   *  step — see FieldBinding.setShapeValue. Keyed by the chosen value, since
+   *  what the siblings become depends on which option was picked. */
+  @property({ attribute: false }) shapeExtra: ((value: number) => Record<string, number>) | null = null;
+
   /** Multi-edit: the distinct values any bound target uses (for the gray
    *  in-use highlight when mixed). */
   private get inUse(): unknown[] {
@@ -63,7 +68,8 @@ export class FieldTabBar extends MobxLitElement implements FieldEditorElement {
     // string-coerced label. Same lesson as <field-select>: serialised
     // state and on_state_patched both expect typed values.
     if (this.shapeField && this.binding?.setShapeValue && typeof opt.value === 'number') {
-      this.binding.setShapeValue(this.fieldPath, opt.value);
+      this.binding.setShapeValue(this.fieldPath, opt.value,
+                                 this.shapeExtra?.(opt.value));
       return;
     }
     this.binding?.setValue(this.fieldPath, opt.value);

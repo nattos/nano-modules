@@ -18,7 +18,7 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { editorRegistry } from '../editor-registry';
 import type { FieldBinding } from '../widgets/field-editor';
 import { MATH_MODULE_TYPES, MATH_MAX_INPUTS, MATH_MIN_INPUTS,
-         SWITCH_MODULE_TYPE } from '../state/math-nodes';
+         SWITCH_MODULE_TYPE, SLICE_MODULE_TYPE, sliceSpreadValues } from '../state/math-nodes';
 import '../widgets/field-tab-bar';
 
 const COUNT_OPTIONS = Array.from(
@@ -31,6 +31,10 @@ export class InputCountOptions extends MobxLitElement {
   @property({ attribute: false }) binding: FieldBinding | null = null;
   /** Row label — the nodes disagree about what they are counting. */
   @property({ attribute: false }) label = 'Inputs';
+  /** Sibling values a new count implies, written in the same undo step (Slice
+   *  re-spreads its lane windows). Null for the nodes where a count is just a
+   *  count. */
+  @property({ attribute: false }) spread: ((count: number) => Record<string, number>) | null = null;
 
   static styles = css`
     :host { display: block; }
@@ -48,18 +52,21 @@ export class InputCountOptions extends MobxLitElement {
         .options=${COUNT_OPTIONS}
         .defaultValue=${MATH_MIN_INPUTS}
         ?shapeField=${true}
+        .shapeExtra=${this.spread}
         .binding=${this.binding}
       ></field-tab-bar>
     `;
   }
 }
 
-function factoryLabelled(label: string) {
+function factoryLabelled(label: string,
+                        spread: ((count: number) => Record<string, number>) | null = null) {
   return {
     create(_pluginKey: string, binding: FieldBinding): HTMLElement {
       const el = document.createElement('input-count-options') as InputCountOptions;
       el.binding = binding;
       el.label = label;
+      el.spread = spread;
       return el;
     },
     destroy(_element: HTMLElement) {},
@@ -77,3 +84,10 @@ for (const moduleType of MATH_MODULE_TYPES) {
 // count has nothing to do with, so calling this "Inputs" would be actively
 // misleading about which rows it governs.
 editorRegistry.register(SWITCH_MODULE_TYPE, { options: factoryLabelled('Cases') });
+
+// Slice counts OUTPUTS — one lane each, not one input each. Changing the count
+// also re-spreads the lane windows evenly over the input range, in the same undo
+// step: five lanes keeping two halves and three leftovers is nobody's idea of
+// what picking 5 meant.
+editorRegistry.register(SLICE_MODULE_TYPE,
+                        { options: factoryLabelled('Outputs', sliceSpreadValues) });

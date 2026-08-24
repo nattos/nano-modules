@@ -1980,6 +1980,10 @@ export class ColumnGroup extends MobxLitElement {
       const d: any = def;
       const io = d?.io ?? 0;
       if (!(io & 2)) continue;
+      // A hidden output has no trace row. `getPlugin` hands back the schema with
+      // this instance's hidden overlay applied, so a card that counts its own
+      // outputs (mod.shaper.slice's lanes) shows exactly the pips it has.
+      if (d?.hidden) continue;
       seen.add(name);
       rows.push({
         fieldPath: name,
@@ -2422,13 +2426,16 @@ export class ColumnGroup extends MobxLitElement {
       setValue: (fieldPath: string, value: any) => {
         this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
       },
-      setShapeValue: (fieldPath: string, value: number) => {
+      setShapeValue: (fieldPath: string, value: number, extra?: Record<string, number>) => {
         // Falls back to a plain param write on a surface that doesn't plumb the
         // wire-pruning variant — the value still lands, the stale wires stay.
         if (this.ctl.setEffectVisibilityParam) {
-          this.ctl.setEffectVisibilityParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+          this.ctl.setEffectVisibilityParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value, extra);
         } else {
           this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, fieldPath, value);
+          for (const k in extra ?? {}) {
+            this.ctl.setEffectParam(this.sketchId, this.colIdx, chainIdx, k, extra![k]);
+          }
         }
       },
       beginContinuousEdit: (fieldPath: string, value: any): ContinuousEditHandle => {

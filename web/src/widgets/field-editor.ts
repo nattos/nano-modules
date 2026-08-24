@@ -41,11 +41,17 @@ export interface FieldBinding {
 
   /**
    * Write a field that changes which OTHER fields the card shows — the math
-   * nodes' `input_count`. Drops wires landing on fields the new value hides, in
+   * nodes' `input_count`. Drops wires touching fields the new value hides, in
    * the same undo step, so no arc is left pointing at a pip that no longer
    * renders. Optional: widgets should fall back to `setValue` if absent.
+   *
+   * `extra` writes sibling fields in that SAME step — for a count whose new
+   * value implies new values elsewhere (Slice re-spreads its lane windows when
+   * the lane count changes). Doing it as a second edit would split one gesture
+   * across two undo entries, and an intermediate state where the count and the
+   * windows disagree would be briefly visible.
    */
-  setShapeValue?(fieldPath: string, value: number): void;
+  setShapeValue?(fieldPath: string, value: number, extra?: Record<string, number>): void;
 
   /**
    * Begin a continuous edit (e.g., slider drag). Updates are previewed live
