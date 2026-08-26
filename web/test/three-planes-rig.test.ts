@@ -1,0 +1,218 @@
+import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
+import type { Sketch } from '../src/sketch-types';
+
+/**
+ * E2E for `mod.rig.three_planes` — the show controller for the Three Planes
+ * stack. The ballistics themselves (meter fall, peak hold, flam envelopes, the
+ * four camera moves) are pinned host-free by
+ * native/tests/test_three_planes_rig.cpp; what only a real engine can check is
+ * everything BETWEEN the card and its destination:
+ *
+ *   - the lit/unlit decision surviving as a value on a real wire,
+ *   - the NORMALISATION contract (`elevation` goes out as deg/89,
+ *     `plane_spacing` as units/1.5) surviving the executor's magnitude fold,
+ *   - the COLOUR rails, which are the first computed vec3 output in the tree —
+ *     everything else either takes colour in or relays an authored one.
+ *
+ * Probe for the scalar cases is the house one: white solid → rig → bc, with a
+ * rig output wired into bc.brightness. An unsigned [0,1] source folds into
+ * brightness's signed [-1,1] under auto/replace, and with contrast -0.5 on white
+ * bc paints black at 0, mid grey at 0.5 and white at 1 — so the pixel reads the
+ * rail directly.
+ *
+ * Every case is a STEADY state: a gate held at 1 pins the meter at its floor
+ * regardless of frame pacing, so nothing here depends on how long a waitFrames
+ * window actually took (see the e2e rAF-pacing note in the repo).
+ */
+describe('mod.rig.three_planes E2E', () => {
+  jest.setTimeout(60000);
+
+  // The real shipping bundle: it carries source.solid_color,
+  // mod.rig.three_planes and color.tone.brightness_contrast. Passed explicitly
+  // because the harness's legacy alias table doesn't know this id and would
+  // resolve it to the testonly fork.
+  const MODULES = ['com.nano.core'];
+
+  /** Defaults that make each case a clean 0-or-1 read of the lit decision. */
+  const CRISP = { emission_on: 1.0, emission_off: 0.0, flam_emission: 0.0 };
+
+  // solid(white) → rig → bc(brightness 1, contrast -0.5), one rig output wired
+  // into bc.brightness. solid_color publishes no modulation, so the rig's
+  // `sig_1` auto-connect has nothing to steal it with.
+  const scalarSketch = (field: string, params: Record<string, unknown>): Sketch => ({
+    anchor: null,
+    chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
+        params: { color: [1.0, 1.0, 1.0] } },
+      { type: 'module', module_type: 'mod.rig.three_planes', instance_key: 'rig@0',
+        params },
+      { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'bc@0',
+        params: { brightness: 1.0, contrast: -0.5 } },
+    ],
+    wires: [
+      { id: 'w1', src: { instanceKey: 'rig@0', field },
+        dest: { instanceKey: 'bc@0', field: 'brightness' }, combine: 'replace' },
+    ],
+  } as Sketch);
+
+  const runScalar = (id: string, field: string, params: Record<string, unknown>) =>
+    runEngineTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      commands: [{ type: 'createSketch', sketchId: id, sketch: scalarSketch(field, params) }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: id,
+    });
+
+  it('a held gate lights its own floor and everything under it', async () => {
+    // Signal 2 names floor 2, so floors 1 and 2 light and floor 3 stays dark.
+    const p = { ...CRISP, sig_2: 1.0 };
+    const f1 = await runScalar('rig_fill_p1', 'plane1_emission', p);
+    const f2 = await runScalar('rig_fill_p2', 'plane2_emission', p);
+    const f3 = await runScalar('rig_fill_p3', 'plane3_emission', p);
+    expect(f1.success && f2.success && f3.success).toBe(true);
+    expect(f1.trace('out').averageColor().r).toBeGreaterThan(215);
+    expect(f2.trace('out').averageColor().r).toBeGreaterThan(215);
+    expect(f3.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('a floor above the meter stays dark', async () => {
+    const r = await runScalar('rig_below', 'plane2_emission', { ...CRISP, sig_1: 1.0 });
+    expect(r.success).toBe(true);
+    expect(r.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('Allow Holes stops the tower filling in underneath', async () => {
+    // Signal 3 names the top floor. Filled in, floor 1 lights under it; with
+    // holes it does not, because nothing fired there.
+    const filled = await runScalar('rig_holes_off', 'plane1_emission',
+                                   { ...CRISP, sig_3: 1.0, allow_holes: false });
+    const holed  = await runScalar('rig_holes_on', 'plane1_emission',
+                                   { ...CRISP, sig_3: 1.0, allow_holes: true });
+    expect(filled.success && holed.success).toBe(true);
+    expect(filled.trace('out').averageColor().r).toBeGreaterThan(215);
+    expect(holed.trace('out').averageColor().r).toBeLessThan(40);
+    // The cap floor itself is exempt from the holes rule — it always shows.
+    const cap = await runScalar('rig_holes_cap', 'plane3_emission',
+                                { ...CRISP, sig_3: 1.0, allow_holes: true });
+    expect(cap.trace('out').averageColor().r).toBeGreaterThan(215);
+  });
+
+  // THE NORMALISATION CONTRACT. `elevation` is published as a fraction of Three
+  // Planes' 0..89 deg range, not as degrees, because a hand-drawn wire folds the
+  // value into the DESTINATION field's range. A mid-range baseline is what
+  // actually discriminates: if the card published degrees (or divided by the
+  // wrong number) this would saturate white instead of landing on grey.
+  it('elevation goes out as a fraction of the 0..89 deg range', async () => {
+    const lo  = await runScalar('rig_elev_lo',  'elevation', { elevation_base: 0 });
+    const mid = await runScalar('rig_elev_mid', 'elevation', { elevation_base: 44.5 });
+    const hi  = await runScalar('rig_elev_hi',  'elevation', { elevation_base: 89 });
+    expect(lo.success && mid.success && hi.success).toBe(true);
+    expect(lo.trace('out').averageColor().r).toBeLessThan(40);
+    expect(mid.trace('out').averageColor().r).toBeGreaterThan(100);
+    expect(mid.trace('out').averageColor().r).toBeLessThan(156);
+    expect(hi.trace('out').averageColor().r).toBeGreaterThan(215);
+  });
+
+  it('plane spacing goes out as a fraction of the 0..1.5 range', async () => {
+    const mid = await runScalar('rig_space_mid', 'plane_spacing', { spacing_base: 0.75 });
+    const hi  = await runScalar('rig_space_hi',  'plane_spacing', { spacing_base: 1.5 });
+    expect(mid.success && hi.success).toBe(true);
+    expect(mid.trace('out').averageColor().r).toBeGreaterThan(100);
+    expect(mid.trace('out').averageColor().r).toBeLessThan(156);
+    expect(hi.trace('out').averageColor().r).toBeGreaterThan(215);
+  });
+
+  // THE MOVE TRIGGERS. `show`/`sweep_up`/`glance`/`unfold` are event fields, and
+  // the executor replays every stored value as a PatchReplace EVERY frame — so a
+  // handler that fired on patch arrival would re-arm the move forever. The
+  // rising edge is the defense, and this is where it is actually exercised:
+  // fire once, watch the move run, then watch it EXPIRE while `show` is still
+  // sitting at 1 in instance state.
+  it('a move fires once on the rising edge and does not re-arm from the replay', async () => {
+    // Orbit baseline at mid-scale so idle reads as grey, and the widest possible
+    // swing so the start pose (baseline − 90 deg = 0.25 of a turn) is far from it.
+    const params = { azimuth_base: 0.5, show_azimuth: 180.0, show_time: 0.25 };
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_show', sketch: scalarSketch('orbit_azimuth', params) },
+            { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'rig_show' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        // Fire it. One frame later the camera has popped to its start pose.
+        { commands: [{ type: 'setParam', sketchId: 'rig_show', colIdx: 0, chainIdx: 1, paramKey: 'show', value: 1 }],
+          waitFrames: 1, captureTraceIds: ['out'] },
+        // Wait out the move with `show` STILL 1 in state. It must expire and pop
+        // back to the baseline; a replay-armed trigger would hold it out here.
+        { commands: [], waitFrames: 150, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_show',
+    });
+    expect(r.success).toBe(true);
+    const idleR = r.phases[0].trace('out').averageColor().r;
+    const firedR = r.phases[1].trace('out').averageColor().r;
+    const doneR = r.phases[2].trace('out').averageColor().r;
+    expect(idleR).toBeGreaterThan(100);
+    expect(idleR).toBeLessThan(156);
+    expect(firedR).toBeLessThan(100);      // popped to the start pose
+    expect(doneR).toBeGreaterThan(100);    // popped back to baseline
+    expect(doneR).toBeLessThan(156);
+  });
+
+  // THE COLOUR RAILS. rig → solid_color.color, read straight off the sketch
+  // output: a computed vec3 travelling a real wire. Vec rails carry components
+  // whole, with no magnitude fold, so what the card computes is what lands.
+  const colorSketch = (params: Record<string, unknown>): Sketch => ({
+    anchor: null,
+    chain: [
+      { type: 'module', module_type: 'mod.rig.three_planes', instance_key: 'rig@0', params },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'src@0',
+        params: { color: [0.0, 0.0, 0.0] } },
+    ],
+    wires: [
+      { id: 'w1', src: { instanceKey: 'rig@0', field: 'plane1_color' },
+        dest: { instanceKey: 'src@0', field: 'color' }, combine: 'replace' },
+    ],
+  } as Sketch);
+
+  const runColor = (id: string, params: Record<string, unknown>) =>
+    runEngineTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      commands: [{ type: 'createSketch', sketchId: id, sketch: colorSketch(params) }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: id,
+    });
+
+  it('a resting floor publishes the Secondary colour down a vec wire', async () => {
+    // Nothing firing: floor 1 is neither the cap nor flamming, so it rests on
+    // Secondary — violet (0.72, 0.35, 1.00).
+    const r = await runColor('rig_col_rest', {});
+    expect(r.success).toBe(true);
+    r.trace('out').expectPixelAt(32, 32, { r: 184, g: 89, b: 255 }, 12);
+  });
+
+  it('the cap floor publishes the Highlight colour instead', async () => {
+    // Signal 1 names floor 1, so floor 1 IS the cap and rests on Highlight —
+    // cyan (0.30, 0.85, 1.00). Same wire, different colour: this is the whole
+    // point of the card, and it only reads correctly if the rail is live.
+    const r = await runColor('rig_col_cap', { sig_1: 1.0, flam_color: 0.0 });
+    expect(r.success).toBe(true);
+    r.trace('out').expectPixelAt(32, 32, { r: 77, g: 217, b: 255 }, 12);
+  });
+
+  it('an authored colour input reaches the rails', async () => {
+    // Drive Secondary to pure red and the resting floor must follow it — proof
+    // the vec INPUT and the vec OUTPUT are both wired through, not defaults.
+    const r = await runColor('rig_col_authored', { secondary_color: [1.0, 0.0, 0.0] });
+    expect(r.success).toBe(true);
+    r.trace('out').expectPixelAt(32, 32, { r: 255, g: 0, b: 0 }, 12);
+  });
+});

@@ -190,6 +190,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_switch)
 // Cut one modulation signal into N windowed, individually-shaped outputs — the
 // fan-out shaper. See mod_slice/main.cpp.
 NANO_DECLARE_INSTANCE_EFFECT(mod_slice)
+NANO_DECLARE_INSTANCE_EFFECT(three_planes_rig_effect)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
@@ -1079,6 +1080,20 @@ void nano_module_main() {
         "slice,crop,split,band,window,chase,stagger,fanout,spread,curve,modulation,shaper",
         "la-stream",
         NANO_INSTANCE_LIFECYCLE(mod_slice),
+    });
+
+    // The show logic source.mesh.three_planes deliberately does NOT have. Four
+    // Art-Net gates in, twelve rails out — the only card here that publishes
+    // COMPUTED colour, which is what the vec wires were built for.
+    nano::registerEffect({
+        2,
+        "mod.rig.three_planes",
+        "Three Planes Rig",
+        "Show controller for source.mesh.three_planes. Reads four on/off signals (a beatsync Art-Net drum feed, a sequencer, four buttons) as an EV meter with peak hold: each signal names a floor, a hit throws the meter up to it and the meter falls back on its own time, leaving a held cap behind in the Highlight colour. Each hit also flams its floor — a short brightness blip that swings the colour to the other end. Publishes three emission rails, three colour rails, and orbit / elevation / spacing, all normalised so a plain wire lands on the right value. Four monophonic one-shot camera moves (Show, Sweep Up, Glance, Unfold) compose on top. Pure data module.",
+        "mod",
+        "three planes,rig,meter,vu,ev,peak,hold,flam,artnet,dmx,beatsync,show,controller,colour,color,modulation",
+        "la-layer-group",
+        NANO_INSTANCE_LIFECYCLE(three_planes_rig_effect),
     });
 
     nano::registerEffect({

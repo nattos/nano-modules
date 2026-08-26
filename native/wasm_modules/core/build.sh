@@ -142,6 +142,7 @@ wasm_build \
   ../color_const/main.cpp \
   ../mod_switch/main.cpp \
   ../mod_slice/main.cpp \
+  ../three_planes_rig/main.cpp \
   ../env_adsr/main.cpp \
   ../trigger_beat/main.cpp \
   ../trigger_out/main.cpp
