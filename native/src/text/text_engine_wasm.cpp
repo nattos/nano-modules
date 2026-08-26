@@ -14,6 +14,7 @@
  * Exports (see native/wasm_modules/text_engine/build.sh):
  *   te_layout, te_measure, te_glyph_count, te_glyphs, te_release,
  *   te_atlas_width, te_atlas_height, te_atlas_ptr, te_next_dirty_region,
+ *   te_outline_ptr, te_outline_float_count, te_outline_dirty,
  *   plus malloc/free (WASI libc) for the host to stage the spec JSON.
  */
 
@@ -86,11 +87,13 @@ int te_layout(const char* spec, int len) {
 // `ptr`/`count` is a packed array of text_engine::PreGlyph records; `boxPtr`/
 // `boxCount` is a packed array of text_engine::BoxQuad background fills (may be
 // 0/0). Both were written into engine memory by the host. Returns a layoutId
-// (>0) or 0.
-int te_layout_glyphs(const void* ptr, int count, const void* boxPtr, int boxCount) {
+// (>0) or 0. `precision` is text_engine::Precision (0 = Auto).
+int te_layout_glyphs(const void* ptr, int count, const void* boxPtr, int boxCount,
+                     int precision) {
   return Engine::instance().layoutGlyphs(
       (const text_engine::PreGlyph*)ptr, count,
-      (const text_engine::BoxQuad*)boxPtr, boxCount);
+      (const text_engine::BoxQuad*)boxPtr, boxCount,
+      (text_engine::Precision)precision);
 }
 
 int te_measure(int id, void* out_metrics) {
@@ -150,6 +153,16 @@ int te_atlas_page_count() { return Engine::instance().atlasPageCount(); }
 int te_atlas_page_ptr(int p) {
   return (int)(intptr_t)Engine::instance().atlasPagePixels(p);
 }
+
+// Analytic outline arena for the Precise path: byte offset into linear memory,
+// float count, and a once-per-growth dirty flag the GPU glue polls to decide
+// whether to re-upload the storage buffer.
+int te_outline_ptr() {
+  const float* p = Engine::instance().outlineData();
+  return (int)(intptr_t)p;
+}
+int te_outline_float_count() { return Engine::instance().outlineFloatCount(); }
+int te_outline_dirty() { return Engine::instance().outlineDirty() ? 1 : 0; }
 
 int te_next_dirty_region(void* out) {
   text_engine::AtlasRegion r;

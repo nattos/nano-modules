@@ -61,6 +61,15 @@ SPECS=(
   '{"text":"雪 直 海 言","lang":"ja","size_px":72}'
   '{"text":"CSSlist","runs":[{"family":"\"No Such Font\", sErIf","size_px":72,"rgba":[0.6,0.8,1,1]}]}'
   '{"text":"Serif 明朝","runs":[{"family":"Serif","lang":"ja","size_px":64,"rgba":[1,0.85,0.4,1]}]}'
+  # Precise (analytic outline) path — the record arena, the per-glyph blend
+  # weight and the coverage math are all pure float code compiled both ways, so
+  # they have to stay byte-identical too. One forced-Precise case, one Auto case
+  # BELOW the fade (must be bit-identical to plain MSDF), and one INSIDE it (a
+  # partial blend, the fiddliest arithmetic of the three).
+  '{"text":"Rg@%","precision":2,"runs":[{"size_px":420}]}'
+  '{"text":"Rg@%","precision":0,"runs":[{"size_px":96}]}'
+  '{"text":"Rg@%","precision":0,"runs":[{"size_px":270}]}'
+  '{"text":"Serif hairlines","precision":2,"runs":[{"family":"Serif","size_px":380,"rgba":[1,1,1,1]}]}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.

@@ -53,6 +53,34 @@ static constexpr int    GAP       = 1;     // transparent gutter between packed 
                                            // instead of the neighbor tile — kills the
                                            // thin-line / dot atlas-bleed artifacts.
 
+// --- Precise path (analytic outline) ----------------------------------------
+// Curve flattening tolerance, EM units. An outline record is scale-free, so
+// this is a fixed budget rather than something we re-derive per size: 5e-5 em
+// is 0.05 px at 1000 px/em and 0.1 px at 2000 — an order of magnitude below
+// what the eye resolves — while keeping a curvy glyph in the low hundreds of
+// segments.
+static constexpr float  kFlattenTol   = 5e-5f;
+static constexpr int    kFlattenDepth = 8;     // max bisections per edge (≤256 segments)
+static constexpr int    kMaxSegs      = 4096;  // pathological-outline guard → stay MSDF
+static constexpr int    kMinBands     = 4;
+static constexpr int    kMaxBands     = 64;
+// Auto handover: start crossing over at kAutoScale × the glyph's atlas
+// reference em, finishing one octave later. Fading (rather than switching)
+// means a size sweep through the boundary can't pop.
+static constexpr float  kAutoScale    = 3.0f;
+static constexpr float  kAutoFadeOct  = 2.0f;
+// Auto safety probe: how far the MSDF tile may misclassify a pixel before we
+// call that magnification unsafe for this particular glyph (measureMaxSafePx).
+static constexpr float  kSafeCovTol   = 0.15f;
+static constexpr int    kSafeUnbounded = 64;   // "no constraint from this glyph's tile"
+// Only samples at least this many screen pixels clear of the true outline count
+// toward the probe. Sub-pixel disagreement about where an edge sits is what MSDF
+// is FOR; what we're hunting is ink appearing or vanishing well inside or well
+// outside the shape. The margin has to clear CORNERS too: MSDF's median is a
+// pseudo-distance there and legitimately diverges from the true distance a pixel
+// or two in, while still placing the edge perfectly.
+static constexpr float  kSafeMarginPx = 4.0f;
+
 // Reference em for a codepoint: dense CJK scripts (ideographs, kana, hangul,
 // compat ideographs, SIP) → high-res pages; everything else → standard.
 static int refPxForCodepoint(unsigned cp) {
@@ -204,6 +232,10 @@ std::vector<std::string> parseFamilyList(const std::string& s) {
   return out;
 }
 
+// Defined with the CPU compositor further down; the Auto safety probe needs it
+// up here to compare a baked tile against the true outline.
+static float msdfCoverage(const uint8_t* page, float au, float av, float screenPxRange);
+
 // A styled run: a byte range [b0, b1) of the text with its size, color, the
 // resolved faceId (0 = primary font; >0 = a host-registered named family), and
 // the normalized CJK script (for regional Han fallback selection). `skew` /
@@ -301,6 +333,158 @@ int sbConic(const FT_Vector* c,const FT_Vector* to,void* u){ auto*b=(ShapeBuilde
 int sbCubic(const FT_Vector* c1,const FT_Vector* c2,const FT_Vector* to,void* u){ auto*b=(ShapeBuilder*)u; auto e=ShapeBuilder::pt(to); b->contour->addEdge(msdfgen::EdgeHolder(b->cur,ShapeBuilder::pt(c1),ShapeBuilder::pt(c2),e)); b->cur=e; return 0; }
 } // namespace
 
+// ---- Analytic outline records (the Precise path) ---------------------------
+// Layout of a record is documented in text_engine.h. Everything here is pure
+// float math on an arena of vec4s, so the CPU golden, the MSL compositor and
+// the WGSL compositor can be exact transliterations of one another.
+
+// Adaptive bisection of one edge into line segments, in EM units. A straight
+// edge passes the flatness test immediately, so linear segments cost nothing.
+static void flattenEdge(const msdfgen::EdgeSegment* e, double upem,
+                        double t0, double t1,
+                        const msdfgen::Point2& p0, const msdfgen::Point2& p1,
+                        int depth, std::vector<float>& out) {
+  auto emit = [&]() {
+    float x0 = (float)(p0.x / upem), y0 = (float)(p0.y / upem);
+    float x1 = (float)(p1.x / upem), y1 = (float)(p1.y / upem);
+    if (x0 == x1 && y0 == y1) return;             // degenerate → contributes nothing
+    out.push_back(x0); out.push_back(y0); out.push_back(x1); out.push_back(y1);
+  };
+  if (depth >= kFlattenDepth) { emit(); return; }
+  double tm = 0.5 * (t0 + t1);
+  msdfgen::Point2 pm = e->point(tm);
+  // Perpendicular deviation of the curve's midpoint from the chord, in em.
+  double dx = (p1.x - p0.x) / upem, dy = (p1.y - p0.y) / upem;
+  double mx = (pm.x - p0.x) / upem, my = (pm.y - p0.y) / upem;
+  double len2 = dx * dx + dy * dy;
+  double dev = len2 > 0.0 ? std::fabs(mx * dy - my * dx) / std::sqrt(len2)
+                          : std::sqrt(mx * mx + my * my);
+  if (dev <= kFlattenTol) { emit(); return; }
+  flattenEdge(e, upem, t0, tm, p0, pm, depth + 1, out);
+  flattenEdge(e, upem, tm, t1, pm, p1, depth + 1, out);
+}
+
+// Flatten + band `shape` (font units) into `arena`, using the SAME plane bounds
+// the MSDF tile uses so the quad geometry is identical in both modes. Returns
+// the record's vec4 offset, or 0 (= "no record") when the outline is empty or
+// absurdly complex.
+static int buildOutlineRecord(const msdfgen::Shape& shape, double upem,
+                              float planeL, float planeB, float planeR, float planeT,
+                              std::vector<float>& arena) {
+  float spanY = planeT - planeB;
+  if (!(spanY > 0.0f) || !(planeR > planeL)) return 0;
+
+  std::vector<float> segs;
+  for (const msdfgen::Contour& c : shape.contours) {
+    for (const msdfgen::EdgeHolder& eh : c.edges) {
+      const msdfgen::EdgeSegment* e = eh;
+      if (!e) continue;
+      flattenEdge(e, upem, 0.0, 1.0, e->point(0.0), e->point(1.0), 0, segs);
+    }
+  }
+  int segCount = (int)(segs.size() / 4);
+  if (segCount <= 0 || segCount > kMaxSegs) return 0;
+
+  int bandCount = (int)std::lround(std::sqrt((double)segCount));
+  if (bandCount < kMinBands) bandCount = kMinBands;
+  if (bandCount > kMaxBands) bandCount = kMaxBands;
+  float bandDy = spanY / (float)bandCount;
+
+  // A segment belongs to every band its y-extent overlaps. Bands run top-down
+  // from planeT, which is the index math the shaders use.
+  std::vector<std::vector<int>> buckets((size_t)bandCount);
+  for (int i = 0; i < segCount; i++) {
+    float ya = segs[i * 4 + 1], yb = segs[i * 4 + 3];
+    float ymin = ya < yb ? ya : yb, ymax = ya < yb ? yb : ya;
+    int b0 = (int)std::floor((planeT - ymax) / bandDy);
+    int b1 = (int)std::floor((planeT - ymin) / bandDy);
+    if (b0 < 0) b0 = 0;
+    if (b1 > bandCount - 1) b1 = bandCount - 1;
+    if (b0 > bandCount - 1 || b1 < 0) continue;
+    for (int b = b0; b <= b1; b++) buckets[(size_t)b].push_back(i);
+  }
+
+  int ofs = (int)(arena.size() / 4);
+  arena.push_back(planeL);            arena.push_back(planeB);
+  arena.push_back(planeR);            arena.push_back(planeT);
+  arena.push_back((float)bandCount);  arena.push_back(bandDy);
+  arena.push_back(0.0f);              arena.push_back(0.0f);
+  size_t tableAt = arena.size();
+  arena.resize(tableAt + (size_t)bandCount * 4, 0.0f);
+  for (int b = 0; b < bandCount; b++) {
+    const std::vector<int>& bucket = buckets[(size_t)b];
+    arena[tableAt + (size_t)b * 4 + 0] = (float)((int)(arena.size() / 4) - ofs);
+    arena[tableAt + (size_t)b * 4 + 1] = (float)bucket.size();
+    for (int i : bucket) {
+      arena.push_back(segs[i * 4 + 0]); arena.push_back(segs[i * 4 + 1]);
+      arena.push_back(segs[i * 4 + 2]); arena.push_back(segs[i * 4 + 3]);
+    }
+  }
+  return ofs;
+}
+
+// THE reference implementation of the Precise path. `ofs` is the record's vec4
+// offset, (ex, ey) the sample point in em (y-up), `ppe` the screen pixels per
+// em of this glyph instance. Returns coverage in [0,1] from the SAME ramp the
+// MSDF branch uses — clamp(0.5 - signedDistancePx, 0, 1) — which is what makes
+// the two blendable.
+//
+// MIRRORED IN: text_composite_quad_msl.h (glyph_fs) and text-engine.ts (WGSL
+// glyph_fs). Change all three together.
+static float outlineCoverage(const float* arena, int ofs, float ex, float ey, float ppe) {
+  const float* rec = arena + (size_t)ofs * 4;
+  float planeT   = rec[3];
+  int   bandCount = (int)rec[4];
+  float bandDy    = rec[5];
+  if (bandCount <= 0 || !(bandDy > 0.0f) || !(ppe > 0.0f)) return 0.0f;
+  const float* table = rec + 8;
+  float r = 1.0f / ppe;                       // one screen pixel, in em
+
+  auto bandOf = [&](float y) {
+    int i = (int)std::floor((planeT - y) / bandDy);
+    return i < 0 ? 0 : (i > bandCount - 1 ? bandCount - 1 : i);
+  };
+  // Distance sweeps every band within a pixel of the sample; winding uses ONLY
+  // the sample's own band — any segment crossing this scanline must overlap it.
+  int bLo = bandOf(ey + r), bHi = bandOf(ey - r), bMid = bandOf(ey);
+
+  float best = 1e30f;
+  for (int b = bLo; b <= bHi; b++) {
+    int so = (int)table[(size_t)b * 4 + 0], sn = (int)table[(size_t)b * 4 + 1];
+    const float* sg = rec + (size_t)so * 4;
+    for (int i = 0; i < sn; i++) {
+      float x0 = sg[i * 4 + 0], y0 = sg[i * 4 + 1];
+      float x1 = sg[i * 4 + 2], y1 = sg[i * 4 + 3];
+      float dx = x1 - x0, dy = y1 - y0;
+      float len2 = dx * dx + dy * dy;
+      float t = len2 > 0.0f ? ((ex - x0) * dx + (ey - y0) * dy) / len2 : 0.0f;
+      t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+      float px = x0 + t * dx - ex, py = y0 + t * dy - ey;
+      float d2 = px * px + py * py;
+      if (d2 < best) best = d2;
+    }
+  }
+
+  int wind = 0;
+  {
+    int so = (int)table[(size_t)bMid * 4 + 0], sn = (int)table[(size_t)bMid * 4 + 1];
+    const float* sg = rec + (size_t)so * 4;
+    for (int i = 0; i < sn; i++) {
+      float x0 = sg[i * 4 + 0], y0 = sg[i * 4 + 1];
+      float x1 = sg[i * 4 + 2], y1 = sg[i * 4 + 3];
+      if ((y0 <= ey) != (y1 <= ey)) {          // crosses this scanline
+        float xc = x0 + (ey - y0) * (x1 - x0) / (y1 - y0);
+        if (xc > ex) wind += (y1 > y0) ? 1 : -1;   // ray to +x, nonzero rule
+      }
+    }
+  }
+
+  float sd = std::sqrt(best) * ppe;            // px, unsigned
+  if (wind != 0) sd = -sd;                     // negative inside, as sd_round_box
+  float cov = 0.5f - sd;
+  return cov < 0.0f ? 0.0f : (cov > 1.0f ? 1.0f : cov);
+}
+
 // Per-glyph cache entry. Plane bounds are in EM units (relative to the pen
 // origin on the baseline, y-up); the layout scales them by the font size.
 struct GlyphInfo {
@@ -309,6 +493,11 @@ struct GlyphInfo {
   float advance=0;                    // em units
   int   page=0;                       // atlas-array layer holding this glyph
   bool  has_msdf=false;               // false for whitespace/empty glyphs
+  // Precise path, both baked lazily (only when a layout asks for a size where
+  // they can matter) so ordinary text pays nothing for them.
+  int   outline_ofs=0;                // outline-arena vec4 offset; 0 = none
+  bool  outline_tried=false;          // don't re-attempt a glyph we gave up on
+  float max_safe_px=0;                // largest px/em this tile stays faithful at (0 = unmeasured)
 };
 
 struct LayoutData {
@@ -369,6 +558,12 @@ struct Engine::Impl {
   // Glyph cache keyed by (faceId, FT glyph index) so faces never collide.
   std::unordered_map<uint64_t, GlyphInfo> glyphs;
 
+  // Analytic outline records for the Precise path, in one append-only arena
+  // uploaded as a storage buffer. Index 0 is a reserved dummy vec4 so a
+  // GlyphQuad's outline_ofs of 0 unambiguously means "no record".
+  std::vector<float> outlines = std::vector<float>(4, 0.0f);
+  bool outlines_dirty = true;
+
   std::unordered_map<int, LayoutData> layouts;
   int next_id = 1;
 
@@ -377,6 +572,8 @@ struct Engine::Impl {
   void resetAtlas() {
     pages.clear();
     glyphs.clear();
+    outlines.assign(4, 0.0f);     // offsets are cache-relative — drop them with the cache
+    outlines_dirty = true;
   }
   void clearFaces() {
     for (Face& f : faces) if (f.ft) FT_Done_Face(f.ft);
@@ -427,6 +624,20 @@ struct Engine::Impl {
   const GlyphInfo* ensureGlyph(int faceId, uint32_t gi, unsigned cp,
                                float skew = 0, float embolden = 0, float rot = 0);
 
+  // Load one glyph's outline at unscaled units, apply the synthetic styling,
+  // and decompose it into an msdfgen Shape. Shared by the MSDF bake and the
+  // Precise bake so the two can never drift. `advanceEm` comes back including
+  // embolden's widening. Returns false if FreeType rejects the glyph.
+  bool loadGlyphShape(int faceId, uint32_t gi, float skew, float embolden, float rot,
+                      msdfgen::Shape& shape, float& advanceEm);
+
+  // Resolve a layout's Precision request for ONE glyph at `sizePx`, baking the
+  // outline record and the glyph's safety scale on demand. Returns the blend
+  // weight (0 = MSDF only) and writes the record offset to `outOfs`.
+  float resolvePrecision(Precision mode, float sizePx, unsigned cp,
+                         int faceId, uint32_t gi, float skew, float embolden, float rot,
+                         float& outOfs);
+
   // Shelf-pack a tileW×tileH tile onto a page of class `refPx` (creating a new
   // page if the current one is full), leaving a GAP gutter. Returns the page
   // index and top-left (x,y), or -1 if the tile can't fit a page at all.
@@ -451,21 +662,15 @@ struct Engine::Impl {
   }
 };
 
-const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
-                                           float skew, float embolden, float rot) {
-  uint64_t key = gkey(faceId, gi, skew, embolden, rot);
-  auto it = glyphs.find(key);
-  if (it != glyphs.end()) return &it->second;
-
+bool Engine::Impl::loadGlyphShape(int faceId, uint32_t gi, float skew, float embolden,
+                                  float rot, msdfgen::Shape& shape, float& advanceEm) {
   Face& fc = faces[faceId];
   FT_Face face = fc.ft;
   int units_per_em = fc.units_per_em;
 
-  GlyphInfo info;
-  if (FT_Load_Glyph(face, gi, FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING)) {
-    glyphs.emplace(key, info); return &glyphs[key];
-  }
-  info.advance = (float)(face->glyph->metrics.horiAdvance) / (float)units_per_em;
+  advanceEm = 0.0f;
+  if (FT_Load_Glyph(face, gi, FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING)) return false;
+  advanceEm = (float)(face->glyph->metrics.horiAdvance) / (float)units_per_em;
 
   // Synthetic styling (Blitz path): apply parley's oblique/bold to the unscaled
   // outline before decomposing, so the MSDF tile bakes them in. embolden also
@@ -473,7 +678,7 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
   if (embolden > 0.0f) {
     FT_Pos strength = (FT_Pos)std::lround(embolden * units_per_em);
     FT_Outline_Embolden(&face->glyph->outline, strength);
-    info.advance += (float)strength / (float)units_per_em;
+    advanceEm += (float)strength / (float)units_per_em;
   }
   if (skew != 0.0f) {
     // x' = x + y·tan(skew): a horizontal shear producing a faux-italic slant.
@@ -504,11 +709,26 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
   if (FT_Outline_Get_Orientation(&face->glyph->outline) == FT_ORIENTATION_POSTSCRIPT)
     FT_Outline_Reverse(&face->glyph->outline);
 
-  msdfgen::Shape shape; ShapeBuilder b; b.shape = &shape;
+  ShapeBuilder b; b.shape = &shape;
   FT_Outline_Funcs funcs = { sbMove, sbLine, sbConic, sbCubic, 0, 0 };
   FT_Outline_Decompose(&face->glyph->outline, &funcs, &b);
   shape.normalize();
+  return true;
+}
 
+const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
+                                           float skew, float embolden, float rot) {
+  uint64_t key = gkey(faceId, gi, skew, embolden, rot);
+  auto it = glyphs.find(key);
+  if (it != glyphs.end()) return &it->second;
+
+  int units_per_em = faces[faceId].units_per_em;
+
+  GlyphInfo info;
+  msdfgen::Shape shape;
+  if (!loadGlyphShape(faceId, gi, skew, embolden, rot, shape, info.advance)) {
+    glyphs.emplace(key, info); return &glyphs[key];
+  }
   if (shape.contours.empty()) {           // whitespace / empty glyph: advance only
     glyphs.emplace(key, info); return &glyphs[key];
   }
@@ -564,6 +784,103 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
   pages[page].dirty = true;
   glyphs.emplace(key, info);
   return &glyphs[key];
+}
+
+// Auto's per-glyph safety scale: the largest magnification at which the baked
+// MSDF tile still CLASSIFIES pixels the way the true outline does. This is the
+// pinhole detector — we compare only kSafeMarginPx screen pixels or more away
+// from the true outline, so ordinary sub-pixel edge placement (which the plain
+// scale rule already covers) can't swamp the measurement. Sampled at tile-texel
+// density, which is enough because an MSDF artifact is never smaller than a texel.
+//
+// The margin test doubles as the ground truth: coverage saturates at half a
+// pixel, so evaluating the outline at ppe/(2·margin) yields a hard 0/1 exactly
+// when the sample is `margin` screen pixels clear, and its value is then the
+// correct classification.
+static float measureMaxSafePx(const uint8_t* page, const GlyphInfo& gi, int refPx,
+                              const std::vector<float>& arena) {
+  int tx0 = (int)std::lround(gi.u0 * PAGE_W), ty0 = (int)std::lround(gi.v0 * PAGE_H);
+  int tw  = (int)std::lround((gi.u1 - gi.u0) * PAGE_W);
+  int th  = (int)std::lround((gi.v1 - gi.v0) * PAGE_H);
+  if (tw <= 0 || th <= 0) return (float)refPx * 2.0f;
+  float spanX = gi.planeR - gi.planeL, spanY = gi.planeT - gi.planeB;
+  if (!(spanX > 0.0f) || !(spanY > 0.0f)) return (float)refPx * 2.0f;
+
+  // The ladder stops at the scale rule's own threshold: past that the scale rule
+  // decides anyway, so climbing further would cost bake time for no effect. A
+  // glyph that survives the whole ladder simply imposes no constraint.
+  int safe = kSafeUnbounded;
+  for (int mag = 2; (float)mag <= kAutoScale; mag *= 2) {
+    float ppe = (float)refPx * (float)mag;
+    float spr = (float)RANGE_PX * (float)mag;   // screenPxRange at this magnification
+    bool ok = true;
+    for (int j = 0; j < th && ok; j++) {
+      for (int i = 0; i < tw; i++) {
+        float fx = ((float)i + 0.5f) / (float)tw, fy = ((float)j + 0.5f) / (float)th;
+        float ex = gi.planeL + fx * spanX;
+        float ey = gi.planeT - fy * spanY;
+        float covTrue = outlineCoverage(arena.data(), gi.outline_ofs, ex, ey,
+                                        ppe / (2.0f * kSafeMarginPx));
+        if (covTrue > 0.0f && covTrue < 1.0f) continue;   // near the edge — not our business
+        float au = ((float)(tx0 + i) + 0.5f) / (float)PAGE_W;
+        float av = ((float)(ty0 + j) + 0.5f) / (float)PAGE_H;
+        float d = msdfCoverage(page, au, av, spr) - covTrue;
+        if (d < 0.0f) d = -d;
+        if (d > kSafeCovTol) { ok = false; break; }
+      }
+    }
+    if (!ok) { safe = mag / 2; break; }   // the previous rung was the last to hold
+  }
+  // Never claim a tile is unsafe below 2× its own reference em — below that the
+  // field is doing exactly what it was built for.
+  if (safe < 2) safe = 2;
+  return (float)refPx * (float)safe;
+}
+
+float Engine::Impl::resolvePrecision(Precision mode, float sizePx, unsigned cp,
+                                     int faceId, uint32_t gi, float skew, float embolden,
+                                     float rot, float& outOfs) {
+  outOfs = 0.0f;
+  if (mode == Precision::Smooth) return 0.0f;
+
+  auto it = glyphs.find(gkey(faceId, gi, skew, embolden, rot));
+  if (it == glyphs.end() || !it->second.has_msdf) return 0.0f;
+  GlyphInfo& info = it->second;
+
+  // Auto below the floor can never want the outline, so don't bake one — this
+  // is what keeps normal-size text on exactly the old code path.
+  int refPx = refPxForCodepoint(cp);
+  if (mode == Precision::Auto && sizePx <= (float)refPx * 2.0f) return 0.0f;
+
+  if (!info.outline_tried) {
+    info.outline_tried = true;
+    msdfgen::Shape shape; float adv = 0.0f;
+    if (loadGlyphShape(faceId, gi, skew, embolden, rot, shape, adv) && !shape.contours.empty()) {
+      double upem = (double)faces[faceId].units_per_em;
+      int ofs = buildOutlineRecord(shape, upem, info.planeL, info.planeB,
+                                   info.planeR, info.planeT, outlines);
+      info.outline_ofs = ofs;
+      if (ofs > 0) outlines_dirty = true;
+    }
+  }
+  if (info.outline_ofs <= 0) return 0.0f;   // no record (empty or too complex) → MSDF
+  outOfs = (float)info.outline_ofs;
+
+  if (mode == Precision::Precise) return 1.0f;
+
+  if (info.max_safe_px <= 0.0f) {
+    const uint8_t* page = (info.page >= 0 && info.page < (int)pages.size())
+                              ? pages[info.page].rgba.data() : nullptr;
+    info.max_safe_px = page ? measureMaxSafePx(page, info, refPx, outlines)
+                            : (float)refPx * 2.0f;
+  }
+  float lo = (float)refPx * kAutoScale;
+  if (info.max_safe_px < lo) lo = info.max_safe_px;
+  float hi = lo * kAutoFadeOct;
+  if (sizePx <= lo) { outOfs = 0.0f; return 0.0f; }
+  if (sizePx >= hi) return 1.0f;
+  float t = (sizePx - lo) / (hi - lo);
+  return t * t * (3.0f - 2.0f * t);          // smoothstep — no pop across the handover
 }
 
 Engine::Engine() : impl_(new Impl()) {}
@@ -650,6 +967,10 @@ int Engine::layout(const char* spec_json, int len) {
   float defSize   = readNumber(spec_json, len, "size_px", 48.0f);
   float max_width = readNumber(spec_json, len, "max_width_px", 0.0f);
   float line_sp   = readNumber(spec_json, len, "line_spacing", 1.2f);
+  // Anti-aliasing path for this layout; resolved PER GLYPH below, since the
+  // right answer depends on how big each glyph actually lands on screen.
+  Precision prec  = (Precision)(int)readNumber(spec_json, len, "precision",
+                                               (float)(int)Precision::Auto);
   // Document-level language: spec "lang" (in constraints or top-level) overrides
   // the engine default (system locale); runs may override per-run.
   std::string docLang = impl_->defaultLang;
@@ -663,7 +984,8 @@ int Engine::layout(const char* spec_json, int len) {
 
   // A glyph with its own run style. Layout buffers a line (baseline TBD), so
   // mixed sizes align on a shared baseline = lineTop + maxAscent on the line.
-  struct SG { float size; float r, g, b, a; const GlyphInfo* info; int face; };
+  struct SG { float size; float r, g, b, a; const GlyphInfo* info; int face;
+              float pofs, pw; };   // resolved Precise record offset + blend weight
   std::vector<SG> word; float wordW = 0;                 // current word (for wrap)
   struct LG { float x; SG g; };
   std::vector<LG> lineGlyphs;                            // glyphs placed on the current line
@@ -707,7 +1029,8 @@ int Engine::layout(const char* spec_json, int len) {
       q.h = (gi->planeT - gi->planeB) * sz;
       q.u0 = gi->u0; q.v0 = gi->v0; q.u1 = gi->u1; q.v1 = gi->v1;
       q.r = lg.g.r; q.g = lg.g.g; q.b = lg.g.b; q.a = lg.g.a;
-      q.page = (float)gi->page; q._r0 = q._r1 = q._r2 = 0.0f;
+      q.page = (float)gi->page;
+      q.outline_ofs = lg.g.pofs; q.precise_w = lg.g.pw; q._r2 = 0.0f;
       ld.quads.push_back(q);
     }
     totalH += lineMaxHeight > 0 ? lineMaxHeight : defSize * line_sp;
@@ -755,7 +1078,10 @@ int Engine::layout(const char* spec_json, int len) {
       else { bumpLineMetrics(r.size, faceId); penX += adv; }
       continue;
     }
-    word.push_back({r.size, r.r, r.g, r.b, r.a, info, faceId}); wordW += info->advance * r.size;
+    float pofs = 0.0f;
+    float pw = impl_->resolvePrecision(prec, r.size, cp, faceId, gi, r.skew, r.embolden, 0.0f, pofs);
+    word.push_back({r.size, r.r, r.g, r.b, r.a, info, faceId, pofs, pw});
+    wordW += info->advance * r.size;
     // End the segment at an allowed break (the last byte of this char is i-1),
     // so the next segment can wrap onto a new line independently.
     char br = (i >= 1 && i <= (int)brks.size()) ? brks[i - 1] : (char)LINEBREAK_NOBREAK;
@@ -780,7 +1106,7 @@ int Engine::layout(const char* spec_json, int len) {
 }
 
 int Engine::layoutGlyphs(const PreGlyph* glyphs, int count,
-                         const BoxQuad* boxes, int boxCount) {
+                         const BoxQuad* boxes, int boxCount, Precision precision) {
   if (!impl_->font_loaded || count < 0 || boxCount < 0) return 0;
   if (count > 0 && !glyphs) return 0;
   if (boxCount > 0 && !boxes) return 0;
@@ -812,7 +1138,10 @@ int Engine::layoutGlyphs(const PreGlyph* glyphs, int count,
     q.h = (info->planeT - info->planeB) * g.size;
     q.u0 = info->u0; q.v0 = info->v0; q.u1 = info->u1; q.v1 = info->v1;
     q.r = g.r; q.g = g.g; q.b = g.b; q.a = g.a;
-    q.page = (float)info->page; q._r0 = q._r1 = q._r2 = 0.0f;
+    q.page = (float)info->page;
+    q.precise_w = impl_->resolvePrecision(precision, g.size, g.cp, g.face, g.gid,
+                                          g.skew, g.embolden, g.rot, q.outline_ofs);
+    q._r2 = 0.0f;
     q.clip_x = g.clip_x; q.clip_y = g.clip_y; q.clip_w = g.clip_w; q.clip_h = g.clip_h;
     q.clip_r_tl = g.clip_r_tl; q.clip_r_tr = g.clip_r_tr;
     q.clip_r_br = g.clip_r_br; q.clip_r_bl = g.clip_r_bl;
@@ -995,6 +1324,19 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
     if (x1 > outW) x1 = outW; if (y1 > outH) y1 = outH;
     float tileH_px = (q.v1 - q.v0) * PAGE_H;
     float screenPxRange = (msdf && tileH_px > 0) ? pxRange * q.h / tileH_px : 1.0f;
+    // Precise path: the quad maps the glyph's em plane onto its pixel rect, so
+    // one scale serves both axes. `outline_ofs` of 0 means this glyph has no
+    // record and stays on the MSDF branch whatever precise_w says.
+    int   pofs = (int)q.outline_ofs;
+    float pw   = pofs > 0 ? q.precise_w : 0.0f;
+    float planeSpanX = 0.0f, ppe = 0.0f, planeL = 0.0f, planeT = 0.0f;
+    if (pw > 0.0f) {
+      const float* rec = impl_->outlines.data() + (size_t)pofs * 4;
+      planeL = rec[0]; planeT = rec[3];
+      planeSpanX = rec[2] - rec[0];
+      ppe = planeSpanX > 0.0f ? q.w / planeSpanX : 0.0f;
+      if (!(ppe > 0.0f)) pw = 0.0f;
+    }
 
     for (int py = y0; py < y1; py++) {
       for (int px = x0; px < x1; px++) {
@@ -1011,6 +1353,12 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
           if (ty < 0) ty = 0; if (ty >= PAGE_H) ty = PAGE_H - 1;
           cov = atlas[((size_t)ty * PAGE_W + tx) * 4 + 3] / 255.0f;
         }
+        if (pw > 0.0f) {
+          float ex = planeL + (px + 0.5f - (q.x + originX)) / ppe;
+          float ey = planeT - (py + 0.5f - (q.y + originY)) / ppe;
+          float covP = outlineCoverage(impl_->outlines.data(), pofs, ex, ey, ppe);
+          cov += (covP - cov) * pw;
+        }
         cov *= clipCoverage(px + 0.5f, py + 0.5f, q.clip_x + originX, q.clip_y + originY,
                             q.clip_w, q.clip_h, q.clip_r_tl, q.clip_r_tr, q.clip_r_br, q.clip_r_bl);
         float a = cov * q.a;
@@ -1025,6 +1373,14 @@ bool Engine::rasterize(int id, int outW, int outH, float originX, float originY,
     }
   }
   return true;
+}
+
+const float* Engine::outlineData() const {
+  return impl_->outlines.empty() ? nullptr : impl_->outlines.data();
+}
+int Engine::outlineFloatCount() const { return (int)impl_->outlines.size(); }
+bool Engine::outlineDirty() {
+  bool d = impl_->outlines_dirty; impl_->outlines_dirty = false; return d;
 }
 
 int Engine::atlasWidth() const  { return PAGE_W; }

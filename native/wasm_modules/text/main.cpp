@@ -28,6 +28,11 @@ namespace gen_text {
 // across fonts and sizes (the typographic anchor).
 enum VAlign { AlignCenter = 0, AlignBaseline = 1, AlignTop = 2, AlignBottom = 3 };
 
+// How glyph edges are anti-aliased. Mirrors text_engine::Precision — the host
+// resolves it per glyph, since the right answer depends on how big each glyph
+// actually lands on screen.
+enum Precision { PrecAuto = 0, PrecSmooth = 1, PrecPrecise = 2 };
+
 struct State {
   char  text[2048] = "Text";
   char  font[128] = "";       // OS/bundled family name ("" = host primary font)
@@ -39,6 +44,7 @@ struct State {
   float max_width = 0.0f;     // 0 = no wrap
   float line_spacing = 1.2f;
   int   v_align = AlignCenter;
+  int   precision = PrecAuto;
   float v_pos = 0.5f;         // anchor line, fraction of viewport height
   bool  initialized = false;
 };
@@ -72,14 +78,14 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 }
 
 void module_init() {
-  state::init("source.text.plain", {1, 0, 1},
+  state::init("source.text.plain", {1, 1, 0},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
         "## Text\n"
         "Renders crisp multiline text into a texture via the host type engine "
-        "(FreeType + HarfBuzz + msdfgen). Because it's MSDF, it stays sharp at "
-        "**any scale** — zoom in without pixelation.\n\n"
+        "(FreeType + msdfgen). It stays sharp at **any scale** — zoom in without "
+        "pixelation — and *Edges* controls how it gets there.\n\n"
         "**Try:** leave *Font* blank for the primary UI font, or name any OS / "
         "bundled family; set *Max Width* above 0 to wrap into a paragraph; wire the "
         "output into a filter chain (glow, displacement) for animated titles.")
@@ -98,11 +104,23 @@ void module_init() {
           "synthesizes the style (faux bold / oblique) when the family has no "
           "true face for it. *Size* is the cap height in pixels **at 1080p** — it "
           "scales with the output, so the preview and a 4K export show the same "
-          "text at the same place (MSDF keeps it crisp at any scale).")
+          "text at the same place.\n\n"
+          "*Edges* picks the anti-aliasing path. **Smooth** is the signed-distance "
+          "atlas: fast, and faithful until the text gets much bigger than the atlas "
+          "resolution — past that it rounds off corners and can punch pinholes "
+          "through thin strokes. **Precise** evaluates the real outline per pixel "
+          "instead: no holes, exact corners, at any size. **Auto** (the default) "
+          "stays on Smooth while it's faithful and fades into Precise as the text "
+          "grows, per glyph — so a size sweep never pops. Leave it on Auto unless "
+          "you are chasing a specific look or a specific frame budget.")
       .textField  ("font",         "",     state::PrimaryInput).label("Font", "Font")
       .boolField  ("bold",         false,  state::PrimaryInput).label("Bold", "Bold")
       .boolField  ("italic",       false,  state::PrimaryInput).label("Italic", "Ital")
       .floatField ("size",         64.0f,  8.0f, 512.0f, state::PrimaryInput).label("Size", "Size")
+      .selectField("precision", PrecAuto, state::PrimaryInput,
+                   {{"Auto", PrecAuto},
+                    {"Smooth", PrecSmooth},
+                    {"Precise", PrecPrecise}}).label("Edges", "Edge")
       .group("color", "Colour")
       .rgbaField  ("color",        1.0f, 1.0f, 1.0f, 1.0f, state::PrimaryInput).label("Colour", "Col")
       .group("layout", "Layout")
@@ -157,6 +175,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, pl, "max_width"))    s->max_width = state::patchFloat(i);
     else if (state::pathIs(p, pl, "line_spacing")) s->line_spacing = state::patchFloat(i);
     else if (state::pathIs(p, pl, "v_align"))      s->v_align = state::patchInt(i);
+    else if (state::pathIs(p, pl, "precision"))    s->precision = state::patchInt(i);
     else if (state::pathIs(p, pl, "v_pos"))        s->v_pos = state::patchFloat(i);
     else if (state::pathIs(p, pl, "color")) {
       auto v = state::patchVec4(i); s->r=v.x; s->g=v.y; s->b=v.z; s->a=v.w;
@@ -197,8 +216,10 @@ void render(void* self, int vp_w, int vp_h) {
                        s->bold ? 700 : 400, s->italic ? "true" : "false");
   pos += std::snprintf(spec + pos, sizeof(spec) - pos,
       "\"size_px\":%.3f,\"rgba\":[%.4f,%.4f,%.4f,%.4f]}],"
+      "\"precision\":%d,"
       "\"constraints\":{\"max_width_px\":%.3f,\"line_spacing\":%.3f}}",
-      s->size * px, s->r, s->g, s->b, s->a, s->max_width * px, s->line_spacing);
+      s->size * px, s->r, s->g, s->b, s->a, s->precision,
+      s->max_width * px, s->line_spacing);
 
   // Output target: the executor binds our PrimaryOutput as the "tex_out" field
   // (same as every other effect). renderTarget() only works on a path that set

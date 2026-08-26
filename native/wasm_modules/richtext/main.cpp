@@ -89,10 +89,16 @@ namespace gen_richtext {
   "  margin-top: 20px;\n" \
   "}"
 
+// How glyph edges are anti-aliased. Mirrors text_engine::Precision — the host
+// resolves it per glyph, since the right answer depends on how big each glyph
+// actually lands on screen.
+enum Precision { PrecAuto = 0, PrecSmooth = 1, PrecPrecise = 2 };
+
 struct State {
   char  html[6144] = GEN_RICHTEXT_DEFAULT_HTML;
   char  css[4096]  = GEN_RICHTEXT_DEFAULT_CSS;
   float scale = 1.0f;       // CSS px → device px (hidpi)
+  int   precision = PrecAuto;
   bool  initialized = false;
 
   // Cached Blitz layout. The HTML/CSS layout (Stylo cascade + Taffy + parley
@@ -136,14 +142,14 @@ static void appendEscaped(char* dst, int& pos, int n, const char* src) {
 }
 
 void module_init() {
-  state::init("source.text.rich", {1, 0, 1},
+  state::init("source.text.rich", {1, 1, 0},
     state::Schema()
       // Top-level manual: high-level "what is this / how to use / what to try".
       .helpField("intro",
         "## Rich Text\n"
         "A full **HTML + CSS** document laid out by Blitz (Stylo cascade, Taffy "
-        "flex/grid, parley shaping) and rendered through the same MSDF atlas as "
-        "plain Text — so flexbox, coloured spans, mixed sizes/weights and complex "
+        "flex/grid, parley shaping) and rendered through the same glyph pipeline "
+        "as plain Text — so flexbox, coloured spans, mixed sizes/weights and complex "
         "scripts all *just work*, crisp at any scale and byte-identical in the "
         "browser and native.\n\n"
         "**Try:** the default doc drives its whole look from a handful of CSS "
@@ -165,8 +171,18 @@ void module_init() {
           "magnified into whatever the output actually is, so `100vw` fills the node, "
           "CSS pixels map 1:1 at 1080p, and the layout never reflows between the "
           "preview and a 4K export. *Scale* is a zoom over that mapping (2 = twice "
-          "as large) — handy for retuning everything without editing the CSS.")
+          "as large) — handy for retuning everything without editing the CSS.\n\n"
+          "*Edges* picks the anti-aliasing path, per glyph. **Smooth** is the "
+          "signed-distance atlas: fast, and faithful until a glyph gets much bigger "
+          "than the atlas resolution — past that it rounds off corners and can punch "
+          "pinholes through thin strokes. **Precise** evaluates the real outline per "
+          "pixel: no holes, exact corners, at any size. **Auto** (the default) fades "
+          "from one to the other as each glyph grows, so a *Scale* sweep never pops.")
       .floatField  ("scale", 1.0f, 0.25f, 4.0f, state::PrimaryInput).label("Scale", "Scale")
+      .selectField ("precision", PrecAuto, state::PrimaryInput,
+                    {{"Auto", PrecAuto},
+                     {"Smooth", PrecSmooth},
+                     {"Precise", PrecPrecise}}).label("Edges", "Edge")
       .textureField("tex_in",  state::PrimaryInput)   // overlay the doc on this; transparent if unconnected
       .textureField("tex_out", state::PrimaryOutput)
       // Generates its image; the tex_in overlay is optional (transparent when
@@ -195,6 +211,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if      (state::pathIs(p, pl, "html"))  { state::patchString(i, s->html, sizeof(s->html)); s->layoutDirty = true; }
     else if (state::pathIs(p, pl, "css"))   { state::patchString(i, s->css, sizeof(s->css));   s->layoutDirty = true; }
     else if (state::pathIs(p, pl, "scale")) { s->scale = state::patchFloat(i);                 s->layoutDirty = true; }
+    else if (state::pathIs(p, pl, "precision")) { s->precision = state::patchInt(i);              s->layoutDirty = true; }
   }
 }
 
@@ -233,7 +250,8 @@ void render(void* self, int vp_w, int vp_h) {
     appendEscaped(spec, pos, (int)sizeof(spec), s->html);
     pos += std::snprintf(spec + pos, sizeof(spec) - pos, "</body></html>");
     pos += std::snprintf(spec + pos, sizeof(spec) - pos,
-        "\",\"width\":%d,\"height\":%d,\"scale\":%.4f}", vp_w, vp_h, zoom);
+        "\",\"width\":%d,\"height\":%d,\"scale\":%.4f,\"precision\":%d}",
+        vp_w, vp_h, zoom, s->precision);
 
     int id = text::layout(spec, pos);
     if (id > 0) {

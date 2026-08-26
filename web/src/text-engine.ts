@@ -38,10 +38,73 @@ struct U {
 @group(0) @binding(1) var atlas_arr: texture_2d_array<f32>;
 @group(0) @binding(2) var bg_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
+// The analytic-outline arena (the Precise path). Record layout is documented in
+// native/src/text/text_engine.h; index 0 is a reserved empty slot.
+@group(0) @binding(4) var<storage, read> outlines: array<vec4<f32>>;
 @group(0) @binding(5) var<uniform> u: U;
 @group(0) @binding(6) var<storage, read> boxes: array<Box>;
 
 fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c)); }
+
+// Analytic outline coverage (the Precise path). ofs is the glyph's record
+// (vec4 units), e the sample point in the glyph's EM space (y-up), ppe its
+// screen pixels per em.
+//
+// Distance sweeps every band within one pixel of the sample; winding uses ONLY
+// the sample's own band, which is exact because any segment crossing this
+// scanline must overlap that band. The result goes through the SAME ramp the
+// MSDF branch uses, which is what lets the two be blended.
+//
+// EXACT MIRROR of outlineCoverage() in native/src/text/text_engine.cpp (the CPU
+// golden) and te_outline_cov in text_composite_quad_msl.h. Move all three together.
+fn outline_cov(ofs:u32, e:vec2<f32>, ppe:f32) -> f32 {
+  let plane = outlines[ofs];
+  let hdr   = outlines[ofs + 1u];
+  let bandCount = i32(hdr.x);
+  let bandDy    = hdr.y;
+  if (bandCount <= 0 || bandDy <= 0.0 || ppe <= 0.0) { return 0.0; }
+  let planeT = plane.w;
+  let r = 1.0 / ppe;                       // one screen pixel, in em
+  let bLo  = clamp(i32(floor((planeT - (e.y + r)) / bandDy)), 0, bandCount - 1);
+  let bHi  = clamp(i32(floor((planeT - (e.y - r)) / bandDy)), 0, bandCount - 1);
+  let bMid = clamp(i32(floor((planeT - e.y) / bandDy)), 0, bandCount - 1);
+
+  var best = 1e30;
+  for (var b = bLo; b <= bHi; b = b + 1) {
+    let band = outlines[ofs + 2u + u32(b)];
+    let so = ofs + u32(band.x);
+    let sn = i32(band.y);
+    for (var i = 0; i < sn; i = i + 1) {
+      let sg = outlines[so + u32(i)];
+      let d = sg.zw - sg.xy;
+      let len2 = dot(d, d);
+      var t = 0.0;
+      if (len2 > 0.0) { t = clamp(dot(e - sg.xy, d) / len2, 0.0, 1.0); }
+      let q = sg.xy + t * d - e;
+      best = min(best, dot(q, q));
+    }
+  }
+
+  var wind = 0;
+  {
+    let band = outlines[ofs + 2u + u32(bMid)];
+    let so = ofs + u32(band.x);
+    let sn = i32(band.y);
+    for (var i = 0; i < sn; i = i + 1) {
+      let sg = outlines[so + u32(i)];
+      if ((sg.y <= e.y) != (sg.w <= e.y)) {          // crosses this scanline
+        let xc = sg.x + (e.y - sg.y) * (sg.z - sg.x) / (sg.w - sg.y);
+        if (xc > e.x) {                              // ray to +x, nonzero rule
+          if (sg.w > sg.y) { wind = wind + 1; } else { wind = wind - 1; }
+        }
+      }
+    }
+  }
+
+  var sd = sqrt(best) * ppe;               // px, unsigned
+  if (wind != 0) { sd = -sd; }             // negative inside, as sd_round_box
+  return clamp(0.5 - sd, 0.0, 1.0);
+}
 // Signed distance (px) to a rounded box; radius = (tl,tr,br,bl), selected per
 // quadrant and clamped to half-extent. Matches the engine's CPU sdRoundBox.
 fn sd_round_box(p:vec2<f32>, c:vec2<f32>, h:vec2<f32>, rad:vec4<f32>) -> f32 {
@@ -134,6 +197,10 @@ struct GlyphOut {
   @location(3) @interpolate(flat) spr: f32,
   @location(4) @interpolate(flat) clip: vec4<f32>,
   @location(5) @interpolate(flat) clipr: vec4<f32>,
+  @location(6) em: vec2<f32>,                        // position in the glyph's EM plane
+  @location(7) @interpolate(flat) ofs: f32,          // outline record (vec4 units); 0 = none
+  @location(8) @interpolate(flat) pw: f32,           // analytic-outline blend weight
+  @location(9) @interpolate(flat) ppe: f32,          // screen px per em
 };
 @vertex fn glyph_vs(@builtin(vertex_index) vid:u32, @builtin(instance_index) iid:u32) -> GlyphOut {
   let g = glyphs[iid];
@@ -147,6 +214,17 @@ struct GlyphOut {
   o.page = g.aux.x;
   let tile_h_px = (g.uv.w - g.uv.y) * f32(u.atlas_h);
   o.spr = select(1.0, u.atlas_px_range * g.rect.w / tile_h_px, tile_h_px > 0.0);
+  // Precise path. The quad rect IS the glyph's em plane mapped to pixels, so
+  // interpolating the plane corners across the quad hands every fragment its em
+  // position for free. Record 0 is the reserved empty slot, so reading it is
+  // safe and lands on pw = 0.
+  let ofs = u32(g.aux.y);
+  let plane = outlines[ofs];
+  let spanX = plane.z - plane.x;
+  o.ofs = g.aux.y;
+  o.pw  = select(0.0, g.aux.z, ofs > 0u && spanX > 0.0);
+  o.ppe = select(0.0, g.rect.z / spanX, spanX > 0.0);
+  o.em  = vec2<f32>(mix(plane.x, plane.z, corner.x), mix(plane.w, plane.y, corner.y));
   o.clip = g.clip; o.clipr = g.clipr;
   return o;
 }
@@ -158,6 +236,12 @@ struct GlyphOut {
     cov = clamp(in.spr * (sd - 0.5) + 0.5, 0.0, 1.0);
   } else {
     cov = texel.a;
+  }
+  // Precise: the very same ramp, handed an exact distance instead of a sampled
+  // one. pw is 0 for every glyph the engine left on the MSDF path.
+  if (in.pw > 0.0) {
+    let covP = outline_cov(u32(in.ofs), in.em, in.ppe);
+    cov = cov + (covP - cov) * in.pw;
   }
   cov = cov * clip_cov(in.pos.xy, in.clip, in.clipr);
   let a = cov * in.rgba.a;
@@ -189,7 +273,13 @@ interface TEExports {
   te_next_dirty_region(outPtr: number): number;
   // Blitz complex-layout mode: rasterize pre-shaped runs + background boxes
   // from text_blitz.wasm.
-  te_layout_glyphs(runsPtr: number, count: number, boxPtr: number, boxCount: number): number;
+  te_layout_glyphs(runsPtr: number, count: number, boxPtr: number, boxCount: number,
+                   precision: number): number;
+  // Analytic-outline arena (the Precise path): byte offset into linear memory,
+  // float count, and a once-per-growth dirty flag.
+  te_outline_ptr(): number;
+  te_outline_float_count(): number;
+  te_outline_dirty(): number;
 }
 
 /** Exports of text_blitz.wasm — the Rust Blitz layout lib (Stylo + Taffy +
@@ -320,6 +410,7 @@ export class TextEngine {
   // pipelines (bg/box/glyph) cached per target texture format (intermediates vs
   // the canvas may differ). Built lazily in pipesFor().
   private shaderModule!: GPUShaderModule;
+  private outlineBuf: GPUBuffer | null = null;
   private bindLayout!: GPUBindGroupLayout;
   private pipeLayout!: GPUPipelineLayout;
   private renderPipes = new Map<GPUTextureFormat,
@@ -428,7 +519,7 @@ export class TextEngine {
     this.shaderModule = device.createShaderModule({ code: WGSL });
     // Shared bind-group layout for all three pipelines (each shader uses a
     // subset). binding 0=glyphs(VS), 1=atlas(FS), 2=bg(FS), 3=sampler(FS),
-    // 5=uniforms(VS+FS), 6=boxes(VS).
+    // 4=outlines(VS+FS), 5=uniforms(VS+FS), 6=boxes(VS).
     const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT;
     this.bindLayout = device.createBindGroupLayout({
       entries: [
@@ -436,6 +527,7 @@ export class TextEngine {
         { binding: 1, visibility: F, texture: { sampleType: 'float', viewDimension: '2d-array' } },
         { binding: 2, visibility: F, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 3, visibility: F, sampler: { type: 'filtering' } },
+        { binding: 4, visibility: V | F, buffer: { type: 'read-only-storage' } },
         { binding: 5, visibility: V | F, buffer: { type: 'uniform' } },
         { binding: 6, visibility: V, buffer: { type: 'read-only-storage' } },
       ],
@@ -457,7 +549,8 @@ export class TextEngine {
       try {
         const o = JSON.parse(specJson);
         if (o && o.mode === 'html' && typeof o.html === 'string') {
-          return this.layoutHtml(o.html, o.width | 0 || 1920, o.height | 0 || 1080, o.scale || 1);
+          return this.layoutHtml(o.html, o.width | 0 || 1920, o.height | 0 || 1080,
+                                 o.scale || 1, o.precision | 0);
         }
       } catch { /* fall through to the paragraph engine */ }
     }
@@ -475,20 +568,21 @@ export class TextEngine {
   /** Lay out an HTML/CSS document via Blitz (Stylo+Taffy+parley) into a w×h px
    *  viewport, feeding the pre-shaped runs through the engine's GID seam. Returns
    *  a layoutId usable with measure/glyphs/render, or 0 if Blitz isn't loaded.
+   *  `precision` is text_engine::Precision (0 = Auto).
    *  Pixel-parity with native is proven in blitz_parity.sh. */
-  layoutHtml(html: string, width: number, height: number, scale = 1): number {
+  layoutHtml(html: string, width: number, height: number, scale = 1, precision = 0): number {
     const blz = this.blz;
     if (!blz || !this.blzSess) return 0;
     const htmlEnc = new TextEncoder().encode(html);
     // Empty / blank HTML → an empty engine layout (valid id, 0 glyphs) so the
     // effect still renders and CLEARS its target, rather than skipping and
     // leaving the previous frame.
-    if (htmlEnc.length === 0) return this.ex.te_layout_glyphs(0, 0, 0, 0);
+    if (htmlEnc.length === 0) return this.ex.te_layout_glyphs(0, 0, 0, 0, precision);
     const hp = blz.tb_alloc(htmlEnc.length);
     new Uint8Array(blz.memory.buffer).set(htmlEnc, hp);
     const bl = blz.tb_layout(this.blzSess, hp, htmlEnc.length, width, height, scale);
     blz.tb_dealloc(hp, htmlEnc.length);
-    if (!bl) return this.ex.te_layout_glyphs(0, 0, 0, 0);  // layout failed → clear, not stale
+    if (!bl) return this.ex.te_layout_glyphs(0, 0, 0, 0, precision);  // layout failed → clear, not stale
     const n = blz.tb_glyph_count(bl);
     const gp = blz.tb_glyph_ptr(bl);
     const bn = blz.tb_box_count(bl);
@@ -501,7 +595,7 @@ export class TextEngine {
     this.u8().set(runs, rp);
     const bxp = bn > 0 ? this.ex.malloc(boxes.length) : 0;
     if (bxp) this.u8().set(boxes, bxp);
-    const id = this.ex.te_layout_glyphs(rp, n, bxp, bn);
+    const id = this.ex.te_layout_glyphs(rp, n, bxp, bn, precision);
     this.ex.free(rp);
     if (bxp) this.ex.free(bxp);
     return id;
@@ -723,6 +817,16 @@ export class TextEngine {
     }
   }
 
+  /** Copy the engine's outline arena into the GPU storage buffer. */
+  private uploadOutlines(floatCount: number): void {
+    if (!this.outlineBuf) return;
+    const ptr = this.ex.te_outline_ptr();
+    const bytes = floatCount > 0 && ptr
+        ? this.u8().slice(ptr, ptr + floatCount * 4)
+        : new Uint8Array(16);
+    this.device.queue.writeBuffer(this.outlineBuf, 0, bytes);
+  }
+
   /** Upload page `p`'s pixels into atlas-array layer `p`. */
   private uploadPage(p: number, aw: number, ah: number): void {
     const ptr = this.ex.te_atlas_page_ptr(p);
@@ -812,6 +916,20 @@ export class TextEngine {
       for (const p of dirtyPages) if (p < ex.te_atlas_page_count()) this.uploadPage(p, aw, ah);
     }
 
+    // Analytic outline arena (the Precise path). It only ever grows, so re-upload
+    // just when the engine reports growth — a full-screen title's records are a
+    // few tens of KB and would otherwise be re-sent every frame.
+    const outFloats = ex.te_outline_float_count();
+    const outBytes = Math.max(16, outFloats * 4);
+    const outDirty = ex.te_outline_dirty() !== 0;
+    if (!this.outlineBuf || this.outlineBuf.size < outBytes) {
+      this.outlineBuf?.destroy();
+      this.outlineBuf = device.createBuffer({ size: outBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      this.uploadOutlines(outFloats);
+    } else if (outDirty) {
+      this.uploadOutlines(outFloats);
+    }
+
     const cw = target.width, ch = target.height;
     const glyphBuf = device.createBuffer({ size: Math.max(96, glyphBytes.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(glyphBuf, 0, glyphBytes);
@@ -844,6 +962,7 @@ export class TextEngine {
         { binding: 1, resource: this.atlasTex.createView({ dimension: '2d-array' }) },
         { binding: 2, resource: bgTex.createView() },
         { binding: 3, resource: this.sampler },
+        { binding: 4, resource: { buffer: this.outlineBuf! } },
         { binding: 5, resource: { buffer: uniBuf } },
         { binding: 6, resource: { buffer: boxBuf } },
       ],

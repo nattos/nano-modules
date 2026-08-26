@@ -237,6 +237,15 @@ int main(int argc, char** argv) {
     id<MTLBuffer> uniBuf = [dev newBufferWithBytes:&u length:sizeof(UBO)
                                            options:MTLResourceStorageModeShared];
 
+    // Analytic outline arena (the Precise path). Always bound — the arena is
+    // never empty (index 0 is a reserved slot), and glyph_vs reads it for every
+    // instance to decide whether it has a record.
+    const float* outFloats = text_engine::Engine::instance().outlineData();
+    size_t outBytes = (size_t)text_engine::Engine::instance().outlineFloatCount() * 4;
+    id<MTLBuffer> outlineBuf = [dev newBufferWithBytes:outFloats
+                                                length:std::max<size_t>(16, outBytes)
+                                               options:MTLResourceStorageModeShared];
+
     id<MTLCommandQueue> q = [dev newCommandQueue];
     id<MTLCommandBuffer> cb = [q commandBuffer];
 
@@ -268,13 +277,15 @@ int main(int argc, char** argv) {
               instanceCount:(NSUInteger)boxesWritten];
     }
 
-    // glyphs (MSDF quads).
+    // glyphs (MSDF and/or analytic-outline quads).
     if (written > 0) {
       [enc setRenderPipelineState:glyphPSO];
       [enc setVertexBuffer:glyphBuf offset:0 atIndex:0];
       [enc setFragmentBuffer:glyphBuf offset:0 atIndex:0];
       [enc setVertexBuffer:uniBuf offset:0 atIndex:2];
       [enc setFragmentBuffer:uniBuf offset:0 atIndex:2];
+      [enc setVertexBuffer:outlineBuf offset:0 atIndex:3];
+      [enc setFragmentBuffer:outlineBuf offset:0 atIndex:3];
       [enc setFragmentTexture:atlas atIndex:0];
       [enc setFragmentSamplerState:samp atIndex:0];
       [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6

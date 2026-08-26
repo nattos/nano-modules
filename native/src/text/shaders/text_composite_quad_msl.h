@@ -23,11 +23,14 @@
 //                       ONE straight-alpha output (the golden does two sequential
 //                       composites per box; they fold algebraically into a single
 //                       src-over: see below).
-//   glyph_vs/glyph_fs — instanced glyph quad, MSDF coverage × run alpha.
+//   glyph_vs/glyph_fs — instanced glyph quad, coverage × run alpha. Coverage is
+//                       the MSDF sample, the analytic outline, or a blend of the
+//                       two (per-glyph aux.z) — see te_outline_cov.
 //
 // Bindings (Metal index spaces are per-class; renderSetBuffer binds a buffer to
 // BOTH vertex+fragment so [[buffer(n)]] resolves in either stage):
 //   buffer(0)=glyphs  buffer(1)=boxes  buffer(2)=uniforms U
+//   buffer(3)=outlines (analytic-outline arena, the Precise path)
 //   fragment texture(0)=atlas_arr (2D array, LINEAR)  texture(1)=bg
 //   fragment sampler(0)=linear/clamp
 //
@@ -48,6 +51,65 @@ struct U {
 
 static inline float te_median3(float a, float b, float c) {
   return max(min(a, b), min(max(a, b), c));
+}
+
+// Analytic outline coverage (the Precise path). `arena` is the engine's outline
+// buffer, `ofs` the glyph's record (vec4 units), `e` the sample point in the
+// glyph's EM space (y-up), `ppe` its screen pixels per em. The record layout is
+// documented in text_engine.h.
+//
+// Distance sweeps every band within one pixel of the sample; winding uses ONLY
+// the sample's own band, which is exact because any segment crossing this
+// scanline must overlap that band. The result goes through the SAME ramp the
+// MSDF branch uses, which is what lets the two be blended.
+//
+// EXACT MIRROR of outlineCoverage() in native/src/text/text_engine.cpp (the CPU
+// golden) and the WGSL twin in web/src/text-engine.ts. Move all three together.
+static inline float te_outline_cov(device const float4* arena, uint ofs,
+                                   float2 e, float ppe) {
+  float4 plane = arena[ofs];
+  float4 hdr   = arena[ofs + 1u];
+  int   bandCount = int(hdr.x);
+  float bandDy    = hdr.y;
+  if (bandCount <= 0 || bandDy <= 0.0 || ppe <= 0.0) { return 0.0; }
+  float planeT = plane.w;
+  float r = 1.0 / ppe;                       // one screen pixel, in em
+  int bLo  = clamp(int(floor((planeT - (e.y + r)) / bandDy)), 0, bandCount - 1);
+  int bHi  = clamp(int(floor((planeT - (e.y - r)) / bandDy)), 0, bandCount - 1);
+  int bMid = clamp(int(floor((planeT - e.y) / bandDy)), 0, bandCount - 1);
+
+  float best = 1e30;
+  for (int b = bLo; b <= bHi; b++) {
+    float4 band = arena[ofs + 2u + uint(b)];
+    uint so = ofs + uint(band.x);
+    int  sn = int(band.y);
+    for (int i = 0; i < sn; i++) {
+      float4 sg = arena[so + uint(i)];
+      float2 d = sg.zw - sg.xy;
+      float len2 = dot(d, d);
+      float t = (len2 > 0.0) ? clamp(dot(e - sg.xy, d) / len2, 0.0, 1.0) : 0.0;
+      float2 q = sg.xy + t * d - e;
+      best = min(best, dot(q, q));
+    }
+  }
+
+  int wind = 0;
+  {
+    float4 band = arena[ofs + 2u + uint(bMid)];
+    uint so = ofs + uint(band.x);
+    int  sn = int(band.y);
+    for (int i = 0; i < sn; i++) {
+      float4 sg = arena[so + uint(i)];
+      if ((sg.y <= e.y) != (sg.w <= e.y)) {                 // crosses this scanline
+        float xc = sg.x + (e.y - sg.y) * (sg.z - sg.x) / (sg.w - sg.y);
+        if (xc > e.x) { wind += (sg.w > sg.y) ? 1 : -1; }   // ray to +x, nonzero rule
+      }
+    }
+  }
+
+  float sd = sqrt(best) * ppe;               // px, unsigned
+  if (wind != 0) { sd = -sd; }               // negative inside, as sd_round_box
+  return clamp(0.5 - sd, 0.0, 1.0);
 }
 
 // Signed distance (px) to a rounded box; radius=(tl,tr,br,bl), per-quadrant.
@@ -147,15 +209,20 @@ fragment float4 box_fs(BoxOut in [[stage_in]], constant U& u [[buffer(2)]]) {
 struct GlyphOut {
   float4 pos  [[position]];
   float2 auv;                 // interpolated atlas-page uv
+  float2 em;                  // interpolated position in the glyph's EM plane (y-up)
   float4 rgba  [[flat]];
   float  page  [[flat]];
   float  spr   [[flat]];      // screenPxRange factor
+  float  ofs   [[flat]];      // outline record offset (vec4 units); 0 = none
+  float  pw    [[flat]];      // analytic-outline blend weight
+  float  ppe   [[flat]];      // screen px per em for this instance
   float4 clip  [[flat]];
   float4 clipr [[flat]];
 };
 vertex GlyphOut glyph_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
-                         device const Glyph* glyphs [[buffer(0)]],
-                         constant U& u              [[buffer(2)]]) {
+                         device const Glyph* glyphs    [[buffer(0)]],
+                         constant U& u                 [[buffer(2)]],
+                         device const float4* outlines [[buffer(3)]]) {
   Glyph g = glyphs[iid];
   float2 corner = quad_corner(vid);
   float gx = g.rect.x + u.origin_x, gy = g.rect.y + u.origin_y;
@@ -167,11 +234,23 @@ vertex GlyphOut glyph_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
   o.page = g.aux.x;
   float tile_h_px = (g.uv.w - g.uv.y) * float(u.atlas_h);
   o.spr = (tile_h_px > 0.0) ? u.atlas_px_range * g.rect.w / tile_h_px : 1.0;
+  // Precise path. The quad rect IS the glyph's em plane mapped to pixels, so
+  // interpolating the plane corners across the quad hands every fragment its em
+  // position for free — no inverse transform in the fragment shader. Record 0 is
+  // the reserved empty slot, so reading it is safe and lands on pw = 0.
+  uint ofs = uint(g.aux.y);
+  float4 plane = outlines[ofs];
+  float spanX = plane.z - plane.x;
+  o.ofs = g.aux.y;
+  o.pw  = (ofs > 0u && spanX > 0.0) ? g.aux.z : 0.0;
+  o.ppe = (spanX > 0.0) ? g.rect.z / spanX : 0.0;
+  o.em  = float2(mix(plane.x, plane.z, corner.x), mix(plane.w, plane.y, corner.y));
   o.clip = g.clip; o.clipr = g.clipr;
   return o;
 }
 fragment float4 glyph_fs(GlyphOut in [[stage_in]],
                          constant U& u                    [[buffer(2)]],
+                         device const float4* outlines    [[buffer(3)]],
                          texture2d_array<float> atlas_arr [[texture(0)]],
                          sampler samp                     [[sampler(0)]]) {
   float4 texel = atlas_arr.sample(samp, in.auv, uint(in.page), level(0.0));
@@ -181,6 +260,12 @@ fragment float4 glyph_fs(GlyphOut in [[stage_in]],
     cov = clamp(in.spr * (sd - 0.5) + 0.5, 0.0, 1.0);
   } else {                                   // alpha-coverage (stub atlas)
     cov = texel.a;
+  }
+  // Precise: the very same ramp, handed an exact distance instead of a sampled
+  // one. pw is 0 for every glyph the engine left on the MSDF path.
+  if (in.pw > 0.0) {
+    float covP = te_outline_cov(outlines, uint(in.ofs), in.em, in.ppe);
+    cov += (covP - cov) * in.pw;
   }
   cov = cov * clip_cov(in.pos.xy, in.clip, in.clipr, u);
   float a = cov * in.rgba.a;

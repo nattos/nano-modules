@@ -1125,6 +1125,14 @@ if(APPLE)
   target_compile_options(test_text_fonts PRIVATE -Wno-attributes)
   catch_discover_tests(test_text_fonts)
 
+  # The Precise (analytic outline) glyph path + the Auto handover. CPU-only:
+  # Engine::rasterize is the golden both GPU compositors are validated against.
+  add_executable(test_text_precise tests/test_text_precise.cpp)
+  target_link_libraries(test_text_precise PRIVATE
+    effect_runtime Catch2::Catch2WithMain)
+  target_compile_options(test_text_precise PRIVATE -Wno-attributes)
+  catch_discover_tests(test_text_precise)
+
   # End-to-end GPU render of a WASM effect on a real Metal backend.
   if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     # Composition executor end-to-end GPU render (Metal-gated): pixel parity

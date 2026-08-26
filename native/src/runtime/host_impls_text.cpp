@@ -220,6 +220,9 @@ struct TextGpu {
   int glyphBuf = -1; uint32_t glyphCap = 0;
   int boxBuf = -1;   uint32_t boxCap = 0;
   int uniBuf = -1;
+  // Analytic outline arena (the Precise path). It only ever grows, so we
+  // re-upload on the engine's dirty flag rather than every frame.
+  int outlineBuf = -1; uint32_t outlineCap = 0;
 
   void reset() {
     backend = nullptr;
@@ -227,6 +230,7 @@ struct TextGpu {
     psos.clear();
     atlasLayers = atlasW = atlasH = 0;
     glyphBuf = boxBuf = uniBuf = -1; glyphCap = boxCap = 0;
+    outlineBuf = -1; outlineCap = 0;
   }
 };
 TextGpu g_gpu;
@@ -396,7 +400,8 @@ int text_layout(const char* spec_json, int spec_len) {
   std::string_view spec(spec_json, spec_len > 0 ? (size_t)spec_len : 0);
 
   // Blitz complex-layout mode: {"mode":"html","html":...,"width":W,"height":H,
-  // "scale":S}. Cheap substring gate, then full parse (mirrors text-engine.ts).
+  // "scale":S,"precision":P}. Cheap substring gate, then full parse (mirrors
+  // text-engine.ts).
   if (spec.find("\"mode\"") != std::string_view::npos) {
     auto j = nlohmann::json::parse(spec, nullptr, false);
     if (!j.is_discarded() && j.value("mode", std::string()) == "html") {
@@ -406,15 +411,16 @@ int text_layout(const char* spec_json, int spec_len) {
       unsigned w = (unsigned)j.value("width", 1920);
       unsigned h = (unsigned)j.value("height", 1080);
       float scale = j.value("scale", 1.0f);
-      if (html.empty()) return engine().layoutGlyphs(nullptr, 0, nullptr, 0);
+      auto prec = (text_engine::Precision)j.value("precision", 0);
+      if (html.empty()) return engine().layoutGlyphs(nullptr, 0, nullptr, 0, prec);
       TbLayout* bl = tb_layout(g_blitz, (const unsigned char*)html.data(),
                                (int)html.size(), w, h, scale);
-      if (!bl) return engine().layoutGlyphs(nullptr, 0, nullptr, 0);
+      if (!bl) return engine().layoutGlyphs(nullptr, 0, nullptr, 0, prec);
       int n = tb_glyph_count(bl);
       const text_engine::PreGlyph* runs = tb_glyph_ptr(bl);
       int bn = tb_box_count(bl);
       const text_engine::BoxQuad* boxes = tb_box_ptr(bl);
-      int id = engine().layoutGlyphs(runs, n, boxes, bn);
+      int id = engine().layoutGlyphs(runs, n, boxes, bn, prec);
       tb_free_layout(bl);
       return id;
     }
@@ -493,6 +499,16 @@ void text_render(int layout_id, int target_tex, int bg_tex,
                               boxes.data(),
                               (uint32_t)boxesWritten * sizeof(text_engine::BoxQuad));
 
+  // Outline arena: upload only when it grew (or when the cache was rebuilt for a
+  // new backend, which zeroes outlineCap and forces the first branch).
+  {
+    uint32_t need = (uint32_t)engine().outlineFloatCount() * 4u;
+    bool dirty = engine().outlineDirty();
+    if (g_gpu.outlineBuf < 0 || g_gpu.outlineCap < need || dirty)
+      g_gpu.outlineBuf = ensureBuffer(b, g_gpu.outlineBuf, g_gpu.outlineCap,
+                                      engine().outlineData(), need);
+  }
+
   UBO u{};
   u.canvas_w = (uint32_t)cw; u.canvas_h = (uint32_t)ch;
   u.glyph_count = (uint32_t)written;
@@ -538,6 +554,7 @@ void text_render(int layout_id, int target_tex, int bg_tex,
     b->renderSetPSO(pass, pso->glyph);
     b->renderSetBuffer(pass, g_gpu.glyphBuf, 0);
     b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
+    b->renderSetBuffer(pass, g_gpu.outlineBuf, 3);
     b->renderSetTexture(pass, atlas, 0, /*read*/0);
     b->renderSetSampler(pass, g_gpu.sampler, 0);
     b->renderDraw(pass, 6, (uint32_t)written);

@@ -64,6 +64,7 @@ done
 
 EXPORTS=(te_set_font te_add_font te_has_font te_add_fallback_font te_set_default_lang te_layout te_layout_glyphs te_measure te_glyph_count te_glyphs te_box_count te_boxes te_release
          te_rasterize te_atlas_width te_atlas_height te_atlas_page_count te_atlas_page_ptr te_next_dirty_region
+         te_outline_ptr te_outline_float_count te_outline_dirty
          malloc free __wasm_call_ctors)
 EXPFLAGS=(); for e in "${EXPORTS[@]}"; do EXPFLAGS+=(-Wl,--export="$e"); done
 

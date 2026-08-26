@@ -133,6 +133,17 @@ while (ex.te_next_dirty_region(rPtr)) {
 ex.free(rPtr);
 const pages = ex.te_atlas_page_count();
 
+// FNV-1a over the analytic-outline arena (the Precise path), matching the native
+// tool. Flattening and banding are pure float math compiled both ways, so this
+// must match exactly — a divergence would silently change Precise pixels.
+const ofloats = ex.te_outline_float_count();
+let ohash = 0x811c9dc5 >>> 0;
+{
+  const optr = ex.te_outline_ptr();
+  const bytes = u8();
+  for (let i = 0; i < ofloats * 4; i++) { ohash ^= bytes[optr + i]; ohash = Math.imul(ohash, 0x01000193) >>> 0; }
+}
+
 // CPU reference composite → real pixels (same deterministic canvas as the
 // native tool: layout bounds + 16px margin, opaque-black bg).
 const MARGIN = 16;
@@ -157,6 +168,7 @@ ex.te_release(id);
 console.log(JSON.stringify({
   metrics, quad_count: written, quads,
   atlas: { w: aw, h: ah, pages, hash: atlasHash.toString(16) },
+  outlines: { floats: ofloats, hash: ohash.toString(16) },
   composite: { w: cw, h: ch, hash: chash.toString(16) },
 }, null, 2));
 

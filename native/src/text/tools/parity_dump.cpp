@@ -101,6 +101,16 @@ int main(int argc, char** argv) {
   }
   int pageCount = eng.atlasPageCount();
 
+  // FNV-1a over the analytic-outline arena (the Precise path). Flattening and
+  // banding are pure float math compiled both ways, so this must match the wasm
+  // tool exactly — a divergence here would silently change Precise pixels.
+  uint32_t ohash = 0x811c9dc5u;
+  int ofloats = eng.outlineFloatCount();
+  if (const float* od = eng.outlineData()) {
+    const uint8_t* ob = reinterpret_cast<const uint8_t*>(od);
+    for (long i = 0; i < (long)ofloats * 4; i++) { ohash ^= ob[i]; ohash *= 0x01000193u; }
+  }
+
   // --- CPU reference composite → real pixels ---
   // Deterministic canvas: layout bounds + 16px margin, opaque-black background.
   const int MARGIN = 16;
@@ -144,6 +154,7 @@ int main(int argc, char** argv) {
   std::printf("    \"pages\": %d,\n", pageCount);
   std::printf("    \"hash\": \"%x\"\n", hash);
   std::printf("  },\n");
+  std::printf("  \"outlines\": { \"floats\": %d, \"hash\": \"%x\" },\n", ofloats, ohash);
   std::printf("  \"composite\": { \"w\": %d, \"h\": %d, \"hash\": \"%x\" }\n", cw, ch, chash);
   std::printf("}\n");
 

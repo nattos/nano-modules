@@ -212,8 +212,14 @@ inline float pxScale(int vp_h) {
 //     "lang":"ja",                       // optional doc default for regional Han
 //     "runs":[{"start":0,"len":5,"family":"Inter","weight":700,"italic":false,
 //              "size_px":48,"rgba":[1,1,1,1],"lang":"zh-Hant","features":["liga"]}],
+//     "precision":0,                     // 0 auto, 1 smooth (MSDF), 2 precise
 //     "constraints":{"max_width_px":1024,"align":"start|center|end|justify",
 //                    "direction":"auto|ltr|rtl","line_spacing":1.2} }
+//   `precision` picks how glyph edges are anti-aliased. 1 samples the MSDF atlas
+//   (fast; rounds corners and can punch pinholes once the text is much larger
+//   than the atlas reference em). 2 evaluates the real outline per pixel (exact
+//   at any size, costs a short per-pixel loop). 0 resolves PER GLYPH from its
+//   on-screen size and cross-fades between the two, so a size sweep can't pop.
 //   `lang` (run-level, else doc-level, else the host's system-locale default)
 //   selects the regional CJK fallback so shared Han ideographs render in the
 //   correct glyph forms (ja / ko / zh-Hant / zh-Hans).
@@ -244,7 +250,9 @@ struct GlyphQuad {
   float u0, v0, u1, v1;   // atlas-page UV rect, normalized
   float r, g, b, a;       // run color (linear, premultiply-free)
   float page;             // atlas-array layer index
-  float _r0, _r1, _r2;    // reserved (16-byte alignment for GPU storage buffers)
+  float outline_ofs;      // analytic-outline record offset (vec4s); 0 = none
+  float precise_w;        // 0 = pure MSDF .. 1 = pure analytic outline (blended)
+  float _r2;              // reserved (16-byte alignment for GPU storage buffers)
 };
 
 /// Lay out an attributed string. Returns an opaque layout handle (>0), or 0 on

@@ -45,6 +45,48 @@ enum class AtlasKind : int {
   AlphaCoverage = 1,  // straight coverage in all channels (stub / browser-raster fallback)
 };
 
+// How a layout's glyphs are anti-aliased. This is a per-LAYOUT request; the
+// engine resolves it PER GLYPH into GlyphQuad::precise_w (see below), because
+// the right answer depends on that glyph's on-screen size.
+//
+//   Smooth  — the MSDF atlas alone. Cheap, but above a few multiples of the
+//             atlas reference em it develops interior pinholes and rounds off
+//             corners: the field simply doesn't carry that much detail.
+//   Precise — evaluate the real outline analytically in the shader. Exact at
+//             any scale, costs a short per-pixel loop over nearby segments.
+//   Auto    — per glyph, from its size vs. the scale at which its own MSDF tile
+//             stops being faithful (GlyphInfo::maxSafePx), cross-faded over one
+//             octave so the handover is invisible.
+enum class Precision : int {
+  Auto    = 0,
+  Smooth  = 1,
+  Precise = 2,
+};
+
+// ---------------------------------------------------------------------------
+// Outline records (the Precise path)
+//
+// A flat float arena, uploaded once as a read-only storage buffer alongside the
+// atlas and indexed by GlyphQuad::outline_ofs. Everything is in EM units, y-up,
+// matching GlyphInfo's plane bounds — so a record is scale-free and is baked
+// exactly once per glyph key, however large the text gets.
+//
+// Curves are flattened to line segments at kFlattenTol em (deviation stays well
+// under a tenth of a pixel even at absurd sizes), then bucketed into horizontal
+// BANDS so a fragment only visits the segments near its own scanline. A segment
+// belongs to every band its y-extent overlaps.
+//
+//   rec+0 : planeL, planeB, planeR, planeT      // em, y-up (PAD-inclusive)
+//   rec+1 : bandCount, bandDy, 0, 0             // bands span [planeB,planeT], top-down
+//   rec+2 : bandCount x (segOfs, segCount, 0, 0)  // segOfs: vec4s, record-relative
+//    ...  : segments, each (x0, y0, x1, y1)
+//
+// All offsets are in vec4 units so the buffer binds as array<vec4<f32>> (WGSL)
+// / device const float4* (MSL) with no packing games. The shader-side reader is
+// mirrored three ways: Engine::rasterize (the CPU golden), the MSL compositor,
+// and the WGSL compositor.
+// ---------------------------------------------------------------------------
+
 // Layout-level metrics. Mirrors text::TextMetrics in host.h (the ABI POD); the
 // host glue copies field-for-field across the boundary.
 struct Metrics {
@@ -66,7 +108,9 @@ struct GlyphQuad {
   float u0, v0, u1, v1;   // atlas-page UV rect, normalized
   float r, g, b, a;       // run color (linear)
   float page;             // atlas-array layer index
-  float _r0, _r1, _r2;    // reserved (keeps the struct 16-byte aligned)
+  float outline_ofs;      // outline record offset (vec4 units); 0 = no record
+  float precise_w;        // 0 = pure MSDF .. 1 = pure analytic outline (blended)
+  float _r2;              // reserved (keeps the struct 16-byte aligned)
   // overflow:hidden clip = the nearest clipping ancestor's rounded padding box,
   // applied as a coverage mask. clip_w <= 0 → no clip. 96 bytes (6 vec4).
   // Defaulted so the JSON layout() path (which doesn't clip) emits clip_w=0.
@@ -171,7 +215,8 @@ public:
 
   // Lay out an attributed-string JSON spec (schema documented in host.h).
   // Returns an opaque layoutId (>0) or 0 on error. Deterministic given the
-  // same spec + same available fonts.
+  // same spec + same available fonts. The spec's optional `precision` field
+  // (Precision, default Auto) selects the anti-aliasing path.
   int  layout(const char* spec_json, int len);
 
   // Lay out PRE-SHAPED glyph runs from an external engine (the Blitz complex-
@@ -183,7 +228,8 @@ public:
   // layoutId (>0) or 0 on error. `boxes`/`boxCount` are the element background
   // fills (may be null/0); they are stored verbatim and drawn behind the glyphs.
   int  layoutGlyphs(const PreGlyph* glyphs, int count,
-                    const BoxQuad* boxes = nullptr, int boxCount = 0);
+                    const BoxQuad* boxes = nullptr, int boxCount = 0,
+                    Precision precision = Precision::Auto);
 
   bool measure(int layout_id, Metrics& out) const;
   int  glyphCount(int layout_id) const;
@@ -220,6 +266,14 @@ public:
   // Pops the next pending dirty page (false when none remain); out.page is the
   // layer. The GPU glue drains this after each layout() and re-uploads each.
   bool nextDirtyRegion(AtlasRegion& out);
+
+  // --- Outline arena access for the per-platform GPU glue ---
+  // The Precise path's segment/band records (layout documented above). The
+  // arena only ever grows and is never rewritten in place, so the glue can
+  // upload the whole thing whenever `outlineDirty()` reports growth.
+  const float* outlineData() const;     // vec4-aligned floats, may be null when empty
+  int  outlineFloatCount() const;
+  bool outlineDirty();                  // true once per growth, then clears
 
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
