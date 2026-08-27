@@ -64,6 +64,11 @@ static constexpr int    kFlattenDepth = 8;     // max bisections per edge (≤25
 static constexpr int    kMaxSegs      = 4096;  // pathological-outline guard → stay MSDF
 static constexpr int    kMinBands     = 4;
 static constexpr int    kMaxBands     = 64;
+// How far past a band a segment is still registered, in em. One band lookup then
+// serves BOTH the distance (which needs everything within a pixel) and the
+// winding count (which needs every segment crossing the scanline). 1/32 em
+// covers any size Auto picks Precise at, several times over.
+static constexpr float  kBandMarginEm = 1.0f / 32.0f;
 // Auto handover: start crossing over at kAutoScale × the glyph's atlas
 // reference em, finishing one octave later. Fading (rather than switching)
 // means a size sweep through the boundary can't pop.
@@ -374,28 +379,39 @@ static int buildOutlineRecord(const msdfgen::Shape& shape, double upem,
   float spanY = planeT - planeB;
   if (!(spanY > 0.0f) || !(planeR > planeL)) return 0;
 
+  // Flatten contour by contour, remembering where each one starts and which way
+  // it winds — the combiner needs both.
   std::vector<float> segs;
+  std::vector<int> contourStart, contourEnd, contourWinding;
   for (const msdfgen::Contour& c : shape.contours) {
+    int begin = (int)(segs.size() / 4);
     for (const msdfgen::EdgeHolder& eh : c.edges) {
       const msdfgen::EdgeSegment* e = eh;
       if (!e) continue;
       flattenEdge(e, upem, 0.0, 1.0, e->point(0.0), e->point(1.0), 0, segs);
     }
+    int end = (int)(segs.size() / 4);
+    if (end <= begin) continue;                 // empty / degenerate contour
+    contourStart.push_back(begin);
+    contourEnd.push_back(end);
+    contourWinding.push_back(c.winding() >= 0 ? 1 : -1);
   }
   int segCount = (int)(segs.size() / 4);
-  if (segCount <= 0 || segCount > kMaxSegs) return 0;
+  if (segCount <= 0 || segCount > kMaxSegs || contourStart.empty()) return 0;
 
   int bandCount = (int)std::lround(std::sqrt((double)segCount));
   if (bandCount < kMinBands) bandCount = kMinBands;
   if (bandCount > kMaxBands) bandCount = kMaxBands;
   float bandDy = spanY / (float)bandCount;
 
-  // A segment belongs to every band its y-extent overlaps. Bands run top-down
-  // from planeT, which is the index math the shaders use.
+  // A segment belongs to every band its y-extent overlaps, grown by the
+  // antialiasing reach so a fragment only ever has to read ONE band. Bands run
+  // top-down from planeT, which is the index math the shaders use.
+  float margin = bandDy > kBandMarginEm ? bandDy : kBandMarginEm;
   std::vector<std::vector<int>> buckets((size_t)bandCount);
   for (int i = 0; i < segCount; i++) {
     float ya = segs[i * 4 + 1], yb = segs[i * 4 + 3];
-    float ymin = ya < yb ? ya : yb, ymax = ya < yb ? yb : ya;
+    float ymin = (ya < yb ? ya : yb) - margin, ymax = (ya < yb ? yb : ya) + margin;
     int b0 = (int)std::floor((planeT - ymax) / bandDy);
     int b1 = (int)std::floor((planeT - ymin) / bandDy);
     if (b0 < 0) b0 = 0;
@@ -411,13 +427,32 @@ static int buildOutlineRecord(const msdfgen::Shape& shape, double upem,
   arena.push_back(0.0f);              arena.push_back(0.0f);
   size_t tableAt = arena.size();
   arena.resize(tableAt + (size_t)bandCount * 4, 0.0f);
+  int contourCount = (int)contourStart.size();
   for (int b = 0; b < bandCount; b++) {
     const std::vector<int>& bucket = buckets[(size_t)b];
+    // Split this band's segments into contour runs (bucket is in segment order,
+    // and segments are laid out contour by contour, so the runs are contiguous).
+    std::vector<int> runContour;
+    for (int ci = 0; ci < contourCount; ci++) {
+      for (int i : bucket)
+        if (i >= contourStart[(size_t)ci] && i < contourEnd[(size_t)ci]) { runContour.push_back(ci); break; }
+    }
     arena[tableAt + (size_t)b * 4 + 0] = (float)((int)(arena.size() / 4) - ofs);
-    arena[tableAt + (size_t)b * 4 + 1] = (float)bucket.size();
-    for (int i : bucket) {
-      arena.push_back(segs[i * 4 + 0]); arena.push_back(segs[i * 4 + 1]);
-      arena.push_back(segs[i * 4 + 2]); arena.push_back(segs[i * 4 + 3]);
+    arena[tableAt + (size_t)b * 4 + 1] = (float)runContour.size();
+    size_t runHdrAt = arena.size();
+    arena.resize(runHdrAt + runContour.size() * 4, 0.0f);
+    for (size_t r = 0; r < runContour.size(); r++) {
+      int ci = runContour[r];
+      arena[runHdrAt + r * 4 + 0] = (float)((int)(arena.size() / 4) - ofs);
+      arena[runHdrAt + r * 4 + 2] = (float)contourWinding[(size_t)ci];
+      int n = 0;
+      for (int i : bucket) {
+        if (i < contourStart[(size_t)ci] || i >= contourEnd[(size_t)ci]) continue;
+        arena.push_back(segs[i * 4 + 0]); arena.push_back(segs[i * 4 + 1]);
+        arena.push_back(segs[i * 4 + 2]); arena.push_back(segs[i * 4 + 3]);
+        n++;
+      }
+      arena[runHdrAt + r * 4 + 1] = (float)n;
     }
   }
   return ofs;
@@ -426,33 +461,57 @@ static int buildOutlineRecord(const msdfgen::Shape& shape, double upem,
 // THE reference implementation of the Precise path. `ofs` is the record's vec4
 // offset, (ex, ey) the sample point in em (y-up), `ppe` the screen pixels per
 // em of this glyph instance. Returns coverage in [0,1] from the SAME ramp the
-// MSDF branch uses — clamp(0.5 - signedDistancePx, 0, 1) — which is what makes
-// the two blendable.
+// MSDF branch uses, which is what makes the two blendable.
 //
-// MIRRORED IN: text_composite_quad_msl.h (glyph_fs) and text-engine.ts (WGSL
-// glyph_fs). Change all three together.
+// Per CONTOUR in the sample's band we take a signed distance — positive on that
+// contour's own filled side, matching msdfgen's convention — then combine them
+// the way msdfgen's OverlappingContourCombiner does. Naively taking the nearest
+// segment of any contour is wrong wherever outlines overlap (CJK strokes,
+// synthetic bold): the nearest edge is often BURIED inside the filled region,
+// and treating it as boundary paints a seam through solid ink.
+//
+// The combination, given for each contour a signed distance d and an orientation
+// w (+1 filled, -1 hole):
+//   inside a stroke  → the DEEPEST containing filled contour, capped by the
+//                      nearest hole edge and by any hole edge on the same side
+//   inside a hole    → the mirror image
+//   outside entirely → simply the nearest edge, which is exact there
+//
+// MIRRORED IN: text_composite_quad_msl.h (te_outline_cov) and text-engine.ts
+// (WGSL outline_cov). Change all three together.
 static float outlineCoverage(const float* arena, int ofs, float ex, float ey, float ppe) {
   const float* rec = arena + (size_t)ofs * 4;
-  float planeT   = rec[3];
+  float planeT    = rec[3];
   int   bandCount = (int)rec[4];
   float bandDy    = rec[5];
   if (bandCount <= 0 || !(bandDy > 0.0f) || !(ppe > 0.0f)) return 0.0f;
-  const float* table = rec + 8;
-  float r = 1.0f / ppe;                       // one screen pixel, in em
 
-  auto bandOf = [&](float y) {
-    int i = (int)std::floor((planeT - y) / bandDy);
-    return i < 0 ? 0 : (i > bandCount - 1 ? bandCount - 1 : i);
-  };
-  // Distance sweeps every band within a pixel of the sample; winding uses ONLY
-  // the sample's own band — any segment crossing this scanline must overlap it.
-  int bLo = bandOf(ey + r), bHi = bandOf(ey - r), bMid = bandOf(ey);
+  // One band serves both loops: segments are registered into every band within
+  // the antialiasing reach, and any segment crossing this scanline necessarily
+  // overlaps this band.
+  int b = (int)std::floor((planeT - ey) / bandDy);
+  if (b < 0) b = 0;
+  if (b > bandCount - 1) b = bandCount - 1;
+  const float* band = rec + 8 + (size_t)b * 4;
+  int runOfs = (int)band[0], runCount = (int)band[1];
 
-  float best = 1e30f;
-  for (int b = bLo; b <= bHi; b++) {
-    int so = (int)table[(size_t)b * 4 + 0], sn = (int)table[(size_t)b * 4 + 1];
-    const float* sg = rec + (size_t)so * 4;
-    for (int i = 0; i < sn; i++) {
+  const float kFar = 1e30f;
+  float innerNear = kFar, innerDeep = -kFar;   // w>0, d>=0 : containing filled contours
+  float outerNear = kFar, outerDeep =  kFar;   // w<0, d<=0 : containing holes
+  float crossPos  = kFar;                      // w<0, d>=0 : hole edge on the filled side
+  float crossNeg  = -kFar;                     // w>0, d<=0 : filled edge on the empty side
+  float shapeSigned = 0.0f, shapeNear = kFar;  // plain nearest edge, sign and all
+
+  for (int r = 0; r < runCount; r++) {
+    const float* run = rec + (size_t)(runOfs + r) * 4;
+    int   segOfs   = (int)run[0];
+    int   segCount = (int)run[1];
+    float winding  = run[2];
+    const float* sg = rec + (size_t)segOfs * 4;
+
+    float best = kFar * kFar;
+    int   cross = 0;
+    for (int i = 0; i < segCount; i++) {
       float x0 = sg[i * 4 + 0], y0 = sg[i * 4 + 1];
       float x1 = sg[i * 4 + 2], y1 = sg[i * 4 + 3];
       float dx = x1 - x0, dy = y1 - y0;
@@ -462,26 +521,53 @@ static float outlineCoverage(const float* arena, int ofs, float ex, float ey, fl
       float px = x0 + t * dx - ex, py = y0 + t * dy - ey;
       float d2 = px * px + py * py;
       if (d2 < best) best = d2;
-    }
-  }
-
-  int wind = 0;
-  {
-    int so = (int)table[(size_t)bMid * 4 + 0], sn = (int)table[(size_t)bMid * 4 + 1];
-    const float* sg = rec + (size_t)so * 4;
-    for (int i = 0; i < sn; i++) {
-      float x0 = sg[i * 4 + 0], y0 = sg[i * 4 + 1];
-      float x1 = sg[i * 4 + 2], y1 = sg[i * 4 + 3];
-      if ((y0 <= ey) != (y1 <= ey)) {          // crosses this scanline
+      if ((y0 <= ey) != (y1 <= ey)) {                 // crosses this scanline
         float xc = x0 + (ey - y0) * (x1 - x0) / (y1 - y0);
-        if (xc > ex) wind += (y1 > y0) ? 1 : -1;   // ray to +x, nonzero rule
+        if (xc > ex) cross += (y1 > y0) ? 1 : -1;     // ray to +x, nonzero rule
       }
     }
+    if (segCount <= 0) continue;
+
+    // Signed distance to THIS contour: positive on the side it fills, which for
+    // a hole is the outside of it.
+    float dist = std::sqrt(best);
+    float d = (cross != 0 ? dist : -dist) * winding;
+    float ad = d < 0.0f ? -d : d;
+
+    if (ad < shapeNear) { shapeNear = ad; shapeSigned = d; }
+    if (winding > 0.0f) {
+      if (d >= 0.0f) { if (ad < innerNear) innerNear = ad; if (d > innerDeep) innerDeep = d; }
+      else           { if (d > crossNeg) crossNeg = d; }
+    } else {
+      if (d <= 0.0f) { if (ad < outerNear) outerNear = ad; if (d < outerDeep) outerDeep = d; }
+      else           { if (d < crossPos) crossPos = d; }
+    }
   }
 
-  float sd = std::sqrt(best) * ppe;            // px, unsigned
-  if (wind != 0) sd = -sd;                     // negative inside, as sd_round_box
-  float cov = 0.5f - sd;
+  // No geometry on this scanline at all. A point inside the shape always has the
+  // outline crossing its scanline, so an empty band means "outside", not "on the
+  // edge" — falling through with d = 0 would paint a 50% grey block.
+  if (shapeNear >= kFar) return 0.0f;
+
+  float d;
+  if (innerNear < kFar && innerNear <= outerNear) {
+    // Inside a filled contour. The deepest one wins over any edge buried under
+    // it, but a hole edge is real boundary and still caps how deep we can be.
+    d = innerDeep;
+    if (outerNear < d) d = outerNear;
+    if (crossPos  < d) d = crossPos;
+  } else if (outerNear < kFar) {
+    // Inside a hole: the mirror image.
+    d = outerDeep;
+    if (-innerNear > d) d = -innerNear;
+    if (crossNeg   > d) d = crossNeg;
+  } else {
+    // Outside everything — every interior point is farther than the boundary,
+    // so the plain nearest edge is already exact.
+    d = shapeSigned;
+  }
+
+  float cov = 0.5f + d * ppe;                  // positive inside, as msdfgen
   return cov < 0.0f ? 0.0f : (cov > 1.0f ? 1.0f : cov);
 }
 
@@ -1162,6 +1248,11 @@ int Engine::layoutGlyphs(const PreGlyph* glyphs, int count,
   int id = impl_->next_id++;
   impl_->layouts.emplace(id, std::move(ld));
   return id;
+}
+
+uint32_t Engine::glyphIndex(int face, uint32_t codepoint) const {
+  if (face < 0 || face >= (int)impl_->faces.size() || !impl_->faces[face].ft) return 0;
+  return FT_Get_Char_Index(impl_->faces[face].ft, codepoint);
 }
 
 bool Engine::measure(int id, Metrics& out) const {

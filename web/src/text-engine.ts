@@ -48,12 +48,18 @@ fn median3(a:f32, b:f32, c:f32) -> f32 { return max(min(a,b), min(max(a,b), c));
 
 // Analytic outline coverage (the Precise path). ofs is the glyph's record
 // (vec4 units), e the sample point in the glyph's EM space (y-up), ppe its
-// screen pixels per em.
+// screen pixels per em. The record layout is documented in text_engine.h.
 //
-// Distance sweeps every band within one pixel of the sample; winding uses ONLY
-// the sample's own band, which is exact because any segment crossing this
-// scanline must overlap that band. The result goes through the SAME ramp the
-// MSDF branch uses, which is what lets the two be blended.
+// Per CONTOUR in the sample's band we take a signed distance — positive on that
+// contour's own filled side, matching msdfgen's convention — then combine them
+// the way msdfgen's OverlappingContourCombiner does. Taking the nearest segment
+// of any contour is wrong wherever outlines overlap (CJK strokes, synthetic
+// bold): the nearest edge is often BURIED inside the filled region, and treating
+// it as boundary paints a seam through solid ink.
+//
+// One band serves both loops: segments are registered into every band within the
+// antialiasing reach, and any segment crossing this scanline necessarily
+// overlaps this band.
 //
 // EXACT MIRROR of outlineCoverage() in native/src/text/text_engine.cpp (the CPU
 // golden) and te_outline_cov in text_composite_quad_msl.h. Move all three together.
@@ -64,47 +70,80 @@ fn outline_cov(ofs:u32, e:vec2<f32>, ppe:f32) -> f32 {
   let bandDy    = hdr.y;
   if (bandCount <= 0 || bandDy <= 0.0 || ppe <= 0.0) { return 0.0; }
   let planeT = plane.w;
-  let r = 1.0 / ppe;                       // one screen pixel, in em
-  let bLo  = clamp(i32(floor((planeT - (e.y + r)) / bandDy)), 0, bandCount - 1);
-  let bHi  = clamp(i32(floor((planeT - (e.y - r)) / bandDy)), 0, bandCount - 1);
-  let bMid = clamp(i32(floor((planeT - e.y) / bandDy)), 0, bandCount - 1);
 
-  var best = 1e30;
-  for (var b = bLo; b <= bHi; b = b + 1) {
-    let band = outlines[ofs + 2u + u32(b)];
-    let so = ofs + u32(band.x);
-    let sn = i32(band.y);
-    for (var i = 0; i < sn; i = i + 1) {
-      let sg = outlines[so + u32(i)];
-      let d = sg.zw - sg.xy;
-      let len2 = dot(d, d);
+  let b = clamp(i32(floor((planeT - e.y) / bandDy)), 0, bandCount - 1);
+  let band = outlines[ofs + 2u + u32(b)];
+  let runOfs = i32(band.x);
+  let runCount = i32(band.y);
+
+  let kFar = 1e30;
+  var innerNear = kFar; var innerDeep = -kFar;   // w>0, d>=0 : containing filled contours
+  var outerNear = kFar; var outerDeep =  kFar;   // w<0, d<=0 : containing holes
+  var crossPos  = kFar;                          // w<0, d>=0 : hole edge on the filled side
+  var crossNeg  = -kFar;                         // w>0, d<=0 : filled edge on the empty side
+  var shapeSigned = 0.0; var shapeNear = kFar;   // plain nearest edge, sign and all
+
+  for (var r = 0; r < runCount; r = r + 1) {
+    let run = outlines[ofs + u32(runOfs + r)];
+    let segOfs = ofs + u32(run.x);
+    let segCount = i32(run.y);
+    let winding = run.z;
+    if (segCount <= 0) { continue; }
+
+    var best = kFar;
+    var cross = 0;
+    for (var i = 0; i < segCount; i = i + 1) {
+      let sg = outlines[segOfs + u32(i)];
+      let dv = sg.zw - sg.xy;
+      let len2 = dot(dv, dv);
       var t = 0.0;
-      if (len2 > 0.0) { t = clamp(dot(e - sg.xy, d) / len2, 0.0, 1.0); }
-      let q = sg.xy + t * d - e;
+      if (len2 > 0.0) { t = clamp(dot(e - sg.xy, dv) / len2, 0.0, 1.0); }
+      let q = sg.xy + t * dv - e;
       best = min(best, dot(q, q));
-    }
-  }
-
-  var wind = 0;
-  {
-    let band = outlines[ofs + 2u + u32(bMid)];
-    let so = ofs + u32(band.x);
-    let sn = i32(band.y);
-    for (var i = 0; i < sn; i = i + 1) {
-      let sg = outlines[so + u32(i)];
       if ((sg.y <= e.y) != (sg.w <= e.y)) {          // crosses this scanline
         let xc = sg.x + (e.y - sg.y) * (sg.z - sg.x) / (sg.w - sg.y);
         if (xc > e.x) {                              // ray to +x, nonzero rule
-          if (sg.w > sg.y) { wind = wind + 1; } else { wind = wind - 1; }
+          if (sg.w > sg.y) { cross = cross + 1; } else { cross = cross - 1; }
         }
       }
     }
+
+    // Signed distance to THIS contour: positive on the side it fills, which for
+    // a hole is the outside of it.
+    let dist = sqrt(best);
+    var d = -dist;
+    if (cross != 0) { d = dist; }
+    d = d * winding;
+    let ad = abs(d);
+
+    if (ad < shapeNear) { shapeNear = ad; shapeSigned = d; }
+    if (winding > 0.0) {
+      if (d >= 0.0) { innerNear = min(innerNear, ad); innerDeep = max(innerDeep, d); }
+      else          { crossNeg = max(crossNeg, d); }
+    } else {
+      if (d <= 0.0) { outerNear = min(outerNear, ad); outerDeep = min(outerDeep, d); }
+      else          { crossPos = min(crossPos, d); }
+    }
   }
 
-  var sd = sqrt(best) * ppe;               // px, unsigned
-  if (wind != 0) { sd = -sd; }             // negative inside, as sd_round_box
-  return clamp(0.5 - sd, 0.0, 1.0);
+  // No geometry on this scanline at all. A point inside the shape always has the
+  // outline crossing its scanline, so an empty band means "outside", not "on the
+  // edge" — falling through with d = 0 would paint a 50% grey block.
+  if (shapeNear >= kFar) { return 0.0; }
+
+  var d = shapeSigned;
+  if (innerNear < kFar && innerNear <= outerNear) {
+    // Inside a filled contour. The deepest one wins over any edge buried under
+    // it, but a hole edge is real boundary and still caps how deep we can be.
+    d = min(min(innerDeep, outerNear), crossPos);
+  } else if (outerNear < kFar) {
+    d = max(max(outerDeep, -innerNear), crossNeg);   // inside a hole: the mirror image
+  }
+  // Outside everything, shapeSigned already stands: every interior point is
+  // farther than the boundary, so the plain nearest edge is exact there.
+  return clamp(0.5 + d * ppe, 0.0, 1.0);             // positive inside, as msdfgen
 }
+
 // Signed distance (px) to a rounded box; radius = (tl,tr,br,bl), selected per
 // quadrant and clamped to half-extent. Matches the engine's CPU sdRoundBox.
 fn sd_round_box(p:vec2<f32>, c:vec2<f32>, h:vec2<f32>, rad:vec4<f32>) -> f32 {

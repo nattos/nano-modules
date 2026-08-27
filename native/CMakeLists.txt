@@ -1131,6 +1131,10 @@ if(APPLE)
   target_link_libraries(test_text_precise PRIVATE
     effect_runtime Catch2::Catch2WithMain)
   target_compile_options(test_text_precise PRIVATE -Wno-attributes)
+  # Bundled CJK face (not committed; web/scripts/fetch_fonts.sh) — the overlap
+  # test needs a glyph made of overlapping contours, and skips without it.
+  target_compile_definitions(test_text_precise PRIVATE
+    TEXT_TEST_CJK_FONT="${CMAKE_SOURCE_DIR}/../web/test-fonts/noto-sans-jp.ttf")
   catch_discover_tests(test_text_precise)
 
   # End-to-end GPU render of a WASM effect on a real Metal backend.

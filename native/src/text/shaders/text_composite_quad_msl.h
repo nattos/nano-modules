@@ -58,10 +58,16 @@ static inline float te_median3(float a, float b, float c) {
 // glyph's EM space (y-up), `ppe` its screen pixels per em. The record layout is
 // documented in text_engine.h.
 //
-// Distance sweeps every band within one pixel of the sample; winding uses ONLY
-// the sample's own band, which is exact because any segment crossing this
-// scanline must overlap that band. The result goes through the SAME ramp the
-// MSDF branch uses, which is what lets the two be blended.
+// Per CONTOUR in the sample's band we take a signed distance — positive on that
+// contour's own filled side, matching msdfgen's convention — then combine them
+// the way msdfgen's OverlappingContourCombiner does. Taking the nearest segment
+// of any contour is wrong wherever outlines overlap (CJK strokes, synthetic
+// bold): the nearest edge is often BURIED inside the filled region, and treating
+// it as boundary paints a seam through solid ink.
+//
+// One band serves both loops: segments are registered into every band within the
+// antialiasing reach, and any segment crossing this scanline necessarily
+// overlaps this band.
 //
 // EXACT MIRROR of outlineCoverage() in native/src/text/text_engine.cpp (the CPU
 // golden) and the WGSL twin in web/src/text-engine.ts. Move all three together.
@@ -73,43 +79,74 @@ static inline float te_outline_cov(device const float4* arena, uint ofs,
   float bandDy    = hdr.y;
   if (bandCount <= 0 || bandDy <= 0.0 || ppe <= 0.0) { return 0.0; }
   float planeT = plane.w;
-  float r = 1.0 / ppe;                       // one screen pixel, in em
-  int bLo  = clamp(int(floor((planeT - (e.y + r)) / bandDy)), 0, bandCount - 1);
-  int bHi  = clamp(int(floor((planeT - (e.y - r)) / bandDy)), 0, bandCount - 1);
-  int bMid = clamp(int(floor((planeT - e.y) / bandDy)), 0, bandCount - 1);
 
-  float best = 1e30;
-  for (int b = bLo; b <= bHi; b++) {
-    float4 band = arena[ofs + 2u + uint(b)];
-    uint so = ofs + uint(band.x);
-    int  sn = int(band.y);
-    for (int i = 0; i < sn; i++) {
-      float4 sg = arena[so + uint(i)];
-      float2 d = sg.zw - sg.xy;
-      float len2 = dot(d, d);
-      float t = (len2 > 0.0) ? clamp(dot(e - sg.xy, d) / len2, 0.0, 1.0) : 0.0;
-      float2 q = sg.xy + t * d - e;
+  int b = clamp(int(floor((planeT - e.y) / bandDy)), 0, bandCount - 1);
+  float4 band = arena[ofs + 2u + uint(b)];
+  int runOfs = int(band.x), runCount = int(band.y);
+
+  const float kFar = 1e30;
+  float innerNear = kFar, innerDeep = -kFar;   // w>0, d>=0 : containing filled contours
+  float outerNear = kFar, outerDeep =  kFar;   // w<0, d<=0 : containing holes
+  float crossPos  = kFar;                      // w<0, d>=0 : hole edge on the filled side
+  float crossNeg  = -kFar;                     // w>0, d<=0 : filled edge on the empty side
+  float shapeSigned = 0.0, shapeNear = kFar;   // plain nearest edge, sign and all
+
+  for (int r = 0; r < runCount; r++) {
+    float4 run = arena[ofs + uint(runOfs + r)];
+    uint  segOfs   = ofs + uint(run.x);
+    int   segCount = int(run.y);
+    float winding  = run.z;
+    if (segCount <= 0) { continue; }
+
+    float best = kFar;
+    int   cross = 0;
+    for (int i = 0; i < segCount; i++) {
+      float4 sg = arena[segOfs + uint(i)];
+      float2 d2v = sg.zw - sg.xy;
+      float len2 = dot(d2v, d2v);
+      float t = (len2 > 0.0) ? clamp(dot(e - sg.xy, d2v) / len2, 0.0, 1.0) : 0.0;
+      float2 q = sg.xy + t * d2v - e;
       best = min(best, dot(q, q));
-    }
-  }
-
-  int wind = 0;
-  {
-    float4 band = arena[ofs + 2u + uint(bMid)];
-    uint so = ofs + uint(band.x);
-    int  sn = int(band.y);
-    for (int i = 0; i < sn; i++) {
-      float4 sg = arena[so + uint(i)];
       if ((sg.y <= e.y) != (sg.w <= e.y)) {                 // crosses this scanline
         float xc = sg.x + (e.y - sg.y) * (sg.z - sg.x) / (sg.w - sg.y);
-        if (xc > e.x) { wind += (sg.w > sg.y) ? 1 : -1; }   // ray to +x, nonzero rule
+        if (xc > e.x) { cross += (sg.w > sg.y) ? 1 : -1; }  // ray to +x, nonzero rule
       }
+    }
+
+    // Signed distance to THIS contour: positive on the side it fills, which for
+    // a hole is the outside of it.
+    float dist = sqrt(best);
+    float d = (cross != 0 ? dist : -dist) * winding;
+    float ad = abs(d);
+
+    if (ad < shapeNear) { shapeNear = ad; shapeSigned = d; }
+    if (winding > 0.0) {
+      if (d >= 0.0) { innerNear = min(innerNear, ad); innerDeep = max(innerDeep, d); }
+      else          { crossNeg = max(crossNeg, d); }
+    } else {
+      if (d <= 0.0) { outerNear = min(outerNear, ad); outerDeep = min(outerDeep, d); }
+      else          { crossPos = min(crossPos, d); }
     }
   }
 
-  float sd = sqrt(best) * ppe;               // px, unsigned
-  if (wind != 0) { sd = -sd; }               // negative inside, as sd_round_box
-  return clamp(0.5 - sd, 0.0, 1.0);
+  // No geometry on this scanline at all. A point inside the shape always has the
+  // outline crossing its scanline, so an empty band means "outside", not "on the
+  // edge" — falling through with d = 0 would paint a 50% grey block.
+  if (shapeNear >= kFar) { return 0.0; }
+
+  float d;
+  if (innerNear < kFar && innerNear <= outerNear) {
+    // Inside a filled contour. The deepest one wins over any edge buried under
+    // it, but a hole edge is real boundary and still caps how deep we can be.
+    d = min(min(innerDeep, outerNear), crossPos);
+  } else if (outerNear < kFar) {
+    d = max(max(outerDeep, -innerNear), crossNeg);   // inside a hole: the mirror image
+  } else {
+    // Outside everything — every interior point is farther than the boundary,
+    // so the plain nearest edge is already exact.
+    d = shapeSigned;
+  }
+  return clamp(0.5 + d * ppe, 0.0, 1.0);            // positive inside, as msdfgen
 }
 
 // Signed distance (px) to a rounded box; radius=(tl,tr,br,bl), per-quadrant.

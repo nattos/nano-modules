@@ -73,13 +73,31 @@ enum class Precision : int {
 //
 // Curves are flattened to line segments at kFlattenTol em (deviation stays well
 // under a tenth of a pixel even at absurd sizes), then bucketed into horizontal
-// BANDS so a fragment only visits the segments near its own scanline. A segment
-// belongs to every band its y-extent overlaps.
+// BANDS so a fragment only visits the geometry near its own scanline.
+//
+// Within a band the segments are grouped into CONTOUR RUNS, and that grouping is
+// load-bearing rather than tidiness: glyph outlines overlap. CJK strokes are
+// drawn as separate overlapping contours, and synthetic bold (FT_Outline_Embolden)
+// makes an outline self-intersect. Plain "distance to the nearest segment" then
+// latches onto an edge BURIED inside the filled region and paints a seam down
+// the middle of solid ink. Combining per-contour distances the way msdfgen's
+// OverlappingContourCombiner does — which is what keeps the MSDF tile itself
+// clean — is what makes the analytic path agree with it.
 //
 //   rec+0 : planeL, planeB, planeR, planeT      // em, y-up (PAD-inclusive)
 //   rec+1 : bandCount, bandDy, 0, 0             // bands span [planeB,planeT], top-down
-//   rec+2 : bandCount x (segOfs, segCount, 0, 0)  // segOfs: vec4s, record-relative
+//   rec+2 : bandCount x (runOfs, runCount, 0, 0)    // runOfs: vec4s, record-relative
+//    ...  : per band, runCount x (segOfs, segCount, winding, 0)
 //    ...  : segments, each (x0, y0, x1, y1)
+//
+// `winding` is the contour's orientation (+1 filled, -1 a counter/hole), which
+// the combiner needs to tell "inside a stroke" from "inside a hole".
+//
+// A segment is registered in every band its y-extent overlaps, GROWN by the
+// antialiasing reach, so one band lookup serves both the distance and the
+// winding count. That reach is a fixed em budget (kBandMarginEm): ample for any
+// size Auto ever selects Precise at, and only theoretically thin if someone
+// forces Precise below ~32 px/em — a size at which the atlas is exact anyway.
 //
 // All offsets are in vec4 units so the buffer binds as array<vec4<f32>> (WGSL)
 // / device const float4* (MSL) with no packing games. The shader-side reader is
@@ -230,6 +248,11 @@ public:
   int  layoutGlyphs(const PreGlyph* glyphs, int count,
                     const BoxQuad* boxes = nullptr, int boxCount = 0,
                     Precision precision = Precision::Auto);
+
+  // Glyph index for a codepoint in a registered face (0 = the primary font);
+  // 0 if the face doesn't cover it. The pre-shaped layoutGlyphs() path takes
+  // GIDs, so a caller driving it directly needs this to get one.
+  uint32_t glyphIndex(int face, uint32_t codepoint) const;
 
   bool measure(int layout_id, Metrics& out) const;
   int  glyphCount(int layout_id) const;

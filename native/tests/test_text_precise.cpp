@@ -11,6 +11,16 @@
 //               hole in the middle of a stem.
 //   handover  — Auto equals Smooth below the fade, equals Precise above it, and
 //               lands strictly between them inside it. No pop on a size sweep.
+//   overlap   — a glyph whose outline overlaps ITSELF still fills solid. This is
+//               the one that bites in practice: CJK draws each stroke as its own
+//               overlapping contour and synthetic bold self-intersects, and a
+//               renderer that just takes the nearest edge paints a seam down the
+//               middle of solid ink, because the nearest edge there is BURIED
+//               inside the shape rather than on its boundary.
+//   no stray fill — no block of half-covered pixels away from any edge. Real
+//               antialiasing is a one-pixel rind between solid and empty; a
+//               patch of grey with neither nearby means the coverage function
+//               fell through some path it shouldn't have.
 //   scale-free — one baked record serves every size (the arena doesn't grow
 //               when the same glyph is laid out again bigger).
 //
@@ -23,6 +33,8 @@
 #include "text/text_engine.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -36,10 +48,30 @@ using text_engine::Precision;
 namespace {
 
 constexpr int kW = 900, kH = 700;
+// The engine's synthetic-bold strength (text_engine.cpp's kSynthEmbolden) — the
+// only embolden real content ever produces.
+constexpr float kSynthEmbolden = 0.03f;
 
 void ensurePrimary() {
   effect_runtime::textInstallDefaultFonts(nullptr);
   REQUIRE(effect_runtime::textFontsReady());
+}
+
+// Register the bundled CJK face the parity harness uses, so a test can reach a
+// glyph built from OVERLAPPING contours. Not committed (web/scripts/fetch_fonts.sh
+// pulls it), so callers skip when it isn't there.
+bool ensureCjkFallback() {
+  static int state = -1;
+  if (state >= 0) return state == 1;
+  const char* path = TEXT_TEST_CJK_FONT;
+  std::ifstream f(path, std::ios::binary);
+  if (!f) { state = 0; return false; }
+  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+  state = (!bytes.empty() &&
+           Engine::instance().addFallbackFont(bytes.data(), (int)bytes.size(), "ja", 2) >= 0)
+              ? 1 : 0;
+  return state == 1;
 }
 
 std::string spec(const char* text, float sizePx, Precision p) {
@@ -105,6 +137,74 @@ std::vector<uint8_t> supersampledTruth(const char* text, float sizePx) {
     }
   }
   return out;
+}
+
+// Lay out a single glyph through the PRE-SHAPED entry point, which (unlike the
+// attributed-string path) lets a test dial synthetic bold up to where the
+// outline definitely self-intersects.
+std::vector<uint8_t> renderEmboldened(uint32_t cp, float sizePx, float embolden,
+                                      Precision p) {
+  text_engine::PreGlyph g{};
+  g.face = 0;
+  g.gid = Engine::instance().glyphIndex(0, cp);
+  REQUIRE(g.gid != 0);
+  g.cp = cp;
+  g.x = 40.0f;
+  g.y = sizePx;            // baseline
+  g.size = sizePx;
+  g.r = g.g = g.b = g.a = 1.0f;
+  g.embolden = embolden;
+  int id = Engine::instance().layoutGlyphs(&g, 1, nullptr, 0, p);
+  REQUIRE(id > 0);
+  std::vector<uint8_t> out((size_t)kW * kH * 4);
+  REQUIRE(Engine::instance().rasterize(id, kW, kH, 0.0f, 0.0f, nullptr, out.data()));
+  Engine::instance().release(id);
+  return out;
+}
+
+// Pixels that are DEEP inside the ink yet not fully covered — the exact
+// signature of a seam along a buried edge. Returns the count and the darkest.
+struct Seams { int count; int darkest; };
+Seams seamPixels(const std::vector<uint8_t>& img) {
+  const int R = 3;
+  auto inked = [&](int x, int y) { return img[((size_t)y * kW + x) * 4] > 128; };
+  Seams out{0, 255};
+  for (int y = R; y < kH - R; y++) {
+    for (int x = R; x < kW - R; x++) {
+      if (!inked(x, y)) continue;
+      bool solid = true;
+      for (int j = -R; j <= R && solid; j++)
+        for (int i = -R; i <= R; i++)
+          if (i * i + j * j <= R * R && !inked(x + i, y + j)) { solid = false; break; }
+      int v = img[((size_t)y * kW + x) * 4];
+      if (solid && v != 255) { out.count++; if (v < out.darkest) out.darkest = v; }
+    }
+  }
+  return out;
+}
+
+// Half-covered pixels that have neither a solid nor an empty pixel nearby. On a
+// real antialiased edge both are a pixel or two away; a patch of grey floating
+// on its own is the coverage function returning a fallback value over an area.
+int strayMidPixels(const std::vector<uint8_t>& img) {
+  const int R = 2;
+  auto v = [&](int x, int y) { return img[((size_t)y * kW + x) * 4]; };
+  int stray = 0;
+  for (int y = R; y < kH - R; y++) {
+    for (int x = R; x < kW - R; x++) {
+      int c = v(x, y);
+      if (c < 77 || c > 179) continue;              // not mid-coverage
+      bool solid = false, empty = false;
+      for (int j = -R; j <= R; j++)
+        for (int i = -R; i <= R; i++) {
+          int n = v(x + i, y + j);
+          if (n == 255) solid = true;
+          if (n == 0) empty = true;
+        }
+      if (!solid && !empty) stray++;
+    }
+  }
+  return stray;
 }
 
 }  // namespace
@@ -189,6 +289,58 @@ TEST_CASE("auto precision hands over without a pop") {
     REQUIRE(between > 0);
     CHECK(outside == 0);
   }
+}
+
+// Guards the whole class of "the coverage function fell through a path it
+// shouldn't have": an empty band, a missing record, a bad offset. Any of them
+// paints an AREA of half-coverage rather than a one-pixel edge. Text with real
+// gaps in it (ascenders, descenders, the space) is what puts empty bands under
+// the sampler in the first place.
+TEST_CASE("precise leaves no stray half-covered areas") {
+  ensurePrimary();
+  for (float size : {260.0f, 420.0f}) {
+    INFO("size " << size);
+    CHECK(strayMidPixels(render("Ag j", size, Precision::Precise)) == 0);
+    CHECK(strayMidPixels(render("Ag j", size, Precision::Auto)) == 0);
+  }
+}
+
+// The artifact that per-contour combining exists to kill. CJK draws each stroke
+// as its own contour and they overlap freely, so a point deep inside a junction
+// has a BURIED edge as its nearest — and treating that as boundary cuts a seam
+// straight through solid ink. Before the contour combiner this glyph rendered 78
+// such pixels, some fully black.
+TEST_CASE("overlapping contours fill solid") {
+  ensurePrimary();
+  if (!ensureCjkFallback()) {
+    SKIP("bundled CJK face absent — run web/scripts/fetch_fonts.sh");
+  }
+  std::vector<uint8_t> img = render("永", 420.0f, Precision::Precise);
+  Seams s = seamPixels(img);
+  INFO("seam pixels " << s.count << ", darkest " << s.darkest);
+  CHECK(s.count == 0);
+}
+
+// KNOWN LIMITATION, pinned so it can't quietly get worse. Synthetic bold offsets
+// the outline outward, which makes a SINGLE contour cross itself at inner
+// corners. Combining per contour — which is what msdfgen does too — cannot see
+// inside one contour, so a few pixels in those little self-overlap loops still
+// take a buried edge as their nearest. At the 0.03 em the engine actually
+// synthesizes, that is a handful of pixels dipping about a quarter, on a glyph
+// 420 px tall: below the threshold of visibility. Fixing it properly means
+// resolving self-intersections at bake time, which is a planar-boolean problem
+// and not worth it for this.
+TEST_CASE("synthetic bold's self-overlap stays within a bounded dip") {
+  ensurePrimary();
+  CHECK(seamPixels(renderEmboldened('B', 420.0f, 0.0f, Precision::Precise)).count == 0);
+
+  Seams s = seamPixels(renderEmboldened('B', 420.0f, kSynthEmbolden, Precision::Precise));
+  INFO("seam pixels " << s.count << ", darkest " << s.darkest);
+  // Bounds, not exact values: how badly a font self-intersects under embolden is
+  // a property of its outlines. Measured at the time of writing — bundled Noto
+  // Sans 6 px / darkest 191, the macOS system UI font 33 px / darkest 135.
+  CHECK(s.count <= 64);
+  CHECK(s.darkest >= 120);
 }
 
 // One record per glyph serves every size — that is the whole point of keeping

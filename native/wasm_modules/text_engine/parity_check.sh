@@ -70,6 +70,13 @@ SPECS=(
   '{"text":"Rg@%","precision":0,"runs":[{"size_px":96}]}'
   '{"text":"Rg@%","precision":0,"runs":[{"size_px":270}]}'
   '{"text":"Serif hairlines","precision":2,"runs":[{"family":"Serif","size_px":380,"rgba":[1,1,1,1]}]}'
+  # CJK on the Precise path: a dense Han outline is an order of magnitude more
+  # segments than a Latin one, so it exercises the banding (and the complexity
+  # guard) far harder. The mixed-script Auto case pins the PER-GLYPH decision —
+  # at 400 px the Latin 'A' is fully precise while the ideograph, baked on a
+  # 128 px/em page, has barely entered its own fade.
+  '{"text":"鬱 안녕 永","precision":2,"lang":"ja","size_px":420}'
+  '{"text":"A鬱","precision":0,"lang":"ja","size_px":400}'
 )
 
 # Geometry/metrics/atlas are deterministic → compared byte-exact via digests.
