@@ -859,12 +859,21 @@ const GlyphInfo* Engine::Impl::ensureGlyph(int faceId, uint32_t gi, unsigned cp,
   info.page = page;
   info.u0 = (float)px / PAGE_W; info.v0 = (float)py / PAGE_H;
   info.u1 = (float)(px + tileW) / PAGE_W; info.v1 = (float)(py + tileH) / PAGE_H;
-  // Plane bounds (em units, y-up): the tile spans [bnds.l - PAD/s, bnds.r + PAD/s] etc.
+  // Plane bounds (em units, y-up) — the em rectangle the QUAD covers, which must
+  // be exactly the rectangle the TILE covers, since the quad samples u0..u1 /
+  // v0..v1 across its whole span. tileW/tileH are ceil()'d to whole atlas
+  // texels, so that rectangle is NOT (glyph bounds + 2*PAD/s): it is up to one
+  // texel wider. Describing the glyph bounds instead squeezes the field into a
+  // slightly-too-small quad — the glyph renders ~1-2% small and offset from
+  // where its outline really is, uniformly at every size. Invisible on its own;
+  // glaring next to the Precise path, which is exact by construction.
   double upem = (double)units_per_em;
-  info.planeL = (float)((bnds.l - PAD / s) / upem);
-  info.planeR = (float)((bnds.r + PAD / s) / upem);
-  info.planeB = (float)((bnds.b - PAD / s) / upem);
-  info.planeT = (float)((bnds.t + PAD / s) / upem);
+  double planeL = (bnds.l - PAD / s) / upem;
+  double planeB = (bnds.b - PAD / s) / upem;
+  info.planeL = (float)planeL;
+  info.planeB = (float)planeB;
+  info.planeR = (float)(planeL + (double)tileW / (s * upem));
+  info.planeT = (float)(planeB + (double)tileH / (s * upem));
   info.has_msdf = true;
 
   pages[page].dirty = true;

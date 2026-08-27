@@ -32,6 +32,7 @@
 #include "runtime/text_host.h"
 #include "text/text_engine.h"
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -354,4 +355,83 @@ TEST_CASE("outline records are baked once and reused at any size") {
   CHECK(Engine::instance().outlineFloatCount() == after1);
   render("Q", 220.0f, Precision::Precise);
   CHECK(Engine::instance().outlineFloatCount() == after1);
+}
+
+// Smooth and Precise must place the glyph at the SAME size and position: Auto
+// cross-fades between them per glyph, so any registration difference shows up
+// as the outline visibly growing or sliding as text is scaled through the fade.
+//
+// The two paths derive that placement independently — Precise reads the real
+// outline in em, Smooth reads a field baked into an atlas tile — so this pins
+// that the tile's em rectangle really is the rectangle the quad covers. It is
+// easy to get subtly wrong: the tile is ceil()'d to whole texels, and taking
+// the plane from the glyph bounds instead of the tile squeezed every MSDF glyph
+// by up to one texel (5.6 px of height on a 500 px 'H', uniformly, at every
+// size). Measured as sub-pixel 0.5-coverage crossings, which is where the two
+// paths agree by construction if they agree anywhere.
+TEST_CASE("Smooth and Precise register to the same outline", "[text][precise]") {
+  ensurePrimary();
+  const float kSize = 500.0f;
+
+  // Sub-pixel positions where coverage crosses 0.5 along a row / a column.
+  auto crossings = [&](const std::vector<uint8_t>& img, bool horiz, int fixed) {
+    std::vector<double> out;
+    int n = horiz ? kW : kH;
+    for (int i = 1; i < n; i++) {
+      float a = horiz ? cov(img, i - 1, fixed) : cov(img, fixed, i - 1);
+      float b = horiz ? cov(img, i, fixed)     : cov(img, fixed, i);
+      if ((a - 0.5f) * (b - 0.5f) < 0.0f)
+        out.push_back((double)i - 1.0 + (0.5 - a) / (b - a));
+    }
+    return out;
+  };
+
+  for (const char* text : {"H", "O", "8"}) {
+    auto sm = render(text, kSize, Precision::Smooth);
+    auto pr = render(text, kSize, Precision::Precise);
+    // Row/column through the middle of the ink, found on the precise raster.
+    int ymin = kH, ymax = -1;
+    for (int y = 0; y < kH; y++)
+      for (int x = 0; x < kW; x++)
+        if (cov(pr, x, y) > 0.5f) { if (y < ymin) ymin = y; if (y > ymax) ymax = y; break; }
+    REQUIRE(ymax > ymin);
+    int row = (ymin + ymax) / 2;
+    auto rs = crossings(pr, true, row);
+    REQUIRE(rs.size() >= 2);
+    // Mid-width, so the column meets the outline near-perpendicular. Probing
+    // near a vertical edge instead would cross it almost tangentially, where a
+    // sub-pixel horizontal difference reads as a large vertical one.
+    int col = (int)((rs.front() + rs.back()) * 0.5);
+
+    for (auto axis : {0, 1}) {
+      auto a = axis ? crossings(sm, false, col) : crossings(sm, true, row);
+      auto b = axis ? crossings(pr, false, col) : crossings(pr, true, row);
+      INFO(text << (axis ? " vertical" : " horizontal"));
+      REQUIRE(a.size() == b.size());
+      REQUIRE(a.size() >= 2);
+      for (size_t i = 0; i < a.size(); i++) REQUIRE(std::fabs(a[i] - b[i]) < 0.5);
+      // ...and the same overall extent, which is what a scale error shows up as.
+      REQUIRE(std::fabs((a.back() - a.front()) - (b.back() - b.front())) < 0.5);
+    }
+
+    // Whole-glyph check, independent of where the probes landed: the inked
+    // bounding box and the inked area. A uniform scale error the probes could
+    // straddle still moves both.
+    auto inkBox = [&](const std::vector<uint8_t>& img) {
+      int x0 = kW, y0 = kH, x1 = -1, y1 = -1; long area = 0;
+      for (int y = 0; y < kH; y++)
+        for (int x = 0; x < kW; x++)
+          if (cov(img, x, y) > 0.5f) {
+            area++;
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }
+      return std::array<long, 5>{x0, y0, x1, y1, area};
+    };
+    auto ba = inkBox(sm), bb = inkBox(pr);
+    INFO(text << " ink box");
+    for (int i = 0; i < 4; i++) REQUIRE(std::labs(ba[i] - bb[i]) <= 1);
+    REQUIRE(bb[4] > 0);
+    REQUIRE(std::fabs((double)(ba[4] - bb[4]) / (double)bb[4]) < 0.01);
+  }
 }
