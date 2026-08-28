@@ -97,6 +97,11 @@ struct Params {
   float spacing_base = 0.42f;
 
   float show_time = 1.2f, sweep_time = 1.5f, glance_time = 0.8f, unfold_time = 1.6f;
+  /// Seconds a move SITS on its end pose before popping back. Shared by all
+  /// four, because it is about how the landing reads, not about the move.
+  /// Defaults to 0 — the original gesture is travel-then-pop, and a hold is
+  /// something you dial in.
+  float move_hold = 0.0f;
   float show_azimuth = 30.0f;      ///< total swing, degrees (−half .. +half)
   float glance_azimuth = 30.0f;
   float glance_elevation = 15.0f;  ///< total swing, degrees, travelling DOWN
@@ -160,7 +165,8 @@ struct Core {
 
   int anim = AnimNone;
   float anim_t = 0.0f;
-  float anim_dur = 1.0f;
+  float anim_dur = 1.0f;   ///< travel time, captured at trigger
+  float anim_hold = 0.0f;  ///< end-pose hold, likewise
 
   void reset() { *this = Core(); }
 
@@ -181,8 +187,11 @@ struct Core {
     if (a < 0 || a >= kAnimCount) return;
     anim = a;
     anim_t = 0.0f;
+    // Both timings are captured HERE so a knob moving mid-move cannot stretch
+    // or truncate what is already running.
     anim_dur = animDuration(a, p);
     if (anim_dur < 1e-4f) anim_dur = 1e-4f;
+    anim_hold = p.move_hold > 0.0f ? p.move_hold : 0.0f;
   }
 
   /// Advance one frame. `sig` is the raw four-channel feed; it is quantized here.
@@ -212,16 +221,20 @@ struct Core {
     //        camera, and Solid exists precisely so a move can be the only
     //        thing happening.
     //        Half a cycle, no return: it pops into its start pose, eases
-    //        across, and pops back to baseline when the timer runs out. Both
-    //        pops are the effect, not an artefact. ---
+    //        across, optionally SITS there for `move_hold`, and pops back to
+    //        baseline. Both pops are the effect, not an artefact. ---
     float az_deg = 0.0f;
     float elev_deg = 0.0f;
     float spacing = p.spacing_base;
     if (anim != AnimNone) {
       anim_t += dt;
-      if (anim_t >= anim_dur) {
+      if (anim_t >= anim_dur + anim_hold) {
         anim = AnimNone;   // POP back to baseline
       } else {
+        // Past the travel time the phase SATURATES at 1 rather than ending, so
+        // the move sits on its end pose for `move_hold` seconds. The pop is
+        // still the exit — the hold only decides how long you look at the pose
+        // before it happens.
         const float u = smoothstep01(anim_t / anim_dur);
         o.anim_phase = u;
         switch (anim) {

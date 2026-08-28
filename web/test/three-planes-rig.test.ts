@@ -263,6 +263,43 @@ describe('mod.rig.three_planes E2E', () => {
     p3.trace('out').expectPixelAt(32, 32, { r: 184, g: 89, b: 255 }, 12);
   });
 
+  // THE END-OF-MOVE HOLD. Only the parked pose is asserted here: the exact
+  // moment a hold expires is pinned host-free by the native goldens, and pacing
+  // one out over a real rAF window (4-20 ms a frame in headless) would need
+  // hundreds of frames to be safe. What the engine adds is that `hold_time`
+  // reaches the card at all, and that the phase saturates instead of ending.
+  it('Hold parks a move on its end pose past the travel time', async () => {
+    // Travel 0.05 s, hold 3 s: any plausible 30-frame window lands inside the
+    // hold and well past the travel, whatever the pacing does.
+    const params = { azimuth_base: 0.5, show_azimuth: 180.0,
+                     show_time: 0.05, hold_time: 3.0 };
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_hold', sketch: scalarSketch('orbit_azimuth', params) },
+            { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'rig_hold' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        // Fire it. The start pose is not sampled here — a 0.05 s travel is over
+        // faster than a waitFrames window can reliably catch, and the pop-in is
+        // already pinned by the rising-edge case above.
+        { commands: [{ type: 'setParam', sketchId: 'rig_hold', colIdx: 0, chainIdx: 1, paramKey: 'show', value: 1 }],
+          waitFrames: 1, captureTraceIds: ['out'] },
+        // Long past the travel, and still parked — a quarter turn ABOVE it.
+        // Without the hold this would have popped back to the baseline grey.
+        { commands: [], waitFrames: 30, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_hold',
+    });
+    expect(r.success).toBe(true);
+    const idleR = r.phases[0].trace('out').averageColor().r;
+    expect(idleR).toBeGreaterThan(100);
+    expect(idleR).toBeLessThan(156);
+    expect(r.phases[2].trace('out').averageColor().r).toBeGreaterThan(156);
+  });
+
   it('a move still runs in Solid', async () => {
     // The moves fly the camera and the mode paints the tower, so they compose.
     // Same swing as the rising-edge case above, with the meter switched off.

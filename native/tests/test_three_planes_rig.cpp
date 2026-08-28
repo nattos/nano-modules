@@ -26,6 +26,9 @@ Out step(Core& c, const Params& p, float s1, float s2, float s3, float s4, float
 
 Out idle(Core& c, const Params& p, float dt) { return step(c, p, 0, 0, 0, 0, dt); }
 
+/// The azimuth rail is a [0,1) turn, so an end pose past the top wraps.
+double wrapped(double turn) { return turn - (double)(long long)turn; }
+
 constexpr double kBaseElevation = 35.264389682754654 / 89.0;
 constexpr double kBaseSpacing = 0.42 / 1.5;
 
@@ -424,4 +427,61 @@ TEST_CASE("a signal held across a mode change does not read as a fresh hit",
   // Dropping and re-raising it is a fresh edge, and does flam.
   step(c, p, 0, 0, 0, 0, 0.01f);
   CHECK(step(c, p, 0, 0, 1, 0, 0.01f).emission[2] > 0.4f);
+}
+
+// --- the end-of-move hold ---------------------------------------------------
+
+TEST_CASE("Hold parks a move on its end pose before the pop", "[three_planes_rig]") {
+  Params p;
+  p.show_time = 0.5f;
+  p.show_azimuth = 180.0f;   // ±90 deg, so the poses are far apart
+  p.move_hold = 0.4f;
+  Core c;
+
+  c.trigger(AnimShow, p);
+  // Travel: 0.5 s at 0.05 s a tick.
+  for (int i = 0; i < 10; ++i) idle(c, p, 0.05f);
+
+  // Past the travel time the phase saturates instead of ending — the move is
+  // sitting on its end pose, which is the baseline plus half the swing.
+  const float endAz = wrapped(0.125 + 90.0 / 360.0);
+  for (int i = 0; i < 7; ++i) {
+    const Out o = idle(c, p, 0.05f);
+    CHECK(c.anim == AnimShow);
+    CHECK_THAT(o.anim_phase, WithinAbs(1.0, 1e-6));
+    CHECK_THAT(o.azimuth, WithinAbs(endAz, 1e-5));
+  }
+
+  // Then the pop, on the far side of travel + hold.
+  const Out done = idle(c, p, 0.05f);
+  CHECK(c.anim == AnimNone);
+  CHECK_THAT(done.azimuth, WithinAbs(0.125, 1e-6));
+}
+
+TEST_CASE("Hold defaults to nothing — travel then pop, unchanged", "[three_planes_rig]") {
+  Params p;
+  p.show_time = 0.5f;
+  Core c;
+  CHECK(p.move_hold == 0.0f);
+
+  c.trigger(AnimShow, p);
+  for (int i = 0; i < 9; ++i) idle(c, p, 0.05f);
+  CHECK(c.anim == AnimShow);       // still travelling at 0.45 s
+  idle(c, p, 0.05f);
+  CHECK(c.anim == AnimNone);       // and gone the moment the travel ends
+}
+
+TEST_CASE("the hold is captured at trigger time, like the duration",
+          "[three_planes_rig]") {
+  Params p;
+  p.show_time = 0.5f;
+  p.move_hold = 0.4f;
+  Core c;
+  c.trigger(AnimShow, p);
+
+  // Turning the knob to zero mid-move must not cut short what is already
+  // running — same rule the travel time follows.
+  p.move_hold = 0.0f;
+  for (int i = 0; i < 12; ++i) idle(c, p, 0.05f);
+  CHECK(c.anim == AnimShow);
 }

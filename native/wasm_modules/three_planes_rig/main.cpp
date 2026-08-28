@@ -280,6 +280,11 @@ void module_init() {
           "out. Those two pops are the gesture, not an artefact — it lands like a "
           "cut rather than a drift. *Unfold* is the exception, because it ends on "
           "the baseline already.\n\n"
+          "*Hold* keeps a move parked on its end pose before that last pop, so "
+          "the arrival is something you get to look at rather than a place it "
+          "passes through. It applies to all four. (On *Unfold* it holds at the "
+          "baseline, which looks like nothing happening — that one is already "
+          "home.)\n\n"
           "**Show** swings the orbit through its whole arc. **Glance** does the "
           "same but drops the deck as it goes, like a look away. **Sweep Up** "
           "tips the deck to side-on. **Unfold** collapses the floors together and "
@@ -288,6 +293,11 @@ void module_init() {
   schema.eventField("sweep_up", state::PrimaryInput).label("Sweep Up", "Sweep");
   schema.eventField("glance", state::PrimaryInput).label("Glance", "Glance");
   schema.eventField("unfold", state::PrimaryInput).label("Unfold", "Unfold");
+  // Shared by all four: it is about how the LANDING reads, not about the move.
+  schema.floatField("hold_time", 0.f, 0.f, 6.f, state::PrimaryInput,
+                    nullptr, 0.f, "s",
+                    "Seconds a move sits on its end pose before popping back.")
+        .label("Hold", "Hold");
   schema.floatField("show_time", 1.2f, 0.1f, 6.f, state::SecondaryInput,
                     nullptr, 0.f, "s")
         .label("Show Time", "ShowT");
@@ -488,6 +498,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "glance_azimuth"))   s->p.glance_azimuth = state::patchFloat(i);
     else if (state::pathIs(p, l, "glance_elevation")) s->p.glance_elevation = state::patchFloat(i);
     else if (state::pathIs(p, l, "unfold_time"))      s->p.unfold_time = state::patchFloat(i);
+    else if (state::pathIs(p, l, "hold_time"))       s->p.move_hold = state::patchFloat(i);
   }
 }
 
