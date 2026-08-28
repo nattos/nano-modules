@@ -161,17 +161,33 @@ struct Core {
     }
     if (m == MoveCycles || m == MoveResonate || m == MoveResonateRev) {
       // Evenly spaced down the tunnel, which is the whole look of these three.
-      // Spread rather than stacked: starting them together would put the
-      // REVERSE quad at the far end with nowhere to recede to, and it would
-      // wrap to the near end on the first frame and read as a pop.
+      // Spread rather than stacked: starting them together would put a quad at
+      // the far end with nowhere to recede to, and it would wrap to the near
+      // end on the first frame and read as a pop.
       //
-      // The spread runs BACKWARDS — the last quad deepest — so the highlight
-      // leads, the same way the pulse train does. It matters most in Cycles,
-      // where the highlight is the one travelling toward you: spread the
-      // natural way round it starts on top of the camera and is gone before
-      // you have seen it, instead of having the whole tunnel to come down.
+      // THE HIGHLIGHT ARRIVES FIRST, and which end that puts it at depends on
+      // what the other two are doing:
+      //
+      //   Cycles    — the highlight is the ONLY quad travelling toward you (the
+      //               others recede or alternate), so nothing is racing it. Put
+      //               it DEEPEST and it still gets there first, having had the
+      //               whole tunnel to come down. Spread the other way it starts
+      //               on top of the camera and is gone before you see it.
+      //   Resonate  — all three run toward you together at one rate, so the
+      //               order is fixed by position alone and the leader is simply
+      //               whoever is NEAREST. The highlight has to be that one.
+      //   Rev       — the same arrangement as Resonate, so it reads as Resonate
+      //               running backwards, which is what its name promises.
+      //               Putting the highlight at the far end instead would be
+      //               worse than useless: going backwards it is already AT the
+      //               exit, so it wraps to the near end on the first frame and
+      //               never travels at all.
+      //
+      // So only Cycles wants the highlight at the back.
+      const bool highlight_nearest = (m != MoveCycles);
       for (int i = 0; i < kQuads; ++i) {
-        phase[i] = (float)(kQuads - 1 - i) / (float)kQuads;
+        const int slot = highlight_nearest ? i : (kQuads - 1 - i);
+        phase[i] = (float)slot / (float)kQuads;
         live[i] = true;
       }
     }

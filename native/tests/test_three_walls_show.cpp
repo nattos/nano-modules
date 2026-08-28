@@ -393,3 +393,60 @@ TEST_CASE("reset returns the tunnel to rest", "[three_walls_show]") {
   const Out o = c.tick(p, kFrame);
   for (int i = 0; i < kQuads; ++i) CHECK_FALSE(o.live[i]);
 }
+
+// --- who gets there first ---------------------------------------------------
+//
+// The highlight (the LAST quad) has to arrive before the other two in every
+// held move. Which end of the tunnel that puts it at is not the same for all
+// three, because it depends on what the others are doing — so each is pinned
+// separately rather than trusting one rule to cover them.
+
+TEST_CASE("Resonate puts the highlight in front", "[three_walls_show]") {
+  Core c;
+  Params p;
+  c.trigger(MoveResonate);
+  const Out o = step(c, p, kFrame);
+  // All three run toward the camera together at one rate, so the order never
+  // changes and the leader is simply whoever is nearest. Nearest is smallest z.
+  CHECK(o.z[2] < o.z[1]);
+  CHECK(o.z[1] < o.z[0]);
+}
+
+TEST_CASE("Cycles puts the highlight deepest, and it still leads",
+          "[three_walls_show]") {
+  Params p;
+  p.cycles_f0 = p.cycles_f1 = 1.0f;
+  p.cycles_rev_f0 = p.cycles_rev_f1 = 1.0f;
+
+  Core c;
+  c.trigger(MoveCycles);
+  const Out start = step(c, p, 1e-4f);
+  // Deepest of the three...
+  CHECK(start.z[2] > start.z[1]);
+  CHECK(start.z[1] > start.z[0]);
+
+  // ...and nothing is racing it: it is the only one moving toward the camera,
+  // so it closes on the others rather than trailing them.
+  const float gap_before = start.z[2] - start.z[1];
+  const Out later = run(c, p, kFrame, 10);
+  CHECK(later.z[2] - later.z[1] < gap_before);
+}
+
+TEST_CASE("Resonate Rev mirrors Resonate rather than starting on the exit",
+          "[three_walls_show]") {
+  Core c;
+  Params p;
+  p.resonate_f0 = p.resonate_f1 = 1.0f;
+  c.trigger(MoveResonateRev);
+
+  // Same arrangement as Resonate, so Rev reads as Resonate running backwards.
+  CHECK_THAT(c.phase[2], WithinAbs(2.0 / 3.0, 1e-6));
+
+  // The trap this guards: put the highlight at the FAR end instead and, running
+  // backwards, it is already at the exit — it wraps to the near end on the very
+  // first frame and never travels. From the front it has the whole tunnel.
+  const Out first = step(c, p, kFrame);
+  CHECK(first.z[2] < first.z[1]);
+  const Out later = run(c, p, kFrame, 20);
+  CHECK(later.z[2] > first.z[2]);      // receding, not teleported
+}
