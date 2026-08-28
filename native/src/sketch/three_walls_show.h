@@ -240,15 +240,22 @@ struct Core {
     return detail::lerpf(f0, f1, u);
   }
 
-  /// PULSE — a one-shot train. Quad i starts `pulse_stagger` after quad i-1 and
-  /// takes `pulse_time` to cross; it is dark before and after its own window,
-  /// so the move ends by itself when the last one lands.
+  /// PULSE — a one-shot train, LED BY THE LAST QUAD.
+  ///
+  /// The train runs 3, 2, 1 rather than 1, 2, 3, so the HIGHLIGHT arrives first
+  /// and the other two follow it in. That is the whole shape of the gesture: the
+  /// bright one is the hit and the rest are its tail, which only reads that way
+  /// if the hit gets there first. Ordering it the natural way round makes the
+  /// highlight a straggler and the pulse lands on the wrong colour.
+  ///
+  /// Each quad takes `pulse_time` to cross and is dark before and after its own
+  /// window, so the move ends by itself once the last one lands.
   void tickPulse(const Params& p, Out& o) {
     using namespace detail;
     const float travel = p.pulse_time > 1e-4f ? p.pulse_time : 1e-4f;
     bool any = false;
     for (int i = 0; i < kQuads; ++i) {
-      const float t0 = (float)i * p.pulse_stagger;
+      const float t0 = (float)(kQuads - 1 - i) * p.pulse_stagger;
       const float u = (move_t - t0) / travel;
       if (u < 0.0f || u >= 1.0f) { live[i] = false; continue; }
       live[i] = true;

@@ -380,9 +380,11 @@ void module_init() {
         .groupHelp(
           "Four ways to send the frames down the tunnel. Only one runs at a "
           "time: firing another drops whatever was going, where it stood.\n\n"
-          "**Pulse** is a one-shot — it plays out and stops. The other three "
-          "are **held**: they run while the trigger is high and their rate "
-          "ramps the whole time, so how long you hold is the performance.\n\n"
+          "**Pulse** is a one-shot — it plays out and stops. It leads with "
+          "*Frame 3*, the highlight, and the other two chase it in: the bright "
+          "one is the hit and the rest are its tail. The other three moves are "
+          "**held**: they run while the trigger is high and their rate ramps "
+          "the whole time, so how long you hold is the performance.\n\n"
           "*Cycles* runs two frames against each other, one toward you and one "
           "away, on separate rate curves so they drift in and out of step. "
           "*Resonate* sends all three at once, evenly spaced, fast enough to "
@@ -399,7 +401,9 @@ void module_init() {
                   nullptr, 0.f, "s", "How long one frame takes to cross.")
         .label("Pulse Time", "PlsT")
       .floatField("pulse_stagger", 0.12f, 0.f, 2.f, state::SecondaryInput,
-                  nullptr, 0.f, "s", "Gap between the three frames of a pulse.")
+                  nullptr, 0.f, "s",
+                  "Gap between the three frames of a pulse. The train leads "
+                  "with Frame 3, the highlight, and the others chase it in.")
         .label("Pulse Stagger", "Stgr")
 
       .floatField("cycles_f0", 0.4f, 0.f, 30.f, state::SecondaryInput,

@@ -101,9 +101,12 @@ describe(`Three Walls E2E (${backend})`, () => {
     expect(litHalfWidth(late)).toBeGreaterThan(litHalfWidth(early) * 1.5);
   });
 
-  it('Pulse is a train — the frames arrive one after another', async () => {
-    // Frame 1 is magenta and frame 3 is cyan, so "how many have launched" is
-    // readable straight off the colours.
+  it('Pulse leads with the highlight', async () => {
+    // Frame 3 is cyan (the highlight) and frame 1 is magenta, so which one is
+    // in front is readable straight off the colours. The train runs 3, 2, 1:
+    // the bright one is the hit and the others are its tail, which only reads
+    // that way if the hit gets there first.
+    //
     // core_whiten off: the neon core deliberately blows to white, and a small
     // frame is nothing BUT core, so the hue only survives out in the halo.
     const p = [['pulse', 1], ['pulse_time', 1.2], ['pulse_stagger', 0.35],
@@ -111,9 +114,9 @@ describe(`Three Walls E2E (${backend})`, () => {
     const first = await run('three_walls_train_first', p, 6);    // ~0.1 s
     const all   = await run('three_walls_train_all', p, 50);     // ~0.8 s
     expect(first.success && all.success).toBe(true);
-    expect(hasMagenta(first)).toBe(true);
-    expect(hasCyan(first)).toBe(false);     // frame 3 has not launched yet
-    expect(hasCyan(all)).toBe(true);        // by now it has
+    expect(hasCyan(first)).toBe(true);        // the highlight is out in front
+    expect(hasMagenta(first)).toBe(false);    // and frame 1 has not left yet
+    expect(hasMagenta(all)).toBe(true);       // by now it has
   });
 
   it('Pulse plays out and leaves the card black again', async () => {

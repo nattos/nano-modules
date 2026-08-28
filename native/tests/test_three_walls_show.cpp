@@ -70,26 +70,27 @@ TEST_CASE("at rest nothing is live — the card is black", "[three_walls_show]")
 
 // --- Pulse ------------------------------------------------------------------
 
-TEST_CASE("Pulse is a train — the quads arm in order, staggered", "[three_walls_show]") {
+TEST_CASE("Pulse is a train LED BY THE HIGHLIGHT", "[three_walls_show]") {
   Core c;
   Params p;
   p.pulse_time = 0.5f;
   p.pulse_stagger = 0.2f;
 
   c.trigger(MovePulse);
-  // First frame: only quad 1 has started.
+  // First frame: only the LAST quad has started. That one carries the highlight
+  // colour, and it has to arrive first or the pulse lands on the wrong one.
   const Out first = step(c, p, kFrame);
-  CHECK(first.live[0]);
+  CHECK(first.live[2]);
   CHECK_FALSE(first.live[1]);
-  CHECK_FALSE(first.live[2]);
+  CHECK_FALSE(first.live[0]);
 
-  // Past the second stagger, quads 1 and 2 are both in flight.
+  // Past the second stagger, quads 3 and 2 are both in flight.
   const Out mid = run(c, p, kFrame, 14);   // t ~= 0.25 s
-  CHECK(mid.live[0]);
+  CHECK(mid.live[2]);
   CHECK(mid.live[1]);
-  CHECK_FALSE(mid.live[2]);
-  // ...and the earlier one is further down the tunnel than the later one.
-  CHECK(mid.z[0] < mid.z[1]);
+  CHECK_FALSE(mid.live[0]);
+  // ...and the leader is further down the tunnel than the one chasing it.
+  CHECK(mid.z[2] < mid.z[1]);
 }
 
 TEST_CASE("Pulse retires by itself and leaves the card black", "[three_walls_show]") {
