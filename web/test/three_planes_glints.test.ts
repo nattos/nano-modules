@@ -610,6 +610,98 @@ describe('Three Planes glints E2E', () => {
     expect(G[1]!).toBeGreaterThan(S[2]!);
   });
 
+  it('a glint lights the throw itself, not just the tower', async () => {
+    // The point of a Strobe throw is that the tower is muted and the ghosts
+    // ARE the picture. If glints only multiplied the planes' emission they
+    // would have nothing to act on in the state they were just taught to hang
+    // around for — up there, drifting, touching nothing.
+    //
+    // Held inside the ARRIVAL, where all three floors are up: the roll is
+    // slowed right down so one step is far longer than this window, which is
+    // what makes two runs comparable at all when engine dt is wall clock.
+    const run = (id: string, gesture: boolean) => runEngineMultiPhaseTest({
+      width: W, height: H, modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: id, sketch: ringSketch({
+                release_mode: 1, strobe_rate: 4, strobe_duty: 1,
+                // Wire Glow wide open, so the ghost is a broad glow rather
+                // than the hairline the mode normally draws: a glint then
+                // crosses a lot of it and the reading is a real fraction
+                // rather than two per cent of a thin outline. The glint keeps
+                // its nominal WIDTH — widening one moves its birth margin out
+                // with it, and it would still be on its way in.
+                strobe_glow: 1, glimmer_gain: 3,
+                glimmer_ratio: 0.15, glimmer_shadow: 0,
+                glimmer_sweep: 0.95 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        // One run sweeps the knob through the middle and launches a glint; the
+        // other leaves it exactly where it is and never has one.
+        { commands: gesture ? [{ type: 'setParam', sketchId: id, colIdx: 0,
+                                 chainIdx: 1, paramKey: 'glimmer_sweep',
+                                 value: 0.70 }] : [],
+          waitFrames: 6, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
+                       paramKey: 'release', value: 1 }],
+          waitFrames: 6, captureTraceIds: ['out'] },
+      ],
+      dumpName: id,
+    });
+
+    // Sequentially: the engine runner drives one page.
+    const bare = await run('strobe_glint_bare', false);
+    const lit = await run('strobe_glint_lit', true);
+    expect(bare.success && lit.success).toBe(true);
+
+    // Neither the brightest pixel nor the total will do. A neon core is
+    // already blown to white in both runs, so a peak reading saturates; and an
+    // engine trace comes back checkerboard-composited, so a frame total is
+    // mostly background and a real flare moves it by a couple of per cent.
+    //
+    // So: the light the two frames differ BY, against the light the wireframe
+    // brought on its own. Same sketch, same phase, grain and scanlines off —
+    // the only thing that differs between them is the glint.
+    const bareF = bare.phases[2].trace('out');
+    const litF = lit.phases[2].trace('out');
+
+    const lumas: number[] = [];
+    bareF.forEachPixel((p: { r: number; g: number; b: number }) => lumas.push(luma(p)));
+    lumas.sort((x, y) => x - y);
+    const ground = lumas[Math.floor(lumas.length / 2)];   // the checkerboard
+
+    // The extra light, projected onto the travel axis the same way a glint is
+    // — because WHERE it lands is the claim. A glint is a band square across
+    // that axis, so if the ghosts are taking it the difference is a band too,
+    // and not a general lift.
+    const diff = new Array<number>(AXIS.length).fill(0);
+    let ink = 0, added = 0;
+    bareF.forEachPixel((p: { r: number; g: number; b: number }, x: number, y: number) => {
+      const d = Math.max(0, luma(litF.pixelAt(x, y)) - luma(p));
+      ink += Math.max(0, luma(p) - ground);
+      added += d;
+      const sx = ((x + 0.5) / W - 0.5) / ax;
+      const sy = ((y + 0.5) / H - 0.5) / ay;
+      const i = Math.round((sx * R2 - sy * R2 - AXIS_LO) / AXIS_STEP);
+      if (i >= 0 && i < diff.length && d > diff[i]) diff[i] = d;
+    });
+
+    // The wireframe is there in both — the throw does not need a glint.
+    expect(ink).toBeGreaterThan(0);
+    // ...and the glint lights a real fraction of it. (Shadow is off here, so a
+    // glint can only ADD; the wake punching holes in a tube is the same field,
+    // and it is covered on the tower.)
+    expect(added).toBeGreaterThan(ink * 0.03);
+    // ...in a BAND, which is what says it came from the glint and not from the
+    // two runs having drifted apart. A glint is narrow against the whole axis,
+    // so its peak stands far clear of the median.
+    const sorted = [...diff].sort((x, y) => x - y);
+    const mid = sorted[Math.floor(sorted.length / 2)];
+    expect(Math.max(...diff)).toBeGreaterThan(mid * 8 + 20);
+  });
+
   it('a lit plane holds its own ring down while the ring is still on it',
      async () => {
     // FAKED LOCAL CONTRAST. Sweeping straight back after a throw relights the

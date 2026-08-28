@@ -17,7 +17,8 @@
 //   3b. add the release ghosts — the same quads again, either thrown outward
 //      and opening out as they fly or sitting exactly where they were as bare
 //      wireframe, depending on the throw mode. The host has already resolved
-//      which; from here it is one path (see `ring_at`);
+//      which; from here it is one path (see `ring_at`), and it is lit by the
+//      same glints as everything else;
 //   4. grade the composite through the shared VCR stack.
 //
 // Nothing here needs an intermediate texture: the accumulator lives in
@@ -186,8 +187,15 @@ float3 resolve(float2 p, float3 base) {
   // The ghosts go on TOP of the resolve, additively and without occluding
   // anything. They are light already thrown — nothing left behind can mask
   // them, and they have no body to be masked.
+  //
+  // They take the SAME glint the planes do. A glint is a property of the
+  // screen — a light sweeping across the whole installation — and a throw is
+  // still the installation: without this, a mode that mutes the tower and
+  // shows only ghosts is a mode the glints cannot touch at all, and they hang
+  // there over the picture doing nothing to it.
   [unroll]
-  for (int k = 0; k < 3; k++) acc += plane_color[k].rgb * (ring_at(p, k) * ring_gain[k]);
+  for (int k = 0; k < 3; k++)
+    acc += plane_color[k].rgb * (ring_at(p, k) * ring_gain[k] * glint);
   return acc;
 }
 
