@@ -247,10 +247,17 @@ static float wallHeight(const State& s, float d) {
 static void wallCorners(const State& s, const WallExtent& w, int v, float z,
                         float out[4][2]) {
   if (v == 0) {
-    // A rectangle on the back wall, sharing the wall's aspect so it reaches all
-    // four edges at once.
+    // A SQUARE on the back wall — isotropic, so it looks like a frame rather
+    // than a stretched one, whatever the output's aspect is.
+    //
+    // Its half-size is measured against the wall's HORIZONTAL extent, because
+    // that is the edge that matters: crossing it is what hands the frame over
+    // to the side walls. On a wide output that means the square runs off the
+    // top and bottom first — its horizontal edges leave through the ceiling and
+    // floor, which this room does not have — and for a while you see just its
+    // two verticals, still on the back wall, before they cross over too.
     const float a = apparentSize(s, z);
-    const float hx = w.ex * a, hy = w.ey * a;
+    const float hx = w.ex * a, hy = hx;
     out[0][0] = -hx; out[0][1] = -hy;
     out[1][0] = +hx; out[1][1] = -hy;
     out[2][0] = +hx; out[2][1] = +hy;
