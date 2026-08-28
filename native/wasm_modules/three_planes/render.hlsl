@@ -72,6 +72,29 @@ cbuffer Uniforms : register(b2) {
 // Note a plain sum of per-edge kernels, sum(exp(-d_i/r)), is this same softmin
 // with T pinned to the halo radius: smooth, but it under-reads distance by up
 // to r*ln(4) and washes the whole figure out. Decoupling T from r is the fix.
+//
+// THE BAND HAS TO GROW WITH DEPTH. A crease is scale-free: how sharp it looks
+// is set by the ratio of the rounding band to the distance it sits at, not by
+// the band alone. So a band pinned to the halo radius rounds the medial axis
+// where it leaves the corners and progressively stops rounding it further in —
+// and a rhombus' medial axis is BOTH diagonals, meeting at the centre. Deep
+// inside, that reads as a dark four-pointed star: geometrically honest (those
+// really are the points furthest from the outline) but it looks like a defect,
+// because real glow is an integral over the whole outline and has no skeleton
+// in it at all.
+//
+// It only became visible when the three planes stopped being separated —
+// normally each plane's interior is washed by its neighbours' halos, and at
+// zero spacing there are no neighbours to wash it. Hence kMedialDepth: the
+// band also grows as a fraction of the distance itself, so the rounding is
+// proportional at every depth.
+//
+// INSIDE ONLY. Outside a convex polygon the two segments meeting at a vertex
+// are exactly equidistant across that vertex's whole outer wedge — a permanent
+// four-way tie the softmin would bias by t*ln2. With t pinned to the halo
+// radius that bias is a fixed small offset; let it grow with distance and every
+// corner sprouts a brightening horn. The exterior field is left exactly as it
+// was, which is also where all the tuning lives.
 
 float seg_dist(float2 p, float2 a, float2 b) {
   float2 e = b - a;
@@ -102,11 +125,20 @@ float halo_profile(float ad, float r, float falloff) {
   return dot(e, wts);
 }
 
+// How much of the distance-to-outline the interior rounding band spans, before
+// `halo_smooth` scales it. 0.6 puts the default band (halo_smooth 0.35) at a
+// fifth of the depth — enough to dissolve the skeleton, small enough that the
+// interior brightness barely moves.
+static const float kMedialDepth = 0.6;
+
 // Log-sum-exp soft minimum of four distances, shifted by the true min so the
 // exponentials stay in [0,1] and the log argument stays in [1,4] — exact and
 // overflow-free regardless of how far away the point is.
-float softmin4(float d0, float d1, float d2, float d3, float t) {
+// `t_rel` is the depth-proportional term; it needs `m`, which is only known
+// here, so the band is resolved inside rather than passed in whole.
+float softmin4(float d0, float d1, float d2, float d3, float t_floor, float t_rel) {
   float m = min(min(d0, d1), min(d2, d3));
+  float t = max(t_floor, m * t_rel);
   float e = exp(-(d0 - m) / t) + exp(-(d1 - m) / t)
           + exp(-(d2 - m) / t) + exp(-(d3 - m) / t);
   return m - t * log(e);
@@ -131,11 +163,14 @@ PlaneField eval_plane(float2 p, float2 a, float2 b, float2 c, float2 d,
   PlaneField f;
   f.sd = s * min(min(d0, d1), min(d2, d3)) - corner_r;
 
-  // The rounding band scales with the halo, because that is the only scale at
-  // which the crease is bright enough to see: further in, the glow has already
-  // fallen to nothing and the ridge is invisible whatever we do here.
-  float t = max(halo_r * smooth_frac, 1e-5);
-  float g = softmin4(d0, d1, d2, d3, t);
+  // Near the outline the band is a fraction of the halo radius, which is the
+  // scale the look is tuned at. Deeper in it becomes a fraction of the distance
+  // instead, so the medial skeleton keeps getting rounded all the way to the
+  // centre — see the note above for why one fixed band cannot do both, and why
+  // the depth term stops at the outline.
+  float t_floor = max(halo_r * smooth_frac, 1e-5);
+  float t_rel   = (s < 0.0) ? smooth_frac * kMedialDepth : 0.0;
+  float g = softmin4(d0, d1, d2, d3, t_floor, t_rel);
   // Re-sign BEFORE the rounding offset: corner_r shrinks the shape, so it has
   // to move the signed field. Subtracting it from an unsigned distance would
   // read interior points as 2*corner_r closer than they are and flood the
