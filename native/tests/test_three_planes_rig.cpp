@@ -312,3 +312,116 @@ TEST_CASE("a transport stall is clamped, not fast-forwarded", "[three_planes_rig
   idle(c, p, 10.0f);
   CHECK_THAT(c.meter, WithinAbs(3.0 - 0.25, 1e-6));
 }
+
+// --- Solid ------------------------------------------------------------------
+//
+// The mode that does nothing, which is the point of it. These cases mostly
+// assert ABSENCES: no reaction to the gates, no cap, no flam.
+
+TEST_CASE("Solid lights every floor and ignores the signals entirely", "[three_planes_rig]") {
+  Params p;
+  p.mode = ModeSolid;
+  p.emission_on = 0.8f;
+  Core c;
+
+  // Full-scale hits on every channel at once — in the meter mode this would peg
+  // the tower and fire three flams. Here it changes nothing at all.
+  const Out hit = step(c, p, 1, 1, 1, 1, 0.1f);
+  const Out quiet = idle(c, p, 0.1f);
+
+  for (int i = 0; i < kLayers; ++i) {
+    CHECK_THAT(hit.emission[i], WithinAbs(0.8, 1e-6));
+    CHECK_THAT(quiet.emission[i], WithinAbs(0.8, 1e-6));
+  }
+  // No meter, no cap: the rails report the meter, and there isn't one.
+  CHECK(hit.meter == 0.0f);
+  CHECK(hit.peak == 0.0f);
+  CHECK(hit.peak_layer == -1);
+}
+
+TEST_CASE("Solid colours the floors the way three_planes ships them", "[three_planes_rig]") {
+  Params p;
+  p.mode = ModeSolid;
+  Core c;
+  const Out o = step(c, p, 1, 1, 1, 1, 0.1f);
+
+  // bottom = Primary, middle = Highlight, top = Secondary — the three roles'
+  // defaults ARE the effect's own plane1/2/3 defaults, so an untouched rig in
+  // this mode reproduces the unwired look.
+  CHECK_THAT(o.color[0].r, WithinAbs(p.primary.r, 1e-6));
+  CHECK_THAT(o.color[0].b, WithinAbs(p.primary.b, 1e-6));
+  CHECK_THAT(o.color[1].g, WithinAbs(p.highlight.g, 1e-6));
+  CHECK_THAT(o.color[1].b, WithinAbs(p.highlight.b, 1e-6));
+  CHECK_THAT(o.color[2].r, WithinAbs(p.secondary.r, 1e-6));
+  CHECK_THAT(o.color[2].g, WithinAbs(p.secondary.g, 1e-6));
+
+  // And a hit does not swing them — there are no flams in this mode.
+  const Out again = step(c, p, 0, 0, 0, 0, 0.05f);
+  CHECK_THAT(again.color[0].r, WithinAbs(p.primary.r, 1e-6));
+}
+
+TEST_CASE("the moves still run in Solid", "[three_planes_rig]") {
+  Params p;
+  p.mode = ModeSolid;
+  p.unfold_time = 1.0f;
+  Core c;
+
+  idle(c, p, 0.1f);
+  c.trigger(AnimUnfold, p);
+  // Unfold starts collapsed and grows to the baseline — the tower is static,
+  // the camera is not.
+  CHECK_THAT(idle(c, p, 0.01f).spacing, WithinAbs(0.0, 1e-3));
+  for (int i = 0; i < 40; ++i) idle(c, p, 0.01f);
+  const float mid = idle(c, p, 0.01f).spacing;
+  CHECK(mid > 0.0f);
+  CHECK(mid < kBaseSpacing);
+}
+
+TEST_CASE("Solid parks the meter, and the way back is not a hit", "[three_planes_rig]") {
+  Params p;
+  p.peak_hold = 10.0f;    // a cap that would still be standing on the way back
+  Core c;
+
+  // Peg it in the meter mode.
+  const Out loud = step(c, p, 0, 0, 1, 0, 0.1f);
+  CHECK_THAT(loud.meter, WithinAbs(1.0, 1e-6));
+  CHECK(loud.peak_layer == 2);
+
+  // A spell in Solid, with the signal still held high the whole time.
+  p.mode = ModeSolid;
+  for (int i = 0; i < 5; ++i) step(c, p, 0, 0, 1, 0, 0.1f);
+
+  // Back to the meter with the signal RELEASED: the ballistics resume from
+  // zero, not from the reading they were parked on. A cap that would still have
+  // seconds of hold left is gone with them.
+  p.mode = ModeEvMeter;
+  const Out back = step(c, p, 0, 0, 0, 0, 0.1f);
+  CHECK(back.meter == 0.0f);
+  CHECK(back.peak == 0.0f);
+  CHECK(back.peak_layer == -1);
+}
+
+TEST_CASE("a signal held across a mode change does not read as a fresh hit",
+          "[three_planes_rig]") {
+  Params p;
+  p.emission_on = 0.4f;   // headroom, so a flam blip would show
+  p.flam_emission = 0.5f;
+  Core c;
+
+  step(c, p, 0, 0, 1, 0, 0.1f);          // the hit, in the meter mode
+  p.mode = ModeSolid;
+  for (int i = 0; i < 5; ++i) step(c, p, 0, 0, 1, 0, 0.1f);
+
+  // Still high on the way back. The meter is level-driven, so it re-reads the
+  // height immediately — that is a meter doing its job, not a retrigger...
+  p.mode = ModeEvMeter;
+  const Out back = step(c, p, 0, 0, 1, 0, 0.1f);
+  CHECK_THAT(back.meter, WithinAbs(1.0, 1e-6));
+  // ...but there is no FLAM, because the edge was consumed before the mode
+  // changed and `prev_on` kept tracking through the quiet mode.
+  CHECK_THAT(back.emission[2], WithinAbs(0.4, 1e-6));
+
+  // Dropping and re-raising it is a fresh edge, and does flam.
+  step(c, p, 0, 0, 0, 0, 0.01f);
+  CHECK(step(c, p, 0, 0, 1, 0, 0.01f).emission[2] > 0.4f);
+}

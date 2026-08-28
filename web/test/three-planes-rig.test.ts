@@ -167,7 +167,7 @@ describe('mod.rig.three_planes E2E', () => {
   // THE COLOUR RAILS. rig → solid_color.color, read straight off the sketch
   // output: a computed vec3 travelling a real wire. Vec rails carry components
   // whole, with no magnitude fold, so what the card computes is what lands.
-  const colorSketch = (params: Record<string, unknown>): Sketch => ({
+  const colorSketch = (params: Record<string, unknown>, field = 'plane1_color'): Sketch => ({
     anchor: null,
     chain: [
       { type: 'module', module_type: 'mod.rig.three_planes', instance_key: 'rig@0', params },
@@ -175,16 +175,16 @@ describe('mod.rig.three_planes E2E', () => {
         params: { color: [0.0, 0.0, 0.0] } },
     ],
     wires: [
-      { id: 'w1', src: { instanceKey: 'rig@0', field: 'plane1_color' },
+      { id: 'w1', src: { instanceKey: 'rig@0', field },
         dest: { instanceKey: 'src@0', field: 'color' }, combine: 'replace' },
     ],
   } as Sketch);
 
-  const runColor = (id: string, params: Record<string, unknown>) =>
+  const runColor = (id: string, params: Record<string, unknown>, field?: string) =>
     runEngineTest({
       width: 64, height: 64,
       modules: MODULES,
-      commands: [{ type: 'createSketch', sketchId: id, sketch: colorSketch(params) }],
+      commands: [{ type: 'createSketch', sketchId: id, sketch: colorSketch(params, field) }],
       tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
       captureTraceIds: ['out'],
       waitFrames: 20,
@@ -214,5 +214,77 @@ describe('mod.rig.three_planes E2E', () => {
     const r = await runColor('rig_col_authored', { secondary_color: [1.0, 0.0, 0.0] });
     expect(r.success).toBe(true);
     r.trace('out').expectPixelAt(32, 32, { r: 255, g: 0, b: 0 }, 12);
+  });
+
+  // --- Solid -----------------------------------------------------------------
+  //
+  // The mode with no reactivity: three lit floors, nothing listening. What the
+  // engine adds over the host-free goldens is that `mode` really is reaching the
+  // card as a select patch, and that the colour rails re-role in this mode.
+
+  const SOLID = 1;
+
+  it('Solid lights the top floor with nothing playing', async () => {
+    // The same silent sketch reads dark under the meter and lit under Solid —
+    // the one difference is the mode.
+    const meter = await runScalar('rig_solid_off', 'plane3_emission', { ...CRISP });
+    const solid = await runScalar('rig_solid_on',  'plane3_emission', { ...CRISP, mode: SOLID });
+    expect(meter.success && solid.success).toBe(true);
+    expect(meter.trace('out').averageColor().r).toBeLessThan(40);
+    expect(solid.trace('out').averageColor().r).toBeGreaterThan(215);
+  });
+
+  it('Solid ignores the gates entirely', async () => {
+    // Every channel pegged. Under the meter this would peg the tower and flam;
+    // here the floors sit exactly at Lit Level and the meter rail reads 0.
+    const p = { ...CRISP, mode: SOLID, emission_on: 0.5,
+                sig_1: 1.0, sig_2: 1.0, sig_3: 1.0, sig_4: 1.0 };
+    const floor = await runScalar('rig_solid_gates', 'plane1_emission', p);
+    const meter = await runScalar('rig_solid_meter', 'meter', p);
+    expect(floor.success && meter.success).toBe(true);
+    // Lit Level 0.5 lands on mid grey — no flam blip riding on top of it.
+    expect(floor.trace('out').averageColor().r).toBeGreaterThan(100);
+    expect(floor.trace('out').averageColor().r).toBeLessThan(156);
+    // Nothing is being measured, so the meter rail reports nothing.
+    expect(meter.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('Solid gives each floor its own colour', async () => {
+    // bottom = Primary (magenta), middle = Highlight (cyan), top = Secondary
+    // (violet) — three_planes' own plane defaults, so an untouched rig in this
+    // mode reproduces the look the effect ships with.
+    const p = { mode: SOLID };
+    const p1 = await runColor('rig_solid_c1', p, 'plane1_color');
+    const p2 = await runColor('rig_solid_c2', p, 'plane2_color');
+    const p3 = await runColor('rig_solid_c3', p, 'plane3_color');
+    expect(p1.success && p2.success && p3.success).toBe(true);
+    p1.trace('out').expectPixelAt(32, 32, { r: 255, g: 56, b: 158 }, 12);
+    p2.trace('out').expectPixelAt(32, 32, { r: 77, g: 217, b: 255 }, 12);
+    p3.trace('out').expectPixelAt(32, 32, { r: 184, g: 89, b: 255 }, 12);
+  });
+
+  it('a move still runs in Solid', async () => {
+    // The moves fly the camera and the mode paints the tower, so they compose.
+    // Same swing as the rising-edge case above, with the meter switched off.
+    const params = { mode: SOLID, azimuth_base: 0.5, show_azimuth: 180.0, show_time: 0.25 };
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_solid_show', sketch: scalarSketch('orbit_azimuth', params) },
+            { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'rig_solid_show' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: 'rig_solid_show', colIdx: 0, chainIdx: 1, paramKey: 'show', value: 1 }],
+          waitFrames: 1, captureTraceIds: ['out'] },
+        { commands: [], waitFrames: 150, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_solid_show',
+    });
+    expect(r.success).toBe(true);
+    expect(r.phases[0].trace('out').averageColor().r).toBeGreaterThan(100);
+    expect(r.phases[1].trace('out').averageColor().r).toBeLessThan(100);
+    expect(r.phases[2].trace('out').averageColor().r).toBeGreaterThan(100);
   });
 });

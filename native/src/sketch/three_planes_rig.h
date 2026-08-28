@@ -4,10 +4,11 @@
  *
  * `source.mesh.three_planes` is deliberately dumb: it projects three stacked
  * quads and shades them, and every rhythmic decision lives outside it. This
- * header IS that outside — an EV meter with peak hold, per-layer flam
- * envelopes, and four one-shot camera moves — kept host-free so the wasm
- * effect and a Catch2 golden run byte-identical code with no GPU and no ABI.
- * Same arrangement as param_smoothing.h / envelope.h / transient_shaper.h.
+ * header IS that outside — a MODE that paints the tower (an EV meter with peak
+ * hold and per-layer flams, or Solid, which does nothing at all) plus four
+ * one-shot camera moves that compose on top of either — kept host-free so the
+ * wasm effect and a Catch2 golden run byte-identical code with no GPU and no
+ * ABI. Same arrangement as param_smoothing.h / envelope.h / transient_shaper.h.
  *
  * THE FOUR SIGNALS ARE GATES, NOT FADERS. They come from `beatsync`'s Art-Net
  * output (four DMX channels: heavy / regular / decor / uniform), where a hit is
@@ -44,6 +45,16 @@ constexpr float kMaxDt = 0.25f;
 enum Anim { AnimNone = -1, AnimShow = 0, AnimSweepUp = 1, AnimGlance = 2, AnimUnfold = 3 };
 constexpr int kAnimCount = 4;
 
+/// What drives the layers. The moves are OUTSIDE this choice — they compose on
+/// top of whatever the mode is doing, because they move the camera and the mode
+/// paints the tower.
+///
+/// `ModeSolid` is the deliberate absence of reactivity: no meter, no cap, no
+/// flams, just three lit floors and whatever move is running. It exists because
+/// a piece that is reacting the whole time has nothing to react FROM — Solid is
+/// the pose you cut back to.
+enum Mode { ModeEvMeter = 0, ModeSolid = 1 };
+
 struct Rgb {
   float r = 0.0f, g = 0.0f, b = 0.0f;
 };
@@ -55,6 +66,8 @@ inline Rgb lerpRgb(const Rgb& a, const Rgb& b, float t) {
 /// Everything the card authors. Read fresh each tick — a wire may be moving any
 /// of it, so nothing is cached across frames.
 struct Params {
+  int mode = ModeEvMeter;
+
   // What each signal means on the meter axis. ch3 and ch4 both name the top.
   float level[kSignals] = {1.0f, 2.0f, 3.0f, 3.0f};
 
@@ -178,7 +191,9 @@ struct Core {
     if (dt < 0.0f) dt = 0.0f;
     if (dt > kMaxDt) dt = kMaxDt;
 
-    // --- 1. Quantize, and find the rising edges that fire the flams. ---
+    // --- 1. Quantize. The rising edges are what the meter mode fires flams
+    //        from; they are found here either way so `prev_on` stays honest
+    //        across a mode change. ---
     float target = 0.0f;
     bool fired[kSignals] = {};
     for (int c = 0; c < kSignals; ++c) {
@@ -188,76 +203,17 @@ struct Core {
       if (on && p.level[c] > target) target = p.level[c];
     }
 
-    // --- 2. Meter: instant attack, timed fall. A hit is a step, not a ramp —
-    //        the whole point of a meter is that you see the transient. ---
-    if (target > meter) {
-      meter = target;
-    } else {
-      const float fall = p.meter_fall > 1e-4f ? p.meter_fall : 1e-4f;
-      meter -= dt / fall;
-      if (meter < 0.0f) meter = 0.0f;
-    }
-
-    // --- 3. Peak hold. Rearms whenever the meter reaches it, then sits for
-    //        `peak_hold` seconds before falling. Never below the meter. ---
-    if (meter >= peak) {
-      peak = meter;
-      hold_t = 0.0f;
-    } else {
-      hold_t += dt;
-      if (hold_t > p.peak_hold) {
-        const float fall = p.peak_fall > 1e-4f ? p.peak_fall : 1e-4f;
-        peak -= dt / fall;
-        if (peak < meter) peak = meter;
-      }
-    }
-
-    // --- 4. Flams. A fire lands on the layer its LEVEL names, so ch3 and ch4
-    //        share the top layer and retrigger each other. ---
-    for (int c = 0; c < kSignals; ++c) {
-      if (!fired[c]) continue;
-      const int i = layerOf(p.level[c]);
-      flam_t[i] = 0.0f;
-      flam_live[i] = true;
-    }
-    const float ft = p.flam_time > 1e-4f ? p.flam_time : 1e-4f;
-    float flam[kLayers] = {};
-    for (int i = 0; i < kLayers; ++i) {
-      if (!flam_live[i]) continue;
-      const float k = 1.0f - flam_t[i] / ft;   // 1 at the hit, 0 at retirement
-      flam[i] = k > 0.0f ? k * k : 0.0f;       // ease out — a blip, not a fade
-      flam_t[i] += dt;
-      if (flam_t[i] >= ft) flam_live[i] = false;
-    }
-
     Out o;
-    o.meter = clamp01(meter / (float)kLayers);
-    o.peak = clamp01(peak / (float)kLayers);
+    if (p.mode == ModeSolid) tickSolid(p, o);
+    else                     tickMeter(p, fired, target, dt, o);
 
-    // --- 5. Which layers are lit. `allow_holes` swaps "everything under the
-    //        meter" for "only what is currently flamming"; the cap is exempt
-    //        either way, because a cap you cannot see is not a cap. ---
-    o.peak_layer = peak >= 0.05f ? layerOf(peak) : -1;
-    bool lit[kLayers] = {};
-    for (int i = 0; i < kLayers; ++i)
-      lit[i] = p.allow_holes ? (flam[i] > 0.0f) : (meter >= (float)(i + 1) - 1e-4f);
-    if (o.peak_layer >= 0) lit[o.peak_layer] = true;
-
-    // --- 6. Emission and colour. The cap's flam runs the OTHER WAY: a plain
-    //        layer rests dark-violet and flashes magenta, the cap rests cyan and
-    //        flashes violet, so the top of the tower never reads like the rest
-    //        of it even mid-hit. ---
-    for (int i = 0; i < kLayers; ++i) {
-      const float base = lit[i] ? p.emission_on : p.emission_off;
-      o.emission[i] = clamp01(base + flam[i] * p.flam_emission);
-      const float mix = clamp01(flam[i] * p.flam_color);
-      o.color[i] = (i == o.peak_layer) ? lerpRgb(p.highlight, p.secondary, mix)
-                                       : lerpRgb(p.secondary, p.primary, mix);
-    }
-
-    // --- 7. The camera move. Half a cycle, no return: it pops into its start
-    //        pose, eases across, and pops back to baseline when the timer runs
-    //        out. Both pops are the effect, not an artefact. ---
+    // --- 2. The camera move, which every mode gets. It sits OUTSIDE the mode
+    //        branch on purpose: the mode paints the tower, the move flies the
+    //        camera, and Solid exists precisely so a move can be the only
+    //        thing happening.
+    //        Half a cycle, no return: it pops into its start pose, eases
+    //        across, and pops back to baseline when the timer runs out. Both
+    //        pops are the effect, not an artefact. ---
     float az_deg = 0.0f;
     float elev_deg = 0.0f;
     float spacing = p.spacing_base;
@@ -292,11 +248,114 @@ struct Core {
       }
     }
 
-    // --- 8. Normalise for publication (see the header note). ---
+    // --- 3. Normalise for publication (see the header note). ---
     o.azimuth = wrap01(p.azimuth_base + az_deg / 360.0f);
     o.elevation = clamp01((p.elevation_base + elev_deg) / kElevationMaxDeg);
     o.spacing = clamp01(spacing / kSpacingMax);
     return o;
+  }
+
+ private:
+  /// SOLID — the mode with no reactivity at all. Every floor sits lit in its own
+  /// colour and only the camera moves.
+  ///
+  /// The colour assignment is not arbitrary: it reproduces three_planes' OWN
+  /// plane defaults (magenta / cyan / violet, which is exactly what the three
+  /// roles default to), so a rig in this mode with untouched colours looks like
+  /// the effect does with nothing wired to it.
+  void tickSolid(const Params& p, Out& o) {
+    using namespace detail;
+    // Hold the ballistics at rest rather than letting them drift while unread,
+    // so switching back to the meter starts from silence instead of from
+    // whatever it happened to be showing a minute ago. `prev_on` is still
+    // tracked by the caller, so a signal that was already high when the mode
+    // changed does not read as a fresh hit on the way back.
+    meter = 0.0f;
+    peak = 0.0f;
+    hold_t = 0.0f;
+    for (int i = 0; i < kLayers; ++i) { flam_t[i] = 0.0f; flam_live[i] = false; }
+
+    // The meter rails report the METER, and in this mode there isn't one. They
+    // read 0 rather than "full" because nothing is being measured.
+    o.meter = 0.0f;
+    o.peak = 0.0f;
+    o.peak_layer = -1;
+
+    const Rgb solid[kLayers] = {p.primary, p.highlight, p.secondary};
+    for (int i = 0; i < kLayers; ++i) {
+      o.emission[i] = clamp01(p.emission_on);
+      o.color[i] = solid[i];
+    }
+  }
+
+  /// EV METER — the reactive mode. Everything below is driven by the four gates.
+  void tickMeter(const Params& p, const bool* fired, float target, float dt, Out& o) {
+    using namespace detail;
+    // --- 1. Meter: instant attack, timed fall. A hit is a step, not a ramp —
+    //        the whole point of a meter is that you see the transient. ---
+    if (target > meter) {
+      meter = target;
+    } else {
+      const float fall = p.meter_fall > 1e-4f ? p.meter_fall : 1e-4f;
+      meter -= dt / fall;
+      if (meter < 0.0f) meter = 0.0f;
+    }
+
+    // --- 2. Peak hold. Rearms whenever the meter reaches it, then sits for
+    //        `peak_hold` seconds before falling. Never below the meter. ---
+    if (meter >= peak) {
+      peak = meter;
+      hold_t = 0.0f;
+    } else {
+      hold_t += dt;
+      if (hold_t > p.peak_hold) {
+        const float fall = p.peak_fall > 1e-4f ? p.peak_fall : 1e-4f;
+        peak -= dt / fall;
+        if (peak < meter) peak = meter;
+      }
+    }
+
+    // --- 3. Flams. A fire lands on the layer its LEVEL names, so ch3 and ch4
+    //        share the top layer and retrigger each other. ---
+    for (int c = 0; c < kSignals; ++c) {
+      if (!fired[c]) continue;
+      const int i = layerOf(p.level[c]);
+      flam_t[i] = 0.0f;
+      flam_live[i] = true;
+    }
+    const float ft = p.flam_time > 1e-4f ? p.flam_time : 1e-4f;
+    float flam[kLayers] = {};
+    for (int i = 0; i < kLayers; ++i) {
+      if (!flam_live[i]) continue;
+      const float k = 1.0f - flam_t[i] / ft;   // 1 at the hit, 0 at retirement
+      flam[i] = k > 0.0f ? k * k : 0.0f;       // ease out — a blip, not a fade
+      flam_t[i] += dt;
+      if (flam_t[i] >= ft) flam_live[i] = false;
+    }
+
+    o.meter = clamp01(meter / (float)kLayers);
+    o.peak = clamp01(peak / (float)kLayers);
+
+    // --- 4. Which layers are lit. `allow_holes` swaps "everything under the
+    //        meter" for "only what is currently flamming"; the cap is exempt
+    //        either way, because a cap you cannot see is not a cap. ---
+    o.peak_layer = peak >= 0.05f ? layerOf(peak) : -1;
+    bool lit[kLayers] = {};
+    for (int i = 0; i < kLayers; ++i)
+      lit[i] = p.allow_holes ? (flam[i] > 0.0f) : (meter >= (float)(i + 1) - 1e-4f);
+    if (o.peak_layer >= 0) lit[o.peak_layer] = true;
+
+    // --- 5. Emission and colour. The cap's flam runs the OTHER WAY: a plain
+    //        layer rests dark-violet and flashes magenta, the cap rests cyan and
+    //        flashes violet, so the top of the tower never reads like the rest
+    //        of it even mid-hit. ---
+    for (int i = 0; i < kLayers; ++i) {
+      const float base = lit[i] ? p.emission_on : p.emission_off;
+      o.emission[i] = clamp01(base + flam[i] * p.flam_emission);
+      const float mix = clamp01(flam[i] * p.flam_color);
+      o.color[i] = (i == o.peak_layer) ? lerpRgb(p.highlight, p.secondary, mix)
+                                       : lerpRgb(p.secondary, p.primary, mix);
+    }
   }
 };
 

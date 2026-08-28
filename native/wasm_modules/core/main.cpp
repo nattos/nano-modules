@@ -1089,11 +1089,13 @@ void nano_module_main() {
         2,
         "mod.rig.three_planes",
         "Three Planes Rig",
-        "Show controller for source.mesh.three_planes. Reads four on/off signals (a beatsync Art-Net drum feed, a sequencer, four buttons) as an EV meter with peak hold: each signal names a floor, a hit throws the meter up to it and the meter falls back on its own time, leaving a held cap behind in the Highlight colour. Each hit also flams its floor — a short brightness blip that swings the colour to the other end. Publishes three emission rails, three colour rails, and orbit / elevation / spacing, all normalised so a plain wire lands on the right value. Four monophonic one-shot camera moves (Show, Sweep Up, Glance, Unfold) compose on top. Pure data module.",
+        "Show controller for source.mesh.three_planes. Reads four on/off signals (a beatsync Art-Net drum feed, a sequencer, four buttons) as an EV meter with peak hold: each signal names a floor, a hit throws the meter up to it and the meter falls back on its own time, leaving a held cap behind in the Highlight colour. Each hit also flams its floor — a short brightness blip that swings the colour to the other end. Publishes three emission rails, three colour rails, and orbit / elevation / spacing, all normalised so a plain wire lands on the right value. Four monophonic one-shot camera moves (Show, Sweep Up, Glance, Unfold) compose on top, in every mode. A second mode, Solid, drops the reactivity entirely: three floors lit in the three colours, nothing but the moves. Pure data module.",
         "mod",
         "three planes,rig,meter,vu,ev,peak,hold,flam,artnet,dmx,beatsync,show,controller,colour,color,modulation",
         "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(three_planes_rig_effect),
+        nullptr, nullptr, nullptr,
+        &three_planes_rig_effect::eval_visibility,  // the meter's knobs vanish in Solid
     });
 
     nano::registerEffect({

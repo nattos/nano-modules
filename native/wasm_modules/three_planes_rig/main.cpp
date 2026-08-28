@@ -51,8 +51,6 @@ struct State {
   /// duration knob arriving in the same transaction resolve the same way
   /// whatever order they land in (mod_latch's discipline).
   int pending_anim = rig::AnimNone;
-
-  int mode = 0;
 };
 
 // --- publish helpers ------------------------------------------------------
@@ -76,6 +74,45 @@ static inline void pubRgb(const char* name, const rig::Rgb& c) {
   state::setValPath(name, arr.h);
 }
 
+// --- per-instance field visibility -----------------------------------------
+
+/// Solid reads NO signals and runs no ballistics, so every field that only the
+/// meter consumes comes off the card. That leaves the mode select, the three
+/// colours, the lit level, the camera baselines and the moves — which is exactly
+/// the set Solid actually uses.
+static void applyModeVisibility(int mode) {
+  const bool solid = (mode == rig::ModeSolid);
+  for (int i = 0; i < rig::kSignals; ++i) {
+    char name[16];
+    std::snprintf(name, sizeof(name), "sig_%d", i + 1);
+    state::setFieldHidden(name, solid);
+    std::snprintf(name, sizeof(name), "sig%d_level", i + 1);
+    state::setFieldHidden(name, solid);
+  }
+  state::setFieldHidden("meter_fall", solid);
+  state::setFieldHidden("peak_hold", solid);
+  state::setFieldHidden("peak_fall", solid);
+  state::setFieldHidden("allow_holes", solid);
+  // `emission_on` stays — it is what Solid lights the floors AT. `emission_off`
+  // is the unlit level, and in Solid nothing is unlit.
+  state::setFieldHidden("emission_off", solid);
+  state::setFieldHidden("flam_time", solid);
+  state::setFieldHidden("flam_color", solid);
+  state::setFieldHidden("flam_emission", solid);
+}
+
+/// Static (self-less) evaluator — pure over state, so the editor can resolve the
+/// field set for a card that is not currently executing.
+void eval_visibility(int n, const char* pb, const int* off, const int* len,
+                     const int* ops) {
+  int mode = rig::ModeEvMeter;
+  for (int i = 0; i < n; i++) {
+    if (ops[i] != state::PatchReplace) continue;
+    if (state::pathIs(pb + off[i], len[i], "mode")) mode = (int)state::patchFloat(i);
+  }
+  applyModeVisibility(mode);
+}
+
 void module_init() {
   state::Schema schema;
   schema.helpField("intro",
@@ -84,11 +121,16 @@ void module_init() {
     "signals — a drum feed over Art-Net, a sequencer, four buttons — and drives "
     "the whole stack: which floors are lit, what colour they are, and where the "
     "camera is.\n\n"
-    "The meter is an **EV meter with peak hold**. Each signal names a height; a "
-    "hit throws the meter up to it instantly and the meter falls back on its own "
-    "time. The highest point it reached stays behind as a **cap**, held for a "
-    "moment before it sinks — and the cap wears the *Highlight* colour, so you "
-    "can always see how loud it just got.\n\n"
+    "**EV Meter** is the reactive mode. Each signal names a height; a hit throws "
+    "the meter up to it instantly and the meter falls back on its own time. The "
+    "highest point it reached stays behind as a **cap**, held for a moment "
+    "before it sinks — and the cap wears the *Highlight* colour, so you can "
+    "always see how loud it just got.\n\n"
+    "**Solid** is the opposite: no signals, no meter, no cap. Three lit floors "
+    "in the three colours and nothing moving. It is the pose to cut back to — a "
+    "piece that reacts the whole way through has nothing left to react from.\n\n"
+    "The four **moves** work in either mode. They fly the camera, not the tower, "
+    "so Solid plus a move is a clean gesture on a still image.\n\n"
     "**Try:** wire `Sig 1..4` from an *Art-Net In* card and the nine outputs into "
     "Three Planes' emission and colour, then fire **Show** from the trigger row "
     "while it runs. Turn on *Allow Holes* for a sparser, more percussive tower — "
@@ -135,7 +177,12 @@ void module_init() {
   // ---------------- Meter ----------------
   schema.group("meter", "Meter")
         .groupHelp(
-          "How the tower moves. A hit is a **step**, not a ramp — the meter jumps "
+          "What paints the tower. **EV Meter** reads the signals; **Solid** "
+          "ignores them entirely and just lights all three floors at *Lit "
+          "Level*, one per colour, leaving the moves as the only thing "
+          "happening. The rest of this group is the meter's, and disappears in "
+          "Solid.\n\n"
+          "A hit is a **step**, not a ramp — the meter jumps "
           "to the height it was given and then falls, which is the whole point of "
           "a meter: you see the transient.\n\n"
           "*Fall* and *Peak Fall* are seconds to travel **one floor**, so a drop "
@@ -145,7 +192,9 @@ void module_init() {
           "meter is lit and the tower reads solid. On, a floor lights only while "
           "its own hit is ringing, so the tower is full of gaps and reads much "
           "more percussive. The cap shows either way.");
-  schema.selectField("mode", 0, state::SecondaryInput, {{"EV Meter", 0}})
+  // Options APPEND, never renumber — a stored `mode` is an index.
+  schema.selectField("mode", 0, state::SecondaryInput,
+                     {{"EV Meter", rig::ModeEvMeter}, {"Solid", rig::ModeSolid}})
         .label("Mode", "Mode");
   schema.floatField("meter_fall", 0.35f, 0.05f, 3.f, state::PrimaryInput,
                     nullptr, 0.f, "s", "Seconds for the meter to fall one floor.")
@@ -184,7 +233,11 @@ void module_init() {
   // ---------------- Colours ----------------
   schema.group("colors", "Colours")
         .groupHelp(
-          "Three roles, not three floors. A plain floor **rests** on *Secondary* "
+          "Three roles, not three floors — except in **Solid**, where they are "
+          "exactly three floors: bottom takes *Primary*, middle *Highlight*, "
+          "top *Secondary*, which is the colouring Three Planes already ships "
+          "with.\n\n"
+          "In the meter mode a plain floor **rests** on *Secondary* "
           "and **flams** to *Primary*. The peak cap runs the other way round: it "
           "rests on *Highlight* and flams to *Secondary* — so the top of the "
           "tower never reads like the rest of it, even mid-hit.\n\n"
@@ -219,8 +272,9 @@ void module_init() {
   // ---------------- Animations ----------------
   schema.group("animations", "Moves")
         .groupHelp(
-          "Four one-shot camera moves. Only one runs at a time — firing another "
-          "drops whatever was going, where it stood.\n\n"
+          "Four one-shot camera moves, available in every mode — they fly the "
+          "camera, not the tower. Only one runs at a time; firing another drops "
+          "whatever was going, where it stood.\n\n"
           "They are deliberately **half a cycle**: a move pops into its start "
           "pose, eases across, and pops back to the baseline when its timer runs "
           "out. Those two pops are the gesture, not an artefact — it lands like a "
@@ -269,7 +323,8 @@ void module_init() {
           "*Spacing* go to the camera.\n\n"
           "*Meter* and *Peak* are the raw levels over 0..1 — useful for driving "
           "anything else in the sketch off the same pulse, and for watching what "
-          "the card thinks is happening.");
+          "the card thinks is happening. Both read 0 in **Solid**, because "
+          "nothing is being measured.");
   schema.floatField("meter", 0.f, 0.f, 1.f, state::PrimaryOutput, "unsigned",
                     0.f, nullptr, "Meter height over the three floors.")
         .label("Meter", "Meter");
@@ -398,8 +453,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       if (matched) continue;
     }
 
-    if      (state::pathIs(p, l, "mode"))          s->mode = state::patchInt(i);
-    else if (state::pathIs(p, l, "meter_fall"))    s->p.meter_fall = state::patchFloat(i);
+    if (state::pathIs(p, l, "mode")) {
+      s->p.mode = state::patchInt(i);
+      applyModeVisibility(s->p.mode);
+      continue;
+    }
+    if      (state::pathIs(p, l, "meter_fall"))    s->p.meter_fall = state::patchFloat(i);
     else if (state::pathIs(p, l, "peak_hold"))     s->p.peak_hold = state::patchFloat(i);
     else if (state::pathIs(p, l, "peak_fall"))     s->p.peak_fall = state::patchFloat(i);
     else if (state::pathIs(p, l, "allow_holes"))   s->p.allow_holes = state::patchBool(i);
