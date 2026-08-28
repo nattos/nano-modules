@@ -84,7 +84,10 @@ struct State {
   int pending_release = show::MoveNone;
 
   // --- Scene ---
-  float quad_size = 0.5f;
+  /// 0.35 rather than something rounder: at the default depth range this is the
+  /// largest the frames can be while all three of Resonate's evenly-spaced pose
+  /// still fit on screen. Bigger and the nearest one is always past the lens.
+  float quad_size = 0.35f;
   float fov_deg = 55.0f;
   float side_angle_deg = 55.0f;
   float side_dolly = 1.0f;
@@ -338,7 +341,10 @@ void module_init() {
           "degrees they see the frames exactly edge-on — infinitely thin, "
           "gone in an instant — so back it off until the frames have real "
           "width as they sweep past.")
-      .floatField("quad_size", 0.5f, 0.05f, 2.f, state::PrimaryInput)
+      .floatField("quad_size", 0.35f, 0.05f, 2.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How big the frames are in the tunnel. Past about 0.4 the "
+                  "nearest one is always beyond the edge of the picture.")
         .label("Frame Size", "Size")
       .floatField("z_far", 6.0f, 0.5f, 40.f, state::SecondaryInput)
         .label("Depth Far", "Far")
