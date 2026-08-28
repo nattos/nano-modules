@@ -562,3 +562,357 @@ TEST_CASE("the default ease is the smoothstep the moves always had",
     CHECK_THAT(detail::easeCurve(1.0f, e), WithinAbs(1.0, 1e-6));
   }
 }
+
+// ---------------------------------------------------------------------------
+// The sweep: one bipolar knob whose POSITION dims the tower and whose SPEED
+// throws glints. Everything below drives it at an exact dt, which is the whole
+// reason SweepCore lives in the header rather than in the wasm module — the
+// motion estimator is a time-domain thing and a golden has to own the clock.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// One frame with the sweep knob parked at `sweep`. No gates: every case below
+/// is about the sweep, and a gate would move the emission underneath it.
+Out sweepAt(Core& c, Params& p, float sweep, float dt) {
+  p.sweep = sweep;
+  return idle(c, p, dt);
+}
+
+/// Drive the knob from `from` to `to` at a constant speed, returning the last
+/// frame. `step` is the value change per frame — 0 holds it still.
+Out drag(Core& c, Params& p, float from, float to, float dt, int frames) {
+  Out o{};
+  for (int i = 0; i < frames; ++i) {
+    const float u = frames > 1 ? (float)i / (float)(frames - 1) : 1.0f;
+    o = sweepAt(c, p, from + (to - from) * u, dt);
+  }
+  return o;
+}
+
+/// How many of the three floors sit away from the majority this frame. The
+/// flicker is defined as touching ONE at a time, so this is the assertion.
+int oddFloorsOut(const Out& o) {
+  int odd = 0;
+  for (int i = 0; i < kLayers; ++i) {
+    int same = 0;
+    for (int j = 0; j < kLayers; ++j)
+      if (std::fabs(o.emission[i] - o.emission[j]) < 1e-4f) ++same;
+    if (same == 1) ++odd;   // matches only itself
+  }
+  return odd;
+}
+
+}  // namespace
+
+TEST_CASE("the sweep at rest costs nothing", "[three_planes_rig][sweep]") {
+  // The centre IS the default, so a card nobody has wired must look exactly
+  // like it did before the sweep existed: full emission, no glint, no motion.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  Out o{};
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
+
+  for (int i = 0; i < kLayers; ++i)
+    REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+  REQUIRE(o.sweep_speed == 0.0f);
+  REQUIRE(o.glimmer == 0.0f);
+  REQUIRE(o.glimmer_phase == 0.0f);
+}
+
+TEST_CASE("a knob that starts off-centre does not fire a ghost glint",
+          "[three_planes_rig][sweep]") {
+  // The initial state replay delivers a sketch's stored `sweep` as a real patch
+  // BEFORE the first tick. Differencing that against the default centre would
+  // read as an instantaneous full-throw drag — the trap mod.shaper.motion seeds
+  // its window against, for the same reason.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  const Out first = sweepAt(c, p, 0.9f, 0.016f);
+  REQUIRE(first.sweep_speed == 0.0f);
+  REQUIRE(first.glimmer_phase == 0.0f);
+}
+
+TEST_CASE("most of the middle is a deadzone at full brightness",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;   // isolate the position law
+
+  // Anywhere inside the deadzone reads exactly as the centre does. That is the
+  // point of it: you can ride the knob around home without touching the look.
+  const float inside = kSweepCenter + 0.5f * p.sweep_deadzone * 0.9f;
+  for (int i = 0; i < 5; ++i) sweepAt(c, p, inside, 0.016f);
+  const Out o = sweepAt(c, p, inside, 0.016f);
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+}
+
+TEST_CASE("either extreme fades the tower to black", "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+
+  for (int i = 0; i < 5; ++i) sweepAt(c, p, 1.0f, 0.016f);
+  const Out top = sweepAt(c, p, 1.0f, 0.016f);
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(top.emission[i], WithinAbs(0.0, 1e-5));
+
+  // Signed in concept, unsigned in magnitude: the two ends are the same
+  // gesture in opposite directions, so they must land on the same picture.
+  Core c2;
+  Params p2 = p;
+  for (int i = 0; i < 5; ++i) sweepAt(c2, p2, 0.0f, 0.016f);
+  const Out bottom = sweepAt(c2, p2, 0.0f, 0.016f);
+  for (int i = 0; i < kLayers; ++i)
+    REQUIRE_THAT(bottom.emission[i], WithinAbs(top.emission[i], 1e-6));
+}
+
+TEST_CASE("Fade Depth floors how dark the ends go", "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.sweep_depth = 0.4f;
+  for (int i = 0; i < 5; ++i) sweepAt(c, p, 1.0f, 0.016f);
+  const Out o = sweepAt(c, p, 1.0f, 0.016f);
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(0.6, 1e-5));
+}
+
+TEST_CASE("Deadzone 0 starts the fade the moment you leave centre",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.sweep_deadzone = 0.0f;
+  for (int i = 0; i < 5; ++i) sweepAt(c, p, 0.75f, 0.016f);
+  const Out o = sweepAt(c, p, 0.75f, 0.016f);
+  // Half a throw out, smoothstepped: 1 - (0.5^2 * (3 - 1)) = 0.5.
+  REQUIRE_THAT(o.emission[0], WithinAbs(0.5, 1e-5));
+}
+
+TEST_CASE("the sweep dims the meter's own picture rather than replacing it",
+          "[three_planes_rig][sweep]") {
+  // The position law is a DIMMER over whatever the mode painted, so the
+  // relative shape of the tower survives it. Half-brightness must halve every
+  // floor, lit and unlit alike, not flatten them together.
+  Core c;
+  Params p;
+  p.sweep_flicker = 0.0f;
+  p.sweep_deadzone = 0.0f;
+  p.allow_holes = false;
+
+  Core ref;
+  Params refp = p;
+  Out lit{}, dimmed{};
+  for (int i = 0; i < 4; ++i) {
+    lit = step(ref, refp, 1, 0, 0, 0, 0.016f);                    // sweep at home
+    p.sweep = 0.75f;
+    const float sig[kSignals] = {1, 0, 0, 0};
+    dimmed = c.tick(p, sig, 0.016f);
+  }
+  for (int i = 0; i < kLayers; ++i)
+    REQUIRE_THAT(dimmed.emission[i], WithinAbs(lit.emission[i] * 0.5f, 1e-5));
+}
+
+TEST_CASE("speed is measured over the window, so a stepping encoder reads true",
+          "[three_planes_rig][sweep]") {
+  // The reason this is a boxcar and not a per-frame difference. A MIDI encoder
+  // does not send a smooth ramp; it sends a step every few frames. Differenced
+  // per frame those steps read as full-scale spikes.
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_window = 0.2f;
+  p.sweep_sense = 2.0f;   // 2 full throws / second pegs the meter
+
+  // Same gesture both ways: 1.0 throws per second, so half of full scale.
+  Core smooth;
+  Params sp = p;
+  float peak_smooth = 0.0f;
+  for (int i = 0; i < 60; ++i) {
+    const Out o = sweepAt(smooth, sp, 0.016f * (float)i * 1.0f, 0.016f);
+    if (i > 20) peak_smooth = o.sweep_speed;
+  }
+  REQUIRE_THAT(peak_smooth, WithinAbs(0.5, 0.05));
+
+  Core stepped;
+  Params tp = p;
+  float last_stepped = 0.0f, peak_stepped = 0.0f;
+  for (int i = 0; i < 60; ++i) {
+    // 0.05 every fifth frame at dt 0.01 — the same 1.0 / second, delivered in
+    // lumps five times the size.
+    const float v = 0.05f * (float)(i / 5);
+    const Out o = sweepAt(stepped, tp, v, 0.01f);
+    if (i > 25) {
+      last_stepped = o.sweep_speed;
+      if (o.sweep_speed > peak_stepped) peak_stepped = o.sweep_speed;
+    }
+  }
+  REQUIRE_THAT(last_stepped, WithinAbs(0.5, 0.15));
+  REQUIRE(peak_stepped < 0.8f);   // never mistakes a step for a flick
+
+  // ...and with the window closed it does exactly what it must not: pegs.
+  Core raw;
+  Params rp = p;
+  rp.sweep_window = 0.0f;
+  float peak_raw = 0.0f;
+  for (int i = 0; i < 60; ++i) {
+    const Out o = sweepAt(raw, rp, 0.05f * (float)(i / 5), 0.01f);
+    if (o.sweep_speed > peak_raw) peak_raw = o.sweep_speed;
+  }
+  REQUIRE(peak_raw > 0.99f);
+}
+
+TEST_CASE("the glint coasts to a stop and then reads exact zero",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  const Out moving = drag(c, p, 0.5f, 0.9f, 0.016f, 30);
+  REQUIRE(moving.sweep_speed > 0.2f);
+
+  // Immediately after: still coasting, because Glint Decay is what keeps a
+  // flick alive past the gesture rather than cutting it dead.
+  const Out justAfter = sweepAt(c, p, 0.9f, 0.016f);
+  REQUIRE(justAfter.sweep_speed > 0.0f);
+  REQUIRE(justAfter.sweep_speed < moving.sweep_speed);
+
+  Out rested{};
+  for (int i = 0; i < 160; ++i) rested = sweepAt(c, p, 0.9f, 0.016f);
+  REQUIRE(rested.sweep_speed == 0.0f);   // an exact zero, not an epsilon tail
+  REQUIRE(rested.glimmer == 0.0f);
+}
+
+TEST_CASE("the glint phase advances only while the knob moves, and wraps",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_decay = 0.02f;   // stop coasting quickly so "stopped" is unambiguous
+
+  float prev = 0.0f;
+  bool wrapped_once = false;
+  for (int i = 0; i < 400; ++i) {
+    // Ride back and forth across the centre — the gesture the knob is for.
+    const float s = kSweepCenter + 0.45f * (float)((i / 20) % 2 ? 1 : -1) *
+                                       ((float)(i % 20) / 19.0f);
+    const Out o = sweepAt(c, p, s, 0.016f);
+    REQUIRE(o.glimmer_phase >= 0.0f);
+    REQUIRE(o.glimmer_phase < 1.0f);
+    if (o.glimmer_phase < prev - 0.5f) wrapped_once = true;
+    prev = o.glimmer_phase;
+  }
+  REQUIRE(wrapped_once);
+
+  // Parked: the phase freezes once the envelope has drained.
+  Out a{};
+  for (int i = 0; i < 40; ++i) a = sweepAt(c, p, kSweepCenter, 0.016f);
+  const Out b = sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE_THAT(b.glimmer_phase, WithinAbs(a.glimmer_phase, 1e-6));
+}
+
+TEST_CASE("Glint scales the glimmer without touching the speed rail",
+          "[three_planes_rig][sweep]") {
+  // `sweep_speed` is the honest reading — other things wire off it — so the
+  // intensity knob must sit downstream of it, not on it.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_glimmer = 0.0f;
+  const Out o = drag(c, p, 0.5f, 0.9f, 0.016f, 30);
+  REQUIRE(o.sweep_speed > 0.2f);
+  REQUIRE(o.glimmer == 0.0f);
+
+  Core c2;
+  Params p2 = p;
+  p2.sweep_glimmer = 0.5f;
+  const Out o2 = drag(c2, p2, 0.5f, 0.9f, 0.016f, 30);
+  REQUIRE_THAT(o2.glimmer, WithinAbs(o2.sweep_speed * 0.5f, 1e-5));
+}
+
+TEST_CASE("the flicker lives in the fade and touches one floor at a time",
+          "[three_planes_rig][sweep]") {
+  // Halfway out: smoothstep(0.5) = 0.5, so gain 0.5 and the drive is at its
+  // peak. 0.45 deadzone + half of the remaining throw.
+  const float half_out = kSweepCenter +
+                         0.5f * (0.45f + 0.5f * (1.0f - 0.45f));
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+
+  int flicker_frames = 0, worst = 0;
+  for (int i = 0; i < 400; ++i) {
+    const Out o = sweepAt(c, p, half_out, 0.016f);
+    const int odd = oddFloorsOut(o);
+    if (odd > 0) ++flicker_frames;
+    if (odd > worst) worst = odd;
+  }
+  REQUIRE(flicker_frames > 10);   // it actually stutters
+  REQUIRE(worst == 1);            // never two floors at once
+}
+
+TEST_CASE("the flicker is silent at full brightness and once it is black",
+          "[three_planes_rig][sweep]") {
+  // Both ends of the fade have nothing to show: a tower at full brightness is
+  // not struggling, and a black one cannot be seen to.
+  Core home;
+  Params p;
+  p.mode = ModeSolid;
+  for (int i = 0; i < 400; ++i) {
+    const Out o = sweepAt(home, p, kSweepCenter, 0.016f);
+    REQUIRE(oddFloorsOut(o) == 0);
+    REQUIRE_THAT(o.emission[0], WithinAbs(1.0, 1e-5));
+  }
+
+  Core dark;
+  Params dp = p;
+  for (int i = 0; i < 400; ++i) {
+    const Out o = sweepAt(dark, dp, 1.0f, 0.016f);
+    REQUIRE_THAT(o.emission[0], WithinAbs(0.0, 1e-6));
+    REQUIRE_THAT(o.emission[1], WithinAbs(0.0, 1e-6));
+    REQUIRE_THAT(o.emission[2], WithinAbs(0.0, 1e-6));
+  }
+}
+
+TEST_CASE("a flickering floor TOGGLES — a dark one comes up",
+          "[three_planes_rig][sweep]") {
+  // "One will either go out or turn on." In the meter mode with nothing
+  // playing every floor sits at the unlit level, so the only stutter available
+  // is upward — and a design that could only dim would show nothing at all.
+  const float half_out = kSweepCenter + 0.5f * (0.45f + 0.5f * (1.0f - 0.45f));
+  Core c;
+  Params p;   // EV Meter, no gates: all three floors rest at emission_off
+  int lifted = 0;
+  for (int i = 0; i < 400; ++i) {
+    const Out o = sweepAt(c, p, half_out, 0.016f);
+    for (int k = 0; k < kLayers; ++k) {
+      // Brighter than the unlit level it would otherwise be dimmed to.
+      if (o.emission[k] > p.emission_off * 0.5f + 1e-3f) ++lifted;
+    }
+  }
+  REQUIRE(lifted > 10);
+}
+
+TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",
+          "[three_planes_rig][sweep]") {
+  // dt is clamped at kMaxDt upstream, but the sweep also has to survive the
+  // frame where a knob moved a long way across that clamped step.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  for (int i = 0; i < 10; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+  const Out stalled = sweepAt(c, p, 0.62f, 4.0f);   // clamps to kMaxDt
+  REQUIRE(stalled.sweep_speed >= 0.0f);
+  REQUIRE(stalled.sweep_speed <= 1.0f);
+  REQUIRE(stalled.glimmer_phase >= 0.0f);
+  REQUIRE(stalled.glimmer_phase < 1.0f);
+  for (int i = 0; i < kLayers; ++i) REQUIRE(stalled.emission[i] >= 0.0f);
+
+  // A zero-dt frame (a paused transport re-publishing) must not divide by it.
+  const Out paused = sweepAt(c, p, 0.62f, 0.0f);
+  REQUIRE(paused.sweep_speed >= 0.0f);
+  REQUIRE(paused.sweep_speed <= 1.0f);
+}

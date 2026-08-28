@@ -289,5 +289,169 @@ describe(`Three Planes E2E (${backend})`, () => {
     expect(on).toBeGreaterThan(4);          // the probe is on the lit interior
     expect(dip / on).toBeLessThan(0.25);
   });
+
+  // ---------------------------------------------------------------- Glimmer
+  // Travelling diagonal glints — the glare off metal in an old cel-animated
+  // show. They multiply each plane's EMISSION rather than the finished
+  // picture, which is what makes them read as light in the tube instead of a
+  // highlight pasted over it. Rate and intensity come from outside (Three
+  // Planes Rig's Sweep knob); this effect only draws a phase.
+
+  // A flat lit target: the three planes collapsed onto one another, filled,
+  // grown past the frame edges and graded neutrally. Everything visible is
+  // then ONE uniform emission, so the glimmer field is readable straight off a
+  // pixel with no geometry underneath it to confound the reading.
+  const FLAT: [string, any][] = [
+    ...QUIET,
+    ['drive', 0], ['toe', 0], ['shoulder', 0], ['warmth', 0],
+    ['asymmetry', 0], ['highlight_desat', 0],
+    ['plane_spacing', 0], ['zoom', 1.5], ['plane_size', 1.5],
+    ['plane1_emission', 0.30], ['plane1_fill', 1], ['fill_gain', 1],
+    ['plane2_emission', 0], ['plane3_emission', 0],
+    ['line_width', 0], ['halo_gain', 0],
+    ['glimmer_density', 3], ['glimmer_gain', 0.6], ['glimmer_shadow', 0.5],
+  ];
+
+  const flat = (extra: [string, any][], name: string) => runGpuEffectTest({
+    module: MODULE, bundle: BUNDLE, width: W, height: H,
+    inputColor: [0, 0, 0, 1],
+    params: [...FLAT, ...extra] as any,
+    dumpName: name,
+  });
+
+  // Travel direction at the default 45 deg, and the band line square across it.
+  // Cover-square y grows DOWNWARD, so "up-right" is (+, −).
+  const R2 = Math.SQRT1_2;
+  const TRAVEL: [number, number] = [R2, -R2];
+  const BAND: [number, number] = [R2, R2];
+  const scan = (f: Frame, dir: [number, number], ts: number[]) =>
+    ts.map((t) => luma(f.pixelAt(...toPx(t * dir[0], t * dir[1]))));
+  const spread = (v: number[]) => Math.max(...v) - Math.min(...v);
+
+  it('Glint Amount 0 leaves the picture exactly as it was', async () => {
+    // The guard that used to be an early `return` in the shader — DXC compiles
+    // one into a local naga rejects, which silently blanks the whole effect on
+    // WebGPU. It is arithmetic now: `amount` scales both band sets, so zero
+    // amount computes a multiplier of exactly 1. This is what pins that.
+    const off = await flat([['glimmer_amount', 0]], 'three_planes_glim_off');
+    const wild = await flat([
+      ['glimmer_amount', 0], ['glimmer_phase', 0.37],
+      ['glimmer_density', 11], ['glimmer_gain', 3], ['glimmer_shadow', 1],
+    ], 'three_planes_glim_zero');
+    expect(off.success && wild.success).toBe(true);
+    let worst = 0;
+    off.forEachPixel((p, x, y) => {
+      const q = wild.pixelAt(x, y);
+      worst = Math.max(worst, Math.abs(luma(p) - luma(q)));
+    });
+    expect(worst).toBe(0);
+  });
+
+  it('the glints run square across the travel direction', async () => {
+    const on = await flat([['glimmer_amount', 1], ['glimmer_phase', 0.1]],
+                          'three_planes_glim_axis');
+    expect(on.success).toBe(true);
+
+    // Two scans through the centre of the same uniform field: one along the
+    // travel, one along a band. A band is a line of constant brightness by
+    // construction, so only the first may vary.
+    const ts = [-0.30, -0.20, -0.10, 0, 0.10, 0.20, 0.30];
+    const along = scan(on, TRAVEL, ts);
+    const across = scan(on, BAND, ts);
+    expect(spread(along)).toBeGreaterThan(30);
+    // Not zero: toPx rounds to whole pixels, so a "band line" sample sits up to
+    // half a pixel off the true line and picks up a little of the gradient.
+    expect(spread(across)).toBeLessThan(spread(along) / 4);
+  });
+
+  it('the phase wraps seamlessly at 1', async () => {
+    // Why the second, finer band set travels at exactly TWO periods per wrap
+    // rather than some prettier irrational: the rail that drives this counts
+    // round and round, and a phase of 1 has to be the same picture as 0 or
+    // every lap would show a jump.
+    const zero = await flat([['glimmer_amount', 1], ['glimmer_phase', 0]],
+                            'three_planes_glim_p0');
+    const one  = await flat([['glimmer_amount', 1], ['glimmer_phase', 1]],
+                            'three_planes_glim_p1');
+    expect(zero.success && one.success).toBe(true);
+    let worst = 0;
+    zero.forEachPixel((p, x, y) => {
+      worst = Math.max(worst, Math.abs(luma(p) - luma(one.pixelAt(x, y))));
+    });
+    expect(worst).toBeLessThanOrEqual(1);
+  });
+
+  it('the phase carries the glints along the travel direction', async () => {
+    // u = axis * density − phase, so a peak sits at axis = phase / density:
+    // advancing the phase by 0.15 at density 3 slides it 0.05 UP-RIGHT.
+    const ts: number[] = [];
+    for (let t = -0.20; t <= 0.20001; t += 0.005) ts.push(t);
+    const peakAt = (v: number[]) => ts[v.indexOf(Math.max(...v))];
+
+    const a = await flat([['glimmer_amount', 1], ['glimmer_phase', 0]],
+                         'three_planes_glim_move0');
+    const b = await flat([['glimmer_amount', 1], ['glimmer_phase', 0.15]],
+                         'three_planes_glim_move1');
+    expect(a.success && b.success).toBe(true);
+    const shift = peakAt(scan(b, TRAVEL, ts)) - peakAt(scan(a, TRAVEL, ts));
+    expect(shift).toBeGreaterThan(0.02);   // up-right, not down-left
+    expect(shift).toBeLessThan(0.08);
+  });
+
+  it('a glint lifts the halo, not just the line core', async () => {
+    // HALF THE CLAIM THIS EFFECT MAKES. The glimmer multiplies emission, and
+    // emission scales the core, the halo and the fill together — so a glint
+    // crossing a tube brightens the glow around it as well, which is what
+    // stops it reading as a highlight pasted on top of the picture.
+    const only2: [string, any][] = [
+      ...QUIET,
+      ['plane1_emission', 0], ['plane3_emission', 0],
+      ['plane2_emission', 0.8], ['halo_radius', 1.0], ['halo_gain', 1.2],
+      ['glimmer_amount', 1], ['glimmer_density', 3],
+      ['glimmer_gain', 1.4], ['glimmer_shadow', 0.6],
+    ];
+    const halo: number[] = [];
+    for (const ph of [0, 0.2, 0.4, 0.6, 0.8]) {
+      const f = await runGpuEffectTest({
+        module: MODULE, bundle: BUNDLE, width: W, height: H,
+        inputColor: [0, 0, 0, 1],
+        params: [...only2, ['glimmer_phase', ph]] as any,
+        dumpName: `three_planes_glim_halo_${Math.round(ph * 100)}`,
+      });
+      expect(f.success).toBe(true);
+      // Plane 2 is a diamond with its top vertex at y = −0.279 (it is the
+      // middle floor, so it is centred whatever the spacing). Just above that
+      // is halo and nothing else — no line core reaches this far out.
+      halo.push(luma(f.pixelAt(...toPx(0, -0.32))));
+    }
+    expect(Math.min(...halo)).toBeGreaterThan(0);   // the probe is in the halo
+    expect(spread(halo)).toBeGreaterThan(8);
+  });
+
+  it('the glimmer cannot touch a pixel that is not emitting', async () => {
+    // THE OTHER HALF. It is a multiplier ON EMISSION, not a layer over the
+    // finished frame: with every plane dark the incoming image must survive
+    // untouched, however hard the glints are driven. An overlay would tint it.
+    const dark: [string, any][] = [
+      ...QUIET,
+      ['plane1_emission', 0], ['plane2_emission', 0], ['plane3_emission', 0],
+      ['glimmer_amount', 1], ['glimmer_density', 3],
+      ['glimmer_gain', 3], ['glimmer_shadow', 1],
+    ];
+    const mk = (ph: number) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0.45, 0.20, 0.30, 1],
+      params: [...dark, ['glimmer_phase', ph]] as any,
+      dumpName: `three_planes_glim_dark_${Math.round(ph * 100)}`,
+    });
+    const a = await mk(0);
+    const b = await mk(0.37);
+    expect(a.success && b.success).toBe(true);
+    let worst = 0;
+    a.forEachPixel((p, x, y) => {
+      worst = Math.max(worst, Math.abs(luma(p) - luma(b.pixelAt(x, y))));
+    });
+    expect(worst).toBe(0);
+  });
 });
 });

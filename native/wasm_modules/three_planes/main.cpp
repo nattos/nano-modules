@@ -44,9 +44,11 @@ struct Uniforms {
   float neon1[4];           // row 11:    halo gain, falloff, corner r, aa width
   float misc[4];            // row 12:    fill gain, chroma bleed, input opacity, debug
   float view[4];            // row 13:    vp_w, vp_h, aspect_x, aspect_y
-  float grade[16];          // rows 14-16: VcrGrade
+  float glim0[4];           // row 14:    phase, amount, travel dir x, dir y
+  float glim1[4];           // row 15:    density, width, gain, shadow
+  float grade[16];          // rows 16-19: VcrGrade
 };
-static_assert(sizeof(Uniforms) == 288, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 320, "Uniforms layout mismatch with render.hlsl");
 
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
@@ -73,6 +75,18 @@ struct State {
   float halo_falloff = 0.45f;
   float halo_smooth  = 0.35f;
   float fill_gain    = 0.22f;
+
+  // --- Glimmer ---
+  // Driven from outside like everything else rhythmic here: the rig hands us
+  // a PHASE rather than a rate, which is what keeps this effect a pure
+  // function of its inputs (see the TimeIndependent capability).
+  float glimmer_amount  = 0.0f;
+  float glimmer_phase   = 0.0f;
+  float glimmer_angle   = 45.0f;   // degrees, travel direction, CCW from +x
+  float glimmer_density = 3.0f;    // bands per cover-square unit
+  float glimmer_width   = 0.10f;   // band sharpness, fraction of a period
+  float glimmer_gain    = 1.4f;
+  float glimmer_shadow  = 0.55f;
 
   // --- Grade ---
   float exposure        = 1.0f;
@@ -296,6 +310,56 @@ void module_init() {
       .floatField("fill_gain", 0.22f, 0.f, 2.f, state::SecondaryInput)
         .label("Fill Gain", "Fill G")
 
+      // ---------------- Glimmer ----------------
+      .group("glimmer", "Glimmer")
+        .groupHelp(
+          "Slanted glints that travel across the stack — the glare off metal "
+          "in an old cel-animated show.\n\n"
+          "They multiply each plane's **emission**, not the finished picture. "
+          "That is the whole trick: emission scales the line core, the halo "
+          "and the fill together, so a glint crossing a tube brightens the "
+          "glow around it too and reads as light IN the tube rather than a "
+          "highlight pasted over it.\n\n"
+          "Like everything else here, the motion comes from outside. Wire "
+          "*Amount* and *Phase* from **Three Planes Rig**'s Sweep — riding "
+          "that knob is what throws them, faster movement giving faster, "
+          "brighter and denser glints. *Amount* alone does nothing at 0, so "
+          "an unwired card looks exactly as it always did.\n\n"
+          "*Shadow* is what sells it: a dark band trailing half a period "
+          "behind each glint, so the stack gains contrast rather than just "
+          "getting brighter.")
+      .floatField("glimmer_amount", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  "unsigned", 0.f, nullptr,
+                  "How strong the glints are. 0 is off entirely.")
+        .label("Glint Amount", "Glint")
+      .floatField("glimmer_phase", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  "unsigned", 0.f, nullptr,
+                  "Where the glints have travelled to. Wraps at 1 seamlessly, "
+                  "so a rail that keeps counting round never jumps.")
+        .label("Glint Phase", "Phase")
+      .floatField("glimmer_density", 3.0f, 0.5f, 12.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How many bands cross the frame. A second, finer set fades "
+                  "in with Amount on top of this one.")
+        .label("Glint Density", "Dens")
+      .floatField("glimmer_gain", 1.4f, 0.f, 3.f, state::PrimaryInput)
+        .label("Glint Gain", "GlGain")
+      .floatField("glimmer_shadow", 0.55f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "The dark band trailing each glint, as a fraction of full "
+                  "extinction.")
+        .label("Glint Shadow", "Shadow")
+      .floatField("glimmer_angle", 45.f, 0.f, 360.f, state::SecondaryInput,
+                  nullptr, 0.f, "deg",
+                  "Which way the glints travel. 45 deg runs bottom-left to "
+                  "top-right; the bands sit square across that.")
+        .label("Glint Angle", "GlAng")
+      .floatField("glimmer_width", 0.10f, 0.02f, 0.5f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Band sharpness, as a fraction of the spacing. Small is a "
+                  "hard glint, large is a soft sheen.")
+        .label("Glint Width", "GlWid")
+
       // ---------------- Grade ----------------
       .group("grade", "Warmth & Dehancement")
         .groupHelp(
@@ -487,6 +551,14 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "halo_smooth"))     s->halo_smooth = state::patchFloat(i);
     else if (state::pathIs(p, l, "fill_gain"))       s->fill_gain = state::patchFloat(i);
 
+    else if (state::pathIs(p, l, "glimmer_amount"))  s->glimmer_amount = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_phase"))   s->glimmer_phase = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_angle"))   s->glimmer_angle = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_density")) s->glimmer_density = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_width"))   s->glimmer_width = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_gain"))    s->glimmer_gain = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_shadow"))  s->glimmer_shadow = state::patchFloat(i);
+
     else if (state::pathIs(p, l, "chroma_bleed"))    s->chroma_bleed = state::patchFloat(i);
     else if (state::pathIs(p, l, "warmth"))          s->warmth = state::patchFloat(i);
     else if (state::pathIs(p, l, "drive"))           s->drive = state::patchFloat(i);
@@ -565,6 +637,19 @@ void render(void* self, int vp_w, int vp_h) {
   u.view[1] = float(vp_h);
   u.view[2] = cs.ax;
   u.view[3] = cs.ay;
+
+  // Travel direction, measured CCW from +x the way an angle normally is —
+  // hence the negated sine, because cover-square y grows DOWNWARD. The bands
+  // themselves sit square across this.
+  const float ga = s->glimmer_angle * (kPi / 180.0f);
+  u.glim0[0] = s->glimmer_phase;
+  u.glim0[1] = s->glimmer_amount;
+  u.glim0[2] = std::cos(ga);
+  u.glim0[3] = -std::sin(ga);
+  u.glim1[0] = s->glimmer_density;
+  u.glim1[1] = s->glimmer_width;
+  u.glim1[2] = s->glimmer_gain;
+  u.glim1[3] = s->glimmer_shadow;
 
   u.grade[0]  = s->exposure;
   u.grade[1]  = s->warmth;

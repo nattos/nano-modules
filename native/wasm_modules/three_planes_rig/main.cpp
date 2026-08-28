@@ -7,6 +7,13 @@
  * EV meter that lights the layers, and four one-shot camera moves — publishing
  * the rails to wire straight back into it.
  *
+ * The SWEEP is the exception to "reads four gates": one bipolar knob you
+ * perform on, whose POSITION dims the tower and whose SPEED throws glints.
+ * It is the only input here read for its motion rather than its value, and the
+ * only one whose effect three_planes cannot render from a level alone — hence
+ * the `glimmer` / `glimmer_phase` rails. All of it lives in the header's
+ * SweepCore.
+ *
  * The four signal inputs are `beatsync`'s Art-Net feed, reached through
  * control.artnet's `ch_0..ch_3`: four DMX channels (heavy / regular / decor /
  * uniform) that are GATES, not faders. Everything quantizes at 0.5; velocity is
@@ -131,6 +138,10 @@ void module_init() {
     "piece that reacts the whole way through has nothing left to react from.\n\n"
     "The four **moves** work in either mode. They fly the camera, not the tower, "
     "so Solid plus a move is a clean gesture on a still image.\n\n"
+    "**Sweep** is the knob you perform on. Where it sits dims the whole tower — "
+    "wide deadzone through the middle, fading to black at either end with the "
+    "tubes stuttering on the way out — and how fast you move it throws slanted "
+    "glints across the quads. It works in every mode too.\n\n"
     "**Try:** wire `Sig 1..4` from an *Art-Net In* card and the nine outputs into "
     "Three Planes' emission and colour, then fire **Show** from the trigger row "
     "while it runs. Turn on *Allow Holes* for a sparser, more percussive tower — "
@@ -337,6 +348,72 @@ void module_init() {
                     nullptr, 0.f, "s")
         .label("Unfold Time", "UnfT");
 
+  // ---------------- Sweep ----------------
+  schema.group("sweep", "Sweep")
+        .groupHelp(
+          "One knob you PERFORM — map it to a MIDI encoder and ride it. It is "
+          "bipolar: the centre (0.5) is home, and the two ends are the same "
+          "gesture in opposite directions.\n\n"
+          "**Where it sits** dims the whole tower. Most of the middle is a "
+          "*Deadzone* at full brightness, so you can work around centre "
+          "without touching the look — only out near an end does the light "
+          "fade, and *Fade Depth* says how far (1 = all the way to black). "
+          "Sweeping to an extreme is a deliberate blackout, not a dimmer.\n\n"
+          "**How fast you move it** throws glints. Speed is measured as "
+          "displacement over *Window*, so a stepping MIDI encoder reads as the "
+          "true drag speed instead of a string of spikes, and it returns to a "
+          "real zero when you stop. *Full Scale* is the speed that pegs it; "
+          "*Glint Decay* lets the glimmers coast to a stop after you let go.\n\n"
+          "*Flicker* is the stutter that arrives mid-fade — one floor at a "
+          "time, going dark or coming up, loudest exactly where the light is "
+          "halfway out and gone again at both ends. Old tubes struggle; they "
+          "do not dim politely.\n\n"
+          "**Try:** wire *Sweep* to a knob and sweep it across the beat with "
+          "*Glint* and *Glint Phase* wired into Three Planes — the tower "
+          "flashes with slanted highlights while you move and settles when you "
+          "arrive.");
+  schema.floatField("sweep", rig::kSweepCenter, 0.f, 1.f, state::PrimaryInput,
+                    "unsigned", 0.f, nullptr,
+                    "The performance knob. 0.5 is home — full brightness and "
+                    "no glints; both ends fade to black.")
+        .label("Sweep", "Swp");
+  schema.floatField("sweep_deadzone", 0.45f, 0.f, 0.95f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "How much of each half stays fully lit before the fade "
+                    "starts, as a fraction of the throw.")
+        .label("Deadzone", "Dead");
+  schema.floatField("sweep_depth", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "How dark the extremes go. 1 is black.")
+        .label("Fade Depth", "Depth");
+  schema.floatField("sweep_flicker", 0.6f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "Tube stutter through the fade — one floor at a time, "
+                    "loudest where the light is halfway out.")
+        .label("Flicker", "Flick");
+  schema.floatField("sweep_glimmer", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "How strong the glints get at full sweep speed.")
+        .label("Glint", "Glint");
+  schema.floatField("sweep_rate", 2.5f, 0.f, 12.f, state::SecondaryInput,
+                    nullptr, 0.f, "/s",
+                    "Glint travel at full speed, in band-widths per second.")
+        .label("Glint Rate", "Rate");
+  schema.floatField("sweep_decay", 0.18f, 0.01f, 2.f, state::SecondaryInput,
+                    nullptr, 0.f, "s",
+                    "How long the glints coast on after you stop moving.")
+        .label("Glint Decay", "Dec");
+  schema.floatField("sweep_sense", 2.0f, 0.1f, 8.f, state::SecondaryInput,
+                    nullptr, 0.f, "/s",
+                    "The sweep speed that pegs the glints, in full throws per "
+                    "second.")
+        .label("Full Scale", "Scale");
+  schema.floatField("sweep_window", 0.09f, 0.f, 0.4f, state::SecondaryInput,
+                    nullptr, 0.f, "s",
+                    "Span the sweep speed is measured over. Longer steadies a "
+                    "stepping encoder; 0 differences per frame.")
+        .label("Window", "Win");
+
   // ---------------- Outputs ----------------
   // Declared min/max IS the modulation contract; every rail here is the
   // DESTINATION slider's position, so a plain drag lands on the right value.
@@ -386,6 +463,25 @@ void module_init() {
                     "unsigned", 0.f, nullptr,
                     "Floor spacing as a fraction of Three Planes' 0..1.5 range.")
         .label("Plane Spacing", "Space");
+  // The sweep rails. The position half of the sweep needs no rail — it is
+  // already folded into the three Emission outputs above, because a global
+  // dimmer with a stutter in it IS the emission. Only the glints need their
+  // own wires: a travelling diagonal is a screen-space thing, and three_planes
+  // is the only card that can draw it.
+  schema.floatField("sweep_speed", 0.f, 0.f, 1.f, state::SecondaryOutput,
+                    "unsigned", 0.f, nullptr,
+                    "How hard the sweep knob is moving, 0..1. Coasts down "
+                    "over Glint Decay when you stop.")
+        .label("Sweep Speed", "Speed");
+  schema.floatField("glimmer", 0.f, 0.f, 1.f, state::SecondaryOutput,
+                    "unsigned", 0.f, nullptr,
+                    "Glint intensity. Wire to Three Planes' Glint Amount.")
+        .label("Glint", "Glint");
+  schema.floatField("glimmer_phase", 0.f, 0.f, 1.f, state::SecondaryOutput,
+                    "unsigned", 0.f, nullptr,
+                    "Where the glints have travelled to, wrapping 0..1. Wire "
+                    "to Three Planes' Glint Phase.")
+        .label("Glint Phase", "GlPh");
 
   // 4 gates in, twelve rails out. NO temporal tag: the meter, the peak hold, the
   // flams and the moves are all accumulators, so this cannot be seeked.
@@ -429,6 +525,9 @@ void tick(void* self, double dt) {
     std::snprintf(name, sizeof(name), "plane%d_color", i + 1);
     pubRgb(name, o.color[i]);
   }
+  pubFloat("sweep_speed", o.sweep_speed);
+  pubFloat("glimmer", o.glimmer);
+  pubFloat("glimmer_phase", o.glimmer_phase);
   pubFloat("orbit_azimuth", o.azimuth);
   pubFloat("elevation", o.elevation);
   pubFloat("plane_spacing", o.spacing);
@@ -515,6 +614,17 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "hold_time"))       s->p.move_hold = state::patchFloat(i);
     else if (state::pathIs(p, l, "move_ease"))      s->p.move_ease = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_start"))    s->p.sweep_start = state::patchFloat(i);
+    // The sweep. `sweep_start` above is a MOVE parameter and unrelated — it is
+    // matched first so the shorter "sweep" test below cannot shadow it.
+    else if (state::pathIs(p, l, "sweep"))          s->p.sweep = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_deadzone")) s->p.sweep_deadzone = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_depth"))    s->p.sweep_depth = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_flicker"))  s->p.sweep_flicker = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_glimmer"))  s->p.sweep_glimmer = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_rate"))     s->p.sweep_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_decay"))    s->p.sweep_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_window"))   s->p.sweep_window = state::patchFloat(i);
   }
 }
 

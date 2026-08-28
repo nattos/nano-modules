@@ -10,6 +10,12 @@
  * wasm effect and a Catch2 golden run byte-identical code with no GPU and no
  * ABI. Same arrangement as param_smoothing.h / envelope.h / transient_shaper.h.
  *
+ * On top of all of that sits the SWEEP: one bipolar knob, performed live,
+ * whose POSITION dims the whole tower (with a wide deadzone through the middle
+ * and a flickering fade at either end) and whose SPEED throws diagonal glints
+ * across it. See SweepCore — it is the only thing here that reads the input's
+ * motion rather than its value, and it works in every mode.
+ *
  * THE FOUR SIGNALS ARE GATES, NOT FADERS. They come from `beatsync`'s Art-Net
  * output (four DMX channels: heavy / regular / decor / uniform), where a hit is
  * a lit window rather than a level — so everything here quantizes at 0.5 and
@@ -23,6 +29,8 @@
  * the right value; kElevationMaxDeg / kSpacingMax mirror three_planes' declared
  * ranges and must be kept in step with its schema.
  */
+
+#include <cmath>
 
 namespace three_planes_rig {
 
@@ -39,6 +47,13 @@ constexpr float kSpacingMax = 1.5f;
 /// peak hold by it in one step would blank the meter. Same clamp motion.peak_decay
 /// uses for the same reason.
 constexpr float kMaxDt = 0.25f;
+
+/// The sweep knob's rest position. It is conceptually SIGNED — a bipolar knob
+/// centred here — but its magnitude is 0..1 like every other MIDI mapping in
+/// the rig, so the centre is 0.5 and `bp = 2*sweep - 1` is the signed reading.
+/// An unwired card sits here, which is exactly full intensity and no motion,
+/// so the sweep costs a sketch that ignores it nothing at all.
+constexpr float kSweepCenter = 0.5f;
 
 /// Which one-shot is running. Monophonic: a new trigger replaces the running
 /// one outright, which reads as a pop — consistent with the moves themselves.
@@ -115,6 +130,19 @@ struct Params {
   /// (the default, and what the moves had before this was a knob), 1
   /// smootherstep. The ends still pop — this only decides how the middle feels.
   float move_ease = 0.5f;
+
+  // --- Sweep: one bipolar knob, performed ---------------------------------
+  // Read fresh each tick like everything else here. `sweep` is the knob
+  // itself; the rest shape what it does. See SweepCore for the reasoning.
+  float sweep = kSweepCenter;
+  float sweep_sense = 2.0f;      ///< full-scale drag speed, knob ranges / second
+  float sweep_window = 0.09f;    ///< boxcar span the speed is measured over, s
+  float sweep_decay = 0.18f;     ///< motion envelope release, s
+  float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
+  float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
+  float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
+  float sweep_glimmer = 1.0f;    ///< glint intensity scale
+  float sweep_rate = 2.5f;       ///< glint travel, band-widths / second at full speed
 };
 
 /// One frame of rails. Floats are already normalised for publication.
@@ -128,6 +156,11 @@ struct Out {
   float elevation = 0.0f;  ///< deg / kElevationMaxDeg
   float spacing = 0.0f;    ///< units / kSpacingMax
   int peak_layer = -1;     ///< which layer wears the cap, −1 when the meter is dead
+
+  // --- Sweep rails --------------------------------------------------------
+  float sweep_speed = 0.0f;    ///< 0..1 motion envelope — how hard the knob is moving
+  float glimmer = 0.0f;        ///< 0..1 glint intensity for three_planes
+  float glimmer_phase = 0.0f;  ///< 0..1 glint travel, wrapping
 };
 
 namespace detail {
@@ -166,7 +199,195 @@ inline int layerOf(float level) {
   return i < 0 ? 0 : (i >= kLayers ? kLayers - 1 : i);
 }
 
+/// xorshift32, so the flicker is deterministic given the same dt sequence —
+/// which is what lets the Catch2 goldens pin it at all. Returns [0,1).
+inline float rand01(unsigned& state) {
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return (float)(state & 0xFFFFFFu) * (1.0f / 16777216.0f);
+}
+
 }  // namespace detail
+
+/// The sweep knob's dynamics: a motion estimator, a position law, and the
+/// flicker that hangs off both.
+///
+/// ONE knob, performed live — swept to the beat — doing two unrelated jobs at
+/// once, which is the point of it:
+///
+///   WHERE it is  → overall emission. Bipolar and strongly squashed: most of
+///                  the middle is a deadzone at full brightness, and only out
+///                  near either extreme does the tower fade toward black. So
+///                  you can ride the knob around centre without touching the
+///                  look, and reaching for an end is a deliberate blackout.
+///   HOW FAST it moves → glints. The travel rate and the intensity of the
+///                  diagonal glimmers three_planes flashes over the quads.
+///
+/// The rate estimate is mod.shaper.motion's, for its reason: a MIDI knob
+/// arrives as a stream of quantized steps, so per-frame differencing reads
+/// those steps as huge instantaneous spikes. Displacement over a short boxcar
+/// window reads the true drag speed instead, is bounded at range/window, and
+/// returns to an EXACT zero one window after the motion stops rather than
+/// trailing an exponential tail.
+///
+/// The flicker is deliberately loudest in the MIDDLE of the fade — a tower at
+/// full brightness has nothing to stutter about, and one already black has
+/// nothing to show. It peaks where the light is halfway out, which is where a
+/// tired tube actually struggles, and only ever touches ONE floor at a time.
+struct SweepCore {
+  /// Boxcar capacity. The longest window (0.4 s) at the ~2 ms frames a headless
+  /// test runs is ~200 samples; when it fills, the oldest drops and the window
+  /// shrinks gracefully instead of reading a wrong span.
+  static constexpr int kRing = 224;
+
+  /// Glint travel is measured in band-widths per second, so `sweep_rate` means
+  /// the same thing whatever density three_planes is drawing them at.
+  double clock = 0.0;
+  float ring_t[kRing] = {};
+  float ring_x[kRing] = {};
+  int ring_head = 0;
+  int ring_count = 0;
+  bool seeded = false;
+
+  float speed = 0.0f;   ///< 0..1 motion envelope: instant attack, timed release
+  float phase = 0.0f;   ///< glint travel, wraps at 1
+
+  int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
+  float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
+  unsigned rng = 0x9e3779b9u;
+
+  /// Displacement over the window ending at (clock, x): evict samples older
+  /// than `window` — always keeping one, so the span still covers the whole
+  /// window — read the rate against the oldest survivor, then push.
+  float windowRate(float window, float x) {
+    const float now = (float)clock;
+    int oldest = (ring_head - ring_count + kRing) % kRing;
+    while (ring_count >= 2) {
+      const int next = (oldest + 1) % kRing;
+      if (ring_t[next] > now - window) break;   // next would under-span
+      oldest = next;
+      --ring_count;
+    }
+    float rate = 0.0f;
+    if (ring_count >= 1) {
+      const float span = now - ring_t[oldest];
+      if (span > 1e-6f) rate = (x - ring_x[oldest]) / span;
+    }
+    if (ring_count >= kRing) --ring_count;   // full: drop the oldest
+    ring_t[ring_head] = now;
+    ring_x[ring_head] = x;
+    ring_head = (ring_head + 1) % kRing;
+    ++ring_count;
+    return rate;
+  }
+
+  /// The position law. 1 across the deadzone, easing to `1 - depth` at either
+  /// extreme. Smoothstep rather than a straight line so the shoulder where the
+  /// fade begins has no corner in it — a corner is exactly what you would see
+  /// riding the knob past it.
+  static float positionGain(const Params& p, float sweep) {
+    using namespace detail;
+    const float mag = clamp01((sweep - kSweepCenter < 0.0f
+                                   ? kSweepCenter - sweep
+                                   : sweep - kSweepCenter) / kSweepCenter);
+    const float dz = clamp01(p.sweep_deadzone);
+    const float t = clamp01((mag - dz) / (1.0f - dz > 1e-4f ? 1.0f - dz : 1e-4f));
+    const float fade = t * t * (3.0f - 2.0f * t);
+    return clamp01(1.0f - fade * clamp01(p.sweep_depth));
+  }
+
+  /// Advance one frame and fold the result into `o` — the rails, and the
+  /// emission the mode branch has already written.
+  void apply(const Params& p, float dt, Out& o) {
+    using namespace detail;
+
+    // --- 1. Speed. The first tick SEEDS the window from wherever the knob
+    //        already is: the initial state replay delivers a sketch's stored
+    //        `sweep` as a real patch before this runs, and differencing that
+    //        against a default would fire a ghost glint on frame one.
+    float x = p.sweep;
+    if (!(x == x)) x = kSweepCenter;   // NaN patch: hold the centre
+    if (!seeded) {
+      seeded = true;
+      clock = 0.0;
+      ring_t[0] = 0.0f;
+      ring_x[0] = x;
+      ring_head = 1;
+      ring_count = 1;
+    }
+    if (dt > 0.0f) {
+      clock += dt;
+      float rate;
+      if (p.sweep_window > 1e-3f) {
+        rate = windowRate(p.sweep_window, x);
+      } else {
+        // Window 0: raw per-frame differencing. The sample is still pushed so
+        // a window opened live resumes with history behind it.
+        const int prev = (ring_head - 1 + kRing) % kRing;
+        rate = (x - ring_x[prev]) / dt;
+        windowRate(1e-3f, x);
+      }
+      if (!(rate == rate)) rate = 0.0f;
+      const float v = clamp01(std::fabs(rate) /
+                              (p.sweep_sense > 1e-4f ? p.sweep_sense : 1e-4f));
+      // Instant attack, timed release — the meter IS the speed, so it reaches
+      // the full range at any decay. A flick reads immediately and then trails.
+      const float rel = std::exp(-dt / (p.sweep_decay > 1e-3f ? p.sweep_decay : 1e-3f));
+      speed = v > speed * rel ? v : speed * rel;
+      if (speed < 1e-4f) speed = 0.0f;
+      // Glints travel while the knob does, and coast to a stop with the
+      // envelope rather than freezing the instant you let go.
+      phase = wrap01(phase + speed * p.sweep_rate * dt);
+    }
+    o.sweep_speed = speed;
+    o.glimmer = clamp01(speed * clamp01(p.sweep_glimmer));
+    o.glimmer_phase = phase;
+
+    // --- 2. Position, and the flicker that lives inside the fade.
+    const float gain = positionGain(p, x);
+    // Peaks where the light is halfway out and vanishes at both ends: nothing
+    // to stutter about at full brightness, nothing to see once it is black.
+    const float drive = clamp01(4.0f * gain * (1.0f - gain)) * clamp01(p.sweep_flicker);
+
+    if (drive <= 1e-3f) {
+      flick_layer = -1;
+      flick_t = 0.0f;
+    } else if (dt > 0.0f) {
+      flick_t -= dt;
+      if (flick_t <= 0.0f) {
+        if (flick_layer >= 0) {
+          // End the blip and wait. The gap shortens as the drive rises, which
+          // is what turns an occasional stutter into a struggling tube.
+          flick_layer = -1;
+          const float gap = lerpf(0.55f, 0.05f, drive);
+          flick_t = gap * (0.4f + 1.2f * rand01(rng));
+        } else {
+          // ONE floor at a time — the whole reason this is a scheduler and not
+          // three independent noises. Coordinated stutter reads as one failing
+          // installation; independent stutter reads as static.
+          flick_layer = (int)(rand01(rng) * (float)kLayers);
+          if (flick_layer >= kLayers) flick_layer = kLayers - 1;
+          flick_t = 0.02f + 0.07f * rand01(rng);
+        }
+      }
+    }
+
+    // The chosen floor TOGGLES rather than dimming: lit goes dark, dark comes
+    // up. That is what an old tube does, and it keeps the stutter legible in
+    // the meter mode where half the tower may already be unlit.
+    if (flick_layer >= 0 && flick_layer < kLayers) {
+      const float lit = o.emission[flick_layer];
+      const float target = lit >= 0.5f * clamp01(p.emission_on)
+                               ? 0.0f
+                               : clamp01(p.emission_on);
+      o.emission[flick_layer] = lerpf(lit, target, drive);
+    }
+
+    // Position last, so the whole bank — flicker included — fades together.
+    for (int i = 0; i < kLayers; ++i) o.emission[i] = clamp01(o.emission[i] * gain);
+  }
+};
 
 /// The per-instance state. Everything here is an accumulator, which is why the
 /// effect declares no temporal capability — it cannot be seeked.
@@ -179,6 +400,11 @@ struct Core {
 
   float flam_t[kLayers] = {};
   bool flam_live[kLayers] = {};
+
+  /// The sweep knob's own dynamics. Held here, not in the mode branch, because
+  /// it composes on TOP of whatever paints the tower — same relationship the
+  /// camera moves have.
+  SweepCore sweep;
 
   int anim = AnimNone;
   float anim_t = 0.0f;
@@ -233,7 +459,13 @@ struct Core {
     if (p.mode == ModeSolid) tickSolid(p, o);
     else                     tickMeter(p, fired, target, dt, o);
 
-    // --- 2. The camera move, which every mode gets. It sits OUTSIDE the mode
+    // --- 2. The sweep. It runs in every mode and folds INTO the emission the
+    //        mode just wrote — a global dimmer with a stutter in it — while
+    //        publishing the glint rails separately, because a moving glimmer
+    //        is a screen-space thing only three_planes can draw. ---
+    sweep.apply(p, dt, o);
+
+    // --- 3. The camera move, which every mode gets. It sits OUTSIDE the mode
     //        branch on purpose: the mode paints the tower, the move flies the
     //        camera, and Solid exists precisely so a move can be the only
     //        thing happening.
@@ -280,7 +512,7 @@ struct Core {
       }
     }
 
-    // --- 3. Normalise for publication (see the header note). ---
+    // --- 4. Normalise for publication (see the header note). ---
     o.azimuth = wrap01(p.azimuth_base + az_deg / 360.0f);
     o.elevation = clamp01((p.elevation_base + elev_deg) / kElevationMaxDeg);
     o.spacing = clamp01(spacing / kSpacingMax);

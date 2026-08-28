@@ -186,9 +186,9 @@ void nano_module_main() {
         2,
         "source.mesh.three_planes",
         "Three Planes",
-        "Three isometric planes stacked like a 3D chess board, shaded as VCR-era neon. The CPU projects twelve corner points per frame (orthographic, so orbiting never adds perspective) and one fullscreen pass shades every plane at once from an exact signed distance field — so the halo is a smooth function of true distance with correctly rounded corners, and its radius is free to widen. Each plane is empty, neon-filled, or a black mask that eats the glow of everything beneath it while keeping its own outline. Publishes per-plane screen Y (azimuth-independent) and silhouette half-height as rails.",
+        "Three isometric planes stacked like a 3D chess board, shaded as VCR-era neon. The CPU projects twelve corner points per frame (orthographic, so orbiting never adds perspective) and one fullscreen pass shades every plane at once from an exact signed distance field — so the halo is a smooth function of true distance with correctly rounded corners, and its radius is free to widen. Each plane is empty, neon-filled, or a black mask that eats the glow of everything beneath it while keeping its own outline. Publishes per-plane screen Y (azimuth-independent) and silhouette half-height as rails. Travelling diagonal glimmers — the glare off metal in an old cel-animated show — multiply each plane's emission rather than the finished picture, so a glint lights the halo along with the core; drive their Amount and Phase from Three Planes Rig's Sweep knob.",
         "source",
-        "isometric,neon,vcr,glow,stack,layer,sdf,show,meter",
+        "isometric,neon,vcr,glow,stack,layer,sdf,show,meter,glimmer,glint",
         "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(three_planes),
     });

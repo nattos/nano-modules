@@ -367,4 +367,74 @@ describe('mod.rig.three_planes E2E', () => {
     expect(r.phases[2].trace('out').averageColor().r).toBeGreaterThan(100);
     expect(r.phases[2].trace('out').averageColor().r).toBeLessThan(156);
   });
+
+  // ------------------------------------------------------------------ Sweep
+  // The knob's DYNAMICS are pinned host-free (native/tests, which owns the
+  // clock a motion estimator needs). What only a real engine shows is that a
+  // patched value reaches the estimator at all, and that the position law
+  // lands on the emission rails rather than somewhere else.
+
+  /** Solid, one floor fully lit, flicker off — a clean read of the dimmer. */
+  const SWEPT = { mode: 1, emission_on: 1.0, sweep_flicker: 0 };
+
+  it('the deadzone keeps a knob near home from touching the tower', async () => {
+    // Default deadzone is 0.45 of each half, so 0.70 is still inside it and
+    // must read EXACTLY as home does. This is the whole point of the law:
+    // riding the knob around centre changes nothing.
+    const home = await runScalar('rig_sweep_home', 'plane1_emission',
+                                 { ...SWEPT, sweep: 0.5 });
+    const near = await runScalar('rig_sweep_near', 'plane1_emission',
+                                 { ...SWEPT, sweep: 0.70 });
+    expect(home.success && near.success).toBe(true);
+    expect(home.trace('out').averageColor().r).toBeGreaterThan(215);
+    expect(near.trace('out').averageColor().r).toBeGreaterThan(215);
+  });
+
+  it('either extreme fades the tower to black', async () => {
+    const top = await runScalar('rig_sweep_top', 'plane1_emission',
+                                { ...SWEPT, sweep: 1.0 });
+    const bottom = await runScalar('rig_sweep_bottom', 'plane1_emission',
+                                   { ...SWEPT, sweep: 0.0 });
+    expect(top.success && bottom.success).toBe(true);
+    // Signed in concept, unsigned in magnitude: both ends are the same
+    // gesture, so they must land on the same picture.
+    expect(top.trace('out').averageColor().r).toBeLessThan(40);
+    expect(bottom.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('a knob nobody has moved publishes no glint', async () => {
+    // Including one parked well off centre: the rail reports MOTION, and a
+    // stationary knob is not moving however far from home it is parked.
+    const still = await runScalar('rig_glint_still', 'glimmer',
+                                  { ...SWEPT, sweep: 0.9 });
+    expect(still.success).toBe(true);
+    expect(still.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('moving the knob on a real wire throws a glint', async () => {
+    // The leg the native goldens cannot reach: a patched `sweep` actually
+    // reaching the estimator. Decay is stretched to 2 s so the reading does
+    // not depend on how long the sampling window took.
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_glint', sketch:
+                scalarSketch('glimmer', { ...SWEPT, sweep: 0.5, sweep_decay: 2.0 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_glint' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        // A jump of 0.4 in one frame is far past Full Scale, so the meter pegs.
+        { commands: [{ type: 'setParam', sketchId: 'rig_glint', colIdx: 0,
+                       chainIdx: 1, paramKey: 'sweep', value: 0.9 }],
+          waitFrames: 2, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_glint',
+    });
+    expect(r.success).toBe(true);
+    expect(r.phases[0].trace('out').averageColor().r).toBeLessThan(40);
+    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(150);
+  });
 });
