@@ -3,10 +3,9 @@
 // The CPU has already projected three isometric quads into cover-square
 // screen coords and handed us 12 corner points. Per pixel we:
 //
-//   1. take the EXACT signed distance to each quad's outline (4 segments,
-//      always a convex parallelogram under azimuth orbit, so the SDF is
-//      exact and the halo is a smooth function of true distance — corners
-//      round correctly instead of throwing miter spikes);
+//   1. take the EXACT signed distance to each quad's outline and its glow
+//      field (nano_neon_quad.hlsl — shared with source.mesh.three_walls, and
+//      where the reasoning behind the two fields lives);
 //   2. turn that into a line core, a stacked-exponential halo, and an
 //      antialiased interior coverage;
 //   3. resolve all three planes bottom-to-top in ONE expression, so a
@@ -19,6 +18,7 @@
 // registers at float precision and is tone-mapped exactly once, on write.
 
 #include "nano_coords.hlsl"
+#include "nano_neon_quad.hlsl"
 #include "nano_vcr.hlsl"
 
 Texture2D<float4>   inputTex  : register(t0);
@@ -41,147 +41,36 @@ cbuffer Uniforms : register(b2) {
   VcrGrade grade;
 };
 
-// --- Plane field ----------------------------------------------------------
-// Each plane contributes TWO fields, and they are deliberately different.
-//
-//   sd   — the exact signed distance to the outline (iq's polygon SDF,
-//          unrolled to four explicit edges so the SPIR-V -> WGSL/MSL
-//          translation stays trivial). Drives the crisp line core and the
-//          antialiased interior coverage.
-//
-//   glow — a per-edge kernel SUMMED over the four edges, never min'd.
-//
-// Why the halo does NOT reuse `sd` directly: min() is only C0 where two edges
-// are equidistant, so exp(-|sd|/r) inherits the distance field's medial axis —
-// the "roof ridge" inside the quad where the nearest edge switches. The
-// gradient flips across it, which Mach-bands into a visible crease running out
-// of every corner (and a matching curvature kink just outside each vertex).
-//
-// The halo therefore folds the four edge distances with a LOG-SUM-EXP soft
-// minimum instead. Two properties make it the right operator here:
-//
-//   * It is C-infinity — no derivative of any order jumps. A polynomial smin
-//     is only C1 and still has a C2 break at its band edges, which Mach-bands
-//     faintly on its own; this has nothing to band on.
-//   * Its bias is SELF-LIMITING. Where one edge dominates, the sum collapses
-//     to that term and the result is the true minimum, exactly. It only pulls
-//     below min where several edges are comparable — which is precisely the
-//     crease, and precisely where we want rounding. So the field away from the
-//     medial axis, and hence the tuned brightness and falloff, is untouched.
-//
-// Note a plain sum of per-edge kernels, sum(exp(-d_i/r)), is this same softmin
-// with T pinned to the halo radius: smooth, but it under-reads distance by up
-// to r*ln(4) and washes the whole figure out. Decoupling T from r is the fix.
-//
-// ...OUTSIDE. Inside the quad the softmin cannot win, because BOTH of its terms
-// carry the skeleton: `m` ridges along the medial axis (those points really are
-// furthest from the outline) and the bias `t*ln(n)` brightens wherever n edges
-// tie — which is the same locus. Deep inside a rhombus the medial axis is both
-// diagonals meeting at the centre, so the interior reads as a dark four-pointed
-// star when the ridge wins, and as a bright centre blob ringed by a dark
-// contour when the bias does. Widening the band just trades one for the other.
-//
-// So the interior does not use a nearest-edge construction at all. It SUMS the
-// four edges' halo kernels, which is what light from four tubes actually does:
-// smooth, no skeleton, and monotone inward. That sum is exactly the "washes the
-// figure out" case above — true where it would double-count the corners on the
-// OUTSIDE, harmless inside, where there is no tuned look to protect and the
-// alternative is a visible skeleton.
-//
-// The two are cross-faded over the first `kInteriorBlend` halo radii of depth,
-// so the outline and everything outside it stay bit-for-bit what they were.
-// Near the outline the far edges contribute nothing anyway, so the fade has
-// almost nothing to do; by the time it matters, it is fully inside.
-
-float seg_dist(float2 p, float2 a, float2 b) {
-  float2 e = b - a;
-  float2 w = p - a;
-  float2 q = w - e * saturate(dot(w, e) / max(dot(e, e), 1e-12));
-  return sqrt(dot(q, q));
-}
-
-// Even-odd crossing test for one edge — supplies the SIGN of `sd`.
-bool seg_crosses(float2 p, float2 a, float2 b) {
-  float2 e = b - a;
-  float2 w = p - a;
-  bool3 c = bool3(p.y >= a.y, p.y < b.y, e.x * w.y > e.y * w.x);
-  return all(c) || all(!c);
-}
-
-// Stacked exponentials at 0.25x / 1x / 4x the radius. A single Gaussian reads
-// flat and synthetic; three octaves is what makes it read as glow. Weights sum
-// to 1 at distance 0, so `halo_gain` stays the only intensity control.
-// `falloff` 0 = tight and punchy, 1 = wide and soft.
-float halo_profile(float ad, float r, float falloff) {
-  float r0 = max(r, 1e-4);
-  float w = saturate(falloff);
-  float3 e = float3(exp(-ad / (r0 * 0.25)),
-                    exp(-ad / (r0 * 1.00)),
-                    exp(-ad / (r0 * 4.00)));
-  float3 wts = lerp(float3(0.60, 0.30, 0.10), float3(0.15, 0.30, 0.55), w);
-  return dot(e, wts);
-}
-
-// Log-sum-exp soft minimum of four distances, shifted by the true min so the
-// exponentials stay in [0,1] and the log argument stays in [1,4] — exact and
-// overflow-free regardless of how far away the point is.
-float softmin4(float d0, float d1, float d2, float d3, float t) {
-  float m = min(min(d0, d1), min(d2, d3));
-  float e = exp(-(d0 - m) / t) + exp(-(d1 - m) / t)
-          + exp(-(d2 - m) / t) + exp(-(d3 - m) / t);
-  return m - t * log(e);
-}
-
-/// How deep, in halo radii, the interior light-sum takes over from the softmin.
-static const float kInteriorBlend = 2.0;
-
-struct PlaneField { float sd; float glow; };
-
-PlaneField eval_plane(float2 p, float2 a, float2 b, float2 c, float2 d,
-                      float corner_r, float halo_r, float falloff,
-                      float smooth_frac) {
-  float d0 = seg_dist(p, a, b);
-  float d1 = seg_dist(p, b, c);
-  float d2 = seg_dist(p, c, d);
-  float d3 = seg_dist(p, d, a);
-
-  float s = 1.0;
-  if (seg_crosses(p, a, b)) s = -s;
-  if (seg_crosses(p, b, c)) s = -s;
-  if (seg_crosses(p, c, d)) s = -s;
-  if (seg_crosses(p, d, a)) s = -s;
-
-  PlaneField f;
-  f.sd = s * min(min(d0, d1), min(d2, d3)) - corner_r;
-
-  // The rounding band scales with the halo, because that is the only scale at
-  // which the crease is bright enough to see: further in, the glow has already
-  // fallen to nothing and the ridge is invisible whatever we do here.
-  float t = max(halo_r * smooth_frac, 1e-5);
-  float g = softmin4(d0, d1, d2, d3, t);
-  // Re-sign BEFORE the rounding offset: corner_r shrinks the shape, so it has
-  // to move the signed field. Subtracting it from an unsigned distance would
-  // read interior points as 2*corner_r closer than they are and flood the
-  // inside with glow.
-  float glow_near = halo_profile(abs(s * g - corner_r), halo_r, falloff);
-
-  // The interior light-sum (see the note above). Each edge is offset by
-  // corner_r for the same reason the softmin branch is.
-  float glow_sum = halo_profile(d0 + corner_r, halo_r, falloff)
-                 + halo_profile(d1 + corner_r, halo_r, falloff)
-                 + halo_profile(d2 + corner_r, halo_r, falloff)
-                 + halo_profile(d3 + corner_r, halo_r, falloff);
-
-  // Depth measured from the outline in halo radii. smoothstep rather than a
-  // clamp so the handover has no gradient step of its own to band on.
-  float depth = smoothstep(0.0, max(halo_r * kInteriorBlend, 1e-5), -f.sd);
-  f.glow = lerp(glow_near, glow_sum, depth);
-  return f;
+// This effect predates the shared NeonStyle block and keeps its own historical
+// float4 packing, so the style is assembled here rather than embedded in the
+// cbuffer. Same bytes in, same bytes out — three_walls, which is new, embeds
+// NeonStyle directly instead.
+NeonStyle neon_style() {
+  NeonStyle st;
+  st.line_hw     = neon0.x;
+  st.line_gain   = neon0.y;
+  st.core_whiten = neon0.z;
+  st.halo_r      = neon0.w;
+  st.halo_gain   = neon1.x;
+  st.falloff     = neon1.y;
+  st.corner_r    = neon1.z;
+  st.aa          = neon1.w;
+  st.fill_gain   = misc.x;
+  st.halo_smooth = fills.w;
+  st.pad0        = 0.0;
+  st.pad1        = 0.0;
+  return st;
 }
 
 float2 corner_of(int i, int k) {
   float4 row = corners[i * 2 + (k >> 1)];
   return (k & 1) ? row.zw : row.xy;
+}
+
+NanoNeonField plane_field(float2 p, int i) {
+  return nano_neon_quad(p, corner_of(i, 0), corner_of(i, 1),
+                           corner_of(i, 2), corner_of(i, 3),
+                        neon1.z, neon0.w, neon1.y, fills.w);
 }
 
 // --- The resolve ----------------------------------------------------------
@@ -190,42 +79,15 @@ float2 corner_of(int i, int k) {
 // what keeps its OWN outline and halo alive over that black. Fixed-function
 // blend cannot express both in one draw — this loop is the effect.
 float3 resolve(float2 p, float3 base) {
-  float line_hw     = neon0.x;
-  float line_gain   = neon0.y;
-  float core_whiten = neon0.z;
-  float halo_r      = neon0.w;
-  float halo_gain   = neon1.x;
-  float falloff     = neon1.y;
-  float corner_r    = neon1.z;
-  float aa          = max(neon1.w, 1e-6);
-  float fill_gain   = misc.x;
-  float halo_smooth = fills.w;
-
+  NeonStyle st = neon_style();
   float3 acc = base;
 
   [unroll]
   for (int i = 0; i < 3; i++) {
-    PlaneField f = eval_plane(p, corner_of(i, 0), corner_of(i, 1),
-                                 corner_of(i, 2), corner_of(i, 3),
-                              corner_r, halo_r, falloff, halo_smooth);
-
-    float inside = saturate(0.5 - f.sd / aa);
-    float core   = 1.0 - smoothstep(line_hw - aa, line_hw + aa, abs(f.sd));
-    float halo   = f.glow;
-
-    float3 col  = plane_color[i].rgb;
-    float  emis = plane_color[i].w;
-    float  fill = fills[i];
-
-    // Real neon photographs blow their core to white and keep the hue only
-    // out in the halo. This is the knob that makes it read as neon at all.
-    float3 tint = lerp(col, float3(1.0, 1.0, 1.0), saturate(core_whiten * core));
-
-    float3 E = emis * tint * (core * line_gain
-                            + halo * halo_gain
-                            + max(fill, 0.0) * inside * fill_gain);
-    float  A = -min(fill, 0.0) * inside;
-
+    NanoNeonField f = plane_field(p, i);
+    float A;
+    float3 E = nano_neon_quad_emit(f, plane_color[i].rgb, plane_color[i].w,
+                                   fills[i], st, A);
     acc = acc * (1.0 - A) + E;
   }
   return acc;
@@ -252,12 +114,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // the corners is legible.
     float d = 1e9;
     [unroll]
-    for (int i = 0; i < 3; i++) {
-      PlaneField f = eval_plane(p, corner_of(i, 0), corner_of(i, 1),
-                                   corner_of(i, 2), corner_of(i, 3),
-                                neon1.z, neon0.w, neon1.y, fills.w);
-      d = min(d, abs(f.sd));
-    }
+    for (int i = 0; i < 3; i++) d = min(d, abs(plane_field(p, i).sd));
     float bands = frac(d * 20.0);
     outputTex[gid.xy] = float4(bands.xxx * saturate(1.0 - d * 2.0), 1.0);
     return;
@@ -268,10 +125,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float3 flat_c = base * 0.15;
     [unroll]
     for (int i = 0; i < 3; i++) {
-      PlaneField f = eval_plane(p, corner_of(i, 0), corner_of(i, 1),
-                                   corner_of(i, 2), corner_of(i, 3),
-                                neon1.z, neon0.w, neon1.y, fills.w);
-      float ins = saturate(0.5 - f.sd / max(neon1.w, 1e-6));
+      float ins = saturate(0.5 - plane_field(p, i).sd / max(neon1.w, 1e-6));
       float3 key = float3(i == 0 ? 1.0 : 0.0, i == 1 ? 1.0 : 0.0, i == 2 ? 1.0 : 0.0);
       flat_c = lerp(flat_c, key, ins * 0.75);
     }
