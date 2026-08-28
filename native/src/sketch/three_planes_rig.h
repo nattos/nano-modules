@@ -14,7 +14,8 @@
  * whose POSITION dims the whole tower (with a wide deadzone through the middle
  * and a flickering fade at either end) and whose SPEED throws diagonal glints
  * across it. See SweepCore — it is the only thing here that reads the input's
- * motion rather than its value, and it works in every mode.
+ * motion rather than its value, and it works in every mode. The glints are
+ * three_planes' own particles; this only publishes the rail that drives them.
  *
  * THE FOUR SIGNALS ARE GATES, NOT FADERS. They come from `beatsync`'s Art-Net
  * output (four DMX channels: heavy / regular / decor / uniform), where a hit is
@@ -141,8 +142,7 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
-  float sweep_glimmer = 1.0f;    ///< glint intensity scale
-  float sweep_rate = 2.5f;       ///< glint travel, band-widths / second at full speed
+  float sweep_glimmer = 1.0f;    ///< glint drive scale
 };
 
 /// One frame of rails. Floats are already normalised for publication.
@@ -158,9 +158,8 @@ struct Out {
   int peak_layer = -1;     ///< which layer wears the cap, −1 when the meter is dead
 
   // --- Sweep rails --------------------------------------------------------
-  float sweep_speed = 0.0f;    ///< 0..1 motion envelope — how hard the knob is moving
-  float glimmer = 0.0f;        ///< 0..1 glint intensity for three_planes
-  float glimmer_phase = 0.0f;  ///< 0..1 glint travel, wrapping
+  float sweep_speed = 0.0f;  ///< 0..1 motion envelope — how hard the knob is moving
+  float glimmer = 0.0f;      ///< 0..1 glint drive for three_planes
 };
 
 namespace detail {
@@ -221,8 +220,10 @@ inline float rand01(unsigned& state) {
 ///                  near either extreme does the tower fade toward black. So
 ///                  you can ride the knob around centre without touching the
 ///                  look, and reaching for an end is a deliberate blackout.
-///   HOW FAST it moves → glints. The travel rate and the intensity of the
-///                  diagonal glimmers three_planes flashes over the quads.
+///   HOW FAST it moves → glints. How often three_planes throws a diagonal
+///                  glint across the quads, and how fast it crosses. The
+///                  glints themselves are particles and live over there; this
+///                  publishes the one rail that drives them.
 ///
 /// The rate estimate is mod.shaper.motion's, for its reason: a MIDI knob
 /// arrives as a stream of quantized steps, so per-frame differencing reads
@@ -241,8 +242,6 @@ struct SweepCore {
   /// shrinks gracefully instead of reading a wrong span.
   static constexpr int kRing = 224;
 
-  /// Glint travel is measured in band-widths per second, so `sweep_rate` means
-  /// the same thing whatever density three_planes is drawing them at.
   double clock = 0.0;
   float ring_t[kRing] = {};
   float ring_x[kRing] = {};
@@ -251,7 +250,6 @@ struct SweepCore {
   bool seeded = false;
 
   float speed = 0.0f;   ///< 0..1 motion envelope: instant attack, timed release
-  float phase = 0.0f;   ///< glint travel, wraps at 1
 
   int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
   float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
@@ -336,13 +334,11 @@ struct SweepCore {
       const float rel = std::exp(-dt / (p.sweep_decay > 1e-3f ? p.sweep_decay : 1e-3f));
       speed = v > speed * rel ? v : speed * rel;
       if (speed < 1e-4f) speed = 0.0f;
-      // Glints travel while the knob does, and coast to a stop with the
-      // envelope rather than freezing the instant you let go.
-      phase = wrap01(phase + speed * p.sweep_rate * dt);
     }
     o.sweep_speed = speed;
+    // Glints keep arriving while the envelope coasts down, so a flick throws a
+    // few more after the gesture rather than cutting off with your hand.
     o.glimmer = clamp01(speed * clamp01(p.sweep_glimmer));
-    o.glimmer_phase = phase;
 
     // --- 2. Position, and the flicker that lives inside the fade.
     const float gain = positionGain(p, x);

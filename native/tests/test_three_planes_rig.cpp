@@ -618,7 +618,6 @@ TEST_CASE("the sweep at rest costs nothing", "[three_planes_rig][sweep]") {
     REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
   REQUIRE(o.sweep_speed == 0.0f);
   REQUIRE(o.glimmer == 0.0f);
-  REQUIRE(o.glimmer_phase == 0.0f);
 }
 
 TEST_CASE("a knob that starts off-centre does not fire a ghost glint",
@@ -632,7 +631,7 @@ TEST_CASE("a knob that starts off-centre does not fire a ghost glint",
   p.mode = ModeSolid;
   const Out first = sweepAt(c, p, 0.9f, 0.016f);
   REQUIRE(first.sweep_speed == 0.0f);
-  REQUIRE(first.glimmer_phase == 0.0f);
+  REQUIRE(first.glimmer == 0.0f);
 }
 
 TEST_CASE("most of the middle is a deadzone at full brightness",
@@ -786,34 +785,6 @@ TEST_CASE("the glint coasts to a stop and then reads exact zero",
   REQUIRE(rested.glimmer == 0.0f);
 }
 
-TEST_CASE("the glint phase advances only while the knob moves, and wraps",
-          "[three_planes_rig][sweep]") {
-  Core c;
-  Params p;
-  p.mode = ModeSolid;
-  p.sweep_decay = 0.02f;   // stop coasting quickly so "stopped" is unambiguous
-
-  float prev = 0.0f;
-  bool wrapped_once = false;
-  for (int i = 0; i < 400; ++i) {
-    // Ride back and forth across the centre — the gesture the knob is for.
-    const float s = kSweepCenter + 0.45f * (float)((i / 20) % 2 ? 1 : -1) *
-                                       ((float)(i % 20) / 19.0f);
-    const Out o = sweepAt(c, p, s, 0.016f);
-    REQUIRE(o.glimmer_phase >= 0.0f);
-    REQUIRE(o.glimmer_phase < 1.0f);
-    if (o.glimmer_phase < prev - 0.5f) wrapped_once = true;
-    prev = o.glimmer_phase;
-  }
-  REQUIRE(wrapped_once);
-
-  // Parked: the phase freezes once the envelope has drained.
-  Out a{};
-  for (int i = 0; i < 40; ++i) a = sweepAt(c, p, kSweepCenter, 0.016f);
-  const Out b = sweepAt(c, p, kSweepCenter, 0.016f);
-  REQUIRE_THAT(b.glimmer_phase, WithinAbs(a.glimmer_phase, 1e-6));
-}
-
 TEST_CASE("Glint scales the glimmer without touching the speed rail",
           "[three_planes_rig][sweep]") {
   // `sweep_speed` is the honest reading — other things wire off it — so the
@@ -907,8 +878,8 @@ TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",
   const Out stalled = sweepAt(c, p, 0.62f, 4.0f);   // clamps to kMaxDt
   REQUIRE(stalled.sweep_speed >= 0.0f);
   REQUIRE(stalled.sweep_speed <= 1.0f);
-  REQUIRE(stalled.glimmer_phase >= 0.0f);
-  REQUIRE(stalled.glimmer_phase < 1.0f);
+  REQUIRE(stalled.glimmer >= 0.0f);
+  REQUIRE(stalled.glimmer <= 1.0f);
   for (int i = 0; i < kLayers; ++i) REQUIRE(stalled.emission[i] >= 0.0f);
 
   // A zero-dt frame (a paused transport re-publishing) must not divide by it.

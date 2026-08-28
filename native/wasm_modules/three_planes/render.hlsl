@@ -8,8 +8,8 @@
 //      where the reasoning behind the two fields lives);
 //   2. turn that into a line core, a stacked-exponential halo, and an
 //      antialiased interior coverage;
-//   2b. scale that emission by the travelling glimmer, so a glint lights the
-//      halo as well as the core (see `glimmer_at`);
+//   2b. scale that emission by whichever glint particles are passing, so a
+//      glint lights the halo as well as the core (see `glimmer_at`);
 //   3. resolve all three planes bottom-to-top in ONE expression, so a
 //      masking plane can occlude the halos beneath it while still emitting
 //      its own (see `resolve` below — this is the whole reason the effect
@@ -39,8 +39,11 @@ cbuffer Uniforms : register(b2) {
   float4 neon1;       // halo gain, halo falloff, corner radius, aa width
   float4 misc;        // fill gain, chroma bleed, has_input, debug mode
   float4 view;        // vp_w, vp_h, aspect_x, aspect_y
-  float4 glim0;       // glint phase, amount, travel dir x, dir y
-  float4 glim1;       // glint density, width, gain, shadow
+  float4 glim0;       // glint travel dir x, dir y, -, -
+  // One row per glint IN FLIGHT: where it sits on the travel axis, its
+  // half-width there, and the brightness and wake depth it was born with. A
+  // dead slot is zero gain and zero shade, so there is no count and no branch.
+  float4 glints[8];
 
   VcrGrade grade;
 };
@@ -67,56 +70,50 @@ NeonStyle neon_style() {
 }
 
 // --- Glimmer --------------------------------------------------------------
-// Travelling diagonal glints, multiplied into each plane's EMISSION rather
-// than composited over the finished picture. That is the point of doing it
-// here at all: emission scales the line core, the halo and the fill together,
-// so a glint crossing a tube brightens the glow around it as well and reads as
+// Travelling glints, multiplied into each plane's EMISSION rather than
+// composited over the finished picture. That is the point of doing it here at
+// all: emission scales the line core, the halo and the fill together, so a
+// glint crossing a tube brightens the glow around it as well and reads as
 // light in the tube instead of a highlight pasted on top.
 //
-// Two band sets at incommensurate spacings. The first is always present; the
-// second fades in with `amount`, which is what makes a fast sweep read as
-// DENSER rather than merely brighter. Both key off the same phase, and the
-// second travels at exactly TWO periods per wrap — an integer, so the rail's
-// 1 -> 0 wrap is seamless for both sets rather than just the first.
+// These are PARTICLES. The host owns their lives (see
+// <sketch/three_planes_glints.h>) and hands us however many are in flight,
+// already projected onto the travel axis; all that is left here is to add up
+// what they look like. Each is a bright band with a darker, wider wake behind
+// it — a glint alone gets brighter, a glint with a wake sweeps CONTRAST past,
+// which is what the eye reads as a moving highlight on a surface.
 //
-// The shadow sits half a period behind each glint and is deliberately wider
-// than it: a bright line with a soft dark wake behind it reads as contrast
-// sweeping past, where two equally hard bands read as a grating.
-
-/// One band set: a bright glint, and a wider dark wake half a period behind it.
-float glimmer_band(float axis, float phase, float density, float speed,
-                   float w, float gain, float shadow) {
-  float u  = frac(axis * density - phase * speed);
-  float tb = min(u, 1.0 - u);   // 0 at the glint, wrapped
-  float td = abs(u - 0.5);      // 0 at the shadow, half a period behind
-  return exp(-(tb * tb) / (w * w)) * gain
-       - exp(-(td * td) / (w * w * 3.24)) * shadow;
-}
+// The wake trails, so it sits at a LOWER axis coordinate than the glint (they
+// travel toward +axis) — hence `d + wake` rather than `d - wake`.
+static const float kGlintWake  = 1.5;   // wake offset, in glint half-widths
+static const float kGlintWakeW = 1.8;   // wake width, likewise
 
 float glimmer_at(float2 p) {
-  float axis    = dot(p, glim0.zw);
-  float amt     = glim0.y;
-  float phase   = glim0.x;
-  float density = glim1.x;
-  float w       = max(glim1.y, 1e-3);
-  float gain    = glim1.z;
-  float shadow  = glim1.w;
+  float axis = dot(p, glim0.xy);
 
-  // BRANCHLESS ON PURPOSE. The obvious `if (amt <= 0) return 1.0;` costs
-  // nothing to write and breaks the effect on WebGPU: DXC compiles an early
-  // return inside a function into a local whose type naga rejects ("has a type
-  // that can't be stored in a local variable"), the shader fails translation,
-  // and three_planes silently renders nothing at all. No guard is needed
-  // anyway — `amt` scales both terms, so an unwired card computes m = 0 and
-  // this returns exactly 1.0.
-  //
-  // The fine set travels at exactly TWO periods per wrap — an integer, so the
-  // rail's 1 -> 0 wrap is seamless for it as well as for the coarse one.
-  float m = amt       * glimmer_band(axis, phase, density,         1.0, w, gain, shadow)
-          + amt * amt * glimmer_band(axis, phase, density * 1.618, 2.0, w, gain, shadow);
+  // BRANCHLESS AND FULLY UNROLLED. An early `return` for the idle case looks
+  // free and is not: DXC compiles one inside a function into a local naga
+  // rejects ("has a type that can't be stored in a local variable"), the
+  // SPIR-V -> WGSL translation fails, and the whole effect silently renders
+  // nothing on WebGPU. A dead slot carries zero gain instead.
+  float m = 0.0;
+  [unroll]
+  for (int i = 0; i < 8; i++) {
+    float4 g = glints[i];
+    float w = max(g.y, 1e-4);
+    float d = (axis - g.x) / w;
+    float k = (d + kGlintWake) / kGlintWakeW;
+    // The glint is a SUPER-Gaussian (d^4, not d^2): a flatter top with much
+    // faster shoulders, so it reads as a hard-edged slash — an object with a
+    // boundary — where a plain Gaussian reads as a soft wash sliding past.
+    // The wake stays Gaussian, because a wake IS a soft thing.
+    float d2 = d * d;
+    m += g.z * exp(-d2 * d2)
+       - g.w * exp(-k * k);
+  }
 
-  // Clamped at 0 so a deep shadow extinguishes a plane rather than inverting
-  // it — emission is a multiplier on light, and there is no negative light.
+  // Clamped at 0 so a deep wake extinguishes a plane rather than inverting it
+  // — emission is a multiplier on light, and there is no negative light.
   return max(0.0, 1.0 + m);
 }
 
@@ -139,8 +136,8 @@ NanoNeonField plane_field(float2 p, int i) {
 float3 resolve(float2 p, float3 base) {
   NeonStyle st = neon_style();
   float3 acc = base;
-  // One sample for all three planes: the glint is a property of the SCREEN,
-  // a light sweeping across the whole installation, not of any one plane.
+  // One sample for all three planes: a glint is a property of the SCREEN, a
+  // light sweeping across the whole installation, not of any one plane.
   float glint = glimmer_at(p);
 
   [unroll]

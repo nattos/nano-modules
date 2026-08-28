@@ -21,6 +21,7 @@
 #include <host.h>
 #include <val.h>
 #include <effect_utils.h>   // fx::coverSquare
+#include <sketch/three_planes_glints.h>
 #include "three_planes_shaders.h"
 
 #include <cmath>
@@ -44,11 +45,15 @@ struct Uniforms {
   float neon1[4];           // row 11:    halo gain, falloff, corner r, aa width
   float misc[4];            // row 12:    fill gain, chroma bleed, input opacity, debug
   float view[4];            // row 13:    vp_w, vp_h, aspect_x, aspect_y
-  float glim0[4];           // row 14:    phase, amount, travel dir x, dir y
-  float glim1[4];           // row 15:    density, width, gain, shadow
-  float grade[16];          // rows 16-19: VcrGrade
+  float glim0[4];           // row 14:    travel dir x, dir y, -, -
+  // One row per glint IN FLIGHT: where it is on the travel axis (cover-square),
+  // its half-width there, and the two look values it was born with. A dead slot
+  // is zero gain and zero shade, so the shader needs no count and no branch.
+  float glints[8][4];       // rows 15-22: axis, half-width, gain, shade
+  float grade[16];          // rows 23-26: VcrGrade
 };
-static_assert(sizeof(Uniforms) == 320, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 432, "Uniforms layout mismatch with render.hlsl");
+static_assert(three_planes_glints::kMaxLive == 8, "glint rows must match kMaxLive");
 
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
@@ -77,15 +82,18 @@ struct State {
   float fill_gain    = 0.22f;
 
   // --- Glimmer ---
-  // Driven from outside like everything else rhythmic here: the rig hands us
-  // a PHASE rather than a rate, which is what keeps this effect a pure
-  // function of its inputs (see the TimeIndependent capability).
-  float glimmer_amount  = 0.0f;
-  float glimmer_phase   = 0.0f;
+  // The rhythm still comes from outside — `glimmer_drive` is the rig's Sweep
+  // knob — but the glints themselves are PARTICLES with lifetimes, so unlike
+  // everything else in this effect they are an accumulator. See
+  // <sketch/three_planes_glints.h>; it is why the effect is only
+  // SeekableApproximate rather than TimeIndependent.
+  three_planes_glints::Core glint_core;
+  float glimmer_drive   = 0.0f;    // 0..1 spawn + speed drive, wired from the rig
+  float glimmer_density = 5.0f;    // arrivals per second at full drive
+  float glimmer_speed   = 1.2f;    // crossings per second at full drive
   float glimmer_angle   = 45.0f;   // degrees, travel direction, CCW from +x
-  float glimmer_density = 3.0f;    // bands per cover-square unit
-  float glimmer_width   = 0.10f;   // band sharpness, fraction of a period
-  float glimmer_gain    = 1.4f;
+  float glimmer_width   = 0.07f;   // glint half-width, fraction of the travel span
+  float glimmer_gain    = 1.6f;
   float glimmer_shadow  = 0.55f;
 
   // --- Grade ---
@@ -315,49 +323,63 @@ void module_init() {
         .groupHelp(
           "Slanted glints that travel across the stack — the glare off metal "
           "in an old cel-animated show.\n\n"
+          "They are **particles, not a pattern**: each one is born at a "
+          "boundary, crosses the picture and dies at the far side, and while "
+          "it is in flight nothing about the knob that threw it reaches it. "
+          "Arrivals are randomly spaced and each glint gets its own "
+          "brightness, width and wake at birth, so a stream of them reads as "
+          "separate events rather than as a moving grating.\n\n"
           "They multiply each plane's **emission**, not the finished picture. "
           "That is the whole trick: emission scales the line core, the halo "
           "and the fill together, so a glint crossing a tube brightens the "
           "glow around it too and reads as light IN the tube rather than a "
           "highlight pasted over it.\n\n"
-          "Like everything else here, the motion comes from outside. Wire "
-          "*Amount* and *Phase* from **Three Planes Rig**'s Sweep — riding "
-          "that knob is what throws them, faster movement giving faster, "
-          "brighter and denser glints. *Amount* alone does nothing at 0, so "
-          "an unwired card looks exactly as it always did.\n\n"
-          "*Shadow* is what sells it: a dark band trailing half a period "
-          "behind each glint, so the stack gains contrast rather than just "
-          "getting brighter.")
-      .floatField("glimmer_amount", 0.0f, 0.f, 1.f, state::PrimaryInput,
+          "*Drive* is the one live input, and it does exactly two things — "
+          "how often glints arrive, and how fast they travel. Wire it from "
+          "**Three Planes Rig**'s *Glint* rail and riding the Sweep knob "
+          "throws them. At 0 nothing new arrives and whatever is still in "
+          "flight coasts out and dies, so an unwired card is quiet.\n\n"
+          "Speed is shared by every glint on purpose: at their own speeds "
+          "they would eventually cross, and two overlapping glints stop being "
+          "two things.\n\n"
+          "*Shadow* is what sells it — a dark wake trailing each glint, so "
+          "the stack gains contrast rather than just getting brighter.")
+      .floatField("glimmer_drive", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   "unsigned", 0.f, nullptr,
-                  "How strong the glints are. 0 is off entirely.")
-        .label("Glint Amount", "Glint")
-      .floatField("glimmer_phase", 0.0f, 0.f, 1.f, state::PrimaryInput,
-                  "unsigned", 0.f, nullptr,
-                  "Where the glints have travelled to. Wraps at 1 seamlessly, "
-                  "so a rail that keeps counting round never jumps.")
-        .label("Glint Phase", "Phase")
-      .floatField("glimmer_density", 3.0f, 0.5f, 12.f, state::PrimaryInput,
+                  "How hard the glints are being thrown: arrivals per second "
+                  "and travel speed. It never touches a glint already in "
+                  "flight.")
+        .label("Glint Drive", "Glint")
+      .floatField("glimmer_density", 5.0f, 0.f, 16.f, state::PrimaryInput,
+                  nullptr, 0.f, "/s",
+                  "Arrivals per second at full Drive. At most eight can be in "
+                  "flight at once; past that, arrivals are dropped rather "
+                  "than cutting a glint short.")
+        .label("Glint Rate", "Rate")
+      .floatField("glimmer_speed", 1.2f, 0.1f, 6.f, state::PrimaryInput,
+                  nullptr, 0.f, "/s",
+                  "Crossings per second at full Drive. Never falls to zero, "
+                  "so a glint always reaches the far side.")
+        .label("Glint Speed", "Speed")
+      .floatField("glimmer_gain", 1.6f, 0.f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
-                  "How many bands cross the frame. A second, finer set fades "
-                  "in with Amount on top of this one.")
-        .label("Glint Density", "Dens")
-      .floatField("glimmer_gain", 1.4f, 0.f, 3.f, state::PrimaryInput)
+                  "How hard a glint lifts the emission it crosses. Each one "
+                  "takes a random share of this at birth.")
         .label("Glint Gain", "GlGain")
       .floatField("glimmer_shadow", 0.55f, 0.f, 1.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
-                  "The dark band trailing each glint, as a fraction of full "
+                  "The dark wake trailing each glint, as a fraction of full "
                   "extinction.")
         .label("Glint Shadow", "Shadow")
       .floatField("glimmer_angle", 45.f, 0.f, 360.f, state::SecondaryInput,
                   nullptr, 0.f, "deg",
                   "Which way the glints travel. 45 deg runs bottom-left to "
-                  "top-right; the bands sit square across that.")
+                  "top-right; each glint sits square across that.")
         .label("Glint Angle", "GlAng")
-      .floatField("glimmer_width", 0.10f, 0.02f, 0.5f, state::SecondaryInput,
+      .floatField("glimmer_width", 0.07f, 0.01f, 0.4f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
-                  "Band sharpness, as a fraction of the spacing. Small is a "
-                  "hard glint, large is a soft sheen.")
+                  "Glint width, as a fraction of the distance it travels. "
+                  "Small is a hard slash, large is a soft sheen.")
         .label("Glint Width", "GlWid")
 
       // ---------------- Grade ----------------
@@ -451,10 +473,13 @@ void module_init() {
       .textureField("tex_out", state::PrimaryOutput)
 
       .capability(state::Capability::Generator)
-      // Every envelope lives outside this effect and the grain is derived
-      // from absolute host time, so a frame is a pure function of the
-      // current inputs — a time jump just yields the right frame.
-      .capability(state::Capability::TimeIndependent)
+      // Every envelope still lives outside this effect and the grain is
+      // derived from absolute host time — but the GLINTS are particles with
+      // lifetimes, and that is a real accumulator. A seek lands on a
+      // different set of them in flight and is otherwise the same frame,
+      // which is exactly what SeekableApproximate says. (With Drive at 0
+      // there are none, and the effect is time-independent in practice.)
+      .capability(state::Capability::SeekableApproximate)
       .capability(state::Capability::ModulationSource)
       .capability(state::Capability::ModulationSourceMulti)
   );
@@ -496,13 +521,22 @@ void init(void* self) {
 
 // The projection and both rails are viewport-free, so they belong here — no
 // GPU readback, and downstream taps see this frame's values before render.
+//
+// The glints advance here too, and ONLY here: render() may be called without a
+// tick (thumbnails, off-playhead previews) and stepping the particles from
+// there would age them by a frame every time somebody looked at the card.
 void tick(void* self, double dt) {
-  (void)dt;
   auto* s = static_cast<State*>(self);
   if (!s) return;
 
   projectPlanes(*s);
   publishRails(*s);
+
+  three_planes_glints::Params gp;
+  gp.drive = s->glimmer_drive;
+  gp.density = s->glimmer_density;
+  gp.speed = s->glimmer_speed;
+  s->glint_core.tick(gp, (float)dt);
 }
 
 void on_resolume_param(void* self, long long param_id, double value) {
@@ -551,10 +585,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "halo_smooth"))     s->halo_smooth = state::patchFloat(i);
     else if (state::pathIs(p, l, "fill_gain"))       s->fill_gain = state::patchFloat(i);
 
-    else if (state::pathIs(p, l, "glimmer_amount"))  s->glimmer_amount = state::patchFloat(i);
-    else if (state::pathIs(p, l, "glimmer_phase"))   s->glimmer_phase = state::patchFloat(i);
-    else if (state::pathIs(p, l, "glimmer_angle"))   s->glimmer_angle = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_drive"))   s->glimmer_drive = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_density")) s->glimmer_density = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_speed"))   s->glimmer_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_angle"))   s->glimmer_angle = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_width"))   s->glimmer_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_gain"))    s->glimmer_gain = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_shadow"))  s->glimmer_shadow = state::patchFloat(i);
@@ -639,17 +673,34 @@ void render(void* self, int vp_w, int vp_h) {
   u.view[3] = cs.ay;
 
   // Travel direction, measured CCW from +x the way an angle normally is —
-  // hence the negated sine, because cover-square y grows DOWNWARD. The bands
-  // themselves sit square across this.
+  // hence the negated sine, because cover-square y grows DOWNWARD. Each glint
+  // sits square across this.
   const float ga = s->glimmer_angle * (kPi / 180.0f);
-  u.glim0[0] = s->glimmer_phase;
-  u.glim0[1] = s->glimmer_amount;
-  u.glim0[2] = std::cos(ga);
-  u.glim0[3] = -std::sin(ga);
-  u.glim1[0] = s->glimmer_density;
-  u.glim1[1] = s->glimmer_width;
-  u.glim1[2] = s->glimmer_gain;
-  u.glim1[3] = s->glimmer_shadow;
+  const float dx = std::cos(ga), dy = -std::sin(ga);
+  u.glim0[0] = dx;
+  u.glim0[1] = dy;
+
+  // How far the frame reaches along that axis: the corner that projects
+  // furthest onto it. Deriving the travel from the VIEWPORT rather than from a
+  // fixed number is what makes Speed and Width mean the same thing whatever
+  // shape the output is and whichever way the glints are running.
+  const float span = std::fabs(dx) * (0.5f / cs.ax) + std::fabs(dy) * (0.5f / cs.ay);
+  const float hw = s->glimmer_width * span;
+  // Born and buried off-screen, so a glint fades in and out at the edges
+  // instead of appearing. Sized for the widest one plus room for its wake.
+  const float pad = 6.0f * hw;
+  const float from = -(span + pad), to = span + pad;
+
+  for (int i = 0; i < three_planes_glints::kMaxLive; i++) {
+    const auto& g = s->glint_core.glints[i];
+    // A dead slot is a zero-gain, zero-shade glint of unit width: it costs the
+    // shader two exponentials and contributes exactly nothing, which is
+    // cheaper than a branch and keeps the loop fully unrolled.
+    u.glints[i][0] = g.live ? from + g.pos * (to - from) : 0.0f;
+    u.glints[i][1] = g.live ? hw * g.width : 1.0f;
+    u.glints[i][2] = g.live ? s->glimmer_gain * g.gain : 0.0f;
+    u.glints[i][3] = g.live ? s->glimmer_shadow * g.shade : 0.0f;
+  }
 
   u.grade[0]  = s->exposure;
   u.grade[1]  = s->warmth;

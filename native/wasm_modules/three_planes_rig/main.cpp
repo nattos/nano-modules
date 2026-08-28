@@ -10,9 +10,9 @@
  * The SWEEP is the exception to "reads four gates": one bipolar knob you
  * perform on, whose POSITION dims the tower and whose SPEED throws glints.
  * It is the only input here read for its motion rather than its value, and the
- * only one whose effect three_planes cannot render from a level alone — hence
- * the `glimmer` / `glimmer_phase` rails. All of it lives in the header's
- * SweepCore.
+ * only one that reaches three_planes as a DRIVE rather than as a level — the
+ * glints it throws are particles with lifetimes, owned over there. All of it
+ * lives in the header's SweepCore.
  *
  * The four signal inputs are `beatsync`'s Art-Net feed, reached through
  * control.artnet's `ch_0..ch_3`: four DMX channels (heavy / regular / decor /
@@ -363,15 +363,14 @@ void module_init() {
           "displacement over *Window*, so a stepping MIDI encoder reads as the "
           "true drag speed instead of a string of spikes, and it returns to a "
           "real zero when you stop. *Full Scale* is the speed that pegs it; "
-          "*Glint Decay* lets the glimmers coast to a stop after you let go.\n\n"
+          "*Glint Decay* keeps them arriving for a moment after you let go.\n\n"
           "*Flicker* is the stutter that arrives mid-fade — one floor at a "
           "time, going dark or coming up, loudest exactly where the light is "
           "halfway out and gone again at both ends. Old tubes struggle; they "
           "do not dim politely.\n\n"
           "**Try:** wire *Sweep* to a knob and sweep it across the beat with "
-          "*Glint* and *Glint Phase* wired into Three Planes — the tower "
-          "flashes with slanted highlights while you move and settles when you "
-          "arrive.");
+          "*Glint* wired into Three Planes' *Glint Drive* — the tower throws "
+          "slanted highlights while you move and settles when you arrive.");
   schema.floatField("sweep", rig::kSweepCenter, 0.f, 1.f, state::PrimaryInput,
                     "unsigned", 0.f, nullptr,
                     "The performance knob. 0.5 is home — full brightness and "
@@ -395,13 +394,9 @@ void module_init() {
                     nullptr, 0.f, nullptr,
                     "How strong the glints get at full sweep speed.")
         .label("Glint", "Glint");
-  schema.floatField("sweep_rate", 2.5f, 0.f, 12.f, state::SecondaryInput,
-                    nullptr, 0.f, "/s",
-                    "Glint travel at full speed, in band-widths per second.")
-        .label("Glint Rate", "Rate");
   schema.floatField("sweep_decay", 0.18f, 0.01f, 2.f, state::SecondaryInput,
                     nullptr, 0.f, "s",
-                    "How long the glints coast on after you stop moving.")
+                    "How long glints keep arriving after you stop moving.")
         .label("Glint Decay", "Dec");
   schema.floatField("sweep_sense", 2.0f, 0.1f, 8.f, state::SecondaryInput,
                     nullptr, 0.f, "/s",
@@ -465,9 +460,9 @@ void module_init() {
         .label("Plane Spacing", "Space");
   // The sweep rails. The position half of the sweep needs no rail — it is
   // already folded into the three Emission outputs above, because a global
-  // dimmer with a stutter in it IS the emission. Only the glints need their
-  // own wires: a travelling diagonal is a screen-space thing, and three_planes
-  // is the only card that can draw it.
+  // dimmer with a stutter in it IS the emission. The glints need one: they are
+  // three_planes' own particles (screen-space objects with lifetimes, which
+  // nothing can carry down a wire), and this is what throws them.
   schema.floatField("sweep_speed", 0.f, 0.f, 1.f, state::SecondaryOutput,
                     "unsigned", 0.f, nullptr,
                     "How hard the sweep knob is moving, 0..1. Coasts down "
@@ -475,13 +470,9 @@ void module_init() {
         .label("Sweep Speed", "Speed");
   schema.floatField("glimmer", 0.f, 0.f, 1.f, state::SecondaryOutput,
                     "unsigned", 0.f, nullptr,
-                    "Glint intensity. Wire to Three Planes' Glint Amount.")
+                    "How hard the glints are being thrown. Wire to Three "
+                    "Planes' Glint Drive.")
         .label("Glint", "Glint");
-  schema.floatField("glimmer_phase", 0.f, 0.f, 1.f, state::SecondaryOutput,
-                    "unsigned", 0.f, nullptr,
-                    "Where the glints have travelled to, wrapping 0..1. Wire "
-                    "to Three Planes' Glint Phase.")
-        .label("Glint Phase", "GlPh");
 
   // 4 gates in, twelve rails out. NO temporal tag: the meter, the peak hold, the
   // flams and the moves are all accumulators, so this cannot be seeked.
@@ -527,7 +518,6 @@ void tick(void* self, double dt) {
   }
   pubFloat("sweep_speed", o.sweep_speed);
   pubFloat("glimmer", o.glimmer);
-  pubFloat("glimmer_phase", o.glimmer_phase);
   pubFloat("orbit_azimuth", o.azimuth);
   pubFloat("elevation", o.elevation);
   pubFloat("plane_spacing", o.spacing);
@@ -621,7 +611,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sweep_depth"))    s->p.sweep_depth = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_flicker"))  s->p.sweep_flicker = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_glimmer"))  s->p.sweep_glimmer = state::patchFloat(i);
-    else if (state::pathIs(p, l, "sweep_rate"))     s->p.sweep_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_decay"))    s->p.sweep_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_window"))   s->p.sweep_window = state::patchFloat(i);
