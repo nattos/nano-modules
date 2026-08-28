@@ -88,11 +88,12 @@ struct State {
   // <sketch/three_planes_glints.h>; it is why the effect is only
   // SeekableApproximate rather than TimeIndependent.
   three_planes_glints::Core glint_core;
-  float glimmer_drive   = 0.0f;    // 0..1 spawn + speed drive, wired from the rig
-  float glimmer_density = 5.0f;    // arrivals per second at full drive
-  float glimmer_speed   = 1.2f;    // crossings per second at full drive
+  float glimmer_sweep   = 0.5f;    // the knob itself, wired from the rig
+  float glimmer_band    = 0.45f;   // launch band, fraction of each half of the throw
+  float glimmer_ratio   = 1.0f;    // crossings per knob range
+  float glimmer_chaos   = 4.0f;    // small extra glints per second, when sweeping fast
   float glimmer_angle   = 45.0f;   // degrees, travel direction, CCW from +x
-  float glimmer_width   = 0.07f;   // glint half-width, fraction of the travel span
+  float glimmer_width   = 0.07f;   // glint half-width, fraction of one crossing
   float glimmer_gain    = 1.6f;
   float glimmer_shadow  = 0.55f;
 
@@ -334,51 +335,60 @@ void module_init() {
         .groupHelp(
           "Slanted glints that travel across the stack — the glare off metal "
           "in an old cel-animated show.\n\n"
-          "They are **particles, not a pattern**: each one is born at a "
-          "boundary, crosses the picture and dies at the far side, and while "
-          "it is in flight nothing about the knob that threw it reaches it. "
-          "Arrivals are randomly spaced and each glint gets its own "
-          "brightness, width and wake at birth, so a stream of them reads as "
-          "separate events rather than as a moving grating.\n\n"
-          "They multiply each plane's **emission**, not the finished picture. "
-          "That is the whole trick: emission scales the line core, the halo "
-          "and the fill together, so a glint crossing a tube brightens the "
-          "glow around it too and reads as light IN the tube rather than a "
-          "highlight pasted over it.\n\n"
-          "*Drive* is the one live input, and it does exactly two things — "
-          "how often glints arrive, and how fast they travel. Wire it from "
-          "**Three Planes Rig**'s *Glint* rail and riding the Sweep knob "
-          "throws them. At 0 nothing new arrives and whatever is still in "
-          "flight coasts out and dies, so an unwired card is quiet.\n\n"
-          "They are born just outside the stack and retired just past it, "
-          "rather than crossing the whole frame — so one starts working "
-          "almost as soon as it is thrown, instead of spending its first "
-          "moments out in the black where there is nothing to light.\n\n"
-          "Speed is shared by every glint on purpose: at their own speeds "
-          "they would eventually cross, and two overlapping glints stop being "
-          "two things.\n\n"
-          "*Shadow* is what sells it — a dark wake trailing each glint, so "
-          "the stack gains contrast rather than just getting brighter.")
-      .floatField("glimmer_drive", 0.0f, 0.f, 1.f, state::PrimaryInput,
+          "**The glint is the gesture.** Wire *Glint Sweep* from the rig\'s "
+          "*Sweep Out* and the rule is: move the knob at a steady speed across "
+          "its whole range, and ONE glint crosses the stack at exactly that "
+          "rate. The launch is the moment the knob enters the middle band — "
+          "which happens once per traverse, and can only happen while you are "
+          "moving, so there is always a real speed for the new glint to "
+          "take.\n\n"
+          "Which WAY you move it is thrown away. Reverse mid-gesture and the "
+          "glints already out there carry on exactly as they were: they are "
+          "objects in flight, not a readout. Nothing about the knob reaches a "
+          "live glint again except its speed — and that is shared by all of "
+          "them, because at their own speeds two would eventually cross, and "
+          "the moment they overlap they stop being two things.\n\n"
+          "Sweep hard and *Chaos* starts adding small ones underneath, at "
+          "random intervals. They are dimmer and narrower on purpose, so the "
+          "gesture stays legible through them.\n\n"
+          "Glints multiply each plane\'s **emission**, not the finished "
+          "picture. That is the whole trick: emission scales the line core, "
+          "the halo and the fill together, so one crossing a tube brightens "
+          "the glow around it too and reads as light IN the tube rather than a "
+          "highlight pasted over it. They are also born just outside the stack "
+          "and retired just past it, rather than crossing the whole frame, so "
+          "one starts working the moment it is thrown.\n\n"
+          "*Shadow* is what sells it — a dark wake trailing each glint, so the "
+          "stack gains contrast rather than just getting brighter.")
+      .floatField("glimmer_sweep", 0.5f, 0.f, 1.f, state::PrimaryInput,
                   "unsigned", 0.f, nullptr,
-                  "How hard the glints are being thrown: arrivals per second "
-                  "and travel speed. It never touches a glint already in "
-                  "flight.")
-        .label("Glint Drive", "Glint")
-      .floatField("glimmer_density", 5.0f, 0.f, 16.f, state::PrimaryInput,
+                  "The sweep knob itself — wire it from Three Planes Rig's "
+                  "*Sweep Out*. Its MOTION is the whole input: a glint "
+                  "launches every time it enters the middle band, travelling "
+                  "at the speed you moved.")
+        .label("Glint Sweep", "Sweep")
+      .floatField("glimmer_ratio", 1.0f, 0.f, 4.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Crossings of the picture per full range of the knob. At 1 "
+                  "a sweep across the whole knob is one glint across the whole "
+                  "stack, in the same time — turn it up and the glint outruns "
+                  "your hand.")
+        .label("Glint Ratio", "Ratio")
+      .floatField("glimmer_band", 0.45f, 0.02f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How wide the middle band is, as a fraction of each half of "
+                  "the throw. Entering it is what launches a glint, so this is "
+                  "where in the sweep it happens. Matching the rig's Deadzone "
+                  "puts the launch exactly where the tower is at full "
+                  "brightness.")
+        .label("Launch Band", "Band")
+      .floatField("glimmer_chaos", 4.0f, 0.f, 16.f, state::PrimaryInput,
                   nullptr, 0.f, "/s",
-                  "Arrivals per second at full Drive. At most eight can be in "
-                  "flight at once; past that, arrivals are dropped rather "
-                  "than cutting a glint short.")
-        .label("Glint Rate", "Rate")
-      .floatField("glimmer_speed", 1.2f, 0.1f, 6.f, state::PrimaryInput,
-                  nullptr, 0.f, "/s",
-                  "Crossings per second at full Drive. A crossing is the LIT "
-                  "part of the picture, not the whole frame — a glint is born "
-                  "just outside the stack and retired just past it, so it "
-                  "starts working almost as soon as it is thrown. Never falls "
-                  "to zero, so it always reaches the far side.")
-        .label("Glint Speed", "Speed")
+                  "Small extra glints per second, once the sweep is brisk. "
+                  "They are dimmer and narrower than the launched one on "
+                  "purpose — the gesture stays legible and the chaos sits "
+                  "under it. 0 leaves one clean glint per pass.")
+        .label("Chaos", "Chaos")
       .floatField("glimmer_gain", 1.6f, 0.f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
                   "How hard a glint lifts the emission it crosses. Each one "
@@ -552,10 +562,21 @@ void tick(void* self, double dt) {
   publishRails(*s);
 
   three_planes_glints::Params gp;
-  gp.drive = s->glimmer_drive;
-  gp.density = s->glimmer_density;
-  gp.speed = s->glimmer_speed;
+  gp.sweep = s->glimmer_sweep;
+  gp.band = s->glimmer_band;
+  gp.ratio = s->glimmer_ratio;
+  gp.chaos = s->glimmer_chaos;
+  // The margins, in CROSSINGS — the units `pos` is in. A glint is born `lead`
+  // before the lit picture starts and retired `trail` after it ends, sized by
+  // the widest glint the birth spread can draw so every one of them maps from
+  // `pos` to the screen the same way (see render()). The projection cancels:
+  // `glimmer_width` is already a fraction of one crossing, so a half-width is
+  // half of it whatever the stack's size on screen turns out to be.
+  const float hw_max = s->glimmer_width * three_planes_glints::kMaxWidthFactor;
+  gp.lead = kGlintSkirt * hw_max * 0.5f;
+  gp.trail = kGlintWakeReach * hw_max * 0.5f;
   s->glint_core.tick(gp, (float)dt);
+
 }
 
 void on_resolume_param(void* self, long long param_id, double value) {
@@ -604,9 +625,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "halo_smooth"))     s->halo_smooth = state::patchFloat(i);
     else if (state::pathIs(p, l, "fill_gain"))       s->fill_gain = state::patchFloat(i);
 
-    else if (state::pathIs(p, l, "glimmer_drive"))   s->glimmer_drive = state::patchFloat(i);
-    else if (state::pathIs(p, l, "glimmer_density")) s->glimmer_density = state::patchFloat(i);
-    else if (state::pathIs(p, l, "glimmer_speed"))   s->glimmer_speed = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_sweep"))   s->glimmer_sweep = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_band"))    s->glimmer_band = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_ratio"))   s->glimmer_ratio = state::patchFloat(i);
+    else if (state::pathIs(p, l, "glimmer_chaos"))   s->glimmer_chaos = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_angle"))   s->glimmer_angle = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_width"))   s->glimmer_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_gain"))    s->glimmer_gain = state::patchFloat(i);
@@ -729,23 +751,18 @@ void render(void* self, int vp_w, int vp_h) {
   if (reach > span) reach = span;
   if (reach < 0.05f) reach = 0.05f;
 
-  // The glint scales with what it is crossing, not with the frame — which is
-  // what keeps Width meaning "a fraction of the distance it travels".
+  // A crossing is the whole lit extent, so `pos` 0..1 spans -reach..+reach and
+  // a glint's half-width is half of `glimmer_width` of that. Which is what
+  // makes the header's invariant exact: `pos` advances at the knob's own speed
+  // in crossings per second, and one crossing is one traverse of the picture.
   const float hw = s->glimmer_width * reach;
-  // Born and buried outside that extent, so a glint fades in and its wake
-  // fades out rather than either popping. Sized for the WIDEST glint the
-  // birth spread can draw, because the mapping from `pos` to the screen has to
-  // be the same for every glint in flight or two of them could cross.
-  const float hw_max = hw * three_planes_glints::kMaxWidthFactor;
-  const float from = -(reach + kGlintSkirt * hw_max);
-  const float to = reach + kGlintWakeReach * hw_max;
 
   for (int i = 0; i < three_planes_glints::kMaxLive; i++) {
     const auto& g = s->glint_core.glints[i];
     // A dead slot is a zero-gain, zero-shade glint of unit width: it costs the
     // shader two exponentials and contributes exactly nothing, which is
     // cheaper than a branch and keeps the loop fully unrolled.
-    u.glints[i][0] = g.live ? from + g.pos * (to - from) : 0.0f;
+    u.glints[i][0] = g.live ? -reach + g.pos * 2.0f * reach : 0.0f;
     u.glints[i][1] = g.live ? hw * g.width : 1.0f;
     u.glints[i][2] = g.live ? s->glimmer_gain * g.gain : 0.0f;
     u.glints[i][3] = g.live ? s->glimmer_shadow * g.shade : 0.0f;

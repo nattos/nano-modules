@@ -291,235 +291,40 @@ describe(`Three Planes E2E (${backend})`, () => {
   });
 
   // ---------------------------------------------------------------- Glimmer
-  // Travelling glints — the glare off metal in an old cel-animated show. They
-  // are PARTICLES: each is born at a boundary, crosses, and dies at the far
-  // side. Their lives are pinned host-free in
-  // native/tests/test_three_planes_glints.cpp, which owns the clock; what only
-  // a render shows is that a live one draws as a separate slash across the
-  // picture, and where it draws.
-  //
-  // `ticks` is the whole reason these are readable: it advances the particle
-  // system at a FIXED dt with no wall clock in it, so both backends run the
-  // identical sequence and land on the identical frame.
+  // The glints are thrown by a GESTURE — a knob crossing the middle of its
+  // throw — so they cannot be reached from this harness at all: it sets its
+  // params once and then ticks, and a parked knob throws nothing forever. That
+  // is exactly what the case below pins, and what the effect promises an
+  // unwired card. Everything about a glint in flight is in
+  // web/test/three_planes_glints.test.ts, which drives the knob through the
+  // engine, and in native/tests/test_three_planes_glints.cpp, which owns the
+  // clock the invariant is stated against.
 
-  // A flat lit target: the three planes collapsed onto one another, filled,
-  // grown past the frame edges and graded neutrally. Everything visible is
-  // then ONE uniform emission, so the glint field is readable straight off a
-  // pixel with no geometry underneath it to confound the reading.
-  const FLAT: [string, any][] = [
-    ...QUIET,
-    ['drive', 0], ['toe', 0], ['shoulder', 0], ['warmth', 0],
-    ['asymmetry', 0], ['highlight_desat', 0],
-    ['plane_spacing', 0], ['zoom', 1.5], ['plane_size', 1.5],
-    ['plane1_emission', 0.30], ['plane1_fill', 1], ['fill_gain', 1],
-    ['plane2_emission', 0], ['plane3_emission', 0],
-    ['line_width', 0], ['halo_gain', 0],
-    ['glimmer_gain', 1.6], ['glimmer_shadow', 0.5],
-  ];
-
-  const flat = (extra: [string, any][], name: string, ticks = 0) =>
-    runGpuEffectTest({
+  it('a knob nobody moves throws nothing, ever', async () => {
+    const mk = (ticks: number, sweep: number, name: string) => runGpuEffectTest({
       module: MODULE, bundle: BUNDLE, width: W, height: H,
       inputColor: [0, 0, 0, 1], ticks,
-      params: [...FLAT, ...extra] as any,
+      params: [...QUIET, ['glimmer_sweep', sweep], ['glimmer_chaos', 16],
+               ['glimmer_gain', 3]] as any,
       dumpName: name,
     });
+    // Parked in the middle — where an untouched card sits — for two hundred
+    // frames. A design that fired on being IN the band rather than on entering
+    // it would have thrown one at boot with no gesture behind it.
+    const home = await mk(0, 0.5, 'three_planes_glint_home_0');
+    const homeLater = await mk(200, 0.5, 'three_planes_glint_home_200');
+    // ...and parked off centre, which is the other way to get it wrong.
+    const off = await mk(200, 0.92, 'three_planes_glint_off_200');
+    expect(home.success && homeLater.success && off.success).toBe(true);
 
-  // Travel direction at the default 45 deg, and the line square across it.
-  // Cover-square y grows DOWNWARD, so "up-right" is (+, −).
-  const R2 = Math.SQRT1_2;
-  const TRAVEL: [number, number] = [R2, -R2];
-  const ACROSS: [number, number] = [R2, R2];
-  const scanAlong = (f: Frame, dir: [number, number], ts: number[]) =>
-    ts.map((t) => luma(f.pixelAt(...toPx(t * dir[0], t * dir[1]))));
-  const spread = (v: number[]) => Math.max(...v) - Math.min(...v);
-
-  /**
-   * Samples along the travel axis. The scan walks the frame's centre diagonal,
-   * which runs out of picture at |t| ≈ 0.955 (the short axis gives out first);
-   * 0.90 stays inside that with room for the peak detector's standoff.
-   */
-  const AXIS: number[] = [];
-  for (let t = -0.90; t <= 0.9001; t += 0.01) AXIS.push(t);
-
-  /**
-   * Local maxima that stand clear of the field around them — i.e. glints.
-   *
-   * The standoff has to clear a glint's OWN core or nothing counts as a peak:
-   * the core is flat-topped (a super-Gaussian) and up to 0.35 of the travel
-   * axis wide, so comparing against the samples immediately beside it compares
-   * two points on the same plateau. PEAK_SPAN is 16 samples — 0.16, out past
-   * the core — and still inside the 0.25 that the spawn gap guarantees between
-   * two live glints, so it cannot merge a pair into one.
-   */
-  const PEAK_SPAN = 16;
-  const peaks = (v: number[], prominence: number) => {
-    const out: number[] = [];
-    for (let i = PEAK_SPAN; i < v.length - PEAK_SPAN; i++) {
-      const isTop = v[i] >= v[i - 1] && v[i] >= v[i + 1] &&
-                    v[i] > v[i - PEAK_SPAN] + prominence &&
-                    v[i] > v[i + PEAK_SPAN] + prominence;
-      // One glint counts once, however flat its top is.
-      if (isTop && (out.length === 0 ||
-                    i - out[out.length - 1] > PEAK_SPAN)) out.push(i);
-    }
-    return out;
-  };
-
-  it('Glint Drive 0 leaves the picture exactly as it was', async () => {
-    // An unwired card must be untouched — and stay untouched however long it
-    // runs, because with no drive nothing is ever born. This also pins the
-    // shader's branchless idle path: the obvious early `return` compiles into
-    // a local naga rejects, which silently blanks the whole effect on WebGPU.
-    const still = await flat([['glimmer_drive', 0]], 'three_planes_glint_off');
-    const later = await flat([
-      ['glimmer_drive', 0], ['glimmer_density', 16], ['glimmer_gain', 3],
-    ], 'three_planes_glint_off_late', 120);
-    expect(still.success && later.success).toBe(true);
     let worst = 0;
-    still.forEachPixel((p, x, y) => {
-      worst = Math.max(worst, Math.abs(luma(p) - luma(later.pixelAt(x, y))));
+    home.forEachPixel((p, x, y) => {
+      worst = Math.max(worst, Math.abs(luma(p) - luma(homeLater.pixelAt(x, y))));
+      worst = Math.max(worst, Math.abs(luma(p) - luma(off.pixelAt(x, y))));
     });
-    expect(worst).toBe(0);
-  });
-
-  it('a glint draws as one slash square across its travel', async () => {
-    // One particle, alone in the frame: a single bright band, constant along
-    // the line square across the travel and varying sharply along it. That is
-    // what says "slash", as opposed to a blob or a wash.
-    const one = await flat([
-      ['glimmer_drive', 1], ['glimmer_density', 0.001], ['glimmer_speed', 1.2],
-    ], 'three_planes_glint_one', 24);
-    expect(one.success).toBe(true);
-
-    const along = scanAlong(one, TRAVEL, AXIS);
-    expect(peaks(along, 8).length).toBe(1);
-
-    // Through the peak, square across the travel: flat.
-    const at = AXIS[along.indexOf(Math.max(...along))];
-    const across = [-0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3].map((u) =>
-      luma(one.pixelAt(...toPx(at * TRAVEL[0] + u * ACROSS[0],
-                               at * TRAVEL[1] + u * ACROSS[1]))));
-    expect(spread(along)).toBeGreaterThan(30);
-    expect(spread(across)).toBeLessThan(spread(along) / 4);
-  });
-
-  it('a glint travels, and keeps its own brightness while it does', async () => {
-    // THE BRIEF. It crosses under its own power: the same particle, sampled
-    // later, has MOVED but has not dimmed — even though the drive that threw
-    // it has been taken away in the meantime.
-    // 16 and 30 ticks at the harness's fixed 16 ms: the glint sits at either
-    // end of the stretch of travel the centre diagonal actually crosses. (The
-    // travel axis reaches past the frame's corners, so a glint further out
-    // than this is real but off the line the scan walks.)
-    const born = await flat([
-      ['glimmer_drive', 1], ['glimmer_density', 0.001],
-    ], 'three_planes_glint_t16', 16);
-    const later = await flat([
-      ['glimmer_drive', 1], ['glimmer_density', 0.001],
-    ], 'three_planes_glint_t30', 30);
-    expect(born.success && later.success).toBe(true);
-
-    const a = scanAlong(born, TRAVEL, AXIS);
-    const b = scanAlong(later, TRAVEL, AXIS);
-    const pa = peaks(a, 8), pb = peaks(b, 8);
-    expect(pa.length).toBe(1);
-    expect(pb.length).toBe(1);
-    // Moved UP-RIGHT along the travel axis...
-    expect(AXIS[pb[0]]).toBeGreaterThan(AXIS[pa[0]] + 0.05);
-    // ...and just as bright as it was. A pattern would have re-spaced and
-    // re-levelled instead.
-    expect(Math.abs(b[pb[0]] - a[pa[0]])).toBeLessThan(12);
-  });
-
-  it('a glint dies at the boundary rather than fading out early', async () => {
-    // 1.2 crossings/s at full drive is ~52 frames from edge to edge: at 24
-    // ticks it is halfway, and by 200 it is long gone — with nothing behind it,
-    // because at this arrival rate the next one is half a minute away.
-    const mid = await flat([
-      ['glimmer_drive', 1], ['glimmer_density', 0.001],
-    ], 'three_planes_glint_mid', 24);
-    const gone = await flat([
-      ['glimmer_drive', 1], ['glimmer_density', 0.001],
-    ], 'three_planes_glint_gone', 200);
-    expect(mid.success && gone.success).toBe(true);
-    expect(peaks(scanAlong(mid, TRAVEL, AXIS), 8).length).toBe(1);
-    expect(peaks(scanAlong(gone, TRAVEL, AXIS), 8).length).toBe(0);
-  });
-
-  it('a harder drive puts more glints on screen at once', async () => {
-    // Arrivals scale with the drive outright while travel only lifts off a
-    // floor, so density follows the knob — without any one glint's brightness
-    // following it.
-    const gentle = await flat([
-      ['glimmer_drive', 0.2], ['glimmer_density', 8], ['glimmer_speed', 0.8],
-    ], 'three_planes_glint_gentle', 90);
-    const hard = await flat([
-      ['glimmer_drive', 1.0], ['glimmer_density', 8], ['glimmer_speed', 0.8],
-    ], 'three_planes_glint_hard', 90);
-    expect(gentle.success && hard.success).toBe(true);
-    const nGentle = peaks(scanAlong(gentle, TRAVEL, AXIS), 6).length;
-    const nHard = peaks(scanAlong(hard, TRAVEL, AXIS), 6).length;
-    expect(nHard).toBeGreaterThan(nGentle);
-    expect(nHard).toBeGreaterThan(1);   // several distinct entities, not a wash
-  });
-
-  it('a glint lifts the halo, not just the line core', async () => {
-    // HALF THE CLAIM THIS EFFECT MAKES. The glimmer multiplies emission, and
-    // emission scales the core, the halo and the fill together — so a glint
-    // crossing a tube brightens the glow around it as well, which is what
-    // stops it reading as a highlight pasted on top of the picture.
-    const only2: [string, any][] = [
-      ...QUIET,
-      ['plane1_emission', 0], ['plane3_emission', 0],
-      // Dim enough that the probe pixel has headroom BOTH ways: at the
-      // effect's own default levels a wide halo clips the probe flat at the
-      // top, and a glint crossing a clipped pixel is invisible.
-      ['plane2_emission', 0.30], ['halo_radius', 1.0], ['halo_gain', 0.7],
-      ['glimmer_drive', 1], ['glimmer_density', 5],
-      ['glimmer_gain', 1.6], ['glimmer_shadow', 0.6],
-    ];
-    const halo: number[] = [];
-    for (const t of [10, 20, 30, 40, 50]) {
-      const f = await runGpuEffectTest({
-        module: MODULE, bundle: BUNDLE, width: W, height: H,
-        inputColor: [0, 0, 0, 1], ticks: t,
-        params: only2 as any,
-        dumpName: `three_planes_glint_halo_${t}`,
-      });
-      expect(f.success).toBe(true);
-      // Plane 2 is a diamond with its top vertex at y = −0.279 (it is the
-      // middle floor, so it is centred whatever the spacing). Just above that
-      // is halo and nothing else — no line core reaches this far out.
-      halo.push(luma(f.pixelAt(...toPx(0, -0.32))));
-    }
-    expect(Math.min(...halo)).toBeGreaterThan(0);   // the probe is in the halo
-    expect(spread(halo)).toBeGreaterThan(8);        // and glints cross it
-  });
-
-  it('the glimmer cannot touch a pixel that is not emitting', async () => {
-    // THE OTHER HALF. It is a multiplier ON EMISSION, not a layer over the
-    // finished frame: with every plane dark the incoming image must survive
-    // untouched, however hard the glints are driven. An overlay would tint it.
-    const dark: [string, any][] = [
-      ...QUIET,
-      ['plane1_emission', 0], ['plane2_emission', 0], ['plane3_emission', 0],
-      ['glimmer_drive', 1], ['glimmer_density', 12],
-      ['glimmer_gain', 3], ['glimmer_shadow', 1],
-    ];
-    const mk = (ticks: number) => runGpuEffectTest({
-      module: MODULE, bundle: BUNDLE, width: W, height: H,
-      inputColor: [0.45, 0.20, 0.30, 1], ticks,
-      params: dark as any,
-      dumpName: `three_planes_glint_dark_${ticks}`,
-    });
-    const a = await mk(0);
-    const b = await mk(40);
-    expect(a.success && b.success).toBe(true);
-    let worst = 0;
-    a.forEachPixel((p, x, y) => {
-      worst = Math.max(worst, Math.abs(luma(p) - luma(b.pixelAt(x, y))));
-    });
+    // Not "close to": IDENTICAL. This also pins the shader's branchless idle
+    // path — the obvious early `return` compiles into a local naga rejects,
+    // and the whole effect silently renders nothing on WebGPU.
     expect(worst).toBe(0);
   });
 });

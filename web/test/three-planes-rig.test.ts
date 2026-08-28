@@ -402,16 +402,31 @@ describe('mod.rig.three_planes E2E', () => {
     expect(bottom.trace('out').averageColor().r).toBeLessThan(40);
   });
 
-  it('a knob nobody has moved publishes no glint', async () => {
+  it('the knob goes out verbatim for the glints', async () => {
+    // Three Planes throws glints from the GESTURE, not from a level, so what
+    // crosses this wire is the knob itself — untouched by the envelope that
+    // shapes Sweep Speed, and readable at rest.
+    const still = await runScalar('rig_sweepout_hi', 'sweep_out',
+                                  { ...SWEPT, sweep: 0.9 });
+    const mid = await runScalar('rig_sweepout_mid', 'sweep_out',
+                                { ...SWEPT, sweep: 0.5 });
+    expect(still.success && mid.success).toBe(true);
+    expect(still.trace('out').averageColor().r).toBeGreaterThan(215);
+    const midR = mid.trace('out').averageColor().r;
+    expect(midR).toBeGreaterThan(100);
+    expect(midR).toBeLessThan(156);
+  });
+
+  it('a knob nobody has moved reads no speed', async () => {
     // Including one parked well off centre: the rail reports MOTION, and a
     // stationary knob is not moving however far from home it is parked.
-    const still = await runScalar('rig_glint_still', 'glimmer',
+    const still = await runScalar('rig_speed_still', 'sweep_speed',
                                   { ...SWEPT, sweep: 0.9 });
     expect(still.success).toBe(true);
     expect(still.trace('out').averageColor().r).toBeLessThan(40);
   });
 
-  it('moving the knob on a real wire throws a glint', async () => {
+  it('moving the knob on a real wire reads as speed', async () => {
     // The leg the native goldens cannot reach: a patched `sweep` actually
     // reaching the estimator. Decay is stretched to 2 s so the reading does
     // not depend on how long the sampling window took.
@@ -420,18 +435,18 @@ describe('mod.rig.three_planes E2E', () => {
       modules: MODULES,
       phases: [
         { commands: [
-            { type: 'createSketch', sketchId: 'rig_glint', sketch:
-                scalarSketch('glimmer', { ...SWEPT, sweep: 0.5, sweep_decay: 2.0 }) },
+            { type: 'createSketch', sketchId: 'rig_speed', sketch:
+                scalarSketch('sweep_speed', { ...SWEPT, sweep: 0.5, sweep_decay: 2.0 }) },
             { type: 'setTracePoints', tracePoints: [
-                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_glint' } }] },
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_speed' } }] },
           ],
           waitFrames: 20, captureTraceIds: ['out'] },
         // A jump of 0.4 in one frame is far past Full Scale, so the meter pegs.
-        { commands: [{ type: 'setParam', sketchId: 'rig_glint', colIdx: 0,
+        { commands: [{ type: 'setParam', sketchId: 'rig_speed', colIdx: 0,
                        chainIdx: 1, paramKey: 'sweep', value: 0.9 }],
           waitFrames: 2, captureTraceIds: ['out'] },
       ],
-      dumpName: 'rig_glint',
+      dumpName: 'rig_speed',
     });
     expect(r.success).toBe(true);
     expect(r.phases[0].trace('out').averageColor().r).toBeLessThan(40);

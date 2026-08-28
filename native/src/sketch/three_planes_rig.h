@@ -33,6 +33,8 @@
 
 #include <cmath>
 
+#include "knob_rate.h"
+
 namespace three_planes_rig {
 
 constexpr int kLayers = 3;
@@ -142,7 +144,6 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
-  float sweep_glimmer = 1.0f;    ///< glint drive scale
 };
 
 /// One frame of rails. Floats are already normalised for publication.
@@ -159,7 +160,7 @@ struct Out {
 
   // --- Sweep rails --------------------------------------------------------
   float sweep_speed = 0.0f;  ///< 0..1 motion envelope — how hard the knob is moving
-  float glimmer = 0.0f;      ///< 0..1 glint drive for three_planes
+  float sweep_out = 0.5f;    ///< the knob, passed through for three_planes' glints
 };
 
 namespace detail {
@@ -220,65 +221,28 @@ inline float rand01(unsigned& state) {
 ///                  near either extreme does the tower fade toward black. So
 ///                  you can ride the knob around centre without touching the
 ///                  look, and reaching for an end is a deliberate blackout.
-///   HOW FAST it moves → glints. How often three_planes throws a diagonal
-///                  glint across the quads, and how fast it crosses. The
-///                  glints themselves are particles and live over there; this
-///                  publishes the one rail that drives them.
+///   HOW FAST it moves → glints, over in three_planes. Those are thrown by
+///                  the GESTURE rather than by a level, so what goes out is
+///                  the knob itself; the particles live over there and read
+///                  its motion themselves. See three_planes_glints.h.
 ///
-/// The rate estimate is mod.shaper.motion's, for its reason: a MIDI knob
-/// arrives as a stream of quantized steps, so per-frame differencing reads
-/// those steps as huge instantaneous spikes. Displacement over a short boxcar
-/// window reads the true drag speed instead, is bounded at range/window, and
-/// returns to an EXACT zero one window after the motion stops rather than
-/// trailing an exponential tail.
+/// The rate estimate is knob_rate.h's boxcar, shared with the glints — see
+/// there for why a MIDI knob cannot simply be differenced per frame.
 ///
 /// The flicker is deliberately loudest in the MIDDLE of the fade — a tower at
 /// full brightness has nothing to stutter about, and one already black has
 /// nothing to show. It peaks where the light is halfway out, which is where a
 /// tired tube actually struggles, and only ever touches ONE floor at a time.
 struct SweepCore {
-  /// Boxcar capacity. The longest window (0.4 s) at the ~2 ms frames a headless
-  /// test runs is ~200 samples; when it fills, the oldest drops and the window
-  /// shrinks gracefully instead of reading a wrong span.
-  static constexpr int kRing = 224;
-
-  double clock = 0.0;
-  float ring_t[kRing] = {};
-  float ring_x[kRing] = {};
-  int ring_head = 0;
-  int ring_count = 0;
-  bool seeded = false;
+  /// The speed measurement itself, shared with source.mesh.three_planes'
+  /// glints. See knob_rate.h for why it is a boxcar and not a difference.
+  knob_rate::KnobRate rate;
 
   float speed = 0.0f;   ///< 0..1 motion envelope: instant attack, timed release
 
   int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
   float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
   unsigned rng = 0x9e3779b9u;
-
-  /// Displacement over the window ending at (clock, x): evict samples older
-  /// than `window` — always keeping one, so the span still covers the whole
-  /// window — read the rate against the oldest survivor, then push.
-  float windowRate(float window, float x) {
-    const float now = (float)clock;
-    int oldest = (ring_head - ring_count + kRing) % kRing;
-    while (ring_count >= 2) {
-      const int next = (oldest + 1) % kRing;
-      if (ring_t[next] > now - window) break;   // next would under-span
-      oldest = next;
-      --ring_count;
-    }
-    float rate = 0.0f;
-    if (ring_count >= 1) {
-      const float span = now - ring_t[oldest];
-      if (span > 1e-6f) rate = (x - ring_x[oldest]) / span;
-    }
-    if (ring_count >= kRing) --ring_count;   // full: drop the oldest
-    ring_t[ring_head] = now;
-    ring_x[ring_head] = x;
-    ring_head = (ring_head + 1) % kRing;
-    ++ring_count;
-    return rate;
-  }
 
   /// The position law. 1 across the deadzone, easing to `1 - depth` at either
   /// extreme. Smoothstep rather than a straight line so the shoulder where the
@@ -300,34 +264,12 @@ struct SweepCore {
   void apply(const Params& p, float dt, Out& o) {
     using namespace detail;
 
-    // --- 1. Speed. The first tick SEEDS the window from wherever the knob
-    //        already is: the initial state replay delivers a sketch's stored
-    //        `sweep` as a real patch before this runs, and differencing that
-    //        against a default would fire a ghost glint on frame one.
-    float x = p.sweep;
-    if (!(x == x)) x = kSweepCenter;   // NaN patch: hold the centre
-    if (!seeded) {
-      seeded = true;
-      clock = 0.0;
-      ring_t[0] = 0.0f;
-      ring_x[0] = x;
-      ring_head = 1;
-      ring_count = 1;
-    }
+    // --- 1. Speed. The estimator seeds itself from wherever the knob already
+    //        is, so a sketch's stored `sweep` cannot read as a full-throw drag
+    //        on frame one (knob_rate.h).
+    const float r = rate.sample(p.sweep, dt, p.sweep_window);
     if (dt > 0.0f) {
-      clock += dt;
-      float rate;
-      if (p.sweep_window > 1e-3f) {
-        rate = windowRate(p.sweep_window, x);
-      } else {
-        // Window 0: raw per-frame differencing. The sample is still pushed so
-        // a window opened live resumes with history behind it.
-        const int prev = (ring_head - 1 + kRing) % kRing;
-        rate = (x - ring_x[prev]) / dt;
-        windowRate(1e-3f, x);
-      }
-      if (!(rate == rate)) rate = 0.0f;
-      const float v = clamp01(std::fabs(rate) /
+      const float v = clamp01((r < 0.0f ? -r : r) /
                               (p.sweep_sense > 1e-4f ? p.sweep_sense : 1e-4f));
       // Instant attack, timed release — the meter IS the speed, so it reaches
       // the full range at any decay. A flick reads immediately and then trails.
@@ -336,12 +278,13 @@ struct SweepCore {
       if (speed < 1e-4f) speed = 0.0f;
     }
     o.sweep_speed = speed;
-    // Glints keep arriving while the envelope coasts down, so a flick throws a
-    // few more after the gesture rather than cutting off with your hand.
-    o.glimmer = clamp01(speed * clamp01(p.sweep_glimmer));
+    // The knob itself goes out too: three_planes' glints are thrown by the
+    // GESTURE, not by a level, so what they need is the position and its
+    // motion — not this envelope. See three_planes_glints.h.
+    o.sweep_out = clamp01(p.sweep);
 
     // --- 2. Position, and the flicker that lives inside the fade.
-    const float gain = positionGain(p, x);
+    const float gain = positionGain(p, o.sweep_out);
     // Peaks where the light is halfway out and vanishes at both ends: nothing
     // to stutter about at full brightness, nothing to see once it is black.
     const float drive = clamp01(4.0f * gain * (1.0f - gain)) * clamp01(p.sweep_flicker);
@@ -457,8 +400,8 @@ struct Core {
 
     // --- 2. The sweep. It runs in every mode and folds INTO the emission the
     //        mode just wrote — a global dimmer with a stutter in it — while
-    //        publishing the glint rails separately, because a moving glimmer
-    //        is a screen-space thing only three_planes can draw. ---
+    //        passing the knob itself out separately, because the glints it
+    //        throws are objects three_planes owns rather than a level. ---
     sweep.apply(p, dt, o);
 
     // --- 3. The camera move, which every mode gets. It sits OUTSIDE the mode

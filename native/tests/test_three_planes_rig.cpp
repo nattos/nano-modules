@@ -617,7 +617,7 @@ TEST_CASE("the sweep at rest costs nothing", "[three_planes_rig][sweep]") {
   for (int i = 0; i < kLayers; ++i)
     REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
   REQUIRE(o.sweep_speed == 0.0f);
-  REQUIRE(o.glimmer == 0.0f);
+  REQUIRE_THAT(o.sweep_out, WithinAbs(kSweepCenter, 1e-6));
 }
 
 TEST_CASE("a knob that starts off-centre does not fire a ghost glint",
@@ -631,7 +631,6 @@ TEST_CASE("a knob that starts off-centre does not fire a ghost glint",
   p.mode = ModeSolid;
   const Out first = sweepAt(c, p, 0.9f, 0.016f);
   REQUIRE(first.sweep_speed == 0.0f);
-  REQUIRE(first.glimmer == 0.0f);
 }
 
 TEST_CASE("most of the middle is a deadzone at full brightness",
@@ -782,26 +781,20 @@ TEST_CASE("the glint coasts to a stop and then reads exact zero",
   Out rested{};
   for (int i = 0; i < 160; ++i) rested = sweepAt(c, p, 0.9f, 0.016f);
   REQUIRE(rested.sweep_speed == 0.0f);   // an exact zero, not an epsilon tail
-  REQUIRE(rested.glimmer == 0.0f);
 }
 
-TEST_CASE("Glint scales the glimmer without touching the speed rail",
+TEST_CASE("the knob goes out verbatim for the glints",
           "[three_planes_rig][sweep]") {
-  // `sweep_speed` is the honest reading — other things wire off it — so the
-  // intensity knob must sit downstream of it, not on it.
+  // source.mesh.three_planes throws glints from the GESTURE, not from a level,
+  // so what it needs is the knob and its motion — which means this rail must
+  // be the knob, untouched by the envelope that shapes Sweep Speed.
   Core c;
   Params p;
   p.mode = ModeSolid;
-  p.sweep_glimmer = 0.0f;
-  const Out o = drag(c, p, 0.5f, 0.9f, 0.016f, 30);
-  REQUIRE(o.sweep_speed > 0.2f);
-  REQUIRE(o.glimmer == 0.0f);
-
-  Core c2;
-  Params p2 = p;
-  p2.sweep_glimmer = 0.5f;
-  const Out o2 = drag(c2, p2, 0.5f, 0.9f, 0.016f, 30);
-  REQUIRE_THAT(o2.glimmer, WithinAbs(o2.sweep_speed * 0.5f, 1e-5));
+  for (const float v : {0.0f, 0.17f, 0.5f, 0.83f, 1.0f}) {
+    const Out o = sweepAt(c, p, v, 0.016f);
+    REQUIRE_THAT(o.sweep_out, WithinAbs(v, 1e-6));
+  }
 }
 
 TEST_CASE("the flicker lives in the fade and touches one floor at a time",
@@ -878,8 +871,7 @@ TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",
   const Out stalled = sweepAt(c, p, 0.62f, 4.0f);   // clamps to kMaxDt
   REQUIRE(stalled.sweep_speed >= 0.0f);
   REQUIRE(stalled.sweep_speed <= 1.0f);
-  REQUIRE(stalled.glimmer >= 0.0f);
-  REQUIRE(stalled.glimmer <= 1.0f);
+  REQUIRE_THAT(stalled.sweep_out, WithinAbs(0.62, 1e-5));
   for (int i = 0; i < kLayers; ++i) REQUIRE(stalled.emission[i] >= 0.0f);
 
   // A zero-dt frame (a paused transport re-publishing) must not divide by it.

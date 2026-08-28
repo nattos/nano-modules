@@ -1,15 +1,20 @@
-// test_three_planes_glints.cpp — goldens for the glint particles
+// test_three_planes_glints.cpp — goldens for the glints
 // `source.mesh.three_planes` flashes across its quads. Host-free:
-// three_planes_glints.h carries no effect ABI, so a lifetime can be driven at
-// an exact dt here with no wasm bundle, no executor and no GPU.
+// three_planes_glints.h carries no effect ABI, so a gesture can be driven at an
+// exact dt here with no wasm bundle, no executor and no GPU.
+//
+// The brief these pin, in the order the header states it:
+//
+//   * move the knob at a constant speed across its whole range, and ONE glint
+//     crosses the planes at exactly that rate;
+//   * the launch is guaranteed, and guaranteed to happen while moving;
+//   * sign is thrown away — reverse the knob and the glints carry on;
+//   * a live glint keeps everything except its speed, which is shared so two
+//     can never cross;
+//   * small extra glints arrive only once the sweep is brisk.
 //
 // What the effect adds on top is the projection onto the travel axis and the
 // two exponentials that draw one. Those are covered by web/test/three_planes.
-//
-// The brief these pin: a glint is an INDEPENDENT OBJECT. It is born, it
-// crosses, it dies at the far boundary, and while it is in flight the knob
-// that threw it cannot reach it — except through the one shared speed, which
-// exists precisely so two of them can never swap places.
 
 #include "sketch/three_planes_glints.h"
 
@@ -23,132 +28,202 @@ using namespace three_planes_glints;
 
 namespace {
 
-/// Run `frames` ticks at a fixed dt.
-void run(Core& c, const Params& p, int frames, float dt = 1.0f / 60.0f) {
-  for (int i = 0; i < frames; ++i) c.tick(p, dt);
+constexpr float kDt = 1.0f / 120.0f;   // fine enough that a gesture is smooth
+
+/// Hold the knob still for `seconds`.
+void hold(Core& c, Params& p, float at, float seconds) {
+  p.sweep = at;
+  for (float t = 0.0f; t < seconds; t += kDt) c.tick(p, kDt);
 }
 
-/// Live positions, nearest-to-death first. The order is the birth order
-/// reversed, and it is the thing that must never change.
+/// Sweep the knob from `from` to `to` at a constant speed, over `seconds`.
+/// Returns where the knob was on the frame a glint was launched (or `to` if
+/// none was) — which is what the crossing-rate invariant has to measure from.
+float sweep(Core& c, Params& p, float from, float to, float seconds) {
+  const int n = (int)(seconds / kDt);
+  const unsigned before = c.launches;
+  float at_launch = to;
+  bool seen = false;
+  for (int i = 0; i < n; ++i) {
+    p.sweep = from + (to - from) * ((float)(i + 1) / (float)n);
+    c.tick(p, kDt);
+    if (!seen && c.launches > before) { at_launch = p.sweep; seen = true; }
+  }
+  return at_launch;
+}
+
+int launchedCount(const Core& c) {
+  int n = 0;
+  for (int i = 0; i < kMaxLive; ++i) if (c.glints[i].live && c.glints[i].launched) ++n;
+  return n;
+}
+
+/// The one launched glint, or nullptr.
+const Glint* launched(const Core& c) {
+  for (int i = 0; i < kMaxLive; ++i)
+    if (c.glints[i].live && c.glints[i].launched) return &c.glints[i];
+  return nullptr;
+}
+
 std::vector<float> positions(const Core& c) {
   std::vector<float> v;
-  for (int i = 0; i < kMaxLive; ++i)
-    if (c.glints[i].live) v.push_back(c.glints[i].pos);
+  for (int i = 0; i < kMaxLive; ++i) if (c.glints[i].live) v.push_back(c.glints[i].pos);
   return v;
 }
 
-/// Highest live position — the glint closest to dying.
-float oldest(const Core& c) {
-  float best = -1.0f;
-  for (int i = 0; i < kMaxLive; ++i)
-    if (c.glints[i].live && c.glints[i].pos > best) best = c.glints[i].pos;
-  return best;
-}
-
-Params driven(float drive) {
+/// A knob that starts outside the band, so the first entry is a real one.
+Params settled(Core& c, float park = 0.95f) {
   Params p;
-  p.drive = drive;
+  p.chaos = 0.0f;   // most cases are about the launched glint alone
+  hold(c, p, park, 0.5f);
   return p;
 }
 
 }  // namespace
 
-TEST_CASE("no drive, no glints", "[three_planes_glints]") {
-  // An unwired card is quiet. This is what makes the whole feature free for
-  // every existing sketch that never asks for it.
+TEST_CASE("one traverse throws exactly one glint", "[three_planes_glints]") {
   Core c;
-  run(c, driven(0.0f), 600);
-  REQUIRE(c.liveCount() == 0);
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.05f, 0.6f);
+  REQUIRE(c.launches == 1);
+  REQUIRE(launchedCount(c) == 1);
+
+  // ...and coming back throws exactly one more. ENTERING the band is the
+  // event, so a there-and-back is two gestures and two glints. (Counted
+  // cumulatively: the first one may well have crossed and died by now.)
+  sweep(c, p, 0.05f, 0.95f, 0.6f);
+  REQUIRE(c.launches == 2);
 }
 
-TEST_CASE("the first tick with drive throws one immediately",
+TEST_CASE("a constant sweep crosses the planes at exactly that rate",
           "[three_planes_glints]") {
-  // The arrival countdown starts at zero on purpose: reaching for the knob and
-  // waiting a beat for the first glint would read as lag, not as randomness.
-  Core c;
-  c.tick(driven(1.0f), 1.0f / 60.0f);
-  REQUIRE(c.liveCount() == 1);
-  // Exactly ON the birth edge for its first frame: the tick moves what is
-  // already in flight and THEN takes arrivals, so a newborn cannot skip
-  // forward by the frame it was born in.
-  REQUIRE(c.glints[0].pos == 0.0f);
-  c.tick(driven(1.0f), 1.0f / 60.0f);
-  REQUIRE(c.glints[0].pos > 0.0f);
-  REQUIRE(c.glints[0].pos < 0.1f);
-}
+  // THE INVARIANT, as an equality rather than a trend: `pos` is measured in
+  // crossings precisely so that the distance a glint has covered IS the
+  // distance the knob has covered since it was launched, times Ratio.
+  for (const float T : {0.4f, 0.8f, 1.6f}) {
+    Core c;
+    Params p = settled(c);
+    const float at = sweep(c, p, 0.95f, 0.35f, T);
+    const Glint* g = launched(c);
+    REQUIRE(g != nullptr);
 
-TEST_CASE("a glint crosses and dies at the far boundary",
-          "[three_planes_glints]") {
-  Core c;
-  Params p = driven(1.0f);
-  p.density = 0.01f;   // one arrival, then nothing for a hundred seconds
-  c.tick(p, 1.0f / 60.0f);
-  REQUIRE(c.liveCount() == 1);
-
-  // Monotone travel the whole way, and gone the moment it passes 1.
-  float last = c.glints[0].pos;
-  bool died = false;
-  for (int i = 0; i < 600 && !died; ++i) {
-    c.tick(p, 1.0f / 60.0f);
-    if (c.liveCount() == 0) { died = true; break; }
-    REQUIRE(c.glints[0].pos > last);
-    last = c.glints[0].pos;
+    // Born `lead` outside the picture, and it does not move on the frame it
+    // was born — hence the one-tick allowance in the tolerance.
+    const float knob = at - 0.35f;
+    REQUIRE_THAT(g->pos + p.lead, WithinAbs(knob, 0.02));
   }
-  REQUIRE(died);
-  REQUIRE(last > 0.9f);   // it made it to the boundary, not out early
-  // At the default 1.2 crossings/s a full-drive crossing takes ~0.83 s.
+}
+
+TEST_CASE("Ratio is the exchange rate between knob and picture",
+          "[three_planes_glints]") {
+  // Same gesture, twice the ratio, twice the ground covered. Stopped short of
+  // the end of the throw so the faster glint is still alive to be measured.
+  Core slow, fast;
+  Params ps = settled(slow), pf = settled(fast);
+  pf.ratio = 2.0f;
+  const float a_at = sweep(slow, ps, 0.95f, 0.40f, 0.8f);
+  const float b_at = sweep(fast, pf, 0.95f, 0.40f, 0.8f);
+  const Glint* a = launched(slow);
+  const Glint* b = launched(fast);
+  REQUIRE(a != nullptr);
+  REQUIRE(b != nullptr);
+  REQUIRE_THAT(a_at, WithinAbs(b_at, 1e-4));   // same gesture, same launch point
+  REQUIRE_THAT((b->pos + pf.lead) / (a->pos + ps.lead), WithinAbs(2.0, 0.1));
+}
+
+TEST_CASE("a launch cannot happen standing still", "[three_planes_glints]") {
+  // Which is the reason the band ENTRY is the event and not the band itself: a
+  // knob parked in the middle — where an untouched card sits — has no gesture
+  // behind it, and a glint with no speed would just sit there.
+  Core c;
+  Params p;
+  p.chaos = 0.0f;
+  hold(c, p, 0.5f, 2.0f);
   REQUIRE(c.liveCount() == 0);
+}
+
+TEST_CASE("the launch takes the speed of the gesture that threw it",
+          "[three_planes_glints]") {
+  // Instant attack: at the moment of the launch the shared speed already IS
+  // the knob's speed, so a fast gesture throws a fast glint from its first
+  // frame rather than winding up.
+  Core c;
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.72f, 0.25f);   // arrive at the band edge at ~0.9 range/s
+  const float before = c.speed;
+  c.tick(p, kDt);                     // ...and cross it
+  REQUIRE(before > 0.5f);
+  REQUIRE_THAT(c.speed, WithinAbs(before, 0.25));
+}
+
+TEST_CASE("sign is thrown away: reversing does not turn a glint round",
+          "[three_planes_glints]") {
+  Core c;
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.30f, 0.5f);
+  const Glint* g = launched(c);
+  REQUIRE(g != nullptr);
+  const float at_reversal = g->pos;
+
+  // Straight back the other way, just as fast.
+  sweep(c, p, 0.30f, 0.95f, 0.5f);
+  // It kept going forward the whole time — never paused, never came back.
+  for (int i = 0; i < kMaxLive; ++i)
+    if (c.glints[i].live && c.glints[i].launched)
+      REQUIRE(c.glints[i].pos > at_reversal);
 }
 
 TEST_CASE("nothing about a live glint changes after it is born",
           "[three_planes_glints]") {
-  // THE BRIEF. Once thrown, a glint is under its own power: dropping the drive
-  // to nothing mid-flight must not dim it, narrow it, or take its wake away.
+  // Once thrown, a glint is under its own power: letting go of the knob must
+  // not dim it, narrow it, or take its wake away.
   Core c;
-  Params p = driven(1.0f);
-  p.density = 0.01f;
-  c.tick(p, 1.0f / 60.0f);
-  REQUIRE(c.liveCount() == 1);
-  const Glint born = c.glints[0];
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.60f, 0.3f);
+  const Glint* g = launched(c);
+  REQUIRE(g != nullptr);
+  const Glint born = *g;
 
-  run(c, driven(0.0f), 20);
-  REQUIRE(c.liveCount() == 1);
-  REQUIRE_THAT(c.glints[0].gain, WithinAbs(born.gain, 0.0));
-  REQUIRE_THAT(c.glints[0].width, WithinAbs(born.width, 0.0));
-  REQUIRE_THAT(c.glints[0].shade, WithinAbs(born.shade, 0.0));
-  // ...but it HAS moved on. Speed is the one thing the drive still owns.
-  REQUIRE(c.glints[0].pos > born.pos);
+  hold(c, p, 0.60f, 0.3f);
+  const Glint* now = launched(c);
+  REQUIRE(now != nullptr);
+  REQUIRE_THAT(now->gain, WithinAbs(born.gain, 0.0));
+  REQUIRE_THAT(now->width, WithinAbs(born.width, 0.0));
+  REQUIRE_THAT(now->shade, WithinAbs(born.shade, 0.0));
+  // ...but it HAS moved on. Speed is the one thing the knob still owns, and it
+  // idles rather than stopping, so a glint always finishes its crossing.
+  REQUIRE(now->pos > born.pos);
 }
 
-TEST_CASE("speed is the one thing the drive still reaches",
+TEST_CASE("a glint crosses and dies past the far boundary",
           "[three_planes_glints]") {
-  // And it must reach every live glint equally: two glints travelling at their
-  // own speeds would eventually cross, and the moment they overlap they stop
-  // being two things.
-  Core fast, slow;
-  Params pf = driven(1.0f), ps = driven(0.0f);
-  pf.density = ps.density = 0.01f;
-  fast.tick(pf, 1.0f / 60.0f);
-  slow.tick(pf, 1.0f / 60.0f);   // same birth, then diverge
-  run(fast, pf, 20);
-  run(slow, ps, 20);
-  REQUIRE(fast.glints[0].pos > slow.glints[0].pos);
-  // Idle is a floor, not a stop: a glint always finishes its crossing.
-  REQUIRE(slow.glints[0].pos > 0.0f);
-  REQUIRE_THAT(slow.glints[0].pos / fast.glints[0].pos,
-               WithinAbs(kIdleSpeed, 0.02));
+  Core c;
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.05f, 0.5f);
+  REQUIRE(c.liveCount() == 1);
+
+  float last = -9.0f;
+  bool died = false;
+  for (int i = 0; i < 4000 && !died; ++i) {
+    c.tick(p, kDt);
+    if (c.liveCount() == 0) { died = true; break; }
+    REQUIRE(c.glints[0].pos > last);   // monotone the whole way
+    last = c.glints[0].pos;
+  }
+  REQUIRE(died);
+  REQUIRE(last > 1.0f);   // it made it past the picture, not out early
 }
 
 TEST_CASE("glints never cross or swap order", "[three_planes_glints]") {
-  // Driven hard, with the drive swinging around underneath them — which is the
-  // case that would break it if speed were ever per-glint.
+  // Driven hard, with the knob thrashing back and forth — which is the case
+  // that would break it if speed were ever per-glint.
   Core c;
-  for (int i = 0; i < 900; ++i) {
-    Params p = driven(i % 120 < 60 ? 1.0f : 0.15f);
-    p.density = 9.0f;
-    c.tick(p, 1.0f / 60.0f);
-    // Separation is established at birth and preserved by the shared speed, so
-    // no two live glints may ever be closer than the spawn gap.
+  Params p;
+  p.chaos = 10.0f;
+  float at = 0.95f;
+  for (int g = 0; g < 40; ++g) {
+    at = (g % 2) ? 0.95f : 0.05f;
+    sweep(c, p, (g % 2) ? 0.05f : 0.95f, at, 0.05f + 0.01f * (float)(g % 7));
     const std::vector<float> v = positions(c);
     for (size_t a = 0; a < v.size(); ++a)
       for (size_t b = a + 1; b < v.size(); ++b)
@@ -156,126 +231,71 @@ TEST_CASE("glints never cross or swap order", "[three_planes_glints]") {
   }
 }
 
-TEST_CASE("arrivals are independently spaced, not a metronome",
+TEST_CASE("an unhurried sweep is one clean glint and nothing else",
           "[three_planes_glints]") {
-  // A pattern is exactly what these stopped being. Exponential inter-arrival
-  // times give a real spread of gaps; a fixed period would give one gap over
-  // and over, which is what the spread check below would catch.
+  // Chaos is a HIGH-speed thing. A gentle traverse must not scuff itself up,
+  // or the gesture stops being legible.
   Core c;
-  Params p = driven(1.0f);
-  p.density = 6.0f;
-  p.speed = 0.6f;   // long lives, so several are up at once
-
-  std::vector<float> gaps;
-  int prev_live = 0;
-  float since = 0.0f;
-  for (int i = 0; i < 3000; ++i) {
-    c.tick(p, 1.0f / 60.0f);
-    since += 1.0f / 60.0f;
-    const int n = c.liveCount();
-    // A rise in the population is an arrival (deaths only ever lower it, and
-    // the two cannot land on the same frame at these rates).
-    if (n > prev_live) { gaps.push_back(since); since = 0.0f; }
-    prev_live = n;
-  }
-  REQUIRE(gaps.size() > 20);
-  float lo = gaps[0], hi = gaps[0], sum = 0.0f;
-  for (float g : gaps) { lo = g < lo ? g : lo; hi = g > hi ? g : hi; sum += g; }
-  const float mean = sum / (float)gaps.size();
-  // Genuinely spread: the longest wait is several times the shortest.
-  REQUIRE(hi > lo * 3.0f);
-  // ...and still around the requested rate. The floor is loose because the
-  // spawn gap and the eight-slot ceiling both suppress arrivals at this
-  // density, which lengthens the mean; what matters is that it is not a
-  // metronome, and that the rate knob still means something.
-  REQUIRE(mean > 1.0f / (p.density * 2.0f));
-  REQUIRE(mean < 1.0f);
+  Params p = settled(c);
+  p.chaos = 8.0f;
+  sweep(c, p, 0.95f, 0.05f, 2.5f);   // ~0.36 ranges/s, well under kChaosFrom
+  REQUIRE(c.liveCount() == 1);
+  REQUIRE(launchedCount(c) == 1);
 }
 
-TEST_CASE("each glint gets its own look, drawn once", "[three_planes_glints]") {
+TEST_CASE("a fast sweep scuffs itself up with small ones",
+          "[three_planes_glints]") {
   Core c;
-  Params p = driven(1.0f);
-  p.density = 5.0f;
-  p.speed = 0.5f;
-  run(c, p, 240);
-  REQUIRE(c.liveCount() >= 3);
+  Params p = settled(c);
+  p.chaos = 10.0f;
+  sweep(c, p, 0.95f, 0.05f, 0.18f);   // ~5 ranges/s: well past kChaosFull
+  REQUIRE(launchedCount(c) == 1);
+  REQUIRE(c.liveCount() > 1);
 
-  float lo = 9.0f, hi = -9.0f;
+  // And they are unmistakably the small ones: every chaos glint is narrower
+  // and dimmer than the launched glint it is sitting under.
+  const Glint* big = launched(c);
+  REQUIRE(big != nullptr);
   for (int i = 0; i < kMaxLive; ++i) {
-    if (!c.glints[i].live) continue;
-    REQUIRE(c.glints[i].gain > 0.0f);
-    REQUIRE(c.glints[i].width > 0.0f);
-    lo = c.glints[i].gain < lo ? c.glints[i].gain : lo;
-    hi = c.glints[i].gain > hi ? c.glints[i].gain : hi;
+    const Glint& g = c.glints[i];
+    if (!g.live || g.launched) continue;
+    REQUIRE(g.width < big->width);
+    REQUIRE(g.gain < big->gain);
   }
-  REQUIRE(hi > lo);   // not one repeated stamp
 }
 
-TEST_CASE("a harder sweep puts more of them on screen at once",
+TEST_CASE("the launch is guaranteed even when the sky is full",
           "[three_planes_glints]") {
-  // Spawn rate scales with the drive outright while travel only lifts off a
-  // floor, so density follows the knob — WITHOUT any individual glint's
-  // brightness following it. That split is the whole point.
-  const auto occupancy = [](float drive) {
-    Core c;
-    Params p = driven(drive);
-    p.density = 6.0f;
-    p.speed = 0.8f;
-    long total = 0;
-    for (int i = 0; i < 1800; ++i) {
-      c.tick(p, 1.0f / 60.0f);
-      if (i > 120) total += c.liveCount();   // past the fill-up transient
-    }
-    return (double)total / 1680.0;
-  };
-  const double hard = occupancy(1.0f);
-  const double gentle = occupancy(0.25f);
-  REQUIRE(hard > gentle * 1.5);
-  REQUIRE(gentle > 0.0);
-}
-
-TEST_CASE("the slots are a ceiling, not a recycling ring",
-          "[three_planes_glints]") {
-  // Overdriven far past what eight slots can hold. An arrival that finds no
-  // room is DROPPED — never evicts someone — because a glint vanishing in
-  // mid-flight is the one thing a particle here may not do.
+  // Chaos arrivals are dropped when there is no room; a launch is not. It is
+  // the gesture, and a gesture that sometimes does nothing is not a control.
   Core c;
-  Params p = driven(1.0f);
-  p.density = 16.0f;
-  p.speed = 0.4f;
-  float prev[kMaxLive] = {};
-  bool was_live[kMaxLive] = {};
-  for (int i = 0; i < 1200; ++i) {
-    c.tick(p, 1.0f / 60.0f);
-    REQUIRE(c.liveCount() <= kMaxLive);
-    for (int k = 0; k < kMaxLive; ++k) {
-      // A slot may only go dark from the far end of the travel.
-      if (was_live[k] && !c.glints[k].live) REQUIRE(prev[k] > 0.85f);
-      was_live[k] = c.glints[k].live;
-      prev[k] = c.glints[k].pos;
-    }
-  }
+  Params p;
+  p.chaos = 16.0f;
+  // Thrash until the slots are saturated with chaos.
+  for (int g = 0; g < 12; ++g)
+    sweep(c, p, (g % 2) ? 0.05f : 0.95f, (g % 2) ? 0.95f : 0.05f, 0.10f);
+  REQUIRE(c.liveCount() >= 1);
+
+  const unsigned before = c.launches;
+  sweep(c, p, 0.95f, 0.05f, 0.10f);
+  REQUIRE(c.launches == before + 1);
 }
 
-TEST_CASE("a transport stall arrives once, and carries no debt",
+TEST_CASE("a transport stall neither loses the gesture nor bursts",
           "[three_planes_glints]") {
   // dt is clamped, so a stalled frame advances by kMaxDt rather than by the
-  // wall-clock gap. Several arrivals are owed over that step — and only ONE of
-  // them can land, because every arrival is at the birth edge and the
-  // separation rule refuses to stack them. That is the right answer: a stall
-  // should not vomit a wall of glints on top of each other.
+  // wall-clock gap. The knob still moved across the band during it, so the
+  // launch must still happen — exactly once.
   Core c;
-  Params p = driven(1.0f);
-  p.density = 12.0f;
-  p.speed = 0.5f;
+  Params p;
+  p.chaos = 12.0f;
+  hold(c, p, 0.95f, 0.3f);
+  p.sweep = 0.05f;
   c.tick(p, 4.0f);
-  REQUIRE(c.liveCount() == 1);
-  REQUIRE(oldest(c) <= 1.0f);
-
-  // Nor is the refused credit banked: the very next frame must not fire the
-  // arrivals the stall could not place. It comes back at the ordinary rate.
-  c.tick(p, 1.0f / 60.0f);
-  REQUIRE(c.liveCount() == 1);
+  // The knob was never SEEN inside the band — it went straight past it — but
+  // it changed sides, and that is a traverse however few samples it took.
+  REQUIRE(c.launches == 1);
+  REQUIRE(c.liveCount() <= kMaxLive);
 
   // And a zero-dt frame (a paused transport re-publishing) changes nothing.
   const int before = c.liveCount();
@@ -283,9 +303,21 @@ TEST_CASE("a transport stall arrives once, and carries no debt",
   REQUIRE(c.liveCount() == before);
 }
 
+TEST_CASE("Chaos 0 leaves the gesture completely alone",
+          "[three_planes_glints]") {
+  Core c;
+  Params p = settled(c);
+  p.chaos = 0.0f;
+  for (int g = 0; g < 6; ++g)
+    sweep(c, p, (g % 2) ? 0.05f : 0.95f, (g % 2) ? 0.95f : 0.05f, 0.12f);
+  REQUIRE(c.launches == 6);
+  REQUIRE(c.liveCount() == launchedCount(c));   // every glint up there is a gesture
+}
+
 TEST_CASE("reset clears the sky", "[three_planes_glints]") {
   Core c;
-  run(c, driven(1.0f), 120);
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.05f, 0.4f);
   REQUIRE(c.liveCount() > 0);
   c.reset();
   REQUIRE(c.liveCount() == 0);

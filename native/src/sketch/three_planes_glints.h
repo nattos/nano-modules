@@ -3,32 +3,41 @@
  * three_planes_glints.h — the glints `source.mesh.three_planes` flashes across
  * its quads: the glare off metal in an old cel-animated show.
  *
- * THESE ARE PARTICLES, NOT A PATTERN. Each glint is an independent object: it
- * is born at one boundary, travels across the picture, and dies at the other.
- * Nothing recycles it, nothing fades it out early, and nothing about the state
- * of the knob that spawned it reaches it afterwards. That is the whole design
- * brief, and it is what a moving PERIODIC field cannot express — a grating has
- * no individuals in it, so slowing the sweep visibly dims and re-spaces glints
- * that were already in flight.
+ * THE GLINT IS THE GESTURE. This does not watch a level and decide when to
+ * sparkle; it watches the sweep knob itself, and the invariant it is built
+ * around is:
  *
- * What the live drive still controls:
+ *     move the knob at a constant speed across its whole range, and ONE glint
+ *     crosses the planes at exactly that rate.
  *
- *   SPAWN RATE — arrivals per second, so a hard sweep throws more of them.
- *                Arrivals are exponentially spaced (a Poisson process), which
- *                is what makes them read as independent events rather than as
- *                a metronome with jitter on it.
- *   SPEED      — shared by every live glint, and the ONE exception to "under
- *                their own power". It has to be shared: two glints travelling
- *                at their own speeds would eventually cross, and the moment
- *                they overlap they stop being two things.
+ * Everything else falls out of that. The launch is the moment the knob ENTERS
+ * the middle band, which is guaranteed to happen once per traverse and is
+ * guaranteed to happen while the knob is moving — so there is always a real
+ * speed for the glint to take. `ratio` is the exchange rate, and at its
+ * default of 1 the sentence above is literal: one knob range, one crossing.
  *
- * Everything else about a glint — how bright, how wide, how dark its wake — is
- * drawn once at birth and then belongs to it.
+ * SIGN IS THROWN AWAY. Only how fast the knob is moving matters, never which
+ * way. Reverse the knob mid-gesture and the glints already out there carry on
+ * exactly as they were — they are objects in flight, not a readout.
  *
- * Because spawn rate scales with the drive FASTER than the travel does (speed
- * only lifts off a floor, see kIdleSpeed), a harder sweep also puts more of
- * them on screen at once. Density follows the knob without any glint's own
- * brightness following it.
+ * Above a brisk sweep, small extra glints start arriving on their own to
+ * scuff up the result. Those ARE random (exponentially spaced, so they read as
+ * independent events rather than as a metronome), but they are deliberately
+ * dimmer and narrower than the launched one: the gesture stays legible, and
+ * the chaos sits underneath it.
+ *
+ * WHAT A LIVE GLINT KEEPS. Brightness, width and wake are drawn once at birth
+ * and belong to it. The only thing the knob still reaches is SPEED, which is
+ * shared by every glint at once — and it has to be shared, because at their
+ * own speeds two of them would eventually cross, and the moment they overlap
+ * they stop being two things.
+ *
+ * `pos` is measured in CROSSINGS: 0 is the leading edge of the lit part of the
+ * picture and 1 is the trailing edge, so advancing it by `speed * dt` is what
+ * makes the invariant exact. The effect supplies `lead` and `trail` — the
+ * margins outside that, in the same units, where a glint is fading in or its
+ * wake is still finishing — because only the effect knows how big the stack
+ * is on screen.
  *
  * Host-free, like three_planes_rig.h and three_walls_show.h: no effect ABI, no
  * GPU, so the Catch2 goldens drive the whole thing at an exact dt.
@@ -36,66 +45,103 @@
 
 #include <cmath>
 
+#include "knob_rate.h"
+
 namespace three_planes_glints {
 
-/// How many glints can be in flight at once. An arrival with every slot busy is
-/// DROPPED rather than stealing one, so this is a ceiling on density, not a
-/// recycling ring — see `spawn`.
+/// How many glints can be in flight at once.
 constexpr int kMaxLive = 8;
 
 /// A frame longer than this is a transport stall, not slow motion. Same clamp,
 /// and the same reason, as three_planes_rig.h's.
 constexpr float kMaxDt = 0.25f;
 
-/// Travel speed at zero drive, as a fraction of the full-drive speed. NOT zero:
-/// a glint must always reach the boundary and die, and letting go of the knob
-/// should not park one in the middle of the picture forever.
-constexpr float kIdleSpeed = 0.30f;
+/// The window the knob's speed is measured over. Not a knob: it is a property
+/// of how MIDI encoders send (a quantized step every few frames), not a taste
+/// setting. See knob_rate.h.
+constexpr float kRateWindow = 0.09f;
 
-/// Minimum separation, in travel units (0 = birth edge, 1 = death edge), between
-/// an arrival and the youngest glint already in flight. Poisson arrivals will
-/// happily put two on top of each other, and two overlapping glints read as one
-/// fat one — which is exactly the thing these stopped being a pattern to avoid.
-constexpr float kMinGap = 0.08f;
+/// How long the speed takes to fall away once the knob stops, in seconds. The
+/// attack is instant — a glint launches at exactly the speed of the gesture
+/// that threw it — and this is only about how it coasts afterwards.
+constexpr float kSpeedRelease = 0.22f;
+
+/// Floor on the travel, in crossings per second. NOT zero: a glint must always
+/// reach the boundary and die, and letting go of the knob should not park one
+/// in the middle of the picture forever.
+constexpr float kMinSpeed = 0.22f;
+
+/// Where the small extra glints begin and where they are in full flow, in
+/// crossings per second. Below the first there are none at all: an unhurried
+/// sweep is one clean glint, and nothing else.
+constexpr float kChaosFrom = 1.20f;
+constexpr float kChaosFull = 4.00f;
+
+/// Minimum separation, in crossings, between any two live glints. Two on top
+/// of each other read as one fat one, which is what these stopped being a
+/// pattern to avoid.
+constexpr float kMinGap = 0.06f;
 
 /// The spread of per-glint widths drawn at birth, as multiples of the effect's
-/// base width. The effect needs the TOP of this range to size the margins that
-/// hide a glint's entry and its wake's exit — and those margins have to be the
-/// same for every glint, or `pos` would map to a different place on screen for
-/// each of them and two could cross.
-constexpr float kMinWidthFactor = 0.60f;
-constexpr float kMaxWidthFactor = 1.40f;
+/// base width. The LAUNCHED glint is the gesture and stays close to nominal;
+/// the chaos ones are visibly smaller so they never compete with it.
+///
+/// The effect needs the top of the whole range to size the margins that hide a
+/// glint's entry and its wake's exit — and those margins have to be the same
+/// for every glint, or `pos` would map to a different place on screen for each
+/// of them and two could cross.
+constexpr float kLaunchWidthLo = 0.90f, kLaunchWidthHi = 1.15f;
+constexpr float kChaosWidthLo = 0.22f, kChaosWidthHi = 0.50f;
+constexpr float kMaxWidthFactor = kLaunchWidthHi;
 
-/// Read fresh each tick. `drive` is the rig's Glint rail; the other two are
-/// style knobs on the effect.
+/// Read fresh each tick.
 struct Params {
-  float drive = 0.0f;     ///< 0..1. Spawns and speed only — never a live glint's look.
-  float density = 5.0f;   ///< arrivals per second at full drive
-  float speed = 1.2f;     ///< crossings per second at full drive
+  float sweep = 0.5f;    ///< the knob, 0..1. Its MOTION is the whole input.
+  float band = 0.45f;    ///< launch band, as a fraction of each half of the throw
+  float ratio = 1.0f;    ///< crossings per knob range. 1 = the invariant, literally
+  float chaos = 4.0f;    ///< small extra glints per second, at kChaosFull and above
+
+  /// Margins outside the lit picture, in crossings, where a glint is fading in
+  /// (`lead`) or its wake is still finishing (`trail`). The effect computes
+  /// these from the stack's projected size; the defaults here are only so a
+  /// golden can run without one.
+  float lead = 0.05f;
+  float trail = 0.15f;
 };
 
 /// One glint in flight. The three look values are drawn at birth and never
 /// touched again — that is what "under its own power" means here.
 struct Glint {
-  float pos = 0.0f;    ///< 0 at the birth boundary, 1 at the death boundary
+  float pos = 0.0f;    ///< crossings: 0 the leading edge of the picture, 1 the trailing
   float gain = 0.0f;   ///< brightness factor
   float width = 1.0f;  ///< width factor
   float shade = 0.0f;  ///< depth of the dark wake behind it
   bool live = false;
+  bool launched = false;  ///< thrown by the knob, rather than chaos
 };
 
 struct Core {
   Glint glints[kMaxLive];
-  /// Countdown to the next arrival, in EXPECTED arrivals rather than seconds —
-  /// so a drive that changes mid-wait re-times the arrival correctly instead of
-  /// honouring a deadline set under the old rate. Starts at 0, so the first
-  /// tick with any drive at all throws a glint immediately.
-  float spawn_c = 0.0f;
+  knob_rate::KnobRate rate;
+
+  /// Starts TRUE so a knob already parked in the middle — which is where an
+  /// untouched card sits — does not read as an entry and throw a glint at boot
+  /// with no gesture behind it.
+  bool inside = true;
+  /// The knob as of the previous tick. A hand at 60 fps cannot get clean
+  /// through the band between two samples, but a stalled frame or a jumped
+  /// automation lane can — and a gesture that silently does nothing is not a
+  /// control, so that counts as a traverse too.
+  float last = 0.5f;
+  float speed = 0.0f;     ///< crossings per second, shared by every live glint
+  float chaos_c = 1.0f;   ///< countdown to the next small one, in expected arrivals
   unsigned rng = 0x2545f491u;
+  /// Gestures thrown since the last reset. Nothing reads it but the goldens
+  /// and anyone debugging — a live glint can die before you get to count it.
+  unsigned launches = 0;
 
   void reset() { *this = Core(); }
 
-  /// How many are in flight. For the goldens and for the effect's uniform fill.
   int liveCount() const {
     int n = 0;
     for (int i = 0; i < kMaxLive; ++i) if (glints[i].live) ++n;
@@ -105,31 +151,68 @@ struct Core {
   void tick(const Params& p, float dt) {
     if (dt < 0.0f) dt = 0.0f;
     if (dt > kMaxDt) dt = kMaxDt;
-    const float drive = p.drive < 0.0f ? 0.0f : (p.drive > 1.0f ? 1.0f : p.drive);
 
-    // --- Travel. One speed for everyone, which is what keeps the order they
-    //     were born in — and therefore their separation — intact forever.
-    const float v = p.speed * (kIdleSpeed + (1.0f - kIdleSpeed) * drive);
+    // A NaN patch holds the middle rather than poisoning the ring and the
+    // band test alike.
+    const float sw = (p.sweep == p.sweep) ? p.sweep : 0.5f;
+
+    // --- 1. How fast the knob is moving, in crossings per second. The sign is
+    //        dropped here and nowhere else: which way you are going never
+    //        reaches a glint, so reversing mid-gesture leaves the ones already
+    //        out there travelling exactly as they were.
+    const float r = rate.sample(sw, dt, kRateWindow);
+    const float v = (r < 0.0f ? -r : r) * (p.ratio > 0.0f ? p.ratio : 0.0f);
+
+    // Instant attack so a launch takes the speed of the gesture that threw it
+    // exactly; a timed release so letting go coasts instead of stopping dead.
+    if (dt > 0.0f) {
+      const float held = speed * std::exp(-dt / kSpeedRelease);
+      speed = v > held ? v : held;
+      if (speed < 1e-4f) speed = 0.0f;
+    }
+
+    // --- 2. Travel. One speed for everyone, which is what keeps the order they
+    //        were born in — and therefore their separation — intact forever.
+    const float travel = speed > kMinSpeed ? speed : kMinSpeed;
+    const float death = 1.0f + (p.trail > 0.0f ? p.trail : 0.0f);
     for (int i = 0; i < kMaxLive; ++i) {
       Glint& g = glints[i];
       if (!g.live) continue;
-      g.pos += v * dt;
-      if (g.pos > 1.0f) g = Glint();   // reached the boundary: gone
+      g.pos += travel * dt;
+      if (g.pos > death) g = Glint();   // reached the boundary: gone
     }
 
-    // --- Arrivals. Exponentially spaced: independent events, not a metronome.
-    const float rate = p.density * drive;
-    if (rate > 0.0f && dt > 0.0f) {
-      spawn_c -= rate * dt;
-      // A long frame can owe more than one arrival; pay them all, so a stall
-      // does not silently swallow glints.
-      for (int guard = 0; spawn_c <= 0.0f && guard < kMaxLive * 2; ++guard) {
-        spawn();
+    // --- 3. The launch. Entering the middle band is the event, and it is the
+    //        right one for two reasons: a traverse of the knob crosses it
+    //        exactly once, and you cannot enter it standing still — so there
+    //        is always a real speed for the new glint to take.
+    const float half = sw - 0.5f;
+    const float mag = (half < 0.0f ? -half : half) * 2.0f;   // 0 centre, 1 either end
+    const bool inside_now = mag <= (p.band < 0.0f ? 0.0f : p.band);
+    // Entering the band — or clearing it outright between two samples, which
+    // shows up as the knob changing sides without ever being seen inside.
+    const bool jumped = !inside_now && !inside &&
+                        ((last - 0.5f) < 0.0f) != (half < 0.0f);
+    if ((inside_now && !inside) || jumped) launch(p);
+    inside = inside_now;
+    last = sw;
+
+    // --- 4. Chaos. Small ones, and only once the sweep is brisk: an unhurried
+    //        gesture is one clean glint and nothing else. Exponentially spaced,
+    //        so they read as independent events rather than as a second
+    //        metronome running underneath the first.
+    float drive = (speed - kChaosFrom) / (kChaosFull - kChaosFrom);
+    drive = drive < 0.0f ? 0.0f : (drive > 1.0f ? 1.0f : drive);
+    const float crate = (p.chaos > 0.0f ? p.chaos : 0.0f) * drive;
+    if (crate > 0.0f && dt > 0.0f) {
+      chaos_c -= crate * dt;
+      for (int guard = 0; chaos_c <= 0.0f && guard < kMaxLive; ++guard) {
+        spawn(p, false);
         float u = rand01();
         if (u < 1e-6f) u = 1e-6f;
-        spawn_c += -std::log(u);   // mean 1, so `rate` really is per second
+        chaos_c += -std::log(u);   // mean 1, so `chaos` really is per second
       }
-      if (spawn_c <= 0.0f) spawn_c = 1e-3f;
+      if (chaos_c <= 0.0f) chaos_c = 1e-3f;
     }
   }
 
@@ -143,27 +226,60 @@ struct Core {
     return (float)(rng & 0xFFFFFFu) * (1.0f / 16777216.0f);
   }
 
-  void spawn() {
-    // Not on top of the youngest one. Poisson arrivals cluster by nature, and a
-    // cluster is indistinguishable from a single wide glint.
-    for (int i = 0; i < kMaxLive; ++i)
-      if (glints[i].live && glints[i].pos < kMinGap) return;
+  /// The knob's own glint. GUARANTEED: unlike a chaos arrival it is never
+  /// refused, because the whole design is that a traverse throws exactly one.
+  void launch(const Params& p) { ++launches; spawn(p, true); }
 
-    for (int i = 0; i < kMaxLive; ++i) {
-      Glint& g = glints[i];
-      if (g.live) continue;
-      g.live = true;
-      g.pos = 0.0f;
-      // Drawn once, kept for life. The spread is what stops a stream of them
-      // reading as one repeated stamp.
-      g.gain = 0.45f + 0.55f * rand01();
-      g.width = kMinWidthFactor + (kMaxWidthFactor - kMinWidthFactor) * rand01();
-      g.shade = 0.40f + 0.60f * rand01();
-      return;
+  void spawn(const Params& p, bool launched) {
+    const float birth = -(p.lead > 0.0f ? p.lead : 0.0f);
+
+    // Not on top of the youngest. Separation is established here and preserved
+    // for life by the shared speed, so this is the only place it can be got
+    // wrong — and a cluster is indistinguishable from one fat glint.
+    float youngest = 1e9f;
+    for (int i = 0; i < kMaxLive; ++i)
+      if (glints[i].live && glints[i].pos < youngest) youngest = glints[i].pos;
+
+    float pos = birth;
+    if (youngest < birth + kMinGap) {
+      // A chaos arrival with no room is simply DROPPED. A launch is not: it is
+      // placed further back instead, so it arrives a beat later but it always
+      // arrives.
+      if (!launched) return;
+      pos = youngest - kMinGap;
     }
-    // Every slot busy: the arrival is DROPPED rather than evicting someone.
-    // Stealing a live slot would make a glint vanish in mid-flight, which is
-    // the one thing a particle here is not allowed to do.
+
+    Glint* slot = nullptr;
+    for (int i = 0; i < kMaxLive; ++i) {
+      if (glints[i].live) continue;
+      slot = &glints[i];
+      break;
+    }
+    if (!slot) {
+      // Every slot busy. A chaos arrival gives up — stealing one would make a
+      // glint vanish in mid-flight, the one thing a particle here may not do.
+      // A launch takes the OLDEST, which is the one about to die anyway.
+      if (!launched) return;
+      float best = -1e9f;
+      for (int i = 0; i < kMaxLive; ++i)
+        if (glints[i].pos > best) { best = glints[i].pos; slot = &glints[i]; }
+    }
+
+    slot->live = true;
+    slot->launched = launched;
+    slot->pos = pos;
+    // Drawn once, kept for life. The launched glint stays near nominal — it is
+    // the gesture, and it has to read the same every time you make it. The
+    // chaos ones scatter, and are small enough never to be mistaken for it.
+    if (launched) {
+      slot->gain = 0.85f + 0.15f * rand01();
+      slot->width = kLaunchWidthLo + (kLaunchWidthHi - kLaunchWidthLo) * rand01();
+      slot->shade = 0.75f + 0.25f * rand01();
+    } else {
+      slot->gain = 0.22f + 0.28f * rand01();
+      slot->width = kChaosWidthLo + (kChaosWidthHi - kChaosWidthLo) * rand01();
+      slot->shade = 0.20f + 0.35f * rand01();
+    }
   }
 };
 
