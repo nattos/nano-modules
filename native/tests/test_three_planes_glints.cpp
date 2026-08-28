@@ -415,6 +415,35 @@ TEST_CASE("a throw slings the glints and holds off the putter",
   REQUIRE(b->vit < 1.0f);
 }
 
+TEST_CASE("a held throw keeps them up without hurrying them",
+          "[three_planes_glints]") {
+  // The other kind of throw: one that keeps everything inside the frame rather
+  // than sending it out (Strobe). The hold is not negotiable — a glint being
+  // thrown is never a glint running down — but the sling is, and with it off
+  // they stay in the picture and drift while the rest of it rattles.
+  Core held, slung;
+  Params ph = settled(held), ps = settled(slung);
+  sweep(held, ph, 0.95f, 0.70f, 0.2f);
+  sweep(slung, ps, 0.95f, 0.70f, 0.2f);
+  const float from = launched(held)->pos;
+
+  ph.fling = 1.0f; ph.sling = 0.0f;
+  ps.fling = 1.0f; ps.sling = 1.0f;
+  hold(held, ph, 0.70f, 0.65f);
+  hold(slung, ps, 0.70f, 0.65f);
+
+  const Glint* a = launched(held);
+  const Glint* b = launched(slung);
+  REQUIRE(a != nullptr);
+  REQUIRE(b != nullptr);
+  // Held: still at full strength, exactly like the slung one...
+  REQUIRE_THAT(a->vit, WithinAbs(1.0, 1e-6));
+  // ...and nowhere near as far along.
+  REQUIRE(b->pos - from > (a->pos - from) * 2.0f);
+  // It is drifting, though, not parked — nothing here is ever frozen.
+  REQUIRE(a->pos > from);
+}
+
 TEST_CASE("reset clears the sky", "[three_planes_glints]") {
   Core c;
   Params p = settled(c);

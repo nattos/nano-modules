@@ -546,6 +546,70 @@ describe('Three Planes glints E2E', () => {
     expect(peak(1)).toBeGreaterThan(peak(2));
   });
 
+  it('a Strobe throw keeps the glints in the picture; Grow slings them out',
+     async () => {
+    // A throw does two things to whatever is in the air, and they come apart.
+    // Both modes HOLD it at full strength while the throw rings out — letting
+    // go of the knob to reach a mute is what fires one, so a glint being
+    // thrown must not start running down. Only Grow also SLINGS it along, and
+    // that belongs to a throw whose whole idea is light leaving the frame.
+    // Strobe keeps everything inside, so its glints hang about and drift.
+    const run = (id: string, mode: number) => runEngineMultiPhaseTest({
+      width: W, height: H, modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: id,
+              sketch: sketch({ glimmer_sweep: 0.95, release_mode: mode }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        // The gesture, which launches one...
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
+                       paramKey: 'glimmer_sweep', value: 0.70 }],
+          waitFrames: 6, captureTraceIds: ['out'] },
+        // ...and then the throw, held rather than decayed: there is no rig
+        // here, so `release` stays where it is put and the hold never lifts.
+        // Three even windows after it, to watch where the glint gets to.
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
+                       paramKey: 'release', value: 1 }],
+          waitFrames: 40, captureTraceIds: ['out'] },
+        { commands: [], waitFrames: 40, captureTraceIds: ['out'] },
+        { commands: [], waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+      dumpName: id,
+    });
+
+    // Sequentially: the engine runner drives one page, and two at once abort
+    // each other.
+    const grow = await run('glint_throw_grow', 0);
+    const strobe = await run('glint_throw_strobe', 1);
+    expect(grow.success && strobe.success).toBe(true);
+
+    const where = (r: any, phase: number) => {
+      const s = scan(r.phases[phase].trace('out'));
+      const p = peaks(s, 8);
+      return p.length > 0 ? axisOf(s, p[0]) : null;
+    };
+    const S = [2, 3, 4].map((i) => where(strobe, i));
+    const G = [2, 3, 4].map((i) => where(grow, i));
+
+    // Still up there through all three windows, one slash the whole way, and
+    // moving between every pair: held, not parked. Nothing here is ever frozen.
+    for (const p of S) expect(p).not.toBeNull();
+    expect(S[1]!).toBeGreaterThan(S[0]!);
+    expect(S[2]!).toBeGreaterThan(S[1]!);
+
+    // Slung: over the same window it covers several times the ground.
+    expect(G[0]).not.toBeNull();
+    expect(G[1]).not.toBeNull();
+    expect(G[1]! - G[0]!).toBeGreaterThan((S[1]! - S[0]!) * 2);
+    // Far enough that it is past where the held one gets to two windows later
+    // — and, in practice, off the far side and dead by the third. Engine dt is
+    // wall clock, so the claim is that ratio and not a time.
+    expect(G[1]!).toBeGreaterThan(S[2]!);
+  });
+
   it('a lit plane holds its own ring down while the ring is still on it',
      async () => {
     // FAKED LOCAL CONTRAST. Sweeping straight back after a throw relights the

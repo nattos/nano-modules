@@ -20,11 +20,18 @@
  * way. Reverse the knob mid-gesture and the glints already out there carry on
  * exactly as they were — they are objects in flight, not a readout.
  *
- * A THROW SLINGS THEM. When the sweep reaches a mute the rig spends whatever
- * it had latched, and that release both flings the glints already in the air
- * and holds them at full strength while it rings out — reaching a mute means
- * letting go of the knob, so without that they would start running down at the
- * exact moment they are being thrown.
+ * A THROW DOES TWO THINGS TO THEM, and they are separable. When the sweep
+ * reaches a mute the rig spends whatever it had latched, and that release
+ *
+ *   HOLDS them at full strength while it rings out — reaching a mute means
+ *   letting go of the knob, so without this they would start running down at
+ *   the exact moment they are being thrown. Always on;
+ *
+ *   SLINGS them along, four times their own speed at a full throw, so they
+ *   leave with everything else. That one is `sling`, and it is a choice: it
+ *   belongs to a throw that is energy LEAVING the frame. A throw that keeps
+ *   everything inside it wants the opposite — glints that hang around and
+ *   drift while the rest of it rattles — and passes 0.
  *
  * Above a brisk sweep, small extra glints start arriving on their own to
  * scuff up the result. Those ARE random (exponentially spaced, so they read as
@@ -108,10 +115,10 @@ constexpr float kPutterWidthFloor = 0.40f;
 constexpr float kChaosFrom = 1.20f;
 constexpr float kChaosFull = 4.00f;
 
-/// How much faster a glint travels at a full throw. The release is the sweep
-/// arriving at a mute and spending everything it had held; the rings fly, and
-/// whatever glints are in the air get slung along with them. Shared like every
-/// other speed here, so it cannot reorder them.
+/// How much faster a glint travels at a full throw, before `sling` scales it.
+/// The release is the sweep arriving at a mute and spending everything it had
+/// held; whatever glints are in the air get slung along with it. Shared like
+/// every other speed here, so it cannot reorder them.
 constexpr float kFlingBoost = 3.0f;
 
 /// Minimum separation, in crossings, between any two live glints. Two on top
@@ -137,10 +144,16 @@ struct Params {
   float band = 0.45f;    ///< launch band, as a fraction of each half of the throw
   float ratio = 1.0f;    ///< crossings per knob range. 1 = the invariant, literally
   float chaos = 4.0f;    ///< small extra glints per second, at kChaosFull and above
-  /// The rig's throw, 0..1. Slings the glints already in flight, and holds
-  /// them at full strength while it does — a glint being thrown is not a glint
-  /// running down, whatever the knob has stopped doing.
+  /// The rig's throw, 0..1. Holds the glints already in flight at full
+  /// strength while it rings out — a glint being thrown is not a glint running
+  /// down, whatever the knob has stopped doing — and, through `sling`, carries
+  /// them along with it.
   float fling = 0.0f;
+  /// How much of that throw is spent on SPEED, 0..1. At 1 they are slung off
+  /// with everything else; at 0 they are held but not hurried, so they stay in
+  /// the picture and drift for as long as the throw lasts. The hold is not
+  /// negotiable either way — a throw never runs a glint down.
+  float sling = 1.0f;
 
   /// Margins outside the lit picture, in crossings, where a glint is fading in
   /// (`lead`) or its wake is still finishing (`trail`). The effect computes
@@ -242,8 +255,9 @@ struct Core {
     //        as the knob comes to rest they shrink and dim on exactly that
     //        exponential, still moving, until there is nothing left to see.
     const float fling = p.fling < 0.0f ? 0.0f : (p.fling > 1.0f ? 1.0f : p.fling);
+    const float sling = p.sling < 0.0f ? 0.0f : (p.sling > 1.0f ? 1.0f : p.sling);
     const float travel = (speed > kMinSpeed ? speed : kMinSpeed)
-                       * (1.0f + kFlingBoost * fling);
+                       * (1.0f + kFlingBoost * fling * sling);
     // A throw holds the putter off for as long as it lasts. Letting go of the
     // knob to reach a mute is exactly the gesture that fires one, so without
     // this the glints would start running down at the very moment they are

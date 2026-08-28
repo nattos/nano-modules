@@ -563,7 +563,14 @@ void module_init() {
           "and retired just past it, rather than crossing the whole frame, so "
           "one starts working the moment it is thrown.\n\n"
           "*Shadow* is what sells it — a dark wake trailing each glint, so the "
-          "stack gains contrast rather than just getting brighter.")
+          "stack gains contrast rather than just getting brighter.\n\n"
+          "A throw holds whatever is in the air at full strength while it "
+          "rings out, in both modes — letting go of the knob to reach a mute "
+          "is exactly the gesture that fires one, so a glint being thrown is "
+          "never a glint running down. What differs is where they go: **Grow** "
+          "slings them off with everything else, and **Strobe**, which keeps "
+          "everything inside the frame, lets them hang about and drift over "
+          "the flam instead.")
       .floatField("glimmer_sweep", 0.5f, 0.f, 1.f, state::PrimaryInput,
                   "unsigned", 0.f, nullptr,
                   "The sweep knob itself — wire it from Three Planes Rig's "
@@ -780,6 +787,11 @@ void tick(void* self, double dt) {
   gp.ratio = s->glimmer_ratio;
   gp.chaos = s->glimmer_chaos;
   gp.fling = s->release;
+  // A throw holds the glints up in both modes, but only Grow carries them off
+  // with it. Strobe keeps everything inside the frame — slinging the glints
+  // out of the picture is the one thing in it that would go the other way — so
+  // there they are held and left to drift instead.
+  gp.sling = s->release_mode == kModeStrobe ? 0.0f : 1.0f;
   // The margins, in CROSSINGS — the units `pos` is in. A glint is born `lead`
   // before the lit picture starts and retired `trail` after it ends, sized by
   // the widest glint the birth spread can draw so every one of them maps from
