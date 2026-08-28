@@ -1054,3 +1054,226 @@ TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",
   REQUIRE(paused.sweep_speed >= 0.0f);
   REQUIRE(paused.sweep_speed <= 1.0f);
 }
+
+// --- The bounce -----------------------------------------------------------
+// Sweeping back IN from an end, the light does not simply track the knob: it
+// runs ahead of it and springs back, by an amount set by how fast you came.
+// Everything below is stated against the POSITION LAW rather than against
+// absolute numbers, because "the light is ahead of your hand" is the claim —
+// how bright the hand itself asks for is the dimmer's business, and pinned
+// separately above.
+
+namespace {
+
+/// What the knob's position alone asks for, this frame. The bounce is measured
+/// as the gap between the light and this.
+float positionOf(const Params& p, float sweep) {
+  return SweepCore::positionGain(p, sweep);
+}
+
+struct Bounce {
+  float peak = 0.0f;    ///< furthest the light ran AHEAD of the knob
+  float sag = 0.0f;     ///< furthest it fell BEHIND afterwards (negative)
+  float settled = 0.0f; ///< the gap once everything has stopped
+  int peak_frame = -1;
+};
+
+/// Sweep from `from` to `to` over `frames`, then hold for `tail` more, and
+/// report how the light sat against the position law throughout.
+Bounce sweepIn(Core& c, Params& p, float from, float to, int frames, int tail) {
+  Bounce b;
+  for (int i = 0; i < frames + tail; ++i) {
+    const float u = i < frames ? (float)i / (float)(frames - 1) : 1.0f;
+    const float knob = from + (to - from) * u;
+    const Out o = sweepAt(c, p, knob, 0.016f);
+    const float gap = o.emission[0] - positionOf(p, knob);
+    if (gap > b.peak) {
+      b.peak = gap;
+      b.peak_frame = i;
+    }
+    if (b.peak_frame >= 0 && i > b.peak_frame && gap < b.sag) b.sag = gap;
+    b.settled = gap;
+  }
+  return b;
+}
+
+/// Park the knob out at one end, with the sweep's own history settled, so a
+/// return reads as a return rather than as a jump.
+void parkOut(Core& c, Params& p, float end) {
+  for (int i = 0; i < 40; ++i) sweepAt(c, p, end, 0.016f);
+}
+
+}  // namespace
+
+TEST_CASE("Bounce dialled out is the dimmer exactly as it was",
+          "[three_planes_rig][sweep][bounce]") {
+  // The whole thing has to be free when it is off — not nearly free. The
+  // spring lands on an exact zero for this: a card that never touches the knob
+  // must be bit-identical to the positional dimmer without it.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.sweep_bounce = 0.0f;
+  parkOut(c, p, 1.0f);
+
+  for (int i = 0; i < 40; ++i) {
+    const float knob = 1.0f - 0.5f * (float)i / 39.0f;
+    const Out o = sweepAt(c, p, knob, 0.016f);
+    REQUIRE(o.emission[0] == positionOf(p, knob));
+  }
+}
+
+TEST_CASE("coming back in, the light runs ahead of the knob and springs back",
+          "[three_planes_rig][sweep][bounce]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  parkOut(c, p, 1.0f);
+
+  const Bounce b = sweepIn(c, p, 1.0f, kSweepCenter, 8, 60);
+
+  // Ahead of the hand on the way in — the tower relights before the knob says
+  // it should, which is the overshoot.
+  REQUIRE(b.peak > 0.08f);
+  // ...and behind it afterwards. This is the half you can actually see when
+  // the sweep ends at home: the light has already saturated, so the overshoot
+  // is clipped away and the DIP is the bounce.
+  REQUIRE(b.sag < -0.03f);
+  // And then it is over, exactly. A spring that crept would leave the tower a
+  // hair off its own dimmer for ever.
+  REQUIRE(b.settled == 0.0f);
+}
+
+TEST_CASE("how far it overshoots is how fast you came",
+          "[three_planes_rig][sweep][bounce]") {
+  // The point of the whole mechanism: there is no velocity term downstream —
+  // the lead is a lookahead in TIME, so speed is the only thing that decides
+  // how much of one you get.
+  Core fast_c;
+  Params fast_p;
+  fast_p.mode = ModeSolid;
+  fast_p.sweep_flicker = 0.0f;
+  parkOut(fast_c, fast_p, 1.0f);
+  const Bounce fast = sweepIn(fast_c, fast_p, 1.0f, kSweepCenter, 10, 60);
+
+  Core slow_c;
+  Params slow_p = fast_p;
+  parkOut(slow_c, slow_p, 1.0f);
+  const Bounce slow = sweepIn(slow_c, slow_p, 1.0f, kSweepCenter, 75, 60);
+
+  REQUIRE(slow.peak < fast.peak * 0.4f);
+  REQUIRE(slow.sag > -0.01f);   // an unhurried return does not bounce at all
+}
+
+TEST_CASE("Bounce scales it, and nothing else does",
+          "[three_planes_rig][sweep][bounce]") {
+  Core soft_c;
+  Params soft_p;
+  soft_p.mode = ModeSolid;
+  soft_p.sweep_flicker = 0.0f;
+  soft_p.sweep_bounce = 0.25f;
+  parkOut(soft_c, soft_p, 1.0f);
+  const Bounce soft = sweepIn(soft_c, soft_p, 1.0f, kSweepCenter, 10, 60);
+
+  Core hard_c;
+  Params hard_p = soft_p;
+  hard_p.sweep_bounce = 1.0f;
+  parkOut(hard_c, hard_p, 1.0f);
+  const Bounce hard = sweepIn(hard_c, hard_p, 1.0f, kSweepCenter, 10, 60);
+
+  REQUIRE(hard.peak > soft.peak * 2.0f);
+  REQUIRE(hard.sag < soft.sag);
+}
+
+TEST_CASE("nothing swells on the way OUT", "[three_planes_rig][sweep][bounce]") {
+  // Going out is a blackout. A blackout that brightens before it falls is not
+  // a gesture, it is a light with a fault in it — so the bounce is inward-only
+  // and the fade is exactly the position law, however hard you throw the knob.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  for (int i = 0; i < 20; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+
+  for (int i = 0; i < 10; ++i) {
+    const float knob = kSweepCenter + 0.5f * (float)i / 9.0f;
+    const Out o = sweepAt(c, p, knob, 0.016f);
+    REQUIRE(o.emission[0] == positionOf(p, knob));
+  }
+}
+
+TEST_CASE("riding the knob around home still costs nothing",
+          "[three_planes_rig][sweep][bounce]") {
+  // The deadzone's whole promise is that you can work around centre without
+  // touching the look. The drive rides the fade's own slope, which is flat
+  // across the deadzone — so however briskly you cross it, there is nothing
+  // there for the light to run ahead of.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  const float inside = 0.5f * p.sweep_deadzone * 0.9f;
+
+  Out o{};
+  for (int i = 0; i < 90; ++i)
+    o = sweepAt(c, p, kSweepCenter + (i % 2 ? inside : -inside), 0.016f);
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-6));
+}
+
+TEST_CASE("the bounce does not move the mute, or the throw that hangs off it",
+          "[three_planes_rig][sweep][bounce]") {
+  // Where the mute is is a fact about the KNOB. It must not move because you
+  // arrived at it quickly — so everything downstream of the position law (the
+  // flicker's drive, the charge, the release) reads the positional gain and
+  // not the bounced one. Same gesture, bounce in and out: identical throw.
+  Core plain_c;
+  Params plain_p;
+  plain_p.mode = ModeSolid;
+  plain_p.sweep_bounce = 0.0f;
+
+  Core bouncy_c;
+  Params bouncy_p = plain_p;
+  bouncy_p.sweep_bounce = 1.0f;
+
+  // A flick from one end clean through the middle to the other: an inward leg
+  // that bounces, then an outward one that arrives at the mute and throws.
+  for (int i = 0; i < 30; ++i) {
+    const float knob = 0.02f + 0.96f * (float)i / 29.0f;
+    const Out a = sweepAt(plain_c, plain_p, knob, 0.016f);
+    const Out b = sweepAt(bouncy_c, bouncy_p, knob, 0.016f);
+    REQUIRE(b.release == a.release);
+    REQUIRE(b.sweep_speed == a.sweep_speed);
+  }
+  Out last{};
+  for (int i = 0; i < 20; ++i) {
+    last = sweepAt(plain_c, plain_p, 0.98f, 0.016f);
+    REQUIRE(sweepAt(bouncy_c, bouncy_p, 0.98f, 0.016f).release == last.release);
+  }
+  REQUIRE(last.release > 0.5f);   // the gesture really did throw
+}
+
+TEST_CASE("a dropped frame damps the bounce rather than detonating it",
+          "[three_planes_rig][sweep][bounce]") {
+  // Explicit integration of a stiff spring across the stall clamp's quarter
+  // second is exactly how one of these blows up. It is sub-stepped for that,
+  // and this is the golden that says so.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.sweep_bounce = 1.0f;
+  parkOut(c, p, 1.0f);
+
+  // Get it swinging, then hand it a stalled frame mid-swing.
+  for (int i = 0; i < 5; ++i) sweepAt(c, p, 1.0f - 0.06f * (float)(i + 1), 0.016f);
+  const Out stalled = sweepAt(c, p, 0.6f, 4.0f);   // clamps to kMaxDt
+  REQUIRE(stalled.emission[0] == stalled.emission[0]);   // not NaN
+  REQUIRE(stalled.emission[0] >= 0.0f);
+  REQUIRE(stalled.emission[0] <= 1.0f);
+
+  Out o{};
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, 0.6f, 0.016f);
+  REQUIRE_THAT(o.emission[0], WithinAbs(positionOf(p, 0.6f), 1e-6));
+}

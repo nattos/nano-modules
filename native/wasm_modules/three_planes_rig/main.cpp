@@ -378,6 +378,14 @@ void module_init() {
           "and relight the tower over a tail that is still running. Wire it "
           "into Three Planes and the throw flings the stack outward as "
           "expanding rings.\n\n"
+          "**Coming back in, the light has weight.** A positional dimmer is "
+          "dead on the return — the brightness is exactly your hand, and "
+          "sweeping in is just the fade played backwards. So on the way in "
+          "the tower relights slightly AHEAD of the knob and springs back, by "
+          "*Bounce*, scaled by how fast you came: slam it home and the light "
+          "arrives early, overshoots and settles; ease it home and nothing "
+          "bounces at all. Only ever on the way in — going out is a blackout, "
+          "and a blackout that swells first is a fault, not a gesture.\n\n"
           "*Flicker* is the stutter that arrives mid-fade — one floor at a "
           "time, going dark or coming up, loudest exactly where the light is "
           "halfway out and gone again at both ends. Old tubes struggle; they "
@@ -405,6 +413,13 @@ void module_init() {
                     "Tube stutter through the fade — one floor at a time, "
                     "loudest where the light is halfway out.")
         .label("Flicker", "Flick");
+  schema.floatField("sweep_bounce", 0.4f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "How far the light overshoots when you sweep back IN, "
+                    "before it springs back. Set by how FAST you came — a "
+                    "hard return slams past and a patient one does not. "
+                    "0 tracks the knob exactly.")
+        .label("Bounce", "Bnce");
   schema.floatField("sweep_decay", 0.18f, 0.01f, 2.f, state::SecondaryInput,
                     nullptr, 0.f, "s",
                     "How long the Sweep Speed reading coasts after you stop moving.")
@@ -652,6 +667,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sweep_deadzone")) s->p.sweep_deadzone = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_depth"))    s->p.sweep_depth = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_flicker"))  s->p.sweep_flicker = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_bounce"))   s->p.sweep_bounce = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_decay"))    s->p.sweep_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_window"))   s->p.sweep_window = state::patchFloat(i);

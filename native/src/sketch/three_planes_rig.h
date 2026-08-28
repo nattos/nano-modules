@@ -12,8 +12,8 @@
  *
  * On top of all of that sits the SWEEP: one bipolar knob, performed live,
  * whose POSITION dims the whole tower (with a wide deadzone through the middle
- * and a flickering fade at either end) and whose SPEED throws diagonal glints
- * across it. See SweepCore — it is the only thing here that reads the input's
+ * and a flickering fade at either end), whose SPEED throws diagonal glints
+ * across it, and whose return from an end overshoots and springs back. See SweepCore — it is the only thing here that reads the input's
  * motion rather than its value, and it works in every mode. The glints are
  * three_planes' own particles; this only publishes the rail that drives them.
  *
@@ -57,6 +57,22 @@ constexpr float kMaxDt = 0.25f;
 /// An unwired card sits here, which is exactly full intensity and no motion,
 /// so the sweep costs a sketch that ignores it nothing at all.
 constexpr float kSweepCenter = 0.5f;
+
+/// THE BOUNCE, and the spring it hangs off. Coming back IN from an end the
+/// tower does not simply track your hand: it relights slightly AHEAD of the
+/// knob and then springs back. The lead is a LOOKAHEAD IN TIME — the light
+/// shows you where the knob will be a moment from now — which is what makes
+/// how far it overshoots a fact about how fast you came in, with no separate
+/// velocity term anywhere and an unhurried return costing nothing.
+///
+/// Seconds of lookahead at Bounce 1, and a spring that is stiff and damped
+/// just short of dead: the return has ONE small dip in it and no wobble after.
+constexpr float kBounceLead = 0.05f;
+constexpr float kBounceFreq = 60.0f;   ///< rad/s
+constexpr float kBounceDamp = 0.30f;   ///< zeta
+/// Integrator sub-step. The stall clamp lets a frame be a quarter of a second,
+/// which explicit integration of a 30 rad/s spring would explode on.
+constexpr float kBounceStep = 0.008f;
 
 /// Below this much of the tower's brightness the sweep counts as MUTED, and a
 /// held charge is thrown. Derived from the dimmer rather than being its own
@@ -150,6 +166,7 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
+  float sweep_bounce = 0.4f;     ///< how far a fast sweep back in overshoots
   float latch_drive = 2.0f;      ///< how readily a pass through the middle charges
   float latch_decay = 1.2f;      ///< seconds a charge survives before it bleeds away
   float ring_time = 1.4f;        ///< seconds the thrown release takes to ring out
@@ -231,6 +248,11 @@ inline float rand01(unsigned& state) {
 ///                  near either extreme does the tower fade toward black. So
 ///                  you can ride the knob around centre without touching the
 ///                  look, and reaching for an end is a deliberate blackout.
+///   COMING BACK IN → the bounce. Positional brightness alone is dead — the
+///                  light is exactly your hand, and a return is just the fade
+///                  played backwards. So on the way in the light LEADS the
+///                  knob and springs back, by an amount set by how fast you
+///                  came. Inward only, and never on the way out.
 ///   REACHING AN END  → the throw. The mute at either extreme is not just
 ///                  darkness: passing through the middle charges by how HARD
 ///                  you went through it, and arriving at a mute spends that
@@ -267,6 +289,12 @@ struct SweepCore {
   /// charge nothing at all, and lose the best gesture on the card.
   float last = kSweepCenter;
 
+  /// The bounce: how far the lit level currently sits above what the knob's
+  /// position asks for (below it, on the way back down), and how fast that is
+  /// moving. Both are exactly zero at rest and for any outward sweep.
+  float bounce = 0.0f;
+  float bounce_v = 0.0f;
+
   int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
   float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
   unsigned rng = 0x9e3779b9u;
@@ -291,6 +319,19 @@ struct SweepCore {
     const float t = clamp01((mag - dz) / (1.0f - dz > 1e-4f ? 1.0f - dz : 1e-4f));
     const float fade = t * t * (3.0f - 2.0f * t);
     return clamp01(1.0f - fade * clamp01(p.sweep_depth));
+  }
+
+  /// The position law's local steepness, d(gain)/d(magnitude). Negative: the
+  /// light goes out as the knob goes away. Flat across the deadzone and flat
+  /// again right at the extreme — the smoothstep's two shoulders — which is
+  /// exactly where the bounce should be silent: there is nothing there for the
+  /// light to run ahead of.
+  static float positionSlope(const Params& p, float sweep) {
+    using namespace detail;
+    const float dz = clamp01(p.sweep_deadzone);
+    const float span = 1.0f - dz > 1e-4f ? 1.0f - dz : 1e-4f;
+    const float t = clamp01((magnitudeOf(sweep) - dz) / span);
+    return -clamp01(p.sweep_depth) * 6.0f * t * (1.0f - t) / span;
   }
 
   /// Advance one frame and fold the result into `o` — the rails, and the
@@ -319,6 +360,57 @@ struct SweepCore {
 
     // --- 2. Position, and the flicker that lives inside the fade.
     const float gain = positionGain(p, o.sweep_out);
+
+    // --- 2a. THE BOUNCE. Sweeping back IN from an end, the light has weight:
+    //         it runs AHEAD of your hand through the fade and then springs
+    //         back. `target` is that lead — the position law's own climb rate
+    //         times a lookahead in seconds — so a hard return overshoots and a
+    //         patient one does not, without a velocity term appearing anywhere
+    //         downstream. It is the same trick a lookahead limiter plays,
+    //         pointed at a dimmer.
+    //
+    //         INWARD ONLY, and deliberately. Going out is a blackout, and a
+    //         blackout that swells before it falls is not a gesture, it is a
+    //         light with a fault in it.
+    float target = 0.0f;
+    const float bp = o.sweep_out - kSweepCenter;
+    const float inward = bp > 0.0f ? -r : (bp < 0.0f ? r : 0.0f);
+    if (inward > 0.0f) {
+      // The climb is read through the fade's SLOPE off the boxcar knob rate,
+      // never by differencing `gain` frame to frame — a stepping encoder
+      // differenced per frame is a string of spikes, which is the whole reason
+      // knob_rate.h exists. It also makes the drive die at both shoulders on
+      // its own: silent across the deadzone, silent at the extreme.
+      const float climb = -positionSlope(p, o.sweep_out) * (inward / kSweepCenter);
+      target = kBounceLead * clamp01(p.sweep_bounce) * climb;
+    }
+    // A stiff spring chasing that lead. It settles ON the lead while the sweep
+    // is running and rings down through zero the moment the sweep stops — the
+    // overshoot and the spring back are one object seen at two moments, which
+    // is why there is no separate release to tune. Semi-implicit (velocity
+    // first, then position) and sub-stepped, so a dropped frame damps it
+    // rather than detonating it.
+    if (dt > 0.0f) {
+      const int n = (int)(dt / kBounceStep) + 1;
+      const float h = dt / (float)n;
+      const float k = kBounceFreq * kBounceFreq;
+      const float damp = 2.0f * kBounceDamp * kBounceFreq;
+      for (int i = 0; i < n; ++i) {
+        bounce_v += (k * (target - bounce) - damp * bounce_v) * h;
+        bounce += bounce_v * h;
+      }
+      // Land on an EXACT zero rather than creeping, so Bounce dialled out (or
+      // never touched) is bit-identical to the dimmer without it.
+      if (bounce > -1e-5f && bounce < 1e-5f && bounce_v > -1e-4f && bounce_v < 1e-4f) {
+        bounce = 0.0f;
+        bounce_v = 0.0f;
+      }
+    }
+    // The bounce is a thing that happens to the LIGHT. Everything else below
+    // — the flicker's drive, the mute that fires the throw — keeps reading the
+    // positional gain, because where the mute is is a fact about the knob and
+    // must not move because you arrived at it quickly.
+    const float lit_gain = clamp01(gain + bounce);
 
     // --- 2b. CATCH AND THROW. The mute at either end is the point of the
     //         sweep, but a mute that is only "dark" has no gesture in it — the
@@ -422,7 +514,7 @@ struct SweepCore {
     }
 
     // Position last, so the whole bank — flicker included — fades together.
-    for (int i = 0; i < kLayers; ++i) o.emission[i] = clamp01(o.emission[i] * gain);
+    for (int i = 0; i < kLayers; ++i) o.emission[i] = clamp01(o.emission[i] * lit_gain);
   }
 };
 

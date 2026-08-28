@@ -1,4 +1,5 @@
 import { runEngineTest, runEngineMultiPhaseTest } from './engine-test-helpers';
+import type { EnginePhaseConfig } from './engine-test-helpers';
 import type { Sketch } from '../src/sketch-types';
 
 /**
@@ -451,5 +452,107 @@ describe('mod.rig.three_planes E2E', () => {
     expect(r.success).toBe(true);
     expect(r.phases[0].trace('out').averageColor().r).toBeLessThan(40);
     expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(150);
+  });
+
+  // --- The bounce ---------------------------------------------------------
+  // How far the light runs ahead of the knob, and how it springs back, is
+  // pinned frame by frame at an exact dt in the native goldens. What only a
+  // real engine can show is the leg those cannot reach: a patched Bounce
+  // actually reaching the spring, on a knob moved over a real wire. So these
+  // two ask only for the SIGN and the DIRECTION, never for a magnitude — the
+  // lead is velocity-driven and engine frames are wall-clock.
+  //
+  // 0.8625 is chosen so the position law reads exactly 0.5 there: half a
+  // throw past the deadzone, which is mid grey on the probe and leaves the
+  // overshoot somewhere to go.
+  const AT_HALF = 0.8625;
+
+  it('a knob thrown back IN overshoots, then springs back', async () => {
+    const jumpIn = (id: string, bounce: number) => {
+      const phases: EnginePhaseConfig[] = [
+        { commands: [
+            { type: 'createSketch', sketchId: id, sketch:
+                scalarSketch('plane1_emission',
+                             { ...SWEPT, sweep: 1.0, sweep_bounce: bounce }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
+                       paramKey: 'sweep', value: AT_HALF }],
+          waitFrames: 1, captureTraceIds: ['out'] },
+      ];
+      // One frame per phase through the ring-down. WHEN the spring crosses is
+      // a matter of frame pacing, so nothing below looks at a particular
+      // frame — only at the extremes over the whole window.
+      for (let i = 0; i < 12; ++i)
+        phases.push({ commands: [], waitFrames: 1, captureTraceIds: ['out'] });
+      phases.push({ commands: [], waitFrames: 40, captureTraceIds: ['out'] });
+      return runEngineMultiPhaseTest(
+        { width: 64, height: 64, modules: MODULES, phases, dumpName: id });
+    };
+    const grey = (r: Awaited<ReturnType<typeof jumpIn>>, i: number) =>
+      r.phases[i].trace('out').averageColor().r;
+
+    const plain = await jumpIn('rig_bounce_off', 0);
+    const bouncy = await jumpIn('rig_bounce_on', 1);
+    expect(plain.success && bouncy.success).toBe(true);
+
+    // Parked at the extreme, both are black.
+    expect(grey(plain, 0)).toBeLessThan(40);
+    expect(grey(bouncy, 0)).toBeLessThan(40);
+
+    // Bounce dialled out tracks the knob exactly — mid grey, the position law
+    // and nothing else, every frame of the way.
+    const ring = (r: typeof plain) =>
+      Array.from({ length: 13 }, (_, i) => grey(r, i + 1));
+    for (const v of ring(plain)) {
+      expect(v).toBeGreaterThan(100);
+      expect(v).toBeLessThan(156);
+    }
+
+    // With it up, the light has already run well past where the knob is...
+    expect(grey(bouncy, 1)).toBeGreaterThan(200);
+    // ...and comes back through it, sitting BELOW the dimmer's own answer on
+    // the way. That dip is the spring back, and it is the half you can see
+    // when a sweep ends at home: by then the light has saturated, so the
+    // overshoot is clipped off and only the return shows.
+    expect(Math.min(...ring(bouncy))).toBeLessThan(115);
+
+    // Both settle on the same picture. A spring that crept would leave the
+    // tower a hair off its own dimmer for ever.
+    for (const r of [plain, bouncy]) {
+      expect(grey(r, 14)).toBeGreaterThan(100);
+      expect(grey(r, 14)).toBeLessThan(156);
+    }
+  });
+
+  it('the same throw OUTWARD does not swell at all', async () => {
+    // Going out is a blackout, and a blackout that brightens before it falls
+    // is a fault rather than a gesture. Same distance, same one frame, Bounce
+    // at maximum — and the tower lands on the position law dead on.
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_bounce_out', sketch:
+                scalarSketch('plane1_emission',
+                             { ...SWEPT, sweep: 0.5, sweep_bounce: 1 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_bounce_out' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: 'rig_bounce_out', colIdx: 0,
+                       chainIdx: 1, paramKey: 'sweep', value: AT_HALF }],
+          waitFrames: 5, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_bounce_out',
+    });
+    expect(r.success).toBe(true);
+    expect(r.phases[0].trace('out').averageColor().r).toBeGreaterThan(215);
+    const out = r.phases[1].trace('out').averageColor().r;
+    expect(out).toBeGreaterThan(100);
+    expect(out).toBeLessThan(156);
   });
 });
