@@ -20,6 +20,7 @@ compile_shaders_compute_spv plasma_beam_cannon render
 compile_shaders_compute_spv orthomod           render
 compile_shaders_compute_spv lights_sim           render
 compile_shaders_compute_spv three_planes         render
+compile_shaders_compute_spv three_walls          render
 
 # vcr_halo: prefilter -> down chain -> progressive up chain -> composite.
 compile_shaders_compute_var_spv vcr_halo prefilter
@@ -113,6 +114,7 @@ wasm_build \
   ../chroma_wave/main.cpp \
   ../flicker_grid/main.cpp \
   ../three_planes/main.cpp \
+  ../three_walls/main.cpp \
   ../vcr_halo/main.cpp
 
 echo "Built: $OUT_DIR/$MODULE_NAME.wasm ($(wc -c < "$OUT_DIR/$MODULE_NAME.wasm")B)"

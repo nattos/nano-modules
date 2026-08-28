@@ -26,6 +26,7 @@ NANO_DECLARE_INSTANCE_EFFECT(tingle_top)
 NANO_DECLARE_INSTANCE_EFFECT(chroma_wave)
 NANO_DECLARE_INSTANCE_EFFECT(flicker_grid)
 NANO_DECLARE_INSTANCE_EFFECT(three_planes)
+NANO_DECLARE_INSTANCE_EFFECT(three_walls)
 NANO_DECLARE_INSTANCE_EFFECT(vcr_halo)
 
 extern "C" {
@@ -190,6 +191,19 @@ void nano_module_main() {
         "isometric,neon,vcr,glow,stack,layer,sdf,show,meter",
         "la-layer-group",
         NANO_INSTANCE_LIFECYCLE(three_planes),
+    });
+
+    // The frontal companion to three_planes: the same neon-quad motif pointed
+    // INTO the screen, and the only effect here with three camera outputs.
+    nano::registerEffect({
+        2,
+        "source.mesh.three_walls",
+        "Three Walls",
+        "Three neon frames rushing at you down a tunnel — the frontal companion to Three Planes, sharing its quad field and VCR grade but perspective rather than orthographic. Quiet until a move fires: Pulse throws the three frames at you one after another; Cycles, Resonate and Resonate Rev are HELD, running while the trigger is high and ramping their rate the whole time. Resonate is frame-locked rather than dt-integrated, so past roughly half the frame rate it stops reading as motion and lands on standing strobe patterns. Three texture outputs are three cameras on the same tunnel: the main one looks down its throat, and the two auxiliaries watch it from either side, so a frame that fills the main output is the same instant a bar sweeping across the sides. The auxiliaries cost nothing unless wired.",
+        "source",
+        "tunnel,neon,vcr,glow,perspective,depth,pulse,resonate,strobe,frame,show,corridor",
+        "la-expand",
+        NANO_INSTANCE_LIFECYCLE(three_walls),
     });
 
     nano::registerEffect({
