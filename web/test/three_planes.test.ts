@@ -345,12 +345,14 @@ describe(`Three Planes E2E (${backend})`, () => {
   /**
    * Local maxima that stand clear of the field around them — i.e. glints.
    *
-   * The standoff has to be comparable to a glint's OWN width or nothing counts
-   * as a peak: at the default width a glint spans about 0.17 of the travel, so
-   * comparing against the samples immediately beside it compares two points on
-   * the same slope. PEAK_SPAN is six samples, 0.06 of travel, out on the skirt.
+   * The standoff has to clear a glint's OWN core or nothing counts as a peak:
+   * the core is flat-topped (a super-Gaussian) and up to 0.35 of the travel
+   * axis wide, so comparing against the samples immediately beside it compares
+   * two points on the same plateau. PEAK_SPAN is 16 samples — 0.16, out past
+   * the core — and still inside the 0.25 that the spawn gap guarantees between
+   * two live glints, so it cannot merge a pair into one.
    */
-  const PEAK_SPAN = 6;
+  const PEAK_SPAN = 16;
   const peaks = (v: number[], prominence: number) => {
     const out: number[] = [];
     for (let i = PEAK_SPAN; i < v.length - PEAK_SPAN; i++) {
@@ -406,7 +408,7 @@ describe(`Three Planes E2E (${backend})`, () => {
     // THE BRIEF. It crosses under its own power: the same particle, sampled
     // later, has MOVED but has not dimmed — even though the drive that threw
     // it has been taken away in the meantime.
-    // 16 and 38 ticks at the harness's fixed 16 ms: the glint sits at either
+    // 16 and 30 ticks at the harness's fixed 16 ms: the glint sits at either
     // end of the stretch of travel the centre diagonal actually crosses. (The
     // travel axis reaches past the frame's corners, so a glint further out
     // than this is real but off the line the scan walks.)
@@ -415,7 +417,7 @@ describe(`Three Planes E2E (${backend})`, () => {
     ], 'three_planes_glint_t16', 16);
     const later = await flat([
       ['glimmer_drive', 1], ['glimmer_density', 0.001],
-    ], 'three_planes_glint_t38', 38);
+    ], 'three_planes_glint_t30', 30);
     expect(born.success && later.success).toBe(true);
 
     const a = scanAlong(born, TRAVEL, AXIS);

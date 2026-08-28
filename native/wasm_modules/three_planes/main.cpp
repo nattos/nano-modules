@@ -150,6 +150,17 @@ static inline float haloRadius(float r) {
   return 0.006f * std::pow(40.0f, t);
 }
 
+// How far a glint's drawn profile reaches on either side of its centre, in its
+// own half-widths. Mirrors render.hlsl: the super-Gaussian core has died by
+// about 1.5, and the Gaussian wake trailing it by about 5.5.
+//
+// Deliberately asymmetric, because the two margins are doing different jobs.
+// The entry margin only has to hide the core's leading edge so the glint fades
+// in rather than popping; the exit margin has to let the whole wake finish
+// crossing before the glint is retired.
+static constexpr float kGlintSkirt = 1.5f;
+static constexpr float kGlintWakeReach = 5.5f;
+
 // --- Camera ---------------------------------------------------------------
 // Planes are squares in the model XZ plane at y = -spacing, 0, +spacing. The
 // origin IS the middle plane's centre, so orbiting about it is free.
@@ -339,6 +350,10 @@ void module_init() {
           "**Three Planes Rig**'s *Glint* rail and riding the Sweep knob "
           "throws them. At 0 nothing new arrives and whatever is still in "
           "flight coasts out and dies, so an unwired card is quiet.\n\n"
+          "They are born just outside the stack and retired just past it, "
+          "rather than crossing the whole frame — so one starts working "
+          "almost as soon as it is thrown, instead of spending its first "
+          "moments out in the black where there is nothing to light.\n\n"
           "Speed is shared by every glint on purpose: at their own speeds "
           "they would eventually cross, and two overlapping glints stop being "
           "two things.\n\n"
@@ -358,8 +373,11 @@ void module_init() {
         .label("Glint Rate", "Rate")
       .floatField("glimmer_speed", 1.2f, 0.1f, 6.f, state::PrimaryInput,
                   nullptr, 0.f, "/s",
-                  "Crossings per second at full Drive. Never falls to zero, "
-                  "so a glint always reaches the far side.")
+                  "Crossings per second at full Drive. A crossing is the LIT "
+                  "part of the picture, not the whole frame — a glint is born "
+                  "just outside the stack and retired just past it, so it "
+                  "starts working almost as soon as it is thrown. Never falls "
+                  "to zero, so it always reaches the far side.")
         .label("Glint Speed", "Speed")
       .floatField("glimmer_gain", 1.6f, 0.f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
@@ -378,7 +396,8 @@ void module_init() {
         .label("Glint Angle", "GlAng")
       .floatField("glimmer_width", 0.07f, 0.01f, 0.4f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
-                  "Glint width, as a fraction of the distance it travels. "
+                  "Glint width, as a fraction of the distance it travels — "
+                  "so it scales with the stack rather than with the frame. "
                   "Small is a hard slash, large is a soft sheen.")
         .label("Glint Width", "GlWid")
 
@@ -681,15 +700,45 @@ void render(void* self, int vp_w, int vp_h) {
   u.glim0[1] = dy;
 
   // How far the frame reaches along that axis: the corner that projects
-  // furthest onto it. Deriving the travel from the VIEWPORT rather than from a
-  // fixed number is what makes Speed and Width mean the same thing whatever
-  // shape the output is and whichever way the glints are running.
+  // furthest onto it. Deriving anything here from the VIEWPORT rather than
+  // from a fixed number is what makes Speed and Width mean the same thing
+  // whatever shape the output is and whichever way the glints are running.
   const float span = std::fabs(dx) * (0.5f / cs.ax) + std::fabs(dy) * (0.5f / cs.ay);
-  const float hw = s->glimmer_width * span;
-  // Born and buried off-screen, so a glint fades in and out at the edges
-  // instead of appearing. Sized for the widest one plus room for its wake.
-  const float pad = 6.0f * hw;
-  const float from = -(span + pad), to = span + pad;
+
+  // ...but the frame is NOT what a glint travels across. It multiplies
+  // emission, so out where there is no geometry it is multiplying nothing, and
+  // every unit of travel spent there is dead time between throwing a glint and
+  // seeing it. On a default stack that dead run is most of the way in from
+  // each corner — and at the idle speed it is seconds of it.
+  //
+  // So the trip is bounded by the LIT extent instead: the furthest any plane's
+  // corner projects onto the travel axis, plus the halo and line it carries
+  // out past that. A glint is then doing something almost from the moment it
+  // is born.
+  float reach = 0.0f;
+  for (int i = 0; i < PLANES; i++) {
+    for (int k = 0; k < 4; k++) {
+      const float a = std::fabs(s->corner_x[i][k] * dx + s->corner_y[i][k] * dy);
+      if (a > reach) reach = a;
+    }
+  }
+  reach += haloRadius(s->halo_radius) + lineHalfWidth(s->line_width);
+  // Never further than the picture: an enormous zoom would otherwise send
+  // glints off on a tour of geometry nobody can see. And never zero, so a
+  // collapsed camera cannot divide the travel down to nothing.
+  if (reach > span) reach = span;
+  if (reach < 0.05f) reach = 0.05f;
+
+  // The glint scales with what it is crossing, not with the frame — which is
+  // what keeps Width meaning "a fraction of the distance it travels".
+  const float hw = s->glimmer_width * reach;
+  // Born and buried outside that extent, so a glint fades in and its wake
+  // fades out rather than either popping. Sized for the WIDEST glint the
+  // birth spread can draw, because the mapping from `pos` to the screen has to
+  // be the same for every glint in flight or two of them could cross.
+  const float hw_max = hw * three_planes_glints::kMaxWidthFactor;
+  const float from = -(reach + kGlintSkirt * hw_max);
+  const float to = reach + kGlintWakeReach * hw_max;
 
   for (int i = 0; i < three_planes_glints::kMaxLive; i++) {
     const auto& g = s->glint_core.glints[i];

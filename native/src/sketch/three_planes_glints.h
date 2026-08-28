@@ -58,6 +58,14 @@ constexpr float kIdleSpeed = 0.30f;
 /// fat one — which is exactly the thing these stopped being a pattern to avoid.
 constexpr float kMinGap = 0.08f;
 
+/// The spread of per-glint widths drawn at birth, as multiples of the effect's
+/// base width. The effect needs the TOP of this range to size the margins that
+/// hide a glint's entry and its wake's exit — and those margins have to be the
+/// same for every glint, or `pos` would map to a different place on screen for
+/// each of them and two could cross.
+constexpr float kMinWidthFactor = 0.60f;
+constexpr float kMaxWidthFactor = 1.40f;
+
 /// Read fresh each tick. `drive` is the rig's Glint rail; the other two are
 /// style knobs on the effect.
 struct Params {
@@ -149,7 +157,7 @@ struct Core {
       // Drawn once, kept for life. The spread is what stops a stream of them
       // reading as one repeated stamp.
       g.gain = 0.45f + 0.55f * rand01();
-      g.width = 0.60f + 0.80f * rand01();
+      g.width = kMinWidthFactor + (kMaxWidthFactor - kMinWidthFactor) * rand01();
       g.shade = 0.40f + 0.60f * rand01();
       return;
     }
