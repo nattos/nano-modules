@@ -327,5 +327,38 @@ describe(`Three Planes E2E (${backend})`, () => {
     // and the whole effect silently renders nothing on WebGPU.
     expect(worst).toBe(0);
   });
+
+  // ---------------------------------------------------------------- Release
+  // The throw is a plain scalar input, so unlike the glints it IS reachable
+  // from this harness — and the beat before it needs exact tick counting,
+  // which is the one thing an engine run cannot give (wall-clock pacing puts
+  // a single frame below its resolution).
+
+  it('the rings wait one frame before appearing', async () => {
+    // The frame that fires a throw is already black — the tower muted, which
+    // is what fired it — so the rings are held back for exactly one more and
+    // the picture lands on nothing before it lands on the release. A hit
+    // reads harder for the silence in front of it.
+    const mk = (ticks: number, name: string) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0, 0, 0, 1], ticks,
+      params: [...QUIET, ['release', 1.0],
+               // Muted, exactly as the rig leaves the tower at either end, so
+               // anything in the frame is the throw and nothing else.
+               ['plane1_emission', 0], ['plane2_emission', 0],
+               ['plane3_emission', 0]] as any,
+      dumpName: name,
+    });
+    const painted = (f: Frame) => {
+      let n = 0;
+      f.forEachPixel((p) => { if (luma(p) > 4) n++; });
+      return n;
+    };
+    const firing = await mk(1, 'three_planes_ring_beat_1');
+    const after = await mk(2, 'three_planes_ring_beat_2');
+    expect(firing.success && after.success).toBe(true);
+    expect(painted(firing)).toBe(0);
+    expect(painted(after)).toBeGreaterThan(0);
+  });
 });
 });

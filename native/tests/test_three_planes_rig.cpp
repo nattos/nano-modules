@@ -916,8 +916,10 @@ TEST_CASE("a vigorous pass charges the throw", "[three_planes_rig][sweep]") {
   sweepAcross(c, p, 0.95f, 0.15f, 2.5f);   // through the middle, firmly
   REQUIRE(c.sweep.charge > 0.9f);
 
+  // Even the hardest gesture pays a little bleed on the run from the band out
+  // to the mute, so a full throw lands a shade under 1 rather than on it.
   const Out o = sweepAcross(c, p, 0.15f, 0.02f, 2.5f);   // on to the mute
-  REQUIRE(o.release > 0.9f);
+  REQUIRE(o.release > 0.85f);
   REQUIRE(c.sweep.charge == 0.0f);   // spent, all at once
   // ...and the tower is muted under it — that being what fired the throw in
   // the first place. What you see is the release, not a brightening of
@@ -937,21 +939,26 @@ TEST_CASE("flick harder, throw harder", "[three_planes_rig][sweep]") {
   const float firm = thrown(2.5f);
   REQUIRE(gentle > 0.0f);
   REQUIRE(firm > gentle * 2.0f);
-  REQUIRE(firm > 0.95f);
+  REQUIRE(firm > 0.85f);
 }
 
-TEST_CASE("the charge holds the best of the pass", "[three_planes_rig][sweep]") {
-  // Peak-held, so slowing down after a hard pass does not give the throw back.
-  // The vigour was in the gesture; dithering afterwards is not a second one.
-  Core c;
-  Params p;
-  p.mode = ModeSolid;
-  sweepAcross(c, p, 0.95f, 0.15f, 3.0f);
-  const float charged = c.sweep.charge;
-  REQUIRE(charged > 0.9f);
-  sweepAcross(c, p, 0.15f, kSweepCenter, 0.05f);   // creep back and loiter
-  for (int i = 0; i < 120; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
-  REQUIRE_THAT(c.sweep.charge, WithinAbs(charged, 1e-6));
+TEST_CASE("the charge bleeds away, so dawdling throws soft",
+          "[three_planes_rig][sweep]") {
+  // Held indefinitely, a hard flick followed by a slow wander out still threw
+  // everything — which makes it impossible to be quiet on purpose. The throw
+  // is as big as the whole GESTURE was, not just its best instant.
+  const auto thrown = [](float out_speed) {
+    Core c;
+    Params p;
+    p.mode = ModeSolid;
+    sweepAcross(c, p, 0.95f, 0.30f, 3.0f);   // the same hard pass, both times
+    return sweepAcross(c, p, 0.30f, 0.02f, out_speed).release;
+  };
+  const float straight = thrown(3.0f);
+  const float dawdled = thrown(0.18f);
+  REQUIRE(straight > 0.85f);          // flick and go: a wallop
+  REQUIRE(dawdled < straight * 0.4f); // flick and amble: a whisper
+  REQUIRE(dawdled > 0.0f);            // ...but still the same gesture
 }
 
 TEST_CASE("Latch Drive decides how squashed the reading is",
@@ -965,8 +972,8 @@ TEST_CASE("Latch Drive decides how squashed the reading is",
   };
   const float polite = thrown(1.0f);
   const float driven = thrown(3.0f);
-  REQUIRE(polite < 0.7f);     // the raw reading is a meter's, and too tame
-  REQUIRE(driven > 0.95f);    // ...and above 1 an ordinary sweep pegs it
+  REQUIRE(polite < 0.5f);    // the raw reading is a meter's, and too tame
+  REQUIRE(driven > 0.7f);    // ...and above 1 an ordinary sweep all but pegs it
 }
 
 TEST_CASE("the tail is causal: nothing the knob does cancels it",
@@ -981,7 +988,7 @@ TEST_CASE("the tail is causal: nothing the knob does cancels it",
   p.sweep_flicker = 0.0f;
   p.ring_time = 2.0f;
   const float thrown = flick(c, p, 2.5f);
-  REQUIRE(thrown > 0.9f);
+  REQUIRE(thrown > 0.85f);
 
   Out o{};
   for (int i = 0; i < 20; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
@@ -1014,7 +1021,7 @@ TEST_CASE("one pass is one throw", "[three_planes_rig][sweep]") {
   Params p;
   p.mode = ModeSolid;
   p.ring_time = 0.25f;
-  REQUIRE(flick(c, p, 2.5f) > 0.9f);
+  REQUIRE(flick(c, p, 2.5f) > 0.85f);
 
   // Ring it out while jogging about at the muted end, well clear of centre.
   Out o{};
@@ -1025,7 +1032,7 @@ TEST_CASE("one pass is one throw", "[three_planes_rig][sweep]") {
 
   // Cross the middle again and it fires again — because that pass is a new
   // gesture, not because the knob happens to be somewhere.
-  REQUIRE(sweepAcross(c, p, 0.02f, 0.98f, 2.5f).release > 0.9f);
+  REQUIRE(sweepAcross(c, p, 0.02f, 0.98f, 2.5f).release > 0.85f);
 }
 
 TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",

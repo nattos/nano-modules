@@ -367,7 +367,10 @@ void module_init() {
           "*Glint Decay* is how long that reading coasts after you let go.\n\n"
           "**Reaching an end is a throw, not just a mute.** Passing through "
           "the middle *charges* — by how hard you go through it, not by how "
-          "long you linger, so a short vigorous flick charges hardest. Arrive "
+          "long you linger, so a short vigorous flick charges hardest. The "
+          "charge also bleeds away over *Latch Decay*, so dawdling on the way "
+          "out gives a soft throw — which is how you play this quietly. "
+          "Arrive "
           "at either "
           "extreme and the whole charge is spent at once, and *Release* rings "
           "out over *Ring Out* on its own clock — nothing you do with the knob "
@@ -419,6 +422,13 @@ void module_init() {
                     "dawdling in the middle charges nothing. Above 1 an "
                     "ordinary firm sweep already pegs it.")
         .label("Latch Drive", "Latch");
+  schema.floatField("latch_decay", 1.2f, 0.05f, 6.f, state::PrimaryInput,
+                    nullptr, 0.f, "s",
+                    "How long a charge survives before it bleeds away. So the "
+                    "throw is as big as the whole gesture was, not just its "
+                    "best instant — flick hard and go straight out for a "
+                    "wallop, or take your time on the way and get a soft one.")
+        .label("Latch Decay", "Hold");
   schema.floatField("ring_time", 1.4f, 0.05f, 6.f, state::PrimaryInput,
                     nullptr, 0.f, "s",
                     "How long a throw takes to ring out. Nothing you do with "
@@ -646,6 +656,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_window"))   s->p.sweep_window = state::patchFloat(i);
     else if (state::pathIs(p, l, "latch_drive"))    s->p.latch_drive = state::patchFloat(i);
+    else if (state::pathIs(p, l, "latch_decay"))    s->p.latch_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "ring_time"))      s->p.ring_time = state::patchFloat(i);
   }
 }

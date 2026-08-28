@@ -47,15 +47,16 @@ struct Uniforms {
   float view[4];            // row 13:    vp_w, vp_h, aspect_x, aspect_y
   // The release: the stack thrown outward as expanding rings.
   float ghosts[6][4];       // rows 14-19: ring i -> rows 2i, 2i+1, like `corners`
-  float rel[4];             // row 20:    ring gain, halo radius, falloff, -
-  float glim0[4];           // row 21:    travel dir x, dir y, -, -
+  float rel[4];             // row 20:    ring halo radius, falloff, -, -
+  float ring_gain[4];       // row 21:    per-ring gain: release, opening, damping
+  float glim0[4];           // row 22:    travel dir x, dir y, -, -
   // One row per glint IN FLIGHT: where it is on the travel axis (cover-square),
   // its half-width there, and the two look values it was born with. A dead slot
   // is zero gain and zero shade, so the shader needs no count and no branch.
-  float glints[8][4];       // rows 22-29: axis, half-width, gain, shade
-  float grade[16];          // rows 30-33: VcrGrade
+  float glints[8][4];       // rows 23-30: axis, half-width, gain, shade
+  float grade[16];          // rows 31-34: VcrGrade
 };
-static_assert(sizeof(Uniforms) == 544, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 560, "Uniforms layout mismatch with render.hlsl");
 static_assert(three_planes_glints::kMaxLive == 8, "glint rows must match kMaxLive");
 
 struct State {
@@ -92,6 +93,12 @@ struct State {
   float release_expand = 1.80f;   // how far the rings fly, as a fraction of the stack
   float release_gain   = 2.20f;
   float release_blur   = 10.0f;   // how far the halo opens out as they go
+  float release_contrast = 0.80f; // how hard a lit plane holds its own ring down
+
+  // One frame of nothing between the throw and the rings appearing. Counted
+  // in tick(), because render() can be called without one.
+  float prev_release = 0.0f;
+  int ring_delay = 0;
 
   // --- Glimmer ---
   // The rhythm still comes from outside — `glimmer_drive` is the rig's Sweep
@@ -360,7 +367,12 @@ void module_init() {
           "than something that leaps out and then creeps.\n\n"
           "Nothing about where the knob goes next can cancel a throw, so "
           "sweeping straight back relights the tower over a tail still "
-          "running. That overlap is the move.")
+          "running. That overlap is the move — and *Local Contrast* is what "
+          "keeps it legible, holding a ring down while it is still sitting on "
+          "the plane that threw it.\n\n"
+          "The rings appear one frame AFTER the throw, on purpose. The frame "
+          "that fires one is already black, so the picture lands on nothing "
+          "before it lands on the release, and the hit reads harder for it.")
       .floatField("release", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   "unsigned", 0.f, nullptr,
                   "The throw, ringing out. At 0 there is nothing to see, so an "
@@ -376,6 +388,16 @@ void module_init() {
                   "How bright the rings are at the moment of the throw. They "
                   "dim as they open out, so this is the punch, not the tail.")
         .label("Throw Gain", "RelGain")
+      .floatField("release_contrast", 0.80f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How hard a lit plane holds its own ring down while the ring "
+                  "is still on top of it. Sweeping straight back after a throw "
+                  "relights the tower underneath a ring that has barely left "
+                  "it, and two bright things in the same place read as one; "
+                  "this keeps them apart. It fades out as the ring flies "
+                  "clear, so a ring well away from the stack is at full "
+                  "strength whatever the tower is doing.")
+        .label("Local Contrast", "Contrast")
       .floatField("release_blur", 10.0f, 1.f, 30.f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
                   "How far the rings open out as they fly — the filter "
@@ -614,6 +636,14 @@ void tick(void* self, double dt) {
   projectPlanes(*s);
   publishRails(*s);
 
+  // THE BEAT BEFORE THE HIT. A throw fires on the frame the tower mutes, so
+  // that frame is already black — and holding the rings back for exactly one
+  // more makes the picture land on nothing before it lands on the release.
+  // A hit reads harder for the silence in front of it.
+  if (s->release > s->prev_release + 1e-4f) s->ring_delay = 1;
+  else if (s->ring_delay > 0) --s->ring_delay;
+  s->prev_release = s->release;
+
   three_planes_glints::Params gp;
   gp.sweep = s->glimmer_sweep;
   gp.band = s->glimmer_band;
@@ -683,6 +713,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "release_expand"))  s->release_expand = state::patchFloat(i);
     else if (state::pathIs(p, l, "release_gain"))    s->release_gain = state::patchFloat(i);
     else if (state::pathIs(p, l, "release_blur"))    s->release_blur = state::patchFloat(i);
+    else if (state::pathIs(p, l, "release_contrast")) s->release_contrast = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "glimmer_sweep"))   s->glimmer_sweep = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_band"))    s->glimmer_band = state::patchFloat(i);
@@ -783,9 +814,24 @@ void render(void* self, int vp_w, int vp_h) {
   // as it dissipates. Dividing conserves roughly the light it was thrown with,
   // which is the difference between a ring going out and a ring blooming.
   const float opened = 1.0f + (s->release_blur - 1.0f) * flown;
-  u.rel[0] = s->release_gain * rel / opened;
-  u.rel[1] = haloRadius(s->halo_radius) * opened;
-  u.rel[2] = s->halo_falloff;
+  u.rel[0] = haloRadius(s->halo_radius) * opened;
+  u.rel[1] = s->halo_falloff;
+
+  // FAKED LOCAL CONTRAST. Sweep straight back after a throw and the tower
+  // relights UNDERNEATH a ring that has barely left it — two bright things in
+  // the same place, which reads as one bright thing and loses the ring. So a
+  // lit plane holds its own ring down, and only while the ring is still on top
+  // of it: the damping is the plane's brightness times how close the ring
+  // still is, so by the time it has flown clear it is back to full strength
+  // whatever the tower is doing. Per ring, because the floors light
+  // separately — the cap can be blazing while the ground floor is dark.
+  const float gate = s->ring_delay > 0 ? 0.0f : 1.0f;
+  for (int i = 0; i < PLANES; i++) {
+    const float lit = s->emission[i] < 0.0f ? 0.0f : (s->emission[i] > 1.0f ? 1.0f : s->emission[i]);
+    float damp = 1.0f - s->release_contrast * lit * rel;
+    if (damp < 0.0f) damp = 0.0f;
+    u.ring_gain[i] = s->release_gain * rel / opened * damp * gate;
+  }
 
   u.neon0[0] = lineHalfWidth(s->line_width);
   u.neon0[1] = s->line_gain;

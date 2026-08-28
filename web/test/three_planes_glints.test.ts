@@ -545,4 +545,57 @@ describe('Three Planes glints E2E', () => {
     expect(peak(0)).toBeGreaterThan(peak(1));
     expect(peak(1)).toBeGreaterThan(peak(2));
   });
+
+  it('a lit plane holds its own ring down while the ring is still on it',
+     async () => {
+    // FAKED LOCAL CONTRAST. Sweeping straight back after a throw relights the
+    // tower UNDERNEATH a ring that has barely left it — two bright things in
+    // the same place, which read as one bright thing and lose the ring. So a
+    // lit plane damps its own ring, and only while the ring is still close.
+    const mk = (id: string, lit: number, release: number) =>
+      runEngineMultiPhaseTest({
+        width: W, height: H, modules: MODULES,
+        phases: [
+          { commands: [
+              { type: 'createSketch', sketchId: id, sketch: ringSketch({
+                  release, plane1_emission: lit, plane2_emission: lit,
+                  plane3_emission: lit }) },
+              { type: 'setTracePoints', tracePoints: [
+                  { id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+            ],
+            // Two settled frames, so the one-frame hold below is long over.
+            waitFrames: 12, captureTraceIds: ['out'] },
+        ],
+        dumpName: id,
+      });
+
+    /** Light in the frame, over and above whatever the tower itself is doing. */
+    const litSum = async (id: string, lit: number, rel: number) => {
+      // Sequentially: the engine runner drives one page, and two at once
+      // abort each other.
+      const withRing = await mk(`${id}_on`, lit, rel);
+      const without = await mk(`${id}_off`, lit, 0);
+      expect(withRing.success && without.success).toBe(true);
+      let sum = 0;
+      withRing.phases[0].trace('out').forEachPixel(
+        (p: { r: number; g: number; b: number }, x: number, y: number) => {
+          sum += luma(p) - luma(without.phases[0].trace('out').pixelAt(x, y));
+        });
+      return sum;
+    };
+
+    // A ring still sitting on the stack, over a dark tower and over a lit one.
+    const onDark = await litSum('damp_close_dark', 0, 0.95);
+    const onLit = await litSum('damp_close_lit', 1, 0.95);
+    expect(onDark).toBeGreaterThan(0);
+    expect(onLit).toBeLessThan(onDark * 0.6);
+
+    // ...and the same comparison once it has flown clear: the damping is gone,
+    // so the tower's brightness stops mattering.
+    const farDark = await litSum('damp_far_dark', 0, 0.25);
+    const farLit = await litSum('damp_far_lit', 1, 0.25);
+    expect(farDark).toBeGreaterThan(0);
+    expect(farLit).toBeGreaterThan(farDark * 0.8);
+  });
+
 });

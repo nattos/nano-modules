@@ -151,6 +151,7 @@ struct Params {
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
   float latch_drive = 2.0f;      ///< how readily a pass through the middle charges
+  float latch_decay = 1.2f;      ///< seconds a charge survives before it bleeds away
   float ring_time = 1.4f;        ///< seconds the thrown release takes to ring out
 };
 
@@ -358,6 +359,17 @@ struct SweepCore {
       const float vigour = clamp01(speed * (p.latch_drive > 0.0f ? p.latch_drive : 0.0f));
       if (vigour > charge) charge = vigour;
       armed = true;
+    }
+    // ...and it leaks. Held indefinitely, a hard flick through the middle
+    // followed by a slow wander out to the end still threw everything, which
+    // makes it impossible to be quiet on purpose. Bleeding it away means the
+    // throw is as big as the whole GESTURE was, not just its best instant —
+    // dawdle on the way out and you get a soft one, which is what a breakdown
+    // needs. Exponential rather than linear so a hard flick always leaves
+    // something behind instead of falling off a cliff.
+    if (charge > 0.0f && dt > 0.0f) {
+      charge *= std::exp(-dt / (p.latch_decay > 1e-3f ? p.latch_decay : 1e-3f));
+      if (charge < 1e-3f) charge = 0.0f;
     }
     if (armed && gain <= kMuteGain && charge > 0.0f) {
       // A bigger throw wins outright rather than summing: two mutes in a row

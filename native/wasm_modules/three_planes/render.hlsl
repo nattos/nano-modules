@@ -44,7 +44,10 @@ cbuffer Uniforms : register(b2) {
   // The release rings: the same three quads, thrown outward. Ring i occupies
   // rows 2i and 2i+1, wound the same way `corners` is.
   float4 ghosts[6];
-  float4 rel;         // ring gain (already scaled by the release), halo radius, falloff, -
+  float4 rel;         // ring halo radius, falloff, -, -
+  // Per-ring gain, carrying the release, the opening-out, the local-contrast
+  // damping and the one-frame hold — all of it worked out on the host.
+  float4 ring_gain;
   float4 glim0;       // glint travel dir x, dir y, -, -
   // One row per glint IN FLIGHT: where it sits on the travel axis, its
   // half-width there, and the brightness and wake depth it was born with. A
@@ -93,7 +96,7 @@ float ring_at(float2 p, int i) {
   float2 a = r0.xy, b = r0.zw, c = r1.xy, d = r1.zw;
   float dist = min(min(nano_neon_seg_dist(p, a, b), nano_neon_seg_dist(p, b, c)),
                    min(nano_neon_seg_dist(p, c, d), nano_neon_seg_dist(p, d, a)));
-  return nano_neon_halo_profile(dist, rel.y, rel.z);
+  return nano_neon_halo_profile(dist, rel.x, rel.y);
 }
 
 // --- Glimmer --------------------------------------------------------------
@@ -180,7 +183,7 @@ float3 resolve(float2 p, float3 base) {
   // anything. They are light already thrown clear of the stack — nothing left
   // behind can mask them, and they have no body to be masked.
   [unroll]
-  for (int k = 0; k < 3; k++) acc += plane_color[k].rgb * (ring_at(p, k) * rel.x);
+  for (int k = 0; k < 3; k++) acc += plane_color[k].rgb * (ring_at(p, k) * ring_gain[k]);
   return acc;
 }
 
