@@ -191,6 +191,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_switch)
 // fan-out shaper. See mod_slice/main.cpp.
 NANO_DECLARE_INSTANCE_EFFECT(mod_slice)
 NANO_DECLARE_INSTANCE_EFFECT(three_planes_rig_effect)
+NANO_DECLARE_INSTANCE_EFFECT(triptych)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
@@ -1096,6 +1097,19 @@ void nano_module_main() {
         NANO_INSTANCE_LIFECYCLE(three_planes_rig_effect),
         nullptr, nullptr, nullptr,
         &three_planes_rig_effect::eval_visibility,  // the meter's knobs vanish in Solid
+    });
+
+    // A measuring surface for source.mesh.three_walls: its three outputs are
+    // three walls of one room, and only laid out in a row do they read as one.
+    nano::registerEffect({
+        2,
+        "util.triptych",
+        "Triptych",
+        "Three inputs side by side in a row, each in an exact third of the width. No blending and no colour work — a measuring surface, for looking at several related pictures at once. Built for source.mesh.three_walls, whose three outputs are the three walls of one room: wire its two side outputs into Left and Right, drop this straight after it so the main output lands in the middle, and the room is laid out flat in the order the walls sit. Stretch keeps the panels continuous; Fit letterboxes the whole picture; Fill crops. Unwired panels stay transparent, so an empty panel never reads as a dark one.",
+        "util",
+        "triptych,row,side by side,compare,debug,layout,three,panel,montage,walls",
+        "la-columns",
+        NANO_INSTANCE_LIFECYCLE(triptych),
     });
 
     nano::registerEffect({

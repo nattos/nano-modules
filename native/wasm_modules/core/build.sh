@@ -39,6 +39,7 @@ compile_shaders_compute_spv edges
 compile_shaders_compute_spv crop
 compile_shaders_compute_spv transform
 compile_shaders_compute_spv twitch_mask
+compile_shaders_compute_spv triptych render
 compile_shaders_compute_fused_spv gradient
 compile_shaders_compute_fused_spv grid
 compile_shaders_compute_fused_spv noise
@@ -143,6 +144,7 @@ wasm_build \
   ../mod_switch/main.cpp \
   ../mod_slice/main.cpp \
   ../three_planes_rig/main.cpp \
+  ../triptych/main.cpp \
   ../env_adsr/main.cpp \
   ../trigger_beat/main.cpp \
   ../trigger_out/main.cpp
