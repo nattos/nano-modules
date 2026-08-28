@@ -248,14 +248,17 @@ describe(`Three Planes E2E (${backend})`, () => {
     expect(maxSplit(on)).toBeGreaterThan(maxSplit(off) + 25);
   });
 
-  // THE MEDIAL AXIS. Inside a quad, the distance to the outline ridges along
-  // both diagonals — the locus where the nearest edge switches — and a halo
-  // built on a raw min() inherits that ridge as a hard gradient kink: a dark
-  // four-pointed star at the centre of every plane. Normally each plane's
-  // interior is washed out by its neighbours' halos and you never see it; set
-  // the spacing to zero, so all three coincide and there are no neighbours, and
-  // it is the only thing in the frame. The softmin's rounding band grows with
-  // depth to dissolve it (render.hlsl, kMedialDepth).
+  // THE MEDIAL AXIS. A halo built on the nearest edge carries that construction's
+  // skeleton into the picture: the distance to the outline ridges along both
+  // diagonals of a quad — the locus where the nearest edge switches — and the
+  // softmin's own bias brightens along the same locus, so the interior reads as
+  // a dark four-pointed star or a bright centre ringed by a dark contour
+  // depending on which of the two wins. Normally each plane's interior is washed
+  // out by its neighbours' halos and you never see it; set the spacing to zero,
+  // so all three coincide and there are no neighbours, and it is the only thing
+  // in the frame. The interior is therefore a SUM over the four edges instead —
+  // light from four tubes, no nearest-edge structure to inherit (render.hlsl,
+  // kInteriorBlend).
   //
   // Probed as a DIP: on a smooth field a point on the axis sits at about the
   // mean of its two neighbours either side; across a kink it sits well below
@@ -282,7 +285,7 @@ describe(`Three Planes E2E (${backend})`, () => {
     const dn = luma(frame.pixelAt(...bpx(0.125, 0.025)));
     const dip = (up + dn) / 2 - on;
 
-    // A raw min() reads about 0.47 here; the rounded field about 0.10.
+    // A nearest-edge field reads about 0.47 here; the light-sum about 0.07.
     expect(on).toBeGreaterThan(4);          // the probe is on the lit interior
     expect(dip / on).toBeLessThan(0.25);
   });

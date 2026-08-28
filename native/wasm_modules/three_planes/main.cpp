@@ -289,8 +289,9 @@ void module_init() {
         .label("Halo Falloff", "Fall")
       .floatField("halo_smooth", 0.35f, 0.f, 1.f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
-                  "Rounds the distance field's medial-axis crease, as a "
-                  "fraction of the halo radius. 0 shows the raw ridge.")
+                  "Rounds the corner creases just OUTSIDE the outline, as a "
+                  "fraction of the halo radius. 0 shows the raw ridge. The "
+                  "interior does not use this — it sums the four edges.")
         .label("Halo Smoothing", "Smooth")
       .floatField("fill_gain", 0.22f, 0.f, 2.f, state::SecondaryInput)
         .label("Fill Gain", "Fill G")
