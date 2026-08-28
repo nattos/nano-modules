@@ -358,6 +358,29 @@ describe('Three Walls walls', () => {
       .toBeGreaterThan(brightestColumn(flat.trace('out')).x + 10);
   });
 
+  // The point of raking the wall is that a frame which passes you is GONE. An
+  // earlier version pinned both ends of the run so nothing could ever leave,
+  // and frames piled up against the outer edge and sat there instead.
+  it('Stretch runs frames off the near end of the wall', async () => {
+    // Far enough along that at rest the frame is well inside the near third...
+    const slow = await view('tw_exit_slow', 'left_out',
+                            { ...FROZEN, quad_size: 3.2, wall_stretch: 1 });
+    // ...and raked, it has already left the picture entirely.
+    const fast = await view('tw_exit_fast', 'left_out',
+                            { ...FROZEN, quad_size: 3.2, wall_stretch: 3 });
+    expect(slow.success && fast.success).toBe(true);
+
+    // The left wall's NEAR end is its left edge, so "gone" means nothing lit in
+    // the outer third.
+    const nearThird = (f: any) => {
+      let n = 0;
+      f.forEachPixel((p: any, x: number) => { if (x < W / 3 && luma(p) > 60) n++; });
+      return n;
+    };
+    expect(nearThird(slow.trace('out'))).toBeGreaterThan(40);
+    expect(nearThird(fast.trace('out'))).toBeLessThan(10);
+  });
+
   it('Stretch runs a frame down the wall faster', async () => {
     const slow = await view('tw_str_slow', 'left_out',
                             { ...FROZEN, quad_size: 1.5, wall_stretch: 1 });

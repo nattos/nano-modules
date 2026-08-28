@@ -230,15 +230,16 @@ static inline float apparentSize(const State& s, float z) {
 /// is what you want when the three outputs go to three flat panels side by side
 /// and the perspective has to be baked in.
 ///
-/// `stretch` then rakes the wall, and it has to do so with BOTH ENDS PINNED.
-/// The obvious version — multiply the whole run — is wrong: it walks the near
-/// end off the outer edge of the picture and the wall simply empties out, which
-/// is not a longer wall, it is a cropped one. Instead the run is warped in
-/// place (u -> u^(1/stretch)), so the seam stays at the seam, the camera end
-/// stays at the camera end, and what changes is where along it a frame spends
-/// its time. Above 1 a frame bursts out of the corner and then swells toward
-/// you for most of the wall — which, with the depth glow doing the same thing
-/// to its tube, is what actually sells the tunnel.
+/// `stretch` then rakes the wall: it MAGNIFIES the run, anchored at the seam.
+/// Above 1 the same depth covers more picture, so frames tear along the wall
+/// and then run clean off the near edge — which is the point. A frame that
+/// passes you should be gone, not parked at the edge of the frame.
+///
+/// Pinning both ends instead (warping u in place so the near end stays put) is
+/// the obvious-looking alternative and it is wrong: nothing can then leave, so
+/// frames pile up against the outer edge and sit there. The wall showing less
+/// of the tunnel at high stretch is not content being lost, it is the wall
+/// being raked — you are seeing a shorter run, larger.
 static float wallU(const State& s, float d) {
   const float near_ = s.show_p.z_near > 1e-4f ? s.show_p.z_near : 1e-4f;
   const float dd = d < near_ ? near_ : d;
@@ -250,13 +251,10 @@ static float wallU(const State& s, float d) {
   const float k = s.wall_keystone < 0.0f ? 0.0f : (s.wall_keystone > 1.0f ? 1.0f : s.wall_keystone);
   const float u = flat + (persp - flat) * k;
 
-  // Short of the seam (the frame is still on the back wall) u is negative and
-  // the bar is off the far edge, bleeding its halo around the corner. Leave
-  // that alone: pow() of a negative is not a number, and more to the point the
-  // corner should behave the same however the wall is raked.
-  if (u <= 0.0f) return u;
-  const float stretch = detailClamp(s.wall_stretch, 0.2f, 5.0f);
-  return std::pow(u, 1.0f / stretch);
+  // Multiplied, not warped — including where u is negative (the frame is still
+  // on the back wall, bleeding its halo around the corner). Scaling that region
+  // too keeps the corner's approach consistent with the wall it feeds.
+  return u * detailClamp(s.wall_stretch, 0.2f, 5.0f);
 }
 
 /// How tall the wall is at depth `d`, as a multiple of the texture's height.
@@ -464,10 +462,9 @@ void module_init() {
           "outputs, so the room never tears at the seam.\n\n"
           "*Stretch* rakes the side walls — a lie about the shape of the "
           "space, and the strongest single thing here for selling depth. Above "
-          "1 a frame bursts out of the corner and then swells toward you down "
-          "most of the wall. Both ends stay pinned, so turning it up never "
-          "empties the wall out; it only moves where along the run the time "
-          "goes.")
+          "1 the frames tear along them and run clean off the near end, the "
+          "way something passing you does. You are seeing a shorter length of "
+          "tunnel, larger; below 1 you see more of it, crawling.")
       .floatField("quad_size", 1.0f, 0.1f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
                   "Moves where a frame crosses off the back wall and onto the "
@@ -491,10 +488,9 @@ void module_init() {
         .label("Keystone", "Keyst")
       .floatField("wall_stretch", 1.0f, 0.2f, 5.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
-                  "Rakes the side walls. Above 1 a frame bursts out of the "
-                  "corner and then swells toward you down most of the wall; "
-                  "below 1 it crawls out and then snaps past. Both ends stay "
-                  "put, so the run never empties.")
+                  "Rakes the side walls. Above 1 the frames tear along them and "
+                  "run off the near end — you see a shorter length of tunnel, "
+                  "larger. Below 1 you see more of it, crawling.")
         .label("Stretch", "Strch")
       .floatField("depth_scale", 1.0f, 0.f, 1.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
