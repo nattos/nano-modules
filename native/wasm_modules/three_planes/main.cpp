@@ -197,6 +197,17 @@ static inline float strobeGlow(float t) {
   return 0.02f + 0.98f * k;
 }
 
+// Strobe's per-floor duty scale: exactly Grow's local-contrast damping, spent
+// on the LENGTH of a hit instead of on its brightness. A floor that is already
+// lit underneath keeps its flam at full strength and gets less of it, and once
+// its window falls under a frame the flam simply stops landing there.
+static inline float strobeWeight(const State& s, int i) {
+  const float lit = s.emission[i] < 0.0f ? 0.0f
+                  : (s.emission[i] > 1.0f ? 1.0f : s.emission[i]);
+  const float w = 1.0f - s.release_contrast * lit;
+  return w < 0.0f ? 0.0f : w;
+}
+
 // How far a glint's drawn profile reaches on either side of its centre, in its
 // own half-widths. Mirrors render.hlsl: the super-Gaussian core has died by
 // about 1.5, and the Gaussian wake trailing it by about 5.5.
@@ -428,9 +439,15 @@ void module_init() {
           "wireframe with barely any glow, and then breaks up — the floors "
           "flam one at a time on a fast roll whose hits get SHORTER as the "
           "tail runs down, until they start missing frames outright and it "
-          "sputters out. Grow is energy leaving the frame; Strobe is energy "
-          "rattling around inside it, and they cut against each other well "
-          "enough to be worth switching between on the fly.")
+          "sputters out.\n\n"
+          "Nothing in Strobe ever dims. Every hit lands at full strength or "
+          "does not land, and everything that would turn one down — the decay, "
+          "the local contrast — takes its window away instead. A strobe that "
+          "fades reads as a light going out; one that thins reads as a thing "
+          "running down.\n\n"
+          "Grow is energy leaving the frame; Strobe is energy rattling around "
+          "inside it, and they cut against each other well enough to be worth "
+          "switching between on the fly.")
       .floatField("release", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   "unsigned", 0.f, nullptr,
                   "The throw, ringing out. At 0 there is nothing to see, so an "
@@ -509,10 +526,12 @@ void module_init() {
                   "left it, and two bright things in the same place read as "
                   "one; this keeps them apart. In **Grow** it fades out as the "
                   "ring flies clear, so a ring well away from the stack is at "
-                  "full strength whatever the tower is doing. In **Strobe** "
-                  "nothing ever flies clear, so it holds at full for the whole "
-                  "roll — which is what stops a relit floor and its own flam "
-                  "from turning into one bright smear.")
+                  "full strength whatever the tower is doing.\n\n"
+                  "**Strobe** spends it on the WINDOW instead of on the "
+                  "brightness — a lit floor gets a shorter flam, not a dimmer "
+                  "one, and once its window drops under a frame the flam stops "
+                  "landing on that floor at all. Nothing in that mode ever "
+                  "turns a hit down when it could drop it.")
         .label("Local Contrast", "Contrast")
 
       // ---------------- Glimmer ----------------
@@ -780,6 +799,10 @@ void tick(void* self, double dt) {
   sp.rate    = s->strobe_rate;
   sp.duty    = s->strobe_duty;
   sp.grace   = s->strobe_grace;
+  // Local contrast, as a WINDOW and not as a dimmer. See render() for what
+  // Grow does with the same number, and the header for why Strobe refuses to
+  // turn a hit down when it could drop it instead.
+  for (int i = 0; i < PLANES; i++) sp.weight[i] = strobeWeight(*s, i);
   s->strobe.tick(sp, s->ring_delay > 0 ? 0.0f : (float)dt);
 }
 
@@ -969,21 +992,23 @@ void render(void* self, int vp_w, int vp_h) {
   // whatever the tower is doing. Per ring, because the floors light
   // separately — the cap can be blazing while the ground floor is dark.
   const float gate = s->ring_delay > 0 ? 0.0f : 1.0f;
-  // How close a ring still is to the plane that threw it. Grow measures that
-  // with the release itself, since the two run together; Strobe never leaves
-  // at all, so it is pinned at fully-on-top and damps at full strength for as
-  // long as the roll lasts.
-  const float nearness = strobe ? 1.0f : rel;
   for (int i = 0; i < PLANES; i++) {
+    if (strobe) {
+      // Strobe never touches a brightness. Its decay is the window closing and
+      // its local contrast is the window closing — both already spent on the
+      // roll's timing back in tick(), where `strobeWeight` went in — so a hit
+      // that happens at all happens at full strength. See the header: a
+      // dimming strobe reads as a light going out, a thinning one reads as a
+      // thing running down, and only the second is the move.
+      u.ring_gain[i] = s->strobe_gain * s->strobe.gain[i] * gate;
+      continue;
+    }
+    // Grow does fade, because brightness IS its decay: the ring opens out and
+    // goes dull as it flies, and the damping rides on how close it still is.
     const float lit = s->emission[i] < 0.0f ? 0.0f : (s->emission[i] > 1.0f ? 1.0f : s->emission[i]);
-    float damp = 1.0f - s->release_contrast * lit * nearness;
+    float damp = 1.0f - s->release_contrast * lit * rel;
     if (damp < 0.0f) damp = 0.0f;
-    // Grow fades: brightness IS its decay. Strobe does not — every hit is as
-    // hard as the first and there are simply fewer of them, which is what the
-    // duty puttering out in <sketch/three_planes_strobe.h> comes to.
-    const float drive = strobe ? s->strobe_gain * s->strobe.gain[i]
-                               : s->release_gain * rel / opened;
-    u.ring_gain[i] = drive * damp * gate;
+    u.ring_gain[i] = s->release_gain * rel / opened * damp * gate;
   }
 
   u.neon0[0] = lineHalfWidth(s->line_width);

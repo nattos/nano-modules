@@ -33,6 +33,10 @@ constexpr float kDt = 1.0f / 120.0f;
 /// One frame at a given release. Returns the gains for that frame.
 struct Frame { float g[kPlanes]; };
 
+/// How many frames in a run light floor `i` at all, and how bright the
+/// brightest of them was.
+struct Played { int frames; float peak; };
+
 Frame step(Core& c, Params& p, float release, float dt = kDt) {
   p.release = release;
   c.tick(p, dt);
@@ -319,6 +323,90 @@ TEST_CASE("the hits stay as hard as the first one") {
     }
   }
   REQUIRE_THAT(last_lit, WithinAbs(1.0f, 1e-6f));
+}
+
+TEST_CASE("a lit floor loses its window, not its brightness") {
+  // Local contrast, which the effect hands in as a per-floor weight. The point
+  // of doing it here rather than on the gain: a floor that is already lit
+  // underneath gets FEWER hits, at exactly the same strength as everyone
+  // else's, instead of the same hits turned down.
+  Params p;
+  p.rate = 20.0f;
+  p.duty = 0.9f;
+  p.grace = 0.0f;
+  p.weight[1] = 0.2f;    // the middle floor is blazing underneath
+
+  // Measured against the same roll with nothing damped, because the floors are
+  // not interchangeable: the bounce visits the middle one twice a cycle, so
+  // comparing it to its neighbours would be comparing two different jobs.
+  auto run = [](Params q) {
+    Core c;
+    Played out[kPlanes] = {};
+    step(c, q, 1.0f);
+    for (int i = 0; i < 600; ++i) {
+      Frame f = step(c, q, 1.0f);
+      for (int k = 0; k < kPlanes; ++k) {
+        if (f.g[k] > 1e-4f) {
+          ++out[k].frames;
+          if (f.g[k] > out[k].peak) out[k].peak = f.g[k];
+        }
+      }
+    }
+    return std::vector<Played>(out, out + kPlanes);
+  };
+
+  Params open = p;
+  open.weight[1] = 1.0f;
+  const auto damped = run(p);
+  const auto full = run(open);
+
+  // Far fewer frames on the damped floor...
+  REQUIRE(damped[1].frames > 0);
+  REQUIRE(damped[1].frames * 2 < full[1].frames);
+  // ...its neighbours untouched...
+  REQUIRE(damped[0].frames == full[0].frames);
+  REQUIRE(damped[2].frames == full[2].frames);
+  // ...and every hit that did land, on any floor, at exactly full strength.
+  for (int k = 0; k < kPlanes; ++k) {
+    REQUIRE_THAT(damped[k].peak, WithinAbs(1.0f, 1e-6f));
+    REQUIRE_THAT(full[k].peak, WithinAbs(1.0f, 1e-6f));
+  }
+}
+
+TEST_CASE("a floor damped to nothing drops out entirely") {
+  Params p;
+  p.rate = 20.0f;
+  p.duty = 0.9f;
+  p.weight[2] = 0.0f;
+
+  Core c;
+  step(c, p, 1.0f);
+  for (int i = 0; i < 600; ++i) {
+    Frame f = step(c, p, 1.0f);
+    REQUIRE_THAT(f.g[2], WithinAbs(0.0f, 1e-6f));
+  }
+}
+
+TEST_CASE("the weight shortens the arrival too") {
+  // The arrival is the whole step for an untouched floor. A damped one gets
+  // its share of it and no more — cut off early, never dimmed.
+  Params p;
+  p.rate = 20.0f;
+  p.weight[0] = 0.25f;
+  Core c;
+
+  int frames[kPlanes] = {};
+  const int arrival = (int)std::ceil(120.0f / p.rate);   // one step, in frames
+  for (int i = 0; i < arrival; ++i) {
+    Frame f = step(c, p, 1.0f);
+    for (int k = 0; k < kPlanes; ++k) {
+      if (f.g[k] > 1e-4f) { ++frames[k]; REQUIRE_THAT(f.g[k], WithinAbs(1.0f, 1e-6f)); }
+    }
+  }
+  REQUIRE(frames[1] == arrival);
+  REQUIRE(frames[2] == arrival);
+  REQUIRE(frames[0] > 0);
+  REQUIRE(frames[0] * 2 < arrival);
 }
 
 TEST_CASE("a soft throw is a short tail, not a dim one") {

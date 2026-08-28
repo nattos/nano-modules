@@ -29,11 +29,22 @@
  *      window falls below a frame the hits start missing frames outright and
  *      it sputters, which is the sound of the thing running out.
  *
- * Brightness is deliberately NOT part of the decay. Every hit is as hard as
- * the first and there are simply fewer of them, which is what keeps a long
- * tail legible over a picture that may already be relighting underneath it.
- * How hard a throw was is already carried by how long the tail lasts (the rig
- * spends its latched charge into `release`, and a weak throw is a short one).
+ * BRIGHTNESS IS NEVER PART OF ANY OF IT. Not the decay, not the local
+ * contrast, not anything: a hit is either at full strength or it does not
+ * happen. Everything that would otherwise turn a hit down turns it OFF
+ * instead, by taking its window away, so what changes over a tail is how many
+ * hits there are and never how hard they land. A dimming strobe reads as a
+ * light going out; a thinning one reads as a thing running down, and the
+ * second is the whole point of the mode. (The one exception is the grace
+ * stroke, which is quieter because that is what makes it a grace stroke.)
+ *
+ * That is also how `weight` works — the per-floor duty scale the effect feeds
+ * back in for local contrast. A floor that is already lit underneath does not
+ * get a dimmer flam, it gets a SHORTER one, and once its window falls under a
+ * frame it simply stops landing on that floor. How hard a throw was is
+ * likewise carried by how long the tail lasts, never by how bright it is (the
+ * rig spends its latched charge into `release`, and a weak throw is a short
+ * one).
  *
  * Host-free, like three_planes_glints.h and three_planes_rig.h: no effect ABI,
  * no GPU, so the Catch2 goldens drive the whole roll at an exact dt.
@@ -66,6 +77,10 @@ struct Params {
   float rate    = 22.0f;  ///< steps per second — constant through the decay
   float duty    = 0.55f;  ///< on-window, as a fraction of a step at full release
   float grace   = 0.35f;  ///< grace stroke, as a fraction of a STEP
+  /// Per-floor window scale, 0..1. The effect's local contrast rides in here:
+  /// a floor that is lit underneath keeps its hits at full strength and loses
+  /// their length instead. 1 is untouched.
+  float weight[kPlanes] = {1.0f, 1.0f, 1.0f};
 };
 
 struct Core {
@@ -108,7 +123,11 @@ inline void Core::tick(const Params& p, float dt) {
     // duty window. It is the hit the tail hangs off — half a frame of it at a
     // brisk rate on a slow display is not a hit, it is a dropout. The roll
     // picks up the instant it ends, so there is no gap to fill either.
-    for (int i = 0; i < kPlanes; ++i) gain[i] = 1.0f;
+    //
+    // A floor's weight still shortens its share of it, which is what lets a
+    // relit tower cut the arrival off its own floors without dimming them.
+    for (int i = 0; i < kPlanes; ++i)
+      if (frac < clamp01(p.weight[i])) gain[i] = 1.0f;
     // No grace out of the arrival — it is a hit, not a stroke in the roll.
     return;
   }
@@ -116,7 +135,8 @@ inline void Core::tick(const Params& p, float dt) {
   if (duty <= 0.0f) return;   // a zero window silences the roll, not the arrival
 
   const int k = (int)((step - kOpenSteps) % kSteps);
-  if (frac < duty) gain[kOrder[k]] = 1.0f;
+  const int cur = kOrder[k];
+  if (frac < duty * clamp01(p.weight[cur])) gain[cur] = 1.0f;
 
   // The grace stroke, tucked against the end of the step: the next floor
   // speaks a moment early and quietly, then lands.
@@ -127,11 +147,9 @@ inline void Core::tick(const Params& p, float dt) {
   // frame wide — it would land on some steps and miss others, and a control
   // that only sometimes does anything is worse than no control. It still
   // putters, because the release scales it like everything else.
-  const float gw = clamp01(p.grace) * rel;
-  if (gw > 0.0f && frac > 1.0f - gw) {
-    const int nxt = kOrder[(k + 1) % kSteps];
-    if (gain[nxt] < kGraceGain) gain[nxt] = kGraceGain;
-  }
+  const int nxt = kOrder[(k + 1) % kSteps];
+  const float gw = clamp01(p.grace) * rel * clamp01(p.weight[nxt]);
+  if (gw > 0.0f && frac > 1.0f - gw && gain[nxt] < kGraceGain) gain[nxt] = kGraceGain;
 }
 
 }  // namespace three_planes_strobe
