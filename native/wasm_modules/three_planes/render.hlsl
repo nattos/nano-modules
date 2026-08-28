@@ -14,6 +14,8 @@
 //      masking plane can occlude the halos beneath it while still emitting
 //      its own (see `resolve` below — this is the whole reason the effect
 //      is a fullscreen pass rather than three additive draws);
+//   3b. add the release rings — the same quads thrown outward, opening out
+//      and going soft as they fly (see `ring_at`);
 //   4. grade the composite through the shared VCR stack.
 //
 // Nothing here needs an intermediate texture: the accumulator lives in
@@ -39,6 +41,10 @@ cbuffer Uniforms : register(b2) {
   float4 neon1;       // halo gain, halo falloff, corner radius, aa width
   float4 misc;        // fill gain, chroma bleed, has_input, debug mode
   float4 view;        // vp_w, vp_h, aspect_x, aspect_y
+  // The release rings: the same three quads, thrown outward. Ring i occupies
+  // rows 2i and 2i+1, wound the same way `corners` is.
+  float4 ghosts[6];
+  float4 rel;         // ring gain (already scaled by the release), halo radius, falloff, -
   float4 glim0;       // glint travel dir x, dir y, -, -
   // One row per glint IN FLIGHT: where it sits on the travel axis, its
   // half-width there, and the brightness and wake depth it was born with. A
@@ -67,6 +73,27 @@ NeonStyle neon_style() {
   st.pad0        = 0.0;
   st.pad1        = 0.0;
   return st;
+}
+
+// --- The release rings ---------------------------------------------------
+// The throw: the same three quads, flung outward off the stack and ringing
+// down. The host has already worked out where they are and how open they have
+// gone — everything here is a pure function of the release, so a ring reads as
+// an object with a life while costing no state at all.
+//
+// Deliberately NOT nano_neon_quad. A ring has no inside: no fill to flood, no
+// mask to occlude with, and no core — by the time you can see one it is
+// already past being a tube. So the exact SIGNED field, the corner rounding
+// and the interior light-sum are all work with nothing to show for it, and
+// what is left is the cheap half: unsigned distance to four edges, through one
+// halo. That is the whole shape.
+float ring_at(float2 p, int i) {
+  float4 r0 = ghosts[i * 2 + 0];
+  float4 r1 = ghosts[i * 2 + 1];
+  float2 a = r0.xy, b = r0.zw, c = r1.xy, d = r1.zw;
+  float dist = min(min(nano_neon_seg_dist(p, a, b), nano_neon_seg_dist(p, b, c)),
+                   min(nano_neon_seg_dist(p, c, d), nano_neon_seg_dist(p, d, a)));
+  return nano_neon_halo_profile(dist, rel.y, rel.z);
 }
 
 // --- Glimmer --------------------------------------------------------------
@@ -148,6 +175,12 @@ float3 resolve(float2 p, float3 base) {
                                    fills[i], st, A);
     acc = acc * (1.0 - A) + E;
   }
+
+  // The rings go on TOP of the resolve, additively and without occluding
+  // anything. They are light already thrown clear of the stack — nothing left
+  // behind can mask them, and they have no body to be masked.
+  [unroll]
+  for (int k = 0; k < 3; k++) acc += plane_color[k].rgb * (ring_at(p, k) * rel.x);
   return acc;
 }
 

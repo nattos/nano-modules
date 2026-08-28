@@ -383,6 +383,38 @@ TEST_CASE("Chaos 0 leaves the gesture completely alone",
   REQUIRE(c.liveCount() == launchedCount(c));   // every glint up there is a gesture
 }
 
+TEST_CASE("a throw slings the glints and holds off the putter",
+          "[three_planes_glints]") {
+  // The rig's release is the sweep arriving at a mute and spending everything
+  // it had latched. The rings fly — and so does whatever is in the air.
+  //
+  // The second half matters as much as the first: reaching a mute means
+  // letting GO of the knob, so the speed is falling at the exact moment of the
+  // throw. Without the hold, a glint would start running down just as it is
+  // being flung, which is backwards.
+  Core slung, plain;
+  Params ps = settled(slung), pp = settled(plain);
+  sweep(slung, ps, 0.95f, 0.70f, 0.2f);
+  sweep(plain, pp, 0.95f, 0.70f, 0.2f);
+  REQUIRE(launched(slung) != nullptr);
+  REQUIRE(launched(plain) != nullptr);
+  const float from = launched(plain)->pos;
+
+  ps.fling = 1.0f;   // ...and the knob is let go in both
+  hold(slung, ps, 0.70f, 0.65f);
+  hold(plain, pp, 0.70f, 0.65f);
+
+  const Glint* a = launched(slung);
+  const Glint* b = launched(plain);
+  REQUIRE(a != nullptr);
+  REQUIRE(b != nullptr);
+  // Flung: much further along than the one that was merely let go.
+  REQUIRE(a->pos - from > (b->pos - from) * 2.0f);
+  // ...and still at full strength, where the other has started to run down.
+  REQUIRE_THAT(a->vit, WithinAbs(1.0, 1e-6));
+  REQUIRE(b->vit < 1.0f);
+}
+
 TEST_CASE("reset clears the sky", "[three_planes_glints]") {
   Core c;
   Params p = settled(c);

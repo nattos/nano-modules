@@ -365,6 +365,14 @@ void module_init() {
           "true drag speed instead of a string of spikes, and it returns to a "
           "real zero when you stop. *Full Scale* is the speed that pegs it; "
           "*Glint Decay* is how long that reading coasts after you let go.\n\n"
+          "**Reaching an end is a throw, not just a mute.** The middle "
+          "*latches*: sit there and the system charges. Arrive at either "
+          "extreme and the whole charge is spent at once, and *Release* rings "
+          "out over *Ring Out* on its own clock — nothing you do with the knob "
+          "afterwards cancels it, so you can come straight back to the middle "
+          "and relight the tower over a tail that is still running. Wire it "
+          "into Three Planes and the throw flings the stack outward as "
+          "expanding rings.\n\n"
           "*Flicker* is the stutter that arrives mid-fade — one floor at a "
           "time, going dark or coming up, loudest exactly where the light is "
           "halfway out and gone again at both ends. Old tubes struggle; they "
@@ -401,6 +409,18 @@ void module_init() {
                     "The sweep speed that pegs the Sweep Speed rail, in full "
                     "throws per second.")
         .label("Full Scale", "Scale");
+  schema.floatField("latch_time", 0.6f, 0.02f, 4.f, state::PrimaryInput,
+                    nullptr, 0.f, "s",
+                    "How long at centre to charge the throw fully. Sit in the "
+                    "middle and the system latches on; arrive at a mute and "
+                    "whatever you had held is thrown at once.")
+        .label("Latch", "Latch");
+  schema.floatField("ring_time", 1.4f, 0.05f, 6.f, state::PrimaryInput,
+                    nullptr, 0.f, "s",
+                    "How long a throw takes to ring out. Nothing you do with "
+                    "the knob cancels it — come straight back to the middle "
+                    "and the tower relights over a tail still running.")
+        .label("Ring Out", "Ring");
   schema.floatField("sweep_window", 0.09f, 0.f, 0.4f, state::SecondaryInput,
                     nullptr, 0.f, "s",
                     "Span the sweep speed is measured over. Longer steadies a "
@@ -473,6 +493,13 @@ void module_init() {
                     "GESTURE, so they read the knob's motion themselves "
                     "rather than taking a level from here.")
         .label("Sweep Out", "SwpOut");
+  schema.floatField("release", 0.f, 0.f, 1.f, state::SecondaryOutput,
+                    "unsigned", 0.f, nullptr,
+                    "The throw, ringing out. 1 the instant a mute spends the "
+                    "charge, falling to 0 over Ring Out — on its own clock, so "
+                    "nothing the knob does afterwards can cancel it. Wire to "
+                    "Three Planes' Release.")
+        .label("Release", "Rel");
 
   // 4 gates in, twelve rails out. NO temporal tag: the meter, the peak hold, the
   // flams and the moves are all accumulators, so this cannot be seeked.
@@ -518,6 +545,7 @@ void tick(void* self, double dt) {
   }
   pubFloat("sweep_speed", o.sweep_speed);
   pubFloat("sweep_out", o.sweep_out);
+  pubFloat("release", o.release);
   pubFloat("orbit_azimuth", o.azimuth);
   pubFloat("elevation", o.elevation);
   pubFloat("plane_spacing", o.spacing);
@@ -613,6 +641,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sweep_decay"))    s->p.sweep_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_window"))   s->p.sweep_window = state::patchFloat(i);
+    else if (state::pathIs(p, l, "latch_time"))     s->p.latch_time = state::patchFloat(i);
+    else if (state::pathIs(p, l, "ring_time"))      s->p.ring_time = state::patchFloat(i);
   }
 }
 

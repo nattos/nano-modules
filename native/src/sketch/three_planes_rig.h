@@ -58,6 +58,12 @@ constexpr float kMaxDt = 0.25f;
 /// so the sweep costs a sketch that ignores it nothing at all.
 constexpr float kSweepCenter = 0.5f;
 
+/// Below this much of the tower's brightness the sweep counts as MUTED, and a
+/// held charge is thrown. Derived from the dimmer rather than being its own
+/// threshold, so "the release happens at the ends" stays true however the
+/// deadzone and the fade depth are set.
+constexpr float kMuteGain = 0.06f;
+
 /// Which one-shot is running. Monophonic: a new trigger replaces the running
 /// one outright, which reads as a pop — consistent with the moves themselves.
 enum Anim { AnimNone = -1, AnimShow = 0, AnimSweepUp = 1, AnimGlance = 2, AnimUnfold = 3 };
@@ -144,6 +150,8 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
+  float latch_time = 0.6f;       ///< seconds at centre to charge the throw fully
+  float ring_time = 1.4f;        ///< seconds the thrown release takes to ring out
 };
 
 /// One frame of rails. Floats are already normalised for publication.
@@ -161,6 +169,7 @@ struct Out {
   // --- Sweep rails --------------------------------------------------------
   float sweep_speed = 0.0f;  ///< 0..1 motion envelope — how hard the knob is moving
   float sweep_out = 0.5f;    ///< the knob, passed through for three_planes' glints
+  float release = 0.0f;      ///< 1 at the throw, falling to 0 across the ring-out
 };
 
 namespace detail {
@@ -221,6 +230,11 @@ inline float rand01(unsigned& state) {
 ///                  near either extreme does the tower fade toward black. So
 ///                  you can ride the knob around centre without touching the
 ///                  look, and reaching for an end is a deliberate blackout.
+///   REACHING AN END  → the throw. The mute at either extreme is not just
+///                  darkness: the middle charges while you sit in it, and
+///                  arriving at a mute spends that charge as a `release` that
+///                  rings out on its own clock. three_planes turns it into
+///                  rings flying outward off the stack.
 ///   HOW FAST it moves → glints, over in three_planes. Those are thrown by
 ///                  the GESTURE rather than by a level, so what goes out is
 ///                  the knob itself; the particles live over there and read
@@ -240,9 +254,25 @@ struct SweepCore {
 
   float speed = 0.0f;   ///< 0..1 motion envelope: instant attack, timed release
 
+  /// The throw. `charge` fills while the knob sits in the middle and is spent
+  /// the moment the tower mutes; `release` is what was thrown, ringing out on
+  /// its own clock afterwards. `armed` stops one mute from firing twice.
+  float charge = 0.0f;
+  float release = 0.0f;
+  bool armed = false;
+
   int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
   float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
   unsigned rng = 0x9e3779b9u;
+
+  /// How far from home the knob is, 0 at the centre and 1 at either end. The
+  /// sweep is bipolar in concept and unsigned in magnitude, and this is where
+  /// that conversion lives.
+  static float magnitudeOf(float sweep) {
+    using namespace detail;
+    const float d = sweep - kSweepCenter;
+    return clamp01((d < 0.0f ? -d : d) / kSweepCenter);
+  }
 
   /// The position law. 1 across the deadzone, easing to `1 - depth` at either
   /// extreme. Smoothstep rather than a straight line so the shoulder where the
@@ -250,9 +280,7 @@ struct SweepCore {
   /// riding the knob past it.
   static float positionGain(const Params& p, float sweep) {
     using namespace detail;
-    const float mag = clamp01((sweep - kSweepCenter < 0.0f
-                                   ? kSweepCenter - sweep
-                                   : sweep - kSweepCenter) / kSweepCenter);
+    const float mag = magnitudeOf(sweep);
     const float dz = clamp01(p.sweep_deadzone);
     const float t = clamp01((mag - dz) / (1.0f - dz > 1e-4f ? 1.0f - dz : 1e-4f));
     const float fade = t * t * (3.0f - 2.0f * t);
@@ -285,6 +313,42 @@ struct SweepCore {
 
     // --- 2. Position, and the flicker that lives inside the fade.
     const float gain = positionGain(p, o.sweep_out);
+
+    // --- 2b. CATCH AND THROW. The mute at either end is the point of the
+    //         sweep, but a mute that is only "dark" has no gesture in it — the
+    //         brightness just tracks where your hand is, and reversing undoes
+    //         it exactly. So the middle CHARGES: sit there and the system
+    //         latches on, filling over `latch_time`. Reaching a mute spends
+    //         the whole charge at once — that is the throw — and what was
+    //         thrown then rings out on ITS OWN clock.
+    //
+    //         Which is the whole point: nothing about where the knob goes next
+    //         can cancel it. Come straight back to the middle and the tower
+    //         relights over a tail that is still ringing. That is what makes
+    //         the tail causal rather than positional.
+    //
+    //         The decay is LINEAR, not exponential. three_planes spends this
+    //         on rings flying outward, and a linear fall is a constant
+    //         outward speed — a shockwave with a definite end, rather than
+    //         something that leaps out and then creeps for ever.
+    const float mag = magnitudeOf(o.sweep_out);
+    if (mag <= clamp01(p.sweep_deadzone)) {
+      charge += dt / (p.latch_time > 1e-3f ? p.latch_time : 1e-3f);
+      charge = clamp01(charge);
+      armed = true;
+    }
+    if (armed && gain <= kMuteGain && charge > 0.0f) {
+      // A bigger throw wins outright rather than summing: two mutes in a row
+      // are two gestures, not a level to pile up.
+      if (charge > release) release = charge;
+      charge = 0.0f;
+      armed = false;
+    }
+    if (release > 0.0f) {
+      release -= dt / (p.ring_time > 1e-3f ? p.ring_time : 1e-3f);
+      if (release < 0.0f) release = 0.0f;
+    }
+    o.release = release;
     // Peaks where the light is halfway out and vanishes at both ends: nothing
     // to stutter about at full brightness, nothing to see once it is black.
     const float drive = clamp01(4.0f * gain * (1.0f - gain)) * clamp01(p.sweep_flicker);

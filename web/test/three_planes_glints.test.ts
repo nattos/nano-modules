@@ -406,4 +406,143 @@ describe('Three Planes glints E2E', () => {
     });
     expect(worst).toBe(0);
   });
+
+  // ---------------------------------------------------------------- Release
+  // The throw. Reaching either end of the sweep mutes the tower — and flings
+  // it outward as three rings that open up and go dull as they fly. The
+  // envelope is the rig's (pinned in native/tests/test_three_planes_rig.cpp);
+  // what only a render shows is that the rings actually leave the stack, and
+  // that they are LIGHT rather than a brightening of what was already there.
+
+  // NOT the flat target the glint cases use: that one blows the quads up past
+  // the frame so their interiors fill it, and a ring is only an OUTLINE — off
+  // the edge of the picture, where nothing can see it. The stack's own camera,
+  // and a muted tower exactly as the rig leaves it at either end, so anything
+  // in the frame is the throw and nothing else.
+  const RING = {
+    grain: 0, scanline: 0, chroma_bleed: 0,
+    plane1_emission: 0, plane2_emission: 0, plane3_emission: 0,
+    glimmer_chaos: 0, glimmer_sweep: 0.5,
+    // Kept inside the frame so "further out" stays measurable instead of
+    // saturating against the corners.
+    release_expand: 0.5,
+  };
+
+  const ringSketch = (params: Record<string, unknown>): Sketch => ({
+    anchor: null,
+    wires: [],
+    chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
+        params: { color: [0, 0, 0] } },
+      { type: 'module', module_type: 'source.mesh.three_planes',
+        instance_key: 'tp@0', params: { ...RING, ...params } },
+    ],
+  } as Sketch);
+
+  /**
+   * Where the light IS: its distance from the centre, weighted by brightness.
+   *
+   * Not "the furthest lit pixel", which is the obvious measure and the wrong
+   * one — a ring dims as it flies, so its faint outer skirt drops under any
+   * threshold you pick and the reading comes back SMALLER for a ring that has
+   * travelled further. Normalising by the total cancels the dimming out and
+   * leaves only where the light sits.
+   */
+  const spreadOf = (f: any) => {
+    let sum = 0, weighted = 0;
+    f.forEachPixel((p: { r: number; g: number; b: number }, x: number, y: number) => {
+      const l = luma(p);
+      if (l < 4) return;
+      const sx = ((x + 0.5) / W - 0.5) / ax;
+      const sy = ((y + 0.5) / H - 0.5) / ay;
+      sum += l;
+      weighted += l * Math.sqrt(sx * sx + sy * sy);
+    });
+    return sum > 0 ? weighted / sum : 0;
+  };
+
+  it('the throw flings the stack outward as rings that open and go dull',
+     async () => {
+    // Driven straight, rather than through the rig: the envelope has its own
+    // goldens, and what is under test here is the geometry it is spent on.
+    const at = (v: number) => ({
+      type: 'setParam' as const, sketchId: 'ring', colIdx: 0, chainIdx: 1,
+      paramKey: 'release', value: v,
+    });
+    const r = await runEngineMultiPhaseTest({
+      width: W, height: H, modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'ring', sketch: ringSketch({}) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'ring' } }] },
+          ],
+          waitFrames: 12, captureTraceIds: ['out'] },
+        { commands: [at(1.0)], waitFrames: 4, captureTraceIds: ['out'] },   // the throw
+        { commands: [at(0.6)], waitFrames: 4, captureTraceIds: ['out'] },   // flying
+        { commands: [at(0.3)], waitFrames: 4, captureTraceIds: ['out'] },   // spent
+        { commands: [at(0.02)], waitFrames: 4, captureTraceIds: ['out'] },  // over
+      ],
+      dumpName: 'ring_throw',
+    });
+    expect(r.success).toBe(true);
+    const f = (i: number) => r.phases[i].trace('out');
+
+    // Release 0 shows NOTHING over a muted tower — so an unwired card, and a
+    // sweep sitting anywhere but an end, cost exactly nothing.
+    let painted = 0;
+    f(0).forEachPixel((p: { r: number; g: number; b: number }) => {
+      if (luma(p) > 4) painted++;
+    });
+    expect(painted).toBe(0);
+
+    // Thrown: light, over a tower that is emitting none.
+    expect(spreadOf(f(1))).toBeGreaterThan(0);
+    // ...and it travels outward as the throw is spent.
+    expect(spreadOf(f(2))).toBeGreaterThan(spreadOf(f(1)) + 0.03);
+    expect(spreadOf(f(3))).toBeGreaterThan(spreadOf(f(2)) + 0.03);
+
+    // And the tail ENDS. A release that trailed away asymptotically would
+    // leave the muted picture permanently not-quite-black.
+    let left = 0;
+    f(4).forEachPixel((p: { r: number; g: number; b: number }) => {
+      if (luma(p) > 4) left++;
+    });
+    expect(left).toBe(0);
+  });
+
+  it('the rings dim as they open rather than blooming', async () => {
+    // The trap this guards: the halo profile peaks at 1 whatever its radius,
+    // so opening a ring out WITHOUT paying for it spreads the same peak over
+    // more picture and the thing gets brighter as it dissipates — which is the
+    // exact opposite of a release.
+    const at = (v: number) => ({
+      type: 'setParam' as const, sketchId: 'ring_dim', colIdx: 0, chainIdx: 1,
+      paramKey: 'release', value: v,
+    });
+    const r = await runEngineMultiPhaseTest({
+      width: W, height: H, modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'ring_dim',
+              sketch: ringSketch({ release: 1.0 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'ring_dim' } }] },
+          ],
+          waitFrames: 12, captureTraceIds: ['out'] },
+        { commands: [at(0.45)], waitFrames: 4, captureTraceIds: ['out'] },
+        { commands: [at(0.12)], waitFrames: 4, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'ring_dim',
+    });
+    expect(r.success).toBe(true);
+    const peak = (i: number) => {
+      let m = 0;
+      r.phases[i].trace('out').forEachPixel(
+        (p: { r: number; g: number; b: number }) => { m = Math.max(m, luma(p)); });
+      return m;
+    };
+    expect(peak(0)).toBeGreaterThan(peak(1));
+    expect(peak(1)).toBeGreaterThan(peak(2));
+  });
 });

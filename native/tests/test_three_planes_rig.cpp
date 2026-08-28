@@ -860,6 +860,120 @@ TEST_CASE("a flickering floor TOGGLES — a dark one comes up",
   REQUIRE(lifted > 10);
 }
 
+// ---------------------------------------------------------------------------
+// THE THROW. Reaching either end of the sweep mutes the tower, and that mute
+// is the point of the gesture — but a mute that is only "dark" has nothing in
+// it, because the brightness just tracks the knob and reversing undoes it
+// exactly. So the middle CHARGES, arriving at a mute spends the charge, and
+// what was thrown rings out on its own clock afterwards.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("sitting in the middle charges without showing anything",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  Out o{};
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE(c.sweep.charge > 0.9f);
+  REQUIRE(o.release == 0.0f);   // nothing thrown yet
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+}
+
+TEST_CASE("reaching a mute throws what was held", "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  for (int i = 0; i < 60; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE_THAT(c.sweep.charge, WithinAbs(1.0, 1e-5));
+
+  const Out o = sweepAt(c, p, 1.0f, 0.016f);
+  REQUIRE(o.release > 0.9f);
+  REQUIRE(c.sweep.charge == 0.0f);   // spent, all at once
+  // ...and the tower is dark under it. The throw is what you see, not a
+  // brightening of what was already there.
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(0.0, 1e-5));
+}
+
+TEST_CASE("hold longer, throw harder", "[three_planes_rig][sweep]") {
+  const auto thrown = [](float centre_seconds) {
+    Core c;
+    Params p;
+    p.mode = ModeSolid;
+    p.latch_time = 1.0f;
+    for (float t = 0.0f; t < centre_seconds; t += 0.016f)
+      sweepAt(c, p, kSweepCenter, 0.016f);
+    return sweepAt(c, p, 1.0f, 0.016f).release;
+  };
+  const float brief = thrown(0.2f);
+  const float full = thrown(1.2f);
+  REQUIRE(brief > 0.0f);
+  REQUIRE(full > brief * 2.0f);
+  REQUIRE(full > 0.95f);   // a full latch throws everything
+}
+
+TEST_CASE("the tail is causal: nothing the knob does cancels it",
+          "[three_planes_rig][sweep]") {
+  // THE WHOLE POINT. If the afterglow tracked the knob it would be a dimmer
+  // with extra steps; because it rings on its own clock you can sweep straight
+  // back and relight the tower OVER a tail that is still running. That overlap
+  // is the move.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.ring_time = 2.0f;
+  for (int i = 0; i < 60; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+  const float thrown = sweepAt(c, p, 1.0f, 0.016f).release;
+  REQUIRE(thrown > 0.9f);
+
+  Out o{};
+  for (int i = 0; i < 20; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE(o.release > 0.5f);           // still ringing...
+  REQUIRE(o.release < thrown);         // ...and falling
+  for (int i = 0; i < kLayers; ++i)    // ...over a fully relit tower
+    REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+}
+
+TEST_CASE("Ring Out is how long the tail lasts", "[three_planes_rig][sweep]") {
+  const auto ringing_after = [](float ring, float seconds) {
+    Core c;
+    Params p;
+    p.mode = ModeSolid;
+    p.ring_time = ring;
+    for (int i = 0; i < 80; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+    Out o = sweepAt(c, p, 1.0f, 0.016f);
+    for (float t = 0.0f; t < seconds; t += 0.016f) o = sweepAt(c, p, 1.0f, 0.016f);
+    return o.release;
+  };
+  REQUIRE(ringing_after(0.3f, 0.5f) == 0.0f);    // short: over and done
+  REQUIRE(ringing_after(3.0f, 0.5f) > 0.5f);     // long: barely started
+}
+
+TEST_CASE("one mute is one throw", "[three_planes_rig][sweep]") {
+  // Sitting at the end must not keep firing, and neither must jogging around
+  // out there. The charge has to be rebuilt in the middle first — which is
+  // what makes the gesture a round trip rather than a switch.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.ring_time = 0.25f;
+  for (int i = 0; i < 60; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE(sweepAt(c, p, 1.0f, 0.016f).release > 0.9f);
+
+  // Ring it out while jogging about at the muted end.
+  Out o{};
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, i % 2 ? 1.0f : 0.93f, 0.016f);
+  REQUIRE(o.release == 0.0f);
+  // Straight to the OTHER end, still without visiting the middle: nothing.
+  for (int i = 0; i < 20; ++i) o = sweepAt(c, p, 0.0f, 0.016f);
+  REQUIRE(o.release == 0.0f);
+  // Back through the middle to recharge, and it fires again.
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE(sweepAt(c, p, 0.0f, 0.016f).release > 0.9f);
+}
+
 TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",
           "[three_planes_rig][sweep]") {
   // dt is clamped at kMaxDt upstream, but the sweep also has to survive the

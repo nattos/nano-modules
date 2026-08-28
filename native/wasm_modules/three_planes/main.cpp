@@ -45,14 +45,17 @@ struct Uniforms {
   float neon1[4];           // row 11:    halo gain, falloff, corner r, aa width
   float misc[4];            // row 12:    fill gain, chroma bleed, input opacity, debug
   float view[4];            // row 13:    vp_w, vp_h, aspect_x, aspect_y
-  float glim0[4];           // row 14:    travel dir x, dir y, -, -
+  // The release: the stack thrown outward as expanding rings.
+  float ghosts[6][4];       // rows 14-19: ring i -> rows 2i, 2i+1, like `corners`
+  float rel[4];             // row 20:    ring gain, halo radius, falloff, -
+  float glim0[4];           // row 21:    travel dir x, dir y, -, -
   // One row per glint IN FLIGHT: where it is on the travel axis (cover-square),
   // its half-width there, and the two look values it was born with. A dead slot
   // is zero gain and zero shade, so the shader needs no count and no branch.
-  float glints[8][4];       // rows 15-22: axis, half-width, gain, shade
-  float grade[16];          // rows 23-26: VcrGrade
+  float glints[8][4];       // rows 22-29: axis, half-width, gain, shade
+  float grade[16];          // rows 30-33: VcrGrade
 };
-static_assert(sizeof(Uniforms) == 432, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 544, "Uniforms layout mismatch with render.hlsl");
 static_assert(three_planes_glints::kMaxLive == 8, "glint rows must match kMaxLive");
 
 struct State {
@@ -80,6 +83,15 @@ struct State {
   float halo_falloff = 0.45f;
   float halo_smooth  = 0.35f;
   float fill_gain    = 0.22f;
+
+  // --- Release ---
+  // The throw, from the rig: 1 the instant a mute spends the latched charge,
+  // falling to 0 across the ring-out. Everything here is a pure function of
+  // it, which is what keeps the rings stateless.
+  float release        = 0.0f;
+  float release_expand = 1.80f;   // how far the rings fly, as a fraction of the stack
+  float release_gain   = 2.20f;
+  float release_blur   = 10.0f;   // how far the halo opens out as they go
 
   // --- Glimmer ---
   // The rhythm still comes from outside — `glimmer_drive` is the rig's Sweep
@@ -330,6 +342,47 @@ void module_init() {
       .floatField("fill_gain", 0.22f, 0.f, 2.f, state::SecondaryInput)
         .label("Fill Gain", "Fill G")
 
+      // ---------------- Release ----------------
+      .group("release", "Release")
+        .groupHelp(
+          "The throw. Wire *Release* from **Three Planes Rig** and reaching "
+          "either end of the sweep stops being merely a blackout: the stack is "
+          "flung outward as three expanding rings that ring down on their own "
+          "clock, over the muted picture.\n\n"
+          "They are the SAME three quads, thrown — the outline and nothing "
+          "else, since a ring has no inside. As they fly they open out and go "
+          "soft: bright and tight at the throw, wide and dull by the end. That "
+          "is deliberately what a filter closing sounds like, and it is why "
+          "the tail reads as a special state rather than as the picture merely "
+          "being dimmer.\n\n"
+          "The rig gives the tail a straight-line fall on purpose, which makes "
+          "this a constant outward speed — a shockwave with an end, rather "
+          "than something that leaps out and then creeps.\n\n"
+          "Nothing about where the knob goes next can cancel a throw, so "
+          "sweeping straight back relights the tower over a tail still "
+          "running. That overlap is the move.")
+      .floatField("release", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  "unsigned", 0.f, nullptr,
+                  "The throw, ringing out. At 0 there is nothing to see, so an "
+                  "unwired card is exactly as it was.")
+        .label("Release", "Rel")
+      .floatField("release_expand", 1.80f, 0.f, 4.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How far the rings fly, as a fraction of the stack\'s own "
+                  "size. They start exactly on the quads that threw them.")
+        .label("Throw Distance", "Throw")
+      .floatField("release_gain", 2.20f, 0.f, 6.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How bright the rings are at the moment of the throw. They "
+                  "dim as they open out, so this is the punch, not the tail.")
+        .label("Throw Gain", "RelGain")
+      .floatField("release_blur", 10.0f, 1.f, 30.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How far the rings open out as they fly — the filter "
+                  "closing. 1 keeps them as tight as the tubes they came off; "
+                  "high values leave a wide, dull smear behind.")
+        .label("Throw Blur", "RelBlur")
+
       // ---------------- Glimmer ----------------
       .group("glimmer", "Glimmer")
         .groupHelp(
@@ -566,6 +619,7 @@ void tick(void* self, double dt) {
   gp.band = s->glimmer_band;
   gp.ratio = s->glimmer_ratio;
   gp.chaos = s->glimmer_chaos;
+  gp.fling = s->release;
   // The margins, in CROSSINGS — the units `pos` is in. A glint is born `lead`
   // before the lit picture starts and retired `trail` after it ends, sized by
   // the widest glint the birth spread can draw so every one of them maps from
@@ -624,6 +678,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "halo_falloff"))    s->halo_falloff = state::patchFloat(i);
     else if (state::pathIs(p, l, "halo_smooth"))     s->halo_smooth = state::patchFloat(i);
     else if (state::pathIs(p, l, "fill_gain"))       s->fill_gain = state::patchFloat(i);
+
+    else if (state::pathIs(p, l, "release"))         s->release = state::patchFloat(i);
+    else if (state::pathIs(p, l, "release_expand"))  s->release_expand = state::patchFloat(i);
+    else if (state::pathIs(p, l, "release_gain"))    s->release_gain = state::patchFloat(i);
+    else if (state::pathIs(p, l, "release_blur"))    s->release_blur = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "glimmer_sweep"))   s->glimmer_sweep = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_band"))    s->glimmer_band = state::patchFloat(i);
@@ -693,6 +752,40 @@ void render(void* self, int vp_w, int vp_h) {
 
   const float px = 2.0f / float(vp_w > vp_h ? vp_w : vp_h);
   const auto  cs = fx::coverSquare(vp_w, vp_h);
+
+  // THE RELEASE RINGS. The same three quads, thrown outward from the stack's
+  // centre — which is the origin, because the middle plane's centre is where
+  // the camera orbits — so the floors spread apart as they fly rather than
+  // just growing. Everything is a pure function of `release`: at 1 a ring sits
+  // exactly on the quad that threw it, and by 0 it has flown its full distance
+  // and gone out. That is what keeps them stateless despite reading as
+  // objects with a life.
+  const float rel = s->release < 0.0f ? 0.0f : (s->release > 1.0f ? 1.0f : s->release);
+  const float flown = 1.0f - rel;                       // 0 at the throw, 1 spent
+  const float grow = 1.0f + s->release_expand * flown;
+  for (int i = 0; i < PLANES; i++) {
+    u.ghosts[i * 2 + 0][0] = s->corner_x[i][0] * grow;
+    u.ghosts[i * 2 + 0][1] = s->corner_y[i][0] * grow;
+    u.ghosts[i * 2 + 0][2] = s->corner_x[i][1] * grow;
+    u.ghosts[i * 2 + 0][3] = s->corner_y[i][1] * grow;
+    u.ghosts[i * 2 + 1][0] = s->corner_x[i][2] * grow;
+    u.ghosts[i * 2 + 1][1] = s->corner_y[i][2] * grow;
+    u.ghosts[i * 2 + 1][2] = s->corner_x[i][3] * grow;
+    u.ghosts[i * 2 + 1][3] = s->corner_y[i][3] * grow;
+  }
+  // Bright and tight at the throw, wide and dull by the end: the core goes
+  // first and only the glow is left, which is a low-pass closing drawn in
+  // space rather than heard.
+  //
+  // The gain is divided by how far it has opened, and that is not a taste
+  // decision — the halo profile peaks at 1 whatever its radius, so widening it
+  // alone spreads the SAME peak over more picture and the ring gets BRIGHTER
+  // as it dissipates. Dividing conserves roughly the light it was thrown with,
+  // which is the difference between a ring going out and a ring blooming.
+  const float opened = 1.0f + (s->release_blur - 1.0f) * flown;
+  u.rel[0] = s->release_gain * rel / opened;
+  u.rel[1] = haloRadius(s->halo_radius) * opened;
+  u.rel[2] = s->halo_falloff;
 
   u.neon0[0] = lineHalfWidth(s->line_width);
   u.neon0[1] = s->line_gain;
