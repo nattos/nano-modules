@@ -32,6 +32,15 @@
  * own speeds two of them would eventually cross, and the moment they overlap
  * they stop being two things.
  *
+ * AND HOW IT GOES OUT. When the sweep comes to rest the speed decays away and
+ * the glints run down with it, on the same exponential: still drifting
+ * forward, but shrinking and dimming until there is nothing left. That is the
+ * glint running out of push, not the knob reaching back into it — which is why
+ * it only ever runs DOWN, and a fresh sweep starts a new glint rather than
+ * reviving a dying one. Keep sweeping and a glint crosses the whole picture
+ * instead; both deaths are real, and which one you get is a fact about the
+ * gesture.
+ *
  * `pos` is measured in CROSSINGS: 0 is the leading edge of the lit part of the
  * picture and 1 is the trailing edge, so advancing it by `speed * dt` is what
  * makes the invariant exact. The effect supplies `lead` and `trail` — the
@@ -66,10 +75,26 @@ constexpr float kRateWindow = 0.09f;
 /// that threw it — and this is only about how it coasts afterwards.
 constexpr float kSpeedRelease = 0.22f;
 
-/// Floor on the travel, in crossings per second. NOT zero: a glint must always
-/// reach the boundary and die, and letting go of the knob should not park one
-/// in the middle of the picture forever.
+/// Floor on the travel, in crossings per second. NOT zero: a glint that has
+/// stopped being driven still drifts, so letting go of the knob does not park
+/// one in the middle of the picture.
 constexpr float kMinSpeed = 0.22f;
+
+/// Below this speed a glint is no longer being SWEPT, only drifting — so it
+/// starts to putter out. Deliberately the same value as the travel floor:
+/// that floor is exactly the drift, so it is exactly the point where "still
+/// being pushed" becomes "running down".
+constexpr float kPutterFrom = kMinSpeed;
+
+/// How far gone a glint has to be before it is retired. Not zero — the tail of
+/// an exponential is forever, and a glint nobody can see is still one of eight
+/// slots' worth of nothing.
+constexpr float kVitDead = 0.05f;
+
+/// How much of a glint's width survives at the end of the putter. It narrows
+/// as it goes, but the BRIGHTNESS is what actually takes it out: a tube going
+/// down dims long before it becomes a hairline.
+constexpr float kPutterWidthFloor = 0.40f;
 
 /// Where the small extra glints begin and where they are in full flow, in
 /// crossings per second. Below the first there are none at all: an unhurried
@@ -110,14 +135,32 @@ struct Params {
 };
 
 /// One glint in flight. The three look values are drawn at birth and never
-/// touched again — that is what "under its own power" means here.
+/// touched again — that is what "under its own power" means here. What DOES
+/// change is `vit`, which is the glint running down rather than the knob
+/// reaching back into it.
 struct Glint {
   float pos = 0.0f;    ///< crossings: 0 the leading edge of the picture, 1 the trailing
-  float gain = 0.0f;   ///< brightness factor
-  float width = 1.0f;  ///< width factor
-  float shade = 0.0f;  ///< depth of the dark wake behind it
+  float gain = 0.0f;   ///< brightness factor, at birth
+  float width = 1.0f;  ///< width factor, at birth
+  float shade = 0.0f;  ///< depth of the dark wake behind it, at birth
   bool live = false;
   bool launched = false;  ///< thrown by the knob, rather than chaos
+
+  /// How much push is left in it: 1 while the sweep is still driving it,
+  /// falling in step with the speed once the knob comes to rest.
+  ///
+  /// RATCHETED — it only ever decreases. A fresh sweep must not re-inflate a
+  /// glint that has already started to go out; that reads as a rewind, and the
+  /// new gesture has its own glint to be seen in.
+  float vit = 1.0f;
+
+  // What the effect actually draws. Kept here rather than at the call site so
+  // the shape of the putter is one decision in one place.
+  float drawGain() const { return gain * vit; }
+  float drawShade() const { return shade * vit; }
+  float drawWidth() const {
+    return width * (kPutterWidthFloor + (1.0f - kPutterWidthFloor) * vit);
+  }
 };
 
 struct Core {
@@ -171,15 +214,29 @@ struct Core {
       if (speed < 1e-4f) speed = 0.0f;
     }
 
-    // --- 2. Travel. One speed for everyone, which is what keeps the order they
-    //        were born in — and therefore their separation — intact forever.
+    // --- 2. Travel, and the putter.
+    //
+    //        One speed for everyone, which is what keeps the order they were
+    //        born in — and therefore their separation — intact forever. Below
+    //        the floor they keep DRIFTING, so nothing is ever left parked.
+    //
+    //        But drifting is not being swept, and a glint that sailed on at a
+    //        crawl forever would outlive the gesture that made it. So the same
+    //        envelope that is running the speed down runs them down with it:
+    //        as the knob comes to rest they shrink and dim on exactly that
+    //        exponential, still moving, until there is nothing left to see.
     const float travel = speed > kMinSpeed ? speed : kMinSpeed;
+    const float vitality = speed >= kPutterFrom ? 1.0f : speed / kPutterFrom;
     const float death = 1.0f + (p.trail > 0.0f ? p.trail : 0.0f);
     for (int i = 0; i < kMaxLive; ++i) {
       Glint& g = glints[i];
       if (!g.live) continue;
       g.pos += travel * dt;
-      if (g.pos > death) g = Glint();   // reached the boundary: gone
+      if (g.vit > vitality) g.vit = vitality;   // ratchet: down only
+      // Two ways out, and both are real: cross the picture, or run down where
+      // you are. Which one happens is a fact about the gesture — keep sweeping
+      // and a glint makes it all the way over.
+      if (g.pos > death || g.vit <= kVitDead) g = Glint();
     }
 
     // --- 3. The launch. Entering the middle band is the event, and it is the
@@ -193,7 +250,7 @@ struct Core {
     // shows up as the knob changing sides without ever being seen inside.
     const bool jumped = !inside_now && !inside &&
                         ((last - 0.5f) < 0.0f) != (half < 0.0f);
-    if ((inside_now && !inside) || jumped) launch(p);
+    if ((inside_now && !inside) || jumped) launch(p, vitality);
     inside = inside_now;
     last = sw;
 
@@ -207,7 +264,7 @@ struct Core {
     if (crate > 0.0f && dt > 0.0f) {
       chaos_c -= crate * dt;
       for (int guard = 0; chaos_c <= 0.0f && guard < kMaxLive; ++guard) {
-        spawn(p, false);
+        spawn(p, false, vitality);
         float u = rand01();
         if (u < 1e-6f) u = 1e-6f;
         chaos_c += -std::log(u);   // mean 1, so `chaos` really is per second
@@ -228,9 +285,12 @@ struct Core {
 
   /// The knob's own glint. GUARANTEED: unlike a chaos arrival it is never
   /// refused, because the whole design is that a traverse throws exactly one.
-  void launch(const Params& p) { ++launches; spawn(p, true); }
+  void launch(const Params& p, float vitality) {
+    ++launches;
+    spawn(p, true, vitality);
+  }
 
-  void spawn(const Params& p, bool launched) {
+  void spawn(const Params& p, bool launched, float vitality) {
     const float birth = -(p.lead > 0.0f ? p.lead : 0.0f);
 
     // Not on top of the youngest. Separation is established here and preserved
@@ -268,6 +328,10 @@ struct Core {
     slot->live = true;
     slot->launched = launched;
     slot->pos = pos;
+    // Born at whatever push there is right now, rather than at full and
+    // dropping a frame later — a gesture too faint to carry a glint should
+    // make a faint one, not a bright one that pops.
+    slot->vit = vitality;
     // Drawn once, kept for life. The launched glint stays near nominal — it is
     // the gesture, and it has to read the same every time you make it. The
     // chaos ones scatter, and are small enough never to be mistaken for it.

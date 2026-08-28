@@ -763,9 +763,11 @@ void render(void* self, int vp_w, int vp_h) {
     // shader two exponentials and contributes exactly nothing, which is
     // cheaper than a branch and keeps the loop fully unrolled.
     u.glints[i][0] = g.live ? -reach + g.pos * 2.0f * reach : 0.0f;
-    u.glints[i][1] = g.live ? hw * g.width : 1.0f;
-    u.glints[i][2] = g.live ? s->glimmer_gain * g.gain : 0.0f;
-    u.glints[i][3] = g.live ? s->glimmer_shadow * g.shade : 0.0f;
+    // drawWidth/drawGain/drawShade, not the raw birth values: a glint that has
+    // outlived its gesture is puttering out, and that is where it shows.
+    u.glints[i][1] = g.live ? hw * g.drawWidth() : 1.0f;
+    u.glints[i][2] = g.live ? s->glimmer_gain * g.drawGain() : 0.0f;
+    u.glints[i][3] = g.live ? s->glimmer_shadow * g.drawShade() : 0.0f;
   }
 
   u.grade[0]  = s->exposure;

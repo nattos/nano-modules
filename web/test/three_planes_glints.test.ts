@@ -170,19 +170,86 @@ describe('Three Planes glints E2E', () => {
     expect(peaks(after, 8).length).toBe(1);
   });
 
-  it('the glint travels up-right and keeps its own brightness', async () => {
-    const r = await gesture('glint_travel', {}, 0.95, 0.05, [6, 40]);
+  it('the glint travels, and the sweep does not reach back into it', async () => {
+    // Keep the knob moving between the two readings, so the speed never falls
+    // to a drift and nothing is puttering: the leader must be further along
+    // and just as bright as it was, even though the drive has been all over
+    // the place since it was thrown.
+    const r = await runEngineMultiPhaseTest({
+      width: W, height: H, modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'glint_travel',
+              sketch: sketch({ glimmer_sweep: 0.95 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'glint_travel' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: 'glint_travel', colIdx: 0,
+                       chainIdx: 1, paramKey: 'glimmer_sweep', value: 0.05 }],
+          waitFrames: 6, captureTraceIds: ['out'] },
+        // Keep sweeping. This throws a second glint behind the first, which is
+        // why the leader is read as the LAST peak rather than the only one.
+        { commands: [{ type: 'setParam', sketchId: 'glint_travel', colIdx: 0,
+                       chainIdx: 1, paramKey: 'glimmer_sweep', value: 0.95 }],
+          waitFrames: 10, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'glint_travel',
+    });
     expect(r.success).toBe(true);
     const a = scan(r.phases[1].trace('out'));
     const b = scan(r.phases[2].trace('out'));
     const pa = peaks(a, 8), pb = peaks(b, 8);
     expect(pa.length).toBe(1);
-    expect(pb.length).toBe(1);
+    expect(pb.length).toBeGreaterThanOrEqual(1);
+    const lead = pb[pb.length - 1];
     // Moved along the travel axis, in the +dir sense...
-    expect(axisOf(b, pb[0])).toBeGreaterThan(axisOf(a, pa[0]) + 0.03);
-    // ...and it is just as bright as it was, even though the knob has been
-    // sitting still since. Nothing about the drive reaches a live glint.
-    expect(Math.abs(b.v[pb[0]] - a.v[pa[0]])).toBeLessThan(14);
+    expect(axisOf(b, lead)).toBeGreaterThan(axisOf(a, pa[0]) + 0.03);
+    // ...and just as bright as it was.
+    expect(Math.abs(b.v[lead] - a.v[pa[0]])).toBeLessThan(14);
+  });
+
+  it('let go and the glint putters out where it is', async () => {
+    // The other death. A glint that sailed on at the drift speed forever would
+    // outlive the gesture that made it, so the envelope running the speed down
+    // runs the glint down with it — still moving, but shrinking and dimming
+    // until there is nothing left.
+    const r = await runEngineMultiPhaseTest({
+      width: W, height: H, modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'glint_putter',
+              sketch: sketch({ glimmer_sweep: 0.95 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'glint_putter' } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: 'glint_putter', colIdx: 0,
+                       chainIdx: 1, paramKey: 'glimmer_sweep', value: 0.05 }],
+          waitFrames: 6, captureTraceIds: ['out'] },
+        // ...and then nothing. The knob is not touched again.
+        { commands: [], waitFrames: 60, captureTraceIds: ['out'] },
+        { commands: [], waitFrames: 90, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'glint_putter',
+    });
+    expect(r.success).toBe(true);
+
+    const born = scan(r.phases[1].trace('out'));
+    const pb = peaks(born, 8);
+    expect(pb.length).toBe(1);
+    const bright = born.v[pb[0]];
+
+    // Part way through the run-down: still there, and dimmer. (Or already
+    // gone, if the frames were long — either way it is on its way out, which
+    // is the claim. Engine dt is wall clock, so this cannot assert a time.)
+    const mid = scan(r.phases[2].trace('out'));
+    const pm = peaks(mid, 8);
+    if (pm.length > 0) expect(mid.v[pm[0]]).toBeLessThan(bright - 4);
+
+    // And gone — without ever having reached the far side of the picture.
+    const late = scan(r.phases[3].trace('out'));
+    expect(peaks(late, 8).length).toBe(0);
   });
 
   it('the direction is fixed: reversing the knob does not turn it round',

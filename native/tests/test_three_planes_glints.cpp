@@ -21,6 +21,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <cmath>
 #include <vector>
 
 using Catch::Matchers::WithinAbs;
@@ -184,34 +185,102 @@ TEST_CASE("nothing about a live glint changes after it is born",
   REQUIRE(g != nullptr);
   const Glint born = *g;
 
-  hold(c, p, 0.60f, 0.3f);
+  hold(c, p, 0.60f, 0.8f);
   const Glint* now = launched(c);
   REQUIRE(now != nullptr);
   REQUIRE_THAT(now->gain, WithinAbs(born.gain, 0.0));
   REQUIRE_THAT(now->width, WithinAbs(born.width, 0.0));
   REQUIRE_THAT(now->shade, WithinAbs(born.shade, 0.0));
-  // ...but it HAS moved on. Speed is the one thing the knob still owns, and it
-  // idles rather than stopping, so a glint always finishes its crossing.
+  // ...but it HAS moved on, and it is running down. Neither is the knob
+  // reaching back into it: the speed is shared and the putter is the glint
+  // spending what it was given.
   REQUIRE(now->pos > born.pos);
+  REQUIRE(now->vit < born.vit);
 }
 
-TEST_CASE("a glint crosses and dies past the far boundary",
+TEST_CASE("keep sweeping and a glint crosses the whole picture",
           "[three_planes_glints]") {
+  // The putter is what happens when the gesture STOPS. Keep going and the
+  // speed never falls to a drift, nothing runs down, and glints cross the
+  // picture and retire off the far side the way they always did.
   Core c;
   Params p = settled(c);
-  sweep(c, p, 0.95f, 0.05f, 0.5f);
-  REQUIRE(c.liveCount() == 1);
 
-  float last = -9.0f;
-  bool died = false;
-  for (int i = 0; i < 4000 && !died; ++i) {
+  float best = -9.0f;
+  const int n = (int)(6.0f / kDt);
+  for (int i = 0; i < n; ++i) {
+    // A continuous triangle across the whole throw, 1.2 s a lap: the knob is
+    // never still, so the speed is never in putter territory.
+    const float tri = std::fabs(std::fmod((float)i * kDt / 0.6f, 2.0f) - 1.0f);
+    p.sweep = 0.05f + 0.9f * tri;
     c.tick(p, kDt);
-    if (c.liveCount() == 0) { died = true; break; }
-    REQUIRE(c.glints[0].pos > last);   // monotone the whole way
-    last = c.glints[0].pos;
+    for (int k = 0; k < kMaxLive; ++k) {
+      if (!c.glints[k].live) continue;
+      if (c.glints[k].pos > best) best = c.glints[k].pos;
+      REQUIRE_THAT(c.glints[k].vit, WithinAbs(1.0, 1e-6));
+    }
   }
-  REQUIRE(died);
-  REQUIRE(last > 1.0f);   // it made it past the picture, not out early
+  REQUIRE(best > 1.0f);   // one of them made it all the way over
+}
+
+TEST_CASE("let go and a glint putters out where it is",
+          "[three_planes_glints]") {
+  // THE OTHER DEATH. A glint that sailed on at the drift speed forever would
+  // outlive the gesture that made it. So the envelope that runs the speed down
+  // runs the glint down with it — still moving, but shrinking and dimming.
+  Core c;
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.60f, 0.25f);   // a short gesture, then let go
+  const Glint* g = launched(c);
+  REQUIRE(g != nullptr);
+  REQUIRE_THAT(g->vit, WithinAbs(1.0, 1e-6));
+  const float from = g->pos;
+
+  // It fades, and it keeps moving while it does.
+  hold(c, p, 0.60f, 0.5f);
+  const Glint* mid = launched(c);
+  REQUIRE(mid != nullptr);
+  REQUIRE(mid->vit < 0.9f);
+  REQUIRE(mid->pos > from);
+  // Narrower and dimmer, not just dimmer.
+  REQUIRE(mid->drawGain() < mid->gain);
+  REQUIRE(mid->drawWidth() < mid->width);
+
+  // ...and it is gone well before it could have reached the far side.
+  float died_at = -1.0f;
+  for (int i = 0; i < 2000; ++i) {
+    const Glint* now = launched(c);
+    if (!now) break;
+    died_at = now->pos;
+    c.tick(p, kDt);
+  }
+  REQUIRE(launched(c) == nullptr);
+  REQUIRE(died_at < 1.0f);   // it ran down, it did not cross
+}
+
+TEST_CASE("puttering never runs backwards", "[three_planes_glints]") {
+  // A fresh sweep must not re-inflate a glint that has already started to go
+  // out — that reads as a rewind, and the new gesture has its own glint to be
+  // seen in.
+  Core c;
+  Params p = settled(c);
+  sweep(c, p, 0.95f, 0.60f, 0.25f);
+  hold(c, p, 0.60f, 0.8f);
+  const Glint* dim = launched(c);
+  REQUIRE(dim != nullptr);
+  const float faded = dim->vit;
+  REQUIRE(faded < 0.9f);
+
+  // Sweep hard again. The old glint is still the leader, so it is still the
+  // highest position; it must not have brightened.
+  sweep(c, p, 0.60f, 0.05f, 0.12f);
+  float top = -9.0f, top_vit = 1.0f;
+  for (int i = 0; i < kMaxLive; ++i)
+    if (c.glints[i].live && c.glints[i].pos > top) {
+      top = c.glints[i].pos;
+      top_vit = c.glints[i].vit;
+    }
+  REQUIRE(top_vit <= faded + 1e-6f);
 }
 
 TEST_CASE("glints never cross or swap order", "[three_planes_glints]") {
