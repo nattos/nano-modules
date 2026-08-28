@@ -63,12 +63,13 @@ struct Uniforms {
   float corners[6][4];      // rows 0-5   projected, this view
   float quad_color[3][4];   // rows 6-8   rgb = colour, w = emission drive
   float fills[4];           // row  9
-  float misc[4];            // row 10     bleed, input opacity, debug, -
-  float view[4];            // row 11     vp_w, vp_h, aspect_x, aspect_y
-  float style[12];          // rows 12-14 NeonStyle, verbatim
-  float grade[16];          // rows 15-18 VcrGrade, verbatim
+  float depth[4];           // row 10     xyz = per-quad neon scale
+  float misc[4];            // row 11     bleed, input opacity, debug, -
+  float view[4];            // row 12     vp_w, vp_h, aspect_x, aspect_y
+  float style[12];          // rows 13-15 NeonStyle, verbatim
+  float grade[16];          // rows 16-19 VcrGrade, verbatim
 };
-static_assert(sizeof(Uniforms) == 304, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 320, "Uniforms layout mismatch with render.hlsl");
 
 struct State {
   show::Params show_p;
@@ -93,6 +94,11 @@ struct State {
   /// 0 = each side output is that wall's own flat surface; 1 = the wall as the
   /// camera sees it. See wallU() for which you want when.
   float wall_keystone = 0.0f;
+  /// Scales the run along a side wall, anchored at the seam. Above 1 the
+  /// frames tear past — the wall reads as raked away rather than square.
+  float wall_stretch = 1.0f;
+  /// How hard the neon itself scales with depth. See neonScale().
+  float depth_scale = 1.0f;
 
   // --- Quads ---
   float color[QUADS][3] = {{1.00f, 0.22f, 0.62f},   // magenta  (quad 1)
@@ -204,6 +210,10 @@ static WallExtent frameExtent(const fx::CoverSquare& cs) {
 
 /// A frame's apparent half-size on the back wall. `quad_size` just moves where
 /// the overflow happens: at 1.0 a frame crosses the wall's edge at z = 1.
+static inline float detailClamp(float v, float lo, float hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
 static inline float apparentSize(const State& s, float z) {
   const float zz = z > 1e-4f ? z : 1e-4f;
   return s.quad_size / zz;
@@ -219,6 +229,13 @@ static inline float apparentSize(const State& s, float z) {
 /// the wall as the CAMERA sees it, linear in apparent position instead, which
 /// is what you want when the three outputs go to three flat panels side by side
 /// and the perspective has to be baked in.
+///
+/// `stretch` then scales the whole run, anchored at the far end so the seam
+/// never moves. Above 1 a frame crosses the wall in less depth than it really
+/// occupies — the wall behaves as though it were raked away from the viewer
+/// rather than square to the back wall, and the frames tear past. It is a lie
+/// about the room's shape, and it is the single strongest thing here for
+/// selling depth.
 static float wallU(const State& s, float d) {
   const float near_ = s.show_p.z_near > 1e-4f ? s.show_p.z_near : 1e-4f;
   const float dd = d < near_ ? near_ : d;
@@ -228,18 +245,50 @@ static float wallU(const State& s, float d) {
   const float s_far = 1.0f, s_near = 1.0f / near_;
   const float persp = (1.0f / dd - s_far) / (s_near - s_far + 1e-6f);
   const float k = s.wall_keystone < 0.0f ? 0.0f : (s.wall_keystone > 1.0f ? 1.0f : s.wall_keystone);
-  return flat + (persp - flat) * k;
+  const float u = flat + (persp - flat) * k;
+  return u * (s.wall_stretch < 0.05f ? 0.05f : s.wall_stretch);
 }
 
-/// How tall the wall is at depth `d`, as a fraction of the texture's height.
-/// Flat, the wall is a rectangle and this is always 1. Keystoned, it tapers to
-/// the far end exactly as the camera sees it — the trapezoid.
+/// How tall the wall is at depth `d`, as a multiple of the texture's height.
+///
+/// THE SEAM MUST MATCH. A frame straddling the threshold has its edge on the
+/// back wall and on the side wall in the same instant, and the two have to be
+/// the same height or the picture visibly tears at the corner. At the far end
+/// (d = 1) the side wall IS the back wall's edge, so this returns exactly 1
+/// whatever the keystone is — the two ends of the knob are different pictures
+/// of the wall, not different rooms.
+///
+/// From there, keystoned, it grows as 1/d: the wall is nearer the camera as it
+/// comes forward, so it looks BIGGER, and a frame sweeping down it swells past
+/// the top and bottom of the picture the way the mouth of a tunnel does. Flat,
+/// it stays 1 the whole way, because a real wall is a rectangle.
 static float wallHeight(const State& s, float d) {
   const float near_ = s.show_p.z_near > 1e-4f ? s.show_p.z_near : 1e-4f;
   const float dd = d < near_ ? near_ : d;
-  const float taper = near_ / dd;   // 1 at the near end, near_ at the far end
   const float k = s.wall_keystone < 0.0f ? 0.0f : (s.wall_keystone > 1.0f ? 1.0f : s.wall_keystone);
-  return 1.0f + (taper - 1.0f) * k;
+  return 1.0f + (1.0f / dd - 1.0f) * k;
+}
+
+/// How big a frame's own NEON should be, relative to its authored size.
+///
+/// A real tube has a fixed thickness, so what reaches the eye scales with
+/// everything else: near, a fat bar with a wide bloom; far, a hairline with
+/// almost none. Holding the width constant is exactly what makes a receding
+/// frame read as a flat shrinking rectangle rather than an object going away —
+/// the glow carries as much of the depth as the size does.
+///
+/// The scale is the frame's own apparent size `a`, which needs no special case
+/// at the corner: on the back wall that IS how big the rectangle is, and on a
+/// side wall the same number is 1/depth. The two agree at the seam for free.
+/// Anchored at a = 1, so a frame at the threshold wears exactly the width that
+/// was authored and everything else is relative to that.
+static float neonScale(const State& s, float z) {
+  const float a = apparentSize(s, z);
+  const float k = detailClamp(s.depth_scale, 0.0f, 1.0f);
+  const float raw = 1.0f + (a - 1.0f) * k;
+  // Floored and capped: below about a quarter the line falls under a pixel and
+  // stops being a line at all, and above a few times it swallows the frame.
+  return detailClamp(raw, 0.25f, 6.0f);
 }
 
 /// The four corners of quad `q` as they land on view `v`, in cover-square coords.
@@ -393,9 +442,14 @@ void module_init() {
           "0 each is that wall's own flat surface, which is what you want when "
           "the output drives a screen standing where that wall is — the real "
           "geometry then does the perspective for you. At 1 it is the wall as "
-          "the camera sees it, tapering away, which is what you want when the "
-          "three outputs go to three flat panels side by side and the "
-          "perspective has to be baked in.")
+          "the camera sees it, so a frame SWELLS as it comes at you and runs "
+          "off the top and bottom of the picture. Either way the corner holds: "
+          "a frame straddling the threshold is the same height in both "
+          "outputs, so the room never tears at the seam.\n\n"
+          "*Stretch* runs the frames down the side walls faster than the room "
+          "really is. It is a lie about the shape of the space — the walls "
+          "behave as though raked away from you rather than square — and it is "
+          "the single strongest thing here for selling depth.")
       .floatField("quad_size", 1.0f, 0.1f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
                   "Moves where a frame crosses off the back wall and onto the "
@@ -414,8 +468,22 @@ void module_init() {
       .floatField("wall_keystone", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
                   "0 = the side outputs are those walls' own flat surfaces; "
-                  "1 = the walls as the camera sees them, tapering away.")
+                  "1 = the walls as the camera sees them, growing toward you. "
+                  "Either way a frame crossing the corner keeps its height.")
         .label("Keystone", "Keyst")
+      .floatField("wall_stretch", 1.0f, 0.1f, 6.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How fast frames run down the side walls. Above 1 they tear "
+                  "past, as though the walls were raked away from you rather "
+                  "than square to the back one — the strongest single knob for "
+                  "selling depth.")
+        .label("Stretch", "Strch")
+      .floatField("depth_scale", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How hard the neon itself scales with depth — near frames "
+                  "get a fat tube and a wide bloom, far ones a hairline. At 0 "
+                  "the line is the same width everywhere, which reads flat.")
+        .label("Depth Glow", "DGlow")
 
       // ---------------- Quads ----------------
       .group("quads", "Frames")
@@ -676,6 +744,10 @@ static void fillUniforms(State* s, int v, int vp_w, int vp_h, Uniforms& u) {
   }
   u.fills[3] = 0.0f;
 
+  for (int slot = 0; slot < QUADS; slot++)
+    u.depth[slot] = neonScale(*s, s->frame.z[order[slot]]);
+  u.depth[3] = 0.0f;
+
   const float px = 2.0f / float(vp_w > vp_h ? vp_w : vp_h);
 
   u.misc[0] = s->chroma_bleed;
@@ -840,6 +912,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "z_near"))        s->show_p.z_near = state::patchFloat(i);
     else if (state::pathIs(p, l, "quad_size"))     s->quad_size = state::patchFloat(i);
     else if (state::pathIs(p, l, "wall_keystone")) s->wall_keystone = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_stretch"))  s->wall_stretch = state::patchFloat(i);
+    else if (state::pathIs(p, l, "depth_scale"))   s->depth_scale = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_width"))    s->line_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_gain"))     s->line_gain = state::patchFloat(i);
     else if (state::pathIs(p, l, "core_whiten"))   s->core_whiten = state::patchFloat(i);

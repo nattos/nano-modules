@@ -143,6 +143,23 @@ describe(`Three Walls E2E (${backend})`, () => {
   // Also the check that a held event value does not re-arm the move every frame
   // off the executor's replay: a re-arming Resonate would snap back to its start
   // pose on every patch and these two frames would be identical.
+  // The glow carries as much of the depth as the size does. A real tube has a
+  // fixed thickness, so a far frame should be a hairline with almost no bloom
+  // and a near one a fat bar — hold the width constant and a receding frame
+  // reads as a flat shrinking rectangle instead of something going away.
+  it('Depth Glow thins the neon on a far frame', async () => {
+    // One small frame, well down the tunnel, so its own size is identical in
+    // both renders and the only difference is how wide its tube is.
+    const p: any[] = [['pulse', 1], ['pulse_time', 4.0], ['pulse_stagger', 5.0],
+                      ['quad_size', 0.5]];
+    const flatGlow = await run('three_walls_dglow_off', [...p, ['depth_scale', 0]], 6);
+    const scaled   = await run('three_walls_dglow_on',  [...p, ['depth_scale', 1]], 6);
+    expect(flatGlow.success && scaled.success).toBe(true);
+    // Same geometry, less ink: a thinner line and a tighter halo.
+    expect(litCount(scaled, 20)).toBeLessThan(litCount(flatGlow, 20) * 0.6);
+    expect(litCount(scaled, 20)).toBeGreaterThan(0);
+  });
+
   it('the frames keep moving under a held gate', async () => {
     const p: any[] = [['resonate', 1], ['resonate_f0', 0.5], ['resonate_f1', 0.5]];
     const a = await run('three_walls_moving_a', p, 10);
@@ -276,18 +293,59 @@ describe('Three Walls walls', () => {
       .toBeLessThan(litCentroidX(near.trace('out')) - W * 0.1);
   });
 
-  it('Keystone tapers the side wall instead of leaving it square', async () => {
-    // 0 is the wall's own flat surface: a bar spans its full height. 1 is the
-    // wall as the camera sees it, so the same bar is cut down to the wall's
-    // apparent height at that depth.
+  /** The brightest column in a picture, and whether it runs top to bottom. */
+  const brightestColumn = (f: any) => {
+    let best = -1, bx = 0;
+    const colMean: number[] = new Array(W).fill(0);
+    f.forEachPixel((p: any, x: number) => { colMean[x] += luma(p) / H; });
+    for (let x = 0; x < W; x++) if (colMean[x] > best) { best = colMean[x]; bx = x; }
+    return { x: bx, top: luma(f.pixelAt(bx, 2)), bottom: luma(f.pixelAt(bx, H - 3)) };
+  };
+
+  // THE SEAM HOLDS AT ANY KEYSTONE. A frame straddling the threshold has its
+  // edge on the back wall and on the side wall in the same instant. At the far
+  // end the side wall IS the back wall's edge, so the two must be the same
+  // height — a frame's bar arrives full height and stays there, whatever the
+  // keystone is. Get the taper backwards and a frame crossing the corner
+  // collapses to a stub and the room tears.
+  it('a frame keeps its height crossing the corner, at any keystone', async () => {
+    // Just past the threshold, so the bar is at the far end of the side wall.
+    const at = (k: number, id: string) =>
+      view(id, 'left_out', { ...FROZEN, quad_size: 1.05, wall_keystone: k });
+    const flat = await at(0, 'tw_seam_flat');
+    const keyed = await at(1, 'tw_seam_keyed');
+    expect(flat.success && keyed.success).toBe(true);
+
+    for (const r of [flat, keyed]) {
+      const bar = brightestColumn(r.trace('out'));
+      expect(bar.top).toBeGreaterThan(120);
+      expect(bar.bottom).toBeGreaterThan(120);
+    }
+  });
+
+  it('Keystone moves where along the wall a frame sits', async () => {
+    // Same frame, two pictures of the same wall: flat is linear in depth,
+    // keystoned is linear in apparent position, which crowds the far end.
     const flat = await view('tw_keys_flat', 'left_out',
                             { ...FROZEN, quad_size: 1.5, wall_keystone: 0 });
     const keyed = await view('tw_keys_on', 'left_out',
                              { ...FROZEN, quad_size: 1.5, wall_keystone: 1 });
     expect(flat.success && keyed.success).toBe(true);
-    expect(litCount(flat.trace('out'))).toBeGreaterThan(300);
-    expect(litCount(keyed.trace('out')))
-      .toBeLessThan(litCount(flat.trace('out')) * 0.8);
+    // The left wall's far end is its RIGHT edge, so "crowded toward the far
+    // end" means further right.
+    expect(brightestColumn(keyed.trace('out')).x)
+      .toBeGreaterThan(brightestColumn(flat.trace('out')).x + 10);
+  });
+
+  it('Stretch runs a frame down the wall faster', async () => {
+    const slow = await view('tw_str_slow', 'left_out',
+                            { ...FROZEN, quad_size: 1.5, wall_stretch: 1 });
+    const fast = await view('tw_str_fast', 'left_out',
+                            { ...FROZEN, quad_size: 1.5, wall_stretch: 3 });
+    expect(slow.success && fast.success).toBe(true);
+    // Further along means further from the far end, i.e. further LEFT.
+    expect(brightestColumn(fast.trace('out')).x)
+      .toBeLessThan(brightestColumn(slow.trace('out')).x - W * 0.1);
   });
 
   it('the main view is unaffected by whether the side walls are wired',
