@@ -8,17 +8,23 @@
  * lifted out of three_planes for exactly this) and the VCR grade, and adds
  * perspective and a set of moves.
  *
- * THREE OUTPUTS, ONE SCENE. The tunnel is a 3D scene; the three texture outputs
- * are three CAMERAS on it. `tex_out` looks head-on down the throat; `left_out`
- * and `right_out` watch the same tunnel from off to either side, orbited around
- * its middle by `side_angle`. A quad that grows out of the main frame is, in the
- * same instant, a bar sweeping across the side views — one event, three views,
- * which is what makes the pulse read as passing THROUGH something.
+ * THREE OUTPUTS, THREE WALLS. The room is a hollow box; the camera sits at its
+ * mouth looking at the back wall. `tex_out` IS that back wall, and `left_out`
+ * and `right_out` are the two side walls running away from it. The outputs
+ * PARTITION the room rather than each re-rendering it: a frame's left edge is
+ * either still on the back wall or already on the left wall, never in two
+ * pictures at once.
  *
- * `side_angle` is a look knob, not a fact. At 90 degrees the side cameras see
- * the quads exactly edge-on: zero width, and the pulse crosses in no time. Back
- * it off and each quad projects to a skewed quadrilateral with real area and a
- * finite crossing. That is the whole reason it is a parameter.
+ * So a pulse starts as a small rectangle in the middle of the main output,
+ * grows until it fills it, and then OVERFLOWS — leaving the back wall and
+ * reappearing as bars sweeping down the two side walls toward you. The halo
+ * carries around the corner on its own, because a frame just past the wall's
+ * edge still bleeds light back into the picture.
+ *
+ * The whole geometry is one number: `a`, a frame's apparent half-size in wall
+ * half-widths. Below 1 it is on the back wall, above 1 its edges are on the
+ * side walls at depth 1/a. That reciprocal IS the perspective — see the room
+ * section below.
  *
  * The aux outputs follow chroma_wave's `wave_out` pattern: the effect owns the
  * allocation, publishes the handle once, and skips the dispatch entirely unless
@@ -52,10 +58,6 @@ static constexpr int QUADS = show::kQuads;
 static constexpr int VIEWS = 3;      // main, left, right
 static constexpr float kPi = 3.14159265358979323846f;
 
-/// Anything nearer than this is behind the camera or on top of the lens; a quad
-/// with a corner inside it is culled from THAT view rather than projected.
-static constexpr float kNearPlane = 0.05f;
-
 // Mirrors `cbuffer Uniforms` in render.hlsl, row for row.
 struct Uniforms {
   float corners[6][4];      // rows 0-5   projected, this view
@@ -84,13 +86,13 @@ struct State {
   int pending_release = show::MoveNone;
 
   // --- Scene ---
-  /// 0.35 rather than something rounder: at the default depth range this is the
-  /// largest the frames can be while all three of Resonate's evenly-spaced pose
-  /// still fit on screen. Bigger and the nearest one is always past the lens.
-  float quad_size = 0.35f;
-  float fov_deg = 55.0f;
-  float side_angle_deg = 55.0f;
-  float side_dolly = 1.0f;
+  /// A frame's apparent half-size on the back wall is quad_size / z, so at 1.0
+  /// a frame crosses the wall's edge exactly at z = 1 — a third of the way
+  /// through the default travel.
+  float quad_size = 1.0f;
+  /// 0 = each side output is that wall's own flat surface; 1 = the wall as the
+  /// camera sees it. See wallU() for which you want when.
+  float wall_keystone = 0.0f;
 
   // --- Quads ---
   float color[QUADS][3] = {{1.00f, 0.22f, 0.62f},   // magenta  (quad 1)
@@ -159,84 +161,124 @@ static inline float haloRadius(float r) {
   return 0.006f * std::pow(40.0f, t);
 }
 
-// --- Camera ---------------------------------------------------------------
-// The tunnel runs down +z. The main camera sits at the origin looking into it;
-// the side cameras ORBIT the tunnel's middle, so they see it from outside
-// rather than just aiming at a wall.
+// --- The room -------------------------------------------------------------
 //
-// Perspective, unlike three_planes' orthographic affine map — a tunnel needs
-// things to grow as they arrive, and that is a divide. Everything that follows
-// from the divide (the near-plane cull, the per-view liveness) is the cost.
+// A hollow box. The camera sits at its mouth looking at the BACK WALL; the two
+// side walls run away from it to left and right. Each of the three outputs is
+// ONE WALL, so a given piece of the picture belongs to exactly one of them —
+// a frame's left edge is either still on the back wall or already on the left
+// wall, never both. The outputs partition the room; they do not each re-render
+// it.
+//
+// The whole geometry collapses to one number. Let `a` be a frame's apparent
+// half-size on the back wall, measured in wall half-widths, so a = 1 is exactly
+// the wall's edge:
+//
+//   a < 1   the frame is a rectangle on the BACK WALL, growing as it comes
+//   a = 1   it fills the wall exactly, and its edges reach all four corners
+//   a > 1   it has left the back wall; its left and right edges are now bars
+//           on the side walls, at wall depth d = 1/a, running from the far
+//           end (d = 1) toward the camera (d -> 0)
+//
+// `d = 1/a` is the entire perspective story: as the frame keeps growing at a
+// steady apparent rate, the bar's slide along the wall stretches out toward the
+// camera exactly the way a real corridor does. Nothing here is a fudge factor.
+//
+// NOTHING IS CULLED. A frame past the back wall's edge draws a rectangle whose
+// outline is simply outside the picture, and a bar short of the wall's far end
+// draws off its edge — in both cases the halo still bleeds in from beyond the
+// frame, which is what carries the light around the corner and makes the
+// overflow read as continuous rather than as a hand-off.
 
-struct Camera {
-  float pos[3];
-  float ct, st;   // yaw about Y: cos, sin
-  float focal;
-};
+/// The back wall IS the picture, so its half-extents are the frame's own bounds
+/// in cover-square coords (see nano_coords.hlsl: +/-1 on the long axis, less on
+/// the short one).
+struct WallExtent { float ex, ey; };
 
-/// `index` 0 = main, 1 = left, 2 = right.
-static Camera makeCamera(const State& s, int index) {
-  Camera c;
-  // Half the tunnel's depth range, in the geometric middle rather than the
-  // arithmetic one, so the side views frame what the eye actually reads as the
-  // centre of the corridor.
-  const float pivot_z = std::sqrt(s.show_p.z_far * s.show_p.z_near);
-  const float fov = s.fov_deg * (kPi / 180.0f);
-  c.focal = 1.0f / std::tan(0.5f * (fov < 1e-3f ? 1e-3f : fov));
-
-  if (index == 0) {
-    c.pos[0] = 0.0f; c.pos[1] = 0.0f; c.pos[2] = 0.0f;
-    c.ct = 1.0f; c.st = 0.0f;
-    return c;
-  }
-  const float sign = (index == 1) ? -1.0f : 1.0f;
-  const float th = sign * s.side_angle_deg * (kPi / 180.0f);
-
-  // Stand off far enough that the WHOLE tunnel fits, not just the pivot. Seen
-  // from an angle the corridor's length subtends roughly extent*sin(th) across
-  // the view, so the radius that frames it falls straight out of the FOV. Doing
-  // this by hand instead would mean re-dialling the distance every time the
-  // depth range moved.
-  const float extent = s.show_p.z_far - s.show_p.z_near;
-  const float sin_th = std::fabs(std::sin(th));
-  const float fit = extent * sin_th * 0.5f * c.focal * 1.15f;   // 1.15 = margin
-  const float r = (fit > pivot_z ? fit : pivot_z) *
-                  (s.side_dolly < 0.05f ? 0.05f : s.side_dolly);
-
-  c.pos[0] = std::sin(th) * -r;
-  c.pos[1] = 0.0f;
-  c.pos[2] = pivot_z - std::cos(th) * r;
-  c.ct = std::cos(th);
-  c.st = std::sin(th);
-  return c;
+static WallExtent frameExtent(const fx::CoverSquare& cs) {
+  WallExtent w;
+  w.ex = 0.5f / cs.ax;
+  w.ey = 0.5f / cs.ay;
+  return w;
 }
 
-/// World point -> this camera's screen position, in cover-square coords.
-/// Returns false when the point is at or behind the near plane.
-static bool project(const Camera& c, float wx, float wy, float wz,
-                    float& sx, float& sy) {
-  // Into camera space: translate, then yaw by -theta.
-  const float dx = wx - c.pos[0];
-  const float dy = wy - c.pos[1];
-  const float dz = wz - c.pos[2];
-  const float ex =  dx * c.ct - dz * c.st;
-  const float ez =  dx * c.st + dz * c.ct;
-  if (ez <= kNearPlane) return false;
-  sx = c.focal * ex / ez;
-  // Cover-square y grows DOWNWARD, hence the negation.
-  sy = -c.focal * dy / ez;
-  return true;
+/// A frame's apparent half-size on the back wall. `quad_size` just moves where
+/// the overflow happens: at 1.0 a frame crosses the wall's edge at z = 1.
+static inline float apparentSize(const State& s, float z) {
+  const float zz = z > 1e-4f ? z : 1e-4f;
+  return s.quad_size / zz;
 }
 
-/// Project one quad through one camera. False means "not visible in this view",
-/// which the caller turns into a dark quad rather than a garbage one.
-static bool projectQuad(const Camera& c, float half, float z, float out[4][2]) {
-  const float cx[4] = {-half, +half, +half, -half};
-  const float cy[4] = {-half, -half, +half, +half};
-  for (int k = 0; k < 4; k++) {
-    if (!project(c, cx[k], cy[k], z, out[k][0], out[k][1])) return false;
+/// Where a side wall's depth `d` lands across its texture, as 0 at the far end
+/// (against the back wall) and 1 at the near end (against the camera).
+///
+/// The two ends of the `keystone` knob are two different pictures of the same
+/// wall. At 0 the texture is the wall's own flat surface, linear in depth —
+/// what you want when the output drives a physical screen standing where that
+/// wall is, because the real geometry then supplies the perspective. At 1 it is
+/// the wall as the CAMERA sees it, linear in apparent position instead, which
+/// is what you want when the three outputs go to three flat panels side by side
+/// and the perspective has to be baked in.
+static float wallU(const State& s, float d) {
+  const float near_ = s.show_p.z_near > 1e-4f ? s.show_p.z_near : 1e-4f;
+  const float dd = d < near_ ? near_ : d;
+  // Flat: linear in depth, far end (d = 1) at 0.
+  const float flat = (1.0f - dd) / (1.0f - near_ + 1e-6f);
+  // Camera: linear in apparent position, which is 1/d.
+  const float s_far = 1.0f, s_near = 1.0f / near_;
+  const float persp = (1.0f / dd - s_far) / (s_near - s_far + 1e-6f);
+  const float k = s.wall_keystone < 0.0f ? 0.0f : (s.wall_keystone > 1.0f ? 1.0f : s.wall_keystone);
+  return flat + (persp - flat) * k;
+}
+
+/// How tall the wall is at depth `d`, as a fraction of the texture's height.
+/// Flat, the wall is a rectangle and this is always 1. Keystoned, it tapers to
+/// the far end exactly as the camera sees it — the trapezoid.
+static float wallHeight(const State& s, float d) {
+  const float near_ = s.show_p.z_near > 1e-4f ? s.show_p.z_near : 1e-4f;
+  const float dd = d < near_ ? near_ : d;
+  const float taper = near_ / dd;   // 1 at the near end, near_ at the far end
+  const float k = s.wall_keystone < 0.0f ? 0.0f : (s.wall_keystone > 1.0f ? 1.0f : s.wall_keystone);
+  return 1.0f + (taper - 1.0f) * k;
+}
+
+/// The four corners of quad `q` as they land on view `v`, in cover-square coords.
+/// `v` 0 = back wall, 1 = left wall, 2 = right wall.
+static void wallCorners(const State& s, const WallExtent& w, int v, float z,
+                        float out[4][2]) {
+  if (v == 0) {
+    // A rectangle on the back wall, sharing the wall's aspect so it reaches all
+    // four edges at once.
+    const float a = apparentSize(s, z);
+    const float hx = w.ex * a, hy = w.ey * a;
+    out[0][0] = -hx; out[0][1] = -hy;
+    out[1][0] = +hx; out[1][1] = -hy;
+    out[2][0] = +hx; out[2][1] = +hy;
+    out[3][0] = -hx; out[3][1] = +hy;
+    return;
   }
-  return true;
+
+  // A side wall. The frame's vertical edge crosses it at depth d = 1/a; the
+  // texture runs far-to-near AWAY from the back wall, so the left wall has its
+  // far end on the right and the right wall mirrors it. Laid out side by side,
+  // the three outputs are then continuous across both seams.
+  const float a = apparentSize(s, z);
+  const float d = 1.0f / (a > 1e-4f ? a : 1e-4f);
+  const float u = wallU(s, d);
+  const float h = w.ey * wallHeight(s, d);
+  // The far end abuts the BACK WALL, so it sits on the inner side of each side
+  // output: right edge for the left wall, left edge for the right wall. Laid
+  // out left / main / right, the three pictures are then continuous across both
+  // seams and a frame crossing over does not jump.
+  const float sign = (v == 1) ? -1.0f : 1.0f;
+  const float x = sign * (2.0f * u - 1.0f) * w.ex;
+
+  // Wound the same way as the back wall's rectangle, with zero width: the edge
+  // IS a line, and the shader's own line width is what gives it body.
+  out[0][0] = x; out[0][1] = -h;
+  out[1][0] = x; out[1][1] = -h;
+  out[2][0] = x; out[2][1] = +h;
+  out[3][0] = x; out[3][1] = +h;
 }
 
 // --- Schema ---------------------------------------------------------------
@@ -331,37 +373,42 @@ void module_init() {
         .label("Resonate Ramp", "ResRmp")
 
       // ---------------- Tunnel ----------------
-      .group("tunnel", "Tunnel")
+      .group("tunnel", "Room")
         .groupHelp(
-          "The space the frames travel through. *Depth Far* and *Depth Near* "
-          "are where they enter and leave; the travel between them is "
-          "geometric, so a frame grows at a steady rate rather than crawling "
-          "and then lunging.\n\n"
-          "*Side Angle* is how far round the two extra cameras sit. At 90 "
-          "degrees they see the frames exactly edge-on — infinitely thin, "
-          "gone in an instant — so back it off until the frames have real "
-          "width as they sweep past.")
-      .floatField("quad_size", 0.35f, 0.05f, 2.f, state::PrimaryInput,
+          "The box the frames travel through. The camera sits at its mouth "
+          "looking at the back wall, and the three outputs are its three "
+          "walls — so a frame's left edge is either still on the back wall or "
+          "already on the left one, never in two pictures at once.\n\n"
+          "*Travel Start* and *Travel End* are where a frame enters and "
+          "leaves. It crosses off the back wall and onto the sides partway "
+          "through; *Frame Size* moves where that happens.\n\n"
+          "*Keystone* decides what the two side outputs actually contain. At "
+          "0 each is that wall's own flat surface, which is what you want when "
+          "the output drives a screen standing where that wall is — the real "
+          "geometry then does the perspective for you. At 1 it is the wall as "
+          "the camera sees it, tapering away, which is what you want when the "
+          "three outputs go to three flat panels side by side and the "
+          "perspective has to be baked in.")
+      .floatField("quad_size", 1.0f, 0.1f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
-                  "How big the frames are in the tunnel. Past about 0.4 the "
-                  "nearest one is always beyond the edge of the picture.")
+                  "Moves where a frame crosses off the back wall and onto the "
+                  "sides. Bigger overflows sooner.")
         .label("Frame Size", "Size")
-      .floatField("z_far", 6.0f, 0.5f, 40.f, state::SecondaryInput)
-        .label("Depth Far", "Far")
-      .floatField("z_near", 0.35f, 0.05f, 4.f, state::SecondaryInput)
-        .label("Depth Near", "Near")
-      .floatField("fov", 55.f, 10.f, 120.f, state::SecondaryInput,
-                  nullptr, 0.f, "deg")
-        .label("Field of View", "FOV")
-      .floatField("side_angle", 55.f, 0.f, 90.f, state::PrimaryInput,
-                  nullptr, 0.f, "deg",
-                  "How far round the side cameras sit. 90 is exactly edge-on, "
-                  "where the frames vanish to nothing.")
-        .label("Side Angle", "Side")
-      .floatField("side_dolly", 1.0f, 0.2f, 4.f, state::SecondaryInput,
+      .floatField("z_far", 8.0f, 1.f, 40.f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
-                  "How far back the side cameras stand off.")
-        .label("Side Distance", "SideD")
+                  "How far back a frame starts. Larger begins it smaller and "
+                  "deeper in.")
+        .label("Travel Start", "Start")
+      .floatField("z_near", 0.15f, 0.02f, 1.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How near a frame gets before it is gone — also how far "
+                  "along the side walls the bars reach.")
+        .label("Travel End", "End")
+      .floatField("wall_keystone", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "0 = the side outputs are those walls' own flat surfaces; "
+                  "1 = the walls as the camera sees them, tapering away.")
+        .label("Keystone", "Keyst")
 
       // ---------------- Quads ----------------
       .group("quads", "Frames")
@@ -576,18 +623,18 @@ void tick(void* self, double dt) {
 
 /// Fill the uniform block for one camera. `quad_order` is near-to-far, so a
 /// masking frame in front eats the glow of the ones behind it.
-static void fillUniforms(State* s, const Camera& cam, int vp_w, int vp_h,
-                         Uniforms& u) {
+static void fillUniforms(State* s, int v, int vp_w, int vp_h, Uniforms& u) {
   const auto cs = fx::coverSquare(vp_w, vp_h);
-  const float half = s->quad_size;
+  const WallExtent wall = frameExtent(cs);
 
-  // Sort near-to-far for THIS view. Three items, so a hand-rolled insertion
-  // sort is smaller and clearer than pulling in <algorithm>.
+  // Sort far-to-near, so a nearer frame's mask eats the glow of the ones behind
+  // it. Three items, so a hand-rolled insertion sort beats pulling in
+  // <algorithm>.
   int order[QUADS] = {0, 1, 2};
   for (int i = 1; i < QUADS; i++) {
     const int key = order[i];
     int j = i - 1;
-    while (j >= 0 && s->frame.z[order[j]] > s->frame.z[key]) {
+    while (j >= 0 && s->frame.z[order[j]] < s->frame.z[key]) {
       order[j + 1] = order[j];
       j--;
     }
@@ -597,8 +644,7 @@ static void fillUniforms(State* s, const Camera& cam, int vp_w, int vp_h,
   for (int slot = 0; slot < QUADS; slot++) {
     const int q = order[slot];
     float pts[4][2] = {};
-    const bool visible = s->frame.live[q] &&
-                         projectQuad(cam, half, s->frame.z[q], pts);
+    wallCorners(*s, wall, v, s->frame.z[q], pts);
 
     // Rows 2*slot and 2*slot+1: (c0.xy, c1.zw) then (c2.xy, c3.zw).
     u.corners[slot * 2 + 0][0] = pts[0][0];
@@ -613,10 +659,13 @@ static void fillUniforms(State* s, const Camera& cam, int vp_w, int vp_h,
     u.quad_color[slot][0] = s->color[q][0];
     u.quad_color[slot][1] = s->color[q][1];
     u.quad_color[slot][2] = s->color[q][2];
-    // A culled or unlit frame goes dark rather than being skipped: the loop is
-    // unrolled over a fixed three, and zero emission costs the same as a branch.
-    u.quad_color[slot][3] = visible ? emissionDrive(s->emission[q]) : 0.0f;
-    u.fills[slot] = visible ? s->fill[q] : 0.0f;
+    // A frame that is not live goes dark rather than being skipped: the shader
+    // loop is unrolled over a fixed three, and zero emission costs the same as
+    // a branch would. Frames that have left THIS wall need no such treatment —
+    // they simply land outside the picture, and their halo bleeding in around
+    // the corner is exactly what we want.
+    u.quad_color[slot][3] = s->frame.live[q] ? emissionDrive(s->emission[q]) : 0.0f;
+    u.fills[slot] = s->frame.live[q] ? s->fill[q] : 0.0f;
   }
   u.fills[3] = 0.0f;
 
@@ -638,7 +687,11 @@ static void fillUniforms(State* s, const Camera& cam, int vp_w, int vp_h,
   u.style[3]  = haloRadius(s->halo_radius);
   u.style[4]  = s->halo_gain;
   u.style[5]  = s->halo_falloff;
-  u.style[6]  = s->corner_radius;
+  // Corner rounding is meaningless on a side wall and actively wrong: a frame's
+  // edge there is a zero-area LINE, and shrinking a line by corner_r pushes its
+  // outline out to either side, so the bar renders as two cores with a notch
+  // down the middle. Zero it and the line is a line.
+  u.style[6]  = (v == 0) ? s->corner_radius : 0.0f;
   u.style[7]  = px * 1.2f;
   u.style[8]  = s->fill_gain;
   u.style[9]  = s->halo_smooth;
@@ -694,7 +747,7 @@ void render(void* self, int vp_w, int vp_h) {
     }
 
     Uniforms u = {};
-    fillUniforms(s, makeCamera(*s, v), vp_w, vp_h, u);
+    fillUniforms(s, v, vp_w, vp_h, u);
     s->uniform_buf[v].writeOne(u);
 
     auto cp = gpu::ComputePass::begin();
@@ -779,9 +832,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "z_far"))         s->show_p.z_far = state::patchFloat(i);
     else if (state::pathIs(p, l, "z_near"))        s->show_p.z_near = state::patchFloat(i);
     else if (state::pathIs(p, l, "quad_size"))     s->quad_size = state::patchFloat(i);
-    else if (state::pathIs(p, l, "fov"))           s->fov_deg = state::patchFloat(i);
-    else if (state::pathIs(p, l, "side_angle"))    s->side_angle_deg = state::patchFloat(i);
-    else if (state::pathIs(p, l, "side_dolly"))    s->side_dolly = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_keystone")) s->wall_keystone = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_width"))    s->line_width = state::patchFloat(i);
     else if (state::pathIs(p, l, "line_gain"))     s->line_gain = state::patchFloat(i);
     else if (state::pathIs(p, l, "core_whiten"))   s->core_whiten = state::patchFloat(i);

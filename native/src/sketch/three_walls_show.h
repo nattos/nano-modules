@@ -56,8 +56,8 @@ inline bool isFrameLocked(int m) { return m == MoveResonate || m == MoveResonate
 struct Params {
   /// Depth range, in room units. `z_near` is in front of the near plane, so a
   /// quad at phase 1 has already swallowed the camera.
-  float z_far = 6.0f;
-  float z_near = 0.35f;
+  float z_far = 8.0f;
+  float z_near = 0.15f;
 
   /// Travel shape, shared by every move that eases. 0 linear, 0.5 smoothstep,
   /// 1 smootherstep — the same family and the same default as the rig's.

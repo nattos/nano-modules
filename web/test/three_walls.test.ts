@@ -104,7 +104,10 @@ describe(`Three Walls E2E (${backend})`, () => {
   it('Pulse is a train — the frames arrive one after another', async () => {
     // Frame 1 is magenta and frame 3 is cyan, so "how many have launched" is
     // readable straight off the colours.
-    const p = [['pulse', 1], ['pulse_time', 1.2], ['pulse_stagger', 0.35]];
+    // core_whiten off: the neon core deliberately blows to white, and a small
+    // frame is nothing BUT core, so the hue only survives out in the halo.
+    const p = [['pulse', 1], ['pulse_time', 1.2], ['pulse_stagger', 0.35],
+               ['core_whiten', 0]];
     const first = await run('three_walls_train_first', p, 6);    // ~0.1 s
     const all   = await run('three_walls_train_all', p, 50);     // ~0.8 s
     expect(first.success && all.success).toBe(true);
@@ -121,22 +124,25 @@ describe(`Three Walls E2E (${backend})`, () => {
     expect(litCount(done)).toBeLessThan(20);
   });
 
-  // A gate stays up. This is also the check that a held event value does not
-  // re-arm the move every frame off the executor's replay — a re-arming
-  // Resonate would keep resetting to its start pose instead of running.
+  // A gate stays up, and puts all three frames in the room. Frozen at rate 0 so
+  // the pose is exact: the point here is PRESENCE, and the case below covers
+  // the motion.
   it('Resonate holds all three frames while the trigger is high', async () => {
-    // Smaller frames than the default, so all three of the start pose fit in
-    // the viewport at once — the nearest sits close enough to the lens that at
-    // full size its outline is off-screen and only its glow is left.
+    // Small frames, so all three of the start pose are still on the BACK wall
+    // — at the default size the nearest has already overflowed onto the sides
+    // and is by design not in this output at all.
     const f = await run('three_walls_resonate',
-                        [['resonate', 1], ['resonate_f0', 0.2], ['resonate_f1', 0.2],
-                         ['quad_size', 0.25]], 30);
+                        [['resonate', 1], ['resonate_f0', 0], ['resonate_f1', 0],
+                         ['quad_size', 0.5], ['core_whiten', 0]], 30);
     expect(f.success).toBe(true);
     expect(hasMagenta(f)).toBe(true);
     expect(hasCyan(f)).toBe(true);
     expect(litCount(f)).toBeGreaterThan(1000);
   });
 
+  // Also the check that a held event value does not re-arm the move every frame
+  // off the executor's replay: a re-arming Resonate would snap back to its start
+  // pose on every patch and these two frames would be identical.
   it('the frames keep moving under a held gate', async () => {
     const p: any[] = [['resonate', 1], ['resonate_f0', 0.5], ['resonate_f1', 0.5]];
     const a = await run('three_walls_moving_a', p, 10);
@@ -147,14 +153,20 @@ describe(`Three Walls E2E (${backend})`, () => {
 });
 });
 
-// --- The side views ---------------------------------------------------------
+// --- The walls --------------------------------------------------------------
 //
-// Only reachable through a real sketch: wire the aux output into a
+// The three outputs are three WALLS of one room, and they PARTITION it: a
+// frame's vertical edge is either still on the back wall or already on a side
+// wall, never in two pictures at once. That partition is the contract this
+// whole card is built on, so most of what follows is checking it holds.
+//
+// Only reachable through a real sketch: wire the side output into a
 // util.sidechannel_out override and put a util.sidechannel_in after it, and the
 // sketch output IS that texture (the trick from chroma_wave.test.ts:393).
-// Engine dt is wall clock, so everything here is geometry.
-describe('Three Walls side views', () => {
-  jest.setTimeout(120000);
+// Engine dt is wall clock, so every case here freezes the pose with rate 0 and
+// asserts geometry — nothing rides on timing.
+describe('Three Walls walls', () => {
+  jest.setTimeout(150000);
   const W = 240, H = 160;
 
   const luma = (p: { r: number; g: number; b: number }) => (p.r + p.g + p.b) / 3;
@@ -163,7 +175,7 @@ describe('Three Walls side views', () => {
     f.forEachPixel((p: any) => { if (luma(p) > threshold) n++; });
     return n;
   };
-  /** Centre of mass of the lit pixels, in x. Left and right views mirror it. */
+  /** Centre of mass of the lit pixels, in x. */
   const litCentroidX = (f: any, threshold = 60) => {
     let sum = 0, n = 0;
     f.forEachPixel((p: any, x: number) => {
@@ -202,59 +214,88 @@ describe('Three Walls side views', () => {
       waitFrames: 25, captureTraceIds: ['out'], dumpName: id,
     });
 
-  // Held at a crawl so the frames are somewhere down the tunnel whatever the
-  // wall clock did — no timing rides on this.
-  const HELD = { resonate: 1, resonate_f0: 0.15, resonate_f1: 0.15 };
+  // Rate 0 freezes the three frames at phases 0, 1/3 and 2/3 forever, so every
+  // case below samples an EXACT pose however long the wall clock took.
+  const FROZEN = { resonate: 1, resonate_f0: 0, resonate_f1: 0 };
 
-  it('the side views show the same tunnel from outside', async () => {
-    const main = await view('tw_side_main', 'tex_out', HELD);
-    const left = await view('tw_side_left', 'left_out', HELD);
-    expect(main.success && left.success).toBe(true);
-
-    // Both have content — so the aux allocation, the publish and the
-    // connection gate all work — and they are different pictures, which is the
-    // point: one looks down the tunnel, the other across it.
+  it('a frame on the back wall is not on the side walls', async () => {
+    // Small frames: all three are well inside the back wall, so the side walls
+    // have nothing on them at all.
+    const p = { ...FROZEN, quad_size: 0.4 };
+    const main = await view('tw_part_main', 'tex_out', p);
+    const left = await view('tw_part_left', 'left_out', p);
+    const right = await view('tw_part_right', 'right_out', p);
+    expect(main.success && left.success && right.success).toBe(true);
     expect(litCount(main.trace('out'))).toBeGreaterThan(500);
-    expect(litCount(left.trace('out'))).toBeGreaterThan(500);
-    main.trace('out').expectDifferentFrom(left.trace('out'), 60);
+    expect(litCount(left.trace('out'))).toBeLessThan(60);
+    expect(litCount(right.trace('out'))).toBeLessThan(60);
   });
 
-  it('left and right are mirror images of each other', async () => {
-    const left = await view('tw_side_l', 'left_out', HELD);
-    const right = await view('tw_side_r', 'right_out', HELD);
+  it('a frame that overflows leaves the back wall and lands on both sides',
+     async () => {
+    // Big frames: the nearest has crossed the back wall's edge, so it is gone
+    // from the main output and present on BOTH side walls — one vertical edge
+    // each, which is the whole partition in one assertion.
+    const p = { ...FROZEN, quad_size: 2.0 };
+    const left = await view('tw_flow_left', 'left_out', p);
+    const right = await view('tw_flow_right', 'right_out', p);
+    expect(left.success && right.success).toBe(true);
+    expect(litCount(left.trace('out'))).toBeGreaterThan(300);
+    expect(litCount(right.trace('out'))).toBeGreaterThan(300);
+  });
+
+  it('the two side walls mirror each other about the back wall', async () => {
+    const p = { ...FROZEN, quad_size: 2.0 };
+    const left = await view('tw_mirror_left', 'left_out', p);
+    const right = await view('tw_mirror_right', 'right_out', p);
     expect(left.success && right.success).toBe(true);
 
-    // The nearest frame is the biggest, so it dominates the centre of mass and
-    // sits on opposite sides of the two views.
+    // Each wall's FAR end abuts the back wall, so it is on the inner side of
+    // that output — right edge for the left wall, left edge for the right one.
+    // A bar partway down therefore sits on opposite sides of the two pictures,
+    // at mirrored distances from the centre.
     const lx = litCentroidX(left.trace('out'));
     const rx = litCentroidX(right.trace('out'));
-    expect(Math.abs(lx - rx)).toBeGreaterThan(W * 0.15);
-    expect(Math.abs((lx + rx) / 2 - W / 2)).toBeLessThan(W * 0.12);
+    expect(lx).toBeLessThan(W / 2);
+    expect(rx).toBeGreaterThan(W / 2);
+    expect(Math.abs((lx + rx) / 2 - W / 2)).toBeLessThan(W * 0.06);
   });
 
-  // The knob the whole side-view idea rests on. At 90 degrees the cameras are
-  // exactly edge-on to the frames, which are flat — so each one collapses to a
-  // sliver and a pulse would cross it in no time. It does not go entirely dark,
-  // because the tube has a width of its own and that survives being seen
-  // edge-on; what collapses is the AREA, which is what "infinitely thin" means
-  // here in practice.
-  it('a 90 degree side angle takes the frames edge-on', async () => {
-    const open = await view('tw_side_open', 'left_out', { ...HELD, side_angle: 55 });
-    const flat = await view('tw_side_flat', 'left_out', { ...HELD, side_angle: 90 });
-    expect(open.success && flat.success).toBe(true);
-    expect(litCount(open.trace('out'))).toBeGreaterThan(500);
-    // A three-fold collapse in lit AREA. Area, not width: the sliver's width is
-    // the tube plus its halo, which is the same however edge-on the camera is,
-    // so a width measure would be reading the neon rather than the geometry.
-    expect(litCount(flat.trace('out'))).toBeLessThan(
-      litCount(open.trace('out')) * 0.45);
+  it('a frame travels down the side wall as it keeps going', async () => {
+    // Further along means nearer the camera, which is the OUTER end of the
+    // side output. Two sizes put the same frame at two points on that run.
+    // Both sizes keep the MIDDLE frame on the back wall, so only the nearest
+    // one is on the side and the centre of mass is that single bar. Push
+    // further and a second bar arrives and averages the measurement away.
+    const near = await view('tw_run_a', 'left_out', { ...FROZEN, quad_size: 1.2 });
+    const far  = await view('tw_run_b', 'left_out', { ...FROZEN, quad_size: 1.9 });
+    expect(near.success && far.success).toBe(true);
+    // The left wall's far end is its right edge, so travelling means moving
+    // LEFT across the picture.
+    expect(litCentroidX(far.trace('out')))
+      .toBeLessThan(litCentroidX(near.trace('out')) - W * 0.1);
   });
 
-  it('the main view is unaffected by whether the side views are wired',
+  it('Keystone tapers the side wall instead of leaving it square', async () => {
+    // 0 is the wall's own flat surface: a bar spans its full height. 1 is the
+    // wall as the camera sees it, so the same bar is cut down to the wall's
+    // apparent height at that depth.
+    const flat = await view('tw_keys_flat', 'left_out',
+                            { ...FROZEN, quad_size: 1.5, wall_keystone: 0 });
+    const keyed = await view('tw_keys_on', 'left_out',
+                             { ...FROZEN, quad_size: 1.5, wall_keystone: 1 });
+    expect(flat.success && keyed.success).toBe(true);
+    expect(litCount(flat.trace('out'))).toBeGreaterThan(300);
+    expect(litCount(keyed.trace('out')))
+      .toBeLessThan(litCount(flat.trace('out')) * 0.8);
+  });
+
+  it('the main view is unaffected by whether the side walls are wired',
      async () => {
-    // The aux dispatches are gated on connectivity, and that gate must not be
-    // able to change what the main output looks like.
-    const alone = await view('tw_gate_alone', 'tex_out', HELD);
+    // The side dispatches are gated on connectivity, and that gate must not be
+    // able to change what the back wall looks like.
+    const p = { ...FROZEN, quad_size: 0.6 };
+    const alone = await view('tw_gate_alone', 'tex_out', p);
     const withAux = await runEngineTest({
       width: W, height: H,
       modules: ['com.nano.lights', 'com.nano.core'],
@@ -264,7 +305,7 @@ describe('Three Walls side views', () => {
           wires: [
             { id: 'w1', src: { instanceKey: 'tw@0', field: 'tex_out' },
               dest: { instanceKey: 'send@0', field: 'send_in' } },
-            // A second consumer of an aux view, so its dispatch runs too.
+            // A consumer for a side wall too, so its dispatch actually runs.
             { id: 'w2', src: { instanceKey: 'tw@0', field: 'left_out' },
               dest: { instanceKey: 'send2@0', field: 'send_in' } },
           ],
@@ -272,7 +313,7 @@ describe('Three Walls side views', () => {
             { type: 'module', module_type: 'source.solid_color', instance_key: 'bg@0',
               params: { color: [0, 0, 0] } },
             { type: 'module', module_type: 'source.mesh.three_walls', instance_key: 'tw@0',
-              params: { grain: 0, scanline: 0, chroma_bleed: 0, ...HELD } },
+              params: { grain: 0, scanline: 0, chroma_bleed: 0, ...p } },
             { type: 'module', module_type: 'util.sidechannel_out', instance_key: 'send2@0',
               params: { channel: 4 } },
             { type: 'module', module_type: 'util.sidechannel_out', instance_key: 'send@0',
@@ -287,8 +328,8 @@ describe('Three Walls side views', () => {
       waitFrames: 25, captureTraceIds: ['out'], dumpName: 'tw_gate_both',
     });
     expect(alone.success && withAux.success).toBe(true);
-    // Same move at the same crawl, so the two main views agree up to the frames
-    // the wall clock happened to land on.
-    expect(litCount(withAux.trace('out'))).toBeGreaterThan(500);
+    // Same frozen pose either way, so the two back walls agree closely.
+    expect(Math.abs(litCount(withAux.trace('out')) - litCount(alone.trace('out'))))
+      .toBeLessThan(litCount(alone.trace('out')) * 0.15);
   });
 });
