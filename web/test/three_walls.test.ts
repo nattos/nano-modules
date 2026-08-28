@@ -144,20 +144,41 @@ describe(`Three Walls E2E (${backend})`, () => {
   // off the executor's replay: a re-arming Resonate would snap back to its start
   // pose on every patch and these two frames would be identical.
   // The glow carries as much of the depth as the size does. A real tube has a
-  // fixed thickness, so a far frame should be a hairline with almost no bloom
-  // and a near one a fat bar — hold the width constant and a receding frame
-  // reads as a flat shrinking rectangle instead of something going away.
-  it('Depth Glow thins the neon on a far frame', async () => {
-    // One small frame, well down the tunnel, so its own size is identical in
-    // both renders and the only difference is how wide its tube is.
-    const p: any[] = [['pulse', 1], ['pulse_time', 4.0], ['pulse_stagger', 5.0],
-                      ['quad_size', 0.5]];
-    const flatGlow = await run('three_walls_dglow_off', [...p, ['depth_scale', 0]], 6);
-    const scaled   = await run('three_walls_dglow_on',  [...p, ['depth_scale', 1]], 6);
-    expect(flatGlow.success && scaled.success).toBe(true);
-    // Same geometry, less ink: a thinner line and a tighter halo.
-    expect(litCount(scaled, 20)).toBeLessThan(litCount(flatGlow, 20) * 0.6);
-    expect(litCount(scaled, 20)).toBeGreaterThan(0);
+  // fixed thickness, so what reaches the eye scales with everything else: near,
+  // a fat bar with a wide bloom; far, a hairline with almost none. Hold the
+  // width constant and a frame coming at you reads as a flat rectangle being
+  // scaled up rather than an object arriving.
+  //
+  // Measured as INK, not as core width. The core is one to three pixels at any
+  // sane size, so a real change rounds away; the halo is where nearly all of
+  // the cue actually lives, and it is what the eye reads.
+  it('Depth Glow grows the neon as a frame arrives', async () => {
+    const p: any[] = [['pulse', 1], ['pulse_time', 1.0], ['pulse_stagger', 5.0],
+                      ['quad_size', 1.0], ['core_whiten', 0]];
+    const BW = 480, BH = 320;
+    const big = (name: string, extra: any[], ticks: number) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: BW, height: BH,
+      inputColor: [0, 0, 0, 1],
+      params: [...QUIET, ...p, ...extra] as any, ticks, dumpName: name,
+    });
+
+    // The SAME tick with the scaling off is the control: identical geometry,
+    // so the ratio between them is purely how much tube and bloom the frame
+    // was given at that depth.
+    const ratioAt = async (ticks: number, tag: string) => {
+      const off = await big(`three_walls_dg_${tag}_off`, [['depth_scale', 0]], ticks);
+      const on  = await big(`three_walls_dg_${tag}_on`,  [['depth_scale', 1]], ticks);
+      expect(off.success && on.success).toBe(true);
+      return litCount(on, 30) / Math.max(1, litCount(off, 30));
+    };
+
+    const far = await ratioAt(6, 'far');
+    const near = await ratioAt(30, 'near');
+    // Deep in the tunnel the frame is drawn with far less ink than its authored
+    // width would give it; by the time it is on top of you it has most of it
+    // back.
+    expect(far).toBeLessThan(0.5);
+    expect(near).toBeGreaterThan(far * 1.8);
   });
 
   it('the frames keep moving under a held gate', async () => {
