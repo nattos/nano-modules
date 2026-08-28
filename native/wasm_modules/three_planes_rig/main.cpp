@@ -365,8 +365,10 @@ void module_init() {
           "true drag speed instead of a string of spikes, and it returns to a "
           "real zero when you stop. *Full Scale* is the speed that pegs it; "
           "*Glint Decay* is how long that reading coasts after you let go.\n\n"
-          "**Reaching an end is a throw, not just a mute.** The middle "
-          "*latches*: sit there and the system charges. Arrive at either "
+          "**Reaching an end is a throw, not just a mute.** Passing through "
+          "the middle *charges* — by how hard you go through it, not by how "
+          "long you linger, so a short vigorous flick charges hardest. Arrive "
+          "at either "
           "extreme and the whole charge is spent at once, and *Release* rings "
           "out over *Ring Out* on its own clock — nothing you do with the knob "
           "afterwards cancels it, so you can come straight back to the middle "
@@ -409,12 +411,14 @@ void module_init() {
                     "The sweep speed that pegs the Sweep Speed rail, in full "
                     "throws per second.")
         .label("Full Scale", "Scale");
-  schema.floatField("latch_time", 0.6f, 0.02f, 4.f, state::PrimaryInput,
-                    nullptr, 0.f, "s",
-                    "How long at centre to charge the throw fully. Sit in the "
-                    "middle and the system latches on; arrive at a mute and "
-                    "whatever you had held is thrown at once.")
-        .label("Latch", "Latch");
+  schema.floatField("latch_drive", 2.0f, 0.f, 6.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "How readily a pass through the middle charges the throw. "
+                    "The charge takes the SPEED of the pass and holds the "
+                    "best of it — so a short vigorous flick charges hard and "
+                    "dawdling in the middle charges nothing. Above 1 an "
+                    "ordinary firm sweep already pegs it.")
+        .label("Latch Drive", "Latch");
   schema.floatField("ring_time", 1.4f, 0.05f, 6.f, state::PrimaryInput,
                     nullptr, 0.f, "s",
                     "How long a throw takes to ring out. Nothing you do with "
@@ -641,7 +645,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sweep_decay"))    s->p.sweep_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_window"))   s->p.sweep_window = state::patchFloat(i);
-    else if (state::pathIs(p, l, "latch_time"))     s->p.latch_time = state::patchFloat(i);
+    else if (state::pathIs(p, l, "latch_drive"))    s->p.latch_drive = state::patchFloat(i);
     else if (state::pathIs(p, l, "ring_time"))      s->p.ring_time = state::patchFloat(i);
   }
 }

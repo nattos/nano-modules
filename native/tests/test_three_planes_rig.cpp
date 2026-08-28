@@ -868,49 +868,105 @@ TEST_CASE("a flickering floor TOGGLES — a dark one comes up",
 // what was thrown rings out on its own clock afterwards.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("sitting in the middle charges without showing anything",
+/// A constant-speed sweep between two knob positions. `ranges_per_second` is
+/// exactly what the charge reads off the gesture.
+///
+/// Sweeps rather than jumps ON PURPOSE. A knob that teleports from one
+/// extreme to the other really has crossed the middle, at an enormous speed,
+/// so it charges fully and fires in the same frame — correct, and useless for
+/// measuring anything.
+Out sweepAcross(Core& c, Params& p, float from, float to, float ranges_per_second) {
+  const float dt = 0.008f;
+  const float step = ranges_per_second * dt;
+  Out o{};
+  if (from > to) for (float v = from; v > to; v -= step) o = sweepAt(c, p, v, dt);
+  else           for (float v = from; v < to; v += step) o = sweepAt(c, p, v, dt);
+  return o;
+}
+
+/// The whole gesture: from one extreme, through the middle, to the mute at the
+/// other end. Returns what it threw.
+float flick(Core& c, Params& p, float ranges_per_second) {
+  return sweepAcross(c, p, 0.95f, 0.02f, ranges_per_second).release;
+}
+
+TEST_CASE("dawdling in the middle charges nothing",
           "[three_planes_rig][sweep]") {
+  // Filling by the second had the gesture backwards: a short sharp flick
+  // through the middle is the most emphatic thing you can do with the knob,
+  // and it spent almost no time in the band. So loitering earns nothing.
   Core c;
   Params p;
   p.mode = ModeSolid;
   Out o{};
-  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
-  REQUIRE(c.sweep.charge > 0.9f);
-  REQUIRE(o.release == 0.0f);   // nothing thrown yet
-  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+  for (int i = 0; i < 200; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE(c.sweep.charge == 0.0f);
+  REQUIRE(o.release == 0.0f);
+
+  // ...and creeping out to a mute on an empty charge throws nothing at all.
+  o = sweepAcross(c, p, kSweepCenter, 0.02f, 0.02f);
+  REQUIRE(o.release == 0.0f);
 }
 
-TEST_CASE("reaching a mute throws what was held", "[three_planes_rig][sweep]") {
+TEST_CASE("a vigorous pass charges the throw", "[three_planes_rig][sweep]") {
   Core c;
   Params p;
   p.mode = ModeSolid;
   p.sweep_flicker = 0.0f;
-  for (int i = 0; i < 60; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
-  REQUIRE_THAT(c.sweep.charge, WithinAbs(1.0, 1e-5));
+  sweepAcross(c, p, 0.95f, 0.15f, 2.5f);   // through the middle, firmly
+  REQUIRE(c.sweep.charge > 0.9f);
 
-  const Out o = sweepAt(c, p, 1.0f, 0.016f);
+  const Out o = sweepAcross(c, p, 0.15f, 0.02f, 2.5f);   // on to the mute
   REQUIRE(o.release > 0.9f);
   REQUIRE(c.sweep.charge == 0.0f);   // spent, all at once
-  // ...and the tower is dark under it. The throw is what you see, not a
-  // brightening of what was already there.
-  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(0.0, 1e-5));
+  // ...and the tower is muted under it — that being what fired the throw in
+  // the first place. What you see is the release, not a brightening of
+  // anything that was already there.
+  for (int i = 0; i < kLayers; ++i) REQUIRE(o.emission[i] < kMuteGain);
 }
 
-TEST_CASE("hold longer, throw harder", "[three_planes_rig][sweep]") {
-  const auto thrown = [](float centre_seconds) {
+TEST_CASE("flick harder, throw harder", "[three_planes_rig][sweep]") {
+  const auto thrown = [](float ranges_per_second) {
     Core c;
     Params p;
     p.mode = ModeSolid;
-    p.latch_time = 1.0f;
-    for (float t = 0.0f; t < centre_seconds; t += 0.016f)
-      sweepAt(c, p, kSweepCenter, 0.016f);
-    return sweepAt(c, p, 1.0f, 0.016f).release;
+    p.latch_drive = 1.0f;   // no help from the drive: read the pass as it was
+    return flick(c, p, ranges_per_second);
   };
-  const float brief = thrown(0.2f);
-  const float full = thrown(1.2f);
-  REQUIRE(brief > 0.0f);
-  REQUIRE(full > brief * 2.0f);
-  REQUIRE(full > 0.95f);   // a full latch throws everything
+  const float gentle = thrown(0.35f);
+  const float firm = thrown(2.5f);
+  REQUIRE(gentle > 0.0f);
+  REQUIRE(firm > gentle * 2.0f);
+  REQUIRE(firm > 0.95f);
+}
+
+TEST_CASE("the charge holds the best of the pass", "[three_planes_rig][sweep]") {
+  // Peak-held, so slowing down after a hard pass does not give the throw back.
+  // The vigour was in the gesture; dithering afterwards is not a second one.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  sweepAcross(c, p, 0.95f, 0.15f, 3.0f);
+  const float charged = c.sweep.charge;
+  REQUIRE(charged > 0.9f);
+  sweepAcross(c, p, 0.15f, kSweepCenter, 0.05f);   // creep back and loiter
+  for (int i = 0; i < 120; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
+  REQUIRE_THAT(c.sweep.charge, WithinAbs(charged, 1e-6));
+}
+
+TEST_CASE("Latch Drive decides how squashed the reading is",
+          "[three_planes_rig][sweep]") {
+  const auto thrown = [](float drive) {
+    Core c;
+    Params p;
+    p.mode = ModeSolid;
+    p.latch_drive = drive;
+    return flick(c, p, 0.9f);   // an ordinary, unhurried sweep
+  };
+  const float polite = thrown(1.0f);
+  const float driven = thrown(3.0f);
+  REQUIRE(polite < 0.7f);     // the raw reading is a meter's, and too tame
+  REQUIRE(driven > 0.95f);    // ...and above 1 an ordinary sweep pegs it
 }
 
 TEST_CASE("the tail is causal: nothing the knob does cancels it",
@@ -924,8 +980,7 @@ TEST_CASE("the tail is causal: nothing the knob does cancels it",
   p.mode = ModeSolid;
   p.sweep_flicker = 0.0f;
   p.ring_time = 2.0f;
-  for (int i = 0; i < 60; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
-  const float thrown = sweepAt(c, p, 1.0f, 0.016f).release;
+  const float thrown = flick(c, p, 2.5f);
   REQUIRE(thrown > 0.9f);
 
   Out o{};
@@ -942,36 +997,35 @@ TEST_CASE("Ring Out is how long the tail lasts", "[three_planes_rig][sweep]") {
     Params p;
     p.mode = ModeSolid;
     p.ring_time = ring;
-    for (int i = 0; i < 80; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
-    Out o = sweepAt(c, p, 1.0f, 0.016f);
-    for (float t = 0.0f; t < seconds; t += 0.016f) o = sweepAt(c, p, 1.0f, 0.016f);
+    flick(c, p, 2.5f);
+    Out o{};
+    for (float t = 0.0f; t < seconds; t += 0.016f) o = sweepAt(c, p, 0.02f, 0.016f);
     return o.release;
   };
   REQUIRE(ringing_after(0.3f, 0.5f) == 0.0f);    // short: over and done
   REQUIRE(ringing_after(3.0f, 0.5f) > 0.5f);     // long: barely started
 }
 
-TEST_CASE("one mute is one throw", "[three_planes_rig][sweep]") {
-  // Sitting at the end must not keep firing, and neither must jogging around
-  // out there. The charge has to be rebuilt in the middle first — which is
-  // what makes the gesture a round trip rather than a switch.
+TEST_CASE("one pass is one throw", "[three_planes_rig][sweep]") {
+  // Sitting at the end must not keep firing, and neither must jogging about
+  // out there. The charge has to be earned by another pass through the middle
+  // first — which is what makes the gesture a round trip rather than a switch.
   Core c;
   Params p;
   p.mode = ModeSolid;
   p.ring_time = 0.25f;
-  for (int i = 0; i < 60; ++i) sweepAt(c, p, kSweepCenter, 0.016f);
-  REQUIRE(sweepAt(c, p, 1.0f, 0.016f).release > 0.9f);
+  REQUIRE(flick(c, p, 2.5f) > 0.9f);
 
-  // Ring it out while jogging about at the muted end.
+  // Ring it out while jogging about at the muted end, well clear of centre.
   Out o{};
-  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, i % 2 ? 1.0f : 0.93f, 0.016f);
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, i % 2 ? 0.02f : 0.11f, 0.016f);
   REQUIRE(o.release == 0.0f);
-  // Straight to the OTHER end, still without visiting the middle: nothing.
-  for (int i = 0; i < 20; ++i) o = sweepAt(c, p, 0.0f, 0.016f);
+  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, i % 2 ? 0.02f : 0.11f, 0.016f);
   REQUIRE(o.release == 0.0f);
-  // Back through the middle to recharge, and it fires again.
-  for (int i = 0; i < 60; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
-  REQUIRE(sweepAt(c, p, 0.0f, 0.016f).release > 0.9f);
+
+  // Cross the middle again and it fires again — because that pass is a new
+  // gesture, not because the knob happens to be somewhere.
+  REQUIRE(sweepAcross(c, p, 0.02f, 0.98f, 2.5f).release > 0.9f);
 }
 
 TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",

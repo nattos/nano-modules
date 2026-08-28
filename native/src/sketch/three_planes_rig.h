@@ -150,7 +150,7 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
-  float latch_time = 0.6f;       ///< seconds at centre to charge the throw fully
+  float latch_drive = 2.0f;      ///< how readily a pass through the middle charges
   float ring_time = 1.4f;        ///< seconds the thrown release takes to ring out
 };
 
@@ -231,10 +231,11 @@ inline float rand01(unsigned& state) {
 ///                  you can ride the knob around centre without touching the
 ///                  look, and reaching for an end is a deliberate blackout.
 ///   REACHING AN END  → the throw. The mute at either extreme is not just
-///                  darkness: the middle charges while you sit in it, and
-///                  arriving at a mute spends that charge as a `release` that
-///                  rings out on its own clock. three_planes turns it into
-///                  rings flying outward off the stack.
+///                  darkness: passing through the middle charges by how HARD
+///                  you went through it, and arriving at a mute spends that
+///                  charge as a `release` ringing out on its own clock.
+///                  three_planes turns it into rings flying off the stack, so
+///                  a short vigorous sweep lands as an impulse.
 ///   HOW FAST it moves → glints, over in three_planes. Those are thrown by
 ///                  the GESTURE rather than by a level, so what goes out is
 ///                  the knob itself; the particles live over there and read
@@ -254,12 +255,16 @@ struct SweepCore {
 
   float speed = 0.0f;   ///< 0..1 motion envelope: instant attack, timed release
 
-  /// The throw. `charge` fills while the knob sits in the middle and is spent
-  /// the moment the tower mutes; `release` is what was thrown, ringing out on
-  /// its own clock afterwards. `armed` stops one mute from firing twice.
+  /// The throw. `charge` takes the vigour of a pass through the middle and is
+  /// spent the moment the tower mutes; `release` is what was thrown, ringing
+  /// out on its own clock afterwards. `armed` stops one mute firing twice.
   float charge = 0.0f;
   float release = 0.0f;
   bool armed = false;
+  /// The knob as of the previous tick. The vigorous case is exactly the one
+  /// that can clear the whole band between two samples — which would otherwise
+  /// charge nothing at all, and lose the best gesture on the card.
+  float last = kSweepCenter;
 
   int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
   float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
@@ -317,10 +322,10 @@ struct SweepCore {
     // --- 2b. CATCH AND THROW. The mute at either end is the point of the
     //         sweep, but a mute that is only "dark" has no gesture in it — the
     //         brightness just tracks where your hand is, and reversing undoes
-    //         it exactly. So the middle CHARGES: sit there and the system
-    //         latches on, filling over `latch_time`. Reaching a mute spends
-    //         the whole charge at once — that is the throw — and what was
-    //         thrown then rings out on ITS OWN clock.
+    //         it exactly. So passing through the middle CHARGES, by how hard
+    //         you went through it. Reaching a mute spends the whole charge at
+    //         once — that is the throw — and what was thrown then rings out on
+    //         ITS OWN clock.
     //
     //         Which is the whole point: nothing about where the knob goes next
     //         can cancel it. Come straight back to the middle and the tower
@@ -332,9 +337,26 @@ struct SweepCore {
     //         outward speed — a shockwave with a definite end, rather than
     //         something that leaps out and then creeps for ever.
     const float mag = magnitudeOf(o.sweep_out);
-    if (mag <= clamp01(p.sweep_deadzone)) {
-      charge += dt / (p.latch_time > 1e-3f ? p.latch_time : 1e-3f);
-      charge = clamp01(charge);
+    // In the band, or clean through it between two samples — which shows up as
+    // the knob changing sides without ever being seen inside. Same rule, and
+    // the same reason, as the glint launcher's over in three_planes_glints.h.
+    const bool crossed = ((last - kSweepCenter) < 0.0f) !=
+                         ((o.sweep_out - kSweepCenter) < 0.0f);
+    last = o.sweep_out;
+    if (mag <= clamp01(p.sweep_deadzone) || crossed) {
+      // The charge takes the VIGOUR of the pass, peak-held — not the time
+      // spent loitering. Filling it by the second had the gesture exactly
+      // backwards: a short sharp flick through the middle, which is the most
+      // emphatic thing you can do with the knob, spent almost no time in the
+      // band and so earned the weakest throw available. Now it earns the
+      // hardest one, and dawdling earns nothing at all.
+      //
+      // `speed` has an instant attack, so at the moment of a quick pass it IS
+      // the vigour of that pass. `latch_drive` is there because the raw
+      // reading is squashed for a meter and too polite for an impulse: above
+      // 1 an ordinary firm sweep already pegs it.
+      const float vigour = clamp01(speed * (p.latch_drive > 0.0f ? p.latch_drive : 0.0f));
+      if (vigour > charge) charge = vigour;
       armed = true;
     }
     if (armed && gain <= kMuteGain && charge > 0.0f) {
