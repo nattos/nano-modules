@@ -133,7 +133,7 @@ describe('mod.rig.three_planes E2E', () => {
   // sitting at 1 in instance state.
   it('a move fires once on the rising edge and does not re-arm from the replay', async () => {
     // Orbit baseline at mid-scale so idle reads as grey, and the widest possible
-    // swing so the start pose (baseline − 90 deg = 0.25 of a turn) is far from it.
+    // swing so the start pose (baseline + 90 deg = 0.75 of a turn) is far from it.
     const params = { azimuth_base: 0.5, show_azimuth: 180.0, show_time: 0.25 };
     const r = await runEngineMultiPhaseTest({
       width: 64, height: 64,
@@ -144,7 +144,8 @@ describe('mod.rig.three_planes E2E', () => {
             { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'rig_show' } }] },
           ],
           waitFrames: 20, captureTraceIds: ['out'] },
-        // Fire it. One frame later the camera has popped to its start pose.
+        // Fire it. One frame later the camera has popped to its start pose,
+        // which the reversed polarity puts a quarter turn ABOVE the baseline.
         { commands: [{ type: 'setParam', sketchId: 'rig_show', colIdx: 0, chainIdx: 1, paramKey: 'show', value: 1 }],
           waitFrames: 1, captureTraceIds: ['out'] },
         // Wait out the move with `show` STILL 1 in state. It must expire and pop
@@ -159,7 +160,7 @@ describe('mod.rig.three_planes E2E', () => {
     const doneR = r.phases[2].trace('out').averageColor().r;
     expect(idleR).toBeGreaterThan(100);
     expect(idleR).toBeLessThan(156);
-    expect(firedR).toBeLessThan(100);      // popped to the start pose
+    expect(firedR).toBeGreaterThan(156);   // popped to the start pose
     expect(doneR).toBeGreaterThan(100);    // popped back to baseline
     expect(doneR).toBeLessThan(156);
   });
@@ -287,7 +288,7 @@ describe('mod.rig.three_planes E2E', () => {
         // already pinned by the rising-edge case above.
         { commands: [{ type: 'setParam', sketchId: 'rig_hold', colIdx: 0, chainIdx: 1, paramKey: 'show', value: 1 }],
           waitFrames: 1, captureTraceIds: ['out'] },
-        // Long past the travel, and still parked — a quarter turn ABOVE it.
+        // Long past the travel, and still parked — a quarter turn BELOW it.
         // Without the hold this would have popped back to the baseline grey.
         { commands: [], waitFrames: 30, captureTraceIds: ['out'] },
       ],
@@ -297,7 +298,48 @@ describe('mod.rig.three_planes E2E', () => {
     const idleR = r.phases[0].trace('out').averageColor().r;
     expect(idleR).toBeGreaterThan(100);
     expect(idleR).toBeLessThan(156);
-    expect(r.phases[2].trace('out').averageColor().r).toBeGreaterThan(156);
+    expect(r.phases[2].trace('out').averageColor().r).toBeLessThan(100);
+  });
+
+  // SWEEP START. The wind-up that gives Sweep Up an entry pop it otherwise
+  // doesn't have. Sampled one frame in, with a long travel, so the reading is
+  // the start POSE and not a point on the curve — which keeps it independent of
+  // how long a frame actually took. (The ease curve's shape is pinned natively
+  // instead, for the opposite reason: it can only be read mid-travel, and e2e
+  // frame pacing can't hold a fraction of the travel steady.)
+  it('Sweep Start dips the deck at the top of the move', async () => {
+    const base = { elevation_base: 44.5, sweep_time: 3.0, sweep_target: 89.0 };
+    const fire = (id: string, params: Record<string, unknown>) =>
+      runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: MODULES,
+        phases: [
+          { commands: [
+              { type: 'createSketch', sketchId: id, sketch: scalarSketch('elevation', params) },
+              { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+            ],
+            waitFrames: 20, captureTraceIds: ['out'] },
+          { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1, paramKey: 'sweep_up', value: 1 }],
+            waitFrames: 1, captureTraceIds: ['out'] },
+        ],
+        dumpName: id,
+      });
+
+    // 0: starts ON the baseline, so firing changes nothing yet.
+    const flat = await fire('rig_sweep_flat', { ...base, sweep_start: 0 });
+    // −44.5 deg off a 44.5 deg baseline puts the start pose at 0 — full down.
+    const dip = await fire('rig_sweep_dip', { ...base, sweep_start: -44.5 });
+    expect(flat.success && dip.success).toBe(true);
+
+    for (const r of [flat, dip]) {
+      const idleR = r.phases[0].trace('out').averageColor().r;
+      expect(idleR).toBeGreaterThan(100);
+      expect(idleR).toBeLessThan(156);
+    }
+    const flatFired = flat.phases[1].trace('out').averageColor().r;
+    const dipFired = dip.phases[1].trace('out').averageColor().r;
+    expect(flatFired).toBeGreaterThan(100);   // no entry pop without a wind-up
+    expect(dipFired).toBeLessThan(40);        // and a deep one with it
   });
 
   it('a move still runs in Solid', async () => {
@@ -321,7 +363,8 @@ describe('mod.rig.three_planes E2E', () => {
     });
     expect(r.success).toBe(true);
     expect(r.phases[0].trace('out').averageColor().r).toBeGreaterThan(100);
-    expect(r.phases[1].trace('out').averageColor().r).toBeLessThan(100);
+    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(156);
     expect(r.phases[2].trace('out').averageColor().r).toBeGreaterThan(100);
+    expect(r.phases[2].trace('out').averageColor().r).toBeLessThan(156);
   });
 });

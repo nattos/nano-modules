@@ -26,8 +26,11 @@ Out step(Core& c, const Params& p, float s1, float s2, float s3, float s4, float
 
 Out idle(Core& c, const Params& p, float dt) { return step(c, p, 0, 0, 0, 0, dt); }
 
-/// The azimuth rail is a [0,1) turn, so an end pose past the top wraps.
-double wrapped(double turn) { return turn - (double)(long long)turn; }
+/// The azimuth rail is a [0,1) turn, so an end pose past either end wraps.
+double wrapped(double turn) {
+  double f = turn - (double)(long long)turn;
+  return f < 0.0 ? f + 1.0 : f;
+}
 
 constexpr double kBaseElevation = 35.264389682754654 / 89.0;
 constexpr double kBaseSpacing = 0.42 / 1.5;
@@ -196,7 +199,7 @@ TEST_CASE("an idle rig publishes the baselines, normalised", "[three_planes_rig]
   CHECK(o.anim_phase == 0.0f);
 }
 
-TEST_CASE("Show pops in at −half, eases across, and pops back", "[three_planes_rig]") {
+TEST_CASE("Show pops in at +half, eases across, and pops back", "[three_planes_rig]") {
   Core c;
   Params p;
   p.show_time = 1.0f;
@@ -206,7 +209,7 @@ TEST_CASE("Show pops in at −half, eases across, and pops back", "[three_planes
   // FIRST tick is already at the start pose — that discontinuity from the
   // baseline is the gesture, not an artefact.
   const Out first = idle(c, p, 1e-4f);
-  CHECK_THAT(first.azimuth, WithinAbs(0.125 - 15.0 / 360.0, 2e-4));
+  CHECK_THAT(first.azimuth, WithinAbs(0.125 + 15.0 / 360.0, 2e-4));
 
   float last = first.azimuth;
   bool retired = false;
@@ -222,7 +225,7 @@ TEST_CASE("Show pops in at −half, eases across, and pops back", "[three_planes
     }
   }
   REQUIRE(retired);
-  CHECK_THAT(last, WithinAbs(0.125 + 15.0 / 360.0, 2e-4));
+  CHECK_THAT(last, WithinAbs(0.125 - 15.0 / 360.0, 2e-4));
 }
 
 TEST_CASE("Sweep Up ends on its target elevation, then pops back", "[three_planes_rig]") {
@@ -264,7 +267,7 @@ TEST_CASE("Unfold grows from nothing and LANDS on the baseline", "[three_planes_
   CHECK_THAT(idle(c, p, 1e-4f).spacing, WithinAbs(kBaseSpacing, 1e-6));
 }
 
-TEST_CASE("Glance drops the deck while it swings", "[three_planes_rig]") {
+TEST_CASE("Glance lifts the deck while it swings", "[three_planes_rig]") {
   Core c;
   Params p;
   p.glance_time = 0.5f;
@@ -273,16 +276,16 @@ TEST_CASE("Glance drops the deck while it swings", "[three_planes_rig]") {
 
   c.trigger(AnimGlance, p);
   const Out first = idle(c, p, 1e-4f);
-  CHECK_THAT(first.azimuth, WithinAbs(0.125 - 15.0 / 360.0, 2e-4));
-  CHECK_THAT(first.elevation, WithinAbs((35.264389682754654 + 7.5) / 89.0, 2e-4));
+  CHECK_THAT(first.azimuth, WithinAbs(0.125 + 15.0 / 360.0, 2e-4));
+  CHECK_THAT(first.elevation, WithinAbs((35.264389682754654 - 7.5) / 89.0, 2e-4));
 
   Out last = first;
   while (c.anim != AnimNone) {
     const Out o = idle(c, p, 1e-4f);
     if (c.anim != AnimNone) last = o;
   }
-  CHECK_THAT(last.azimuth, WithinAbs(0.125 + 15.0 / 360.0, 2e-4));
-  CHECK_THAT(last.elevation, WithinAbs((35.264389682754654 - 7.5) / 89.0, 2e-4));
+  CHECK_THAT(last.azimuth, WithinAbs(0.125 - 15.0 / 360.0, 2e-4));
+  CHECK_THAT(last.elevation, WithinAbs((35.264389682754654 + 7.5) / 89.0, 2e-4));
 }
 
 TEST_CASE("the moves are monophonic — a new one drops the old", "[three_planes_rig]") {
@@ -444,7 +447,8 @@ TEST_CASE("Hold parks a move on its end pose before the pop", "[three_planes_rig
 
   // Past the travel time the phase saturates instead of ending — the move is
   // sitting on its end pose, which is the baseline plus half the swing.
-  const float endAz = wrapped(0.125 + 90.0 / 360.0);
+  // Reversed polarity: Show ends a quarter turn BELOW the baseline, which wraps.
+  const float endAz = wrapped(0.125 - 90.0 / 360.0);
   for (int i = 0; i < 7; ++i) {
     const Out o = idle(c, p, 0.05f);
     CHECK(c.anim == AnimShow);
@@ -484,4 +488,77 @@ TEST_CASE("the hold is captured at trigger time, like the duration",
   p.move_hold = 0.0f;
   for (int i = 0; i < 12; ++i) idle(c, p, 0.05f);
   CHECK(c.anim == AnimShow);
+}
+
+// --- the sweep's wind-up, and the ease knob ---------------------------------
+
+TEST_CASE("Sweep Start dips the deck before it climbs", "[three_planes_rig]") {
+  Core c;
+  Params p;
+  p.sweep_time = 0.5f;
+  p.sweep_target = 0.0f;      // side-on
+  p.sweep_start = -20.0f;     // wind up 20 deg BELOW the baseline first
+
+  c.trigger(AnimSweepUp, p);
+  // The entry pop the default (0) does not have: it starts below the baseline.
+  const Out first = idle(c, p, 1e-4f);
+  CHECK_THAT(first.elevation, WithinAbs((35.264389682754654 - 20.0) / 89.0, 2e-4));
+  CHECK(first.elevation < kBaseElevation);
+
+  float last = 1.0f;
+  while (c.anim != AnimNone) {
+    const Out o = idle(c, p, 1e-4f);
+    if (c.anim != AnimNone) last = o.elevation;
+  }
+  // Same destination as before — the wind-up moves the START, not the target.
+  CHECK_THAT(last, WithinAbs(0.0, 1e-3));
+}
+
+TEST_CASE("Ease 0 is straight-line travel, 1 floats out of both ends",
+          "[three_planes_rig]") {
+  Params p;
+  p.show_time = 1.0f;
+  p.show_azimuth = 180.0f;    // a big swing, so the shapes separate clearly
+
+  // Halfway through, every ease lands on the midpoint — the curves differ in
+  // how they get there, not where they end up.
+  auto atFraction = [&](float ease, float frac) {
+    Params q = p;
+    q.move_ease = ease;
+    Core c;
+    c.trigger(AnimShow, q);
+    Out o = idle(c, q, 1e-4f);
+    const int steps = (int)(frac * 10000.0f);
+    for (int i = 0; i < steps; ++i) o = idle(c, q, 1e-4f);
+    return o.anim_phase;
+  };
+
+  CHECK_THAT(atFraction(0.0f, 0.5f), WithinAbs(0.5, 2e-3));
+  CHECK_THAT(atFraction(0.5f, 0.5f), WithinAbs(0.5, 2e-3));
+  CHECK_THAT(atFraction(1.0f, 0.5f), WithinAbs(0.5, 2e-3));
+
+  // A quarter of the way in, linear is already a quarter across; the eased
+  // curves are still gathering themselves, and more so the harder the ease.
+  const float lin  = atFraction(0.0f, 0.25f);
+  const float soft = atFraction(0.5f, 0.25f);
+  const float hard = atFraction(1.0f, 0.25f);
+  CHECK_THAT(lin, WithinAbs(0.25, 5e-3));
+  CHECK(soft < lin - 0.05f);
+  CHECK(hard < soft - 0.01f);
+}
+
+TEST_CASE("the default ease is the smoothstep the moves always had",
+          "[three_planes_rig]") {
+  Params p;
+  CHECK(p.move_ease == 0.5f);
+  // smoothstep(0.25) = 0.15625
+  CHECK_THAT(detail::easeCurve(0.25f, 0.5f), WithinAbs(0.15625, 1e-6));
+  CHECK_THAT(detail::easeCurve(0.25f, 0.0f), WithinAbs(0.25, 1e-6));
+  // smootherstep(0.25) = 0.103515625
+  CHECK_THAT(detail::easeCurve(0.25f, 1.0f), WithinAbs(0.103515625, 1e-6));
+  // Endpoints are endpoints whatever the shape.
+  for (float e : {0.0f, 0.5f, 1.0f}) {
+    CHECK_THAT(detail::easeCurve(0.0f, e), WithinAbs(0.0, 1e-6));
+    CHECK_THAT(detail::easeCurve(1.0f, e), WithinAbs(1.0, 1e-6));
+  }
 }

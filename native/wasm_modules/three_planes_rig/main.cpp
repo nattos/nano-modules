@@ -284,7 +284,12 @@ void module_init() {
           "the arrival is something you get to look at rather than a place it "
           "passes through. It applies to all four. (On *Unfold* it holds at the "
           "baseline, which looks like nothing happening — that one is already "
-          "home.)\n\n"
+          "home.) *Ease* shapes the travel in between: straight-line at 0, a "
+          "long float out of the start and into the landing at 1.\n\n"
+          "*Sweep Start* gives **Sweep Up** a wind-up — set it negative and the "
+          "deck dips before it climbs, which is what makes the rise read as a "
+          "rise. At 0 the sweep begins on the baseline and is the one move "
+          "without an entry pop.\n\n"
           "**Show** swings the orbit through its whole arc. **Glance** does the "
           "same but drops the deck as it goes, like a look away. **Sweep Up** "
           "tips the deck to side-on. **Unfold** collapses the floors together and "
@@ -298,6 +303,10 @@ void module_init() {
                     nullptr, 0.f, "s",
                     "Seconds a move sits on its end pose before popping back.")
         .label("Hold", "Hold");
+  schema.floatField("move_ease", 0.5f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "Travel shape: 0 straight-line, 0.5 eased, 1 heavily eased.")
+        .label("Ease", "Ease");
   schema.floatField("show_time", 1.2f, 0.1f, 6.f, state::SecondaryInput,
                     nullptr, 0.f, "s")
         .label("Show Time", "ShowT");
@@ -307,6 +316,11 @@ void module_init() {
   schema.floatField("sweep_time", 1.5f, 0.1f, 6.f, state::SecondaryInput,
                     nullptr, 0.f, "s")
         .label("Sweep Time", "SwpT");
+  schema.floatField("sweep_start", 0.f, -89.f, 89.f, state::SecondaryInput,
+                    "signed", 0.f, "deg",
+                    "Where the sweep starts, either side of the baseline. "
+                    "Negative dips the deck before it climbs.")
+        .label("Sweep Start", "SwpFr");
   schema.floatField("sweep_target", 0.f, 0.f, 89.f, state::SecondaryInput,
                     nullptr, 0.f, "deg", "Elevation the sweep ends on before it pops back.")
         .label("Sweep Target", "SwpTo");
@@ -499,6 +513,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "glance_elevation")) s->p.glance_elevation = state::patchFloat(i);
     else if (state::pathIs(p, l, "unfold_time"))      s->p.unfold_time = state::patchFloat(i);
     else if (state::pathIs(p, l, "hold_time"))       s->p.move_hold = state::patchFloat(i);
+    else if (state::pathIs(p, l, "move_ease"))      s->p.move_ease = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_start"))    s->p.sweep_start = state::patchFloat(i);
   }
 }
 

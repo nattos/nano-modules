@@ -102,10 +102,19 @@ struct Params {
   /// Defaults to 0 — the original gesture is travel-then-pop, and a hold is
   /// something you dial in.
   float move_hold = 0.0f;
-  float show_azimuth = 30.0f;      ///< total swing, degrees (−half .. +half)
+  float show_azimuth = 30.0f;      ///< total swing, degrees (+half .. −half)
   float glance_azimuth = 30.0f;
-  float glance_elevation = 15.0f;  ///< total swing, degrees, travelling DOWN
+  float glance_elevation = 15.0f;  ///< total swing, degrees, travelling UP
   float sweep_target = 0.0f;       ///< absolute elevation the sweep ends at, degrees
+  /// Where the sweep STARTS, in degrees either side of the baseline. Negative
+  /// dips the deck before it climbs — the wind-up that makes the rise read as
+  /// a rise. 0 starts flat on the baseline, which is the one move with no
+  /// entry pop.
+  float sweep_start = 0.0f;
+  /// Shape of the travel between the two poses. 0 linear, 0.5 smoothstep
+  /// (the default, and what the moves had before this was a knob), 1
+  /// smootherstep. The ends still pop — this only decides how the middle feels.
+  float move_ease = 0.5f;
 };
 
 /// One frame of rails. Floats are already normalised for publication.
@@ -127,11 +136,19 @@ inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi 
 inline float clamp01(float v) { return clampf(v, 0.0f, 1.0f); }
 inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
-/// Ease in AND out. The moves pop at their ends on purpose; the easing is only
-/// about how the travel between those poses feels.
-inline float smoothstep01(float t) {
+/// Ease in AND out, at a chosen strength. The moves pop at their ends on
+/// purpose; this is only about how the travel between those poses feels.
+///
+/// Two halves of one knob: 0..0.5 fades linear into smoothstep, 0.5..1 fades
+/// smoothstep into smootherstep. Straight-line travel at one end, a long float
+/// out of the start and into the landing at the other, and the old fixed
+/// smoothstep exactly in the middle.
+inline float easeCurve(float t, float ease) {
   t = clamp01(t);
-  return t * t * (3.0f - 2.0f * t);
+  const float s1 = t * t * (3.0f - 2.0f * t);                       // smoothstep
+  const float s2 = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);    // smootherstep
+  const float e = clamp01(ease);
+  return e <= 0.5f ? lerpf(t, s1, e * 2.0f) : lerpf(s1, s2, (e - 0.5f) * 2.0f);
 }
 
 /// [0,1) turn, so a sweep past 360 deg wraps instead of clamping at the top.
@@ -235,21 +252,23 @@ struct Core {
         // the move sits on its end pose for `move_hold` seconds. The pop is
         // still the exit — the hold only decides how long you look at the pose
         // before it happens.
-        const float u = smoothstep01(anim_t / anim_dur);
+        const float u = easeCurve(anim_t / anim_dur, p.move_ease);
         o.anim_phase = u;
         switch (anim) {
           case AnimShow:
-            az_deg = lerpf(-p.show_azimuth * 0.5f, p.show_azimuth * 0.5f, u);
+            az_deg = lerpf(p.show_azimuth * 0.5f, -p.show_azimuth * 0.5f, u);
             break;
           case AnimGlance:
-            az_deg = lerpf(-p.glance_azimuth * 0.5f, p.glance_azimuth * 0.5f, u);
-            // Travels DOWN across the move, hence the high-to-low order.
-            elev_deg = lerpf(p.glance_elevation * 0.5f, -p.glance_elevation * 0.5f, u);
+            az_deg = lerpf(p.glance_azimuth * 0.5f, -p.glance_azimuth * 0.5f, u);
+            // Travels UP across the move, hence the low-to-high order.
+            elev_deg = lerpf(-p.glance_elevation * 0.5f, p.glance_elevation * 0.5f, u);
             break;
           case AnimSweepUp:
-            // Absolute endpoint, not a swing: baseline → `sweep_target` (0 deg
-            // by default, the side-on pose), then a pop back.
-            elev_deg = lerpf(0.0f, p.sweep_target - p.elevation_base, u);
+            // A wind-up and an absolute endpoint, not a swing: `sweep_start`
+            // degrees off the baseline (dip down with a negative), then up to
+            // `sweep_target` (0 deg by default, the side-on pose), then a pop
+            // back. With sweep_start 0 there is no entry pop.
+            elev_deg = lerpf(p.sweep_start, p.sweep_target - p.elevation_base, u);
             break;
           case AnimUnfold:
             // The one move that LANDS on baseline, so it has no end-pop.
