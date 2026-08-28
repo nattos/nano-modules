@@ -159,18 +159,19 @@ struct Core {
       live[i] = false;
       phase[i] = 0.0f;
     }
-    if (m == MoveResonate || m == MoveResonateRev) {
-      // Evenly spaced down the tunnel, which is the whole look of these two.
+    if (m == MoveCycles || m == MoveResonate || m == MoveResonateRev) {
+      // Evenly spaced down the tunnel, which is the whole look of these three.
+      // Spread rather than stacked: starting them together would put the
+      // REVERSE quad at the far end with nowhere to recede to, and it would
+      // wrap to the near end on the first frame and read as a pop.
+      //
+      // The spread runs BACKWARDS — the last quad deepest — so the highlight
+      // leads, the same way the pulse train does. It matters most in Cycles,
+      // where the highlight is the one travelling toward you: spread the
+      // natural way round it starts on top of the camera and is gone before
+      // you have seen it, instead of having the whole tunnel to come down.
       for (int i = 0; i < kQuads; ++i) {
-        phase[i] = (float)i / (float)kQuads;
-        live[i] = true;
-      }
-    } else if (m == MoveCycles) {
-      // Spread, like Resonate. Starting all three together would put the
-      // REVERSE quad at the far end with nowhere to recede to — it would wrap
-      // to the near end on the first frame and read as a pop.
-      for (int i = 0; i < kQuads; ++i) {
-        phase[i] = (float)i / (float)kQuads;
+        phase[i] = (float)(kQuads - 1 - i) / (float)kQuads;
         live[i] = true;
       }
     }

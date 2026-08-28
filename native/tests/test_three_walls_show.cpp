@@ -348,16 +348,24 @@ TEST_CASE("Cycles' third quad reverses on its duty cycle", "[three_walls_show]")
   p.cycles_duty_period = 1.0f;
 
   c.trigger(MoveCycles);
-  // First half of the period: forward, so depth falls.
-  const Out fwd = run(c, p, kFrame, 20);   // t ~= 0.33 s
-  const float after_fwd = fwd.phase[0];
-  CHECK(after_fwd > 0.0f);
-  CHECK(after_fwd < 0.5f);
 
-  // Second half: backward, so it gives ground back.
-  run(c, p, kFrame, 20);                   // t ~= 0.66 s, past the duty edge
-  const Out rev = run(c, p, kFrame, 10);
-  CHECK(rev.phase[0] < after_fwd + 0.34f);   // not still climbing at full rate
+  // Measured as signed TRAVEL, not as absolute phase: the quads start spread
+  // down the tunnel and the phase wraps, so where it happens to sit says
+  // nothing about which way it is going.
+  auto travel = [&](int frames) {
+    const float before = c.phase[0];
+    run(c, p, kFrame, frames);
+    float d = c.phase[0] - before;
+    if (d > 0.5f) d -= 1.0f;        // wrapped backwards past 0
+    if (d < -0.5f) d += 1.0f;       // wrapped forwards past 1
+    return d;
+  };
+
+  // First half of the period: toward the camera.
+  CHECK(travel(20) > 0.0f);         // t ~= 0.33 s
+  // Second half: it gives the ground back.
+  run(c, p, kFrame, 15);            // t ~= 0.58 s, past the duty edge
+  CHECK(travel(15) < 0.0f);
 }
 
 // --- housekeeping -----------------------------------------------------------
