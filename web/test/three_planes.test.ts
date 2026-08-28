@@ -360,5 +360,182 @@ describe(`Three Planes E2E (${backend})`, () => {
     expect(painted(firing)).toBe(0);
     expect(painted(after)).toBeGreaterThan(0);
   });
+
+  // ------------------------------------------------------------ Strobe throw
+  // The other mode. Nothing flies: the stack comes straight back exactly where
+  // it was, as bare wireframe, and then breaks up — one floor at a time on a
+  // roll whose window closes as the tail runs down.
+  //
+  // The roll's TIMING is reachable from this harness and from nowhere else. It
+  // advances on a fixed dt of 0.016 per tick, so which floor is lit on tick N
+  // is exactly computable, and the counts below are worked out rather than
+  // observed. (The puttering needs a release that DECAYS, which only the rig
+  // produces; that half is in native/tests/test_three_planes_strobe.cpp.)
+
+  // The stock stack is taller than its own spacing, so the three diamonds
+  // overlap in rows and no band belongs to one floor. Shrink and spread them
+  // and each floor gets a row band of its own to be measured in.
+  const R_SIZE = 0.30, R_SPACING = 0.55;
+  const ELEV = (ELEV_DEG * Math.PI) / 180;
+  const rPlaneY = (i: number) => -((i - 1) * R_SPACING) * Math.cos(ELEV) * ZOOM;
+  // Half-height and floor pitch, in pixels. Azimuth is the default 45 deg, so
+  // |sin| + |cos| is exactly sqrt(2).
+  const rHalfPx  = Math.sin(ELEV) * ZOOM * R_SIZE * Math.SQRT2 * ay * H;
+  const rPitchPx = R_SPACING * Math.cos(ELEV) * ZOOM * ay * H;
+  // Wide enough to catch the floor's own side vertices, narrow enough that no
+  // neighbour reaches in.
+  const bandH = Math.max(2, Math.min(Math.floor(rHalfPx), Math.floor(rPitchPx / 2) - 2));
+  const bandOf = (i: number): [number, number] => {
+    const cy = toPx(0, rPlaneY(i))[1];
+    return [Math.max(0, cy - bandH), Math.min(H, cy + bandH + 1)];
+  };
+  const bandLuma = (f: Frame, i: number) => {
+    const [y0, y1] = bandOf(i);
+    return meanRows(f, y0, y1);
+  };
+
+  // Floor 0 is the bottom one — `planeY` puts i = 0 at positive y, and y grows
+  // downward. That is also where the roll starts.
+  const ROLL: [string, any][] = [
+    ...QUIET,
+    ['release', 1.0], ['release_mode', 1],
+    ['strobe_rate', 20], ['strobe_duty', 0.5], ['strobe_grace', 0],
+    // Muted, exactly as the rig leaves the tower at either end, so everything
+    // in the frame is the throw and nothing else.
+    ['plane1_emission', 0], ['plane2_emission', 0], ['plane3_emission', 0],
+    ['plane_size', R_SIZE], ['plane_spacing', R_SPACING],
+  ];
+
+  it('the whole stack arrives, then the roll takes it one floor at a time',
+     async () => {
+    // At 20 steps/s and 0.016 per tick the roll advances 0.32 of a step a
+    // frame, and the clock does not start until the held frame is over:
+    //
+    //   tick 1        held — the beat before the hit
+    //   ticks 2..5    step 0, the arrival: the whole stack
+    //   tick 6        step 1, frac 0.28 -> floor 0 (bottom)
+    //   tick 9        step 2, frac 0.24 -> floor 1 (middle)
+    //   tick 12       step 3, frac 0.20 -> floor 2 (top)
+    //
+    // Which is the bounce, one floor at a time, in order.
+    const mk = (ticks: number, name: string) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0, 0, 0, 1], ticks, params: ROLL as any, dumpName: name,
+    });
+    const held    = await mk(1, 'three_planes_strobe_held');
+    const arrival = await mk(3, 'three_planes_strobe_arrival');
+    const lo      = await mk(6, 'three_planes_strobe_floor0');
+    const mid     = await mk(9, 'three_planes_strobe_floor1');
+    const hi      = await mk(12, 'three_planes_strobe_floor2');
+    expect(held.success && arrival.success).toBe(true);
+    expect(lo.success && mid.success && hi.success).toBe(true);
+
+    // The beat before the hit applies to this mode too — same gate.
+    let painted = 0;
+    held.forEachPixel((p) => { if (luma(p) > 4) painted++; });
+    expect(painted).toBe(0);
+
+    // The arrival is the one moment all three are up.
+    const arr = [0, 1, 2].map((i) => bandLuma(arrival, i));
+    for (const v of arr) expect(v).toBeGreaterThan(2);
+
+    // ...and then it is strictly one at a time, ascending.
+    const frames = [lo, mid, hi];
+    frames.forEach((f, want) => {
+      const bands = [0, 1, 2].map((i) => bandLuma(f, i));
+      for (const other of [0, 1, 2]) {
+        if (other === want) continue;
+        expect(bands[want]).toBeGreaterThan(bands[other] * 4 + 1);
+      }
+    });
+  });
+
+  it('nothing flies: the wireframe comes back where the stack was', async () => {
+    // Half spent, so Grow has thrown its rings most of the way out while
+    // Strobe is drawing the same arrival in place. Measured on the topmost lit
+    // row, which is the top floor's own apex in one mode and well above the
+    // picture in the other.
+    const mk = (mode: number, name: string) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0, 0, 0, 1], ticks: 3,
+      params: [...ROLL, ['release', 0.5], ['release_mode', mode],
+               ['strobe_duty', 1.0]] as any,
+      dumpName: name,
+    });
+    const grow = await mk(0, 'three_planes_throw_grow');
+    const strobe = await mk(1, 'three_planes_throw_strobe');
+    expect(grow.success && strobe.success).toBe(true);
+
+    const topLit = (f: Frame) => {
+      let top = H;
+      f.forEachPixel((p, _x, y) => { if (luma(p) > 8 && y < top) top = y; });
+      return top;
+    };
+    // The stack's own apex: the top floor's centre, one half-height up.
+    const apex = toPx(0, rPlaneY(2))[1] - rHalfPx;
+    expect(topLit(strobe)).toBeGreaterThan(apex - 4);
+    // Grow at half spent is 1 + 1.8 * 0.5 = 1.9x out, and the floors have
+    // spread apart as well, so its apex is far above the stack's.
+    expect(topLit(grow)).toBeLessThan(apex - 10);
+  });
+
+  it('Wire Glow is what makes it a wireframe rather than the picture again',
+     async () => {
+    const mk = (glow: number, name: string) => runGpuEffectTest({
+      module: MODULE, bundle: BUNDLE, width: W, height: H,
+      inputColor: [0, 0, 0, 1], ticks: 3,
+      params: [...ROLL, ['strobe_glow', glow]] as any,
+      dumpName: name,
+    });
+    const bare = await mk(0, 'three_planes_strobe_glow_0');
+    const full = await mk(1, 'three_planes_strobe_glow_1');
+    expect(bare.success && full.success).toBe(true);
+
+    const lit = (f: Frame) => {
+      let n = 0;
+      f.forEachPixel((p) => { if (luma(p) > 8) n++; });
+      return n;
+    };
+    // Same lines, same gain — all that changes is how far the light around
+    // them carries.
+    expect(lit(bare)).toBeGreaterThan(0);
+    expect(lit(full)).toBeGreaterThan(lit(bare) * 2);
+  });
+
+  it('a lit floor holds its own flam down for the whole roll', async () => {
+    // Strobe never flies clear, so the local-contrast damping does not fade
+    // out the way Grow's does — it holds at full strength for as long as the
+    // roll lasts. Measured as what the throw ADDS, which cancels the base.
+    const mk = (emission: number, release: number, name: string) =>
+      runGpuEffectTest({
+        module: MODULE, bundle: BUNDLE, width: W, height: H,
+        inputColor: [0, 0, 0, 1], ticks: 3,
+        params: [...ROLL, ['release', release],
+                 ['plane1_emission', emission], ['plane2_emission', emission],
+                 ['plane3_emission', emission]] as any,
+        dumpName: name,
+      });
+    const [darkOff, darkOn, litOff, litOn] = [
+      await mk(0, 0, 'three_planes_strobe_damp_dark_off'),
+      await mk(0, 1, 'three_planes_strobe_damp_dark_on'),
+      await mk(0.6, 0, 'three_planes_strobe_damp_lit_off'),
+      await mk(0.6, 1, 'three_planes_strobe_damp_lit_on'),
+    ];
+    expect(darkOff.success && darkOn.success).toBe(true);
+    expect(litOff.success && litOn.success).toBe(true);
+
+    const added = (off: Frame, on: Frame) => {
+      let s = 0;
+      on.forEachPixel((p, x, y) => { s += Math.max(0, luma(p) - luma(off.pixelAt(x, y))); });
+      return s;
+    };
+    const overDark = added(darkOff, darkOn);
+    const overLit = added(litOff, litOn);
+    expect(overDark).toBeGreaterThan(0);
+    // Default contrast is 0.8, so a floor at 0.6 keeps roughly half its flam.
+    // The bound is loose because the grade is not linear; what it pins is that
+    // the damping is real and did not fade out with the release.
+    expect(overLit).toBeLessThan(overDark * 0.75);
+  });
 });
 });

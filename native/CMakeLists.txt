@@ -422,6 +422,14 @@ target_include_directories(test_three_planes_glints PRIVATE ${CMAKE_SOURCE_DIR}/
 target_link_libraries(test_three_planes_glints PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_three_planes_glints)
 
+# source.mesh.three_planes' Strobe throw — the arrival, the one-at-a-time roll,
+# the flam and the duty puttering out. Host-free, so a whole tail runs at an
+# exact dt with no wasm and no GPU.
+add_executable(test_three_planes_strobe tests/test_three_planes_strobe.cpp)
+target_include_directories(test_three_planes_strobe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_three_planes_strobe PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_three_planes_strobe)
+
 # source.mesh.three_walls' moves — the pulse train, the counter-rotating cycles
 # and the frame-locked resonances. Host-free header, so no wasm bundle and no
 # GPU; the frame-lock in particular can only be pinned at an exact dt.

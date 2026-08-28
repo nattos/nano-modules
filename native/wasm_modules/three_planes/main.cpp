@@ -22,6 +22,7 @@
 #include <val.h>
 #include <effect_utils.h>   // fx::coverSquare
 #include <sketch/three_planes_glints.h>
+#include <sketch/three_planes_strobe.h>
 #include "three_planes_shaders.h"
 
 #include <cmath>
@@ -30,6 +31,9 @@
 namespace three_planes {
 
 static constexpr int PLANES = 3;
+// What a throw does with the stack. See the Release group help.
+static constexpr int kModeGrow   = 0;
+static constexpr int kModeStrobe = 1;
 static constexpr float kPi = 3.14159265358979323846f;
 
 // True isometric: the deck tilt where a unit cube's three visible faces
@@ -45,10 +49,12 @@ struct Uniforms {
   float neon1[4];           // row 11:    halo gain, falloff, corner r, aa width
   float misc[4];            // row 12:    fill gain, chroma bleed, input opacity, debug
   float view[4];            // row 13:    vp_w, vp_h, aspect_x, aspect_y
-  // The release: the stack thrown outward as expanding rings.
-  float ghosts[6][4];       // rows 14-19: ring i -> rows 2i, 2i+1, like `corners`
-  float rel[4];             // row 20:    ring halo radius, falloff, -, -
-  float ring_gain[4];       // row 21:    per-ring gain: release, opening, damping
+  // The release: the stack thrown. Both modes draw through these same rows —
+  // Grow expands them and opens the halo out, Strobe leaves them exactly on
+  // the quads and gates them one floor at a time.
+  float ghosts[6][4];       // rows 14-19: ghost i -> rows 2i, 2i+1, like `corners`
+  float rel[4];             // row 20:    ghost halo radius, falloff, -, -
+  float ring_gain[4];       // row 21:    per-ghost gain: the throw, damped and gated
   float glim0[4];           // row 22:    travel dir x, dir y, -, -
   // One row per glint IN FLIGHT: where it is on the travel axis (cover-square),
   // its half-width there, and the two look values it was born with. A dead slot
@@ -94,6 +100,18 @@ struct State {
   float release_gain   = 2.20f;
   float release_blur   = 10.0f;   // how far the halo opens out as they go
   float release_contrast = 0.80f; // how hard a lit plane holds its own ring down
+
+  // Which throw. Grow flings the stack outward; Strobe keeps it exactly where
+  // it is and flams the floors one at a time on a roll that putters out. The
+  // two draw through the SAME three ghost quads — see render() — so the mode
+  // costs nothing but the numbers fed to them.
+  int   release_mode  = kModeGrow;
+  float strobe_rate   = 22.0f;    // steps per second
+  float strobe_duty   = 0.55f;    // on-window per step, at full release
+  float strobe_gain   = 1.10f;
+  float strobe_glow   = 0.28f;    // halo radius, as a fraction of the live one
+  float strobe_grace  = 0.35f;
+  three_planes_strobe::Core strobe;
 
   // One frame of nothing between the throw and the rings appearing. Counted
   // in tick(), because render() can be called without one.
@@ -170,6 +188,15 @@ static inline float haloRadius(float r) {
   return 0.006f * std::pow(40.0f, t);
 }
 
+// Strobe's halo, as a fraction of the live one. Linear, and never quite zero:
+// the profile peaks at 1 whatever its radius, so at 0 you would still get a
+// line — just an aliased one-pixel line with nothing around it, which is a
+// worse picture than the hairline this floors it at.
+static inline float strobeGlow(float t) {
+  float k = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+  return 0.02f + 0.98f * k;
+}
+
 // How far a glint's drawn profile reaches on either side of its centre, in its
 // own half-widths. Mirrors render.hlsl: the super-Gaussian core has died by
 // about 1.5, and the Gaussian wake trailing it by about 5.5.
@@ -217,6 +244,29 @@ static void projectPlanes(State& s) {
     s.plane_half_h[i] =
         sp * s.zoom * half * (std::fabs(st) + std::fabs(ct));
   }
+}
+
+// The two throw modes have disjoint controls and nothing to say about each
+// other's, so a card only ever shows the one it is in.
+static void applyModeVisibility(const State* s) {
+  const bool strobe = s->release_mode == kModeStrobe;
+  state::setFieldHidden("release_expand", strobe);
+  state::setFieldHidden("release_gain",   strobe);
+  state::setFieldHidden("release_blur",   strobe);
+  state::setFieldHidden("strobe_rate",   !strobe);
+  state::setFieldHidden("strobe_duty",   !strobe);
+  state::setFieldHidden("strobe_gain",   !strobe);
+  state::setFieldHidden("strobe_glow",   !strobe);
+  state::setFieldHidden("strobe_grace",  !strobe);
+  // `release_contrast` belongs to both: it is the rule about two bright things
+  // in one place, and Strobe puts them there by construction.
+}
+
+// Fires once after init and the initial state replay, so a restored card never
+// flashes the other mode's fields.
+static void on_state_ready(void* self) {
+  auto* s = static_cast<State*>(self);
+  if (s) applyModeVisibility(s);
 }
 
 static void publish(const char* name, float value) {
@@ -372,12 +422,28 @@ void module_init() {
           "the plane that threw it.\n\n"
           "The rings appear one frame AFTER the throw, on purpose. The frame "
           "that fires one is already black, so the picture lands on nothing "
-          "before it lands on the release, and the hit reads harder for it.")
+          "before it lands on the release, and the hit reads harder for it.\n\n"
+          "**Strobe** is the same throw pointed the other way. Nothing flies: "
+          "the stack comes straight back exactly where it was, as bare "
+          "wireframe with barely any glow, and then breaks up — the floors "
+          "flam one at a time on a fast roll whose hits get SHORTER as the "
+          "tail runs down, until they start missing frames outright and it "
+          "sputters out. Grow is energy leaving the frame; Strobe is energy "
+          "rattling around inside it, and they cut against each other well "
+          "enough to be worth switching between on the fly.")
       .floatField("release", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   "unsigned", 0.f, nullptr,
                   "The throw, ringing out. At 0 there is nothing to see, so an "
                   "unwired card is exactly as it was.")
         .label("Release", "Rel")
+      .selectField("release_mode", kModeGrow, state::PrimaryInput,
+                   {{"Grow", kModeGrow}, {"Strobe", kModeStrobe}}, false,
+                   "What a throw does with the stack. **Grow** flings it "
+                   "outward as three rings that open up and go soft. "
+                   "**Strobe** leaves it where it is and flams the floors one "
+                   "at a time until the roll putters out. Each mode shows only "
+                   "its own controls; *Local Contrast* belongs to both.")
+        .label("Throw Mode", "Mode")
       .floatField("release_expand", 1.80f, 0.f, 4.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
                   "How far the rings fly, as a fraction of the stack\'s own "
@@ -388,22 +454,66 @@ void module_init() {
                   "How bright the rings are at the moment of the throw. They "
                   "dim as they open out, so this is the punch, not the tail.")
         .label("Throw Gain", "RelGain")
-      .floatField("release_contrast", 0.80f, 0.f, 1.f, state::PrimaryInput,
-                  nullptr, 0.f, nullptr,
-                  "How hard a lit plane holds its own ring down while the ring "
-                  "is still on top of it. Sweeping straight back after a throw "
-                  "relights the tower underneath a ring that has barely left "
-                  "it, and two bright things in the same place read as one; "
-                  "this keeps them apart. It fades out as the ring flies "
-                  "clear, so a ring well away from the stack is at full "
-                  "strength whatever the tower is doing.")
-        .label("Local Contrast", "Contrast")
       .floatField("release_blur", 10.0f, 1.f, 30.f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
                   "How far the rings open out as they fly — the filter "
                   "closing. 1 keeps them as tight as the tubes they came off; "
                   "high values leave a wide, dull smear behind.")
         .label("Throw Blur", "RelBlur")
+
+      // Strobe. Rate stays put through the whole tail on purpose — the decay
+      // is the WINDOW closing, not the roll slowing down, because a roll that
+      // slows reads as a machine winding down and a window that closes reads
+      // as one being switched off.
+      .floatField("strobe_rate", 22.0f, 4.f, 60.f, state::PrimaryInput,
+                  nullptr, 0.f, "steps/s",
+                  "How fast the roll goes. It does not change as the tail runs "
+                  "down; only the hits get shorter.")
+        .label("Roll Rate", "Rate")
+      .floatField("strobe_duty", 0.55f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much of each step a floor is lit for, at the moment of "
+                  "the throw. This is the thing that putters out: the release "
+                  "scales it, so by the end the window is shorter than a frame "
+                  "and the hits start missing frames altogether. High values "
+                  "run the floors into each other and it reads as a wave; low "
+                  "ones are already sparse at the top of the tail.")
+        .label("Duty", "Duty")
+      .floatField("strobe_gain", 1.10f, 0.f, 4.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How bright a hit is — and every hit is this bright, "
+                  "including the last one. The decay is in the timing.")
+        .label("Roll Gain", "RollG")
+      .floatField("strobe_glow", 0.28f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much halo the wireframe carries, as a fraction of the "
+                  "live one. Near 0 it is a bare tube with a breath around it, "
+                  "which is the whole point of the mode: the throw looks like "
+                  "the drawing under the picture rather than like the picture "
+                  "again.")
+        .label("Wire Glow", "WireG")
+      .floatField("strobe_grace", 0.35f, 0.f, 1.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "The flam. The next floor speaks quietly just before each "
+                  "step changes, then lands — two strokes where a roll would "
+                  "have one, as a fraction of a step. At 0 it is a plain "
+                  "metronome up and down the tower; near 1 the two strokes run "
+                  "together and the roll reads as a wave instead.")
+        .label("Flam", "Flam")
+
+      .floatField("release_contrast", 0.80f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How hard a lit plane holds its own ghost down while the "
+                  "ghost is still on top of it. Sweeping straight back after a "
+                  "throw relights the tower underneath a ring that has barely "
+                  "left it, and two bright things in the same place read as "
+                  "one; this keeps them apart. In **Grow** it fades out as the "
+                  "ring flies clear, so a ring well away from the stack is at "
+                  "full strength whatever the tower is doing. In **Strobe** "
+                  "nothing ever flies clear, so it holds at full for the whole "
+                  "roll — which is what stops a relit floor and its own flam "
+                  "from turning into one bright smear.")
+        .label("Local Contrast", "Contrast")
 
       // ---------------- Glimmer ----------------
       .group("glimmer", "Glimmer")
@@ -599,6 +709,7 @@ void module_init() {
       .storageTex2d(1)
       .uniform(2));
 
+  state::setOnStateReady(&on_state_ready);
   state::log("three_planes: module initialized");
 }
 
@@ -661,6 +772,15 @@ void tick(void* self, double dt) {
   gp.trail = kGlintWakeReach * hw_max * 0.5f;
   s->glint_core.tick(gp, (float)dt);
 
+  // THE ROLL, if this is a Strobe throw. Its clock does not start until the
+  // picture does — the held frame above is silence on purpose, and letting the
+  // roll run through it would eat most of the arrival it is there to set up.
+  three_planes_strobe::Params sp;
+  sp.release = s->release;
+  sp.rate    = s->strobe_rate;
+  sp.duty    = s->strobe_duty;
+  sp.grace   = s->strobe_grace;
+  s->strobe.tick(sp, s->ring_delay > 0 ? 0.0f : (float)dt);
 }
 
 void on_resolume_param(void* self, long long param_id, double value) {
@@ -672,6 +792,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
   auto* s = static_cast<State*>(self);
   if (!s) return;
 
+  bool vis_dirty = false;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
     const char* p = pb + off[i];
@@ -714,6 +835,15 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "release_gain"))    s->release_gain = state::patchFloat(i);
     else if (state::pathIs(p, l, "release_blur"))    s->release_blur = state::patchFloat(i);
     else if (state::pathIs(p, l, "release_contrast")) s->release_contrast = state::patchFloat(i);
+    else if (state::pathIs(p, l, "release_mode")) {
+      s->release_mode = state::patchInt(i);
+      vis_dirty = true;
+    }
+    else if (state::pathIs(p, l, "strobe_rate"))    s->strobe_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "strobe_duty"))    s->strobe_duty = state::patchFloat(i);
+    else if (state::pathIs(p, l, "strobe_gain"))    s->strobe_gain = state::patchFloat(i);
+    else if (state::pathIs(p, l, "strobe_glow"))    s->strobe_glow = state::patchFloat(i);
+    else if (state::pathIs(p, l, "strobe_grace"))   s->strobe_grace = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "glimmer_sweep"))   s->glimmer_sweep = state::patchFloat(i);
     else if (state::pathIs(p, l, "glimmer_band"))    s->glimmer_band = state::patchFloat(i);
@@ -746,6 +876,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "debug_show_sdf"))    s->debug_show_sdf = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_show_planes")) s->debug_show_planes = state::patchBool(i);
   }
+  if (vis_dirty) applyModeVisibility(s);
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -793,7 +924,13 @@ void render(void* self, int vp_w, int vp_h) {
   // objects with a life.
   const float rel = s->release < 0.0f ? 0.0f : (s->release > 1.0f ? 1.0f : s->release);
   const float flown = 1.0f - rel;                       // 0 at the throw, 1 spent
-  const float grow = 1.0f + s->release_expand * flown;
+  const bool strobe = s->release_mode == kModeStrobe;
+  // STROBE throws the stack nowhere. The ghosts sit exactly on the quads that
+  // made them and stay there, which is what makes them read as the bars coming
+  // BACK — bare wireframe over a muted picture — rather than as light leaving.
+  // Everything after this point is the same code for both modes with different
+  // numbers in it, which is the whole reason there is only one ghost path.
+  const float grow = strobe ? 1.0f : 1.0f + s->release_expand * flown;
   for (int i = 0; i < PLANES; i++) {
     u.ghosts[i * 2 + 0][0] = s->corner_x[i][0] * grow;
     u.ghosts[i * 2 + 0][1] = s->corner_y[i][0] * grow;
@@ -813,8 +950,14 @@ void render(void* self, int vp_w, int vp_h) {
   // alone spreads the SAME peak over more picture and the ring gets BRIGHTER
   // as it dissipates. Dividing conserves roughly the light it was thrown with,
   // which is the difference between a ring going out and a ring blooming.
-  const float opened = 1.0f + (s->release_blur - 1.0f) * flown;
-  u.rel[0] = haloRadius(s->halo_radius) * opened;
+  //
+  // Strobe opts out of all of that: it is a fixed look, not a flight. Its halo
+  // is a fraction of the live one — barely there, so what is left is the tube
+  // and a breath around it — and its gain is exactly what it says, since
+  // nothing is dissipating.
+  const float opened = strobe ? 1.0f : 1.0f + (s->release_blur - 1.0f) * flown;
+  const float ring_scale = strobe ? strobeGlow(s->strobe_glow) : opened;
+  u.rel[0] = haloRadius(s->halo_radius) * ring_scale;
   u.rel[1] = s->halo_falloff;
 
   // FAKED LOCAL CONTRAST. Sweep straight back after a throw and the tower
@@ -826,11 +969,21 @@ void render(void* self, int vp_w, int vp_h) {
   // whatever the tower is doing. Per ring, because the floors light
   // separately — the cap can be blazing while the ground floor is dark.
   const float gate = s->ring_delay > 0 ? 0.0f : 1.0f;
+  // How close a ring still is to the plane that threw it. Grow measures that
+  // with the release itself, since the two run together; Strobe never leaves
+  // at all, so it is pinned at fully-on-top and damps at full strength for as
+  // long as the roll lasts.
+  const float nearness = strobe ? 1.0f : rel;
   for (int i = 0; i < PLANES; i++) {
     const float lit = s->emission[i] < 0.0f ? 0.0f : (s->emission[i] > 1.0f ? 1.0f : s->emission[i]);
-    float damp = 1.0f - s->release_contrast * lit * rel;
+    float damp = 1.0f - s->release_contrast * lit * nearness;
     if (damp < 0.0f) damp = 0.0f;
-    u.ring_gain[i] = s->release_gain * rel / opened * damp * gate;
+    // Grow fades: brightness IS its decay. Strobe does not — every hit is as
+    // hard as the first and there are simply fewer of them, which is what the
+    // duty puttering out in <sketch/three_planes_strobe.h> comes to.
+    const float drive = strobe ? s->strobe_gain * s->strobe.gain[i]
+                               : s->release_gain * rel / opened;
+    u.ring_gain[i] = drive * damp * gate;
   }
 
   u.neon0[0] = lineHalfWidth(s->line_width);

@@ -14,8 +14,10 @@
 //      masking plane can occlude the halos beneath it while still emitting
 //      its own (see `resolve` below — this is the whole reason the effect
 //      is a fullscreen pass rather than three additive draws);
-//   3b. add the release rings — the same quads thrown outward, opening out
-//      and going soft as they fly (see `ring_at`);
+//   3b. add the release ghosts — the same quads again, either thrown outward
+//      and opening out as they fly or sitting exactly where they were as bare
+//      wireframe, depending on the throw mode. The host has already resolved
+//      which; from here it is one path (see `ring_at`);
 //   4. grade the composite through the shared VCR stack.
 //
 // Nothing here needs an intermediate texture: the accumulator lives in
@@ -78,11 +80,13 @@ NeonStyle neon_style() {
   return st;
 }
 
-// --- The release rings ---------------------------------------------------
-// The throw: the same three quads, flung outward off the stack and ringing
-// down. The host has already worked out where they are and how open they have
-// gone — everything here is a pure function of the release, so a ring reads as
-// an object with a life while costing no state at all.
+// --- The release ghosts ---------------------------------------------------
+// The throw: the same three quads again. In Grow they are flung outward off
+// the stack and ring down; in Strobe they do not move at all and flam one at a
+// time as bare wireframe. The host has already worked out where they are, how
+// open they have gone and how bright each one is this frame — everything here
+// is a pure function of that, so a ghost reads as an object with a life while
+// costing no state at all.
 //
 // Deliberately NOT nano_neon_quad. A ring has no inside: no fill to flood, no
 // mask to occlude with, and no core — by the time you can see one it is
@@ -90,7 +94,7 @@ NeonStyle neon_style() {
 // and the interior light-sum are all work with nothing to show for it, and
 // what is left is the cheap half: unsigned distance to four edges, through one
 // halo. That is the whole shape.
-float ring_at(float2 p, int i) {
+float ring_at(float2 p, int i) {   // ghost i's outline, unshaded
   float4 r0 = ghosts[i * 2 + 0];
   float4 r1 = ghosts[i * 2 + 1];
   float2 a = r0.xy, b = r0.zw, c = r1.xy, d = r1.zw;
@@ -179,9 +183,9 @@ float3 resolve(float2 p, float3 base) {
     acc = acc * (1.0 - A) + E;
   }
 
-  // The rings go on TOP of the resolve, additively and without occluding
-  // anything. They are light already thrown clear of the stack — nothing left
-  // behind can mask them, and they have no body to be masked.
+  // The ghosts go on TOP of the resolve, additively and without occluding
+  // anything. They are light already thrown — nothing left behind can mask
+  // them, and they have no body to be masked.
   [unroll]
   for (int k = 0; k < 3; k++) acc += plane_color[k].rgb * (ring_at(p, k) * ring_gain[k]);
   return acc;
