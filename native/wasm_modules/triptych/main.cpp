@@ -22,9 +22,17 @@
  * would step the room at both seams. Unwired, the strip costs nothing and the
  * row is the full frame.
  *
- * Deliberately dumb: no blending, no colour work, no per-panel transform beyond
- * the fit. It is a measuring surface, and a measuring surface that alters what
- * it shows is worse than useless.
+ * Flat out, the three panels are exact thirds. Two knobs bend that into the
+ * room it is a picture of: `mid_scale` widens the back wall past its third, and
+ * `perspective` splays the two sides into trapezoids — short at the seam, tall
+ * at the frame edges, the way a corridor's walls read. The sides are then
+ * sampled perspective-correct rather than stretched, because the difference
+ * between those two IS what makes a corridor look like one.
+ *
+ * Beyond that it is deliberately dumb: no blending and no colour work. It is a
+ * measuring surface, and a measuring surface that alters what it shows is worse
+ * than useless — laying the room out is showing you where the pictures GO, not
+ * changing what is in them.
  */
 
 #include <gpu.h>
@@ -39,13 +47,16 @@ struct Uniforms {
   float misc[4];   // fit mode, gap, has_left, has_right
   float view[4];   // vp_w, vp_h, -, -
   float led[4];    // has_led, strip height, -, -
+  float room[4];   // middle size (in thirds), perspective, -, -
 };
-static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 64, "Uniforms layout mismatch with render.hlsl");
 
 struct State {
   int fit_mode = 0;
   float gap = 0.0f;
   float led_height = 0.25f;
+  float mid_scale = 1.0f;
+  float perspective = 0.0f;
 
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -81,6 +92,12 @@ void module_init() {
         "panels stay an aligned row. On **Stretch** it fills the strip, which "
         "is what you usually want: a pixel map has no aspect worth "
         "preserving.\n\n"
+        "*Middle Size* and *Perspective* bend the flat row into the room it "
+        "is a picture of: the back wall grows past its third, and the two "
+        "sides splay out into trapezoids — short where they meet it, tall at "
+        "the frame edges. The sides are sampled the way a corridor actually "
+        "projects, not just stretched into the shape, so the far half stays "
+        "compressed. At Perspective 0 it is the flat row again, exactly.\n\n"
         "Anything unwired is left transparent, so an empty panel and a dark "
         "one never look alike.")
 
@@ -95,6 +112,19 @@ void module_init() {
                   "stay equal — and the divider under the middle panel is cut "
                   "to the same thickness, so one knob draws one kind of line.")
         .label("Gap", "Gap")
+      .floatField("mid_scale", 1.0f, 0.3f, 2.5f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How wide the middle panel is, in thirds of the frame — 1 is "
+                  "an exact third. The two sides give up whatever it takes.")
+        .label("Middle Size", "Mid")
+      .floatField("perspective", 0.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "Splays the two sides into a corridor: short at the seam, "
+                  "full height at the frame edges. How much shorter the back "
+                  "wall goes at 1 is the real geometry, not a taste — it "
+                  "follows from how wide you made it — so this is the "
+                  "fraction of that you want. 0 is the flat row.")
+        .label("Perspective", "Persp")
       .floatField("led_height", 0.25f, 0.05f, 0.6f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
                   "How much of the frame's height the LED strip takes. All "
@@ -187,6 +217,8 @@ void render(void* self, int vp_w, int vp_h) {
   u.view[1] = float(vp_h);
   u.led[0] = has_led ? 1.0f : 0.0f;
   u.led[1] = s->led_height;
+  u.room[0] = s->mid_scale;
+  u.room[1] = s->perspective;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
@@ -215,6 +247,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     if      (state::pathIs(p, l, "fit_mode")) s->fit_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "gap"))      s->gap = state::patchFloat(i);
     else if (state::pathIs(p, l, "led_height")) s->led_height = state::patchFloat(i);
+    else if (state::pathIs(p, l, "mid_scale"))   s->mid_scale = state::patchFloat(i);
+    else if (state::pathIs(p, l, "perspective")) s->perspective = state::patchFloat(i);
   }
 }
 

@@ -5,6 +5,34 @@
 // picture actually carries around the corners is to put them next to each other
 // in the order they physically sit. Left wall, back wall, right wall.
 //
+// --- The room -------------------------------------------------------------
+//
+// Flat out, the three panels are exact thirds. Two knobs bend that into the
+// room it is a picture of:
+//
+//   Middle Size  widens the back wall past its third; the two side panels give
+//                up whatever it takes.
+//   Perspective  splays the side panels out into trapezoids — short where they
+//                meet the back wall, tall at the frame edges, exactly the way
+//                a corridor's walls read.
+//
+// The OUTER edges always fill the band, and the perspective works by pulling
+// the back wall DOWN from it rather than by pushing the sides past it. So the
+// room is bounded by construction, and at Perspective 0 every edge is the same
+// height again — the aligned row, unchanged.
+//
+// How much shorter the back wall gets at full perspective is not a taste
+// decision, it is the geometry: on a plane through the camera, screen height
+// and distance-from-centre both go as 1/z, so the ratio between the frame edge
+// and the seam is (half the frame) / (half the back wall) — one over the
+// middle's width. The knob just dials in a fraction of that truth, because
+// this is a measuring surface and the whole truth is a very deep room.
+//
+// The side panels then need PERSPECTIVE-CORRECT sampling, not a stretch into
+// the trapezoid. Screen position interpolates linearly across the quad; the
+// wall's own coordinate does not, and the difference is the whole reason the
+// far half of a corridor looks compressed. See `wall_s` below.
+//
 // Each panel gets an exact third of the width. The fit modes decide what
 // happens when a source's shape does not match that third:
 //
@@ -45,8 +73,21 @@ Texture2D<float4>   ledTex    : register(t6);
 cbuffer Uniforms : register(b5) {
   float4 misc;   // fit mode, gap, has_left, has_right
   float4 view;   // vp_w, vp_h, -, -
-  float4 led;    // has_led, strip height (fraction of the column), -, -
+  float4 led;    // has_led, strip height (fraction of the frame), -, -
+  float4 room;   // middle size (in thirds), perspective, -, -
 };
+
+/// How far along a side wall a pixel is, given how far across the panel it is.
+///
+/// `t` runs 0 at the seam to 1 at the frame edge, `h_seam` and `h_edge` are the
+/// panel's half-heights at those two ends. Screen half-height goes as 1/z on a
+/// plane, so the heights ARE the reciprocal depths, and this is the ordinary
+/// perspective-correct interpolation written in terms of them. At h_seam ==
+/// h_edge it collapses to `t`, which is why Perspective 0 costs nothing.
+float wall_s(float t, float h_seam, float h_edge) {
+  float h = lerp(h_seam, h_edge, t);
+  return t * h_edge / max(h, 1e-6);
+}
 
 /// Column-local uv -> source uv, honouring the fit mode. Returns false when the
 /// pixel falls outside the source (the letterbox bars).
@@ -91,10 +132,11 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float gap  = saturate(misc.y);
   bool  has_led = led.x > 0.5;
   float led_h = saturate(led.y);
+  float persp = saturate(room.y);
 
   float2 vp = float2(float(W), float(H));
-  float col_w = vp.x / 3.0;
-  float y = (float(gid.y) + 0.5) / vp.y;
+  float xn = (float(gid.x) + 0.5) / vp.x;
+  float y  = (float(gid.y) + 0.5) / vp.y;
 
   // THE ROW COMES FIRST. The strip's height comes off the whole frame, so all
   // three panels keep the same top and the same bottom however tall it is.
@@ -104,41 +146,87 @@ void main(uint3 gid : SV_DispatchThreadID) {
   // — one gap knob, one kind of line. Capped, so a wide gap on a short strip
   // narrows the divider rather than swallowing what is either side of it.
   float band = (row_h < 1.0)
-      ? min(gap * col_w * 0.5 / vp.y, min(row_h, 1.0 - row_h) * 0.4)
+      ? min(gap * vp.x / (6.0 * vp.y), min(row_h, 1.0 - row_h) * 0.4)
       : 0.0;
   if (row_h < 1.0 && y > row_h - band && y < row_h + band) {
     outputTex[gid.xy] = float4(0, 0, 0, 0);
     return;
   }
 
-  bool  in_strip = y >= row_h + band;
-  float panel_h  = in_strip ? (1.0 - row_h - band) : (row_h - band);
-  float y_local  = (in_strip ? (y - row_h - band) : y) / max(panel_h, 1e-4);
+  // The room's horizontal geometry. `half_g` is the divider's half-width in
+  // frame units — gap is a fraction of ONE PANEL, and a panel is a third.
+  float mid_w = clamp(room.x / 3.0, 0.02, 0.96);
+  float x_i = (1.0 - mid_w) * 0.5;   // the left seam
+  float x_o = 1.0 - x_i;             // the right seam
+  float half_g = gap / 6.0;
 
-  // Which third, and where inside it.
-  float fx = (float(gid.x) + 0.5) / col_w;
-  int   col = int(fx);
-  col = col < 0 ? 0 : (col > 2 ? 2 : col);
-  float2 col_uv = float2(fx - float(col), y_local);
-  float2 col_size = float2(col_w, vp.y * panel_h);
+  int    src = 1;                    // 0 left, 1 mid, 2 right, 3 LED strip
+  float2 col_uv = float2(0.0, 0.0);
+  float2 col_size = float2(1.0, 1.0);
 
-  // The divider eats a strip from each side of every seam, so the three panels
-  // stay the same width as each other however wide the gap is.
-  if (gap > 0.0) {
-    float half_gap = gap * 0.5;
-    if (col_uv.x < half_gap || col_uv.x > 1.0 - half_gap) {
+  if (y >= row_h + band) {
+    // Under the row: the strip, and it follows the middle panel rather than
+    // the middle THIRD — it is a reading of what that panel shows.
+    if (xn < x_i + half_g || xn > x_o - half_g) {
       outputTex[gid.xy] = float4(0, 0, 0, 0);
       return;
     }
-    col_uv.x = saturate((col_uv.x - half_gap) / max(1.0 - gap, 1e-4));
-  }
+    float w = mid_w - 2.0 * half_g;
+    float h = 1.0 - row_h - band;
+    src = 3;
+    col_uv = float2((xn - x_i - half_g) / max(w, 1e-4),
+                    (y - row_h - band) / max(h, 1e-4));
+    col_size = float2(vp.x * w, vp.y * h);
+  } else {
+    float row_bot = row_h - band;
+    float cy   = row_bot * 0.5;
+    float h_o  = row_bot * 0.5;                        // at the frame edges
+    float k    = 1.0 / max(mid_w, 1e-3);               // the true depth ratio
+    float h_i  = h_o / lerp(1.0, k, persp);            // at the back wall
+    float run  = x_i - 2.0 * half_g;                   // a side panel's width
 
-  // Under the row, only the middle third carries anything.
-  if (in_strip && col != 1) {
-    outputTex[gid.xy] = float4(0, 0, 0, 0);
-    return;
+    if (xn >= x_i + half_g && xn <= x_o - half_g) {
+      // The back wall: a rectangle, centred in the band.
+      float w = mid_w - 2.0 * half_g;
+      float top = cy - h_i;
+      if (y < top || y > cy + h_i) {
+        outputTex[gid.xy] = float4(0, 0, 0, 0);        // above it, or below it
+        return;
+      }
+      src = 1;
+      col_uv = float2((xn - x_i - half_g) / max(w, 1e-4),
+                      (y - top) / max(2.0 * h_i, 1e-4));
+      col_size = float2(vp.x * w, vp.y * 2.0 * h_i);
+    } else if (xn >= half_g && xn <= x_i - half_g) {
+      // The left wall. Its far end abuts the back wall, so the seam is where
+      // the source's own far end goes — which is its RIGHT edge, the way
+      // three_walls lays a side camera out. Hence `1 - s`.
+      float t = (x_i - half_g - xn) / max(run, 1e-4);
+      float ht = lerp(h_i, h_o, t);
+      float top = cy - ht;
+      if (y < top || y > cy + ht) {
+        outputTex[gid.xy] = float4(0, 0, 0, 0);
+        return;
+      }
+      src = 0;
+      col_uv = float2(1.0 - wall_s(t, h_i, h_o), (y - top) / max(2.0 * ht, 1e-4));
+      col_size = float2(vp.x * run, vp.y * 2.0 * h_i);
+    } else if (xn >= x_o + half_g && xn <= 1.0 - half_g) {
+      float t = (xn - x_o - half_g) / max(run, 1e-4);
+      float ht = lerp(h_i, h_o, t);
+      float top = cy - ht;
+      if (y < top || y > cy + ht) {
+        outputTex[gid.xy] = float4(0, 0, 0, 0);
+        return;
+      }
+      src = 2;
+      col_uv = float2(wall_s(t, h_i, h_o), (y - top) / max(2.0 * ht, 1e-4));
+      col_size = float2(vp.x * run, vp.y * 2.0 * h_i);
+    } else {
+      outputTex[gid.xy] = float4(0, 0, 0, 0);          // a divider
+      return;
+    }
   }
-  int src = in_strip ? 3 : col;   // 0 left, 1 mid, 2 right, 3 LED strip
 
   // An unwired side is transparent rather than a repeat of the middle: on a
   // debug surface "nothing is connected here" and "the same picture again" must
@@ -156,8 +244,7 @@ void main(uint3 gid : SV_DispatchThreadID) {
   else               midTex.GetDimensions(sw, sh);
 
   float2 uv;
-  if (!panel_uv(col_uv, float2(float(sw), float(sh)),
-                col_size, mode, uv)) {
+  if (!panel_uv(col_uv, float2(float(sw), float(sh)), col_size, mode, uv)) {
     outputTex[gid.xy] = float4(0, 0, 0, 0);
     return;
   }

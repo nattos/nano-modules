@@ -307,3 +307,147 @@ describe('Triptych LED strip', () => {
     f.expectPixelAt(150, 95, { r: 255, g: 255, b: 0 }, 12);
   });
 });
+
+// Middle Size and Perspective: the flat row bent into the room it is a picture
+// of. The back wall grows past its third and the two sides splay out into
+// trapezoids — short where they meet it, full height at the frame edges.
+describe('Triptych room', () => {
+  jest.setTimeout(120000);
+
+  const W = 300, H = 100;
+  const MODULES = ['com.nano.core', 'com.nano.lights'];
+
+  const RED: [number, number, number] = [1, 0, 0];
+  const GREEN: [number, number, number] = [0, 1, 0];
+  const BLUE: [number, number, number] = [0, 0, 1];
+
+  const isEmpty = (p: { r: number; g: number; b: number }) =>
+    Math.abs(p.r - p.g) < 24 && Math.abs(p.g - p.b) < 24 && Math.abs(p.r - p.b) < 24;
+
+  // `leftIsRamp` swaps the left source for a white-to-black horizontal ramp,
+  // which turns the left panel into a ruler: the luma at a pixel says exactly
+  // how far along the wall it is reading, which is the only way to see the
+  // difference between a corridor and a stretched rectangle.
+  const build = (params: Record<string, unknown>, leftIsRamp = false): Sketch => ({
+    anchor: null,
+    wires: [
+      { id: 'wl', src: { instanceKey: 'l@0', field: 'tex_out' },
+        dest: { instanceKey: 'tp@0', field: 'left_in' } },
+      { id: 'wr', src: { instanceKey: 'r@0', field: 'tex_out' },
+        dest: { instanceKey: 'tp@0', field: 'right_in' } },
+    ],
+    chain: [
+      leftIsRamp
+        // Defaults are exactly the ramp we want: angle 0 is left-to-right,
+        // softness 1 is the full linear sweep, white into black.
+        ? { type: 'module', module_type: 'source.gradient', instance_key: 'l@0',
+            params: {} }
+        : { type: 'module', module_type: 'source.solid_color', instance_key: 'l@0',
+            params: { color: RED } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'r@0',
+        params: { color: BLUE } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'm@0',
+        params: { color: GREEN } },
+      { type: 'module', module_type: 'util.triptych', instance_key: 'tp@0',
+        params: { fit_mode: 1, ...params } },
+    ],
+  } as Sketch);
+
+  const run = (id: string, params: Record<string, unknown>, leftIsRamp = false) =>
+    runEngineTest({
+      width: W, height: H, modules: MODULES,
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: build(params, leftIsRamp) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } }]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: id,
+    });
+
+  it('Middle Size widens the back wall and the sides give up the room',
+     async () => {
+    // 1.8 thirds is 60% of the width, so the seams move from 100 and 200 in to
+    // 60 and 240.
+    const r = await run('trip_room_wide', { mid_scale: 1.8 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    f.expectPixelAt(30, 50, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(270, 50, { r: 0, g: 0, b: 255 }, 12);
+    // 90 and 210 were the sides at an exact third and are the back wall now.
+    f.expectPixelAt(90, 50, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(210, 50, { r: 0, g: 255, b: 0 }, 12);
+    // ...and it is still centred: the seams moved by the same amount.
+    f.expectPixelAt(70, 50, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(230, 50, { r: 0, g: 255, b: 0 }, 12);
+  });
+
+  it('Perspective splays the sides and pulls the back wall down', async () => {
+    // At a third wide, full perspective puts the frame edge three times the
+    // height of the seam — that ratio is the geometry, not a taste. So the
+    // back wall covers the middle third of the height and the walls open out
+    // to the full frame at the edges.
+    const r = await run('trip_room_persp', { mid_scale: 1, perspective: 1 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+
+    f.expectPixelAt(150, 50, { r: 0, g: 255, b: 0 }, 12);
+    // Above and below the back wall is the room's ceiling and floor, which we
+    // do not have — so it is nothing, not a stretched picture.
+    expect(isEmpty(f.pixelAt(150, 5))).toBe(true);
+    expect(isEmpty(f.pixelAt(150, 95))).toBe(true);
+
+    // Hard against the seam a wall is as short as the back wall...
+    f.expectPixelAt(95, 50, { r: 255, g: 0, b: 0 }, 12);
+    expect(isEmpty(f.pixelAt(95, 5))).toBe(true);
+    // ...and out at the frame edge it is the full height of the frame.
+    f.expectPixelAt(5, 5, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(5, 95, { r: 255, g: 0, b: 0 }, 12);
+
+    // The right wall mirrors it.
+    expect(isEmpty(f.pixelAt(205, 5))).toBe(true);
+    f.expectPixelAt(295, 5, { r: 0, g: 0, b: 255 }, 12);
+    f.expectPixelAt(295, 95, { r: 0, g: 0, b: 255 }, 12);
+  });
+
+  it('Perspective 0 is the flat row, whatever the middle is doing', async () => {
+    const r = await run('trip_room_flat', { mid_scale: 1.8, perspective: 0 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    // Every panel full height, top to bottom — a wider middle on its own must
+    // not tilt anything.
+    for (const [x, want] of [[30, { r: 255, g: 0, b: 0 }],
+                             [150, { r: 0, g: 255, b: 0 }],
+                             [270, { r: 0, g: 0, b: 255 }]] as const) {
+      f.expectPixelAt(x, 3, want, 12);
+      f.expectPixelAt(x, 97, want, 12);
+    }
+  });
+
+  it('samples the sides as a corridor rather than stretching one', async () => {
+    // The left source is a white-to-black ramp, so luma reads out how far
+    // along the wall a pixel is: 255 * (distance from the far end).
+    //
+    // Halfway across the panel on screen is NOT halfway along the wall. Screen
+    // position interpolates linearly, the wall's own coordinate does not, and
+    // that difference is the entire reason a corridor's far half looks
+    // compressed. At a third wide and full perspective the screen midpoint sits
+    // three quarters of the way along.
+    const flat = await run('trip_room_ramp_flat', { perspective: 0 }, true);
+    const deep = await run('trip_room_ramp_deep', { perspective: 1 }, true);
+    expect(flat.success && deep.success).toBe(true);
+
+    // x = 50 is the middle of the left panel; y = 50 is inside the wall in
+    // both cases.
+    const flatMid = flat.trace('out').pixelAt(50, 50);
+    const deepMid = deep.trace('out').pixelAt(50, 50);
+    expect(flatMid.r).toBeGreaterThan(114);   // 255 * 0.50
+    expect(flatMid.r).toBeLessThan(142);
+    expect(deepMid.r).toBeGreaterThan(177);   // 255 * 0.75
+    expect(deepMid.r).toBeLessThan(205);
+
+    // Both ends still land where they belong, so the compression is a
+    // reparameterisation and not a slide: the far end is at the seam.
+    expect(deep.trace('out').pixelAt(97, 50).r).toBeLessThan(30);
+    expect(deep.trace('out').pixelAt(3, 50).r).toBeGreaterThan(225);
+  });
+});
