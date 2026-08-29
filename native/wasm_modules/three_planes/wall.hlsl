@@ -82,7 +82,8 @@ float tube_light(float3 P, float3 A, float3 B, float soft2, float g2) {
   float t = saturate(dot(P - A, e) / ee);
   float3 d = P - (A + e * t);
   float q = dot(d, d) + soft2;
-  float3 dh = d * rsqrt(q);
+  float inv = rsqrt(q);
+  float3 dh = d * inv;
 
   // How squarely the wall faces it. The wall is x-facing, so the cosine is
   // just the direction's own x and there is no dot product to write out.
@@ -93,7 +94,18 @@ float tube_light(float3 P, float3 A, float3 B, float soft2, float g2) {
   float ax = dot(eh, dh);
   float along = sqrt(saturate(1.0 - ax * ax));
 
-  return g2 * face * along / q;
+  // How much TUBE there is. Everything above is the nearest point of the edge
+  // and says nothing about its length, which is fine while an edge is long
+  // compared to how far off it is and wrong as soon as it is not: a tube
+  // shortening toward nothing goes on throwing a full point's worth of light.
+  // That shows up the moment Depth collapses a ring — the two edges running
+  // away from the wall shorten to nothing and were left standing as two bright
+  // dots on the bar. A short tube throws less; at zero length it throws
+  // nothing, and a long one is unchanged.
+  float len = sqrt(ee);
+  float extent = len / (len + sqrt(q));
+
+  return g2 * face * along * extent / q;
 }
 
 [numthreads(8, 8, 1)]

@@ -251,6 +251,52 @@ describe('Three Planes impact light', () => {
     expect(Math.abs((cl - W / 2) - (W / 2 - cr))).toBeLessThan(6);
   });
 
+  it('Depth draws the far side in, spreading the pool', async () => {
+    // The knob for when the honest geometry gets too point-like: it pulls the
+    // far side of each ring toward the wall, so more of the ring lights it and
+    // the pool spreads. The near side does not move, so the gap — and the
+    // exposure normalised against it — stay put.
+    const area = (f: any) => {
+      let n = 0;
+      for (let y = 0; y < H; y += 2)
+        for (let x = 0; x < W; x += 2) if (level(f.pixelAt(x, y)) > 100) n++;
+      return n;
+    };
+    const p = { orbit_azimuth: 0.06 };
+    const full = await view('tpw_dep_1', 'left_out', { ...p, wall_depth: 1 });
+    const some = await view('tpw_dep_h', 'left_out', { ...p, wall_depth: 0.3 });
+    const none = await view('tpw_dep_0', 'left_out', { ...p, wall_depth: 0 });
+    expect(full.success && some.success && none.success).toBe(true);
+
+    const a = area(full.trace('out')), b = area(some.trace('out')),
+          c = area(none.trace('out'));
+    expect(b).toBeGreaterThan(a * 1.3);
+    expect(c).toBeGreaterThan(b * 1.3);
+  });
+
+  it('at Depth 0 the lean is gone and the two walls agree again', async () => {
+    // Flat out, every part of a ring is the same distance off whatever the
+    // orbit is doing — so there is no nearest corner to lean toward, and the
+    // thing that told the two walls apart is gone with it. That is the check
+    // that Depth is acting on the DEPTH and not just softening everything.
+    const centroid = (f: any) => {
+      let sum = 0, w = 0;
+      for (let y = 0; y < H; y += 2)
+        for (let x = 0; x < W; x += 2) {
+          const v = level(f.pixelAt(x, y));
+          if (v > 60) { sum += v * x; w += v; }
+        }
+      return w > 0 ? sum / w : W / 2;
+    };
+    const p = { orbit_azimuth: 0.06, wall_depth: 0 };
+    const l = await view('tpw_dep0_l', 'left_out', p);
+    const r = await view('tpw_dep0_r', 'right_out', p);
+    expect(l.success && r.success).toBe(true);
+    // Centred, where at full depth it leant more than 20px off (above).
+    expect(Math.abs(centroid(l.trace('out')) - W / 2)).toBeLessThan(6);
+    expect(Math.abs(centroid(r.trace('out')) - W / 2)).toBeLessThan(6);
+  });
+
   it('a corner pointing straight at the wall is symmetric again', async () => {
     // At 45 the ring's corner faces the wall square on, so there is nothing to
     // lean toward and the two walls agree again. Between the two the lean grows

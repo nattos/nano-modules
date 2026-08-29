@@ -190,6 +190,7 @@ struct State {
   float wall_reach   = 0.45f;
   float wall_bounce  = 0.14f;
   float wall_warmth  = 0.55f;
+  float wall_depth   = 1.0f;
   gpu::Texture wall_tex[2];
   gpu::Buffer  wall_buf[2];
   int wall_w[2] = {0, 0};
@@ -875,6 +876,12 @@ void module_init() {
         "side of the same ring. A throw slams both walls; the glints sweep "
         "across them, and because they cross the room rather than the picture "
         "they reach the two walls at different moments.\n\n"
+        "Each floor is FOUR TUBES, turned by the orbit, so what lands depends "
+        "on how the ring is facing: square on the near edge does the work and "
+        "lays a flat bar, turned off it one corner is nearest and the pool "
+        "leans that way. That is also what tells the two walls apart. Pull "
+        "*Depth* down when it gets too point-like — it draws the far side of "
+        "each ring in toward the wall.\n\n"
         "*Distance* is the knob that matters, and it is not a softness — it is "
         "where the wall stands. A pool is half as bright exactly that far out, "
         "so close is tight and burnt and far is broad, and there is no way to "
@@ -917,6 +924,15 @@ void module_init() {
                   "centre, which is what real light does and what stops a "
                   "bright pool reading as a flat coloured shape.")
         .label("Warmth", "Warm")
+      .floatField("wall_depth", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much of each ring's real depth counts. At 1 the far side "
+                  "of a ring genuinely is further off, so one turned away from "
+                  "the wall throws a pool that leans hard into its nearest "
+                  "corner and can get quite point-like. Turn it down to draw "
+                  "the far side in — at 0 the whole ring is the same distance "
+                  "away and lays a flat bar, whatever the orbit is doing.")
+        .label("Depth", "Depth")
 
       .capability(state::Capability::Generator)
       // Every envelope still lives outside this effect and the grain is
@@ -1143,6 +1159,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "wall_reach"))    s->wall_reach = state::patchFloat(i);
     else if (state::pathIs(p, l, "wall_bounce"))   s->wall_bounce = state::patchFloat(i);
     else if (state::pathIs(p, l, "wall_warmth"))   s->wall_warmth = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_depth"))    s->wall_depth = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "led_quantize"))   s->led_quantize = state::patchBool(i);
 
@@ -1241,6 +1258,21 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
     const float wall_x = support + gap;
     const float d_min = gap;
 
+    // How much of the ring's real depth counts. Below 1 the far side of it is
+    // drawn in toward the wall — the NEAR side does not move, so the gap and
+    // everything normalised against it stay put, and what changes is only how
+    // much further away the rest of the ring is than its closest point.
+    //
+    // At 1 the geometry is honest and a ring turned off square throws a pool
+    // that leans hard into the one corner facing the wall. At 0 every part of
+    // it is the same distance off, which is the flat bar this pass drew before
+    // any of the four-tube work — including, at that end, the far edge landing
+    // exactly on the near one and the two between them shortening to nothing.
+    // The doubling that comes of it is not a glitch: it is what collapsing a
+    // ring onto a plane means.
+    const float depth = clamp01f(s->wall_depth);
+    const float side_sign = (side == 0) ? -1.0f : 1.0f;
+
     float elev_cos = std::cos(s->elevation_deg * (kPi / 180.0f));
     if (elev_cos < kMinElevCos) elev_cos = kMinElevCos;
 
@@ -1267,9 +1299,13 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
         w.ring[r][3] = level_of[g];
         w.ring_g[r][0] = y * s->zoom * sc;
         w.ring_g[r][1] = soft_of[g];
+        // The ring's own wall-facing extreme, which is what the damping pulls
+        // the rest of it toward.
+        const float near_x = side_sign * support * sc;
         for (int k = 0; k < 4; k++) {
-          const float xr = (cx[k] * ct - cz[k] * st) * s->zoom * sc;
+          float xr = (cx[k] * ct - cz[k] * st) * s->zoom * sc;
           const float zr = (cx[k] * st + cz[k] * ct) * s->zoom * sc;
+          xr = near_x + (xr - near_x) * depth;
           w.ring_c[r * 2 + (k >> 1)][(k & 1) ? 2 : 0] = xr;
           w.ring_c[r * 2 + (k >> 1)][(k & 1) ? 3 : 1] = zr;
         }
@@ -1278,7 +1314,19 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
 
     w.wall[0] = wallReach(s->wall_reach);
     w.wall[1] = s->wall_bounce;
-    w.wall[2] = s->wall_gain;
+    // Damping the depth brings MORE of the ring up against the wall — at 0 the
+    // far edge lands on the near one and both are at the gap — so the light
+    // roughly doubles on the way down. That is honest, and it would also blow
+    // the pools out at one end of the knob's travel with the Gain having to be
+    // ridden against it. Divided out, so what the knob changes is the SHAPE.
+    //
+    // How much it doubles by, rather than a straight line between 1 and 2: the
+    // far edge sits at gap + 2 * support * depth and falls off as the square of
+    // it, so it stays negligible until the depth is nearly gone and then rushes
+    // in. A linear compensation reads that as gradual and dims the whole middle
+    // of the knob, where nothing has happened yet.
+    const float far_d = gap + 2.0f * support * depth;
+    w.wall[2] = s->wall_gain / (1.0f + (gap * gap) / (far_d * far_d));
     w.wall[3] = d_min;
 
     w.look[0] = s->wall_warmth;
