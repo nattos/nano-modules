@@ -186,9 +186,13 @@ describe('Triptych E2E', () => {
   });
 });
 
-// The LED strip: a fourth input, UNDER the middle panel rather than beside it.
+// The LED strip: a fourth input, UNDER the middle third rather than beside it.
 // The three columns are the three walls of one room; the strip is the same
 // instrument read a second way, so it belongs beneath the picture it reads.
+//
+// Its height comes off the WHOLE FRAME. The row of three has to stay a row —
+// same top, same bottom — so most of what is here is checking that the strip
+// never steps the middle panel out of line with the walls either side of it.
 describe('Triptych LED strip', () => {
   jest.setTimeout(120000);
 
@@ -240,34 +244,43 @@ describe('Triptych LED strip', () => {
       waitFrames: 20, captureTraceIds: ['out'], dumpName: id,
     });
 
-  it('puts the strip under the middle panel, and only the middle', async () => {
+  it('keeps the three panels an aligned row and puts the strip below it',
+     async () => {
     const r = await run('trip_led_under', { led_height: 0.25 });
     expect(r.success).toBe(true);
     const f = r.trace('out');
-    // The middle column: picture on top, strip below, split at 75% of the way
-    // down.
-    f.expectPixelAt(150, 30, { r: 0, g: 255, b: 0 }, 12);
+    // The row runs to 75% of the way down, and all three panels run with it —
+    // same top, same bottom. A middle panel that gave up the strip on its own
+    // would step the room at both seams, which is the one thing a measuring
+    // surface must not do.
+    for (const [x, want] of [[50, { r: 255, g: 0, b: 0 }],
+                             [150, { r: 0, g: 255, b: 0 }],
+                             [250, { r: 0, g: 0, b: 255 }]] as const) {
+      f.expectPixelAt(x, 5, want, 12);    // top of the row
+      f.expectPixelAt(x, 70, want, 12);   // and still going at the bottom of it
+    }
+    // Below the row: the strip under the middle third, and nothing either side.
     f.expectPixelAt(150, 90, { r: 255, g: 255, b: 0 }, 12);
-    // The two sides are walls of the room and do not split — they keep the
-    // whole column, top to bottom.
-    f.expectPixelAt(50, 30, { r: 255, g: 0, b: 0 }, 12);
-    f.expectPixelAt(50, 90, { r: 255, g: 0, b: 0 }, 12);
-    f.expectPixelAt(250, 30, { r: 0, g: 0, b: 255 }, 12);
-    f.expectPixelAt(250, 90, { r: 0, g: 0, b: 255 }, 12);
+    expect(isEmpty(f.pixelAt(50, 90))).toBe(true);
+    expect(isEmpty(f.pixelAt(250, 90))).toBe(true);
   });
 
-  it('LED Height moves the split and nothing else', async () => {
+  it('LED Height moves the row\'s bottom edge, for all three at once',
+     async () => {
     const r = await run('trip_led_half', { led_height: 0.5 });
     expect(r.success).toBe(true);
     const f = r.trace('out');
-    f.expectPixelAt(150, 40, { r: 0, g: 255, b: 0 }, 12);   // still picture
-    f.expectPixelAt(150, 60, { r: 255, g: 255, b: 0 }, 12); // already strip
-    // The columns did not move.
-    f.expectPixelAt(50, 60, { r: 255, g: 0, b: 0 }, 12);
-    f.expectPixelAt(250, 60, { r: 0, g: 0, b: 255 }, 12);
+    // Half the frame now, so the row ends at mid-height — and it ends there
+    // for the walls exactly as it does for the picture.
+    f.expectPixelAt(50, 40, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(150, 40, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(250, 40, { r: 0, g: 0, b: 255 }, 12);
+    f.expectPixelAt(150, 60, { r: 255, g: 255, b: 0 }, 12);
+    expect(isEmpty(f.pixelAt(50, 60))).toBe(true);
+    expect(isEmpty(f.pixelAt(250, 60))).toBe(true);
   });
 
-  it('an unwired strip leaves the middle panel whole', async () => {
+  it('an unwired strip leaves the row the whole frame', async () => {
     // Costing nothing when unused is the point: dropping this card on a chain
     // that has no LED map must look exactly as it did before there was one.
     const r = await run('trip_led_unwired', { led_height: 0.25 }, false);
@@ -275,16 +288,21 @@ describe('Triptych LED strip', () => {
     const f = r.trace('out');
     f.expectPixelAt(150, 30, { r: 0, g: 255, b: 0 }, 12);
     f.expectPixelAt(150, 90, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(50, 90, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(250, 90, { r: 0, g: 0, b: 255 }, 12);
   });
 
-  it('Gap cuts the divider under the middle too', async () => {
+  it('Gap cuts the divider under the whole row', async () => {
     const r = await run('trip_led_gap', { led_height: 0.25, gap: 0.12 });
     expect(r.success).toBe(true);
     const f = r.trace('out');
-    // One knob, one kind of line: the seam under the picture is transparent
-    // the way the seams between the columns are.
+    // One knob, one kind of line: the seam under the row is transparent the
+    // way the seams between the columns are — and it runs the full width,
+    // because the row it closes off runs the full width.
     expect(isEmpty(f.pixelAt(150, 75))).toBe(true);
-    // ...and the two halves are still there either side of it.
+    expect(isEmpty(f.pixelAt(50, 75))).toBe(true);
+    expect(isEmpty(f.pixelAt(250, 75))).toBe(true);
+    // ...and what it separates is still there either side of it.
     f.expectPixelAt(150, 30, { r: 0, g: 255, b: 0 }, 12);
     f.expectPixelAt(150, 95, { r: 255, g: 255, b: 0 }, 12);
   });

@@ -4516,7 +4516,7 @@ TEST_CASE("the LED map is the same map on Metal", "[effect_render]") {
 // numbering that only the MSL translation can get wrong, and it fails as a
 // wrong picture rather than as an error. The layout itself is pinned in
 // web/test/triptych.test.ts.
-TEST_CASE("triptych puts the LED strip under the middle on Metal too",
+TEST_CASE("triptych keeps the row aligned over its LED strip on Metal too",
           "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) {
@@ -4577,16 +4577,23 @@ TEST_CASE("triptych puts the LED strip under the middle on Metal too",
     return std::array<int, 3>{px[i], px[i + 1], px[i + 2]};
   };
 
-  auto mid_top = at(150, 30);      // the picture
-  auto mid_low = at(150, 90);      // the strip
-  auto left = at(50, 90);
-  auto right = at(250, 90);
+  // The row runs to 75% of the way down and all three panels run with it, so
+  // each is still its own colour at the bottom of the row.
+  for (uint32_t yy : {5u, 70u}) {
+    INFO("row at y " << yy);
+    auto l = at(50, yy), m = at(150, yy), r = at(250, yy);
+    CHECK(l[0] > 200); CHECK(l[1] < 40); CHECK(l[2] < 40);
+    CHECK(m[1] > 200); CHECK(m[0] < 40); CHECK(m[2] < 40);
+    CHECK(r[2] > 200); CHECK(r[0] < 40); CHECK(r[1] < 40);
+  }
 
-  INFO("mid_top " << mid_top[0] << "," << mid_top[1] << "," << mid_top[2]
-       << " mid_low " << mid_low[0] << "," << mid_low[1] << "," << mid_low[2]);
-  CHECK(mid_top[1] > 200); CHECK(mid_top[0] < 40); CHECK(mid_top[2] < 40);
-  CHECK(mid_low[0] > 200); CHECK(mid_low[1] > 200); CHECK(mid_low[2] < 40);
-  // The two sides are walls of the room and do not split.
-  CHECK(left[0] > 200); CHECK(left[1] < 40);
-  CHECK(right[2] > 200); CHECK(right[1] < 40);
+  // Below it: the strip under the middle third, and nothing either side.
+  auto strip = at(150, 90);
+  INFO("strip " << strip[0] << "," << strip[1] << "," << strip[2]);
+  CHECK(strip[0] > 200); CHECK(strip[1] > 200); CHECK(strip[2] < 40);
+  for (uint32_t xx : {50u, 250u}) {
+    INFO("beside the strip at x " << xx);
+    auto c = at(xx, 90);
+    CHECK(c[0] < 40); CHECK(c[1] < 40); CHECK(c[2] < 40);
+  }
 }

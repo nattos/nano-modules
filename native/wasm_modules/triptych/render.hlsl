@@ -20,10 +20,15 @@
 // Letterbox bars and the divider are transparent, not black, so the monitor's
 // checkerboard makes it obvious they are nothing rather than dark picture.
 //
-// The MIDDLE panel splits when an LED map is wired: picture on top, the rig
-// underneath it. Only the middle, because the two sides are walls of the room
-// and the strip is not one — it is the same instrument seen a second way, and
-// it belongs under the thing it is a reading of. The sides keep full height.
+// When an LED map is wired it takes a strip off the BOTTOM OF THE FRAME, under
+// the middle third. Off the frame and not out of the middle panel: left, middle
+// and right are three walls of one room and have to read as one picture, so
+// they share a top and a bottom always. Shrinking only the middle would step
+// the room at both seams, which is the one thing this surface must not do.
+//
+// The strip sits under the middle third alone, because it is a reading of what
+// that panel shows rather than a fourth panel in the row. The thirds either
+// side of it are left empty.
 
 #include "nano_coords.hlsl"
 
@@ -89,13 +94,33 @@ void main(uint3 gid : SV_DispatchThreadID) {
 
   float2 vp = float2(float(W), float(H));
   float col_w = vp.x / 3.0;
+  float y = (float(gid.y) + 0.5) / vp.y;
+
+  // THE ROW COMES FIRST. The strip's height comes off the whole frame, so all
+  // three panels keep the same top and the same bottom however tall it is.
+  float row_h = (has_led && led_h > 0.0) ? (1.0 - led_h) : 1.0;
+
+  // The divider under the row, at the same PIXEL thickness as a vertical seam
+  // — one gap knob, one kind of line. Capped, so a wide gap on a short strip
+  // narrows the divider rather than swallowing what is either side of it.
+  float band = (row_h < 1.0)
+      ? min(gap * col_w * 0.5 / vp.y, min(row_h, 1.0 - row_h) * 0.4)
+      : 0.0;
+  if (row_h < 1.0 && y > row_h - band && y < row_h + band) {
+    outputTex[gid.xy] = float4(0, 0, 0, 0);
+    return;
+  }
+
+  bool  in_strip = y >= row_h + band;
+  float panel_h  = in_strip ? (1.0 - row_h - band) : (row_h - band);
+  float y_local  = (in_strip ? (y - row_h - band) : y) / max(panel_h, 1e-4);
 
   // Which third, and where inside it.
   float fx = (float(gid.x) + 0.5) / col_w;
   int   col = int(fx);
   col = col < 0 ? 0 : (col > 2 ? 2 : col);
-  float2 col_uv = float2(fx - float(col), (float(gid.y) + 0.5) / vp.y);
-  float2 col_size = float2(col_w, vp.y);
+  float2 col_uv = float2(fx - float(col), y_local);
+  float2 col_size = float2(col_w, vp.y * panel_h);
 
   // The divider eats a strip from each side of every seam, so the three panels
   // stay the same width as each other however wide the gap is.
@@ -108,32 +133,12 @@ void main(uint3 gid : SV_DispatchThreadID) {
     col_uv.x = saturate((col_uv.x - half_gap) / max(1.0 - gap, 1e-4));
   }
 
-  // The middle column splits: picture above, LED strip below. Each half is
-  // then a panel in its own right — its own height goes into the fit, so the
-  // picture letterboxes against the space it actually has rather than against
-  // the column it used to have.
-  int src = col;   // 0 left, 1 mid, 2 right, 3 LED strip
-  if (col == 1 && has_led && led_h > 0.0) {
-    float split = 1.0 - led_h;
-    // The same PIXEL thickness as a vertical seam, so one gap knob does not
-    // draw two different dividers. Capped, so a wide gap on a short strip
-    // narrows the divider instead of swallowing the panels.
-    float band = min(gap * col_w * 0.5 / vp.y, min(split, led_h) * 0.4);
-    if (col_uv.y > split - band && col_uv.y < split + band) {
-      outputTex[gid.xy] = float4(0, 0, 0, 0);
-      return;
-    }
-    if (col_uv.y >= split + band) {
-      float h = 1.0 - split - band;
-      src = 3;
-      col_uv.y = (col_uv.y - split - band) / max(h, 1e-4);
-      col_size.y = vp.y * h;
-    } else {
-      float h = split - band;
-      col_uv.y = col_uv.y / max(h, 1e-4);
-      col_size.y = vp.y * h;
-    }
+  // Under the row, only the middle third carries anything.
+  if (in_strip && col != 1) {
+    outputTex[gid.xy] = float4(0, 0, 0, 0);
+    return;
   }
+  int src = in_strip ? 3 : col;   // 0 left, 1 mid, 2 right, 3 LED strip
 
   // An unwired side is transparent rather than a repeat of the middle: on a
   // debug surface "nothing is connected here" and "the same picture again" must

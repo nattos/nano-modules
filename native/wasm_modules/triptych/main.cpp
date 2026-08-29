@@ -12,11 +12,15 @@
  * drawing by hand.
  *
  * A fourth input, `led_in`, takes the LED-bar pixel map that both neon-quad
- * instruments publish, and it goes UNDER the middle panel rather than beside
- * it. The three columns are the three walls of one room; the strip is not a
- * fourth wall, it is the same instrument read a second way, so it belongs
- * beneath the picture it is a reading of. Unwired, it costs nothing and the
- * middle panel keeps the whole column.
+ * instruments publish, and it goes UNDER the middle third rather than beside
+ * it — the strip is not a fourth wall, it is the same instrument read a second
+ * way, so it belongs beneath the picture it is a reading of.
+ *
+ * Its height comes off the WHOLE FRAME, not out of the middle panel. The three
+ * columns are three walls of one room and have to read as one picture, so they
+ * keep the same top and the same bottom always; a middle panel that shrank
+ * would step the room at both seams. Unwired, the strip costs nothing and the
+ * row is the full frame.
  *
  * Deliberately dumb: no blending, no colour work, no per-panel transform beyond
  * the fit. It is a measuring surface, and a measuring surface that alters what
@@ -71,10 +75,12 @@ void module_init() {
         "and keeping the three continuous, which is better when they are meant "
         "to read as one space rather than be compared. **Fill** crops.\n\n"
         "*LED In* takes the pixel map those cards publish and puts it in a "
-        "strip UNDER the middle panel — not beside it, because the three "
+        "strip UNDER the middle third — not beside it, because the three "
         "columns are the room and the strip is the same instrument read a "
-        "second way. On **Stretch** it fills the strip, which is what you "
-        "usually want: a pixel map has no aspect worth preserving.\n\n"
+        "second way. It takes its height off the whole frame, so the three "
+        "panels stay an aligned row. On **Stretch** it fills the strip, which "
+        "is what you usually want: a pixel map has no aspect worth "
+        "preserving.\n\n"
         "Anything unwired is left transparent, so an empty panel and a dark "
         "one never look alike.")
 
@@ -91,8 +97,8 @@ void module_init() {
         .label("Gap", "Gap")
       .floatField("led_height", 0.25f, 0.05f, 0.6f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,
-                  "How much of the middle column the LED strip takes. Only "
-                  "the middle moves; the two sides stay full height.")
+                  "How much of the frame's height the LED strip takes. All "
+                  "three panels give it up together, so the row stays aligned.")
         .label("LED Height", "LED H")
 
       // `tex_in` is the middle, so a plain drop-in wires the main output to the
