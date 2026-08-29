@@ -37,6 +37,18 @@ describe('mod.rig.three_planes E2E', () => {
   /** Defaults that make each case a clean 0-or-1 read of the lit decision. */
   const CRISP = { emission_on: 1.0, emission_off: 0.0, flam_emission: 0.0 };
 
+  // A fully lit floor does NOT read white. The emission rails carry a FRACTION
+  // of Three Planes' emission range, and that range runs past fully lit — the
+  // overdrive headroom the sweep's Bounce overshoots into — so Lit Level 1
+  // publishes 1/1.5 of full scale and lands on 170, not 255. Every emission
+  // read below goes through this; every other rail is a plain [0,1].
+  const EMISSION_MAX = 1.5;
+  const emissionGrey = (level: number) => 255 * level / EMISSION_MAX;
+  const expectEmission = (r: number, level: number) => {
+    expect(r).toBeGreaterThan(emissionGrey(level) - 22);
+    expect(r).toBeLessThan(emissionGrey(level) + 22);
+  };
+
   // solid(white) → rig → bc(brightness 1, contrast -0.5), one rig output wired
   // into bc.brightness. solid_color publishes no modulation, so the rig's
   // `sig_1` auto-connect has nothing to steal it with.
@@ -74,8 +86,8 @@ describe('mod.rig.three_planes E2E', () => {
     const f2 = await runScalar('rig_fill_p2', 'plane2_emission', p);
     const f3 = await runScalar('rig_fill_p3', 'plane3_emission', p);
     expect(f1.success && f2.success && f3.success).toBe(true);
-    expect(f1.trace('out').averageColor().r).toBeGreaterThan(215);
-    expect(f2.trace('out').averageColor().r).toBeGreaterThan(215);
+    expectEmission(f1.trace('out').averageColor().r, 1.0);
+    expectEmission(f2.trace('out').averageColor().r, 1.0);
     expect(f3.trace('out').averageColor().r).toBeLessThan(40);
   });
 
@@ -93,12 +105,12 @@ describe('mod.rig.three_planes E2E', () => {
     const holed  = await runScalar('rig_holes_on', 'plane1_emission',
                                    { ...CRISP, sig_3: 1.0, allow_holes: true });
     expect(filled.success && holed.success).toBe(true);
-    expect(filled.trace('out').averageColor().r).toBeGreaterThan(215);
+    expectEmission(filled.trace('out').averageColor().r, 1.0);
     expect(holed.trace('out').averageColor().r).toBeLessThan(40);
     // The cap floor itself is exempt from the holes rule — it always shows.
     const cap = await runScalar('rig_holes_cap', 'plane3_emission',
                                 { ...CRISP, sig_3: 1.0, allow_holes: true });
-    expect(cap.trace('out').averageColor().r).toBeGreaterThan(215);
+    expectEmission(cap.trace('out').averageColor().r, 1.0);
   });
 
   // THE NORMALISATION CONTRACT. `elevation` is published as a fraction of Three
@@ -233,7 +245,7 @@ describe('mod.rig.three_planes E2E', () => {
     const solid = await runScalar('rig_solid_on',  'plane3_emission', { ...CRISP, mode: SOLID });
     expect(meter.success && solid.success).toBe(true);
     expect(meter.trace('out').averageColor().r).toBeLessThan(40);
-    expect(solid.trace('out').averageColor().r).toBeGreaterThan(215);
+    expectEmission(solid.trace('out').averageColor().r, 1.0);
   });
 
   it('Solid ignores the gates entirely', async () => {
@@ -244,9 +256,8 @@ describe('mod.rig.three_planes E2E', () => {
     const floor = await runScalar('rig_solid_gates', 'plane1_emission', p);
     const meter = await runScalar('rig_solid_meter', 'meter', p);
     expect(floor.success && meter.success).toBe(true);
-    // Lit Level 0.5 lands on mid grey — no flam blip riding on top of it.
-    expect(floor.trace('out').averageColor().r).toBeGreaterThan(100);
-    expect(floor.trace('out').averageColor().r).toBeLessThan(156);
+    // Lit Level 0.5, and nothing riding on top of it — no flam blip.
+    expectEmission(floor.trace('out').averageColor().r, 0.5);
     // Nothing is being measured, so the meter rail reports nothing.
     expect(meter.trace('out').averageColor().r).toBeLessThan(40);
   });
@@ -387,8 +398,8 @@ describe('mod.rig.three_planes E2E', () => {
     const near = await runScalar('rig_sweep_near', 'plane1_emission',
                                  { ...SWEPT, sweep: 0.70 });
     expect(home.success && near.success).toBe(true);
-    expect(home.trace('out').averageColor().r).toBeGreaterThan(215);
-    expect(near.trace('out').averageColor().r).toBeGreaterThan(215);
+    expectEmission(home.trace('out').averageColor().r, 1.0);
+    expectEmission(near.trace('out').averageColor().r, 1.0);
   });
 
   it('either extreme fades the tower to black', async () => {
@@ -461,76 +472,70 @@ describe('mod.rig.three_planes E2E', () => {
   // actually reaching the spring, on a knob moved over a real wire. So these
   // two ask only for the SIGN and the DIRECTION, never for a magnitude — the
   // lead is velocity-driven and engine frames are wall-clock.
-  //
-  // 0.8625 is chosen so the position law reads exactly 0.5 there: half a
-  // throw past the deadzone, which is mid grey on the probe and leaves the
-  // overshoot somewhere to go.
-  const AT_HALF = 0.8625;
 
-  it('a knob thrown back IN overshoots, then springs back', async () => {
-    const jumpIn = (id: string, bounce: number) => {
+  it('a knob thrown back home overshoots past fully lit, then springs onto it',
+     async () => {
+    // The gesture, end to end, at the shipping default: one frame from the
+    // extreme to home, which is what a stepping encoder actually sends when
+    // you slam it. The tower has to land HARDER than it normally sits and then
+    // settle back — not merely get there a frame sooner.
+    const slamHome = (id: string, bounce: number | null) => {
       const phases: EnginePhaseConfig[] = [
         { commands: [
             { type: 'createSketch', sketchId: id, sketch:
                 scalarSketch('plane1_emission',
-                             { ...SWEPT, sweep: 1.0, sweep_bounce: bounce }) },
+                             { ...SWEPT, sweep: 1.0,
+                               ...(bounce === null ? {} : { sweep_bounce: bounce }) }) },
             { type: 'setTracePoints', tracePoints: [
                 { id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
           ],
           waitFrames: 20, captureTraceIds: ['out'] },
         { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
-                       paramKey: 'sweep', value: AT_HALF }],
+                       paramKey: 'sweep', value: 0.5 }],
           waitFrames: 1, captureTraceIds: ['out'] },
       ];
-      // One frame per phase through the ring-down. WHEN the spring crosses is
-      // a matter of frame pacing, so nothing below looks at a particular
-      // frame — only at the extremes over the whole window.
+      // One frame per phase through the swing. WHEN the spring crosses is a
+      // matter of frame pacing, so nothing below reads a particular frame —
+      // only the extremes over the whole window.
       for (let i = 0; i < 12; ++i)
         phases.push({ commands: [], waitFrames: 1, captureTraceIds: ['out'] });
-      phases.push({ commands: [], waitFrames: 40, captureTraceIds: ['out'] });
+      phases.push({ commands: [], waitFrames: 60, captureTraceIds: ['out'] });
       return runEngineMultiPhaseTest(
         { width: 64, height: 64, modules: MODULES, phases, dumpName: id });
     };
-    const grey = (r: Awaited<ReturnType<typeof jumpIn>>, i: number) =>
-      r.phases[i].trace('out').averageColor().r;
+    const swing = (r: Awaited<ReturnType<typeof slamHome>>) =>
+      Array.from({ length: 13 }, (_, i) => r.phases[i + 1].trace('out').averageColor().r);
 
-    const plain = await jumpIn('rig_bounce_off', 0);
-    const bouncy = await jumpIn('rig_bounce_on', 1);
+    const plain = await slamHome('rig_bounce_off', 0);
+    const bouncy = await slamHome('rig_bounce_on', null);   // the default
     expect(plain.success && bouncy.success).toBe(true);
 
     // Parked at the extreme, both are black.
-    expect(grey(plain, 0)).toBeLessThan(40);
-    expect(grey(bouncy, 0)).toBeLessThan(40);
+    expect(plain.phases[0].trace('out').averageColor().r).toBeLessThan(40);
+    expect(bouncy.phases[0].trace('out').averageColor().r).toBeLessThan(40);
 
-    // Bounce dialled out tracks the knob exactly — mid grey, the position law
-    // and nothing else, every frame of the way.
-    const ring = (r: typeof plain) =>
-      Array.from({ length: 13 }, (_, i) => grey(r, i + 1));
-    for (const v of ring(plain)) {
-      expect(v).toBeGreaterThan(100);
-      expect(v).toBeLessThan(156);
-    }
+    // Bounce dialled out relights straight onto the base and stays there —
+    // the position law and nothing else, every frame of the way.
+    for (const v of swing(plain)) expectEmission(v, 1.0);
 
-    // With it up, the light has already run well past where the knob is...
-    expect(grey(bouncy, 1)).toBeGreaterThan(200);
-    // ...and comes back through it, sitting BELOW the dimmer's own answer on
-    // the way. That dip is the spring back, and it is the half you can see
-    // when a sweep ends at home: by then the light has saturated, so the
-    // overshoot is clipped off and only the return shows.
-    expect(Math.min(...ring(bouncy))).toBeLessThan(115);
+    // With it on, the landing goes PAST the base — into the emission overdrive
+    // Three Planes' range keeps above fully lit, which is the whole reason
+    // that headroom exists...
+    expect(Math.max(...swing(bouncy))).toBeGreaterThan(emissionGrey(1.0) + 30);
+    // ...and then springs back down THROUGH it before settling. A tower that
+    // only ever arrived early would have no dip.
+    expect(Math.min(...swing(bouncy))).toBeLessThan(emissionGrey(1.0) - 8);
 
-    // Both settle on the same picture. A spring that crept would leave the
-    // tower a hair off its own dimmer for ever.
-    for (const r of [plain, bouncy]) {
-      expect(grey(r, 14)).toBeGreaterThan(100);
-      expect(grey(r, 14)).toBeLessThan(156);
-    }
+    // Both end on the base. A spring that crept would leave the tower a hair
+    // off its own dimmer for ever.
+    expectEmission(plain.phases[14].trace('out').averageColor().r, 1.0);
+    expectEmission(bouncy.phases[14].trace('out').averageColor().r, 1.0);
   });
 
   it('the same throw OUTWARD does not swell at all', async () => {
     // Going out is a blackout, and a blackout that brightens before it falls
-    // is a fault rather than a gesture. Same distance, same one frame, Bounce
-    // at maximum — and the tower lands on the position law dead on.
+    // is a fault rather than a gesture. Same one frame, Bounce at maximum —
+    // and the tower lands on the position law dead on.
     const r = await runEngineMultiPhaseTest({
       width: 64, height: 64,
       modules: MODULES,
@@ -543,16 +548,16 @@ describe('mod.rig.three_planes E2E', () => {
                 { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_bounce_out' } }] },
           ],
           waitFrames: 20, captureTraceIds: ['out'] },
+        // 0.8625 is half a throw past the deadzone, where the position law
+        // reads exactly half.
         { commands: [{ type: 'setParam', sketchId: 'rig_bounce_out', colIdx: 0,
-                       chainIdx: 1, paramKey: 'sweep', value: AT_HALF }],
+                       chainIdx: 1, paramKey: 'sweep', value: 0.8625 }],
           waitFrames: 5, captureTraceIds: ['out'] },
       ],
       dumpName: 'rig_bounce_out',
     });
     expect(r.success).toBe(true);
-    expect(r.phases[0].trace('out').averageColor().r).toBeGreaterThan(215);
-    const out = r.phases[1].trace('out').averageColor().r;
-    expect(out).toBeGreaterThan(100);
-    expect(out).toBeLessThan(156);
+    expectEmission(r.phases[0].trace('out').averageColor().r, 1.0);
+    expectEmission(r.phases[1].trace('out').averageColor().r, 0.5);
   });
 });

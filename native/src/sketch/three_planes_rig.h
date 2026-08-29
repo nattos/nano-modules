@@ -27,8 +27,11 @@
  * by hand carries no `magnitude` key, so the executor folds it into the DEST
  * field's [min,max] (tap_mod.h applyMagnitude, Replace). Publishing the
  * destination slider's *position* is therefore what makes a naive drag land on
- * the right value; kElevationMaxDeg / kSpacingMax mirror three_planes' declared
- * ranges and must be kept in step with its schema.
+ * the right value; kElevationMaxDeg / kSpacingMax / kEmissionMax mirror
+ * three_planes' declared ranges and must be kept in step with its schema. The
+ * emission one is the awkward member: its range runs PAST fully lit, so a lit
+ * floor publishes kLit rather than 1, and the room above it is what the sweep's
+ * bounce overshoots into.
  */
 
 #include <cmath>
@@ -45,6 +48,15 @@ constexpr int kSignals = 4;
 /// outputs below divide by. KEEP IN STEP with three_planes/main.cpp's schema.
 constexpr float kElevationMaxDeg = 89.0f;
 constexpr float kSpacingMax = 1.5f;
+/// Likewise for the per-plane emission fields, whose range runs PAST fully
+/// lit: 1 is the base level and everything above it is overdrive. The
+/// headroom exists so the bounce can overshoot the base rather than merely
+/// arrive at it early — clipped at 1, a return that slams home reads as a
+/// return that got there sooner, which is not the gesture.
+constexpr float kEmissionMax = 1.5f;
+/// A fully-lit floor, as a fraction of that range: what `emission_on` at 1
+/// publishes, and the level a bounce is measured against.
+constexpr float kLit = 1.0f / kEmissionMax;
 
 /// A frame longer than this is a transport stall, not slow motion — ageing the
 /// peak hold by it in one step would blank the meter. Same clamp motion.peak_decay
@@ -166,7 +178,7 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
-  float sweep_bounce = 0.4f;     ///< how far a fast sweep back in overshoots
+  float sweep_bounce = 0.55f;    ///< how far a fast sweep back in overshoots
   float latch_drive = 2.0f;      ///< how readily a pass through the middle charges
   float latch_decay = 1.2f;      ///< seconds a charge survives before it bleeds away
   float ring_time = 1.4f;        ///< seconds the thrown release takes to ring out
@@ -177,6 +189,9 @@ struct Out {
   float meter = 0.0f;       ///< level/3
   float peak = 0.0f;        ///< level/3
   float anim_phase = 0.0f;  ///< eased 0..1 while a move runs, 0 idle
+  /// Fraction of three_planes' 0..kEmissionMax emission range — so a fully
+  /// lit floor is kLit, NOT 1, and the room above it is what the bounce
+  /// overshoots into.
   float emission[kLayers] = {};
   Rgb color[kLayers] = {};
   float azimuth = 0.0f;    ///< [0,1] turn
@@ -252,7 +267,11 @@ inline float rand01(unsigned& state) {
 ///                  light is exactly your hand, and a return is just the fade
 ///                  played backwards. So on the way in the light LEADS the
 ///                  knob and springs back, by an amount set by how fast you
-///                  came. Inward only, and never on the way out.
+///                  came. It overshoots the BASE level, not merely the level
+///                  the knob is asking for: a return that slams home has
+///                  nowhere left to go otherwise, and reads as one that
+///                  arrived early rather than as one that hit. Inward only,
+///                  and never on the way out.
 ///   REACHING AN END  → the throw. The mute at either extreme is not just
 ///                  darkness: passing through the middle charges by how HARD
 ///                  you went through it, and arriving at a mute spends that
@@ -321,19 +340,6 @@ struct SweepCore {
     return clamp01(1.0f - fade * clamp01(p.sweep_depth));
   }
 
-  /// The position law's local steepness, d(gain)/d(magnitude). Negative: the
-  /// light goes out as the knob goes away. Flat across the deadzone and flat
-  /// again right at the extreme — the smoothstep's two shoulders — which is
-  /// exactly where the bounce should be silent: there is nothing there for the
-  /// light to run ahead of.
-  static float positionSlope(const Params& p, float sweep) {
-    using namespace detail;
-    const float dz = clamp01(p.sweep_deadzone);
-    const float span = 1.0f - dz > 1e-4f ? 1.0f - dz : 1e-4f;
-    const float t = clamp01((magnitudeOf(sweep) - dz) / span);
-    return -clamp01(p.sweep_depth) * 6.0f * t * (1.0f - t) / span;
-  }
-
   /// Advance one frame and fold the result into `o` — the rails, and the
   /// emission the mode branch has already written.
   void apply(const Params& p, float dt, Out& o) {
@@ -362,27 +368,36 @@ struct SweepCore {
     const float gain = positionGain(p, o.sweep_out);
 
     // --- 2a. THE BOUNCE. Sweeping back IN from an end, the light has weight:
-    //         it runs AHEAD of your hand through the fade and then springs
-    //         back. `target` is that lead — the position law's own climb rate
-    //         times a lookahead in seconds — so a hard return overshoots and a
-    //         patient one does not, without a velocity term appearing anywhere
-    //         downstream. It is the same trick a lookahead limiter plays,
-    //         pointed at a dimmer.
+    //         it runs AHEAD of your hand through the fade, PAST fully lit, and
+    //         then springs back down onto the base. `target` is that lead — the
+    //         position law's own climb rate times a lookahead in seconds — so a
+    //         hard return overshoots and a patient one does not, without a
+    //         velocity term appearing anywhere downstream. It is the same trick
+    //         a lookahead limiter plays, pointed at a dimmer.
     //
     //         INWARD ONLY, and deliberately. Going out is a blackout, and a
     //         blackout that swells before it falls is not a gesture, it is a
     //         light with a fault in it.
+    //
+    //         The drive is the SECANT of the position law across the rate
+    //         estimator's own window — where the dimmer stood a window ago
+    //         against where it stands now — not a slope sampled where the knob
+    //         happens to be. Two things fall out of that and neither is free
+    //         any other way. A knob that clears the whole fade band between two
+    //         samples, which is the most emphatic gesture on the card, lands in
+    //         the deadzone where the tangent is flat and would bounce not at
+    //         all; the secant sees the climb it actually made. And "inward" is
+    //         then just a rising dimmer, so crossing the centre needs no sign
+    //         rule of its own.
+    //
+    //         Never a frame-to-frame difference: a stepping encoder differenced
+    //         per frame is a string of spikes with nothing in between, which is
+    //         the whole reason knob_rate.h is a boxcar (see there).
     float target = 0.0f;
-    const float bp = o.sweep_out - kSweepCenter;
-    const float inward = bp > 0.0f ? -r : (bp < 0.0f ? r : 0.0f);
-    if (inward > 0.0f) {
-      // The climb is read through the fade's SLOPE off the boxcar knob rate,
-      // never by differencing `gain` frame to frame — a stepping encoder
-      // differenced per frame is a string of spikes, which is the whole reason
-      // knob_rate.h exists. It also makes the drive die at both shoulders on
-      // its own: silent across the deadzone, silent at the extreme.
-      const float climb = -positionSlope(p, o.sweep_out) * (inward / kSweepCenter);
-      target = kBounceLead * clamp01(p.sweep_bounce) * climb;
+    if (rate.last_span > 1e-6f) {
+      const float climb =
+          (gain - positionGain(p, clamp01(rate.last_from))) / rate.last_span;
+      if (climb > 0.0f) target = kBounceLead * clamp01(p.sweep_bounce) * climb;
     }
     // A stiff spring chasing that lead. It settles ON the lead while the sweep
     // is running and rings down through zero the moment the sweep stops — the
@@ -410,7 +425,9 @@ struct SweepCore {
     // — the flicker's drive, the mute that fires the throw — keeps reading the
     // positional gain, because where the mute is is a fact about the knob and
     // must not move because you arrived at it quickly.
-    const float lit_gain = clamp01(gain + bounce);
+    // Not clamped at 1: overshooting the BASE is the point, and three_planes'
+    // emission range runs past fully lit for exactly this.
+    const float lit_gain = clampf(gain + bounce, 0.0f, kEmissionMax);
 
     // --- 2b. CATCH AND THROW. The mute at either end is the point of the
     //         sweep, but a mute that is only "dark" has no gesture in it — the
@@ -513,8 +530,12 @@ struct SweepCore {
       o.emission[flick_layer] = lerpf(lit, target, drive);
     }
 
-    // Position last, so the whole bank — flicker included — fades together.
-    for (int i = 0; i < kLayers; ++i) o.emission[i] = clamp01(o.emission[i] * lit_gain);
+    // Position last, so the whole bank — flicker included — fades together,
+    // and the overshoot lifts whatever the mode painted in proportion rather
+    // than flattening it. Normalised here, at the one boundary where the
+    // emission bank stops being "how lit is this floor" and becomes a rail.
+    for (int i = 0; i < kLayers; ++i)
+      o.emission[i] = clampf(o.emission[i] * lit_gain, 0.0f, kEmissionMax) / kEmissionMax;
   }
 };
 

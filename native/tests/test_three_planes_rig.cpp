@@ -32,6 +32,13 @@ double wrapped(double turn) {
   return f < 0.0 ? f + 1.0 : f;
 }
 
+/// The emission rails carry a FRACTION of three_planes' emission range, and
+/// that range runs PAST fully lit — the headroom the sweep's bounce overshoots
+/// into. So what a golden means by "this floor sits at 0.8" is `rail(0.8)`.
+/// Mirrors the header's own division exactly, so the bit-equality cases below
+/// stay bit-equality cases.
+float rail(float level) { return level / kEmissionMax; }
+
 constexpr double kBaseElevation = 35.264389682754654 / 89.0;
 constexpr double kBaseSpacing = 0.42 / 1.5;
 
@@ -122,9 +129,9 @@ TEST_CASE("Allow Holes lights only what is ringing — except the cap", "[three_
     Core c;
     const Out o = step(c, p, 0, 0, 1, 0, 0.1f);
     CHECK(o.peak_layer == 2);
-    CHECK_THAT(o.emission[0], WithinAbs(1.0, 1e-6));
-    CHECK_THAT(o.emission[1], WithinAbs(1.0, 1e-6));
-    CHECK_THAT(o.emission[2], WithinAbs(1.0, 1e-6));
+    CHECK_THAT(o.emission[0], WithinAbs(rail(1.0f), 1e-6));
+    CHECK_THAT(o.emission[1], WithinAbs(rail(1.0f), 1e-6));
+    CHECK_THAT(o.emission[2], WithinAbs(rail(1.0f), 1e-6));
   }
   // With holes: only the floor that actually fired, plus the cap (which is the
   // same floor here), so the two below go dark under an active meter.
@@ -132,9 +139,9 @@ TEST_CASE("Allow Holes lights only what is ringing — except the cap", "[three_
     Core c;
     p.allow_holes = true;
     const Out o = step(c, p, 0, 0, 1, 0, 0.1f);
-    CHECK_THAT(o.emission[0], WithinAbs(0.12, 1e-6));
-    CHECK_THAT(o.emission[1], WithinAbs(0.12, 1e-6));
-    CHECK_THAT(o.emission[2], WithinAbs(1.0, 1e-6));
+    CHECK_THAT(o.emission[0], WithinAbs(rail(0.12f), 1e-6));
+    CHECK_THAT(o.emission[1], WithinAbs(rail(0.12f), 1e-6));
+    CHECK_THAT(o.emission[2], WithinAbs(rail(1.0f), 1e-6));
   }
 }
 
@@ -179,11 +186,11 @@ TEST_CASE("a flam brightens its own floor and retires", "[three_planes_rig]") {
 
   // Lit base plus the full blip on the frame it lands.
   const Out hit = step(c, p, 1, 0, 0, 0, 0.02f);
-  CHECK_THAT(hit.emission[0], WithinAbs(0.9, 1e-6));
+  CHECK_THAT(hit.emission[0], WithinAbs(rail(0.9f), 1e-6));
   // Ease-out: (1 - t/T)^2, so it is already well down a fifth of the way in.
   const Out mid = idle(c, p, 0.02f);
   CHECK(mid.emission[0] < hit.emission[0]);
-  CHECK(mid.emission[0] > p.emission_on);
+  CHECK(mid.emission[0] > rail(p.emission_on));
   // Well past flam_time nothing is ringing any more.
   for (int i = 0; i < 10; ++i) idle(c, p, 0.02f);
   CHECK(c.flam_live[0] == false);
@@ -336,8 +343,8 @@ TEST_CASE("Solid lights every floor and ignores the signals entirely", "[three_p
   const Out quiet = idle(c, p, 0.1f);
 
   for (int i = 0; i < kLayers; ++i) {
-    CHECK_THAT(hit.emission[i], WithinAbs(0.8, 1e-6));
-    CHECK_THAT(quiet.emission[i], WithinAbs(0.8, 1e-6));
+    CHECK_THAT(hit.emission[i], WithinAbs(rail(0.8f), 1e-6));
+    CHECK_THAT(quiet.emission[i], WithinAbs(rail(0.8f), 1e-6));
   }
   // No meter, no cap: the rails report the meter, and there isn't one.
   CHECK(hit.meter == 0.0f);
@@ -425,11 +432,11 @@ TEST_CASE("a signal held across a mode change does not read as a fresh hit",
   CHECK_THAT(back.meter, WithinAbs(1.0, 1e-6));
   // ...but there is no FLAM, because the edge was consumed before the mode
   // changed and `prev_on` kept tracking through the quiet mode.
-  CHECK_THAT(back.emission[2], WithinAbs(0.4, 1e-6));
+  CHECK_THAT(back.emission[2], WithinAbs(rail(0.4f), 1e-6));
 
   // Dropping and re-raising it is a fresh edge, and does flam.
   step(c, p, 0, 0, 0, 0, 0.01f);
-  CHECK(step(c, p, 0, 0, 1, 0, 0.01f).emission[2] > 0.4f);
+  CHECK(step(c, p, 0, 0, 1, 0, 0.01f).emission[2] > rail(0.4f));
 }
 
 // --- the end-of-move hold ---------------------------------------------------
@@ -615,7 +622,7 @@ TEST_CASE("the sweep at rest costs nothing", "[three_planes_rig][sweep]") {
   for (int i = 0; i < 60; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
 
   for (int i = 0; i < kLayers; ++i)
-    REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+    REQUIRE_THAT(o.emission[i], WithinAbs(rail(1.0f), 1e-5));
   REQUIRE(o.sweep_speed == 0.0f);
   REQUIRE_THAT(o.sweep_out, WithinAbs(kSweepCenter, 1e-6));
 }
@@ -645,7 +652,7 @@ TEST_CASE("most of the middle is a deadzone at full brightness",
   const float inside = kSweepCenter + 0.5f * p.sweep_deadzone * 0.9f;
   for (int i = 0; i < 5; ++i) sweepAt(c, p, inside, 0.016f);
   const Out o = sweepAt(c, p, inside, 0.016f);
-  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(rail(1.0f), 1e-5));
 }
 
 TEST_CASE("either extreme fades the tower to black", "[three_planes_rig][sweep]") {
@@ -676,7 +683,7 @@ TEST_CASE("Fade Depth floors how dark the ends go", "[three_planes_rig][sweep]")
   p.sweep_depth = 0.4f;
   for (int i = 0; i < 5; ++i) sweepAt(c, p, 1.0f, 0.016f);
   const Out o = sweepAt(c, p, 1.0f, 0.016f);
-  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(0.6, 1e-5));
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(rail(0.6f), 1e-5));
 }
 
 TEST_CASE("Deadzone 0 starts the fade the moment you leave centre",
@@ -689,7 +696,7 @@ TEST_CASE("Deadzone 0 starts the fade the moment you leave centre",
   for (int i = 0; i < 5; ++i) sweepAt(c, p, 0.75f, 0.016f);
   const Out o = sweepAt(c, p, 0.75f, 0.016f);
   // Half a throw out, smoothstepped: 1 - (0.5^2 * (3 - 1)) = 0.5.
-  REQUIRE_THAT(o.emission[0], WithinAbs(0.5, 1e-5));
+  REQUIRE_THAT(o.emission[0], WithinAbs(rail(0.5f), 1e-5));
 }
 
 TEST_CASE("the sweep dims the meter's own picture rather than replacing it",
@@ -828,7 +835,7 @@ TEST_CASE("the flicker is silent at full brightness and once it is black",
   for (int i = 0; i < 400; ++i) {
     const Out o = sweepAt(home, p, kSweepCenter, 0.016f);
     REQUIRE(oddFloorsOut(o) == 0);
-    REQUIRE_THAT(o.emission[0], WithinAbs(1.0, 1e-5));
+    REQUIRE_THAT(o.emission[0], WithinAbs(rail(1.0f), 1e-5));
   }
 
   Core dark;
@@ -854,7 +861,7 @@ TEST_CASE("a flickering floor TOGGLES — a dark one comes up",
     const Out o = sweepAt(c, p, half_out, 0.016f);
     for (int k = 0; k < kLayers; ++k) {
       // Brighter than the unlit level it would otherwise be dimmed to.
-      if (o.emission[k] > p.emission_off * 0.5f + 1e-3f) ++lifted;
+      if (o.emission[k] > rail(p.emission_off * 0.5f) + 1e-3f) ++lifted;
     }
   }
   REQUIRE(lifted > 10);
@@ -924,7 +931,7 @@ TEST_CASE("a vigorous pass charges the throw", "[three_planes_rig][sweep]") {
   // ...and the tower is muted under it — that being what fired the throw in
   // the first place. What you see is the release, not a brightening of
   // anything that was already there.
-  for (int i = 0; i < kLayers; ++i) REQUIRE(o.emission[i] < kMuteGain);
+  for (int i = 0; i < kLayers; ++i) REQUIRE(o.emission[i] < rail(kMuteGain));
 }
 
 TEST_CASE("flick harder, throw harder", "[three_planes_rig][sweep]") {
@@ -986,16 +993,20 @@ TEST_CASE("the tail is causal: nothing the knob does cancels it",
   Params p;
   p.mode = ModeSolid;
   p.sweep_flicker = 0.0f;
-  p.ring_time = 2.0f;
+  // Ring Out long enough that the tail is still plainly alive once the
+  // relight's own bounce has finished swinging: the claim here is that the two
+  // clocks are independent, and a tower still ringing its way down onto the
+  // base would confuse one for the other.
+  p.ring_time = 3.0f;
   const float thrown = flick(c, p, 2.5f);
   REQUIRE(thrown > 0.85f);
 
   Out o{};
-  for (int i = 0; i < 20; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
+  for (int i = 0; i < 40; ++i) o = sweepAt(c, p, kSweepCenter, 0.016f);
   REQUIRE(o.release > 0.5f);           // still ringing...
   REQUIRE(o.release < thrown);         // ...and falling
   for (int i = 0; i < kLayers; ++i)    // ...over a fully relit tower
-    REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-5));
+    REQUIRE_THAT(o.emission[i], WithinAbs(rail(1.0f), 1e-5));
 }
 
 TEST_CASE("Ring Out is how long the tail lasts", "[three_planes_rig][sweep]") {
@@ -1075,6 +1086,7 @@ struct Bounce {
   float peak = 0.0f;    ///< furthest the light ran AHEAD of the knob
   float sag = 0.0f;     ///< furthest it fell BEHIND afterwards (negative)
   float settled = 0.0f; ///< the gap once everything has stopped
+  bool exact = false;   ///< ...and whether that gap is exactly nothing
   int peak_frame = -1;
 };
 
@@ -1086,13 +1098,16 @@ Bounce sweepIn(Core& c, Params& p, float from, float to, int frames, int tail) {
     const float u = i < frames ? (float)i / (float)(frames - 1) : 1.0f;
     const float knob = from + (to - from) * u;
     const Out o = sweepAt(c, p, knob, 0.016f);
-    const float gap = o.emission[0] - positionOf(p, knob);
+    // Back into lit units, where 1 is a fully lit floor: every threshold
+    // below is a statement about the light, not about the rail's scaling.
+    const float gap = o.emission[0] * kEmissionMax - positionOf(p, knob);
     if (gap > b.peak) {
       b.peak = gap;
       b.peak_frame = i;
     }
     if (b.peak_frame >= 0 && i > b.peak_frame && gap < b.sag) b.sag = gap;
     b.settled = gap;
+    b.exact = o.emission[0] == rail(positionOf(p, knob));
   }
   return b;
 }
@@ -1120,7 +1135,7 @@ TEST_CASE("Bounce dialled out is the dimmer exactly as it was",
   for (int i = 0; i < 40; ++i) {
     const float knob = 1.0f - 0.5f * (float)i / 39.0f;
     const Out o = sweepAt(c, p, knob, 0.016f);
-    REQUIRE(o.emission[0] == positionOf(p, knob));
+    REQUIRE(o.emission[0] == rail(positionOf(p, knob)));
   }
 }
 
@@ -1143,7 +1158,61 @@ TEST_CASE("coming back in, the light runs ahead of the knob and springs back",
   REQUIRE(b.sag < -0.03f);
   // And then it is over, exactly. A spring that crept would leave the tower a
   // hair off its own dimmer for ever.
-  REQUIRE(b.settled == 0.0f);
+  REQUIRE(b.exact);
+}
+
+TEST_CASE("the overshoot goes past the BASE level, not just past the knob",
+          "[three_planes_rig][sweep][bounce]") {
+  // The reason three_planes' emission range runs past fully lit at all. A
+  // sweep that comes all the way home ends where the position law is already
+  // at full, so an overshoot clipped there is spent against a ceiling: what
+  // survives is the light arriving a frame early and then dipping, which reads
+  // as a return that got there sooner rather than as one that HIT. Given
+  // somewhere to go, the landing punches through the base and falls back to it.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  parkOut(c, p, 1.0f);
+
+  float peak = 0.0f;
+  Out o{};
+  for (int i = 0; i < 68; ++i) {
+    const float u = i < 8 ? (float)i / 7.0f : 1.0f;
+    o = sweepAt(c, p, 1.0f + (kSweepCenter - 1.0f) * u, 0.016f);
+    if (o.emission[0] > peak) peak = o.emission[0];
+  }
+  // At the SHIPPING default, not only at the top of the knob: a bounce nobody
+  // has dialled up still has to be a thing you can see.
+  REQUIRE(peak > rail(p.emission_on) * 1.12f);
+  // Overdrive, not overflow — the rail still tops out at its own full scale.
+  REQUIRE(peak <= 1.0f);
+  // And it lands back ON the base, exactly.
+  REQUIRE(o.emission[0] == rail(p.emission_on));
+}
+
+TEST_CASE("a knob that clears the whole band in one frame still bounces",
+          "[three_planes_rig][sweep][bounce]") {
+  // The gesture this card is FOR: a hard flick home, which on a stepping
+  // encoder can be a single sample. Reading the fade's slope where the knob
+  // LANDED would find the deadzone — flat, nothing there to run ahead of — and
+  // lose the best gesture available outright. The drive is the secant across
+  // the rate window instead, so what counts is the climb the knob actually
+  // made, not where it came to rest.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  parkOut(c, p, 1.0f);
+
+  float peak = 0.0f;
+  Out o{};
+  for (int i = 0; i < 80; ++i) {
+    o = sweepAt(c, p, kSweepCenter, 0.016f);   // one frame, end to home
+    if (o.emission[0] > peak) peak = o.emission[0];
+  }
+  REQUIRE(peak > rail(p.emission_on) * 1.15f);
+  REQUIRE(o.emission[0] == rail(p.emission_on));
 }
 
 TEST_CASE("how far it overshoots is how fast you came",
@@ -1200,7 +1269,7 @@ TEST_CASE("nothing swells on the way OUT", "[three_planes_rig][sweep][bounce]") 
   for (int i = 0; i < 10; ++i) {
     const float knob = kSweepCenter + 0.5f * (float)i / 9.0f;
     const Out o = sweepAt(c, p, knob, 0.016f);
-    REQUIRE(o.emission[0] == positionOf(p, knob));
+    REQUIRE(o.emission[0] == rail(positionOf(p, knob)));
   }
 }
 
@@ -1219,7 +1288,7 @@ TEST_CASE("riding the knob around home still costs nothing",
   Out o{};
   for (int i = 0; i < 90; ++i)
     o = sweepAt(c, p, kSweepCenter + (i % 2 ? inside : -inside), 0.016f);
-  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(1.0, 1e-6));
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.emission[i], WithinAbs(rail(1.0f), 1e-6));
 }
 
 TEST_CASE("the bounce does not move the mute, or the throw that hangs off it",
@@ -1275,5 +1344,5 @@ TEST_CASE("a dropped frame damps the bounce rather than detonating it",
 
   Out o{};
   for (int i = 0; i < 60; ++i) o = sweepAt(c, p, 0.6f, 0.016f);
-  REQUIRE_THAT(o.emission[0], WithinAbs(positionOf(p, 0.6f), 1e-6));
+  REQUIRE_THAT(o.emission[0], WithinAbs(rail(positionOf(p, 0.6f)), 1e-6));
 }

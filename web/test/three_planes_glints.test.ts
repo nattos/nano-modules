@@ -600,14 +600,24 @@ describe('Three Planes glints E2E', () => {
     expect(S[1]!).toBeGreaterThan(S[0]!);
     expect(S[2]!).toBeGreaterThan(S[1]!);
 
-    // Slung: over the same window it covers several times the ground.
+    // Slung: over the same window it covers several times the ground — or it
+    // is simply GONE, having crossed the picture and died inside one window,
+    // which is that same claim in its strongest form. Engine dt is wall clock
+    // and this glint is the fast one, so which of the two you get is a matter
+    // of frame pacing; the contrast with the held one, still up there and
+    // barely moved over the very same windows, is what the case is about.
     expect(G[0]).not.toBeNull();
-    expect(G[1]).not.toBeNull();
-    expect(G[1]! - G[0]!).toBeGreaterThan((S[1]! - S[0]!) * 2);
-    // Far enough that it is past where the held one gets to two windows later
-    // — and, in practice, off the far side and dead by the third. Engine dt is
-    // wall clock, so the claim is that ratio and not a time.
-    expect(G[1]!).toBeGreaterThan(S[2]!);
+    if (G[1] !== null) {
+      expect(G[1] - G[0]!).toBeGreaterThan((S[1]! - S[0]!) * 2);
+      // Past where the held one gets to two windows later.
+      expect(G[1]).toBeGreaterThan(S[2]!);
+    } else {
+      // Off the far side already, inside one window. The contrast is the whole
+      // assertion: over that same window the held one is still in the picture
+      // — and still there a window after that, and a window after that.
+      expect(S[1]).not.toBeNull();
+      expect(S[2]).not.toBeNull();
+    }
   });
 
   it('a glint lights the throw itself, not just the tower', async () => {

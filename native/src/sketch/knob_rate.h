@@ -35,6 +35,16 @@ struct KnobRate {
   int count = 0;
   bool seeded = false;
 
+  /// The window the last rate was actually measured over, and the sample at
+  /// its far end — so `rate == (x - last_from) / last_span`. Published because
+  /// a rate alone cannot answer "how much did some function of the knob change
+  /// over that window": a caller that needs the SECANT (three_planes_rig's
+  /// bounce reads the dimmer's climb this way) has to know both ends, and a
+  /// knob that clears a whole band between two samples is exactly the case
+  /// where reconstructing them from the rate goes wrong.
+  float last_span = 0.0f;
+  float last_from = 0.0f;
+
   void reset() { *this = KnobRate(); }
 
   /// SIGNED rate in input ranges per second. Call once per tick.
@@ -64,8 +74,14 @@ struct KnobRate {
       // Window closed: raw per-frame differencing. The sample is still pushed,
       // so a window opened live resumes with history behind it.
       const int prev = (head - 1 + kRing) % kRing;
+      last_from = ring_x[prev];
+      last_span = dt;
       rate = (x - ring_x[prev]) / dt;
       windowRate(1e-3f, x);
+      // windowRate above overwrote them with its own 1 ms span; the per-frame
+      // difference is what this branch actually reported.
+      last_from = ring_x[prev];
+      last_span = dt;
     }
     return (rate == rate) ? rate : 0.0f;
   }
@@ -86,9 +102,15 @@ struct KnobRate {
       --count;
     }
     float rate = 0.0f;
+    last_span = 0.0f;
+    last_from = x;
     if (count >= 1) {
       const float span = now - ring_t[oldest];
-      if (span > 1e-6f) rate = (x - ring_x[oldest]) / span;
+      if (span > 1e-6f) {
+        rate = (x - ring_x[oldest]) / span;
+        last_span = span;
+        last_from = ring_x[oldest];
+      }
     }
     if (count >= kRing) --count;   // full: drop the oldest
     ring_t[head] = now;

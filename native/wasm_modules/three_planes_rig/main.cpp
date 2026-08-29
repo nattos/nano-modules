@@ -381,11 +381,13 @@ void module_init() {
           "**Coming back in, the light has weight.** A positional dimmer is "
           "dead on the return — the brightness is exactly your hand, and "
           "sweeping in is just the fade played backwards. So on the way in "
-          "the tower relights slightly AHEAD of the knob and springs back, by "
-          "*Bounce*, scaled by how fast you came: slam it home and the light "
-          "arrives early, overshoots and settles; ease it home and nothing "
-          "bounces at all. Only ever on the way in — going out is a blackout, "
-          "and a blackout that swells first is a fault, not a gesture.\n\n"
+          "the tower relights slightly AHEAD of the knob and overshoots PAST "
+          "fully lit — into Three Planes' emission overdrive, where the cores "
+          "blow out — then springs back down onto the base. *Bounce* is how "
+          "far, scaled by how fast you came: slam it home and the landing "
+          "hits; ease it home and nothing bounces at all. Only ever on the "
+          "way in — going out is a blackout, and a blackout that swells first "
+          "is a fault, not a gesture.\n\n"
           "*Flicker* is the stutter that arrives mid-fade — one floor at a "
           "time, going dark or coming up, loudest exactly where the light is "
           "halfway out and gone again at both ends. Old tubes struggle; they "
@@ -413,12 +415,14 @@ void module_init() {
                     "Tube stutter through the fade — one floor at a time, "
                     "loudest where the light is halfway out.")
         .label("Flicker", "Flick");
-  schema.floatField("sweep_bounce", 0.4f, 0.f, 1.f, state::PrimaryInput,
+  schema.floatField("sweep_bounce", 0.55f, 0.f, 1.f, state::PrimaryInput,
                     nullptr, 0.f, nullptr,
                     "How far the light overshoots when you sweep back IN, "
-                    "before it springs back. Set by how FAST you came — a "
-                    "hard return slams past and a patient one does not. "
-                    "0 tracks the knob exactly.")
+                    "before it springs back. It goes past FULLY LIT, into "
+                    "Three Planes' emission overdrive — so a return that "
+                    "slams home lands harder than the tower normally sits, "
+                    "rather than merely getting there sooner. Set by how FAST "
+                    "you came; 0 tracks the knob exactly.")
         .label("Bounce", "Bnce");
   schema.floatField("sweep_decay", 0.18f, 0.01f, 2.f, state::SecondaryInput,
                     nullptr, 0.f, "s",

@@ -329,20 +329,25 @@ void module_init() {
           "into a black mask that occludes the planes below. **Colour** is "
           "what the halo carries; the line core always blows out toward "
           "white (see *Core Whiten*).\n\n"
-          "Plane 1 is the ground floor, plane 3 the top.")
-      .floatField("plane1_emission", 0.85f, 0.f, 1.f, state::PrimaryInput)
+          "Plane 1 is the ground floor, plane 3 the top.\n\n"
+          "**Emission runs past 1.** Fully lit is 1; the rest of the range is "
+          "overdrive, where the cores blow out and the halo goes with them. "
+          "That headroom is there so a level can OVERSHOOT its own base — it "
+          "is what Three Planes Rig's *Bounce* spends on the way back in — "
+          "and it is yours to dial by hand too.")
+      .floatField("plane1_emission", 0.85f, 0.f, 1.5f, state::PrimaryInput)
         .label("Plane 1 Emission", "P1 Emit")
       .floatField("plane1_fill", 0.0f, -1.f, 1.f, state::PrimaryInput, "signed")
         .label("Plane 1 Fill", "P1 Fill")
       .rgbField("plane1_color", 1.00f, 0.22f, 0.62f, state::PrimaryInput)
         .label("Plane 1 Colour", "P1 Col")
-      .floatField("plane2_emission", 0.85f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("plane2_emission", 0.85f, 0.f, 1.5f, state::PrimaryInput)
         .label("Plane 2 Emission", "P2 Emit")
       .floatField("plane2_fill", 0.0f, -1.f, 1.f, state::PrimaryInput, "signed")
         .label("Plane 2 Fill", "P2 Fill")
       .rgbField("plane2_color", 0.30f, 0.85f, 1.00f, state::PrimaryInput)
         .label("Plane 2 Colour", "P2 Col")
-      .floatField("plane3_emission", 0.85f, 0.f, 1.f, state::PrimaryInput)
+      .floatField("plane3_emission", 0.85f, 0.f, 1.5f, state::PrimaryInput)
         .label("Plane 3 Emission", "P3 Emit")
       .floatField("plane3_fill", 0.0f, -1.f, 1.f, state::PrimaryInput, "signed")
         .label("Plane 3 Fill", "P3 Fill")
