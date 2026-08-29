@@ -430,6 +430,14 @@ target_include_directories(test_three_planes_strobe PRIVATE ${CMAKE_SOURCE_DIR}/
 target_link_libraries(test_three_planes_strobe PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test_three_planes_strobe)
 
+# The house rig's pixel map — the 3/3/4 segment split, where the bars stand in
+# three_walls' room, the pass response and its peak-hold. Host-free, so a frame
+# can be walked past the bars at an exact `a` with no wasm and no GPU.
+add_executable(test_led_bars tests/test_led_bars.cpp)
+target_include_directories(test_led_bars PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_led_bars PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test_led_bars)
+
 # source.mesh.three_walls' moves — the pulse train, the counter-rotating cycles
 # and the frame-locked resonances. Host-free header, so no wasm bundle and no
 # GPU; the frame-lock in particular can only be pinned at an exact dt.

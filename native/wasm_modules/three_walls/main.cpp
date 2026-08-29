@@ -44,6 +44,7 @@
 #include <val.h>
 #include <effect_utils.h>   // fx::coverSquare
 #include <sketch/three_walls_show.h>
+#include <sketch/led_bars.h>
 #include "three_walls_shaders.h"
 
 #include <cmath>
@@ -70,6 +71,15 @@ struct Uniforms {
   float grade[16];          // rows 16-19 VcrGrade, verbatim
 };
 static_assert(sizeof(Uniforms) == 320, "Uniforms layout mismatch with render.hlsl");
+
+// Mirrors `cbuffer LedUniforms` in shaders_common/nano_led_bars.hlsl.
+struct LedUniforms {
+  float cell[led_bars::kCells][4];   // bar-major, segment 0 at the bottom
+  float ctl[4];                      // quantize, -, -, -
+};
+static_assert(sizeof(LedUniforms) == 16 * (led_bars::kCells + 1),
+              "LedUniforms layout mismatch with nano_led_bars.hlsl");
+static_assert(QUADS == led_bars::kFrames, "the LED map sees every frame");
 
 struct State {
   show::Params show_p;
@@ -144,12 +154,29 @@ struct State {
   gpu::Buffer uniform_buf[VIEWS];
   /// The two auxiliary views are the effect's own textures — the executor
   /// allocates only tex_out. Sized lazily, and only while something reads them.
+  // --- LED bars ---
+  // The pixel map for the house rig, published on `led_out`. See the LED note
+  // below the room section for where the bars stand.
+  bool  led_quantize = true;
+  float led_spacing = 1.5f;
+  float led_width = 0.45f;
+  float led_decay = 0.12f;
+  /// The peak-held colour of each bar, advanced in tick() because that is where
+  /// dt lives — render() is handed a viewport and nothing else.
+  led_bars::Bars led_now;
+
+  gpu::Texture led_tex;
+  gpu::Buffer  led_buf;
+  int led_w = 0;
+  int led_h = 0;
+
   gpu::Texture aux_tex[2];
   int aux_w[2] = {0, 0};
   int aux_h[2] = {0, 0};
 };
 
 static gpu::ComputePSO s_pso;
+static gpu::ComputePSO s_led_pso;
 
 // --- Perceptual mappings (style guide 1.3) --------------------------------
 // Shared with three_planes, deliberately: the two cards' neon knobs have to
@@ -157,6 +184,13 @@ static gpu::ComputePSO s_pso;
 
 static inline float emissionDrive(float e) {
   return std::pow(e < 0.0f ? 0.0f : e, 1.8f) * 3.2f;
+}
+// What one frame is worth on the LED rig: the SAME dimmer curve, normalised so
+// a frame at full emission is a fully-lit segment. Divided by the curve rather
+// than restated as a number, so the map cannot drift from the picture.
+static inline float ledLevel(float e) {
+  const float v = emissionDrive(e) / emissionDrive(1.0f);
+  return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
 }
 static inline float lineHalfWidth(float w) {
   float t = w < 0.0f ? 0.0f : (w > 1.0f ? 1.0f : w);
@@ -629,6 +663,50 @@ void module_init() {
       .textureField("left_out",  state::SecondaryOutput)
       .textureField("right_out", state::SecondaryOutput)
 
+      // ---------------- LED bars ----------------
+      // After tex_out, and it matters: the editor takes a module's texture
+      // output to be the FIRST one its schema declares (schema-channels.ts,
+      // firstFieldOfType — it sorts on declaration order).
+      .group("led", "LED Bars")
+        .groupHelp(
+          "A pixel map for the house rig: four vertical bars, ten segments "
+          "each, as a 4x10 grid of flat blocks. It is a CONTROL SIGNAL, not a "
+          "picture — wire *LED Out* at whatever drives the bars.\n\n"
+          "The bars stand in the room BEYOND the two side walls, two a side. A "
+          "frame fills the back wall, breaks out onto the sides, tears down "
+          "them, and then reaches these — so the rig fires LAST, as a pair of "
+          "lights opening outward from the screen. The room is symmetric, so "
+          "the outer two always agree and so do the inner two.\n\n"
+          "Unwired, none of this is drawn.")
+      .textureField("led_out", state::SecondaryOutput)
+        .label("LED Out", "LED")
+      .floatField("led_spacing", 1.5f, 0.25f, 6.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How far out the bars stand, as the gap between the two "
+                  "rings — measured in back-wall widths, so 1 is one whole "
+                  "wall past its edge. Small brings them in tight behind the "
+                  "screen; large pushes them out to the end of the throw.")
+        .label("Bar Spacing", "Space")
+      .floatField("led_width", 0.45f, 0.05f, 2.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How long a bar stays lit as a frame goes past, as a "
+                  "fraction of the spacing. Narrow is a hard blink; wide has "
+                  "the two rings overlapping into a wash.")
+        .label("Pass Width", "Width")
+      .floatField("led_decay", 0.12f, 0.f, 1.f, state::SecondaryInput,
+                  nullptr, 0.f, "s",
+                  "How long a bar takes to fall back after it is hit. The "
+                  "frames tear through this part of the room fastest, so "
+                  "without some decay a quick move puts the whole pass between "
+                  "two frames and the bar never lights at all.")
+        .label("Bar Decay", "Decay")
+      .boolField("led_quantize", true, state::SecondaryInput,
+                 "Each segment a flat block of colour, which is what you want: "
+                 "anything sampling or averaging inside a block then comes away "
+                 "with the exact colour that segment asked for. Turn it off to "
+                 "interpolate between segment centres.")
+        .label("Quantize", "Quant")
+
       .capability(state::Capability::Generator)
       // NOT TimeIndependent, unlike three_planes: every move here is an
       // accumulator, so a frame is not a pure function of the current inputs
@@ -648,6 +726,13 @@ void module_init() {
       .storageTex2d(1)
       .uniform(2));
 
+  state::registerShaderSPV("three_walls_led", LED_SPV, LED_SPV_SIZE);
+  if (auto led = gpu::Device::createShaderModuleByName("three_walls_led")) {
+    s_led_pso = gpu::Device::createComputePSO(led, "main", gpu::Bindings()
+        .storageTex2d(0)
+        .uniform(1));
+  }
+
   state::log("three_walls: module initialized");
 }
 
@@ -656,6 +741,8 @@ void* create() {
   for (int v = 0; v < VIEWS; v++)
     s->uniform_buf[v] = gpu::Device::createBuffer(sizeof(Uniforms),
                                                   gpu::BufferUsage::Uniform);
+  s->led_buf = gpu::Device::createBuffer(sizeof(LedUniforms),
+                                         gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -664,6 +751,8 @@ void destroy(void* self) {
   if (!s) return;
   for (int v = 0; v < VIEWS; v++) s->uniform_buf[v].release();
   for (int i = 0; i < 2; i++) s->aux_tex[i].release();
+  s->led_buf.release();
+  s->led_tex.release();
   delete s;
 }
 
@@ -692,6 +781,38 @@ static void publishRails(const State& s) {
   publish("move_rate", s.frame.rate);
 }
 
+// --- The LED bars ---------------------------------------------------------
+//
+// Four vertical bars standing in the room BEYOND the two side walls, two on
+// each side. A frame comes at you, fills the back wall, breaks out onto the
+// side walls, tears down them — and then reaches these, which are the last
+// thing it passes on its way through you.
+//
+// They are placed in `a`, the frame's apparent half-size (the room note above),
+// because `a = 1` is exactly the back wall's edge and everything past that is
+// outside the box. Deliberately NOT in the side wall's own texture coordinate:
+// keystone and stretch are how those PICTURES get drawn, and a light standing
+// in the room does not move because you remapped a projector.
+//
+// The response and the ordering live in <sketch/led_bars.h>, host-free, so the
+// Catch2 goldens can drive a frame past the rig at an exact dt. All this does
+// is read the scene out of the show and hand it over.
+static void updateLed(State& s, float dt) {
+  led_bars::WallScene scene;
+  for (int q = 0; q < QUADS; q++) {
+    scene.a[q] = apparentSize(s, s.frame.z[q]);
+    scene.level[q] = ledLevel(s.emission[q]);
+    scene.live[q] = s.frame.live[q];
+    for (int c = 0; c < 3; c++) scene.rgb[q][c] = s.color[q][c];
+  }
+  const led_bars::Bars inst =
+      led_bars::wallBars(scene, s.led_spacing, s.led_width);
+  for (int b = 0; b < led_bars::kBars; b++)
+    for (int c = 0; c < 3; c++)
+      s.led_now.rgb[b][c] = led_bars::peakHold(s.led_now.rgb[b][c],
+                                               inst.rgb[b][c], dt, s.led_decay);
+}
+
 void tick(void* self, double dt) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
@@ -710,6 +831,7 @@ void tick(void* self, double dt) {
 
   s->frame = s->core.tick(s->show_p, static_cast<float>(dt));
   publishRails(*s);
+  updateLed(*s, static_cast<float>(dt));
 }
 
 // --- Render ---------------------------------------------------------------
@@ -813,6 +935,48 @@ static void fillUniforms(State* s, int v, int vp_w, int vp_h, Uniforms& u) {
   u.grade[15] = s->highlight_tint_amount;
 }
 
+/// The LED map, on the same aux-output pattern as the two side cameras: the
+/// effect owns the allocation, publishes the handle once, and does not dispatch
+/// unless something downstream is wired to it.
+///
+/// Drawn at the full viewport rather than as a 4x10 thumbnail. The map is forty
+/// flat blocks either way, but at viewport size each block is hundreds of
+/// pixels across, so anything that resamples it stays well inside one and comes
+/// away with the exact colour. A 4x10 texture stretched up would be bilinearly
+/// smeared into precisely the averaging the quantising is there to avoid.
+static void renderLed(State* s, int vp_w, int vp_h) {
+  if (!s_led_pso.valid() || !s->led_buf.valid()) return;
+  if (!state::isOutputConnected("led_out")) return;
+
+  if (!s->led_tex.valid() || s->led_w != vp_w || s->led_h != vp_h) {
+    s->led_tex.release();
+    s->led_tex = gpu::Device::createTexture(vp_w, vp_h);
+    s->led_w = vp_w;
+    s->led_h = vp_h;
+    if (!s->led_tex.valid()) return;
+    state::setGpuTexture("led_out", s->led_tex.id);
+  }
+
+  const led_bars::Cells cells = led_bars::barsToCells(s->led_now);
+
+  LedUniforms u = {};
+  for (int i = 0; i < led_bars::kCells; i++) {
+    u.cell[i][0] = cells.rgb[i][0];
+    u.cell[i][1] = cells.rgb[i][1];
+    u.cell[i][2] = cells.rgb[i][2];
+    u.cell[i][3] = 1.0f;
+  }
+  u.ctl[0] = s->led_quantize ? 1.0f : 0.0f;
+  s->led_buf.writeOne(u);
+
+  auto cp = gpu::ComputePass::begin();
+  cp.setPSO(s_led_pso);
+  cp.setTexture(s->led_tex, 0, 1);
+  cp.setBuffer(s->led_buf, 1);
+  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+  cp.end();
+}
+
 void render(void* self, int vp_w, int vp_h) {
   auto* s = static_cast<State*>(self);
   if (!s || !s->initialized) return;
@@ -855,6 +1019,8 @@ void render(void* self, int vp_w, int vp_h) {
     cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
     cp.end();
   }
+
+  renderLed(s, vp_w, vp_h);
 
   gpu::Device::submit();
 }
@@ -959,6 +1125,10 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "scanline_count")) s->scanline_count = state::patchInt(i);
     else if (state::pathIs(p, l, "grain"))          s->grain = state::patchFloat(i);
     else if (state::pathIs(p, l, "input_opacity"))  s->input_opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led_spacing"))   s->led_spacing = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led_width"))     s->led_width = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led_decay"))     s->led_decay = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led_quantize"))  s->led_quantize = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_show_quads")) s->debug_show_quads = state::patchBool(i);
   }
 }

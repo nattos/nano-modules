@@ -23,6 +23,7 @@
 #include <effect_utils.h>   // fx::coverSquare
 #include <sketch/three_planes_glints.h>
 #include <sketch/three_planes_strobe.h>
+#include <sketch/led_bars.h>
 #include "three_planes_shaders.h"
 
 #include <cmath>
@@ -65,6 +66,15 @@ struct Uniforms {
 };
 static_assert(sizeof(Uniforms) == 576, "Uniforms layout mismatch with render.hlsl");
 static_assert(three_planes_glints::kMaxLive == 8, "glint rows must match kMaxLive");
+static_assert(PLANES == led_bars::kLayers, "the LED map shows every floor");
+
+// Mirrors `cbuffer LedUniforms` in shaders_common/nano_led_bars.hlsl.
+struct LedUniforms {
+  float cell[led_bars::kCells][4];   // bar-major, segment 0 at the bottom
+  float ctl[4];                      // quantize, -, -, -
+};
+static_assert(sizeof(LedUniforms) == 16 * (led_bars::kCells + 1),
+              "LedUniforms layout mismatch with nano_led_bars.hlsl");
 
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
@@ -154,6 +164,15 @@ struct State {
   float mask_strength   = 1.0f;
   float mask_halo       = 0.6f;
 
+  // --- LED bars ---
+  // The pixel map for the house rig, published on `led_out`. Effect-owned and
+  // dispatched only when something is wired to it — see renderLed().
+  bool  led_quantize = true;
+  gpu::Texture led_tex;
+  gpu::Buffer  led_buf;
+  int   led_w = 0;
+  int   led_h = 0;
+
   // --- Debug ---
   bool debug_show_sdf    = false;
   bool debug_show_planes = false;
@@ -169,6 +188,7 @@ struct State {
 };
 
 static gpu::ComputePSO s_pso;
+static gpu::ComputePSO s_led_pso;
 
 // --- Perceptual mappings (style guide 1.3) --------------------------------
 // Every one of these takes a normalised slider and returns the value the
@@ -180,6 +200,15 @@ static inline float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0
 // range stays dark and the top has real punch to blow the cores out.
 static inline float emissionDrive(float e) {
   return std::pow(e < 0.0f ? 0.0f : e, 1.8f) * 3.2f;
+}
+// What one plane is worth on the LED rig: the SAME dimmer curve, normalised so
+// a plane at full emission is a fully-lit segment. Divided by the curve rather
+// than restated as a number, so the map cannot drift from what the eye sees on
+// screen — and so the headroom above 1.0 that the emission field carries (a
+// bounce overshooting the base level) reads on the bars as saturation, which
+// is exactly what an overdriven LED does.
+static inline float ledLevel(float e) {
+  return clamp01f(emissionDrive(e) / emissionDrive(1.0f));
 }
 // Line half-width in cover-square units: 0.0012 .. 0.022, quadratic so the
 // hairline end of the range gets most of the slider.
@@ -761,6 +790,32 @@ void module_init() {
         .label("Halo Cut", "Halo")
 
 
+      // ---------------- LED bars ----------------
+      // AFTER tex_out, and that matters as much as it did for mask_in: the
+      // editor takes a module's texture output to be the FIRST one its schema
+      // declares (schema-channels.ts, firstFieldOfType — it sorts on
+      // declaration order), so an aux output declared ahead of tex_out would
+      // quietly become THE output and the chain's picture would stop here.
+      .group("led", "LED Bars")
+      .groupHelp(
+        "A pixel map for the house rig: four vertical bars, ten segments each, "
+        "as a 4x10 grid of flat blocks. It is a CONTROL SIGNAL, not a picture "
+        "— wire *LED Out* at whatever drives the bars and leave it alone.\n\n"
+        "Every bar shows the same tower, so the rig reads as three floors "
+        "lighting the way the stack does. Ten segments do not divide by three: "
+        "the spare one goes to the TOP floor, so from the bottom it is "
+        "**3 / 3 / 4**. The top of a meter is the part you read.\n\n"
+        "Unwired, none of this is drawn.")
+      .textureField("led_out", state::SecondaryOutput)
+        .label("LED Out", "LED")
+      .boolField("led_quantize", true, state::SecondaryInput,
+                 "Each segment a flat block of colour, which is what you want: "
+                 "anything sampling or averaging inside a block then comes away "
+                 "with the exact colour that segment asked for. Turn it off to "
+                 "interpolate between segment centres — a soft wash, and mud on "
+                 "a physical rig.")
+        .label("Quantize", "Quant")
+
       .capability(state::Capability::Generator)
       // Every envelope still lives outside this effect and the grain is
       // derived from absolute host time — but the GLINTS are particles with
@@ -785,6 +840,13 @@ void module_init() {
       .uniform(2)
       .tex2d(3));
 
+  state::registerShaderSPV("three_planes_led", LED_SPV, LED_SPV_SIZE);
+  if (auto led = gpu::Device::createShaderModuleByName("three_planes_led")) {
+    s_led_pso = gpu::Device::createComputePSO(led, "main", gpu::Bindings()
+        .storageTex2d(0)
+        .uniform(1));
+  }
+
   state::setOnStateReady(&on_state_ready);
   state::log("three_planes: module initialized");
 }
@@ -792,6 +854,7 @@ void module_init() {
 void* create() {
   auto* s = new State();
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
+  s->led_buf = gpu::Device::createBuffer(sizeof(LedUniforms), gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -799,6 +862,8 @@ void destroy(void* self) {
   auto* s = static_cast<State*>(self);
   if (!s) return;
   s->uniform_buf.release();
+  s->led_buf.release();
+  s->led_tex.release();
   delete s;
 }
 
@@ -960,10 +1025,65 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "mask_strength"))  s->mask_strength = state::patchFloat(i);
     else if (state::pathIs(p, l, "mask_halo"))      s->mask_halo = state::patchFloat(i);
 
+    else if (state::pathIs(p, l, "led_quantize"))   s->led_quantize = state::patchBool(i);
+
     else if (state::pathIs(p, l, "debug_show_sdf"))    s->debug_show_sdf = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_show_planes")) s->debug_show_planes = state::patchBool(i);
   }
   if (vis_dirty) applyModeVisibility(s);
+}
+
+// --- The LED map ----------------------------------------------------------
+//
+// A second, tiny pass, on chroma_wave's aux-output pattern: the effect owns the
+// allocation, publishes the handle once per allocation, and does not dispatch
+// at all unless something downstream is wired to it. The executor allocates and
+// sizes ONLY tex_out.
+//
+// Drawn at the full viewport rather than as a 4x10 thumbnail on purpose. The
+// map is forty flat blocks either way, but at viewport size each block is
+// hundreds of pixels across, so a consumer that resamples — a pixel mapper
+// picking a point, a scaler fitting it to a surface — stays well inside one
+// block and comes away with the exact colour. A 4x10 texture stretched up
+// would be bilinearly smeared into precisely the averaging we are avoiding.
+static void renderLed(State* s, int vp_w, int vp_h) {
+  if (!s_led_pso.valid() || !s->led_buf.valid()) return;
+  if (!state::isOutputConnected("led_out")) return;
+
+  if (!s->led_tex.valid() || s->led_w != vp_w || s->led_h != vp_h) {
+    s->led_tex.release();
+    s->led_tex = gpu::Device::createTexture(vp_w, vp_h);
+    s->led_w = vp_w;
+    s->led_h = vp_h;
+    if (!s->led_tex.valid()) return;
+    // Published on ALLOCATION only — the executor never clears an output
+    // handle, so it persists across frames.
+    state::setGpuTexture("led_out", s->led_tex.id);
+  }
+
+  float level[PLANES];
+  for (int i = 0; i < PLANES; i++) level[i] = ledLevel(s->emission[i]);
+  // The fills are deliberately absent. A plane set to -1 cuts a hole in the
+  // PICTURE, where there is something behind it to cut; a bar has nothing
+  // behind it, and a floor that is lit is lit.
+  const led_bars::Cells cells = led_bars::planeCells(s->color, level);
+
+  LedUniforms u = {};
+  for (int i = 0; i < led_bars::kCells; i++) {
+    u.cell[i][0] = cells.rgb[i][0];
+    u.cell[i][1] = cells.rgb[i][1];
+    u.cell[i][2] = cells.rgb[i][2];
+    u.cell[i][3] = 1.0f;
+  }
+  u.ctl[0] = s->led_quantize ? 1.0f : 0.0f;
+  s->led_buf.writeOne(u);
+
+  auto cp = gpu::ComputePass::begin();
+  cp.setPSO(s_led_pso);
+  cp.setTexture(s->led_tex, 0, 1);
+  cp.setBuffer(s->led_buf, 1);
+  cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+  cp.end();
 }
 
 void render(void* self, int vp_w, int vp_h) {
@@ -1192,6 +1312,8 @@ void render(void* self, int vp_w, int vp_h) {
   cp.setTexture(mask, 3, 0);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
+
+  renderLed(s, vp_w, vp_h);
 
   gpu::Device::submit();
 }

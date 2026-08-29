@@ -4,6 +4,7 @@
 // real Metal backend), wires tex_in/tex_out, drives doRender via the WASM
 // EffectInstance driver, and verifies the output pixels brighten.
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
@@ -4401,4 +4402,110 @@ TEST_CASE("a wired mask cuts the neon on Metal too", "[effect_render]") {
   CHECK(cut_none < unwired * 0.6);
   // And a mask nobody asked for changes nothing.
   CHECK(off == Catch::Approx(unwired).margin(1.0));
+}
+
+// The LED map, on Metal. It is a SECOND compute pass with its own binding
+// layout — a storage texture at 0 and a uniform at 1, with no sampled texture
+// in front of them — so the slot numbering is the thing at risk here, and a
+// mis-bind shows up as a black map rather than as an error. The web side of
+// the same pass is web/test/led_bars.test.ts; the arithmetic behind it is
+// native/tests/test_led_bars.cpp.
+//
+// Read the way the web reads a secondary output: wire it into a sidechannel
+// send override and put the receive after it, so the sketch output IS the map.
+TEST_CASE("the LED map is the same map on Metal", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(LIGHTS_WASM_PATH, registry, backend.get(), nullptr) > 0);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  // 10 segments over 200 rows is 20 rows each, so every boundary is a whole
+  // pixel and a sample can sit either side of one.
+  const uint32_t W = 64, H = 200;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0);
+  REQUIRE(outTex >= 0);
+  std::vector<uint8_t> blk(W * H * 4, 0);
+  for (size_t i = 3; i < blk.size(); i += 4) blk[i] = 255;
+  backend->writeTexture(inTex, W, H, blk.data(), (uint32_t)blk.size());
+
+  // A primary per floor, so a segment showing the wrong one is a different
+  // colour rather than a near miss.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "source.solid_color", "instance_key": "bg",
+        "params": { "color": [0.0, 0.0, 0.0] } },
+      { "type": "module", "module_type": "source.mesh.three_planes", "instance_key": "tp",
+        "params": { "grain": 0.0, "scanline": 0.0, "chroma_bleed": 0.0,
+                    "plane1_color": [1.0, 0.0, 0.0],
+                    "plane2_color": [0.0, 1.0, 0.0],
+                    "plane3_color": [0.0, 0.0, 1.0],
+                    "plane1_emission": 1.0, "plane2_emission": 1.0,
+                    "plane3_emission": 1.0 } },
+      { "type": "module", "module_type": "util.sidechannel_out", "instance_key": "send",
+        "params": { "channel": 3 } },
+      { "type": "module", "module_type": "util.sidechannel_in", "instance_key": "recv",
+        "params": { "channel": 3 } }
+    ],
+    "wires": [
+      { "id": "lw", "src": { "instanceKey": "tp", "field": "led_out" },
+        "dest": { "instanceKey": "send", "field": "send_in" } }
+    ]
+  })JSON");
+
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                 /*sketchDirty=*/true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+  REQUIRE(px.size() >= (size_t)W * H * 4);
+
+  auto at = [&](uint32_t x, uint32_t y) {
+    const size_t i = ((size_t)y * W + x) * 4;
+    return std::array<int, 3>{px[i], px[i + 1], px[i + 2]};
+  };
+  // The image row at the middle of segment `seg`, counting from the BOTTOM.
+  auto rowOf = [&](int seg) { return (uint32_t)(H - (uint32_t)(seg * 20) - 10); };
+
+  for (int seg = 0; seg <= 2; ++seg) {      // bottom floor, three segments
+    INFO("segment " << seg);
+    auto c = at(8, rowOf(seg));
+    CHECK(c[0] > 240); CHECK(c[1] < 12); CHECK(c[2] < 12);
+  }
+  for (int seg = 3; seg <= 5; ++seg) {      // middle floor, three segments
+    INFO("segment " << seg);
+    auto c = at(8, rowOf(seg));
+    CHECK(c[0] < 12); CHECK(c[1] > 240); CHECK(c[2] < 12);
+  }
+  for (int seg = 6; seg <= 9; ++seg) {      // top floor, FOUR segments
+    INFO("segment " << seg);
+    auto c = at(8, rowOf(seg));
+    CHECK(c[0] < 12); CHECK(c[1] < 12); CHECK(c[2] > 240);
+  }
+
+  // Every bar shows the same tower.
+  for (uint32_t bar = 1; bar < 4; ++bar) {
+    INFO("bar " << bar);
+    auto c = at(bar * 16 + 8, rowOf(0));
+    CHECK(c[0] > 240); CHECK(c[1] < 12); CHECK(c[2] < 12);
+  }
+
+  // And the blocks are FLAT: the boundary under the top floor sits at row 80,
+  // with no ramp across it. A consumer sampling anywhere inside a segment has
+  // to come away with that segment's exact colour.
+  auto above = at(8, 78);
+  auto below = at(8, 82);
+  CHECK(above[2] > 240);
+  CHECK(below[1] > 240);
+  CHECK(below[2] < 12);
 }

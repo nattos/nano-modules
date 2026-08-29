@@ -19,8 +19,20 @@ compile_shaders_compute_spv dispersion         render
 compile_shaders_compute_spv plasma_beam_cannon render
 compile_shaders_compute_spv orthomod           render
 compile_shaders_compute_spv lights_sim           render
-compile_shaders_compute_spv three_planes         render
-compile_shaders_compute_spv three_walls          render
+# The two neon-quad instruments each carry a second, tiny pass: the LED-bar
+# pixel map. Its source is one line — the whole shader lives in
+# shaders_common/nano_led_bars.hlsl and is shared verbatim — but it still has
+# to be compiled and named per effect, because registered shader names are
+# module-global.
+compile_shaders_compute_var_spv three_planes render
+compile_shaders_compute_var_spv three_planes led
+_emit_spv_header_var three_planes render led
+echo "  three_planes shaders compiled (SPV: render + led)"
+
+compile_shaders_compute_var_spv three_walls render
+compile_shaders_compute_var_spv three_walls led
+_emit_spv_header_var three_walls render led
+echo "  three_walls shaders compiled (SPV: render + led)"
 
 # vcr_halo: prefilter -> down chain -> progressive up chain -> composite.
 compile_shaders_compute_var_spv vcr_halo prefilter
