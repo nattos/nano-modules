@@ -689,37 +689,6 @@ void module_init() {
                   "How much of the incoming image survives under the stack.")
         .label("Input Opacity", "In Op")
 
-      // ---------------- Mask ----------------
-      .group("mask", "Mask")
-      .groupHelp(
-        "A second image — text, a logo, any shape — wired into *Mask In* and "
-        "laid over the stack in SCREEN space, so what you see in that input is "
-        "where it lands.\n\n"
-        "What it covers is CUT AWAY, exactly the way a plane at Fill -1 cuts: "
-        "a hole through the picture rather than a sticker on it. That is why "
-        "there is no colour here — a mask has a shape, not a look.\n\n"
-        "Its weight is the mask's **alpha times its luma**, and it wants both. "
-        "A shape that is present but black is not a mask, and neither is a "
-        "bright shape that is not there — so an ordinary rendered logo works "
-        "as it comes, with no separate matte to author and keep in step.\n\n"
-        "*Halo Cut* is the one place the hole is not clean. A tube behind a "
-        "letter still throws light around the letter's edges, so by default "
-        "the mask takes the neon's body outright and only some of its glow. "
-        "Turn it up for a hard stencil; turn it down and the shape sits deep "
-        "in the light instead of on the glass.")
-      .textureField("mask_in", state::SecondaryInput)
-        .label("Mask In", "Mask")
-      .floatField("mask_strength", 1.0f, 0.f, 1.f, state::PrimaryInput,
-                  nullptr, 0.f, nullptr,
-                  "How hard the mask cuts. 0 ignores it entirely.")
-        .label("Mask Amount", "Amt")
-      .floatField("mask_halo", 0.6f, 0.f, 1.f, state::PrimaryInput,
-                  nullptr, 0.f, nullptr,
-                  "How much of the HALO the mask takes with it. 1 cuts the "
-                  "glow as hard as the tube; 0 lets all of it bleed over the "
-                  "shape.")
-        .label("Halo Cut", "Halo")
-
       // ---------------- Debug ----------------
       .group("debug", "Debug")
       .boolField("debug_show_sdf", false, state::SecondaryInput,
@@ -751,8 +720,46 @@ void module_init() {
                   0.f, nullptr, "Half-height of plane 3's silhouette.")
         .label("Plane 3 Half Height", "P3 H")
 
+      // tex_in FIRST, and then the mask. The editor takes a module's texture
+      // input to be the FIRST texture input its schema declares
+      // (schema-channels.ts, firstFieldOfType — it sorts on declaration
+      // order), so a second texture input declared ahead of tex_in quietly
+      // becomes THE input: the chain's image is what the card offers a
+      // dropped wire, and the aux port is the one that disappears.
       .textureField("tex_in",  state::PrimaryInput)
       .textureField("tex_out", state::PrimaryOutput)
+
+      // ---------------- Mask ----------------
+      .group("mask", "Mask")
+      .groupHelp(
+        "A second image — text, a logo, any shape — wired into *Mask In* and "
+        "laid over the stack in SCREEN space, so what you see in that input is "
+        "where it lands.\n\n"
+        "What it covers is CUT AWAY, exactly the way a plane at Fill -1 cuts: "
+        "a hole through the picture rather than a sticker on it. That is why "
+        "there is no colour here — a mask has a shape, not a look.\n\n"
+        "Its weight is the mask's **alpha times its luma**, and it wants both. "
+        "A shape that is present but black is not a mask, and neither is a "
+        "bright shape that is not there — so an ordinary rendered logo works "
+        "as it comes, with no separate matte to author and keep in step.\n\n"
+        "*Halo Cut* is the one place the hole is not clean. A tube behind a "
+        "letter still throws light around the letter's edges, so by default "
+        "the mask takes the neon's body outright and only some of its glow. "
+        "Turn it up for a hard stencil; turn it down and the shape sits deep "
+        "in the light instead of on the glass.")
+      .textureField("mask_in", state::SecondaryInput)
+        .label("Mask In", "Mask")
+      .floatField("mask_strength", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How hard the mask cuts. 0 ignores it entirely.")
+        .label("Mask Amount", "Amt")
+      .floatField("mask_halo", 0.6f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much of the HALO the mask takes with it. 1 cuts the "
+                  "glow as hard as the tube; 0 lets all of it bleed over the "
+                  "shape.")
+        .label("Halo Cut", "Halo")
+
 
       .capability(state::Capability::Generator)
       // Every envelope still lives outside this effect and the grain is

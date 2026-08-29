@@ -119,3 +119,61 @@ describe('Three Planes mask E2E', () => {
     expect(brightAfter).toBeLessThan(brightBefore * 0.5);
   });
 });
+
+/**
+ * The editor's own view of the same input. A module's texture INPUT is whichever
+ * texture input its schema declares FIRST (schema-channels.ts, firstFieldOfType,
+ * which sorts on declaration order) — so a second one declared ahead of `tex_in`
+ * silently becomes THE input, and the aux port is the one that vanishes off the
+ * card. That is not visible from any render: the picture still comes out right,
+ * and the port is simply not there to wire.
+ */
+describe('Three Planes mask port', () => {
+  jest.setTimeout(60000);
+  const BASE = process.env.GPU_TEST_BASE_URL || 'http://localhost:5173';
+  const WALK = `function* walk(root){for(const el of root.querySelectorAll('*')){yield el; if(el.shadowRoot) yield* walk(el.shadowRoot);}}`;
+
+  it('shows Mask In, and leaves tex_in as the chain input', async () => {
+    page.removeAllListeners('console');
+    await page.goto(`${BASE}/resolume/index.html?playground`, { waitUntil: 'networkidle0' });
+    await new Promise(r => setTimeout(r, 3000));
+    await page.evaluate(`(async () => {
+      const ac = window.appController;
+      ac.mutate('s', d => {
+        d.sketches['sk_mask_port'] = { anchor: null,
+          chain: [{ type: 'module', module_type: 'source.mesh.three_planes', instance_key: 'tp@0' }],
+          wires: [],
+          instances: { 'tp@0': { module_type: 'source.mesh.three_planes', state: {} } } };
+      });
+      ac.setActiveTab('edit');
+      ac.editSketch('sk_mask_port');
+    })()`);
+    await new Promise(r => setTimeout(r, 2500));
+
+    const info: any = await page.evaluate(`(() => {
+      const plugins = (window.appState?.local?.engine?.plugins)
+                   || (window.appState?.local?.plugins) || [];
+      const p = plugins.find(x => (x.id || x.module_type) === 'source.mesh.three_planes');
+      const sch = p && (p.schema || p.fields);
+      const tex = sch ? Object.entries(sch)
+        .filter(([, d]) => d && d.type === 'texture')
+        .map(([n, d]) => ({ name: n, io: d.io, order: d.order })) : [];
+      ${WALK}
+      const labels = [];
+      for (const el of walk(document)) {
+        const t = (el.textContent || '').trim();
+        if (el.children.length === 0 && t.length < 30) labels.push(t);
+      }
+      return { tex, labels: [...new Set(labels)] };
+    })()`);
+
+    const ins = info.tex.filter((f: any) => (f.io & 1) !== 0)
+                        .sort((a: any, b: any) => a.order - b.order);
+    expect(ins.length).toBe(2);
+    // tex_in first — the chain's image still belongs to the chain.
+    expect(ins[0].name).toBe('tex_in');
+    expect(ins[1].name).toBe('mask_in');
+    // ...and the aux one is on the card, where it can be wired.
+    expect(info.labels).toContain('Mask In');
+  });
+});
