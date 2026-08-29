@@ -36,6 +36,12 @@
 //     to the right heights and nothing else: no slant at any angle, and flat
 //     on the horizon it came out at its most DIFFUSE, which is backwards.
 //
+//     Each ring tilts about ITS OWN CENTRE, and that part is a cheat: the
+//     centres stay on the vertical however far the deck goes over. See the
+//     note in main.cpp — tilting the stack as one body is the honest version
+//     and it strings the pools out diagonally, which loses the isometric read
+//     the whole card is built on.
+//
 // The falloff is inverse square times the GRAZING cosine — what a surface
 // catches is not how much light reaches it but how squarely — and the two
 // together go as 1/d^3. That extra power is most of why this reads as light

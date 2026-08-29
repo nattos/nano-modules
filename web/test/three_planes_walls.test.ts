@@ -34,24 +34,21 @@ describe('Three Planes impact light', () => {
   const W = 480, H = 270;
   const MODULES = ['com.nano.core', 'com.nano.lights'];
 
-  // Where a floor's pool sits. The elevation TILTS the stack, so a ring's
-  // centre comes out at height y*cos(phi) — the picture's own height, which is
-  // what keeps the three outputs one room — and at depth -y*sin(phi), because
-  // a tilted stack leans back. Both are needed: at any elevation but zero the
-  // upper floors have moved along the wall as well as up it, and a fixed
-  // column samples the slant rather than the pool.
+  // Where a floor's pool sits. The elevation tilts each ring about its OWN
+  // centre, so a centre lands at height y*cos(phi) — the picture's own height,
+  // which is what keeps the three outputs one room — and on the vertical axis
+  // at any elevation. That last part is the deliberate cheat: tilting the stack
+  // as one body would carry the upper floors off along the wall by y*sin(phi)
+  // and string the pools out diagonally.
   const SPACING = 0.42, ZOOM = 0.55;
   const ELEV = 35.264389682754654;
   const ASPECT_X = Math.max(W, H) / (2 * W);
   const ASPECT_Y = Math.max(W, H) / (2 * H);
-  const floorAt = (i: number, elevDeg = ELEV, side: 'l' | 'r' = 'l') => {
+  const floorAt = (i: number, elevDeg = ELEV) => {
     const y0 = (i - 1) * SPACING * ZOOM;
-    const phi = (elevDeg * Math.PI) / 180;
-    const cy = y0 * Math.cos(phi), cz = -y0 * Math.sin(phi);
-    // Depth runs outward from the back wall, so it carries the side's sign.
     return {
-      x: Math.round(((side === 'l' ? cz : -cz) * ASPECT_X + 0.5) * W),
-      y: Math.round((-cy * ASPECT_Y + 0.5) * H),
+      x: Math.round(W / 2),
+      y: Math.round((-y0 * Math.cos((elevDeg * Math.PI) / 180) * ASPECT_Y + 0.5) * H),
     };
   };
 
@@ -229,9 +226,9 @@ describe('Three Planes impact light', () => {
     // Sampled at each floor's own place on ITS wall — the depth axis runs
     // outward from the back wall on each side, so the two are mirrored in x.
     for (const i of [0, 1, 2]) {
-      const pl = floorAt(i, ELEV, 'l'), pr = floorAt(i, ELEV, 'r');
-      expect(Math.abs(luma(l.trace('out').pixelAt(pl.x, pl.y))
-                    - luma(r.trace('out').pixelAt(pr.x, pr.y)))).toBeLessThan(3);
+      const p = floorAt(i);
+      expect(Math.abs(luma(l.trace('out').pixelAt(p.x, p.y))
+                    - luma(r.trace('out').pixelAt(p.x, p.y)))).toBeLessThan(3);
     }
   });
 
@@ -255,10 +252,8 @@ describe('Three Planes impact light', () => {
         }
       return w > 0 ? sum / w : W / 2;
     };
-    // The MIDDLE floor alone. The others sit at a depth of -y*sin(phi), so a
-    // tilted stack fans them along the wall and a centroid over all three
-    // measures the fan instead of the lean. The middle one is at y = 0 and
-    // does not move.
+    // The MIDDLE floor alone, so the reading is one pool's lean and not three
+    // slants averaged together.
     const p = { orbit_azimuth: 0.06, plane1_emission: 0, plane3_emission: 0 };
     const l = await view('tpw_orb_l', 'left_out', p);
     const r = await view('tpw_orb_r', 'right_out', p);
@@ -336,9 +331,9 @@ describe('Three Planes impact light', () => {
     const r = await view('tpw_45_r', 'right_out', { orbit_azimuth: 0.125 });
     expect(l.success && r.success).toBe(true);
     for (const i of [0, 1, 2]) {
-      const pl = floorAt(i, ELEV, 'l'), pr = floorAt(i, ELEV, 'r');
-      expect(Math.abs(level(l.trace('out').pixelAt(pl.x, pl.y))
-                    - level(r.trace('out').pixelAt(pr.x, pr.y)))).toBeLessThan(4);
+      const p = floorAt(i);
+      expect(Math.abs(level(l.trace('out').pixelAt(p.x, p.y))
+                    - level(r.trace('out').pixelAt(p.x, p.y)))).toBeLessThan(4);
     }
   });
 
@@ -397,10 +392,37 @@ describe('Three Planes impact light', () => {
     expect(slope(steep.trace('out'))).toBeLessThan(want * 1.25);
   });
 
+  it('keeps the floors in one vertical column at any elevation', async () => {
+    // THE CHEAT, and the thing a later correctness pass would quietly undo.
+    // Each ring tilts about its own centre rather than the stack tilting as one
+    // body, so the centres stay on the vertical however far over the deck goes.
+    // Tilted honestly, the top floor would sit at a depth of -y*sin(phi) — at
+    // 60 degrees that is a fifth of the room, some 48px off centre here — and
+    // the three pools would string out diagonally instead of stacking.
+    const only = { plane1_emission: 0, plane2_emission: 0, plane3_emission: 1 };
+    const centroidX = (f: any) => {
+      let sum = 0, w = 0;
+      for (let y = 0; y < H; y += 2)
+        for (let x = 0; x < W; x += 2) {
+          const v = level(f.pixelAt(x, y));
+          if (v > 60) { sum += v * x; w += v; }
+        }
+      return w > 0 ? sum / w : -1;
+    };
+    for (const elevation of [0, 30, 60]) {
+      const r = await view(`tpw_col_${elevation}`, 'left_out',
+                           { ...only, elevation, wall_bounce: 0 });
+      expect(r.success).toBe(true);
+      expect(Math.abs(centroidX(r.trace('out')) - W / 2)).toBeLessThan(8);
+    }
+  });
+
   it('a floor still lands at the height it is drawn at', async () => {
     // The tilt is the same rotation the picture is drawn through, so a ring's
     // CENTRE comes out at y * cos(phi) — exactly where the picture puts that
-    // floor. That is what keeps a triptych of left / main / right one room.
+    // floor. That is what keeps a triptych of left / main / right one room, and
+    // with the centres pinned on the vertical it holds at any elevation and in
+    // the same column.
     const r = await view('tpw_heights', 'left_out', { elevation: 60 });
     expect(r.success).toBe(true);
     const f = r.trace('out');

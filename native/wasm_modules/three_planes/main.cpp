@@ -1271,13 +1271,29 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
     const float depth = clamp01f(s->wall_depth);
     const float side_sign = (side == 0) ? -1.0f : 1.0f;
 
-    // THE ELEVATION TILTS THE DECK. An orthographic camera raised over a flat
-    // stack and a camera on the horizon looking at a stack tilted by the same
-    // angle draw the same main output, so the picture cannot tell you which
-    // room it is a picture of — but a side wall can, and only the tilted one
-    // has anything for it to see. Tilting is also what puts a floor's pool at
-    // the height that floor is drawn at, for free: the ring's CENTRE lands at
-    // y * cos(phi), which is exactly where the picture puts it.
+    // THE ELEVATION TILTS EACH RING, ABOUT ITS OWN CENTRE.
+    //
+    // An orthographic camera raised over a flat stack and a camera on the
+    // horizon looking at a stack tilted by the same angle draw the same main
+    // output, so the picture cannot tell you which room it is a picture of —
+    // but a side wall can, and only the tilted one has anything for it to see.
+    // So the rings tilt, and their near edges run uphill at tan(phi), and the
+    // pools slant.
+    //
+    // Tilting the STACK as one body is the honest version of that and it is not
+    // what happens here. Doing it leans the whole column back: floor by floor
+    // the centres walk off along the wall by y * sin(phi), so the pools stagger
+    // diagonally and the corner hotspots — which are the most legible thing on
+    // the wall — string out into a slanted line instead of stacking. Past about
+    // 60 degrees the column has laid over far enough to stop reading as a tower
+    // at all.
+    //
+    // So the centres are pinned on the vertical: each ring tilts in place. The
+    // room this describes cannot exist, and every other thing about it stays
+    // true — a ring's centre is still at y * cos(phi), exactly where the picture
+    // draws that floor, and its near edge still climbs at tan(phi). What it
+    // buys is the isometric read: three slanted pools in a vertical column,
+    // with their hotspots in two clean vertical files.
     const float ep = s->elevation_deg * (kPi / 180.0f);
     const float e_cos = std::cos(ep), e_sin = std::sin(ep);
 
@@ -1316,12 +1332,19 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
           // a corner's height here IS its height on screen. A ring flat on the
           // horizon has every corner at one height and lays a hard line; tilted,
           // its near edge climbs at tan(phi) and the pool slants with it.
+          //
+          // Only the ring's OWN offset is tilted, not its height: the `zr * sp`
+          // that lifts a corner is kept and the `y0 * sp` that would carry the
+          // whole ring backward is dropped. See the note above — that dropped
+          // term is the stack leaning over, and the wall reads better without
+          // it.
           w.ring_c[r * 4 + k][1] = y0 * e_cos + zr * e_sin;
-          w.ring_c[r * 4 + k][2] = -y0 * e_sin + zr * e_cos;
+          w.ring_c[r * 4 + k][2] = zr * e_cos;
         }
-        // The ring's centre, tilted the same way — where the bounce comes from.
+        // The ring's centre — where the bounce comes from. On the vertical
+        // axis at every elevation, which is the whole of the cheat.
         w.ring_g[r][0] = y0 * e_cos;
-        w.ring_g[r][1] = -y0 * e_sin;
+        w.ring_g[r][1] = 0.0f;
         w.ring_g[r][2] = soft_of[g];
       }
     }
