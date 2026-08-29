@@ -19,6 +19,9 @@
 //      wireframe, depending on the throw mode. The host has already resolved
 //      which; from here it is one path (see `ring_at`), and it is lit by the
 //      same glints as everything else;
+//   3c. cut the screen-space MASK out of the result — a stencil that removes
+//      the neon where it covers, letting only some of the halo spill past its
+//      edge (see `mask_at` and the split accumulators in `resolve`);
 //   4. grade the composite through the shared VCR stack.
 //
 // Nothing here needs an intermediate texture: the accumulator lives in
@@ -30,6 +33,10 @@
 
 Texture2D<float4>   inputTex  : register(t0);
 RWTexture2D<float4> outputTex : register(u1);
+// The stencil. Bound to `mask_in` when something is wired there, and to the
+// input texture otherwise — `mask.x` is 0 in that case, so nothing is read
+// into the picture and there is no branch to take.
+Texture2D<float4>   maskTex   : register(t3);
 
 cbuffer Uniforms : register(b2) {
   // Projected corners, cover-square coords. Plane i occupies rows 2i and
@@ -56,6 +63,9 @@ cbuffer Uniforms : register(b2) {
   // half-width there, and the brightness and wake depth it was born with. A
   // dead slot is zero gain and zero shade, so there is no count and no branch.
   float4 glints[8];
+  // x = mask strength (0 when nothing is wired), y = how much of the HALO the
+  // mask takes — 1 cuts it as hard as the body, 0 lets all of it bleed.
+  float4 mask;
 
   VcrGrade grade;
 };
@@ -152,6 +162,30 @@ float glimmer_at(float2 p) {
   return max(0.0, 1.0 + m);
 }
 
+// --- The mask -------------------------------------------------------------
+// A screen-space stencil laid over the stack — text, a logo, anything with a
+// shape. Its weight is ALPHA times LUMA, and it wants both: a shape that is
+// present but black is not a mask, and neither is a bright shape that is not
+// there. Taking the product is what lets an ordinary rendered logo work as-is,
+// with no separate matte to author and keep in step.
+//
+// Sampled in SCREEN space, not in the stack's, so what you see in the mask
+// input is where it lands. Nearest, and clamped: no sampler, and a mask of a
+// different size than the output simply stretches over it.
+//
+// Branchless, like glimmer_at, and for the same reason — an early return
+// inside a function is what DXC turns into a local that naga refuses, and the
+// whole effect then renders nothing on WebGPU.
+float mask_at(float2 uv) {
+  uint mw, mh;
+  maskTex.GetDimensions(mw, mh);
+  float2 sz = float2(max(mw, 1u), max(mh, 1u));
+  int2 mp = int2(clamp(uv * sz, float2(0.0, 0.0), sz - 1.0));
+  float4 t = maskTex.Load(int3(mp, 0));
+  float luma = dot(t.rgb, float3(0.299, 0.587, 0.114));
+  return saturate(t.a * luma * mask.x);
+}
+
 float2 corner_of(int i, int k) {
   float4 row = corners[i * 2 + (k >> 1)];
   return (k & 1) ? row.zw : row.xy;
@@ -170,7 +204,12 @@ NanoNeonField plane_field(float2 p, int i) {
 // blend cannot express both in one draw — this loop is the effect.
 float3 resolve(float2 p, float3 base) {
   NeonStyle st = neon_style();
-  float3 acc = base;
+  // TWO accumulators, occluded identically and summed at the end — so with no
+  // mask this is exactly the single-accumulator resolve it replaces. The split
+  // exists because the mask below has to take the BODY of the neon and leave
+  // some of the halo, and a sum cannot be un-summed.
+  float3 body = base;
+  float3 halo = float3(0.0, 0.0, 0.0);
   // One sample for all three planes: a glint is a property of the SCREEN, a
   // light sweeping across the whole installation, not of any one plane.
   float glint = glimmer_at(p);
@@ -179,9 +218,12 @@ float3 resolve(float2 p, float3 base) {
   for (int i = 0; i < 3; i++) {
     NanoNeonField f = plane_field(p, i);
     float A;
-    float3 E = nano_neon_quad_emit(f, plane_color[i].rgb, plane_color[i].w * glint,
-                                   fills[i], st, A);
-    acc = acc * (1.0 - A) + E;
+    float3 h;
+    float3 E = nano_neon_quad_emit_split(f, plane_color[i].rgb,
+                                         plane_color[i].w * glint,
+                                         fills[i], st, A, h);
+    body = body * (1.0 - A) + E;
+    halo = halo * (1.0 - A) + h;
   }
 
   // The ghosts go on TOP of the resolve, additively and without occluding
@@ -193,10 +235,22 @@ float3 resolve(float2 p, float3 base) {
   // still the installation: without this, a mode that mutes the tower and
   // shows only ghosts is a mode the glints cannot touch at all, and they hang
   // there over the picture doing nothing to it.
+  //
+  // And they land on the HALO side of the split, because that is what they
+  // are: ring_at is the halo profile and nothing else. So a stencil lets them
+  // spill over its edge exactly as it lets a tube's glow spill.
   [unroll]
   for (int k = 0; k < 3; k++)
-    acc += plane_color[k].rgb * (ring_at(p, k) * ring_gain[k] * glint);
-  return acc;
+    halo += plane_color[k].rgb * (ring_at(p, k) * ring_gain[k] * glint);
+
+  // The stencil, applied the way a fill of -1 applies: what it covers is taken
+  // AWAY rather than drawn over, base included, so the shape reads as a hole
+  // cut through the picture rather than as a sticker on it. The halo is only
+  // partly taken — a tube behind a letter still throws light around the
+  // letter's edges, and that spill is the whole difference between a mask that
+  // sits in the scene and one that sits on the glass.
+  float m = mask_at(nano_cover_square_to_uv(p, view.zw));
+  return body * (1.0 - m) + halo * (1.0 - m * mask.y);
 }
 
 [numthreads(8, 8, 1)]

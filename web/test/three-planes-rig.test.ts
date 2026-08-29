@@ -263,17 +263,17 @@ describe('mod.rig.three_planes E2E', () => {
   });
 
   it('Solid gives each floor its own colour', async () => {
-    // bottom = Primary (magenta), middle = Highlight (cyan), top = Secondary
-    // (violet) — three_planes' own plane defaults, so an untouched rig in this
-    // mode reproduces the look the effect ships with.
+    // Read DOWN the tower: top = Highlight (cyan), middle = Primary (magenta),
+    // bottom = Secondary (violet). The highlight goes where the eye goes, and
+    // where the peak cap lands in the other mode.
     const p = { mode: SOLID };
     const p1 = await runColor('rig_solid_c1', p, 'plane1_color');
     const p2 = await runColor('rig_solid_c2', p, 'plane2_color');
     const p3 = await runColor('rig_solid_c3', p, 'plane3_color');
     expect(p1.success && p2.success && p3.success).toBe(true);
-    p1.trace('out').expectPixelAt(32, 32, { r: 255, g: 56, b: 158 }, 12);
-    p2.trace('out').expectPixelAt(32, 32, { r: 77, g: 217, b: 255 }, 12);
-    p3.trace('out').expectPixelAt(32, 32, { r: 184, g: 89, b: 255 }, 12);
+    p1.trace('out').expectPixelAt(32, 32, { r: 184, g: 89, b: 255 }, 12);
+    p2.trace('out').expectPixelAt(32, 32, { r: 255, g: 56, b: 158 }, 12);
+    p3.trace('out').expectPixelAt(32, 32, { r: 77, g: 217, b: 255 }, 12);
   });
 
   // THE END-OF-MOVE HOLD. Only the parked pose is asserted here: the exact

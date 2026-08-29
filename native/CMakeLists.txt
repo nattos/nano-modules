@@ -1203,6 +1203,7 @@ if(APPLE)
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm"
       NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm"
+      LIGHTS_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/lights.wasm"
       LEGACY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/legacy.wasm")
     # text.wasm bridge (step #4): source.text.plain resolves text.* to the native
     # TextEngine. Only define the path when the bundle exists so the test's

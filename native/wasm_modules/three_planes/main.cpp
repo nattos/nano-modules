@@ -60,9 +60,10 @@ struct Uniforms {
   // its half-width there, and the two look values it was born with. A dead slot
   // is zero gain and zero shade, so the shader needs no count and no branch.
   float glints[8][4];       // rows 23-30: axis, half-width, gain, shade
-  float grade[16];          // rows 31-34: VcrGrade
+  float mask[4];            // row 31:    strength (0 = nothing wired), halo cut, -, -
+  float grade[16];          // rows 32-35: VcrGrade
 };
-static_assert(sizeof(Uniforms) == 560, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 576, "Uniforms layout mismatch with render.hlsl");
 static_assert(three_planes_glints::kMaxLive == 8, "glint rows must match kMaxLive");
 
 struct State {
@@ -150,6 +151,8 @@ struct State {
   int   scanline_count  = 240;
   float grain           = 0.08f;
   float input_opacity   = 1.0f;
+  float mask_strength   = 1.0f;
+  float mask_halo       = 0.6f;
 
   // --- Debug ---
   bool debug_show_sdf    = false;
@@ -170,6 +173,8 @@ static gpu::ComputePSO s_pso;
 // --- Perceptual mappings (style guide 1.3) --------------------------------
 // Every one of these takes a normalised slider and returns the value the
 // shader actually wants, so the UI stays in [0,1] and taps compose.
+
+static inline float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
 // Emission: a dimmer curve. Slightly steeper than linear so the bottom of the
 // range stays dark and the top has real punch to blow the cores out.
@@ -684,6 +689,37 @@ void module_init() {
                   "How much of the incoming image survives under the stack.")
         .label("Input Opacity", "In Op")
 
+      // ---------------- Mask ----------------
+      .group("mask", "Mask")
+      .groupHelp(
+        "A second image — text, a logo, any shape — wired into *Mask In* and "
+        "laid over the stack in SCREEN space, so what you see in that input is "
+        "where it lands.\n\n"
+        "What it covers is CUT AWAY, exactly the way a plane at Fill -1 cuts: "
+        "a hole through the picture rather than a sticker on it. That is why "
+        "there is no colour here — a mask has a shape, not a look.\n\n"
+        "Its weight is the mask's **alpha times its luma**, and it wants both. "
+        "A shape that is present but black is not a mask, and neither is a "
+        "bright shape that is not there — so an ordinary rendered logo works "
+        "as it comes, with no separate matte to author and keep in step.\n\n"
+        "*Halo Cut* is the one place the hole is not clean. A tube behind a "
+        "letter still throws light around the letter's edges, so by default "
+        "the mask takes the neon's body outright and only some of its glow. "
+        "Turn it up for a hard stencil; turn it down and the shape sits deep "
+        "in the light instead of on the glass.")
+      .textureField("mask_in", state::SecondaryInput)
+        .label("Mask In", "Mask")
+      .floatField("mask_strength", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How hard the mask cuts. 0 ignores it entirely.")
+        .label("Mask Amount", "Amt")
+      .floatField("mask_halo", 0.6f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much of the HALO the mask takes with it. 1 cuts the "
+                  "glow as hard as the tube; 0 lets all of it bleed over the "
+                  "shape.")
+        .label("Halo Cut", "Halo")
+
       // ---------------- Debug ----------------
       .group("debug", "Debug")
       .boolField("debug_show_sdf", false, state::SecondaryInput,
@@ -739,7 +775,8 @@ void module_init() {
   s_pso = gpu::Device::createComputePSO(cs, "main", gpu::Bindings()
       .tex2d(0)
       .storageTex2d(1)
-      .uniform(2));
+      .uniform(2)
+      .tex2d(3));
 
   state::setOnStateReady(&on_state_ready);
   state::log("three_planes: module initialized");
@@ -913,6 +950,8 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "scanline_count"))  s->scanline_count = state::patchInt(i);
     else if (state::pathIs(p, l, "grain"))           s->grain = state::patchFloat(i);
     else if (state::pathIs(p, l, "input_opacity"))   s->input_opacity = state::patchFloat(i);
+    else if (state::pathIs(p, l, "mask_strength"))  s->mask_strength = state::patchFloat(i);
+    else if (state::pathIs(p, l, "mask_halo"))      s->mask_halo = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "debug_show_sdf"))    s->debug_show_sdf = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_show_planes")) s->debug_show_planes = state::patchBool(i);
@@ -927,6 +966,13 @@ void render(void* self, int vp_w, int vp_h) {
   auto in  = gpu::Device::textureForField("tex_in");
   auto out = gpu::Device::textureForField("tex_out");
   if (!in.valid() || !out.valid()) return;
+  // Nothing wired: bind the input in its place and hand the shader a strength
+  // of 0. The sample still happens and reads nothing into the picture, which
+  // is cheaper than a branch and leaves the binding table the same shape every
+  // frame.
+  auto mask = gpu::Device::textureForField("mask_in");
+  const bool has_mask = mask.valid();
+  if (!has_mask) mask = in;
 
   projectPlanes(*s);
   publishRails(*s);
@@ -1043,6 +1089,11 @@ void render(void* self, int vp_w, int vp_h) {
   u.misc[2] = s->input_opacity;
   u.misc[3] = s->debug_show_sdf ? 1.0f : (s->debug_show_planes ? 2.0f : 0.0f);
 
+  u.mask[0] = has_mask ? clamp01f(s->mask_strength) : 0.0f;
+  u.mask[1] = clamp01f(s->mask_halo);
+  u.mask[2] = 0.0f;
+  u.mask[3] = 0.0f;
+
   u.view[0] = float(vp_w);
   u.view[1] = float(vp_h);
   u.view[2] = cs.ax;
@@ -1131,6 +1182,7 @@ void render(void* self, int vp_w, int vp_h) {
   cp.setTexture(in,  0, 0);
   cp.setTexture(out, 1, 1);
   cp.setBuffer(s->uniform_buf, 2);
+  cp.setTexture(mask, 3, 0);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 

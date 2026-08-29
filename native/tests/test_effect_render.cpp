@@ -4310,3 +4310,95 @@ TEST_CASE("invert shaper XORs its param against a trigger-toggled latch",
   CHECK(step(true, false) == Catch::Approx(FLIP).margin(0.02));
   CHECK(step(true, true) == Catch::Approx(PASS).margin(0.02));
 }
+
+// source.mesh.three_planes' MASK input, on Metal.
+//
+// This is the leg the web suites cannot reach. The per-effect GPU suite runs on
+// both backends but has no way to wire a second texture in, so it only ever
+// exercises the mask with nothing bound; the engine e2e wires it properly but
+// is WebGPU only. What is untested between them is precisely the thing
+// CLAUDE.md warns about — a binding index that lines up on one backend and not
+// on the other silently reads the wrong texture, and the symptom is a black
+// frame nobody attributes to the binding table.
+TEST_CASE("a wired mask cuts the neon on Metal too", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(LIGHTS_WASM_PATH, registry, backend.get(), nullptr) > 0);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 64, H = 64;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0);
+  REQUIRE(outTex >= 0);
+  std::vector<uint8_t> blk(W * H * 4, 0);
+  for (size_t i = 3; i < blk.size(); i += 4) blk[i] = 255;
+  backend->writeTexture(inTex, W, H, blk.data(), (uint32_t)blk.size());
+
+  // A white solid feeds the stack's own input AND its mask, so the whole frame
+  // is masked at full weight and the reading is a single number rather than a
+  // shape to hunt for.
+  auto sketchFor = [](const char* extra, bool wire) {
+    std::string w = wire
+        ? R"JSON({ "id": "wm", "src": { "instanceKey": "msk", "field": "tex_out" },
+                   "dest": { "instanceKey": "tp", "field": "mask_in" } })JSON"
+        : "";
+    return nlohmann::json::parse(std::string(R"JSON({
+      "chain": [
+        { "type": "module", "module_type": "source.solid_color", "instance_key": "msk",
+          "params": { "color": [1.0, 1.0, 1.0] } },
+        { "type": "module", "module_type": "source.mesh.three_planes", "instance_key": "tp",
+          "params": { "grain": 0.0, "scanline": 0.0, "chroma_bleed": 0.0,
+                      "input_opacity": 1.0, "plane1_emission": 1.0,
+                      "plane2_emission": 1.0, "plane3_emission": 1.0)JSON")
+      + extra + R"JSON( } }
+      ],
+      "wires": [)JSON" + w + R"JSON(]
+    })JSON");
+  };
+
+  auto meanOf = [&](const nlohmann::json& sketch) {
+    int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                   /*sketchDirty=*/true);
+    backend->submit();
+    auto px = backend->readbackTexture(out, W, H);
+    double sum = 0;
+    int n = 0;
+    for (size_t i = 0; i + 3 < px.size(); i += 4) {
+      sum += (px[i] + px[i + 1] + px[i + 2]) / 3.0;
+      ++n;
+    }
+    return sum / n;
+  };
+
+  const double unwired = meanOf(sketchFor("", false));
+  const double cut_all = meanOf(sketchFor(", \"mask_halo\": 1.0", true));
+  const double cut_mid = meanOf(sketchFor(", \"mask_halo\": 0.6", true));
+  const double cut_none = meanOf(sketchFor(", \"mask_halo\": 0.0", true));
+  const double off = meanOf(sketchFor(", \"mask_strength\": 0.0", true));
+  INFO("unwired " << unwired << " all " << cut_all << " mid " << cut_mid
+                  << " none " << cut_none << " off " << off);
+
+  // A white input under a lit stack is a bright frame.
+  CHECK(unwired > 200.0);
+  // Masked at full weight with the halo taken too: nothing is left.
+  CHECK(cut_all < 4.0);
+  // Let the halo through and the glow survives the cut — that spill is the
+  // whole difference between a mask in the scene and one on the glass.
+  CHECK(cut_none > cut_mid + 10.0);
+  CHECK(cut_mid > cut_all + 10.0);
+  // ...but the body and the base are gone whatever the halo does.
+  CHECK(cut_none < unwired * 0.6);
+  // And a mask nobody asked for changes nothing.
+  CHECK(off == Catch::Approx(unwired).margin(1.0));
+}

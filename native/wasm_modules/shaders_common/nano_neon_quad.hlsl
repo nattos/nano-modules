@@ -181,8 +181,18 @@ NanoNeonField nano_neon_quad(float2 p, float2 a, float2 b, float2 c, float2 d,
 // whatever is already accumulated (returned in `occlusion`, for the caller's
 // `acc = acc * (1 - occlusion) + emit`). Fixed-function blend cannot express
 // both in one draw, which is why the callers resolve in a loop.
-float3 nano_neon_quad_emit(NanoNeonField f, float3 col, float emis, float fill,
-                           NeonStyle st, out float occlusion) {
+// The emission, split into the two parts a MASK has to treat differently.
+//
+// `halo` is the wide soft field the tube throws; the RETURN is everything else
+// — the line core and the interior flood, which are the plane as an object.
+// Anything that cuts a shape out of the picture has to cut those two by
+// different amounts, because a tube behind a letter still throws light around
+// the letter's edges, and once the halo has been summed into the body that is
+// no longer expressible. Callers with nothing to mask want the sum and should
+// use nano_neon_quad_emit below, which IS the sum.
+float3 nano_neon_quad_emit_split(NanoNeonField f, float3 col, float emis,
+                                 float fill, NeonStyle st,
+                                 out float occlusion, out float3 halo) {
   float aa     = max(st.aa, 1e-6);
   float inside = saturate(0.5 - f.sd / aa);
   float core   = 1.0 - smoothstep(st.line_hw - aa, st.line_hw + aa, abs(f.sd));
@@ -192,9 +202,15 @@ float3 nano_neon_quad_emit(NanoNeonField f, float3 col, float emis, float fill,
   float3 tint = lerp(col, float3(1.0, 1.0, 1.0), saturate(st.core_whiten * core));
 
   occlusion = -min(fill, 0.0) * inside;
+  halo = emis * tint * (f.glow * st.halo_gain);
   return emis * tint * (core * st.line_gain
-                      + f.glow * st.halo_gain
                       + max(fill, 0.0) * inside * st.fill_gain);
+}
+
+float3 nano_neon_quad_emit(NanoNeonField f, float3 col, float emis, float fill,
+                           NeonStyle st, out float occlusion) {
+  float3 halo;
+  return nano_neon_quad_emit_split(f, col, emis, fill, st, occlusion, halo) + halo;
 }
 
 #endif  // NANO_NEON_QUAD_HLSL

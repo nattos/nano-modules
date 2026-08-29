@@ -479,25 +479,26 @@ TEST_CASE("Solid lights every floor and ignores the signals entirely", "[three_p
   CHECK(hit.peak_layer == -1);
 }
 
-TEST_CASE("Solid colours the floors the way three_planes ships them", "[three_planes_rig]") {
+TEST_CASE("Solid reads the colours DOWN the tower", "[three_planes_rig]") {
   Params p;
   p.mode = ModeSolid;
   Core c;
   const Out o = step(c, p, 1, 1, 1, 1, 0.1f);
 
-  // bottom = Primary, middle = Highlight, top = Secondary — the three roles'
-  // defaults ARE the effect's own plane1/2/3 defaults, so an untouched rig in
-  // this mode reproduces the unwired look.
-  CHECK_THAT(o.color[0].r, WithinAbs(p.primary.r, 1e-6));
-  CHECK_THAT(o.color[0].b, WithinAbs(p.primary.b, 1e-6));
-  CHECK_THAT(o.color[1].g, WithinAbs(p.highlight.g, 1e-6));
-  CHECK_THAT(o.color[1].b, WithinAbs(p.highlight.b, 1e-6));
-  CHECK_THAT(o.color[2].r, WithinAbs(p.secondary.r, 1e-6));
-  CHECK_THAT(o.color[2].g, WithinAbs(p.secondary.g, 1e-6));
+  // top = Highlight, middle = Primary, bottom = Secondary. The highlight goes
+  // where the eye goes, and where the peak cap lands in the other mode — the
+  // pose you cut TO should not disagree with the one you cut FROM about which
+  // floor is the important one.
+  CHECK_THAT(o.color[2].g, WithinAbs(p.highlight.g, 1e-6));
+  CHECK_THAT(o.color[2].b, WithinAbs(p.highlight.b, 1e-6));
+  CHECK_THAT(o.color[1].r, WithinAbs(p.primary.r, 1e-6));
+  CHECK_THAT(o.color[1].b, WithinAbs(p.primary.b, 1e-6));
+  CHECK_THAT(o.color[0].r, WithinAbs(p.secondary.r, 1e-6));
+  CHECK_THAT(o.color[0].g, WithinAbs(p.secondary.g, 1e-6));
 
   // And a hit does not swing them — there are no flams in this mode.
   const Out again = step(c, p, 0, 0, 0, 0, 0.05f);
-  CHECK_THAT(again.color[0].r, WithinAbs(p.primary.r, 1e-6));
+  CHECK_THAT(again.color[2].g, WithinAbs(p.highlight.g, 1e-6));
 }
 
 TEST_CASE("the moves still run in Solid", "[three_planes_rig]") {

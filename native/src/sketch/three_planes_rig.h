@@ -897,10 +897,11 @@ struct Core {
   /// SOLID — the mode with no reactivity to the FEED. Every floor sits lit in
   /// its own colour; the camera, the sweep and the beat still run on top.
   ///
-  /// The colour assignment is not arbitrary: it reproduces three_planes' OWN
-  /// plane defaults (magenta / cyan / violet, which is exactly what the three
-  /// roles default to), so a rig in this mode with untouched colours looks like
-  /// the effect does with nothing wired to it.
+  /// The colour assignment reads DOWN the tower, not up it: the top floor wears
+  /// Highlight, the middle Primary, the bottom Secondary. The highlight belongs
+  /// at the top because that is where the eye goes and where the peak cap lands
+  /// in the other mode — Solid is the pose you cut to, so the two modes should
+  /// not disagree about which floor is the important one.
   void tickSolid(const Params& p, Out& o) {
     using namespace detail;
     // Hold the ballistics at rest rather than letting them drift while unread,
@@ -923,7 +924,7 @@ struct Core {
     o.peak = 0.0f;
     o.peak_layer = -1;
 
-    const Rgb solid[kLayers] = {p.primary, p.highlight, p.secondary};
+    const Rgb solid[kLayers] = {p.secondary, p.primary, p.highlight};
     for (int i = 0; i < kLayers; ++i) {
       o.emission[i] = clamp01(p.emission_on);
       o.color[i] = solid[i];
