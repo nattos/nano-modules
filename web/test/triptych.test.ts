@@ -468,15 +468,19 @@ describe('Triptych Room mode', () => {
   const isGreen = (p: { r: number; g: number; b: number }) =>
     p.g > 150 && p.r < 90 && p.b < 90;
 
-  const build = (params: Record<string, unknown>): Sketch => ({
+  const build = (params: Record<string, unknown>, wireLed = false): Sketch => ({
     anchor: null,
     wires: [
       { id: 'wl', src: { instanceKey: 'l@0', field: 'tex_out' },
         dest: { instanceKey: 'tp@0', field: 'left_in' } },
       { id: 'wr', src: { instanceKey: 'r@0', field: 'tex_out' },
         dest: { instanceKey: 'tp@0', field: 'right_in' } },
+      ...(wireLed ? [{ id: 'wd', src: { instanceKey: 'd@0', field: 'tex_out' },
+                       dest: { instanceKey: 'tp@0', field: 'led_in' } }] : []),
     ],
     chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'd@0',
+        params: { color: [1, 1, 0] } },
       { type: 'module', module_type: 'source.solid_color', instance_key: 'l@0',
         params: { color: [1, 0, 0] } },
       { type: 'module', module_type: 'source.solid_color', instance_key: 'r@0',
@@ -488,11 +492,11 @@ describe('Triptych Room mode', () => {
     ],
   } as Sketch);
 
-  const run = (id: string, params: Record<string, unknown>) =>
+  const run = (id: string, params: Record<string, unknown>, wireLed = false) =>
     runEngineTest({
       width: W, height: H, modules: MODULES,
       commands: [
-        { type: 'createSketch', sketchId: id, sketch: build(params) },
+        { type: 'createSketch', sketchId: id, sketch: build(params, wireLed) },
         { type: 'setTracePoints', tracePoints: [
           { id: 'out', target: { type: 'sketch_output', sketchId: id } }]},
       ],
@@ -580,5 +584,43 @@ describe('Triptych Room mode', () => {
       expect(isEmpty(f.pixelAt(x, box.y0 - 4))).toBe(true);
       expect(isEmpty(f.pixelAt(x, box.y1 + 4))).toBe(true);
     }
+  });
+
+  it('never cuts the sides off part way, however deep the room', async () => {
+    // The failure this pins: an outer half-height derived by MULTIPLYING the
+    // back wall's by the depth ratio is unbounded, so past a point the walls
+    // ran into the band's edge and were flat-cut across — with the perspective
+    // still visibly climbing into the cut, and the picture inside them lost
+    // from there out. Worst exactly where it is most wanted: full perspective,
+    // with an LED strip below eating into the band.
+    const r = await run('trip_noclip', {
+      fit_mode: ROOM, mid_scale: 1, perspective: 1, led_height: 0.3, gap: 0,
+    }, /*wireLed=*/true);
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+
+    /** The first row of the left wall that carries anything, at this column. */
+    const topOf = (x: number) => {
+      for (let y = 0; y < H; y++) if (!isEmpty(f.pixelAt(x, y))) return y;
+      return H;
+    };
+    const tops = [5, 30, 60, 90].map(topOf);
+    // Strictly increasing toward the seam: the wall climbs the whole way, so
+    // there is no flat run where it has been cut. A cut shows up here as two
+    // columns agreeing at row 0.
+    for (let i = 1; i < tops.length; i++) expect(tops[i]).toBeGreaterThan(tops[i - 1]);
+    // It reaches the band only at the very edge of the frame, and not before.
+    expect(tops[0]).toBeLessThan(3);
+    expect(tops[1]).toBeGreaterThan(3);
+
+    // And the bottom mirrors it, about the row's own centre — so the wall is a
+    // clean trapezoid rather than a trapezoid with its ends sawn off.
+    const bottomOf = (x: number) => {
+      for (let y = H - 1; y >= 0; y--) if (!isEmpty(f.pixelAt(x, y))) return y;
+      return -1;
+    };
+    const rowBot = H * 0.7;
+    for (const x of [5, 30, 60, 90])
+      expect(Math.abs((topOf(x) + bottomOf(x)) / 2 - rowBot / 2)).toBeLessThan(2);
   });
 });

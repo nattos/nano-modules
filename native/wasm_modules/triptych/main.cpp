@@ -145,8 +145,9 @@ void module_init() {
                   "wall goes at 1 is the real geometry, not a taste — it "
                   "follows from how wide you made it — so this is the "
                   "fraction of that you want. 0 is the flat row. In Room the "
-                  "back wall stays put and the sides grow out past the frame "
-                  "instead, which is what a corridor does.")
+                  "back wall stays put and the sides open out to the frame "
+                  "around it, reaching it exactly at 1 — they are never cut "
+                  "off part way, whatever else is set.")
         .label("Perspective", "Persp")
       .floatField("led_height", 0.25f, 0.05f, 0.6f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,

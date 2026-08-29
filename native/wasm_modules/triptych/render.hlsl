@@ -117,12 +117,23 @@ float wall_s(float t, float h_seam, float h_edge) {
 /// `row_bot` is the bottom of the band the row lives in, `half_g` the
 /// divider's half-width, `mid_src` the back wall source's pixel size.
 ///
-/// The two paths differ in which end is pinned. Everywhere but Room the OUTER
-/// edges fill the band and the back wall is pulled down from it, so the room is
-/// bounded by construction. In Room the BACK WALL is pinned — at its own aspect,
-/// square pixels — and the sides grow out from it, which means they can run off
-/// the top and bottom of the band. That is not a bug to clamp: a corridor's
-/// walls do leave the frame, and the band crops them the way the frame would.
+/// The two paths differ in which end the back wall's height comes from. Outside
+/// Room it is pulled DOWN from the band by the depth ratio; in Room it is the
+/// back wall's own aspect, and the ratio comes out instead.
+///
+/// EITHER WAY BOTH ENDS STAY INSIDE THE BAND. Letting the sides grow past it and
+/// cropping them looked defensible — a corridor's walls do leave the frame — and
+/// it is not what happens here: the crop lands at the band's edge, which is
+/// wherever the LED strip happens to start, so the walls get a flat cut across
+/// them with the perspective still visibly climbing into it, and the picture
+/// inside them is lost from there on. So the outer half-height is interpolated
+/// TO the band rather than multiplied past it.
+///
+/// That is not a fudge either. At full perspective the true outer half-height
+/// works out at (frame aspect / source aspect) / 2, so for a source shaped like
+/// the frame with no strip below it, filling the band IS the true geometry —
+/// this only departs from it by as much as the strip has taken, and in the
+/// direction of a slightly shallower room rather than a cropped one.
 RoomGeom room_geom(int mode, float mid_slot, float persp, float row_bot,
                    float half_g, float2 vp, float2 mid_src) {
   RoomGeom g;
@@ -135,7 +146,7 @@ RoomGeom room_geom(int mode, float mid_slot, float persp, float row_bot,
     if (h > row_bot) { w *= row_bot / max(h, 1e-4); h = row_bot; }
     g.x_i = (1.0 - (w + 2.0 * half_g)) * 0.5;
     g.h_i = h * 0.5;
-    g.h_o = g.h_i * lerp(1.0, 1.0 / max(w, 1e-3), persp);
+    g.h_o = lerp(g.h_i, row_bot * 0.5, persp);
   } else {
     g.x_i = (1.0 - mid_slot) * 0.5;
     g.h_o = row_bot * 0.5;
