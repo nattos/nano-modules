@@ -429,6 +429,52 @@ describe('mod.rig.three_planes E2E', () => {
     expect(midR).toBeLessThan(156);
   });
 
+  it('a knob parked in the fade settles instead of stuttering for ever', async () => {
+    // The flicker is something the SWEEP does to the tubes, not a property of
+    // where it is parked, so a tower left halfway out is a tower that stopped
+    // arguing — which is what makes half-lit a place you can leave the piece.
+    //
+    // 0.8625 is the middle of the fade (deadzone 0.45, then half of what is
+    // left), where the stutter's drive is at its peak — so with the flicker at
+    // FULL this is the loudest it could possibly be, and the rail still has to
+    // read the position law exactly. Compare against the same knob with the
+    // flicker dialled out: the two must be the same picture.
+    //
+    // How LONG the settle takes is a question about the clock, and belongs to
+    // the native goldens with the rest of the sweep's dynamics; what is checked
+    // here is dt-invariant, which is that it ends.
+    //
+    // Sampled at TWENTY-FOUR moments rather than one, and this is the whole
+    // design of the case. A stutter is not a level: whether one capture sees it
+    // is a question about where the blip fell, and a single frame that came out
+    // clean has proved nothing. At full drive some floor is mid-blip about half
+    // the time and it is this floor a third of those, so a settle that failed
+    // would have to dodge every one of these — and the waits are deliberately
+    // uneven so the sampling cannot beat against the blip period and miss in
+    // lock-step. With the settle working the answer is the same at all of them,
+    // so nothing here is left to chance in the passing direction.
+    const MID_FADE = 0.8625;
+    const params = { ...SWEPT, sweep_flicker: 1.0, sweep: MID_FADE };
+    const phases: EnginePhaseConfig[] = [
+      { commands: [
+          { type: 'createSketch', sketchId: 'rig_settle',
+            sketch: scalarSketch('plane1_emission', params) },
+          { type: 'setTracePoints',
+            tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: 'rig_settle' } }] },
+        ],
+        waitFrames: 20, captureTraceIds: ['out'] },
+    ];
+    for (let i = 0; i < 23; i++)
+      phases.push({ commands: [], waitFrames: 3 + (i % 7), captureTraceIds: ['out'] });
+
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64, modules: MODULES, phases, dumpName: 'rig_settle',
+    });
+    expect(r.success).toBe(true);
+    // smoothstep(0.5) — half the tower's light, at every one of them.
+    for (const phase of r.phases) expectEmission(phase.trace('out').averageColor().r, 0.5);
+  });
+
   it('a knob nobody has moved reads no speed', async () => {
     // Including one parked well off centre: the rail reports MOTION, and a
     // stationary knob is not moving however far from home it is parked.

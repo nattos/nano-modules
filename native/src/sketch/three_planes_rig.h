@@ -145,6 +145,23 @@ constexpr float kBeatGuard = 0.5f;
 /// first black arrives. So 0 is "no chop" without being a special case.
 constexpr float kFlamSlowFrames = 32.0f;
 
+/// THE FLICKER'S WAKE. The stutter is a thing the knob DOES to the tubes, not
+/// a property of where it is parked: a tower left halfway out is a tower that
+/// has settled, and one that goes on struggling for ever reads as a bug in the
+/// card rather than as a fixture with a fault. So the drive is gated by a life
+/// that motion re-arms and stillness lets run out (`sweep_settle`).
+///
+/// Re-arming is a GATE on movement, not a reading of how fast — anything at
+/// all past this rate pegs it. A slow deliberate crawl out to the end is the
+/// most exposed the fade ever is and has to stutter exactly as hard as a slam;
+/// scaling the life by speed would have made the gesture that shows the fade
+/// off best the one that shows nothing. In knob ranges per second, and set
+/// well under one MIDI step per boxcar window (1/128 over 0.09 s is ~0.09/s),
+/// so a stepping encoder never falls between two of its own steps and goes
+/// dark. The estimator returns an EXACT zero one window after the motion stops
+/// (knob_rate.h), so at rest this is unambiguously off.
+constexpr float kFlickWake = 0.02f;
+
 /// Below this much of the tower's brightness the sweep counts as MUTED, and a
 /// held charge is thrown. Derived from the dimmer rather than being its own
 /// threshold, so "the release happens at the ends" stays true however the
@@ -256,6 +273,7 @@ struct Params {
   float sweep_deadzone = 0.45f;  ///< fraction of each half that stays FULLY lit
   float sweep_depth = 1.0f;      ///< how far the extremes fade; 1 = to black
   float sweep_flicker = 0.6f;    ///< how hard the tubes stutter through the fade
+  float sweep_settle = 1.2f;     ///< seconds the stutter carries on after the knob stops
   float sweep_bounce = 0.55f;    ///< how far a fast sweep back in overshoots
   float latch_drive = 2.0f;      ///< how readily a pass through the middle charges
   float latch_decay = 1.2f;      ///< seconds a charge survives before it bleeds away
@@ -479,6 +497,15 @@ struct BeatCore {
 /// full brightness has nothing to stutter about, and one already black has
 /// nothing to show. It peaks where the light is halfway out, which is where a
 /// tired tube actually struggles, and only ever touches ONE floor at a time.
+///
+/// And it SETTLES. Where in the fade the knob sits says how hard the tubes can
+/// struggle; whether they still are is a separate fact, carried by a life that
+/// the knob's motion re-arms and stillness runs out (kFlickWake, `sweep_settle`).
+/// Positional flicker alone made parking the knob mid-fade a permanent fault
+/// rather than a place you can leave the piece — and a stutter that never ends
+/// stops reading as one, because the thing that sells it is the moment it
+/// stops. Riding the knob through the fade is unchanged; letting go is where
+/// the difference is.
 struct SweepCore {
   /// The speed measurement itself, shared with source.mesh.three_planes'
   /// glints. See knob_rate.h for why it is a boxcar and not a difference.
@@ -505,6 +532,11 @@ struct SweepCore {
 
   int flick_layer = -1;   ///< the floor currently mid-blip, −1 between blips
   float flick_t = 0.0f;   ///< seconds left in the current blip (or gap)
+  /// How much stutter is left in the tubes. Motion re-arms it outright and
+  /// stillness lets it run out over `sweep_settle` — see kFlickWake. Starts at
+  /// zero: a card that comes up with the knob already parked in the fade shows
+  /// a tower that settled long ago, not one still fighting.
+  float flick_life = 0.0f;
   unsigned rng = 0x9e3779b9u;
 
   /// How far from home the knob is, 0 at the centre and 1 at either end. The
@@ -548,6 +580,17 @@ struct SweepCore {
       if (speed < 1e-4f) speed = 0.0f;
     }
     o.sweep_speed = speed;
+    // The flicker's own life, on its own clock. `speed` is the wrong signal to
+    // hang it on twice over: it is scaled by how FAST the knob moves, and it
+    // releases in a fifth of a second because a glint meter has to be tight.
+    // The stutter wants neither — any movement at all should wake the tubes,
+    // and they should go on arguing about it well after your hand has stopped.
+    if (dt > 0.0f) {
+      const float woke = clamp01((r < 0.0f ? -r : r) / kFlickWake);
+      const float rel = std::exp(-dt / (p.sweep_settle > 1e-3f ? p.sweep_settle : 1e-3f));
+      flick_life = woke > flick_life * rel ? woke : flick_life * rel;
+      if (flick_life < 1e-4f) flick_life = 0.0f;
+    }
     // The knob itself goes out too: three_planes' glints are thrown by the
     // GESTURE, not by a level, so what they need is the position and its
     // motion — not this envelope. See three_planes_glints.h.
@@ -683,7 +726,15 @@ struct SweepCore {
     o.release = release;
     // Peaks where the light is halfway out and vanishes at both ends: nothing
     // to stutter about at full brightness, nothing to see once it is black.
-    const float drive = clamp01(4.0f * gain * (1.0f - gain)) * clamp01(p.sweep_flicker);
+    // Gated by the life, so where in the fade the tower sits decides how hard
+    // it CAN stutter and the life decides whether it still is.
+    //
+    // One drive, feeding both the depth of each blip and the gap between them
+    // (below) — so a stutter does not merely fade out as it settles, it also
+    // slows down. Which is the difference between a tube giving up and a tube
+    // being turned down.
+    const float drive =
+        clamp01(4.0f * gain * (1.0f - gain)) * clamp01(p.sweep_flicker) * flick_life;
 
     if (drive <= 1e-3f) {
       flick_layer = -1;

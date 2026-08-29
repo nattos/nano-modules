@@ -725,6 +725,26 @@ Out drag(Core& c, Params& p, float from, float to, float dt, int frames) {
   return o;
 }
 
+/// A hand still ON the knob: `center`, worked back and forth by a hair.
+///
+/// The flicker's life is armed by MOTION and runs out when the knob is left
+/// alone (kFlickWake, `sweep_settle`), so any case about WHERE IN THE FADE the
+/// flicker lives has to keep a hand on it — otherwise it is measuring the
+/// settle instead. The excursion is a hundredth of the range against a fade
+/// that spans half of it, so the dimmer barely moves: these cases and the
+/// settle's own cases below stay independent.
+///
+/// A TRIANGLE over 24 frames, and not a per-frame dither, which is the trap
+/// here and worth stating. The rate estimator is a boxcar over `sweep_window`
+/// — at 0.09 s and 60 Hz, six frames — and a value that alternates every frame
+/// has moved exactly nowhere across an even-length window. It reads as a knob
+/// at a dead stop however hard it is being shaken. Anything sampling a window
+/// can be aliased against; the fix is to move slower than it, as a hand does.
+float riding(float center, int frame) {
+  const float phase = (float)(frame % 24) / 24.0f;
+  return center + 0.01f * (4.0f * std::fabs(phase - 0.5f) - 1.0f);
+}
+
 /// How many of the three floors sit away from the majority this frame. The
 /// flicker is defined as touching ONE at a time, so this is the assertion.
 int oddFloorsOut(const Out& o) {
@@ -736,6 +756,22 @@ int oddFloorsOut(const Out& o) {
     if (same == 1) ++odd;   // matches only itself
   }
   return odd;
+}
+
+/// How FAR the odd floor sits from the other two — the depth of the stutter,
+/// where oddFloorsOut only counts whether there is one. The settle is an
+/// exponential and never reaches an exact zero on any schedule worth writing a
+/// test around, so "has it stopped" has to be a question about size.
+float flickerDepth(const Out& o) {
+  static_assert(kLayers == 3, "the majority of three is its middle value");
+  float e[kLayers];
+  for (int i = 0; i < kLayers; ++i) e[i] = o.emission[i];
+  for (int i = 0; i < kLayers; ++i)
+    for (int j = i + 1; j < kLayers; ++j)
+      if (e[j] < e[i]) { const float t = e[i]; e[i] = e[j]; e[j] = t; }
+  const float med = e[1];
+  const float lo = std::fabs(e[0] - med), hi = std::fabs(e[2] - med);
+  return lo > hi ? lo : hi;
 }
 
 }  // namespace
@@ -944,7 +980,7 @@ TEST_CASE("the flicker lives in the fade and touches one floor at a time",
 
   int flicker_frames = 0, worst = 0;
   for (int i = 0; i < 400; ++i) {
-    const Out o = sweepAt(c, p, half_out, 0.016f);
+    const Out o = sweepAt(c, p, riding(half_out, i), 0.016f);
     const int odd = oddFloorsOut(o);
     if (odd > 0) ++flicker_frames;
     if (odd > worst) worst = odd;
@@ -986,13 +1022,123 @@ TEST_CASE("a flickering floor TOGGLES — a dark one comes up",
   Params p;   // EV Meter, no gates: all three floors rest at emission_off
   int lifted = 0;
   for (int i = 0; i < 400; ++i) {
-    const Out o = sweepAt(c, p, half_out, 0.016f);
+    const Out o = sweepAt(c, p, riding(half_out, i), 0.016f);
     for (int k = 0; k < kLayers; ++k) {
       // Brighter than the unlit level it would otherwise be dimmed to.
       if (o.emission[k] > rail(p.emission_off * 0.5f) + 1e-3f) ++lifted;
     }
   }
   REQUIRE(lifted > 10);
+}
+
+// ---------------------------------------------------------------------------
+// THE SETTLE. Where in the fade the knob sits says how hard the tubes CAN
+// stutter; whether they still are is a separate fact, carried by a life the
+// knob's motion arms and stillness runs out. Positional flicker alone made
+// parking mid-fade a permanent fault rather than a place you can leave the
+// piece.
+// ---------------------------------------------------------------------------
+
+namespace {
+/// Halfway out: smoothstep(0.5) = 0.5, so the drive is at its peak. Same
+/// position the flicker cases above use.
+const float kHalfOut = kSweepCenter + 0.5f * (0.45f + 0.5f * (1.0f - 0.45f));
+
+/// The worst stutter seen over `frames` with the knob left exactly where the
+/// caller put it. Returns the depth, so an exponential tail can be measured
+/// rather than merely detected.
+float worstOver(Core& c, Params& p, float sweep, int frames) {
+  float worst = 0.0f;
+  for (int i = 0; i < frames; ++i) {
+    const float d = flickerDepth(sweepAt(c, p, sweep, 0.016f));
+    if (d > worst) worst = d;
+  }
+  return worst;
+}
+}  // namespace
+
+TEST_CASE("the stutter runs out when the knob is abandoned",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+
+  // Sweep out to the middle of the fade over half a second, then let go.
+  drag(c, p, kSweepCenter, kHalfOut, 0.016f, 32);
+
+  // It is still arguing on the way down — the first settle's worth of frames
+  // has real blips in it, which is the flicker the sweep is there for.
+  const float during = worstOver(c, p, kHalfOut, (int)(p.sweep_settle / 0.016f));
+  REQUIRE(during > 0.05f);
+
+  // Four more settles pass...
+  worstOver(c, p, kHalfOut, (int)(4.0f * p.sweep_settle / 0.016f));
+
+  // ...and there is nothing left to see. Not an exact zero — an exponential
+  // does not offer one — but a fifth of a percent of the range, which is below
+  // anything a projector resolves.
+  const float after = worstOver(c, p, kHalfOut, (int)(2.0f / 0.016f));
+  REQUIRE(after < 0.01f);
+  REQUIRE(after < during * 0.1f);
+}
+
+TEST_CASE("riding the knob keeps the tubes struggling indefinitely",
+          "[three_planes_rig][sweep]") {
+  // The settle must not have made the flicker a one-shot: a hand still on the
+  // knob is a tower still in trouble, however long it goes on for. Same
+  // position and the same number of frames as the case above, which sees
+  // nothing by the end.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  drag(c, p, kSweepCenter, kHalfOut, 0.016f, 32);
+
+  float late = 0.0f;
+  const int frames = (int)(6.0f / 0.016f);
+  for (int i = 0; i < frames; ++i) {
+    const float d = flickerDepth(sweepAt(c, p, riding(kHalfOut, i), 0.016f));
+    if (i > frames / 2 && d > late) late = d;   // the SECOND half only
+  }
+  REQUIRE(late > 0.05f);
+}
+
+TEST_CASE("a knob that was already parked in the fade never starts",
+          "[three_planes_rig][sweep]") {
+  // A card that comes up with the sweep stored mid-fade shows a tower that
+  // settled long ago, not one still fighting. The life starts at zero and only
+  // motion arms it, so a sketch that never touches the knob is silent — which
+  // is also what keeps a stored value from reading as a gesture on frame one,
+  // the same rule knob_rate.h's seeding exists for.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  REQUIRE(worstOver(c, p, kHalfOut, 400) < 1e-5f);
+}
+
+TEST_CASE("Settle at 0 stutters only while the hand is moving",
+          "[three_planes_rig][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_settle = 0.0f;
+
+  // Moving: unchanged. The gate is on motion, not on speed, so an unhurried
+  // crawl through the fade stutters exactly as hard as a slam — which is the
+  // whole reason the life is not simply `speed`.
+  float moving = 0.0f;
+  for (int i = 0; i < 400; ++i) {
+    const float d = flickerDepth(sweepAt(c, p, riding(kHalfOut, i), 0.016f));
+    if (d > moving) moving = d;
+  }
+  REQUIRE(moving > 0.05f);
+
+  // Stopped: gone within a boxcar window. Not instantly — the rate estimator
+  // reports the displacement over the last `sweep_window`, so the knob is
+  // still measurably moving for that long after the hand comes off, and that
+  // is a fact about the measurement rather than about the settle.
+  const int window_frames = (int)(p.sweep_window / 0.016f) + 2;
+  worstOver(c, p, kHalfOut, window_frames);
+  REQUIRE(worstOver(c, p, kHalfOut, 200) < 1e-5f);
 }
 
 // ---------------------------------------------------------------------------

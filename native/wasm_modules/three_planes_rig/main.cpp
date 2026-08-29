@@ -146,7 +146,10 @@ void module_init() {
     "**Sweep** is the knob you perform on. Where it sits dims the whole tower — "
     "wide deadzone through the middle, fading to black at either end with the "
     "tubes stuttering on the way out — and how fast you move it throws slanted "
-    "glints across the quads. It works in every mode too.\n\n"
+    "glints across the quads. It works in every mode too. The stutter is "
+    "something your hand does to the tubes rather than a place on the knob, so "
+    "it *settles* once you let go and you can leave the tower parked "
+    "half-lit.\n\n"
     "**Try:** wire `Sig 1..4` from an *Art-Net In* card and the nine outputs into "
     "Three Planes' emission and colour, then fire **Show** from the trigger row "
     "while it runs. Turn on *Allow Holes* for a sparser, more percussive tower — "
@@ -487,6 +490,14 @@ void module_init() {
                     "Tube stutter through the fade — one floor at a time, "
                     "loudest where the light is halfway out.")
         .label("Flicker", "Flick");
+  schema.floatField("sweep_settle", 1.2f, 0.f, 6.f, state::PrimaryInput,
+                    nullptr, 0.f, "s",
+                    "How long the tubes go on stuttering after you STOP "
+                    "moving. The flicker is something the sweep does to them, "
+                    "not a property of where it is parked — so a tower "
+                    "left halfway out settles, and you can leave it there. 0 "
+                    "stutters only while your hand is moving.")
+        .label("Settle", "Stl");
   schema.floatField("sweep_bounce", 0.55f, 0.f, 1.f, state::PrimaryInput,
                     nullptr, 0.f, nullptr,
                     "How far the light overshoots when you sweep back IN, "
@@ -780,6 +791,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "sweep_deadzone")) s->p.sweep_deadzone = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_depth"))    s->p.sweep_depth = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_flicker"))  s->p.sweep_flicker = state::patchFloat(i);
+    else if (state::pathIs(p, l, "sweep_settle"))   s->p.sweep_settle = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_bounce"))   s->p.sweep_bounce = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_decay"))    s->p.sweep_decay = state::patchFloat(i);
     else if (state::pathIs(p, l, "sweep_sense"))    s->p.sweep_sense = state::patchFloat(i);
