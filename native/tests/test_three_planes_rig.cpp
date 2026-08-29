@@ -9,6 +9,8 @@
 
 #include "sketch/three_planes_rig.h"
 
+#include <vector>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -180,6 +182,7 @@ TEST_CASE("a flam brightens its own floor and retires", "[three_planes_rig]") {
   Params p;
   p.flam_time = 0.1f;
   p.flam_emission = 0.5f;
+  p.flam_rate = 0.0f;      // the chop is its own case; this one is the envelope
   p.emission_on = 0.4f;    // leave headroom, or the blip just clamps at 1
   p.emission_off = 0.0f;
   Core c;
@@ -194,6 +197,129 @@ TEST_CASE("a flam brightens its own floor and retires", "[three_planes_rig]") {
   // Well past flam_time nothing is ringing any more.
   for (int i = 0; i < 10; ++i) idle(c, p, 0.02f);
   CHECK(c.flam_live[0] == false);
+}
+
+// --- The flam's chop ------------------------------------------------------
+// An accent that only ever adds light is a bump on a lit tower. The flam takes
+// the floor AWAY between its strokes, and how fast it does that is counted in
+// frames rather than timed, because the fastest chop worth having — one frame
+// lit, one frame black — has no name in seconds.
+
+namespace {
+
+/// One flam, read frame by frame: true where floor 0 is showing anything at
+/// all, false where the chop has taken it to black. Struck on the first frame.
+std::vector<bool> flamFrames(Params& p, int frames, float dt) {
+  Core c;
+  std::vector<bool> on;
+  for (int i = 0; i < frames; ++i) {
+    const Out o = step(c, p, i == 0 ? 1.0f : 0.0f, 0, 0, 0, dt);
+    on.push_back(o.emission[0] > 0.0f);
+  }
+  return on;
+}
+
+int countBlack(const std::vector<bool>& on) {
+  int n = 0;
+  for (bool v : on) if (!v) ++n;
+  return n;
+}
+
+}  // namespace
+
+TEST_CASE("a flam chops to BLACK, not merely to brighter",
+          "[three_planes_rig][flam]") {
+  // The hole is half the accent. A floor that is lit underneath still goes out
+  // — the chop overrides the base, because a lit floor with a hole punched in
+  // it is the whole idea.
+  Params p;
+  p.flam_time = 0.5f;
+  p.emission_on = 1.0f;    // fully lit underneath, and it still goes dark
+  p.emission_off = 0.0f;
+  const std::vector<bool> on = flamFrames(p, 20, 0.016f);
+
+  CHECK(on[0]);                      // struck: a hit you cannot see is not a hit
+  CHECK(countBlack(on) > 0);         // ...and it does reach black
+}
+
+TEST_CASE("at the top of the range the flam alternates every frame",
+          "[three_planes_rig][flam]") {
+  // The fastest thing a display can show, and the reason the chop is counted
+  // instead of timed: there is no duration that names "one frame".
+  Params p;
+  p.flam_time = 0.5f;
+  p.flam_rate = 1.0f;
+  const std::vector<bool> on = flamFrames(p, 12, 0.016f);
+  for (size_t i = 0; i < on.size(); ++i) CHECK(on[i] == (i % 2 == 0));
+}
+
+TEST_CASE("the chop is counted in FRAMES, not seconds",
+          "[three_planes_rig][flam]") {
+  // The same knob has to strobe the same way on a 60 Hz display and a 144 Hz
+  // one. Timed, it would not: name a duration and it lands on some fraction of
+  // a frame, and which frames it catches drifts with the pacing.
+  Params fast;
+  fast.flam_time = 2.0f;   // long enough that neither run retires
+  Params slow = fast;
+  const std::vector<bool> a = flamFrames(fast, 16, 0.004f);
+  const std::vector<bool> b = flamFrames(slow, 16, 0.040f);   // ten times the dt
+  CHECK(a == b);
+  CHECK(countBlack(a) > 0);   // and it is a real pattern, not a run of ones
+}
+
+TEST_CASE("dialled down, an ordinary flam never reaches its first black",
+          "[three_planes_rig][flam]") {
+  // 0 is "no chop" without being a special case: the half-period simply grows
+  // longer than the blip it would have cut up.
+  Params p;
+  p.flam_rate = 0.0f;
+  const std::vector<bool> on = flamFrames(p, 12, 0.016f);   // default 0.18 s flam
+  CHECK(countBlack(on) == 0);
+}
+
+TEST_CASE("the chop halves with the knob, like a clock divider",
+          "[three_planes_rig][flam]") {
+  CHECK(detail::flamHalfFrames(1.0f) == 1);
+  CHECK(detail::flamHalfFrames(0.8f) == 2);
+  CHECK(detail::flamHalfFrames(0.6f) == 4);
+  CHECK(detail::flamHalfFrames(0.4f) == 8);
+  CHECK(detail::flamHalfFrames(0.2f) == 16);
+  CHECK(detail::flamHalfFrames(0.0f) == 32);
+  // Out of range is clamped, not wrapped — a wire can carry anything.
+  CHECK(detail::flamHalfFrames(2.0f) == 1);
+  CHECK(detail::flamHalfFrames(-1.0f) == 32);
+}
+
+TEST_CASE("a paused transport neither strobes nor freezes on the hole",
+          "[three_planes_rig][flam]") {
+  // A stopped clock still ticks: the executor calls tick() every frame whether
+  // or not time moved. Left to itself the chop would keep alternating over a
+  // frozen frame — and worse, could stop on a black one and stay there, since
+  // the envelope is frozen too and nothing would ever end it. A frozen frame
+  // shows the light.
+  Params p;
+  p.flam_time = 0.5f;
+  p.flam_rate = 1.0f;      // would alternate every frame if it advanced
+  Core c;
+  CHECK(step(c, p, 1, 0, 0, 0, 0.016f).emission[0] > 0.0f);
+  for (int i = 0; i < 8; ++i) CHECK(idle(c, p, 0.0f).emission[0] > 0.0f);
+  // And the flam is exactly where it was left: no time passed.
+  CHECK(c.flam_live[0]);
+  CHECK_THAT(c.flam_t[0], WithinAbs(0.016, 1e-6));
+}
+
+TEST_CASE("a stalled frame advances the chop by one step, not by its length",
+          "[three_planes_rig][flam]") {
+  // The counterpart: a frame that took a quarter of a second is still ONE
+  // frame. Counting is what makes that true for free — there is no dt in the
+  // chop to clamp in the first place.
+  Params p;
+  p.flam_time = 2.0f;
+  p.flam_rate = 1.0f;
+  Core c;
+  step(c, p, 1, 0, 0, 0, 0.016f);              // frame 0: lit
+  CHECK(idle(c, p, 4.0f).emission[0] == 0.0f); // frame 1 (stalled): black
+  CHECK(idle(c, p, 0.016f).emission[0] > 0.0f);// frame 2: lit again
 }
 
 TEST_CASE("an idle rig publishes the baselines, normalised", "[three_planes_rig]") {

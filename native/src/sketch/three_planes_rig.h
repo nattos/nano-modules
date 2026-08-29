@@ -86,6 +86,34 @@ constexpr float kBounceDamp = 0.30f;   ///< zeta
 /// which explicit integration of a 30 rad/s spring would explode on.
 constexpr float kBounceStep = 0.008f;
 
+/// THE FLAM'S CHOP. A flam is not a bloom: it CHOPS, alternating the floor
+/// between its accent and BLACK for as long as the blip lasts. An accent that
+/// only ever adds light is a bump on a lit tower and reads as one; taking the
+/// floor away between the strokes is what makes a hit land, because the eye
+/// reads the hole as hard as it reads the flash.
+///
+/// The half-period is counted in FRAMES, not seconds, and that is the whole
+/// reason it is a separate mechanism from `flam_time`. The fastest chop worth
+/// having is one frame lit and one frame black — the finest thing a display
+/// can show — and there is no way to ask for that in seconds: name a duration
+/// and it lands on some fraction of a frame, so which frames it catches drifts
+/// with the pacing and the pattern comes out ragged. Counting ticks pins it.
+/// (The executor calls tick() exactly once per instance per frame on every
+/// path, so a tick IS a frame.)
+///
+/// The trade is deliberate and worth stating: this is a DISPLAY-LOCKED strobe.
+/// The pattern is exact on any machine, but its wall-clock rate follows the
+/// refresh, so the same flam holds more strokes at 144 Hz than at 60. That is
+/// what "pinned to the frame rate" means, and it is the point — an aliasing
+/// instrument wants the grid it is aliasing against. Everything else in this
+/// header that is a DURATION stays on dt, `flam_time` included.
+///
+/// Exponential across the knob — each step down the slider is a doubling, a
+/// clock divider you can hear — from one frame at the top to this at the
+/// bottom, which is long enough that a default-length flam finishes before the
+/// first black arrives. So 0 is "no chop" without being a special case.
+constexpr float kFlamSlowFrames = 32.0f;
+
 /// Below this much of the tower's brightness the sweep counts as MUTED, and a
 /// held charge is thrown. Derived from the dimmer rather than being its own
 /// threshold, so "the release happens at the ends" stays true however the
@@ -139,6 +167,10 @@ struct Params {
   float flam_time = 0.18f;      ///< seconds
   float flam_color = 1.0f;      ///< how far the flam pushes toward the alternate colour
   float flam_emission = 0.35f;  ///< additive brightness blip, clamped at 1
+  /// How fast the flam chops between its accent and black, 0..1. 1 alternates
+  /// every FRAME; 0 is slow enough that a flam of ordinary length never
+  /// reaches its first black. See kFlamSlowFrames.
+  float flam_rate = 0.8f;
 
   Rgb primary{1.00f, 0.22f, 0.62f};    ///< magenta — the flam colour of a plain layer
   Rgb secondary{0.72f, 0.35f, 1.00f};  ///< violet — where a plain layer settles
@@ -239,6 +271,16 @@ inline int layerOf(float level) {
   if ((float)i < level) ++i;   // ceil, without pulling in <cmath>
   i -= 1;
   return i < 0 ? 0 : (i >= kLayers ? kLayers - 1 : i);
+}
+
+/// The flam chop's half-period, in FRAMES: how many frames it stays lit, and
+/// then how many it stays black. Exponential, and floored at one frame — the
+/// fastest alternation a display has. See kFlamSlowFrames for why this is
+/// counted rather than timed.
+inline int flamHalfFrames(float rate) {
+  const float f = std::pow(kFlamSlowFrames, 1.0f - clamp01(rate));
+  const int n = (int)(f + 0.5f);
+  return n < 1 ? 1 : n;
 }
 
 /// xorshift32, so the flicker is deterministic given the same dt sequence —
@@ -550,6 +592,9 @@ struct Core {
 
   float flam_t[kLayers] = {};
   bool flam_live[kLayers] = {};
+  /// Frames since this floor's flam was struck. An integer count, not a clock:
+  /// the chop is frame-locked (kFlamSlowFrames) and this is what locks it.
+  int flam_frame[kLayers] = {};
 
   /// The sweep knob's own dynamics. Held here, not in the mode branch, because
   /// it composes on TOP of whatever paints the tower — same relationship the
@@ -687,7 +732,11 @@ struct Core {
     meter = 0.0f;
     peak = 0.0f;
     hold_t = 0.0f;
-    for (int i = 0; i < kLayers; ++i) { flam_t[i] = 0.0f; flam_live[i] = false; }
+    for (int i = 0; i < kLayers; ++i) {
+      flam_t[i] = 0.0f;
+      flam_live[i] = false;
+      flam_frame[i] = 0;
+    }
 
     // The meter rails report the METER, and in this mode there isn't one. They
     // read 0 rather than "full" because nothing is being measured.
@@ -702,7 +751,9 @@ struct Core {
     }
   }
 
-  /// EV METER — the reactive mode. Everything below is driven by the four gates.
+  /// EV METER — the reactive mode. Everything below is driven by the four
+  /// gates, and its accent is the FLAM: a struck floor chops between brighter
+  /// and black for `flam_time`, at a rate counted in frames.
   void tickMeter(const Params& p, const bool* fired, float target, float dt, Out& o) {
     using namespace detail;
     // --- 1. Meter: instant attack, timed fall. A hit is a step, not a ramp —
@@ -730,20 +781,41 @@ struct Core {
     }
 
     // --- 3. Flams. A fire lands on the layer its LEVEL names, so ch3 and ch4
-    //        share the top layer and retrigger each other. ---
+    //        share the top layer and retrigger each other.
+    //
+    //        A flam has TWO clocks, and they are different kinds of thing. Its
+    //        envelope is a duration — how long the accent lasts — and runs on
+    //        dt like every other ballistic here. Its CHOP is a frame count:
+    //        the floor alternates between the accent and black, and the
+    //        fastest chop worth having is one frame of each, which no duration
+    //        can name (kFlamSlowFrames). So the blip is timed and the chop is
+    //        counted, and neither is the other's business. ---
     for (int c = 0; c < kSignals; ++c) {
       if (!fired[c]) continue;
       const int i = layerOf(p.level[c]);
       flam_t[i] = 0.0f;
+      flam_frame[i] = 0;   // the chop starts LIT: a hit you cannot see is not a hit
       flam_live[i] = true;
     }
     const float ft = p.flam_time > 1e-4f ? p.flam_time : 1e-4f;
+    const int half = flamHalfFrames(p.flam_rate);
     float flam[kLayers] = {};
+    bool black[kLayers] = {};
     for (int i = 0; i < kLayers; ++i) {
       if (!flam_live[i]) continue;
       const float k = 1.0f - flam_t[i] / ft;   // 1 at the hit, 0 at retirement
       flam[i] = k > 0.0f ? k * k : 0.0f;       // ease out — a blip, not a fade
+      // A frozen frame shows the LIGHT, never the hole. The executor calls
+      // tick() every frame whether or not time moved, so a paused transport
+      // would otherwise leave a floor stuck black on whichever half it
+      // happened to stop in — and with the envelope frozen too, stuck there
+      // for good. The hole is an event; if nothing is happening there is no
+      // hole. The counter is held for the same reason: a stopped clock must
+      // not strobe.
+      const bool run = dt > 0.0f;
+      black[i] = run && ((flam_frame[i] / half) & 1) != 0;
       flam_t[i] += dt;
+      if (run) ++flam_frame[i];
       if (flam_t[i] >= ft) flam_live[i] = false;
     }
 
@@ -765,7 +837,12 @@ struct Core {
     //        of it even mid-hit. ---
     for (int i = 0; i < kLayers; ++i) {
       const float base = lit[i] ? p.emission_on : p.emission_off;
-      o.emission[i] = clamp01(base + flam[i] * p.flam_emission);
+      // BLACK, not "back to the base level". The hole is half the accent: a
+      // floor that only ever brightens reads as a bump on a lit tower, and one
+      // that goes out reads as a hit. It overrides the base for the same
+      // reason — a lit floor with a hole punched in it is the whole idea.
+      o.emission[i] = black[i] ? 0.0f
+                              : clamp01(base + flam[i] * p.flam_emission);
       const float mix = clamp01(flam[i] * p.flam_color);
       o.color[i] = (i == o.peak_layer) ? lerpRgb(p.highlight, p.secondary, mix)
                                        : lerpRgb(p.secondary, p.primary, mix);

@@ -106,6 +106,7 @@ static void applyModeVisibility(int mode) {
   state::setFieldHidden("flam_time", solid);
   state::setFieldHidden("flam_color", solid);
   state::setFieldHidden("flam_emission", solid);
+  state::setFieldHidden("flam_rate", solid);
 }
 
 /// Static (self-less) evaluator — pure over state, so the editor can resolve the
@@ -229,10 +230,24 @@ void module_init() {
   schema.group("flam", "Flam")
         .groupHelp(
           "The blip a floor gives when its own signal fires. It is short and it "
-          "eases out — a flick, not a fade — and it does two things at once: "
-          "pushes the floor brighter, and swings its colour to the other end.\n\n"
-          "*Colour* is how far that swing goes. At 0 the flam is purely a "
-          "brightness accent; at 1 the floor fully changes colour on every hit.");
+          "eases out — a flick, not a fade — and it does three things at once: "
+          "pushes the floor brighter, swings its colour to the other end, and "
+          "CHOPS.\n\n"
+          "**The chop is the half you feel.** A flam that only ever adds light "
+          "is a bump on a lit tower; one that takes the floor away between its "
+          "strokes lands. So a struck floor alternates between the accent and "
+          "BLACK — properly out, under whatever it was resting at — for as "
+          "long as *Time* lasts.\n\n"
+          "*Rate* is how fast, and it is counted in FRAMES rather than "
+          "seconds: at 1 the floor alternates every single frame, the finest "
+          "thing a display can show, and each notch down the knob doubles the "
+          "hold — 1 frame, 2, 4, 8, 16, 32. Timed instead, the same knob would "
+          "strobe differently on a 60 Hz screen than on a 144 Hz one. Wind it "
+          "all the way down and the hold outlasts an ordinary flam, so nothing "
+          "ever goes black and you are back to a plain blip.\n\n"
+          "*Colour* is how far the colour swing goes. At 0 the flam is purely "
+          "a brightness accent; at 1 the floor fully changes colour on every "
+          "hit.");
   schema.floatField("flam_time", 0.18f, 0.02f, 1.f, state::PrimaryInput,
                     nullptr, 0.f, "s")
         .label("Flam Time", "Time");
@@ -240,6 +255,13 @@ void module_init() {
         .label("Flam Colour", "Col");
   schema.floatField("flam_emission", 0.35f, 0.f, 1.f, state::PrimaryInput)
         .label("Flam Brightness", "Bright");
+  schema.floatField("flam_rate", 0.8f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, nullptr,
+                    "How fast a flam chops between its accent and black, "
+                    "counted in FRAMES: 1 alternates every frame, and each "
+                    "notch down doubles the hold — 1, 2, 4, 8, 16, 32. At 0 "
+                    "the hold outlasts the flam, so nothing goes black.")
+        .label("Flam Rate", "Rate");
 
   // ---------------- Colours ----------------
   schema.group("colors", "Colours")
@@ -641,6 +663,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "flam_time"))     s->p.flam_time = state::patchFloat(i);
     else if (state::pathIs(p, l, "flam_color"))    s->p.flam_color = state::patchFloat(i);
     else if (state::pathIs(p, l, "flam_emission")) s->p.flam_emission = state::patchFloat(i);
+    else if (state::pathIs(p, l, "flam_rate"))     s->p.flam_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "primary_color")) {
       auto v = state::patchVec3(i);
       s->p.primary = rig::Rgb{v.x, v.y, v.z};

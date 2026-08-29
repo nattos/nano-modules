@@ -465,6 +465,60 @@ describe('mod.rig.three_planes E2E', () => {
     expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(150);
   });
 
+  // --- The flam's chop ----------------------------------------------------
+
+  it('a struck floor chops to black, one frame at a time', async () => {
+    // The chop is FRAME-locked, which is the one piece of timing in this card
+    // a wall-clock harness can pin exactly: at the top of the range the floor
+    // alternates every frame whatever a frame happened to cost. One phase per
+    // frame, and the pattern has to come out clean.
+    const chop = (id: string, rate: number) => {
+      const phases: EnginePhaseConfig[] = [
+        { commands: [
+            { type: 'createSketch', sketchId: id, sketch:
+                scalarSketch('plane1_emission',
+                             { ...CRISP, flam_time: 0.5, flam_emission: 0,
+                               flam_rate: rate }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+          ],
+          waitFrames: 20, captureTraceIds: ['out'] },
+        { commands: [{ type: 'setParam', sketchId: id, colIdx: 0, chainIdx: 1,
+                       paramKey: 'sig_1', value: 1 }],
+          waitFrames: 1, captureTraceIds: ['out'] },
+      ];
+      for (let i = 0; i < 7; ++i)
+        phases.push({ commands: [], waitFrames: 1, captureTraceIds: ['out'] });
+      return runEngineMultiPhaseTest(
+        { width: 64, height: 64, modules: MODULES, phases, dumpName: id });
+    };
+    // Unlit is 0 here (CRISP), so "showing anything at all" is the read.
+    const shown = (r: Awaited<ReturnType<typeof chop>>) =>
+      Array.from({ length: 8 }, (_, i) =>
+        r.phases[i + 1].trace('out').averageColor().r > 40);
+
+    const fast = await chop('rig_flam_chop', 1);
+    const flat = await chop('rig_flam_nochop', 0);
+    expect(fast.success && flat.success).toBe(true);
+
+    // Nothing playing: the floor is dark before the hit.
+    expect(fast.phases[0].trace('out').averageColor().r).toBeLessThan(40);
+
+    // Out and back every single frame, for as long as the flam runs. WHICH
+    // frame the hit itself lands on is a harness detail — the gate arrives at
+    // a phase boundary — so the claim here is the alternation, and that the
+    // hit's own frame is the lit one is pinned in the native goldens where the
+    // tick boundary is unambiguous.
+    const seen = shown(fast);
+    for (let i = 1; i < seen.length; ++i) expect(seen[i]).toBe(!seen[i - 1]);
+    expect(seen).toContain(true);
+    expect(seen).toContain(false);
+
+    // Wound all the way down the hold outlasts the flam, so the same hit never
+    // reaches black at all. That is the knob, on a real wire.
+    for (const v of shown(flat)) expect(v).toBe(true);
+  });
+
   // --- The bounce ---------------------------------------------------------
   // How far the light runs ahead of the knob, and how it springs back, is
   // pinned frame by frame at an exact dt in the native goldens. What only a
