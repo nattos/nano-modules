@@ -87,12 +87,17 @@ static inline void pubRgb(const char* name, const rig::Rgb& c) {
 
 // --- per-instance field visibility -----------------------------------------
 
-/// Solid reads NO signals and runs no ballistics, so every field that only the
-/// meter consumes comes off the card. That leaves the mode select, the three
-/// colours, the lit level, the camera baselines and the moves — which is exactly
-/// the set Solid actually uses.
-static void applyModeVisibility(int mode) {
-  const bool solid = (mode == rig::ModeSolid);
+/// Outside EV Meter the tower is not painted from the signals, so every field
+/// that only the meter consumes can come off the card — leaving the mode
+/// select, the three colours, the lit level, the camera baselines and the
+/// moves, which is exactly the set Solid and Strobe actually use.
+///
+/// Unless the BARS are still reading it. `led_meter` keeps the meter running
+/// for the LED rails while the screen sits solid or chops, and a control you
+/// cannot see is not a control — so the whole group comes back, in a mode that
+/// is not otherwise using it.
+static void applyModeVisibility(int mode, bool led_meter) {
+  const bool solid = (mode != rig::ModeEvMeter) && !led_meter;
   for (int i = 0; i < rig::kSignals; ++i) {
     char name[16];
     std::snprintf(name, sizeof(name), "sig_%d", i + 1);
@@ -118,11 +123,15 @@ static void applyModeVisibility(int mode) {
 void eval_visibility(int n, const char* pb, const int* off, const int* len,
                      const int* ops) {
   int mode = rig::ModeEvMeter;
+  bool led_meter = true;
   for (int i = 0; i < n; i++) {
     if (ops[i] != state::PatchReplace) continue;
-    if (state::pathIs(pb + off[i], len[i], "mode")) mode = (int)state::patchFloat(i);
+    const char* p = pb + off[i];
+    const int l = len[i];
+    if (state::pathIs(p, l, "mode")) mode = (int)state::patchFloat(i);
+    else if (state::pathIs(p, l, "led_meter")) led_meter = state::patchBool(i);
   }
-  applyModeVisibility(mode);
+  applyModeVisibility(mode, led_meter);
 }
 
 void module_init() {
@@ -140,7 +149,13 @@ void module_init() {
     "always see how loud it just got.\n\n"
     "**Solid** is the opposite: no signals, no meter, no cap. Three lit floors "
     "in the three colours and nothing moving. It is the pose to cut back to — a "
-    "piece that reacts the whole way through has nothing left to react from.\n\n"
+    "piece that reacts the whole way through has nothing left to react from. "
+    "**Strobe** is that same tower with the mains chopped: lit and black every "
+    "frame, unconditionally — it does not ask the feed, the meter or the sweep "
+    "whether to do it.\n\n"
+    "The **LED rails are separate**, and that is what makes cutting to either "
+    "of those cheap: the bars standing in the room keep reading the meter while "
+    "the screen sits still or chops. See *LED Meter*.\n\n"
     "The four **moves** work in either mode. They fly the camera, not the tower, "
     "so Solid plus a move is a clean gesture on a still image.\n\n"
     "**Sweep** is the knob you perform on. Where it sits dims the whole tower — "
@@ -199,8 +214,10 @@ void module_init() {
           "What paints the tower. **EV Meter** reads the signals; **Solid** "
           "ignores them entirely and just lights all three floors at *Lit "
           "Level*, one per colour, leaving the moves as the only thing "
-          "happening. The rest of this group is the meter's, and disappears in "
-          "Solid.\n\n"
+          "happening; **Strobe** is Solid chopped on and off every frame. The "
+          "rest of this group is the meter's, and disappears in the other two "
+          "— unless *LED Meter* is on, because then the bars are still using "
+          "it.\n\n"
           "A hit is a **step**, not a ramp — the meter jumps "
           "to the height it was given and then falls, which is the whole point of "
           "a meter: you see the transient.\n\n"
@@ -213,7 +230,9 @@ void module_init() {
           "more percussive. The cap shows either way.");
   // Options APPEND, never renumber — a stored `mode` is an index.
   schema.selectField("mode", 0, state::SecondaryInput,
-                     {{"EV Meter", rig::ModeEvMeter}, {"Solid", rig::ModeSolid}})
+                     {{"EV Meter", rig::ModeEvMeter},
+                      {"Solid", rig::ModeSolid},
+                      {"Strobe", rig::ModeStrobe}})
         .label("Mode", "Mode");
   schema.floatField("meter_fall", 0.35f, 0.05f, 3.f, state::PrimaryInput,
                     nullptr, 0.f, "s", "Seconds for the meter to fall one floor.")
@@ -232,6 +251,14 @@ void module_init() {
         .label("Lit Level", "On");
   schema.floatField("emission_off", 0.12f, 0.f, 1.f, state::SecondaryInput)
         .label("Unlit Level", "Off");
+  schema.boolField("led_meter", true, state::SecondaryInput,
+                   "Keep the meter running for the LED rails even when the "
+                   "picture is Solid or Strobe — the bars are a fixture in the "
+                   "room, not a copy of the screen, so they can go on reading "
+                   "the feed while the screen sits still or chops. Turn it off "
+                   "and the meter parks in those modes, and the rest of this "
+                   "group leaves the card with it.")
+        .label("LED Meter", "LEDMtr");
 
   // ---------------- Flam ----------------
   schema.group("flam", "Flam")
@@ -278,10 +305,14 @@ void module_init() {
           "**Solid** — which is what makes *nothing reacting, but still on the "
           "grid* a pose you can cut to.\n\n"
           "**A floor fills on the beat and HOLDS until the next one**, so the "
-          "light climbs the tower a step at a time: bottom, middle, top, "
-          "rest. Nothing decays and nothing eases — the beat that ends one "
-          "floor is the beat that lights the next, and the rest at the end of "
-          "the bar is what turns the climb into a phrase instead of a loop.\n\n"
+          "light climbs the tower a step at a time: bottom, middle, top, and "
+          "round again. Nothing decays and nothing eases — the beat that ends "
+          "one floor is the beat that lights the next.\n\n"
+          "*Rest* leaves the bar's spare beat dark, which turns the climb into "
+          "a four-beat phrase instead of a loop and pins the bottom floor to "
+          "the downbeat. Off — the default — the walk simply never stops: "
+          "three floors against a four-beat bar, so it lands somewhere new "
+          "each downbeat and keeps climbing.\n\n"
           "It is the one thing here that fills a plane rather than outlining "
           "it, so it reads as the construct lighting up rather than as another "
           "accent on its edges. *Fill* is how hard, and it is signed like the "
@@ -305,6 +336,13 @@ void module_init() {
                     "How hard the walk fills a floor's interior. Negative "
                     "punches it to a black mask instead. 0 is off.")
         .label("Beat Fill", "Fill");
+  schema.boolField("beat_rest", false, state::SecondaryInput,
+                   "Leave the bar's spare beat dark, so the climb reads as a "
+                   "four-beat phrase that always starts the bottom floor on "
+                   "the downbeat. Off, the walk simply keeps going — a "
+                   "three-beat cycle against a four-beat bar, so it lands on a "
+                   "different floor each downbeat and never stops climbing.")
+        .label("Rest", "Rest");
 
   // ---------------- Colours ----------------
   schema.group("colors", "Colours")
@@ -551,10 +589,15 @@ void module_init() {
           "Wire these into Three Planes. The three *Emission* rails and the three "
           "*Colour* rails go to the matching plane; *Orbit*, *Elevation* and "
           "*Spacing* go to the camera.\n\n"
+          "The six *LED* rails go to Three Planes' *LED Source* fields, and "
+          "they are a second opinion rather than a copy: outside EV Meter they "
+          "carry the METER while the picture rails carry whatever the mode is "
+          "painting. Three Planes' *Solid Mix* decides how much of each end "
+          "the bars get.\n\n"
           "*Meter* and *Peak* are the raw levels over 0..1 — useful for driving "
           "anything else in the sketch off the same pulse, and for watching what "
-          "the card thinks is happening. Both read 0 in **Solid**, because "
-          "nothing is being measured.");
+          "the card thinks is happening. They read 0 only when the meter is not "
+          "running at all — in **Solid** or **Strobe** with *LED Meter* off.");
   schema.floatField("meter", 0.f, 0.f, 1.f, state::PrimaryOutput, "unsigned",
                     0.f, nullptr, "Meter height over the three floors.")
         .label("Meter", "Meter");
@@ -595,6 +638,31 @@ void module_init() {
                       "no fill.")
           .label(disp, shortl);
   }
+  // The LED rails. A SECOND set, deliberately: they are what the bars in the
+  // room show, and outside EV Meter that is not what the screen shows. Wire
+  // them into Three Planes' six LED Source fields and reach for its *Solid
+  // Mix* to say how much of each end the bars get. In EV Meter they are
+  // identical to the picture rails above, so a sketch that wires both loses
+  // nothing by cutting to it.
+  for (int i = 0; i < rig::kLayers; ++i) {
+    char name[24], disp[24], shortl[8];
+    std::snprintf(name, sizeof(name), "led%d_emission", i + 1);
+    std::snprintf(disp, sizeof(disp), "LED %d Emission", i + 1);
+    std::snprintf(shortl, sizeof(shortl), "L%d Em", i + 1);
+    schema.floatField(name, 0.f, 0.f, 1.f, state::SecondaryOutput, "unsigned",
+                      0.f, nullptr,
+                      "What the bars show for this floor, which outside EV "
+                      "Meter is the meter rather than the picture.")
+          .label(disp, shortl);
+  }
+  for (int i = 0; i < rig::kLayers; ++i) {
+    char name[24], disp[24], shortl[8];
+    std::snprintf(name, sizeof(name), "led%d_color", i + 1);
+    std::snprintf(disp, sizeof(disp), "LED %d Colour", i + 1);
+    std::snprintf(shortl, sizeof(shortl), "L%d Col", i + 1);
+    schema.rgbField(name, 0.72f, 0.35f, 1.00f, state::SecondaryOutput)
+          .label(disp, shortl);
+  }
   schema.floatField("orbit_azimuth", 0.125f, 0.f, 1.f, state::SecondaryOutput,
                     "unsigned", 0.f, nullptr,
                     "Turntable angle. 0..1 maps to a full 360 deg turn.")
@@ -632,7 +700,7 @@ void module_init() {
                     "Three Planes' Release.")
         .label("Release", "Rel");
 
-  // 4 gates in, twelve rails out. NO temporal tag: the meter, the peak hold, the
+  // 4 gates in, two dozen rails out. NO temporal tag: the meter, the peak hold, the
   // flams and the moves are all accumulators, so this cannot be seeked.
   schema.capability(state::Capability::ModulationShaper)
         .capability(state::Capability::ModulationShaperFanout);
@@ -685,6 +753,10 @@ void tick(void* self, double dt) {
     pubRgb(name, o.color[i]);
     std::snprintf(name, sizeof(name), "plane%d_fill", i + 1);
     pubFloat(name, o.fill[i]);
+    std::snprintf(name, sizeof(name), "led%d_emission", i + 1);
+    pubFloat(name, o.led_emission[i]);
+    std::snprintf(name, sizeof(name), "led%d_color", i + 1);
+    pubRgb(name, o.led_color[i]);
   }
   pubFloat("sweep_speed", o.sweep_speed);
   pubFloat("sweep_out", o.sweep_out);
@@ -746,7 +818,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
 
     if (state::pathIs(p, l, "mode")) {
       s->p.mode = state::patchInt(i);
-      applyModeVisibility(s->p.mode);
+      applyModeVisibility(s->p.mode, s->p.led_meter);
+      continue;
+    }
+    if (state::pathIs(p, l, "led_meter")) {
+      s->p.led_meter = state::patchBool(i);
+      applyModeVisibility(s->p.mode, s->p.led_meter);
       continue;
     }
     if      (state::pathIs(p, l, "meter_fall"))    s->p.meter_fall = state::patchFloat(i);
@@ -761,6 +838,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "flam_rate"))     s->p.flam_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "orbit_rate"))   s->p.orbit_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "beat_fill"))    s->p.beat_fill = state::patchFloat(i);
+    else if (state::pathIs(p, l, "beat_rest"))    s->p.beat_rest = state::patchBool(i);
     else if (state::pathIs(p, l, "primary_color")) {
       auto v = state::patchVec3(i);
       s->p.primary = rig::Rgb{v.x, v.y, v.z};

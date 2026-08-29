@@ -197,6 +197,15 @@ struct State {
   int wall_h[2] = {0, 0};
 
   bool  led_quantize = true;
+  // What the bars show when `led_solid` is dialled off the picture. Wired from
+  // Three Planes Rig's six LED rails; the defaults mirror the plane fields, so
+  // an unwired card that reaches for the knob finds a plausible tower rather
+  // than a black one.
+  float led_emission[PLANES] = {0.85f, 0.85f, 0.85f};
+  float led_color[PLANES][3] = {{1.00f, 0.22f, 0.62f},
+                                {0.30f, 0.85f, 1.00f},
+                                {0.72f, 0.35f, 1.00f}};
+  float led_solid = 1.0f;
   gpu::Texture led_tex;
   gpu::Buffer  led_buf;
   int   led_w = 0;
@@ -850,6 +859,12 @@ void module_init() {
         "lighting the way the stack does. Ten segments do not divide by three: "
         "the spare one goes to the TOP floor, so from the bottom it is "
         "**3 / 3 / 4**. The top of a meter is the part you read.\n\n"
+        "**The bars do not have to show what the screen shows.** They are a "
+        "fixture standing in the room, not a picture of the picture — so "
+        "*Solid Mix* crossfades them between the planes above and the six *LED "
+        "Source* rails, which Three Planes Rig drives with its meter whatever "
+        "the screen is doing. Cut the screen to Solid or Strobe and the rig in "
+        "the room keeps reading the feed.\n\n"
         "Unwired, none of this is drawn.")
       .textureField("led_out", state::SecondaryOutput)
         .label("LED Out", "LED")
@@ -860,6 +875,29 @@ void module_init() {
                  "interpolate between segment centres — a soft wash, and mud on "
                  "a physical rig.")
         .label("Quantize", "Quant")
+      .floatField("led_solid", 1.0f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much of the PICTURE the bars show, against the six *LED "
+                  "Source* rails below. 1 — the default — is the bars mirroring "
+                  "the screen, which is what they did before there was a "
+                  "choice. 0 hands them over to the sources entirely; wire "
+                  "those from Three Planes Rig and the rig in the room goes on "
+                  "reading the meter while the screen sits Solid or chops. "
+                  "Anywhere between is a mix, per floor, of both the brightness "
+                  "and the colour.")
+        .label("Solid Mix", "Solid")
+      .floatField("led1_emission", 0.85f, 0.f, 1.5f, state::SecondaryInput)
+        .label("LED 1 Source", "L1 Em")
+      .rgbField("led1_color", 1.00f, 0.22f, 0.62f, state::SecondaryInput)
+        .label("LED 1 Colour", "L1 Col")
+      .floatField("led2_emission", 0.85f, 0.f, 1.5f, state::SecondaryInput)
+        .label("LED 2 Source", "L2 Em")
+      .rgbField("led2_color", 0.30f, 0.85f, 1.00f, state::SecondaryInput)
+        .label("LED 2 Colour", "L2 Col")
+      .floatField("led3_emission", 0.85f, 0.f, 1.5f, state::SecondaryInput)
+        .label("LED 3 Source", "L3 Em")
+      .rgbField("led3_color", 0.72f, 0.35f, 1.00f, state::SecondaryInput)
+        .label("LED 3 Colour", "L3 Col")
 
       // ---------------- Walls ----------------
       // After tex_out, like every other aux output on this card — the editor
@@ -1162,6 +1200,20 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "wall_depth"))    s->wall_depth = state::patchFloat(i);
 
     else if (state::pathIs(p, l, "led_quantize"))   s->led_quantize = state::patchBool(i);
+    else if (state::pathIs(p, l, "led_solid"))      s->led_solid = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led1_emission"))  s->led_emission[0] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led2_emission"))  s->led_emission[1] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led3_emission"))  s->led_emission[2] = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led1_color")) {
+      auto v = state::patchVec3(i);
+      s->led_color[0][0] = v.x; s->led_color[0][1] = v.y; s->led_color[0][2] = v.z;
+    } else if (state::pathIs(p, l, "led2_color")) {
+      auto v = state::patchVec3(i);
+      s->led_color[1][0] = v.x; s->led_color[1][1] = v.y; s->led_color[1][2] = v.z;
+    } else if (state::pathIs(p, l, "led3_color")) {
+      auto v = state::patchVec3(i);
+      s->led_color[2][0] = v.x; s->led_color[2][1] = v.y; s->led_color[2][2] = v.z;
+    }
 
     else if (state::pathIs(p, l, "debug_show_sdf"))    s->debug_show_sdf = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_show_planes")) s->debug_show_planes = state::patchBool(i);
@@ -1415,12 +1467,28 @@ static void renderLed(State* s, int vp_w, int vp_h) {
     state::setGpuTexture("led_out", s->led_tex.id);
   }
 
+  // Two towers, crossfaded per floor: the PICTURE's planes and the six LED
+  // Source rails. At Solid Mix 1 this is exactly the old single-source path.
+  //
+  // The mix happens AFTER the dimmer curve, in the units the eye is in, so
+  // half way is half as bright rather than half as far along a gamma. Colour
+  // crossfades alongside it — the bars have to be able to hold the meter's
+  // moving cap while the screen holds a fixed colour, and a level without its
+  // colour would put the cap on the wrong floor's tint.
+  const float mix = clamp01f(s->led_solid);
   float level[PLANES];
-  for (int i = 0; i < PLANES; i++) level[i] = litLevel(s->emission[i]);
+  float rgb[PLANES][3];
+  for (int i = 0; i < PLANES; i++) {
+    const float a = litLevel(s->led_emission[i]);
+    const float b = litLevel(s->emission[i]);
+    level[i] = a + (b - a) * mix;
+    for (int c = 0; c < 3; c++)
+      rgb[i][c] = s->led_color[i][c] + (s->color[i][c] - s->led_color[i][c]) * mix;
+  }
   // The fills are deliberately absent. A plane set to -1 cuts a hole in the
   // PICTURE, where there is something behind it to cut; a bar has nothing
   // behind it, and a floor that is lit is lit.
-  const led_bars::Cells cells = led_bars::planeCells(s->color, level);
+  const led_bars::Cells cells = led_bars::planeCells(rgb, level);
 
   LedUniforms u = {};
   for (int i = 0; i < led_bars::kCells; i++) {

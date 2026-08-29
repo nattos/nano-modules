@@ -100,10 +100,21 @@ constexpr float kFillMax = 1.0f;
 /// conventions are kept identical (seed on the first frame, a big backward
 /// step is a wrap, only forward crossings fire).
 ///
-/// The beat pattern is ONE BAR long and it is not a coincidence: a floor per
-/// beat walking up the tower, and the beat left over is the rest that makes it
-/// a phrase rather than a loop. The assert is there because the two constants
-/// have to keep agreeing for that to be true.
+/// TWO WALKS, and which one you get is `beat_rest`.
+///
+/// With the rest, the pattern is ONE BAR long and it is not a coincidence: a
+/// floor per beat walking up the tower, and the beat left over is the rest that
+/// makes it a phrase rather than a loop. The assert is there because the two
+/// constants have to keep agreeing for that to be true.
+///
+/// Without it the cycle is three beats instead of four, so it PHASES against
+/// the bar — a continuous escalator, three against four, landing on a different
+/// floor each downbeat. That is unavoidable and it is the point: three floors
+/// cannot divide a four-beat bar, so a rest-free walk either drifts or doubles
+/// a floor, and a doubled floor is a hesitation, which is the thing the rest
+/// already was. What does NOT change is where the walk comes from — the floor
+/// is still read off the absolute beat rather than counted here, so a dropped
+/// beat still cannot put it out of step.
 constexpr int kBeatsPerBar = 4;
 static_assert(kBeatsPerBar == kLayers + 1,
               "the beat pattern is one floor per beat plus a rest, in a bar");
@@ -182,7 +193,13 @@ constexpr int kAnimCount = 4;
 /// has nothing to react FROM — Solid is the pose you cut back to. What still
 /// runs there is everything that was never the feed's: a move, the sweep, and
 /// the beat lighting the quads' interiors.
-enum Mode { ModeEvMeter = 0, ModeSolid = 1 };
+///
+/// `ModeStrobe` is Solid with the mains chopped: the same three floors in the
+/// same three colours, alternating lit and BLACK every frame. It is a mode
+/// rather than a knob on Solid because it is not a look you leave running — it
+/// is a cut, held for a bar, and a mode select is the one control you can hit
+/// blind.
+enum Mode { ModeEvMeter = 0, ModeSolid = 1, ModeStrobe = 2 };
 
 struct Rgb {
   float r = 0.0f, g = 0.0f, b = 0.0f;
@@ -205,6 +222,15 @@ struct Params {
   float meter_fall = 0.35f;
   float peak_hold = 1.2f;
   float peak_fall = 0.9f;
+
+  /// Keep the meter running for the LED rails in the modes that do not paint
+  /// with it. The bars are a separate fixture from the picture — this is what
+  /// lets the screen sit Solid, or chop, while the rig in the room goes on
+  /// reading the feed. It also decides whether the meter's own controls are
+  /// worth showing on the card outside EV Meter, which is the only reason it
+  /// is a switch rather than always-on: Solid with nothing to tune is a pose
+  /// too. Off, the ballistics park exactly as they used to.
+  bool led_meter = true;
 
   /// false — every layer under the meter is lit (a solid tower).
   /// true  — a layer is lit only while its own flam runs, so the tower has
@@ -238,6 +264,10 @@ struct Params {
   /// drives: positive is neon, negative punches it to a black mask. 0 is off,
   /// which is the whole enable — there is no separate switch.
   float beat_fill = 0.6f;
+  /// Whether the bar's spare beat is dark. See kBeatsPerBar: false is a
+  /// continuous three-beat climb that phases against the bar, true is the
+  /// four-beat phrase that always starts the bottom floor on the downbeat.
+  bool beat_rest = false;
 
   float azimuth_base = 0.125f;                  ///< [0,1] turn, 0.125 = 45 deg
   float elevation_base = 35.264389682754654f;   ///< degrees, true isometric
@@ -290,6 +320,14 @@ struct Out {
   /// overshoots into.
   float emission[kLayers] = {};
   Rgb color[kLayers] = {};
+  /// What the LED bars show, in the same units as `emission` / `color` above.
+  /// A SECOND opinion about the tower rather than a copy of the first: the
+  /// bars are a fixture standing in the room, not a picture of the screen, so
+  /// they can go on reading the meter while the screen sits Solid or chops.
+  /// Identical to the picture rails whenever the meter is what painted them.
+  /// three_planes mixes the two ends itself — see its `led_solid`.
+  float led_emission[kLayers] = {};
+  Rgb led_color[kLayers] = {};
   /// Fraction of three_planes' -1..1 fill range, so an unfilled plane is 0.5.
   float fill[kLayers] = {};
   float azimuth = 0.0f;    ///< [0,1] turn
@@ -447,13 +485,20 @@ struct BeatCore {
     if (crossed && (!seen || since >= kBeatGuard * beat)) {
       seen = true;
       since = 0.0f;
-      step = (int)std::floor(bp * (double)kBeatsPerBar);
-      if (step < 0) step = 0;
-      if (step >= kBeatsPerBar) step = kBeatsPerBar - 1;
+      // The ABSOLUTE beat, folded by the length of the walk. With the rest
+      // that is the bar, and `last_line % kBeatsPerBar` is exactly the
+      // `floor(bp * kBeatsPerBar)` this used to read off the phase — the bar
+      // counter is the same arithmetic carried across the wrap. Without the
+      // rest the cycle is one shorter than the bar, which is the whole
+      // difference between the two walks, and taking it off the absolute beat
+      // rather than off the phase is what lets it be shorter at all.
+      const long len = p.beat_rest ? (long)kBeatsPerBar : (long)kLayers;
+      step = (int)(((last_line % len) + len) % len);
     }
 
     // --- 3. The floor that is holding. The rest needs no case of its own: it
-    //        is the beat whose number no floor has (kBeatsPerBar == kLayers+1).
+    //        is the beat whose number no floor has (kBeatsPerBar == kLayers+1),
+    //        and with `beat_rest` off there simply is no such beat.
     const float fill = clampf(p.beat_fill, kFillMin, kFillMax);
     for (int i = 0; i < kLayers; ++i) o.fill[i] = fillRail(i == step ? fill : 0.0f);
   }
@@ -774,8 +819,17 @@ struct SweepCore {
     // and the overshoot lifts whatever the mode painted in proportion rather
     // than flattening it. Normalised here, at the one boundary where the
     // emission bank stops being "how lit is this floor" and becomes a rail.
-    for (int i = 0; i < kLayers; ++i)
+    //
+    // The LED bank rides the same dimmer, because the sweep is a fact about
+    // the room and not about the screen: reach for an end and the bars go out
+    // with the tower. The FLICKER above is not applied to it, and that is the
+    // one place the two banks part company — a stuttering tube is a fault in
+    // that tube, and the bars are not it.
+    for (int i = 0; i < kLayers; ++i) {
       o.emission[i] = clampf(o.emission[i] * lit_gain, 0.0f, kEmissionMax) / kEmissionMax;
+      o.led_emission[i] =
+          clampf(o.led_emission[i] * lit_gain, 0.0f, kEmissionMax) / kEmissionMax;
+    }
   }
 };
 
@@ -790,6 +844,9 @@ struct Core {
 
   float flam_t[kLayers] = {};
   bool flam_live[kLayers] = {};
+  /// Frames since the card was armed, for the Strobe mode's chop. An integer
+  /// count and not a clock, for the reason kFlamSlowFrames gives.
+  int strobe_frame = 0;
   /// Frames since this floor's flam was struck. An integer count, not a clock:
   /// the chop is frame-locked (kFlamSlowFrames) and this is what locks it.
   int flam_frame[kLayers] = {};
@@ -869,9 +926,36 @@ struct Core {
       if (on && p.level[c] > target) target = p.level[c];
     }
 
+    // --- 1a. The meter, which is no longer only the meter mode's. The BARS
+    //         can read it while the screen is doing something else entirely
+    //         (`led_meter`), so it runs whenever anything is reading it and
+    //         parks when nothing is. Its output goes into a bank of its own
+    //         and is then handed to whichever rails asked for it. ---
+    const bool meter_mode = (p.mode == ModeEvMeter);
+    const bool run_meter = meter_mode || p.led_meter;
+    Out m;
+    if (run_meter) tickMeter(p, fired, target, dt, m);
+    else           restMeter();
+
     Out o;
-    if (p.mode == ModeSolid) tickSolid(p, o);
-    else                     tickMeter(p, fired, target, dt, o);
+    if (meter_mode)                 o = m;
+    else if (p.mode == ModeStrobe)  tickStrobe(p, dt, o);
+    else                            tickSolid(p, o);
+
+    // The meter rails report the meter wherever it is running — in Solid that
+    // is no longer "nothing is being measured", because something is.
+    if (!meter_mode && run_meter) {
+      o.meter = m.meter;
+      o.peak = m.peak;
+      o.peak_layer = m.peak_layer;
+    }
+    // What the bars show. Not wired to anything by default: three_planes'
+    // `led_solid` decides how much of each end reaches them, and rests where
+    // the bars simply mirror the picture.
+    for (int i = 0; i < kLayers; ++i) {
+      o.led_emission[i] = run_meter ? m.emission[i] : o.emission[i];
+      o.led_color[i] = run_meter ? m.color[i] : o.color[i];
+    }
 
     // --- 1b. The beat. Transport-driven rather than feed-driven, so like the
     //         sweep and the moves it runs in EVERY mode: the mode paints the
@@ -955,22 +1039,9 @@ struct Core {
   /// not disagree about which floor is the important one.
   void tickSolid(const Params& p, Out& o) {
     using namespace detail;
-    // Hold the ballistics at rest rather than letting them drift while unread,
-    // so switching back to the meter starts from silence instead of from
-    // whatever it happened to be showing a minute ago. `prev_on` is still
-    // tracked by the caller, so a signal that was already high when the mode
-    // changed does not read as a fresh hit on the way back.
-    meter = 0.0f;
-    peak = 0.0f;
-    hold_t = 0.0f;
-    for (int i = 0; i < kLayers; ++i) {
-      flam_t[i] = 0.0f;
-      flam_live[i] = false;
-      flam_frame[i] = 0;
-    }
-
-    // The meter rails report the METER, and in this mode there isn't one. They
-    // read 0 rather than "full" because nothing is being measured.
+    // The meter rails report the METER, and if it is not running there isn't
+    // one. They read 0 rather than "full" because nothing is being measured;
+    // the caller overwrites them when the bars have it running anyway.
     o.meter = 0.0f;
     o.peak = 0.0f;
     o.peak_layer = -1;
@@ -979,6 +1050,44 @@ struct Core {
     for (int i = 0; i < kLayers; ++i) {
       o.emission[i] = clamp01(p.emission_on);
       o.color[i] = solid[i];
+    }
+  }
+
+  /// STROBE — Solid, chopped. The same three floors in the same three colours,
+  /// alternating between lit and BLACK every frame.
+  ///
+  /// UNCONDITIONAL, which is the whole mode: it does not ask the feed, the
+  /// meter or the sweep whether to chop. The sweep still dims what is left —
+  /// it is the room's master, and a blackout has to be able to black this out
+  /// too — but it cannot slow the chop or stop it, so a tower parked halfway
+  /// through the fade strobes at half brightness rather than settling.
+  ///
+  /// Counted in FRAMES for the same reason the flam's chop is (kFlamSlowFrames)
+  /// and with the same rule at the end of it: a stopped clock must not strobe,
+  /// so a frozen frame shows the LIGHT. There is no rate here on purpose —
+  /// every frame is the fastest a display has, and anything slower is a thing
+  /// the flam already does.
+  void tickStrobe(const Params& p, float dt, Out& o) {
+    tickSolid(p, o);
+    const bool run = dt > 0.0f;
+    if (run && (strobe_frame & 1) != 0)
+      for (int i = 0; i < kLayers; ++i) o.emission[i] = 0.0f;
+    if (run) ++strobe_frame;
+  }
+
+  /// Park the ballistics rather than letting them drift while nothing reads
+  /// them, so the way back to the meter starts from silence instead of from
+  /// whatever it happened to be showing a minute ago. `prev_on` is still
+  /// tracked by the caller, so a signal that was already high when the mode
+  /// changed does not read as a fresh hit on the way back.
+  void restMeter() {
+    meter = 0.0f;
+    peak = 0.0f;
+    hold_t = 0.0f;
+    for (int i = 0; i < kLayers; ++i) {
+      flam_t[i] = 0.0f;
+      flam_live[i] = false;
+      flam_frame[i] = 0;
     }
   }
 

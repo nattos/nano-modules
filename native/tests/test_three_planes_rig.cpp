@@ -461,6 +461,7 @@ TEST_CASE("a transport stall is clamped, not fast-forwarded", "[three_planes_rig
 TEST_CASE("Solid lights every floor and ignores the signals entirely", "[three_planes_rig]") {
   Params p;
   p.mode = ModeSolid;
+  p.led_meter = false;   // nothing else reading the meter, so it is truly off
   p.emission_on = 0.8f;
   Core c;
 
@@ -520,6 +521,9 @@ TEST_CASE("the moves still run in Solid", "[three_planes_rig]") {
 
 TEST_CASE("Solid parks the meter, and the way back is not a hit", "[three_planes_rig]") {
   Params p;
+  // With LED Meter on, the meter keeps running for the bars and there is
+  // nothing to park — that is the case below this one. This is the other pose.
+  p.led_meter = false;
   p.peak_hold = 10.0f;    // a cap that would still be standing on the way back
   Core c;
 
@@ -1521,6 +1525,7 @@ TEST_CASE("the fill walks up the tower, a floor a beat, and rests",
   Core c;
   Params p;
   p.bpm = 120.0f;
+  p.beat_rest = true;
   p.beat_fill = 1.0f;
   p.bar_phase = 0.9f;
   idle(c, p, 0.016f);   // seed near the end of a bar
@@ -1622,6 +1627,7 @@ TEST_CASE("a dropped beat does not put the walk out of step",
   Core c;
   Params p;
   p.bpm = 120.0f;
+  p.beat_rest = true;   // the pose with a beat that is nobody's floor
   p.beat_fill = 1.0f;
   p.bar_phase = 0.02f;
   idle(c, p, 0.016f);
@@ -1682,6 +1688,7 @@ TEST_CASE("the downbeat is a beat like any other", "[three_planes_rig][beat]") {
   // one beat the whole walk is anchored to, would be the one that never fired.
   Core c;
   Params p;
+  p.beat_rest = true;   // the walk that is anchored to the bar at all
   p.beat_fill = 1.0f;
   p.bar_phase = 0.98f;
   idle(c, p, 0.016f);
@@ -2003,4 +2010,310 @@ TEST_CASE("a dropped frame damps the bounce rather than detonating it",
   Out o{};
   for (int i = 0; i < 60; ++i) o = sweepAt(c, p, 0.6f, 0.016f);
   REQUIRE_THAT(o.emission[0], WithinAbs(rail(positionOf(p, 0.6f)), 1e-6));
+}
+
+// ---------------------------------------------------------------------------
+// The rest-free walk.
+//
+// Three floors do not divide a four-beat bar, so a walk with no rest in it
+// cannot also be bar-locked: it cycles every three beats and lands somewhere
+// new each downbeat. What it keeps is where it comes from — the absolute beat,
+// not a count kept here — which is what a dropped beat tests.
+
+TEST_CASE("with the rest off the walk never stops climbing",
+          "[three_planes_rig][beat]") {
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;   // beat_rest defaults OFF
+  p.bar_phase = 0.9f;
+  idle(c, p, 0.016f);
+
+  Grid g;
+  g.phase = 0.9;
+  std::vector<int> seen;
+  int was = -2;
+  for (int i = 0; i < 260; ++i) {
+    g.advance(p, 0.016f);
+    const int now = litFloor(idle(c, p, 0.016f));
+    if (now != was) { seen.push_back(now); was = now; }
+  }
+
+  // Dark until the first beat arrives, and lit from then on — there is no beat
+  // left over to go dark on.
+  REQUIRE(seen.size() >= 8);
+  CHECK(seen[0] == -1);
+  for (size_t i = 1; i < seen.size(); ++i) {
+    CHECK(seen[i] != -1);
+    if (i >= 2) CHECK(seen[i] == (seen[i - 1] + 1) % kLayers);
+  }
+}
+
+TEST_CASE("the rest-free walk starts each bar one floor higher",
+          "[three_planes_rig][beat]") {
+  // Three against four, stated as the thing you actually see: the downbeat is
+  // on the bottom floor, then the middle, then the top, then round. It is the
+  // one property the rest was there to prevent, and the reason it is optional.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  p.bar_phase = 0.9f;
+  idle(c, p, 0.016f);
+
+  Grid g;
+  g.phase = 0.9;
+  std::vector<int> downbeat;
+  double prev = g.phase;
+  int wait = -1;
+  for (int i = 0; i < 600; ++i) {
+    g.advance(p, 0.016f);
+    const int now = litFloor(idle(c, p, 0.016f));
+    if (g.phase < prev) wait = 6;              // just wrapped into a new bar
+    else if (wait > 0) --wait;
+    else if (wait == 0) { downbeat.push_back(now); wait = -1; }
+    prev = g.phase;
+  }
+
+  REQUIRE(downbeat.size() >= 4);
+  for (size_t i = 1; i < downbeat.size(); ++i)
+    CHECK(downbeat[i] == (downbeat[i - 1] + 1) % kLayers);
+}
+
+TEST_CASE("a dropped beat does not put the rest-free walk out of step",
+          "[three_planes_rig][beat]") {
+  // Same reason as the four-beat walk's, and it survives the shorter cycle
+  // because the floor is still folded out of the ABSOLUTE beat rather than
+  // counted from the last one taken.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  p.bar_phase = 0.02f;
+  idle(c, p, 0.016f);                            // seeded on beat 1 of bar 1
+
+  REQUIRE(litFloor(beatAt(c, p, 0.25)) == 1);    // beat 2 -> middle
+  p.bar_phase = 0.55f;                           // beat 3 arrives far too soon
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 1);    // ...and is thrown away
+  for (int i = 0; i < 20; ++i) idle(c, p, 0.016f);
+  p.bar_phase = 0.8f;                            // beat 4, and beat 3 is lost
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 0);    // 3 % 3 — the bottom, on time
+}
+
+TEST_CASE("Rest brings the dark beat back", "[three_planes_rig][beat]") {
+  // The same transport, read both ways, so the switch is the only difference.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_rest = true;
+  p.beat_fill = 1.0f;
+  p.bar_phase = 0.02f;
+  idle(c, p, 0.016f);
+
+  // The guard is half a WALL-CLOCK beat, so the transport has to be left alone
+  // for long enough between the lines or the second one is thrown away.
+  const auto settle = [](Core& core, Params& pp) {
+    for (int i = 0; i < 20; ++i) idle(core, pp, 0.016f);
+  };
+
+  CHECK(litFloor(beatAt(c, p, 0.25)) == 1);
+  settle(c, p);
+  CHECK(litFloor(beatAt(c, p, 0.5)) == 2);
+  settle(c, p);
+  CHECK(litFloor(beatAt(c, p, 0.75)) == -1);   // the rest
+
+  Core c2;
+  Params q = p;
+  q.beat_rest = false;
+  q.bar_phase = 0.02f;
+  idle(c2, q, 0.016f);
+  CHECK(litFloor(beatAt(c2, q, 0.25)) == 1);
+  settle(c2, q);
+  CHECK(litFloor(beatAt(c2, q, 0.5)) == 2);
+  settle(c2, q);
+  CHECK(litFloor(beatAt(c2, q, 0.75)) == 0);   // ...is the bottom floor again
+}
+
+// ---------------------------------------------------------------------------
+// Strobe: Solid with the mains chopped.
+
+TEST_CASE("Strobe alternates the whole tower between lit and black",
+          "[three_planes_rig][strobe]") {
+  Core c;
+  Params p;
+  p.mode = ModeStrobe;
+  p.led_meter = false;
+  p.emission_on = 0.8f;
+
+  for (int k = 0; k < 6; ++k) {
+    const Out o = idle(c, p, 0.016f);
+    for (int i = 0; i < kLayers; ++i) {
+      if (k % 2 == 0) CHECK_THAT(o.emission[i], WithinAbs(rail(0.8f), 1e-6));
+      else            CHECK(o.emission[i] == 0.0f);
+    }
+  }
+}
+
+TEST_CASE("Strobe reads the colours the way Solid does",
+          "[three_planes_rig][strobe]") {
+  // It is Solid chopped, not a mode of its own — so the tower it is chopping
+  // has to be the same tower, down the same way: Secondary, Primary, Highlight.
+  Core c;
+  Params p;
+  p.mode = ModeStrobe;
+  p.led_meter = false;
+  const Out o = idle(c, p, 0.016f);
+  CHECK_THAT(o.color[0].r, WithinAbs(p.secondary.r, 1e-6));
+  CHECK_THAT(o.color[1].r, WithinAbs(p.primary.r, 1e-6));
+  CHECK_THAT(o.color[2].r, WithinAbs(p.highlight.r, 1e-6));
+}
+
+TEST_CASE("Strobe ignores the feed as completely as Solid does",
+          "[three_planes_rig][strobe]") {
+  Core c;
+  Params p;
+  p.mode = ModeStrobe;
+  p.led_meter = false;
+  p.emission_on = 0.8f;
+
+  const Out lit = step(c, p, 1, 1, 1, 1, 0.016f);   // frame 0: lit
+  idle(c, p, 0.016f);                               // frame 1: black
+  const Out quiet = idle(c, p, 0.016f);             // frame 2: lit again
+  for (int i = 0; i < kLayers; ++i)
+    CHECK_THAT(lit.emission[i], WithinAbs(quiet.emission[i], 1e-6));
+}
+
+TEST_CASE("a frozen frame shows the light, not the hole",
+          "[three_planes_rig][strobe]") {
+  // Same rule the flam's chop has, for the same reason: a stopped clock must
+  // not strobe, and it must not leave the tower parked on the black half.
+  Core c;
+  Params p;
+  p.mode = ModeStrobe;
+  p.led_meter = false;
+  p.emission_on = 0.8f;
+
+  idle(c, p, 0.016f);                        // frame 0, lit
+  const Out frozen = idle(c, p, 0.0f);       // ...and time stops
+  for (int i = 0; i < kLayers; ++i)
+    CHECK_THAT(frozen.emission[i], WithinAbs(rail(0.8f), 1e-6));
+  // The count did not advance either, so the chop resumes where it stopped.
+  CHECK(idle(c, p, 0.016f).emission[0] == 0.0f);
+}
+
+TEST_CASE("the sweep dims the chop but cannot slow it",
+          "[three_planes_rig][strobe][sweep]") {
+  Core c;
+  Params p;
+  p.mode = ModeStrobe;
+  p.led_meter = false;
+  p.sweep_flicker = 0.0f;   // no stutter to confuse the reading
+  // Parked halfway down the fade, and left there long enough to settle.
+  p.sweep = kSweepCenter + 0.5f * (p.sweep_deadzone +
+                                   0.5f * (1.0f - p.sweep_deadzone));
+  for (int i = 0; i < 200; ++i) idle(c, p, 0.05f);
+
+  const Out a = idle(c, p, 0.016f);
+  const Out b = idle(c, p, 0.016f);
+  const float hi = a.emission[0] > b.emission[0] ? a.emission[0] : b.emission[0];
+  const float lo = a.emission[0] < b.emission[0] ? a.emission[0] : b.emission[0];
+  CHECK(lo == 0.0f);                  // still all the way to black
+  CHECK(hi > 0.05f);                  // ...from somewhere dimmer than full
+  CHECK(hi < rail(1.0f) - 1e-3f);
+}
+
+// ---------------------------------------------------------------------------
+// The LED rails: what the bars show, which outside EV Meter is not the picture.
+
+TEST_CASE("in EV Meter the bars and the picture are the same tower",
+          "[three_planes_rig][led]") {
+  Core c;
+  Params p;
+  const Out o = step(c, p, 0, 1, 0, 0, 0.1f);
+  for (int i = 0; i < kLayers; ++i) {
+    CHECK(o.led_emission[i] == o.emission[i]);
+    CHECK(o.led_color[i].r == o.color[i].r);
+    CHECK(o.led_color[i].g == o.color[i].g);
+    CHECK(o.led_color[i].b == o.color[i].b);
+  }
+}
+
+TEST_CASE("the bars keep reading the meter while the screen sits Solid",
+          "[three_planes_rig][led]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.emission_on = 0.8f;
+
+  // A hit on the top floor. The picture does not move; the bars do.
+  Out o = step(c, p, 0, 0, 1, 0, 0.1f);
+  for (int i = 0; i < kLayers; ++i)
+    CHECK_THAT(o.emission[i], WithinAbs(rail(0.8f), 1e-6));
+  CHECK(o.peak_layer == 2);
+  CHECK(o.led_emission[2] > rail(p.emission_off));
+
+  // Let the feed go quiet. The screen is exactly where it was; the bars have
+  // fallen back to the unlit level, and their top floor has given up the cap's
+  // colour with it.
+  for (int i = 0; i < 60; ++i) o = idle(c, p, 0.1f);
+  for (int i = 0; i < kLayers; ++i) {
+    CHECK_THAT(o.emission[i], WithinAbs(rail(0.8f), 1e-6));
+    CHECK_THAT(o.led_emission[i], WithinAbs(rail(p.emission_off), 1e-6));
+  }
+  CHECK_THAT(o.color[2].r, WithinAbs(p.highlight.r, 1e-6));
+  CHECK_THAT(o.led_color[2].r, WithinAbs(p.secondary.r, 1e-6));
+}
+
+TEST_CASE("the meter rails report the meter wherever it is running",
+          "[three_planes_rig][led]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  const Out o = step(c, p, 0, 0, 1, 0, 0.1f);
+  CHECK_THAT(o.meter, WithinAbs(1.0, 1e-6));
+  CHECK_THAT(o.peak, WithinAbs(1.0, 1e-6));
+}
+
+TEST_CASE("LED Meter off puts the bars back on the picture",
+          "[three_planes_rig][led]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.led_meter = false;
+  const Out o = step(c, p, 1, 1, 1, 1, 0.1f);
+  for (int i = 0; i < kLayers; ++i) {
+    CHECK(o.led_emission[i] == o.emission[i]);
+    CHECK(o.led_color[i].r == o.color[i].r);
+  }
+  CHECK(o.meter == 0.0f);
+}
+
+TEST_CASE("the chop is the screen's, not the room's",
+          "[three_planes_rig][led][strobe]") {
+  // Strobe is a thing done to the picture. The bars are a different fixture,
+  // and while they are on the meter they hold steady through it.
+  Core c;
+  Params p;
+  p.mode = ModeStrobe;
+  const Out a = idle(c, p, 0.016f);
+  const Out b = idle(c, p, 0.016f);
+  CHECK(a.emission[0] != b.emission[0]);
+  CHECK_THAT(a.led_emission[0], WithinAbs(b.led_emission[0], 1e-9));
+}
+
+TEST_CASE("the sweep takes the bars out with the tower",
+          "[three_planes_rig][led][sweep]") {
+  // The other half of that: the chop is the screen's, but the dimmer is the
+  // room's. Reaching for an end is a blackout, and a blackout is everything.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.sweep = 1.0f;
+  Out o{};
+  for (int i = 0; i < 80; ++i) o = idle(c, p, 0.05f);
+  for (int i = 0; i < kLayers; ++i) {
+    CHECK(o.emission[i] < 1e-4f);
+    CHECK(o.led_emission[i] < 1e-4f);
+  }
 }

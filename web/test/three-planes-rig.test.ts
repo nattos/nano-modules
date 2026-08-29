@@ -254,12 +254,75 @@ describe('mod.rig.three_planes E2E', () => {
     const p = { ...CRISP, mode: SOLID, emission_on: 0.5,
                 sig_1: 1.0, sig_2: 1.0, sig_3: 1.0, sig_4: 1.0 };
     const floor = await runScalar('rig_solid_gates', 'plane1_emission', p);
-    const meter = await runScalar('rig_solid_meter', 'meter', p);
-    expect(floor.success && meter.success).toBe(true);
+    expect(floor.success).toBe(true);
     // Lit Level 0.5, and nothing riding on top of it — no flam blip.
     expectEmission(floor.trace('out').averageColor().r, 0.5);
-    // Nothing is being measured, so the meter rail reports nothing.
-    expect(meter.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('the PICTURE ignores them; the bars do not', async () => {
+    // Solid is about what the screen shows. The LED rails are a second opinion
+    // — the bars are a fixture standing in the room — so with LED Meter on the
+    // meter is still running under all this, and it is only with the switch
+    // off that there is genuinely nothing being measured.
+    const p = { ...CRISP, mode: SOLID, emission_on: 0.5,
+                sig_1: 1.0, sig_2: 1.0, sig_3: 1.0, sig_4: 1.0 };
+    const live = await runScalar('rig_solid_meter_live', 'meter', p);
+    const off  = await runScalar('rig_solid_meter_off', 'meter',
+                                 { ...p, led_meter: false });
+    expect(live.success && off.success).toBe(true);
+    // Every gate pegged, so the meter is at the top of the tower.
+    expect(live.trace('out').averageColor().r).toBeGreaterThan(215);
+    expect(off.trace('out').averageColor().r).toBeLessThan(40);
+  });
+
+  it('the bars hold the meter while the screen sits Solid', async () => {
+    // The whole point of the second set of rails: one wire off the same card,
+    // same frame, reading the two different towers.
+    const p = { ...CRISP, mode: SOLID, emission_on: 1.0, sig_1: 1.0 };
+    // Signal 1 names the BOTTOM floor, so the meter leaves the top one dark...
+    const bars = await runScalar('rig_solid_led3', 'led3_emission', p);
+    // ...while the picture has all three lit, because that is what Solid is.
+    const pic = await runScalar('rig_solid_pic3', 'plane3_emission', p);
+    expect(bars.success && pic.success).toBe(true);
+    expect(bars.trace('out').averageColor().r).toBeLessThan(40);
+    expectEmission(pic.trace('out').averageColor().r, 1.0);
+  });
+
+  it('Strobe chops the tower, and the bars hold through it', async () => {
+    // THE ONE CASE IN THIS FILE THAT IS NOT A STEADY STATE, because the mode is
+    // an alternation and there is nothing steady to read. Eight consecutive
+    // single-frame captures: an alternating rail cannot give the same answer to
+    // all eight, so both a lit frame and a black one have to be in there.
+    const STROBE = 2;
+    const params = { ...CRISP, mode: STROBE, emission_on: 1.0 };
+    const frames = (id: string, field: string): EnginePhaseConfig[] => [
+      { commands: [
+          { type: 'createSketch', sketchId: id, sketch: scalarSketch(field, params) },
+          { type: 'setTracePoints', tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }] },
+        ],
+        waitFrames: 20, captureTraceIds: ['out'] },
+      ...Array.from({ length: 7 }, () => (
+        { commands: [], waitFrames: 1, captureTraceIds: ['out'] } as EnginePhaseConfig)),
+    ];
+
+    const pic = await runEngineMultiPhaseTest({
+      width: 64, height: 64, modules: MODULES,
+      phases: frames('rig_strobe_pic', 'plane1_emission'), dumpName: 'rig_strobe_pic',
+    });
+    expect(pic.success).toBe(true);
+    const reads = pic.phases.map((ph) => ph.trace('out').averageColor().r);
+    expect(Math.min(...reads)).toBeLessThan(40);          // caught a black frame
+    expectEmission(Math.max(...reads), 1.0);              // ...and a lit one
+
+    // The bars are a different fixture and the chop is the screen's, so with
+    // nothing playing they sit flat at the unlit level right through it.
+    const bars = await runEngineMultiPhaseTest({
+      width: 64, height: 64, modules: MODULES,
+      phases: frames('rig_strobe_led', 'led1_emission'), dumpName: 'rig_strobe_led',
+    });
+    expect(bars.success).toBe(true);
+    const led = bars.phases.map((ph) => ph.trace('out').averageColor().r);
+    expect(Math.max(...led)).toBeLessThan(40);
   });
 
   it('Solid gives each floor its own colour', async () => {

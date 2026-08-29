@@ -171,6 +171,79 @@ describe('LED bars — three_planes', () => {
     expect(c.g).toBeGreaterThan(60);
   });
 
+  // --- Solid Mix -----------------------------------------------------------
+  //
+  // The bars are a fixture standing in the room, not a picture of the picture.
+  // Three Planes Rig drives the six LED Source rails with its METER whatever
+  // the screen is doing, and this knob is how much of each end reaches them.
+  // The rails are rotated one floor against the planes below, so a segment
+  // showing the wrong source is a different colour rather than a near miss.
+  const SOURCES = {
+    led1_color: [0, 0, 1], led2_color: [1, 0, 0], led3_color: [0, 1, 0],
+    led1_emission: 1, led2_emission: 1, led3_emission: 1,
+  };
+
+  it('Solid Mix 1 keeps the bars on the picture', async () => {
+    // The default, and the whole of the old behaviour: the sources are wired
+    // and loud, and they change nothing.
+    const r = await view('led_tp_mix_solid', { ...SOURCES, led_solid: 1 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    f.expectPixelAt(30, rowOfSegment(1), { r: 255, g: 0, b: 0 }, 8);
+    f.expectPixelAt(30, rowOfSegment(4), { r: 0, g: 255, b: 0 }, 8);
+    f.expectPixelAt(30, rowOfSegment(8), { r: 0, g: 0, b: 255 }, 8);
+  });
+
+  it('Solid Mix 0 hands the bars over to the LED sources', async () => {
+    const r = await view('led_tp_mix_led', { ...SOURCES, led_solid: 0 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    // Each floor now wears its SOURCE colour, and the picture's is gone.
+    f.expectPixelAt(30, rowOfSegment(1), { r: 0, g: 0, b: 255 }, 8);
+    f.expectPixelAt(30, rowOfSegment(4), { r: 255, g: 0, b: 0 }, 8);
+    f.expectPixelAt(30, rowOfSegment(8), { r: 0, g: 255, b: 0 }, 8);
+  });
+
+  it('half way carries both, per floor', async () => {
+    const r = await view('led_tp_mix_half', { ...SOURCES, led_solid: 0.5 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    // The bottom floor is red in the picture and blue on the rails, so half
+    // way is both at half — and no green anywhere near it.
+    const c = meanOf(f, 10, BAR - 10, rowOfSegment(1) - 4, rowOfSegment(1) + 4);
+    expect(c.r).toBeGreaterThan(100);
+    expect(c.r).toBeLessThan(155);
+    expect(c.b).toBeGreaterThan(100);
+    expect(c.b).toBeLessThan(155);
+    expect(c.g).toBeLessThan(6);
+  });
+
+  it('a dark source pulls its floor down without touching the others',
+     async () => {
+    // The mix carries the LEVEL as well as the colour, and it is per floor: a
+    // meter that has fallen off the top floor takes those segments down with
+    // it and leaves the ones below at whatever the picture is holding.
+    //
+    // The top floor's source is given the picture's own blue here, so the only
+    // thing left to read on it is the level. Everywhere else the two ends are
+    // still different colours, which is what the second half checks.
+    const r = await view('led_tp_mix_level',
+                         { ...SOURCES, led3_color: [0, 0, 1], led3_emission: 0,
+                           led_solid: 0.5 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    // Top floor: blue either way, and half as bright because one end is dark.
+    const top = meanOf(f, 10, BAR - 10, rowOfSegment(8) - 4, rowOfSegment(8) + 4);
+    expect(top.b).toBeGreaterThan(100);
+    expect(top.b).toBeLessThan(155);
+    expect(top.g).toBeLessThan(6);
+    // Middle floor is untouched by any of that: green in the picture, red on
+    // the rails, both at full level, so half way is half of each.
+    const mid = meanOf(f, 10, BAR - 10, rowOfSegment(4) - 4, rowOfSegment(4) + 4);
+    expect(mid.g).toBeGreaterThan(100);
+    expect(mid.r).toBeGreaterThan(100);
+  });
+
   it('draws nothing at all when nobody is wired to it', async () => {
     const wired = await view('led_tp_wired', {});
     const unwired = await view('led_tp_unwired', {}, false);
