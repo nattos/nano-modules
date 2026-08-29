@@ -29,6 +29,17 @@
  * sampled perspective-correct rather than stretched, because the difference
  * between those two IS what makes a corridor look like one.
  *
+ * The ROOM fit mode is what that geometry actually wants, and it asks a
+ * different question from the other three. They take the panel as given and
+ * decide what to do with a source that does not match it; Room takes the BACK
+ * WALL as given — its own aspect, square pixels — and builds the room around
+ * whatever shape that turns out to be, with the sides stretched to meet it. A
+ * back wall that squashes is a lie about the thing being measured; a side wall
+ * is already a plane seen edge-on, so stretching it is what makes it right.
+ * And since the seam height is the back wall's rather than the panel's, the
+ * three meet with nothing between them at any perspective — which none of the
+ * other modes can manage.
+ *
  * Beyond that it is deliberately dumb: no blending and no colour work. It is a
  * measuring surface, and a measuring surface that alters what it shows is worse
  * than useless — laying the room out is showing you where the pictures GO, not
@@ -85,6 +96,14 @@ void module_init() {
         "is a worse one. **Stretch** fills the panel instead, wasting no space "
         "and keeping the three continuous, which is better when they are meant "
         "to read as one space rather than be compared. **Fill** crops.\n\n"
+        "**Room** is the one to use with *Perspective*, and it does something "
+        "the others cannot: it keeps the MIDDLE at square pixels — its own "
+        "aspect, never squashed, just larger as you raise *Middle Size* — and "
+        "stretches the two sides to meet it exactly. So the back wall stays "
+        "honest, and the three panels join with nothing between them at any "
+        "perspective. The others each get one of those and not the other: Fit "
+        "leaves bars at the seams, Stretch closes them by distorting the one "
+        "panel that must not be.\n\n"
         "*LED In* takes the pixel map those cards publish and puts it in a "
         "strip UNDER the middle third — not beside it, because the three "
         "columns are the room and the strip is the same instrument read a "
@@ -103,7 +122,7 @@ void module_init() {
 
       .group("layout", "Layout")
       .selectField("fit_mode", 0, state::SecondaryInput,
-                   {{"Fit", 0}, {"Stretch", 1}, {"Fill", 2}})
+                   {{"Fit", 0}, {"Stretch", 1}, {"Fill", 2}, {"Room", 3}})
         .label("Fit", "Fit")
       .floatField("gap", 0.0f, 0.f, 0.2f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
@@ -112,10 +131,12 @@ void module_init() {
                   "stay equal — and the divider under the middle panel is cut "
                   "to the same thickness, so one knob draws one kind of line.")
         .label("Gap", "Gap")
-      .floatField("mid_scale", 1.0f, 0.3f, 2.5f, state::PrimaryInput,
+      .floatField("mid_scale", 1.0f, 0.3f, 3.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
                   "How wide the middle panel is, in thirds of the frame — 1 is "
-                  "an exact third. The two sides give up whatever it takes.")
+                  "an exact third, 3 is the whole width. The two sides give up "
+                  "whatever it takes. In Room this sizes the back wall itself, "
+                  "and its height follows at the source's own aspect.")
         .label("Middle Size", "Mid")
       .floatField("perspective", 0.0f, 0.f, 1.f, state::PrimaryInput,
                   nullptr, 0.f, nullptr,
@@ -123,7 +144,9 @@ void module_init() {
                   "full height at the frame edges. How much shorter the back "
                   "wall goes at 1 is the real geometry, not a taste — it "
                   "follows from how wide you made it — so this is the "
-                  "fraction of that you want. 0 is the flat row.")
+                  "fraction of that you want. 0 is the flat row. In Room the "
+                  "back wall stays put and the sides grow out past the frame "
+                  "instead, which is what a corridor does.")
         .label("Perspective", "Persp")
       .floatField("led_height", 0.25f, 0.05f, 0.6f, state::SecondaryInput,
                   nullptr, 0.f, nullptr,

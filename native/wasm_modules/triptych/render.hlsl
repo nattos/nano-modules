@@ -44,6 +44,22 @@
 //               read as one space rather than be compared.
 //   2 Fill    — crop to the third instead, so nothing is squashed but the edges
 //               of the source are lost.
+//   3 Room    — the two answers at once, one per role. See below.
+//
+// ROOM is the mode the perspective wants, and it is not a fit at all — it is a
+// different question. The other three take the panel as given and decide what
+// to do with a source that does not match it. Room does the reverse: the BACK
+// WALL is given, at its own aspect and square pixels, and the room is built
+// around whatever shape that turns out to be. The sides then stretch, aspect
+// and all, to meet it exactly.
+//
+// That split is the point. A back wall that squashes is a lie about the thing
+// you are measuring; a side wall is already a projection of a plane you are
+// looking at edge-on, so stretching it is what makes it correct, not what
+// breaks it. And because the seam height IS the back wall's height rather than
+// the panel's, the three meet with nothing between them at any perspective —
+// which no combination of the other modes can do, since Fit leaves bars at the
+// seams and Stretch fixes that by distorting the one panel that must not.
 //
 // Letterbox bars and the divider are transparent, not black, so the monitor's
 // checkerboard makes it obvious they are nothing rather than dark picture.
@@ -77,6 +93,13 @@ cbuffer Uniforms : register(b5) {
   float4 room;   // middle size (in thirds), perspective, -, -
 };
 
+/// The room's geometry, in frame-normalised units.
+struct RoomGeom {
+  float x_i;   ///< the left seam (the right one mirrors it)
+  float h_i;   ///< half-height at the seam — the back wall's
+  float h_o;   ///< half-height at the frame edges
+};
+
 /// How far along a side wall a pixel is, given how far across the panel it is.
 ///
 /// `t` runs 0 at the seam to 1 at the frame edge, `h_seam` and `h_edge` are the
@@ -87,6 +110,38 @@ cbuffer Uniforms : register(b5) {
 float wall_s(float t, float h_seam, float h_edge) {
   float h = lerp(h_seam, h_edge, t);
   return t * h_edge / max(h, 1e-6);
+}
+
+/// Where the three panels sit, given the mode.
+///
+/// `row_bot` is the bottom of the band the row lives in, `half_g` the
+/// divider's half-width, `mid_src` the back wall source's pixel size.
+///
+/// The two paths differ in which end is pinned. Everywhere but Room the OUTER
+/// edges fill the band and the back wall is pulled down from it, so the room is
+/// bounded by construction. In Room the BACK WALL is pinned — at its own aspect,
+/// square pixels — and the sides grow out from it, which means they can run off
+/// the top and bottom of the band. That is not a bug to clamp: a corridor's
+/// walls do leave the frame, and the band crops them the way the frame would.
+RoomGeom room_geom(int mode, float mid_slot, float persp, float row_bot,
+                   float half_g, float2 vp, float2 mid_src) {
+  RoomGeom g;
+  if (mode == 3) {
+    float w = max(mid_slot - 2.0 * half_g, 1e-4);
+    // Square pixels: the height that width implies at the source's own aspect.
+    float h = w * (vp.x / vp.y) * max(mid_src.y, 1.0) / max(mid_src.x, 1.0);
+    // Too tall to fit the band, so take it from the width instead — shrinking
+    // the back wall keeps every pixel of it, where cropping would not.
+    if (h > row_bot) { w *= row_bot / max(h, 1e-4); h = row_bot; }
+    g.x_i = (1.0 - (w + 2.0 * half_g)) * 0.5;
+    g.h_i = h * 0.5;
+    g.h_o = g.h_i * lerp(1.0, 1.0 / max(w, 1e-3), persp);
+  } else {
+    g.x_i = (1.0 - mid_slot) * 0.5;
+    g.h_o = row_bot * 0.5;
+    g.h_i = g.h_o / lerp(1.0, 1.0 / max(mid_slot, 1e-3), persp);
+  }
+  return g;
 }
 
 /// Column-local uv -> source uv, honouring the fit mode. Returns false when the
@@ -153,12 +208,22 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
 
-  // The room's horizontal geometry. `half_g` is the divider's half-width in
-  // frame units — gap is a fraction of ONE PANEL, and a panel is a third.
-  float mid_w = clamp(room.x / 3.0, 0.02, 0.96);
-  float x_i = (1.0 - mid_w) * 0.5;   // the left seam
-  float x_o = 1.0 - x_i;             // the right seam
+  // The room's geometry. `half_g` is the divider's half-width in frame units —
+  // gap is a fraction of ONE PANEL, and a panel is a third.
+  float mid_slot = clamp(room.x / 3.0, 0.02, 0.999);
   float half_g = gap / 6.0;
+  float row_bot = row_h - band;
+
+  uint msw, msh;
+  midTex.GetDimensions(msw, msh);
+  RoomGeom geom = room_geom(mode, mid_slot, persp, row_bot, half_g, vp,
+                            float2(float(msw), float(msh)));
+  float x_i = geom.x_i;              // the left seam
+  float x_o = 1.0 - x_i;             // the right seam
+
+  // Room is the geometry talking, not the fit: each panel is filled outright,
+  // and it is the SHAPE OF THE PANEL that carries the back wall's aspect.
+  int fit = (mode == 3) ? 1 : mode;
 
   int    src = 1;                    // 0 left, 1 mid, 2 right, 3 LED strip
   float2 col_uv = float2(0.0, 0.0);
@@ -171,23 +236,21 @@ void main(uint3 gid : SV_DispatchThreadID) {
       outputTex[gid.xy] = float4(0, 0, 0, 0);
       return;
     }
-    float w = mid_w - 2.0 * half_g;
+    float w = x_o - x_i - 2.0 * half_g;
     float h = 1.0 - row_h - band;
     src = 3;
     col_uv = float2((xn - x_i - half_g) / max(w, 1e-4),
                     (y - row_h - band) / max(h, 1e-4));
     col_size = float2(vp.x * w, vp.y * h);
   } else {
-    float row_bot = row_h - band;
-    float cy   = row_bot * 0.5;
-    float h_o  = row_bot * 0.5;                        // at the frame edges
-    float k    = 1.0 / max(mid_w, 1e-3);               // the true depth ratio
-    float h_i  = h_o / lerp(1.0, k, persp);            // at the back wall
-    float run  = x_i - 2.0 * half_g;                   // a side panel's width
+    float cy  = row_bot * 0.5;
+    float h_i = geom.h_i;                              // at the back wall
+    float h_o = geom.h_o;                              // at the frame edges
+    float run = x_i - 2.0 * half_g;                    // a side panel's width
 
     if (xn >= x_i + half_g && xn <= x_o - half_g) {
       // The back wall: a rectangle, centred in the band.
-      float w = mid_w - 2.0 * half_g;
+      float w = x_o - x_i - 2.0 * half_g;
       float top = cy - h_i;
       if (y < top || y > cy + h_i) {
         outputTex[gid.xy] = float4(0, 0, 0, 0);        // above it, or below it
@@ -237,14 +300,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
     return;
   }
 
-  uint sw, sh;
+  uint sw = msw, sh = msh;
   if (src == 0)      leftTex.GetDimensions(sw, sh);
   else if (src == 2) rightTex.GetDimensions(sw, sh);
   else if (src == 3) ledTex.GetDimensions(sw, sh);
-  else               midTex.GetDimensions(sw, sh);
 
   float2 uv;
-  if (!panel_uv(col_uv, float2(float(sw), float(sh)), col_size, mode, uv)) {
+  if (!panel_uv(col_uv, float2(float(sw), float(sh)), col_size, fit, uv)) {
     outputTex[gid.xy] = float4(0, 0, 0, 0);
     return;
   }

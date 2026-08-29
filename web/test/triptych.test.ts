@@ -451,3 +451,134 @@ describe('Triptych room', () => {
     expect(deep.trace('out').pixelAt(3, 50).r).toBeGreaterThan(225);
   });
 });
+
+// Room: the fourth mode, and the one the perspective actually wants. The other
+// three take the panel as given and fit a source into it; Room takes the BACK
+// WALL as given — its own aspect, square pixels — and builds the room around
+// whatever shape that turns out to be, stretching the sides to meet it.
+describe('Triptych Room mode', () => {
+  jest.setTimeout(120000);
+
+  const W = 300, H = 100;
+  const MODULES = ['com.nano.core', 'com.nano.lights'];
+  const ROOM = 3;
+
+  const isEmpty = (p: { r: number; g: number; b: number }) =>
+    Math.abs(p.r - p.g) < 24 && Math.abs(p.g - p.b) < 24 && Math.abs(p.r - p.b) < 24;
+  const isGreen = (p: { r: number; g: number; b: number }) =>
+    p.g > 150 && p.r < 90 && p.b < 90;
+
+  const build = (params: Record<string, unknown>): Sketch => ({
+    anchor: null,
+    wires: [
+      { id: 'wl', src: { instanceKey: 'l@0', field: 'tex_out' },
+        dest: { instanceKey: 'tp@0', field: 'left_in' } },
+      { id: 'wr', src: { instanceKey: 'r@0', field: 'tex_out' },
+        dest: { instanceKey: 'tp@0', field: 'right_in' } },
+    ],
+    chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'l@0',
+        params: { color: [1, 0, 0] } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'r@0',
+        params: { color: [0, 0, 1] } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'm@0',
+        params: { color: [0, 1, 0] } },
+      { type: 'module', module_type: 'util.triptych', instance_key: 'tp@0',
+        params: { gap: 0, ...params } },
+    ],
+  } as Sketch);
+
+  const run = (id: string, params: Record<string, unknown>) =>
+    runEngineTest({
+      width: W, height: H, modules: MODULES,
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: build(params) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } }]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: id,
+    });
+
+  /** The extent of the green back wall, measured off the picture. */
+  const midBox = (f: any) => {
+    let x0 = W, x1 = -1, y0 = H, y1 = -1;
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++)
+        if (isGreen(f.pixelAt(x, y))) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+    return { w: x1 - x0 + 1, h: y1 - y0 + 1, x0, x1, y0, y1 };
+  };
+
+  it('keeps the back wall at square pixels, whatever size it is', async () => {
+    // Every source here is rendered at the sketch's own 300x100, so a back wall
+    // with square pixels is three times as wide as it is tall — at any Middle
+    // Size, which is the whole claim.
+    const small = await run('trip_sq_small', { fit_mode: ROOM, mid_scale: 1 });
+    const big = await run('trip_sq_big', { fit_mode: ROOM, mid_scale: 2 });
+    expect(small.success && big.success).toBe(true);
+
+    const a = midBox(small.trace('out'));
+    const b = midBox(big.trace('out'));
+    // Bounds rather than a tight tolerance: the small box is 33 rows tall, so
+    // the one pixel either end of a measured extent is already 3% of it.
+    for (const box of [a, b]) {
+      expect(box.w / box.h).toBeGreaterThan(2.8);
+      expect(box.w / box.h).toBeLessThan(3.2);
+    }
+    // Middle Size scales it, and scales it in BOTH axes — the thing Stretch
+    // cannot do, since it only ever has the panel's shape to work with.
+    expect(b.w / a.w).toBeGreaterThan(1.9);
+    expect(b.w / a.w).toBeLessThan(2.1);
+    expect(b.h / a.h).toBeGreaterThan(1.9);
+    expect(b.h / a.h).toBeLessThan(2.1);
+    // Centred, still. Against (W-1)/2, because these are pixel INDICES: the
+    // middle of a 300-wide frame is 149.5, not 150.
+    expect((a.x0 + a.x1) / 2).toBeCloseTo((W - 1) / 2, 0);
+    expect((a.y0 + a.y1) / 2).toBeCloseTo((H - 1) / 2, 0);
+  });
+
+  it('joins the three with nothing between them, where Fit cannot', async () => {
+    const p = { mid_scale: 1.5, perspective: 0.8, gap: 0 };
+    const room = await run('trip_join_room', { ...p, fit_mode: ROOM });
+    const fit = await run('trip_join_fit', { ...p, fit_mode: 0 });
+    expect(room.success && fit.success).toBe(true);
+
+    // A scan across the picture ABOVE its centre line — where a letterbox bar
+    // at the seam would show, and where the middle of the panel would not.
+    const holes = (r: any) => {
+      let n = 0;
+      for (let x = 2; x < W - 2; x++) if (isEmpty(r.trace('out').pixelAt(x, 30))) n++;
+      return n;
+    };
+    // Room: wall, back wall, wall — continuous, no seam to find.
+    expect(holes(room)).toBe(0);
+    // Fit: the sides letterbox inside their trapezoids, so the picture pulls
+    // away from the seam on both sides and the room falls apart there. Closing
+    // that with Stretch would square up the back wall instead, which is the
+    // gap in the modes that Room exists to fill.
+    expect(holes(fit)).toBeGreaterThan(20);
+  });
+
+  it('stretches the sides to the back wall\'s height', async () => {
+    // Flat, so the sides are rectangles: they should be exactly as tall as the
+    // back wall, not as tall as the band. Vertically aspect-destructive on
+    // purpose — a side wall is a plane seen edge-on, so stretching it is what
+    // makes it right, where doing the same to the back wall would be a lie.
+    const r = await run('trip_join_flat', { fit_mode: ROOM, mid_scale: 1, perspective: 0 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    const box = midBox(f);
+
+    for (const x of [20, 280]) {
+      // Lit exactly where the back wall is...
+      expect(isEmpty(f.pixelAt(x, Math.round((box.y0 + box.y1) / 2)))).toBe(false);
+      expect(isEmpty(f.pixelAt(x, box.y0 + 2))).toBe(false);
+      expect(isEmpty(f.pixelAt(x, box.y1 - 2))).toBe(false);
+      // ...and nowhere else.
+      expect(isEmpty(f.pixelAt(x, box.y0 - 4))).toBe(true);
+      expect(isEmpty(f.pixelAt(x, box.y1 + 4))).toBe(true);
+    }
+  });
+});
