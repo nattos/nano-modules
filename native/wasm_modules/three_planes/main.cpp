@@ -863,8 +863,8 @@ void module_init() {
         "fixture standing in the room, not a picture of the picture — so "
         "*Solid Mix* crossfades them between the planes above and the six *LED "
         "Source* rails, which Three Planes Rig drives with its meter whatever "
-        "the screen is doing. Cut the screen to Solid or Strobe and the rig in "
-        "the room keeps reading the feed.\n\n"
+        "the screen is doing. Cut the screen to Solid and the rig in the room "
+        "keeps reading the feed.\n\n"
         "Unwired, none of this is drawn.")
       .textureField("led_out", state::SecondaryOutput)
         .label("LED Out", "LED")

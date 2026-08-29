@@ -2135,52 +2135,117 @@ TEST_CASE("Rest brings the dark beat back", "[three_planes_rig][beat]") {
 }
 
 // ---------------------------------------------------------------------------
-// Strobe: Solid with the mains chopped.
+// The strobe: one button, held, and the last word on the light.
 
-TEST_CASE("Strobe alternates the whole tower between lit and black",
+TEST_CASE("the strobe alternates the whole tower between its level and black",
           "[three_planes_rig][strobe]") {
   Core c;
   Params p;
-  p.mode = ModeStrobe;
-  p.led_meter = false;
-  p.emission_on = 0.8f;
+  p.strobe = true;
+  p.strobe_level = 1.2f;
 
   for (int k = 0; k < 6; ++k) {
     const Out o = idle(c, p, 0.016f);
     for (int i = 0; i < kLayers; ++i) {
-      if (k % 2 == 0) CHECK_THAT(o.emission[i], WithinAbs(rail(0.8f), 1e-6));
+      if (k % 2 == 0) CHECK_THAT(o.emission[i], WithinAbs(rail(1.2f), 1e-6));
       else            CHECK(o.emission[i] == 0.0f);
     }
   }
 }
 
-TEST_CASE("Strobe reads the colours the way Solid does",
-          "[three_planes_rig][strobe]") {
-  // It is Solid chopped, not a mode of its own — so the tower it is chopping
-  // has to be the same tower, down the same way: Secondary, Primary, Highlight.
+TEST_CASE("the strobe ignores Lit Level entirely", "[three_planes_rig][strobe]") {
+  // A punch whose height depends on how dim the tower happened to be left is
+  // not a punch. Two towers dimmed differently, one strobe height.
+  Core c1, c2;
+  Params dim;
+  dim.mode = ModeSolid;
+  dim.emission_on = 0.1f;
+  dim.strobe_level = 1.0f;
+  Params bright = dim;
+  bright.emission_on = 1.0f;
+
+  // Both dark, and clearly different, before the button.
+  CHECK(idle(c1, dim, 0.016f).emission[0] != idle(c2, bright, 0.016f).emission[0]);
+
+  dim.strobe = true;
+  bright.strobe = true;
+  const Out a = idle(c1, dim, 0.016f);
+  const Out b = idle(c2, bright, 0.016f);
+  CHECK_THAT(a.emission[0], WithinAbs(rail(1.0f), 1e-6));
+  CHECK_THAT(b.emission[0], WithinAbs(rail(1.0f), 1e-6));
+}
+
+TEST_CASE("the strobe punches through a full blackout",
+          "[three_planes_rig][strobe][sweep]") {
+  // The order this depends on is the whole feature: the strobe is applied
+  // AFTER the sweep folds its dimmer in, so the sweep cannot reach it. Parked
+  // at an end with Depth 1, the tower is off; the punch is at full anyway.
   Core c;
   Params p;
-  p.mode = ModeStrobe;
-  p.led_meter = false;
+  p.mode = ModeSolid;
+  p.sweep_flicker = 0.0f;
+  p.sweep_depth = 1.0f;
+  p.sweep = 1.0f;
+  p.strobe_level = kEmissionMax;
+  Out blacked{};
+  for (int i = 0; i < 80; ++i) blacked = idle(c, p, 0.05f);
+  REQUIRE(blacked.emission[0] < 1e-4f);
+
+  p.strobe = true;
+  const Out punch = idle(c, p, 0.016f);
+  for (int i = 0; i < kLayers; ++i) CHECK_THAT(punch.emission[i], WithinAbs(1.0, 1e-6));
+}
+
+TEST_CASE("the strobe overrides the meter it interrupted",
+          "[three_planes_rig][strobe]") {
+  // EV Meter, nothing playing, so the tower is at the unlit level and the
+  // colours are the meter's. The button writes over all of it, and the floors
+  // come back reading DOWN the tower the way Solid does.
+  Core c;
+  Params p;
+  p.emission_off = 0.1f;
+  Out before{};
+  for (int i = 0; i < 5; ++i) before = idle(c, p, 0.016f);
+  REQUIRE_THAT(before.emission[2], WithinAbs(rail(0.1f), 1e-6));
+
+  p.strobe = true;
   const Out o = idle(c, p, 0.016f);
+  CHECK_THAT(o.emission[2], WithinAbs(rail(p.strobe_level), 1e-6));
   CHECK_THAT(o.color[0].r, WithinAbs(p.secondary.r, 1e-6));
   CHECK_THAT(o.color[1].r, WithinAbs(p.primary.r, 1e-6));
   CHECK_THAT(o.color[2].r, WithinAbs(p.highlight.r, 1e-6));
 }
 
-TEST_CASE("Strobe ignores the feed as completely as Solid does",
-          "[three_planes_rig][strobe]") {
+TEST_CASE("every press starts on a lit frame", "[three_planes_rig][strobe]") {
+  // A punch whose first frame is the black one is a punch you cannot see. The
+  // count is reset on release, so it cannot matter how many frames the last
+  // press happened to last.
   Core c;
   Params p;
-  p.mode = ModeStrobe;
-  p.led_meter = false;
-  p.emission_on = 0.8f;
+  for (int hold = 1; hold <= 4; ++hold) {
+    p.strobe = true;
+    const Out first = idle(c, p, 0.016f);
+    CHECK_THAT(first.emission[0], WithinAbs(rail(p.strobe_level), 1e-6));
+    for (int i = 1; i < hold; ++i) idle(c, p, 0.016f);
+    p.strobe = false;
+    idle(c, p, 0.016f);
+  }
+}
 
-  const Out lit = step(c, p, 1, 1, 1, 1, 0.016f);   // frame 0: lit
-  idle(c, p, 0.016f);                               // frame 1: black
-  const Out quiet = idle(c, p, 0.016f);             // frame 2: lit again
+TEST_CASE("releasing it leaves nothing behind", "[three_planes_rig][strobe]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.emission_on = 0.6f;
+  Out before{};
+  for (int i = 0; i < 5; ++i) before = idle(c, p, 0.016f);
+
+  p.strobe = true;
+  for (int i = 0; i < 7; ++i) idle(c, p, 0.016f);   // released mid-chop, on black
+  p.strobe = false;
+  const Out after = idle(c, p, 0.016f);
   for (int i = 0; i < kLayers; ++i)
-    CHECK_THAT(lit.emission[i], WithinAbs(quiet.emission[i], 1e-6));
+    CHECK_THAT(after.emission[i], WithinAbs(before.emission[i], 1e-6));
 }
 
 TEST_CASE("a frozen frame shows the light, not the hole",
@@ -2189,37 +2254,29 @@ TEST_CASE("a frozen frame shows the light, not the hole",
   // not strobe, and it must not leave the tower parked on the black half.
   Core c;
   Params p;
-  p.mode = ModeStrobe;
-  p.led_meter = false;
-  p.emission_on = 0.8f;
+  p.strobe = true;
+  p.strobe_level = 1.0f;
 
   idle(c, p, 0.016f);                        // frame 0, lit
   const Out frozen = idle(c, p, 0.0f);       // ...and time stops
   for (int i = 0; i < kLayers; ++i)
-    CHECK_THAT(frozen.emission[i], WithinAbs(rail(0.8f), 1e-6));
+    CHECK_THAT(frozen.emission[i], WithinAbs(rail(1.0f), 1e-6));
   // The count did not advance either, so the chop resumes where it stopped.
   CHECK(idle(c, p, 0.016f).emission[0] == 0.0f);
 }
 
-TEST_CASE("the sweep dims the chop but cannot slow it",
-          "[three_planes_rig][strobe][sweep]") {
+TEST_CASE("the camera is left alone under a held strobe",
+          "[three_planes_rig][strobe]") {
+  // A move is where you are looking, not how bright it is. The two compose.
   Core c;
   Params p;
-  p.mode = ModeStrobe;
-  p.led_meter = false;
-  p.sweep_flicker = 0.0f;   // no stutter to confuse the reading
-  // Parked halfway down the fade, and left there long enough to settle.
-  p.sweep = kSweepCenter + 0.5f * (p.sweep_deadzone +
-                                   0.5f * (1.0f - p.sweep_deadzone));
-  for (int i = 0; i < 200; ++i) idle(c, p, 0.05f);
-
-  const Out a = idle(c, p, 0.016f);
-  const Out b = idle(c, p, 0.016f);
-  const float hi = a.emission[0] > b.emission[0] ? a.emission[0] : b.emission[0];
-  const float lo = a.emission[0] < b.emission[0] ? a.emission[0] : b.emission[0];
-  CHECK(lo == 0.0f);                  // still all the way to black
-  CHECK(hi > 0.05f);                  // ...from somewhere dimmer than full
-  CHECK(hi < rail(1.0f) - 1e-3f);
+  p.strobe = true;
+  p.show_azimuth = 30.0f;
+  idle(c, p, 0.016f);
+  c.trigger(AnimShow, p);
+  const Out o = idle(c, p, 0.016f);
+  CHECK(o.anim_phase > 0.0f);
+  CHECK_THAT(wrapped(o.azimuth), WithinAbs(wrapped(p.azimuth_base + 15.0 / 360.0), 1e-3));
 }
 
 // ---------------------------------------------------------------------------
@@ -2288,17 +2345,24 @@ TEST_CASE("LED Meter off puts the bars back on the picture",
   CHECK(o.meter == 0.0f);
 }
 
-TEST_CASE("the chop is the screen's, not the room's",
-          "[three_planes_rig][led][strobe]") {
-  // Strobe is a thing done to the picture. The bars are a different fixture,
-  // and while they are on the meter they hold steady through it.
+TEST_CASE("the strobe takes the bars with it", "[three_planes_rig][led][strobe]") {
+  // The sweep's dimmer is the room's and the meter is the bars' own, but a
+  // momentary override is the WHOLE RIG: a screen strobing in front of steady
+  // bars is not a drop. So this is the one thing that writes both banks.
   Core c;
   Params p;
-  p.mode = ModeStrobe;
+  p.mode = ModeSolid;
+  p.strobe = true;
+  p.strobe_level = 1.0f;
   const Out a = idle(c, p, 0.016f);
   const Out b = idle(c, p, 0.016f);
-  CHECK(a.emission[0] != b.emission[0]);
-  CHECK_THAT(a.led_emission[0], WithinAbs(b.led_emission[0], 1e-9));
+  CHECK_THAT(a.led_emission[0], WithinAbs(rail(1.0f), 1e-6));
+  CHECK(b.led_emission[0] == 0.0f);
+  // ...and both banks agree, frame for frame.
+  for (int i = 0; i < kLayers; ++i) {
+    CHECK(a.led_emission[i] == a.emission[i]);
+    CHECK(b.led_emission[i] == b.emission[i]);
+  }
 }
 
 TEST_CASE("the sweep takes the bars out with the tower",

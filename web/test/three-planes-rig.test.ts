@@ -23,7 +23,10 @@ import type { Sketch } from '../src/sketch-types';
  *
  * Every case is a STEADY state: a gate held at 1 pins the meter at its floor
  * regardless of frame pacing, so nothing here depends on how long a waitFrames
- * window actually took (see the e2e rAF-pacing note in the repo).
+ * window actually took (see the e2e rAF-pacing note in the repo). The one
+ * exception is the STROBE, which is an alternation and has no steady reading at
+ * all — it is sampled a frame at a time and asserted on the SET of readings, so
+ * it still does not care which parity a window landed on.
  */
 describe('mod.rig.three_planes E2E', () => {
   jest.setTimeout(60000);
@@ -288,13 +291,19 @@ describe('mod.rig.three_planes E2E', () => {
     expectEmission(pic.trace('out').averageColor().r, 1.0);
   });
 
-  it('Strobe chops the tower, and the bars hold through it', async () => {
-    // THE ONE CASE IN THIS FILE THAT IS NOT A STEADY STATE, because the mode is
-    // an alternation and there is nothing steady to read. Eight consecutive
+  it('the strobe punches through a full blackout, and takes the bars with it',
+     async () => {
+    // THE ONE CASE IN THIS FILE THAT IS NOT A STEADY STATE, because the strobe
+    // is an alternation and there is nothing steady to read. Eight consecutive
     // single-frame captures: an alternating rail cannot give the same answer to
     // all eight, so both a lit frame and a black one have to be in there.
-    const STROBE = 2;
-    const params = { ...CRISP, mode: STROBE, emission_on: 1.0 };
+    //
+    // The sweep is parked at an end with Depth 1 — a full blackout — and Lit
+    // Level is 0.1. Neither reaches the punch: it lands at Strobe Level, which
+    // is the whole point of the control.
+    const params = { ...CRISP, emission_on: 0.1, sweep_depth: 1.0,
+                     sweep_flicker: 0.0, sweep: 1.0,
+                     strobe_level: 1.0, strobe: 1 };
     const frames = (id: string, field: string): EnginePhaseConfig[] => [
       { commands: [
           { type: 'createSketch', sketchId: id, sketch: scalarSketch(field, params) },
@@ -312,17 +321,29 @@ describe('mod.rig.three_planes E2E', () => {
     expect(pic.success).toBe(true);
     const reads = pic.phases.map((ph) => ph.trace('out').averageColor().r);
     expect(Math.min(...reads)).toBeLessThan(40);          // caught a black frame
-    expectEmission(Math.max(...reads), 1.0);              // ...and a lit one
+    expectEmission(Math.max(...reads), 1.0);              // ...at Strobe Level
 
-    // The bars are a different fixture and the chop is the screen's, so with
-    // nothing playing they sit flat at the unlit level right through it.
+    // The bars go with it. A screen strobing in front of steady bars is not a
+    // drop, so this is the one thing on the card that writes both banks.
     const bars = await runEngineMultiPhaseTest({
       width: 64, height: 64, modules: MODULES,
       phases: frames('rig_strobe_led', 'led1_emission'), dumpName: 'rig_strobe_led',
     });
     expect(bars.success).toBe(true);
     const led = bars.phases.map((ph) => ph.trace('out').averageColor().r);
-    expect(Math.max(...led)).toBeLessThan(40);
+    expect(Math.min(...led)).toBeLessThan(40);
+    expectEmission(Math.max(...led), 1.0);
+  });
+
+  it('let go, and it leaves nothing behind', async () => {
+    // A momentary control that changed anything permanently would be unusable
+    // on a drop. Same sketch, same everything, with the button up: back to the
+    // blackout the sweep was holding.
+    const p = { ...CRISP, emission_on: 0.1, sweep_depth: 1.0,
+                sweep_flicker: 0.0, sweep: 1.0, strobe_level: 1.0 };
+    const r = await runScalar('rig_strobe_up', 'plane1_emission', p);
+    expect(r.success).toBe(true);
+    expect(r.trace('out').averageColor().r).toBeLessThan(40);
   });
 
   it('Solid gives each floor its own colour', async () => {

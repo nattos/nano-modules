@@ -194,12 +194,10 @@ constexpr int kAnimCount = 4;
 /// runs there is everything that was never the feed's: a move, the sweep, and
 /// the beat lighting the quads' interiors.
 ///
-/// `ModeStrobe` is Solid with the mains chopped: the same three floors in the
-/// same three colours, alternating lit and BLACK every frame. It is a mode
-/// rather than a knob on Solid because it is not a look you leave running — it
-/// is a cut, held for a bar, and a mode select is the one control you can hit
-/// blind.
-enum Mode { ModeEvMeter = 0, ModeSolid = 1, ModeStrobe = 2 };
+/// THE STROBE IS NOT IN HERE, and that is the point of it. It is a momentary
+/// trigger that overrides whichever of these is running rather than a third
+/// choice alongside them — see `strobe` below.
+enum Mode { ModeEvMeter = 0, ModeSolid = 1 };
 
 struct Rgb {
   float r = 0.0f, g = 0.0f, b = 0.0f;
@@ -272,6 +270,24 @@ struct Params {
   float azimuth_base = 0.125f;                  ///< [0,1] turn, 0.125 = 45 deg
   float elevation_base = 35.264389682754654f;   ///< degrees, true isometric
   float spacing_base = 0.42f;
+
+  // --- The strobe: one button, held ---------------------------------------
+  /// THE PUNCH. Held, the whole tower alternates lit and BLACK every frame at
+  /// `strobe_level`, and nothing else on the card gets a say — not the mode,
+  /// not the meter, not the sweep's dimmer. It is the control you hit blind on
+  /// a drop, so what it does cannot depend on where anything else was left.
+  ///
+  /// MOMENTARY, and therefore not a mode: it is a thing you do for a bar and
+  /// let go of, and a mode select is a thing you leave somewhere. Read as a
+  /// held VALUE every tick rather than on its edges (style guide 8.2 is about
+  /// one-shots; here replaying the value every frame is exactly the semantics).
+  bool strobe = false;
+  /// What it flashes AT, in three_planes' own emission units — so it means the
+  /// same thing as Lit Level's neighbour and can be read straight off. It
+  /// deliberately ignores `emission_on`: a punch whose height depends on how
+  /// dim you happened to leave the tower is not a punch. Defaults to the top
+  /// of the range, which is overdrive, which is what blows the cores out.
+  float strobe_level = kEmissionMax;
 
   float show_time = 1.2f, sweep_time = 1.5f, glance_time = 0.8f, unfold_time = 1.6f;
   /// Seconds a move SITS on its end pose before popping back. Shared by all
@@ -844,8 +860,9 @@ struct Core {
 
   float flam_t[kLayers] = {};
   bool flam_live[kLayers] = {};
-  /// Frames since the card was armed, for the Strobe mode's chop. An integer
-  /// count and not a clock, for the reason kFlamSlowFrames gives.
+  /// Frames since the strobe was pressed. An integer count and not a clock,
+  /// for the reason kFlamSlowFrames gives; reset on release so every press
+  /// starts on a lit frame.
   int strobe_frame = 0;
   /// Frames since this floor's flam was struck. An integer count, not a clock:
   /// the chop is frame-locked (kFlamSlowFrames) and this is what locks it.
@@ -938,9 +955,8 @@ struct Core {
     else           restMeter();
 
     Out o;
-    if (meter_mode)                 o = m;
-    else if (p.mode == ModeStrobe)  tickStrobe(p, dt, o);
-    else                            tickSolid(p, o);
+    if (meter_mode) o = m;
+    else            tickSolid(p, o);
 
     // The meter rails report the meter wherever it is running — in Solid that
     // is no longer "nothing is being measured", because something is.
@@ -967,6 +983,13 @@ struct Core {
     //        passing the knob itself out separately, because the glints it
     //        throws are objects three_planes owns rather than a level. ---
     sweep.apply(p, dt, o);
+
+    // --- 2b. The strobe, which is the last word on the light. Held, it writes
+    //         over everything above it in both banks — the mode's tower, the
+    //         beat's floors, the sweep's dimmer — at its own fixed level. The
+    //         camera below is untouched: a move is where you are looking, not
+    //         how bright it is, and the two compose. ---
+    applyStrobe(p, dt, o);
 
     // --- 3. The camera move, which every mode gets. It sits OUTSIDE the mode
     //        branch on purpose: the mode paints the tower, the move flies the
@@ -1053,26 +1076,47 @@ struct Core {
     }
   }
 
-  /// STROBE — Solid, chopped. The same three floors in the same three colours,
-  /// alternating between lit and BLACK every frame.
+  /// THE STROBE, and it goes LAST — after the mode has painted, after the beat,
+  /// after the sweep has folded its dimmer in. That order is the override: it
+  /// is the only thing on this card that the sweep cannot touch, because a
+  /// punch you have to remember to un-dim first is no use on a drop.
   ///
-  /// UNCONDITIONAL, which is the whole mode: it does not ask the feed, the
-  /// meter or the sweep whether to chop. The sweep still dims what is left —
-  /// it is the room's master, and a blackout has to be able to black this out
-  /// too — but it cannot slow the chop or stop it, so a tower parked halfway
-  /// through the fade strobes at half brightness rather than settling.
+  /// Everything it writes it writes over both banks, the picture and the bars.
+  /// The chop was the screen's while it was a mode; a momentary override is
+  /// the whole rig's — you hit it to flash the ROOM, and a screen strobing
+  /// alone in front of steady bars is not that.
   ///
   /// Counted in FRAMES for the same reason the flam's chop is (kFlamSlowFrames)
   /// and with the same rule at the end of it: a stopped clock must not strobe,
   /// so a frozen frame shows the LIGHT. There is no rate here on purpose —
   /// every frame is the fastest a display has, and anything slower is a thing
   /// the flam already does.
-  void tickStrobe(const Params& p, float dt, Out& o) {
-    tickSolid(p, o);
+  ///
+  /// The count is reset on RELEASE, so every press starts lit. A punch whose
+  /// first frame is the black one is a punch you cannot see, which is the same
+  /// argument the flam's `flam_frame[i] = 0` makes.
+  void applyStrobe(const Params& p, float dt, Out& o) {
+    using namespace detail;
+    if (!p.strobe) {
+      strobe_frame = 0;
+      return;
+    }
     const bool run = dt > 0.0f;
-    if (run && (strobe_frame & 1) != 0)
-      for (int i = 0; i < kLayers; ++i) o.emission[i] = 0.0f;
+    const float lit = clampf(p.strobe_level, 0.0f, kEmissionMax) / kEmissionMax;
+    const float v = (run && (strobe_frame & 1) != 0) ? 0.0f : lit;
     if (run) ++strobe_frame;
+
+    // The colours read DOWN the tower, exactly as Solid does. The strobe has
+    // to look the same whichever mode it interrupted — it is the one control
+    // you hit without looking, so what it does cannot be a fact about where
+    // the meter happened to be standing.
+    const Rgb solid[kLayers] = {p.secondary, p.primary, p.highlight};
+    for (int i = 0; i < kLayers; ++i) {
+      o.emission[i] = v;
+      o.led_emission[i] = v;
+      o.color[i] = solid[i];
+      o.led_color[i] = solid[i];
+    }
   }
 
   /// Park the ballistics rather than letting them drift while nothing reads

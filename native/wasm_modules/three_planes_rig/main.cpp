@@ -230,9 +230,7 @@ void module_init() {
           "more percussive. The cap shows either way.");
   // Options APPEND, never renumber — a stored `mode` is an index.
   schema.selectField("mode", 0, state::SecondaryInput,
-                     {{"EV Meter", rig::ModeEvMeter},
-                      {"Solid", rig::ModeSolid},
-                      {"Strobe", rig::ModeStrobe}})
+                     {{"EV Meter", rig::ModeEvMeter}, {"Solid", rig::ModeSolid}})
         .label("Mode", "Mode");
   schema.floatField("meter_fall", 0.35f, 0.05f, 3.f, state::PrimaryInput,
                     nullptr, 0.f, "s", "Seconds for the meter to fall one floor.")
@@ -343,6 +341,37 @@ void module_init() {
                    "three-beat cycle against a four-beat bar, so it lands on a "
                    "different floor each downbeat and never stops climbing.")
         .label("Rest", "Rest");
+
+  // ---------------- Strobe ----------------
+  schema.group("strobe", "Strobe")
+        .groupHelp(
+          "**One button, held.** The whole tower alternates lit and black every "
+          "frame for as long as you hold it, and nothing else on the card gets "
+          "a say: not the mode, not the meter, not the Sweep's dimmer. Reach "
+          "for an end of the Sweep to black the room out and the strobe still "
+          "punches straight through it.\n\n"
+          "It is momentary on purpose — a thing you do for a bar and let go "
+          "of, not somewhere you leave a switch. Every press starts on a LIT "
+          "frame, so the punch is never the one you cannot see, and the floors "
+          "read down the tower the way **Solid** does, so it looks the same "
+          "whichever mode it interrupted. That is what makes it safe to hit "
+          "without looking.\n\n"
+          "It takes the **LED bars** with it. The Sweep's dimmer is the room's "
+          "and the mode's chop was the screen's, but this is the whole rig at "
+          "once — a screen strobing in front of steady bars is not a drop.\n\n"
+          "The camera is left alone: a move is where you are looking, not how "
+          "bright it is, so firing one under a held strobe still works.");
+  schema.eventField("strobe", state::PrimaryInput)
+        .label("Strobe", "Strb");
+  schema.floatField("strobe_level", rig::kEmissionMax, 0.f, rig::kEmissionMax,
+                    state::SecondaryInput, nullptr, 0.f, nullptr,
+                    "What it flashes AT, in Three Planes' own emission units — "
+                    "the same scale as *Lit Level*, which it deliberately "
+                    "ignores. A punch whose height depends on how dim you "
+                    "happened to leave the tower is not a punch. The default is "
+                    "the top of the range, which is overdrive: the cores blow "
+                    "out and the halo goes with them.")
+        .label("Strobe Level", "Level");
 
   // ---------------- Colours ----------------
   schema.group("colors", "Colours")
@@ -839,6 +868,11 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "orbit_rate"))   s->p.orbit_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "beat_fill"))    s->p.beat_fill = state::patchFloat(i);
     else if (state::pathIs(p, l, "beat_rest"))    s->p.beat_rest = state::patchBool(i);
+    // The strobe is a HELD value, not an edge: the executor replaying it every
+    // frame is exactly what "for as long as you hold it" means. The four moves
+    // above are one-shots and read their edges for the opposite reason.
+    else if (state::pathIs(p, l, "strobe"))       s->p.strobe = state::patchEvent(i);
+    else if (state::pathIs(p, l, "strobe_level")) s->p.strobe_level = state::patchFloat(i);
     else if (state::pathIs(p, l, "primary_color")) {
       auto v = state::patchVec3(i);
       s->p.primary = rig::Rgb{v.x, v.y, v.z};
