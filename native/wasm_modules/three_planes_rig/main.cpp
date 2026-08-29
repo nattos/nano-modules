@@ -274,35 +274,34 @@ void module_init() {
           "the feed or by your hand — so it runs in both modes, including "
           "**Solid** — which is what makes *nothing reacting, but still on the "
           "grid* a pose you can cut to.\n\n"
-          "On the beat, the quads' INTERIORS flood. That is the one thing here "
-          "that fills a plane rather than outlining it, so it reads as the "
-          "construct lighting up rather than as another accent on its edges. "
-          "*Fill* is how hard, and it is signed like the field it drives: "
-          "positive floods with neon, negative punches the interiors to black "
-          "masks that occlude whatever is behind them.\n\n"
-          "*Stagger* is how long the next floor waits, in beats. At 0 the "
-          "tower lights flat; wind it up and the beat walks up it.\n\n"
+          "**A floor fills on the beat and HOLDS until the next one**, so the "
+          "light climbs the tower a step at a time: bottom, middle, top, "
+          "rest. Nothing decays and nothing eases — the beat that ends one "
+          "floor is the beat that lights the next, and the rest at the end of "
+          "the bar is what turns the climb into a phrase instead of a loop.\n\n"
+          "It is the one thing here that fills a plane rather than outlining "
+          "it, so it reads as the construct lighting up rather than as another "
+          "accent on its edges. *Fill* is how hard, and it is signed like the "
+          "field it drives: positive fills with neon, negative punches the "
+          "floor to a black mask that occludes whatever is behind it. 0 is the "
+          "whole off switch.\n\n"
+          "**Which floor lights comes off the transport, not off a count "
+          "kept here.** The bottom floor is the downbeat and stays the "
+          "downbeat: start the card mid-bar, lose a beat to the guard below, "
+          "let the host re-lock — the walk lands back on the bar by itself "
+          "instead of drifting one floor out and staying there.\n\n"
           "**A beat is only believed once half a beat has passed since the "
           "last one.** A beat-sync that is not confident does not drift "
           "gently, it emits crossings in bursts while it re-locks, and a tower "
-          "flashing on every one of them reads as broken rather than as fast. "
-          "The half-beat is wall clock, off the BPM: the guard's whole job is "
-          "to distrust the grid, so it cannot ask the grid how long its own "
-          "suspect interval was.");
+          "that walks a floor on every one of them reads as broken rather than "
+          "as fast. The half-beat is wall clock, off the BPM: the guard's "
+          "whole job is to distrust the grid, so it cannot ask the grid how "
+          "long its own suspect interval was.");
   schema.floatField("beat_fill", 0.6f, -1.f, 1.f, state::PrimaryInput,
                     "signed", 0.f, nullptr,
-                    "How hard a beat floods the quads' interiors. Negative "
-                    "punches them to black masks instead. 0 is off.")
+                    "How hard the walk fills a floor's interior. Negative "
+                    "punches it to a black mask instead. 0 is off.")
         .label("Beat Fill", "Fill");
-  schema.floatField("beat_fill_time", 0.22f, 0.02f, 2.f, state::PrimaryInput,
-                    nullptr, 0.f, "s",
-                    "How long one flood lasts.")
-        .label("Beat Time", "BTime");
-  schema.floatField("beat_fill_stagger", 0.f, 0.f, 1.f, state::PrimaryInput,
-                    nullptr, 0.f, "beats",
-                    "How long each floor waits after the one below it. 0 "
-                    "lights the tower flat; up here the beat walks it.")
-        .label("Beat Stagger", "Stag");
 
   // ---------------- Colours ----------------
   schema.group("colors", "Colours")
@@ -580,9 +579,9 @@ void module_init() {
     // destination slider's position, as every rail here does.
     schema.floatField(name, 0.5f, 0.f, 1.f, state::SecondaryOutput, "unsigned",
                       0.f, nullptr,
-                      "The beat flooding this plane's interior, as a fraction "
-                      "of Three Planes' -1..1 Fill range. Rests at 0.5, which "
-                      "is no fill.")
+                      "This plane's turn in the beat walk, as a fraction of "
+                      "Three Planes' -1..1 Fill range. Rests at 0.5, which is "
+                      "no fill.")
           .label(disp, shortl);
   }
   schema.floatField("orbit_azimuth", 0.125f, 0.f, 1.f, state::SecondaryOutput,
@@ -751,10 +750,6 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "flam_rate"))     s->p.flam_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "orbit_rate"))   s->p.orbit_rate = state::patchFloat(i);
     else if (state::pathIs(p, l, "beat_fill"))    s->p.beat_fill = state::patchFloat(i);
-    else if (state::pathIs(p, l, "beat_fill_time"))
-      s->p.beat_fill_time = state::patchFloat(i);
-    else if (state::pathIs(p, l, "beat_fill_stagger"))
-      s->p.beat_fill_stagger = state::patchFloat(i);
     else if (state::pathIs(p, l, "primary_color")) {
       auto v = state::patchVec3(i);
       s->p.primary = rig::Rgb{v.x, v.y, v.z};

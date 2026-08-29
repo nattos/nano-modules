@@ -1304,10 +1304,11 @@ TEST_CASE("the orbit runs in Solid too", "[three_planes_rig][orbit]") {
   REQUIRE_THAT(turnedFrom(o, p), WithinAbs(0.1, 1e-4));
 }
 
-// --- The beat, and the fills it lights -------------------------------------
-// The one mechanism here driven by the TRANSPORT. Its guard is the interesting
-// part: a beat-sync that is not confident emits crossings in bursts, and this
-// has to sit those out.
+// --- The beat, and the walk it lights --------------------------------------
+// A floor fills on the beat and HOLDS until the next one, so the light climbs
+// the tower: bottom, middle, top, rest. Which floor is read off the transport
+// rather than counted here, and a crossing the guard does not believe is not a
+// step.
 
 namespace {
 
@@ -1323,22 +1324,22 @@ struct Grid {
   }
 };
 
-/// Is this floor's interior flooded this frame? The rail rests at the middle
-/// of three_planes' signed range, so "lit" is anything above it.
-bool flooded(const Out& o, int i = 0) { return o.fill[i] > 0.5f + 1e-4f; }
+/// Which floor is holding this frame, or -1 for none. The rail rests at the
+/// middle of three_planes' signed range, so "filled" is anything off it.
+int litFloor(const Out& o) {
+  for (int i = 0; i < kLayers; ++i)
+    if (std::fabs(o.fill[i] - 0.5f) > 1e-4f) return i;
+  return -1;
+}
 
-/// Run `frames` frames on the grid and report how many of them began a flood
-/// — a rising edge on the fill, which is one accepted beat each.
-int beatsIn(Core& c, Params& p, Grid& g, int frames, float dt) {
-  int n = 0;
-  bool was = false;
-  for (int i = 0; i < frames; ++i) {
-    g.advance(p, dt);
-    const bool now = flooded(idle(c, p, dt));
-    if (now && !was) ++n;
-    was = now;
-  }
-  return n;
+/// Park the transport just before a beat line and step over it. The parking
+/// frame has to land in the beat BEFORE the line — anything further back is
+/// itself a crossing, and the guard would then eat the step under test.
+Out beatAt(Core& c, Params& p, double line) {
+  p.bar_phase = (float)(line - 0.02);
+  idle(c, p, 0.016f);
+  p.bar_phase = (float)(line + 0.02);
+  return idle(c, p, 0.016f);
 }
 
 }  // namespace
@@ -1357,67 +1358,98 @@ TEST_CASE("an unfilled plane publishes the middle of the range, not the bottom",
 }
 
 TEST_CASE("arming the card is not a beat", "[three_planes_rig][beat]") {
-  // The first frame SEEDS the grid and fires nothing. Otherwise every card
-  // would flash the instant it was created, wherever the transport happened
-  // to be standing.
+  // The first frame SEEDS the grid and takes nothing. Otherwise every card
+  // would light a floor the instant it was created, wherever the transport
+  // happened to be standing.
   Core c;
   Params p;
   p.bar_phase = 0.4f;   // mid-beat, and not on a line
-  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == -1);
   p.bar_phase = 0.45f;
-  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == -1);
 }
 
-TEST_CASE("a beat floods the interiors, and the flood decays",
+TEST_CASE("the fill walks up the tower, a floor a beat, and rests",
           "[three_planes_rig][beat]") {
   Core c;
   Params p;
   p.bpm = 120.0f;
   p.beat_fill = 1.0f;
-  p.beat_fill_time = 0.2f;
+  p.bar_phase = 0.9f;
+  idle(c, p, 0.016f);   // seed near the end of a bar
+
   Grid g;
-  idle(c, p, 0.016f);   // seed
-
-  // 120 bpm is a beat every half second: two seconds is four of them.
-  REQUIRE(beatsIn(c, p, g, 125, 0.016f) == 4);
-
-  // And the flood eases out rather than latching.
-  Core d;
-  Params q = p;
-  q.bar_phase = 0.2f;
-  idle(d, q, 0.016f);
-  q.bar_phase = 0.3f;                       // over the line
-  const Out hit = idle(d, q, 0.016f);
-  REQUIRE(flooded(hit));
-  const Out later = idle(d, q, 0.1f);
-  REQUIRE(later.fill[0] < hit.fill[0]);
-  REQUIRE(later.fill[0] > 0.5f);
-  idle(d, q, 0.2f);                          // past beat_fill_time
-  REQUIRE_THAT(idle(d, q, 0.016f).fill[0], WithinAbs(0.5, 1e-6));
+  g.phase = 0.9;
+  // Two full bars at 120 bpm is four seconds.
+  std::vector<int> seen;
+  int was = -2;
+  for (int i = 0; i < 260; ++i) {
+    g.advance(p, 0.016f);
+    const int now = litFloor(idle(c, p, 0.016f));
+    if (now != was) { seen.push_back(now); was = now; }
+  }
+  // Bottom, middle, top, rest — twice, and starting on the downbeat wherever
+  // the card happened to be armed.
+  REQUIRE(seen.size() >= 9);
+  const std::vector<int> want = {-1, 0, 1, 2, -1, 0, 1, 2, -1};
+  for (size_t i = 0; i < want.size(); ++i) CHECK(seen[i] == want[i]);
 }
 
-TEST_CASE("a beat inside half a beat of the last one is not believed",
+TEST_CASE("a lit floor HOLDS until the beat that takes it off",
+          "[three_planes_rig][beat]") {
+  // Not a pulse: nothing decays, nothing eases. The step that ends one floor
+  // is the step that lights the next.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  idle(c, p, 0.016f);
+
+  const Out hit = beatAt(c, p, 0.25);   // beat 2 of the bar: the middle floor
+  REQUIRE(litFloor(hit) == 1);
+  Grid g;
+  g.phase = 0.27;
+  for (int i = 0; i < 28; ++i) {        // most of a beat later...
+    g.advance(p, 0.016f);
+    const Out o = idle(c, p, 0.016f);
+    REQUIRE(litFloor(o) == 1);
+    REQUIRE_THAT(o.fill[1], WithinAbs(hit.fill[1], 1e-6));   // and just as hard
+  }
+}
+
+TEST_CASE("which floor lights comes off the global clock, not from counting",
+          "[three_planes_rig][beat]") {
+  // Start mid-bar and the walk is already where the bar says it should be —
+  // no phase of its own to drift out of step. Beat 3 lights the TOP floor
+  // whether or not this card saw beats 1 and 2.
+  Core c;
+  Params p;
+  p.beat_fill = 1.0f;
+  // Armed mid-bar, having seen no beat at all, and the very first one it takes
+  // is beat 3 — so it lights the TOP floor, not the bottom one a counter
+  // starting from nothing would have reached for.
+  REQUIRE(litFloor(beatAt(c, p, 0.5)) == 2);
+}
+
+TEST_CASE("a beat inside half a beat of the last one is not a step",
           "[three_planes_rig][beat]") {
   // The guard. A sync that is re-locking walks the phase across several lines
-  // in a handful of frames; only the first of them is a beat.
+  // in a handful of frames; only the first of them moves the tower.
   Core c;
   Params p;
   p.bpm = 120.0f;      // half a beat is 0.25 s
   p.beat_fill = 1.0f;
-  p.beat_fill_time = 0.05f;   // short, so a second flood would be visible
   p.bar_phase = 0.2f;
   idle(c, p, 0.016f);   // seed
 
-  p.bar_phase = 0.3f;   // crosses beat line 1
-  REQUIRE(flooded(idle(c, p, 0.016f)));
-  for (int i = 0; i < 4; ++i) idle(c, p, 0.016f);   // let the flood retire
-  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
-
-  // ~0.1 s later, another line. Real time says that cannot be a beat.
+  p.bar_phase = 0.3f;                          // crosses into beat 2
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 1);
+  // ~0.03 s later, two more lines. Real time says neither can be a beat, so
+  // the middle floor stays exactly where it is.
   p.bar_phase = 0.55f;
-  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 1);
   p.bar_phase = 0.8f;
-  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 1);
 }
 
 TEST_CASE("...and one that waited is", "[three_planes_rig][beat]") {
@@ -1425,109 +1457,112 @@ TEST_CASE("...and one that waited is", "[three_planes_rig][beat]") {
   Params p;
   p.bpm = 120.0f;
   p.beat_fill = 1.0f;
-  p.beat_fill_time = 0.05f;
   p.bar_phase = 0.2f;
   idle(c, p, 0.016f);
 
   p.bar_phase = 0.3f;
-  REQUIRE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 1);
   for (int i = 0; i < 20; ++i) idle(c, p, 0.016f);   // 0.32 s — past the guard
   p.bar_phase = 0.55f;
-  REQUIRE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 2);
+}
+
+TEST_CASE("a dropped beat does not put the walk out of step",
+          "[three_planes_rig][beat]") {
+  // The reason the step is read rather than counted. Throw a beat away to the
+  // guard and a counter would be one floor behind for ever after; reading the
+  // bar, the next beat lands where the bar says and the walk is back on it.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  p.bar_phase = 0.02f;
+  idle(c, p, 0.016f);
+
+  REQUIRE(litFloor(beatAt(c, p, 0.25)) == 1);   // beat 2: middle
+  p.bar_phase = 0.55f;                          // beat 3 arrives far too soon
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 1);   // ...and is thrown away
+  for (int i = 0; i < 20; ++i) idle(c, p, 0.016f);
+  p.bar_phase = 0.8f;                           // beat 4: the REST, not beat 3
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == -1);
 }
 
 TEST_CASE("a burst cannot lock the beat out for ever",
           "[three_planes_rig][beat]") {
   // Which is why the guard is measured from the last ACCEPTED beat and not
   // from the last crossing seen. Timed from the rejects, a sync stuck in a
-  // burst would push the window ahead of itself and never fire again.
+  // burst would push the window ahead of itself and never step again.
   Core c;
   Params p;
   p.bpm = 120.0f;
   p.beat_fill = 1.0f;
-  p.beat_fill_time = 0.05f;
   p.bar_phase = 0.0f;
   idle(c, p, 0.016f);
 
-  // A line crossed every other frame for a third of a second.
   double ph = 0.0;
-  for (int i = 0; i < 20; ++i) {
+  for (int i = 0; i < 20; ++i) {   // a line crossed every other frame
     ph += 0.13;
     ph -= std::floor(ph);
     p.bar_phase = (float)ph;
     idle(c, p, 0.016f);
   }
-  // The guard has long since expired against the FIRST of them, so the sync
-  // is being believed again by now rather than being permanently deaf.
+  // The guard has long since expired against the FIRST of them, so the walk is
+  // moving again by now rather than being permanently deaf.
   Grid g;
   g.phase = ph;
-  REQUIRE(beatsIn(c, p, g, 125, 0.016f) >= 3);
+  int changes = 0, was = litFloor(idle(c, p, 0.0f));
+  for (int i = 0; i < 260; ++i) {
+    g.advance(p, 0.016f);
+    const int now = litFloor(idle(c, p, 0.016f));
+    if (now != was) { ++changes; was = now; }
+  }
+  REQUIRE(changes >= 6);
 }
 
-TEST_CASE("a scrub backwards fires nothing", "[three_planes_rig][beat]") {
+TEST_CASE("a scrub backwards takes nothing", "[three_planes_rig][beat]") {
   Core c;
   Params p;
   p.beat_fill = 1.0f;
   p.bar_phase = 0.6f;
   idle(c, p, 0.016f);
   p.bar_phase = 0.4f;   // back over a line, not forward across one
-  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == -1);
 }
 
-TEST_CASE("the bar line is a beat like any other", "[three_planes_rig][beat]") {
+TEST_CASE("the downbeat is a beat like any other", "[three_planes_rig][beat]") {
   // The phase wraps at the bar, so the crossing has to be reconstructed from
   // the bar count rather than read off the phase — otherwise the downbeat, the
-  // most important beat there is, would be the one beat that never fired.
+  // one beat the whole walk is anchored to, would be the one that never fired.
   Core c;
   Params p;
   p.beat_fill = 1.0f;
   p.bar_phase = 0.98f;
   idle(c, p, 0.016f);
   p.bar_phase = 0.02f;
-  REQUIRE(flooded(idle(c, p, 0.016f)));
+  REQUIRE(litFloor(idle(c, p, 0.016f)) == 0);   // and it lights the bottom
 }
 
-TEST_CASE("Beat Fill is signed: turned down it masks instead of floods",
+TEST_CASE("Beat Fill is signed: turned down it masks instead of fills",
           "[three_planes_rig][beat]") {
   Core c;
   Params p;
   p.beat_fill = -1.0f;
-  p.bar_phase = 0.2f;
+  p.bar_phase = 0.1f;
   idle(c, p, 0.016f);
-  p.bar_phase = 0.3f;
-  const Out o = idle(c, p, 0.016f);
-  REQUIRE(o.fill[0] < 0.5f - 1e-4f);   // below the middle: a black mask
+  const Out o = beatAt(c, p, 0.25);
+  REQUIRE(o.fill[1] < 0.5f - 1e-4f);   // below the middle: a black mask
+  REQUIRE_THAT(o.fill[0], WithinAbs(0.5, 1e-6));
 }
 
-TEST_CASE("Stagger walks the beat up the tower", "[three_planes_rig][beat]") {
-  Params flat;
-  flat.bpm = 120.0f;
-  flat.beat_fill = 1.0f;
-  flat.beat_fill_time = 0.1f;
-  flat.bar_phase = 0.2f;
+TEST_CASE("Beat Fill at zero is the whole off switch",
+          "[three_planes_rig][beat]") {
   Core c;
-  idle(c, flat, 0.016f);
-  flat.bar_phase = 0.3f;
-  const Out together = idle(c, flat, 0.016f);
-  // At 0 the tower lights flat — one pulse, not three.
-  for (int i = 1; i < kLayers; ++i)
-    REQUIRE_THAT(together.fill[i], WithinAbs(together.fill[0], 1e-6));
-
-  Params walk = flat;
-  walk.beat_fill_stagger = 0.5f;   // a quarter second between floors
-  walk.bar_phase = 0.2f;
-  Core d;
-  idle(d, walk, 0.016f);
-  walk.bar_phase = 0.3f;
-  const Out first = idle(d, walk, 0.016f);
-  REQUIRE(flooded(first, 0));
-  REQUIRE_FALSE(flooded(first, 1));   // the floor above has not been reached
-  REQUIRE_FALSE(flooded(first, 2));
-
-  // ...and it gets there, a quarter of a second later.
-  bool reached = false;
-  for (int i = 0; i < 40 && !reached; ++i) reached = flooded(idle(d, walk, 0.016f), 1);
-  REQUIRE(reached);
+  Params p;
+  p.beat_fill = 0.0f;
+  p.bar_phase = 0.1f;
+  idle(c, p, 0.016f);
+  const Out o = beatAt(c, p, 0.25);
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.fill[i], WithinAbs(0.5, 1e-6));
 }
 
 TEST_CASE("the beat runs in Solid too", "[three_planes_rig][beat]") {
@@ -1536,11 +1571,10 @@ TEST_CASE("the beat runs in Solid too", "[three_planes_rig][beat]") {
   Core c;
   Params p;
   p.mode = ModeSolid;
-  p.bpm = 120.0f;
   p.beat_fill = 1.0f;
-  Grid g;
+  p.bar_phase = 0.1f;
   idle(c, p, 0.016f);
-  REQUIRE(beatsIn(c, p, g, 125, 0.016f) == 4);
+  REQUIRE(litFloor(beatAt(c, p, 0.25)) == 1);
 }
 
 // --- The bounce -----------------------------------------------------------

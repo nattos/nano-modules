@@ -509,38 +509,59 @@ describe('mod.rig.three_planes E2E', () => {
 
   // --- The beat -----------------------------------------------------------
 
-  it('the beat floods the interiors, and rests in the middle of the range',
+  it('the beat walks a fill up the tower, and rests in the middle of the range',
      async () => {
-    // Two legs the goldens cannot reach: the host transport actually arriving
-    // as bar phase and BPM, and the Fill rail's resting value surviving a real
-    // wire. Fill is SIGNED over -1..1, so "no fill" is the MIDDLE of the
-    // destination range — a rail that rested at 0 would mask every plane the
-    // moment it was connected.
-    const r = await runEngineMultiPhaseTest({
+    // Three legs the goldens cannot reach: the host transport actually
+    // arriving as bar phase and BPM, the Fill rail's resting value surviving a
+    // real wire, and the walk reaching every floor in turn. Fill is SIGNED
+    // over -1..1, so "no fill" is the MIDDLE of the destination range — a rail
+    // that rested at 0 would mask every plane the moment it was connected.
+    const run = (id: string, field: string, fill: number) => runEngineTest({
       width: 64, height: 64,
       modules: MODULES,
-      phases: [
-        { commands: [
-            { type: 'createSketch', sketchId: 'rig_beat', sketch:
-                scalarSketch('plane1_fill', { beat_fill: 0, beat_fill_time: 1.5 }) },
-            { type: 'setTracePoints', tracePoints: [
-                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_beat' } }] },
-          ],
-          waitFrames: 30, captureTraceIds: ['out'] },
-        // Turn it on. The transport is running, so a beat lands within a beat.
-        { commands: [{ type: 'setParam', sketchId: 'rig_beat', colIdx: 0,
-                       chainIdx: 1, paramKey: 'beat_fill', value: 1 }],
-          waitFrames: 90, captureTraceIds: ['out'] },
-      ],
-      dumpName: 'rig_beat',
+      commands: [{ type: 'createSketch', sketchId: id,
+                   sketch: scalarSketch(field, { beat_fill: fill }) }],
+      tracePoints: [{ id: 'out', target: { type: 'sketch_output', sketchId: id } }],
+      captureTraceIds: ['out'],
+      waitFrames: 20,
+      dumpName: id,
     });
-    expect(r.success).toBe(true);
-    // Fill 0 is mid grey: the middle of Three Planes' signed range.
-    const rest = r.phases[0].trace('out').averageColor().r;
-    expect(rest).toBeGreaterThan(100);
-    expect(rest).toBeLessThan(156);
-    // And a beat pushes it up out of the middle.
-    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(rest + 20);
+
+    // Off: every floor sits on the middle of the range, indefinitely.
+    for (let i = 0; i < 3; ++i) {
+      const r = await run(`rig_beat_off${i}`, `plane${i + 1}_fill`, 0);
+      expect(r.success).toBe(true);
+      const grey = r.trace('out').averageColor().r;
+      expect(grey).toBeGreaterThan(100);
+      expect(grey).toBeLessThan(156);
+    }
+
+    // On: sampled over a window longer than a bar, every floor has its turn —
+    // which is only true if the transport is really reaching the card.
+    for (let i = 0; i < 3; ++i) {
+      const r = await runEngineMultiPhaseTest({
+        width: 64, height: 64,
+        modules: MODULES,
+        phases: Array.from({ length: 24 }, (_, k) => ({
+          commands: k === 0
+            ? [{ type: 'createSketch' as const, sketchId: `rig_beat_on${i}`,
+                 sketch: scalarSketch(`plane${i + 1}_fill`, { beat_fill: 1 }) },
+               { type: 'setTracePoints' as const, tracePoints: [
+                   { id: 'out', target: { type: 'sketch_output' as const,
+                                          sketchId: `rig_beat_on${i}` } }] }]
+            : [],
+          waitFrames: k === 0 ? 20 : 12,
+          captureTraceIds: ['out'],
+        })),
+        dumpName: `rig_beat_on${i}`,
+      });
+      expect(r.success).toBe(true);
+      const greys = r.phases.map((ph: any) => ph.trace('out').averageColor().r);
+      // Its turn came: somewhere in there the rail is well off the middle.
+      expect(Math.max(...greys)).toBeGreaterThan(180);
+      // ...and it is not simply stuck on.
+      expect(Math.min(...greys)).toBeLessThan(156);
+    }
   });
 
   // --- The flam's chop ----------------------------------------------------

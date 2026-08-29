@@ -99,7 +99,14 @@ constexpr float kFillMax = 1.0f;
 /// so the ten lines it would have saved are spelled out here instead and the
 /// conventions are kept identical (seed on the first frame, a big backward
 /// step is a wrap, only forward crossings fire).
+///
+/// The beat pattern is ONE BAR long and it is not a coincidence: a floor per
+/// beat walking up the tower, and the beat left over is the rest that makes it
+/// a phrase rather than a loop. The assert is there because the two constants
+/// have to keep agreeing for that to be true.
 constexpr int kBeatsPerBar = 4;
+static_assert(kBeatsPerBar == kLayers + 1,
+              "the beat pattern is one floor per beat plus a rest, in a bar");
 
 /// How much of a wall-clock beat has to have passed before another beat is
 /// believed. A beat-sync that is not confident — a fresh lock, a tempo change,
@@ -210,13 +217,10 @@ struct Params {
   /// current bar, 0..1, and the tempo the guard is measured in.
   float bar_phase = 0.0f;
   float bpm = 120.0f;
-  /// How hard a beat floods the quads' interiors. SIGNED, like the field it
-  /// drives: positive is neon, negative punches them to black masks. 0 is off.
+  /// How hard the walk fills a floor's interior. SIGNED, like the field it
+  /// drives: positive is neon, negative punches it to a black mask. 0 is off,
+  /// which is the whole enable — there is no separate switch.
   float beat_fill = 0.6f;
-  float beat_fill_time = 0.22f;    ///< seconds the flood lasts
-  /// Beats between one floor's flood and the next, so the pulse can either hit
-  /// the tower flat (0) or walk up it.
-  float beat_fill_stagger = 0.0f;
 
   float azimuth_base = 0.125f;                  ///< [0,1] turn, 0.125 = 45 deg
   float elevation_base = 35.264389682754654f;   ///< degrees, true isometric
@@ -345,26 +349,41 @@ inline float rand01(unsigned& state) {
 
 }  // namespace detail
 
-/// THE BEAT, and the fills it lights.
+/// THE BEAT, and the walk it lights.
 ///
 /// Everything else in this card is driven by the four gates or by a hand on a
-/// knob. This one is driven by the TRANSPORT: on the beat, the quads' interiors
-/// flood — the one thing here that fills a plane rather than outlining it, so
-/// it reads as the construct itself lighting up rather than as another accent
-/// on its edges.
+/// knob. This one is driven by the TRANSPORT: a floor's interior fills on the
+/// beat and HOLDS until the next one, so the light climbs the tower a step at a
+/// time — bottom, middle, top, rest. It is the one thing here that fills a
+/// plane rather than outlining it, which is why it reads as the construct
+/// itself lighting up rather than as another accent on its edges.
+///
+/// A HOLD, not a pulse. Nothing decays and nothing eases: a floor is on until
+/// the beat that takes it off, and the beat that takes it off is the beat that
+/// lights the next one. The rest at the end of the bar is what turns the climb
+/// into a phrase — without it the tower never goes dark and there is nothing to
+/// climb back from.
+///
+/// THE STEP COMES OFF THE GLOBAL CLOCK, not from counting our own beats. Which
+/// floor lights is `floor(barPhase * 4)` at the moment the beat is taken, so
+/// the bottom floor is the DOWNBEAT and stays the downbeat — start the card
+/// mid-bar, drop a beat to the guard below, let the host re-lock, and the walk
+/// lands back on the bar of its own accord instead of drifting one floor out
+/// and staying there.
 ///
 /// It composes on top of whatever the mode is doing, like the sweep and the
 /// camera moves, and for the same reason: the mode branch paints the tower
 /// from the FEED, and this is not the feed. So it runs in Solid too, which is
-/// what makes "no reactivity, but still on the grid" a pose you can cut to.
+/// what makes "nothing reacting, but still on the grid" a pose you can cut to.
 ///
 /// THE GUARD is the whole reason this is not three lines. A beat-sync that is
 /// not confident does not gently drift — it emits crossings in bursts as it
-/// re-locks, and a tower that flashes on every one of them reads as broken
-/// rather than as fast. So a crossing is only believed once half a wall-clock
-/// beat has passed since the last one that WAS (kBeatGuard). Wall-clock,
-/// because the guard's whole job is to distrust the grid: measuring it in
-/// beats would ask the suspect clock how long its own suspicious interval was.
+/// re-locks, and a tower that walks a floor on every one of them reads as
+/// broken rather than as fast. So a crossing is only believed once half a
+/// wall-clock beat has passed since the last one that WAS (kBeatGuard).
+/// Wall-clock, because the guard's whole job is to distrust the grid:
+/// measuring it in beats would ask the suspect clock how long its own
+/// suspicious interval was.
 struct BeatCore {
   // The bar tracker. `phase_prev < 0` is the unseeded sentinel: the first
   // frame seeds and fires nothing, so arming the card is never a beat.
@@ -374,8 +393,9 @@ struct BeatCore {
 
   float since = 0.0f;   ///< wall-clock seconds since the last ACCEPTED beat
   bool seen = false;    ///< ...and whether there has been one at all
-  float t = 0.0f;       ///< seconds into the flood
-  bool live = false;
+  /// Which beat of the bar is holding: 0..kLayers-1 name a floor, the last one
+  /// is the rest, and -1 is "no beat has been taken yet".
+  int step = -1;
 
   void reset() { *this = BeatCore(); }
 
@@ -395,43 +415,29 @@ struct BeatCore {
       phase_prev = bp;
       const long line =
           (long)std::floor(((double)bars + bp) * (double)kBeatsPerBar);
-      // Forward only. A scrub backwards rewinds the position and fires
+      // Forward only. A scrub backwards rewinds the position and takes
       // nothing; the lines speak again as they are passed again.
       crossed = line > last_line;
       last_line = line;
     }
 
-    // --- 2. The guard.
+    // --- 2. The guard, and the step it lets through. The step is READ off the
+    //        transport rather than counted here, which is what keeps the walk
+    //        on the bar through everything the guard throws away.
     since += dt;
     const float beat = p.bpm > 1.0f ? 60.0f / p.bpm : 0.5f;
     if (crossed && (!seen || since >= kBeatGuard * beat)) {
       seen = true;
       since = 0.0f;
-      t = 0.0f;
-      live = true;
+      step = (int)std::floor(bp * (double)kBeatsPerBar);
+      if (step < 0) step = 0;
+      if (step >= kBeatsPerBar) step = kBeatsPerBar - 1;
     }
 
-    // --- 3. The flood. One envelope, read at three different times: the
-    //        stagger is a delay per floor, so at 0 the tower lights flat and
-    //        turned up it walks. Same ease-out the flam uses — a flick.
-    const float ft = p.beat_fill_time > 1e-4f ? p.beat_fill_time : 1e-4f;
-    const float lag = clampf(p.beat_fill_stagger, 0.0f, 4.0f) * beat;
-    for (int i = 0; i < kLayers; ++i) {
-      float fill = 0.0f;
-      if (live) {
-        const float u = (t - (float)i * lag) / ft;
-        if (u >= 0.0f && u < 1.0f) {
-          const float k = 1.0f - u;
-          fill = k * k * clampf(p.beat_fill, kFillMin, kFillMax);
-        }
-      }
-      o.fill[i] = fillRail(fill);
-    }
-    if (live) {
-      t += dt;
-      // The last floor has to finish too, not just the first.
-      if (t >= ft + (float)(kLayers - 1) * lag) live = false;
-    }
+    // --- 3. The floor that is holding. The rest needs no case of its own: it
+    //        is the beat whose number no floor has (kBeatsPerBar == kLayers+1).
+    const float fill = clampf(p.beat_fill, kFillMin, kFillMax);
+    for (int i = 0; i < kLayers; ++i) o.fill[i] = fillRail(i == step ? fill : 0.0f);
   }
 };
 
