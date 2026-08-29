@@ -26,8 +26,9 @@ compile_shaders_compute_spv lights_sim           render
 # module-global.
 compile_shaders_compute_var_spv three_planes render
 compile_shaders_compute_var_spv three_planes led
-_emit_spv_header_var three_planes render led
-echo "  three_planes shaders compiled (SPV: render + led)"
+compile_shaders_compute_var_spv three_planes wall
+_emit_spv_header_var three_planes render led wall
+echo "  three_planes shaders compiled (SPV: render + led + wall)"
 
 compile_shaders_compute_var_spv three_walls render
 compile_shaders_compute_var_spv three_walls led

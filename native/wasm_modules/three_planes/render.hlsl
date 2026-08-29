@@ -28,6 +28,7 @@
 // registers at float precision and is tone-mapped exactly once, on write.
 
 #include "nano_coords.hlsl"
+#include "nano_glint.hlsl"
 #include "nano_neon_quad.hlsl"
 #include "nano_vcr.hlsl"
 
@@ -128,11 +129,9 @@ float ring_at(float2 p, int i) {   // ghost i's outline, unshaded
 // it — a glint alone gets brighter, a glint with a wake sweeps CONTRAST past,
 // which is what the eye reads as a moving highlight on a surface.
 //
-// The wake trails, so it sits at a LOWER axis coordinate than the glint (they
-// travel toward +axis) — hence `d + wake` rather than `d - wake`.
-static const float kGlintWake  = 1.5;   // wake offset, in glint half-widths
-static const float kGlintWakeW = 1.8;   // wake width, likewise
-
+// The per-glint kernel — and the reasoning behind its shape — lives in
+// shaders_common/nano_glint.hlsl, because the WALL pass lights itself with the
+// same glints and the two must not drift apart.
 float glimmer_at(float2 p) {
   float axis = dot(p, glim0.xy);
 
@@ -143,19 +142,7 @@ float glimmer_at(float2 p) {
   // nothing on WebGPU. A dead slot carries zero gain instead.
   float m = 0.0;
   [unroll]
-  for (int i = 0; i < 8; i++) {
-    float4 g = glints[i];
-    float w = max(g.y, 1e-4);
-    float d = (axis - g.x) / w;
-    float k = (d + kGlintWake) / kGlintWakeW;
-    // The glint is a SUPER-Gaussian (d^4, not d^2): a flatter top with much
-    // faster shoulders, so it reads as a hard-edged slash — an object with a
-    // boundary — where a plain Gaussian reads as a soft wash sliding past.
-    // The wake stays Gaussian, because a wake IS a soft thing.
-    float d2 = d * d;
-    m += g.z * exp(-d2 * d2)
-       - g.w * exp(-k * k);
-  }
+  for (int i = 0; i < 8; i++) m += nano_glint_at(axis, glints[i]);
 
   // Clamped at 0 so a deep wake extinguishes a plane rather than inverting it
   // — emission is a multiplier on light, and there is no negative light.

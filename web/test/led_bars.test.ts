@@ -374,8 +374,12 @@ describe('LED bars port', () => {
     const outs = (tex: any[]) => tex.filter((f: any) => (f.io & 2) !== 0)
                                     .sort((a: any, b: any) => a.order - b.order);
 
+    // tex_out first, then the aux outputs — three_planes has grown a pair of
+    // impact-light walls since, and the only thing that matters is that none
+    // of them got in front of the chain's own picture.
     const planeOuts = outs(info.planes);
-    expect(planeOuts.map((f: any) => f.name)).toEqual(['tex_out', 'led_out']);
+    expect(planeOuts[0].name).toBe('tex_out');
+    expect(planeOuts.map((f: any) => f.name)).toContain('led_out');
 
     const wallOuts = outs(info.walls);
     // tex_out first, and led_out after the two side cameras.

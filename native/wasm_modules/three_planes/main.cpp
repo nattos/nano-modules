@@ -76,6 +76,19 @@ struct LedUniforms {
 static_assert(sizeof(LedUniforms) == 16 * (led_bars::kCells + 1),
               "LedUniforms layout mismatch with nano_led_bars.hlsl");
 
+// Mirrors `cbuffer WallUniforms` in wall.hlsl, row for row.
+struct WallUniforms {
+  float layer[PLANES][4];     // rows 0-2:   rgb = colour, w = level
+  float layer_g[PLANES][4];   // rows 3-5:   height, ring half-size, gap
+  float ghost[PLANES][4];     // rows 6-8:   the release throw, as light
+  float ghost_g[PLANES][4];   // rows 9-11
+  float wall[4];              // row 12:     wash reach, wash weight, gain, -
+  float look[4];              // row 13:     warmth, side, far-edge weight, zoom
+  float glim[4];              // row 14:     travel heading through the room
+  float glints[8][4];         // rows 15-22
+};
+static_assert(sizeof(WallUniforms) == 368, "WallUniforms layout mismatch with wall.hlsl");
+
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
   float emission[PLANES] = {0.85f, 0.85f, 0.85f};
@@ -167,6 +180,19 @@ struct State {
   // --- LED bars ---
   // The pixel map for the house rig, published on `led_out`. Effect-owned and
   // dispatched only when something is wired to it — see renderLed().
+  // --- Walls ---
+  // The impact light the stack throws into the room, published on `left_out`
+  // and `right_out`. Effect-owned and dispatched only when wired.
+  float wall_gain    = 1.0f;
+  float wall_gap     = 0.45f;
+  float wall_reach   = 0.45f;
+  float wall_bounce  = 0.14f;
+  float wall_warmth  = 0.55f;
+  gpu::Texture wall_tex[2];
+  gpu::Buffer  wall_buf[2];
+  int wall_w[2] = {0, 0};
+  int wall_h[2] = {0, 0};
+
   bool  led_quantize = true;
   gpu::Texture led_tex;
   gpu::Buffer  led_buf;
@@ -189,6 +215,7 @@ struct State {
 
 static gpu::ComputePSO s_pso;
 static gpu::ComputePSO s_led_pso;
+static gpu::ComputePSO s_wall_pso;
 
 // --- Perceptual mappings (style guide 1.3) --------------------------------
 // Every one of these takes a normalised slider and returns the value the
@@ -201,13 +228,14 @@ static inline float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0
 static inline float emissionDrive(float e) {
   return std::pow(e < 0.0f ? 0.0f : e, 1.8f) * 3.2f;
 }
-// What one plane is worth on the LED rig: the SAME dimmer curve, normalised so
-// a plane at full emission is a fully-lit segment. Divided by the curve rather
-// than restated as a number, so the map cannot drift from what the eye sees on
-// screen — and so the headroom above 1.0 that the emission field carries (a
-// bounce overshooting the base level) reads on the bars as saturation, which
-// is exactly what an overdriven LED does.
-static inline float ledLevel(float e) {
+// What one plane is worth to anything OUTSIDE the picture — the LED map, the
+// walls. The SAME dimmer curve, normalised so a plane at full emission is a
+// fully-lit segment and a fully-lit wall. Divided by the curve rather than
+// restated as a number, so neither can drift from what the eye sees on screen
+// — and so the headroom above 1.0 that the emission field carries (a bounce
+// overshooting the base level) reads out there as saturation, which is what an
+// overdriven LED and an overexposed wall both do.
+static inline float litLevel(float e) {
   return clamp01f(emissionDrive(e) / emissionDrive(1.0f));
 }
 // Line half-width in cover-square units: 0.0012 .. 0.022, quadratic so the
@@ -215,6 +243,20 @@ static inline float ledLevel(float e) {
 static inline float lineHalfWidth(float w) {
   float t = w < 0.0f ? 0.0f : (w > 1.0f ? 1.0f : w);
   return 0.0012f + 0.0208f * t * t;
+}
+// How far the wall stands off the stack, in its own units: 0.02 .. 1.0,
+// exponential, because the useful end is the tight one. Half brightness lands
+// exactly this far out from a ring, so below about half the floor spacing the
+// three pools read as three and above it they merge.
+static inline float wallGap(float t) {
+  float u = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+  return 0.02f * std::pow(50.0f, u);
+}
+// How far the bounce carries: 0.2 .. 2.0 of the same units, linear — it is a
+// wash, and there is nothing to resolve at either end of it.
+static inline float wallReach(float t) {
+  float u = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+  return 0.2f + 1.8f * u;
 }
 // Halo radius: exponential, 0.006 .. 0.24 cover-square units.
 static inline float haloRadius(float r) {
@@ -816,6 +858,64 @@ void module_init() {
                  "a physical rig.")
         .label("Quantize", "Quant")
 
+      // ---------------- Walls ----------------
+      // After tex_out, like every other aux output on this card — the editor
+      // takes a module's texture output to be the first one its schema
+      // declares (schema-channels.ts, firstFieldOfType).
+      .group("walls", "Impact Light")
+      .groupHelp(
+        "The light the stack throws into the room it is standing in. *Left "
+        "Out* and *Right Out* are the two side walls, flat on — what a muzzle "
+        "flash does to a corridor, not a second picture of the tower.\n\n"
+        "Nothing here draws a quad. Each floor is a ring of light a little way "
+        "off the wall, so what lands is a BAR — flat across the ring, falling "
+        "away past its ends — with a second, wider lobe under it from the far "
+        "side of the same ring. A throw slams both walls; the glints sweep "
+        "across them, and because they cross the room rather than the picture "
+        "they reach the two walls at different moments.\n\n"
+        "*Distance* is the knob that matters, and it is not a softness — it is "
+        "where the wall stands. A pool is half as bright exactly that far out, "
+        "so close is tight and burnt and far is broad, and there is no way to "
+        "set the two against each other into a shape that could not happen. "
+        "That, and the flat crown across each ring, is the difference between "
+        "light on a wall and a gradient.\n\n"
+        "Unwired, none of this is drawn.")
+      .textureField("left_out",  state::SecondaryOutput)
+        .label("Left Out", "L")
+      .textureField("right_out", state::SecondaryOutput)
+        .label("Right Out", "R")
+      .floatField("wall_gain", 1.4f, 0.f, 4.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How hard the stack lights the room. Past the top of the "
+                  "range the pools blow out warm, which is what an "
+                  "overexposed wall does.")
+        .label("Wall Gain", "Gain")
+      .floatField("wall_gap", 0.45f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How far off the wall stands. This is the whole shape of the "
+                  "light: a pool is half as bright exactly this far out, so "
+                  "close is tight and burnt and far is broad. Below about half "
+                  "the floor spacing the three read as three; above it they "
+                  "merge into one.")
+        .label("Distance", "Dist")
+      .floatField("wall_reach", 0.45f, 0.f, 1.f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How far the bounce carries past the pools.")
+        .label("Reach", "Reach")
+      .floatField("wall_bounce", 0.14f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "The room answering: a wide dim wash under the pools. At 0 "
+                  "the wall is a black void with bars floating on it, which is "
+                  "exactly how bad lighting reads.")
+        .label("Bounce", "Bnce")
+      .floatField("wall_warmth", 0.55f, 0.f, 1.f, state::PrimaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How far a hot core blows out toward warm white. The "
+                  "surround keeps its hue outright — this only takes the "
+                  "centre, which is what real light does and what stops a "
+                  "bright pool reading as a flat coloured shape.")
+        .label("Warmth", "Warm")
+
       .capability(state::Capability::Generator)
       // Every envelope still lives outside this effect and the grain is
       // derived from absolute host time — but the GLINTS are particles with
@@ -847,6 +947,13 @@ void module_init() {
         .uniform(1));
   }
 
+  state::registerShaderSPV("three_planes_wall", WALL_SPV, WALL_SPV_SIZE);
+  if (auto wall = gpu::Device::createShaderModuleByName("three_planes_wall")) {
+    s_wall_pso = gpu::Device::createComputePSO(wall, "main", gpu::Bindings()
+        .storageTex2d(0)
+        .uniform(1));
+  }
+
   state::setOnStateReady(&on_state_ready);
   state::log("three_planes: module initialized");
 }
@@ -855,6 +962,9 @@ void* create() {
   auto* s = new State();
   s->uniform_buf = gpu::Device::createBuffer(sizeof(Uniforms), gpu::BufferUsage::Uniform);
   s->led_buf = gpu::Device::createBuffer(sizeof(LedUniforms), gpu::BufferUsage::Uniform);
+  for (int i = 0; i < 2; i++)
+    s->wall_buf[i] = gpu::Device::createBuffer(sizeof(WallUniforms),
+                                               gpu::BufferUsage::Uniform);
   return s;
 }
 
@@ -864,6 +974,7 @@ void destroy(void* self) {
   s->uniform_buf.release();
   s->led_buf.release();
   s->led_tex.release();
+  for (int i = 0; i < 2; i++) { s->wall_buf[i].release(); s->wall_tex[i].release(); }
   delete s;
 }
 
@@ -1025,12 +1136,120 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "mask_strength"))  s->mask_strength = state::patchFloat(i);
     else if (state::pathIs(p, l, "mask_halo"))      s->mask_halo = state::patchFloat(i);
 
+    else if (state::pathIs(p, l, "wall_gain"))     s->wall_gain = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_gap"))      s->wall_gap = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_reach"))    s->wall_reach = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_bounce"))   s->wall_bounce = state::patchFloat(i);
+    else if (state::pathIs(p, l, "wall_warmth"))   s->wall_warmth = state::patchFloat(i);
+
     else if (state::pathIs(p, l, "led_quantize"))   s->led_quantize = state::patchBool(i);
 
     else if (state::pathIs(p, l, "debug_show_sdf"))    s->debug_show_sdf = state::patchBool(i);
     else if (state::pathIs(p, l, "debug_show_planes")) s->debug_show_planes = state::patchBool(i);
   }
   if (vis_dirty) applyModeVisibility(s);
+}
+
+// --- The impact light -----------------------------------------------------
+//
+// Two more aux passes on the same pattern as the LED map: effect-owned, one
+// dispatch each, and only when something downstream is wired.
+//
+// Everything the wall needs is in the STACK's own units, not the picture's —
+// floor heights and ring sizes straight off the parameters rather than off the
+// projected corners. That is what makes it orbit-independent, which is not a
+// shortcut: a square turned about its own axis presents the same silhouette to
+// both walls, so the light genuinely does not change.
+static const float kGhostWallGain = 0.70f;   ///< a throw, as light on the wall
+/// How much of the ghost's own opening-out reaches the wall as softness.
+///
+/// A thrown ring does two things at once and only one of them was here at
+/// first. It flies OUTWARD, which brings it at the wall, and it OPENS OUT,
+/// which is the halo spreading as the light dissipates. Modelling the flight
+/// alone made the pool converge on a razor line — correct for an ideal line
+/// source arriving at a plane, and it read as a WIRE, three more tubes
+/// switching on rather than a throw. The opening is what makes it a flash: it
+/// lands tight and hot exactly on the bars the tower was showing, then blooms
+/// wide and goes out.
+static const float kGhostBloom = 0.5f;
+
+static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
+                        float grow, float opened) {
+  if (!s_wall_pso.valid()) return;
+  static const char* const kField[2] = {"left_out", "right_out"};
+
+  for (int side = 0; side < 2; side++) {
+    if (!state::isOutputConnected(kField[side])) continue;
+    if (!s->wall_buf[side].valid()) continue;
+
+    if (!s->wall_tex[side].valid() || s->wall_w[side] != vp_w ||
+        s->wall_h[side] != vp_h) {
+      s->wall_tex[side].release();
+      s->wall_tex[side] = gpu::Device::createTexture(vp_w, vp_h);
+      s->wall_w[side] = vp_w;
+      s->wall_h[side] = vp_h;
+      if (!s->wall_tex[side].valid()) continue;
+      state::setGpuTexture(kField[side], s->wall_tex[side].id);
+    }
+
+    const float gap = wallGap(s->wall_gap);
+
+    WallUniforms w = {};
+    for (int i = 0; i < PLANES; i++) {
+      const float y = (float(i) - 1.0f) * s->plane_spacing;   // 0 = bottom floor
+      for (int c = 0; c < 3; c++) {
+        w.layer[i][c] = s->color[i][c];
+        w.ghost[i][c] = s->color[i][c];
+      }
+      w.layer[i][3] = litLevel(s->emission[i]);
+      w.layer_g[i][0] = y;
+      w.layer_g[i][1] = s->plane_size;
+      w.layer_g[i][2] = gap;
+      // The throw. `grow` has already resolved the mode for us: in Grow the
+      // floors have flown outward and apart, in Strobe they are exactly where
+      // they were, and either way the ring gain carries the whole life of it.
+      //
+      // Multiplied back by `opened`, which the picture divides out. There it
+      // conserves the light a ring was thrown with as its HALO widens — a
+      // ring going out rather than blooming. Out here nothing is widening:
+      // the ring is a real thing flying at a real wall, and dimming it as it
+      // arrives is exactly backwards.
+      w.ghost[i][3] = u.ring_gain[i] * opened * kGhostWallGain;
+      w.ghost_g[i][0] = y * grow;
+      w.ghost_g[i][1] = s->plane_size * grow;
+      // ...and it OPENS as it flies. `opened` is the same number the picture
+      // widens the ghost's halo by, so the wall softens in step with it — one
+      // throw seen twice rather than two events that happen to coincide.
+      w.ghost_g[i][2] = gap * (1.0f + (opened - 1.0f) * kGhostBloom);
+    }
+
+    w.wall[0] = wallReach(s->wall_reach);
+    w.wall[1] = s->wall_bounce;
+    w.wall[2] = s->wall_gain;
+
+    w.look[0] = s->wall_warmth;
+    w.look[1] = (side == 0) ? -1.0f : 1.0f;
+    w.look[2] = 0.0f;
+    // The glints arrive already projected onto a SCREEN axis, so the wall
+    // converts its own room coordinates the same way to meet them. Rough on
+    // purpose: what has to be right is that a glint reaches the two walls at
+    // different moments, not where it is to the millimetre.
+    w.look[3] = s->zoom;
+
+    w.glim[0] = u.glim0[0];
+    w.glim[1] = u.glim0[1];
+    for (int g = 0; g < 8; g++)
+      for (int c = 0; c < 4; c++) w.glints[g][c] = u.glints[g][c];
+
+    s->wall_buf[side].writeOne(w);
+
+    auto cp = gpu::ComputePass::begin();
+    cp.setPSO(s_wall_pso);
+    cp.setTexture(s->wall_tex[side], 0, 1);
+    cp.setBuffer(s->wall_buf[side], 1);
+    cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
+    cp.end();
+  }
 }
 
 // --- The LED map ----------------------------------------------------------
@@ -1062,7 +1281,7 @@ static void renderLed(State* s, int vp_w, int vp_h) {
   }
 
   float level[PLANES];
-  for (int i = 0; i < PLANES; i++) level[i] = ledLevel(s->emission[i]);
+  for (int i = 0; i < PLANES; i++) level[i] = litLevel(s->emission[i]);
   // The fills are deliberately absent. A plane set to -1 cuts a hole in the
   // PICTURE, where there is something behind it to cut; a bar has nothing
   // behind it, and a floor that is lit is lit.
@@ -1314,6 +1533,7 @@ void render(void* self, int vp_w, int vp_h) {
   cp.end();
 
   renderLed(s, vp_w, vp_h);
+  renderWalls(s, vp_w, vp_h, u, grow, opened);
 
   gpu::Device::submit();
 }
