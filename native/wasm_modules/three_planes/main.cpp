@@ -82,14 +82,14 @@ static_assert(sizeof(LedUniforms) == 16 * (led_bars::kCells + 1),
 static constexpr int WALL_RINGS = PLANES * 2;
 struct WallUniforms {
   float ring[WALL_RINGS][4];    // rows 0-5:   rgb = colour, w = level
-  float ring_g[WALL_RINGS][4];  // rows 6-11:  height, source radius
-  float ring_c[12][4];          // rows 12-23: (x,z) corners, turned by the orbit
-  float wall[4];                // row 24:     wash reach, wash weight, gain, gap
-  float look[4];                // row 25:     warmth, side, 1/cos(elev), wall x
-  float glim[4];                // row 26:     travel heading across the floor
-  float glints[8][4];           // rows 27-34
+  float ring_g[WALL_RINGS][4];  // rows 6-11:  centre height, centre depth, radius
+  float ring_c[24][4];          // rows 12-35: a corner each, turned AND tilted
+  float wall[4];                // row 36:     wash reach, wash weight, gain, gap
+  float look[4];                // row 37:     warmth, side, -, wall x
+  float glim[4];                // row 38:     travel heading across the floor
+  float glints[8][4];           // rows 39-46
 };
-static_assert(sizeof(WallUniforms) == 560, "WallUniforms layout mismatch with wall.hlsl");
+static_assert(sizeof(WallUniforms) == 752, "WallUniforms layout mismatch with wall.hlsl");
 
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
@@ -1201,9 +1201,7 @@ static const float kGhostBloom = 0.5f;
 /// fraction the corner lands as a blob the size of the gap instead.
 static const float kTubeRadius = 0.60f;
 
-/// The camera can be laid flat, and a flat camera divides by nothing. Well
-/// below any elevation anyone would use.
-static const float kMinElevCos = 0.15f;
+
 
 static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
                         float grow, float opened) {
@@ -1273,8 +1271,15 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
     const float depth = clamp01f(s->wall_depth);
     const float side_sign = (side == 0) ? -1.0f : 1.0f;
 
-    float elev_cos = std::cos(s->elevation_deg * (kPi / 180.0f));
-    if (elev_cos < kMinElevCos) elev_cos = kMinElevCos;
+    // THE ELEVATION TILTS THE DECK. An orthographic camera raised over a flat
+    // stack and a camera on the horizon looking at a stack tilted by the same
+    // angle draw the same main output, so the picture cannot tell you which
+    // room it is a picture of — but a side wall can, and only the tilted one
+    // has anything for it to see. Tilting is also what puts a floor's pool at
+    // the height that floor is drawn at, for free: the ring's CENTRE lands at
+    // y * cos(phi), which is exactly where the picture puts it.
+    const float ep = s->elevation_deg * (kPi / 180.0f);
+    const float e_cos = std::cos(ep), e_sin = std::sin(ep);
 
     WallUniforms w = {};
     for (int i = 0; i < PLANES; i++) {
@@ -1297,18 +1302,27 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
         const float sc = scale_of[g];
         for (int c = 0; c < 3; c++) w.ring[r][c] = s->color[i][c];
         w.ring[r][3] = level_of[g];
-        w.ring_g[r][0] = y * s->zoom * sc;
-        w.ring_g[r][1] = soft_of[g];
         // The ring's own wall-facing extreme, which is what the damping pulls
-        // the rest of it toward.
+        // the rest of it toward. In x, which the tilt leaves alone — so the gap
+        // and everything normalised against it are the same at any elevation.
         const float near_x = side_sign * support * sc;
+        const float y0 = y * s->zoom * sc;
         for (int k = 0; k < 4; k++) {
           float xr = (cx[k] * ct - cz[k] * st) * s->zoom * sc;
           const float zr = (cx[k] * st + cz[k] * ct) * s->zoom * sc;
           xr = near_x + (xr - near_x) * depth;
-          w.ring_c[r * 2 + (k >> 1)][(k & 1) ? 2 : 0] = xr;
-          w.ring_c[r * 2 + (k >> 1)][(k & 1) ? 3 : 1] = zr;
+          w.ring_c[r * 4 + k][0] = xr;
+          // Tilted about x, the same rotation the picture is drawn through — so
+          // a corner's height here IS its height on screen. A ring flat on the
+          // horizon has every corner at one height and lays a hard line; tilted,
+          // its near edge climbs at tan(phi) and the pool slants with it.
+          w.ring_c[r * 4 + k][1] = y0 * e_cos + zr * e_sin;
+          w.ring_c[r * 4 + k][2] = -y0 * e_sin + zr * e_cos;
         }
+        // The ring's centre, tilted the same way — where the bounce comes from.
+        w.ring_g[r][0] = y0 * e_cos;
+        w.ring_g[r][1] = -y0 * e_sin;
+        w.ring_g[r][2] = soft_of[g];
       }
     }
 
@@ -1331,11 +1345,7 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
 
     w.look[0] = s->wall_warmth;
     w.look[1] = (side == 0) ? -1.0f : 1.0f;
-    // Heights arrive as the PICTURE's, squashed by the elevation so a floor's
-    // pool lands where that floor is drawn; the wall undoes the squash before
-    // measuring anything, so the distances stay true while the framing follows
-    // the camera.
-    w.look[2] = 1.0f / elev_cos;
+    w.look[2] = 0.0f;
     w.look[3] = wall_x;
 
     w.glim[0] = u.glim0[0];

@@ -4637,7 +4637,7 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
       { "type": "module", "module_type": "source.mesh.three_planes", "instance_key": "tp",
         "params": { "grain": 0.0, "scanline": 0.0, "chroma_bleed": 0.0,
                     "glimmer_gain": 0.0, "glimmer_chaos": 0.0,
-                    "orbit_azimuth": 0.0,
+                    "orbit_azimuth": 0.0, "elevation": 0.0,
                     "plane1_color": [1.0, 0.0, 0.0],
                     "plane2_color": [0.0, 1.0, 0.0],
                     "plane3_color": [0.0, 0.0, 1.0],
@@ -4664,13 +4664,15 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
     const size_t i = ((size_t)y * W + x) * 4;
     return std::array<int, 3>{px[i], px[i + 1], px[i + 2]};
   };
-  // A floor's pool lands at the height that floor is DRAWN at: model height
-  // through the elevation squash and the zoom, into cover-square, into pixels.
-  // At the defaults and this frame size that is 25 rows a floor. The bottom
+  // Flat on the horizon and square on, so the three pools are horizontal bars
+  // down the middle of the wall — the elevation would otherwise tilt each ring
+  // and fan the floors along the wall as well as up it, which is its own case
+  // in web/test/three_planes_walls.test.ts. Model height through the zoom, into
+  // cover-square, into pixels: 31 rows a floor at this frame size. The bottom
   // floor is LOW, which is the one thing a sign error would flip.
-  auto bottom = at(W / 2, 160);
+  auto bottom = at(W / 2, 166);
   auto middle = at(W / 2, 135);
-  auto top    = at(W / 2, 110);
+  auto top    = at(W / 2, 104);
   INFO("bottom " << bottom[0] << "," << bottom[1] << "," << bottom[2]
        << "  middle " << middle[0] << "," << middle[1] << "," << middle[2]
        << "  top " << top[0] << "," << top[1] << "," << top[2]);
@@ -4686,6 +4688,6 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
   // edge is at one distance along its whole length, so the pool is a bar rather
   // than a blob.
   auto lum = [](const std::array<int, 3>& c) { return (c[0] + c[1] + c[2]) / 3.0; };
-  CHECK(std::abs(lum(at(W / 2 - 25, 110)) - lum(top)) < lum(top) * 0.10);
-  CHECK(lum(at(6, 110)) < lum(top) * 0.35);
+  CHECK(std::abs(lum(at(W / 2 - 25, 104)) - lum(top)) < lum(top) * 0.10);
+  CHECK(lum(at(6, 104)) < lum(top) * 0.35);
 }

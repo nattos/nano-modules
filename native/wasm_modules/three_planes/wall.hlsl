@@ -25,11 +25,16 @@
 //     presents the same silhouette to both — which is why the orbit was
 //     ignored here at first — but the near-corner PATTERN is mirrored between
 //     them, so at any angle but square-on or 45 the two are different pictures.
-//   * ELEVATION squashes the vertical. Heights are the picture's own, so a
-//     floor's pool lands at the height that floor is drawn at and the three
-//     outputs stay one room when they are laid out side by side. Distances are
-//     worked out with that squash undone, so the geometry stays honest while
-//     the framing follows the camera.
+//   * ELEVATION TILTS THE RINGS, because that is what the picture is a picture
+//     of. An orthographic camera raised by phi over a flat deck and a camera on
+//     the horizon looking at a deck tilted by phi draw the SAME main output —
+//     but they are different rooms, and only the second one has anything for a
+//     side wall to see. Flat on the horizon a ring is edge-on, every part of it
+//     at one height, and it lays a thin hard line; tilt it and its near edge
+//     runs uphill at exactly tan(phi), so the pool slants. Squashing the wall's
+//     vertical axis instead — which is what this did first — gets the floors
+//     to the right heights and nothing else: no slant at any angle, and flat
+//     on the horizon it came out at its most DIFFUSE, which is backwards.
 //
 // The falloff is inverse square times the GRAZING cosine — what a surface
 // catches is not how much light reaches it but how squarely — and the two
@@ -55,20 +60,17 @@ static const int kNanoWallRings = 6;
 
 cbuffer WallUniforms : register(b1) {
   float4 ring[6];      // rgb = colour, w = level
-  float4 ring_g[6];    // x = height, y = source radius, -, -
-  // The four corners of each ring, in the ROOM: (x, z) pairs, turned by the
-  // orbit. Ring r takes rows 2r and 2r+1 — (c0, c1) then (c2, c3).
-  float4 ring_c[12];
+  float4 ring_g[6];    // x, y = the ring's centre (height, depth); z = source radius
+  // The four corners of each ring, in the ROOM: turned by the orbit and tilted
+  // by the elevation, so each carries its own height. Ring r takes rows 4r..4r+3.
+  float4 ring_c[24];
   float4 wall;   // wash reach, wash weight, gain, the nearest tube's distance
-  float4 look;   // warmth, which wall (-1 left, +1 right), 1/cos(elevation), wall x
+  float4 look;   // warmth, which wall (-1 left, +1 right), -, wall x
   float4 glim;   // the glints' heading across the floor
   float4 glints[8];
 };
 
-float2 ring_corner(int r, int k) {
-  float4 row = ring_c[r * 2 + (k >> 1)];
-  return (k & 1) ? row.zw : row.xy;
-}
+float3 ring_corner(int r, int k) { return ring_c[r * 4 + k].xyz; }
 
 /// What one length of tube throws at one point on the wall.
 ///
@@ -125,10 +127,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float2 aspect = float2(m / (2.0 * vp.x), m / (2.0 * vp.y));
   float2 sq = nano_uv_to_cover_square(uv, aspect);
 
-  // The wall point, in the room. Its height is the picture's own height with
-  // the elevation squash undone, so what lands is at the height the floor is
-  // DRAWN at while the distances behind it stay true.
-  float3 P = float3(look.y * look.w, -sq.y * look.z, sq.x);
+  // The wall point, in the room. Cover-square straight through: the room is
+  // measured in the picture's own units, so a floor's pool lands at the height
+  // that floor is drawn at with nothing to convert.
+  //
+  // Depth runs OUTWARD FROM THE BACK WALL on each side, which is why it carries
+  // the side's sign: the far end of a side wall abuts the back one, so it wants
+  // to be on the inner edge of its own picture — the right of the left wall and
+  // the left of the right wall. Laid out left / main / right, the room is then
+  // continuous across both seams. (Same convention as source.mesh.three_walls;
+  // running both the same way put the two far ends on the same side and the
+  // room folded in half at one of the corners.)
+  float3 P = float3(look.y * look.w, -sq.y, -look.y * sq.x);
 
   // The glints, sweeping THROUGH the room rather than across a picture. Their
   // travel angle is read as a heading on the floor, so a glint crossing the
@@ -147,21 +157,18 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // A dark floor and a spent ghost cost nothing: the level is a uniform, so
     // every thread takes the same side of this and the branch is free.
     if (lvl > 1e-4) {
-      float y = ring_g[r].x;
-      float soft2 = ring_g[r].y * ring_g[r].y;
+      float soft2 = ring_g[r].z * ring_g[r].z;
 
       float lit = 0.0;
       [unroll]
-      for (int k = 0; k < 4; k++) {
-        float2 a = ring_corner(r, k);
-        float2 b = ring_corner(r, (k + 1) & 3);
-        lit += tube_light(P, float3(a.x, y, a.y), float3(b.x, y, b.y), soft2, g2);
-      }
+      for (int k = 0; k < 4; k++)
+        lit += tube_light(P, ring_corner(r, k), ring_corner(r, (k + 1) & 3),
+                          soft2, g2);
 
       // The bounce: the room answering, from the ring as a whole rather than
       // from any one tube of it. No grazing term — it arrives from everywhere,
       // so there is no angle for a surface to be square to.
-      float3 dc = P - float3(0.0, y, 0.0);
+      float3 dc = P - float3(0.0, ring_g[r].x, ring_g[r].y);
       lit += bounce * (r2 / (r2 + dot(dc, dc)));
 
       c += ring[r].rgb * (lvl * glint * lit);
