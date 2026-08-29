@@ -185,3 +185,107 @@ describe('Triptych E2E', () => {
     expect(Math.abs(lit[0] - lit[2])).toBeLessThan(Math.max(lit[0], lit[2]) * 0.25);
   });
 });
+
+// The LED strip: a fourth input, UNDER the middle panel rather than beside it.
+// The three columns are the three walls of one room; the strip is the same
+// instrument read a second way, so it belongs beneath the picture it reads.
+describe('Triptych LED strip', () => {
+  jest.setTimeout(120000);
+
+  const W = 300, H = 100;
+  const MODULES = ['com.nano.core', 'com.nano.lights'];
+
+  const RED: [number, number, number] = [1, 0, 0];
+  const GREEN: [number, number, number] = [0, 1, 0];
+  const BLUE: [number, number, number] = [0, 0, 1];
+  // Chromatic and unlike any of the other three, so a pixel says which input
+  // it came from on its own.
+  const YELLOW: [number, number, number] = [1, 1, 0];
+
+  const isEmpty = (p: { r: number; g: number; b: number }) =>
+    Math.abs(p.r - p.g) < 24 && Math.abs(p.g - p.b) < 24 && Math.abs(p.r - p.b) < 24;
+
+  const build = (params: Record<string, unknown>, wireLed = true): Sketch => ({
+    anchor: null,
+    wires: [
+      { id: 'wl', src: { instanceKey: 'l@0', field: 'tex_out' },
+        dest: { instanceKey: 'tp@0', field: 'left_in' } },
+      { id: 'wr', src: { instanceKey: 'r@0', field: 'tex_out' },
+        dest: { instanceKey: 'tp@0', field: 'right_in' } },
+      ...(wireLed ? [{ id: 'wd', src: { instanceKey: 'd@0', field: 'tex_out' },
+                       dest: { instanceKey: 'tp@0', field: 'led_in' } }] : []),
+    ],
+    chain: [
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'l@0',
+        params: { color: RED } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'r@0',
+        params: { color: BLUE } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'd@0',
+        params: { color: YELLOW } },
+      { type: 'module', module_type: 'source.solid_color', instance_key: 'm@0',
+        params: { color: GREEN } },
+      { type: 'module', module_type: 'util.triptych', instance_key: 'tp@0',
+        params: { fit_mode: 1, ...params } },
+    ],
+  } as Sketch);
+
+  const run = (id: string, params: Record<string, unknown>, wireLed = true) =>
+    runEngineTest({
+      width: W, height: H, modules: MODULES,
+      commands: [
+        { type: 'createSketch', sketchId: id, sketch: build(params, wireLed) },
+        { type: 'setTracePoints', tracePoints: [
+          { id: 'out', target: { type: 'sketch_output', sketchId: id } }]},
+      ],
+      waitFrames: 20, captureTraceIds: ['out'], dumpName: id,
+    });
+
+  it('puts the strip under the middle panel, and only the middle', async () => {
+    const r = await run('trip_led_under', { led_height: 0.25 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    // The middle column: picture on top, strip below, split at 75% of the way
+    // down.
+    f.expectPixelAt(150, 30, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(150, 90, { r: 255, g: 255, b: 0 }, 12);
+    // The two sides are walls of the room and do not split — they keep the
+    // whole column, top to bottom.
+    f.expectPixelAt(50, 30, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(50, 90, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(250, 30, { r: 0, g: 0, b: 255 }, 12);
+    f.expectPixelAt(250, 90, { r: 0, g: 0, b: 255 }, 12);
+  });
+
+  it('LED Height moves the split and nothing else', async () => {
+    const r = await run('trip_led_half', { led_height: 0.5 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    f.expectPixelAt(150, 40, { r: 0, g: 255, b: 0 }, 12);   // still picture
+    f.expectPixelAt(150, 60, { r: 255, g: 255, b: 0 }, 12); // already strip
+    // The columns did not move.
+    f.expectPixelAt(50, 60, { r: 255, g: 0, b: 0 }, 12);
+    f.expectPixelAt(250, 60, { r: 0, g: 0, b: 255 }, 12);
+  });
+
+  it('an unwired strip leaves the middle panel whole', async () => {
+    // Costing nothing when unused is the point: dropping this card on a chain
+    // that has no LED map must look exactly as it did before there was one.
+    const r = await run('trip_led_unwired', { led_height: 0.25 }, false);
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    f.expectPixelAt(150, 30, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(150, 90, { r: 0, g: 255, b: 0 }, 12);
+  });
+
+  it('Gap cuts the divider under the middle too', async () => {
+    const r = await run('trip_led_gap', { led_height: 0.25, gap: 0.12 });
+    expect(r.success).toBe(true);
+    const f = r.trace('out');
+    // One knob, one kind of line: the seam under the picture is transparent
+    // the way the seams between the columns are.
+    expect(isEmpty(f.pixelAt(150, 75))).toBe(true);
+    // ...and the two halves are still there either side of it.
+    f.expectPixelAt(150, 30, { r: 0, g: 255, b: 0 }, 12);
+    f.expectPixelAt(150, 95, { r: 255, g: 255, b: 0 }, 12);
+  });
+});

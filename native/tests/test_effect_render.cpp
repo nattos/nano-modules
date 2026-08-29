@@ -4509,3 +4509,84 @@ TEST_CASE("the LED map is the same map on Metal", "[effect_render]") {
   CHECK(below[1] > 240);
   CHECK(below[2] < 12);
 }
+
+// util.triptych's LED strip, on Metal. The new binding is a sampled texture at
+// register 6, sitting AFTER the uniform buffer at 5 — binding indices are
+// register numbers shared across resource types, so this is the mixed-type
+// numbering that only the MSL translation can get wrong, and it fails as a
+// wrong picture rather than as an error. The layout itself is pinned in
+// web/test/triptych.test.ts.
+TEST_CASE("triptych puts the LED strip under the middle on Metal too",
+          "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 300, H = 100;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0);
+  REQUIRE(outTex >= 0);
+  std::vector<uint8_t> blk(W * H * 4, 0);
+  for (size_t i = 3; i < blk.size(); i += 4) blk[i] = 255;
+  backend->writeTexture(inTex, W, H, blk.data(), (uint32_t)blk.size());
+
+  // A primary per panel and yellow for the strip, so a pixel says which input
+  // it came from on its own.
+  auto sketch = nlohmann::json::parse(R"JSON({
+    "chain": [
+      { "type": "module", "module_type": "source.solid_color", "instance_key": "l",
+        "params": { "color": [1.0, 0.0, 0.0] } },
+      { "type": "module", "module_type": "source.solid_color", "instance_key": "r",
+        "params": { "color": [0.0, 0.0, 1.0] } },
+      { "type": "module", "module_type": "source.solid_color", "instance_key": "d",
+        "params": { "color": [1.0, 1.0, 0.0] } },
+      { "type": "module", "module_type": "source.solid_color", "instance_key": "m",
+        "params": { "color": [0.0, 1.0, 0.0] } },
+      { "type": "module", "module_type": "util.triptych", "instance_key": "tp",
+        "params": { "fit_mode": 1, "led_height": 0.25 } }
+    ],
+    "wires": [
+      { "id": "wl", "src": { "instanceKey": "l", "field": "tex_out" },
+        "dest": { "instanceKey": "tp", "field": "left_in" } },
+      { "id": "wr", "src": { "instanceKey": "r", "field": "tex_out" },
+        "dest": { "instanceKey": "tp", "field": "right_in" } },
+      { "id": "wd", "src": { "instanceKey": "d", "field": "tex_out" },
+        "dest": { "instanceKey": "tp", "field": "led_in" } }
+    ]
+  })JSON");
+
+  int32_t out = executor.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0,
+                                 /*sketchDirty=*/true);
+  backend->submit();
+  auto px = backend->readbackTexture(out, W, H);
+  REQUIRE(px.size() >= (size_t)W * H * 4);
+
+  auto at = [&](uint32_t x, uint32_t y) {
+    const size_t i = ((size_t)y * W + x) * 4;
+    return std::array<int, 3>{px[i], px[i + 1], px[i + 2]};
+  };
+
+  auto mid_top = at(150, 30);      // the picture
+  auto mid_low = at(150, 90);      // the strip
+  auto left = at(50, 90);
+  auto right = at(250, 90);
+
+  INFO("mid_top " << mid_top[0] << "," << mid_top[1] << "," << mid_top[2]
+       << " mid_low " << mid_low[0] << "," << mid_low[1] << "," << mid_low[2]);
+  CHECK(mid_top[1] > 200); CHECK(mid_top[0] < 40); CHECK(mid_top[2] < 40);
+  CHECK(mid_low[0] > 200); CHECK(mid_low[1] > 200); CHECK(mid_low[2] < 40);
+  // The two sides are walls of the room and do not split.
+  CHECK(left[0] > 200); CHECK(left[1] < 40);
+  CHECK(right[2] > 200); CHECK(right[1] < 40);
+}

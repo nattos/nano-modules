@@ -11,6 +11,13 @@
  * main output into the centre automatically and only the two sides need
  * drawing by hand.
  *
+ * A fourth input, `led_in`, takes the LED-bar pixel map that both neon-quad
+ * instruments publish, and it goes UNDER the middle panel rather than beside
+ * it. The three columns are the three walls of one room; the strip is not a
+ * fourth wall, it is the same instrument read a second way, so it belongs
+ * beneath the picture it is a reading of. Unwired, it costs nothing and the
+ * middle panel keeps the whole column.
+ *
  * Deliberately dumb: no blending, no colour work, no per-panel transform beyond
  * the fit. It is a measuring surface, and a measuring surface that alters what
  * it shows is worse than useless.
@@ -27,12 +34,14 @@ namespace triptych {
 struct Uniforms {
   float misc[4];   // fit mode, gap, has_left, has_right
   float view[4];   // vp_w, vp_h, -, -
+  float led[4];    // has_led, strip height, -, -
 };
-static_assert(sizeof(Uniforms) == 32, "Uniforms layout mismatch with render.hlsl");
+static_assert(sizeof(Uniforms) == 48, "Uniforms layout mismatch with render.hlsl");
 
 struct State {
   int fit_mode = 0;
   float gap = 0.0f;
+  float led_height = 0.25f;
 
   bool initialized = false;
   gpu::Buffer uniform_buf;
@@ -61,6 +70,11 @@ void module_init() {
         "is a worse one. **Stretch** fills the panel instead, wasting no space "
         "and keeping the three continuous, which is better when they are meant "
         "to read as one space rather than be compared. **Fill** crops.\n\n"
+        "*LED In* takes the pixel map those cards publish and puts it in a "
+        "strip UNDER the middle panel — not beside it, because the three "
+        "columns are the room and the strip is the same instrument read a "
+        "second way. On **Stretch** it fills the strip, which is what you "
+        "usually want: a pixel map has no aspect worth preserving.\n\n"
         "Anything unwired is left transparent, so an empty panel and a dark "
         "one never look alike.")
 
@@ -72,8 +86,14 @@ void module_init() {
                   nullptr, 0.f, nullptr,
                   "A transparent divider at each seam, as a fraction of one "
                   "panel's width. Every panel loses the same strip, so they "
-                  "stay equal.")
+                  "stay equal — and the divider under the middle panel is cut "
+                  "to the same thickness, so one knob draws one kind of line.")
         .label("Gap", "Gap")
+      .floatField("led_height", 0.25f, 0.05f, 0.6f, state::SecondaryInput,
+                  nullptr, 0.f, nullptr,
+                  "How much of the middle column the LED strip takes. Only "
+                  "the middle moves; the two sides stay full height.")
+        .label("LED Height", "LED H")
 
       // `tex_in` is the middle, so a plain drop-in wires the main output to the
       // centre panel. Declaration order is slot order for texture inputs
@@ -81,6 +101,7 @@ void module_init() {
       .textureField("tex_in",   state::PrimaryInput)
       .textureField("left_in",  state::SecondaryInput)
       .textureField("right_in", state::SecondaryInput)
+      .textureField("led_in",   state::SecondaryInput)
       .textureField("tex_out",  state::PrimaryOutput)
 
       // A frame is a pure function of its inputs — nothing accumulates, so a
@@ -100,7 +121,8 @@ void module_init() {
       .tex2d(2)          // right
       .storageTex2d(3)   // tex_out
       .sampler(4)
-      .uniform(5));
+      .uniform(5)
+      .tex2d(6));        // led
 
   state::log("triptych: module initialized");
 }
@@ -143,8 +165,10 @@ void render(void* self, int vp_w, int vp_h) {
 
   auto left  = gpu::Device::textureForField("left_in");
   auto right = gpu::Device::textureForField("right_in");
+  auto led   = gpu::Device::textureForField("led_in");
   const bool has_left = left.valid();
   const bool has_right = right.valid();
+  const bool has_led = led.valid();
 
   // An unwired side still needs SOMETHING bound for the dispatch to be legal;
   // the middle stands in, and the shader is told not to read it.
@@ -155,6 +179,8 @@ void render(void* self, int vp_w, int vp_h) {
   u.misc[3] = has_right ? 1.0f : 0.0f;
   u.view[0] = float(vp_w);
   u.view[1] = float(vp_h);
+  u.led[0] = has_led ? 1.0f : 0.0f;
+  u.led[1] = s->led_height;
   s->uniform_buf.writeOne(u);
 
   auto cp = gpu::ComputePass::begin();
@@ -165,6 +191,7 @@ void render(void* self, int vp_w, int vp_h) {
   cp.setTexture(out, 3, 1);
   cp.setSampler(s->sampler, 4);
   cp.setBuffer(s->uniform_buf, 5);
+  cp.setTexture(has_led ? led : mid, 6, 0);
   cp.dispatch((vp_w + 7) / 8, (vp_h + 7) / 8);
   cp.end();
 
@@ -181,6 +208,7 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     const int l = len[i];
     if      (state::pathIs(p, l, "fit_mode")) s->fit_mode = state::patchInt(i);
     else if (state::pathIs(p, l, "gap"))      s->gap = state::patchFloat(i);
+    else if (state::pathIs(p, l, "led_height")) s->led_height = state::patchFloat(i);
   }
 }
 
