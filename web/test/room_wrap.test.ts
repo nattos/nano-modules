@@ -154,23 +154,25 @@ describe('Room Wrap E2E', () => {
     expect(uOf(right.trace('out').pixelAt(W - 2, MID_Y).r)).toBeGreaterThan(0.97);
   });
 
-  it('Perspective foreshortens the wall toward its far end', async () => {
-    // Halfway along the left wall, in the wall's OWN coordinate. At
-    // Perspective 0 that is halfway along its share of the picture — a plain
-    // linear stretch, so 1/6 of the way in from the left edge. At 1 the far
-    // half of the wall is compressed into the outer half of the panel, so the
-    // same pixel is looking much closer to the seam: exactly a quarter, which
-    // is what the depth ratio of 3 puts there.
+  it('Perspective enlarges the end of the wall nearest the viewer', async () => {
+    // THE DIRECTION, and it has been wrong once. A wall's OUTER end is the end
+    // closest to the viewer, and a view of something close spreads it out — so
+    // the outer end of the panel must carry LESS of the picture per pixel, not
+    // more. Read at the panel's midpoint: at Perspective 0 that is halfway
+    // along its share of the picture, a plain linear stretch, 1/6 of the way in
+    // from the left edge. At 1 the outer half of the wall has taken most of the
+    // panel, so the midpoint is only 1/12 in — a quarter of the wall's share
+    // rather than half, which is what a depth ratio of 3 puts there.
     const flat = await run('rw_persp0', { scale: 3, perspective: 0 }, 'left_out');
     const deep = await run('rw_persp1', { scale: 3, perspective: 1 }, 'left_out');
     expect(flat.success && deep.success).toBe(true);
     const uFlat = uOf(flat.trace('out').pixelAt(W / 2, MID_Y).r);
     const uDeep = uOf(deep.trace('out').pixelAt(W / 2, MID_Y).r);
     expect(uFlat).toBeCloseTo(1 / 6, 2);
-    expect(uDeep).toBeCloseTo(1 / 4, 2);
-    // And the direction is the whole point: the room pulls the picture back
-    // toward the corner, it does not push it away.
-    expect(uDeep).toBeGreaterThan(uFlat + SLOP);
+    expect(uDeep).toBeCloseTo(1 / 12, 2);
+    // The sign, stated on its own: the room spreads the picture toward the
+    // near corner. Reversed, this is the one assertion that fails.
+    expect(uDeep).toBeLessThan(uFlat - SLOP);
   });
 
   it('the keystone opens the wall vertically by the same ratio', async () => {
@@ -211,53 +213,34 @@ describe('Room Wrap E2E', () => {
       expect(uOf(f.pixelAt(x, MID_Y).r)).toBeLessThan(0.03);
   });
 
-  it('a round trip through Triptych gives the picture back', async () => {
-    // The two cards are inverses, and this is that claim made of real pixels:
-    // cut the ramp into three panels here, composite them back into a room
-    // there with the matching knobs, and read the result along the middle row.
-    // Every step of the geometry has to be right for this to hold — the zoom,
-    // both wall maps, and the fact that they are the same map read in opposite
-    // directions (shaders_common/nano_room_wall.hlsl).
+  it('both walls recede toward the middle, not away from it', async () => {
+    // The same direction again, stated as the shape of a whole panel and
+    // mirrored across the pair — because "which end is enlarged" and "which
+    // way round is this panel" are two different mistakes and either one alone
+    // produces a wall receding backwards.
     //
-    // Triptych sizes its back wall in THIRDS of the frame, so a Scale of 3 is
-    // its Middle Size of 1. Only the middle row is compared: the room has no
-    // ceiling and no floor, so above and below the walls' trapezoids there is
-    // nothing to put anywhere and triptych leaves it transparent — correctly.
-    const id = 'rw_roundtrip';
-    const r = await runEngineTest({
-      width: W, height: H, modules: MODULES,
-      commands: [
-        { type: 'createSketch', sketchId: id, sketch: {
-            anchor: null,
-            wires: [
-              { id: 'wl', src: { instanceKey: 'rw@0', field: 'left_out' },
-                dest: { instanceKey: 'tp@0', field: 'left_in' } },
-              { id: 'wr', src: { instanceKey: 'rw@0', field: 'right_out' },
-                dest: { instanceKey: 'tp@0', field: 'right_in' } },
-            ],
-            chain: [
-              { type: 'module', module_type: 'source.gradient', instance_key: 'g@0',
-                params: RAMP },
-              { type: 'module', module_type: 'util.room_wrap', instance_key: 'rw@0',
-                params: { scale: 3, perspective: 1 } },
-              { type: 'module', module_type: 'util.triptych', instance_key: 'tp@0',
-                params: { fit_mode: 3, gap: 0, mid_scale: 1, perspective: 1 } },
-            ],
-          } as Sketch },
-        { type: 'setTracePoints', tracePoints: [
-          { id: 'out', target: { type: 'sketch_output', sketchId: id } }]},
-      ],
-      waitFrames: 20, captureTraceIds: ['out'], dumpName: id,
-    });
-    expect(r.success).toBe(true);
-    const f = r.trace('out');
-    // Skip the two seams themselves: they are one pixel wide, and which side
-    // of a boundary a sample lands on is a question about rounding rather than
-    // about the geometry.
-    for (let x = 4; x < W - 4; x += 4) {
-      if (Math.abs(x - W / 3) < 3 || Math.abs(x - (2 * W) / 3) < 3) continue;
-      expect(uOf(f.pixelAt(x, MID_Y).r)).toBeCloseTo((x + 0.5) / W, 1);
-    }
+    // At Scale 3 each wall's share of the picture is a third of it. Quarter the
+    // panel: the OUTER quarter, nearest the viewer, must carry a small slice of
+    // that share, and the quarter at the seam a large one. At a depth ratio of
+    // 3 it works out at a tenth against a half — a factor of five, so nothing
+    // here is a near thing.
+    const left = await run('rw_recede_l', { scale: 3, perspective: 1 }, 'left_out');
+    const right = await run('rw_recede_r', { scale: 3, perspective: 1 }, 'right_out');
+    expect(left.success && right.success).toBe(true);
+
+    // Left panel: outer edge at x = 0, seam at x = W.
+    const lOuter = uOf(left.trace('out').pixelAt(W / 4, MID_Y).r) - 0;
+    const lSeam  = 1 / 3 - uOf(left.trace('out').pixelAt((3 * W) / 4, MID_Y).r);
+    expect(lOuter).toBeCloseTo(1 / 30, 2);
+    expect(lSeam).toBeCloseTo(1 / 6, 2);
+    expect(lSeam).toBeGreaterThan(4 * lOuter);
+
+    // Right panel: mirrored, seam at x = 0 and outer edge at x = W.
+    const rSeam  = uOf(right.trace('out').pixelAt(W / 4, MID_Y).r) - 2 / 3;
+    const rOuter = 1 - uOf(right.trace('out').pixelAt((3 * W) / 4, MID_Y).r);
+    expect(rOuter).toBeCloseTo(1 / 30, 2);
+    expect(rSeam).toBeCloseTo(1 / 6, 2);
+    expect(rSeam).toBeGreaterThan(4 * rOuter);
   });
 
   it('switching a side pass on does not disturb the middle', async () => {

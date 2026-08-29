@@ -30,32 +30,44 @@
 //
 // --- The keystone ---------------------------------------------------------
 //
-// A side pane's own texture is WALL-linear — it is what a projector aimed at
-// that wall paints evenly — while the source is a flat rectangle in the
-// viewer's SCREEN. nano_wall_t is the map between them, and `Perspective` is
-// how much of it to apply:
+// A side pane is a PICTURE OF a wall, not a texture to paint onto one. Its own
+// x is where you are in that picture, and nano_wall_s turns that into where on
+// the wall — and so on the source strip — you are looking. `Perspective` is how
+// much of that map to apply:
 //
 //   R = lerp(1, S_x, perspective)
 //
-// R is the depth ratio: how much taller and further out the wall's far end
-// reads than the seam. At perspective 1 it is S_x, which is exactly the ratio
-// that puts the wall's outer end on the source's outer edge — the honest room,
-// where the source rectangle lands on the three panes' union exactly. At 0 the
-// map is the identity and each side is a plain linear stretch of its overflow:
-// three flat panels in a row, no room, and no cost for saying so.
+// R is the depth ratio: how much nearer the wall's outer end is than its seam
+// end. At perspective 1 it is S_x, which is exactly the ratio that puts the
+// wall's far end on the source's outer edge, so the three panes cover the whole
+// picture. At 0 the map is the identity and each side is a plain linear stretch
+// of its overflow: three flat panels in a row, no room, and no cost for saying
+// so.
 //
-// Between them the horizontal and the vertical are driven by the SAME R, which
-// is not tidiness — the two really are one number (both screen axes go as 1/z),
-// and letting them drift apart is what makes a keystone read as a distortion
-// rather than as a corner.
+// SO THE OUTER EDGE IS THE ENLARGED ONE. That end of the wall is the end
+// nearest the viewer, and a perspective view spreads out what is near and packs
+// what is far: at Perspective 1 and Scale 3 the outer quarter of a pane carries
+// a fifth of the picture the quarter beside the seam does. Reading it the other
+// way round — near end packed SMALL, so that a projector spreading the panel
+// evenly across a real angled surface lands it right — is the other half of the
+// same geometry, and is not what any of our rigs want: the panel here is a
+// picture that gets shown, not a texture that gets projected. That reading was
+// built first and looked wrong on sight, because a wall whose nearest corner is
+// its most crowded is a wall receding the wrong way.
+//
+// The vertical rides the SAME R over the same run, which is not tidiness — the
+// two really are one number (both screen axes go as 1/z), and letting them
+// drift apart is what makes a keystone read as a distortion rather than as a
+// corner.
 //
 // --- Seams ----------------------------------------------------------------
 //
 // At the seam the wall parameter is 0, so the map is the identity there and the
 // vertical multiplier is exactly 1: a side pane's seam edge samples the source
 // at precisely the column and the rows the mid pane's edge does, at every
-// setting. The join is continuous by construction, not by tuning. It BENDS
-// there, which is what a corner is.
+// setting. The join is continuous by construction, not by tuning — the same
+// column of the picture, never a jump. Its SCALE steps there, and deliberately:
+// that is the corner, and the whole reason to keystone at all.
 //
 // The far end is where the source can run out. A source shaped like the mid
 // output never does — its height grows with Scale by exactly the factor the
@@ -119,13 +131,16 @@ void main(uint3 gid : SV_DispatchThreadID) {
     // R is the depth ratio: at Perspective 1 it is exactly the reach that puts
     // the wall's far end on the source's outer edge, so the three panes tile
     // the picture. At 0 it is 1 and the map below is the identity.
+    //
+    // `p` is 0 at the seam, which is the FAR end, so `t` comes back spread
+    // toward the near end — the outer edge of the pane gets the magnification.
     float R = lerp(1.0, S_x, persp);
     float u_seam = (which == 1) ? (0.5 - 1.0 / (2.0 * S_x))
                                 : (0.5 + 1.0 / (2.0 * S_x));
     float u_far  = (which == 1) ? 0.0 : 1.0;
 
     float p = (which == 1) ? (1.0 - xn) : xn;
-    float t = nano_wall_t(p, 1.0, R);   // -> where it lands in the frame
+    float t = nano_wall_s(p, 1.0, R);   // picture position -> position on the wall
 
     // Screen x and screen y both go as 1/z, so one factor carries both: the
     // source column moves out linearly in `t`, and the wall's half-height

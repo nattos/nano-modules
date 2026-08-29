@@ -1,15 +1,6 @@
 /*
  * util.room_wrap — one picture, wrapped around the three walls of a room.
  *
- * The inverse of `util.triptych`'s Room mode, and its natural partner. Triptych
- * takes three pictures and composites them into the frame a viewer sees; this
- * takes the frame a viewer should see and works out what has to be ON each of
- * the three walls for that to be what they get. Wire this card's three outputs
- * into that card's three inputs, match Scale to Middle Size and Perspective to
- * Perspective, and the picture comes back — which is exactly the check the two
- * of them make possible, and the reason the projection they share lives in one
- * file (shaders_common/nano_room_wall.hlsl) rather than twice.
- *
  * It exists for the physical rig: a back screen and two side screens, wanting
  * ONE wipe or one field of light to cross all three as a single continuous
  * thing. Cut a gradient into three panels naively and it stalls at the seams —
@@ -19,9 +10,26 @@
  *
  * The mid output is a plain centred zoom of the input, at square pixels always;
  * `left_out` and `right_out` carry everything that overflowed it to either
- * side, keystoned onto the walls. Scale is what creates the overflow — at 1
- * there is none — and Perspective decides how hard the walls foreshorten it,
- * from a flat row at 0 to the honest room at 1. See render.hlsl.
+ * side, keystoned. Scale is what creates the overflow — at 1 there is none —
+ * and Perspective decides how hard the walls foreshorten it, from a flat row at
+ * 0 to the honest room at 1.
+ *
+ * A SIDE OUTPUT IS A PICTURE OF A WALL, NOT A TEXTURE FOR ONE. Its outer end is
+ * the end nearest the viewer and is therefore the ENLARGED one, the way
+ * anything close is: at Scale 3 and Perspective 1 the outer quarter of a panel
+ * carries a fifth of the picture the quarter beside the seam does. The other
+ * reading — pack the near end SMALL so a projector spreading the panel evenly
+ * over a real angled surface lands it right — is the same geometry run
+ * backwards, and would be what to build if a warper sat downstream. It does not
+ * here, and a panel whose nearest corner is its most crowded reads immediately
+ * as a wall receding the wrong way. See render.hlsl.
+ *
+ * The projection is shared with `util.triptych` (shaders_common/
+ * nano_room_wall.hlsl), which composites three panels INTO a room the way this
+ * cuts one picture up for one. Note they are not inverses: triptych's Room mode
+ * reads its sides as wall textures and applies the map a second time, so
+ * previewing this through it wants triptych's own Perspective at 0 — a flat
+ * row, which is what a rig of three flat screens shows anyway.
  *
  * The side outputs are effect-owned and dispatched only when something is wired
  * to them, so the common "just a zoom" case costs one pass. There is no state
@@ -73,24 +81,28 @@ void module_init() {
         "The main output is the **back wall**: your input, at square pixels, "
         "zoomed in by *Scale*. Whatever that zoom pushes off the left and "
         "right edges comes out of **Left Out** and **Right Out** — all of it, "
-        "keystoned so it reads correctly on a wall you are looking at from the "
-        "side. So *Scale* is the whole show: at 1 the picture fits the back "
-        "wall and the sides get nothing; turn it up and the picture grows "
-        "past the back wall and out around you.\n\n"
+        "keystoned into a view of a wall running away from you. So *Scale* is "
+        "the whole show: at 1 the picture fits the back wall and the sides "
+        "have nothing left to show; turn it up and the picture grows past the "
+        "back wall and out around you.\n\n"
         "*Perspective* is how deep the room is. At **1** the walls reach "
         "exactly as far as the picture does, which is the honest room: the "
         "three screens tile your input with nothing repeated and nothing "
         "lost. Lower it and the walls foreshorten less, down to **0**, where "
         "they are just two flat panels in a row with the overflow stretched "
         "evenly across them.\n\n"
+        "The OUTER end of each side panel is the one nearest you, so that is "
+        "the end the picture opens out on — near things are big. The end that "
+        "meets the back wall is packed tight, the way the far end of a "
+        "corridor is.\n\n"
         "Either way the seams join CONTINUOUSLY — a side wall's inner edge "
         "reads the same column of the picture the back wall's edge does, at "
-        "every setting. The picture bends at the corner, which is what a "
-        "corner is; it never jumps.\n\n"
+        "every setting. It never jumps. The scale steps there, and that is "
+        "the corner.\n\n"
         "**Try:** put this after a slow gradient or a soft light wipe and send "
-        "the three outputs to *Triptych* with the same Perspective and "
-        "*Middle Size* = Scale. That is the room laid out flat in front of "
-        "you, and it should look exactly like what went in.\n\n"
+        "the three outputs to *Triptych* with *Middle Size* = Scale and its "
+        "own *Perspective* at 0 — a flat row, which is how three screens in a "
+        "line actually show it.\n\n"
         "The side outputs cost nothing until something is wired to them.")
 
       .group("room", "Room")

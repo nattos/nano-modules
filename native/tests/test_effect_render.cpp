@@ -4598,19 +4598,21 @@ TEST_CASE("triptych keeps the row aligned over its LED strip on Metal too",
   }
 }
 
-// util.room_wrap and util.triptych are inverses, and this runs that round trip
-// on Metal: cut one ramp into three panels with the first card, composite them
-// back into a room with the second, and the middle row has to come out as the
-// ramp that went in. It is the strongest single statement either card makes —
-// the zoom, both wall maps, and the fact that they are one map read in opposite
-// directions (shaders_common/nano_room_wall.hlsl) all have to be right at once
-// for it to hold, and a translation that got any of them wrong still produces a
-// picture. The web twin is web/test/room_wrap.test.ts.
+// util.room_wrap's side panel, on Metal, and specifically WHICH WAY ROUND the
+// keystone goes — the one thing about this card that has already been wrong
+// once. A wall's outer end is the end nearest the viewer, so a view of it
+// spreads that end out and packs the end at the seam; reversed, the panel reads
+// as a wall receding backwards and every other property still holds, which is
+// exactly the kind of error a picture does not announce.
 //
-// Compared against the ramp rendered ALONE rather than against computed greys,
-// so nothing here depends on the transfer curve between a gradient's parameter
-// and a byte.
-TEST_CASE("room_wrap and triptych round-trip a ramp on Metal", "[effect_render]") {
+// The panel is a SECONDARY output, so this goes through the sidechannel relay
+// the web twin uses (web/test/room_wrap.test.ts): wire `left_out` into a send's
+// `send_in`, put the matching receive after it, and the sketch output IS the
+// panel. Positions are read back by inverting the ramp rendered on its own, so
+// nothing here depends on the transfer curve between a gradient's parameter and
+// a byte.
+TEST_CASE("room_wrap opens its side panel toward the viewer on Metal",
+          "[effect_render]") {
   auto backend = gpu::createMetalBackend();
   if (!backend || backend->getBackend() != 0) {
     SKIP("No Metal device available");
@@ -4628,10 +4630,10 @@ TEST_CASE("room_wrap and triptych round-trip a ramp on Metal", "[effect_render]"
   const int RGBA8 = 1;
   int inTex = backend->createTexture(W, H, RGBA8);
   int refOut = backend->createTexture(W, H, RGBA8);
-  int roomOut = backend->createTexture(W, H, RGBA8);
+  int paneOut = backend->createTexture(W, H, RGBA8);
   REQUIRE(inTex >= 0);
   REQUIRE(refOut >= 0);
-  REQUIRE(roomOut >= 0);
+  REQUIRE(paneOut >= 0);
   std::vector<uint8_t> blk(W * H * 4, 0);
   for (size_t i = 3; i < blk.size(); i += 4) blk[i] = 255;
   backend->writeTexture(inTex, W, H, blk.data(), (uint32_t)blk.size());
@@ -4656,44 +4658,55 @@ TEST_CASE("room_wrap and triptych round-trip a ramp on Metal", "[effect_render]"
   int32_t r0 = executor.execute(ref_sketch, inTex, refOut, (int)W, (int)H, 1.0 / 60.0,
                                 /*sketchDirty=*/true);
   backend->submit();
-  const std::vector<int> want = row(r0);
+  const std::vector<int> ramp = row(r0);
 
-  // Triptych sizes its back wall in THIRDS of the frame, so room_wrap's Scale
-  // of 3 is its Middle Size of 1 — the same room, described the way each card
-  // describes one.
+  // Grey -> where in the picture it came from, by inverting that measurement.
+  auto uOf = [&](int grey) {
+    int best = 0, bestD = 1 << 30;
+    for (uint32_t i = 0; i < W; i++) {
+      const int d = std::abs(ramp[i] - grey);
+      if (d < bestD) { bestD = d; best = (int)i; }
+    }
+    return ((float)best + 0.5f) / (float)W;
+  };
+
   auto sketch = nlohmann::json::parse(std::string(R"JSON({
     "chain": [)JSON") + kGradient + R"JSON(,
       { "type": "module", "module_type": "util.room_wrap", "instance_key": "rw",
         "params": { "scale": 3.0, "perspective": 1.0 } },
-      { "type": "module", "module_type": "util.triptych", "instance_key": "tp",
-        "params": { "fit_mode": 3, "gap": 0.0, "mid_scale": 1.0, "perspective": 1.0 } }
+      { "type": "module", "module_type": "util.sidechannel_out", "instance_key": "send",
+        "params": { "channel": 5 } },
+      { "type": "module", "module_type": "util.sidechannel_in", "instance_key": "recv",
+        "params": { "channel": 5 } }
     ],
     "wires": [
-      { "id": "wl", "src": { "instanceKey": "rw", "field": "left_out" },
-        "dest": { "instanceKey": "tp", "field": "left_in" } },
-      { "id": "wr", "src": { "instanceKey": "rw", "field": "right_out" },
-        "dest": { "instanceKey": "tp", "field": "right_in" } }
+      { "id": "ws", "src": { "instanceKey": "rw", "field": "left_out" },
+        "dest": { "instanceKey": "send", "field": "send_in" } }
     ]
   })JSON");
 
-  int32_t out = executor.execute(sketch, inTex, roomOut, (int)W, (int)H, 1.0 / 60.0,
+  int32_t out = executor.execute(sketch, inTex, paneOut, (int)W, (int)H, 1.0 / 60.0,
                                  /*sketchDirty=*/true);
   backend->submit();
-  const std::vector<int> got = row(out);
+  const std::vector<int> pane = row(out);
 
-  // Only the middle row: the room has no ceiling and no floor, so above and
-  // below the walls' trapezoids triptych correctly leaves nothing. The two
-  // seams are skipped because which side of a one-pixel boundary a sample
-  // lands on is a question about rounding.
-  int checked = 0;
-  for (uint32_t x = 4; x < W - 4; x += 4) {
-    if (std::abs((int)x - (int)W / 3) < 3) continue;
-    if (std::abs((int)x - 2 * (int)W / 3) < 3) continue;
-    INFO("x " << x << " want " << want[x] << " got " << got[x]);
-    CHECK(std::abs(got[x] - want[x]) <= 6);
-    ++checked;
-  }
-  CHECK(checked > 40);
+  // At Scale 3 the left wall's share of the picture is its first third. The
+  // panel runs outer edge to seam, left to right.
+  const float u_outer = uOf(pane[W / 4]);            // a quarter along, from the viewer
+  const float u_seam  = uOf(pane[(3 * W) / 4]);      // a quarter short of the corner
+  INFO("outer quarter reaches " << u_outer << ", seam quarter reaches " << u_seam);
+
+  // The seam edge is continuous with the back wall, and the outer edge is the
+  // far side of the picture: those two ends hold whichever way the map runs.
+  CHECK(uOf(pane[2]) < 0.03f);
+  CHECK(std::abs(uOf(pane[W - 3]) - 1.0f / 3.0f) < 0.03f);
+
+  // The direction. A depth ratio of 3 puts a tenth of the wall's share in the
+  // quarter nearest the viewer and half of it in the quarter at the seam, so
+  // the two differ by a factor of five and nothing here is a near thing.
+  CHECK(std::abs(u_outer - 1.0f / 30.0f) < 0.03f);
+  CHECK(std::abs((1.0f / 3.0f - u_seam) - 1.0f / 6.0f) < 0.03f);
+  CHECK((1.0f / 3.0f - u_seam) > 4.0f * u_outer);
 }
 
 // three_planes' impact light, on Metal. A third compute pass on that card, and

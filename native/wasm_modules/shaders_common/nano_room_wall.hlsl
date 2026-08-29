@@ -21,22 +21,34 @@
 //
 // Two coordinates run along the wall and they are NOT the same coordinate:
 //
-//   t  SCREEN-linear.  Where the pixel is in the picture. Even steps in `t` are
+//   t  SCREEN-linear.  Where the pixel is in the PICTURE. Even steps in `t` are
 //      even steps across the frame.
-//   s  WALL-linear.    Where the pixel is on the physical wall — what a
-//      projector aimed at it paints evenly, and what the wall's own texture is
-//      parameterised by.
+//   s  PLANE-linear.   Where it is on the flat thing being looked at. Even
+//      steps in `s` are even steps along the wall itself.
 //
-// Both run 0 at the seam and 1 at the outer end. The gap between them is
-// exactly why the far half of a corridor looks compressed, and getting it
-// wrong is the classic "stretched into the trapezoid" look: correct at both
-// ends, visibly sliding everywhere between them.
+// Both run 0 where the plane is FURTHEST from the viewer and 1 where it is
+// nearest — for a room's side wall, 0 at the seam with the back wall. The gap
+// between them is exactly why the far half of a corridor looks compressed, and
+// getting it wrong is the classic "stretched into the trapezoid" look: correct
+// at both ends, visibly sliding everywhere between them.
 //
-// So a compositor walks the frame and needs the wall coordinate under each
-// pixel (nano_wall_s); an un-projector walks the wall and needs to know where
-// in the frame it lands (nano_wall_t). Same map, read in either direction.
+// One function, and both cards call it the same way round: give it a position
+// in a PICTURE and it hands back the position on the PLANE that picture is of.
 //
-// Both collapse to the identity when h_seam == h_edge, which is the FLAT ROW —
+//   triptych    the picture is its own frame, the plane is the wall's texture.
+//   room_wrap   the picture is the panel it is producing, the plane is the
+//               strip of the source that panel is a view of.
+//
+// Which is why both walls come out with their NEAR end enlarged — the end that
+// is closest to the viewer is the one a perspective view spreads out. There was
+// briefly an inverse here (a `nano_wall_t`) for the other reading of what a
+// side panel is: not a picture of the wall but the texture to paint ON one,
+// which a projector spreads evenly over the surface and which therefore has to
+// carry the near end SMALL. That is the right answer for a warper driving a
+// real angled surface and the wrong one for every rig we actually have, where
+// the panel is a picture that gets shown. See `util.room_wrap`.
+//
+// It collapses to the identity when h_seam == h_edge, which is the FLAT ROW —
 // three panels in a line, no room at all. That is not a special case anywhere
 // in either effect; it falls out, so "perspective 0" costs nothing and is
 // exactly the un-bent picture rather than nearly it.
@@ -44,26 +56,15 @@
 #ifndef NANO_ROOM_WALL_HLSL
 #define NANO_ROOM_WALL_HLSL
 
-/// SCREEN-linear t -> WALL-linear s. For a compositor: how far along the wall's
-/// own texture the pixel at frame position `t` is looking.
+/// SCREEN-linear t -> PLANE-linear s. Where on the flat thing the pixel at
+/// picture position `t` is looking.
 ///
-/// The heights ARE the reciprocal depths (both go as 1/z, so their ratio is the
-/// depth ratio), which makes this the ordinary perspective-correct interpolation
-/// written in the only two numbers either effect actually has.
+/// The heights ARE the reciprocal depths (both screen axes go as 1/z, so their
+/// ratio IS the depth ratio), which makes this the ordinary perspective-correct
+/// interpolation written in the only two numbers either effect actually has.
 float nano_wall_s(float t, float h_seam, float h_edge) {
   float h = lerp(h_seam, h_edge, t);
   return t * h_edge / max(h, 1e-6);
-}
-
-/// WALL-linear s -> SCREEN-linear t. For an un-projector: where on the frame
-/// the wall's own position `s` shows up.
-///
-/// Algebraically inverse to nano_wall_s, not approximately: solving
-/// s = t*h_e / (h_s + (h_e - h_s)*t) for t gives exactly this, and a round trip
-/// through the pair is the identity to float precision. `util.room_wrap` ->
-/// `util.triptych` is that round trip made of real pixels.
-float nano_wall_t(float s, float h_seam, float h_edge) {
-  return s * h_seam / max(h_edge - s * (h_edge - h_seam), 1e-6);
 }
 
 #endif  // NANO_ROOM_WALL_HLSL
