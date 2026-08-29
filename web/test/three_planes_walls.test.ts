@@ -6,11 +6,15 @@ import type { Sketch } from '../src/sketch-types';
  * onto the walls of the room it stands in.
  *
  * A LIGHT MODEL, not a second picture of the tower: nothing in the pass draws a
- * quad. Each floor is a ring of light a fixed gap off the wall, so what lands
- * is a bar — flat across the ring, falling away past its ends — under a wide
- * dim bounce. Everything below is checking that the SHAPE is the one the
- * geometry gives rather than an authored gradient, because that is the whole
- * difference between light on a wall and bad lighting in an old game.
+ * quad. Each floor is FOUR TUBES in the room, turned by the orbit, so what
+ * lands depends on how the ring is facing: square on, the near edge does all
+ * the work and lays a flat bar; turned off it, one corner is nearest and the
+ * pool leans that way. Everything below is checking that the SHAPE is the one
+ * the geometry gives rather than an authored gradient, because that is the
+ * whole difference between light on a wall and bad lighting in an old game.
+ *
+ * Most cases pin the orbit SQUARE ON, where the shape is simple enough to make
+ * claims about. The orbit's own effect gets its own cases at the bottom.
  *
  * Engine harness, because these are secondary texture outputs and only a wire
  * can reach one (chroma_wave's sidechannel trick). That makes them WebGPU
@@ -30,12 +34,22 @@ describe('Three Planes impact light', () => {
   const W = 480, H = 270;
   const MODULES = ['com.nano.core', 'com.nano.lights'];
 
-  // The wall shows one stack-unit either side of centre, and the floors sit at
-  // -spacing / 0 / +spacing. At the default 0.42 that puts them here.
-  const SPACING = 0.42;
-  const rowOfFloor = (i: number) => Math.round((0.5 - ((i - 1) * SPACING) / 2) * H);
+  // A floor's pool lands at the height that floor is DRAWN at, so the row it
+  // occupies is the picture's own: model height through the elevation squash
+  // and the zoom, into cover-square, into pixels. That is what keeps the three
+  // outputs one room when they are laid out side by side.
+  const SPACING = 0.42, ZOOM = 0.55;
+  const ELEV_COS = Math.cos((35.264389682754654 * Math.PI) / 180);
+  const ASPECT_Y = Math.max(W, H) / (2 * H);
+  const rowOfFloor = (i: number, elevCos = ELEV_COS) =>
+    Math.round((0.5 - (i - 1) * SPACING * elevCos * ZOOM * ASPECT_Y) * H);
 
   const luma = (p: { r: number; g: number; b: number }) => (p.r + p.g + p.b) / 3;
+  // How bright the light IS, rather than how bright a grey of the same value
+  // would be. The floors here are pure primaries, so a luma reading is a third
+  // of the level and every threshold written against it would be a lie.
+  const level = (p: { r: number; g: number; b: number }) =>
+    Math.max(p.r, Math.max(p.g, p.b));
 
   const build = (field: string, params: Record<string, unknown>,
                  wired = true): Sketch => ({
@@ -55,6 +69,11 @@ describe('Three Planes impact light', () => {
           // No glimmer: glints are particles born from knob motion, and a
           // wall-clock run cannot hold one still.
           glimmer_gain: 0, glimmer_chaos: 0,
+          // Square on unless a case says otherwise — the ring's near edge then
+          // faces the wall outright and lays the simple bar these claims are
+          // about. (The card's own default is 45, a corner pointing at each
+          // wall, which is a different picture entirely.)
+          orbit_azimuth: 0,
           ...params,
         } },
       { type: 'module', module_type: 'util.sidechannel_out', instance_key: 'send@0',
@@ -110,26 +129,32 @@ describe('Three Planes impact light', () => {
     expect(mid.g).toBeLessThan(mid.r + 10);
   });
 
-  it('the bar is flat across the ring and falls away past its ends',
+  it('lays a bar with hot ends across the ring, and nothing past it',
      async () => {
-    // The emitter has width, so its pool does too. This is what makes it read
-    // as a bar thrown by an object rather than a blob centred on a point — and
-    // it is the first thing an authored gradient gets wrong.
+    // The shape the four tubes give, and none of it is drawn. Square on, the
+    // near edge is at one distance along its whole length, so the pool is FLAT
+    // across the middle — an emitter with width, not a blob centred on a point.
+    // At the ends the two edges running away from the wall come close enough to
+    // add, so the bar brightens into its corners before it goes. That structure
+    // is the difference between this and a gradient.
     const r = await view('tpw_bar', 'left_out', {});
     expect(r.success).toBe(true);
     const f = r.trace('out');
     const y = rowOfFloor(2);
 
-    // The ring is 0.62 of a stack unit either side of centre and the wall shows
-    // 1 unit scaled by the aspect, so the flat top runs about a third of the
-    // half-width out. Sample well inside it.
-    const mid = luma(f.pixelAt(W / 2, y));
-    for (const x of [W / 2 - 60, W / 2 + 60]) {
-      expect(Math.abs(luma(f.pixelAt(x, y)) - mid)).toBeLessThan(mid * 0.08);
-    }
+    // The ring is 0.62 stack-units wide at 0.55 zoom, so its ends land about
+    // 82px either side of centre.
+    const mid = level(f.pixelAt(W / 2, y));
+    for (const x of [W / 2 - 40, W / 2 + 40])
+      expect(Math.abs(level(f.pixelAt(x, y)) - mid)).toBeLessThan(mid * 0.08);
+
+    // The corners, hotter than the middle and on both sides of it.
+    for (const x of [W / 2 - 80, W / 2 + 80])
+      expect(level(f.pixelAt(x, y))).toBeGreaterThan(mid * 1.15);
+
     // ...and then it goes. Out at the edge of the wall there is bounce and
     // little else.
-    expect(luma(f.pixelAt(12, y))).toBeLessThan(mid * 0.3);
+    expect(level(f.pixelAt(12, y))).toBeLessThan(mid * 0.15);
   });
 
   it('Distance is the size of the light, not a softness', async () => {
@@ -141,8 +166,8 @@ describe('Three Planes impact light', () => {
         if (luma(f.pixelAt(W / 2, y0 - d)) < peak * 0.5) return d;
       return H / 2;
     };
-    const near = await view('tpw_near', 'left_out', { wall_gap: 0.2, wall_bounce: 0 });
-    const far = await view('tpw_far', 'left_out', { wall_gap: 0.7, wall_bounce: 0 });
+    const near = await view('tpw_near', 'left_out', { wall_gap: 0.15, wall_bounce: 0 });
+    const far = await view('tpw_far', 'left_out', { wall_gap: 0.8, wall_bounce: 0 });
     expect(near.success && far.success).toBe(true);
 
     const a = halfHeight(near.trace('out'), rowOfFloor(2));
@@ -157,29 +182,33 @@ describe('Three Planes impact light', () => {
     const area = (f: any, t: number) => {
       let n = 0;
       for (let y = 0; y < H; y += 2)
-        for (let x = 0; x < W; x += 2) if (luma(f.pixelAt(x, y)) > t) n++;
+        for (let x = 0; x < W; x += 2) if (level(f.pixelAt(x, y)) > t) n++;
       return n;
     };
-    const rest = await view('tpw_rest', 'left_out', { release: 0 });
+    // On a MUTED tower, which is what a throw actually is: the rig spends the
+    // latched charge as the floors go dark, and a lit floor holds its own ring
+    // down besides. Comparing against a blazing tower measures the tower.
+    const muted = { plane1_emission: 0.15, plane2_emission: 0.15, plane3_emission: 0.15 };
+    const rest = await view('tpw_rest', 'left_out', { ...muted, release: 0 });
     const thrown = await view('tpw_throw', 'left_out',
-                              { release: 0.65, release_gain: 2.2 });
+                              { ...muted, release: 0.65, release_gain: 2.2 });
     expect(rest.success && thrown.success).toBe(true);
 
-    // Brighter, and over much more of the wall.
-    expect(area(thrown.trace('out'), 100)).toBeGreaterThan(
-      area(rest.trace('out'), 100) * 1.6);
+    // A muted tower puts almost nothing on the wall; the throw floods it. Stated
+    // as two absolutes rather than a ratio, because the resting figure is
+    // nearly zero and a ratio against nearly zero says nothing.
+    expect(area(rest.trace('out'), 40)).toBeLessThan(300);
+    expect(area(thrown.trace('out'), 40)).toBeGreaterThan(2000);
     // And the flare is SOFT: it reaches well above the top floor's own bar,
     // where a resting tower puts almost nothing.
     const y = rowOfFloor(2) - 34;
-    expect(luma(thrown.trace('out').pixelAt(W / 2, y)))
-      .toBeGreaterThan(luma(rest.trace('out').pixelAt(W / 2, y)) + 25);
+    expect(level(thrown.trace('out').pixelAt(W / 2, y)))
+      .toBeGreaterThan(level(rest.trace('out').pixelAt(W / 2, y)) + 25);
   });
 
-  it('the two walls agree when nothing is sweeping the room', async () => {
-    // The room is symmetric about the stack and the orbit is deliberately
-    // ignored — a square turned about its own axis presents the same
-    // silhouette to both walls, so there is genuinely nothing to tell them
-    // apart. The glints are the one thing that does, and they are off here.
+  it('the two walls agree with the ring square on', async () => {
+    // Square on, the ring faces both walls identically and there is nothing
+    // that could tell them apart. Turned off square there is — see below.
     const l = await view('tpw_sym_l', 'left_out', {});
     const r = await view('tpw_sym_r', 'right_out', {});
     expect(l.success && r.success).toBe(true);
@@ -191,6 +220,80 @@ describe('Three Planes impact light', () => {
     }
   });
 
+  it('an off-square orbit leans the pool, and the two walls lean opposite ways',
+     async () => {
+    // The orbit's own effect, and the only thing that makes the two outputs
+    // different pictures. Turned off square, one corner of the ring is nearest
+    // the wall and the pool leans to it — and because a square is symmetric
+    // through its centre, the corner nearest THIS wall and the one nearest the
+    // far wall sit on opposite sides of the room. So the two lean apart, by the
+    // same amount, which is a mirror rather than a coincidence.
+    const centroid = (f: any) => {
+      let sum = 0, w = 0;
+      for (let y = 0; y < H; y += 2)
+        for (let x = 0; x < W; x += 2) {
+          const v = level(f.pixelAt(x, y));
+          if (v > 60) { sum += v * x; w += v; }
+        }
+      return w > 0 ? sum / w : W / 2;
+    };
+    const p = { orbit_azimuth: 0.06 };
+    const l = await view('tpw_orb_l', 'left_out', p);
+    const r = await view('tpw_orb_r', 'right_out', p);
+    expect(l.success && r.success).toBe(true);
+
+    const cl = centroid(l.trace('out'));
+    const cr = centroid(r.trace('out'));
+    // Well off centre...
+    expect(cl - W / 2).toBeGreaterThan(20);
+    expect(W / 2 - cr).toBeGreaterThan(20);
+    // ...and mirrored about it.
+    expect(Math.abs((cl - W / 2) - (W / 2 - cr))).toBeLessThan(6);
+  });
+
+  it('a corner pointing straight at the wall is symmetric again', async () => {
+    // At 45 the ring's corner faces the wall square on, so there is nothing to
+    // lean toward and the two walls agree again. Between the two the lean grows
+    // and falls — this is what says the asymmetry is the GEOMETRY and not a
+    // constant offset someone added to one side.
+    const l = await view('tpw_45_l', 'left_out', { orbit_azimuth: 0.125 });
+    const r = await view('tpw_45_r', 'right_out', { orbit_azimuth: 0.125 });
+    expect(l.success && r.success).toBe(true);
+    for (const [x, y] of [[W / 2, rowOfFloor(2)], [W / 2 - 60, rowOfFloor(1)],
+                          [W / 2 + 60, rowOfFloor(1)]]) {
+      expect(Math.abs(level(l.trace('out').pixelAt(x, y))
+                    - level(r.trace('out').pixelAt(x, y)))).toBeLessThan(4);
+    }
+  });
+
+  it('elevation squashes the light the way it squashes the picture',
+     async () => {
+    // A floor's pool lands at the height that floor is DRAWN at, so tilting the
+    // camera down compresses the wall light in exactly the same proportion.
+    // That is what keeps a triptych of left / main / right reading as one room.
+    const span = (f: any) => {
+      let lo = H, hi = -1;
+      for (let y = 0; y < H; y++)
+        if (level(f.pixelAt(W / 2, y)) > 60) { if (y < lo) lo = y; hi = y; }
+      return hi < lo ? 0 : hi - lo;
+    };
+    const flat = await view('tpw_elev_a', 'left_out', { wall_bounce: 0 });
+    const steep = await view('tpw_elev_b', 'left_out',
+                             { wall_bounce: 0, elevation: 75 });
+    expect(flat.success && steep.success).toBe(true);
+
+    const want = Math.cos((75 * Math.PI) / 180) / ELEV_COS;
+    const got = span(steep.trace('out')) / span(flat.trace('out'));
+    expect(got).toBeGreaterThan(want * 0.8);
+    expect(got).toBeLessThan(want * 1.2);
+    // ...and the floors are still in the picture's own places: the bottom one
+    // is still red and still at the bottom, at the row the squash puts it.
+    const bottom = steep.trace('out')
+      .pixelAt(W / 2, rowOfFloor(0, Math.cos((75 * Math.PI) / 180)));
+    expect(bottom.r).toBeGreaterThan(bottom.g + 40);
+    expect(bottom.r).toBeGreaterThan(bottom.b + 40);
+  });
+
   it('draws nothing at all when nobody is wired to it', async () => {
     const wired = await view('tpw_wired', 'left_out', {});
     const unwired = await view('tpw_unwired', 'left_out', {}, false);
@@ -199,8 +302,14 @@ describe('Three Planes impact light', () => {
     // chain input instead — the tower's own picture, which at the top floor's
     // height is nothing like a flat bar across the frame.
     const y = rowOfFloor(2);
-    expect(luma(wired.trace('out').pixelAt(W / 2, y))).toBeGreaterThan(120);
-    expect(Math.abs(luma(wired.trace('out').pixelAt(30, y))
-                  - luma(unwired.trace('out').pixelAt(30, y)))).toBeGreaterThan(10);
+    expect(level(wired.trace('out').pixelAt(W / 2, y))).toBeGreaterThan(150);
+    // Unwired, the send publishes its chain input instead — the tower's own
+    // picture, which is a different image throughout rather than a dimmer one.
+    let differing = 0, n = 0;
+    for (let yy = 0; yy < H; yy += 4)
+      for (let xx = 0; xx < W; xx += 4, n++)
+        if (Math.abs(luma(wired.trace('out').pixelAt(xx, yy))
+                   - luma(unwired.trace('out').pixelAt(xx, yy))) > 24) differing++;
+    expect(differing).toBeGreaterThan(n * 0.05);
   });
 });

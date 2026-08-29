@@ -2,104 +2,98 @@
 //
 // The stack sits inside a hollow room and this is one of its side walls, flat
 // on, from outside: horizontal is depth through the room, vertical is height.
-// Two dispatches, one per wall, differing only in which side of the room they
-// stand on.
+// Two dispatches, one per wall.
 //
-// It is a LIGHT MODEL, not a picture of the stack. Nothing here draws a quad;
-// what it draws is the pool each glowing ring lays on a wall a little way off,
-// the way a muzzle flash lights a corridor. Deliberately approximate — the
-// orbit is ignored entirely, because a square turned about its own axis
-// presents the same silhouette to both walls anyway and nothing in the light
-// would change.
+// It is a LIGHT MODEL, not a picture of the stack. Nothing here draws a quad.
+// What it draws is what four lengths of glowing tube do to a wall a little way
+// off, the way a muzzle flash lights a corridor.
 //
-// WHY IT DOES NOT LOOK LIKE A GRADIENT. The shape is not authored, it falls out
-// of the geometry, and the geometry is what makes light on a wall look like
-// light on a wall:
+// EACH RING IS FOUR TUBES, in the room, turned by the orbit — not one bar-shaped
+// emitter. That is the whole of it, and everything the light does comes out of
+// it rather than being drawn on afterwards:
 //
-//   * The emitter is a RING with width, so its pool is FLAT-TOPPED across the
-//     ring and only falls off past the ends — a bar of light, not a blob.
-//   * The wall is a fixed distance away, so the nearest the light can ever get
-//     is that gap, and the falloff is inverse square from there — times the
-//     GRAZING term, because what a surface catches is not how much light
-//     reaches it but how squarely. cos = gap/d, so the two together go as
-//     1/d^3, and that extra power is most of why this reads as light landing
-//     on something rather than a glow drawn over it.
-//   * Under all of it, one wide dim wash: the light that has bounced rather
-//     than arrived. A room without it is a black void with lamps in it.
+//   * Distance varies ALONG the ring. Turned off square, one corner is nearer
+//     the wall than the other and the pool leans that way, brighter and tighter
+//     at the near end. A single emitter at one distance can only ever lay down
+//     a flat bar.
+//   * A tube throws across itself and nothing along its length, so a length
+//     pointing AT the wall barely lights it. Square on, the near edge does all
+//     the work and the two running away contribute almost nothing; turned to
+//     45 the four share it and the pool breaks into the diamond the ring
+//     actually is.
+//   * That also breaks the two walls apart. A square turned about its own axis
+//     presents the same silhouette to both — which is why the orbit was
+//     ignored here at first — but the near-corner PATTERN is mirrored between
+//     them, so at any angle but square-on or 45 the two are different pictures.
+//   * ELEVATION squashes the vertical. Heights are the picture's own, so a
+//     floor's pool lands at the height that floor is drawn at and the three
+//     outputs stay one room when they are laid out side by side. Distances are
+//     worked out with that squash undone, so the geometry stays honest while
+//     the framing follows the camera.
 //
-// Each ring carries its OWN gap, which is what makes a throw land. The release
-// flings the rings outward, so they close on the wall as they go: the pool
-// tightens and burns at the same moment it widens, and by the end the ring is
-// nearly against the wall and the whole thing flares. Holding the gap fixed
-// for everything made a throw read as a slightly brighter version of resting,
-// which is not what a throw is.
+// The falloff is inverse square times the GRAZING cosine — what a surface
+// catches is not how much light reaches it but how squarely — and the two
+// together go as 1/d^3. That extra power is most of why this reads as light
+// landing on something rather than a glow drawn over it. Under all of it, one
+// wide dim wash per ring: the light that has bounced rather than arrived. A
+// room without one is a black void with lamps floating in it.
 //
-// The stacked-exponential halo the TUBES use was the obvious thing to reach
-// for here and it is wrong for a wall: its widest octave barely falls off
-// across a whole room, so every floor lays down the same flat pedestal and the
-// three pools melt into one bright rectangle. Inverse square has a long tail
-// and no pedestal, which is the difference.
+// The tubes' own stacked-exponential halo was the obvious thing to reach for
+// and it is wrong for a wall: its widest octave barely falls off across a
+// room, so every floor laid down the same flat pedestal and the three pools
+// melted into one bright rectangle. Inverse square has a long tail and no
+// pedestal, which is the difference.
 
+#include "nano_coords.hlsl"
 #include "nano_glint.hlsl"
 
 RWTexture2D<float4> outputTex : register(u0);
 
-/// How much of the wall the texture shows, in the stack's own units — fixed, so
-/// moving the wall changes the LIGHT and never the framing. The stack is about
-/// 0.4 of this tall by default, which leaves it room to throw.
-static const float kWallSpan = 1.0;
-
+/// Rings 0-2 are the floors; 3-5 are the release ghosts, which the host has
+/// already flown, opened and gated — from here it is one path.
+static const int kNanoWallRings = 6;
 
 cbuffer WallUniforms : register(b1) {
-  float4 layer[3];     // rgb = colour, w = level
-  float4 layer_g[3];   // x = height, y = ring half-size, z = gap to this wall
-  // The release throw, as light. Same rows again for the ghosts: in Grow they
-  // have flown outward and up, in Strobe they sit exactly on the quads — the
-  // host has already resolved which, so from here it is one path.
-  float4 ghost[3];
-  float4 ghost_g[3];
-  float4 wall;   // wash reach, wash weight, gain, -
-  float4 look;   // warmth, which wall (-1 left, +1 right), -, zoom
-  float4 glim;   // travel direction through the room: x across, y along
+  float4 ring[6];      // rgb = colour, w = level
+  float4 ring_g[6];    // x = height, y = source radius, -, -
+  // The four corners of each ring, in the ROOM: (x, z) pairs, turned by the
+  // orbit. Ring r takes rows 2r and 2r+1 — (c0, c1) then (c2, c3).
+  float4 ring_c[12];
+  float4 wall;   // wash reach, wash weight, gain, the nearest tube's distance
+  float4 look;   // warmth, which wall (-1 left, +1 right), 1/cos(elevation), wall x
+  float4 glim;   // the glints' heading across the floor
   float4 glints[8];
 };
 
-/// The pool of light one horizontal ring lays on a side wall.
+float2 ring_corner(int r, int k) {
+  float4 row = ring_c[r * 2 + (k >> 1)];
+  return (k & 1) ? row.zw : row.xy;
+}
+
+/// What one length of tube throws at one point on the wall.
 ///
-/// `w` is the point on the wall (depth, height), `y_i` the ring's height and
-/// `s` its half-size, all in the stack's own units. `gap` is how far the wall
-/// stands off the ring, `reach` and `bounce` the wide wash under it.
-float wall_pool(float2 w, float y_i, float s, float gap, float reach,
-                float bounce) {
-  // Flat across the ring and falling off only past its ends: the emitter has
-  // width, so its pool does too. This is the whole reason it reads as a bar
-  // thrown by an object rather than as a blob centred on a point.
-  float dz = max(abs(w.x) - s, 0.0);
-  float dy = w.y - y_i;
-  float q = dz * dz + dy * dy;
+/// `soft2` is the source's own radius squared — a tube has thickness, and a
+/// thrown ring has opened out besides, so nothing here ever converges on a
+/// line. `g2` normalises against the NEAREST tube in the room this frame, so
+/// the geometry shapes the pool without also setting the exposure.
+float tube_light(float3 P, float3 A, float3 B, float soft2, float g2) {
+  float3 e = B - A;
+  float ee = max(dot(e, e), 1e-8);
+  float t = saturate(dot(P - A, e) / ee);
+  float3 d = P - (A + e * t);
+  float q = dot(d, d) + soft2;
+  float3 dh = d * rsqrt(q);
 
-  // Inverse square TIMES the grazing cosine, normalised so straight opposite
-  // the ring reads 1 — the gap shapes the pool, it does not dim it. Both terms
-  // are gap/d, so the pair is (gap^2/(gap^2+q))^1.5 and needs no angle worked
-  // out: half brightness lands about two thirds of a gap out.
-  float g2 = gap * gap;
-  float k = g2 / (g2 + q);
-  float core = k * sqrt(k);
+  // How squarely the wall faces it. The wall is x-facing, so the cosine is
+  // just the direction's own x and there is no dot product to write out.
+  float face = abs(dh.x);
+  // How much the tube throws this way. A line source radiates in the plane
+  // across itself and nothing at all along its length.
+  float3 eh = e * rsqrt(ee);
+  float ax = dot(eh, dh);
+  float along = sqrt(saturate(1.0 - ax * ax));
 
-  // The ring's corners were once a term of their own here — two tubes meet at
-  // each, and the two edges running away from the wall present their near ends
-  // there, so in principle the bar should brighten toward its ends. In
-  // practice an edge is a LINE source and a corner is a POINT one, so the
-  // point falls off in two dimensions where the line falls off in one, and
-  // whatever weight makes the corner visible makes it a hot dot. The bar came
-  // out a dumbbell — two lamps with a strip between them, which is precisely
-  // the look this is trying not to have. The edge alone ends softly enough.
-
-  // The bounce keeps the plain inverse square, with no grazing term: it is
-  // light that has been around the room and arrives from everywhere, so there
-  // is no angle for a surface to be square to.
-  float r2 = reach * reach;
-  return core + bounce * (r2 / (r2 + q));
+  return g2 * face * along / q;
 }
 
 [numthreads(8, 8, 1)]
@@ -111,33 +105,55 @@ void main(uint3 gid : SV_DispatchThreadID) {
   float reach  = max(wall.x, 1e-3);
   float bounce = wall.y;
   float gain   = wall.z;
+  float g2     = wall.w * wall.w;
 
   float2 vp = float2(float(W), float(H));
-  float2 uv = (float2(gid.xy) + 0.5) / vp;
-  // The wall, flat on. Depth follows the output's aspect, so the units stay
-  // square and a wider output shows more wall rather than a stretched one.
-  float wy = (0.5 - uv.y) * 2.0 * kWallSpan;
-  float wz = (uv.x - 0.5) * 2.0 * kWallSpan * (vp.x / vp.y);
+  float2 uv = nano_pixel_to_uv(float2(gid.xy), vp);
+  float m = max(vp.x, vp.y);
+  float2 aspect = float2(m / (2.0 * vp.x), m / (2.0 * vp.y));
+  float2 sq = nano_uv_to_cover_square(uv, aspect);
+
+  // The wall point, in the room. Its height is the picture's own height with
+  // the elevation squash undone, so what lands is at the height the floor is
+  // DRAWN at while the distances behind it stay true.
+  float3 P = float3(look.y * look.w, -sq.y * look.z, sq.x);
 
   // The glints, sweeping THROUGH the room rather than across a picture. Their
   // travel angle is read as a heading on the floor, so a glint crossing the
-  // stack lights this wall and the far one at different moments — which is the
-  // only thing that makes the two outputs different pictures, and it is the
-  // right thing: it is the same sweep, arriving twice.
-  float axis = (look.y * kWallSpan * glim.x + wz * glim.y) * look.w;
-  float m = 0.0;
+  // stack reaches this wall and the far one at different moments.
+  float axis = look.y * look.w * glim.x + sq.x * glim.y;
+  float mg = 0.0;
   [unroll]
-  for (int gi = 0; gi < 8; gi++) m += nano_glint_at(axis, glints[gi]);
-  float glint = max(0.0, 1.0 + m);
+  for (int gi = 0; gi < 8; gi++) mg += nano_glint_at(axis, glints[gi]);
+  float glint = max(0.0, 1.0 + mg);
 
   float3 c = float3(0.0, 0.0, 0.0);
+  float r2 = reach * reach;
   [unroll]
-  for (int i = 0; i < 3; i++) {
-    float2 p = float2(wz, wy);
-    c += layer[i].rgb * (layer[i].w * glint *
-         wall_pool(p, layer_g[i].x, layer_g[i].y, layer_g[i].z, reach, bounce));
-    c += ghost[i].rgb * (ghost[i].w * glint *
-         wall_pool(p, ghost_g[i].x, ghost_g[i].y, ghost_g[i].z, reach, bounce));
+  for (int r = 0; r < kNanoWallRings; r++) {
+    float lvl = ring[r].w;
+    // A dark floor and a spent ghost cost nothing: the level is a uniform, so
+    // every thread takes the same side of this and the branch is free.
+    if (lvl > 1e-4) {
+      float y = ring_g[r].x;
+      float soft2 = ring_g[r].y * ring_g[r].y;
+
+      float lit = 0.0;
+      [unroll]
+      for (int k = 0; k < 4; k++) {
+        float2 a = ring_corner(r, k);
+        float2 b = ring_corner(r, (k + 1) & 3);
+        lit += tube_light(P, float3(a.x, y, a.y), float3(b.x, y, b.y), soft2, g2);
+      }
+
+      // The bounce: the room answering, from the ring as a whole rather than
+      // from any one tube of it. No grazing term — it arrives from everywhere,
+      // so there is no angle for a surface to be square to.
+      float3 dc = P - float3(0.0, y, 0.0);
+      lit += bounce * (r2 / (r2 + dot(dc, dc)));
+
+      c += ring[r].rgb * (lvl * glint * lit);
+    }
   }
   c *= gain;
 

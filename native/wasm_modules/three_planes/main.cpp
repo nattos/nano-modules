@@ -76,18 +76,20 @@ struct LedUniforms {
 static_assert(sizeof(LedUniforms) == 16 * (led_bars::kCells + 1),
               "LedUniforms layout mismatch with nano_led_bars.hlsl");
 
-// Mirrors `cbuffer WallUniforms` in wall.hlsl, row for row.
+// Mirrors `cbuffer WallUniforms` in wall.hlsl, row for row. Rings 0-2 are the
+// floors and 3-5 the release ghosts — one bank, because by the time it gets
+// here a ghost is just another ring of light in the room.
+static constexpr int WALL_RINGS = PLANES * 2;
 struct WallUniforms {
-  float layer[PLANES][4];     // rows 0-2:   rgb = colour, w = level
-  float layer_g[PLANES][4];   // rows 3-5:   height, ring half-size, gap
-  float ghost[PLANES][4];     // rows 6-8:   the release throw, as light
-  float ghost_g[PLANES][4];   // rows 9-11
-  float wall[4];              // row 12:     wash reach, wash weight, gain, -
-  float look[4];              // row 13:     warmth, side, far-edge weight, zoom
-  float glim[4];              // row 14:     travel heading through the room
-  float glints[8][4];         // rows 15-22
+  float ring[WALL_RINGS][4];    // rows 0-5:   rgb = colour, w = level
+  float ring_g[WALL_RINGS][4];  // rows 6-11:  height, source radius
+  float ring_c[12][4];          // rows 12-23: (x,z) corners, turned by the orbit
+  float wall[4];                // row 24:     wash reach, wash weight, gain, gap
+  float look[4];                // row 25:     warmth, side, 1/cos(elev), wall x
+  float glim[4];                // row 26:     travel heading across the floor
+  float glints[8][4];           // rows 27-34
 };
-static_assert(sizeof(WallUniforms) == 368, "WallUniforms layout mismatch with wall.hlsl");
+static_assert(sizeof(WallUniforms) == 560, "WallUniforms layout mismatch with wall.hlsl");
 
 struct State {
   // --- Planes (the externally-driven rhythm surface) ---
@@ -184,7 +186,7 @@ struct State {
   // The impact light the stack throws into the room, published on `left_out`
   // and `right_out`. Effect-owned and dispatched only when wired.
   float wall_gain    = 1.0f;
-  float wall_gap     = 0.45f;
+  float wall_gap     = 0.55f;
   float wall_reach   = 0.45f;
   float wall_bounce  = 0.14f;
   float wall_warmth  = 0.55f;
@@ -244,19 +246,19 @@ static inline float lineHalfWidth(float w) {
   float t = w < 0.0f ? 0.0f : (w > 1.0f ? 1.0f : w);
   return 0.0012f + 0.0208f * t * t;
 }
-// How far the wall stands off the stack, in its own units: 0.02 .. 1.0,
-// exponential, because the useful end is the tight one. Half brightness lands
-// exactly this far out from a ring, so below about half the floor spacing the
-// three pools read as three and above it they merge.
+// How far the wall stands off the stack, in COVER-SQUARE units — the picture's
+// own, so the light keeps step with the tower as the zoom moves it. 0.008 ..
+// 0.4, exponential, because the useful end is the tight one: below about half
+// the floor spacing the three pools read as three and above it they merge.
 static inline float wallGap(float t) {
   float u = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
-  return 0.02f * std::pow(50.0f, u);
+  return 0.01f * std::pow(30.0f, u);
 }
-// How far the bounce carries: 0.2 .. 2.0 of the same units, linear — it is a
+// How far the bounce carries: 0.1 .. 1.0 of the same units, linear — it is a
 // wash, and there is nothing to resolve at either end of it.
 static inline float wallReach(float t) {
   float u = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
-  return 0.2f + 1.8f * u;
+  return 0.1f + 0.9f * u;
 }
 // Halo radius: exponential, 0.006 .. 0.24 cover-square units.
 static inline float haloRadius(float r) {
@@ -1173,6 +1175,19 @@ static const float kGhostWallGain = 0.70f;   ///< a throw, as light on the wall
 /// wide and goes out.
 static const float kGhostBloom = 0.5f;
 
+/// A tube's own radius, as a fraction of how far off the wall it is.
+///
+/// Not a detail. A ring turned to 45 presents a CORNER to the wall and nothing
+/// else — that is true, and it is the effect asked for — but a mathematical
+/// line through that corner throws a pinpoint, and the tower reads as three
+/// sparks. Real tube has thickness and real glow around it, and at this
+/// fraction the corner lands as a blob the size of the gap instead.
+static const float kTubeRadius = 0.60f;
+
+/// The camera can be laid flat, and a flat camera divides by nothing. Well
+/// below any elevation anyone would use.
+static const float kMinElevCos = 0.15f;
+
 static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
                         float grow, float opened) {
   if (!s_wall_pso.valid()) return;
@@ -1194,47 +1209,86 @@ static void renderWalls(State* s, int vp_w, int vp_h, const Uniforms& u,
 
     const float gap = wallGap(s->wall_gap);
 
+    // The ring in the ROOM, turned by the orbit — the same rotation
+    // projectPlanes uses, kept in (x, z) instead of being flattened to the
+    // screen. Scaled by the zoom, so everything here is in the picture's own
+    // cover-square units and the light keeps step with the tower.
+    const float th = s->orbit_azimuth * 2.0f * kPi;
+    const float ct = std::cos(th), st = std::sin(th);
+    const float half = s->plane_size;
+    const float cx[4] = {-half, +half, +half, -half};
+    const float cz[4] = {-half, -half, +half, +half};
+
+    // Where the wall stands: clear of the ring's silhouette by exactly the gap,
+    // so the NEAREST tube is always that far off however the stack has turned.
+    //
+    // A stylisation, and a deliberate one — a real room's walls do not move
+    // because the thing in it turned. Pinning them instead, at the circumradius
+    // so nothing could poke through, made the distance breathe between the
+    // ring's inradius and its corners: a 1.4x swing under a 1/d^3 falloff, so
+    // the level moved by most of two stops as the stack orbited and no single
+    // exposure was right at more than one angle. It also put a floor of 0.41
+    // ring-widths under the distance, which is already wider than the floors
+    // are apart — the three pools could never come out as three.
+    //
+    // Holding the nearest tube fixed keeps the exposure still and lets the
+    // orbit do what was actually asked of it: change the SHAPE. Square on, the
+    // whole near edge is at the gap and lays a flat bar; turned off it, one
+    // corner is at the gap and the edge falls away behind it, so the pool leans;
+    // at 45 there is only the corner. That is the geometry, and it is mirrored
+    // between the two walls.
+    const float support = half * (std::fabs(ct) + std::fabs(st)) * s->zoom;
+    const float wall_x = support + gap;
+    const float d_min = gap;
+
+    float elev_cos = std::cos(s->elevation_deg * (kPi / 180.0f));
+    if (elev_cos < kMinElevCos) elev_cos = kMinElevCos;
+
     WallUniforms w = {};
     for (int i = 0; i < PLANES; i++) {
       const float y = (float(i) - 1.0f) * s->plane_spacing;   // 0 = bottom floor
-      for (int c = 0; c < 3; c++) {
-        w.layer[i][c] = s->color[i][c];
-        w.ghost[i][c] = s->color[i][c];
+      // Ring i is the floor; ring i + PLANES is the ghost it threw. Same rows,
+      // same code — the ghost is flown and opened, and nothing downstream needs
+      // to know which is which.
+      const int ring_of[2] = {i, i + PLANES};
+      const float scale_of[2] = {1.0f, grow};
+      const float soft_of[2] = {
+          d_min * kTubeRadius,
+          d_min * kTubeRadius * (1.0f + (opened - 1.0f) * kGhostBloom)};
+      // The throw's gain multiplies `opened` back, because the picture divides
+      // it out to conserve a widening halo — and nothing is widening on a wall.
+      const float level_of[2] = {litLevel(s->emission[i]),
+                                 u.ring_gain[i] * opened * kGhostWallGain};
+
+      for (int g = 0; g < 2; g++) {
+        const int r = ring_of[g];
+        const float sc = scale_of[g];
+        for (int c = 0; c < 3; c++) w.ring[r][c] = s->color[i][c];
+        w.ring[r][3] = level_of[g];
+        w.ring_g[r][0] = y * s->zoom * sc;
+        w.ring_g[r][1] = soft_of[g];
+        for (int k = 0; k < 4; k++) {
+          const float xr = (cx[k] * ct - cz[k] * st) * s->zoom * sc;
+          const float zr = (cx[k] * st + cz[k] * ct) * s->zoom * sc;
+          w.ring_c[r * 2 + (k >> 1)][(k & 1) ? 2 : 0] = xr;
+          w.ring_c[r * 2 + (k >> 1)][(k & 1) ? 3 : 1] = zr;
+        }
       }
-      w.layer[i][3] = litLevel(s->emission[i]);
-      w.layer_g[i][0] = y;
-      w.layer_g[i][1] = s->plane_size;
-      w.layer_g[i][2] = gap;
-      // The throw. `grow` has already resolved the mode for us: in Grow the
-      // floors have flown outward and apart, in Strobe they are exactly where
-      // they were, and either way the ring gain carries the whole life of it.
-      //
-      // Multiplied back by `opened`, which the picture divides out. There it
-      // conserves the light a ring was thrown with as its HALO widens — a
-      // ring going out rather than blooming. Out here nothing is widening:
-      // the ring is a real thing flying at a real wall, and dimming it as it
-      // arrives is exactly backwards.
-      w.ghost[i][3] = u.ring_gain[i] * opened * kGhostWallGain;
-      w.ghost_g[i][0] = y * grow;
-      w.ghost_g[i][1] = s->plane_size * grow;
-      // ...and it OPENS as it flies. `opened` is the same number the picture
-      // widens the ghost's halo by, so the wall softens in step with it — one
-      // throw seen twice rather than two events that happen to coincide.
-      w.ghost_g[i][2] = gap * (1.0f + (opened - 1.0f) * kGhostBloom);
     }
 
     w.wall[0] = wallReach(s->wall_reach);
     w.wall[1] = s->wall_bounce;
     w.wall[2] = s->wall_gain;
+    w.wall[3] = d_min;
 
     w.look[0] = s->wall_warmth;
     w.look[1] = (side == 0) ? -1.0f : 1.0f;
-    w.look[2] = 0.0f;
-    // The glints arrive already projected onto a SCREEN axis, so the wall
-    // converts its own room coordinates the same way to meet them. Rough on
-    // purpose: what has to be right is that a glint reaches the two walls at
-    // different moments, not where it is to the millimetre.
-    w.look[3] = s->zoom;
+    // Heights arrive as the PICTURE's, squashed by the elevation so a floor's
+    // pool lands where that floor is drawn; the wall undoes the squash before
+    // measuring anything, so the distances stay true while the framing follows
+    // the camera.
+    w.look[2] = 1.0f / elev_cos;
+    w.look[3] = wall_x;
 
     w.glim[0] = u.glim0[0];
     w.glim[1] = u.glim0[1];

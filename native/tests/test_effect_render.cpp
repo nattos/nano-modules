@@ -4637,6 +4637,7 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
       { "type": "module", "module_type": "source.mesh.three_planes", "instance_key": "tp",
         "params": { "grain": 0.0, "scanline": 0.0, "chroma_bleed": 0.0,
                     "glimmer_gain": 0.0, "glimmer_chaos": 0.0,
+                    "orbit_azimuth": 0.0,
                     "plane1_color": [1.0, 0.0, 0.0],
                     "plane2_color": [0.0, 1.0, 0.0],
                     "plane3_color": [0.0, 0.0, 1.0],
@@ -4663,12 +4664,13 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
     const size_t i = ((size_t)y * W + x) * 4;
     return std::array<int, 3>{px[i], px[i + 1], px[i + 2]};
   };
-  // The wall shows one stack-unit either side of centre and the floors sit at
-  // -0.42 / 0 / +0.42, so they land at these rows. The bottom floor is LOW,
-  // which is the one thing a sign error would flip.
-  auto bottom = at(W / 2, 192);
+  // A floor's pool lands at the height that floor is DRAWN at: model height
+  // through the elevation squash and the zoom, into cover-square, into pixels.
+  // At the defaults and this frame size that is 25 rows a floor. The bottom
+  // floor is LOW, which is the one thing a sign error would flip.
+  auto bottom = at(W / 2, 160);
   auto middle = at(W / 2, 135);
-  auto top    = at(W / 2, 78);
+  auto top    = at(W / 2, 110);
   INFO("bottom " << bottom[0] << "," << bottom[1] << "," << bottom[2]
        << "  middle " << middle[0] << "," << middle[1] << "," << middle[2]
        << "  top " << top[0] << "," << top[1] << "," << top[2]);
@@ -4680,11 +4682,10 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
   CHECK(top[2] > top[0] + 40);
   CHECK(top[2] > top[1] + 40);
 
-  // Flat across the ring, and gone by the edge of the wall: the emitter has
-  // width, so the pool is a bar rather than a blob.
-  auto near_mid = at(W / 2 - 30, 78);
-  auto edge = at(6, 78);
+  // Flat across the ring, and gone by the edge of the wall: square on, the near
+  // edge is at one distance along its whole length, so the pool is a bar rather
+  // than a blob.
   auto lum = [](const std::array<int, 3>& c) { return (c[0] + c[1] + c[2]) / 3.0; };
-  CHECK(std::abs(lum(near_mid) - lum(top)) < lum(top) * 0.10);
-  CHECK(lum(edge) < lum(top) * 0.35);
+  CHECK(std::abs(lum(at(W / 2 - 25, 110)) - lum(top)) < lum(top) * 0.10);
+  CHECK(lum(at(6, 110)) < lum(top) * 0.35);
 }
