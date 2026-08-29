@@ -192,6 +192,7 @@ NANO_DECLARE_INSTANCE_EFFECT(mod_switch)
 NANO_DECLARE_INSTANCE_EFFECT(mod_slice)
 NANO_DECLARE_INSTANCE_EFFECT(three_planes_rig_effect)
 NANO_DECLARE_INSTANCE_EFFECT(triptych)
+NANO_DECLARE_INSTANCE_EFFECT(room_wrap)
 namespace env_lfo { void seek(void* self, double from, double to); } // optional seek export
 
 NANO_DECLARE_INSTANCE_EFFECT(env_adsr)
@@ -1110,6 +1111,19 @@ void nano_module_main() {
         "triptych,row,side by side,compare,debug,layout,three,panel,montage,walls",
         "la-columns",
         NANO_INSTANCE_LIFECYCLE(triptych),
+    });
+
+    // The inverse of triptych's Room mode: one picture cut into the three
+    // panels a room wants, rather than three panels composited into a room.
+    nano::registerEffect({
+        2,
+        "util.room_wrap",
+        "Room Wrap",
+        "One picture spread across the three walls of a room — a back screen and two side screens, from a single input, so a wipe or a field of light crosses all three continuously. The main output is the back wall: the input at square pixels, zoomed by Scale. Everything that zoom pushes off the left and right edges comes out of Left Out and Right Out, keystoned for a wall seen from the side. Perspective sets how deep the room is: at 1 the walls reach exactly as far as the picture, so the three screens tile it with nothing repeated or lost; at 0 they are a flat row with the overflow stretched evenly. The seams always join continuously. The exact inverse of util.triptych's Room mode — send the three outputs there with matching knobs and the input comes back. Side outputs cost nothing until wired.",
+        "util",
+        "room,wrap,wall,three,walls,triptych,keystone,perspective,spread,split,projection,mapping,corner,side",
+        "la-vector-square",
+        NANO_INSTANCE_LIFECYCLE(room_wrap),
     });
 
     nano::registerEffect({

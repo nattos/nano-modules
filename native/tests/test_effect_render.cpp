@@ -4598,6 +4598,104 @@ TEST_CASE("triptych keeps the row aligned over its LED strip on Metal too",
   }
 }
 
+// util.room_wrap and util.triptych are inverses, and this runs that round trip
+// on Metal: cut one ramp into three panels with the first card, composite them
+// back into a room with the second, and the middle row has to come out as the
+// ramp that went in. It is the strongest single statement either card makes —
+// the zoom, both wall maps, and the fact that they are one map read in opposite
+// directions (shaders_common/nano_room_wall.hlsl) all have to be right at once
+// for it to hold, and a translation that got any of them wrong still produces a
+// picture. The web twin is web/test/room_wrap.test.ts.
+//
+// Compared against the ramp rendered ALONE rather than against computed greys,
+// so nothing here depends on the transfer curve between a gradient's parameter
+// and a byte.
+TEST_CASE("room_wrap and triptych round-trip a ramp on Metal", "[effect_render]") {
+  auto backend = gpu::createMetalBackend();
+  if (!backend || backend->getBackend() != 0) {
+    SKIP("No Metal device available");
+  }
+
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+
+  sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
+
+  const uint32_t W = 200, H = 100;
+  const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int refOut = backend->createTexture(W, H, RGBA8);
+  int roomOut = backend->createTexture(W, H, RGBA8);
+  REQUIRE(inTex >= 0);
+  REQUIRE(refOut >= 0);
+  REQUIRE(roomOut >= 0);
+  std::vector<uint8_t> blk(W * H * 4, 0);
+  for (size_t i = 3; i < blk.size(); i += 4) blk[i] = 255;
+  backend->writeTexture(inTex, W, H, blk.data(), (uint32_t)blk.size());
+
+  // Softness 1 spreads the blend over the whole sweep, so the ramp IS the
+  // position across the frame and nothing else.
+  const char* kGradient = R"JSON(
+      { "type": "module", "module_type": "source.gradient", "instance_key": "g",
+        "params": { "angle": 0.0, "offset": 0.0, "softness": 1.0,
+                    "color_a": [0.0, 0.0, 0.0], "color_b": [1.0, 1.0, 1.0] } })JSON";
+
+  auto row = [&](int tex) {
+    auto px = backend->readbackTexture(tex, W, H);
+    REQUIRE(px.size() >= (size_t)W * H * 4);
+    std::vector<int> out(W);
+    for (uint32_t x = 0; x < W; x++)
+      out[x] = px[(((size_t)(H / 2) * W) + x) * 4];
+    return out;
+  };
+
+  auto ref_sketch = nlohmann::json::parse(std::string("{\"chain\":[") + kGradient + "]}");
+  int32_t r0 = executor.execute(ref_sketch, inTex, refOut, (int)W, (int)H, 1.0 / 60.0,
+                                /*sketchDirty=*/true);
+  backend->submit();
+  const std::vector<int> want = row(r0);
+
+  // Triptych sizes its back wall in THIRDS of the frame, so room_wrap's Scale
+  // of 3 is its Middle Size of 1 — the same room, described the way each card
+  // describes one.
+  auto sketch = nlohmann::json::parse(std::string(R"JSON({
+    "chain": [)JSON") + kGradient + R"JSON(,
+      { "type": "module", "module_type": "util.room_wrap", "instance_key": "rw",
+        "params": { "scale": 3.0, "perspective": 1.0 } },
+      { "type": "module", "module_type": "util.triptych", "instance_key": "tp",
+        "params": { "fit_mode": 3, "gap": 0.0, "mid_scale": 1.0, "perspective": 1.0 } }
+    ],
+    "wires": [
+      { "id": "wl", "src": { "instanceKey": "rw", "field": "left_out" },
+        "dest": { "instanceKey": "tp", "field": "left_in" } },
+      { "id": "wr", "src": { "instanceKey": "rw", "field": "right_out" },
+        "dest": { "instanceKey": "tp", "field": "right_in" } }
+    ]
+  })JSON");
+
+  int32_t out = executor.execute(sketch, inTex, roomOut, (int)W, (int)H, 1.0 / 60.0,
+                                 /*sketchDirty=*/true);
+  backend->submit();
+  const std::vector<int> got = row(out);
+
+  // Only the middle row: the room has no ceiling and no floor, so above and
+  // below the walls' trapezoids triptych correctly leaves nothing. The two
+  // seams are skipped because which side of a one-pixel boundary a sample
+  // lands on is a question about rounding.
+  int checked = 0;
+  for (uint32_t x = 4; x < W - 4; x += 4) {
+    if (std::abs((int)x - (int)W / 3) < 3) continue;
+    if (std::abs((int)x - 2 * (int)W / 3) < 3) continue;
+    INFO("x " << x << " want " << want[x] << " got " << got[x]);
+    CHECK(std::abs(got[x] - want[x]) <= 6);
+    ++checked;
+  }
+  CHECK(checked > 40);
+}
+
 // three_planes' impact light, on Metal. A third compute pass on that card, and
 // the one whose whole output is a falloff — so a translation that quietly lost
 // the grazing term or the per-ring gap would still produce a picture, just a

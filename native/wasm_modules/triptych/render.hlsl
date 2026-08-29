@@ -75,6 +75,7 @@
 // side of it are left empty.
 
 #include "nano_coords.hlsl"
+#include "nano_room_wall.hlsl"
 
 Texture2D<float4>   midTex    : register(t0);
 Texture2D<float4>   leftTex   : register(t1);
@@ -101,15 +102,12 @@ struct RoomGeom {
 };
 
 /// How far along a side wall a pixel is, given how far across the panel it is.
-///
-/// `t` runs 0 at the seam to 1 at the frame edge, `h_seam` and `h_edge` are the
-/// panel's half-heights at those two ends. Screen half-height goes as 1/z on a
-/// plane, so the heights ARE the reciprocal depths, and this is the ordinary
-/// perspective-correct interpolation written in terms of them. At h_seam ==
-/// h_edge it collapses to `t`, which is why Perspective 0 costs nothing.
+/// `t` runs 0 at the seam to 1 at the frame edge; the two half-heights are the
+/// panel's at those ends. Shared with `util.room_wrap`, which walks this map
+/// backwards to cut one picture into the three panels a room wants — see
+/// shaders_common/nano_room_wall.hlsl for why the two coordinates differ.
 float wall_s(float t, float h_seam, float h_edge) {
-  float h = lerp(h_seam, h_edge, t);
-  return t * h_edge / max(h, 1e-6);
+  return nano_wall_s(t, h_seam, h_edge);
 }
 
 /// Where the three panels sit, given the mode.
