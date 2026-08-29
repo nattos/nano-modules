@@ -58,6 +58,10 @@ struct State {
   /// duration knob arriving in the same transaction resolve the same way
   /// whatever order they land in (mod_latch's discipline).
   int pending_anim = rig::AnimNone;
+  /// Same rising-edge discipline as the four moves, and the same deferral:
+  /// a patch only ARMS the reset, tick() performs it.
+  bool orbit_reset_prev = false;
+  bool pending_orbit_reset = false;
 };
 
 // --- publish helpers ------------------------------------------------------
@@ -263,6 +267,43 @@ void module_init() {
                     "the hold outlasts the flam, so nothing goes black.")
         .label("Flam Rate", "Rate");
 
+  // ---------------- Beat ----------------
+  schema.group("beat", "Beat")
+        .groupHelp(
+          "The one thing on this card driven by the TRANSPORT rather than by "
+          "the feed or by your hand — so it runs in both modes, including "
+          "**Solid** — which is what makes *nothing reacting, but still on the "
+          "grid* a pose you can cut to.\n\n"
+          "On the beat, the quads' INTERIORS flood. That is the one thing here "
+          "that fills a plane rather than outlining it, so it reads as the "
+          "construct lighting up rather than as another accent on its edges. "
+          "*Fill* is how hard, and it is signed like the field it drives: "
+          "positive floods with neon, negative punches the interiors to black "
+          "masks that occlude whatever is behind them.\n\n"
+          "*Stagger* is how long the next floor waits, in beats. At 0 the "
+          "tower lights flat; wind it up and the beat walks up it.\n\n"
+          "**A beat is only believed once half a beat has passed since the "
+          "last one.** A beat-sync that is not confident does not drift "
+          "gently, it emits crossings in bursts while it re-locks, and a tower "
+          "flashing on every one of them reads as broken rather than as fast. "
+          "The half-beat is wall clock, off the BPM: the guard's whole job is "
+          "to distrust the grid, so it cannot ask the grid how long its own "
+          "suspect interval was.");
+  schema.floatField("beat_fill", 0.6f, -1.f, 1.f, state::PrimaryInput,
+                    "signed", 0.f, nullptr,
+                    "How hard a beat floods the quads' interiors. Negative "
+                    "punches them to black masks instead. 0 is off.")
+        .label("Beat Fill", "Fill");
+  schema.floatField("beat_fill_time", 0.22f, 0.02f, 2.f, state::PrimaryInput,
+                    nullptr, 0.f, "s",
+                    "How long one flood lasts.")
+        .label("Beat Time", "BTime");
+  schema.floatField("beat_fill_stagger", 0.f, 0.f, 1.f, state::PrimaryInput,
+                    nullptr, 0.f, "beats",
+                    "How long each floor waits after the one below it. 0 "
+                    "lights the tower flat; up here the beat walks it.")
+        .label("Beat Stagger", "Stag");
+
   // ---------------- Colours ----------------
   schema.group("colors", "Colours")
         .groupHelp(
@@ -295,6 +336,16 @@ void module_init() {
                     "unsigned", 0.f, nullptr,
                     "Turntable angle. 0..1 maps to a full 360 deg turn.")
         .label("Orbit Base", "Orbit");
+  schema.floatField("orbit_rate", 0.f, -90.f, 90.f, state::PrimaryInput,
+                    "signed", 0.f, "deg/s",
+                    "How fast the whole construct turns, on top of the base "
+                    "angle. This is the one part of the camera that REMEMBERS "
+                    "— leave it running and the tower is wherever it got to — "
+                    "which is what the reset is for. 0 is still.")
+        .label("Orbit Rate", "Turn");
+  // Put the turn back on the base angle. A hard cut, like the end of a move.
+  schema.eventField("orbit_reset", state::PrimaryInput)
+        .label("Reset Orbit", "Rst");
   schema.floatField("elevation_base", 35.264389682754654f, 0.f, 89.f,
                     state::PrimaryInput, nullptr, 0.f, "deg",
                     "Deck tilt. 35.26 deg is true isometric.")
@@ -519,6 +570,21 @@ void module_init() {
     schema.rgbField(name, 0.72f, 0.35f, 1.00f, state::SecondaryOutput)
           .label(disp, shortl);
   }
+  for (int i = 0; i < rig::kLayers; ++i) {
+    char name[24], disp[24], shortl[8];
+    std::snprintf(name, sizeof(name), "plane%d_fill", i + 1);
+    std::snprintf(disp, sizeof(disp), "Plane %d Fill", i + 1);
+    std::snprintf(shortl, sizeof(shortl), "P%d Fill", i + 1);
+    // Three_planes' fill is SIGNED, so an unfilled plane is the MIDDLE of the
+    // range and this rests at 0.5 rather than at 0 — the rail carries the
+    // destination slider's position, as every rail here does.
+    schema.floatField(name, 0.5f, 0.f, 1.f, state::SecondaryOutput, "unsigned",
+                      0.f, nullptr,
+                      "The beat flooding this plane's interior, as a fraction "
+                      "of Three Planes' -1..1 Fill range. Rests at 0.5, which "
+                      "is no fill.")
+          .label(disp, shortl);
+  }
   schema.floatField("orbit_azimuth", 0.125f, 0.f, 1.f, state::SecondaryOutput,
                     "unsigned", 0.f, nullptr,
                     "Turntable angle. 0..1 maps to a full 360 deg turn.")
@@ -585,6 +651,16 @@ void tick(void* self, double dt) {
     s->core.trigger(s->pending_anim, s->p);
     s->pending_anim = rig::AnimNone;
   }
+  if (s->pending_orbit_reset) {
+    s->core.resetOrbit();
+    s->pending_orbit_reset = false;
+  }
+
+  // The transport, read fresh every frame. The show logic is host-free, so the
+  // clock arrives as ordinary parameters and the Catch2 goldens can drive a
+  // beat grid by hand.
+  s->p.bar_phase = static_cast<float>(host::barPhase());
+  s->p.bpm = static_cast<float>(host::bpm());
 
   const rig::Out o = s->core.tick(s->p, s->sig, static_cast<float>(dt));
 
@@ -597,6 +673,8 @@ void tick(void* self, double dt) {
     pubFloat(name, o.emission[i]);
     std::snprintf(name, sizeof(name), "plane%d_color", i + 1);
     pubRgb(name, o.color[i]);
+    std::snprintf(name, sizeof(name), "plane%d_fill", i + 1);
+    pubFloat(name, o.fill[i]);
   }
   pubFloat("sweep_speed", o.sweep_speed);
   pubFloat("sweep_out", o.sweep_out);
@@ -649,6 +727,13 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
       if (matched) continue;
     }
 
+    if (state::pathIs(p, l, "orbit_reset")) {
+      const bool t = state::patchEvent(i);
+      if (t && !s->orbit_reset_prev) s->pending_orbit_reset = true;
+      s->orbit_reset_prev = t;
+      continue;
+    }
+
     if (state::pathIs(p, l, "mode")) {
       s->p.mode = state::patchInt(i);
       applyModeVisibility(s->p.mode);
@@ -664,6 +749,12 @@ void on_state_patched(void* self, int n, const char* pb, const int* off,
     else if (state::pathIs(p, l, "flam_color"))    s->p.flam_color = state::patchFloat(i);
     else if (state::pathIs(p, l, "flam_emission")) s->p.flam_emission = state::patchFloat(i);
     else if (state::pathIs(p, l, "flam_rate"))     s->p.flam_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "orbit_rate"))   s->p.orbit_rate = state::patchFloat(i);
+    else if (state::pathIs(p, l, "beat_fill"))    s->p.beat_fill = state::patchFloat(i);
+    else if (state::pathIs(p, l, "beat_fill_time"))
+      s->p.beat_fill_time = state::patchFloat(i);
+    else if (state::pathIs(p, l, "beat_fill_stagger"))
+      s->p.beat_fill_stagger = state::patchFloat(i);
     else if (state::pathIs(p, l, "primary_color")) {
       auto v = state::patchVec3(i);
       s->p.primary = rig::Rgb{v.x, v.y, v.z};

@@ -465,6 +465,84 @@ describe('mod.rig.three_planes E2E', () => {
     expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(150);
   });
 
+  // --- The orbit ----------------------------------------------------------
+
+  it('the orbit turns the camera, and Reset pops it back', async () => {
+    // The orbit's arithmetic is pinned at an exact dt in the goldens. What only
+    // a real engine can show is the RESET: an event field, replayed as a patch
+    // every single frame, firing exactly once on its rising edge. Get that
+    // wrong and the camera is pinned to the baseline for ever.
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_orbit', sketch:
+                scalarSketch('orbit_azimuth', { azimuth_base: 0, orbit_rate: 90 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_orbit' } }] },
+          ],
+          waitFrames: 30, captureTraceIds: ['out'] },
+        { commands: [], waitFrames: 30, captureTraceIds: ['out'] },
+        // The button. One press, and the memory is gone.
+        { commands: [{ type: 'setParam', sketchId: 'rig_orbit', colIdx: 0,
+                       chainIdx: 1, paramKey: 'orbit_reset', value: 1 }],
+          waitFrames: 1, captureTraceIds: ['out'] },
+        // Held at 1 from here on — the executor replays it every frame, and it
+        // must not re-fire. If it did, the camera would never leave zero.
+        { commands: [], waitFrames: 40, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_orbit',
+    });
+    expect(r.success).toBe(true);
+    const at = (i: number) => r.phases[i].trace('out').averageColor().r;
+
+    // Turning, and still turning: it accumulates rather than settling.
+    expect(at(0)).toBeGreaterThan(10);
+    expect(at(1)).toBeGreaterThan(at(0) + 10);
+    // The press puts it back on the base angle (0 here, so black).
+    expect(at(2)).toBeLessThan(10);
+    // ...and it carries on from there rather than being latched off, which is
+    // what proves the held trigger did not re-fire on every replayed frame.
+    expect(at(3)).toBeGreaterThan(10);
+  });
+
+  // --- The beat -----------------------------------------------------------
+
+  it('the beat floods the interiors, and rests in the middle of the range',
+     async () => {
+    // Two legs the goldens cannot reach: the host transport actually arriving
+    // as bar phase and BPM, and the Fill rail's resting value surviving a real
+    // wire. Fill is SIGNED over -1..1, so "no fill" is the MIDDLE of the
+    // destination range — a rail that rested at 0 would mask every plane the
+    // moment it was connected.
+    const r = await runEngineMultiPhaseTest({
+      width: 64, height: 64,
+      modules: MODULES,
+      phases: [
+        { commands: [
+            { type: 'createSketch', sketchId: 'rig_beat', sketch:
+                scalarSketch('plane1_fill', { beat_fill: 0, beat_fill_time: 1.5 }) },
+            { type: 'setTracePoints', tracePoints: [
+                { id: 'out', target: { type: 'sketch_output', sketchId: 'rig_beat' } }] },
+          ],
+          waitFrames: 30, captureTraceIds: ['out'] },
+        // Turn it on. The transport is running, so a beat lands within a beat.
+        { commands: [{ type: 'setParam', sketchId: 'rig_beat', colIdx: 0,
+                       chainIdx: 1, paramKey: 'beat_fill', value: 1 }],
+          waitFrames: 90, captureTraceIds: ['out'] },
+      ],
+      dumpName: 'rig_beat',
+    });
+    expect(r.success).toBe(true);
+    // Fill 0 is mid grey: the middle of Three Planes' signed range.
+    const rest = r.phases[0].trace('out').averageColor().r;
+    expect(rest).toBeGreaterThan(100);
+    expect(rest).toBeLessThan(156);
+    // And a beat pushes it up out of the middle.
+    expect(r.phases[1].trace('out').averageColor().r).toBeGreaterThan(rest + 20);
+  });
+
   // --- The flam's chop ----------------------------------------------------
 
   it('a struck floor chops to black, one frame at a time', async () => {

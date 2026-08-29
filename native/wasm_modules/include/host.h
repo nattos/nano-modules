@@ -852,7 +852,10 @@ public:
     // apply() is called synchronously at the end of one module_init's Schema.
     static char finalized[65536];
     int flen = len_;
-    if (flen > (int)sizeof(finalized) - 64) flen = (int)sizeof(finalized) - 64;
+    if (flen > (int)sizeof(finalized) - 64) {
+      flen = (int)sizeof(finalized) - 64;
+      overflow_ = true;
+    }
     for (int i = 0; i < flen; i++) finalized[i] = buf_[i];
     finalized[flen++] = '}';   // close "fields"
     // Top-level `capabilities` array (sibling to "fields"), when any declared.
@@ -893,6 +896,23 @@ public:
     }
     finalized[flen++] = '}';   // close root
 
+    if (overflow_) {
+      // Loud, because the symptom is not the cause: what you SEE is an effect
+      // with no parameters and wires that will not connect to it. Raise the
+      // accumulator that ran out (buf_ / groupsBuf_ / capBuf_ / finalized) or
+      // shorten the prose.
+      static const char kMsg[] =
+          " schema OVERFLOWED its buffer — the JSON is truncated and INVALID, "
+          "so this effect will show no parameters and no wire will bind to it. "
+          "Raise Schema's accumulators in host.h or shorten the group help.";
+      char warn[256];
+      int n = 0;
+      for (const char* p = moduleId; *p && n < 90; ++p) warn[n++] = *p;
+      for (const char* p = kMsg; *p && n < (int)sizeof(warn) - 1; ++p) warn[n++] = *p;
+      warn[n] = '\0';
+      state_console_log(static_cast<int>(LogLevel::Warn), warn, n);
+      overflow_ = false;
+    }
     state_set_schema(moduleId, std::strlen(moduleId), version.packed(),
                      finalized, flen);
   }
@@ -921,7 +941,13 @@ private:
   // Group metadata, accumulated as the body of the top-level `groups` object
   // (e.g. `"form":{"name":"Form","order":0}`). Separate from buf_ because the
   // `fields` object is still open while fields (and their groups) are declared.
-  inline static char groupsBuf_[8192];
+  //
+  // Sized for PROSE, not for punctuation: groupHelp() bodies live here, and a
+  // well-documented card runs to several thousand characters of markdown. This
+  // was 8 KB and mod.rig.three_planes outgrew it, which corrupted the schema
+  // JSON with no error anywhere — see overflow_ below, which is why that is
+  // now impossible to miss.
+  inline static char groupsBuf_[32768];
   int groupsLen_ = 0;
   int groupCount_ = 0;
   // The sticky current group id (NUL-terminated) stamped onto each field's
@@ -996,8 +1022,17 @@ private:
   }
 
   // --- Buffer-append primitives (static so both buf_ and groupsBuf_ reuse them) ---
+  // Every accumulator here truncates at its cap rather than scribbling past
+  // it, and a truncated schema is INVALID JSON — the web's strict parse drops
+  // the whole thing, so the inspector shows no parameters and, worse, no wire
+  // to the effect resolves. That failure looks nothing like its cause, so the
+  // one thing that must not happen is for it to be quiet: anything that stops
+  // early sets this, and apply() says so.
+  inline static bool overflow_ = false;
+
   static void rawInto(char* dst, int& len, int cap, const char* s) {
     while (*s && len < cap - 1) dst[len++] = *s++;
+    if (*s) overflow_ = true;
   }
   static void intInto(char* dst, int& len, int cap, int v) {
     if (v < 0) { rawInto(dst, len, cap, "-"); v = -v; }
@@ -1030,6 +1065,7 @@ private:
           }
       }
     }
+    if (*s) overflow_ = true;
   }
 
   void appendRaw(const char* s) { rawInto(buf_, len_, (int)sizeof(buf_), s); }

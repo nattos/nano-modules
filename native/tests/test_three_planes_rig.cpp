@@ -9,6 +9,7 @@
 
 #include "sketch/three_planes_rig.h"
 
+#include <cmath>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -1190,6 +1191,356 @@ TEST_CASE("a transport stall neither spikes the glint nor blanks the tower",
   const Out paused = sweepAt(c, p, 0.62f, 0.0f);
   REQUIRE(paused.sweep_speed >= 0.0f);
   REQUIRE(paused.sweep_speed <= 1.0f);
+}
+
+// --- The orbit ------------------------------------------------------------
+// An angular velocity, and therefore the only MEMORY in the camera path. Every
+// other camera control is a pose you can name; this one is wherever it got to,
+// which is why it has a button.
+
+namespace {
+
+/// Turns travelled from the baseline, signed and unwrapped-ish: the rail is a
+/// [0,1) turn, so a value just under 1 is read as a small negative angle.
+double turnedFrom(const Out& o, const Params& p) {
+  double d = (double)o.azimuth - (double)p.azimuth_base;
+  if (d > 0.5) d -= 1.0;
+  if (d < -0.5) d += 1.0;
+  return d;
+}
+
+}  // namespace
+
+TEST_CASE("an orbit rate of nothing never moves the camera",
+          "[three_planes_rig][orbit]") {
+  Core c;
+  Params p;
+  Out o{};
+  for (int i = 0; i < 600; ++i) o = idle(c, p, 0.016f);
+  REQUIRE_THAT(o.azimuth, WithinAbs(p.azimuth_base, 1e-6));
+}
+
+TEST_CASE("the orbit turns at the rate it is given, and remembers",
+          "[three_planes_rig][orbit]") {
+  Core c;
+  Params p;
+  p.orbit_rate = 36.0f;   // a tenth of a turn per second
+  Out o{};
+  for (int i = 0; i < 100; ++i) o = idle(c, p, 0.01f);   // one second
+  REQUIRE_THAT(turnedFrom(o, p), WithinAbs(0.1, 1e-4));
+  // Memory: another second is another tenth, not the same tenth again.
+  for (int i = 0; i < 100; ++i) o = idle(c, p, 0.01f);
+  REQUIRE_THAT(turnedFrom(o, p), WithinAbs(0.2, 1e-4));
+}
+
+TEST_CASE("the orbit is signed, and wraps rather than piling up",
+          "[three_planes_rig][orbit]") {
+  Core back;
+  Params p;
+  p.orbit_rate = -36.0f;
+  Out o{};
+  for (int i = 0; i < 100; ++i) o = idle(back, p, 0.01f);
+  REQUIRE_THAT(turnedFrom(o, p), WithinAbs(-0.1, 1e-4));
+
+  // Past a full turn it comes round again — the rail is an angle, not a
+  // distance, and a camera that saturated at 360 deg would simply stop.
+  Core far;
+  p.orbit_rate = 90.0f;
+  for (int i = 0; i < 500; ++i) o = idle(far, p, 0.01f);   // 450 deg
+  REQUIRE(o.azimuth >= 0.0f);
+  REQUIRE(o.azimuth < 1.0f);
+  REQUIRE_THAT(turnedFrom(o, p), WithinAbs(0.25, 1e-4));
+}
+
+TEST_CASE("Reset Orbit pops the camera back onto the baseline",
+          "[three_planes_rig][orbit]") {
+  Core c;
+  Params p;
+  p.orbit_rate = 90.0f;
+  for (int i = 0; i < 100; ++i) idle(c, p, 0.01f);
+  REQUIRE(std::fabs(turnedFrom(idle(c, p, 0.01f), p)) > 0.2);
+
+  // One frame, no travel: a cue you have to wait for is not a cue.
+  c.resetOrbit();
+  const Out back = idle(c, p, 0.0f);
+  REQUIRE_THAT(turnedFrom(back, p), WithinAbs(0.0, 1e-6));
+  // ...and it carries on turning from there, rather than being switched off.
+  for (int i = 0; i < 10; ++i) idle(c, p, 0.01f);
+  REQUIRE(turnedFrom(idle(c, p, 0.01f), p) > 0.0);
+}
+
+TEST_CASE("a move swings around wherever the orbit has got to",
+          "[three_planes_rig][orbit]") {
+  // The two compose: the move is measured from the BASE pose, the orbit rides
+  // on top of the result. So a cue fired mid-orbit still reads as the same
+  // swing, just not from the same place.
+  Params p;
+  p.show_azimuth = 30.0f;
+  p.orbit_rate = 0.0f;
+  Core still;
+  still.trigger(AnimShow, p);
+  // Captured on a zero-length frame so the reading is the accumulated turn and
+  // not the accumulated turn plus however long the capture itself took.
+  const Out a = idle(still, p, 0.0f);
+
+  Params q = p;
+  q.orbit_rate = 90.0f;
+  Core turning;
+  for (int i = 0; i < 40; ++i) idle(turning, q, 0.01f);   // 36 deg round
+  turning.trigger(AnimShow, q);
+  const Out b = idle(turning, q, 0.0f);
+
+  // Same move, 0.1 of a turn further round.
+  REQUIRE_THAT(turnedFrom(b, q) - turnedFrom(a, p), WithinAbs(0.1, 2e-3));
+}
+
+TEST_CASE("the orbit runs in Solid too", "[three_planes_rig][orbit]") {
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.orbit_rate = 36.0f;
+  Out o{};
+  for (int i = 0; i < 100; ++i) o = idle(c, p, 0.01f);
+  REQUIRE_THAT(turnedFrom(o, p), WithinAbs(0.1, 1e-4));
+}
+
+// --- The beat, and the fills it lights -------------------------------------
+// The one mechanism here driven by the TRANSPORT. Its guard is the interesting
+// part: a beat-sync that is not confident emits crossings in bursts, and this
+// has to sit those out.
+
+namespace {
+
+/// A hand-driven transport. The bar phase advances at the tempo, so a beat
+/// line arrives every 60/bpm seconds exactly — and can also be moved by hand,
+/// which is how a sync that is not confident is played back.
+struct Grid {
+  double phase = 0.0;
+  void advance(Params& p, float dt) {
+    phase += (double)dt * ((double)p.bpm / 60.0) / (double)kBeatsPerBar;
+    phase -= std::floor(phase);
+    p.bar_phase = (float)phase;
+  }
+};
+
+/// Is this floor's interior flooded this frame? The rail rests at the middle
+/// of three_planes' signed range, so "lit" is anything above it.
+bool flooded(const Out& o, int i = 0) { return o.fill[i] > 0.5f + 1e-4f; }
+
+/// Run `frames` frames on the grid and report how many of them began a flood
+/// — a rising edge on the fill, which is one accepted beat each.
+int beatsIn(Core& c, Params& p, Grid& g, int frames, float dt) {
+  int n = 0;
+  bool was = false;
+  for (int i = 0; i < frames; ++i) {
+    g.advance(p, dt);
+    const bool now = flooded(idle(c, p, dt));
+    if (now && !was) ++n;
+    was = now;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST_CASE("an unfilled plane publishes the middle of the range, not the bottom",
+          "[three_planes_rig][beat]") {
+  // three_planes' Fill is SIGNED — the bottom of it is a full black mask — so
+  // a rail that rested at 0 would flood every plane with darkness the moment
+  // it was wired up.
+  Core c;
+  Params p;
+  p.beat_fill = 0.0f;
+  Out o{};
+  for (int i = 0; i < 30; ++i) o = idle(c, p, 0.016f);
+  for (int i = 0; i < kLayers; ++i) REQUIRE_THAT(o.fill[i], WithinAbs(0.5, 1e-6));
+}
+
+TEST_CASE("arming the card is not a beat", "[three_planes_rig][beat]") {
+  // The first frame SEEDS the grid and fires nothing. Otherwise every card
+  // would flash the instant it was created, wherever the transport happened
+  // to be standing.
+  Core c;
+  Params p;
+  p.bar_phase = 0.4f;   // mid-beat, and not on a line
+  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  p.bar_phase = 0.45f;
+  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+}
+
+TEST_CASE("a beat floods the interiors, and the flood decays",
+          "[three_planes_rig][beat]") {
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  p.beat_fill_time = 0.2f;
+  Grid g;
+  idle(c, p, 0.016f);   // seed
+
+  // 120 bpm is a beat every half second: two seconds is four of them.
+  REQUIRE(beatsIn(c, p, g, 125, 0.016f) == 4);
+
+  // And the flood eases out rather than latching.
+  Core d;
+  Params q = p;
+  q.bar_phase = 0.2f;
+  idle(d, q, 0.016f);
+  q.bar_phase = 0.3f;                       // over the line
+  const Out hit = idle(d, q, 0.016f);
+  REQUIRE(flooded(hit));
+  const Out later = idle(d, q, 0.1f);
+  REQUIRE(later.fill[0] < hit.fill[0]);
+  REQUIRE(later.fill[0] > 0.5f);
+  idle(d, q, 0.2f);                          // past beat_fill_time
+  REQUIRE_THAT(idle(d, q, 0.016f).fill[0], WithinAbs(0.5, 1e-6));
+}
+
+TEST_CASE("a beat inside half a beat of the last one is not believed",
+          "[three_planes_rig][beat]") {
+  // The guard. A sync that is re-locking walks the phase across several lines
+  // in a handful of frames; only the first of them is a beat.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;      // half a beat is 0.25 s
+  p.beat_fill = 1.0f;
+  p.beat_fill_time = 0.05f;   // short, so a second flood would be visible
+  p.bar_phase = 0.2f;
+  idle(c, p, 0.016f);   // seed
+
+  p.bar_phase = 0.3f;   // crosses beat line 1
+  REQUIRE(flooded(idle(c, p, 0.016f)));
+  for (int i = 0; i < 4; ++i) idle(c, p, 0.016f);   // let the flood retire
+  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+
+  // ~0.1 s later, another line. Real time says that cannot be a beat.
+  p.bar_phase = 0.55f;
+  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+  p.bar_phase = 0.8f;
+  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+}
+
+TEST_CASE("...and one that waited is", "[three_planes_rig][beat]") {
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  p.beat_fill_time = 0.05f;
+  p.bar_phase = 0.2f;
+  idle(c, p, 0.016f);
+
+  p.bar_phase = 0.3f;
+  REQUIRE(flooded(idle(c, p, 0.016f)));
+  for (int i = 0; i < 20; ++i) idle(c, p, 0.016f);   // 0.32 s — past the guard
+  p.bar_phase = 0.55f;
+  REQUIRE(flooded(idle(c, p, 0.016f)));
+}
+
+TEST_CASE("a burst cannot lock the beat out for ever",
+          "[three_planes_rig][beat]") {
+  // Which is why the guard is measured from the last ACCEPTED beat and not
+  // from the last crossing seen. Timed from the rejects, a sync stuck in a
+  // burst would push the window ahead of itself and never fire again.
+  Core c;
+  Params p;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  p.beat_fill_time = 0.05f;
+  p.bar_phase = 0.0f;
+  idle(c, p, 0.016f);
+
+  // A line crossed every other frame for a third of a second.
+  double ph = 0.0;
+  for (int i = 0; i < 20; ++i) {
+    ph += 0.13;
+    ph -= std::floor(ph);
+    p.bar_phase = (float)ph;
+    idle(c, p, 0.016f);
+  }
+  // The guard has long since expired against the FIRST of them, so the sync
+  // is being believed again by now rather than being permanently deaf.
+  Grid g;
+  g.phase = ph;
+  REQUIRE(beatsIn(c, p, g, 125, 0.016f) >= 3);
+}
+
+TEST_CASE("a scrub backwards fires nothing", "[three_planes_rig][beat]") {
+  Core c;
+  Params p;
+  p.beat_fill = 1.0f;
+  p.bar_phase = 0.6f;
+  idle(c, p, 0.016f);
+  p.bar_phase = 0.4f;   // back over a line, not forward across one
+  REQUIRE_FALSE(flooded(idle(c, p, 0.016f)));
+}
+
+TEST_CASE("the bar line is a beat like any other", "[three_planes_rig][beat]") {
+  // The phase wraps at the bar, so the crossing has to be reconstructed from
+  // the bar count rather than read off the phase — otherwise the downbeat, the
+  // most important beat there is, would be the one beat that never fired.
+  Core c;
+  Params p;
+  p.beat_fill = 1.0f;
+  p.bar_phase = 0.98f;
+  idle(c, p, 0.016f);
+  p.bar_phase = 0.02f;
+  REQUIRE(flooded(idle(c, p, 0.016f)));
+}
+
+TEST_CASE("Beat Fill is signed: turned down it masks instead of floods",
+          "[three_planes_rig][beat]") {
+  Core c;
+  Params p;
+  p.beat_fill = -1.0f;
+  p.bar_phase = 0.2f;
+  idle(c, p, 0.016f);
+  p.bar_phase = 0.3f;
+  const Out o = idle(c, p, 0.016f);
+  REQUIRE(o.fill[0] < 0.5f - 1e-4f);   // below the middle: a black mask
+}
+
+TEST_CASE("Stagger walks the beat up the tower", "[three_planes_rig][beat]") {
+  Params flat;
+  flat.bpm = 120.0f;
+  flat.beat_fill = 1.0f;
+  flat.beat_fill_time = 0.1f;
+  flat.bar_phase = 0.2f;
+  Core c;
+  idle(c, flat, 0.016f);
+  flat.bar_phase = 0.3f;
+  const Out together = idle(c, flat, 0.016f);
+  // At 0 the tower lights flat — one pulse, not three.
+  for (int i = 1; i < kLayers; ++i)
+    REQUIRE_THAT(together.fill[i], WithinAbs(together.fill[0], 1e-6));
+
+  Params walk = flat;
+  walk.beat_fill_stagger = 0.5f;   // a quarter second between floors
+  walk.bar_phase = 0.2f;
+  Core d;
+  idle(d, walk, 0.016f);
+  walk.bar_phase = 0.3f;
+  const Out first = idle(d, walk, 0.016f);
+  REQUIRE(flooded(first, 0));
+  REQUIRE_FALSE(flooded(first, 1));   // the floor above has not been reached
+  REQUIRE_FALSE(flooded(first, 2));
+
+  // ...and it gets there, a quarter of a second later.
+  bool reached = false;
+  for (int i = 0; i < 40 && !reached; ++i) reached = flooded(idle(d, walk, 0.016f), 1);
+  REQUIRE(reached);
+}
+
+TEST_CASE("the beat runs in Solid too", "[three_planes_rig][beat]") {
+  // It is driven by the transport, not by the feed — so it is not the mode's
+  // business. Solid means nothing reacting, not nothing on the grid.
+  Core c;
+  Params p;
+  p.mode = ModeSolid;
+  p.bpm = 120.0f;
+  p.beat_fill = 1.0f;
+  Grid g;
+  idle(c, p, 0.016f);
+  REQUIRE(beatsIn(c, p, g, 125, 0.016f) == 4);
 }
 
 // --- The bounce -----------------------------------------------------------

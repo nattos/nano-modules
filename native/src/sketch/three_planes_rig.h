@@ -86,6 +86,30 @@ constexpr float kBounceDamp = 0.30f;   ///< zeta
 /// which explicit integration of a 30 rad/s spring would explode on.
 constexpr float kBounceStep = 0.008f;
 
+/// Mirrors three_planes' per-plane `fill` field, which is SIGNED: positive
+/// floods the quad's interior with neon, negative turns it into a black mask
+/// that occludes the planes behind it. The rails publish a slider POSITION
+/// like everything else here, so an unfilled plane goes out as 0.5 rather
+/// than as 0. KEEP IN STEP with three_planes/main.cpp's schema.
+constexpr float kFillMin = -1.0f;
+constexpr float kFillMax = 1.0f;
+
+/// The host exposes a phase within one BAR, and this is what a bar is worth.
+/// Same reconstruction effect_beat_tick.h uses; that header is host-coupled,
+/// so the ten lines it would have saved are spelled out here instead and the
+/// conventions are kept identical (seed on the first frame, a big backward
+/// step is a wrap, only forward crossings fire).
+constexpr int kBeatsPerBar = 4;
+
+/// How much of a wall-clock beat has to have passed before another beat is
+/// believed. A beat-sync that is not confident — a fresh lock, a tempo change,
+/// a scrub — emits crossings in bursts, and a tower that flashes on every one
+/// of them looks broken rather than fast. Measured from the last ACCEPTED
+/// beat, never from the last rejected one: from the rejects, a long enough
+/// burst would push the window out for ever and the fills would never fire
+/// again.
+constexpr float kBeatGuard = 0.5f;
+
 /// THE FLAM'S CHOP. A flam is not a bloom: it CHOPS, alternating the floor
 /// between its accent and BLACK for as long as the blip lasts. An accent that
 /// only ever adds light is a bump on a lit tower and reads as one; taking the
@@ -129,10 +153,11 @@ constexpr int kAnimCount = 4;
 /// top of whatever the mode is doing, because they move the camera and the mode
 /// paints the tower.
 ///
-/// `ModeSolid` is the deliberate absence of reactivity: no meter, no cap, no
-/// flams, just three lit floors and whatever move is running. It exists because
-/// a piece that is reacting the whole time has nothing to react FROM — Solid is
-/// the pose you cut back to.
+/// `ModeSolid` is the deliberate absence of reactivity to the FEED: no meter,
+/// no cap, no flams. It exists because a piece that is reacting the whole time
+/// has nothing to react FROM — Solid is the pose you cut back to. What still
+/// runs there is everything that was never the feed's: a move, the sweep, and
+/// the beat lighting the quads' interiors.
 enum Mode { ModeEvMeter = 0, ModeSolid = 1 };
 
 struct Rgb {
@@ -175,6 +200,23 @@ struct Params {
   Rgb primary{1.00f, 0.22f, 0.62f};    ///< magenta — the flam colour of a plain layer
   Rgb secondary{0.72f, 0.35f, 1.00f};  ///< violet — where a plain layer settles
   Rgb highlight{0.30f, 0.85f, 1.00f};  ///< cyan — where the PEAK CAP settles
+
+  // --- Orbit: the one accumulator in the camera path ----------------------
+  /// Degrees per second the whole construct turns, signed. 0 is still.
+  float orbit_rate = 0.0f;
+
+  // --- The beat, and the fills it lights -----------------------------------
+  /// The host transport, read fresh each tick by the effect: phase within the
+  /// current bar, 0..1, and the tempo the guard is measured in.
+  float bar_phase = 0.0f;
+  float bpm = 120.0f;
+  /// How hard a beat floods the quads' interiors. SIGNED, like the field it
+  /// drives: positive is neon, negative punches them to black masks. 0 is off.
+  float beat_fill = 0.6f;
+  float beat_fill_time = 0.22f;    ///< seconds the flood lasts
+  /// Beats between one floor's flood and the next, so the pulse can either hit
+  /// the tower flat (0) or walk up it.
+  float beat_fill_stagger = 0.0f;
 
   float azimuth_base = 0.125f;                  ///< [0,1] turn, 0.125 = 45 deg
   float elevation_base = 35.264389682754654f;   ///< degrees, true isometric
@@ -226,6 +268,8 @@ struct Out {
   /// overshoots into.
   float emission[kLayers] = {};
   Rgb color[kLayers] = {};
+  /// Fraction of three_planes' -1..1 fill range, so an unfilled plane is 0.5.
+  float fill[kLayers] = {};
   float azimuth = 0.0f;    ///< [0,1] turn
   float elevation = 0.0f;  ///< deg / kElevationMaxDeg
   float spacing = 0.0f;    ///< units / kSpacingMax
@@ -273,6 +317,13 @@ inline int layerOf(float level) {
   return i < 0 ? 0 : (i >= kLayers ? kLayers - 1 : i);
 }
 
+/// A fill value in three_planes' own signed units, as the slider POSITION a
+/// hand-drawn wire folds into. 0 fill is the middle of the range, not the
+/// bottom of it — the bottom is a full black mask.
+inline float fillRail(float fill) {
+  return clamp01((fill - kFillMin) / (kFillMax - kFillMin));
+}
+
 /// The flam chop's half-period, in FRAMES: how many frames it stays lit, and
 /// then how many it stays black. Exponential, and floored at one frame — the
 /// fastest alternation a display has. See kFlamSlowFrames for why this is
@@ -293,6 +344,96 @@ inline float rand01(unsigned& state) {
 }
 
 }  // namespace detail
+
+/// THE BEAT, and the fills it lights.
+///
+/// Everything else in this card is driven by the four gates or by a hand on a
+/// knob. This one is driven by the TRANSPORT: on the beat, the quads' interiors
+/// flood — the one thing here that fills a plane rather than outlining it, so
+/// it reads as the construct itself lighting up rather than as another accent
+/// on its edges.
+///
+/// It composes on top of whatever the mode is doing, like the sweep and the
+/// camera moves, and for the same reason: the mode branch paints the tower
+/// from the FEED, and this is not the feed. So it runs in Solid too, which is
+/// what makes "no reactivity, but still on the grid" a pose you can cut to.
+///
+/// THE GUARD is the whole reason this is not three lines. A beat-sync that is
+/// not confident does not gently drift — it emits crossings in bursts as it
+/// re-locks, and a tower that flashes on every one of them reads as broken
+/// rather than as fast. So a crossing is only believed once half a wall-clock
+/// beat has passed since the last one that WAS (kBeatGuard). Wall-clock,
+/// because the guard's whole job is to distrust the grid: measuring it in
+/// beats would ask the suspect clock how long its own suspicious interval was.
+struct BeatCore {
+  // The bar tracker. `phase_prev < 0` is the unseeded sentinel: the first
+  // frame seeds and fires nothing, so arming the card is never a beat.
+  double phase_prev = -1.0;
+  long bars = 0;
+  long last_line = 0;
+
+  float since = 0.0f;   ///< wall-clock seconds since the last ACCEPTED beat
+  bool seen = false;    ///< ...and whether there has been one at all
+  float t = 0.0f;       ///< seconds into the flood
+  bool live = false;
+
+  void reset() { *this = BeatCore(); }
+
+  void apply(const Params& p, float dt, Out& o) {
+    using namespace detail;
+
+    // --- 1. The grid. Absolute position, reconstructed from the bar counter,
+    //        so the lines sit on the host's beats rather than merely a beat
+    //        apart from whenever this was armed.
+    const double bp = clamp01(p.bar_phase);
+    bool crossed = false;
+    if (phase_prev < 0.0) {
+      phase_prev = bp;
+      last_line = (long)std::floor(bp * (double)kBeatsPerBar);
+    } else {
+      if (bp - phase_prev < -0.5) ++bars;   // wrapped into the next bar
+      phase_prev = bp;
+      const long line =
+          (long)std::floor(((double)bars + bp) * (double)kBeatsPerBar);
+      // Forward only. A scrub backwards rewinds the position and fires
+      // nothing; the lines speak again as they are passed again.
+      crossed = line > last_line;
+      last_line = line;
+    }
+
+    // --- 2. The guard.
+    since += dt;
+    const float beat = p.bpm > 1.0f ? 60.0f / p.bpm : 0.5f;
+    if (crossed && (!seen || since >= kBeatGuard * beat)) {
+      seen = true;
+      since = 0.0f;
+      t = 0.0f;
+      live = true;
+    }
+
+    // --- 3. The flood. One envelope, read at three different times: the
+    //        stagger is a delay per floor, so at 0 the tower lights flat and
+    //        turned up it walks. Same ease-out the flam uses — a flick.
+    const float ft = p.beat_fill_time > 1e-4f ? p.beat_fill_time : 1e-4f;
+    const float lag = clampf(p.beat_fill_stagger, 0.0f, 4.0f) * beat;
+    for (int i = 0; i < kLayers; ++i) {
+      float fill = 0.0f;
+      if (live) {
+        const float u = (t - (float)i * lag) / ft;
+        if (u >= 0.0f && u < 1.0f) {
+          const float k = 1.0f - u;
+          fill = k * k * clampf(p.beat_fill, kFillMin, kFillMax);
+        }
+      }
+      o.fill[i] = fillRail(fill);
+    }
+    if (live) {
+      t += dt;
+      // The last floor has to finish too, not just the first.
+      if (t >= ft + (float)(kLayers - 1) * lag) live = false;
+    }
+  }
+};
 
 /// The sweep knob's dynamics: a motion estimator, a position law, and the
 /// flicker that hangs off both.
@@ -601,6 +742,22 @@ struct Core {
   /// camera moves have.
   SweepCore sweep;
 
+  /// The transport-driven half: the beat grid, its guard, and the flood the
+  /// quads' interiors take from it. Held here for the same reason the sweep is
+  /// — it composes on top of the mode rather than being one.
+  BeatCore beat;
+
+  /// THE ORBIT. Turns accumulated since the last reset, wrapped to [0,1).
+  ///
+  /// The only MEMORY in the camera path, and that is exactly why there is a
+  /// reset. Everything else about the camera is a pose you can name — a
+  /// baseline, or a move measured from it and returning to it — so it does not
+  /// matter how long the card has been running. An angular velocity is not:
+  /// leave it turning through a set and the construct is wherever it happens
+  /// to have got to, which is not a thing you can cue. The reset puts it back
+  /// on the baseline, and it POPS, like every other end of a move here.
+  float orbit_turn = 0.0f;
+
   int anim = AnimNone;
   float anim_t = 0.0f;
   float anim_dur = 1.0f;   ///< travel time, captured at trigger
@@ -619,6 +776,11 @@ struct Core {
       default:          return 1.0f;
     }
   }
+
+  /// Put the orbit back on the baseline. A hard cut, like the end of a move:
+  /// easing back would be a fifth camera move nobody asked for, and a cue you
+  /// have to wait for is not a cue.
+  void resetOrbit() { orbit_turn = 0.0f; }
 
   /// Start a move. Monophonic — whatever was running is dropped where it stood.
   void trigger(int a, const Params& p) {
@@ -653,6 +815,11 @@ struct Core {
     Out o;
     if (p.mode == ModeSolid) tickSolid(p, o);
     else                     tickMeter(p, fired, target, dt, o);
+
+    // --- 1b. The beat. Transport-driven rather than feed-driven, so like the
+    //         sweep and the moves it runs in EVERY mode: the mode paints the
+    //         tower from the signals, and the grid is not the signals. ---
+    beat.apply(p, dt, o);
 
     // --- 2. The sweep. It runs in every mode and folds INTO the emission the
     //        mode just wrote — a global dimmer with a stutter in it — while
@@ -707,16 +874,22 @@ struct Core {
       }
     }
 
+    // --- 3b. The orbit, which is a VELOCITY and therefore the one part of the
+    //         camera that remembers. It rides on top of the baseline and of
+    //         whatever the move is doing, so a move fired mid-orbit still
+    //         swings around wherever the construct currently faces. ---
+    orbit_turn = wrap01(orbit_turn + p.orbit_rate * dt / 360.0f);
+
     // --- 4. Normalise for publication (see the header note). ---
-    o.azimuth = wrap01(p.azimuth_base + az_deg / 360.0f);
+    o.azimuth = wrap01(p.azimuth_base + az_deg / 360.0f + orbit_turn);
     o.elevation = clamp01((p.elevation_base + elev_deg) / kElevationMaxDeg);
     o.spacing = clamp01(spacing / kSpacingMax);
     return o;
   }
 
  private:
-  /// SOLID — the mode with no reactivity at all. Every floor sits lit in its own
-  /// colour and only the camera moves.
+  /// SOLID — the mode with no reactivity to the FEED. Every floor sits lit in
+  /// its own colour; the camera, the sweep and the beat still run on top.
   ///
   /// The colour assignment is not arbitrary: it reproduces three_planes' OWN
   /// plane defaults (magenta / cyan / violet, which is exactly what the three
