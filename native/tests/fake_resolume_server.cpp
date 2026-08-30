@@ -103,6 +103,8 @@ void FakeResolumeServer::set_connected(
   out_changes.push_back({c.connected_id, value});
 }
 
+void FakeResolumeServer::rebroadcast() { broadcast_composition(); }
+
 void FakeResolumeServer::broadcast_composition() {
   // Real Resolume signals a connected-state change by rebroadcasting the WHOLE
   // composition (it does NOT reliably push a per-param parameter_update). The

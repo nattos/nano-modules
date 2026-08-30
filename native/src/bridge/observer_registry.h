@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -13,6 +14,12 @@ using ClientId = int;
 
 /// Manages per-client path subscriptions for state change notifications.
 /// A client observing a path receives patches for that path and all child paths.
+///
+/// Self-guarding: `mu_` is a LEAF lock. Callers on the pump thread already hold
+/// BridgeServer's tick_mutex_ when they get here, and render threads asking
+/// key_observed() take this one ALONE — so the order is always
+/// tick_mutex_ → mu_ and never the reverse, which is what lets a render thread
+/// answer "is anyone watching?" without queueing behind the pump.
 class ObserverRegistry {
 public:
   void observe(ClientId client, const std::string& path);
@@ -37,6 +44,7 @@ public:
   std::unordered_set<std::string> client_paths(ClientId client) const;
 
 private:
+  mutable std::mutex mu_;
   // client → set of observed paths
   std::unordered_map<ClientId, std::unordered_set<std::string>> subscriptions_;
 };

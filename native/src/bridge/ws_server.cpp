@@ -40,6 +40,7 @@ bool WsServer::start(int port) {
               break;
             }
           }
+          open_clients_.store((int)clients_.size(), std::memory_order_relaxed);
           if (connect_callback_) connect_callback_(id);
           return;
         }
@@ -51,6 +52,7 @@ bool WsServer::start(int port) {
             int id = it->second;
             ws_to_id_.erase(it);
             clients_.erase(id);
+            open_clients_.store((int)clients_.size(), std::memory_order_relaxed);
             if (disconnect_callback_) disconnect_callback_(id);
           }
           return;
@@ -89,6 +91,7 @@ void WsServer::stop() {
     std::lock_guard lock(clients_mutex_);
     clients_.clear();
     ws_to_id_.clear();
+    open_clients_.store(0, std::memory_order_relaxed);
   }
   running_ = false;
 }

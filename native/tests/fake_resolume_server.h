@@ -38,6 +38,12 @@ public:
   /// top-level object with `layers`, no `type`). Rebuilds the by-id param index.
   void set_composition(const nlohmann::json& composition);
 
+  /// Push the current composition to every connected client, unprompted. Real
+  /// Resolume rebroadcasts the whole composition on any change; driving this on
+  /// a timer is how a bench reproduces that per-second parse load on the
+  /// dylib's pump thread.
+  void rebroadcast();
+
   bool start(int port);
   void stop();
   int port() const { return port_; }

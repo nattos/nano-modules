@@ -16,6 +16,7 @@
 #include "bridge/bridge_core.h"
 #include "bridge/clip_launcher.h"
 #include "bridge/instance_locator.h"
+#include "resolume/protocol.h"
 #include "canvas/draw_list.h"
 #include "wasm/wasm_context.h"
 
@@ -95,17 +96,20 @@ private:
 
   void init_subsystems();
   void shutdown_subsystems();
-  void process_resolume_messages();
+  // Apply an already-drained batch of Resolume messages. Split from the drain
+  // so the pump can poll (and destroy the batch) OUTSIDE tick_mutex_ — see
+  // pump_loop.
+  void apply_resolume_messages(std::vector<resolume::IncomingMessage>& messages);
   void flush_outbox();
   // Drain the trigger rail + reconcile Resolume clip launches (pump thread).
   void drive_clip_launches();
   // Publish channel → registered marker clips to /global/channels for the web
-  // Instances tab (change-gated). Pump thread; after process_resolume_messages
+  // Instances tab (change-gated). Pump thread; after apply_resolume_messages
   // so the composition cache is fresh.
   void publish_trigger_channels();
   // Publish per-clip connected state to /global/clip_states, keyed
   // "<layer>:<clip>" (0-based), for the web Instances tab's clip play/stop
-  // buttons. Change-gated; pump thread, after process_resolume_messages.
+  // buttons. Change-gated; pump thread, after apply_resolume_messages.
   void publish_clip_states();
   // Handle a web-originated clip-control action (trigger_clip / reassign_channel)
   // before it reaches BridgeCore. Returns true if it consumed the message.
@@ -117,6 +121,12 @@ private:
 
   std::atomic<int> ref_count_{0};
   std::mutex tick_mutex_;
+  // Mirrors the WS server's open-client count, maintained from the ix
+  // connect/disconnect callbacks. has_clients() is asked several times per
+  // instance per frame from render threads; answering it under tick_mutex_ made
+  // those threads queue behind the pump's whole tick (a half-megabyte Resolume
+  // composition parse) just to be told "nobody is watching".
+  std::atomic<int> ws_clients_{0};
   bool subsystems_initialized_ = false;
 
   // WS events are enqueued here (leaf lock only) by the ix callbacks and

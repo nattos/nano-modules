@@ -20,10 +20,12 @@
 #include "../src/plugin/nano_barrel/barrel_codec.h"  // wrap a sketch JSON into the config param
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -306,7 +308,13 @@ int main(int argc, const char* argv[]) {
     // --config <file>: read a sketch JSON file, wrap it the way NanoBarrel's
     // FILE config param expects (nanobarrel://config?<base64>), and set it on
     // text param 0 after instantiate so the barrel runs that sketch.
-    std::string configWrapped;
+    // Repeatable: every --config mounts ANOTHER barrel instance in THIS
+    // process, rendered in argument order each frame. That is what makes the
+    // runner a stand-in for a whole composition rather than one plugin — the
+    // shared runtime, the sidechannel bus and the bridge's tick_mutex_ are all
+    // process-global, so contention between instances only exists when they
+    // coexist. One --config behaves exactly as before.
+    std::vector<std::string> configsWrapped;
     // --ws-patch <file>: after instantiate, push the sketch JSON over the
     // plugin's own WebSocket bridge as `replace /sketch` (exactly like the web
     // editor in barrel mode), to repro barrel-only bugs.
@@ -337,7 +345,7 @@ int main(int argc, const char* argv[]) {
       std::string arg = argv[i];
       if (arg == "--gen-chain" && i + 1 < argc) {
         genChain = std::stoi(argv[i + 1]);
-        configWrapped = barrel_codec::wrap_config(gen_chain_sketch(genChain));
+        configsWrapped.push_back(barrel_codec::wrap_config(gen_chain_sketch(genChain)));
         i += 1;
       } else if (arg == "--bench-watch") {
         benchWatch = true;
@@ -357,7 +365,7 @@ int main(int argc, const char* argv[]) {
         std::ifstream f(argv[i + 1], std::ios::binary);
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        configWrapped = barrel_codec::wrap_config(json);
+        configsWrapped.push_back(barrel_codec::wrap_config(json));
         i += 1;
       } else if (arg == "--text" && i + 2 < argc) {
         textOverrides.push_back({std::stoi(argv[i + 1]), argv[i + 2]});
@@ -420,13 +428,20 @@ int main(int argc, const char* argv[]) {
       std::cerr << "FF_INITIALISE_V2 failed\n"; return 1;
     }
     FFGLViewportStruct vp = {0, 0, (FFUInt32)width, (FFUInt32)height};
-    FFMixed r = plugMain(FF_INSTANTIATE_GL,
-                          (FFMixed){.PointerValue = &vp}, 0);
-    if (r.UIntValue == FF_FAIL) {
-      std::cerr << "FF_INSTANTIATE_GL failed\n"; return 1;
+    const int numInstances = std::max<size_t>(1, configsWrapped.size());
+    std::vector<FFInstanceID> instances;
+    for (int n = 0; n < numInstances; ++n) {
+      FFMixed r = plugMain(FF_INSTANTIATE_GL,
+                            (FFMixed){.PointerValue = &vp}, 0);
+      if (r.UIntValue == FF_FAIL) {
+        std::cerr << "FF_INSTANTIATE_GL failed (instance " << n << ")\n"; return 1;
+      }
+      instances.push_back((FFInstanceID)r.PointerValue);
+      plugMain(FF_RESIZE, (FFMixed){.PointerValue = &vp}, instances.back());
     }
-    FFInstanceID instanceID = (FFInstanceID)r.PointerValue;
-    plugMain(FF_RESIZE, (FFMixed){.PointerValue = &vp}, instanceID);
+    // Instance 0 stays the subject of the single-instance debugging aids
+    // (--param / --text / --ws-patch / the PNG readback).
+    FFInstanceID instanceID = instances[0];
 
     // Dump the parameter list (prototype-queried; uses instanceID=0).
     FFUInt32 nparams = plugMain(FF_GET_NUM_PARAMETERS,
@@ -463,12 +478,13 @@ int main(int argc, const char* argv[]) {
       plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
       std::cerr << "[ffgl_runner] text param[" << idx << "] set (" << str.size() << " bytes)\n";
     }
-    if (!configWrapped.empty()) {
+    for (size_t n = 0; n < configsWrapped.size(); ++n) {
       SetParameterStruct sps;
       sps.ParameterNumber = 0;  // P_CONFIG
-      sps.NewParameterValue.PointerValue = (void*)configWrapped.c_str();
-      plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instanceID);
-      std::cerr << "[ffgl_runner] config set (" << configWrapped.size() << " bytes wrapped)\n";
+      sps.NewParameterValue.PointerValue = (void*)configsWrapped[n].c_str();
+      plugMain(FF_SET_PARAMETER, (FFMixed){.PointerValue = &sps}, instances[n]);
+      std::cerr << "[ffgl_runner] instance " << n << " config set ("
+                << configsWrapped[n].size() << " bytes wrapped)\n";
     }
 
     // Barrel WS path: push the sketch over the shared server like the editor.
@@ -506,17 +522,26 @@ int main(int argc, const char* argv[]) {
     // shape Resolume hands us. That makes ffgl_runner a faithful test bed for the
     // plugin adopting the host surface directly (skipping the GL↔Metal blit):
     // both the input AND output it sees are now IOSurface-backed.
+    // One per instance: in Resolume each effect draws into its own layer/group
+    // surface, and sharing a single FBO across instances would add a serializing
+    // hazard the real host never has.
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    auto outputInterop = std::make_unique<InteropTexture>(
-        device, context, /*createOpenGLFBO=*/ true,
-        MTLPixelFormatBGRA8Unorm, width, height);
-    GLuint fbo = outputInterop->getOpenGLFBO();
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-      std::cerr << "host FBO (interop) incomplete\n"; return 1;
+    std::vector<std::unique_ptr<InteropTexture>> outputInterops;
+    std::vector<GLuint> fbos;
+    for (int n = 0; n < numInstances; ++n) {
+      outputInterops.push_back(std::make_unique<InteropTexture>(
+          device, context, /*createOpenGLFBO=*/ true,
+          MTLPixelFormatBGRA8Unorm, width, height));
+      fbos.push_back(outputInterops.back()->getOpenGLFBO());
+      glBindFramebuffer(GL_FRAMEBUFFER, fbos.back());
+      if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "host FBO (interop) incomplete (instance " << n << ")\n";
+        return 1;
+      }
+      glClearColor(0, 0, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
     }
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint fbo = fbos[0];
 
     // 5. One InteropTexture as the plugin's input (also IOSurface-backed) —
     // filled with a 2D gradient (R = x, G = y) so we can tell input handoff
@@ -572,13 +597,30 @@ int main(int argc, const char* argv[]) {
     // barrel's this->barPhase moves and the looper advances. Derived from the same
     // time (ms) handed to FF_SET_TIME → the beat clock stays consistent with the
     // wall/virtual clock. No-op when --bpm was not given.
-    auto setBeat = [&](double tMs) {
+    std::function<void(double, FFInstanceID)> setBeatFn;
+
+    // Render one composition frame: every instance, in argument order. The
+    // order is load-bearing once sidechannels are in play — a reader placed
+    // before its writer sees last frame's texture, exactly as in Resolume.
+    auto stepFrame = [&](double tMs) {
+      for (size_t n = 0; n < instances.size(); ++n) {
+        ps.HostFBO = fbos[n];
+        glBindFramebuffer(GL_FRAMEBUFFER, fbos[n]);
+        glViewport(0, 0, width, height);
+        plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &tMs}, instances[n]);
+        setBeatFn(tMs, instances[n]);
+        plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instances[n]);
+      }
+      glFlush();
+    };
+
+    setBeatFn = [&](double tMs, FFInstanceID inst) {
       if (fakeBpm <= 0) return;
       double beats = (tMs / 1000.0) * fakeBpm / 60.0;
       double barPhase = beats / 4.0;            // 4 beats per bar
       barPhase -= std::floor(barPhase);         // wrap to [0,1)
       SetBeatinfoStruct bi{ (float)fakeBpm, (float)barPhase };
-      plugMain(FF_SET_BEATINFO, (FFMixed){.PointerValue = &bi}, instanceID);
+      plugMain(FF_SET_BEATINFO, (FFMixed){.PointerValue = &bi}, inst);
     };
 
     // Run numFrames and report BOTH wall-clock (captures the render-thread stalls
@@ -589,11 +631,7 @@ int main(int argc, const char* argv[]) {
       auto w0 = std::chrono::steady_clock::now();
       clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
       for (int f = 0; f < numFrames; ++f) {
-        double t = (timebase + f) * dt_ms;
-        plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
-        setBeat(t);
-        plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
-        glFlush();
+        stepFrame((timebase + f) * dt_ms);
       }
       clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
       auto w1 = std::chrono::steady_clock::now();
@@ -601,9 +639,10 @@ int main(int argc, const char* argv[]) {
       double cpuMs = (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
       double wallMs = std::chrono::duration<double, std::milli>(w1 - w0).count();
       std::fprintf(stderr,
-          "[ffgl_runner] %-9s %d frames | wall %.3f ms/frame (%.1f fps) | CPU %.3f ms/frame\n",
-          label, numFrames, wallMs / numFrames, 1000.0 * numFrames / wallMs,
-          cpuMs / numFrames);
+          "[ffgl_runner] %-9s %d frames x %d inst | wall %.3f ms/frame (%.1f fps) "
+          "| CPU %.3f ms/frame\n",
+          label, numFrames, (int)instances.size(), wallMs / numFrames,
+          1000.0 * numFrames / wallMs, cpuMs / numFrames);
     };
 
     WsWatcher watcher;
@@ -627,10 +666,7 @@ int main(int argc, const char* argv[]) {
         if (serveSeconds > 0 && elapsedSec >= serveSeconds) break;
         double tMs = elapsedSec * 1000.0;
         const auto f0 = std::chrono::steady_clock::now();
-        plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &tMs}, instanceID);
-        setBeat(tMs);
-        plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
-        glFlush();
+        stepFrame(tMs);
         busyMs += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - f0).count();
         ++served;
@@ -679,13 +715,7 @@ int main(int argc, const char* argv[]) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));  // let pump apply
         // Warm up so the preview-request patch's dirty flag propagates into the
         // dylib (it re-reads preview_requests on the next dirty frame).
-        for (int f = 0; f < 30; ++f) {
-          double t = (timebase + f) * dt_ms;
-          plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &t}, instanceID);
-          setBeat(t);
-          plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instanceID);
-          glFlush();
-        }
+        for (int f = 0; f < 30; ++f) stepFrame((timebase + f) * dt_ms);
         timebase += 30;
         std::fprintf(stderr, "[ffgl_runner] watching key=%s (%d preview reqs)\n",
                      key.c_str(), n + 1);
@@ -697,7 +727,8 @@ int main(int argc, const char* argv[]) {
     }
     }  // serve / bench
 
-    // 7. Readback host FBO → RGBA.
+    // 7. Readback instance 0's host FBO → RGBA.
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     std::vector<uint8_t> pixels((size_t)width * height * 4);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 
@@ -719,8 +750,8 @@ int main(int argc, const char* argv[]) {
 
     // 8. Cleanup. (fbo + its color texture are owned by outputInterop.)
     watcher.close_();
-    plugMain(FF_DEINSTANTIATE_GL, (FFMixed){.PointerValue = nullptr},
-             instanceID);
+    for (FFInstanceID inst : instances)
+      plugMain(FF_DEINSTANTIATE_GL, (FFMixed){.PointerValue = nullptr}, inst);
     plugMain(FF_DEINITIALISE, (FFMixed){.PointerValue = nullptr}, 0);
     dlclose(handle);
   }

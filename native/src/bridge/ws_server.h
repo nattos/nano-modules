@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -35,6 +37,14 @@ public:
   /// preview readbacks entirely when the editor is disconnected).
   bool has_open_clients() const;
 
+  /// Same question, answered without taking clients_mutex_. `clients_` only
+  /// ever changes in the Open/Close callbacks, so a counter maintained there is
+  /// exact — and a render thread asking "is anyone watching?" tens of times a
+  /// frame must not queue behind a broadcast to find out.
+  bool any_clients() const {
+    return open_clients_.load(std::memory_order_relaxed) != 0;
+  }
+
   /// Broadcast a message to all connected clients.
   void broadcast(const std::string& msg);
 
@@ -59,6 +69,7 @@ private:
   int next_client_id_ = 1;
 
   mutable std::mutex clients_mutex_;
+  std::atomic<int> open_clients_{0};
   std::unordered_map<ClientId, std::shared_ptr<ix::WebSocket>> clients_;
   std::unordered_map<ix::WebSocket*, ClientId> ws_to_id_;
 

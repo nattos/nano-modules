@@ -112,7 +112,15 @@ void BridgeServer::init_subsystems() {
     std::lock_guard lock(inbox_mu_);
     inbox_.push_back({client_id, /*is_message=*/true, msg});
   });
+  // Count opens/closes here rather than reading ws_server_ from has_clients():
+  // the shared_ptr is reset during shutdown, and a lock-free reader must not
+  // touch it. The callbacks fire on the ix thread under its clients_mutex_, so
+  // the count is exact.
+  ws_server_->set_connect_callback([this](int) {
+    ws_clients_.fetch_add(1, std::memory_order_relaxed);
+  });
   ws_server_->set_disconnect_callback([this](int client_id) {
+    ws_clients_.fetch_sub(1, std::memory_order_relaxed);
     std::lock_guard lock(inbox_mu_);
     inbox_.push_back({client_id, /*is_message=*/false, std::string()});
   });
@@ -155,6 +163,7 @@ void BridgeServer::shutdown_subsystems() {
   if (pump_thread_.joinable()) pump_thread_.join();
 
   std::lock_guard lock(tick_mutex_);
+  ws_clients_.store(0, std::memory_order_relaxed);
   if (ws_server_) { ws_server_->stop(); ws_server_.reset(); }
   if (resolume_client_) { resolume_client_->disconnect(); resolume_client_.reset(); }
   if (wasm_host_) { wasm_host_->shutdown(); wasm_host_.reset(); }
@@ -185,6 +194,15 @@ void BridgeServer::pump_loop() {
       // ws_server_/core_/resolume_client_ stay alive until after the pump is
       // joined, so it's safe to use them here even once subsystems_initialized_
       // has been flipped false at the start of shutdown.
+      // Drain Resolume's inbox BEFORE taking tick_mutex_, and let the drained
+      // vector die AFTER releasing it (see the scope below). A composition
+      // frame is a half-megabyte json; moving it out of the client and
+      // destroying it are both real work, and neither needs the render threads
+      // held up behind it.
+      std::vector<resolume::IncomingMessage> resolume_msgs;
+      if (resolume_client_) resolume_msgs = resolume_client_->poll();
+
+      {
       std::lock_guard lock(tick_mutex_);
       for (auto& e : events) {
         if (e.is_message) {
@@ -196,7 +214,7 @@ void BridgeServer::pump_loop() {
           core_.remove_client(e.cid);
         }
       }
-      process_resolume_messages();
+      apply_resolume_messages(resolume_msgs);
       flush_outbox();
       // Drain the process-global trigger rail and launch matching Resolume
       // clips (reconcile loop; see clip_launcher.h). Runs AFTER
@@ -218,6 +236,7 @@ void BridgeServer::pump_loop() {
       // composition next changed. Self-deduping, so re-running it is free.
       instance_locator_.publish_placements(core_.state_document());
       core_.broadcast_state_patches();
+      }  // tick_mutex_ released — resolume_msgs is destroyed below, unlocked.
     }
     std::this_thread::sleep_for(5ms);
   }
@@ -297,19 +316,21 @@ void BridgeServer::broadcast_binary(const void* data, size_t len) {
 }
 
 bool BridgeServer::has_clients() {
-  std::lock_guard lock(tick_mutex_);
-  return ws_server_ && ws_server_->has_open_clients();
+  // Deliberately lock-free — see ws_clients_.
+  return ws_clients_.load(std::memory_order_relaxed) > 0;
 }
 
 bool BridgeServer::key_observed(const std::string& key) {
-  std::lock_guard lock(tick_mutex_);
+  // Nobody connected means nobody observing, and that is the show case: skip
+  // the registry entirely rather than take a lock to walk an empty map.
+  if (ws_clients_.load(std::memory_order_relaxed) <= 0) return false;
+  // The registry carries its own leaf mutex, so this needs no tick_mutex_. Lock
+  // order is one-way (tick_mutex_ → observers) and never the reverse.
   return core_.observers().is_anyone_observing("/plugins/" + key + "/state");
 }
 
-void BridgeServer::process_resolume_messages() {
-  if (!resolume_client_) return;
-
-  auto messages = resolume_client_->poll();
+void BridgeServer::apply_resolume_messages(
+    std::vector<resolume::IncomingMessage>& messages) {
   for (auto& msg : messages) {
     if (auto* cs = std::get_if<resolume::CompositionState>(&msg)) {
       auto comp = resolume::parse_composition(cs->data);

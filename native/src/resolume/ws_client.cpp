@@ -2,6 +2,8 @@
 
 #include <ixwebsocket/IXWebSocket.h>
 
+#include <iterator>
+
 namespace resolume {
 
 WsClient::WsClient() = default;
@@ -45,7 +47,12 @@ bool WsClient::is_connected() const {
 
 std::vector<IncomingMessage> WsClient::poll() {
   std::lock_guard lock(inbox_mutex_);
-  std::vector<IncomingMessage> result(inbox_.begin(), inbox_.end());
+  // MOVE. A CompositionState carries the whole composition json by value —
+  // half a megabyte on a real show — and copying it here meant every broadcast
+  // was deep-copied once and destroyed twice, on the pump thread, inside the
+  // lock the render threads need.
+  std::vector<IncomingMessage> result(std::make_move_iterator(inbox_.begin()),
+                                      std::make_move_iterator(inbox_.end()));
   inbox_.clear();
   return result;
 }

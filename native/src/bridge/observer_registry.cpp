@@ -3,10 +3,12 @@
 namespace bridge {
 
 void ObserverRegistry::observe(ClientId client, const std::string& path) {
+  std::lock_guard lock(mu_);
   subscriptions_[client].insert(path);
 }
 
 void ObserverRegistry::unobserve(ClientId client, const std::string& path) {
+  std::lock_guard lock(mu_);
   auto it = subscriptions_.find(client);
   if (it != subscriptions_.end()) {
     it->second.erase(path);
@@ -15,16 +17,19 @@ void ObserverRegistry::unobserve(ClientId client, const std::string& path) {
 }
 
 void ObserverRegistry::remove_client(ClientId client) {
+  std::lock_guard lock(mu_);
   subscriptions_.erase(client);
 }
 
 bool ObserverRegistry::is_observing(ClientId client, const std::string& path) const {
+  std::lock_guard lock(mu_);
   auto it = subscriptions_.find(client);
   if (it == subscriptions_.end()) return false;
   return it->second.count(path) > 0;
 }
 
 std::unordered_set<std::string> ObserverRegistry::client_paths(ClientId client) const {
+  std::lock_guard lock(mu_);
   auto it = subscriptions_.find(client);
   if (it == subscriptions_.end()) return {};
   return it->second;
@@ -66,6 +71,7 @@ static bool path_matches(const std::string& patch_path_in,
 }
 
 bool ObserverRegistry::is_anyone_observing(const std::string& path) const {
+  std::lock_guard lock(mu_);
   for (const auto& [client, paths] : subscriptions_) {
     for (const auto& sub_path : paths) {
       if (path_matches(path, sub_path)) return true;
@@ -76,6 +82,7 @@ bool ObserverRegistry::is_anyone_observing(const std::string& path) const {
 
 std::unordered_map<ClientId, std::vector<json_patch::PatchOp>>
 ObserverRegistry::filter_patches(const std::vector<json_patch::PatchOp>& patches) const {
+  std::lock_guard lock(mu_);
   std::unordered_map<ClientId, std::vector<json_patch::PatchOp>> result;
 
   for (const auto& [client, paths] : subscriptions_) {
