@@ -67,7 +67,66 @@ Surfaced while getting the full Puppeteer e2e suite green (run against this work
 
 Fixed in the same pass (for context): the engine/gpu test-runner readiness check (was fooled by effect help-text containing "Running"), the `mod.shaper.remap`/`mod-shaper-chain` auto-connect tests and `wire-magnitude` (updated for the now-signed `mod.source.lfo` output), `capabilities` (`lfo.hasSeek`), and repointing the DXV/h264 media tests at the committed small fixtures.
 
+### Resolume rebroadcasts the WHOLE composition on every clip trigger (2026-08-30, external)
+
+Resolume's WebSocket API has no granular change events for clip state: any trigger makes it
+push the entire composition document again. That is Resolume's behaviour and we cannot fix it —
+but it is the single largest CPU consumer in our code, so it is worth knowing exactly what it
+costs and what makes it worse.
+
+**Measured** (`sample` of live Arena, 15 barrels / 107 effects, in `.composition-pull-2026-08-30/`):
+the ixwebsocket client thread that receives those broadcasts was the **busiest thread we own** —
+2336 ms busy per 10 s, of which **~1.35 s is `nlohmann` DOM-parsing the composition**. That is
+~13% of a core, continuously, all show. It is off the render path, so it costs no frames directly;
+what it fed — the pump holding `tick_mutex_` while the render thread queued behind it — is fixed
+(see Recently Completed).
+
+**What amplifies it, in order:**
+
+1. **A tight autopilot loop is a trigger per frame.** The show flips three static images very
+   rapidly on an autopilot sequence to fake a video. Every flip is a clip trigger, so Resolume
+   rebroadcasts the whole composition *every frame*. This is the dominant multiplier and it is
+   fixable **on the show side** — that loop does not have to be built out of clip triggers.
+2. **Large data blocks in parameters ride inline in every broadcast.** Our own barrel `config`
+   blob is one of them: it is a param on the effect, so Resolume ships it inside the composition
+   document, and we pay to re-parse it at whatever rate the triggers fire. Anything large we put
+   in a param is multiplied by the broadcast rate.
+
+**Scale reference for a bench:** the canned composition from `fake_resolume` is ~10 KB; a real
+show composition is 0.5-1 MB. `fake_resolume --clips 8` ≈ 520 KB, `--clips 16` ≈ 980 KB.
+
 ## Future Work
+
+### Barrel/bridge CPU: queued after the tick_mutex_ pass (queued 2026-08-30)
+
+Ranked by measured share, from the live Arena profile and the post-fix bench (both in
+`.composition-pull-2026-08-30/`; harness usage is in the Recently Completed entry below).
+
+- **Don't DOM-parse a composition we have already seen** — *the biggest remaining lever, ~1.35 s
+  per 10 s of a core.* `WsClient`'s message handler parses every Resolume broadcast into a full
+  `nlohmann` DOM, and we then extract a handful of things from it: barrel `config` blobs, tempo,
+  clip connected states, param ids. Cheapest first step is a pre-check on the RAW frame before
+  `nlohmann::parse` — hash it, or hash the slice we care about — and drop unchanged repeats; the
+  thorough version is a SAX pass that only materializes the paths we read. Directly proportional
+  to the rebroadcast storm above, so it is worth doing even after the show-side workaround.
+- **Keep large blobs out of Resolume parameters.** The barrel `config` blob is re-broadcast in
+  full on every trigger (see Known Issues). Shrinking it, or moving the sketch out of the param
+  entirely and keeping only a reference, cuts Resolume's own broadcast size — the one lever we
+  have on *their* cost, not just ours.
+- **`endSubmitBatch`'s per-instance `[_MTLCommandBuffer waitUntilScheduled]`** — 24% of what is
+  left on the render path, and it is synchronisation rather than work: 15 instances means 15
+  waits per frame. Likely unnecessary (or needed only on the last submit of a frame).
+  **Deliberately kept for now** — deferred on purpose, not overlooked.
+- **Coalesce redundant `CompositionState` frames** arriving inside one 5 ms pump tick: each is
+  currently applied in full, and every one supersedes the last. Blocked on `instance_locator_`'s
+  dwell-based fork detection, which reads the intermediate timestamps — so this needs the dwell
+  clock separated from the frame stream first.
+- **WAMR's per-call setjmp/`sigprocmask` guard** — 2.4% of the render path, the tail of the
+  wasm-call-overhead work. Next step would be batching read-tap patches per instance per frame,
+  or `WAMR_DISABLE_HW_BOUND_CHECK` (riskier).
+- **Metal encode / PSO churn** — ~33% of the render path and the largest block of *real* work
+  left. Not investigated; profile before assuming anything is wrong with it.
+
 
 ### Barrel sketch sync: never patch the world (queued 2026-07)
 Make a full sketch sync a **recovery mechanism, not a data path** — it should run only on initial wire-up, instance switch, reconnect, or detected divergence; never on an ordinary edit. Four steps, each independently shippable, each of which alone would have prevented the edit-loss outage above: (1) keep UI-only metadata (`lastModified`) off the wire and out of the push-dedup key; (2) tag broadcast ops with an `origin` client id so a client ignores its own echo instead of refetching; (3) apply remote ops incrementally rather than refetching the whole document; (4) revision numbers on the state doc so a *stale* snapshot can be recognized and discarded — today we can't tell, which is the root reason the replace was unsafe. Plus a dev-mode loop canary (the outage ran at ~140 pushes/sec and nothing warned). Full write-up: **[BARREL_SYNC_PLAN.md](BARREL_SYNC_PLAN.md)**.
@@ -88,6 +147,41 @@ Make a full sketch sync a **recovery mechanism, not a data path** — it should 
 - **Rail UI: tap line positioning refinement**: Tap indicator positioning in the gutter depends on `FieldLayoutManager` bounding boxes which may be stale on first render.
 
 ## Recently Completed
+
+- **Barrel render thread stalled on `tick_mutex_`** (2026-08-30, commit `bb7b7d8b`): the show
+  composition dipped under 60 Hz with neither CPU nor GPU saturated. A live `sample` of Arena
+  found the render thread spending **58% of its time inside our plugin blocked on a mutex** —
+  784 ms per 10 s in `BridgeServer::has_clients()`, which took `tick_mutex_` merely to answer
+  "is anyone watching?" and, with no editor attached, always answered no. The pump holds that
+  same lock across its whole 5 ms tick, most of it parsing Resolume's composition rebroadcasts;
+  at 15 instances the render path asks for it 30-45 times a frame. Priority inversion.
+  Fixed by: `has_clients()` reading an atomic mirrored from the ix connect/disconnect callbacks
+  (never read `ws_server_` lock-free — it is reset on shutdown); `key_observed()` short-circuiting
+  on that atomic and otherwise taking `ObserverRegistry`'s own new leaf mutex (order is one-way,
+  `tick_mutex_` → registry); and `WsClient::poll()` **moving** its inbox instead of deep-copying
+  it — a `CompositionState` holds the whole composition json BY VALUE, so every broadcast was
+  copied once and destroyed twice, on the pump, inside the lock — with the pump now draining
+  before it takes the lock and destroying after it releases.
+  **Result:** 980 KB composition rebroadcast at 60 Hz, 15 instances at 1080p, ProcessOpenGL
+  **8.2-8.8 ms → 4.8-5.4 ms** per composition frame; `has_clients`/`key_observed`/mutex-wait all
+  go to zero in the profile, executor work unchanged, frames byte-identical. With no Resolume
+  peer at all, before ≡ after (~5.0 ms) — the entire win is the stall.
+  **Bug class:** anything a render thread calls per instance per frame must not touch
+  `tick_mutex_`, and nothing should return a large json by value out of a locked queue.
+  **How to measure it again** (both shipped with the fix):
+  `ffgl_runner <bundle> 1920 1080 300 out.png --bpm 120 --config a.json --config b.json ...` —
+  `--config` is now repeatable and mounts one barrel instance per file in ONE process, rendered
+  in argument order every frame, each with its own FBO; the sidechannel bus and `tick_mutex_` are
+  process-global, so cross-instance contention only exists when the instances coexist. Config
+  files are `{uuid, sketch}` envelopes so instances register under their real composition UUIDs.
+  `--serve 60 <secs>` paces like a host and prints the ProcessOpenGL average, which is the
+  faithful number. An A/B must swap the **sibling** `libbridge_server.dylib` (next to the
+  `.bundle` directory, not inside it). And drive it with
+  `fake_resolume 8090 --rebroadcast 60 --clips 16 <uuid...>` +
+  `NANO_RESOLUME_URL=ws://127.0.0.1:8090/api/v1`: **a bench against the bare canned composition
+  measures an idle bridge** — at 20 Hz / 520 KB this fix shows no difference at all.
+  Snapshot the live composition read-only with `{action:'get'}` over :8081 (`get`/`observe` never
+  dirty an instance); the 2026-08-30 pull and the live sample are in `.composition-pull-2026-08-30/`.
 
 - **Barrel resolution-scale snap-back** (2026-07): the 1/4 / 1/2 / 2x buttons applied but the
   UI popped back to 1x (and 1x could then never be re-selected) — `coerceSketch`'s field
