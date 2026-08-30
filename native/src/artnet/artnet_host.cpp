@@ -3,6 +3,8 @@
 #include "artnet/artnet_host.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -110,30 +112,61 @@ struct ArtNetHost::Impl {
     a.sin_port = htons((uint16_t)port);
     a.sin_addr.s_addr = INADDR_ANY;   // never an interface address
     if (::bind(fd, (sockaddr*)&a, sizeof a) != 0) { ::close(fd); return -1; }
-    // A short receive timeout so the RX thread can observe `stopping`.
-    timeval tv{0, 200000};
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    // NON-BLOCKING, and the loop below waits in poll() instead. A blocking
+    // recvfrom here — even with SO_RCVTIMEO — stalls the whole RX thread on
+    // whichever socket happens to be idle, which throttles the OTHER one to
+    // one packet per timeout. See loop().
+    ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     return fd;
   }
 
+  /// Drain every datagram queued on the two sockets, as fast as they arrive.
+  ///
+  /// TWO THINGS HERE ARE LOAD-BEARING, and getting either wrong looks like
+  /// "Art-Net is laggy" rather than like a socket bug:
+  ///
+  ///   * WAIT IN poll(), NOT IN recvfrom(). With a blocking read per socket,
+  ///     the IDLE socket's timeout gates the loop: traffic on 6454 with a quiet
+  ///     6455 mirror was drained at exactly 1/timeout = 5 packets a second
+  ///     while the wire carried ~100. The kernel buffer then backs up, so the
+  ///     values lag further behind every second and keep advancing long after
+  ///     the sender stops — the backlog draining, not a live feed.
+  ///
+  ///   * DRAIN EACH READY SOCKET UNTIL IT IS EMPTY, not one datagram per
+  ///     wakeup. Art-Net senders refresh at 40-100 Hz per universe and several
+  ///     universes share the port, so one-per-wakeup caps us below the wire
+  ///     rate as soon as more than one thing is transmitting.
+  ///
+  /// Bounded per wakeup so a flood cannot starve the `stopping` check.
   void loop() {
     std::vector<uint8_t> buf(2048);
+    constexpr int kMaxPerWake = 1024;
     while (!stopping.load(std::memory_order_relaxed)) {
-      bool any = false;
-      for (int i = 0; i < 2; ++i) {
-        if (fds[i] < 0) continue;
-        sockaddr_in from{};
-        socklen_t fl = sizeof from;
-        const ssize_t n = ::recvfrom(fds[i], buf.data(), buf.size(), 0,
-                                     (sockaddr*)&from, &fl);
-        if (n <= 0) continue;
-        any = true;
-        char ip[INET_ADDRSTRLEN] = {};
-        ::inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
-        ingest(buf.data(), (size_t)n, ip);
+      pollfd pfds[2];
+      int n_pf = 0;
+      for (int i = 0; i < 2; ++i)
+        if (fds[i] >= 0) pfds[n_pf++] = pollfd{fds[i], POLLIN, 0};
+      if (n_pf == 0) {   // nothing bound — nothing to do but stay stoppable
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        continue;
       }
-      // Both sockets timed out: nothing on the wire, so yield rather than spin.
-      if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      // 200 ms is the shutdown latency, NOT the receive rate — poll returns
+      // the instant a datagram lands.
+      const int ready = ::poll(pfds, (nfds_t)n_pf, 200);
+      if (ready <= 0) continue;              // timeout or EINTR
+      for (int i = 0; i < n_pf; ++i) {
+        if (!(pfds[i].revents & POLLIN)) continue;
+        for (int drained = 0; drained < kMaxPerWake; ++drained) {
+          sockaddr_in from{};
+          socklen_t fl = sizeof from;
+          const ssize_t n = ::recvfrom(pfds[i].fd, buf.data(), buf.size(), 0,
+                                       (sockaddr*)&from, &fl);
+          if (n <= 0) break;                 // EAGAIN: this socket is empty
+          char ip[INET_ADDRSTRLEN] = {};
+          ::inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+          ingest(buf.data(), (size_t)n, ip);
+        }
+      }
     }
   }
 };

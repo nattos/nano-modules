@@ -638,6 +638,13 @@ target_include_directories(test_trigger_channels_e2e PRIVATE ${CMAKE_SOURCE_DIR}
 target_link_libraries(test_trigger_channels_e2e PRIVATE bridge_server ixwebsocket nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
 catch_discover_tests(test_trigger_channels_e2e PROPERTIES LABELS "integration")
 
+# The ArtNetHost RX loop against a real socket. Its own binary because start()
+# latches the port pair for the process (test_artnet_host.cpp never binds).
+add_executable(test_artnet_socket tests/test_artnet_socket.cpp src/artnet/artnet_host.cpp)
+target_include_directories(test_artnet_socket PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_artnet_socket PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_artnet_socket PROPERTIES LABELS "integration")
+
 # Runnable fake Resolume WS server (headless dev/e2e — point the dylib at it via
 # NANO_RESOLUME_URL).
 add_executable(fake_resolume
