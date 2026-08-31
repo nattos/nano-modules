@@ -121,6 +121,11 @@ export class FieldLayoutManager {
     };
   }
 
+  /** The element registered under `key` (untracked — see keysUntracked()). */
+  elementFor(key: string): HTMLElement | null {
+    return untracked(() => this.entries.get(key)?.element ?? null);
+  }
+
   /** Get viewport-relative rect (uses cached value from last recalculate). */
   getViewportRect(key: string): DOMRect | null {
     return this.entries.get(key)?.viewportRect ?? null;

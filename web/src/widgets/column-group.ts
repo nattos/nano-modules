@@ -2134,7 +2134,11 @@ export class ColumnGroup extends MobxLitElement {
     const outputFieldNames = this.getOutputFieldNames(entry);
     const schema = this.ds.getPlugin(entry.module_type, entry.instance_key)?.schema ?? {};
 
-    const hits: TemplateResult[] = [];
+    // {area, template} so the boxes can be emitted LARGEST FIRST — a field whose
+    // box nests inside another's (a composite inspector's graph, a reserved header
+    // control) then paints on top and stays clickable, whatever order the layout
+    // manager happens to hold its keys in.
+    const hits: Array<{ area: number; tpl: TemplateResult }> = [];
     const keyPrefix = `${this.sketchId}/${this.colIdx}/${chainIdx}/`;
 
     for (const key of this.layoutManager.keysUntracked()) {
@@ -2149,7 +2153,7 @@ export class ColumnGroup extends MobxLitElement {
       const schemaDef = (schema as any)[fieldPath] ?? null;
       this.registerFieldSelectable(key, chainIdx, entry, fieldPath, isOutput);
 
-      hits.push(html`
+      hits.push({ area: rect.width * rect.height, tpl: html`
         <div class="tap-overlay-hit ${isOutput ? 'output' : ''}" ?selected=${isSelected}
           data-sketch-id=${this.sketchId}
           data-col-idx=${this.colIdx}
@@ -2159,8 +2163,9 @@ export class ColumnGroup extends MobxLitElement {
           style="top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px"
           @pointerdown=${(e: PointerEvent) => this.onTapHitPointerDown(
             e, key, fieldPath, isOutput, schemaDef, chainIdx)}
+          @dblclick=${() => this.onTapOverlayDblClick(key)}
           @click=${(e: Event) => this.onTapOverlayClick(key, fieldPath, isOutput, schemaDef, chainIdx, e)}></div>
-      `);
+      ` });
     }
 
     // Engine-reserved header controls (power ⏻ + opacity) as wire/lane DESTS.
@@ -2177,7 +2182,7 @@ export class ColumnGroup extends MobxLitElement {
         const key = `${keyPrefix}${fieldPath}`;
         const schemaDef = RESERVED_FIELD_DEFS[fieldPath];
         this.registerFieldSelectable(key, chainIdx, entry, fieldPath, false);
-        hits.push(html`
+        hits.push({ area: r.width * r.height, tpl: html`
           <div class="tap-overlay-hit" ?selected=${selectedPath === key}
             data-sketch-id=${this.sketchId}
             data-col-idx=${this.colIdx}
@@ -2187,14 +2192,16 @@ export class ColumnGroup extends MobxLitElement {
             style="top:${r.top - base.top}px;left:${r.left - base.left}px;width:${r.width}px;height:${r.height}px"
             @pointerdown=${(e: PointerEvent) => this.onTapHitPointerDown(
               e, key, fieldPath, false, schemaDef, chainIdx)}
+            @dblclick=${() => this.onTapOverlayDblClick(key)}
             @click=${(e: Event) => this.onTapOverlayClick(key, fieldPath, false, schemaDef, chainIdx, e)}></div>
-        `);
+        ` });
       };
       pushReserved(headerEl?.querySelector('.device-bypass-btn') ?? null, '__enable__');
       pushReserved(headerEl?.querySelector('.device-opacity-slider') ?? null, '__opacity__');
     }
 
-    return html`<div class="tap-overlay-container">${hits}</div>`;
+    hits.sort((a, b) => b.area - a.area);
+    return html`<div class="tap-overlay-container">${hits.map((h) => h.tpl)}</div>`;
   }
 
   /**
@@ -2283,6 +2290,33 @@ export class ColumnGroup extends MobxLitElement {
       return;
     }
     this.ctl.selectField(key);
+    // The overlay sits ON TOP of the field editor, so the editor never sees the
+    // pointer: without this a wires-mode click leaves DOM focus on the body and
+    // the widget's own keyboard handling (Delete → reset to default, typing a
+    // digit → inline edit) is unreachable. Hand focus over explicitly.
+    this.fieldEditorFor(key)?.focus({ preventScroll: true });
+  }
+
+  /** Double-click on a field's tap overlay → open that field's inline value
+   *  editor, the same state a double-click on the bare widget reaches. */
+  private onTapOverlayDblClick(key: string) {
+    this.fieldEditorFor(key)?.beginInlineEdit?.();
+  }
+
+  /**
+   * The field-editor element behind a layout key. The registered anchor is the
+   * editor itself for a plain widget, but a COMPOSITE inspector is anchored on
+   * its inner control element (see scanFieldEditorsIn), so climb out through
+   * light parents and shadow hosts until a field editor turns up.
+   */
+  private fieldEditorFor(key: string): FieldEditorElement | null {
+    let node: Node | null = this.layoutManager.elementFor(key);
+    while (node) {
+      if (isFieldEditor(node)) return node as FieldEditorElement;
+      node = (node as Element).parentElement
+        ?? ((node.parentNode as ShadowRoot | null)?.host ?? null);
+    }
+    return null;
   }
 
   /**
@@ -3242,19 +3276,36 @@ export class ColumnGroup extends MobxLitElement {
 
   private scanFieldEditorsIn(root: ParentNode, cardKey: string, found: Map<string, HTMLElement>) {
     for (const child of root.children) {
-      if (isFieldEditor(child)) {
-        const fieldEditor = child as unknown as FieldEditorElement;
-        for (const fieldPath of fieldEditor.controlledFields) {
-          found.set(`${cardKey}/${fieldPath}`, child as HTMLElement);
-        }
+      if (!isFieldEditor(child)) {
+        this.scanFieldEditorSubtree(child as Element, cardKey, found);
+        continue;
       }
-      if ((child as Element).shadowRoot) {
-        this.scanFieldEditorsIn((child as Element).shadowRoot!, cardKey, found);
+      const editor = child as unknown as FieldEditorElement;
+      // Scan the editor's OWN subtree first. An editor that contains other field
+      // editors is a COMPOSITE — mod.shaper.envelope's inspector is a curve graph
+      // with an `input` slider underneath it — and anchoring it on its host would
+      // hand its tap-overlay hit box the whole card, sitting on top of (or under,
+      // depending on registration order) the nested fields' own boxes. That made
+      // the nested field hard or impossible to click in wires mode. Anchor a
+      // composite on the control element it nominates instead: exactly the part
+      // it actually owns.
+      const nested = new Map<string, HTMLElement>();
+      this.scanFieldEditorSubtree(child as Element, cardKey, nested);
+      const anchor = (nested.size > 0 ? editor.getControlElements()[0] : null)
+        ?? (child as HTMLElement);
+      for (const fieldPath of editor.controlledFields) {
+        found.set(`${cardKey}/${fieldPath}`, anchor);
       }
-      if (child.children.length > 0) {
-        this.scanFieldEditorsIn(child, cardKey, found);
-      }
+      // Inner editors win on a key collision (an inner slider overrides a
+      // composite that also claims its field via `controlledFields`).
+      for (const [key, el] of nested) found.set(key, el);
     }
+  }
+
+  /** Walk an element's shadow root + light children for field editors. */
+  private scanFieldEditorSubtree(el: Element, cardKey: string, found: Map<string, HTMLElement>) {
+    if (el.shadowRoot) this.scanFieldEditorsIn(el.shadowRoot, cardKey, found);
+    if (el.children.length > 0) this.scanFieldEditorsIn(el, cardKey, found);
   }
 
   // ========================================================================

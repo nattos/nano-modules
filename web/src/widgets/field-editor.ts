@@ -155,6 +155,14 @@ export interface FieldEditorElement extends HTMLElement {
 
   /** Returns the interactive control element(s) for bounding box queries. */
   getControlElements(): HTMLElement[];
+
+  /**
+   * Open this editor's inline value edit (the state a double-click reaches),
+   * if it has one. Implemented by the numeric/text widgets so a surface whose
+   * own overlay sits ON TOP of the editor — the wires-mode tap overlay — can
+   * still hand a double-click through to it.
+   */
+  beginInlineEdit?(): void;
 }
 
 /** Type guard for FieldEditorElement. */

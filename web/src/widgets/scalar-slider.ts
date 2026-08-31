@@ -480,6 +480,9 @@ export class ScalarSlider extends LitElement implements FieldEditorElement {
     }
   };
 
+  /** Open the inline value editor (see `FieldEditorElement.beginInlineEdit`). */
+  beginInlineEdit() { void this.handleDoubleClick(); }
+
   private async handleDoubleClick(e?: Event) {
     e?.stopPropagation();
     this.editCancelled = false;

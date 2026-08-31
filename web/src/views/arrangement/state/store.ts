@@ -3366,16 +3366,24 @@ export class ArrangementStore {
     this.setSelection(revealed);
   }
 
-  /** Remove the region's span; later clips shift left, spanning clips trim. */
+  /**
+   * Remove the region's span; later clips shift left, spanning clips trim.
+   *
+   * This is the RIPPLE "Delete Time" — the counterpart of `insertTime`, and like
+   * it, it cuts the whole COLUMN of time: every clip lane, not just the tracks
+   * the caret happens to span. A ripple that skipped out-of-scope lanes slid the
+   * in-scope ones out of sync with the rest of the arrangement (and could not be
+   * undone by an Insert Time, which was always global). Clearing just the boxed
+   * tracks is `clearTime()` (plain Delete), which stays scoped.
+   */
   deleteTime() {
     if (!this.hasTimeSelection) return;
     const start = this.timeSelStart!;
     const end = this.timeSelEnd;
     const span = end - start;
-    const scope = this.regionTracks().map((t) => t.id);
     this.mutate('delete time', (d) => {
       for (const track of d.tracks) {
-        if (!scope.includes(track.id)) continue;
+        if (track.kind !== 'track' && track.kind !== 'scene') continue;
         // First split at both edges so trims are clean (scene cells are rigid:
         // splitClipsAt no-ops, and a PARTIALLY covered cell counts as fully in).
         splitClipsAt(track, start);

@@ -14,6 +14,7 @@
  */
 
 import { EngineProxy } from '../../../engine-proxy';
+import { initFontProvider, requestFont } from '../../../font-access';
 import type { Sketch } from '../../../sketch-types';
 import type { TracePoint, StateDiff, PluginInfo, CompFrameInfo, WorkerCommand } from '../../../engine-types';
 
@@ -84,6 +85,17 @@ export class ArrEngine {
 
   constructor(width = 640, height = 360) {
     this.proxy = new EngineProxy(width, height);
+    // Bridge OS font resolution, exactly as `boot.ts` does for the effect IDE:
+    // the worker's text engine asks (fontRequest) for a family it lacks, the main
+    // thread resolves the bytes via Local Font Access (gesture-primed) and ships
+    // them back (registerFont); the second callback installs the OS CJK faces as
+    // the fallback chain. Without this the arrangement's text effects only ever
+    // see the bundled Noto set — every other font silently fell back.
+    initFontProvider(
+      (family, weight, italic, bytes) => this.proxy.registerFont(family, weight, italic, bytes),
+      (lang, bytes) => this.proxy.registerFallback(lang, bytes),
+    );
+    this.proxy.onFontRequest = (req) => requestFont(req);
     this.proxy.onTracedFrames = (frames) => {
       if (this.onFrameSet) { this.onFrameSet(frames); return; }
       for (const id in frames) this.onFrame?.(id, frames[id]);
