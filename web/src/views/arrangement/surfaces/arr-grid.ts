@@ -22,6 +22,7 @@ import {
 } from './grid-shared';
 import { Track, Clip, AutomationLane, derivedWarpSegments, compositionLengthBeats , LAYER_TARGET_ID} from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
+import { snapMoveStart, type SnapEdges } from '../model/move-snap';
 import { setAnchor, AnchorKeys } from './anchor-registry';
 import '../../../widgets/editable-label';
 import './arr-clip';
@@ -1515,6 +1516,9 @@ export class ArrGrid extends MobxLitElement {
     baseSel: { start: number; end: number; scope: string[] } | null;
     /** Caret + playhead at gesture start, so they can slide with the moved content. */
     baseCaret: { anchorBeat: number; headBeat: number; posBeat: number };
+    /** Neighbour clip edges per track, snapshotted at gesture start (the moved
+     *  content is excluded) — the "snug against the next clip" magnet. */
+    edges: Map<string, SnapEdges>;
   } | null = null;
 
   /** Begin moving `clip` (from arr-clip). `fromHeader` enables time-box split-move. */
@@ -1564,6 +1568,16 @@ export class ArrGrid extends MobxLitElement {
         headBeat: store.playFromBeat,
         posBeat: store.positionBeat,
       },
+      // Snapshot the neighbours ONCE: a coalesced move rewrites what it carries
+      // every frame, so live edges would let the drag snap to its own shadow.
+      edges: store.clipEdgeSnapshot(
+        timebox
+          ? {
+              excludeSpan: { start: store.timeSelStart!, end: store.timeSelEnd },
+              excludeSpanTracks: [...store.timeSelTrackIds],
+            }
+          : { excludeClipIds: [clip.id] },
+      ),
     };
     // One coalesced undo entry for the whole drag — immune to pointer dwell.
     store.beginGesture();
@@ -1590,10 +1604,9 @@ export class ArrGrid extends MobxLitElement {
     const laneLeft = this.scrollEl.getBoundingClientRect().left + store.headerWidth;
     const free = e.altKey;
 
-    // X: shift in beats from pointer-down, quantized to the snap grid.
+    // X: how far the cursor has moved, in beats, since pointer-down. What gets
+    // QUANTIZED is the resulting absolute position, never this delta.
     const deltaBeat = grid.xToBeat(e.clientX - laneLeft) - d.grabBeat;
-    const snap = store.snapStep;
-    const shiftBeat = free ? deltaBeat : Math.round(deltaBeat / snap) * snap;
 
     if (d.timebox && d.baseSel) {
       // Move (or, with Cmd, COPY) the in-box content by the X shift AND across
@@ -1604,6 +1617,20 @@ export class ArrGrid extends MobxLitElement {
         .filter((t) => t.kind === 'track' || t.kind === 'scene').map((t) => t.id);
       const td = plain.indexOf(dest) - plain.indexOf(d.trackId);
       this.clipDropTrackId = td !== 0 ? dest : null;
+      // The box's absolute START is what lands on the grid (or snug against a
+      // neighbour) — snapping the DELTA instead preserved whatever off-grid
+      // offset the box already had, so a box that began off-grid stayed off-grid
+      // no matter how far you dragged it. A single-clip header drag comes through
+      // HERE (selecting a clip boxes it), so this is the common path.
+      const shiftBeat = free
+        ? deltaBeat
+        : snapMoveStart({
+            targetStart: d.baseSel.start + deltaBeat,
+            lengthBeat: d.baseSel.end - d.baseSel.start,
+            step: store.snapStep,
+            pxPerBeat: store.pxPerBeat,
+            edges: d.edges.get(dest),
+          }) - d.baseSel.start;
       if (d.duplicate) {
         // Copy the slices to the shifted spot; originals + box stay put.
         store.copyTimeBoxContent(shiftBeat, td, d.baseSel);
@@ -1617,12 +1644,21 @@ export class ArrGrid extends MobxLitElement {
       return;
     }
 
-    // Snap the clip's ABSOLUTE resulting START to the grid (not the delta), so a
-    // clip that started off-grid lands on a grid line after the move.
+    // Snap the clip's ABSOLUTE resulting START (not the delta), so a clip that
+    // started off-grid lands on a grid line — or snug against a neighbour — after
+    // the move.
     const targetStart = d.startBeat + deltaBeat;
-    const beat = free ? Math.max(0, targetStart) : store.quantize(targetStart);
     const dest = this.trackByCenterShift(d.trackId, e.clientY - d.y0);
     this.clipDropTrackId = dest !== d.trackId ? dest : null;
+    const beat = free
+      ? Math.max(0, targetStart)
+      : snapMoveStart({
+          targetStart,
+          lengthBeat: d.origClip.lengthBeat,
+          step: store.snapStep,
+          pxPerBeat: store.pxPerBeat,
+          edges: d.edges.get(dest),
+        });
     if (d.duplicate) {
       // A live COPY tracking the cursor (the original never moves); per-frame
       // under one key so the whole drag is a single undo.
@@ -1687,32 +1723,63 @@ export class ArrGrid extends MobxLitElement {
     const startBeat = grid.xToBeat(e.clientX - laneLeft);
     const startRow = this.rowAtClientY(e.clientY);
     const qBeat = store.quantize(startBeat, e.altKey);
+    const trackId = startRow.trackId;
+    const laneId = startRow.laneId;
+
+    // SHIFT = extend the existing region to here, rather than starting a new one
+    // (the keyboard's Shift+Arrow, done with the mouse). The kept edge is the one
+    // FARTHER from the click, so extending past either end of the box grows it and
+    // a click inside it pulls the nearer edge in. The anchor row is kept too, so a
+    // shift-click on another track widens the vertical scope.
+    const anchor = e.shiftKey ? this.extendAnchor(qBeat) : null;
     // Set the 2D caret to a zero-width slice at the clicked time + ROW. The bus is a
     // normal row here (it resolves to the global all-tracks scope downstream). A drag
     // below extends it into a box/slice.
-    const trackId = startRow.trackId;
-    const laneId = startRow.laneId;
     // NB: a clip-row click does NOT materialize an automation lane — lanes are only
     // created by an explicit pin or by actually DRAWING on the clip-row overlay
     // (its editor calls ensureLaneId on draw). Merely clicking/selecting must not
     // mint a lane.
-    store.setCaret({ anchorBeat: qBeat, anchorTrackId: trackId, anchorLaneId: laneId, headBeat: qBeat, headTrackId: trackId, headLaneId: laneId });
+    store.setCaret(anchor
+      ? {
+          // Head is the box's LEFT edge by the house convention (play-from sits at
+          // the start of what you selected), so order the two beats.
+          anchorBeat: Math.max(anchor.beat, qBeat),
+          anchorTrackId: anchor.trackId, anchorLaneId: anchor.laneId,
+          headBeat: Math.min(anchor.beat, qBeat),
+          headTrackId: trackId, headLaneId: laneId,
+        }
+      : { anchorBeat: qBeat, anchorTrackId: trackId, anchorLaneId: laneId, headBeat: qBeat, headTrackId: trackId, headLaneId: laneId });
+    if (anchor) store.selectClipsInCaret();
     // Clicking a clip body focuses it right away; a drag below overrides this.
-    if (clickFocusPath) store.selectClipOnly(clickFocusPath);
+    else if (clickFocusPath) store.selectClipOnly(clickFocusPath);
     // An automation lane has no clips — clicking it touches only that lane.
     else if (laneId) store.clearSelection();
     this.drag = {
       x0: e.clientX,
       y0: e.clientY,
-      startBeat,
+      // Dragging on from a shift-click keeps growing off the SAME kept edge.
+      startBeat: anchor ? anchor.beat : startBeat,
       laneLeft,
-      startTrackId: startRow.trackId,
-      startLaneId: startRow.laneId,
+      startTrackId: anchor ? anchor.trackId : startRow.trackId,
+      startLaneId: anchor ? anchor.laneId : startRow.laneId,
       active: false,
-      clickFocusPath,
+      clickFocusPath: anchor ? undefined : clickFocusPath,
     };
     window.addEventListener('pointermove', this.onRegionMove);
     window.addEventListener('pointerup', this.onRegionUp);
+  }
+
+  /** The edge a shift-click extends FROM: the current region's far end (or the
+   *  bare caret when there's no region), with its row. */
+  private extendAnchor(toBeat: number): { beat: number; trackId: string; laneId: string } {
+    const lo = store.hasTimeSelection ? store.timeSelStart! : store.playFromBeat;
+    const hi = store.hasTimeSelection ? store.timeSelEnd : store.playFromBeat;
+    const beat = Math.abs(toBeat - lo) >= Math.abs(toBeat - hi) ? lo : hi;
+    return {
+      beat,
+      trackId: store.caretAnchorTrackId || store.caretHeadTrackId,
+      laneId: store.caretAnchorLaneId,
+    };
   }
 
   private onRegionMove = (e: PointerEvent) => {

@@ -23,7 +23,7 @@ import { store } from '../state/store';
 import type { AutomationLane } from '../model/composition';
 import { toEnvPoints } from '../engine/automation-eval';
 import { buildBeatGrid } from './grid-shared';
-import type { BeatGrid } from '../model/beat-grid';
+import { gridStepBeats, type BeatGrid } from '../model/beat-grid';
 // Registers <envelope-graph> (and the inspector); we only use the graph.
 import { EnvelopeGraph } from '../../../editors/envelope-inspector';
 import type { EnvPoint } from '../../../editors/envelope-math';
@@ -156,8 +156,20 @@ export class ArrAutomationEditor extends MobxLitElement {
         g.xMap = (dx) => grid.beatToX(dx * span);
         g.xUnmap = (px) => grid.xToBeat(px) / span;
         const bpb = this.beatsPerBar || 4;
+        // Same ladder the view's own `quantize` uses (and the ruler above draws),
+        // over the VISIBLE beat window only: a line every whole beat regardless of
+        // zoom showed a grid the snap didn't agree with — coarser than the snap
+        // when zoomed in, finer than it when zoomed out — so clicking a line landed
+        // somewhere else.
+        const step = gridStepBeats(grid.pxPerBeat, bpb);
+        const cw = (g.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null)?.clientWidth ?? 0;
+        const startB = Math.max(0, grid.xToBeat(0));
+        const endB = Math.min(span, (cw > 0 ? grid.xToBeat(cw) : span) + step);
         const lines: Array<{ x: number; bar: boolean }> = [];
-        for (let b = 0; b <= Math.floor(span + 1e-6); b++) lines.push({ x: b / span, bar: b % bpb === 0 });
+        for (let k = Math.ceil(startB / step - 1e-9); k * step <= endB + 1e-9; k++) {
+          const b = k * step;
+          lines.push({ x: b / span, bar: Math.abs(b / bpb - Math.round(b / bpb)) < 1e-6 });
+        }
         g.gridLines = lines;
       } else if (this.timelineSpan > 0) {
         // Track lane: BEAT-DOMAIN over the live warped main grid. Points carry real
@@ -193,9 +205,15 @@ export class ArrAutomationEditor extends MobxLitElement {
         g.xMap = null;
         g.xUnmap = null;
         const bpb = this.beatsPerBar || 4;
+        // The grid step follows the same ladder as everywhere else, off the
+        // effective zoom (the whole span laid across the canvas) — so a short clip
+        // gets its subdivisions and a long one doesn't turn into a wall of lines.
+        const cw = (g.renderRoot?.querySelector('canvas') as HTMLCanvasElement | null)?.clientWidth ?? 0;
+        const step = cw > 0 ? gridStepBeats(cw / this.beats, bpb) : 1;
         const lines: Array<{ x: number; bar: boolean }> = [];
-        for (let b = 0; b <= Math.floor(this.beats + 1e-6); b++) {
-          lines.push({ x: b / this.beats, bar: b % bpb === 0 });
+        for (let k = 0; k * step <= this.beats + 1e-9; k++) {
+          const b = k * step;
+          lines.push({ x: b / this.beats, bar: Math.abs(b / bpb - Math.round(b / bpb)) < 1e-6 });
         }
         g.gridLines = lines;
       } else if (this.pxPerFrame != null && this.durationFrames > 0) {

@@ -41,6 +41,7 @@ import {
 // on demand via `loadDemoComposition()` (a "Load demo" affordance + e2e fixtures).
 import { makeFakeComposition } from '../model/fake-data';
 import { gridStepBeats } from '../model/beat-grid';
+import type { SnapEdges } from '../model/move-snap';
 import { DocHistory } from './history';
 import { effects, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
 import type { CompositeNode } from '../engine/instance-keys';
@@ -2973,6 +2974,43 @@ export class ArrangementStore {
       c.startBeat < this.timeSelEnd - 1e-6 &&
       c.startBeat + c.lengthBeat > this.timeSelStart! + 1e-6
     );
+  }
+
+  /**
+   * Snapshot of every clip lane's clip EDGES, for the move-snap magnet (see
+   * `model/move-snap.ts`). Taken ONCE at the start of a drag, never re-read
+   * per frame: a coalesced move rewrites the clips it carries on every frame,
+   * so reading live edges mid-drag would let a clip snap to its own moving self.
+   *
+   * `excludeClipIds` drops the clips the drag carries by id; `excludeSpan` +
+   * `excludeSpanTracks` drop everything a time box carries (those slices are
+   * split out and rebuilt each frame, so they have no stable ids).
+   */
+  clipEdgeSnapshot(opts: {
+    excludeClipIds?: readonly string[];
+    excludeSpan?: { start: number; end: number } | null;
+    excludeSpanTracks?: readonly string[];
+  } = {}): Map<string, SnapEdges> {
+    const skipIds = new Set(opts.excludeClipIds ?? []);
+    const span = opts.excludeSpan ?? null;
+    const spanTracks = opts.excludeSpanTracks;
+    const out = new Map<string, SnapEdges>();
+    for (const track of this.composition.tracks) {
+      if (track.kind !== 'track' && track.kind !== 'scene') continue;
+      const inSpanScope = !!span
+        && (!spanTracks || spanTracks.length === 0 || spanTracks.includes(track.id));
+      const clipEnds: number[] = [];
+      const clipStarts: number[] = [];
+      for (const c of track.clips) {
+        if (skipIds.has(c.id)) continue;
+        const end = c.startBeat + c.lengthBeat;
+        if (inSpanScope && c.startBeat < span!.end - 1e-6 && end > span!.start + 1e-6) continue;
+        clipStarts.push(c.startBeat);
+        clipEnds.push(end);
+      }
+      out.set(track.id, { clipStarts, clipEnds });
+    }
+    return out;
   }
 
   /**
