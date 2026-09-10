@@ -675,6 +675,11 @@ export class ArrColumnAdapter implements ColumnAdapter {
     // highlight, Delete, and click-away all agree across the app.
     select: (path) => store.setChainFocus(path),
     isSelected: (path) => store.chainFocusPath === path,
+    // Cmd-click adds a card to the group, Shift-click takes the range. The
+    // group is what Delete acts on (see store.deleteChainGroup).
+    toggleSelectEffect: (path) => store.toggleChainSelect(path),
+    rangeSelectEffect: (path) => store.rangeChainSelect(path),
+    isMultiSelected: (path) => store.isChainMultiSelected(path),
     // Field selection is PER-OWNER in the arrangement (each clip/track remembers
     // its own automation field), not the global chainFieldKey. Drives the
     // clip-view automation tab + the track automation overlay.

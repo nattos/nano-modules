@@ -87,6 +87,39 @@ function draftClip(d: Composition, laneId: string, clipId: string): Clip | undef
   return draftLane(d, laneId)?.clips.find((c) => c.id === clipId);
 }
 
+/**
+ * Split a chain-card path — `effect/<sketchId>/<colIdx>/<chainIdx>` — where the
+ * sketch id itself carries slashes (`clip/<track>/<clip>`, `track/<id>`,
+ * `transport/<track>[/<clip>]`, `multi/<set>`), so the two indexes are read off
+ * the END, never by counting from the front.
+ */
+function parseChainPath(
+  path: string,
+): { sketchId: string; colIdx: number; chainIdx: number } | null {
+  if (!path.startsWith('effect/')) return null;
+  const parts = path.slice('effect/'.length).split('/');
+  const chainIdx = Number(parts.pop());
+  const colIdx = Number(parts.pop());
+  if (!Number.isFinite(chainIdx) || !Number.isFinite(colIdx) || parts.length === 0) return null;
+  return { sketchId: parts.join('/'), colIdx, chainIdx };
+}
+
+/** Remove a device (and any wire touching it) from a sketch draft, in place. */
+function stripDevice(sk: ClipSketch, deviceId: string) {
+  const i = sk.devices.findIndex((x) => x.id === deviceId);
+  if (i >= 0) sk.devices.splice(i, 1);
+  if (sk.wires) {
+    sk.wires = sk.wires.filter(
+      (w) => w.src.instanceKey !== deviceId && w.dest.instanceKey !== deviceId);
+  }
+}
+
+/** Drop the automation lanes that targeted a device that's going away — their
+ *  points would never apply again. */
+function dropDeviceLanes(lanes: AutomationLane[], deviceId: string): AutomationLane[] {
+  return lanes.filter((l) => l.targetDeviceId !== deviceId);
+}
+
 /** Per-nesting-level budget (px) for the group gutter: one vertical group line
  *  per depth lives here, and every opacity fader is offset by the full gutter so
  *  faders stay the same width regardless of nesting. */
@@ -572,6 +605,13 @@ export class ArrangementStore {
    */
   chainFocusPath: string | null = null;
   chainFieldKey: string | null = null;
+  /**
+   * Effect cards selected as a GROUP (Cmd-click to add, Shift-click for a
+   * range), in chain order. Holds the focused card alone for a plain single
+   * selection, so `chainFocusPath` stays the primary/inspector anchor and this
+   * is just "what Delete acts on". Ephemeral.
+   */
+  chainMultiSelection: string[] = [];
 
   /**
    * Per-owner field selected for AUTOMATION (distinct from the global field
@@ -1837,9 +1877,131 @@ export class ArrangementStore {
   setChainFocus(path: string | null) {
     runInAction(() => {
       this.chainFocusPath = path;
+      // A plain select collapses any group to this one card (the group lives on
+      // only through toggleChainSelect / rangeChainSelect).
+      this.chainMultiSelection = path?.startsWith('effect/') ? [path] : [];
       // Focusing an in-sketch card/wire supersedes any open rail-wire popup.
       if (path) { this.selectedWireId = null; this.tapPopup = null; }
     });
+  }
+
+  /**
+   * Cmd/ctrl-click an effect card: toggle its membership in the group. Adding
+   * makes it the primary (the inspector follows the last-touched card);
+   * removing the primary hands primary to another member. A card from a
+   * DIFFERENT chain than the group falls back to a plain select — a group never
+   * spans two sketches, because nothing it does would mean anything across them.
+   */
+  toggleChainSelect(path: string) {
+    const parts = parseChainPath(path);
+    const current = this.chainMultiSelection;
+    const groupSketch = current[0] ? parseChainPath(current[0])?.sketchId : undefined;
+    if (!parts || (groupSketch !== undefined && groupSketch !== parts.sketchId)) {
+      this.setChainFocus(path);
+      return;
+    }
+    runInAction(() => {
+      if (current.includes(path)) {
+        const remaining = current.filter((p) => p !== path);
+        this.chainMultiSelection = remaining;
+        if (this.chainFocusPath === path) this.chainFocusPath = remaining.at(-1) ?? null;
+      } else {
+        this.chainMultiSelection = [...current, path]
+          .sort((a, b) => (parseChainPath(a)?.chainIdx ?? 0) - (parseChainPath(b)?.chainIdx ?? 0));
+        this.chainFocusPath = path;
+        this.selectedWireId = null;
+        this.tapPopup = null;
+      }
+    });
+  }
+
+  /** Shift-click an effect card: select the contiguous chain range between the
+   *  focused card (the anchor, which stays primary) and this one. */
+  rangeChainSelect(path: string) {
+    const parts = parseChainPath(path);
+    const anchor = this.chainFocusPath ? parseChainPath(this.chainFocusPath) : null;
+    if (!parts || !anchor || anchor.sketchId !== parts.sketchId
+        || anchor.colIdx !== parts.colIdx) {
+      this.setChainFocus(path);
+      return;
+    }
+    const lo = Math.min(anchor.chainIdx, parts.chainIdx);
+    const hi = Math.max(anchor.chainIdx, parts.chainIdx);
+    const group: string[] = [];
+    for (let i = lo; i <= hi; i++) {
+      if (this.chainDeviceAt(parts.sketchId, i)) {
+        group.push(`effect/${parts.sketchId}/${parts.colIdx}/${i}`);
+      }
+    }
+    runInAction(() => { this.chainMultiSelection = group; });
+  }
+
+  /** True when `path` is part of the group (drives the card highlight). */
+  isChainMultiSelected(path: string): boolean {
+    return this.chainMultiSelection.includes(path);
+  }
+
+  /** The live Device a chain path addresses, for every chain owner the
+   *  arrangement mounts a <column-group> on. */
+  private chainDeviceAt(sketchId: string, chainIdx: number): Device | undefined {
+    if (sketchId.startsWith('clip/')) {
+      const [, trackId, clipId] = sketchId.split('/');
+      return this.clipIn(trackId, clipId)?.sketch.devices[chainIdx];
+    }
+    if (sketchId.startsWith('track/')) {
+      return this.laneById(sketchId.split('/')[1])?.sketch.devices[chainIdx];
+    }
+    if (sketchId.startsWith('transport/')) {
+      const parts = sketchId.split('/');
+      return parts.length >= 3
+        ? this.clipIn(parts[1], parts[2])?.transport?.devices[chainIdx]
+        : this.laneById(parts[1])?.transport?.devices[chainIdx];
+    }
+    return undefined;   // multi/ — the ragged multi-edit rows delete their own way
+  }
+
+  /**
+   * Delete every card in the group as ONE undo entry. Returns false unless
+   * there's an actionable 2+ group, so the caller falls through to the
+   * single-card path.
+   *
+   * Resolves to device IDs BEFORE mutating (chain indexes shift as devices come
+   * out) and does the whole removal in a single recipe — the per-device removers
+   * can't be chained here, because coalescing them would revert each previous
+   * removal before applying the next.
+   */
+  deleteChainGroup(): boolean {
+    const paths = this.chainMultiSelection;
+    if (paths.length < 2) return false;
+    const targets: { sketchId: string; deviceId: string }[] = [];
+    for (const p of paths) {
+      const parsed = parseChainPath(p);
+      const dev = parsed && this.chainDeviceAt(parsed.sketchId, parsed.chainIdx);
+      if (parsed && dev) targets.push({ sketchId: parsed.sketchId, deviceId: dev.id });
+    }
+    if (targets.length < 2) return false;
+    this.mutate('remove devices', (d) => {
+      for (const { sketchId, deviceId } of targets) {
+        if (sketchId.startsWith('clip/')) {
+          const [, trackId, clipId] = sketchId.split('/');
+          const c = draftClip(d, trackId, clipId);
+          if (c) { stripDevice(c.sketch, deviceId); c.automation = dropDeviceLanes(c.automation, deviceId); }
+        } else if (sketchId.startsWith('track/')) {
+          const t = draftLane(d, sketchId.split('/')[1]);
+          if (t) { stripDevice(t.sketch, deviceId); t.automation = dropDeviceLanes(t.automation, deviceId); }
+        } else if (sketchId.startsWith('transport/')) {
+          const parts = sketchId.split('/');
+          const owner = parts.length >= 3
+            ? draftClip(d, parts[1], parts[2]) : draftLane(d, parts[1]);
+          if (owner?.transport) stripDevice(owner.transport, deviceId);
+        }
+      }
+    });
+    for (const { sketchId, deviceId } of targets) {
+      if (this.selectedAutoField[sketchId]?.deviceId === deviceId) this.clearAutoField(sketchId);
+    }
+    this.clearChainFocus();
+    return true;
   }
   /** Set the focused field key (or null). */
   setChainField(key: string | null) {
@@ -1895,7 +2057,11 @@ export class ArrangementStore {
   }
   /** Clear just the chain card/field focus (e.g. clicking the rack background). */
   clearChainFocus() {
-    runInAction(() => { this.chainFocusPath = null; this.chainFieldKey = null; });
+    runInAction(() => {
+      this.chainFocusPath = null;
+      this.chainFieldKey = null;
+      this.chainMultiSelection = [];
+    });
   }
 
   /** True when a deletable chain item (effect card, wire, or the multi-edit
@@ -1925,8 +2091,10 @@ export class ArrangementStore {
     return refs;
   }
 
-  /** Delete the focused effect card, wire, or multi-edit ragged-effects gap. */
+  /** Delete the focused effect card, wire, or multi-edit ragged-effects gap —
+   *  or, when several cards are selected as a group, the whole group at once. */
   deleteChainFocus() {
+    if (this.deleteChainGroup()) return;
     const path = this.chainFocusPath;
     if (path?.startsWith('wire/')) {
       // wire / <sketchId...> / <wireId>
