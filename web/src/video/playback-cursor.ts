@@ -21,13 +21,43 @@ import type { GPUHost } from '../gpu-host';
 import { measureFps } from './video-element-frame-source';
 import { FrameCache } from './frame-cache';
 
-/** Per-cursor decoded-frame cache budget. Large on purpose: a video CACHE is most useful
- *  when it can hold a whole loop SLICE (so the loop reads on-target frames = dense = smooth,
- *  and the wrap is a hit not a seek) rather than just the recently-played tail. It fills
- *  LAZILY (only frames actually played), so this is a CAP, not an eager allocation; if the
- *  GPU can't allocate, createTexture fails and that frame just isn't cached (degrades to the
- *  pre-cache seek path). A 4.5s 1080p60 slice ≈ 2.2 GB. Tune per VRAM / slice length. */
-const CACHE_BUDGET_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB cap (lazy fill)
+/**
+ * VRAM allowance for decoded frames, SHARED across every live cursor.
+ *
+ * Each cursor caches frames at the source's NATIVE size — a 4K frame is 33 MB —
+ * and a per-cursor budget multiplies by however many clips are on screen. A
+ * 4 GB per-cursor cap (what this used to be, sized to hold a whole loop slice)
+ * meant one 4K clip alone grew to 4 GB in about five seconds of playback, and a
+ * timeline with three or four overlapping clips asked for 12–16 GB. On unified
+ * memory that is not a cache, it is a stall: playback crawled.
+ *
+ * So the allowance is global and modest, and the live cursors DIVIDE it (see
+ * `rebalanceCursorCaches`). The cache still does its two real jobs — hold the
+ * frames around the play head so a target a frame or two behind the element is a
+ * hit, and bridge a loop wrap — both of which need a small window, not seconds
+ * of history.
+ */
+const CACHE_TOTAL_BYTES = 768 * 1024 * 1024;
+/** Never starve a cursor below this — a handful of frames at any source size. */
+const CACHE_MIN_BYTES = 96 * 1024 * 1024;
+/** Nor let a lone cursor hoard: a bigger window buys nothing measurable. */
+const CACHE_MAX_BYTES = 384 * 1024 * 1024;
+/** Frames pinned at the loop START (what a wrap actually lands on). Pinning the
+ *  WHOLE slice — thousands of frames — could never fit, and just churned the
+ *  budget's last-resort pinned eviction every frame. */
+const LOOP_PIN_FRAMES = 24;
+
+/** Every live cursor cache, so they can re-divide the shared allowance. */
+const liveCaches = new Set<FrameCache>();
+
+/** Re-divide `CACHE_TOTAL_BYTES` across the live cursors. Called when a cursor
+ *  opens or is released; shrinking a cache evicts down to its new share. */
+function rebalanceCursorCaches(): void {
+  const n = liveCaches.size;
+  if (n === 0) return;
+  const share = Math.min(CACHE_MAX_BYTES, Math.max(CACHE_MIN_BYTES, Math.floor(CACHE_TOTAL_BYTES / n)));
+  for (const c of liveCaches) c.setBudget(share);
+}
 
 // ── Pure decision policy (unit-tested) ────────────────────────────────────────
 
@@ -188,8 +218,11 @@ export class PlaybackCursor {
     const b = Math.max(a, Math.ceil(endSec * this.fps));
     if (this.pinned && this.pinned[0] === a && this.pinned[1] === b) return;
     this.pinned = [a, b];
+    // Pin the frames a wrap LANDS on, not the whole slice: the slice is
+    // typically thousands of frames and could never be resident, so pinning it
+    // only drove the budget's last-resort pinned eviction (see LOOP_PIN_FRAMES).
     const pins: number[] = [];
-    for (let i = a; i <= b; i++) pins.push(i);
+    for (let i = a, end = Math.min(b, a + LOOP_PIN_FRAMES - 1); i <= end; i++) pins.push(i);
     this.cache.setPinned(pins);
   }
 
@@ -385,6 +418,8 @@ export class PlaybackCursor {
     if (this.released) return;
     this.released = true;
     this.cache.clear();
+    liveCaches.delete(this.cache);
+    rebalanceCursorCaches();
     try { this.video.pause(); this.video.removeAttribute('src'); this.video.load(); } catch { /* ignore */ }
   }
 }
@@ -398,16 +433,21 @@ export interface CursorInfo {
 }
 
 /**
- * Build a cursor for `blob`: load a dedicated <video> (metadata), measure its true fps
+ * Build a cursor for `src`: load a dedicated <video> (metadata), measure its true fps
  * (drop-import can't), allocate an rgba8 GPU texture for it, and return the cursor + the
- * decoder-authoritative info. Main-thread only (uses `document`). Throws if the blob has
+ * decoder-authoritative info. Main-thread only (uses `document`). Throws if the source has
  * no decodable dimensions/duration.
+ *
+ * `src` may be a Blob (an object URL is minted and revoked here) or a URL STRING —
+ * pass the URL when the caller already has one, so a gigabyte source isn't
+ * copied into a second blob just to hand the element a second URL for it.
  */
 export async function createPlaybackCursor(
-  gpuHost: GPUHost, blob: Blob, opts?: { fps?: number },
+  gpuHost: GPUHost, src: Blob | string, opts?: { fps?: number },
 ): Promise<{ cursor: PlaybackCursor; info: CursorInfo; objectUrl: string }> {
   if (typeof document === 'undefined') throw new Error('PlaybackCursor requires a DOM (main thread)');
-  const objectUrl = URL.createObjectURL(blob);
+  const owned = typeof src === 'string' ? null : URL.createObjectURL(src);
+  const objectUrl = owned ?? (src as string);
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
@@ -428,7 +468,7 @@ export async function createPlaybackCursor(
       video.src = objectUrl;
     });
   } catch (err) {
-    URL.revokeObjectURL(objectUrl);
+    if (owned) URL.revokeObjectURL(owned);
     throw err;
   }
   video.pause();
@@ -436,7 +476,9 @@ export async function createPlaybackCursor(
   try { video.currentTime = 0; } catch { /* ignore */ }
   const width = video.videoWidth, height = video.videoHeight;
   const durationSec = video.duration;
-  const cache = new FrameCache(gpuHost, CACHE_BUDGET_BYTES);
+  const cache = new FrameCache(gpuHost, CACHE_MAX_BYTES);
+  liveCaches.add(cache);
+  rebalanceCursorCaches();
   const cursor = new PlaybackCursor(gpuHost, video, cache, width, height, fps, durationSec);
   return {
     cursor,

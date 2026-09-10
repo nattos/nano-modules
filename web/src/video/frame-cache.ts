@@ -263,6 +263,22 @@ export class FrameCache {
   /** Bytes resident — exposed for the playback service's debug snapshot. */
   get currentBytes(): number { return this.bytesUsed; }
 
+  /** The current byte budget. */
+  get budget(): number { return this.budgetBytes; }
+
+  /**
+   * Re-budget a live cache, evicting immediately down to the new figure.
+   *
+   * Cursor caches share one VRAM allowance and re-divide it as clips come and
+   * go (see playback-cursor), so a budget is not a constructor-time constant.
+   */
+  setBudget(bytes: number): void {
+    const next = Math.max(0, bytes);
+    if (next === this.budgetBytes) return;
+    this.budgetBytes = next;
+    if (this.bytesUsed > this.budgetBytes) this.ensureRoomFor(0);
+  }
+
   // --- Internal: eviction ---
 
   private ensureRoomFor(extraBytes: number): void {

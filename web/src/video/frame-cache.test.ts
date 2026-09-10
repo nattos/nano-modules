@@ -275,3 +275,44 @@ describe('FrameCache drop + markSuspect (errant-frame guard)', () => {
     expect(host.created.length).toBe(1);           // no realloc
   });
 });
+
+/**
+ * Cursor caches share one VRAM allowance and re-divide it as clips come and go
+ * (see playback-cursor), so a budget is live state, not a constructor constant.
+ * A per-cursor budget was 4 GB, which one 4K clip reached in about five seconds
+ * and several clips multiplied into a stall.
+ */
+describe('FrameCache.setBudget', () => {
+  it('evicts down to a smaller budget immediately', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, FRAME_BYTES * 8);
+    for (let i = 0; i < 8; i++) put(c, i);
+    expect(c.stats().entries).toBe(8);
+
+    c.setBudget(FRAME_BYTES * 3);
+    expect(c.budget).toBe(FRAME_BYTES * 3);
+    expect(c.stats().entries).toBe(3);
+    expect(c.currentBytes).toBeLessThanOrEqual(FRAME_BYTES * 3);
+    // The evicted textures were actually released, not just forgotten.
+    expect(host.released).toHaveLength(5);
+    // LRU order: the OLDEST went first.
+    expect(c.cachedFrameIndices()).toEqual([5, 6, 7]);
+  });
+
+  it('growing the budget evicts nothing', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, FRAME_BYTES * 2);
+    put(c, 0); put(c, 1);
+    c.setBudget(FRAME_BYTES * 10);
+    expect(c.stats().entries).toBe(2);
+    expect(host.released).toHaveLength(0);
+  });
+
+  it('setting the same budget is a no-op', () => {
+    const host = makeMockHost();
+    const c = new FrameCache(host, FRAME_BYTES * 2);
+    put(c, 0); put(c, 1);
+    c.setBudget(FRAME_BYTES * 2);
+    expect(host.released).toHaveLength(0);
+  });
+});

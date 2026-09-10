@@ -18,7 +18,7 @@ import { GPUHost } from '../../../gpu-host';
 import { FrameBlitter, type BlitFit, type BlitTransform } from '../../../video/frame-blitter';
 import { PlaybackCursor, createPlaybackCursor } from '../../../video/playback-cursor';
 import type { VideoPlaybackService, ClipHandle } from '../../../video/playback-service';
-import { classifySource } from '../../../video/dxv-sniff';
+import { classify, urlSource } from '../../../video/dxv-sniff';
 import { thumbnailController } from '../media/thumbnail-controller';
 import { clipSourceTimeAt, clipNoiseSeed, type ClipTimeCtx } from './clip-time';
 import { clipInstanceKey } from './instance-keys';
@@ -349,9 +349,12 @@ export class VideoCompositor {
     this.opening.add(d.clipId);
     try {
       await this.ensureGpu();
-      const resp = await fetch(d.url);
-      const blob = await resp.blob();
-      const kind = await classifySource(blob);
+      // Sniff over RANGED reads — a few KB — instead of materialising the whole
+      // file. `fetch(url).blob()` on a 1 GB source cost ~450 ms and a full copy
+      // per open, and this runs again every time a clip re-enters the lookahead
+      // window; several sources in a real timeline are that size.
+      const src = await urlSource(d.url);
+      const kind = await classify(src);
 
       let pump: Pump;
       if (kind === 'video') {
@@ -360,18 +363,21 @@ export class VideoCompositor {
         // Pass the clip's known fps so the cursor skips measureFps() — that probe PLAYS the
         // element to count frames (hundreds of ms+), which delayed the pump past the moment
         // the clip went active → a Precise "still opening" stall at every clip entry.
-        const { cursor, info } = await createPlaybackCursor(this.gpuHost!, blob, d.fps && d.fps > 0 ? { fps: d.fps } : undefined);
+        const { cursor, info } = await createPlaybackCursor(this.gpuHost!, d.url, d.fps && d.fps > 0 ? { fps: d.fps } : undefined);
         if (!this.opening.has(d.clipId)) { cursor.release(); return; } // canceled mid-open
         pump = { desc: d, cursor, ...this.pumpBase(info.width, info.height, info.frameCount, info.fps, info.durationSec, d) };
       } else {
         // DXV / image: only the service's FrameSource path decodes these (random access + cache).
-        const clip = await this.service!.open(blob, d.sourceKey, { sequential: false });
+        // Only THIS path needs the bytes in hand (DXV decode / image decode), and
+        // those sources are small; <video> is handed the URL.
+        const clip = await this.service!.open(
+          await (await fetch(d.url)).blob(), d.sourceKey, { sequential: false });
         if (!this.opening.has(d.clipId)) { void this.service!.close(clip); return; } // canceled
         const info = this.service!.inspect(clip);
         if (info.codec.startsWith('video:')) {
           // DXV sniff was a false positive (it's really <video>) → use the cursor after all.
           void this.service!.close(clip);
-          const { cursor, info: ci } = await createPlaybackCursor(this.gpuHost!, blob, d.fps && d.fps > 0 ? { fps: d.fps } : undefined);
+          const { cursor, info: ci } = await createPlaybackCursor(this.gpuHost!, d.url, d.fps && d.fps > 0 ? { fps: d.fps } : undefined);
           if (!this.opening.has(d.clipId)) { cursor.release(); return; }
           pump = { desc: d, cursor, ...this.pumpBase(ci.width, ci.height, ci.frameCount, ci.fps, ci.durationSec, d) };
         } else {
