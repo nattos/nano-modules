@@ -1593,11 +1593,12 @@ export class ArrGrid extends MobxLitElement {
   private clipGesture: DragGesture | null = null;
 
   // The drag is DELTA-based: the clip shifts by how far the cursor moved from
-  // pointer-down — NOT to the absolute cursor position. In X, the shift is
-  // quantized to the snap grid (round to nearest step). In Y, the clip moves to
-  // whichever eligible track's center the shifted clip-center lands nearest. So
-  // grabbing a clip anywhere (not just its center) shifts it cleanly by whole
-  // tracks / grid steps.
+  // pointer-down — NOT to the absolute cursor position. In X, the RESULTING
+  // START is what lands on the grid (or snug against a neighbour) — see
+  // `snapMoveStart`; quantizing the delta instead just preserved whatever
+  // off-grid offset the clip already had. In Y, the clip moves to whichever
+  // eligible track's center the shifted clip-center lands nearest. So grabbing a
+  // clip anywhere (not just its center) shifts it cleanly by whole tracks.
   private onClipMove = (e: PointerEvent) => {
     const d = this.clipMove;
     if (!d) return;

@@ -76,6 +76,18 @@ describe('effect card groups', () => {
     expect(types()).toEqual(['source.solid_color', 'color.invert']);
   });
 
+  it('a new top-level selection drops the group (Delete must not reach it)', () => {
+    store.setChainFocus(path(0));
+    store.toggleChainSelect(path(2));
+    expect(store.chainMultiSelection).toHaveLength(2);
+    // Clicking a clip / track / the background clears the chain focus; the group
+    // has to go with it, or the next Delete would gut a chain you left behind.
+    store.selectClipOnly(`clip/${trackId}/${clipId}`);
+    expect(store.chainMultiSelection).toEqual([]);
+    store.deleteChainFocus();
+    expect(types()).toHaveLength(3);
+  });
+
   it('never groups across two different chains', () => {
     const otherTrack = store.addTrack();
     const otherClip = store.createEmptyClip(otherTrack, 0, 8)!;

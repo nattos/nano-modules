@@ -1634,6 +1634,7 @@ export class ArrangementStore {
       // A new top-level selection resets any chain card/field focus.
       this.chainFocusPath = null;
       this.chainFieldKey = null;
+      this.chainMultiSelection = [];
       // (Selection no longer force-switches the right tab — the user drives tabs.)
       // Selecting a clip syncs the time region to the clip's extent;
       // selecting a track selects a time box spanning the whole track.
@@ -1736,6 +1737,7 @@ export class ArrangementStore {
       this.tapPopup = null;
       this.chainFocusPath = null;
       this.chainFieldKey = null;
+      this.chainMultiSelection = [];
     });
   }
 
@@ -1751,6 +1753,7 @@ export class ArrangementStore {
       this.tapPopup = null;
       this.chainFocusPath = null;
       this.chainFieldKey = null;
+      this.chainMultiSelection = [];
     });
   }
 
@@ -1854,6 +1857,7 @@ export class ArrangementStore {
       this.tapPopup = null;
       this.chainFocusPath = null;
       this.chainFieldKey = null;
+      this.chainMultiSelection = [];
     });
   }
 
