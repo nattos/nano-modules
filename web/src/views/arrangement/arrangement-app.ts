@@ -16,6 +16,7 @@ import { html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { store } from './state/store';
+import { beginDragGesture } from '../../utils/drag-gesture';
 import { engineBridge } from './engine/engine-bridge';
 import { generatorThumbCapturer } from './media/generator-thumb-capture';
 import { setGeneratorThumbPersist } from './media/generator-thumb-cache';
@@ -657,53 +658,36 @@ export class ArrangementApp extends MobxLitElement {
   private onFloatResize = (e: PointerEvent, top: boolean, left: boolean) => {
     e.preventDefault();
     e.stopPropagation();
-    const el = e.target as HTMLElement;
-    el.setPointerCapture(e.pointerId);
     const startH = store.monitorHeight;
     const aspect = store.compositionAspect || 16 / 9;
     const x0 = e.clientX, y0 = e.clientY;
-    const move = (ev: PointerEvent) => {
-      const deltas: number[] = [];
-      if (top) deltas.push(y0 - ev.clientY);              // drag up → taller
-      if (left) deltas.push((x0 - ev.clientX) / aspect);  // drag left → wider → taller
-      const dH = deltas.length ? Math.max(...deltas) : 0;
-      store.setMonitorHeight(startH + dH);
-    };
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    beginDragGesture(e, {
+      capture: e.target as HTMLElement,
+      move: (ev) => {
+        const deltas: number[] = [];
+        if (top) deltas.push(y0 - ev.clientY);              // drag up → taller
+        if (left) deltas.push((x0 - ev.clientX) / aspect);  // drag left → wider → taller
+        const dH = deltas.length ? Math.max(...deltas) : 0;
+        store.setMonitorHeight(startH + dH);
+      },
+    });
   };
 
   private onSideResize = (e: PointerEvent) => {
     e.preventDefault();
     const el = e.target as HTMLElement;
     const right = (el.parentElement as HTMLElement).getBoundingClientRect().right;
-    el.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => store.setSidePanelWidth(right - ev.clientX);
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    beginDragGesture(e, {
+      capture: el,
+      move: (ev) => store.setSidePanelWidth(right - ev.clientX),
+    });
   };
 
   private onClipResize = (e: PointerEvent) => {
     e.preventDefault();
-    const el = e.target as HTMLElement;
-    el.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => store.setClipViewHeight(window.innerHeight - ev.clientY);
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    beginDragGesture(e, {
+      capture: e.target as HTMLElement,
+      move: (ev) => store.setClipViewHeight(window.innerHeight - ev.clientY),
+    });
   };
 }

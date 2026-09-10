@@ -21,6 +21,7 @@ import { customElement, property, query } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { beginDragGesture } from '../../../utils/drag-gesture';
 import type { Clip, Track } from '../model/composition';
 import type { BeatGrid } from '../model/beat-grid';
 import { ClipTimelineView } from './timeline-view';
@@ -169,8 +170,10 @@ export class ArrSeqLane extends MobxLitElement {
       duplicate: e.metaKey || e.ctrlKey,
     };
     store.beginGesture();
-    window.addEventListener('pointermove', this.onMove);
-    window.addEventListener('pointerup', this.onUp, { once: true });
+    // Capture on the LANE, not the clip: the clip element is re-rendered under
+    // the move, and a release outside the window would otherwise never arrive —
+    // leaving the drag live and its undo gesture open.
+    beginDragGesture(e, { capture: this, move: this.onMove, end: this.onUp });
   }
 
   private onMove = (e: PointerEvent) => {
@@ -190,7 +193,6 @@ export class ArrSeqLane extends MobxLitElement {
   };
 
   private onUp = () => {
-    window.removeEventListener('pointermove', this.onMove);
     this.drag = null;
     store.endGesture();
   };
@@ -204,15 +206,15 @@ export class ArrSeqLane extends MobxLitElement {
       moved = true;
       this.view.setSelection(anchor, this.beatAt(ev.clientX));
     };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      if (!moved) {
+    beginDragGesture(e, {
+      capture: this,
+      move,
+      end: () => {
+        if (moved) return;
         this.view.setSelection(anchor, anchor);
         if (clickFocusPath) store.selectClipOnly(clickFocusPath);
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up, { once: true });
+      },
+    });
   }
 
   /** Clip-local beat under a client X. */

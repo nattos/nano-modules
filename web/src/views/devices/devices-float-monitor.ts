@@ -10,6 +10,7 @@ import { html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
+import { beginDragGesture } from '../../utils/drag-gesture';
 import { appController } from '../../state/controller';
 
 import '../../widgets/sketch-monitor';
@@ -55,26 +56,20 @@ export class DevicesFloatMonitor extends MobxLitElement {
   private onResize(e: PointerEvent, top: boolean, left: boolean) {
     e.preventDefault();
     e.stopPropagation();
-    const el = e.target as HTMLElement;
-    el.setPointerCapture(e.pointerId);
     const startH = appState.local.userSettings.devicesMonitorHeight;
     const aspect = this.aspect();
     const x0 = e.clientX, y0 = e.clientY;
-    const move = (ev: PointerEvent) => {
-      const deltas: number[] = [];
-      if (top) deltas.push(y0 - ev.clientY);
-      if (left) deltas.push((x0 - ev.clientX) / aspect);
-      const dH = deltas.length ? Math.max(...deltas) : 0;
-      appController.setUserSetting('devicesMonitorHeight',
-        Math.min(MAX_H, Math.max(MIN_H, Math.round(startH + dH))));
-    };
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    beginDragGesture(e, {
+      capture: e.target as HTMLElement,
+      move: (ev) => {
+        const deltas: number[] = [];
+        if (top) deltas.push(y0 - ev.clientY);
+        if (left) deltas.push((x0 - ev.clientX) / aspect);
+        const dH = deltas.length ? Math.max(...deltas) : 0;
+        appController.setUserSetting('devicesMonitorHeight',
+          Math.min(MAX_H, Math.max(MIN_H, Math.round(startH + dH))));
+      },
+    });
   }
 
   render() {

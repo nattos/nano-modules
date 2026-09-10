@@ -96,7 +96,14 @@ export class PointerDragOp {
   private finishDispose() {
     if (this.isDisposed) return;
     this.isDisposed = true;
-    this.element.releasePointerCapture(this.pointerId);
+    // Only release what we actually hold: releasing a pointer that is no longer
+    // active throws, and by this point (pointerup) it usually isn't — the throw
+    // then skipped the listener teardown below and leaked the whole gesture.
+    try {
+      if (this.element.hasPointerCapture(this.pointerId)) {
+        this.element.releasePointerCapture(this.pointerId);
+      }
+    } catch { /* already gone */ }
     window.removeEventListener('pointermove', this.moveFunc);
     window.removeEventListener('pointerup', this.upFunc);
     window.removeEventListener('pointercancel', this.cancelFunc);

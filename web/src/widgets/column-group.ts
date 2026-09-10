@@ -18,6 +18,7 @@ import { sketchChain, chainEntryAt, isCanvasEntry, linearChainLength, isEffectCo
 import type { ColumnAdapter, PluginInfo, EditHandle } from './column-adapter';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiContinuousEditHandle } from './field-editor';
 import { isFieldEditor } from './field-editor';
+import { beginDragGesture } from '../utils/drag-gesture';
 import { FieldLayoutManager, type FieldRect } from './field-layout-manager';
 import { connectGestureActive } from './taps-connect';
 import { editorRegistry } from '../editor-registry';
@@ -3145,14 +3146,14 @@ export class ColumnGroup extends MobxLitElement {
 
   private startDrag(e: PointerEvent, partial: { kind: 'card' | 'chip'; from: number; category?: string; topLevel?: boolean }) {
     this.drag = { ...partial, startX: e.clientX, startY: e.clientY, active: false, targetIdx: -1 };
-    const move = (ev: PointerEvent) => this.onDragMove(ev);
-    const up = (ev: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      this.onDragUp(ev);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    // Captured on the COLUMN (the card being dragged is re-rendered under the
+    // gesture), so a release outside the window still lands the drop instead of
+    // leaving a card glued to the cursor.
+    beginDragGesture(e, {
+      capture: this,
+      move: (ev) => this.onDragMove(ev),
+      end: (ev) => this.onDragUp(ev),
+    });
   }
 
   private onDragMove(e: PointerEvent) {
@@ -3187,7 +3188,7 @@ export class ColumnGroup extends MobxLitElement {
     if (colEl) this.showInsertMarker(best.y - colEl.getBoundingClientRect().top);
   }
 
-  private onDragUp(_e: PointerEvent) {
+  private onDragUp(_e: PointerEvent | null) {
     const d = this.drag;
     this.drag = null;
     this.hideInsertMarker();

@@ -18,6 +18,7 @@ import { html, css } from 'lit';
 import { customElement, query, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
+import { beginDragGesture } from '../../../utils/drag-gesture';
 import { engineBridge } from '../engine/engine-bridge';
 import { debugPerf } from '../state/debug-perf';
 
@@ -270,18 +271,12 @@ export class ArrMonitor extends MobxLitElement {
 
   private onResize = (e: PointerEvent) => {
     e.preventDefault();
-    const el = e.target as HTMLElement;
     const startY = e.clientY;
     const startH = store.monitorHeight;
-    el.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => store.setMonitorHeight(startH + (startY - ev.clientY));
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    beginDragGesture(e, {
+      capture: e.target as HTMLElement,
+      move: (ev) => store.setMonitorHeight(startH + (startY - ev.clientY)),
+    });
   };
 
   /** Canvas 2D context, backing store sized to the COMPOSITION resolution (so the

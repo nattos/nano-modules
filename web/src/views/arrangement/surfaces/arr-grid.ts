@@ -23,6 +23,7 @@ import {
 import { Track, Clip, AutomationLane, derivedWarpSegments, compositionLengthBeats , LAYER_TARGET_ID} from '../model/composition';
 import { warpDeviationAt } from '../model/beat-grid';
 import { snapMoveStart, type SnapEdges } from '../model/move-snap';
+import { beginDragGesture, type DragGesture } from '../../../utils/drag-gesture';
 import { setAnchor, AnchorKeys } from './anchor-registry';
 import '../../../widgets/editable-label';
 import './arr-clip';
@@ -697,17 +698,11 @@ export class ArrGrid extends MobxLitElement {
   private onHeaderResize = (e: PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const el = e.target as HTMLElement;
     const left = this.getBoundingClientRect().left;
-    el.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => store.setHeaderWidth(ev.clientX - left);
-    const up = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    beginDragGesture(e, {
+      capture: this,
+      move: (ev) => store.setHeaderWidth(ev.clientX - left),
+    });
   };
 
   private renderTimeToolbar() {
@@ -1198,8 +1193,7 @@ export class ArrGrid extends MobxLitElement {
     // never reorders, so inline rename still works.
     if (e.target instanceof Element && e.target.closest('button, input, textarea, editable-text')) return;
     this.headerDrag = { y0: e.clientY, trackId: track.id };
-    window.addEventListener('pointermove', this.onHeaderMove);
-    window.addEventListener('pointerup', this.onHeaderUp);
+    this.armHeaderDrag(e);
   }
 
   /** Pointer-down on a group's bracket line: select it, and arm a reorder drag for
@@ -1210,9 +1204,20 @@ export class ArrGrid extends MobxLitElement {
     store.select(paths.track(gid));
     if (!store.canReorderTrack(gid)) return;
     this.headerDrag = { y0: e.clientY, trackId: gid };
-    window.addEventListener('pointermove', this.onHeaderMove);
-    window.addEventListener('pointerup', this.onHeaderUp);
+    this.armHeaderDrag(e);
   }
+
+  /** Capture the pointer on the GRID (not the header row, which the reorder
+   *  preview re-renders out from under the drag) and run the reorder until the
+   *  pointer is released or cancelled. */
+  private armHeaderDrag(e: PointerEvent) {
+    this.headerGesture = beginDragGesture(e, {
+      capture: this,
+      move: this.onHeaderMove,
+      end: (_ev, cancelled) => this.onHeaderUp(cancelled),
+    });
+  }
+  private headerGesture: DragGesture | null = null;
 
   /** Double-click a group header to expand/collapse it (no chevron). Renaming uses
    *  dbl-click on the name, so ignore events from the editable label / controls. */
@@ -1232,12 +1237,11 @@ export class ArrGrid extends MobxLitElement {
     this.reorderDrop = this.computeDrop(e.clientY);
   };
 
-  private onHeaderUp = () => {
-    window.removeEventListener('pointermove', this.onHeaderMove);
-    window.removeEventListener('pointerup', this.onHeaderUp);
+  private onHeaderUp = (cancelled = false) => {
+    this.headerGesture = null;
     const d = this.headerDrag;
     this.headerDrag = null;
-    if (this.reorderActive && d && this.reorderDrop) {
+    if (!cancelled && this.reorderActive && d && this.reorderDrop) {
       store.moveTrackInto(d.trackId, this.reorderDrop.parentId, this.reorderDrop.beforeId);
     }
     this.reorderActive = false;
@@ -1581,9 +1585,12 @@ export class ArrGrid extends MobxLitElement {
     };
     // One coalesced undo entry for the whole drag — immune to pointer dwell.
     store.beginGesture();
-    window.addEventListener('pointermove', this.onClipMove);
-    window.addEventListener('pointerup', this.onClipUp);
+    // Capture on the GRID: the clip element itself is re-rendered (and reparented
+    // across tracks) mid-drag, so capturing it would lose the pointer — and with
+    // it the pointerup — the moment the move crosses a track boundary.
+    this.clipGesture = beginDragGesture(e, { capture: this, move: this.onClipMove, end: this.onClipUp });
   }
+  private clipGesture: DragGesture | null = null;
 
   // The drag is DELTA-based: the clip shifts by how far the cursor moved from
   // pointer-down — NOT to the absolute cursor position. In X, the shift is
@@ -1701,8 +1708,7 @@ export class ArrGrid extends MobxLitElement {
   }
 
   private onClipUp = () => {
-    window.removeEventListener('pointermove', this.onClipMove);
-    window.removeEventListener('pointerup', this.onClipUp);
+    this.clipGesture = null;
     // Cmd-drag DUPLICATE now makes its copy live during the drag (per-frame,
     // coalesced) — nothing to finalize here beyond closing the gesture.
     store.endGesture();
@@ -1765,9 +1771,11 @@ export class ArrGrid extends MobxLitElement {
       active: false,
       clickFocusPath: anchor ? undefined : clickFocusPath,
     };
-    window.addEventListener('pointermove', this.onRegionMove);
-    window.addEventListener('pointerup', this.onRegionUp);
+    this.regionGesture = beginDragGesture(e, {
+      capture: this, move: this.onRegionMove, end: this.onRegionUp,
+    });
   }
+  private regionGesture: DragGesture | null = null;
 
   /** The edge a shift-click extends FROM: the current region's far end (or the
    *  bare caret when there's no region), with its row. */
@@ -1816,9 +1824,8 @@ export class ArrGrid extends MobxLitElement {
     store.selectClipsInCaret();
   };
 
-  private onRegionUp = (e: PointerEvent) => {
-    window.removeEventListener('pointermove', this.onRegionMove);
-    window.removeEventListener('pointerup', this.onRegionUp);
+  private onRegionUp = (_e: PointerEvent | null) => {
+    this.regionGesture = null;
     const d = this.drag;
     this.drag = null;
     if (!d || d.active) return;

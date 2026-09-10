@@ -15,6 +15,7 @@ import { generatorThumbCache } from '../media/generator-thumb-cache';
 import { GENERATOR_THUMB_SAMPLES } from '../media/generator-thumb-capture';
 import { setAnchor, clearAnchor, AnchorKeys } from './anchor-registry';
 import { store, paths } from '../state/store';
+import { beginDragGesture } from '../../../utils/drag-gesture';
 import { buildBeatGrid } from './grid-shared';
 import type { BeatGrid } from '../model/beat-grid';
 import {
@@ -823,8 +824,10 @@ export class ArrClip extends MobxLitElement {
     this.origStart = this.clip.startBeat;
     this.origLen = this.clip.lengthBeat;
     this.resizeArm = { x0: e.clientX, engaged: false };
-    window.addEventListener('pointermove', this.onWinMove);
-    window.addEventListener('pointerup', this.onWinUp);
+    // Captured (past the drag threshold) so a release outside the window still
+    // closes the gesture — an un-ended resize left the undo entry open and the
+    // edge glued to the cursor.
+    beginDragGesture(e, { capture: this, move: this.onWinMove, end: this.onWinUp });
   }
 
   private onWinMove = (e: PointerEvent) => {
@@ -894,8 +897,6 @@ export class ArrClip extends MobxLitElement {
     // Only close a gesture we actually opened — a click that never crossed the
     // threshold wrote nothing and must not push an (empty) undo entry.
     if (engaged) store.endGesture();
-    window.removeEventListener('pointermove', this.onWinMove);
-    window.removeEventListener('pointerup', this.onWinUp);
     this.requestUpdate();
   };
 }

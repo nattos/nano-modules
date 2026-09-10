@@ -14,6 +14,7 @@ import { MobxLitElement } from '../../../mobx-lit-element';
 import { store } from '../state/store';
 import { compositionLengthBeats } from '../model/composition';
 import { RULER_HEIGHT } from './grid-shared';
+import { beginDragGesture } from '../../../utils/drag-gesture';
 import { mainTimelineView, ClipTimelineView, type RulerView } from './timeline-view';
 import '../../../widgets/ui-icon';
 
@@ -216,9 +217,6 @@ export class ArrRuler extends MobxLitElement {
         <div
           class="time"
           @pointerdown=${this.onDown}
-          @pointermove=${this.onMove}
-          @pointerup=${this.onUp}
-          @pointercancel=${this.onUp}
           @dblclick=${this.onDblClick}
           @wheel=${this.onWheel}
         >
@@ -352,6 +350,7 @@ export class ArrRuler extends MobxLitElement {
   }
 
   private onDown = (e: PointerEvent) => {
+    if (this.dragging) return;
     this.dragging = true;
     this.moved = 0;
     this.lastY = e.clientY;
@@ -360,7 +359,11 @@ export class ArrRuler extends MobxLitElement {
     // Capture the content position under the cursor — it stays anchored there
     // for the whole gesture, so hitting the scroll endpoint never drifts.
     this.anchorUnits = v.scrollUnits + this.localX(e) / v.pxPerBeat;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    // Captured on the ruler's own time strip (which outlives the gesture — the
+    // canvas inside it is resized/redrawn constantly), and ended on cancel as
+    // well as release: a ruler drag that never ended kept panning the timeline
+    // on the next pointer move, with no button held.
+    beginDragGesture(e, { capture: this.timeEl, move: this.onMove, end: this.onUp });
   };
 
   private onMove = (e: PointerEvent) => {
@@ -377,15 +380,9 @@ export class ArrRuler extends MobxLitElement {
     v.setScrollUnits(this.anchorUnits - this.localX(e) / v.pxPerBeat);
   };
 
-  private onUp = (e: PointerEvent) => {
-    if (!this.dragging) return;
-    this.dragging = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
+  private onUp = () => {
     // Navigation surface only — a click does NOT move the playhead/caret.
+    this.dragging = false;
   };
 
   /**
