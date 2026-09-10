@@ -319,6 +319,53 @@ inline float modNeutral(tap_mod::Combine combine, bool isSigned,
   }
 }
 
+// --- The per-tap scalar fold, split into parse + apply ---
+//
+// A VEC read tap runs the same fold once per component, each against that
+// lane's own canonical value, so the per-tap parse (once) is separated from the
+// fold (once per lane). The math is untouched: foldFloatReadTap below is now
+// parseTapFold + foldOne plus the stateful delay/band stages it always had, and
+// test_tap_mod.cpp + the mod-remap / mod-motion suites pin that equivalence.
+struct TapFold {
+  tap_mod::Mod mod;
+  tap_mod::Combine combine = tap_mod::Combine::Replace;
+  float mixFactor = 1.0f;
+  bool  hasMag = false;      // magnitude present -> range-aware fold
+  bool  isSigned = false;
+  float dmin = 0.0f, dmax = 1.0f;
+  float preScale = 1.0f, preBias = 0.0f;
+};
+
+TapFold parseTapFold(const json& tap) {
+  TapFold f;
+  f.mod       = parseMod(tap);
+  f.combine   = parseCombine(tap);
+  f.mixFactor = tap.value("mixFactor", 1.0f);
+  f.hasMag    = tap.contains("magnitude");
+  f.isSigned  = tap.value("magnitude", std::string()) == "signed";
+  f.dmin      = (float)tap.value("destMin", 0.0);
+  f.dmax      = (float)tap.value("destMax", 1.0);
+  // Polarity prescale (identity unless the wire forces signed/unsigned against
+  // an opposite EXPLICIT source decl -- see normalization). Applied to the raw
+  // value BEFORE applyTapMod, so the conversion's affine bias is inside what
+  // `scale` multiplies -- i.e. `scale` scales the converted swing around its
+  // neutral (0 for signed), not after it.
+  f.preScale  = (float)tap.value("preScale", 1.0);
+  f.preBias   = (float)tap.value("preBias", 0.0);
+  return f;
+}
+
+// The fold from a raw rail value to the dest value -- shared by the live value
+// AND the band sweep so the two can never diverge. Mirrors web's
+// resolveScalarWire: applyMagnitude seeds from min when there is no canonical.
+inline float foldOne(const TapFold& f, float v, bool hasCanon, float canon) {
+  const float shaped = tap_mod::applyTapMod(v * f.preScale + f.preBias, f.mod);
+  return f.hasMag
+      ? tap_mod::applyMagnitude(hasCanon ? canon : f.dmin, shaped, f.isSigned,
+                                f.combine, f.mixFactor, f.dmin, f.dmax)
+      : tap_mod::combineTap(hasCanon, canon, shaped, f.combine, f.mixFactor);
+}
+
 // --- Reserved per-effect engine state keys (device on/off + opacity) ---
 
 // Find an instance's "state" object WITHOUT copying it. `.value("state", {})`
@@ -2346,31 +2393,9 @@ float SketchExecutor::foldFloatReadTap(const json& tap, const std::string& insta
                                        bool hasCanon, float canon) {
   // Wire magnitude mode (resolved during normalization). Present → range-aware
   // fold into [destMin,destMax]; absent → legacy combineTap (the wire's
-  // `absolute` mode, or a plain rail tap). Mirrors web's resolveScalarWire:
-  // applyMagnitude seeds from min when no canonical. The fold from a raw rail
-  // value to the dest value — shared by the live value AND the band sweep so
-  // the two can never diverge.
-  const tap_mod::Mod mod = parseMod(tap);
-  const tap_mod::Combine combine = parseCombine(tap);
-  const float mixFactor = tap.value("mixFactor", 1.0f);
-  const bool hasMag = tap.contains("magnitude");
-  const bool isSigned = tap.value("magnitude", std::string()) == "signed";
-  const float dmin = (float)tap.value("destMin", 0.0);
-  const float dmax = (float)tap.value("destMax", 1.0);
-  // Polarity prescale (identity unless the wire forces signed/unsigned
-  // against an opposite EXPLICIT source decl — see normalization).
-  // Applied to the raw value BEFORE applyTapMod, so the conversion's
-  // affine bias is inside what `scale` multiplies — i.e. `scale` scales
-  // the converted swing around its neutral (0 for signed), not after it.
-  const float preScale = (float)tap.value("preScale", 1.0);
-  const float preBias  = (float)tap.value("preBias", 0.0);
-  auto fold = [&](float v) -> float {
-    const float shaped = tap_mod::applyTapMod(v * preScale + preBias, mod);
-    return hasMag
-        ? tap_mod::applyMagnitude(hasCanon ? canon : dmin, shaped, isSigned,
-                                  combine, mixFactor, dmin, dmax)
-        : tap_mod::combineTap(hasCanon, canon, shaped, combine, mixFactor);
-  };
+  // `absolute` mode, or a plain rail tap). See parseTapFold / foldOne.
+  const TapFold params = parseTapFold(tap);
+  auto fold = [&](float v) -> float { return foldOne(params, v, hasCanon, canon); };
   float combined = fold(railVal);
   // Wire DELAY stage — temporal, transitive. Applied AFTER the pure
   // envelope/remap/scale + magnitude fold and BEFORE smoothing (so the
@@ -2394,7 +2419,8 @@ float SketchExecutor::foldFloatReadTap(const json& tap, const std::string& insta
   // source output's declared range (default 0..1). Fill anchor = the base the
   // fold modulates from (dmin seeds when no canonical).
   recordModBand(modulationData_, instanceKey, fieldPath, combined,
-                modNeutral(combine, isSigned, hasCanon ? canon : dmin, dmin, dmax),
+                modNeutral(params.combine, params.isSigned,
+                           hasCanon ? canon : params.dmin, params.dmin, params.dmax),
                 (float)tap.value("srcMin", 0.0),
                 (float)tap.value("srcMax", 1.0), fold);
   return combined;
