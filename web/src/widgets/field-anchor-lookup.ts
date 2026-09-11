@@ -12,6 +12,35 @@
 import { appState } from '../state/app-state';
 
 /**
+ * Separator between a vector field's path and a component index in a DOM
+ * ANCHOR key: `translate#0`, `color#2`.
+ *
+ * `/` could not be used — it is the struct-leaf separator, and numeric leaf
+ * names already exist, so `translate/0` would be genuinely ambiguous. `#`
+ * appears in no schema field name.
+ *
+ * This is an anchor/telemetry key only. The DOCUMENT keeps the lane as a
+ * structured `lane` on the wire endpoint (or `targetLane` on an automation
+ * lane), so everything that looks a field up in a schema keeps working — call
+ * {@link splitLane} before any such lookup.
+ */
+export const LANE_SEP = '#';
+
+/** `translate` + 1 → `translate#1`. An undefined lane is the whole field. */
+export function laneKey(field: string, lane?: number): string {
+  return lane == null ? field : `${field}${LANE_SEP}${lane}`;
+}
+
+/** The inverse. A path with no lane suffix comes back with `lane: undefined`. */
+export function splitLane(path: string): { field: string; lane?: number } {
+  const i = path.lastIndexOf(LANE_SEP);
+  if (i < 0) return { field: path };
+  const lane = Number(path.slice(i + 1));
+  if (!Number.isInteger(lane) || lane < 0) return { field: path };
+  return { field: path.slice(0, i), lane };
+}
+
+/**
  * The sketch the ACTIVE surface's editor is editing: the unified surface
  * tracks it in `local.editingSketchId`; the effect IDE binds its editor to
  * `userSettings.selectedProjectId` instead.

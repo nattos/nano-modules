@@ -23,6 +23,7 @@ import type { FieldConnectInfo, Sketch } from '../sketch-types';
 import { chainEntryAt, RESERVED_FIELD_DEFS } from '../sketch-types';
 import type { PluginInfo, ColumnTaps } from './column-adapter';
 import { PointerDragOp } from '../utils/pointer-drag-op';
+import { splitLane } from './field-anchor-lookup';
 import { observable, runInAction } from 'mobx';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
@@ -193,15 +194,20 @@ export class WireConnect implements ColumnTaps {
     const sketchId = hit.dataset.sketchId ?? '';
     const colIdx = parseInt(hit.dataset.colIdx ?? '-1', 10);
     const chainIdx = parseInt(hit.dataset.chainIdx ?? '-1', 10);
-    const fieldPath = hit.dataset.fieldPath ?? '';
-    if (!sketchId || colIdx < 0 || chainIdx < 0 || !fieldPath) return null;
+    const anchorPath = hit.dataset.fieldPath ?? '';
+    if (!sketchId || colIdx < 0 || chainIdx < 0 || !anchorPath) return null;
     const entry = chainEntryAt(this.host.getSketch(sketchId), chainIdx);
     if (entry?.type !== 'module') return null;
+    // An anchor may address ONE LANE of a vector field (`translate#1`). The
+    // endpoint is the field plus that lane — and the schema is keyed by the
+    // field, so the lookup has to happen on the split name or every per-lane
+    // drop would come back untyped.
+    const { field: fieldPath, lane } = splitLane(anchorPath);
     // Reserved engine keys aren't in the plugin schema — synthesize their defs.
     const schemaDef = this.host.getPlugin(entry.module_type)?.schema?.[fieldPath]
       ?? RESERVED_FIELD_DEFS[fieldPath] ?? null;
     const r = hit.getBoundingClientRect();
-    return { sketchId, colIdx, chainIdx, fieldPath,
+    return { sketchId, colIdx, chainIdx, fieldPath, lane,
       isOutput: hit.dataset.isOutput === 'true', viewportY: r.top + r.height / 2, schemaDef };
   }
 

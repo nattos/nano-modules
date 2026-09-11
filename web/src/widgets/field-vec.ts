@@ -14,6 +14,7 @@ import { customElement, property } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import './scalar-slider';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
+import { laneKey } from './field-anchor-lookup';
 
 @customElement('field-vec')
 export class FieldVec extends MobxLitElement implements FieldEditorElement {
@@ -28,8 +29,18 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
   @property({ attribute: false }) componentLabels: string[] | null = null;
 
   get controlledFields() { return [this.fieldPath]; }
+  /**
+   * `[0]` is the anchor for the WHOLE field and must strictly CONTAIN every
+   * per-lane anchor: the tap overlay paints hit boxes largest-area-first so
+   * nested ones stay clickable, and two boxes of equal area would tie — making
+   * "the whole vector" and "its X component" impossible to aim at separately.
+   * Hence the wrapper, rather than the X slider standing in for the field.
+   */
   getControlElements(): HTMLElement[] {
-    return Array.from(this.renderRoot.querySelectorAll('scalar-slider')) as HTMLElement[];
+    const sliders = Array.from(
+      this.renderRoot.querySelectorAll('scalar-slider')) as HTMLElement[];
+    const body = this.renderRoot.querySelector('.vec-body') as HTMLElement | null;
+    return body ? [body, ...sliders] : sliders;
   }
   bindInstance(binding: FieldBinding) { this.binding = binding; }
 
@@ -40,6 +51,7 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
       gap: var(--app-sp-1);
       font-size: var(--app-fs-sm);
     }
+    .vec-body { display: flex; flex-direction: column; gap: var(--app-sp-1); }
     .row { display: inline-flex; align-items: center; gap: var(--app-sp-3); }
     .label {
       min-width: 70px;
@@ -97,12 +109,16 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
             cancel: () => edit?.cancel(),
           };
         },
+        // The band the executor recorded for THIS component. Its telemetry key
+        // is the lane path, which is exactly what the slider asks for below —
+        // so the whole chain from executor to slider needs no special case.
+        getModulation: (path: string) => this.binding?.getModulation?.(path) ?? null,
       };
       rows.push(html`
         <div class="row">
           <span class="label">${labels[i] ?? `[${i}]`}</span>
           <scalar-slider
-            .fieldPath=${'value'}
+            .fieldPath=${laneKey(this.fieldPath, i)}
             .min=${this.min}
             .max=${this.max}
             .step=${this.step}
@@ -114,7 +130,7 @@ export class FieldVec extends MobxLitElement implements FieldEditorElement {
     }
     return html`
       ${this.label ? html`<div class="group-label">${this.label}</div>` : nothing}
-      ${rows}
+      <div class="vec-body">${rows}</div>
     `;
   }
 }

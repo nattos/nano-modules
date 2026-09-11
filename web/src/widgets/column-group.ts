@@ -20,6 +20,7 @@ import type { FieldBinding, FieldEditorElement, ContinuousEditHandle, MultiConti
 import { isFieldEditor } from './field-editor';
 import { beginDragGesture } from '../utils/drag-gesture';
 import { FieldLayoutManager, type FieldRect } from './field-layout-manager';
+import { splitLane } from './field-anchor-lookup';
 import { connectGestureActive } from './taps-connect';
 import { editorRegistry } from '../editor-registry';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
@@ -2149,9 +2150,14 @@ export class ColumnGroup extends MobxLitElement {
       if (!rect) continue;
 
       const fieldPath = key.slice(keyPrefix.length);
-      const isOutput = outputFieldNames.has(fieldPath);
+      // An anchor path may name ONE LANE of a vector field (`translate#1`).
+      // The schema and the output set are keyed by the real field, so split the
+      // lane off before either lookup — `translate#1` is in no schema. The DOM
+      // attribute below keeps the full path: it is the anchor's address.
+      const { field: baseField } = splitLane(fieldPath);
+      const isOutput = outputFieldNames.has(baseField);
       const isSelected = selectedPath === key;
-      const schemaDef = (schema as any)[fieldPath] ?? null;
+      const schemaDef = (schema as any)[baseField] ?? null;
       this.registerFieldSelectable(key, chainIdx, entry, fieldPath, isOutput);
 
       hits.push({ area: rect.width * rect.height, tpl: html`
@@ -2229,11 +2235,14 @@ export class ColumnGroup extends MobxLitElement {
     if (this.taps.state) { e.stopPropagation(); return; }
     const sourceEl = e.currentTarget as HTMLElement;
     const rect = sourceEl.getBoundingClientRect();
+    // The wire addresses the FIELD plus a lane; the anchor path carries both.
+    const { field: baseField, lane } = splitLane(fieldPath);
     const sourceInfo: FieldConnectInfo = {
       sketchId: this.sketchId,
       colIdx: this.colIdx,
       chainIdx,
-      fieldPath,
+      fieldPath: baseField,
+      lane,
       isOutput,
       viewportY: rect.top + rect.height / 2,
       schemaDef,
@@ -2259,11 +2268,15 @@ export class ColumnGroup extends MobxLitElement {
     // bubbling so it doesn't also deselect the arrangement clip after connecting. Pass
     // the STRUCTURED target info (not the re-parsed key) so a slashed sketchId — the
     // arrangement's `clip/<track>/<clip>` — resolves correctly.
+    // The anchor path may name one lane of a vector field; the wire endpoint is
+    // the field plus that lane (see splitLane).
+    const { field: baseField, lane } = splitLane(fieldPath);
     if (this.taps.state) {
       e?.stopPropagation();
       const rect = (e?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect();
       this.taps.completeOnField(key, {
-        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath, isOutput,
+        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx,
+        fieldPath: baseField, lane, isOutput,
         viewportY: rect ? rect.top + rect.height / 2 : 0, schemaDef,
       });
       return;
@@ -2285,7 +2298,8 @@ export class ColumnGroup extends MobxLitElement {
          .field-option-pip.connectable[data-chain-idx="${chainIdx}"][data-field-path="${fieldPath}"]`) as HTMLElement | null;
       const r = hit?.getBoundingClientRect();
       this.taps.beginFromFieldClick(this.sketchId, key, {
-        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx, fieldPath,
+        sketchId: this.sketchId, colIdx: this.colIdx, chainIdx,
+        fieldPath: baseField, lane,
         isOutput, viewportY: r ? r.top + r.height / 2 : 0, schemaDef,
       });
       return;

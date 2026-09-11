@@ -8,13 +8,22 @@
  *
  * Continuous edits coalesce as in field-vec — all RGB(A) channel writes
  * during a single drag flow through one long-edit on the whole vec.
+ *
+ * A disclosure caret reveals one slider PER CHANNEL. Those rows are what give
+ * each channel a DOM anchor, which is what lets a wire or an automation curve
+ * address one component of a colour — the swatch alone has a single rect and
+ * nothing to aim at. Collapsed by default so the compact row is unchanged.
  */
 
 import { html, css, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import './scalar-slider';
 import type { FieldBinding, FieldEditorElement, ContinuousEditHandle } from './field-editor';
+import { laneKey } from './field-anchor-lookup';
+
+/** Component names for a colour's lanes, matching the executor's lane order. */
+const CHANNEL_LABELS = ['R', 'G', 'B', 'A'];
 
 @customElement('field-color')
 export class FieldColor extends MobxLitElement implements FieldEditorElement {
@@ -26,25 +35,54 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
 
   private swatchEdit: ContinuousEditHandle | null = null;
 
+  @state() private channelsOpen = false;
+
   get controlledFields() { return [this.fieldPath]; }
+  /**
+   * `[0]` anchors the WHOLE field and must strictly contain the per-channel
+   * anchors — the tap overlay sorts hit boxes largest-first, and equal areas
+   * tie (see field-vec). When the channels are open the wrapper is that box;
+   * collapsed, there are no lane anchors and the swatch stands for the field.
+   */
   getControlElements(): HTMLElement[] {
     const out: HTMLElement[] = [];
+    const body = this.renderRoot.querySelector('.color-body') as HTMLElement | null;
     const swatch = this.renderRoot.querySelector('input[type=color]') as HTMLElement | null;
-    if (swatch) out.push(swatch);
-    const alpha = this.renderRoot.querySelector('scalar-slider') as HTMLElement | null;
-    if (alpha) out.push(alpha);
+    if (this.channelsOpen && body) out.push(body);
+    else if (swatch) out.push(swatch);
+    for (const el of this.renderRoot.querySelectorAll('scalar-slider')) {
+      out.push(el as HTMLElement);
+    }
     return out;
   }
   bindInstance(binding: FieldBinding) { this.binding = binding; }
 
   static styles = css`
     :host {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--app-sp-3);
+      display: block;
       font-size: var(--app-fs-sm);
       color: var(--app-text-color1, #eaeaea);
     }
+    .color-body { display: flex; flex-direction: column; gap: var(--app-sp-1); }
+    .swatch-row {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--app-sp-3);
+    }
+    .caret {
+      appearance: none;
+      background: transparent;
+      border: none;
+      padding: 0 2px;
+      margin: 0;
+      cursor: pointer;
+      color: var(--app-text-color2, #b0b0b0);
+      font-size: var(--app-fs-sm);
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .caret:hover { color: var(--app-text-color1, #eaeaea); }
+    .row { display: inline-flex; align-items: center; gap: var(--app-sp-3); }
     .label {
       min-width: 70px;
       flex-shrink: 0;
@@ -66,7 +104,7 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
     input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
     input[type=color]::-webkit-color-swatch { border: none; border-radius: 1px; }
     .alpha-row { display: inline-flex; align-items: center; gap: var(--app-sp-2); flex: 1; min-width: 0; }
-    .alpha-label { color: var(--app-text-color2, #b0b0b0); flex-shrink: 0; }
+    .ch-label { color: var(--app-text-color2, #b0b0b0); flex-shrink: 0; min-width: 10px; }
     scalar-slider { flex: 1; min-width: 0; }
   `;
 
@@ -122,62 +160,111 @@ export class FieldColor extends MobxLitElement implements FieldEditorElement {
     this.swatchEdit = null;
   }
 
+  /**
+   * A binding for ONE channel, wrapping the parent vec — the same shape
+   * field-vec uses. Reading gives that component; writing splices it into the
+   * current vec and pushes the whole array back, so the document never sees a
+   * partial colour.
+   */
+  private componentBinding(i: number): FieldBinding {
+    const fallback = i === 3 ? 1 : 0;
+    return {
+      instanceKey: this.binding?.instanceKey ?? '',
+      getValue: () => this.vec[i] ?? fallback,
+      setValue: (_p: string, val: any) => {
+        if (typeof val !== 'number') return;
+        this.onColorChange();  // settle any pending swatch long-edit first
+        const next = this.vec.slice();
+        next[i] = val;
+        this.binding?.setValue(this.fieldPath, next);
+      },
+      beginContinuousEdit: (_p: string, val: any): ContinuousEditHandle => {
+        // Only one long-edit may be active (history contract) — beginning a
+        // channel edit while the swatch panel is still open would cancel-and-
+        // revert the RGB edit, so commit it first.
+        this.onColorChange();
+        const next = this.vec.slice();
+        if (typeof val === 'number') next[i] = val;
+        const edit = this.binding?.beginContinuousEdit?.(this.fieldPath, next);
+        return {
+          update: (cv: any) => {
+            if (typeof cv !== 'number') return;
+            const cur = this.vec.slice();
+            cur[i] = cv;
+            edit?.update(cur);
+          },
+          accept: () => edit?.accept(),
+          cancel: () => edit?.cancel(),
+        };
+      },
+      // The band recorded for this channel; its telemetry key is the lane path
+      // the slider below already asks for.
+      getModulation: (path: string) => this.binding?.getModulation?.(path) ?? null,
+    };
+  }
+
+  private channelRow(i: number) {
+    const v = this.vec;
+    const fallback = i === 3 ? 1 : 0;
+    return html`
+      <div class="row">
+        <span class="ch-label">${CHANNEL_LABELS[i] ?? `[${i}]`}</span>
+        <scalar-slider
+          .fieldPath=${laneKey(this.fieldPath, i)}
+          .min=${0}
+          .max=${1}
+          .step=${0.01}
+          .defaultValue=${v[i] ?? fallback}
+          .binding=${this.componentBinding(i)}
+        ></scalar-slider>
+      </div>
+    `;
+  }
+
   render() {
     const v = this.vec;
     const labelEl = this.label ? html`<span class="label">${this.label}</span>` : nothing;
 
-    let alphaEl: any = nothing;
-    if (this.components === 4) {
-      // Per-component binding wraps the parent vec, exactly like field-vec.
-      const alphaBinding: FieldBinding = {
-        instanceKey: this.binding?.instanceKey ?? '',
-        getValue: () => this.vec[3] ?? 1,
-        setValue: (_p: string, val: any) => {
-          if (typeof val !== 'number') return;
-          this.onColorChange();  // settle any pending swatch long-edit first
-          const next = this.vec.slice();
-          next[3] = val;
-          this.binding?.setValue(this.fieldPath, next);
-        },
-        beginContinuousEdit: (_p: string, val: any): ContinuousEditHandle => {
-          // Only one long-edit may be active (history contract) — beginning the
-          // alpha edit while the swatch panel is still open would cancel-and-
-          // revert the RGB edit, so commit it first.
-          this.onColorChange();
-          const next = this.vec.slice();
-          if (typeof val === 'number') next[3] = val;
-          const edit = this.binding?.beginContinuousEdit?.(this.fieldPath, next);
-          return {
-            update: (cv: any) => {
-              if (typeof cv !== 'number') return;
-              const cur = this.vec.slice();
-              cur[3] = cv;
-              edit?.update(cur);
-            },
-            accept: () => edit?.accept(),
-            cancel: () => edit?.cancel(),
-          };
-        },
-      };
-      alphaEl = html`
+    // Expanded: every channel gets a row (and therefore an anchor a wire or an
+    // automation curve can address). Collapsed: the compact swatch, plus the
+    // inline alpha it has always had.
+    const rows = [];
+    if (this.channelsOpen) {
+      for (let i = 0; i < this.components; i++) rows.push(this.channelRow(i));
+    }
+
+    const alphaEl = (!this.channelsOpen && this.components === 4)
+      ? html`
         <div class="alpha-row">
-          <span class="alpha-label">A</span>
+          <span class="ch-label">A</span>
           <scalar-slider
-            .fieldPath=${'value'}
+            .fieldPath=${laneKey(this.fieldPath, 3)}
             .min=${0}
             .max=${1}
             .step=${0.01}
             .defaultValue=${v[3] ?? 1}
-            .binding=${alphaBinding}
+            .binding=${this.componentBinding(3)}
           ></scalar-slider>
-        </div>
-      `;
-    }
+        </div>`
+      : nothing;
 
     return html`
-      ${labelEl}
-      <input type="color" .value=${this.hex} @input=${this.onColorInput} @change=${this.onColorChange}>
-      ${alphaEl}
+      <div class="color-body">
+        <div class="swatch-row">
+          ${labelEl}
+          <button
+            class="caret"
+            part="caret"
+            title=${this.channelsOpen ? 'Hide channels' : 'Show channels'}
+            aria-expanded=${this.channelsOpen ? 'true' : 'false'}
+            @click=${() => { this.channelsOpen = !this.channelsOpen; }}
+          >${this.channelsOpen ? '\u25BE' : '\u25B8'}</button>
+          <input type="color" .value=${this.hex}
+                 @input=${this.onColorInput} @change=${this.onColorChange}>
+          ${alphaEl}
+        </div>
+        ${rows}
+      </div>
     `;
   }
 }

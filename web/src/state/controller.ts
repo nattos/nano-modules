@@ -20,7 +20,7 @@ import {
 } from './effects-payload';
 import type { EngineProxy } from '../engine-proxy';
 import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand } from '../engine-types';
-import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat, ModuleEntry } from '../sketch-types';
+import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat, ModuleEntry, TapCombine } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey, isMidiInstanceKey } from '../midi/midi-types';
 import { hiddenFieldsFor } from './field-visibility';
@@ -621,6 +621,11 @@ export class AppController {
         ...(orig.combine ? { combine: orig.combine } : {}),
         ...(orig.mixFactor !== undefined ? { mixFactor: orig.mixFactor } : {}),
         ...(orig.magnitude ? { magnitude: orig.magnitude } : {}),
+        // The second half lands on the ORIGINAL destination, so it inherits how
+        // the value is fitted to that field's width. (`dest.lane` rides along
+        // inside the spread above.) The first half targets the spliced node's
+        // scalar input, where neither applies.
+        ...(orig.convert ? { convert: orig.convert } : {}),
       });
       this.reorderExec(draft, sketchId);
     };
@@ -2479,6 +2484,20 @@ export class AppController {
    * connection wins). Declaring `sketch.wires` (even empty) opts the sketch into
    * wire mode (struct auto-connect etc.); we always ensure the array exists.
    */
+  /**
+   * The default `combine` for a new wire, by what it lands on.
+   *
+   * A VECTOR destination (a colour, a position) is a "set this to that" value,
+   * and every vec wire drawn before lanes existed behaved as `replace` — the
+   * executor ignored combine on that path entirely. Defaulting them to `add`
+   * would quietly start adding to the authored colour. Scalars keep `add`,
+   * which rides on top of the current value instead of overwriting it.
+   */
+  private defaultCombineFor(reader: FieldConnectInfo): TapCombine {
+    const t = (reader.schemaDef as { type?: string } | null)?.type;
+    return (t === 'float2' || t === 'float3' || t === 'float4') ? 'replace' : 'add';
+  }
+
   connectWire(a: FieldConnectInfo, b: FieldConnectInfo) {
     // MIDI device controls are wire SOURCES living outside any sketch chain
     // (the app-level device library) — they bypass the writer/reader
@@ -2525,16 +2544,18 @@ export class AppController {
       // SAME edge replaces its wire; a different source stacks alongside.
       sk.wires = sk.wires.filter(
         w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath
+               && (w.dest.lane ?? -1) === (reader.lane ?? -1)
                && w.src.instanceKey === srcKey && w.src.field === writer.fieldPath));
       sk.wires.push({
         id,
         src: { instanceKey: srcKey, field: writer.fieldPath },
-        dest: { instanceKey: destKey, field: reader.fieldPath },
+        dest: { instanceKey: destKey, field: reader.fieldPath,
+                ...(reader.lane != null ? { lane: reader.lane } : {}) },
         // Default scalar wires to `add` — gentle, it rides on top of the dest's
         // current value instead of overwriting it. (Ignored for texture rails.)
         // `unset` still means `replace` everywhere else, so auto-connect and the
         // dashboard mute heuristic are unaffected; we set it explicitly here.
-        combine: 'add',
+        combine: this.defaultCombineFor(reader),
       });
       this.reorderExec(draft, sketchId);
     });
@@ -2585,12 +2606,14 @@ export class AppController {
       // onto the same input replaces; a different control/device stacks.
       sk.wires = sk.wires.filter(
         w => !(w.dest.instanceKey === destKey && w.dest.field === reader.fieldPath
+               && (w.dest.lane ?? -1) === (reader.lane ?? -1)
                && w.src.instanceKey === srcKey && w.src.field === device.controlId));
       sk.wires.push({
         id,
         src: { instanceKey: srcKey, field: device.controlId },
-        dest: { instanceKey: destKey, field: reader.fieldPath },
-        combine: 'add',
+        dest: { instanceKey: destKey, field: reader.fieldPath,
+                ...(reader.lane != null ? { lane: reader.lane } : {}) },
+        combine: this.defaultCombineFor(reader),
       });
     });
   }
