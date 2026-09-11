@@ -3537,8 +3537,13 @@ export class ColumnGroup extends MobxLitElement {
             // field, so its slider/number fallback applies only when this card
             // is the destination.
             const destDef = destDefFor(w);
+            // A VECTOR dest is modulated too, per lane — the options are what
+            // choose the lane and the width fit, so gating them out left a vec
+            // wire with no way to reach them from the field card at all.
             const destScalar = destDef?.type === 'float' || destDef?.type === 'int'
               || destDef?.type === 'bool'
+              || destDef?.type === 'float2' || destDef?.type === 'float3'
+              || destDef?.type === 'float4'
               || (!isSrc && (fieldDef?.type === 'slider' || fieldDef?.type === 'number'));
             // MIDI sources live outside the chain (`midi:<uuid>` + endpoint):
             // show `midi:<endpoint> [device name]` instead of the raw uuid key.
@@ -3568,7 +3573,7 @@ export class ColumnGroup extends MobxLitElement {
                   title="Remove wire"
                   @click=${() => this.ctl.removeWire(sId, w.id)}>×</button>
               </div>
-              ${destScalar ? this.renderWireModInspector(w, !!destDef?.raw) : nothing}
+              ${destScalar ? this.renderWireModInspector(w, !!destDef?.raw, destDef) : nothing}
             `;
           })}
     `;
@@ -3586,7 +3591,9 @@ export class ColumnGroup extends MobxLitElement {
    * edits route through the ColumnController seam (the arrangement supplies
    * a different adapter).
    */
-  private renderWireModInspector(wire: Wire, rawDest = false) {
+  private renderWireModInspector(
+      wire: Wire, rawDest = false,
+      destDef?: { type?: string; hint?: string } | null) {
     const sId = this.sketchId, wireId = wire.id;
     const binding = wireModBinding(`wire/${sId}/${wireId}`, {
       getWire: () => this.ds.getSketch(sId)?.wires?.find(w => w.id === wireId),
@@ -3594,7 +3601,21 @@ export class ColumnGroup extends MobxLitElement {
       beginUpdateWire: (patch) => this.ctl.beginUpdateWire(sId, wireId, patch),
       updateUpdateWire: (edit, patch) => this.ctl.updateUpdateWire(edit, sId, wireId, patch),
     });
-    return renderWireModInspector(wire, binding, rawDest);
+    return renderWireModInspector(wire, binding, rawDest, destDef ?? this.destDefOf(wire));
+  }
+
+  /** The schema def of a wire's destination field — what tells the shared
+   *  inspector whether the dest is a vector, and how wide. */
+  private destDefOf(wire: Wire): { type?: string; hint?: string } | null {
+    const sketch = this.ds.getSketch(this.sketchId);
+    const entry = (sketch ? sketchChain(sketch) : [])
+      .find(e => e.type === 'module' && e.instance_key === wire.dest.instanceKey) as
+        ModuleEntry | undefined;
+    if (!entry) return null;
+    return (this.ds.getPlugin(entry.module_type, entry.instance_key)
+              ?.schema?.[wire.dest.field]
+            ?? RESERVED_FIELD_DEFS[wire.dest.field]) as
+        { type?: string; hint?: string } | null;
   }
 
   /**

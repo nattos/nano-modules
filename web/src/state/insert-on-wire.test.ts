@@ -70,6 +70,14 @@ const floatWire = () => ({
   mod: { scale: 0.25 },
 });
 
+/** The same wire, landing on ONE LANE of a vector field with a width fit. */
+const laneWire = () => ({
+  id: 'w0',
+  src: { instanceKey: 'lfo', field: 'output' },
+  dest: { instanceKey: 'bc', field: 'brightness', lane: 1 },
+  combine: 'add', convert: 'pad' as const,
+});
+
 /** An image chain: one effect's output texture feeding the next one's input. */
 const textureChain = () => [
   { type: 'module', module_type: 'color.tone.brightness_contrast', instance_key: 'a' },
@@ -123,6 +131,20 @@ describe('splicing a node into a wire', () => {
     expect(second.combine).toBe('add');
     expect(second.mixFactor).toBe(0.5);
     expect(second.magnitude).toBe('signed');
+    started.edit.cancel();
+  });
+
+  it('carries the lane and the width fit onto the second half too', () => {
+    // Both describe where the value lands on the ORIGINAL destination, so they
+    // belong to the half that still points at it. The first half targets the
+    // spliced node's scalar input, where neither means anything.
+    seed(laneWire());
+    const started = appController.beginInsertOnWire('sk', 'w0', { x: 0, y: 0 })!;
+    const [first, second] = sk().wires;
+    expect(second.dest).toEqual({ instanceKey: 'bc', field: 'brightness', lane: 1 });
+    expect(second.convert).toBe('pad');
+    expect(first.dest.lane).toBeUndefined();
+    expect(first.convert).toBeUndefined();
     started.edit.cancel();
   });
 

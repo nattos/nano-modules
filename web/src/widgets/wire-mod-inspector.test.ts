@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render } from 'lit';
-import { renderWireModInspector } from './wire-mod-inspector';
+import { renderWireModInspector, wireModBinding } from './wire-mod-inspector';
 import type { FieldBinding } from './field-editor';
 import type { Wire } from '../sketch-types';
 
@@ -38,10 +38,11 @@ function binding(): FieldBinding {
  * `fieldPath` property rather than its text: the labels live inside the field
  * widgets' shadow roots, which textContent doesn't cross.
  */
-function paths(rawDest = false): string[] {
+function paths(rawDest = false, destDef?: { type?: string; hint?: string } | null,
+                w: Wire = wire): string[] {
   const host = document.createElement('div');
   document.body.appendChild(host);
-  render(renderWireModInspector(wire, binding(), rawDest), host);
+  render(renderWireModInspector(w, binding(), rawDest, destDef), host);
   const out: string[] = [];
   for (const el of Array.from(host.querySelectorAll('*'))) {
     const p = (el as unknown as { fieldPath?: unknown }).fieldPath;
@@ -71,5 +72,78 @@ describe('renderWireModInspector raw gate', () => {
 
   it('defaults to the non-raw panel when the flag is omitted', () => {
     expect(paths()).toContain('magnitude');
+  });
+});
+
+describe('renderWireModInspector vector rows', () => {
+  const VEC2 = { type: 'float2' };
+  const vecWire = (lane?: number): Wire => ({
+    ...wire,
+    dest: { instanceKey: 'tf', field: 'translate', ...(lane != null ? { lane } : {}) },
+  });
+
+  it('offers no lane or fit row for a scalar destination', () => {
+    const shown = paths(false, { type: 'float' });
+    expect(shown).not.toContain('lane');
+    expect(shown).not.toContain('convert');
+  });
+
+  it('offers both for a whole-field vector wire', () => {
+    const shown = paths(false, VEC2, vecWire());
+    expect(shown).toContain('lane');
+    expect(shown).toContain('convert');
+  });
+
+  it('drops the fit row once a lane is chosen — there is nothing left to fit', () => {
+    const shown = paths(false, VEC2, vecWire(1));
+    expect(shown).toContain('lane');
+    expect(shown).not.toContain('convert');
+  });
+
+  it('keeps the ordinary stages for a vector destination', () => {
+    // A vec wire folds per lane like any other, so its shaping controls are
+    // the same ones. They used to be gated out of the field card entirely.
+    const shown = paths(false, VEC2, vecWire(0));
+    for (const p of ['magnitude', 'envelopeEnabled', 'remapEnabled', 'scale', 'combine']) {
+      expect(shown).toContain(p);
+    }
+  });
+});
+
+describe('wireModBinding lane and convert', () => {
+  const ops = (w: Wire) => ({
+    getWire: () => w,
+    updateWire: vi.fn(),
+    beginUpdateWire: vi.fn(() => ({ accept: vi.fn(), cancel: vi.fn() })),
+    updateUpdateWire: vi.fn(),
+  });
+
+  it("reads an absent lane as 'all'", () => {
+    const w: Wire = { ...wire, dest: { instanceKey: 'tf', field: 'translate' } };
+    const o = ops(w);
+    expect(wireModBinding('k', o).getValue('lane')).toBe('all');
+    expect(wireModBinding('k', o).getValue('convert')).toBe('auto');
+  });
+
+  it('reads a chosen lane as its index', () => {
+    const w: Wire = { ...wire, dest: { instanceKey: 'tf', field: 'translate', lane: 2 } };
+    expect(wireModBinding('k', ops(w)).getValue('lane')).toBe('2');
+  });
+
+  it('writing a lane replaces the endpoint, keeping instance and field', () => {
+    const w: Wire = { ...wire, dest: { instanceKey: 'tf', field: 'translate' } };
+    const o = ops(w);
+    wireModBinding('k', o).setValue('lane', '1');
+    expect(o.updateWire).toHaveBeenCalledWith(
+      { dest: { instanceKey: 'tf', field: 'translate', lane: 1 } });
+  });
+
+  it("writing 'all' DROPS the key rather than storing a sentinel", () => {
+    const w: Wire = { ...wire, dest: { instanceKey: 'tf', field: 'translate', lane: 1 } };
+    const o = ops(w);
+    wireModBinding('k', o).setValue('lane', 'all');
+    const patch = o.updateWire.mock.calls[0][0] as { dest: Record<string, unknown> };
+    expect('lane' in patch.dest).toBe(false);
+    expect(patch.dest).toEqual({ instanceKey: 'tf', field: 'translate' });
   });
 });

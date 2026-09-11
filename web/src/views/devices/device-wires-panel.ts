@@ -132,8 +132,15 @@ export class DeviceWiresPanel extends MobxLitElement {
    *  magnitude fold (see host.h's Schema::raw()), so the inspector drops that
    *  row. Same schema lookup destLabel uses. */
   private destIsRaw(row: DeviceWireRow): boolean {
-    return !!appState.local.plugins.find(p => p.id === row.dest.module_type)
-        ?.schema?.[row.wire.dest.field]?.raw;
+    return !!this.destDef(row)?.raw;
+  }
+
+  /** The wire's dest field def — also what tells the shared inspector whether
+   *  the destination is a VECTOR, and how wide, so the lane/fit rows appear. */
+  private destDef(row: DeviceWireRow): { type?: string; hint?: string; raw?: boolean } | null {
+    return (appState.local.plugins.find(p => p.id === row.dest.module_type)
+        ?.schema?.[row.wire.dest.field] ?? null) as
+        { type?: string; hint?: string; raw?: boolean } | null;
   }
 
   /** Open the dest instance (if not already being edited), select the dest
@@ -190,7 +197,7 @@ export class DeviceWiresPanel extends MobxLitElement {
           </div>
           ${renderWireModInspector(row.wire,
             wireModBinding(`devwire/${g.sketchId}/${row.wire.id}`, this.wireOps(g.sketchId, row.wire.id)),
-            this.destIsRaw(row))}
+            this.destIsRaw(row), this.destDef(row))}
         `)}
       `)}
     `;

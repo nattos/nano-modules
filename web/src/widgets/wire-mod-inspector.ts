@@ -11,7 +11,7 @@
  */
 
 import { html, nothing, TemplateResult } from 'lit';
-import type { Wire, TapCurve, TapCombine, WireMagnitude } from '../sketch-types';
+import type { Wire, TapCurve, TapCombine, WireMagnitude, WireConvert } from '../sketch-types';
 import type { FieldBinding, ContinuousEditHandle } from './field-editor';
 import type { EditHandle } from './column-adapter';
 import { createGenericInspector, type InspectorFieldDef } from './generic-inspector';
@@ -41,6 +41,9 @@ export function wireModBinding(bindingKey: string, ops: WireModOps): FieldBindin
     if (path === 'mixFactor') return wire.mixFactor;
     if (path === 'combine') return wire.combine ?? 'replace';
     if (path === 'magnitude') return wire.magnitude ?? 'auto';
+    // Selects carry strings; 'all' is the absent lane (the whole field).
+    if (path === 'lane') return wire.dest.lane == null ? 'all' : String(wire.dest.lane);
+    if (path === 'convert') return wire.convert ?? 'auto';
     if (path === 'envelope') return wire.mod?.envelope;
     if (path === 'envelopeEnabled') return !!(wire.mod?.envelope && wire.mod.envelope.length >= 6);
     if (path === 'remapEnabled') return !!wire.mod?.remap;
@@ -57,6 +60,18 @@ export function wireModBinding(bindingKey: string, ops: WireModOps): FieldBindin
     if (path === 'mixFactor') return { mixFactor: v as number };
     if (path === 'combine') return { combine: v as TapCombine };
     if (path === 'magnitude') return { magnitude: v as WireMagnitude };
+    if (path === 'convert') return { convert: v as WireConvert };
+    if (path === 'lane') {
+      // The lane lives ON the endpoint, so the patch replaces `dest` whole —
+      // dropping the key entirely for 'all' rather than storing a sentinel, so
+      // an untouched wire keeps serializing exactly as it did.
+      const dest = ops.getWire()?.dest;
+      if (!dest) return {};
+      const lane = v === 'all' ? undefined : Number(v);
+      return { dest: lane == null || !Number.isInteger(lane)
+        ? { instanceKey: dest.instanceKey, field: dest.field }
+        : { instanceKey: dest.instanceKey, field: dest.field, lane } };
+    }
     if (path === 'envelope') return { mod: { ...mod, envelope: v as number[] } };
     if (path === 'envelopeEnabled') {
       // Toggle on → seed the identity curve [0,0,0, 1,1,0] (passthrough);
@@ -95,7 +110,8 @@ export function wireModBinding(bindingKey: string, ops: WireModOps): FieldBindin
  * styling come for free) — the scalar twin of the old per-tap mod inspector.
  */
 export function renderWireModInspector(
-    wire: Wire, binding: FieldBinding, rawDest = false): TemplateResult {
+    wire: Wire, binding: FieldBinding, rawDest = false,
+    destDef?: { type?: string; hint?: string } | null): TemplateResult {
   const remap = wire.mod?.remap;
   const usesPower = remap?.curveIn === 'power' || remap?.curveOut === 'power';
   const CURVES: TapCurve[] = ['linear', 'quad', 'circular', 'power', 'foldback'];
@@ -104,6 +120,36 @@ export function renderWireModInspector(
   const curveOpts = CURVES.map(c => ({ label: c, value: c }));
   const combineOpts = COMBINES.map(c => ({ label: c, value: c }));
   const magOpts = MAGNITUDES.map(m => ({ label: m, value: m }));
+
+  // A VECTOR destination is one field with a width, so the wire has to say
+  // WHERE it lands: one lane, or all of them fitted by `convert`. Both rows are
+  // absent for a scalar dest, where neither has anything to decide.
+  const destType = destDef?.type;
+  const destWidth = destType === 'float2' ? 2
+    : destType === 'float3' ? 3 : destType === 'float4' ? 4 : 1;
+  const laneLabels = destDef?.hint === 'color'
+    ? ['R', 'G', 'B', 'A'] : ['X', 'Y', 'Z', 'W'];
+  const CONVERTS: WireConvert[] = ['auto', 'broadcast', 'truncate', 'pad'];
+  const widthFields: InspectorFieldDef[] = [];
+  if (destWidth > 1) {
+    widthFields.push({
+      type: 'select', label: 'Lane', path: 'lane', default: 'all',
+      options: [
+        { label: 'all', value: 'all' },
+        ...Array.from({ length: destWidth }, (_, i) => ({
+          label: laneLabels[i] ?? String(i), value: String(i),
+        })),
+      ],
+    });
+    // With a lane chosen there is nothing left to fit — the value goes to that
+    // component. Same dependent-control shape as Mix under Combine.
+    if (wire.dest.lane == null) {
+      widthFields.push({
+        type: 'select', label: 'Fit', path: 'convert', default: 'auto',
+        options: CONVERTS.map(c => ({ label: c, value: c })),
+      });
+    }
+  }
 
   // The shaper stages run in this order (matching native/src/sketch/tap_mod.h +
   // the executor): ENVELOPE → REMAP → SCALE (pure value transforms) → DELAY
@@ -121,6 +167,7 @@ export function renderWireModInspector(
   // shaping stages and combine still apply to a raw dest, matching the
   // executor's lowering (sketch_executor.cpp's destIsRaw).
   const headFields: InspectorFieldDef[] = [
+    ...widthFields,
     ...(rawDest ? [] : [{ type: 'select', label: 'Magnitude', path: 'magnitude',
                          options: magOpts, default: 'auto' } as InspectorFieldDef]),
     { type: 'boolean', label: 'Envelope', path: 'envelopeEnabled', default: false },
