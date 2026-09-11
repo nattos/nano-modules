@@ -4,6 +4,7 @@
 #include "sketch/sketch_canvas.h"
 #include "sketch/wire_types.h"
 #include "sketch/tap_mod.h"
+#include "sketch/rail_convert.h"
 #include "sketch/param_smoothing.h"
 #include "sketch/host_blend.h"
 #include "sketch/host_sidechannel_blit.h"
@@ -1113,17 +1114,26 @@ int32_t SketchExecutor::execute(
           auto fit = r->schemaFields.find(field);
           if (fit != r->schemaFields.end() && fit->is_object()) dfield = &*fit;
         }
-        int width = 1;
+        // 0 = UNKNOWN: leave destWidth off the tap entirely and let the rail's
+        // own width decide, exactly as it did before lanes existed. That is the
+        // right answer for a POLYMORPHIC (`any`) port, which cannot know its
+        // width from a schema — mod.shaper.switch carries colours through
+        // `any` cases, and stamping 1 there sent a whole colour down the scalar
+        // path and handed the effect a bare number. Same for a dest with no
+        // schema entry at all (reserved `__` keys, schema-less dashboard
+        // relays), where a float rail still falls back to 1.
+        int width = 0;
         if (dfield) {
           const std::string t = dfield->value("type", std::string());
           if (t == "float2") width = 2;
           else if (t == "float3") width = 3;
           else if (t == "float4") width = 4;
+          else if (t == "float" || t == "int" || t == "bool") width = 1;
         }
-        rtap["destWidth"] = width;
+        if (width > 0) rtap["destWidth"] = width;
         // Declared per-component defaults — what `convert:"pad"` fills the
         // lanes past the source's width from.
-        if (width > 1 && dfield && dfield->contains("default") &&
+        if (width > 1 && dfield->contains("default") &&
             (*dfield)["default"].is_array()) {
           rtap["destDefaults"] = (*dfield)["default"];
         }
@@ -1974,10 +1984,12 @@ int32_t SketchExecutor::execute(
         inst.setTextureField("tex_in", stageInput);
         inst.setFieldConnected("tex_in", true, false);
         std::unordered_map<std::string, float> modScalars;
+        ModulatedVecs modVecs;
         applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                      railScalars, railBuffers, railVecs, instances, instKey, &modScalars);
-        applyAutomation(inst.h, entry, instances, instKey, &modScalars);
-        applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
+                      railScalars, railBuffers, railVecs, instances, instKey,
+                      &modScalars, &modVecs);
+        applyAutomation(inst.h, entry, instances, instKey, &modScalars, &modVecs);
+        applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt, &modVecs);
         markWriteTapOutputsConnected(inst.h, entry);
         serviceScalarBus(modScalars);
         maybeSeek(inst, entry.value("startSec", 0.0), instKey); // clip-relative seek on activation/back-jump
@@ -1990,7 +2002,7 @@ int32_t SketchExecutor::execute(
         if (reg && reg->hasBufferOutput) inst.doRender(W, H);
         captureWriteTaps(inst.h, entry, instKey, instances,
                          railsById, railTextures, railFloats, railScalars, railBuffers, railVecs,
-                         &modScalars);
+                         &modScalars, &modVecs);
         int32_t out = passthroughOutput(stageInput);
         if (chainEntryHook_) {
           chainEntryHook_((int)colIdx, (int)i, stageInput, out, W, H);
@@ -2023,10 +2035,12 @@ int32_t SketchExecutor::execute(
       }
 
       std::unordered_map<std::string, float> modScalars;
+      ModulatedVecs modVecs;
       applyReadTaps(inst.h, entry, railsById, railTextures, railFloats,
-                    railScalars, railBuffers, railVecs, instances, instKey, &modScalars);
-      applyAutomation(inst.h, entry, instances, instKey, &modScalars);
-      applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt);
+                    railScalars, railBuffers, railVecs, instances, instKey,
+                    &modScalars, &modVecs);
+      applyAutomation(inst.h, entry, instances, instKey, &modScalars, &modVecs);
+      applySmoothing(inst.h, entry, instKey, instances, modScalars, tickDt, &modVecs);
       markWriteTapOutputsConnected(inst.h, entry);
 
       // -- Positional input slots + per-stage render target (slot-based GPU
@@ -2070,7 +2084,7 @@ int32_t SketchExecutor::execute(
 
       captureWriteTaps(inst.h, entry, instKey, instances,
                        railsById, railTextures, railFloats, railScalars, railBuffers, railVecs,
-                       &modScalars);
+                       &modScalars, &modVecs);
 
       if (partial) {
         if (!blend_) blend_ = std::make_unique<WetDryBlend>();
@@ -2544,7 +2558,8 @@ void SketchExecutor::applyReadTaps(
     const std::unordered_map<std::string, std::vector<float>>& railVecs,
     const json& sketchInstances,
     const std::string& instanceKey,
-    std::unordered_map<std::string, float>* outModulatedScalars) {
+    std::unordered_map<std::string, float>* outModulatedScalars,
+    ModulatedVecs* outModulatedVecs) {
   const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
   // The reader's canonical (user-set, serialized) state — the "before
@@ -2566,6 +2581,10 @@ void SketchExecutor::applyReadTaps(
   // multiple connections; without this each tap re-folded from canon and the last
   // `setParamFloat` won (last-wins).
   std::unordered_map<std::string, float> runningFloat;
+  // The same accumulator for VECTOR fields, per lane. Seeded from the authored
+  // array on first touch; each tap folds only the lanes it drives, so two wires
+  // can own two components of one field. Flushed once, after the loop.
+  ModulatedVecs runningVec;
   for (const auto& tap : entry["taps"]) {
     if (tap.value("direction", std::string()) != "read") continue;
     const std::string railId    = tap.value("railId", std::string());
@@ -2583,10 +2602,44 @@ void SketchExecutor::applyReadTaps(
     // never setParamFloat'd onto the plugin, which strips `__` keys anyway.
     if (isReservedField(fieldPath)) continue;
 
-    if (dataType.is_string() && dataType.get<std::string>() == "float") {
-      const auto& srcFloats = delayed ? delayedRailFloats_ : railFloats;
-      auto fit = srcFloats.find(railId);
-      if (fit != srcFloats.end()) {
+    // Scalar-valued rails — float (width 1) and vec (width N). Both are read
+    // into the same component buffer and then dispatched on the DESTINATION's
+    // width, not the rail's: a vec source may land on a scalar field and a
+    // scalar source on a vector one, and a wire is never refused for either.
+    const bool isFloatRail = dataType.is_string() && dataType.get<std::string>() == "float";
+    const bool isVecRail =
+        dataType.is_object() && dataType.value("kind", std::string()) == "vec";
+    if (isFloatRail || isVecRail) {
+      float srcComps[rail_convert::kMaxComps] = {0, 0, 0, 0};
+      int nSrc = 0;
+      if (isFloatRail) {
+        const auto& srcFloats = delayed ? delayedRailFloats_ : railFloats;
+        auto fit = srcFloats.find(railId);
+        if (fit != srcFloats.end()) { srcComps[0] = fit->second; nSrc = 1; }
+      } else {
+        // No delayedRailVecs_ exists — a delayed vec read falls back to this
+        // frame's rail. See the KNOWN GAP note in rail_convert.h.
+        auto vit = railVecs.find(railId);
+        if (vit != railVecs.end()) {
+          nSrc = (int)vit->second.size();
+          if (nSrc > rail_convert::kMaxComps) nSrc = rail_convert::kMaxComps;
+          for (int i = 0; i < nSrc; ++i) srcComps[i] = vit->second[i];
+        }
+      }
+      // Unseeded rail → dormant wire: the dest keeps its authored value.
+      if (nSrc <= 0) continue;
+
+      // Absent destWidth means a tap lowered before widths were stamped; a vec
+      // rail then behaves as it always did (the producer's width, copied whole).
+      int destWidth = tap.value("destWidth", isVecRail ? nSrc : 1);
+      if (destWidth < 1) destWidth = 1;
+      if (destWidth > rail_convert::kMaxComps) destWidth = rail_convert::kMaxComps;
+
+      if (destWidth == 1) {
+        // SCALAR destination. A vec source reduces to component 0 — the same
+        // rule rail_convert applies, and what keeps a vec→float wire (or a vec
+        // driving `__opacity__`) working rather than silently dropped.
+        //
         // Mix into the user's canonical value per the mix mode (replace ignores
         // it; add/mul/mix modulate from it).
         bool hasCanon = false;
@@ -2601,25 +2654,82 @@ void SketchExecutor::applyReadTaps(
         auto runIt = runningFloat.find(fieldPath);
         if (runIt != runningFloat.end()) { canon = runIt->second; hasCanon = true; }
         const float combined =
-            foldFloatReadTap(tap, instanceKey, fieldPath, fit->second, hasCanon, canon);
+            foldFloatReadTap(tap, instanceKey, fieldPath, srcComps[0], hasCanon, canon);
         runningFloat[fieldPath] = combined; // next tap on this field folds from here
         inst.setParamFloat(fieldPath, combined);
         inst.setFieldConnected(fieldPath, true, false);
         // Hand the smoothing pass this field's post-modulation target.
         if (outModulatedScalars) (*outModulatedScalars)[fieldPath] = combined;
+        continue;
       }
-      continue;
-    }
 
-    // Vec read: the producer's components land on the dest field whole. No
-    // fold — a vec has no per-component [min,max] modulation contract, so
-    // there is no magnitude mapping, no combine and no band. Multiple wires
-    // into one vec input are therefore last-write-wins rather than stacking.
-    if (dataType.is_object() && dataType.value("kind", std::string()) == "vec") {
-      auto vit = railVecs.find(railId);
-      if (vit != railVecs.end() && !vit->second.empty()) {
-        inst.setParamArray(fieldPath, vit->second);
-        inst.setFieldConnected(fieldPath, true, false);
+      // VECTOR destination. One field, N lanes: fit the rail onto the field's
+      // width, then run the ordinary scalar fold once per DRIVEN lane against
+      // that lane's own base. Lanes this wire doesn't drive keep what they had,
+      // which is what lets two wires own two components of one field and stops
+      // a narrow source resetting the lanes it says nothing about.
+      rail_convert::Lanes lanes;
+      lanes.dest = tap.value("destLane", -1);
+      lanes.convert = rail_convert::parseConvert(tap.value("convert", std::string()));
+
+      float destDefaults[rail_convert::kMaxComps] = {0, 0, 0, 0};
+      int nDefaults = 0;
+      if (tap.contains("destDefaults") && tap["destDefaults"].is_array()) {
+        for (const auto& d : tap["destDefaults"]) {
+          if (nDefaults >= rail_convert::kMaxComps) break;
+          if (d.is_number()) destDefaults[nDefaults++] = (float)d.get<double>();
+        }
+      }
+
+      ModulatedVec& running = runningVec[fieldPath];
+      if (running.comps.empty()) {
+        // Seed from the AUTHORED array (the "before modulation" base every
+        // non-replace combine folds from), else the schema's declared
+        // per-component defaults. Unlike the scalar path there is no dmin
+        // fallback: a vec's declared default is a better base than its minimum
+        // (an `add` onto a centre's 0 is right; onto its −1 is not).
+        running.comps.assign((size_t)destWidth, 0.0f);
+        const json* cv = nullptr;
+        if (canonState && canonState->contains(fieldPath)) cv = &(*canonState)[fieldPath];
+        if (cv && cv->is_array()) {
+          int i = 0;
+          for (const auto& c : *cv) {
+            if (i >= destWidth) break;
+            if (c.is_number()) running.comps[(size_t)i] = (float)c.get<double>();
+            ++i;
+          }
+        } else {
+          for (int i = 0; i < destWidth && i < nDefaults; ++i) {
+            running.comps[(size_t)i] = destDefaults[i];
+          }
+        }
+      }
+
+      const rail_convert::Fit fit = rail_convert::apply(
+          srcComps, nSrc, lanes, destWidth, destDefaults, nDefaults);
+      const TapFold params = parseTapFold(tap);
+      const float delaySec = tap.contains("mod") && tap["mod"].is_object()
+          ? (float)tap["mod"].value("delay", 0.0) : 0.0f;
+      const float srcMin = (float)tap.value("srcMin", 0.0);
+      const float srcMax = (float)tap.value("srcMax", 1.0);
+      for (int i = 0; i < fit.n; ++i) {
+        if (!(fit.laneMask & (1u << i))) continue;
+        // Lane-suffixed keys for the per-wire delay line and the editor's
+        // telemetry band. `#` is safe where `/` is not: `/` is the struct-leaf
+        // separator and numeric leaf names already exist, so `translate/0`
+        // would be genuinely ambiguous. These never reach a schema lookup.
+        const std::string laneField = fieldPath + "#" + std::to_string(i);
+        const float base = running.comps[(size_t)i];
+        auto foldLane = [&](float v) -> float { return foldOne(params, v, true, base); };
+        float combined = foldLane(fit.comps[i]);
+        combined = applyModDelay(instanceKey, laneField + "\x1f" + railId,
+                                 combined, delaySec);
+        recordModBand(modulationData_, instanceKey, laneField, combined,
+                      modNeutral(params.combine, params.isSigned, base,
+                                 params.dmin, params.dmax),
+                      srcMin, srcMax, foldLane);
+        running.comps[(size_t)i] = combined;
+        running.drivenMask |= (1u << i);
       }
       continue;
     }
@@ -2675,6 +2785,18 @@ void SketchExecutor::applyReadTaps(
       });
     }
     inst.setFieldConnected(fieldPath, true, false);
+  }
+
+  // Flush the vector accumulators ONCE per field, after every tap has folded.
+  // setParamArray is the only vec setter — there is no per-component ABI — so a
+  // per-tap write would resend the whole array anyway, AND would fire one
+  // on_state_patched per wire, each handing the effect a half-updated vector.
+  // Effects cache these in that callback (transform's `s->tx = v.x; s->ty =
+  // v.y;`), so one flush is one atomic patch, exactly like a user edit.
+  for (auto& kv : runningVec) {
+    inst.setParamArray(kv.first, kv.second.comps);
+    inst.setFieldConnected(kv.first, true, false);
+    if (outModulatedVecs) (*outModulatedVecs)[kv.first] = kv.second;
   }
 }
 
@@ -2826,7 +2948,8 @@ void SketchExecutor::setExternalScalars(const json& values) {
 void SketchExecutor::applyAutomation(
     int32_t inst_handle, const json& entry, const json& sketchInstances,
     const std::string& instanceKey,
-    std::unordered_map<std::string, float>* outModulatedScalars) {
+    std::unordered_map<std::string, float>* outModulatedScalars,
+    ModulatedVecs* outModulatedVecs) {
   auto it = automationByInstance_.find(instanceKey);
   if (it == automationByInstance_.end() || !it->second.is_array()) return;
   const EffectRef inst{inst_handle};
@@ -2857,6 +2980,23 @@ void SketchExecutor::applyAutomation(
     // frame — a rail with an active writer sat pinned at its base, so read
     // wires downstream never moved.
     if (outModulatedScalars && outModulatedScalars->count(field)) continue;
+    // A VECTOR field: this path only knows how to setParamFloat, which would
+    // hand the effect a bare number where patchVec2/3/4 expects an array and
+    // snap the field to the origin — the same failure smoothing and an
+    // un-fitted wire used to cause. Per-lane automation folds it properly; a
+    // whole-field entry with no lane is skipped here rather than made
+    // destructive.
+    if ((outModulatedVecs && outModulatedVecs->count(field)) ||
+        (canonState && canonState->contains(field) && (*canonState)[field].is_array())) {
+      continue;
+    }
+    if (reg && reg->schemaFields.is_object()) {
+      auto f = reg->schemaFields.find(field);
+      if (f != reg->schemaFields.end() && f->is_object()) {
+        const std::string t = f->value("type", std::string());
+        if (t == "float2" || t == "float3" || t == "float4") continue;
+      }
+    }
     const float value = (float)a.value("value", 0.0);
     // Dest field [min,max] from the schema (defaults 0..1) — the range the
     // normalized curve value maps into, exactly as a wire's destMin/destMax.
@@ -2908,7 +3048,8 @@ void SketchExecutor::applySmoothing(
     const std::string& instanceKey,
     const json& sketchInstances,
     const std::unordered_map<std::string, float>& modulatedScalars,
-    double dt) {
+    double dt,
+    const ModulatedVecs* modulatedVecs) {
   auto foIt = entry.find("fieldOptions");
   const bool hasFO = foIt != entry.end() && foIt->is_object() && !foIt->empty();
   if (!hasFO) {
@@ -2931,6 +3072,17 @@ void SketchExecutor::applySmoothing(
       continue;
     }
     const float duration = (float)sm.value("duration", 0.0);
+    // A VECTOR field has no scalar target and must never be setParamFloat'd:
+    // the effect would receive a bare number where patchVec2/3/4 expects an
+    // array, read no components, and snap the field to the origin. The field
+    // card offers smoothing on any field, so this is reachable by hand. Ramping
+    // a vector is a real feature; it is just not this one.
+    if ((modulatedVecs && modulatedVecs->count(field)) ||
+        (canon && canon->is_object() && canon->contains(field) &&
+         (*canon)[field].is_array())) {
+      states.erase(field);
+      continue;
+    }
     // Target = the modulated value if a read tap drove it this frame, else the
     // canonical serialized scalar. Skip fields with no defined target.
     float target;
@@ -2972,6 +3124,7 @@ void SketchExecutor::captureWriteTaps(
       std::unordered_map<std::string, int32_t>>& railBuffers,
     std::unordered_map<std::string, std::vector<float>>& railVecs,
     const std::unordered_map<std::string, float>* modulatedScalars,
+    const ModulatedVecs* modulatedVecs,
     int32_t aliasedTexOut) {
   const EffectRef inst{inst_handle};
   if (!entry.contains("taps") || !entry["taps"].is_array()) return;
@@ -2994,7 +3147,19 @@ void SketchExecutor::captureWriteTaps(
     if (dataType.is_object() && dataType.value("kind", std::string()) == "vec") {
       const int n = dataType.value("n", 4);
       std::vector<float> comps;
-      if (sketchInstances.is_object() &&
+      // Relay field: if this same vec field was read-tapped (modulated) this
+      // frame, publish the MODULATED components rather than the authored ones —
+      // the vector twin of the float branch's rule below, and checked FIRST for
+      // the same reason: the authored state is a valid-looking fallback, so
+      // consulting it first would silently win and publish stale components.
+      if (modulatedVecs) {
+        auto mvit = modulatedVecs->find(fieldPath);
+        if (mvit != modulatedVecs->end() && !mvit->second.comps.empty()) {
+          comps = mvit->second.comps;
+          if ((int)comps.size() > n) comps.resize((size_t)n);
+        }
+      }
+      if (comps.empty() && sketchInstances.is_object() &&
           sketchInstances.contains(producerInstanceKey)) {
         const auto& st = sketchInstances[producerInstanceKey]
                             .value("state", json::object());

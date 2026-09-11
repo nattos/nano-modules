@@ -699,6 +699,21 @@ class SketchExecutor {
       const std::unordered_map<std::string,
         std::unordered_map<std::string, int32_t>>& railTextures);
 
+  // A VECTOR field's post-fold components for this frame, plus which lanes a
+  // wire actually drove. Lanes outside `drivenMask` were not modulated: they
+  // hold the authored value, and automation is still free to claim them (the
+  // per-lane twin of the `outModulatedScalars` wire-wins-over-automation gate).
+  //
+  // Deliberately a separate map from the float one rather than lane-suffixed
+  // keys in it: smoothing is keyed by AUTHORED field path and serviceScalarBus
+  // looks `value` up by name, so a lane sharing that namespace would be a
+  // silent float/vec confusion instead of a compile error.
+  struct ModulatedVec {
+    std::vector<float> comps;
+    uint32_t drivenMask = 0;
+  };
+  using ModulatedVecs = std::unordered_map<std::string, ModulatedVec>;
+
   void applyReadTaps(
       int32_t inst,
       const nlohmann::json& entry,
@@ -722,7 +737,10 @@ class SketchExecutor {
       const std::string& instanceKey,
       // When non-null, records each modulated FLOAT field's final post-fold
       // value (the target the smoothing pass ramps toward). See applySmoothing.
-      std::unordered_map<std::string, float>* outModulatedScalars = nullptr);
+      std::unordered_map<std::string, float>* outModulatedScalars = nullptr,
+      // When non-null, the same for VECTOR fields — per-lane values plus the
+      // driven mask. See ModulatedVec.
+      ModulatedVecs* outModulatedVecs = nullptr);
 
   // Fold ONE float read-tap's rail value into its dest: polarity prescale →
   // tap_mod remap/curve → magnitude/combine fold against [destMin,destMax] →
@@ -757,7 +775,8 @@ class SketchExecutor {
   void applyAutomation(int32_t inst, const nlohmann::json& entry,
                        const nlohmann::json& sketchInstances,
                        const std::string& instanceKey,
-                       std::unordered_map<std::string, float>* outModulatedScalars);
+                       std::unordered_map<std::string, float>* outModulatedScalars,
+                       ModulatedVecs* outModulatedVecs = nullptr);
 
   // Apply a wire's continuous-time `delay` (seconds) to a modulated field's final
   // post-fold `value`, via a delay line in delayState_ keyed (instance, field+wire)
@@ -782,7 +801,12 @@ class SketchExecutor {
       const std::string& instanceKey,
       const nlohmann::json& sketchInstances,
       const std::unordered_map<std::string, float>& modulatedScalars,
-      double dt);
+      double dt,
+      // Vector fields modulated this frame. Smoothing does not (yet) ramp a
+      // vector, but it MUST NOT write a bare float to one: setParamFloat on a
+      // float2 reaches the effect as a number, patchVec2 reads no components,
+      // and the field snaps to the origin. Used only to skip those fields.
+      const ModulatedVecs* modulatedVecs = nullptr);
 
   void captureWriteTaps(
       int32_t inst,
@@ -809,6 +833,10 @@ class SketchExecutor {
       // knob driven by an LFO) publishes this modulated value instead of its
       // canonical serialized state. nullptr → no relay (publish state as usual).
       const std::unordered_map<std::string, float>* modulatedScalars = nullptr,
+      // The same relay rule for VECTOR fields: a vec field that is both
+      // read-tapped and write-tapped publishes its modulated components, not
+      // its authored ones.
+      const ModulatedVecs* modulatedVecs = nullptr,
       // Identity-skipped stage: the aliased passthrough handle standing in for
       // this stage's `tex_out` (the stage never rendered, so textureField is
       // stale/absent). Only consulted for bare-texture rails on "tex_out".
