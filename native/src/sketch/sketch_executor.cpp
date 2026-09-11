@@ -1098,6 +1098,44 @@ int32_t SketchExecutor::execute(
         return fit != r->schemaFields.end() && fit->is_object() &&
                fit->value("raw", false);
       };
+      // The DESTINATION's WIDTH and per-component defaults, plus the wire's
+      // lane and conversion options. A vector field is one field with a width:
+      // the read tap fits the rail onto it (rail_convert.h) and folds each
+      // DRIVEN lane separately. Stamped here because applyReadTaps has no
+      // registry handle — every number it needs has to ride on the tap, the
+      // same reason magnitude/destMin/destMax are resolved here.
+      auto stampDest = [&](json& rtap, size_t chainIdx, const std::string& field,
+                           const json& wire) {
+        const RegisteredModule* r =
+            findSchema(chain[chainIdx].value("module_type", std::string()));
+        const json* dfield = nullptr;
+        if (r && r->schemaFields.is_object()) {
+          auto fit = r->schemaFields.find(field);
+          if (fit != r->schemaFields.end() && fit->is_object()) dfield = &*fit;
+        }
+        int width = 1;
+        if (dfield) {
+          const std::string t = dfield->value("type", std::string());
+          if (t == "float2") width = 2;
+          else if (t == "float3") width = 3;
+          else if (t == "float4") width = 4;
+        }
+        rtap["destWidth"] = width;
+        // Declared per-component defaults — what `convert:"pad"` fills the
+        // lanes past the source's width from.
+        if (width > 1 && dfield && dfield->contains("default") &&
+            (*dfield)["default"].is_array()) {
+          rtap["destDefaults"] = (*dfield)["default"];
+        }
+        const json dstEp = wire.value("dest", json::object());
+        auto lit = dstEp.find("lane");
+        if (lit != dstEp.end() && lit->is_number_integer()) {
+          rtap["destLane"] = lit->get<int>();
+        }
+        if (wire.contains("convert") && wire["convert"].is_string()) {
+          rtap["convert"] = wire["convert"];
+        }
+      };
       for (const auto& w : effWires) {
         if (!w.is_object()) continue;
         const json src = w.value("src", json::object());
@@ -1125,6 +1163,7 @@ int32_t SketchExecutor::execute(
           if (w.contains("mod")) rtap["mod"] = w["mod"];
           if (w.contains("combine")) rtap["combine"] = w["combine"];
           if (w.contains("mixFactor")) rtap["mixFactor"] = w["mixFactor"];
+          stampDest(rtap, di->second, dstField, w);
           rtap["srcMin"] = 0.0;
           rtap["srcMax"] = 1.0;
           std::string mag = w.value("magnitude", std::string("auto"));
@@ -1221,6 +1260,7 @@ int32_t SketchExecutor::execute(
         if (w.contains("mod")) rtap["mod"] = w["mod"];
         if (w.contains("combine")) rtap["combine"] = w["combine"];
         if (w.contains("mixFactor")) rtap["mixFactor"] = w["mixFactor"];
+        stampDest(rtap, di->second, dstField, w);
         // Magnitude mapping (scalar wires only). The web's resolveScalarWire
         // default is `auto`: map the shaped value into the DEST field's
         // [min,max] per the source field's signed/unsigned declaration. Only

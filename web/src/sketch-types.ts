@@ -569,6 +569,34 @@ export type TapCombine = 'replace' | 'mix' | 'add' | 'mul';
 export type WireMagnitude = 'auto' | 'signed' | 'unsigned' | 'absolute';
 
 /**
+ * How a wire's value is fitted to the WIDTH of the field it lands on, when the
+ * two differ. A vector field (float2/3/4) is ONE field with a width; a wire may
+ * drive all of it or a single lane (see `Wire.dest.lane`).
+ *
+ * A conversion never refuses — every combination produces a defined result —
+ * because the editor lets any two endpoints be connected and settles the
+ * ambiguity here, exactly as `combine` and `magnitude` do. Lanes a wire does
+ * NOT drive keep whatever the consumer already had: its authored value, or
+ * another wire's fold.
+ *
+ * - `auto` (default): a scalar source broadcasts to every lane; otherwise
+ *   elementwise for the lanes both sides have, leaving any destination lane
+ *   past the source's width undriven — wiring an rgb source into an rgba field
+ *   leaves your authored alpha alone rather than resetting it.
+ * - `broadcast`: every destination lane takes source component 0. For "I have
+ *   several components but want one to drive the whole field uniformly".
+ * - `truncate`: elementwise only. Differs from `auto` at width 1, where it
+ *   drives lane 0 ALONE instead of broadcasting.
+ * - `pad`: drive every destination lane, filling the ones past the source's
+ *   width from the destination field's declared per-component defaults.
+ *
+ * The math is `native/src/sketch/rail_convert.h`, pinned by the shared fixture
+ * `web/test/fixtures/rail-convert-cases.json` — keep this union in lock-step
+ * with the fixture's mode names (`wire-convert-vocab.test.ts` checks it).
+ */
+export type WireConvert = 'auto' | 'broadcast' | 'truncate' | 'pad';
+
+/**
  * A direct connection from a producer output field to a consumer input field —
  * the replacement for taps+rails. Endpoints are addressed by `instance_key` +
  * field path so wires survive reordering/insert/delete. Delay is inferred from
@@ -578,8 +606,15 @@ export interface Wire {
   id: string;
   /** Producer side: the instance whose output feeds the wire, and its output field. */
   src: { instanceKey: string; field: string };
-  /** Consumer side: the instance receiving the value, and its input field. */
-  dest: { instanceKey: string; field: string };
+  /** Consumer side: the instance receiving the value, and its input field.
+   *
+   *  `lane` addresses ONE component of a vector field (0 = x/r, 1 = y/g, …).
+   *  Absent means the whole field, which is the only thing a scalar field can
+   *  mean. It is a structured key rather than a suffix on `field` deliberately:
+   *  everything that looks a wire's destination up in a schema, or builds a DOM
+   *  anchor key from it, keeps working untouched, and lane-awareness is opted
+   *  into only where it matters. */
+  dest: { instanceKey: string; field: string; lane?: number };
   /** Scalar wires only: range remap applied to the value (reuses tap-mod math). */
   mod?: TapMod;
   /** Scalar wires only: how to fold into the dest param when multiple wires target it. */
@@ -589,6 +624,10 @@ export interface Wire {
   /** Scalar wires only: how the source value maps into the dest field's declared
    *  range. Default `auto`. See {@link WireMagnitude}. */
   magnitude?: WireMagnitude;
+  /** How the value is fitted to the dest field's WIDTH when they differ.
+   *  Default `auto`. Only meaningful when either end is a vector.
+   *  See {@link WireConvert}. */
+  convert?: WireConvert;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -655,6 +694,10 @@ export interface FieldConnectInfo {
   colIdx: number;
   chainIdx: number;
   fieldPath: string;
+  /** One component of a vector field, when the gesture started on (or landed
+   *  on) a per-component control. Undefined = the whole field. Becomes the
+   *  wire endpoint's `lane`. */
+  lane?: number;
   isOutput: boolean;
   /** Viewport Y used to decide writer vs reader when both fields are same direction. */
   viewportY: number;
