@@ -103,9 +103,8 @@ describe('connectWire with a device endpoint', () => {
     expect(wires()).toHaveLength(0);
   });
 
-  it('rejects device→device and device→pure-output connections', () => {
+  it('rejects device→pure-output connections', () => {
     seedSketch();
-    appController.connectWire(deviceEnd('b0/e00/turn'), deviceEnd('b0/e01/turn'));
     // A pure output (no input io bit — e.g. an LFO's `output`).
     appController.connectWire(deviceEnd(), field({
       chainIdx: 0, fieldPath: 'output', isOutput: true, schemaDef: { io: 6 } as any }));
@@ -129,6 +128,110 @@ describe('connectWire with a device endpoint', () => {
   });
 });
 
+describe('connectWire between two device controls (a control alias)', () => {
+  const other = (controlId: string): FieldConnectInfo => field({
+    sketchId: '', chainIdx: -1, fieldPath: '',
+    deviceControl: { deviceInstanceId: 'dev-2', controlId },
+  });
+
+  function seedTwoDevices() {
+    seedSketch();
+    runInAction(() => {
+      // The alias lands in whichever sketch the editor is showing —
+      // `selectedProjectId` in the effect-dev IDE, `editingSketchId` in
+      // Playground / Live (activeEditorSketchId picks by appMode).
+      appState.local.editingSketchId = 'sk';
+      appState.local.userSettings.selectedProjectId = 'sk';
+      appState.local.midi.library.push({
+        id: 'dev-2', templateId: 'com.nano.midi.mft', parentId: 'com.nano.midi.mft',
+        forkedAt: 0, name: 'Spare Twister', config: {}, identities: [], updatedAt: 0,
+      });
+    });
+  }
+
+  afterEach(() => {
+    runInAction(() => {
+      appState.local.editingSketchId = '';
+      appState.local.userSettings.selectedProjectId = '';
+    });
+  });
+
+  it('stores both ends as midi: endpoints, with no combine or mod', () => {
+    seedTwoDevices();
+    appController.connectWire(deviceEnd('b0/e05/turn'), other('b1/e02/turn'));
+    expect(wires()).toHaveLength(1);
+    expect(wires()[0]).toMatchObject({
+      src: { instanceKey: 'midi:dev-1', field: 'b0/e05/turn' },
+      dest: { instanceKey: 'midi:dev-2', field: 'b1/e02/turn' },
+    });
+    // Nothing folds an alias into a range — it carries no modulation at all.
+    expect(wires()[0].combine).toBeUndefined();
+    expect(wires()[0].mod).toBeUndefined();
+  });
+
+  it('lands in the sketch the editor is showing', () => {
+    seedTwoDevices();
+    runInAction(() => {
+      appState.local.editingSketchId = 'nope';
+      appState.local.userSettings.selectedProjectId = 'nope';
+    });
+    appController.connectWire(deviceEnd('b0/e05/turn'), other('b1/e02/turn'));
+    expect(wires()).toHaveLength(0);
+  });
+
+  it('dedupes in BOTH directions — an alias is undirected', () => {
+    seedTwoDevices();
+    appController.connectWire(deviceEnd('b0/e05/turn'), other('b1/e02/turn'));
+    appController.connectWire(other('b1/e02/turn'), deviceEnd('b0/e05/turn'));
+    expect(wires()).toHaveLength(1);
+    // The re-drag replaced, so the surviving wire has the LATER drag's order.
+    expect(wires()[0].src.instanceKey).toBe('midi:dev-2');
+  });
+
+  it('a different pair stacks alongside', () => {
+    seedTwoDevices();
+    appController.connectWire(deviceEnd('b0/e05/turn'), other('b1/e02/turn'));
+    appController.connectWire(deviceEnd('b0/e06/turn'), other('b1/e03/turn'));
+    expect(wires()).toHaveLength(2);
+  });
+
+  it('drops a control aliased to itself', () => {
+    seedTwoDevices();
+    appController.connectWire(deviceEnd('b0/e05/turn'), deviceEnd('b0/e05/turn'));
+    expect(wires()).toHaveLength(0);
+  });
+
+  it('aliases two controls on the SAME device', () => {
+    seedTwoDevices();
+    appController.connectWire(deviceEnd('b0/e05/turn'), deviceEnd('b0/e06/turn'));
+    expect(wires()).toHaveLength(1);
+    expect(wires()[0].dest.instanceKey).toBe('midi:dev-1');
+  });
+
+  it('lazy-forks a TEMPLATE on either end', () => {
+    seedTwoDevices();
+    const template = field({
+      sketchId: '', chainIdx: -1, fieldPath: '',
+      deviceControl: { deviceInstanceId: 'com.nano.midi.mft', controlId: 'b0/e00/turn' },
+    });
+    appController.connectWire(deviceEnd('b0/e05/turn'), template);
+    expect(wires()).toHaveLength(1);
+    expect(wires()[0].dest.instanceKey).not.toBe('midi:com.nano.midi.mft');
+    expect(appState.local.midi.library.some(
+      d => `midi:${d.id}` === wires()[0].dest.instanceKey)).toBe(true);
+  });
+
+  it('drops a gesture from an id that is neither an instance nor a template', () => {
+    seedTwoDevices();
+    const junk = field({
+      sketchId: '', chainIdx: -1, fieldPath: '',
+      deviceControl: { deviceInstanceId: 'garbage-id', controlId: 'b0/e00/turn' },
+    });
+    appController.connectWire(deviceEnd('b0/e05/turn'), junk);
+    expect(wires()).toHaveLength(0);
+  });
+});
+
 describe('normalizeSketchChains with device wires', () => {
   it('keeps midi: sources (even when no device exists) but prunes dead dests', () => {
     const sketch = {
@@ -142,5 +245,17 @@ describe('normalizeSketchChains with device wires', () => {
     } as unknown as Sketch;
     const result = normalizeSketchChains(sketch);
     expect(result.wires?.map(w => w.id)).toEqual(['w1']);
+  });
+
+  it('keeps a control ALIAS — neither end is in the chain', () => {
+    const sketch = {
+      anchor: null,
+      chain: [{ type: 'module', module_type: 'video.bc', instance_key: 'bc' }],
+      wires: [
+        { id: 'a1', src: { instanceKey: 'midi:dev-1', field: 'b0/e00/turn' },
+          dest: { instanceKey: 'midi:dev-2', field: 'b1/e02/turn' } },
+      ],
+    } as unknown as Sketch;
+    expect(normalizeSketchChains(sketch).wires?.map(w => w.id)).toEqual(['a1']);
   });
 });

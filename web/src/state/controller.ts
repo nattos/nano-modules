@@ -23,6 +23,7 @@ import type { EngineState, EffectInfo, TracePoint, ParamValue, BarrelClipCommand
 import type { Sketch, Wire, UiOnlyState, InstanceState, FieldConnectInfo, SketchOutputFormat, ModuleEntry, TapCombine } from '../sketch-types';
 import { normalizeSketchChains, sketchChain, ensureChain, execOrderIsChainOrder, isCanvasEntry, UI_ONLY_KEY, DASHBOARD_MODULE_TYPE, SKETCH_OUTPUT_MODULE_TYPE, sanitizeOutputFormat, isDeviceOff } from '../sketch-types';
 import { midiInstanceIdFromKey, midiInstanceKey, isMidiInstanceKey } from '../midi/midi-types';
+import { activeEditorSketchId } from '../widgets/field-anchor-lookup';
 import { hiddenFieldsFor } from './field-visibility';
 // Side-effect import: registers the math nodes' synchronous visibility rule.
 // It belongs here rather than beside their editor widget because BOTH the card
@@ -2569,7 +2570,8 @@ export class AppController {
    * Same edge-level dedupe + `add` default as module wires.
    */
   private connectDeviceWire(a: FieldConnectInfo, b: FieldConnectInfo) {
-    if (a.deviceControl && b.deviceControl) return;   // device→device is meaningless
+    // Device→device is a control ALIAS — a different animal, see below.
+    if (a.deviceControl && b.deviceControl) { this.connectControlAlias(a, b); return; }
     const device = { ...(a.deviceControl ? a : b).deviceControl! };
     const reader = a.deviceControl ? b : a;
     // Devices only drive inputs — but a RELAY field (io = in|out, e.g. a
@@ -2614,6 +2616,63 @@ export class AppController {
         dest: { instanceKey: destKey, field: reader.fieldPath,
                 ...(reader.lane != null ? { lane: reader.lane } : {}) },
         combine: this.defaultCombineFor(reader),
+      });
+    });
+  }
+
+  /**
+   * Connect one MIDI device control to ANOTHER — a control ALIAS. The two
+   * controls become one logical control: every wire reading either of them
+   * reads whichever was touched most recently, and both devices' LED rings /
+   * on-screen dials follow. The point is a spare controller shadowing the
+   * desk, so a dead device's stale value can never pin the live one.
+   *
+   * Stored like any other wire (in the sketch, so it travels with the
+   * document) but carrying no `combine` and no `mod`: nothing folds an alias
+   * into a range, and `src`/`dest` record only which end the drag started
+   * from. Resolution lives in the host value tables, not the executor —
+   * `midi/alias-groups.ts` and its native twin `midi/midi_alias.h`.
+   *
+   * The wire lands in the sketch the editor is currently showing; a device
+   * endpoint belongs to no chain, so there is no other sketch it could imply.
+   */
+  private connectControlAlias(a: FieldConnectInfo, b: FieldConnectInfo) {
+    const src = { ...a.deviceControl! };
+    const dest = { ...b.deviceControl! };
+    if (src.deviceInstanceId === dest.deviceInstanceId && src.controlId === dest.controlId) {
+      return;   // a control aliased to itself is a no-op
+    }
+    // Either end may be a TEMPLATE card — the wire needs real library
+    // instances, so this IS the template's "first edit": lazy-fork now.
+    for (const end of [src, dest]) {
+      if (midiController.instance(end.deviceInstanceId)) continue;
+      try {
+        end.deviceInstanceId = midiController.ensureInstanceForEdit(end.deviceInstanceId).id;
+      } catch {
+        return;   // unknown device/template id — drop the gesture
+      }
+    }
+    const sketchId = activeEditorSketchId();
+    if (!sketchId || !appState.database.sketches[sketchId]) return;
+
+    const srcKey = midiInstanceKey(src.deviceInstanceId);
+    const destKey = midiInstanceKey(dest.deviceInstanceId);
+    const id = `wire_${Date.now().toString(36)}_${this.nextWireId++}`;
+    this.mutate('Alias control', draft => {
+      const sk = draft.sketches[sketchId];
+      if (!sk) return;
+      sk.wires = sk.wires ?? [];
+      // Aliases are UNDIRECTED, so the dedupe is too: re-dragging the pair in
+      // either direction replaces rather than stacking a mirrored twin.
+      sk.wires = sk.wires.filter(w => !(
+        (w.src.instanceKey === srcKey && w.src.field === src.controlId
+         && w.dest.instanceKey === destKey && w.dest.field === dest.controlId) ||
+        (w.src.instanceKey === destKey && w.src.field === dest.controlId
+         && w.dest.instanceKey === srcKey && w.dest.field === src.controlId)));
+      sk.wires.push({
+        id,
+        src: { instanceKey: srcKey, field: src.controlId },
+        dest: { instanceKey: destKey, field: dest.controlId },
       });
     });
   }

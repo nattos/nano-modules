@@ -197,3 +197,79 @@ describe('MidiManager', () => {
     expect(events.connections).toEqual([[a.id, true], [b.id, true]]);
   });
 });
+
+describe('MidiManager control aliases', () => {
+  /** Desk + spare, both paired, aliased on one encoder's turn. */
+  function twoDesks() {
+    const desk = twisterInstance();
+    const spare = twisterInstance();
+    const ctx = setup([desk, spare]);
+    const a = ctx.access.addPair('u1', 'Midi Fighter Twister', 'DJ TechTools');
+    const b = ctx.access.addPair('u2', 'Midi Fighter Twister', 'DJ TechTools');
+    ctx.manager.setAliasGroups([[
+      { deviceId: desk.id, field: 'b0/e05/turn' },
+      { deviceId: spare.id, field: 'b0/e05/turn' },
+    ]]);
+    ctx.events.changed.length = 0;
+    return { ...ctx, desk, spare, deskPort: a, sparePort: b };
+  }
+
+  const turn = (port: { input: any }, cc: number, value: number) =>
+    port.input.onmidimessage!({ data: new Uint8Array([0xb0, cc, value]), timeStamp: 0 });
+
+  it('a turn on either device is read by both', () => {
+    const { manager, desk, spare, deskPort } = twoDesks();
+    turn(deskPort, 5, 127);
+    expect(manager.getValue(desk.id, 'b0/e05/turn')).toBe(1);
+    expect(manager.getValue(spare.id, 'b0/e05/turn')).toBe(1);
+  });
+
+  it('last touched wins — a dead device cannot pin the live one', () => {
+    const { manager, desk, spare, deskPort, sparePort } = twoDesks();
+    turn(deskPort, 5, 127);                       // desk says 1.0
+    expect(manager.getValue(spare.id, 'b0/e05/turn')).toBe(1);
+    turn(sparePort, 5, 0);                        // desk dies; spare says 0.0
+    expect(manager.getValue(desk.id, 'b0/e05/turn')).toBe(0);
+    expect(manager.getValue(spare.id, 'b0/e05/turn')).toBe(0);
+    turn(deskPort, 5, 64);                        // desk comes back
+    expect(manager.getValue(spare.id, 'b0/e05/turn')).toBeCloseTo(64 / 127, 5);
+  });
+
+  it('notifies the PEER device too, so its LED ring follows', () => {
+    const { manager, events, desk, spare, deskPort, sparePort } = twoDesks();
+    turn(deskPort, 5, 127);
+    expect(events.changed).toEqual([desk.id, spare.id]);
+    // The echo really reaches the other unit's output port.
+    manager.renderOutput(spare.id);
+    expect(sparePort.output.sent).toContainEqual([0xb0, 5, 127]);
+  });
+
+  it('leaves un-aliased endpoints alone', () => {
+    const { manager, desk, spare, deskPort } = twoDesks();
+    turn(deskPort, 6, 127);
+    expect(manager.getValue(desk.id, 'b0/e06/turn')).toBe(1);
+    expect(manager.getValue(spare.id, 'b0/e06/turn')).toBe(0);
+  });
+
+  it('an untouched device still reads its peer (spare plugged in mid-show)', () => {
+    const { manager, spare, deskPort } = twoDesks();
+    turn(deskPort, 5, 127);
+    // The spare has reported nothing of its own, yet shows the desk's state.
+    expect(manager.getValues(spare.id).get('b0/e05/turn')).toBe(1);
+  });
+
+  it('an on-screen simulation drag feeds the alias too', () => {
+    const { manager, desk, spare } = twoDesks();
+    manager.setSimulatedValue(spare.id, 'b0/e05/turn', 0.25);
+    expect(manager.getValue(desk.id, 'b0/e05/turn')).toBe(0.25);
+  });
+
+  it('dropping the groups restores each device to its own values', () => {
+    const { manager, desk, spare, deskPort } = twoDesks();
+    turn(deskPort, 5, 127);
+    expect(manager.getValue(spare.id, 'b0/e05/turn')).toBe(1);
+    manager.setAliasGroups([]);
+    expect(manager.getValue(spare.id, 'b0/e05/turn')).toBe(0);
+    expect(manager.getValue(desk.id, 'b0/e05/turn')).toBe(1);
+  });
+});

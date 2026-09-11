@@ -2,8 +2,9 @@
  * <device-wire-overlay> — viewport-fixed SVG drawing the Devices tab's
  * cross-panel wires while W wire mode is on: committed device→field wires
  * (device hit zone → the editor field's tap hit/pip, resolved through the
- * shared field-anchor-lookup) and the live rubber band for an in-flight
- * gesture whose SOURCE is a device control.
+ * shared field-anchor-lookup), device→device control ALIASES (both ends are
+ * device hit zones, drawn in their own colour), and the live rubber band for
+ * an in-flight gesture whose SOURCE is a device control.
  *
  * Purely visual (pointer-events: none): wire management (mod, combine,
  * removal) lives in the dest field's inspector like any other wire, and the
@@ -25,7 +26,10 @@ import { DeviceAnchorKeys, deviceAnchorRect } from './device-anchors';
 interface DeviceWireVis {
   wireId: string;
   anchorKey: string;   // device endpoint anchor
-  destKey: string;     // editor field key `${sketchId}/0/${chainIdx}/${field}`
+  /** Editor field key `${sketchId}/0/${chainIdx}/${field}` — modulation wire. */
+  destKey?: string;
+  /** Device endpoint anchor — control alias (device→device). */
+  destAnchorKey?: string;
 }
 
 function bowPath(x0: number, y0: number, x1: number, y1: number): string {
@@ -33,6 +37,20 @@ function bowPath(x0: number, y0: number, x1: number, y1: number): string {
   const dx = Math.max(40, Math.abs(x1 - x0) * 0.35);
   return `M ${x0.toFixed(1)} ${y0.toFixed(1)} C ${(x0 - dx).toFixed(1)} ${y0.toFixed(1)}, ` +
          `${(x1 + dx).toFixed(1)} ${y1.toFixed(1)}, ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+}
+
+/** Both ends live on the device grid, so the arc runs BETWEEN them (an S
+ *  curve along whichever axis they are further apart on) rather than bowing
+ *  outward toward an editor that isn't there. */
+function aliasPath(x0: number, y0: number, x1: number, y1: number): string {
+  const dx = x1 - x0, dy = y1 - y0;
+  const m = (v: number) => v.toFixed(1);
+  if (Math.abs(dy) > Math.abs(dx)) {
+    const c = Math.max(24, Math.abs(dy) * 0.4) * Math.sign(dy || 1);
+    return `M ${m(x0)} ${m(y0)} C ${m(x0)} ${m(y0 + c)}, ${m(x1)} ${m(y1 - c)}, ${m(x1)} ${m(y1)}`;
+  }
+  const c = Math.max(24, Math.abs(dx) * 0.4) * Math.sign(dx || 1);
+  return `M ${m(x0)} ${m(y0)} C ${m(x0 + c)} ${m(y0)}, ${m(x1 - c)} ${m(y1)}, ${m(x1)} ${m(y1)}`;
 }
 
 @customElement('device-wire-overlay')
@@ -51,6 +69,12 @@ export class DeviceWireOverlay extends MobxLitElement {
       stroke: var(--app-io-output, #ff8c00);
       stroke-width: 1.5;
       opacity: 0.8;
+    }
+    .alias {
+      fill: none;
+      stroke: var(--app-hi-color4, #ffda63);
+      stroke-width: 1.5;
+      opacity: 0.85;
     }
     .connect-line {
       fill: none;
@@ -88,12 +112,22 @@ export class DeviceWireOverlay extends MobxLitElement {
     const out: DeviceWireVis[] = [];
     for (const wire of sketch.wires) {
       if (!isMidiInstanceKey(wire.src.instanceKey)) continue;
+      const anchorKey = DeviceAnchorKeys.control(
+        midiInstanceIdFromKey(wire.src.instanceKey)!, wire.src.field);
+      if (isMidiInstanceKey(wire.dest.instanceKey)) {
+        out.push({
+          wireId: wire.id,
+          anchorKey,
+          destAnchorKey: DeviceAnchorKeys.control(
+            midiInstanceIdFromKey(wire.dest.instanceKey)!, wire.dest.field),
+        });
+        continue;
+      }
       const chainIdx = chainIdxByKey.get(wire.dest.instanceKey);
       if (chainIdx === undefined) continue;
       out.push({
         wireId: wire.id,
-        anchorKey: DeviceAnchorKeys.control(
-          midiInstanceIdFromKey(wire.src.instanceKey)!, wire.src.field),
+        anchorKey,
         destKey: `${sketchId}/0/${chainIdx}/${wire.dest.field}`,
       });
     }
@@ -111,6 +145,14 @@ export class DeviceWireOverlay extends MobxLitElement {
       path.setAttribute('d', bowPath(
         from.left, from.top + from.height / 2, to.right, to.top + to.height / 2));
     }
+    for (const path of svg.querySelectorAll<SVGPathElement>('.alias')) {
+      const from = deviceAnchorRect(path.dataset.anchorKey!);
+      const to = from ? deviceAnchorRect(path.dataset.destAnchorKey!) : null;
+      if (!from || !to) { path.setAttribute('d', ''); continue; }
+      path.setAttribute('d', aliasPath(
+        from.left + from.width / 2, from.top + from.height / 2,
+        to.left + to.width / 2, to.top + to.height / 2));
+    }
     const line = svg.querySelector<SVGPathElement>('.connect-line');
     const s = tapsConnect.state;
     if (line) {
@@ -126,9 +168,11 @@ export class DeviceWireOverlay extends MobxLitElement {
     if (!appState.local.tappingMode) return nothing;
     return html`
       <svg>
-        ${this.wires().map(w => html`
-          <path class="wire" data-anchor-key=${w.anchorKey} data-dest-key=${w.destKey} d=""></path>
-        `)}
+        ${this.wires().map(w => w.destAnchorKey
+          ? html`<path class="alias" data-anchor-key=${w.anchorKey}
+                   data-dest-anchor-key=${w.destAnchorKey} d=""></path>`
+          : html`<path class="wire" data-anchor-key=${w.anchorKey}
+                   data-dest-key=${w.destKey!} d=""></path>`)}
         <path class="connect-line" d=""></path>
       </svg>
     `;

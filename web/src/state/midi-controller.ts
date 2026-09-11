@@ -22,7 +22,8 @@ import { forkInstance } from '../midi/matching';
 import { MidiManager } from '../midi/midi-manager';
 import { libraryKnownIds } from '../midi/midi-types';
 import type { ControlMapping, DeviceInstance, PhysicalIdentity } from '../midi/midi-types';
-import { buildExternalScalars } from '../midi/wire-lowering';
+import { buildExternalScalars, collectAliasEdges } from '../midi/wire-lowering';
+import { aliasGroups } from '../midi/alias-groups';
 import { appState } from './app-state';
 import { loadDeviceLibrary, saveDeviceInstance } from './midi-device-store';
 
@@ -40,6 +41,8 @@ export class MidiController {
   private lastPushedJson = '';
   private bridge: { library: (instances: unknown) => void; sim: (table: unknown) => void } | null = null;
   private lastSimJson = '';
+  /** Last alias edge set handed to the manager (syncAliases dedupe). */
+  private lastAliasJson = '';
 
   constructor() {
     const midi = () => appState.local.midi;
@@ -255,6 +258,9 @@ export class MidiController {
    * states cost one string build, no worker message.
    */
   pushExternalScalars(): void {
+    // Control aliases first: they change what `getValues` reports, so the
+    // manager must know about them before the table below is sampled.
+    this.syncAliases();
     if (!this.enginePush) return;
     // Alias resolution: a wire referencing a `knownAs` uuid reads the
     // canonical device's values while the rail keeps the wire's own key.
@@ -268,6 +274,24 @@ export class MidiController {
     if (json === this.lastPushedJson) return;
     this.lastPushedJson = json;
     this.enginePush(json);
+  }
+
+  /**
+   * Mirror the document's device→device wires into the manager's control
+   * ALIAS groups (alias-groups.ts). Deduped by JSON compare — the groups only
+   * change on a document edit, while this runs from the rAF value push.
+   *
+   * Live mode caveat: only the sketches this editor has loaded are visible
+   * here, so an alias authored in a sibling barrel instance won't move this
+   * editor's dials. The native MidiHost sees every instance's sketch and is
+   * what actually drives the show.
+   */
+  private syncAliases(): void {
+    const edges = collectAliasEdges(appState.database.sketches);
+    const json = JSON.stringify(edges);
+    if (json === this.lastAliasJson) return;
+    this.lastAliasJson = json;
+    this.manager.setAliasGroups(aliasGroups(edges));
   }
 
   /** Every uuid the library answers to (ids + knownAs aliases, deleted

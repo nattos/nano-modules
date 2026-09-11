@@ -324,11 +324,13 @@ export function normalizeSketchChains(sketch: Sketch): Sketch {
     const keys = new Set(chain.map(e => e.instance_key));
     const seen = new Set<string>();
     result.wires = result.wires
-      // `midi:` sources live OUTSIDE the chain (the app-level MIDI device
+      // `midi:` endpoints live OUTSIDE the chain (the app-level MIDI device
       // library) — keep those wires even when the device is missing/deleted;
-      // the executor treats an unseeded external rail as dormant.
+      // the executor treats an unseeded external rail as dormant. A wire with
+      // a `midi:` DEST is a control alias (device→device), which has no chain
+      // end at all.
       .filter(w => (keys.has(w.src.instanceKey) || isMidiInstanceKey(w.src.instanceKey))
-        && keys.has(w.dest.instanceKey))
+        && (keys.has(w.dest.instanceKey) || isMidiInstanceKey(w.dest.instanceKey)))
       .map(w => {
         if (!seen.has(w.id)) { seen.add(w.id); return w; }
         let n = 2, nid = `${w.id}_${n}`;

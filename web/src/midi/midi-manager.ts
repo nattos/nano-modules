@@ -13,20 +13,32 @@
  * wires every callback; this module itself knows nothing about appState,
  * MobX, or IndexedDB, so it stays unit-testable with a fake MIDIAccess.
  *
- * Value layering per instance: `hardware ⊕ simulation`. Simulation overrides
- * (on-screen control drags) sit above whatever the hardware last reported;
- * for connected devices the UI clears the override on pointer-up (snap back
- * to real), for disconnected devices it leaves it (sticky, session-only).
- * Drivers integrate relative encoders against the HARDWARE layer only.
+ * Value layering per instance: `hardware ⊕ simulation ⊕ alias`. Simulation
+ * overrides (on-screen control drags) sit above whatever the hardware last
+ * reported; for connected devices the UI clears the override on pointer-up
+ * (snap back to real), for disconnected devices it leaves it (sticky,
+ * session-only). Drivers integrate relative encoders against the HARDWARE
+ * layer only. On top of both, a control ALIAS (a device→device wire, see
+ * alias-groups.ts) makes a set of endpoints read whichever of them was
+ * written most recently — which is why every write stamps a monotonic
+ * sequence number, and why alias peers on OTHER devices are re-notified (so
+ * their LED rings and on-screen dials follow).
  */
 
 import { getDeviceTemplate } from './device-registry';
 import { matchInstanceForPort } from './matching';
+import {
+  aliasEndpointKey, aliasGroupIndex, aliasWinner,
+  type AliasEndpoint, type AliasSample,
+} from './alias-groups';
 import type { ControlEvent, DeviceDriver, DeviceInstance, PhysicalIdentity } from './midi-types';
 
 interface ValueTable {
   hardware: Map<string, number>;
   simulated: Map<string, number>;
+  /** Write sequence per endpoint, per layer — the alias tie-break. */
+  hardwareSeq: Map<string, number>;
+  simulatedSeq: Map<string, number>;
   /** Merged view cache, rebuilt lazily after any write. */
   merged: ReadonlyMap<string, number> | null;
 }
@@ -59,6 +71,12 @@ export class MidiManager {
   /** Survives disconnects (sticky simulation on disconnected devices). */
   private tables = new Map<string, ValueTable>();
   private unknown: PhysicalIdentity[] = [];
+  /** Control aliases, indexed endpointKey → the group it belongs to. Empty in
+   *  the overwhelmingly common case, which is the fast path everywhere. */
+  private aliases = new Map<string, AliasEndpoint[]>();
+  /** Monotonic write counter — stamped on every hardware/sim value write so
+   *  an alias group can resolve to its most recently touched member. */
+  private writeSeq = 0;
 
   /** The instance source for matching (the controller's observable library). */
   bindLibrary(getInstances: () => readonly DeviceInstance[]): void {
@@ -109,16 +127,87 @@ export class MidiManager {
 
   unknownPorts(): readonly PhysicalIdentity[] { return this.unknown; }
 
-  /** Merged live+sim endpoint values. Cheap: cached until the next write. */
+  /**
+   * Replace the control-alias groups (from the document's device→device
+   * wires — see state/midi-controller.ts). Cheap and idempotent; every
+   * merged-value cache is dropped because a group spans devices.
+   */
+  setAliasGroups(groups: readonly AliasEndpoint[][]): void {
+    const next = aliasGroupIndex(groups);
+    if (next.size === 0 && this.aliases.size === 0) return;
+    this.aliases = next;
+    for (const table of this.tables.values()) table.merged = null;
+  }
+
+  /** One endpoint's own (pre-alias) value + write sequence. Simulation wins
+   *  over hardware for the same endpoint, as it does in the plain merge. */
+  private sampleEndpoint(ep: AliasEndpoint): AliasSample | undefined {
+    const table = this.tables.get(ep.deviceId);
+    if (!table) return undefined;
+    const sim = table.simulated.get(ep.field);
+    if (sim !== undefined) return { value: sim, seq: table.simulatedSeq.get(ep.field) ?? 0 };
+    const hw = table.hardware.get(ep.field);
+    if (hw === undefined) return undefined;
+    return { value: hw, seq: table.hardwareSeq.get(ep.field) ?? 0 };
+  }
+
+  /** Merged live+sim+alias endpoint values. Cheap: cached until the next
+   *  write (any write, once aliases exist — a group spans devices). */
   getValues(instanceId: string): ReadonlyMap<string, number> {
-    const table = this.tables.get(instanceId);
+    // A device that has never reported anything still shows aliased values —
+    // its peer may be the only one anyone has touched — so materialize a
+    // table for it rather than recomputing the overlay on every rAF read.
+    const table = this.tables.get(instanceId)
+      ?? (this.aliases.size > 0 ? this.table(instanceId) : undefined);
     if (!table) return EMPTY_VALUES;
     if (!table.merged) {
       const merged = new Map(table.hardware);
       for (const [k, v] of table.simulated) merged.set(k, v);
-      table.merged = merged;
+      table.merged = this.aliases.size > 0 ? this.applyAliases(instanceId, merged) : merged;
     }
     return table.merged;
+  }
+
+  /**
+   * Overlay this device's aliased endpoints with their group's winner. An
+   * endpoint the device itself has never reported still lands in the map when
+   * a peer has a value — that is what makes a spare controller show the live
+   * desk's positions the moment it is plugged in.
+   */
+  private applyAliases(
+    instanceId: string, merged: Map<string, number>,
+  ): ReadonlyMap<string, number> {
+    for (const [key, group] of this.aliases) {
+      const sep = key.indexOf('\u0000');
+      if (key.slice(0, sep) !== instanceId) continue;
+      const winner = aliasWinner(group, ep => this.sampleEndpoint(ep));
+      if (winner) merged.set(key.slice(sep + 1), winner.value);
+    }
+    return merged;
+  }
+
+  /** Every OTHER device sharing an alias group with one of `fields` — their
+   *  merged values just changed too, so their listeners must re-render. */
+  private aliasPeers(instanceId: string, fields: Iterable<string>): Set<string> {
+    const peers = new Set<string>();
+    if (this.aliases.size === 0) return peers;
+    for (const field of fields) {
+      const group = this.aliases.get(aliasEndpointKey(instanceId, field));
+      if (!group) continue;
+      for (const ep of group) if (ep.deviceId !== instanceId) peers.add(ep.deviceId);
+    }
+    return peers;
+  }
+
+  /** Invalidate every cross-device merged cache after a write into an alias
+   *  group, then fan the change notification out to the peers. */
+  private notifyValues(instanceId: string, fields: Iterable<string>): void {
+    const peers = this.aliasPeers(instanceId, fields);
+    if (peers.size > 0) {
+      for (const table of this.tables.values()) table.merged = null;
+    }
+    this.onValuesChanged?.(instanceId);
+    for (const peer of peers) this.onValuesChanged?.(peer);
   }
 
   getValue(instanceId: string, controlId: string): number {
@@ -131,11 +220,13 @@ export class MidiManager {
     const table = this.table(instanceId);
     if (value === null) {
       if (!table.simulated.delete(controlId)) return;
+      table.simulatedSeq.delete(controlId);
     } else {
       table.simulated.set(controlId, Math.min(1, Math.max(0, value)));
+      table.simulatedSeq.set(controlId, ++this.writeSeq);
     }
     table.merged = null;
-    this.onValuesChanged?.(instanceId);
+    this.notifyValues(instanceId, [controlId]);
   }
 
   /** Push full outgoing state (ring echo, colors) to a connected device. */
@@ -245,9 +336,12 @@ export class MidiManager {
         try { output?.send([...bytes]); } catch (err) { console.warn('[midi] send failed', err); }
       },
       emit: (events: ControlEvent[]) => {
-        for (const e of events) table.hardware.set(e.controlId, e.value);
+        for (const e of events) {
+          table.hardware.set(e.controlId, e.value);
+          table.hardwareSeq.set(e.controlId, ++manager.writeSeq);
+        }
         table.merged = null;
-        manager.onValuesChanged?.(instanceId);
+        manager.notifyValues(instanceId, events.map(e => e.controlId));
       },
       getValue: controlId => table.hardware.get(controlId) ?? 0,
       onBankChanged: bank => manager.onBankChanged?.(instanceId, bank),
@@ -265,7 +359,10 @@ export class MidiManager {
   private table(instanceId: string): ValueTable {
     let table = this.tables.get(instanceId);
     if (!table) {
-      table = { hardware: new Map(), simulated: new Map(), merged: null };
+      table = {
+        hardware: new Map(), simulated: new Map(),
+        hardwareSeq: new Map(), simulatedSeq: new Map(), merged: null,
+      };
       this.tables.set(instanceId, table);
     }
     return table;

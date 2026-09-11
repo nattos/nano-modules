@@ -11,16 +11,31 @@ import {
   midiInstanceIdFromKey, midiInstanceKey, parseControlId, type ControlGesture,
 } from '../../midi/midi-types';
 
-/** One device→field wire, resolved against its sketch's chain. */
-export interface DeviceWireRow {
+/** What every row carries: the wire plus THIS device's end of it. */
+interface DeviceWireRowBase {
   wire: Wire;
   /** Physical control id ('b0/e05') — the gesture-less endpoint prefix. */
   controlId: string;
   gesture: ControlGesture;
+}
+
+/** A device→field modulation wire, resolved against its sketch's chain. */
+export interface DeviceModWireRow extends DeviceWireRowBase {
+  kind: 'mod';
   /** Chain position of the dest module (single-column sketches: colIdx 0). */
   chainIdx: number;
   dest: ModuleEntry;
 }
+
+/** A device→device control ALIAS. Undirected, so `peer` is simply whichever
+ *  end isn't this device — which may be this same device (two of its own
+ *  controls aliased together). */
+export interface DeviceAliasWireRow extends DeviceWireRowBase {
+  kind: 'alias';
+  peer: { deviceId: string; controlId: string; gesture: ControlGesture };
+}
+
+export type DeviceWireRow = DeviceModWireRow | DeviceAliasWireRow;
 
 /** All of one instance's rows; groups are ordered selected-instance-first. */
 export interface DeviceWireGroup {
@@ -29,8 +44,10 @@ export interface DeviceWireGroup {
 }
 
 /**
- * Collect every wire sourced from `deviceId` (optionally restricted to the
- * physical controls in `controlIds`) across `sketchIds`, grouped per sketch.
+ * Collect every wire that touches `deviceId` (optionally restricted to the
+ * physical controls in `controlIds`) across `sketchIds`, grouped per sketch:
+ * the modulation wires it SOURCES, plus the control aliases it sits on at
+ * either end (an alias has no writer — see alias-groups.ts).
  *
  * `sketchIds` is the composition scan set — instance keys are sketch ids in
  * every mode (pg:* in Playground, barrel UUIDs in Live). Duplicates are
@@ -55,6 +72,30 @@ export function collectDeviceWires(
     const chain = sketchChain(sketch);
     const rows: DeviceWireRow[] = [];
     for (const wire of sketch.wires) {
+      const destDeviceId = midiInstanceIdFromKey(wire.dest.instanceKey);
+      if (destDeviceId !== null) {
+        // Control alias — match on EITHER end, and emit one row per end when
+        // both are ours (a device aliased to itself across two controls).
+        for (const [mine, theirs] of [[wire.src, wire.dest], [wire.dest, wire.src]] as const) {
+          if (midiInstanceIdFromKey(mine.instanceKey) !== deviceId) continue;
+          const parsed = parseControlId(mine.field);
+          const peer = parseControlId(theirs.field);
+          if (!parsed || !peer) continue;
+          if (controlIds && !controlIds.includes(parsed.controlId)) continue;
+          rows.push({
+            kind: 'alias',
+            wire,
+            controlId: parsed.controlId,
+            gesture: parsed.gesture,
+            peer: {
+              deviceId: midiInstanceIdFromKey(theirs.instanceKey) ?? '',
+              controlId: peer.controlId,
+              gesture: peer.gesture,
+            },
+          });
+        }
+        continue;
+      }
       if (wire.src.instanceKey !== srcKey) continue;
       const parsed = parseControlId(wire.src.field);
       if (!parsed) continue;
@@ -63,6 +104,7 @@ export function collectDeviceWires(
         e => e.type === 'module' && e.instance_key === wire.dest.instanceKey);
       if (chainIdx < 0) continue;   // dangling dest — nothing to configure/locate
       rows.push({
+        kind: 'mod',
         wire,
         controlId: parsed.controlId,
         gesture: parsed.gesture,
@@ -112,22 +154,27 @@ export function collectGhostDevices(
     const sketch = sketches[sketchId];
     if (!sketch?.wires?.length) continue;
     for (const wire of sketch.wires) {
-      const devId = midiInstanceIdFromKey(wire.src.instanceKey);
-      if (!devId || knownDeviceIds.has(devId)) continue;
-      let g = byDevice.get(devId);
-      if (!g) {
-        g = { perSketch: new Map(), gestures: new Map(), wireCount: 0 };
-        byDevice.set(devId, g);
-      }
-      g.wireCount++;
-      const ids = g.perSketch.get(sketchId) ?? [];
-      ids.push(wire.id);
-      g.perSketch.set(sketchId, ids);
-      const parsed = parseControlId(wire.src.field);
-      if (parsed) {
-        const gs = g.gestures.get(parsed.controlId) ?? new Set<ControlGesture>();
-        gs.add(parsed.gesture);
-        g.gestures.set(parsed.controlId, gs);
+      // BOTH ends can name a device: a control alias's peer is just as much a
+      // missing device as an unknown wire source, and adopting it revives the
+      // alias the same way.
+      for (const end of [wire.src, wire.dest]) {
+        const devId = midiInstanceIdFromKey(end.instanceKey);
+        if (!devId || knownDeviceIds.has(devId)) continue;
+        let g = byDevice.get(devId);
+        if (!g) {
+          g = { perSketch: new Map(), gestures: new Map(), wireCount: 0 };
+          byDevice.set(devId, g);
+        }
+        g.wireCount++;
+        const ids = g.perSketch.get(sketchId) ?? [];
+        ids.push(wire.id);
+        g.perSketch.set(sketchId, ids);
+        const parsed = parseControlId(end.field);
+        if (parsed) {
+          const gs = g.gestures.get(parsed.controlId) ?? new Set<ControlGesture>();
+          gs.add(parsed.gesture);
+          g.gestures.set(parsed.controlId, gs);
+        }
       }
     }
   }

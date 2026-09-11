@@ -12,7 +12,42 @@
  */
 
 import { isMidiInstanceKey, midiInstanceIdFromKey } from './midi-types';
-import type { Sketch } from '../sketch-types';
+import { aliasEdgeKey, type AliasEdge } from './alias-groups';
+import type { Sketch, Wire } from '../sketch-types';
+
+/** True for a wire whose BOTH endpoints are device controls — a control
+ *  ALIAS, not a modulation wire. It synthesizes no rail and no read tap; the
+ *  host value tables fold it instead (see alias-groups.ts). */
+export function isAliasWire(wire: Wire): boolean {
+  return isMidiInstanceKey(wire.src?.instanceKey ?? '')
+      && isMidiInstanceKey(wire.dest?.instanceKey ?? '');
+}
+
+/**
+ * Every control alias in the document, deduped by unordered endpoint pair.
+ * Self-aliases (a control wired to itself) are dropped — they are no-ops that
+ * would otherwise widen a group for nothing.
+ */
+export function collectAliasEdges(
+  sketches: Record<string, Sketch | undefined>,
+): AliasEdge[] {
+  const out: AliasEdge[] = [];
+  const seen = new Set<string>();
+  for (const sketch of Object.values(sketches)) {
+    if (!sketch?.wires) continue;
+    for (const wire of sketch.wires) {
+      if (!isAliasWire(wire) || !wire.src.field || !wire.dest.field) continue;
+      const a = { deviceId: midiInstanceIdFromKey(wire.src.instanceKey)!, field: wire.src.field };
+      const b = { deviceId: midiInstanceIdFromKey(wire.dest.instanceKey)!, field: wire.dest.field };
+      if (a.deviceId === b.deviceId && a.field === b.field) continue;
+      const key = aliasEdgeKey(a, b);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ a, b });
+    }
+  }
+  return out;
+}
 
 /** deviceInstanceId → the endpoint fields some wire reads. */
 export function collectDeviceWireRefs(
@@ -24,6 +59,9 @@ export function collectDeviceWireRefs(
     for (const wire of sketch.wires) {
       const key = wire.src?.instanceKey;
       if (!key || !isMidiInstanceKey(key) || !wire.src.field) continue;
+      // An alias wire references no sketch field — its endpoints reach the
+      // executor only through whatever OTHER wires read the aliased controls.
+      if (isAliasWire(wire)) continue;
       const id = midiInstanceIdFromKey(key)!;
       let fields = refs.get(id);
       if (!fields) { fields = new Set(); refs.set(id, fields); }
