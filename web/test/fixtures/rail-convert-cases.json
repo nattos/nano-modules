@@ -1,0 +1,150 @@
+{
+  "_comment": [
+    "Width-conversion rules for wires landing on vector fields.",
+    "Replayed by native/tests/test_rail_convert.cpp (the implementation, in",
+    "native/src/sketch/rail_convert.h) and by web/src/state/wire-convert-vocab.test.ts",
+    "(which only pins that the TS `WireConvert` union names the same modes -- there",
+    "is no TS executor twin to replay the math against, since the web runs the same",
+    "C++ through executor.wasm).",
+    "",
+    "`comps` entries are null where the wire drives nothing: that lane keeps",
+    "whatever the consumer already had (its authored value, or an earlier wire's",
+    "fold). That is the whole point of the lane mask, so the nulls are assertions,",
+    "not holes.",
+    "",
+    "srcLane/destLane default to -1 (the whole field); convert defaults to auto."
+  ],
+  "cases": [
+    {
+      "name": "auto: a scalar broadcasts to every lane",
+      "rail": [0.25], "destWidth": 2,
+      "expected": [0.25, 0.25]
+    },
+    {
+      "name": "auto: a scalar broadcasts across a float3",
+      "rail": [0.5], "destWidth": 3,
+      "expected": [0.5, 0.5, 0.5]
+    },
+    {
+      "name": "auto: equal widths are elementwise",
+      "rail": [0.1, 0.2], "destWidth": 2,
+      "expected": [0.1, 0.2]
+    },
+    {
+      "name": "auto: rgba into rgb drops alpha",
+      "rail": [0.1, 0.2, 0.3, 0.9], "destWidth": 3,
+      "expected": [0.1, 0.2, 0.3]
+    },
+    {
+      "name": "auto: rgb into rgba leaves the authored alpha alone",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 4, "destDefaults": [0, 0, 0, 1],
+      "expected": [0.1, 0.2, 0.3, null]
+    },
+    {
+      "name": "auto: a vec into a scalar field takes component 0",
+      "rail": [0.7, 0.8, 0.9], "destWidth": 1,
+      "expected": [0.7]
+    },
+    {
+      "name": "auto: a dormant rail drives nothing",
+      "rail": [], "destWidth": 2,
+      "expected": [null, null]
+    },
+
+    {
+      "name": "broadcast: component 0 drives every lane",
+      "rail": [0.4, 0.6], "destWidth": 2, "convert": "broadcast",
+      "expected": [0.4, 0.4]
+    },
+    {
+      "name": "broadcast: widens a scalar to float4",
+      "rail": [0.3], "destWidth": 4, "convert": "broadcast",
+      "expected": [0.3, 0.3, 0.3, 0.3]
+    },
+
+    {
+      "name": "truncate: a scalar drives lane 0 alone (the anti-broadcast)",
+      "rail": [0.25], "destWidth": 2, "convert": "truncate",
+      "expected": [0.25, null]
+    },
+    {
+      "name": "truncate: rgb into rgba still leaves alpha undriven",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 4, "destDefaults": [0, 0, 0, 1], "convert": "truncate",
+      "expected": [0.1, 0.2, 0.3, null]
+    },
+    {
+      "name": "truncate: nothing to drop when the source is wider",
+      "rail": [0.1, 0.2, 0.3, 0.9], "destWidth": 3, "convert": "truncate",
+      "expected": [0.1, 0.2, 0.3]
+    },
+
+    {
+      "name": "pad: rgb into rgba fills alpha from the declared default",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 4, "destDefaults": [0, 0, 0, 1], "convert": "pad",
+      "expected": [0.1, 0.2, 0.3, 1]
+    },
+    {
+      "name": "pad: a scalar fills the rest from declared defaults",
+      "rail": [0.25], "destWidth": 3, "destDefaults": [0, 0.5, 0.75], "convert": "pad",
+      "expected": [0.25, 0.5, 0.75]
+    },
+    {
+      "name": "pad: missing declared defaults read as zero",
+      "rail": [0.25], "destWidth": 4, "destDefaults": [0, 0], "convert": "pad",
+      "expected": [0.25, 0, 0, 0]
+    },
+    {
+      "name": "pad: a wider source has nothing left to pad",
+      "rail": [0.1, 0.2, 0.3, 0.9], "destWidth": 2, "destDefaults": [1, 1], "convert": "pad",
+      "expected": [0.1, 0.2]
+    },
+
+    {
+      "name": "srcLane: picks one component of a vec source",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 1, "srcLane": 1,
+      "expected": [0.2]
+    },
+    {
+      "name": "srcLane: the picked component then broadcasts",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 2, "srcLane": 2,
+      "expected": [0.3, 0.3]
+    },
+    {
+      "name": "srcLane: out of range is ignored, not fatal",
+      "rail": [0.1, 0.2], "destWidth": 2, "srcLane": 5,
+      "expected": [0.1, 0.2]
+    },
+
+    {
+      "name": "destLane: a scalar drives only the addressed lane",
+      "rail": [0.6], "destWidth": 2, "destLane": 1,
+      "expected": [null, 0.6]
+    },
+    {
+      "name": "destLane: a wide source reduces to component 0",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 4, "destLane": 2,
+      "expected": [null, null, 0.1, null]
+    },
+    {
+      "name": "destLane: out of range falls back to the width rule",
+      "rail": [0.6], "destWidth": 2, "destLane": 7,
+      "expected": [0.6, 0.6]
+    },
+    {
+      "name": "destLane: beats convert, which has nothing left to decide",
+      "rail": [0.6], "destWidth": 3, "destLane": 0, "convert": "broadcast",
+      "expected": [0.6, null, null]
+    },
+    {
+      "name": "destLane: a dormant rail drives nothing",
+      "rail": [], "destWidth": 2, "destLane": 1,
+      "expected": [null, null]
+    },
+
+    {
+      "name": "srcLane and destLane compose",
+      "rail": [0.1, 0.2, 0.3], "destWidth": 2, "srcLane": 2, "destLane": 1,
+      "expected": [null, 0.3]
+    }
+  ]
+}

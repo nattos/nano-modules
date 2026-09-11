@@ -1282,6 +1282,16 @@ if(APPLE)
       WIRE_TYPE_FIXTURE="${CMAKE_SOURCE_DIR}/../web/test/fixtures/wire-type-cases.json")
     catch_discover_tests(test_wire_types)
 
+    # Width conversion for wires landing on vector fields, replaying the SAME
+    # fixture the TS vocabulary check reads. Pure logic — no GPU, no bundles.
+    add_executable(test_rail_convert tests/test_rail_convert.cpp)
+    target_link_libraries(test_rail_convert PRIVATE
+      json_utils Catch2::Catch2WithMain)
+    target_include_directories(test_rail_convert PRIVATE src)
+    target_compile_definitions(test_rail_convert PRIVATE
+      RAIL_CONVERT_FIXTURE="${CMAKE_SOURCE_DIR}/../web/test/fixtures/rail-convert-cases.json")
+    catch_discover_tests(test_rail_convert)
+
     # `any` ports END TO END: the resolver is actually wired into rail lowering,
     # and the rail it picks carries the data. Needs testonly (debug.any_probe).
     add_executable(test_any_ports tests/test_any_ports.cpp)
