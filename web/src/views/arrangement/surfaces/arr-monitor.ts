@@ -194,7 +194,13 @@ export class ArrMonitor extends MobxLitElement {
       // Track wires so connecting/removing a modulation wire re-issues the
       // composite (the executor applies them natively).
       const ws = layer.clip.sketch.wires;
-      if (ws) for (const w of ws) void w.id;
+      // `id` alone tracks only STRUCTURE. A wire's options change what the
+      // executor computes without adding or removing a wire, so editing one —
+      // which lane it drives, how its value is fitted to the dest's width, its
+      // combine — has to re-issue the composite too, or the output sits stale.
+      if (ws) for (const w of ws) {
+        void w.id; void w.dest.lane; void w.convert; void w.combine; void w.magnitude;
+      }
       // Track rail exports/reads: adding/removing a return wire must rebuild the
       // composite (rail links are folded into cross-clip wires by buildCompositeSketch).
       for (const ex of layer.clip.exports ?? []) { void ex.railId; void ex.sourceField; }

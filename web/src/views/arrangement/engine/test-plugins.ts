@@ -18,8 +18,15 @@ import type { PluginInfo } from '../../../engine-types';
 import { store } from '../state/store';
 
 interface FieldSpec { key: string; min?: number; max?: number; def?: number; out?: boolean; }
+/** A VECTOR input field (float2/3/4). `hint: 'color'` picks the colour editor
+ *  and names its components R/G/B/A instead of X/Y/Z/W. */
+interface VecSpec {
+  key: string; n: 2 | 3 | 4; hint?: 'color';
+  min?: number; max?: number; def?: number[];
+}
 
-function plugin(id: string, generator: boolean, fields: FieldSpec[], extraCaps: string[] = []): PluginInfo {
+function plugin(id: string, generator: boolean, fields: FieldSpec[], extraCaps: string[] = [],
+                vecs: VecSpec[] = []): PluginInfo {
   const schema: Record<string, any> = {};
   fields.forEach((f, i) => {
     schema[f.key] = {
@@ -31,9 +38,23 @@ function plugin(id: string, generator: boolean, fields: FieldSpec[], extraCaps: 
       order: i,
     };
   });
+  // Vector inputs. The float-only catalog skips these, exactly as it skips the
+  // real ones — they are here so per-LANE addressing (wires, automation) has a
+  // real vector to point at offline.
+  vecs.forEach((v, i) => {
+    schema[v.key] = {
+      type: `float${v.n}`,
+      io: 5,
+      min: v.min ?? 0,
+      max: v.max ?? 1,
+      default: v.def ?? new Array(v.n).fill(0),
+      ...(v.hint ? { hint: v.hint } : {}),
+      order: fields.length + i,
+    };
+  });
   // A texture output so it reads like a real image-producing effect (ignored by
   // the float-only registry, but keeps the shape honest).
-  schema['tex_out'] = { type: 'texture', io: 6, order: fields.length };
+  schema['tex_out'] = { type: 'texture', io: 6, order: fields.length + vecs.length };
   return {
     key: `${id}@0`,
     id,
@@ -49,7 +70,12 @@ function plugin(id: string, generator: boolean, fields: FieldSpec[], extraCaps: 
 
 /** The minimal plugin set the offline arrangement tests reference. */
 export const TEST_PLUGINS: PluginInfo[] = [
-  plugin('source.solid_color', true, [], ['time_independent']),
+  plugin('source.solid_color', true, [], ['time_independent'],
+    [{ key: 'color', n: 3, hint: 'color', def: [1, 1, 1] }]),
+  // The canonical vector-parameter effect: a float2 position alongside scalars.
+  plugin('warp.transform', false,
+    [{ key: 'rotation', min: -1, max: 1 }], ['time_independent'],
+    [{ key: 'translate', n: 2, min: -1, max: 1, def: [0, 0] }]),
   // Time-VARYING generator (noise evolves) — no time_independent tag.
   plugin('source.noise', true, [{ key: 'scale', def: 0.5 }, { key: 'contrast', min: -1, max: 1 }]),
   plugin('source.video.file', true, []),

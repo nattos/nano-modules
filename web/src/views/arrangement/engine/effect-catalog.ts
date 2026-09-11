@@ -132,6 +132,17 @@ export function isCatalogEffect(type: string): boolean {
   return !!store.enginePlugin(type);
 }
 
+/**
+ * One field's RAW schema def, for the things `CatalogEffect.fields` cannot
+ * answer — it is float-only by design (see the note at the top), so a vector
+ * field has no entry there at all. Used to read a field's width and its
+ * `hint: "color"`, which decide whether a component is called X/Y or R/G/B.
+ */
+export function catalogSchemaField(type: string, field: string):
+    { type?: string; hint?: string; min?: number; max?: number } | undefined {
+  return store.enginePlugin(type)?.schema?.[field];
+}
+
 /** Default field state for an effect (float input field key → default value). */
 export function defaultStateFor(type: string): Record<string, number> {
   const p = store.enginePlugin(type);

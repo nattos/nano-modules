@@ -25,6 +25,7 @@ import type { Selectable, EffectClipboard, EffectsClipboard, AvailableEffect } f
 import type { FieldBinding } from '../../../widgets/field-editor';
 import type { Clip, Device } from '../model/composition';
 import { store } from '../state/store';
+import { laneKey, splitLane } from '../../../widgets/field-anchor-lookup';
 import { buildMultiEditModel, clipInsertIndex, aggregateField, multiSketchId, type MultiEditModel } from '../state/multi-edit';
 import { engineBridge } from '../engine/engine-bridge';
 import { WireConnect } from '../../../widgets/taps-connect';
@@ -689,15 +690,19 @@ export class ArrColumnAdapter implements ColumnAdapter {
       const rest = key.startsWith(this.target.id + '/') ? key.slice(this.target.id.length + 1) : key;
       const parts = rest.split('/'); // [colIdx, chainIdx, ...field]
       const chainIdx = Number(parts[1]);
-      const field = parts.slice(2).join('/');
+      // The anchor path may name ONE LANE of a vector field (`translate#1`);
+      // the automation target is the field plus that lane. This round-trip has
+      // to be symmetric with selectedFieldKey below, or a per-lane curve loses
+      // its highlight the moment it is selected.
+      const { field, lane } = splitLane(parts.slice(2).join('/'));
       const deviceId = this.deviceIdAt(chainIdx);
-      if (deviceId && field) store.selectAutoField(this.target.id, deviceId, field);
+      if (deviceId && field) store.selectAutoField(this.target.id, deviceId, field, lane);
     },
     selectedFieldKey: () => {
       const sel = store.autoField(this.target.id);
       if (!sel) return null;
       const idx = this.target.getDevices()?.findIndex((d) => d.id === sel.deviceId) ?? -1;
-      return idx < 0 ? null : `${this.target.id}/0/${idx}/${sel.field}`;
+      return idx < 0 ? null : `${this.target.id}/0/${idx}/${laneKey(sel.field, sel.lane)}`;
     },
     defineSelectable: (_s: Selectable) => { /* arrangement routes its own inspector */ },
 

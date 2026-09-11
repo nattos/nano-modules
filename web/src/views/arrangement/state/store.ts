@@ -43,7 +43,7 @@ import { makeFakeComposition } from '../model/fake-data';
 import { gridStepBeats } from '../model/beat-grid';
 import type { SnapEdges } from '../model/move-snap';
 import { DocHistory } from './history';
-import { effects, defaultStateFor, catalogEffect } from '../engine/effect-catalog';
+import { effects, defaultStateFor, catalogEffect, catalogSchemaField } from '../engine/effect-catalog';
 import type { CompositeNode } from '../engine/instance-keys';
 import { clipSourceTimeAt, type ClipTimeCtx } from '../engine/clip-time';
 import { type WorkspaceBackend, type WorkspaceEntry, DirectoryBackend, mountViaPicker } from '../workspace/backend';
@@ -620,7 +620,7 @@ export class ArrangementStore {
    * track's selection drives the automation overlay on its timeline + the
    * header's pin affordance. Ephemeral (not persisted/undoable).
    */
-  selectedAutoField: Record<string, { deviceId: string; field: string; label: string }> = {};
+  selectedAutoField: Record<string, { deviceId: string; field: string; lane?: number; label: string }> = {};
   /** Tap-config popup anchored to a wire pip (mock of the sketch tap card). */
   tapPopup: {
     wireId: string;
@@ -2025,7 +2025,7 @@ export class ArrangementStore {
     }
     return undefined;
   }
-  private autoFieldLabel(ownerKey: string, deviceId: string, field: string): string {
+  private autoFieldLabel(ownerKey: string, deviceId: string, field: string, lane?: number): string {
     // Composition-level layer params (the __layer__ sentinel).
     if (deviceId === LAYER_TARGET_ID) {
       return `Layer · ${field === 'bypass' ? 'Bypass' : 'Opacity'}`;
@@ -2035,13 +2035,32 @@ export class ArrangementStore {
     // Engine-reserved per-device keys get friendly names.
     const fieldName = field === '__opacity__' ? 'Opacity'
       : field === '__enable__' ? 'Enable' : field;
-    return `${name} · ${fieldName}`;
+    // The component has to be baked in here: a lane's `label` is frozen at
+    // creation and rendered verbatim, so X and Y would otherwise be two rows
+    // reading identically. Colours name their channels R/G/B/A.
+    const schema = dev ? catalogSchemaField(dev.moduleType, field) : undefined;
+    const labels = schema?.hint === 'color'
+      ? ['R', 'G', 'B', 'A'] : ['X', 'Y', 'Z', 'W'];
+    const suffix = lane == null ? '' : ` ${labels[lane] ?? lane}`;
+    return `${name} · ${fieldName}${suffix}`;
+  }
+
+  /** Does an automation lane target the same thing as a field selection?
+   *  Identity is (device, field, lane) — without the lane, two curves on one
+   *  vector field alias and X silently edits Y. */
+  private static sameAutoTarget(
+      lane: { targetDeviceId: string; targetField: string; targetLane?: number },
+      sel: { deviceId: string; field: string; lane?: number }): boolean {
+    return lane.targetDeviceId === sel.deviceId
+        && lane.targetField === sel.field
+        && (lane.targetLane ?? -1) === (sel.lane ?? -1);
   }
   /** Select (or replace) the owner's automation field. */
-  selectAutoField(ownerKey: string, deviceId: string, field: string) {
+  selectAutoField(ownerKey: string, deviceId: string, field: string, lane?: number) {
     runInAction(() => {
-      const label = this.autoFieldLabel(ownerKey, deviceId, field);
-      this.selectedAutoField = { ...this.selectedAutoField, [ownerKey]: { deviceId, field, label } };
+      const label = this.autoFieldLabel(ownerKey, deviceId, field, lane);
+      this.selectedAutoField = {
+        ...this.selectedAutoField, [ownerKey]: { deviceId, field, lane, label } };
       // Selecting a field dismisses any open wire popup (rail or in-sketch).
       this.selectedWireId = null;
       this.tapPopup = null;
@@ -2056,7 +2075,7 @@ export class ArrangementStore {
       this.selectedAutoField = next;
     });
   }
-  autoField(ownerKey: string): { deviceId: string; field: string; label: string } | null {
+  autoField(ownerKey: string): { deviceId: string; field: string; lane?: number; label: string } | null {
     return this.selectedAutoField[ownerKey] ?? null;
   }
   /** Clear just the chain card/field focus (e.g. clicking the rack background). */
@@ -6401,7 +6420,7 @@ export class ArrangementStore {
     const sel = this.autoField(paths.clip(trackId, clipId));
     if (!sel) return undefined;
     return this.clipIn(trackId, clipId)?.automation
-      .find((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field);
+      .find((l) => ArrangementStore.sameAutoTarget(l, sel));
   }
   /** Ensure a lane for the clip's selected field; '' if nothing is selected. */
   ensureSelectedClipLane(trackId: string, clipId: string): string {
@@ -6412,8 +6431,8 @@ export class ArrangementStore {
     const laneId = uid('auto');
     this.mutate('add automation', (d) => {
       const c = draftClip(d, trackId, clipId);
-      if (!c || c.automation.some((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field)) return;
-      c.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
+      if (!c || c.automation.some((l) => ArrangementStore.sameAutoTarget(l, sel))) return;
+      c.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, targetLane: sel.lane, label: sel.label, points: ArrangementStore.defaultCurve(), expanded: true });
     });
     return laneId;
   }
@@ -6421,7 +6440,7 @@ export class ArrangementStore {
   selectedTrackLane(trackId: string): AutomationLane | undefined {
     const sel = this.autoField(paths.track(trackId));
     if (!sel) return undefined;
-    return this.trackById(trackId)?.automation.find((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field);
+    return this.trackById(trackId)?.automation.find((l) => ArrangementStore.sameAutoTarget(l, sel));
   }
   /** Ensure a lane for the track's selected field; '' if nothing is selected. */
   ensureSelectedTrackLane(trackId: string): string {
@@ -6432,8 +6451,8 @@ export class ArrangementStore {
     const laneId = uid('auto');
     this.mutate('add automation', (d) => {
       const t = d.tracks.find((x) => x.id === trackId);
-      if (!t || t.automation.some((l) => l.targetDeviceId === sel.deviceId && l.targetField === sel.field)) return;
-      t.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: this.trackDefaultCurve(), expanded: true });
+      if (!t || t.automation.some((l) => ArrangementStore.sameAutoTarget(l, sel))) return;
+      t.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, targetLane: sel.lane, label: sel.label, points: this.trackDefaultCurve(), expanded: true });
     });
     return laneId;
   }
@@ -6448,7 +6467,7 @@ export class ArrangementStore {
     const laneId = uid('auto');
     this.mutate('pin automation', (d) => {
       const dt = d.tracks.find((t) => t.id === trackId);
-      if (dt) dt.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, label: sel.label, points: this.trackDefaultCurve(), expanded: true });
+      if (dt) dt.automation.push({ id: laneId, targetDeviceId: sel.deviceId, targetField: sel.field, targetLane: sel.lane, label: sel.label, points: this.trackDefaultCurve(), expanded: true });
     });
     this.clearAutoField(ownerKey);
     return laneId;
@@ -6465,7 +6484,7 @@ export class ArrangementStore {
         if (ti >= 0) {
           const lane = t.automation[ti];
           const sel = this.selectedAutoField[paths.track(t.id)];
-          if (sel && sel.deviceId === lane.targetDeviceId && sel.field === lane.targetField) clearOwner = paths.track(t.id);
+          if (sel && ArrangementStore.sameAutoTarget(lane, sel)) clearOwner = paths.track(t.id);
           t.automation.splice(ti, 1);
           return;
         }
@@ -6475,7 +6494,7 @@ export class ArrangementStore {
             const lane = c.automation[ci];
             const owner = `clip/${t.id}/${c.id}`;
             const sel = this.selectedAutoField[owner];
-            if (sel && sel.deviceId === lane.targetDeviceId && sel.field === lane.targetField) clearOwner = owner;
+            if (sel && ArrangementStore.sameAutoTarget(lane, sel)) clearOwner = owner;
             c.automation.splice(ci, 1);
             return;
           }
