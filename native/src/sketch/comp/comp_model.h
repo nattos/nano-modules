@@ -153,6 +153,9 @@ struct LaneM {
   std::string id;
   std::string targetDeviceId;
   std::string targetField;
+  /** One component of a VECTOR target field (0 = x/r, 1 = y/g, ...). Absent =
+   *  the whole field, i.e. one curve drives every component together. */
+  std::optional<int> targetLane;
   std::vector<EnvPointM> points;
   std::optional<std::string> combine;    // ?? 'replace' at the use site
   std::optional<std::string> magnitude;  // ?? 'unsigned' at the use site
@@ -495,6 +498,8 @@ inline std::vector<LaneM> parseLanes(const nlohmann::json& arr) {
     lane.id = l.value("id", std::string());
     lane.targetDeviceId = l.value("targetDeviceId", std::string());
     lane.targetField = l.value("targetField", std::string());
+    if (l.contains("targetLane") && l["targetLane"].is_number_integer())
+      lane.targetLane = l["targetLane"].get<int>();
     lane.points = parsePoints(l.contains("points") ? l["points"] : nlohmann::json());
     if (l.contains("combine") && l["combine"].is_string())
       lane.combine = l["combine"].get<std::string>();

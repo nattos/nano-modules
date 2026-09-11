@@ -380,6 +380,12 @@ export interface AutomationLane {
   /** Field targeted within the owning sketch (device + field path). */
   targetDeviceId: string;
   targetField: string;
+  /** One component of a VECTOR target field (0 = x/r, 1 = y/g, …), so X and Y
+   *  can carry independent curves. Absent = the whole field: one curve drives
+   *  every component together. Structured rather than a suffix on
+   *  `targetField` for the same reason as `Wire.dest.lane` — everything that
+   *  looks the target up in a schema keeps working untouched. */
+  targetLane?: number;
   label: string;
   points: EnvelopePoint[];
   /** Collapsed in the UI by default. */

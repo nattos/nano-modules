@@ -1307,6 +1307,18 @@ if(APPLE)
 
     # Vec (colour) rails: a float3 crossing a wire, asserted on pixels since a
     # vec rail carries no modulation band to read.
+    # Per-LANE modulation of a vector field (wires + automation), asserted on
+    # pixels because only those prove the components reached the effect.
+    add_executable(test_vec_lane tests/test_vec_lane.cpp)
+    target_link_libraries(test_vec_lane PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation")
+    target_compile_definitions(test_vec_lane PRIVATE
+      CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_compile_options(test_vec_lane PRIVATE -Wno-attributes)
+    catch_discover_tests(test_vec_lane)
+
     add_executable(test_vec_rail tests/test_vec_rail.cpp)
     target_link_libraries(test_vec_rail PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend

@@ -2965,6 +2965,17 @@ void SketchExecutor::applyAutomation(
       if (sit != iit->end() && sit->is_object()) canonState = &(*sit);
     }
   }
+  // Per-field accumulation for VECTOR targets. `base` is what every entry folds
+  // FROM (so several entries on one field stay last-wins per lane, matching the
+  // scalar rule) and `out` is what lands; they are separate because a vector is
+  // written whole, once, after the loop. `wireMask` marks lanes a wire already
+  // owns this frame.
+  struct AutoVecState {
+    std::vector<float> base, out;
+    uint32_t wireMask = 0;
+    uint32_t autoMask = 0;
+  };
+  std::unordered_map<std::string, AutoVecState> autoVecs;
   for (const auto& a : it->second) {
     if (!a.is_object()) continue;
     const std::string field = a.value("field", std::string());
@@ -2980,47 +2991,100 @@ void SketchExecutor::applyAutomation(
     // frame — a rail with an active writer sat pinned at its base, so read
     // wires downstream never moved.
     if (outModulatedScalars && outModulatedScalars->count(field)) continue;
-    // A VECTOR field: this path only knows how to setParamFloat, which would
-    // hand the effect a bare number where patchVec2/3/4 expects an array and
-    // snap the field to the origin — the same failure smoothing and an
-    // un-fitted wire used to cause. Per-lane automation folds it properly; a
-    // whole-field entry with no lane is skipped here rather than made
-    // destructive.
-    if ((outModulatedVecs && outModulatedVecs->count(field)) ||
-        (canonState && canonState->contains(field) && (*canonState)[field].is_array())) {
-      continue;
-    }
-    if (reg && reg->schemaFields.is_object()) {
-      auto f = reg->schemaFields.find(field);
-      if (f != reg->schemaFields.end() && f->is_object()) {
-        const std::string t = f->value("type", std::string());
-        if (t == "float2" || t == "float3" || t == "float4") continue;
-      }
-    }
     const float value = (float)a.value("value", 0.0);
     // Dest field [min,max] from the schema (defaults 0..1) — the range the
     // normalized curve value maps into, exactly as a wire's destMin/destMax.
+    // A vector declares ONE min/max across all its components, so the same
+    // contract covers every lane.
     float dmin = 0.0f, dmax = 1.0f;
+    int width = 1;
+    const json* fieldDef = nullptr;
     if (reg && reg->schemaFields.is_object()) {
       auto f = reg->schemaFields.find(field);
       if (f != reg->schemaFields.end() && f->is_object()) {
+        fieldDef = &(*f);
         dmin = (float)f->value("min", 0.0);
         dmax = (float)f->value("max", 1.0);
+        const std::string t = f->value("type", std::string());
+        if (t == "float2") width = 2;
+        else if (t == "float3") width = 3;
+        else if (t == "float4") width = 4;
       }
     }
+    const tap_mod::Combine combine = parseCombine(a);
+    const bool isSigned = a.value("magnitude", std::string("unsigned")) == "signed";
+
+    if (width > 1) {
+      // VECTOR target. `lane` addresses one component; absent means the curve
+      // drives every component of the field together.
+      AutoVecState& st = autoVecs[field];
+      if (st.base.empty()) {
+        st.base.assign((size_t)width, dmin);
+        const ModulatedVec* mv = nullptr;
+        if (outModulatedVecs) {
+          auto mvit = outModulatedVecs->find(field);
+          if (mvit != outModulatedVecs->end()) mv = &mvit->second;
+        }
+        if (mv && (int)mv->comps.size() == width) {
+          // A wire folded this field already: automation layers onto its
+          // result, and the lanes it drove are off limits (below).
+          st.base = mv->comps;
+          st.wireMask = mv->drivenMask;
+        } else if (canonState && canonState->contains(field) &&
+                   (*canonState)[field].is_array()) {
+          int i = 0;
+          for (const auto& c : (*canonState)[field]) {
+            if (i >= width) break;
+            if (c.is_number()) st.base[(size_t)i] = (float)c.get<double>();
+            ++i;
+          }
+        } else if (fieldDef && fieldDef->contains("default") &&
+                   (*fieldDef)["default"].is_array()) {
+          int i = 0;
+          for (const auto& c : (*fieldDef)["default"]) {
+            if (i >= width) break;
+            if (c.is_number()) st.base[(size_t)i] = (float)c.get<double>();
+            ++i;
+          }
+        }
+        st.out = st.base;
+      }
+      const int lane = a.value("lane", -1);
+      for (int i = 0; i < width; ++i) {
+        if (lane >= 0 && i != lane) continue;
+        // A live wire drove this lane THIS frame — same precedence as the
+        // scalar gate above, just per lane instead of per field.
+        if (st.wireMask & (1u << i)) continue;
+        st.out[(size_t)i] = tap_mod::applyMagnitude(
+            st.base[(size_t)i], value, isSigned, combine, 1.0f, dmin, dmax);
+        st.autoMask |= (1u << i);
+      }
+      continue;
+    }
+
     float canon = dmin;
     bool hasCanon = false;
     if (canonState && canonState->contains(field) && (*canonState)[field].is_number()) {
       canon = (float)(*canonState)[field].get<double>();
       hasCanon = true;
     }
-    const tap_mod::Combine combine = parseCombine(a);
-    const bool isSigned = a.value("magnitude", std::string("unsigned")) == "signed";
     const float combined = tap_mod::applyMagnitude(
         hasCanon ? canon : dmin, value, isSigned, combine, 1.0f, dmin, dmax);
     inst.setParamFloat(field, combined);
     inst.setFieldConnected(field, true, false);
     if (outModulatedScalars) (*outModulatedScalars)[field] = combined;
+  }
+
+  // Vectors are written whole, once — same reason as applyReadTaps' flush.
+  for (auto& kv : autoVecs) {
+    if (kv.second.autoMask == 0) continue;   // every lane was wire-owned
+    inst.setParamArray(kv.first, kv.second.out);
+    inst.setFieldConnected(kv.first, true, false);
+    if (outModulatedVecs) {
+      ModulatedVec& mv = (*outModulatedVecs)[kv.first];
+      mv.comps = kv.second.out;
+      mv.drivenMask |= kv.second.autoMask;
+    }
   }
 }
 

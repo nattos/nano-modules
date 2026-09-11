@@ -709,11 +709,16 @@ inline nlohmann::json automationEntriesForTree(const CompositionM& comp,
       instance = (*t).value("instanceKey", std::string());
       field = (*t).value("field", std::string());
     }
-    entries.push_back({{"instance", std::move(instance)},
-                       {"field", std::move(field)},
-                       {"value", evalLaneAtBeat(lane.points, ctx, beat)},
-                       {"combine", lane.combine.value_or("replace")},
-                       {"magnitude", lane.magnitude.value_or("unsigned")}});
+    nlohmann::json e{{"instance", std::move(instance)},
+                     {"field", std::move(field)},
+                     {"value", evalLaneAtBeat(lane.points, ctx, beat)},
+                     {"combine", lane.combine.value_or("replace")},
+                     {"magnitude", lane.magnitude.value_or("unsigned")}};
+    // One component of a vector target. Omitted entirely for a scalar field or
+    // a whole-field curve, so the executor's `lane` default (-1, meaning every
+    // component) is what an untouched document keeps meaning.
+    if (lane.targetLane) e["lane"] = *lane.targetLane;
+    entries.push_back(std::move(e));
   };
 
   auto pushTrackLanes = [&](const TrackM& track) {
