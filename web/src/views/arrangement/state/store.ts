@@ -4588,13 +4588,23 @@ export class ArrangementStore {
       const srcDev = sk.devices[writer.chainIdx];
       const destDev = sk.devices[reader.chainIdx];
       if (!srcDev || !destDev) return;
+      // "The same edge" includes the LANE: without it, wiring Y would silently
+      // replace the wire already on X. (The IDE's connectWire has the twin.)
       sk.wires = (sk.wires ?? []).filter(
-        (w) => !(w.dest.instanceKey === destDev.id && w.dest.field === reader.fieldPath));
+        (w) => !(w.dest.instanceKey === destDev.id && w.dest.field === reader.fieldPath
+                 && (w.dest.lane ?? -1) === (reader.lane ?? -1)));
+      const destType = (reader.schemaDef as { type?: string } | null)?.type;
+      const destIsVec = destType === 'float2' || destType === 'float3' || destType === 'float4';
       sk.wires.push({
         id,
         src: { instanceKey: srcDev.id, field: writer.fieldPath },
-        dest: { instanceKey: destDev.id, field: reader.fieldPath },
-        combine: 'add',
+        dest: { instanceKey: destDev.id, field: reader.fieldPath,
+                ...(reader.lane != null ? { lane: reader.lane } : {}) },
+        // A vector dest is a "set this to that" value, and every vec wire drawn
+        // before lanes existed behaved as replace (the executor ignored combine
+        // on that path) — `add` would quietly start adding to the authored
+        // colour. Scalars keep riding on top of their current value.
+        combine: destIsVec ? 'replace' : 'add',
       });
     });
   }

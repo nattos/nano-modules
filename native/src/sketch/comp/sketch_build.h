@@ -29,6 +29,23 @@
 
 namespace comp {
 
+/**
+ * Re-point a wire ENDPOINT at its composite instance key, keeping everything
+ * else the endpoint carries.
+ *
+ * The five rewrite sites below used to build a fresh {instanceKey, field}
+ * object, which silently dropped `lane` — the component of a vector field the
+ * wire drives — so a per-lane clip wire arrived in the executor addressing the
+ * whole field and broadcast across every component. Copying the endpoint and
+ * overwriting one key keeps that (and anything added later) by construction.
+ */
+inline nlohmann::json remapEndpoint(const nlohmann::json& ep,
+                                    std::string instanceKey) {
+  nlohmann::json out = ep.is_object() ? ep : nlohmann::json::object();
+  out["instanceKey"] = std::move(instanceKey);
+  return out;
+}
+
 /** clip-sketch.ts clipInstanceKey — `clip_<clipId>_<suffix>`. */
 inline std::string clipInstanceKey(const std::string& clipId, const std::string& suffix) {
   return "clip_" + clipId + "_" + suffix;
@@ -132,10 +149,8 @@ inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clip
       if (!pushed.count(srcKey) || !pushed.count(destKey)) continue;
       nlohmann::json w2 = w;  // {...w} — spread keeps mod/combine/magnitude/...
       w2["id"] = "xw" + std::to_string(wid++);
-      w2["src"] = {{"instanceKey", transportInstanceKey(clip->id, srcKey)},
-                   {"field", w["src"].value("field", std::string())}};
-      w2["dest"] = {{"instanceKey", transportInstanceKey(clip->id, destKey)},
-                    {"field", w["dest"].value("field", std::string())}};
+      w2["src"] = remapEndpoint(w["src"], transportInstanceKey(clip->id, srcKey));
+      w2["dest"] = remapEndpoint(w["dest"], transportInstanceKey(clip->id, destKey));
       wires.push_back(std::move(w2));
     }
   }
@@ -165,10 +180,8 @@ inline nlohmann::json buildTransportSketch(const std::vector<const ClipM*>& clip
         if (!pushed.count(srcKey) || !pushed.count(destKey)) continue;
         nlohmann::json w2 = w;
         w2["id"] = "xw" + std::to_string(wid++);
-        w2["src"] = {{"instanceKey", trackTransportInstanceKey(track->id, srcKey)},
-                     {"field", w["src"].value("field", std::string())}};
-        w2["dest"] = {{"instanceKey", trackTransportInstanceKey(track->id, destKey)},
-                      {"field", w["dest"].value("field", std::string())}};
+        w2["src"] = remapEndpoint(w["src"], trackTransportInstanceKey(track->id, srcKey));
+        w2["dest"] = remapEndpoint(w["dest"], trackTransportInstanceKey(track->id, destKey));
         wires.push_back(std::move(w2));
       }
     }
@@ -364,10 +377,8 @@ struct Builder {
       if (!tpushed.count(srcKey) || !tpushed.count(destKey)) continue;
       nlohmann::json w2 = w;  // {...w} — spread keeps mod/combine/magnitude/...
       w2["id"] = "tw" + std::to_string(wid++);
-      w2["src"] = {{"instanceKey", trackInstanceKey(track->id, srcKey)},
-                   {"field", w["src"].value("field", std::string())}};
-      w2["dest"] = {{"instanceKey", trackInstanceKey(track->id, destKey)},
-                    {"field", w["dest"].value("field", std::string())}};
+      w2["src"] = remapEndpoint(w["src"], trackInstanceKey(track->id, srcKey));
+      w2["dest"] = remapEndpoint(w["dest"], trackInstanceKey(track->id, destKey));
       wires.push_back(std::move(w2));
     }
     return last;
@@ -400,8 +411,7 @@ struct Builder {
       if (!tpushed.count(srcKey)) continue;
       nlohmann::json w2 = w;
       w2["id"] = "tw" + std::to_string(wid++);
-      w2["src"] = {{"instanceKey", trackInstanceKey(owner->id, srcKey)},
-                   {"field", w["src"].value("field", std::string())}};
+      w2["src"] = remapEndpoint(w["src"], trackInstanceKey(owner->id, srcKey));
       w2["dest"] = {{"instanceKey", layerKey}, {"field", layerField}};
       wires.push_back(std::move(w2));
     }
@@ -535,10 +545,8 @@ struct Builder {
             if (!fpushed.count(srcKey) || !fpushed.count(destKey)) continue;
             nlohmann::json w2 = w;
             w2["id"] = "fw" + std::to_string(wid++);
-            w2["src"] = {{"instanceKey", clipInstanceKey(fc.id, srcKey)},
-                         {"field", w["src"].value("field", std::string())}};
-            w2["dest"] = {{"instanceKey", clipInstanceKey(fc.id, destKey)},
-                          {"field", w["dest"].value("field", std::string())}};
+            w2["src"] = remapEndpoint(w["src"], clipInstanceKey(fc.id, srcKey));
+            w2["dest"] = remapEndpoint(w["dest"], clipInstanceKey(fc.id, destKey));
             wires.push_back(std::move(w2));
           }
           const std::string x = trackInstanceKey(node.track->id, "xfade");
@@ -632,12 +640,12 @@ struct Builder {
       }
       nlohmann::json w2 = w;
       w2["id"] = "cw" + std::to_string(wid++);
-      w2["src"] = {{"instanceKey", clipInstanceKey(clip.id, srcKey)},
-                   {"field", w["src"].value("field", std::string())}};
+      w2["src"] = remapEndpoint(w["src"], clipInstanceKey(clip.id, srcKey));
+      // The LAYER target is the composite's own opacity — a scalar, and a
+      // different field name — so it is rebuilt rather than re-pointed.
       w2["dest"] = destIsLayer
           ? nlohmann::json{{"instanceKey", layerKey}, {"field", layerField}}
-          : nlohmann::json{{"instanceKey", clipInstanceKey(clip.id, destKey)},
-                           {"field", w["dest"].value("field", std::string())}};
+          : remapEndpoint(w["dest"], clipInstanceKey(clip.id, destKey));
       wires.push_back(std::move(w2));
     }
 
