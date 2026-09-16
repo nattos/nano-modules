@@ -6,6 +6,10 @@
  * device hit zones, drawn in their own colour), and the live rubber band for
  * an in-flight gesture whose SOURCE is a device control.
  *
+ * The paths use lit's `svg` tag, not `html`: a nested template is parsed on
+ * its own, so an `html` <path> would land in the HTML namespace and never
+ * render, however correct its `d` looked in the DOM.
+ *
  * Purely visual (pointer-events: none): wire management (mod, combine,
  * removal) lives in the dest field's inspector like any other wire, and the
  * editor's own <taps-overlay> ignores midi:-sourced wires, so nothing draws
@@ -13,7 +17,7 @@
  * Lit only reconciles the path list. Pattern: arrangement's arr-overlay.
  */
 
-import { html, css, nothing } from 'lit';
+import { html, css, nothing, svg } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { MobxLitElement } from '../../mobx-lit-element';
 import { appState } from '../../state/app-state';
@@ -169,10 +173,10 @@ export class DeviceWireOverlay extends MobxLitElement {
     return html`
       <svg>
         ${this.wires().map(w => w.destAnchorKey
-          ? html`<path class="alias" data-anchor-key=${w.anchorKey}
-                   data-dest-anchor-key=${w.destAnchorKey} d=""></path>`
-          : html`<path class="wire" data-anchor-key=${w.anchorKey}
-                   data-dest-key=${w.destKey!} d=""></path>`)}
+          ? svg`<path class="alias" data-anchor-key=${w.anchorKey}
+                  data-dest-anchor-key=${w.destAnchorKey} d=""></path>`
+          : svg`<path class="wire" data-anchor-key=${w.anchorKey}
+                  data-dest-key=${w.destKey!} d=""></path>`)}
         <path class="connect-line" d=""></path>
       </svg>
     `;
