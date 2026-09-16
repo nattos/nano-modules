@@ -13,6 +13,13 @@
 // BarrelRuntime also persists it to a sidecar for headless restarts). Web sim
 // overrides ride /global/midi_sim while an editor is connected.
 //
+// Control ALIASES (device→device wires — see midi_alias.h) fold into the same
+// table: BarrelRuntime collects them from every loaded plugin's sketch and
+// pushes the union here, and the merged table then reports each alias group's
+// most recently written member for every endpoint in it. Doing it HERE rather
+// than in the executor is what makes an alias move the other device's state
+// too, not just the wire values a sketch reads.
+//
 // v1 is parse-only (no LED output back to the hardware from native).
 
 #pragma once
@@ -20,8 +27,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "midi/midi_alias.h"
 
 namespace nano_midi {
 
@@ -41,8 +51,13 @@ class MidiHost {
   /// Replace the web's simulation overrides: {"<instanceId>": {endpoint: v}}.
   void setSimOverrides(const nlohmann::json& table);
 
+  /// Replace the control-alias edge set (the union over every loaded sketch's
+  /// device→device wires). Bumps the version only when the set really
+  /// changes, so a static composition costs one string compare.
+  void setAliases(const std::vector<AliasEdge>& edges);
+
   /// Monotonic version of the merged value table — bumps on any hardware
-  /// value, sim override, library rematch, or bank change.
+  /// value, sim override, alias change, library rematch, or bank change.
   uint64_t version() const;
 
   /// The merged external-scalar table (setExternalScalars shape).

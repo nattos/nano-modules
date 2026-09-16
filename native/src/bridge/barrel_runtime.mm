@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -239,6 +240,11 @@ struct BarrelRuntime::Impl {
     bool haveLastModulation = false;
     // Host-elapsed time of the last preview-capture frame, for rate limiting.
     double lastPreviewElapsed = -1e9;
+    // Control aliases (device→device wires) from THIS instance's sketch,
+    // re-collected whenever the sketch is refetched. The runtime pushes the
+    // union across instances to the MidiHost — an alias is device-level, so
+    // it holds for the whole composition no matter which sketch stores it.
+    std::vector<nano_midi::AliasEdge> aliasEdges;
     // Last-applied MidiHost table version — setExternalScalars only re-runs
     // when a device value / sim override / library rematch actually changed.
     uint64_t lastMidiVersion = 0;
@@ -250,6 +256,8 @@ struct BarrelRuntime::Impl {
   std::unordered_map<std::string, PerExecutor> executors;
 
   // --- MIDI library/sim sync (render thread, under render_mu) ---
+  /// Last alias edge union handed to the MidiHost, as its comparison key.
+  std::string lastAliasKey;
   std::string lastMidiDevicesJson;
   std::string lastMidiSimJson;
   std::chrono::steady_clock::time_point lastMidiLibPoll{};
@@ -258,6 +266,37 @@ struct BarrelRuntime::Impl {
   // --- Library-path sync (same shape as the MIDI library) ---
   std::string lastLibraryPathsJson;
   std::chrono::steady_clock::time_point lastLibraryPathsPoll{};
+
+  /// Push the UNION of every loaded instance's control aliases to the shared
+  /// MidiHost. An alias is device-level (it makes two physical controls one),
+  /// so it applies composition-wide whichever sketch happens to store it —
+  /// and a barrel running headless in Resolume must honour it with no editor
+  /// connected, which is why this is derived from the sketches rather than
+  /// mirrored over the bridge. Deduped by key; the host bumps nothing when
+  /// the set is unchanged.
+  void pushMidiAliases() {
+    // Keyed + sorted, NOT in `executors` order: that map is unordered, and a
+    // union whose order drifted between frames would bump the host's version
+    // every frame and re-push the whole scalar table with it.
+    std::map<std::string, nano_midi::AliasEdge> byKey;
+    for (const auto& [_, entry] : executors) {
+      for (const auto& e : entry.aliasEdges) {
+        byKey.emplace(nano_midi::aliasEndpointKey(e.a) + '\2' +
+                      nano_midi::aliasEndpointKey(e.b), e);
+      }
+    }
+    std::string key;
+    std::vector<nano_midi::AliasEdge> all;
+    all.reserve(byKey.size());
+    for (auto& [k, edge] : byKey) {
+      key += k;
+      key += '\3';
+      all.push_back(edge);
+    }
+    if (key == lastAliasKey) return;
+    lastAliasKey = std::move(key);
+    nano_midi::MidiHost::instance().setAliases(all);
+  }
 
   static std::string supportDir() {
     const char* home = getenv("HOME");
@@ -1002,6 +1041,8 @@ void BarrelRuntime::destroyExecutor(const std::string& key) {
   // captures value types + the shared backend's scratch pool, so it stays valid.
   if (impl_->rt) impl_->rt->destroyInstancesWithKeyPrefix(key + "/");
   impl_->executors.erase(it);
+  // Its aliases leave the composition with it.
+  impl_->pushMidiAliases();
   BRT_LOG("executor destroyed key=%s (now %zu)", key.c_str(), impl_->executors.size());
 }
 
@@ -1041,6 +1082,9 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
     auto parsed = nlohmann::json::parse(server.get_at(base + "/sketch"), nullptr, false);
     if (!parsed.is_discarded()) { pe.sketch = std::move(parsed); pe.haveSketch = true; }
     impl_->refreshPreviewRequests(pe, server.get_at(base + "/preview_requests"));
+    // Control aliases travel in the document, so they re-derive with it.
+    pe.aliasEdges = nano_midi::collectAliasEdges(pe.sketch);
+    impl_->pushMidiAliases();
   }
   if (!pe.haveSketch || !in_tex || !out_tex) return false;
 

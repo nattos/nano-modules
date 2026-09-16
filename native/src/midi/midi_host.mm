@@ -67,6 +67,16 @@ struct MidiHost::Impl {
 
   /// instanceId → endpoint → hardware value. Survives disconnects.
   std::unordered_map<std::string, std::unordered_map<std::string, float>> hardware;
+  /// Write sequence per hardware endpoint, and per sim override — the alias
+  /// tie-break (last touched wins). Same counter for both layers.
+  std::unordered_map<std::string, std::unordered_map<std::string, uint64_t>> hardwareSeq;
+  std::unordered_map<std::string, std::unordered_map<std::string, uint64_t>> simSeq;
+  uint64_t writeSeq = 0;
+
+  /// Control-alias groups (undirected components over the pushed edges) plus
+  /// the serialized edge set they came from, for change detection.
+  std::vector<std::vector<AliasEndpoint>> aliasGroupList;
+  std::string aliasKey;
 
   void bump() { ++version; }
 
@@ -157,8 +167,10 @@ struct MidiHost::Impl {
       return it != table.end() ? it->second : 0.0f;
     };
     bool changed = false;
+    auto& seqTable = hardwareSeq[conn->instanceId];
     const auto emit = [&](const std::string& ep, float v) {
       table[ep] = v;
+      seqTable[ep] = ++writeSeq;
       changed = true;
     };
 
@@ -182,20 +194,39 @@ struct MidiHost::Impl {
   }
 
   nlohmann::json buildExternalScalars() {
-    // hardware ⊕ sim: the web's on-screen simulation overrides whatever the
-    // hardware last reported, per endpoint.
-    nlohmann::json out = nlohmann::json::object();
+    // One merged entry per endpoint, carrying the write sequence the alias
+    // fold needs. Layered hardware → sim → knownAs fan-out → aliases.
+    struct Val { float v = 0.0f; uint64_t seq = 0; };
+    std::map<std::string, std::map<std::string, Val>> merged;   // "midi:<id>" → ep → Val
+
     for (const auto& [instanceId, table] : hardware) {
       if (table.empty()) continue;
-      auto& entry = out["midi:" + instanceId];
-      for (const auto& [ep, v] : table) entry[ep] = v;
+      auto& entry = merged["midi:" + instanceId];
+      const auto si = hardwareSeq.find(instanceId);
+      for (const auto& [ep, v] : table) {
+        uint64_t seq = 0;
+        if (si != hardwareSeq.end()) {
+          auto it = si->second.find(ep);
+          if (it != si->second.end()) seq = it->second;
+        }
+        entry[ep] = Val{v, seq};
+      }
     }
+    // hardware ⊕ sim: the web's on-screen simulation overrides whatever the
+    // hardware last reported, per endpoint.
     if (simOverrides.is_object()) {
       for (const auto& [instanceId, table] : simOverrides.items()) {
         if (!table.is_object()) continue;
-        auto& entry = out["midi:" + instanceId];
+        auto& entry = merged["midi:" + instanceId];
+        const auto si = simSeq.find(instanceId);
         for (const auto& [ep, v] : table.items()) {
-          if (v.is_number()) entry[ep] = v.get<float>();
+          if (!v.is_number()) continue;
+          uint64_t seq = 0;
+          if (si != simSeq.end()) {
+            auto it = si->second.find(ep);
+            if (it != si->second.end()) seq = it->second;
+          }
+          entry[ep] = Val{v.get<float>(), seq};
         }
       }
     }
@@ -203,19 +234,45 @@ struct MidiHost::Impl {
     // (a ghost adopted from another profile/composition — see the web's
     // DeviceInstance.knownAs). Duplicate the canonical entry under each alias
     // so those rails read the same values. Canonical entries never lose.
+    // Runs BEFORE the control fold so a control alias may name either uuid.
     if (library.is_array()) {
       for (const auto& inst : library) {
         if (!inst.is_object()) continue;
         auto ka = inst.find("knownAs");
         if (ka == inst.end() || !ka->is_array() || ka->empty()) continue;
-        auto src = out.find("midi:" + inst.value("id", std::string()));
-        if (src == out.end()) continue;
+        auto src = merged.find("midi:" + inst.value("id", std::string()));
+        if (src == merged.end()) continue;
         for (const auto& alias : *ka) {
           if (!alias.is_string()) continue;
           const std::string key = "midi:" + alias.get<std::string>();
-          if (out.find(key) == out.end()) out[key] = *src;
+          if (merged.find(key) == merged.end()) merged[key] = src->second;
         }
       }
+    }
+    // Control aliases: every endpoint in a group reads the group's most
+    // recently written member. An endpoint the device itself never reported
+    // is CREATED here — that is what lets a spare controller answer for the
+    // desk the moment it is wired, without having been touched.
+    for (const auto& group : aliasGroupList) {
+      const auto winner = aliasWinner(group, [&](const AliasEndpoint& ep)
+                                                 -> std::optional<AliasSample> {
+        auto di = merged.find("midi:" + ep.deviceId);
+        if (di == merged.end()) return std::nullopt;
+        auto fi = di->second.find(ep.field);
+        if (fi == di->second.end()) return std::nullopt;
+        return AliasSample{fi->second.v, fi->second.seq};
+      });
+      if (!winner) continue;   // nobody touched this group — stays dormant
+      for (const auto& ep : group) {
+        merged["midi:" + ep.deviceId][ep.field] = Val{winner->value, winner->seq};
+      }
+    }
+
+    nlohmann::json out = nlohmann::json::object();
+    for (const auto& [key, entry] : merged) {
+      if (entry.empty()) continue;
+      auto& dst = out[key];
+      for (const auto& [ep, val] : entry) dst[ep] = val.v;
     }
     return out;
   }
@@ -282,7 +339,45 @@ void MidiHost::setSimOverrides(const nlohmann::json& table) {
   std::lock_guard<std::mutex> lk(impl_->mu);
   nlohmann::json next = table.is_object() ? table : nlohmann::json::object();
   if (next == impl_->simOverrides) return;
+  // Stamp a write sequence on every override that actually MOVED, so an
+  // on-screen drag competes with the hardware in an alias group the same way
+  // a real turn does. Untouched overrides keep their sequence; cleared ones
+  // are pruned so a re-drag counts as a fresh write.
+  for (auto& [instanceId, seqs] : impl_->simSeq) {
+    auto next_inst = next.find(instanceId);
+    for (auto it = seqs.begin(); it != seqs.end();) {
+      const bool gone = next_inst == next.end() || !next_inst->is_object() ||
+                        next_inst->find(it->first) == next_inst->end();
+      it = gone ? seqs.erase(it) : std::next(it);
+    }
+  }
+  for (const auto& [instanceId, entries] : next.items()) {
+    if (!entries.is_object()) continue;
+    const auto prev = impl_->simOverrides.find(instanceId);
+    auto& seqs = impl_->simSeq[instanceId];
+    for (const auto& [ep, v] : entries.items()) {
+      if (!v.is_number()) continue;
+      const bool moved = prev == impl_->simOverrides.end() || !prev->is_object() ||
+                         prev->find(ep) == prev->end() || (*prev)[ep] != v;
+      if (moved) seqs[ep] = ++impl_->writeSeq;
+    }
+  }
   impl_->simOverrides = std::move(next);
+  impl_->bump();
+}
+
+void MidiHost::setAliases(const std::vector<AliasEdge>& edges) {
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  std::string key;
+  for (const auto& e : edges) {
+    key += aliasEndpointKey(e.a);
+    key += '\2';
+    key += aliasEndpointKey(e.b);
+    key += '\3';
+  }
+  if (key == impl_->aliasKey) return;
+  impl_->aliasKey = std::move(key);
+  impl_->aliasGroupList = aliasGroups(edges);
   impl_->bump();
 }
 

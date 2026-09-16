@@ -392,6 +392,13 @@ target_compile_definitions(test_mft_driver PRIVATE
   MFT_GOLDENS_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/mft_goldens.json")
 catch_discover_tests(test_mft_driver)
 
+# Control aliases (device→device wires) — lock-step goldens shared with
+# web/src/midi/alias-groups.test.ts.
+add_executable(test_midi_alias tests/test_midi_alias.cpp)
+target_include_directories(test_midi_alias PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_midi_alias PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+catch_discover_tests(test_midi_alias)
+
 add_executable(test_delay_line tests/test_delay_line.cpp)
 target_include_directories(test_delay_line PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_delay_line PRIVATE Catch2::Catch2WithMain)
