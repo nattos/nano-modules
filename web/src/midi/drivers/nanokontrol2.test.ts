@@ -1,13 +1,20 @@
 /**
  * nanoKONTROL2 driver — parse/render behaviour.
  *
- * No shared native goldens yet (there is no C++ twin of this driver), so
- * these are TS-side unit tests rather than a lock-step byte contract. The
- * factory CC map is asserted explicitly: it is the one part of the template
- * that is copied from the manual rather than derived, so it deserves a test
- * that fails loudly if someone "tidies" the numbers.
+ * The byte-level cases live in native/tests/fixtures/nk2_goldens.json, the
+ * LOCK-STEP contract shared with the native C++ driver
+ * (native/src/midi/nanokontrol2_driver.h, exercised by
+ * native/tests/test_nk2_driver.cpp): same MIDI bytes in → same
+ * {controlId, value} out on both platforms. The TS-only cases below cover
+ * template/layout concerns the native driver has no equivalent of.
+ *
+ * The factory CC map is asserted explicitly: it is the one part of the
+ * template that is copied from the manual rather than derived, so it deserves
+ * a test that fails loudly if someone "tidies" the numbers.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ControlEvent, DriverContext, parseControlId } from '../midi-types';
 import {
@@ -31,6 +38,76 @@ class FakeContext implements DriverContext<NanoKontrol2Config> {
 
 const cc = (channel: number, num: number, value: number) =>
   new Uint8Array([0xb0 | channel, num, value]);
+
+// --- Shared native goldens -------------------------------------------------
+
+interface Nk2GoldenCase {
+  name: string;
+  configPatch?: Record<string, Record<string, Record<string, unknown>>>;
+  configTop?: Record<string, unknown>;
+  messages: number[][];
+  expect: { controlId: string; value: number }[];
+}
+interface Nk2RenderCase {
+  name: string;
+  configPatch?: Nk2GoldenCase['configPatch'];
+  configTop?: Nk2GoldenCase['configTop'];
+  values: Record<string, number>;
+  expect: number[][];
+  repeatExpect: number[][];
+}
+
+const GOLDENS: { parse: Nk2GoldenCase[]; render: Nk2RenderCase[] } = JSON.parse(readFileSync(
+  fileURLToPath(new URL('../../../../native/tests/fixtures/nk2_goldens.json', import.meta.url)),
+  'utf8'));
+
+/** Sparse fixture patch over the ARRAY sections, plus top-level scalars —
+ *  same application as the C++ test. */
+function applyPatches(
+  config: NanoKontrol2Config,
+  patch?: Nk2GoldenCase['configPatch'],
+  top?: Nk2GoldenCase['configTop'],
+) {
+  const asRec = config as unknown as Record<string, Record<string, object>>;
+  for (const [section, entries] of Object.entries(patch ?? {})) {
+    for (const [idx, fields] of Object.entries(entries)) {
+      Object.assign(asRec[section][idx], fields);
+    }
+  }
+  for (const [k, v] of Object.entries(top ?? {})) {
+    (config as unknown as Record<string, unknown>)[k] = v;
+  }
+}
+
+describe('NanoKontrol2Driver parse (shared goldens)', () => {
+  for (const g of GOLDENS.parse) {
+    it(g.name, () => {
+      const ctx = new FakeContext();
+      applyPatches(ctx.config, g.configPatch, g.configTop);
+      const driver = new NanoKontrol2Driver(ctx);
+      for (const m of g.messages) driver.onMidiMessage(new Uint8Array(m), 0);
+      expect(ctx.emitted.map(e => e.controlId)).toEqual(g.expect.map(e => e.controlId));
+      ctx.emitted.forEach((e, i) => expect(e.value).toBeCloseTo(g.expect[i].value, 6));
+    });
+  }
+});
+
+describe('NanoKontrol2Driver renderOutput (shared goldens)', () => {
+  for (const g of GOLDENS.render) {
+    it(g.name, () => {
+      const ctx = new FakeContext();
+      applyPatches(ctx.config, g.configPatch, g.configTop);
+      for (const [k, v] of Object.entries(g.values)) ctx.values.set(k, v);
+      const driver = new NanoKontrol2Driver(ctx);
+      driver.renderOutput(ctx.values);
+      expect(ctx.sent).toEqual(g.expect);
+      // A second pass with unchanged values must be silent (lastSent dedupe).
+      ctx.sent = [];
+      driver.renderOutput(ctx.values);
+      expect(ctx.sent).toEqual(g.repeatExpect);
+    });
+  }
+});
 
 describe('nanoKONTROL2 factory config', () => {
   it('matches the manual\'s stock CC-mode scene', () => {

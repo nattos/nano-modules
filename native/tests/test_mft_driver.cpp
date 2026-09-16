@@ -16,7 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "midi/mft_driver.h"
+#include "midi/driver_registry.h"
 
 using nlohmann::json;
 

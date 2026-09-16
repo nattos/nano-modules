@@ -180,12 +180,4 @@ class MftDriver final : public DeviceDriver {
   std::unordered_map<std::string, int> lastSent_;
 };
 
-inline std::unique_ptr<DeviceDriver> createDriverForTemplate(
-    const std::string& templateId, nlohmann::json config) {
-  if (templateId == kMftTemplateId) {
-    return std::make_unique<MftDriver>(std::move(config));
-  }
-  return nullptr;
-}
-
 }  // namespace nano_midi

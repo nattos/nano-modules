@@ -19,7 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "midi/mft_driver.h"
+#include "midi/driver_registry.h"
 
 namespace nano_midi {
 namespace {

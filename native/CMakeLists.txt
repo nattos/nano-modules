@@ -392,6 +392,15 @@ target_compile_definitions(test_mft_driver PRIVATE
   MFT_GOLDENS_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/mft_goldens.json")
 catch_discover_tests(test_mft_driver)
 
+# nanoKONTROL2 MIDI driver — lock-step goldens shared with
+# web/src/midi/drivers/nanokontrol2.test.ts.
+add_executable(test_nk2_driver tests/test_nk2_driver.cpp)
+target_include_directories(test_nk2_driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_nk2_driver PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+target_compile_definitions(test_nk2_driver PRIVATE
+  NK2_GOLDENS_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/nk2_goldens.json")
+catch_discover_tests(test_nk2_driver)
+
 # Control aliases (device→device wires) — lock-step goldens shared with
 # web/src/midi/alias-groups.test.ts.
 add_executable(test_midi_alias tests/test_midi_alias.cpp)

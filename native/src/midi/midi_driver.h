@@ -47,7 +47,7 @@ class DeviceDriver {
 };
 
 // The template → driver factory `createDriverForTemplate(templateId, config)`
-// is defined (inline, header-only) in mft_driver.h — include that to
-// instantiate drivers; this header only carries the interface.
+// lives in driver_registry.h — include that to instantiate drivers; this
+// header only carries the interface.
 
 }  // namespace nano_midi

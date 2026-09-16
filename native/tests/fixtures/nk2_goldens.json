@@ -1,0 +1,126 @@
+{
+  "comment": "Lock-step nanoKONTROL2 driver goldens — consumed by BOTH web/src/midi/drivers/nanokontrol2.test.ts (vitest) and native/tests/test_nk2_driver.cpp (Catch2). Byte-level parse/render contract: same MIDI bytes in -> same {controlId, value} out (values compared at 1e-6; TS computes in double, C++ in float). `configPatch` entries are sparse edits over the factory default config's ARRAY sections; `configTop` sets top-level scalars (channel, ledMode). Slot bases are the wire contract: faders 0-7, knobs 8-15, solo 16-23, mute 24-31, rec 32-39, transport 40-50 in NK2_TRANSPORT order (trackPrev, trackNext, cycle, markerSet, markerPrev, markerNext, rew, ff, stop, play, rec).",
+  "parse": [
+    {
+      "name": "fader 1 (cc 0) is a continuous 'turn'",
+      "messages": [[176, 0, 100]],
+      "expect": [{ "controlId": "b0/e00/turn", "value": 0.7874015748031497 }]
+    },
+    {
+      "name": "fader 8 (cc 7), full scale",
+      "messages": [[176, 7, 127]],
+      "expect": [{ "controlId": "b0/e07/turn", "value": 1 }]
+    },
+    {
+      "name": "knob 1 (cc 16) lands on the knob slot base, not the fader's",
+      "messages": [[176, 16, 64]],
+      "expect": [{ "controlId": "b0/e08/turn", "value": 0.5039370078740157 }]
+    },
+    {
+      "name": "knob 8 (cc 23), zero",
+      "messages": [[176, 23, 0]],
+      "expect": [{ "controlId": "b0/e15/turn", "value": 0 }]
+    },
+    {
+      "name": "S button 1 (cc 32) presses at the 64 threshold",
+      "messages": [[176, 32, 64]],
+      "expect": [{ "controlId": "b0/e16/press", "value": 1 }]
+    },
+    {
+      "name": "S button 1 releases just below the threshold",
+      "messages": [[176, 32, 63]],
+      "expect": [{ "controlId": "b0/e16/press", "value": 0 }]
+    },
+    {
+      "name": "M button 1 (cc 48)",
+      "messages": [[176, 48, 127]],
+      "expect": [{ "controlId": "b0/e24/press", "value": 1 }]
+    },
+    {
+      "name": "R button 8 (cc 71)",
+      "messages": [[176, 71, 127]],
+      "expect": [{ "controlId": "b0/e39/press", "value": 1 }]
+    },
+    {
+      "name": "transport PLAY (cc 41) is slot 49",
+      "messages": [[176, 41, 127]],
+      "expect": [{ "controlId": "b0/e49/press", "value": 1 }]
+    },
+    {
+      "name": "transport CYCLE (cc 46) is slot 42",
+      "messages": [[176, 46, 127]],
+      "expect": [{ "controlId": "b0/e42/press", "value": 1 }]
+    },
+    {
+      "name": "transport REC (cc 45) is slot 50, the last one",
+      "messages": [[176, 45, 127]],
+      "expect": [{ "controlId": "b0/e50/press", "value": 1 }]
+    },
+    {
+      "name": "toggle firmware (127 then 0 on the same button) reads straight through",
+      "messages": [[176, 41, 127], [176, 41, 0]],
+      "expect": [
+        { "controlId": "b0/e49/press", "value": 1 },
+        { "controlId": "b0/e49/press", "value": 0 }
+      ]
+    },
+    {
+      "name": "an unmapped CC emits nothing",
+      "messages": [[176, 100, 127]],
+      "expect": []
+    },
+    {
+      "name": "a message on another channel is ignored",
+      "messages": [[177, 0, 127]],
+      "expect": []
+    },
+    {
+      "name": "a non-CC status byte is ignored",
+      "messages": [[144, 0, 127]],
+      "expect": []
+    },
+    {
+      "name": "configTop moves the whole surface to another channel",
+      "configTop": { "channel": 3 },
+      "messages": [[179, 0, 127], [176, 0, 127]],
+      "expect": [{ "controlId": "b0/e00/turn", "value": 1 }]
+    },
+    {
+      "name": "a remapped fader CC follows the config",
+      "configPatch": { "faders": { "0": { "cc": 99 } } },
+      "messages": [[176, 99, 127], [176, 0, 127]],
+      "expect": [{ "controlId": "b0/e00/turn", "value": 1 }]
+    },
+    {
+      "name": "a ganged CC fires EVERY matching slot, in slot order",
+      "configPatch": { "knobs": { "0": { "cc": 0 } } },
+      "messages": [[176, 0, 127]],
+      "expect": [
+        { "controlId": "b0/e00/turn", "value": 1 },
+        { "controlId": "b0/e08/turn", "value": 1 }
+      ]
+    }
+  ],
+  "render": [
+    {
+      "name": "internal LED mode says nothing at all",
+      "values": { "b0/e16/press": 1, "b0/e49/press": 1 },
+      "expect": [],
+      "repeatExpect": []
+    },
+    {
+      "name": "external LED mode lights buttons, and skips unchanged bytes",
+      "configTop": { "ledMode": "external" },
+      "values": { "b0/e16/press": 1, "b0/e24/press": 0, "b0/e49/press": 1 },
+      "expect": [[176, 32, 127], [176, 48, 0], [176, 41, 127]],
+      "repeatExpect": []
+    },
+    {
+      "name": "external LED mode never echoes faders or knobs (no indicators)",
+      "configTop": { "ledMode": "external" },
+      "values": { "b0/e00/turn": 1, "b0/e08/turn": 1 },
+      "expect": [],
+      "repeatExpect": []
+    }
+  ]
+}
