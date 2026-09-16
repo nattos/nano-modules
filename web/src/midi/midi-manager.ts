@@ -199,12 +199,20 @@ export class MidiManager {
     return peers;
   }
 
-  /** Invalidate every cross-device merged cache after a write into an alias
-   *  group, then fan the change notification out to the peers. */
+  /**
+   * Fan a write out to the alias peers: drop THEIR merged caches (the value
+   * they resolve to just moved) and notify their listeners.
+   *
+   * Only the peers — an earlier version dropped every table's cache on any
+   * write into a group, which made an unrelated device rebuild its whole
+   * endpoint map (a Twister has 192 of them) on every frame the aliased
+   * control moved.
+   */
   private notifyValues(instanceId: string, fields: Iterable<string>): void {
     const peers = this.aliasPeers(instanceId, fields);
-    if (peers.size > 0) {
-      for (const table of this.tables.values()) table.merged = null;
+    for (const peer of peers) {
+      const table = this.tables.get(peer);
+      if (table) table.merged = null;
     }
     this.onValuesChanged?.(instanceId);
     for (const peer of peers) this.onValuesChanged?.(peer);
