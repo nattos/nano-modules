@@ -90,7 +90,10 @@ export class DeviceSurface extends MobxLitElement {
       border-style: solid;
       background: rgba(255, 140, 0, 0.18);
     }
+    /* Round for a dial; a fader's hit zone follows its tall track instead —
+       a 50% radius on that box is an ellipse that misses both ends. */
     .hit-turn { border-radius: 50%; }
+    .hit-turn.hit-linear { border-radius: 1px; }
     .hit-press {
       border-radius: 50%;
       background: rgba(255, 140, 0, 0.12);
@@ -244,7 +247,7 @@ export class DeviceSurface extends MobxLitElement {
     for (const gesture of def.gestures) {
       switch (gesture) {
         case 'turn':
-          zones.push(mk('turn', 'hit-turn',
+          zones.push(mk('turn', def.kind === 'slider' ? 'hit-turn hit-linear' : 'hit-turn',
             `left:${pct(def.x)}; top:${pct(def.y)}; width:${pct(def.w)}; height:${pct(def.h)};`));
           break;
         case 'press':

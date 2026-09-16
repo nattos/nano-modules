@@ -286,11 +286,22 @@ export class MidiManager {
       if (!match.exact) {
         this.onIdentityStamp?.(match.instance.id, match.identityIndex, input.id);
       }
-      // Pair the same physical unit's output by (name, manufacturer) — Web
-      // MIDI gives in/out distinct ids but identical labeling.
-      const output = outputs.find(o =>
-        !usedOutputs.has(o.id) && (o.name ?? '') === identity.name &&
-        (o.manufacturer ?? '') === identity.manufacturer) ?? null;
+      // Pair the same physical unit's output. Identical in/out labeling is
+      // the common case (the Twister reports 'Midi Fighter Twister' both
+      // ways) but NOT universal: a nanoKONTROL2 presents its input as
+      // 'nanoKONTROL2 SLIDER/KNOB' and its output as 'nanoKONTROL2 CTRL'.
+      // An exact-tuple rule leaves such a unit with output null, so every
+      // LED write becomes a silent no-op with nothing logged — so fall back
+      // to the template's own portMatchers, which already describe what this
+      // model's ports are called. Same manufacturer is required either way,
+      // so a matcher can't reach across to a different vendor's port.
+      const free = outputs.filter(o => !usedOutputs.has(o.id) &&
+        (o.manufacturer ?? '') === identity.manufacturer);
+      const template = getDeviceTemplate(match.instance.templateId);
+      const output = free.find(o => (o.name ?? '') === identity.name)
+        ?? free.find(o => template?.portMatchers.some(re =>
+          re.test(o.name ?? '') || re.test(`${o.manufacturer ?? ''} ${o.name ?? ''}`)))
+        ?? null;
       if (output) usedOutputs.add(output.id);
 
       const existing = this.connected.get(match.instance.id);

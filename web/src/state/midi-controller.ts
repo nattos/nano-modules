@@ -29,6 +29,7 @@ import { loadDeviceLibrary, saveDeviceInstance } from './midi-device-store';
 
 // Driver modules self-register their templates on import. Main thread only.
 import '../midi/drivers/mft';
+import '../midi/drivers/nanokontrol2';
 
 const SAVE_DEBOUNCE_MS = 300;
 
