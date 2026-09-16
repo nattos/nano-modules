@@ -295,6 +295,11 @@ struct BarrelRuntime::Impl {
     }
     if (key == lastAliasKey) return;
     lastAliasKey = std::move(key);
+    // Logged because it is the one line that answers "is this barrel seeing
+    // the alias I just drew?" — and because a stale dylib (dlopen'd once per
+    // process, so a rebuild needs a host restart) is otherwise silent. Fires
+    // only when the edge set actually changes.
+    BRT_LOG("midi aliases: %zu edge(s)", all.size());
     nano_midi::MidiHost::instance().setAliases(all);
   }
 
