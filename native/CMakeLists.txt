@@ -123,8 +123,19 @@ target_include_directories(spv_to_msl PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(spv_to_msl PUBLIC spirv-cross-msl)
 
 # --- FFGL SDK ---
+# Fetched rather than vendored: this used to be `add_subdirectory(modules/ffgl)`
+# against a committed symlink into a checkout outside the repo, so configure
+# failed on every machine but the one that made it. Pinned to the commit that
+# symlink resolved to (b1afaf9, v2.2-34 — the SDK has no tag past v2.2).
+# GIT_SHALLOW is off deliberately: shallow fetch of a bare commit hash is not
+# guaranteed to work, and the repo is small.
 set(FFGL_BUILD_EXAMPLE_PLUGINS OFF CACHE BOOL "" FORCE)
-add_subdirectory(modules/ffgl)
+FetchContent_Declare(
+  ffgl
+  GIT_REPOSITORY https://github.com/resolume/ffgl.git
+  GIT_TAG b1afaf9399ff4ed75ff42611ce99db68a124869b
+)
+FetchContent_MakeAvailable(ffgl)
 
 # --- Canvas Renderer library ---
 add_library(canvas_renderer STATIC
