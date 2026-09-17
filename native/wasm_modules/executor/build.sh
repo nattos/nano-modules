@@ -12,13 +12,11 @@ MODULE_NAME=executor
 SRC_DIR=../../src
 NLOHMANN_DIR=../../build/_deps/nlohmann_json-src/include
 
-if [ ! -f "$NLOHMANN_DIR/nlohmann/json.hpp" ]; then
-  echo "ERROR: nlohmann/json not found at $NLOHMANN_DIR"
-  echo "Run 'cmake -B ../../build -S ../..' first to fetch dependencies."
-  exit 1
-fi
-
 source ../wasm_build_env.sh
+
+# nlohmann/json — see bridge_core/build.sh. CMake normally fetches it; a
+# web-only (or non-macOS) checkout has no native configure step, so fetch here.
+ensure_nlohmann "$(dirname "$NLOHMANN_DIR")"
 
 # The executor has its own C API, not the per-effect module API.
 WASM_COMMON_EXPORTS=()

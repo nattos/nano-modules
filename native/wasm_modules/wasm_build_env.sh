@@ -2,30 +2,128 @@
 # Shared WASM C++ build environment.
 # Source this from module build scripts: source ../wasm_build_env.sh
 
-WASI_LIBC=/opt/homebrew/opt/wasi-libc/share/wasi-sysroot
-WASI_CXX=/opt/homebrew/opt/wasi-runtimes/share/wasi-sysroot
+# ---------------------------------------------------------------------------
+# Toolchain discovery.
+#
+# The defaults reproduce the macOS/Homebrew layout this repo grew up on
+# (wasi-libc + wasi-runtimes as two sysroots, clang++ from brew's llvm). Every
+# piece is overridable by environment, so a wasi-sdk host (Linux, or Windows
+# under Git Bash) needs no edit here:
+#
+#   WASI_SDK_PATH  a wasi-sdk root — supplies BOTH <root>/bin/clang++ and
+#                  <root>/share/wasi-sysroot (one sysroot carrying wasi-libc
+#                  AND libc++). This is the one variable a wasi-sdk host sets.
+#   WASI_SYSROOT   a combined sysroot, when the clang comes from elsewhere.
+#   WASI_LIBC / WASI_CXX   the split pair, for the Homebrew shape.
+#   NANO_CLANG     an explicit wasm-capable clang++; wins over all of the above.
+# ---------------------------------------------------------------------------
 
-# Find WASM-capable clang
-CLANG=""
-for candidate in /opt/homebrew/opt/llvm/bin/clang++ /usr/local/opt/llvm/bin/clang++ clang++; do
-  if [ -x "$candidate" ] 2>/dev/null; then
-    if "$candidate" --print-targets 2>/dev/null | grep -qi wasm; then
-      CLANG="$candidate"; break
+# Echo the first existing executable for a path, retrying with a .exe suffix so
+# Git Bash on Windows finds `clang++.exe` when asked for `clang++`.
+_nano_exe() {
+  local p
+  for p in "$1" "$1.exe"; do
+    if [ -f "$p" ] && [ -x "$p" ]; then echo "$p"; return 0; fi
+  done
+  return 1
+}
+
+if [ -n "${WASI_SDK_PATH:-}" ]; then
+  : "${WASI_SYSROOT:=$WASI_SDK_PATH/share/wasi-sysroot}"
+fi
+if [ -n "${WASI_SYSROOT:-}" ]; then
+  : "${WASI_LIBC:=$WASI_SYSROOT}"
+  : "${WASI_CXX:=$WASI_SYSROOT}"
+fi
+WASI_LIBC="${WASI_LIBC:-/opt/homebrew/opt/wasi-libc/share/wasi-sysroot}"
+WASI_CXX="${WASI_CXX:-/opt/homebrew/opt/wasi-runtimes/share/wasi-sysroot}"
+
+# libc++ moved under a target triple in newer sysroots; accept either shape.
+WASI_CXX_INCLUDE="$WASI_CXX/include/wasm32-wasip1/c++/v1"
+[ -d "$WASI_CXX_INCLUDE" ] || WASI_CXX_INCLUDE="$WASI_CXX/include/c++/v1"
+WASI_CXX_LIB="$WASI_CXX/lib/wasm32-wasip1"
+[ -d "$WASI_CXX_LIB" ] || WASI_CXX_LIB="$WASI_CXX/lib"
+
+# Find a WASM-capable clang++.
+CLANG="${NANO_CLANG:-}"
+if [ -n "$CLANG" ]; then
+  CLANG="$(_nano_exe "$CLANG")" || { echo "ERROR: NANO_CLANG='$NANO_CLANG' is not executable" >&2; exit 1; }
+else
+  for candidate in \
+      ${WASI_SDK_PATH:+"$WASI_SDK_PATH/bin/clang++"} \
+      /opt/homebrew/opt/llvm/bin/clang++ \
+      /usr/local/opt/llvm/bin/clang++ \
+      "$(command -v clang++ 2>/dev/null || true)"; do
+    [ -n "$candidate" ] || continue
+    resolved="$(_nano_exe "$candidate")" || continue
+    if "$resolved" --print-targets 2>/dev/null | grep -qi wasm; then
+      CLANG="$resolved"; break
     fi
-  fi
-done
-if [ -z "$CLANG" ]; then echo "ERROR: No WASM-capable clang++"; exit 1; fi
+  done
+fi
+if [ -z "$CLANG" ]; then
+  echo "ERROR: no WASM-capable clang++ found." >&2
+  echo "  macOS:  brew install llvm lld" >&2
+  echo "  else:   install wasi-sdk, then export WASI_SDK_PATH=/path/to/wasi-sdk" >&2
+  echo "  or set NANO_CLANG=/path/to/clang++ explicitly." >&2
+  exit 1
+fi
+if [ ! -d "$WASI_LIBC/include" ]; then
+  echo "ERROR: wasi sysroot not found at '$WASI_LIBC'." >&2
+  echo "  macOS:  brew install wasi-libc wasi-runtimes" >&2
+  echo "  else:   export WASI_SDK_PATH=/path/to/wasi-sdk (or WASI_SYSROOT=...)" >&2
+  exit 1
+fi
+if [ ! -d "$WASI_CXX_INCLUDE" ]; then
+  echo "ERROR: wasi libc++ headers not found under '$WASI_CXX'." >&2
+  echo "  macOS:  brew install wasi-runtimes" >&2
+  echo "  else:   export WASI_SDK_PATH=/path/to/wasi-sdk (or WASI_CXX=...)" >&2
+  exit 1
+fi
+
+# Python 3, for _emit_spv_header.py / _fragment_strip.py. Windows' python.org
+# installer ships `python.exe` only (no `python3`), so probe both.
+if [ -z "${PYTHON:-}" ]; then
+  for c in python3 python; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info[0]==3 else 1)' 2>/dev/null; then
+      PYTHON="$c"; break
+    fi
+  done
+fi
+if [ -z "${PYTHON:-}" ]; then
+  echo "ERROR: python 3 not found on PATH (needed to bake SPIR-V into C++ headers)." >&2
+  exit 1
+fi
+
+# Portable in-place sed: BSD wants `-i ''`, GNU wants a bare `-i`, so use
+# neither and rewrite through a temp file.
+_nano_sed_i() {
+  local expr="$1" file="$2"
+  sed "$expr" "$file" > "$file.tmp" && mv -f "$file.tmp" "$file"
+}
+
+# Clone a header-only dependency the native CMake build would otherwise
+# FetchContent. `cmake -B native/build` cannot configure off macOS (the project
+# declares OBJCXX), so the two pure-logic bundles that need nlohmann/json fetch
+# it themselves rather than demanding a native configure first.
+ensure_nlohmann() {
+  local dir="$1" tag="${2:-v3.11.3}"
+  if [ -f "$dir/include/nlohmann/json.hpp" ]; then return 0; fi
+  echo "  nlohmann/json missing — cloning $tag into $dir"
+  mkdir -p "$(dirname "$dir")"
+  git clone --depth 1 --branch "$tag" https://github.com/nlohmann/json.git "$dir"
+}
 
 WASM_CXXFLAGS=(
   --target=wasm32-wasip1
   --sysroot="$WASI_LIBC"
-  -isystem "$WASI_CXX/include/wasm32-wasip1/c++/v1"
+  -isystem "$WASI_CXX_INCLUDE"
   -O2 -std=c++17
   -fno-exceptions -fno-rtti
 )
 
 WASM_LDFLAGS=(
-  -L"$WASI_CXX/lib/wasm32-wasip1"
+  -L"$WASI_CXX_LIB"
   -lc++ -lc++abi
   -Wl,--no-entry
   -Wl,--allow-undefined
@@ -136,8 +234,8 @@ compile_shaders_compute_var() {
     -I "$SHADERS_COMMON_DIR" \
     "../${effect}/${src}.hlsl" -o "$TMP_DIR/${effect}_${variant}.spv"
   naga "$TMP_DIR/${effect}_${variant}.spv" "$TMP_DIR/${effect}_${variant}.wgsl"
-  sed -i '' "s/rgba32float,read_write/${fmt},${access}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
-  sed -i '' "s/rgba32float/${fmt}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
+  _nano_sed_i "s/rgba32float,read_write/${fmt},${access}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
+  _nano_sed_i "s/rgba32float/${fmt}/g" "$TMP_DIR/${effect}_${variant}.wgsl"
   naga --metal-version 2.0 "$TMP_DIR/${effect}_${variant}.spv" "$TMP_DIR/${effect}_${variant}.metal"
 }
 
@@ -171,7 +269,7 @@ compile_shaders_compute_spv() {
   dxc -T cs_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
     "../${effect}/${src}.hlsl" -Fo "$TMP_DIR/${effect}_${src}.spv"
-  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+  "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
     "${src}=${TMP_DIR}/${effect}_${src}.spv"
   echo "  ${effect} shaders compiled (SPV)"
@@ -201,7 +299,7 @@ compile_shaders_full_spv() {
   dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
     -I "$SHADERS_COMMON_DIR" \
     "../${effect}/fragment.hlsl" -Fo "$TMP_DIR/${effect}_fragment.spv"
-  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+  "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
     "compute=${TMP_DIR}/${effect}_compute.spv" \
     "vertex=${TMP_DIR}/${effect}_vertex.spv" \
@@ -242,7 +340,7 @@ _emit_spv_header_var() {
   for variant in "$@"; do
     args+=("${variant}=${TMP_DIR}/${effect}_${variant}.spv")
   done
-  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+  "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" "${args[@]}"
 }
 
@@ -298,7 +396,7 @@ EOF
     -I "$SHADERS_COMMON_DIR" \
     "$wrapper" -Fo "$TMP_DIR/${effect}_pixel.spv"
 
-  python3 "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
+  "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_emit_spv_header.py" \
     "$TMP_DIR/${effect}_shaders.h" \
     "compute=${TMP_DIR}/${effect}_compute.spv" \
     "pixel=${TMP_DIR}/${effect}_pixel.spv"
@@ -376,9 +474,9 @@ EOF
   naga --metal-version 2.0 "$TMP_DIR/${effect}_pixel.spv" \
     "$TMP_DIR/${effect}_pixel_raw.metal"
 
-  python3 "$(dirname "${BASH_SOURCE[0]}")/_fragment_strip.py" \
+  "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_fragment_strip.py" \
     wgsl "$TMP_DIR/${effect}_pixel_raw.wgsl" "$TMP_DIR/${effect}_pixel.wgsl"
-  python3 "$(dirname "${BASH_SOURCE[0]}")/_fragment_strip.py" \
+  "$PYTHON" "$(dirname "${BASH_SOURCE[0]}")/_fragment_strip.py" \
     msl  "$TMP_DIR/${effect}_pixel_raw.metal" "$TMP_DIR/${effect}_pixel.metal"
 
   _emit_shader_header "$effect" compute pixel
@@ -398,8 +496,8 @@ compile_shaders_full() {
     # but our textures are bound as rgba8unorm and the shader only writes —
     # downgrade to write-only rgba8unorm.
     if [ "$stage" = "compute" ]; then
-      sed -i '' 's/rgba32float,read_write/rgba8unorm,write/g' "$TMP_DIR/${effect}_${stage}.wgsl"
-      sed -i '' 's/rgba32float/rgba8unorm/g' "$TMP_DIR/${effect}_${stage}.wgsl"
+      _nano_sed_i 's/rgba32float,read_write/rgba8unorm,write/g' "$TMP_DIR/${effect}_${stage}.wgsl"
+      _nano_sed_i 's/rgba32float/rgba8unorm/g' "$TMP_DIR/${effect}_${stage}.wgsl"
     fi
     # MSL 2.0 enables read-write storage textures (and other modern features
     # that naga's MSL output relies on for storage-texture access).

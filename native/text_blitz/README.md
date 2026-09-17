@@ -27,7 +27,7 @@ registers the same fonts, in the same order, into Blitz and the engine, so
 
 ```bash
 cargo build --release                      # libtext_blitz.a (native, ~54 MB)
-bash build_wasm.sh                         # text_blitz.wasm → web/public/wasm/
+bash build_wasm.sh                         # text_blitz.wasm → build/wasm/
 ```
 
 The web engine (`web/src/text-engine.ts`) loads `text_blitz.wasm` best-effort;

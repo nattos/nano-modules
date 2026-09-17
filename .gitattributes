@@ -1,0 +1,6 @@
+# Shell scripts must keep LF line endings. Git for Windows defaults to
+# core.autocrlf=true, and a CRLF-converted build.sh dies in Git Bash with
+# "$'\r': command not found" before it runs a single command — the first thing
+# a Windows checkout of this repo would hit.
+*.sh text eol=lf
+*.py text eol=lf

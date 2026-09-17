@@ -50,14 +50,24 @@ FILES=(
   "$TESTF|noto-serif-kr.ttf|ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf|11f8d5de6f1b79195efba3828aaa2ec95c1178f5ae976fb23c8d53250a9938f3"
 )
 
-sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+# sha256 of a file. Git Bash on Windows may have one tool or the other.
+if command -v shasum >/dev/null 2>&1; then
+  sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+elif command -v sha256sum >/dev/null 2>&1; then
+  sha() { sha256sum "$1" | cut -d' ' -f1; }
+else
+  echo "ERROR: need shasum or sha256sum on PATH" >&2; exit 1
+fi
 
 # Tidy up: drop any CJK left in the served dir by an older fetch (they used to
 # live there and would otherwise still ship in dist).
 rm -f "$SERVED"/noto-sans-??.ttf "$SERVED"/noto-serif-??.ttf
 
+# The CJK set is ~123 MB and is used ONLY by the native (macOS) parity harness.
+# A web-only checkout does not need it — SERVED_ONLY=1 skips the download.
 for entry in "${FILES[@]}"; do
   IFS='|' read -r dir out path want <<<"$entry"
+  if [ "${SERVED_ONLY:-}" = "1" ] && [ "$dir" != "$SERVED" ]; then continue; fi
   dst="$dir/$out"
   if [ -f "$dst" ] && [ "$(sha "$dst")" = "$want" ]; then
     echo "  $out already present (sha ok)"; continue

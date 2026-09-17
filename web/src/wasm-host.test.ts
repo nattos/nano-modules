@@ -6,8 +6,8 @@ import { WasmHost } from './wasm-host';
 // This test exercises nanolooper, which lives in the `nano` bundle. Old
 // standalone nanolooper.wasm is kept as a fallback for environments where
 // only that artefact is available.
-const NANO_BUNDLE_PATH = resolve(__dirname, '../public/wasm/nano.wasm');
-const NANOLOOPER_PATH = resolve(__dirname, '../public/wasm/nanolooper.wasm');
+const NANO_BUNDLE_PATH = resolve(__dirname, '../../build/wasm/nano.wasm');
+const NANOLOOPER_PATH = resolve(__dirname, '../../build/wasm/nanolooper.wasm');
 
 function getWasmBytes(): Buffer | null {
   try { return readFileSync(NANO_BUNDLE_PATH); } catch {}
@@ -721,7 +721,7 @@ describe('schema metadata round-trip (groups / names / help)', () => {
   });
 
   it('core bundle: every effect emits VALID schema JSON; edited effects have groups/labels/help', async () => {
-    const CORE = resolve(__dirname, '../public/wasm/core.wasm');
+    const CORE = resolve(__dirname, '../../build/wasm/core.wasm');
     const ids = [
       'color.tone.auto_level', 'composite.bake_alpha', 'control.barrel_macros', 'filter.blur.gaussian',
       'color.tone.brightness_contrast', 'color.color_space', 'color.temperature', 'warp.crop',
@@ -771,7 +771,7 @@ describe('schema metadata round-trip (groups / names / help)', () => {
   // + the shared host.h emission path exercised by the bundles above.)
 
   it('lights bundle: every effect emits VALID schema JSON with groups + labels + intro help', async () => {
-    const LIGHTS = resolve(__dirname, '../public/wasm/lights.wasm');
+    const LIGHTS = resolve(__dirname, '../../build/wasm/lights.wasm');
     const ids = [
       'source.light.chroma_wave', 'source.light.orthomod', 'warp.dispersion',
       'source.light.plasma_beam_cannon', 'source.light.motion_blobs', 'filter.lights_sim',
@@ -809,7 +809,7 @@ describe('schema metadata round-trip (groups / names / help)', () => {
 // engine e2e's wall-clock rAF pacing can't make.
 // ---------------------------------------------------------------------------
 describe('core mod effects: beat-clock behaviors', () => {
-  const CORE_PATH = resolve(__dirname, '../public/wasm/core.wasm');
+  const CORE_PATH = resolve(__dirname, '../../build/wasm/core.wasm');
 
   async function loadCore(effectId: string) {
     let bytes: Buffer | null = null;

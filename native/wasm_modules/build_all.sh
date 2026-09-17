@@ -9,7 +9,7 @@
 #
 #   cd native/wasm_modules/core && ./build.sh
 #
-# Output goes to ../../build/wasm/, which web/public/wasm symlinks to,
+# Output goes to ../../build/wasm/, which the dev server serves as /wasm/,
 # so the dev server's wasm-hmr plugin will pick the change up live.
 #
 # After the .wasm bundles, this also runs ./build_aot.sh to regenerate the
@@ -54,19 +54,21 @@ elif [ -x "$WAMRC" ] || command -v "$WAMRC" >/dev/null 2>&1; then
   WAMRC="$WAMRC" SKIP_BARREL_DEPLOY=1 ./build_aot.sh
 else
   stale=( ../../build/wasm/*.aot )
-  echo "!!! ====================================================================== !!!"
-  echo "!!! wamrc NOT FOUND at '$WAMRC' — cannot regenerate AOT sidecars.           !!!"
-  echo "!!! The just-rebuilt .wasm bundles now have NO matching AOT, so any stale   !!!"
-  echo "!!! <bundle>-<arch>.aot would shadow them natively (preferredBundlePath).   !!!"
   if [ -e "${stale[0]}" ]; then
+    echo "!!! ====================================================================== !!!"
+    echo "!!! wamrc NOT FOUND at '$WAMRC' — cannot regenerate AOT sidecars.           !!!"
+    echo "!!! The just-rebuilt .wasm bundles now have NO matching AOT, so any stale   !!!"
+    echo "!!! <bundle>-<arch>.aot would shadow them natively (preferredBundlePath).   !!!"
     echo "!!! DELETING stale sidecars so the native loader falls back to the .wasm:   !!!"
     for a in "${stale[@]}"; do echo "!!!   rm $a"; done
     rm -f "${stale[@]}"
+    echo "!!! Install wamrc (native/tools/wamrc/README.md) to restore AOT speed.      !!!"
+    echo "!!! ====================================================================== !!!"
   else
-    echo "!!! (no .aot sidecars present — nothing to delete)                          !!!"
+    # Nothing to shadow the fresh .wasm — the normal state for a web-only
+    # checkout, where AOT is never loaded at all.
+    echo "--- No AOT sidecars and no wamrc — bundles load as portable .wasm ---"
   fi
-  echo "!!! Install wamrc (native/tools/wamrc/README.md) to restore AOT speed.      !!!"
-  echo "!!! ====================================================================== !!!"
 fi
 
 # The barrel loads a COPY of the bundles from NanoBarrel.bundle's Resources, not

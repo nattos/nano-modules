@@ -27,20 +27,49 @@ A WASM-based visual effects module system with GPU compute rendering, sideband r
 
 ## Prerequisites
 
+Nothing under `build/` is committed, so **every checkout compiles the WASM
+bundles before the web app will load**. That needs three things on any platform:
+
+| Tool | Used for |
+|------|----------|
+| **A wasm-capable `clang++` + a WASI sysroot** | C++17 → `wasm32-wasip1` (effect bundles, `executor.wasm`, `bridge_core.wasm`) |
+| **`dxc`** (DirectXShaderCompiler) | HLSL → SPIR-V, baked into `<effect>_shaders.h` |
+| **Python 3** | bakes those SPIR-V blobs into the C++ headers |
+
+Plus, for running the web app:
+
+| Tool | Used for |
+|------|----------|
+| **Node.js 20+** | the Vite dev server and the test suites |
+| **`naga` CLI** | the dev server's `/__naga/wgsl` endpoint — SPIR-V → WGSL at load time |
+| **`bash`** | every build script (Git Bash is fine on Windows) |
+
+`glslc`/`shaderc` and `spirv-tools` are **not** needed — the shader pipeline
+moved to DXC-only SPIR-V output, and `naga` is only invoked by the dev server.
+
 ### macOS (Homebrew)
 
 ```bash
-brew install llvm        # WASM-capable clang++
-brew install lld          # wasm-ld linker
-brew install shaderc      # glslc (HLSL → SPIR-V)
-brew install spirv-tools  # spirv-val, spirv-dis
+brew install llvm lld          # wasm-capable clang++ and wasm-ld
+brew install wasi-libc         # the WASI sysroot (C)
+brew install wasi-runtimes     # libc++ / libc++abi for wasm32-wasip1
+brew install python3 cmake
 ```
 
-### Rust (shader transpiler)
+`dxc` is not in Homebrew — install the [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home),
+which puts `dxc` in `/usr/local/bin`. (Any DirectXShaderCompiler build on PATH works.)
+
+### Windows
+
+The **web testbed** builds and runs on Windows through WebGPU; the native
+barrel/FFGL plugin is macOS-only. See **[WINDOWS.md](WINDOWS.md)** for the full
+walkthrough.
+
+### Rust (shader transpiler, all platforms)
 
 ```bash
 rustup update stable
-cargo install naga-cli    # SPIR-V → WGSL/MSL
+cargo install naga-cli    # SPIR-V → WGSL, spawned by the dev server
 ```
 
 ### Node.js
@@ -52,23 +81,43 @@ cd web && npm install
 ## Quick Start
 
 ```bash
-# Build native C++ (bridge server, tests)
+# 1. Build every WASM bundle (effects, executor, bridge core).
+#    On a web-only checkout: SKIP_AOT=1 skips the native-only AOT sidecars.
+bash native/wasm_modules/build_all.sh
+
+# 2. Fetch the bundled text-engine fonts (once per checkout).
+#    SERVED_ONLY=1 skips the ~123MB of CJK faces only the native parity harness reads.
+bash web/scripts/fetch_fonts.sh
+
+# 3. Run the web app.
+cd web && npm run dev            # then open http://localhost:5173/?playground
+
+# Tests
+cd web && npm test               # Vitest unit tests
+cd web && npm run test:e2e       # Jest + Puppeteer (needs the dev server up)
+```
+
+Native (macOS only — the barrel, the C++ executor, Catch2 tests):
+
+```bash
 cmake -B native/build -S native
 cmake --build native/build
-
-# Build all WASM modules
-for m in native/wasm_modules/*/build.sh; do bash "$m"; done
-
-# Run native tests (141 tests)
-cd native/build && ctest --output-on-failure
-
-# Run web unit tests (61 tests)
-cd web && npm test
-
-# Run web E2E tests (39 tests, requires dev server)
-npm run dev &
-npm run test:e2e
+ctest --test-dir native/build --output-on-failure
 ```
+
+### Toolchain overrides
+
+`native/wasm_modules/wasm_build_env.sh` defaults to the Homebrew layout but
+takes these from the environment, so no host needs to edit it:
+
+| Variable | Meaning |
+|----------|---------|
+| `WASI_SDK_PATH` | a [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases) root — supplies both `bin/clang++` and `share/wasi-sysroot` |
+| `WASI_SYSROOT` | a combined sysroot, when clang comes from elsewhere |
+| `WASI_LIBC` / `WASI_CXX` | the split sysroot pair (the Homebrew shape) |
+| `NANO_CLANG` | an explicit wasm-capable `clang++` |
+| `PYTHON` | an explicit Python 3 |
+| `NANO_BASH` | bash for the dev server's auto-rebuild plugin (Windows) |
 
 ## Host API
 

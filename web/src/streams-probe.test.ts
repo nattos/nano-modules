@@ -12,7 +12,7 @@ import { resolve } from 'node:path';
 import { WasmHost } from './wasm-host';
 import { StreamsRegistry } from './streams-registry';
 
-const TESTONLY = resolve(__dirname, '../public/wasm/testonly.wasm');
+const TESTONLY = resolve(__dirname, '../../build/wasm/testonly.wasm');
 const GOLDEN = resolve(__dirname, '../../native/tests/fixtures/comp/streams-golden.json');
 
 // The fixture doc is unwarped at 120 BPM → 0.5 s/beat.

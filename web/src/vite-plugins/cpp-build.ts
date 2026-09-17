@@ -3,7 +3,7 @@
  *
  * The `.wasm` bundles are compiled from C++ by per-bundle `build.sh` scripts
  * (see `native/wasm_modules/<bundle>/build.sh`). Their output lands in
- * `build/wasm/`, which `web/public/wasm` symlinks to — so the existing
+ * `build/wasm/`, which the dev server serves as `/wasm/` — so the existing
  * `wasm-hmr` plugin already reloads the engine worker whenever a `.wasm`
  * changes. The missing half was *compiling* the C++ in the first place: edit a
  * source, and the served `.wasm` silently goes stale until you remember to run
@@ -24,6 +24,26 @@ import type { Plugin } from 'vite';
 import { resolve, dirname } from 'path';
 import { spawn } from 'child_process';
 import { statSync, existsSync, readdirSync } from 'fs';
+
+/**
+ * The bundle build scripts are bash. macOS/Linux always have it on PATH; on
+ * Windows it comes from Git for Windows, whose `bash.exe` lives in a directory
+ * the installer does NOT add to PATH (only `cmd/`, for `git.exe`). So running
+ * `npm run dev` from PowerShell would fail here while the same command works
+ * from Git Bash. Probe the standard install locations, and let NANO_BASH
+ * override for anything else (WSL, MSYS2, a portable Git).
+ */
+function resolveBash(): string {
+  const fromEnv = process.env.NANO_BASH;
+  if (fromEnv) return fromEnv;
+  if (process.platform !== 'win32') return 'bash';
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+  ];
+  return candidates.find((c) => existsSync(c)) ?? 'bash';
+}
 
 interface CppBundle {
   /** Display name (also the output basename: `<name>.wasm`). */
@@ -89,12 +109,14 @@ export function cppBuildPlugin(): Plugin {
         log.info(`[cpp-build] building ${b.name}.wasm (${reason})…`);
         const t0 = Date.now();
         return new Promise((done) => {
-          const child = spawn('bash', [b.script], { cwd: dirname(b.script) });
+          const child = spawn(resolveBash(), [b.script], { cwd: dirname(b.script) });
           let err = '';
           child.stderr.on('data', (d) => { err += d.toString(); });
           child.on('error', (e) => {
             building.delete(b.name);
-            log.error(`[cpp-build] ${b.name}: could not run build.sh — ${e.message}`);
+            log.error(`[cpp-build] ${b.name}: could not run build.sh with ` +
+                      `'${resolveBash()}' — ${e.message}. Set NANO_BASH to a bash ` +
+                      `executable (Git for Windows ships one) if it is not on PATH.`);
             done();
           });
           child.on('close', (code) => {

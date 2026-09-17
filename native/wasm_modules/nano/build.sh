@@ -21,7 +21,7 @@ dxc -T ps_6_0 -E main -spirv -fspv-target-env=vulkan1.1 \
   ../overlay/fs.hlsl -Fo "$TMP_DIR/overlay_fs.spv"
 # Emit with prefixed symbol names (OVERLAY_VS_SPV / OVERLAY_FS_SPV) so the shared
 # overlay.h references don't collide with per-effect VS_SPV/FS_SPV symbols.
-python3 ../_emit_spv_header.py "$TMP_DIR/overlay_shaders.h" \
+"$PYTHON" ../_emit_spv_header.py "$TMP_DIR/overlay_shaders.h" \
   "overlay_vs=$TMP_DIR/overlay_vs.spv" "overlay_fs=$TMP_DIR/overlay_fs.spv"
 echo "  overlay shaders compiled (SPV: vs + fs)"
 
@@ -113,7 +113,7 @@ _emit_spv_header_var plume march prefill slice_debug gi_inject gi_prop fog compo
 # shared by plume and plume_field — includes it, and both effects' TUs
 # also see their own <effect>_shaders.h, so the symbol sets must not
 # collide.
-python3 ../_emit_spv_header.py "$TMP_DIR/plume_gen_shaders.h" \
+"$PYTHON" ../_emit_spv_header.py "$TMP_DIR/plume_gen_shaders.h" \
   "plume_gen_shell=$TMP_DIR/plume_shell.spv" \
   "plume_gen_bake=$TMP_DIR/plume_bake.spv" \
   "plume_gen_compose=$TMP_DIR/plume_compose.spv"
@@ -123,7 +123,7 @@ python3 ../_emit_spv_header.py "$TMP_DIR/plume_gen_shaders.h" \
 # under a prefixed symbol.
 compile_shaders_compute_var_spv plume_field sim_step
 compile_shaders_compute_var_spv plume_field sim_resolve
-python3 ../_emit_spv_header.py "$TMP_DIR/plume_field_shaders.h" \
+"$PYTHON" ../_emit_spv_header.py "$TMP_DIR/plume_field_shaders.h" \
   "plume_field_prefill=$TMP_DIR/plume_prefill.spv" \
   "plume_field_sim_step=$TMP_DIR/plume_field_sim_step.spv" \
   "plume_field_sim_resolve=$TMP_DIR/plume_field_sim_resolve.spv"
@@ -140,7 +140,7 @@ compile_shaders_compute_var_spv helio_field dust_sim
 compile_shaders_compute_var_spv helio_field dust_accum
 compile_shaders_compute_var_spv helio_field dust_fold
 compile_shaders_compute_var_spv helio_field shell
-python3 ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
+"$PYTHON" ../_emit_spv_header.py "$TMP_DIR/helio_field_shaders.h" \
   "helio_field_prefill=$TMP_DIR/plume_prefill.spv" \
   "helio_field_dynamics=$TMP_DIR/helio_field_dynamics.spv" \
   "helio_field_storm=$TMP_DIR/helio_field_storm.spv" \
@@ -156,7 +156,7 @@ echo "  helio_field shaders compiled (SPV: dynamics + storm + dust + shell + pre
 # added to a passing field. Only the generator is new; passthrough,
 # density accumulate, fold, and clear reuse plume's / helio_field's SPVs.
 compile_shaders_compute_var_spv dust_halo halo_gen
-python3 ../_emit_spv_header.py "$TMP_DIR/dust_halo_shaders.h" \
+"$PYTHON" ../_emit_spv_header.py "$TMP_DIR/dust_halo_shaders.h" \
   "dust_halo_prefill=$TMP_DIR/plume_prefill.spv" \
   "dust_halo_gen=$TMP_DIR/dust_halo_halo_gen.spv" \
   "dust_halo_accum=$TMP_DIR/helio_field_dust_accum.spv" \

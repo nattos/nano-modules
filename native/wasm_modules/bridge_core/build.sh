@@ -13,14 +13,12 @@ NLOHMANN_DIR=../../build/_deps/nlohmann_json-src/include
 # — no need to compile miniz.c into the bundle (CMake links it for native only).
 MINIZ_DIR=../../third_party/miniz
 
-# Verify nlohmann/json headers exist (populated by CMake FetchContent)
-if [ ! -f "$NLOHMANN_DIR/nlohmann/json.hpp" ]; then
-  echo "ERROR: nlohmann/json not found at $NLOHMANN_DIR"
-  echo "Run 'cmake -B ../../build -S ../..' first to fetch dependencies."
-  exit 1
-fi
-
 source ../wasm_build_env.sh
+
+# nlohmann/json — normally populated by the native CMake FetchContent, but a
+# web-only checkout never configures CMake (and off macOS it cannot), so fetch
+# it directly when it isn't there.
+ensure_nlohmann "$(dirname "$NLOHMANN_DIR")"
 
 # Override common exports — bridge_core has its own API, not the module API
 WASM_COMMON_EXPORTS=()

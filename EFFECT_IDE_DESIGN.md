@@ -96,7 +96,7 @@ type WorkerCommand =
 
 ### WASM HMR flow
 
-1. `web/src/vite-plugins/wasm-hmr.ts` is registered in `vite.config.ts`. In `configureServer(server)`, it watches `public/wasm/*.wasm` (chokidar). On change, it sends `server.ws.send({ type: 'custom', event: 'wasm:reload', data: { url: '/wasm/<name>.wasm' } })`.
+1. `web/src/vite-plugins/wasm-hmr.ts` is registered in `vite.config.ts`. In `configureServer(server)`, it watches `build/wasm/*.wasm` (chokidar). On change, it sends `server.ws.send({ type: 'custom', event: 'wasm:reload', data: { url: '/wasm/<name>.wasm' } })`.
 2. `web/src/wasm-hmr-client.ts` (imported by both entry points in dev) registers `import.meta.hot.on('wasm:reload', ...)` and forwards to `engine.reloadWasm(url)`.
 3. The worker's `reloadWasm` handler:
    1. Awaits `frameInFlight === false` (existing flag).
