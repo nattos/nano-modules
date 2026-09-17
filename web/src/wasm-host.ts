@@ -210,9 +210,133 @@ export function stripGpuFields(state: any, schema: Record<string, any>): any {
   return out;
 }
 
+/**
+ * Per-effect-type type-level setup captured after `module_init` ran once in a
+ * pooled WASM instance. Everything here is a pure function of the effect TYPE
+ * (module_init takes no `self`), so a second host for the same type replays it
+ * from this snapshot instead of re-running module_init — which is exactly what
+ * lets many effect instances share ONE `WebAssembly.Instance`.
+ */
+interface EffectTypeInfo {
+  metadata: { id: string; version: string } | null;
+  versionPacked: { major: number; minor: number; patch: number };
+  schemaStr: string;
+  schema: Record<string, any>;
+  capabilities: string[];
+  groups: Record<string, any>;
+  moduleVersion: string;
+  params: ParamDecl[];
+  ioDecls: { index: number; name: string; kind: number; role: number }[];
+  shaderSPV: WasmHost['shaderSPV'];
+  shaderWgslCache: Map<string, string>;
+  evalVisibilityFn: WasmHost['evalVisibilityFn'];
+  onStateReadyIdx: number;
+}
+
+/**
+ * One instantiated `WebAssembly.Module` plus the set of `WasmHost`s sharing it.
+ *
+ * WHY THIS EXISTS: Chrome hard-caps LIVE `WebAssembly.Memory` objects at 100
+ * per RENDERER PROCESS — a count cap, shared between the main thread and every
+ * worker, and completely independent of each memory's declared maximum (a
+ * 64 KB-max module hits the same 100). One `WasmHost` per chain entry therefore
+ * capsized any session with more than ~90 live effect instances: the offline /
+ * playground engine simulates every cached instance at once, so a handful of
+ * sketches exhausted the budget and `WebAssembly.instantiate` started throwing
+ * "Cannot allocate Wasm memory for new instance".
+ *
+ * Effects are class-like (`module_init` per TYPE, `create()` → an opaque `self`
+ * per instance — see module_api.h), so N instances of one effect can live in a
+ * single WASM instance. The pool owns the instance; each `WasmHost` remains the
+ * per-instance object (its own `self`, plugin key, frame state, texture fields,
+ * fusion buffer, ...). The import closures were built once, bound to the pool,
+ * and resolve host state through `cur` — which every entry into WASM sets to
+ * the host making the call.
+ *
+ * Pool identity is the caller-supplied `poolKey` (see `WasmHost.poolKey`), so
+ * widening or narrowing the sharing granularity is a one-line change at the
+ * call site rather than a change here.
+ */
+class WasmPool {
+  instance!: WebAssembly.Instance;
+  memory!: WebAssembly.Memory;
+  /** The host whose state the import closures currently resolve against. */
+  cur: WasmHost;
+  /** Per-effect-type snapshots, filled by the first host to describe each type. */
+  typeInfo = new Map<string, EffectTypeInfo>();
+  /** Live hosts sharing this instance; the pool is unregistered at 0. */
+  refs = 1;
+  /**
+   * Val handles, shared by every host on this instance. Pool-level on purpose:
+   * the `val` import block below resolves the store ONCE, when the module is
+   * instantiated, so a per-host store would stay bound to whichever host
+   * happened to create the pool. Safe to share — a handle only lives for the
+   * duration of one synchronous effect call, and the bridge-core val store it
+   * stands in for is process-global anyway.
+   */
+  valStore = {
+    values: new Map<number, any>(),
+    nextHandle: 1,
+    alloc(v: any): number { const h = this.nextHandle++; this.values.set(h, v); return h; },
+    get(h: number): any { return this.values.get(h); },
+    release(h: number) { this.values.delete(h); },
+  };
+
+  /** Registry key, or null for an unshared (one-host) pool. */
+  key: string | null = null;
+  /** The compiled module this pool instantiated, for registry removal. */
+  compiled: WebAssembly.Module | null = null;
+
+  constructor(owner: WasmHost) { this.cur = owner; }
+}
+
+/**
+ * Shared pools, keyed first by compiled module (weak — a module dropped by the
+ * registry takes its pools with it) then by `poolKey`.
+ */
+const poolRegistry = new WeakMap<WebAssembly.Module, Map<string, WasmPool>>();
+
 export class WasmHost {
   private instance!: WebAssembly.Instance;
   private memory!: WebAssembly.Memory;
+
+  /**
+   * Opt-in WASM-instance sharing. Set BEFORE `load()`: hosts that pass the same
+   * key for the same compiled module share one `WebAssembly.Instance` (and so
+   * one of Chrome's 100 per-process wasm memories) while staying separate
+   * effect instances. Null (the default) gives this host a private instance,
+   * which is what the bundle-warmup / visibility / service-module hosts want.
+   *
+   * The key MUST distinguish anything the type-level setup bakes in — the
+   * effect id (module_init is per type), the sketch working format (translated
+   * WGSL storage decls and the shared compute PSO bake it), and whether the
+   * host has a GPU backend at all (a schema-only host's module_init skips
+   * shader compilation). See `executor-host.ts`'s `poolKeyFor`.
+   */
+  poolKey: string | null = null;
+
+  /**
+   * The instance pool backing this host. Normally created (or joined) by
+   * `load()`; `ensurePool()` covers the hand-wired path some tests use, where
+   * `instance`/`memory` are poked in directly and there is nothing to share.
+   */
+  private pool: WasmPool | null = null;
+
+  /** This host's pool, creating an unshared one if `load()` never ran. */
+  private ensurePool(): WasmPool {
+    if (!this.pool) {
+      this.pool = new WasmPool(this);
+      this.pool.instance = this.instance;
+      this.pool.memory = this.memory;
+    }
+    return this.pool;
+  }
+
+  /** The active effect's `destroy(self)`, resolved in `activateEffect`. */
+  private destroyFn: ((self: number) => void) | null = null;
+
+  /** True once `dispose()` has torn this host's effect instance down. */
+  private disposed = false;
 
   /** Effects registered by the module during nano_module_main. */
   registeredEffects: EffectInfo[] = [];
@@ -257,6 +381,11 @@ export class WasmHost {
 
   // Schema (populated by set_schema)
   schema: Record<string, any> = {};
+
+  // The raw schema JSON as `set_schema` delivered it. Kept so a host joining an
+  // existing WASM pool can re-run `bridgeCore.registerWithSchema` for its own
+  // plugin key without re-running the effect's `module_init`.
+  private lastSchemaStr = '';
 
   // Declarative capability tags from the schema's top-level `capabilities`
   // array (e.g. ['modulation_source', 'modulation_source_single']). Classifies
@@ -307,14 +436,10 @@ export class WasmHost {
   // Pending patches for the current on_state_patched call
   pendingPatches: PatchOp[] = [];
 
-  // Val handle store (shared between val imports and state.get_patch)
-  _valStore = {
-    values: new Map<number, any>(),
-    nextHandle: 1,
-    alloc(v: any): number { const h = this.nextHandle++; this.values.set(h, v); return h; },
-    get(h: number): any { return this.values.get(h); },
-    release(h: number) { this.values.delete(h); },
-  };
+  // Val handle store (shared between val imports and state.get_patch). Lives on
+  // the pool so every host on one WASM instance allocates and reads handles from
+  // the same table — see WasmPool.valStore.
+  get _valStore() { return this.ensurePool().valStore; }
 
   // Named texture fields (populated by sketch executor from schema)
   textureFields: Map<string, number> = new Map();
@@ -506,8 +631,42 @@ export class WasmHost {
     this.effectBuilders.clear();
     const bc = this.bridgeCore;
 
+    // Join an existing pool for this (module, poolKey) if one is live: adopt its
+    // already-instantiated WASM instance instead of burning another of Chrome's
+    // 100 per-process wasm memories. `nano_module_main` already ran there, so the
+    // effect registry carries over wholesale; per-TYPE setup replays from the
+    // pool's snapshots in `describeEffect`, and `create()` in `activateEffect`
+    // still mints a fresh `self` — this host is a separate effect instance.
+    const byKey = poolRegistry.get(compiled);
+    const shared = this.poolKey !== null ? byKey?.get(this.poolKey) : undefined;
+    if (shared) {
+      this.pool = shared;
+      shared.refs++;
+      this.instance = shared.instance;
+      this.memory = shared.memory;
+      this.abiVersion = shared.cur.abiVersion;
+      // Shared by reference: `registeredEffects` is immutable after the owning
+      // host's `nano_module_main`, and `_fns` holds function-table indices that
+      // are identical for every host of the same instance.
+      this.registeredEffects = shared.cur.registeredEffects;
+      return;
+    }
+
+    // First host for this key — instantiate, and own the pool. `pool` (not
+    // `this`) is what every import closure below resolves host state through,
+    // so a later-joining host can redirect them by setting `pool.cur`.
+    const pool = new WasmPool(this);
+    this.pool = pool;
+    if (this.poolKey !== null) {
+      pool.key = this.poolKey;
+      pool.compiled = compiled;
+      const map = byKey ?? new Map<string, WasmPool>();
+      if (!byKey) poolRegistry.set(compiled, map);
+      map.set(this.poolKey, pool);
+    }
+
     const importObject: WebAssembly.Imports = {
-      wasi_snapshot_preview1: createWasiShim(() => this.memory),
+      wasi_snapshot_preview1: createWasiShim(() => pool.memory),
       env: {
         resolume_get_param: (id: bigint) =>
           bc ? bc.getParam(id) : 0,
@@ -516,10 +675,10 @@ export class WasmHost {
             bc.setParam(id, value);
             bc.queueParamWrite(id, value);
           }
-          if (this.onResolumeParamSet) this.onResolumeParamSet(id, value);
+          if (pool.cur.onResolumeParamSet) pool.cur.onResolumeParamSet(id, value);
         },
         log: (ptr: number, len: number) => {
-          console.log('[wasm]', this.readString(ptr, len));
+          console.log('[wasm]', pool.cur.readString(ptr, len));
         },
         fmod: (a: number, b: number) => a - Math.trunc(a / b) * b,
         fmodf: (a: number, b: number) => a - Math.trunc(a / b) * b,
@@ -527,26 +686,26 @@ export class WasmHost {
         floor: (a: number) => Math.floor(a),
         fabs: (a: number) => Math.abs(a),
         strlen: (ptr: number) => {
-          const mem = new Uint8Array(this.memory.buffer);
+          const mem = new Uint8Array(pool.cur.memory.buffer);
           let len = 0;
           while (mem[ptr + len] !== 0) len++;
           return len;
         },
       },
       host: {
-        get_time: () => this.frameState.elapsedTime,
-        get_delta_time: () => this.frameState.deltaTime,
-        get_bar_phase: () => this.frameState.barPhase,
-        get_bpm: () => this.frameState.bpm,
-        get_param: (index: number) => this.frameState.params[index] ?? 0,
-        get_viewport_w: () => this.frameState.viewportW,
-        get_viewport_h: () => this.frameState.viewportH,
-        get_reference_h: () => this.frameState.referenceH,
+        get_time: () => pool.cur.frameState.elapsedTime,
+        get_delta_time: () => pool.cur.frameState.deltaTime,
+        get_bar_phase: () => pool.cur.frameState.barPhase,
+        get_bpm: () => pool.cur.frameState.bpm,
+        get_param: (index: number) => pool.cur.frameState.params[index] ?? 0,
+        get_viewport_w: () => pool.cur.frameState.viewportW,
+        get_viewport_h: () => pool.cur.frameState.viewportH,
+        get_reference_h: () => pool.cur.frameState.referenceH,
         log: (ptr: number, len: number) => {
-          console.log('[wasm]', this.readString(ptr, len));
+          console.log('[wasm]', pool.cur.readString(ptr, len));
         },
         trigger_audio: (channel: number) => {
-          this.onAudioTrigger(channel);
+          pool.cur.onAudioTrigger(channel);
         },
       },
       resolume: {
@@ -557,24 +716,24 @@ export class WasmHost {
             bc.setParam(id, value);
             bc.queueParamWrite(id, value);
           }
-          if (this.onResolumeParamSet) this.onResolumeParamSet(id, value);
+          if (pool.cur.onResolumeParamSet) pool.cur.onResolumeParamSet(id, value);
         },
         trigger_clip: (_clipId: bigint, _on: number) => {},
         subscribe_param: (_id: bigint) => {},
         subscribe_query: (queryPtr: number, queryLen: number) => {
-          const query = this.readString(queryPtr, queryLen);
-          this.subscribeQueries.push(query);
+          const query = pool.cur.readString(queryPtr, queryLen);
+          pool.cur.subscribeQueries.push(query);
         },
         get_param_path: (paramId: bigint, bufPtr: number, bufLen: number): number => {
           const path = bc ? bc.getParamPath(paramId) : `param/${paramId}`;
-          return this.writeString(bufPtr, bufLen, path);
+          return pool.cur.writeString(bufPtr, bufLen, path);
         },
         get_clip_count: () => fakeResolume.getClipCount(),
         get_clip_id: (index: number) => fakeResolume.getClipId(index),
         get_clip_channel: (index: number) => fakeResolume.getClipChannel(index),
         get_clip_name: (index: number, bufPtr: number, bufLen: number) => {
           const name = fakeResolume.getClipName(index);
-          return this.writeString(bufPtr, bufLen, name);
+          return pool.cur.writeString(bufPtr, bufLen, name);
         },
         get_clip_connected: (index: number) => fakeResolume.getClipConnected(index),
         get_bpm: () => fakeResolume.getBpm(),
@@ -582,37 +741,37 @@ export class WasmHost {
       },
       // Seekable-streams surface — the web twin of the native "streams" host
       // module (host_functions.cpp; effect header streams.h). Backed by
-      // this.streams (StreamsRegistry) or, when null, the session-clock-only
+      // pool.cur.streams (StreamsRegistry) or, when null, the session-clock-only
       // fallback. All per-frame answers are flat scalars or fixed-layout
       // copies — never JSON.
       streams: {
         parent: (): bigint =>
-          this.streams ? this.streams.parentOf(this.instanceKey) : 1n,
+          pool.cur.streams ? pool.cur.streams.parentOf(pool.cur.instanceKey) : 1n,
         content: (): bigint =>
-          this.streams ? this.streams.contentOf(this.instanceKey) : 0n,
-        timeline: (): bigint => (this.streams ? 2n : 0n),
-        count: (): number => this.streams?.enumCount ?? 1,
+          pool.cur.streams ? pool.cur.streams.contentOf(pool.cur.instanceKey) : 0n,
+        timeline: (): bigint => (pool.cur.streams ? 2n : 0n),
+        count: (): number => pool.cur.streams?.enumCount ?? 1,
         at: (i: number): bigint => {
-          if (!this.streams) return i === 0 ? 1n : 0n;
-          if (i < 0 || i >= this.streams.enumCount) return 0n;
-          return this.streams.streams[i].handle;
+          if (!pool.cur.streams) return i === 0 ? 1n : 0n;
+          if (i < 0 || i >= pool.cur.streams.enumCount) return 0n;
+          return pool.cur.streams.streams[i].handle;
         },
         name: (h: bigint, bufPtr: number, bufLen: number): number => {
-          const s = this.streams?.find(h);
+          const s = pool.cur.streams?.find(h);
           if (!s) return 0;
           const bytes = new TextEncoder().encode(s.name);
           if (bufLen > 0 && bytes.length > 0) {
             const copy = Math.min(bytes.length, bufLen);
-            new Uint8Array(this.memory.buffer, bufPtr, copy).set(bytes.subarray(0, copy));
+            new Uint8Array(pool.cur.memory.buffer, bufPtr, copy).set(bytes.subarray(0, copy));
           }
           return bytes.length; // full length (grow-and-retry)
         },
         describe: (h: bigint, descPtr: number): number => {
-          const dv = new DataView(this.memory.buffer);
+          const dv = new DataView(pool.cur.memory.buffer);
           const sent = dv.getInt32(descPtr, true);
           const fill = Math.min(sent, 48);
           if (fill < 4) return 0;
-          const reg = this.streams;
+          const reg = pool.cur.streams;
           const s = reg?.find(h);
           // [struct_size, kind, flags, axis, frame_count, event_count,
           //  doc_rev, index, clip_count, r0, r1, r2] — streams.h StreamDesc.
@@ -620,7 +779,7 @@ export class WasmHost {
           if (s && reg) {
             const isContent = s.kind === 5 || s.kind === 6;
             const evCount = isContent
-              ? reg.contentEventCount(s, reg.elapsed(s, this.frameState.elapsedTime))
+              ? reg.contentEventCount(s, reg.elapsed(s, pool.cur.frameState.elapsedTime))
               : s.events.length;
             const flags = s.flags | (s.declared ? 64 : 0); // kDriven
             fields = [sent, s.kind, flags, s.axis, s.frameCount, evCount,
@@ -634,67 +793,67 @@ export class WasmHost {
           return fields[1] !== 0 ? 1 : 0;
         },
         rev: (h: bigint): number => {
-          const s = this.streams?.find(h);
-          return s ? s.eventRev : this.streams?.docRev ?? 0;
+          const s = pool.cur.streams?.find(h);
+          return s ? s.eventRev : pool.cur.streams?.docRev ?? 0;
         },
         pos: (h: bigint): number => {
-          const s = this.streams?.find(h);
-          if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
-          return this.streams!.pos(s, this.frameState.elapsedTime);
+          const s = pool.cur.streams?.find(h);
+          if (!s) return h === 1n ? pool.cur.frameState.elapsedTime : NaN;
+          return pool.cur.streams!.pos(s, pool.cur.frameState.elapsedTime);
         },
         pos_sec: (h: bigint): number => {
-          const s = this.streams?.find(h);
-          if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
-          return this.streams!.posSec(s, this.frameState.elapsedTime);
+          const s = pool.cur.streams?.find(h);
+          if (!s) return h === 1n ? pool.cur.frameState.elapsedTime : NaN;
+          return pool.cur.streams!.posSec(s, pool.cur.frameState.elapsedTime);
         },
         playing: (h: bigint): number => {
-          const s = this.streams?.find(h);
+          const s = pool.cur.streams?.find(h);
           if (!s) return h === 1n ? 1 : 0;
-          return this.streams!.playing(s);
+          return pool.cur.streams!.playing(s);
         },
         loop: (h: bigint, outPtr: number): number => {
-          const s = this.streams?.find(h);
+          const s = pool.cur.streams?.find(h);
           if (!s) return 0;
-          const region = this.streams!.loopRegion(s);
+          const region = pool.cur.streams!.loopRegion(s);
           if (!region) return 0;
-          const out = new Float64Array(this.memory.buffer, outPtr, 2);
+          const out = new Float64Array(pool.cur.memory.buffer, outPtr, 2);
           out[0] = region[0];
           out[1] = region[1];
           return 1;
         },
-        duration: (h: bigint): number => this.streams?.find(h)?.durationPrimary ?? -1,
-        duration_sec: (h: bigint): number => this.streams?.find(h)?.durationSec ?? -1,
-        bpm: (h: bigint): number => this.streams?.find(h)?.bpm ?? this.frameState.bpm,
-        fps: (h: bigint): number => this.streams?.find(h)?.fps ?? 0,
+        duration: (h: bigint): number => pool.cur.streams?.find(h)?.durationPrimary ?? -1,
+        duration_sec: (h: bigint): number => pool.cur.streams?.find(h)?.durationSec ?? -1,
+        bpm: (h: bigint): number => pool.cur.streams?.find(h)?.bpm ?? pool.cur.frameState.bpm,
+        fps: (h: bigint): number => pool.cur.streams?.find(h)?.fps ?? 0,
         anchor: (h: bigint): number => {
-          const s = this.streams?.find(h);
+          const s = pool.cur.streams?.find(h);
           return s && (s.kind === 5 || s.kind === 6) ? s.anchorBeat : NaN;
         },
         anchor_sec: (h: bigint): number => {
-          const s = this.streams?.find(h);
+          const s = pool.cur.streams?.find(h);
           if (!s || (s.kind !== 5 && s.kind !== 6)) return NaN;
           return s.anchorSec;
         },
         elapsed: (h: bigint): number => {
-          const s = this.streams?.find(h);
-          if (!s) return h === 1n ? this.frameState.elapsedTime : NaN;
-          return this.streams!.elapsed(s, this.frameState.elapsedTime);
+          const s = pool.cur.streams?.find(h);
+          if (!s) return h === 1n ? pool.cur.frameState.elapsedTime : NaN;
+          return pool.cur.streams!.elapsed(s, pool.cur.frameState.elapsedTime);
         },
         clip_duration: (h: bigint, ordinal: number): number => {
-          const s = this.streams?.find(h);
-          return s ? this.streams!.clipDuration(s, ordinal) : NaN;
+          const s = pool.cur.streams?.find(h);
+          return s ? pool.cur.streams!.clipDuration(s, ordinal) : NaN;
         },
         clip_group: (h: bigint, ordinal: number): number => {
-          const s = this.streams?.find(h);
-          return s ? this.streams!.clipGroup(s, ordinal) : NaN;
+          const s = pool.cur.streams?.find(h);
+          return s ? pool.cur.streams!.clipGroup(s, ordinal) : NaN;
         },
         next_launch: (h: bigint, recPtr: number): number => {
-          const dv = new DataView(this.memory.buffer);
+          const dv = new DataView(pool.cur.memory.buffer);
           const sent = dv.getInt32(recPtr, true);
           const fill = Math.min(sent, 32);
           if (fill < 4) return 0;
-          const s = this.streams?.find(h);
-          const nl = s ? this.streams!.nextLaunch(s) : null;
+          const s = pool.cur.streams?.find(h);
+          const nl = s ? pool.cur.streams!.nextLaunch(s) : null;
           // NextLaunchRec image (streams.h): 8-byte eta sits 8-aligned.
           const scratch = new ArrayBuffer(32);
           const sv = new DataView(scratch);
@@ -703,38 +862,38 @@ export class WasmHost {
           sv.setInt32(8, nl ? nl.ordinal : -1, true);
           sv.setInt32(12, nl ? nl.cls : 1, true);
           sv.setFloat64(16, nl ? nl.etaSec : 0, true);
-          new Uint8Array(this.memory.buffer, recPtr + 4, fill - 4)
+          new Uint8Array(pool.cur.memory.buffer, recPtr + 4, fill - 4)
             .set(new Uint8Array(scratch, 4, fill - 4));
           return nl ? 1 : 0;
         },
         seek: (h: bigint, t: number, cls: number): number =>
-          this.streams?.queueSeek(h, t, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
-        stop: (h: bigint): number => (this.streams?.queueStop(h) ? 1 : 0),
+          pool.cur.streams?.queueSeek(h, t, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
+        stop: (h: bigint): number => (pool.cur.streams?.queueStop(h) ? 1 : 0),
         announce: (h: bigint, t: number, eta: number, cls: number): number =>
-          this.streams?.queueAnnounce(h, t, eta, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
+          pool.cur.streams?.queueAnnounce(h, t, eta, cls === 0 ? 'instant' : 'loose') ? 1 : 0,
         event_count: (h: bigint): number => {
-          const s = this.streams?.find(h);
-          if (!s) return !this.streams && h === 1n ? 0 : -1;
+          const s = pool.cur.streams?.find(h);
+          if (!s) return !pool.cur.streams && h === 1n ? 0 : -1;
           if (s.kind === 5 || s.kind === 6) {
-            return this.streams!.contentEventCount(
-              s, this.streams!.elapsed(s, this.frameState.elapsedTime));
+            return pool.cur.streams!.contentEventCount(
+              s, pool.cur.streams!.elapsed(s, pool.cur.frameState.elapsedTime));
           }
           return s.events.length;
         },
         read_events: (h: bigint, first: number, outPtr: number, capEvents: number): number => {
-          const s = this.streams?.find(h);
-          if (!s) return !this.streams && h === 1n ? 0 : -1;
+          const s = pool.cur.streams?.find(h);
+          if (!s) return !pool.cur.streams && h === 1n ? 0 : -1;
           if (first < 0 || capEvents <= 0) return 0;
           const content = s.kind === 5 || s.kind === 6;
           const total = content
-            ? this.streams!.contentEventCount(
-                s, this.streams!.elapsed(s, this.frameState.elapsedTime))
+            ? pool.cur.streams!.contentEventCount(
+                s, pool.cur.streams!.elapsed(s, pool.cur.frameState.elapsedTime))
             : s.events.length;
           const n = Math.max(0, Math.min(total - first, capEvents));
           if (n === 0) return 0;
-          const out = new Float64Array(this.memory.buffer, outPtr, n * 5);
+          const out = new Float64Array(pool.cur.memory.buffer, outPtr, n * 5);
           for (let k = 0; k < n; k++) {
-            const e = content ? this.streams!.contentEventAt(s, first + k)
+            const e = content ? pool.cur.streams!.contentEventAt(s, first + k)
                               : s.events[first + k];
             out[k * 5 + 0] = e.time;
             out[k * 5 + 1] = e.kind;
@@ -745,8 +904,8 @@ export class WasmHost {
           return n;
         },
         event_lower_bound: (h: bigint, t: number): number => {
-          const s = this.streams?.find(h);
-          return s ? this.streams!.eventLowerBound(s, t) : 0;
+          const s = pool.cur.streams?.find(h);
+          return s ? pool.cur.streams!.eventLowerBound(s, t) : 0;
         },
       },
       // Resources surface (ABI v4) — the ASSET namespace behind streams (web
@@ -754,16 +913,16 @@ export class WasmHost {
       // resources.h). resources.stream fetches the seekable-stream view.
       resources: {
         content: (): bigint =>
-          this.streams ? this.streams.resourceContentOf(this.instanceKey) : 0n,
-        live: (h: bigint): bigint => this.streams?.resourceLive(h) ?? 0n,
+          pool.cur.streams ? pool.cur.streams.resourceContentOf(pool.cur.instanceKey) : 0n,
+        live: (h: bigint): bigint => pool.cur.streams?.resourceLive(h) ?? 0n,
         clip_at: (h: bigint, ordinal: number): bigint =>
-          this.streams?.resourceClipAt(h, ordinal) ?? 0n,
+          pool.cur.streams?.resourceClipAt(h, ordinal) ?? 0n,
         describe: (h: bigint, descPtr: number): number => {
-          const dv = new DataView(this.memory.buffer);
+          const dv = new DataView(pool.cur.memory.buffer);
           const sent = dv.getInt32(descPtr, true);
           const fill = Math.min(sent, 64);
           if (fill < 4) return 0;
-          const r = this.streams?.findResource(h);
+          const r = pool.cur.streams?.findResource(h);
           // ResourceDesc image as (offset, write) pairs — 8-byte fields sit
           // at 8-aligned offsets (resources.h layout).
           const scratch = new ArrayBuffer(64);
@@ -771,74 +930,75 @@ export class WasmHost {
           sv.setInt32(0, sent, true);
           sv.setInt32(4, r ? r.kind : 0, true);
           sv.setInt32(8, r ? r.flags : 0, true);
-          sv.setInt32(12, r ? this.streams!.resourceRevOf(r) : 0, true);
+          sv.setInt32(12, r ? pool.cur.streams!.resourceRevOf(r) : 0, true);
           sv.setBigInt64(16, r ? BigInt.asIntN(64, r.stream) : 0n, true);
           sv.setBigInt64(24, r ? BigInt(r.sizeBytes) : -1n, true);
           sv.setFloat64(32, r ? r.durationSec : -1, true);
           sv.setInt32(40, r ? r.width : 0, true);
           sv.setInt32(44, r ? r.height : 0, true);
-          new Uint8Array(this.memory.buffer, descPtr + 4, fill - 4)
+          new Uint8Array(pool.cur.memory.buffer, descPtr + 4, fill - 4)
             .set(new Uint8Array(scratch, 4, fill - 4));
           return r ? 1 : 0;
         },
         rev: (h: bigint): number => {
-          const r = this.streams?.findResource(h);
-          return r ? this.streams!.resourceRevOf(r) : this.streams?.docRev ?? 0;
+          const r = pool.cur.streams?.findResource(h);
+          return r ? pool.cur.streams!.resourceRevOf(r) : pool.cur.streams?.docRev ?? 0;
         },
         stream: (h: bigint): bigint =>
-          this.streams?.findResource(h)?.stream ?? 0n,
+          pool.cur.streams?.findResource(h)?.stream ?? 0n,
         // Queues the fork arm / re-assert; returns the resource handle when
         // accepted (adopted identity — the fork keeps the same resource).
-        fork: (h: bigint): bigint => this.streams?.queueFork(h) ?? 0n,
-        release: (h: bigint): number => (this.streams?.queueRelease(h) ? 1 : 0),
+        fork: (h: bigint): bigint => pool.cur.streams?.queueFork(h) ?? 0n,
+        release: (h: bigint): number => (pool.cur.streams?.queueRelease(h) ? 1 : 0),
       },
       state: {
         get_key: (bufPtr: number, bufLen: number): number => {
-          const key = this.pluginKey || (this.metadata?.id
-            ? `${this.metadata.id}@0`
+          const key = pool.cur.pluginKey || (pool.cur.metadata?.id
+            ? `${pool.cur.metadata.id}@0`
             : 'unknown@0');
-          return this.writeString(bufPtr, bufLen, key);
+          return pool.cur.writeString(bufPtr, bufLen, key);
         },
         set_metadata: (idPtr: number, idLen: number, versionPacked: number) => {
-          const id = this.readString(idPtr, idLen);
+          const id = pool.cur.readString(idPtr, idLen);
           const major = (versionPacked >> 16) & 0xFF;
           const minor = (versionPacked >> 8) & 0xFF;
           const patch = versionPacked & 0xFF;
-          this.metadata = { id, version: `${major}.${minor}.${patch}` };
+          pool.cur.metadata = { id, version: `${major}.${minor}.${patch}` };
           if (bc) {
-            this.pluginKey = bc.registerPlugin(id, major, minor, patch);
+            pool.cur.pluginKey = bc.registerPlugin(id, major, minor, patch);
           }
         },
         set_schema: (idPtr: number, idLen: number, versionPacked: number,
                       schemaPtr: number, schemaLen: number) => {
-          const id = this.readString(idPtr, idLen);
+          const id = pool.cur.readString(idPtr, idLen);
           const major = (versionPacked >> 16) & 0xFF;
           const minor = (versionPacked >> 8) & 0xFF;
           const patch = versionPacked & 0xFF;
-          this.metadata = { id, version: `${major}.${minor}.${patch}` };
+          pool.cur.metadata = { id, version: `${major}.${minor}.${patch}` };
 
-          const schemaStr = this.readString(schemaPtr, schemaLen);
+          const schemaStr = pool.cur.readString(schemaPtr, schemaLen);
+          pool.cur.lastSchemaStr = schemaStr;
           try {
             const schemaJson = JSON.parse(schemaStr);
-            this.schema = schemaJson.fields ?? {};
-            this.capabilities = Array.isArray(schemaJson.capabilities)
+            pool.cur.schema = schemaJson.fields ?? {};
+            pool.cur.capabilities = Array.isArray(schemaJson.capabilities)
               ? schemaJson.capabilities.filter((c: any) => typeof c === 'string')
               : [];
-            this.groups = (schemaJson.groups && typeof schemaJson.groups === 'object')
+            pool.cur.groups = (schemaJson.groups && typeof schemaJson.groups === 'object')
               ? schemaJson.groups
               : {};
             if (Array.isArray(schemaJson.moduleVersion) && schemaJson.moduleVersion.length === 3) {
-              this.moduleVersion = schemaJson.moduleVersion.map((n: any) => n | 0).join('.');
+              pool.cur.moduleVersion = schemaJson.moduleVersion.map((n: any) => n | 0).join('.');
             }
-            WasmHost.moduleVersionsById.set(id, this.moduleVersion);
-            WasmHost.capabilitiesById.set(id, this.capabilities);
-            WasmHost.groupsById.set(id, this.groups);
+            WasmHost.moduleVersionsById.set(id, pool.cur.moduleVersion);
+            WasmHost.capabilitiesById.set(id, pool.cur.capabilities);
+            WasmHost.groupsById.set(id, pool.cur.groups);
 
             // Derive params and ioDecls from schema for backward compat
-            this.params = [];
-            this.ioDecls = [];
+            pool.cur.params = [];
+            pool.cur.ioDecls = [];
             let paramIdx = 0;
-            for (const [name, field] of Object.entries(this.schema) as [string, any][]) {
+            for (const [name, field] of Object.entries(pool.cur.schema) as [string, any][]) {
               const ioFlags = field.io ?? 0;
               if (field.type === 'help') {
                 // UI-only documentation slot — no param row, no io declaration.
@@ -846,7 +1006,7 @@ export class WasmHost {
               } else if (field.type === 'texture') {
                 const dir = (ioFlags & 1) ? 0 : 1; // Input=0, Output=1
                 const role = (ioFlags & 4) ? 0 : 1; // Primary=0, Secondary=1
-                this.ioDecls.push({ index: this.ioDecls.length, name, kind: dir, role });
+                pool.cur.ioDecls.push({ index: pool.cur.ioDecls.length, name, kind: dir, role });
               } else if (field.type === 'object' || field.type === 'array'
                          || field.type === 'float2' || field.type === 'float3'
                          || field.type === 'float4') {
@@ -854,7 +1014,7 @@ export class WasmHost {
                 // schema marks them Output, but skip the legacy params row.
                 if (ioFlags & 2) {
                   const role = (ioFlags & 4) ? 0 : 1;
-                  this.ioDecls.push({ index: this.ioDecls.length, name, kind: 2, role });
+                  pool.cur.ioDecls.push({ index: pool.cur.ioDecls.length, name, kind: 2, role });
                 }
               } else {
                 let type = 10; // Standard
@@ -870,7 +1030,7 @@ export class WasmHost {
                 const fd = field.default;
                 if (typeof fd === 'number') defaultValue = fd;
                 else if (typeof fd === 'boolean') defaultValue = fd ? 1 : 0;
-                this.params.push({
+                pool.cur.params.push({
                   index: paramIdx++,
                   name,
                   type,
@@ -886,64 +1046,64 @@ export class WasmHost {
                 // Non-texture fields with Output flag → data_output io declaration
                 if (ioFlags & 2) { // Output bit
                   const role = (ioFlags & 4) ? 0 : 1; // Primary=0, Secondary=1
-                  this.ioDecls.push({ index: this.ioDecls.length, name, kind: 2, role });
+                  pool.cur.ioDecls.push({ index: pool.cur.ioDecls.length, name, kind: 2, role });
                 }
               }
             }
           } catch {
-            this.schema = {};
-            this.capabilities = [];
-            this.groups = {};
+            pool.cur.schema = {};
+            pool.cur.capabilities = [];
+            pool.cur.groups = {};
             WasmHost.capabilitiesById.set(id, []);
             WasmHost.groupsById.set(id, {});
           }
 
           if (bc) {
             try {
-              this.pluginKey = bc.registerWithSchema(id, major, minor, patch, schemaStr);
+              pool.cur.pluginKey = bc.registerWithSchema(id, major, minor, patch, schemaStr);
             } catch (e) {
               console.warn('[wasm-host] registerWithSchema failed, falling back to registerPlugin:', e);
-              this.pluginKey = bc.registerPlugin(id, major, minor, patch);
+              pool.cur.pluginKey = bc.registerPlugin(id, major, minor, patch);
             }
             // Seed local pluginState with the schema-derived defaults so
             // downstream consumers (struct rail snapshot, inspector, etc.)
             // can read scalar fields without waiting for the module to
             // call set_val explicitly.
-            if (this.pluginKey) {
-              try { this.pluginState = bc.getPluginState(this.pluginKey); } catch {}
+            if (pool.cur.pluginKey) {
+              try { pool.cur.pluginState = bc.getPluginState(pool.cur.pluginKey); } catch {}
             }
           }
         },
         console_log: (level: number, msgPtr: number, msgLen: number) => {
-          const message = this.readString(msgPtr, msgLen);
+          const message = pool.cur.readString(msgPtr, msgLen);
           const entry: ConsoleEntry = {
-            timestamp: this.frameState.elapsedTime,
+            timestamp: pool.cur.frameState.elapsedTime,
             level: LEVELS[level] ?? 'log',
             message,
           };
-          this.consoleLogs.push(entry);
-          if (this.consoleLogs.length > 200) {
-            this.consoleLogs = this.consoleLogs.slice(-100);
+          pool.cur.consoleLogs.push(entry);
+          if (pool.cur.consoleLogs.length > 200) {
+            pool.cur.consoleLogs = pool.cur.consoleLogs.slice(-100);
           }
           // Also surface to the browser/devtools console so E2E test
           // logging can see what the WASM module emitted. A SCHEMA-ONLY host
           // (no gpu backend — the bundle warm-up describes) demotes to debug:
           // its effects legitimately complain about the backend they'll never
           // render with ("no GPU backend"), which isn't an app error.
-          const tag = `[wasm:${this.metadata?.id ?? this.pluginKey ?? '?'}]`;
-          if (!this.gpuHost) console.debug(tag, message);
+          const tag = `[wasm:${pool.cur.metadata?.id ?? pool.cur.pluginKey ?? '?'}]`;
+          if (!pool.cur.gpuHost) console.debug(tag, message);
           else if (level === 1) console.warn(tag, message);
           else if (level === 2) console.error(tag, message);
           else console.log(tag, message);
-          this.onLog(entry);
-          if (bc && this.pluginKey) {
-            bc.log(this.pluginKey, entry.timestamp, level, message);
+          pool.cur.onLog(entry);
+          if (bc && pool.cur.pluginKey) {
+            bc.log(pool.cur.pluginKey, entry.timestamp, level, message);
           }
         },
         console_log_structured: (level: number, msgPtr: number, msgLen: number,
                                   jsonPtr: number, jsonLen: number) => {
-          const message = this.readString(msgPtr, msgLen);
-          const jsonStr = this.readString(jsonPtr, jsonLen);
+          const message = pool.cur.readString(msgPtr, msgLen);
+          const jsonStr = pool.cur.readString(jsonPtr, jsonLen);
           let data: any;
           try {
             data = JSON.parse(jsonStr);
@@ -951,35 +1111,35 @@ export class WasmHost {
             data = jsonStr;
           }
           const entry: ConsoleEntry = {
-            timestamp: this.frameState.elapsedTime,
+            timestamp: pool.cur.frameState.elapsedTime,
             level: LEVELS[level] ?? 'log',
             message,
             data,
           };
-          this.consoleLogs.push(entry);
-          if (this.consoleLogs.length > 200) {
-            this.consoleLogs = this.consoleLogs.slice(-100);
+          pool.cur.consoleLogs.push(entry);
+          if (pool.cur.consoleLogs.length > 200) {
+            pool.cur.consoleLogs = pool.cur.consoleLogs.slice(-100);
           }
-          this.onLog(entry);
-          if (bc && this.pluginKey) {
-            bc.logStructured(this.pluginKey, entry.timestamp, level, message, jsonStr);
+          pool.cur.onLog(entry);
+          if (bc && pool.cur.pluginKey) {
+            bc.logStructured(pool.cur.pluginKey, entry.timestamp, level, message, jsonStr);
           }
         },
         set_val: (pathPtr: number, pathLen: number, valHandle: number) => {
-          if (bc && this.pluginKey) {
+          if (bc && pool.cur.pluginKey) {
             // Direct commit — no JSON serialization round-trip
-            const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
-            bc.commitVal(this.pluginKey, path, valHandle);
-            this.pluginState = bc.getPluginState(this.pluginKey);
+            const path = pathLen > 0 ? pool.cur.readString(pathPtr, pathLen) : '';
+            bc.commitVal(pool.cur.pluginKey, path, valHandle);
+            pool.cur.pluginState = bc.getPluginState(pool.cur.pluginKey);
           } else {
-            const value = this._valStore.get(valHandle);
+            const value = pool.valStore.get(valHandle);
             if (value === undefined) return;
             if (pathLen === 0) {
-              this.pluginState = value;
+              pool.cur.pluginState = value;
             } else {
-              const path = this.readString(pathPtr, pathLen);
+              const path = pool.cur.readString(pathPtr, pathLen);
               const keys = path.replace(/^\//, '').split('/');
-              let obj = this.pluginState;
+              let obj = pool.cur.pluginState;
               for (let i = 0; i < keys.length - 1; i++) {
                 if (!(keys[i] in obj)) obj[keys[i]] = {};
                 obj = obj[keys[i]];
@@ -987,30 +1147,30 @@ export class WasmHost {
               obj[keys[keys.length - 1]] = value;
             }
           }
-          this.onStateChange(this.pluginState);
+          pool.cur.onStateChange(pool.cur.pluginState);
         },
         mark_gpu_dirty: (pathPtr: number, pathLen: number) => {
-          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
-          this.pendingDirtyPaths.push(path);
+          const path = pathLen > 0 ? pool.cur.readString(pathPtr, pathLen) : '';
+          pool.cur.pendingDirtyPaths.push(path);
         },
         set_gpu_buffer: (pathPtr: number, pathLen: number, bufferHandle: number) => {
-          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
-          const prev = this.gpuBufferFields.get(path) ?? 0;
+          const path = pathLen > 0 ? pool.cur.readString(pathPtr, pathLen) : '';
+          const prev = pool.cur.gpuBufferFields.get(path) ?? 0;
           if (prev !== bufferHandle) {
-            this.gpuBufferFields.set(path, bufferHandle);
+            pool.cur.gpuBufferFields.set(path, bufferHandle);
           }
           // Dirty fires every call — producer convention is to elide this
           // call on frames where the buffer is reused, so reaching here
           // means the consumer should re-resolve.
-          this.pendingDirtyPaths.push(path);
+          pool.cur.pendingDirtyPaths.push(path);
         },
         set_gpu_texture: (pathPtr: number, pathLen: number, textureHandle: number) => {
-          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
-          const prev = this.textureFields.get(path) ?? -1;
+          const path = pathLen > 0 ? pool.cur.readString(pathPtr, pathLen) : '';
+          const prev = pool.cur.textureFields.get(path) ?? -1;
           if (prev !== textureHandle) {
-            this.textureFields.set(path, textureHandle);
+            pool.cur.textureFields.set(path, textureHandle);
           }
-          this.pendingDirtyPaths.push(path);
+          pool.cur.pendingDirtyPaths.push(path);
         },
         set_field_hidden: (pathPtr: number, pathLen: number, hidden: number) => {
           // UI-overlay only: the field's data path keeps working
@@ -1019,43 +1179,43 @@ export class WasmHost {
           // next broadcastState. Effects use this to gate which params
           // appear under the current "mode" without reshaping their
           // schema or losing serialized state.
-          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
+          const path = pathLen > 0 ? pool.cur.readString(pathPtr, pathLen) : '';
           const isHidden = hidden !== 0;
           // During a static visibility query, route into the scratch set and
           // leave the live overlay (and onSchemaChanged) untouched.
-          if (this.evalHiddenScratch) {
-            if (isHidden) this.evalHiddenScratch.add(path);
-            else this.evalHiddenScratch.delete(path);
+          if (pool.cur.evalHiddenScratch) {
+            if (isHidden) pool.cur.evalHiddenScratch.add(path);
+            else pool.cur.evalHiddenScratch.delete(path);
             return;
           }
-          const wasHidden = this.hiddenFields.has(path);
+          const wasHidden = pool.cur.hiddenFields.has(path);
           if (isHidden === wasHidden) return;
-          if (isHidden) this.hiddenFields.add(path);
-          else this.hiddenFields.delete(path);
+          if (isHidden) pool.cur.hiddenFields.add(path);
+          else pool.cur.hiddenFields.delete(path);
           // Schema visibility propagates only via broadcastState, which
           // fires when the engine state is dirty — let the worker know.
-          this.onSchemaChanged?.();
+          pool.cur.onSchemaChanged?.();
         },
         is_field_connected: (pathPtr: number, pathLen: number, direction: number): number => {
           // direction 0 → "is anyone WRITING this field" (input check).
           // direction 1 → "is anyone READING this field"  (output check).
           // The set is populated by the sketch executor each frame from
           // the chain entry's tap topology.
-          const path = pathLen > 0 ? this.readString(pathPtr, pathLen) : '';
-          if (direction === 0) return this.fieldsWithWriter.has(path) ? 1 : 0;
-          if (direction === 1) return this.fieldsWithReader.has(path) ? 1 : 0;
+          const path = pathLen > 0 ? pool.cur.readString(pathPtr, pathLen) : '';
+          if (direction === 0) return pool.cur.fieldsWithWriter.has(path) ? 1 : 0;
+          if (direction === 1) return pool.cur.fieldsWithReader.has(path) ? 1 : 0;
           return 0;
         },
         will_render: (): number => {
           // False only when the executor is skipping render() this frame
           // because opacity is 0 (tick still runs). Set per-stage before tick.
-          return this.willRender ? 1 : 0;
+          return pool.cur.willRender ? 1 : 0;
         },
         set_on_state_ready: (fnIdx: number) => {
           // Effect's `init()` registers a callback to be fired once
           // after init + initial state replay. Stored as a function
           // table index; dispatched by `fireStateReady()`.
-          this.onStateReadyIdx = fnIdx | 0;
+          pool.cur.onStateReadyIdx = fnIdx | 0;
         },
         register_shader_spv: (namePtr: number, nameLen: number,
                                spvPtr: number, spvLen: number,
@@ -1064,15 +1224,15 @@ export class WasmHost {
           // Snapshot the SPV bytes — the WASM linear memory will be
           // reused for other allocations and we want the registry to
           // outlive the call. Slice copies into a fresh buffer.
-          const name = this.readString(namePtr, nameLen);
-          const src = new Uint8Array(this.memory.buffer, spvPtr, spvLen);
+          const name = pool.cur.readString(namePtr, nameLen);
+          const src = new Uint8Array(pool.cur.memory.buffer, spvPtr, spvLen);
           // Empty format = "sketch default": resolved at translation time
           // (fetchShaderWgsl) against the GPU host's working format, so a 16F
           // sketch gets rgba16float storage decls. Effects that need a pinned
           // format pass it explicitly (or via [[vk::image_format]]).
-          const storageFormat = fmtLen > 0 ? this.readString(fmtPtr, fmtLen) : '';
-          const storageAccess = accLen > 0 ? this.readString(accPtr, accLen) : 'write';
-          this.shaderSPV.set(name, {
+          const storageFormat = fmtLen > 0 ? pool.cur.readString(fmtPtr, fmtLen) : '';
+          const storageAccess = accLen > 0 ? pool.cur.readString(accPtr, accLen) : 'write';
+          pool.cur.shaderSPV.set(name, {
             bytes: new Uint8Array(src), // copy
             storageFormat,
             storageAccess,
@@ -1087,22 +1247,22 @@ export class WasmHost {
           // in `shaderSPV` under this name (registered earlier via
           // state::registerShaderSPV). WGSL is fetched lazily from
           // the naga endpoint by getFusionFragmentWgsl().
-          this.fusionKind = kind | 0;
-          this.fusionFragmentName = nameLen > 0 ? this.readString(namePtr, nameLen) : '';
-          this.fusionFragmentWgslCached = null;
-          this.fusionUniformBufferHandle = uniformBufHandle | 0;
-          this.fusionUniformSize = uniformSize | 0;
-          this.fusionPrepareIdx = prepareIdx | 0;
+          pool.cur.fusionKind = kind | 0;
+          pool.cur.fusionFragmentName = nameLen > 0 ? pool.cur.readString(namePtr, nameLen) : '';
+          pool.cur.fusionFragmentWgslCached = null;
+          pool.cur.fusionUniformBufferHandle = uniformBufHandle | 0;
+          pool.cur.fusionUniformSize = uniformSize | 0;
+          pool.cur.fusionPrepareIdx = prepareIdx | 0;
         },
         read: (layoutPtr: number, fieldCount: number, pathsPtr: number,
                outputPtr: number, outputSize: number, resultsPtr: number): number => {
           // Read state from bridge core if available, else use local
-          const stateSource = (bc && this.pluginKey)
-            ? bc.getPluginState(this.pluginKey)
-            : this.pluginState;
+          const stateSource = (bc && pool.cur.pluginKey)
+            ? bc.getPluginState(pool.cur.pluginKey)
+            : pool.cur.pluginState;
 
-          const mem = new DataView(this.memory.buffer);
-          const bytes = new Uint8Array(this.memory.buffer);
+          const mem = new DataView(pool.cur.memory.buffer);
+          const bytes = new Uint8Array(pool.cur.memory.buffer);
           let overflowCount = 0;
 
           const FIELD_SIZE = 20;
@@ -1178,8 +1338,8 @@ export class WasmHost {
           return overflowCount;
         },
         get_patch: (index: number) => {
-          if (index < 0 || index >= this.pendingPatches.length) return 0;
-          const patch = this.pendingPatches[index];
+          if (index < 0 || index >= pool.cur.pendingPatches.length) return 0;
+          const patch = pool.cur.pendingPatches[index];
           if (bc) {
             // Build patch object as bridge core val handles
             const obj = bc.valObject();
@@ -1196,13 +1356,13 @@ export class WasmHost {
               // Parse it back — we need the actual value, not a string
               // Use a simpler approach: allocate based on type
               bc.valRelease(valStr);
-              const valH = this.jsValueToBcVal(bc, patch.value);
+              const valH = pool.cur.jsValueToBcVal(bc, patch.value);
               bc.valSet(obj, 'value', valH);
               bc.valRelease(valH);
             }
             return obj;
           }
-          return this._valStore.alloc(patch);
+          return pool.valStore.alloc(patch);
         },
       },
       // Legacy: no module uses io.declare_*() anymore (all use set_schema).
@@ -1221,7 +1381,7 @@ export class WasmHost {
             null: () => bc.valNull(),
             bool: (v: number) => bc.valBool(v !== 0),
             number: (v: number) => bc.valNumber(v),
-            string: (ptr: number, len: number) => bc.valString(this.readString(ptr, len)),
+            string: (ptr: number, len: number) => bc.valString(pool.cur.readString(ptr, len)),
             array: () => bc.valArray(),
             object: () => bc.valObject(),
             type_of: (h: number) => bc.valTypeOf(h),
@@ -1229,18 +1389,18 @@ export class WasmHost {
             as_bool: (h: number) => bc.valAsBool(h) ? 1 : 0,
             as_string: (h: number, bufPtr: number, bufLen: number) => {
               const s = bc.valAsString(h);
-              return s.length > 0 ? this.writeString(bufPtr, bufLen, s) : 0;
+              return s.length > 0 ? pool.cur.writeString(bufPtr, bufLen, s) : 0;
             },
             get: (objH: number, keyPtr: number, keyLen: number) => {
-              return bc.valGet(objH, this.readString(keyPtr, keyLen));
+              return bc.valGet(objH, pool.cur.readString(keyPtr, keyLen));
             },
             set: (objH: number, keyPtr: number, keyLen: number, valH: number) => {
-              bc.valSet(objH, this.readString(keyPtr, keyLen), valH);
+              bc.valSet(objH, pool.cur.readString(keyPtr, keyLen), valH);
             },
             keys_count: (h: number) => bc.valKeysCount(h),
             key_at: (h: number, index: number, bufPtr: number, bufLen: number) => {
               const key = bc.valKeyAt(h, index);
-              return key.length > 0 ? this.writeString(bufPtr, bufLen, key) : 0;
+              return key.length > 0 ? pool.cur.writeString(bufPtr, bufLen, key) : 0;
             },
             get_index: (arrH: number, index: number) => bc.valGetIndex(arrH, index),
             push: (arrH: number, valH: number) => { bc.valPush(arrH, valH); },
@@ -1248,19 +1408,19 @@ export class WasmHost {
             release: (h: number) => { bc.valRelease(h); },
             to_json: (h: number, bufPtr: number, bufLen: number) => {
               const json = bc.valToJson(h);
-              return json.length > 0 ? this.writeString(bufPtr, bufLen, json) : 0;
+              return json.length > 0 ? pool.cur.writeString(bufPtr, bufLen, json) : 0;
             },
           };
         }
         // Fallback: local JS val store (no bridge core)
-        const valStore = this._valStore;
+        const valStore = pool.valStore;
         const alloc = valStore.alloc.bind(valStore);
         const getVal = valStore.get.bind(valStore);
         return {
           null: () => alloc(null),
           bool: (v: number) => alloc(v !== 0),
           number: (v: number) => alloc(v),
-          string: (ptr: number, len: number) => alloc(this.readString(ptr, len)),
+          string: (ptr: number, len: number) => alloc(pool.cur.readString(ptr, len)),
           array: () => alloc([]),
           object: () => alloc({}),
           type_of: (h: number) => {
@@ -1286,18 +1446,18 @@ export class WasmHost {
           as_bool: (h: number) => { const v = getVal(h); return v ? 1 : 0; },
           as_string: (h: number, bufPtr: number, bufLen: number) => {
             const v = getVal(h);
-            return typeof v === 'string' ? this.writeString(bufPtr, bufLen, v) : 0;
+            return typeof v === 'string' ? pool.cur.writeString(bufPtr, bufLen, v) : 0;
           },
           get: (objH: number, keyPtr: number, keyLen: number) => {
             const obj = getVal(objH);
             if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return 0;
-            const key = this.readString(keyPtr, keyLen);
+            const key = pool.cur.readString(keyPtr, keyLen);
             return key in obj ? alloc(obj[key]) : 0;
           },
           set: (objH: number, keyPtr: number, keyLen: number, valH: number) => {
             const obj = getVal(objH);
             if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
-            const key = this.readString(keyPtr, keyLen);
+            const key = pool.cur.readString(keyPtr, keyLen);
             obj[key] = getVal(valH);
             // set CONSUMES the child handle. Without releasing it, every
             // intermediate val (number/object/array/...) built into a published
@@ -1316,7 +1476,7 @@ export class WasmHost {
             if (!v || typeof v !== 'object' || Array.isArray(v)) return 0;
             const keys = Object.keys(v);
             if (index < 0 || index >= keys.length) return 0;
-            return this.writeString(bufPtr, bufLen, keys[index]);
+            return pool.cur.writeString(bufPtr, bufLen, keys[index]);
           },
           get_index: (arrH: number, index: number) => {
             const arr = getVal(arrH);
@@ -1338,7 +1498,7 @@ export class WasmHost {
           to_json: (h: number, bufPtr: number, bufLen: number) => {
             const v = getVal(h);
             if (v === undefined) return 0;
-            return this.writeString(bufPtr, bufLen, JSON.stringify(v));
+            return pool.cur.writeString(bufPtr, bufLen, JSON.stringify(v));
           },
         };
       })(),
@@ -1350,32 +1510,32 @@ export class WasmHost {
       // entries, no thumbnails. The fallback is a no-op returning -1; spreads
       // can't carry a Proxy's get trap, hence the wrap at this outer level.
       gpu: ((gpuImports: WebAssembly.ModuleImports) =>
-        this.gpuHost
+        pool.cur.gpuHost
           ? gpuImports
           : new Proxy(gpuImports, { get: (t, name: string) => (name in t ? (t as any)[name] : () => -1) }))({
-        ...(this.gpuHost
+        ...(pool.cur.gpuHost
           ? {
-              ...this.gpuHost.buildImports(
-                (ptr, len) => new Uint8Array(this.memory.buffer).slice(ptr, ptr + len),
-                (ptr, len) => decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
+              ...pool.cur.gpuHost.buildImports(
+                (ptr, len) => new Uint8Array(pool.cur.memory.buffer).slice(ptr, ptr + len),
+                (ptr, len) => decoder.decode(new Uint8Array(pool.cur.memory.buffer, ptr, len)),
               ),
               // Override the gpu-host's stub for this import: the
               // SPV → WGSL plumbing lives on the WasmHost since the
               // shaderSPV registry is per-WasmHost.
               create_shader_module_named: (namePtr: number, nameLen: number) => {
-                const name = this.readString(namePtr, nameLen);
-                return this.createShaderModuleByName(name);
+                const name = pool.cur.readString(namePtr, nameLen);
+                return pool.cur.createShaderModuleByName(name);
               },
               // Override the gpu-host stub: poll_readback must write the latest
               // completed snapshot into wasm linear memory (re-derive the view
               // every call — memory may have grown). Returns bytes copied.
               poll_readback: (buf: number, destPtr: number, byteLen: number) => {
-                const gh = this.gpuHost;
+                const gh = pool.cur.gpuHost;
                 if (!gh) return 0;
                 const { bytes, len } = gh.getReadback(buf);
                 if (!bytes || len <= 0) return 0;
                 const n = Math.min(byteLen, len);
-                new Uint8Array(this.memory.buffer, destPtr, n).set(bytes.subarray(0, n));
+                new Uint8Array(pool.cur.memory.buffer, destPtr, n).set(bytes.subarray(0, n));
                 return n;
               },
             }
@@ -1422,18 +1582,18 @@ export class WasmHost {
             }),
         // Input texture API (for chaining modules)
         get_input_texture: (index: number) =>
-          (index >= 0 && index < this.inputTextureHandles.length) ? this.inputTextureHandles[index] : -1,
-        get_input_texture_count: () => this.inputTextureHandles.length,
+          (index >= 0 && index < pool.cur.inputTextureHandles.length) ? pool.cur.inputTextureHandles[index] : -1,
+        get_input_texture_count: () => pool.cur.inputTextureHandles.length,
         // Unified texture access by field path
         texture_for_field: (pathPtr: number, pathLen: number) => {
-          const path = this.readString(pathPtr, pathLen);
-          return this.textureFields.get(path) ?? -1;
+          const path = pool.cur.readString(pathPtr, pathLen);
+          return pool.cur.textureFields.get(path) ?? -1;
         },
         // GPU buffer access by field path — mirrors texture_for_field.
         // Returns 0 when unassigned (convention for gpu::Buffer::valid()).
         buffer_for_field: (pathPtr: number, pathLen: number) => {
-          const path = this.readString(pathPtr, pathLen);
-          return this.gpuBufferFields.get(path) ?? 0;
+          const path = pool.cur.readString(pathPtr, pathLen);
+          return pool.cur.gpuBufferFields.get(path) ?? 0;
         },
       }),
       // text — host text shaping/rendering service. Delegates to the shared
@@ -1443,7 +1603,7 @@ export class WasmHost {
         layout: (specPtr: number, specLen: number): number => {
           const te = TextEngine.instance;
           if (!te) return 0;
-          const spec = this.readString(specPtr, specLen);
+          const spec = pool.cur.readString(specPtr, specLen);
           // Font resolution / layout must never trap the calling effect (that
           // would abort its render and leave stale output). Scan failures are
           // non-fatal (the frame falls back to bundled fonts); a layout error
@@ -1457,23 +1617,23 @@ export class WasmHost {
           const te = TextEngine.instance;
           if (!te) return 0;
           const bytes = te.measureBytes(id);          // 32-byte TextMetrics
-          new Uint8Array(this.memory.buffer).set(bytes, outPtr);
+          new Uint8Array(pool.cur.memory.buffer).set(bytes, outPtr);
           return 1;
         },
         render: (id: number, targetTex: number, bgTex: number, xformPtr: number, xformLen: number): void => {
           const te = TextEngine.instance;
-          if (!te || !this.gpuHost) return;
-          const target = this.gpuHost.getTextureByHandle(targetTex);
+          if (!te || !pool.cur.gpuHost) return;
+          const target = pool.cur.gpuHost.getTextureByHandle(targetTex);
           if (!target) return;
           // Background sampled behind the text: a caller-supplied input texture
           // (overlay), else null → the engine's 1×1 opaque-black fallback. Must
           // differ from the target (WebGPU forbids same-texture read+write).
           const bg = (bgTex >= 0 && bgTex !== targetTex)
-            ? this.gpuHost.getTextureByHandle(bgTex)
+            ? pool.cur.gpuHost.getTextureByHandle(bgTex)
             : null;
           let ox = 0, oy = 0;
           if (xformLen > 0) {
-            try { const x = JSON.parse(this.readString(xformPtr, xformLen)); ox = x.x ?? 0; oy = x.y ?? 0; } catch { /* default */ }
+            try { const x = JSON.parse(pool.cur.readString(xformPtr, xformLen)); ox = x.x ?? 0; oy = x.y ?? 0; } catch { /* default */ }
           }
           te.render(id, target, ox, oy, bg);
         },
@@ -1489,29 +1649,29 @@ export class WasmHost {
         // is registered by string name, so a new hook or field needs no byte-
         // offset/version change on this boundary.
         register_effect_begin: (): number => {
-          const handle = this.nextEffectBuilder++;
-          this.effectBuilders.set(handle, { meta: new Map(), fns: new Map() });
+          const handle = pool.cur.nextEffectBuilder++;
+          pool.cur.effectBuilders.set(handle, { meta: new Map(), fns: new Map() });
           return handle;
         },
         register_effect_str: (handle: number, namePtr: number, nameLen: number,
                               valPtr: number, valLen: number): void => {
-          const b = this.effectBuilders.get(handle);
+          const b = pool.cur.effectBuilders.get(handle);
           if (!b) return;
-          b.meta.set(this.readString(namePtr, nameLen), this.readString(valPtr, valLen));
+          b.meta.set(pool.cur.readString(namePtr, nameLen), pool.cur.readString(valPtr, valLen));
         },
         register_effect_fn: (handle: number, namePtr: number, nameLen: number,
                              fnIdx: number): void => {
-          const b = this.effectBuilders.get(handle);
+          const b = pool.cur.effectBuilders.get(handle);
           if (!b || fnIdx === 0) return; // null callback == "not provided"
-          const name = this.readString(namePtr, nameLen);
+          const name = pool.cur.readString(namePtr, nameLen);
           if (name) b.fns.set(name, fnIdx >>> 0);
         },
         register_effect_end: (handle: number): void => {
-          const b = this.effectBuilders.get(handle);
+          const b = pool.cur.effectBuilders.get(handle);
           if (!b) return;
-          this.effectBuilders.delete(handle);
+          pool.cur.effectBuilders.delete(handle);
           const keywords = b.meta.get('keywords') ?? '';
-          this.registeredEffects.push({
+          pool.cur.registeredEffects.push({
             id: b.meta.get('id') ?? '',
             name: b.meta.get('name') ?? '',
             description: b.meta.get('description') ?? '',
@@ -1529,6 +1689,8 @@ export class WasmHost {
 
     this.instance = await WebAssembly.instantiate(compiled, importObject);
     this.memory = this.instance.exports.memory as WebAssembly.Memory;
+    pool.instance = this.instance;
+    pool.memory = this.memory;
 
     // Initialize WASI runtime (C++ static constructors, etc.)
     const _initialize = this.instance.exports._initialize as (() => void) | undefined;
@@ -1588,26 +1750,108 @@ export class WasmHost {
    */
   describeEffect(effectId: string): void {
     const { effect, fn } = this.effectFns(effectId);
-    if (!this.moduleInitedIds.has(effect.id)) {
-      const moduleInitFn = fn<() => void>('module_init');
-      if (moduleInitFn) moduleInitFn();
-      this.moduleInitedIds.add(effect.id);
+    if (this.moduleInitedIds.has(effect.id)) return;
+    this.moduleInitedIds.add(effect.id);
+    const pool = this.ensurePool();
+
+    // Another host already ran this type's `module_init` in this WASM instance.
+    // Running it again would re-register shaders, rebuild the shared PSO and
+    // re-publish the schema for no gain, so replay its RESULT onto this host
+    // instead. (Unreachable for an unshared pool: `moduleInitedIds` above
+    // already short-circuits a host re-describing the same effect.)
+    const snapshot = pool.typeInfo.get(effect.id);
+    if (snapshot) {
+      this.applyTypeInfo(snapshot);
+      return;
     }
+
+    pool.cur = this;
+    const moduleInitFn = fn<() => void>('module_init');
+    if (moduleInitFn) moduleInitFn();
     // Static (self-less) visibility evaluator — type-level, stored on the host
     // so `evaluateVisibility()` can run it against an arbitrary candidate state.
     this.evalVisibilityFn = fn<
       (n: number, pb: number, off: number, len: number, ops: number) => void>('eval_visibility') ?? null;
+    pool.typeInfo.set(effect.id, this.captureTypeInfo());
+  }
+
+  /**
+   * Snapshot everything `module_init` published onto this host. Maps are kept by
+   * REFERENCE (they are immutable after module_init, and sharing the translated-
+   * WGSL cache across instances of a type is the point — the naga round-trip is
+   * a synchronous XHR).
+   */
+  private captureTypeInfo(): EffectTypeInfo {
+    const [major, minor, patch] = (this.metadata?.version ?? '0.0.0')
+      .split('.').map((n) => parseInt(n, 10) | 0);
+    return {
+      metadata: this.metadata,
+      versionPacked: { major, minor, patch },
+      schemaStr: this.lastSchemaStr,
+      schema: this.schema,
+      capabilities: this.capabilities,
+      groups: this.groups,
+      moduleVersion: this.moduleVersion,
+      params: this.params,
+      ioDecls: this.ioDecls,
+      shaderSPV: this.shaderSPV,
+      shaderWgslCache: this.shaderWgslCache,
+      evalVisibilityFn: this.evalVisibilityFn,
+      onStateReadyIdx: this.onStateReadyIdx,
+    };
+  }
+
+  /**
+   * Replay a type snapshot onto a host that joined an existing pool, then give
+   * it its OWN bridge-core registration. That last part matters: the plugin key
+   * is the identity every `state::read`/`commitVal` resolves against, so two
+   * instances sharing one would share their parameter state.
+   */
+  private applyTypeInfo(t: EffectTypeInfo): void {
+    this.metadata = t.metadata;
+    this.schema = t.schema;
+    this.capabilities = t.capabilities;
+    this.groups = t.groups;
+    this.moduleVersion = t.moduleVersion;
+    this.params = t.params;
+    this.ioDecls = t.ioDecls;
+    this.shaderSPV = t.shaderSPV;
+    this.shaderWgslCache = t.shaderWgslCache;
+    this.evalVisibilityFn = t.evalVisibilityFn;
+    this.onStateReadyIdx = t.onStateReadyIdx;
+    this.lastSchemaStr = t.schemaStr;
+
+    const bc = this.bridgeCore;
+    const id = t.metadata?.id;
+    if (!bc || !id) return;
+    const { major, minor, patch } = t.versionPacked;
+    try {
+      this.pluginKey = t.schemaStr
+        ? bc.registerWithSchema(id, major, minor, patch, t.schemaStr)
+        : bc.registerPlugin(id, major, minor, patch);
+    } catch (e) {
+      console.warn('[wasm-host] registerWithSchema failed, falling back to registerPlugin:', e);
+      this.pluginKey = bc.registerPlugin(id, major, minor, patch);
+    }
+    if (this.pluginKey) {
+      try { this.pluginState = bc.getPluginState(this.pluginKey); } catch { /* defaults */ }
+    }
   }
 
   activateEffect(effectId: string): WasmModule {
     // Type-level setup first (module_init publishes the schema; resolves the
     // visibility evaluator). Skips module_init if a prior describeEffect/
-    // activateEffect already ran it on this host.
+    // activateEffect already ran it on this host — or, when this host joined an
+    // existing pool, replays that type's snapshot instead.
     this.describeEffect(effectId);
     const { fn } = this.effectFns(effectId);
+    const pool = this.ensurePool();
 
     // Class-like instance ABI: (module_init, above) → create() → init(self),
-    // then instance callbacks thread self.
+    // then instance callbacks thread self. `create()` is what makes pooling
+    // work: every host gets its own `self`, so N instances coexist in one
+    // WASM instance.
+    pool.cur = this;
     let self = 0;
     const createFn = fn<() => number>('create');
     if (createFn) self = createFn() | 0;
@@ -1623,21 +1867,70 @@ export class WasmHost {
     const isIdentityFn = fn<(self: number) => number>('is_identity');
     const onActiveFn = fn<(self: number, active: number) => void>('on_active');
     const seekFn = fn<(self: number, from: number, to: number) => void>('seek');
+    // Kept for `dispose()`: with a pooled instance, dropping the host no longer
+    // reclaims its heap — nothing else ever frees `self`.
+    this.destroyFn = fn<(self: number) => void>('destroy') ?? null;
     // (eval_visibility resolved type-level in describeEffect, above.)
 
     // Call init immediately, threading the instance's self pointer.
     if (initFn) initFn(self);
 
+    // Every call below re-points the shared import closures at THIS host before
+    // entering WASM. Cheap (one field write) and sufficient: the effect ABI is
+    // synchronous, so a call never interleaves with another host's.
+    const enter = () => { pool.cur = this; };
     return {
       init: () => {}, // Already called
-      tick: (dt: number) => tickFn?.(self, dt),
-      render: (vpW: number, vpH: number) => renderFn?.(self, vpW, vpH),
-      onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) =>
-        onStatePatchedFn?.(self, n, pb, off, len, ops),
-      isIdentity: () => isIdentityFn ? (isIdentityFn(self) | 0) !== 0 : false,
-      onActive: onActiveFn ? (active: boolean) => onActiveFn!(self, active ? 1 : 0) : undefined,
-      seek: seekFn ? (from: number, to: number) => seekFn!(self, from, to) : undefined,
+      tick: (dt: number) => { enter(); tickFn?.(self, dt); },
+      render: (vpW: number, vpH: number) => { enter(); renderFn?.(self, vpW, vpH); },
+      onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) => {
+        enter(); onStatePatchedFn?.(self, n, pb, off, len, ops);
+      },
+      isIdentity: () => {
+        if (!isIdentityFn) return false;
+        enter();
+        return (isIdentityFn(self) | 0) !== 0;
+      },
+      onActive: onActiveFn
+        ? (active: boolean) => { enter(); onActiveFn!(self, active ? 1 : 0); }
+        : undefined,
+      seek: seekFn ? (from: number, to: number) => { enter(); seekFn!(self, from, to); } : undefined,
     };
+  }
+
+  /**
+   * Tear this host's effect instance down: run the effect's `destroy(self)` and
+   * release the pool reference.
+   *
+   * MANDATORY for a pooled host. With one WASM instance per host, dropping the
+   * host reclaimed its whole linear memory; sharing one means `self` (and any
+   * GPU resource it owns) leaks until the last host of the pool goes away.
+   * Idempotent, and safe on an unpooled host.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const pool = this.pool;
+    if (pool && this.destroyFn && this.activeSelf) {
+      pool.cur = this;
+      try { this.destroyFn(this.activeSelf); }
+      catch (err) { console.warn('[wasm-host] destroy threw:', err); }
+    }
+    this.activeSelf = 0;
+    this.destroyFn = null;
+    if (!pool) return;
+    this.pool = null;
+    // `pool.cur` is deliberately left as-is: every entry into WASM re-points it,
+    // so a stale pointer is inert — whereas clearing it would fault any import
+    // that fires before the next call.
+    if (--pool.refs > 0) return;
+    if (pool.key !== null && pool.compiled) {
+      const map = poolRegistry.get(pool.compiled);
+      if (map?.get(pool.key) === pool) {
+        map.delete(pool.key);
+        if (map.size === 0) poolRegistry.delete(pool.compiled);
+      }
+    }
   }
 
   /**
@@ -1668,7 +1961,9 @@ export class WasmHost {
     if (!this.onStateReadyIdx) return;
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
     const fn = table.get(this.onStateReadyIdx) as ((self: number) => void) | null;
-    if (fn) fn(this.activeSelf);
+    if (!fn) return;
+    if (this.pool) this.pool.cur = this;
+    fn(this.activeSelf);
   }
 
   /**
@@ -1778,7 +2073,9 @@ export class WasmHost {
     if (!this.fusionPrepareIdx) return;
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
     const fn = table.get(this.fusionPrepareIdx) as ((self: number, w: number, h: number) => void) | null;
-    if (fn) fn(this.activeSelf, vpW, vpH);
+    if (!fn) return;
+    if (this.pool) this.pool.cur = this;
+    fn(this.activeSelf, vpW, vpH);
   }
 
   /**
@@ -1833,8 +2130,10 @@ export class WasmHost {
     patches: PatchOp[],
     dispatch: (n: number, pb: number, off: number, len: number, ops: number) => void,
   ) {
-    // Store patches for state.get_patch() value access.
+    // Store patches for state.get_patch() value access — which the effect reads
+    // back through the pool's shared imports, so claim `cur` before dispatching.
     this.pendingPatches = patches;
+    if (this.pool) this.pool.cur = this;
 
     const encoder = new TextEncoder();
     const pathStrings = patches.map(p => encoder.encode(p.path));

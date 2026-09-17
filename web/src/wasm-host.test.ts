@@ -932,3 +932,129 @@ describe('core mod effects: beat-clock behaviors', () => {
     expect(trig.some((t) => t.on === true)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pooled WASM instances.
+//
+// Chrome hard-caps LIVE WebAssembly memories at 100 per RENDERER PROCESS — a
+// count cap shared by the main thread and every worker, independent of each
+// memory's declared maximum. One instance per chain entry therefore capsized
+// any session past ~90 live effects (the offline engine simulates every cached
+// sketch at once). Effects are class-like — `module_init` per TYPE, `create()`
+// → an opaque `self` per instance — so instances of one effect share a single
+// WebAssembly.Instance, keyed by `WasmHost.poolKey`.
+//
+// These drive the REAL `load()` path (not the hand-wired imports above), since
+// the whole point is that the shared import closures resolve host state through
+// the pool's `cur` pointer.
+// ---------------------------------------------------------------------------
+describe('pooled WASM instances', () => {
+  const CORE_WASM = resolve(__dirname, '../../build/wasm/core.wasm');
+  let compiledCore: WebAssembly.Module | null | undefined;
+
+  async function core(): Promise<WebAssembly.Module | null> {
+    if (compiledCore !== undefined) return compiledCore;
+    let bytes: Buffer | null = null;
+    try { bytes = readFileSync(CORE_WASM); } catch { /* not built */ }
+    compiledCore = bytes ? await WebAssembly.compile(bytes as BufferSource) : null;
+    return compiledCore;
+  }
+
+  async function spawn(poolKey: string | null, effectId = 'mod.source.lfo') {
+    const compiled = await core();
+    if (!compiled) return null;
+    const host = new WasmHost();
+    host.poolKey = poolKey;
+    await host.load(compiled);
+    const module = host.activateEffect(effectId);
+    return { host, module };
+  }
+
+  const wasmInstance = (h: WasmHost) => (h as any).instance as WebAssembly.Instance;
+  const selfPtr = (h: WasmHost) => h.activeSelf;
+
+  it('shares one WebAssembly.Instance across hosts with the same pool key', async () => {
+    const a = await spawn('lfo|fmt1');
+    if (!a) { console.warn('no core.wasm — skipping'); return; }
+    const b = await spawn('lfo|fmt1')!;
+    expect(wasmInstance(b!.host)).toBe(wasmInstance(a.host));
+    // Same instance, but genuinely separate effect instances.
+    expect(selfPtr(a.host)).not.toBe(0);
+    expect(selfPtr(b!.host)).not.toBe(selfPtr(a.host));
+    // Type-level setup replays rather than re-running: same schema shape...
+    expect(b!.host.metadata?.id).toBe(a.host.metadata?.id);
+    expect(Object.keys(b!.host.schema)).toEqual(Object.keys(a.host.schema));
+    a.host.dispose(); b!.host.dispose();
+  });
+
+  it('keeps per-instance state independent inside a shared instance', async () => {
+    const a = await spawn('lfo-indep|fmt1');
+    if (!a) { console.warn('no core.wasm — skipping'); return; }
+    const b = (await spawn('lfo-indep|fmt1'))!;
+    const SAW = 3;
+    const setup = (h: WasmHost, m: any, periodBeats: number) =>
+      h.notifyStatePatched(m, [
+        { op: 'replace', path: 'mode', value: 2 },
+        { op: 'replace', path: 'sync', value: 1 },
+        { op: 'replace', path: 'period_beats', value: periodBeats },
+        { op: 'replace', path: 'waveform', value: SAW },
+      ]);
+    setup(a.host, a.module, 4);
+    setup(b.host, b.module, 1);   // 4x faster — must not disturb A
+    for (let i = 0; i < 40; i++) {
+      for (const { host, module } of [a, b]) {
+        host.frameState.bpm = 120;
+        host.frameState.deltaTime = 0.016;
+        host.frameState.elapsedTime += 0.016;
+        host.frameState.barPhase = (host.frameState.barPhase + 0.016 * 120 / 60 / 4) % 1;
+        module.tick(0.016);
+      }
+    }
+    // barPhase after 40 frames = 0.32; A locks to the bar, B runs 4 beats per
+    // cycle → phase (0.32*4) % 1 = 0.28.
+    expect(a.host.pluginState.output as number).toBeCloseTo(2 * 0.32 - 1, 2);
+    expect(b.host.pluginState.output as number).toBeCloseTo(2 * 0.28 - 1, 2);
+    a.host.dispose(); b.host.dispose();
+  });
+
+  it('separates pools by key, and never pools a host that opted out', async () => {
+    const a = await spawn('lfo-k1|fmt1');
+    if (!a) { console.warn('no core.wasm — skipping'); return; }
+    const other = (await spawn('lfo-k1|fmt3'))!;   // different working format
+    const unpooled1 = (await spawn(null))!;
+    const unpooled2 = (await spawn(null))!;
+    expect(wasmInstance(other.host)).not.toBe(wasmInstance(a.host));
+    expect(wasmInstance(unpooled1.host)).not.toBe(wasmInstance(a.host));
+    expect(wasmInstance(unpooled2.host)).not.toBe(wasmInstance(unpooled1.host));
+    for (const h of [a, other, unpooled1, unpooled2]) h.host.dispose();
+  });
+
+  it('releases the pool once its last host is disposed', async () => {
+    const a = await spawn('lfo-refs|fmt1');
+    if (!a) { console.warn('no core.wasm — skipping'); return; }
+    const b = (await spawn('lfo-refs|fmt1'))!;
+    const shared = wasmInstance(a.host);
+    a.host.dispose();
+    // One host left → the pool survives and is still joinable.
+    const c = (await spawn('lfo-refs|fmt1'))!;
+    expect(wasmInstance(c.host)).toBe(shared);
+    b.host.dispose(); c.host.dispose();
+    // Now empty → a later host instantiates afresh.
+    const d = (await spawn('lfo-refs|fmt1'))!;
+    expect(wasmInstance(d.host)).not.toBe(shared);
+    d.host.dispose();
+  });
+
+  it('dispose() is idempotent and runs the effect destroy hook once', async () => {
+    const a = await spawn('lfo-dispose|fmt1');
+    if (!a) { console.warn('no core.wasm — skipping'); return; }
+    let destroys = 0;
+    const realDestroy = (a.host as any).destroyFn as ((self: number) => void) | null;
+    expect(realDestroy).toBeTruthy();
+    (a.host as any).destroyFn = (self: number) => { destroys++; realDestroy!(self); };
+    a.host.dispose();
+    a.host.dispose();
+    expect(destroys).toBe(1);
+    expect(a.host.activeSelf).toBe(0);
+  });
+});

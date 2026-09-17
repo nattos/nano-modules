@@ -51,6 +51,9 @@ interface WebEffectInstance {
   module: WasmModule;
   moduleType: string;
   resolvedId: string;
+  /** False for a host this executor merely ADOPTED (`registerInstance` — the
+   *  worker still owns and drives it). Only owned hosts get `dispose()`d. */
+  owned: boolean;
 }
 
 interface ExecutorExports {
@@ -264,6 +267,35 @@ export class WasmSketchExecutor {
 
   // ---- instance lifecycle ----
   /**
+   * Identity of the WASM instance a chain entry's host may share (see
+   * `WasmHost.poolKey`). Every effect instance of the same TYPE, running under
+   * the same working format, shares one `WebAssembly.Instance` — which is what
+   * keeps a big offline session under Chrome's 100-wasm-memory-per-process cap.
+   *
+   * The format code belongs in the key because a type's shared compute PSO and
+   * its translated WGSL storage declarations bake the sketch working format
+   * (`SketchDefault` → rgba8unorm vs rgba16float); the executor already tears
+   * a chain's hosts down when `slot.fmtCode` changes, and this keeps 8-bit and
+   * 16F sketches from colliding in the meantime.
+   *
+   * Widening this to one instance per BUNDLE is a one-line change (drop the
+   * effect id) — the per-type snapshots in `WasmHost` already keep each type's
+   * shaders and schema apart. Per TYPE is the conservative choice: a trap in an
+   * effect poisons its WASM instance, and this bounds that to one effect type.
+   */
+  private poolKeyFor(resolvedId: string): string {
+    return `${resolvedId}|fmt${this.gpuHost.getDefaultFormatCode()}`;
+  }
+
+  /** Drop `key`'s instance, running the effect's `destroy(self)` first. */
+  private destroyInstance(key: string): void {
+    const inst = this.instances.get(key);
+    if (!inst) return;
+    this.instances.delete(key);
+    if (inst.owned) inst.host.dispose();
+  }
+
+  /**
    * Ensure a web effect instance exists for `key` (module type `mt`). Mirrors
    * SketchExecutor.ensureInstance: a fresh WasmHost wired to the shared
    * gpuHost/bridgeCore, then load + activateEffect. Async (WebAssembly.instantiate).
@@ -278,7 +310,7 @@ export class WasmSketchExecutor {
       // '' when metadata isn't populated and then mismatches every frame, deleting
       // + recreating the instance forever (1000s of "module initialized").
       if (existing.moduleType === mt) return existing;
-      this.instances.delete(key);  // module type changed (smart-input) — rebuild
+      this.destroyInstance(key);  // module type changed (smart-input) — rebuild
     }
     if (!found) return null;
     // Failed create (most commonly WebAssembly OOM — Chrome caps live wasm
@@ -296,6 +328,10 @@ export class WasmSketchExecutor {
     const promise = (async () => {
       try {
         const host = new WasmHost();
+        // Share one WASM instance with every other live instance of this effect
+        // type (see poolKeyFor) — set BEFORE load(), which is where the pool is
+        // joined or created.
+        host.poolKey = this.poolKeyFor(found.resolvedId);
         host.bridgeCore = this.bridgeCore;
         host.gpuHost = this.gpuHost;
         host.onSchemaChanged = this.onHostSchemaChanged;
@@ -305,7 +341,7 @@ export class WasmSketchExecutor {
         host.streams = this.streamsRegistry;
         await host.load(found.compiled);
         const module = host.activateEffect(found.resolvedId);
-        const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId };
+        const inst: WebEffectInstance = { host, module, moduleType: mt, resolvedId, owned: true };
         this.instances.set(key, inst);
         this.createFailures.delete(key);
         return inst;
@@ -326,7 +362,7 @@ export class WasmSketchExecutor {
   }
 
   invalidateInstance(instanceKey: string): void {
-    this.instances.delete(instanceKey);
+    this.destroyInstance(instanceKey);
   }
 
   /**
@@ -354,7 +390,7 @@ export class WasmSketchExecutor {
    */
   pruneInstancesExcept(liveKeys: Set<string>): void {
     for (const key of [...this.instances.keys()]) {
-      if (!liveKeys.has(key)) this.instances.delete(key);
+      if (!liveKeys.has(key)) this.destroyInstance(key);
     }
   }
 
@@ -382,7 +418,7 @@ export class WasmSketchExecutor {
     const mt = host.metadata?.id ?? '';
     host.instanceKey = instanceKey;
     host.streams = this.streamsRegistry;
-    this.instances.set(instanceKey, { host, module, moduleType: mt, resolvedId: mt });
+    this.instances.set(instanceKey, { host, module, moduleType: mt, resolvedId: mt, owned: false });
   }
 
   /** Attach the seekable-streams registry every effect host's streams.*
@@ -740,7 +776,7 @@ export class WasmSketchExecutor {
       this.destroySlot(slot);
       this.slots.delete(sketchId);
       for (const e of chain) {
-        if (e.type === 'module') this.instances.delete(e.instance_key);
+        if (e.type === 'module') this.destroyInstance(e.instance_key);
       }
       slot = this.slotFor(sketchId);
       slot.fmtCode = fmtCode;
