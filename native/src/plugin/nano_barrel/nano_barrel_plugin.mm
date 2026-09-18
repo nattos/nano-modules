@@ -488,6 +488,18 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     return nano_paths::wasmDir(reinterpret_cast<const void*>(&resourceAnchor));
   }
 
+  // This plugin's own `.bundle` path — what the user typed (or dropped) into
+  // Resolume's FFGL plug-in folders, and the thing the editor compares against
+  // its own install to catch "Resolume is loading a DIFFERENT NanoBarrel".
+  static std::string bundleSelfPath() {
+    const std::string self = nano_paths::imagePathContaining(
+        reinterpret_cast<const void*>(&resourceAnchor));
+    if (self.empty()) return "";
+    auto pos = self.rfind(".bundle");
+    if (pos == std::string::npos) return self;   // unbundled (ffgl_runner, tests)
+    return self.substr(0, pos + 7);
+  }
+
   // Resolve libbridge_server.dylib, shipped as a SIBLING of the bundle (so a
   // single shared singleton is dlopen'd across barrel + looper bundles — same
   // path → same image). Mirrors looper_plugin.cpp's discovery.
@@ -533,6 +545,27 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       BridgeHandle h = keepalive_loader.bridge_init();  // acquire, never released
       BARREL_LOG("server-start",
                  "shared bridge server started early (ctor/prototype), h=%p", (void*)h);
+
+      // Say WHERE we are, once, as early as the server exists — before any
+      // clip is launched, so the editor's setup checklist can answer "is
+      // Resolume loading the plugin that shipped with this app?" without a
+      // live instance. The dylib owns the sibling `/global/host/server` key
+      // (connection state); this half is ours and never rewritten.
+      if (h && keepalive_loader.bridge_set_at) {
+        const std::string root = nano_paths::resourceRoot(
+            reinterpret_cast<const void*>(&resourceAnchor));
+        nlohmann::json info = {
+          {"version", 1},
+          {"id", "com.nano.nanobarrel"},
+          {"path", bundleSelfPath()},
+          {"dylib", dylib},
+          {"resourceRoot", root},
+          {"wasmDir", bundleWasmDir()},
+        };
+        keepalive_loader.bridge_set_at(h, "/global/host/plugin", info.dump().c_str());
+        BARREL_LOG("server-start", "published /global/host/plugin root=%s",
+                   root.empty() ? "(none)" : root.c_str());
+      }
     });
   }
 

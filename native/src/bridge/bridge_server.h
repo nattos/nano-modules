@@ -114,6 +114,13 @@ private:
   // "<layer>:<clip>" (0-based), for the web Instances tab's clip play/stop
   // buttons. Change-gated; pump thread, after apply_resolume_messages.
   void publish_clip_states();
+  // Publish /global/host/server — where this dylib lives, which resource root
+  // it resolved, and whether Resolume's own webserver is answering. The
+  // editor's setup checklist is the consumer: without this, "Resolume's
+  // webserver is off" and "Resolume isn't running" look identical from the
+  // web, and a stale plugin copy is invisible. Change-gated; pump thread.
+  // The sibling /global/host/plugin key is written by the FFGL plugin itself.
+  void publish_host_status();
   // Handle a web-originated clip-control action (trigger_clip / reassign_channel)
   // before it reaches BridgeCore. Returns true if it consumed the message.
   // Pump thread, under tick_mutex_ (resolume_client_ in scope).
@@ -167,6 +174,13 @@ private:
   uint64_t trigger_channels_hash_ = 0;
   // FNV hash of the last /global/clip_states doc — same change-gate as above.
   uint64_t clip_states_hash_ = 0;
+  // /global/host/server inputs + change-gate. The port and URL are settled in
+  // init_subsystems (both are env-overridable); `resolume_connected_published_`
+  // is -1 until the doc has been published once, so the first pass always
+  // writes. Pump thread only, except the two settled at init.
+  int bridge_port_ = 8081;
+  std::string resolume_url_;
+  int resolume_connected_published_ = -1;
   // shared_ptr (not unique): broadcast_binary copies the pointer under a brief
   // tick_mutex_ hold, then runs the (CPU-heavy) permessage-deflate + send on the
   // copy OUTSIDE the lock — so a preview frame's compression never stalls the

@@ -4,6 +4,7 @@
 #include "bridge/ws_server.h"
 #include "bridge/composition_cache.h"
 #include "bridge/trig_log.h"
+#include "platform/resource_root.h"
 #include "resolume/ws_client.h"
 #include "sketch/trigger_bus.h"
 #include "wasm/wasm_host.h"
@@ -69,6 +70,7 @@ void BridgeServer::init_subsystems() {
   // server for headless dev/test (see native/tools/fake_resolume.cpp).
   std::string resolume_url = "ws://127.0.0.1:8080/api/v1";
   if (const char* u = getenv("NANO_RESOLUME_URL"); u && *u) resolume_url = u;
+  resolume_url_ = resolume_url;
   resolume_client_->connect(resolume_url);
 
   // Phase 2: when the locator detects a dormant copy-paste duplicate, fork it by
@@ -136,6 +138,7 @@ void BridgeServer::init_subsystems() {
   // benchmarks/tests so they never collide with a live Arena/Resolume barrel.
   int port = 8081;
   if (const char* p = getenv("NANO_BRIDGE_PORT"); p && atoi(p) > 0) port = atoi(p);
+  bridge_port_ = port;
   if (!ws_server_->start(port)) {
     std::fprintf(stderr,
         "[bridge] WsServer failed to bind port %d (already in use?)\n", port);
@@ -177,6 +180,7 @@ void BridgeServer::shutdown_subsystems() {
   clip_launcher_.reset();
   trigger_channels_hash_ = 0;
   clip_states_hash_ = 0;
+  resolume_connected_published_ = -1;
 }
 
 void BridgeServer::pump_loop() {
@@ -224,6 +228,9 @@ void BridgeServer::pump_loop() {
       publish_trigger_channels();
       // Surface per-clip connected state to the web (change-gated).
       publish_clip_states();
+      // Surface where we are + whether Resolume's webserver answered
+      // (change-gated) for the editor's setup checklist.
+      publish_host_status();
       // Re-run Phase 2 fork detection every tick (not just on composition
       // messages) so the collision dwell fires even when Resolume's composition
       // is static — it only rebroadcasts on change.
@@ -514,6 +521,46 @@ void BridgeServer::publish_clip_states() {
   if (h == clip_states_hash_) return;  // unchanged — skip the patch
   clip_states_hash_ = h;
   core_.state_document().set_at("/global/clip_states", states);
+}
+
+namespace {
+// Address inside THIS image, for the image-relative half of resourceRoot().
+// A free function, so it doesn't depend on symbol ordering.
+void dylibAnchor() {}
+}  // namespace
+
+void BridgeServer::publish_host_status() {
+  // Whether Resolume's own webserver is answering is invisible from the web:
+  // the editor talks to US (port 8081), and everything that goes quiet when
+  // Arena's webserver is off — instance names, placement, composition scan,
+  // clip launching, channel reassign — degrades silently. Publish the flag so
+  // the setup checklist can say which of the two is actually wrong.
+  const int connected = (resolume_client_ && resolume_client_->is_connected()) ? 1 : 0;
+  if (connected == resolume_connected_published_) return;   // change-gated
+  const bool first = resolume_connected_published_ < 0;
+  resolume_connected_published_ = connected;
+
+  // The rest is constant for the process, so compute it once. imagePathContaining
+  // is a dladdr/GetModuleHandleEx call and resourceRoot() stats its way up a
+  // directory chain — neither belongs in a 200 Hz pump loop.
+  static const std::string self_path =
+      nano_paths::imagePathContaining(reinterpret_cast<const void*>(&dylibAnchor));
+  static const std::string root =
+      nano_paths::resourceRoot(reinterpret_cast<const void*>(&dylibAnchor));
+
+  nlohmann::json doc = {
+    {"version", 1},
+    {"path", self_path},
+    {"resourceRoot", root},
+    {"bridgePort", bridge_port_},
+    {"resolumeUrl", resolume_url_},
+    {"resolumeConnected", connected != 0},
+  };
+  core_.state_document().set_at("/global/host/server", doc);
+  if (!first) {
+    std::fprintf(stderr, "[bridge] resolume webserver %s (%s)\n",
+                 connected ? "connected" : "disconnected", resolume_url_.c_str());
+  }
 }
 
 bool BridgeServer::handle_client_command(int /*client_id*/, const std::string& msg) {
