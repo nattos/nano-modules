@@ -57,6 +57,7 @@
 
 #include "plugin/bridge_loader.h"
 #include "bridge/bridge_api.h"
+#include "platform/resource_root.h"
 
 #include <dlfcn.h>
 #include <fstream>
@@ -467,54 +468,37 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   }
 
  private:
-  // Resolve a file under this bundle's Contents/Resources/fonts/. Uses dladdr
-  // on a symbol in our own image to find the bundle, mirroring the bridge-dylib
-  // discovery in looper_plugin.cpp. Empty if we can't locate the bundle.
+  // Anchor for image-relative resource discovery. `dladdr` (and its Win32
+  // equivalent) needs an address inside OUR image; a static member function is
+  // a plain function pointer, so this doesn't depend on symbol order.
+  static void resourceAnchor() {}
+
+  // Resolve a font under the shared resource root. Empty is survivable — the
+  // text service falls back to system faces — but parity with the web build is
+  // lost, so callers log it.
   static std::string bundleFontPath(const char* name) {
-    Dl_info info;
-    // Any address in our own image works; use this function itself (static
-    // member → plain function pointer) so we don't depend on symbol order.
-    if (!dladdr(reinterpret_cast<const void*>(&bundleFontPath), &info) || !info.dli_fname)
-      return "";
-    std::string p = info.dli_fname;                 // …/NanoBarrel.bundle/Contents/MacOS/NanoBarrel
-    auto pos = p.find(".bundle/");
-    if (pos == std::string::npos) return "";
-    p = p.substr(0, pos + 8) + "Contents/Resources/fonts/" + name;
-    return p;
+    return nano_paths::fontPath(
+        reinterpret_cast<const void*>(&resourceAnchor), name);
   }
 
-  // Resolve the directory holding the effect .wasm bundles. NANO_BARREL_WASM_DIR
-  // overrides (for ffgl_runner / dev pointing at build/wasm); otherwise the
-  // bundled copy under Contents/Resources/wasm/. The shared runtime appends
-  // "/<bundle>.wasm". Empty if the bundle can't be located.
+  // Resolve the directory holding the effect .wasm bundles. The shared runtime
+  // appends "/<bundle>.wasm". See platform/resource_root.h for the resolution
+  // order — in particular why an installed app never outranks the dev tree.
   static std::string bundleWasmDir() {
-    if (const char* dir = getenv("NANO_BARREL_WASM_DIR"); dir && *dir)
-      return std::string(dir);
-    Dl_info info;
-    if (!dladdr(reinterpret_cast<const void*>(&bundleWasmDir), &info) ||
-        !info.dli_fname)
-      return "";
-    std::string p = info.dli_fname;
-    auto pos = p.find(".bundle/");
-    if (pos == std::string::npos) return "";
-    return p.substr(0, pos + 8) + "Contents/Resources/wasm";
+    return nano_paths::wasmDir(reinterpret_cast<const void*>(&resourceAnchor));
   }
 
   // Resolve libbridge_server.dylib, shipped as a SIBLING of the bundle (so a
   // single shared singleton is dlopen'd across barrel + looper bundles — same
   // path → same image). Mirrors looper_plugin.cpp's discovery.
   static std::string bundleDylibPath() {
-    Dl_info info;
-    if (!dladdr(reinterpret_cast<const void*>(&bundleDylibPath), &info) ||
-        !info.dli_fname)
-      return "";
-    std::string p = info.dli_fname;
-    auto pos = p.rfind(".bundle");
+    const std::string self = nano_paths::imagePathContaining(
+        reinterpret_cast<const void*>(&resourceAnchor));
+    if (self.empty()) return "";
+    auto pos = self.rfind(".bundle");
     if (pos == std::string::npos) return "";
-    p = p.substr(0, pos);
-    auto slash = p.rfind('/');
-    if (slash != std::string::npos) p = p.substr(0, slash + 1);
-    return p + "libbridge_server.dylib";
+    return nano_paths::joinPath(nano_paths::parentDir(self.substr(0, pos)),
+                                "libbridge_server.dylib");
   }
 
   // Start the shared bridge server as EARLY as possible — at Resolume launch,

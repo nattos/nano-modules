@@ -1,0 +1,9 @@
+{
+  "kind": "nano-resources",
+  "version": 1,
+  "layout": {
+    "wasm": "wasm",
+    "fonts": "fonts"
+  },
+  "_comment": "Marks this directory as a NanoModules shared resource root. Both the FFGL plugin (native/src/platform/resource_root.h) and the Electron app read wasm/ and fonts/ from beside this file. A marker alone is not enough - the resolver also requires wasm/core.wasm, so a half-built tree is correctly ignored."
+}

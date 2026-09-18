@@ -61,6 +61,16 @@ fi
 # means the same thing on every machine.
 export NANO_RESOLUME_URL="ws://127.0.0.1:1/api/v1"
 
+# Pin the shared resource root to THIS tree. The plugin would find it anyway by
+# walking up from its own image (see src/platform/resource_root.h, which ranks
+# that walk above the installed app's record precisely so this run can't be
+# hijacked) — but a test that silently rendered a RELEASED app's effects and
+# passed would be worse than one that fails, so say it outright.
+# NOTE: $here is native/tools, so the REPO root is two levels up — the
+# resource root is <repo>/build, not native/build (which is the CMake
+# build dir holding the bundle).
+export NANO_RESOURCE_ROOT="$(cd "$here/../.." && pwd)/build"
+
 run() {  # $1=out_png  $2=rect|2d
   if [ "$2" = 2d ]; then
     "$runner" "$bundle" 128 96 8 "$1" --config "$sketch" --input-target 2d >/dev/null 2>&1

@@ -89,7 +89,17 @@ set(WAMR_BUILD_SIMD 0)
 # so effect bundles fail to load ("zero byte expected") without this.
 set(WAMR_BUILD_REF_TYPES 1)
 set(WAMR_BUILD_BULK_MEMORY 1)
-set(WAMR_BUILD_PLATFORM "darwin")
+# WAMR names platforms in its own vocabulary: "darwin", "windows", "linux".
+# Derived rather than hardcoded so a future Windows host doesn't silently build
+# the macOS platform layer (see WINDOWS.md); the rest of this file is still
+# macOS-gated, so this alone does NOT make the native tree configure off macOS.
+if(WIN32)
+  set(WAMR_BUILD_PLATFORM "windows")
+elseif(APPLE)
+  set(WAMR_BUILD_PLATFORM "darwin")
+else()
+  set(WAMR_BUILD_PLATFORM "linux")
+endif()
 
 include(${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake)
 add_library(vmlib STATIC ${WAMR_RUNTIME_LIB_SOURCE})
@@ -323,6 +333,14 @@ target_compile_definitions(test_bridge_loader PRIVATE
 )
 
 catch_discover_tests(test_bridge_loader)
+
+# Shared resource root. Header-only, so this needs no library beyond Catch2 —
+# and it deliberately lives OUTSIDE if(APPLE) because platform/resource_root.h
+# is portable and is the piece a Windows host would reuse first.
+add_executable(test_resource_root tests/test_resource_root.cpp)
+target_link_libraries(test_resource_root PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_resource_root PRIVATE ${CMAKE_SOURCE_DIR}/src)
+catch_discover_tests(test_resource_root)
 
 add_executable(test_wasm_host tests/test_wasm_host.cpp)
 target_link_libraries(test_wasm_host PRIVATE wasm_host Catch2::Catch2WithMain)
@@ -1604,78 +1622,70 @@ if(APPLE)
   if(NOT DEFINED NANOBARREL_CODESIGN_IDENTITY)
     set(NANOBARREL_CODESIGN_IDENTITY "-")
   endif()
-  # --- Keep NanoBarrel.bundle's payload fresh INDEPENDENTLY of relinking it ---
-  # The barrel loads its effect WASM from Contents/Resources/wasm/ (a COPY) and
-  # dlopens the SIBLING libbridge_server.dylib. Both inputs are built OUTSIDE
-  # this target — the .wasm/.aot by wasm_modules/build_all.sh + build_aot.sh, the
-  # dylib by the bridge_server target — so a plain POST_BUILD (which fires ONLY
-  # when NanoBarrel itself relinks) leaves a STALE bundle whenever you rebuild
-  # just the wasm or just the dylib. Instead we drive the whole deploy from a
-  # STAMP that DEPENDS on every input, wrapped in an `ALL` custom target: a bare
-  # `cmake --build build` re-copies + re-signs whatever is newer, with no
-  # NanoBarrel relink required.
+  # --- Deploy NanoBarrel.bundle's siblings, and mark the shared resource root ---
+  # The barrel no longer carries its own copy of the effect WASM. It resolves a
+  # SHARED RESOURCE ROOT at runtime (src/platform/resource_root.h) holding
+  # wasm/ + fonts/, which in the dev tree is this repo's build/ and in a release
+  # is the Electron app's Contents/Resources/nano/. Two things follow:
   #
-  # ORDER MATTERS: every step that writes into the bundle must run BEFORE the
-  # final codesign, which re-seals the modified Resources. An ad-hoc signature
-  # goes invalid the instant a sealed file changes, and Resolume/Gatekeeper then
-  # refuse the load — so the stamp appends copy steps in call order and
-  # codesigns (dylib, then bundle) LAST.
+  #   * Rebuilding an effect no longer touches the bundle at all, so it no
+  #     longer invalidates the bundle's ad-hoc signature. That used to be the
+  #     forgotten step that left Resolume loading OLD effects (or refusing the
+  #     load outright), which is why wasm_modules/refresh_barrel.sh exists.
+  #   * The 60 MB of .wasm/.aot is stored once instead of twice.
+  #
+  # What still has to be deployed is libbridge_server.dylib, as a SIBLING of the
+  # bundle: dlopen shares one image only for the same path, so a single sibling
+  # copy backs every NanoBarrel (and the looper marker) with ONE shared
+  # singleton. A private per-bundle copy would spin up a second WsServer on
+  # :8081 and fail.
+  #
+  # Still a STAMP rather than a POST_BUILD because the dylib is built by another
+  # target, so a NanoBarrel relink is not the only thing that can make the
+  # deployed copy stale. ORDER MATTERS: codesign LAST, after every write.
   set(_nb_stamp "${CMAKE_CURRENT_BINARY_DIR}/nanobarrel_deploy.stamp")
   set(_nb_bundle "$<TARGET_BUNDLE_DIR:NanoBarrel>")
 
-  # Base step: ensure the wasm dir exists. DEPENDS the NanoBarrel bundle + the
-  # dylib so the stamp re-runs whenever either is rebuilt.
+  # The marker that makes ../build discoverable as a resource root. Written
+  # unconditionally so a dev tree is a valid root the moment it is built; the
+  # resolver additionally requires wasm/core.wasm to exist before accepting it,
+  # so a marker beside an unbuilt wasm dir is correctly ignored.
+  set(_nano_res_root "${CMAKE_SOURCE_DIR}/../build")
   add_custom_command(OUTPUT "${_nb_stamp}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_nb_bundle}/Contents/Resources/wasm"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_nano_res_root}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/tools/nano-resources.json"
+            "${_nano_res_root}/nano-resources.json"
     DEPENDS NanoBarrel "$<TARGET_FILE:bridge_server>"
-    COMMENT "Deploying NanoBarrel.bundle payload (wasm + dylib) + resigning"
+            "${CMAKE_SOURCE_DIR}/tools/nano-resources.json"
+    COMMENT "Deploying NanoBarrel.bundle sibling dylib + resource-root marker"
     VERBATIM)
 
-  # Latin primary font (default.ttf) for the text.* service — parity-exact
-  # primary; CJK falls back to system faces via Core Text. Best-effort: the file
-  # is gitignored, so skip quietly if absent. Folded into the stamp so a font
-  # swap also re-seals the bundle.
+  # Fonts live in the shared root too. web/public/fonts is the single source of
+  # truth for both halves (it is what the web build serves), so link it in
+  # rather than keeping a third copy. Gitignored, so skip quietly if absent.
   set(NANOBARREL_FONT_SRC "${CMAKE_SOURCE_DIR}/../web/public/fonts/default.ttf")
   if(EXISTS "${NANOBARREL_FONT_SRC}")
     add_custom_command(OUTPUT "${_nb_stamp}" APPEND
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${_nb_bundle}/Contents/Resources/fonts"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${_nano_res_root}/fonts"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              "${NANOBARREL_FONT_SRC}" "${_nb_bundle}/Contents/Resources/fonts/default.ttf"
+              "${NANOBARREL_FONT_SRC}" "${_nano_res_root}/fonts/default.ttf"
       DEPENDS "${NANOBARREL_FONT_SRC}")
   else()
-    message(STATUS "NanoBarrel: default.ttf not found — text effects will use the system UI font as primary")
+    message(STATUS "NanoBarrel: default.ttf not found — text effects will use the system UI font as primary (run web/scripts/fetch_fonts.sh)")
   endif()
 
-  # Effect .wasm bundles (+ optional per-arch `<bundle>-<arch>.aot` sidecars the
-  # loader prefers; the portable `.wasm` is the fallback). Guarded by EXISTS at
-  # CONFIGURE time — the files are produced by external shell scripts, so they
-  # can only be a CMake DEPENDS when already present; reconfigure after a fresh
-  # bundle first appears. (executor.wasm is NOT bundled — the barrel runs the
-  # executor natively; executor.wasm is a web-only artifact.)
-  foreach(_b core lights nano text richtext legacy)
-    set(_wsrc "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}.wasm")
-    if(EXISTS "${_wsrc}")
-      add_custom_command(OUTPUT "${_nb_stamp}" APPEND
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_wsrc}" "${_nb_bundle}/Contents/Resources/wasm/${_b}.wasm"
-        DEPENDS "${_wsrc}")
-    endif()
-    foreach(_arch aarch64 x86_64)
-      set(_aot "${CMAKE_SOURCE_DIR}/../build/wasm/${_b}-${_arch}.aot")
-      if(EXISTS "${_aot}")
-        add_custom_command(OUTPUT "${_nb_stamp}" APPEND
-          COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                  "${_aot}" "${_nb_bundle}/Contents/Resources/wasm/${_b}-${_arch}.aot"
-          DEPENDS "${_aot}")
-      endif()
-    endforeach()
-  endforeach()
+  # Prune the LEGACY in-bundle payload. Before the shared root, the barrel
+  # carried its own 60 MB copy of wasm/ + fonts/ here. An existing checkout has
+  # that copy already sealed into its signature, so simply leaving it would ship
+  # a second, silently-diverging set of effects — and deleting it by hand breaks
+  # the seal. Doing it HERE, before the codesign below, upgrades a working tree
+  # in one build with the signature intact.
+  add_custom_command(OUTPUT "${_nb_stamp}" APPEND
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_nb_bundle}/Contents/Resources/wasm"
+                                       "${_nb_bundle}/Contents/Resources/fonts")
 
-  # Deploy + sign the shared dylib as a SIBLING of the bundle. dlopen shares one
-  # image only for the same path, so a single sibling copy backs every NanoBarrel
-  # (and the looper marker) with ONE shared singleton — a private per-bundle copy
-  # would spin up a second WsServer on :8081 and fail. Then re-seal the bundle
-  # LAST (after all Resources writes above) and touch the stamp.
+  # The dylib sibling, then re-seal the bundle LAST.
   add_custom_command(OUTPUT "${_nb_stamp}" APPEND
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:bridge_server>" "${_nb_bundle}/../libbridge_server.dylib"

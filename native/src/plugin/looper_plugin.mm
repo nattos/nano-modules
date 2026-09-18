@@ -53,6 +53,7 @@
 
 #include "plugin/bridge_loader.h"
 #include "bridge/bridge_api.h"
+#include "platform/resource_root.h"
 #include "plugin/synth.h"
 
 #import "nano_barrel/InteropTexture.h"
@@ -312,39 +313,30 @@ class LooperPlugin : public CFFGLPlugin {
   // -- Bundle discovery (mirrors nano_barrel_plugin.mm) ----------------
   // libbridge_server.dylib is a SIBLING of the bundle (same path → one shared
   // image across barrel + looper).
+  // Anchor for image-relative discovery — an address inside OUR image.
+  static void resourceAnchor() {}
+
   static std::string bundleDylibPath() {
-    Dl_info info;
-    if (!dladdr(reinterpret_cast<const void*>(&bundleDylibPath), &info) || !info.dli_fname)
-      return "";
-    std::string p = info.dli_fname;
-    auto pos = p.rfind(".bundle");
+    const std::string self = nano_paths::imagePathContaining(
+        reinterpret_cast<const void*>(&resourceAnchor));
+    if (self.empty()) return "";
+    auto pos = self.rfind(".bundle");
     if (pos == std::string::npos) return "";
-    p = p.substr(0, pos);
-    auto slash = p.rfind('/');
-    if (slash != std::string::npos) p = p.substr(0, slash + 1);
-    return p + "libbridge_server.dylib";
+    return nano_paths::joinPath(nano_paths::parentDir(self.substr(0, pos)),
+                                "libbridge_server.dylib");
   }
 
-  // The looper ships no WASM of its own — read the sibling NanoBarrel bundle's
-  // Resources/wasm (assume colocated). NANO_BARREL_WASM_DIR overrides for
-  // ffgl_runner / dev. Empty if the plugins dir can't be located.
-  static std::string siblingBarrelResource(const char* subpath) {
-    Dl_info info;
-    if (!dladdr(reinterpret_cast<const void*>(&siblingBarrelResource), &info) || !info.dli_fname)
-      return "";
-    std::string p = info.dli_fname;                  // …/NanoLooper.bundle/Contents/MacOS/NanoLooper
-    auto pos = p.rfind(".bundle");
-    if (pos == std::string::npos) return "";
-    p = p.substr(0, pos);                            // …/NanoLooper
-    auto slash = p.rfind('/');
-    if (slash != std::string::npos) p = p.substr(0, slash + 1);  // …/ (plugins dir)
-    return p + "NanoBarrel.bundle/Contents/Resources/" + subpath;
-  }
+  // The looper ships no WASM of its own. It used to reach sideways into a
+  // colocated NanoBarrel.bundle's Resources/ by name; now both plugins resolve
+  // the SAME shared root, so the looper works wherever it is deployed and the
+  // hardcoded "NanoBarrel.bundle" literal is gone.
   static std::string bundleWasmDir() {
-    if (const char* dir = getenv("NANO_BARREL_WASM_DIR"); dir && *dir) return std::string(dir);
-    return siblingBarrelResource("wasm");
+    return nano_paths::wasmDir(reinterpret_cast<const void*>(&resourceAnchor));
   }
-  static std::string bundleFontPath() { return siblingBarrelResource("fonts/default.ttf"); }
+  static std::string bundleFontPath() {
+    return nano_paths::fontPath(reinterpret_cast<const void*>(&resourceAnchor),
+                                "default.ttf");
+  }
 
   static std::string generateUuid() {
     @autoreleasepool {
