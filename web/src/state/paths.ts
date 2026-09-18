@@ -380,6 +380,20 @@ export async function appResourceRoot(): Promise<string | null> {
   }
 }
 
+/**
+ * Put `text` on the clipboard. Prefers Electron's own clipboard, which is
+ * synchronous and needs no permission — `navigator.clipboard` is
+ * permission-gated and rejects silently in contexts that aren't a user gesture
+ * the browser recognises.
+ */
+export async function copyText(text: string): Promise<void> {
+  if (isElectron()) {
+    const clip = nodeRequire<any>('electron')?.clipboard;
+    if (clip?.writeText) { clip.writeText(text); return; }
+  }
+  try { await navigator.clipboard?.writeText(text); } catch { /* ignore */ }
+}
+
 /** Reveal `absPath` in Finder / Explorer. No-op outside Electron. */
 export async function revealInFolder(absPath: string): Promise<void> {
   if (!isElectron() || !absPath) return;

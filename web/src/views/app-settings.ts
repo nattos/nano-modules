@@ -24,7 +24,7 @@ import {
   resolumeRemoteSettingChanged,
   type SetupStepId, type SetupStepStatus,
 } from '../state/resolume-setup';
-import { appResourceRoot, revealInFolder } from '../state/paths';
+import { appResourceRoot, copyText, revealInFolder } from '../state/paths';
 
 /** macOS, from Electron's own `process` when we have it. The FFGL plug-in is
  *  macOS-only, so the install step's paths and buttons hang off this. */
@@ -394,7 +394,7 @@ export class AppSettings extends MobxLitElement {
   }
 
   private onCopy(text: string) {
-    void navigator.clipboard?.writeText(text).catch(() => { /* ignore */ });
+    void copyText(text);
     this.copied = text;
     if (this.copyTimer != null) clearTimeout(this.copyTimer);
     this.copyTimer = setTimeout(() => { this.copied = ''; this.copyTimer = null; }, 1500);
