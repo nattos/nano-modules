@@ -1472,6 +1472,22 @@ int32_t SketchExecutor::execute(
     }
   }
 
+  // NOTHING ABOVE: the walk still needs a real (empty) image to hand the first
+  // stage. Most effects open render() with
+  //   auto in = gpu::Device::textureForField("tex_in");
+  //   if (!in.valid()) return;
+  // — a sane guard, but with no host input the first stage's tex_in was the
+  // sentinel -1, so a generator dropped at the TOP of a chain drew nothing at
+  // all and only came alive once any card was placed above it. Substitute a
+  // cleared, fully transparent intermediate: exactly the image an explicit
+  // "clear" stage above it would have produced, and the same texture
+  // `passthroughOutput` already synthesizes for the no-input passthrough case.
+  // Only ever taken when the host supplied no input (the barrel always does).
+  if (execInput < 0 && W > 0 && H > 0) {
+    execInput = nextIntermediate(W, H);
+    gpu_clear_texture(execInput, 0.0f, 0.0f, 0.0f, 0.0f);
+  }
+
   for (size_t colIdx = 0; colIdx < columns.size(); ++colIdx) {
     // Cached structural plan for this column (resolvable entries + rail index).
     const PlanColumn& pc = plan_[colIdx];
