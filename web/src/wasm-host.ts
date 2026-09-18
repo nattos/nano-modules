@@ -338,6 +338,20 @@ export class WasmHost {
   /** True once `dispose()` has torn this host's effect instance down. */
   private disposed = false;
 
+  /**
+   * Run `fn` with this host installed as the pool's `cur`, restoring the
+   * previous one afterwards. Assigned by `activateEffect`; falls back to a
+   * plain call for a host that never activated an effect (warmup, service
+   * modules, the hand-wired test path).
+   */
+  private enterFn: <T>(run: () => T) => T = (run) => {
+    const pool = this.pool;
+    if (!pool) return run();
+    const prev = pool.cur;
+    pool.cur = this;
+    try { return run(); } finally { pool.cur = prev; }
+  };
+
   /** Effects registered by the module during nano_module_main. */
   registeredEffects: EffectInfo[] = [];
 
@@ -1875,26 +1889,33 @@ export class WasmHost {
     // Call init immediately, threading the instance's self pointer.
     if (initFn) initFn(self);
 
-    // Every call below re-points the shared import closures at THIS host before
-    // entering WASM. Cheap (one field write) and sufficient: the effect ABI is
-    // synchronous, so a call never interleaves with another host's.
-    const enter = () => { pool.cur = this; };
+    // Every call below re-points the shared import closures at THIS host for the
+    // duration of the call, then puts back whatever they pointed at before.
+    //
+    // The restore is insurance, not currently load-bearing: the executor drives
+    // effects strictly sequentially, so nothing is mid-call when another host
+    // starts one. But `cur` is a single mutable pointer shared by every effect
+    // on this WASM instance, and the failure mode if a nested call ever appears
+    // is silent cross-instance state corruption — not a crash. Cheap enough to
+    // pay always.
+    const enter = <T>(run: () => T): T => {
+      const prev = pool.cur;
+      pool.cur = this;
+      try { return run(); } finally { pool.cur = prev; }
+    };
+    this.enterFn = enter;
     return {
       init: () => {}, // Already called
-      tick: (dt: number) => { enter(); tickFn?.(self, dt); },
-      render: (vpW: number, vpH: number) => { enter(); renderFn?.(self, vpW, vpH); },
-      onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) => {
-        enter(); onStatePatchedFn?.(self, n, pb, off, len, ops);
-      },
-      isIdentity: () => {
-        if (!isIdentityFn) return false;
-        enter();
-        return (isIdentityFn(self) | 0) !== 0;
-      },
+      tick: (dt: number) => enter(() => tickFn?.(self, dt)),
+      render: (vpW: number, vpH: number) => enter(() => renderFn?.(self, vpW, vpH)),
+      onStatePatched: (n: number, pb: number, off: number, len: number, ops: number) =>
+        enter(() => onStatePatchedFn?.(self, n, pb, off, len, ops)),
+      isIdentity: () =>
+        isIdentityFn ? enter(() => (isIdentityFn(self) | 0) !== 0) : false,
       onActive: onActiveFn
-        ? (active: boolean) => { enter(); onActiveFn!(self, active ? 1 : 0); }
+        ? (active: boolean) => enter(() => onActiveFn!(self, active ? 1 : 0))
         : undefined,
-      seek: seekFn ? (from: number, to: number) => { enter(); seekFn!(self, from, to); } : undefined,
+      seek: seekFn ? (from: number, to: number) => enter(() => seekFn!(self, from, to)) : undefined,
     };
   }
 
@@ -1962,8 +1983,7 @@ export class WasmHost {
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
     const fn = table.get(this.onStateReadyIdx) as ((self: number) => void) | null;
     if (!fn) return;
-    if (this.pool) this.pool.cur = this;
-    fn(this.activeSelf);
+    this.enterFn(() => fn(this.activeSelf));
   }
 
   /**
@@ -2074,8 +2094,7 @@ export class WasmHost {
     const table = this.instance.exports.__indirect_function_table as WebAssembly.Table;
     const fn = table.get(this.fusionPrepareIdx) as ((self: number, w: number, h: number) => void) | null;
     if (!fn) return;
-    if (this.pool) this.pool.cur = this;
-    fn(this.activeSelf, vpW, vpH);
+    this.enterFn(() => fn(this.activeSelf, vpW, vpH));
   }
 
   /**
@@ -2130,10 +2149,10 @@ export class WasmHost {
     patches: PatchOp[],
     dispatch: (n: number, pb: number, off: number, len: number, ops: number) => void,
   ) {
-    // Store patches for state.get_patch() value access — which the effect reads
-    // back through the pool's shared imports, so claim `cur` before dispatching.
+    // Store patches for state.get_patch() value access — the effect reads them
+    // back through the pool's shared imports, which `enterFn` (below, around
+    // the dispatch) points at this host.
     this.pendingPatches = patches;
-    if (this.pool) this.pool.cur = this;
 
     const encoder = new TextEncoder();
     const pathStrings = patches.map(p => encoder.encode(p.path));
@@ -2176,7 +2195,7 @@ export class WasmHost {
       pathOffset += pathStrings[i].length;
     }
 
-    dispatch(n, pathsBufPtr, offsetsPtr, lengthsPtr, opsPtr);
+    this.enterFn(() => dispatch(n, pathsBufPtr, offsetsPtr, lengthsPtr, opsPtr));
 
     free(pathsBufPtr);
     free(offsetsPtr);
@@ -2208,7 +2227,7 @@ export class WasmHost {
       // An empty candidate state still resolves defaults: dispatch a single
       // no-op (the evaluator defaults every gating field itself).
       if (patches.length === 0) {
-        this.evalVisibilityFn(0, 0, 0, 0, 0);
+        this.enterFn(() => this.evalVisibilityFn!(0, 0, 0, 0, 0));
       } else {
         this.dispatchPatches(patches, (n, pb, off, len, ops) =>
           this.evalVisibilityFn!(n, pb, off, len, ops));
