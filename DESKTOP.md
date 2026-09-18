@@ -142,7 +142,17 @@ back immediately.
 to the dev server) but `npm run build` **fails outright**, rather than shipping
 something that starts and then renders nothing.
 
-`web/src/naga-wgsl.test.ts` asserts the wasm and the CLI agree byte for byte.
+`web/src/naga-wgsl.test.ts` asserts the wasm and the CLI agree byte for byte,
+across the real corpus — `native/build/tmp/*.spv`, 369 files, DXC's actual
+output for every effect, in three storage-format resolutions.
+
+That corpus is the point. An earlier version of `naga_spv` set
+`spv::Options` field-by-field and guessed `adjust_coordinate_space` wrong
+(naga's default is `true`). The result compiled cleanly and **rendered
+differently** — four effect suites failed on brightness thresholds with nothing
+logged anywhere. A single synthetic compute shader sails straight through that.
+Use `Options::default()`; the dev server runs `naga in out` with no flags, so
+anything else is a silent divergence between dev and shipping.
 
 ---
 
