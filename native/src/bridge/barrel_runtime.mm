@@ -26,6 +26,7 @@
 #include "bridge/library_paths.h"
 #include "bridge/preview_codec.h"
 #include "bridge/ws_server.h"
+#include "platform/paths.h"
 #include "gpu/gpu_backend.h"
 #include "midi/midi_host.h"
 #include "artnet/artnet_host.h"
@@ -303,13 +304,7 @@ struct BarrelRuntime::Impl {
     nano_midi::MidiHost::instance().setAliases(all);
   }
 
-  static std::string supportDir() {
-    const char* home = getenv("HOME");
-    if (!home) return {};
-    const std::string dir = std::string(home) + "/Library/Application Support/NanoBarrel";
-    mkdir(dir.c_str(), 0755);
-    return dir;
-  }
+  static std::string supportDir() { return nano_paths::supportDir(); }
 
   static std::string midiSidecarPath() {
     const std::string dir = supportDir();

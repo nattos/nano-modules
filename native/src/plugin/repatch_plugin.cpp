@@ -1,7 +1,8 @@
 #include "plugin/repatch_plugin.h"
 
-#include <dlfcn.h>
 #include <string>
+
+#include "platform/paths.h"
 
 #include <ffgl/FFGLPluginInfo.h>
 #include <ffglquickstart/FFGLPlugin.h>
@@ -24,23 +25,17 @@ RepatchPlugin::RepatchPlugin() {
 }
 
 FFResult RepatchPlugin::InitGL(const FFGLViewportStruct* vp) {
-  // Find the bridge dylib relative to our own bundle location
-  Dl_info info;
+  // Find the bridge dylib relative to our own bundle location, e.g.
+  //   /path/to/NanoRepatch.bundle/Contents/MacOS/NanoRepatch
+  //     -> /path/to/libbridge_server.dylib
   std::string dylib_path;
-  if (dladdr(reinterpret_cast<void*>(&PluginInfo), &info) && info.dli_fname) {
-    dylib_path = info.dli_fname;
-    // Navigate from plugin bundle to dylib location
-    // e.g., /path/to/NanoRepatch.bundle/Contents/MacOS/NanoRepatch
-    //     -> /path/to/libbridge_server.dylib
-    auto pos = dylib_path.rfind(".bundle");
-    if (pos != std::string::npos) {
-      dylib_path = dylib_path.substr(0, pos);
-      auto slash = dylib_path.rfind('/');
-      if (slash != std::string::npos) {
-        dylib_path = dylib_path.substr(0, slash + 1);
-      }
-      dylib_path += "libbridge_server.dylib";
-    }
+  const std::string self =
+      nano_paths::imagePathContaining(reinterpret_cast<void*>(&PluginInfo));
+  if (!self.empty()) {
+    auto pos = self.rfind(".bundle");
+    if (pos != std::string::npos)
+      dylib_path = nano_paths::joinPath(
+          nano_paths::parentDir(self.substr(0, pos)), "libbridge_server.dylib");
   }
 
   if (dylib_path.empty() || !loader_.load(dylib_path.c_str())) {

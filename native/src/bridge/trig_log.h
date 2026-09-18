@@ -15,6 +15,8 @@
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
+
+#include "platform/paths.h"
 #include <unistd.h>
 
 namespace bridge {
@@ -25,10 +27,8 @@ inline FILE*& trig_log_file() { static FILE* f = nullptr; return f; }
 inline void trig_log(const char* fmt, ...) {
   std::lock_guard<std::mutex> g(trig_log_mu());
   if (!trig_log_file()) {
-    const char* home = getenv("HOME");
-    if (!home) return;
-    std::string dir = std::string(home) + "/Library/Logs/NanoBarrel";
-    mkdir(dir.c_str(), 0755);
+    const std::string dir = nano_paths::logDir("NanoBarrel");
+    if (dir.empty()) return;
     const std::string path = dir + "/trigger.log";
     trig_log_file() = fopen(path.c_str(), "a");
     if (!trig_log_file()) return;

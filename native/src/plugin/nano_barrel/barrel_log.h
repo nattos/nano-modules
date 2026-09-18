@@ -15,6 +15,8 @@
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
+
+#include "platform/paths.h"
 #include <unistd.h>
 
 #include <mach/mach_time.h>
@@ -65,10 +67,8 @@ inline os_log_t& oslog() {
 
 inline void ensure_open() {
   if (file()) return;
-  const char* home = getenv("HOME");
-  if (!home) return;
-  std::string dir = std::string(home) + "/Library/Logs/NanoBarrel";
-  mkdir(dir.c_str(), 0755);
+  const std::string dir = nano_paths::logDir("NanoBarrel");
+  if (dir.empty()) return;
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
   uint64_t unixms = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;

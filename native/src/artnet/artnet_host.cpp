@@ -2,13 +2,9 @@
 
 #include "artnet/artnet_host.h"
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include "artnet/socket_compat.h"
+
 #include <sys/time.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -54,7 +50,7 @@ struct ArtNetHost::Impl {
   std::atomic<bool> started{false};
   std::atomic<bool> listening{false};
   std::atomic<bool> stopping{false};
-  int fds[2] = {-1, -1};
+  net::socket_t fds[2] = {net::kInvalidSocket, net::kInvalidSocket};
   int ports[2] = {0, 0};
   std::thread rx;
 
@@ -99,24 +95,29 @@ struct ArtNetHost::Impl {
     }
   }
 
-  int openSocket(int port) {
-    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return -1;
+  net::socket_t openSocket(int port) {
+    net::socket_t fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (!net::valid(fd)) return net::kInvalidSocket;
     int on = 1;
     // BOTH are required, and both must be set by EVERY socket sharing the
     // port. SO_REUSEADDR alone gets EADDRINUSE against Resolume (measured).
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof on);
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof on);
+#ifdef SO_REUSEPORT
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (const char*)&on, sizeof on);
+#endif
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons((uint16_t)port);
     a.sin_addr.s_addr = INADDR_ANY;   // never an interface address
-    if (::bind(fd, (sockaddr*)&a, sizeof a) != 0) { ::close(fd); return -1; }
+    if (::bind(fd, (sockaddr*)&a, sizeof a) != 0) {
+      net::closeSocket(fd);
+      return net::kInvalidSocket;
+    }
     // NON-BLOCKING, and the loop below waits in poll() instead. A blocking
     // recvfrom here — even with SO_RCVTIMEO — stalls the whole RX thread on
     // whichever socket happens to be idle, which throttles the OTHER one to
     // one packet per timeout. See loop().
-    ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    net::setNonBlocking(fd);
     return fd;
   }
 
@@ -142,25 +143,26 @@ struct ArtNetHost::Impl {
     std::vector<uint8_t> buf(2048);
     constexpr int kMaxPerWake = 1024;
     while (!stopping.load(std::memory_order_relaxed)) {
-      pollfd pfds[2];
+      net::pollfd_t pfds[2];
       int n_pf = 0;
       for (int i = 0; i < 2; ++i)
-        if (fds[i] >= 0) pfds[n_pf++] = pollfd{fds[i], POLLIN, 0};
+        if (net::valid(fds[i])) pfds[n_pf++] = net::pollfd_t{fds[i], POLLIN, 0};
       if (n_pf == 0) {   // nothing bound — nothing to do but stay stoppable
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         continue;
       }
       // 200 ms is the shutdown latency, NOT the receive rate — poll returns
       // the instant a datagram lands.
-      const int ready = ::poll(pfds, (nfds_t)n_pf, 200);
+      const int ready = net::poll(pfds, (unsigned)n_pf, 200);
       if (ready <= 0) continue;              // timeout or EINTR
       for (int i = 0; i < n_pf; ++i) {
         if (!(pfds[i].revents & POLLIN)) continue;
         for (int drained = 0; drained < kMaxPerWake; ++drained) {
           sockaddr_in from{};
           socklen_t fl = sizeof from;
-          const ssize_t n = ::recvfrom(pfds[i].fd, buf.data(), buf.size(), 0,
-                                       (sockaddr*)&from, &fl);
+          const net::ssize_t_ n =
+              ::recvfrom(pfds[i].fd, (char*)buf.data(), (int)buf.size(), 0,
+                         (sockaddr*)&from, &fl);
           if (n <= 0) break;                 // EAGAIN: this socket is empty
           char ip[INET_ADDRSTRLEN] = {};
           ::inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
@@ -177,7 +179,7 @@ ArtNetHost::~ArtNetHost() {
   impl_->stopping.store(true);
   if (impl_->rx.joinable()) impl_->rx.join();
   for (int i = 0; i < 2; ++i)
-    if (impl_->fds[i] >= 0) ::close(impl_->fds[i]);
+    if (net::valid(impl_->fds[i])) net::closeSocket(impl_->fds[i]);
 }
 
 ArtNetHost& ArtNetHost::instance() {
@@ -194,7 +196,7 @@ void ArtNetHost::start(int port, int mirrorPort) {
   for (int i = 0; i < 2; ++i)
     if (impl_->ports[i] > 0) impl_->fds[i] = impl_->openSocket(impl_->ports[i]);
 
-  if (impl_->fds[0] < 0 && impl_->fds[1] < 0) {
+  if (!net::valid(impl_->fds[0]) && !net::valid(impl_->fds[1])) {
     // Every bind failed. Leave `started` latched so we don't retry on every
     // render tick; isListening() reports the truth and infoJson() carries it
     // to whoever is asking why nothing arrives.

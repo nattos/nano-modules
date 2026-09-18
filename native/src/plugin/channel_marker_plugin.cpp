@@ -39,6 +39,7 @@
 #include <ffglquickstart/FFGLPlugin.h>
 
 #include "plugin/bridge_loader.h"
+#include "platform/paths.h"
 #include "plugin/nano_barrel/channel_marker_codec.h"
 #include "bridge/preview_codec.h"
 
@@ -301,17 +302,13 @@ class ChannelMarkerPlugin : public CFFGLPlugin {
   // -- Lifecycle --------------------------------------------------------
   FFResult InitGL(const FFGLViewportStruct* /*vp*/) override {
     std::string dylib_path;
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&ChannelMarkerPlugin::init_marker), &info) &&
-        info.dli_fname) {
-      dylib_path = info.dli_fname;
-      auto pos = dylib_path.rfind(".bundle");
-      if (pos != std::string::npos) {
-        dylib_path = dylib_path.substr(0, pos);
-        auto slash = dylib_path.rfind('/');
-        if (slash != std::string::npos) dylib_path = dylib_path.substr(0, slash + 1);
-        dylib_path += "libbridge_server.dylib";
-      }
+    const std::string self = nano_paths::imagePathContaining(
+        reinterpret_cast<void*>(&ChannelMarkerPlugin::init_marker));
+    if (!self.empty()) {
+      auto pos = self.rfind(".bundle");
+      if (pos != std::string::npos)
+        dylib_path = nano_paths::joinPath(
+            nano_paths::parentDir(self.substr(0, pos)), "libbridge_server.dylib");
     }
     if (dylib_path.empty() || !loader_.load(dylib_path.c_str())) return FF_FAIL;
     bridge_ = loader_.bridge_init();
