@@ -46,6 +46,10 @@ extraResources:
   # testonly.wasm (test fixtures) and 46 MB of per-arch AOT sidecars, and the
   # mac block below adds back only the ones this architecture can use.
   # `from` is relative to this file (web/).
+  #
+  # The wasm list must KEEP IN STEP WITH SHIPPED_WASM in
+  # src/vite-plugins/wasm-hmr.ts, which is what fails the build when one is
+  # missing. Here is what actually lands in the package.
   - from: ../build
     to: nano
     filter:

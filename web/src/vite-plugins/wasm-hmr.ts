@@ -26,6 +26,11 @@ import { createReadStream, existsSync, statSync } from 'fs';
  * of per-arch `.aot` sidecars that only the native barrel reads and a
  * `testonly.wasm` of test fixtures. Copying the directory wholesale would put
  * all of that in the installer.
+ *
+ * KEEP IN STEP WITH `web/electron-builder.yml`'s extraResources allowlist —
+ * that is what actually lands in the package, this is what refuses to build
+ * without it. A bundle here but not there ships an app that starts and renders
+ * nothing; a bundle there but not here ships one nothing validated.
  */
 export const SHIPPED_WASM = [
   // Effect bundles — must stay in step with src/effect-bundles.ts.
