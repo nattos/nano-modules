@@ -885,20 +885,77 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // flipped. The two flips now net to zero for the displayed image while keeping
   // the executor in proper top-left space (so orientation-sensitive effects —
   // text, gradients — are upright).
+  // Attach the host's input texture to `src_fbo_` as COLOR_ATTACHMENT0 and
+  // return the texture target that worked (0 = neither).
+  //
+  // FFGL carries NO texture-target field, so every plugin has to work this out
+  // for itself, and hosts differ: Resolume on macOS hands IOSurface-backed
+  // GL_TEXTURE_RECTANGLE (IOSurface textures cannot be GL_TEXTURE_2D in legacy
+  // GL), while most other hosts hand a plain GL_TEXTURE_2D.
+  //
+  // This used to guess from POT padding alone — `HardwareWidth > Width` meant
+  // 2D, anything else RECTANGLE. That only catches a padded 2D texture; a host
+  // handing an EXACTLY-sized GL_TEXTURE_2D (the common case outside Resolume)
+  // was read through a RECTANGLE attachment, which is GL_INVALID_OPERATION.
+  // The attachment silently stayed empty and the blit sourced garbage — the
+  // plugin came out white in any such host.
+  //
+  // So probe instead of guess: attach, and keep the target only if the FBO is
+  // actually complete. The answer is cached, and the status check runs every
+  // frame so a host that changes its mind re-probes on its own.
+  GLenum attachHostInput(const FFGLTextureStruct* pInput) {
+    const bool padded = pInput->HardwareWidth > pInput->Width ||
+                        pInput->HardwareHeight > pInput->Height;
+    const GLenum guess = padded ? GL_TEXTURE_2D : GL_TEXTURE_RECTANGLE;
+    const GLenum first = input_target_ ? input_target_ : guess;
+    const GLenum second = (first == GL_TEXTURE_2D) ? GL_TEXTURE_RECTANGLE
+                                                   : GL_TEXTURE_2D;
+    for (GLenum target : {first, second}) {
+      // Detach first: a failed glFramebufferTexture2D leaves the PREVIOUS
+      // frame's attachment in place, which would read back as COMPLETE and
+      // make the wrong target look like it worked.
+      glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                             GL_TEXTURE_2D, 0, 0);
+      while (glGetError() != GL_NO_ERROR) { }   // drop stale host errors
+      glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                             target, pInput->Handle, 0);
+      if (glGetError() == GL_NO_ERROR &&
+          glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        if (input_target_ != target) {
+          BARREL_LOG("input-target", "host input texture is %s",
+                     target == GL_TEXTURE_2D ? "GL_TEXTURE_2D" : "GL_TEXTURE_RECTANGLE");
+          input_target_ = target;
+        }
+        return target;
+      }
+      if (first == second) break;   // (unreachable; guards a future edit)
+    }
+    input_target_ = 0;              // re-probe from scratch next frame
+    return 0;
+  }
+
   void blitGlInputToInterop(ProcessOpenGLStruct* pGL,
                             const FFGLTextureStruct* pInput) {
-    GLenum target = GL_TEXTURE_RECTANGLE;
-    if (pInput->HardwareWidth > pInput->Width ||
-        pInput->HardwareHeight > pInput->Height) {
-      target = GL_TEXTURE_2D;
-    }
-
     GLint prevRead = 0, prevDraw = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, src_fbo_);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           target, pInput->Handle, 0);
+    if (attachHostInput(pInput) == 0) {
+      // Nothing readable — leave the interop alone (last good frame) rather
+      // than blitting garbage into it.
+      if (!input_attach_failed_) {
+        BARREL_LOG("input-target", "host input texture readable as NEITHER "
+                                   "GL_TEXTURE_2D nor GL_TEXTURE_RECTANGLE "
+                                   "(handle=%u %ux%u hw=%ux%u)",
+                   pInput->Handle, pInput->Width, pInput->Height,
+                   pInput->HardwareWidth, pInput->HardwareHeight);
+        input_attach_failed_ = true;
+      }
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevRead);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
+      return;
+    }
+    input_attach_failed_ = false;
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, input_interop_->getOpenGLFBO());
     glBlitFramebuffer(0, 0, (GLint)pInput->Width, (GLint)pInput->Height,
                       0, (GLint)input_interop_->getHeight(),
@@ -930,22 +987,42 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
   }
 
+  // "Alive, but not rendering" marker: a green corner square, drawn on the
+  // paths that bail out of ProcessOpenGL before the executor runs.
+  //
+  // Draws into pGL->HostFBO explicitly rather than into whatever happens to be
+  // bound — Resolume binds the host FBO before calling us, but that is not
+  // something FFGL promises, and a host that doesn't would have got the badge
+  // painted into one of its own targets.
+  //
+  // Restores every piece of GL state it touches (binding, scissor box + enable,
+  // clear colour). FFGL has no "plugin may clobber global state" contract, so
+  // leaking a green clear colour and a 12%-corner scissor box into the host is
+  // a good way to corrupt an unrelated part of its pipeline.
   void drawBadgeOnly(ProcessOpenGLStruct* pGL) {
     const unsigned int W = currentViewport.width;
     const unsigned int H = currentViewport.height;
     if (W == 0 || H == 0) return;
-    GLint dst_fbo = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &dst_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
-    const int bx = (int)(W * 0.85f);
-    const int by = (int)(H * 0.85f);
-    const int bw = (int)(W * 0.12f);
-    const int bh = (int)(H * 0.12f);
+
+    GLint prevFbo = 0, prevScissorBox[4] = {0, 0, 0, 0};
+    GLfloat prevClear[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevFbo);
+    glGetIntegerv(GL_SCISSOR_BOX, prevScissorBox);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, prevClear);
+    const GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, pGL->HostFBO);
     glEnable(GL_SCISSOR_TEST);
-    glScissor(bx, by, bw, bh);
+    glScissor((int)(W * 0.85f), (int)(H * 0.85f),
+              (int)(W * 0.12f), (int)(H * 0.12f));
     glClearColor(0.1f, 1.0f, 0.3f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glDisable(GL_SCISSOR_TEST);
+
+    if (!prevScissor) glDisable(GL_SCISSOR_TEST);
+    glScissor(prevScissorBox[0], prevScissorBox[1],
+              prevScissorBox[2], prevScissorBox[3]);
+    glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevFbo);
   }
 
   // -- Config <-> state document --------------------------------------
@@ -1060,6 +1137,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
   int    frame_   = 0;
   GLuint src_fbo_ = 0;
+  // The host input texture's GL target, learned by probing (see attachHostInput).
+  // 0 = not yet known / re-probe.
+  GLenum input_target_ = 0;
+  bool   input_attach_failed_ = false;
 };
 
 // ============================================================================

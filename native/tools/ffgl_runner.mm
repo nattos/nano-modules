@@ -340,6 +340,11 @@ int main(int argc, const char* argv[]) {
     // one bar == the looper's 16 steps). 0 (default) = no transport, exactly like
     // a host that never reports beat info.
     double fakeBpm = 0;
+    // --input-target 2d: hand the plugin a PLAIN GL_TEXTURE_2D input instead of
+    // the IOSurface-backed GL_TEXTURE_RECTANGLE Resolume uses on macOS. FFGL
+    // does not tell a plugin the texture target, so every plugin guesses — and
+    // hosts differ. This is what a non-Resolume host looks like.
+    bool input2D = false;
     int positional = 0;
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
@@ -353,6 +358,9 @@ int main(int argc, const char* argv[]) {
         serveHz = std::stod(argv[i + 1]);
         serveSeconds = std::stod(argv[i + 2]);
         i += 2;
+      } else if (arg == "--input-target" && i + 1 < argc) {
+        input2D = (std::string(argv[i + 1]) == "2d");
+        i += 1;
       } else if (arg == "--bpm" && i + 1 < argc) {
         fakeBpm = std::stod(argv[i + 1]);
         i += 1;
@@ -546,23 +554,42 @@ int main(int argc, const char* argv[]) {
     // 5. One InteropTexture as the plugin's input (also IOSurface-backed) —
     // filled with a 2D gradient (R = x, G = y) so we can tell input handoff
     // apart from pure-output cases AND detect X/Y orientation flips.
-    auto inputInterop = std::make_unique<InteropTexture>(
-        device, context, /*createOpenGLFBO=*/ false,
-        MTLPixelFormatBGRA8Unorm, width, height);
-    glBindTexture(GL_TEXTURE_RECTANGLE, inputInterop->getOpenGLTexture());
-    {
-      std::vector<uint8_t> data((size_t)width * height * 4);
-      for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-          size_t idx = (size_t)(y * width + x) * 4;
-          data[idx + 0] = (uint8_t)((float)x / width * 255.0f);   // R ramps L→R
-          data[idx + 1] = (uint8_t)((float)y / height * 255.0f);  // G ramps row0→last
-          data[idx + 2] = 0;
-          data[idx + 3] = 255;
-        }
+    std::vector<uint8_t> inputPixels((size_t)width * height * 4);
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        size_t idx = (size_t)(y * width + x) * 4;
+        inputPixels[idx + 0] = (uint8_t)((float)x / width * 255.0f);   // R ramps L→R
+        inputPixels[idx + 1] = (uint8_t)((float)y / height * 255.0f);  // G ramps row0→last
+        inputPixels[idx + 2] = 0;
+        inputPixels[idx + 3] = 255;
       }
+    }
+
+    // --input-target 2d stands in for a host that is NOT Resolume-on-macOS: a
+    // plain, non-IOSurface GL_TEXTURE_2D. FFGL carries no target field, so the
+    // plugin has to work this out for itself — which is exactly the thing that
+    // silently breaks in a third-party host.
+    std::unique_ptr<InteropTexture> inputInterop;
+    GLuint inputTex = 0;
+    if (input2D) {
+      glGenTextures(1, &inputTex);
+      glBindTexture(GL_TEXTURE_2D, inputTex);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                   GL_RGBA, GL_UNSIGNED_BYTE, inputPixels.data());
+      glBindTexture(GL_TEXTURE_2D, 0);
+      std::cerr << "[ffgl_runner] input target: GL_TEXTURE_2D (non-Resolume host)\n";
+    } else {
+      inputInterop = std::make_unique<InteropTexture>(
+          device, context, /*createOpenGLFBO=*/ false,
+          MTLPixelFormatBGRA8Unorm, width, height);
+      glBindTexture(GL_TEXTURE_RECTANGLE, inputInterop->getOpenGLTexture());
       glTexSubImage2D(GL_TEXTURE_RECTANGLE, 0, 0, 0, width, height,
-                       GL_RGBA, GL_UNSIGNED_BYTE, data.data());
+                      GL_RGBA, GL_UNSIGNED_BYTE, inputPixels.data());
+      inputTex = inputInterop->getOpenGLTexture();
     }
 
     FFGLTextureStruct inputStr;
@@ -570,7 +597,7 @@ int main(int argc, const char* argv[]) {
     inputStr.Height = height;
     inputStr.HardwareWidth = width;
     inputStr.HardwareHeight = height;
-    inputStr.Handle = inputInterop->getOpenGLTexture();
+    inputStr.Handle = inputTex;
     FFGLTextureStruct* inputs[] = {&inputStr};
 
     ProcessOpenGLStruct ps;
