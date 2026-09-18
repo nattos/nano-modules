@@ -355,3 +355,35 @@ export async function handlesFromDataTransfer(dt: DataTransfer): Promise<PathsHa
   );
   return handles.filter((h): h is PathsHandle => !!h);
 }
+
+// ── Desktop-shell queries ───────────────────────────────────────────────────
+
+/**
+ * The desktop app's shared resource root — the one directory holding the
+ * effect `wasm/`, the `fonts/` and (on macOS) the `ffgl/` plugin. Null in a
+ * browser, where there is no such thing.
+ *
+ * The Settings-page setup checklist compares this against the root the FFGL
+ * plugin reported over the bridge: if they differ, Resolume is running a
+ * DIFFERENT copy of the effects than the one in front of you, which otherwise
+ * shows up only as a sketch that renders differently in Resolume.
+ */
+export async function appResourceRoot(): Promise<string | null> {
+  if (!isElectron()) return null;
+  const ipc = nodeRequire<any>('electron')?.ipcRenderer;
+  if (!ipc) return null;
+  try {
+    const root = await ipc.invoke('nano.resourceRoot');
+    return typeof root === 'string' && root ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reveal `absPath` in Finder / Explorer. No-op outside Electron. */
+export async function revealInFolder(absPath: string): Promise<void> {
+  if (!isElectron() || !absPath) return;
+  const ipc = nodeRequire<any>('electron')?.ipcRenderer;
+  if (!ipc) return;
+  try { await ipc.invoke('paths.showItemInFolder', absPath); } catch { /* ignore */ }
+}

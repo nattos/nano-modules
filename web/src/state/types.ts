@@ -428,6 +428,13 @@ export interface LocalState {
    */
   barrelDetected: boolean;
   /**
+   * WebSocket URL of the shared NanoBarrel server for this session — normally
+   * `ws://localhost:8081`, or whatever `?barrel=` named. Recorded at boot on
+   * EVERY surface (not just Live), because the Settings-page setup checklist
+   * probes it from Effect Dev and Playground too.
+   */
+  barrelUrl: string;
+  /**
    * True while the edited sketch is a not-yet-reconciled Live-mode cache
    * mirror, shown before the WS connects — blocks mutations (see
    * `AppController.mutate`) and the shared editor shows a read-only ribbon.

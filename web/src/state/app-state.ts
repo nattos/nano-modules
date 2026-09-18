@@ -10,6 +10,7 @@ import { observable, configure, makeObservable } from 'mobx';
 import { enableMapSet, setAutoFreeze, enablePatches } from 'immer';
 import type { DatabaseState, LocalState } from './types';
 import { defaultUserSettings } from './user-settings';
+import { DEFAULT_BARREL_URL } from '../resolume-mode';
 
 // Immer setup
 enableMapSet();
@@ -50,6 +51,7 @@ export class AppState {
     selectedTriggerClip: null,
     barrelConnection: 'connecting',
     barrelDetected: false,
+    barrelUrl: DEFAULT_BARREL_URL,
     readonly: false,
     liveOfflineMode: false,
     globalInputLabel: null,

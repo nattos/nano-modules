@@ -5,15 +5,33 @@
  * Houses cross-surface preferences that don't belong to any one surface:
  *   - The mode selector (which of the three surfaces this session prefers).
  *   - The Resolume-remote on/off kill-switch (`barrelRemoteEnabled`).
+ *   - The Resolume setup checklist: what to install where, and which of those
+ *     steps is actually satisfied right now. Live status comes from
+ *     `state/resolume-setup.ts`, which keeps its own probe socket open while
+ *     this tab is mounted — the checklist has to work from Effect Dev and
+ *     Playground too, which is exactly when someone reads it.
  */
 
-import { html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { html, css, nothing, type TemplateResult } from 'lit';
+import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { TARGET_FPS_OPTIONS } from './gpu-headroom';
+import {
+  resolumeSetup, setupStatuses, watchResolumeSetup, resolumeApiPort,
+  type SetupStepId, type SetupStepStatus,
+} from '../state/resolume-setup';
+import { appResourceRoot, revealInFolder } from '../state/paths';
+
+/** macOS, from Electron's own `process` when we have it. The FFGL plug-in is
+ *  macOS-only, so the install step's paths and buttons hang off this. */
+function isMac(): boolean {
+  const plat = (globalThis as any).process?.platform;
+  if (typeof plat === 'string') return plat === 'darwin';
+  return /Mac/i.test(navigator.platform || '');
+}
 
 const MODE_OPTIONS: { id: AppMode; label: string; description: string }[] = [
   { id: 'effect-dev', label: 'Effect Dev', description: 'Author and test individual effects in isolation.' },
@@ -113,7 +131,113 @@ export class AppSettings extends MobxLitElement {
       cursor: pointer;
       align-self: flex-start;
     }
+
+    /* --- Setup checklist --- */
+    ol.steps {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--app-sp-3);
+      counter-reset: step;
+    }
+    li.step {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: var(--app-sp-3);
+      align-items: start;
+    }
+    .mark {
+      font-family: inherit;
+      font-size: var(--app-fs-md);
+      line-height: 1.4;
+      text-align: center;
+      color: var(--app-text-color2);
+      user-select: none;
+    }
+    li.step[data-state='ok'] .mark { color: var(--app-hi-color2); }
+    li.step[data-state='warn'] .mark { color: var(--app-warn); }
+    .step-body {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .step-title {
+      font-size: var(--app-fs-md);
+      color: var(--app-text-color1);
+    }
+    li.step[data-state='ok'] .step-title { color: var(--app-text-color2); }
+    .step-how {
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      line-height: 1.5;
+    }
+    .step-detail {
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    li.step[data-state='ok'] .step-detail { color: var(--app-hi-color2); }
+    li.step[data-state='warn'] .step-detail { color: var(--app-warn); }
+    code {
+      font-family: inherit;
+      background: var(--app-bg-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      padding: 0 4px;
+      word-break: break-all;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--app-sp-2);
+      margin-top: 2px;
+    }
+    button.small {
+      font-family: inherit;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color1);
+      background: var(--app-bg-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      padding: 2px var(--app-sp-3);
+      cursor: pointer;
+    }
+    button.small:hover { border-color: var(--app-text-color2); }
+    .note {
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      line-height: 1.5;
+      border-left: 2px solid var(--app-tint-4);
+      padding-left: var(--app-sp-3);
+    }
   `;
+
+  /** This app's own resource root (Electron only) — resolved once on mount,
+   *  and the other half of the "is Resolume running OUR plug-in?" comparison. */
+  @state() private appRoot: string | null = null;
+  /** Feedback for the copy-path button, cleared on a timer. */
+  @state() private copied = '';
+  private stopWatch: (() => void) | null = null;
+  private copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  connectedCallback() {
+    super.connectedCallback();
+    // Only while the tab is actually mounted: no socket is held open behind a
+    // settings page nobody is looking at.
+    this.stopWatch = watchResolumeSetup();
+    void appResourceRoot().then((root) => { this.appRoot = root; });
+  }
+
+  disconnectedCallback() {
+    this.stopWatch?.();
+    this.stopWatch = null;
+    if (this.copyTimer != null) { clearTimeout(this.copyTimer); this.copyTimer = null; }
+    super.disconnectedCallback();
+  }
 
   render() {
     const settings = appState.local.userSettings;
@@ -149,6 +273,7 @@ export class AppSettings extends MobxLitElement {
               Enable Resolume Remote
             </label>
           </div>
+          ${this.renderSetupChecklist()}
         </section>
         <section>
           <h2>Target Framerate</h2>
@@ -168,6 +293,110 @@ export class AppSettings extends MobxLitElement {
         ${this.renderConnectionSection()}
       </div>
     `;
+  }
+
+  /**
+   * The four-step "get Resolume talking to this app" checklist.
+   *
+   * Every step carries both the instruction and its own live checkmark, so the
+   * page answers "what do I do" and "which bit is broken" at once. Step order
+   * is the order you'd actually do them in; the marks are independent, so a
+   * later one can be green while an earlier one isn't (a plug-in installed by
+   * hand, say).
+   */
+  private renderSetupChecklist() {
+    const settings = appState.local.userSettings;
+    const { probe, plugin, server, liveInstances, compositionInstances } = resolumeSetup;
+    const st = setupStatuses({
+      remoteEnabled: settings.barrelRemoteEnabled,
+      probe, plugin, server, liveInstances, compositionInstances,
+      appRoot: this.appRoot,
+      barrelUrl: appState.local.barrelUrl,
+      barrelMode: appState.local.barrelMode,
+      barrelConnection: appState.local.barrelConnection,
+    });
+    const apiPort = resolumeApiPort(server?.resolumeUrl) || '8080';
+    // The folder to hand Resolume: the app's own `ffgl/`, which holds the
+    // bundle and its sibling dylib. macOS only — there is no native plug-in
+    // on Windows yet.
+    const pluginDir = this.appRoot && isMac() ? `${this.appRoot}/ffgl` : null;
+
+    return html`
+      <h2 style="margin-top:var(--app-sp-4)">Set up Resolume</h2>
+      ${settings.barrelRemoteEnabled ? nothing : html`
+        <div class="note">
+          Resolume Remote is off, so none of these are being checked. Turn it on
+          above to see live status.
+        </div>`}
+      <ol class="steps">
+        ${this.renderStep('plugin', st.plugin, 'Install the NanoBarrel plug-in', html`
+          Resolume loads FFGL plug-ins from the folders under
+          <b>Preferences → Video → FFGL plug-in folders</b>. Add this app's
+          <code>ffgl</code> folder there, or copy <code>NanoBarrel.bundle</code>
+          <b>and</b> <code>libbridge_server.dylib</code> side by side into a
+          folder that is already listed — the bundle on its own will not start.
+          Restart Resolume afterwards.
+        `, pluginDir ? html`
+          <div class="actions">
+            <button class="small" @click=${() => void revealInFolder(pluginDir)}>Reveal in Finder</button>
+            <button class="small" @click=${() => this.onCopy(pluginDir)}>
+              ${this.copied === pluginDir ? 'Copied' : 'Copy path'}
+            </button>
+          </div>` : nothing)}
+
+        ${this.renderStep('webserver', st.webserver, "Turn on Resolume's web server", html`
+          <b>Preferences → Webserver</b>, enable it, and leave the port at
+          <code>${apiPort}</code>. Rendering works without it, but instance
+          names, composition scanning, clip launching and channel assignment all
+          go quiet.
+        `)}
+
+        ${this.renderStep('instance', st.instance, 'Add NanoBarrel to your composition', html`
+          Drop the NanoBarrel effect on a clip, a layer, or the composition.
+          <b>On a clip or a layer it does not appear here until that content is
+          actually playing</b> — trigger the clip, or any clip on that layer, at
+          least once. A composition-level effect is live immediately.
+        `)}
+
+        ${this.renderStep('connect', st.connect, 'Connect this app', html`
+          Switch to Live and the editor binds to the instances above: sketch
+          chains, wiring and MIDI all edit the running composition.
+        `, appState.local.barrelMode ? nothing : html`
+          <div class="actions">
+            <button class="small" @click=${() => { void appController.switchAppMode('live'); }}>
+              Switch to Live
+            </button>
+          </div>`)}
+      </ol>
+    `;
+  }
+
+  private renderStep(
+    id: SetupStepId,
+    status: SetupStepStatus,
+    title: string,
+    how: TemplateResult,
+    actions: TemplateResult | typeof nothing = nothing,
+  ) {
+    const mark = status.state === 'ok' ? '\u2713' : status.state === 'warn' ? '\u26a0' : '\u25cb';
+    return html`
+      <li class="step" data-step=${id} data-state=${status.state}>
+        <div class="mark" aria-hidden="true">${mark}</div>
+        <div class="step-body">
+          <div class="step-title">${title}</div>
+          <div class="step-how">${how}</div>
+          ${status.detail ? html`<div class="step-detail">${status.detail}</div>` : nothing}
+          ${actions}
+        </div>
+      </li>
+    `;
+  }
+
+  private onCopy(text: string) {
+    void navigator.clipboard?.writeText(text).catch(() => { /* ignore */ });
+    this.copied = text;
+    if (this.copyTimer != null) clearTimeout(this.copyTimer);
+    this.copyTimer = setTimeout(() => { this.copied = ''; this.copyTimer = null; }, 1500);
   }
 
   /**

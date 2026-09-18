@@ -19,6 +19,8 @@ import 'line-awesome/dist/line-awesome/css/line-awesome.css';
 
 import { loadUserSettings } from './state/user-settings';
 import { DEFAULT_BARREL_URL, modeOverrideFromUrl } from './resolume-mode';
+import { runInAction } from 'mobx';
+import { appState } from './state/app-state';
 
 async function main() {
   // Only used to decide which surface to boot — `boot()` (called from
@@ -29,6 +31,10 @@ async function main() {
   const override = modeOverrideFromUrl(location.search);
   const mode = override?.mode ?? settings.appMode;
   const barrelUrl = override?.barrelUrl ?? DEFAULT_BARREL_URL;
+  // Every surface, not just Live: the Settings-page setup checklist probes
+  // this same server from Effect Dev and Playground, which is exactly when
+  // someone is reading it.
+  runInAction(() => { appState.local.barrelUrl = barrelUrl; });
 
   if (mode === 'effect-dev') {
     const { bootEffectDev } = await import('./boot-effect-dev');
