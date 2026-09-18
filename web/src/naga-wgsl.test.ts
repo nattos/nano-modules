@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
@@ -95,6 +95,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }
 
+/**
+ * Every shader the effects actually ship, as DXC emitted it.
+ *
+ * `native/build/tmp/*.spv` is the real corpus — the intermediate the bundle
+ * build hands to `_emit_spv_header.py` and bakes into each `.wasm`. It is what
+ * the app translates at runtime, and it covers vertex/fragment stages and
+ * storage-texture declarations that a hand-written compute shader does not.
+ *
+ * Going through the built bundles instead would have been circular and, worse,
+ * vacuous: effects guard `registerShaderSPV` behind
+ * `gpu::Device::backend() != None`, so a node-side WasmHost with no GPU host
+ * registers nothing at all and the loop would have silently had zero shaders.
+ *
+ * This is the gate that matters. An earlier naga_spv set
+ * `adjust_coordinate_space: false` by hand — naga's default is true — which
+ * produced WGSL that compiled cleanly and RENDERED DIFFERENTLY: four effect
+ * suites failed on brightness thresholds with nothing logged anywhere. One
+ * synthetic compute shader did not catch it and never would have.
+ */
+function builtSpvFiles(): string[] {
+  const dir = resolve(__dirname, '..', '..', 'native', 'build', 'tmp');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((f) => f.endsWith('.spv')).sort()
+    .map((f) => join(dir, f));
+}
+
 describe('naga_spv.wasm', () => {
   let loaded = false;
 
@@ -146,6 +172,42 @@ describe('naga_spv.wasm', () => {
       expect(mine).toBe(cliTranslate(spv, fmt, access));
     }
   });
+
+  // The real gate. Slower than the rest, and worth every second of it.
+  it('matches the naga CLI across every built shader', () => {
+    if (!loaded) return;
+    if (!haveCli()) { console.warn('no naga CLI on PATH — skipping'); return; }
+    const files = builtSpvFiles();
+    if (files.length === 0) {
+      console.warn('no native/build/tmp/*.spv — build the bundles to run this');
+      return;
+    }
+    const mismatched: string[] = [];
+    const failed: string[] = [];
+    for (const file of files) {
+      const raw = readFileSync(file);
+      const spv = new Uint8Array(new ArrayBuffer(raw.length));
+      spv.set(raw);
+      // Cover both storage-format resolutions of the '' sentinel, plus the
+      // read_write variant, since the fixup differs per shader.
+      for (const [fmt, access] of [
+        ['rgba8unorm', 'write'],
+        ['rgba16float', 'write'],
+        ['r32float', 'read_write'],
+      ] as const) {
+        let mine: string | null;
+        try { mine = spvToWgsl(spv, fmt, access); }
+        catch (e) { failed.push(`${file} [${fmt}]: ${e}`); continue; }
+        let theirs: string;
+        try { theirs = cliTranslate(spv, fmt, access); }
+        catch { continue; }   // the CLI rejects it too — not our divergence
+        if (mine !== theirs) mismatched.push(`${file} [${fmt},${access}]`);
+      }
+    }
+    expect({ mismatched, failed }).toEqual({ mismatched: [], failed: [] });
+    // Guard against a vacuous pass.
+    expect(files.length).toBeGreaterThan(50);
+  }, 600000);
 
   it('applies the storage-format fixup the build helpers use', () => {
     // naga defaults an HLSL RWTexture2D<float4> to rgba32float because SPIR-V

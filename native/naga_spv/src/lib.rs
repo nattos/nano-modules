@@ -58,14 +58,17 @@ pub unsafe extern "C" fn ns_translate(ptr: *const u8, len: usize) -> i32 {
     }
     let spv = std::slice::from_raw_parts(ptr, len);
 
-    // Match the CLI's defaults. `adjust_coordinate_space` is false there too:
-    // our SPIR-V comes from DXC, which already emits the coordinate convention
-    // the rest of the pipeline (and the Metal side, via SPIRV-Cross) assumes.
-    let options = naga::front::spv::Options {
-        adjust_coordinate_space: false,
-        strict_capabilities: false,
-        block_ctx_dump_prefix: None,
-    };
+    // EXACTLY the CLI's defaults, and spelled as `default()` rather than
+    // field-by-field on purpose.
+    //
+    // An earlier version set these by hand and guessed both wrong. naga's
+    // default is `adjust_coordinate_space: true`; forcing it false produced
+    // WGSL that compiled fine and RENDERED DIFFERENTLY - four effect suites
+    // (glisten, monolith, tingle_top, double_chamber) failed on brightness
+    // thresholds with no error anywhere. The dev server invokes `naga in out`
+    // with no flags, so anything but default() is a silent divergence between
+    // the dev path and the shipping one.
+    let options = naga::front::spv::Options::default();
 
     let module = match naga::front::spv::parse_u8_slice(spv, &options) {
         Ok(m) => m,
@@ -75,9 +78,9 @@ pub unsafe extern "C" fn ns_translate(ptr: *const u8, len: usize) -> i32 {
         }
     };
 
-    // WGSL output needs module info, which only validation produces. Validate
-    // permissively: the CLI does the same, and our shaders legitimately use
-    // capabilities a default validator rejects.
+    // WGSL output needs module info, which only validation produces. Same
+    // reasoning as above: match the CLI, which validates with all flags and
+    // all capabilities.
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
