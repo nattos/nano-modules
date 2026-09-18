@@ -73,9 +73,12 @@ function resolveRequestPath(root, urlPath) {
 /**
  * Serve from `root`. Call after `app.whenReady()`.
  *
- * A directory, or a path with no extension, falls back to `index.html` — the
- * build is an MPA, so `nano://app/arrangement.html` is a real file, but
- * `nano://app/` is not.
+ * `nano://app/` and a bare directory fall back to `index.html`. A request for a
+ * named FILE that isn't there 404s instead — falling back for those too would
+ * answer a missing `/wasm/core.wasm` with 200 and a page of HTML, which
+ * surfaces much later as an unintelligible wasm decode error rather than as
+ * "that file isn't in the package". (This is not hypothetical: it made the
+ * packaged-app test pass with the shader translator deleted.)
  */
 function serve(root) {
   protocol.handle(SCHEME, async (request) => {
@@ -83,20 +86,24 @@ function serve(root) {
     if (url.hostname !== HOST) {
       return new Response('not found', { status: 404 });
     }
-    let file = resolveRequestPath(root, url.pathname);
+    const file = resolveRequestPath(root, url.pathname);
     if (!file) return new Response('forbidden', { status: 403 });
 
+    let target = file;
     try {
-      if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-        file = path.join(root, 'app', 'index.html');
+      const stat = fs.existsSync(file) ? fs.statSync(file) : null;
+      if (!stat || stat.isDirectory()) {
+        // Only a route — no filename extension — gets the app shell.
+        if (path.extname(file) !== '') {
+          return new Response('not found', { status: 404 });
+        }
+        target = path.join(root, 'app', 'index.html');
+        if (!fs.existsSync(target)) return new Response('not found', { status: 404 });
       }
     } catch {
       return new Response('not found', { status: 404 });
     }
-    // net.fetch on a file:// URL streams the file and infers the MIME type,
-    // including application/wasm — which matters, because instantiateStreaming
-    // rejects anything else.
-    return net.fetch(pathToFileURL(file).toString());
+    return net.fetch(pathToFileURL(target).toString());
   });
 }
 
