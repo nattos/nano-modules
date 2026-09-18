@@ -29,6 +29,26 @@ for bundle in bridge_core executor core testonly nano lights dxv_decoder text_en
   ( cd "$bundle" && ./build.sh )
 done
 
+# naga_spv.wasm — SPIR-V -> WGSL in process (native/naga_spv/, Rust). Not a C++
+# effect bundle, so it sits outside the loop above.
+#
+# Built here because without it the web app falls back to the dev server's
+# /__naga/wgsl, which is fine in dev and FATAL in a packaged build — there is no
+# dev server to fall back to, so every shader fails and nothing renders. Cargo
+# is incremental, so this is ~nothing on a warm tree.
+#
+# OPTIONAL: a checkout with no Rust toolchain still works in dev. (text_blitz,
+# the other Rust artifact, stays a deliberate manual step — it pulls in Stylo
+# and is genuinely slow. See WINDOWS.md.)
+if [ "${SKIP_RUST:-0}" != "1" ] && [ -x ../naga_spv/build_wasm.sh ]; then
+  echo "--- Building naga_spv (rust) ---"
+  if ! ( cd ../naga_spv && ./build_wasm.sh ); then
+    echo "!!! naga_spv.wasm build FAILED - the web app will fall back to the"
+    echo "!!! dev server for shader translation; a PACKAGED build would render"
+    echo "!!! nothing. Continuing."
+  fi
+fi
+
 echo "--- All bundles built ---"
 ls -la ../../build/wasm/*.wasm
 

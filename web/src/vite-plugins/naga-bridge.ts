@@ -1,6 +1,13 @@
 /**
  * Vite plugin: naga bridge.
  *
+ * NOTE: this is no longer the primary path. `wasm-host.ts` translates in
+ * process via naga_spv.wasm (see naga-wgsl.ts) and only falls back here when
+ * that artifact hasn't been built — which is the normal state of a checkout
+ * that hasn't run native/naga_spv/build_wasm.sh. A packaged app has no dev
+ * server at all, so it has only the in-process path; keeping this one alive
+ * gives the parity test something to compare against.
+ *
  * Exposes `POST /__naga/wgsl` so the browser can hand SPIR-V bytes
  * to naga (running locally as a subprocess) and get WGSL back. This
  * is the runtime side of the "build emits SPV, runtime translates"
@@ -36,6 +43,8 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Plugin } from 'vite';
+
+import { applyStorageFormat } from '../naga-wgsl';
 
 interface CacheEntry {
   wgsl: string;
@@ -103,14 +112,13 @@ export function nagaBridgePlugin(): Plugin {
             });
           });
 
-          let wgsl = readFileSync(outPath, 'utf8');
           // naga emits `rgba32float,read_write` as a default for HLSL
-          // `RWTexture2D<float4>`; the build helpers fixed this up via
-          // sed. Mirror it here so the output matches what the engine
-          // expects at the bind-group layout level.
-          wgsl = wgsl
-            .replace(/rgba32float,read_write/g, `${storageFormat},${storageAccess}`)
-            .replace(/rgba32float/g, storageFormat);
+          // `RWTexture2D<float4>`; the fixup is SHARED with the in-process
+          // translator (naga-wgsl.ts) rather than repeated here, because the
+          // two paths are chosen at runtime and a silent divergence shows up
+          // as a bind-group layout mismatch — black output, no error.
+          const wgsl = applyStorageFormat(
+            readFileSync(outPath, 'utf8'), storageFormat, storageAccess);
 
           cache.set(key, { wgsl });
           res.setHeader('Content-Type', 'text/x-wgsl; charset=utf-8');

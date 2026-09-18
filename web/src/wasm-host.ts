@@ -2,6 +2,7 @@ import type { GPUHost } from './gpu-host';
 import type { BridgeCore } from './bridge-core';
 import type { StreamsRegistry } from './streams-registry';
 import { createWasiShim } from './wasi-shim';
+import { spvToWgsl } from './naga-wgsl';
 import * as fakeResolume from './fake-resolume';
 import { TextEngine } from './text-engine';
 
@@ -2017,6 +2018,26 @@ export class WasmHost {
     const key = `${entry.bytes.length}:${fnv1a32(entry.bytes)}:${storageFormat}:${entry.storageAccess}:${mode}`;
     const cached = WasmHost.spvWgslCache.get(key);
     if (cached !== undefined) return cached;
+
+    // Prefer the in-process translator (naga_spv.wasm). It is the ONLY path
+    // that exists in a packaged app — /__naga/wgsl below is a dev-server
+    // plugin, so a build outside Vite has no bridge to fall back to. Keeping
+    // both lets the two be asserted byte-identical (naga-wgsl.test.ts) and
+    // means a checkout that hasn't built the artifact still works.
+    try {
+      const local = spvToWgsl(entry.bytes, storageFormat, entry.storageAccess);
+      if (local !== null) {
+        const wgsl = mode === 'pixel' ? stripFragmentMain(local) : local;
+        WasmHost.spvWgslCache.set(key, wgsl);
+        return wgsl;
+      }
+    } catch (err) {
+      // naga rejected the SPIR-V itself. The bridge would reject it too, so
+      // don't paper over it by falling through to a second identical failure.
+      console.error(`[wasm-host] naga_spv failed for shader '${name}':`, err);
+      return null;
+    }
+
     try {
       const xhr = new XMLHttpRequest();
       const url = `/__naga/wgsl?storageFormat=${encodeURIComponent(storageFormat)}&storageAccess=${encodeURIComponent(entry.storageAccess)}`;

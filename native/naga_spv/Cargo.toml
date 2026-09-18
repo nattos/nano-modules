@@ -1,0 +1,39 @@
+# naga_spv — SPIR-V to WGSL, as a wasm module the app can call synchronously.
+#
+# Effects author shaders once in HLSL; the build compiles them to SPIR-V and
+# bakes that into the .wasm bundle. WebGPU doesn't take SPIR-V, so the web
+# runtime has to translate at load time. That used to mean POSTing the bytes to
+# /__naga/wgsl — a Vite plugin (apply: 'serve') spawning the naga CLI — which
+# meant a packaged app had no shader pipeline at all, not a degraded one.
+#
+# Building naga itself to wasm32-wasip1 gets us one artifact that works on macOS
+# and Windows, builds from either without a cross-toolchain, and can be called
+# SYNCHRONOUSLY. That last part is load-bearing: wasm-host.ts resolves shader
+# handles inside an effect's init() through a synchronous XHR, and the wasm C++
+# on the other side of that call expects a handle back immediately.
+#
+# Deliberately a thin wrapper. Version-pinned to match the naga-cli the dev
+# server spawns, so the two paths can be asserted byte-identical
+# (web/src/naga-wgsl.test.ts).
+[package]
+name = "naga_spv"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "naga_spv"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Only the two ends we need: read SPIR-V, write WGSL. No validation backends,
+# no other input or output languages — they are dead weight in the wasm.
+naga = { version = "=29.0.0", default-features = false, features = ["spv-in", "wgsl-out"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
