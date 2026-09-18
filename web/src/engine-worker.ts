@@ -1598,11 +1598,13 @@ async function warmupEffects(compiled: WebAssembly.Module, effects: { id: string
   // (describeEffect is per-effect-idempotent on a shared host: moduleInitedIds.)
   //
   // The old one-host-PER-EFFECT shape allocated ~90 WebAssembly.Memory objects
-  // at boot. V8 reserves ~10 GB of address space per memory (4 GB + guards)
-  // against a ~1 TB per-process budget, so ~96 live memories is a HARD cap —
+  // at boot. Chrome hard-caps LIVE wasm memories at 100 per RENDERER PROCESS,
+  // shared between the main thread and every worker — a COUNT cap, unmoved by a
+  // module's declared memory maximum (a 64 KB-max module hits the same 100). So
   // warmup alone nearly exhausted it and every later instantiate (chain
-  // instances, video decoders) threw Out-of-memory. Declared memory maximums
-  // don't shrink V8's reservation; only fewer live instances do.
+  // instances, video decoders) threw Out-of-memory. Only fewer live instances
+  // help; chain instances get there by POOLING (one wasm instance per effect
+  // type — see wasm-host.ts's WasmPool), warmup by this one-host-per-BUNDLE.
   let wh: WasmHost;
   try {
     wh = new WasmHost();

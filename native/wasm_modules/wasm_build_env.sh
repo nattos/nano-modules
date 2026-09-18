@@ -127,14 +127,23 @@ WASM_LDFLAGS=(
   -lc++ -lc++abi
   -Wl,--no-entry
   -Wl,--allow-undefined
-  # Declare a memory MAXIMUM (512 MB). Without one, V8 reserves ~10 GB of
-  # virtual address space PER LIVE INSTANCE (4 GB + guard pages) against a
-  # ~1 TB per-process wasm budget — so ~96 concurrent instances exhaust it and
-  # every later WebAssembly.instantiate throws Out-of-memory. The web engine
-  # holds a WasmHost per warmed effect + per chain entry (hundreds), which blew
-  # that cap. A declared max bounds the reservation to 512 MB, far above any
-  # real effect heap, and WAMR (native) simply honors it.
-  -Wl,--max-memory=536870912
+  # Declare a memory MAXIMUM (2 GB), a growth ceiling — NOT a workaround for
+  # Chrome's instance budget.
+  #
+  # An earlier comment here claimed a declared max shrinks V8's per-memory
+  # address-space reservation and so buys concurrent instances. Measured false:
+  # Chrome refuses the 101st LIVE WebAssembly.Memory in a renderer process no
+  # matter what, and a 14-byte module declaring `(memory 1 1)` — 64 KB max —
+  # hits the same 100. It is a count cap, shared by the main thread and every
+  # worker. The web side fixes that by POOLING (one WASM instance per effect
+  # type — see web/src/wasm-host.ts's WasmPool), not by this flag.
+  #
+  # Pooling is why the ceiling is 2 GB rather than the old 512 MB: every
+  # instance of an effect now shares one linear memory, so a heavy per-instance
+  # heap multiplies within a single wasm memory. WAMR (native) honors this as a
+  # growth bound and pre-allocates nothing, so a high ceiling costs nothing.
+  # Takes effect per bundle on its next rebuild.
+  -Wl,--max-memory=2147483648
 )
 
 # Common exports all modules share
