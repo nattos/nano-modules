@@ -1,0 +1,121 @@
+# electron-builder — packaging NanoModules for macOS and Windows.
+#
+# WHAT SHIPS
+#
+# The app's own code is tiny (electron/*.cjs); everything else rides in
+# `extraResources` as the SHARED RESOURCE ROOT at Contents/Resources/nano
+# (Windows: resources\nano). One directory serves the renderer over nano://app/
+# AND the native NanoBarrel plugin, which reads the same wasm and fonts — see
+# native/src/platform/resource_root.h. Assemble it first:
+#
+#   npm run build:stage            # vite build + scripts/stage_resources.sh
+#   npm run package                # this config
+#
+# WINDOWS is app-only. The native barrel is Metal/ObjC++ (one GPUBackend, and
+# native/CMakeLists.txt declares OBJCXX, so it will not even configure off
+# macOS), so the Windows build carries no ffgl/ directory. Effect-dev,
+# Playground, Arrangement and Live's offline form all work; Resolume
+# integration does not. See WINDOWS.md.
+#
+# There are NO native node modules here, so a Windows target cross-builds from
+# macOS without a rebuild step.
+
+appId: com.nano.modules
+productName: Nano Modules
+copyright: ""
+
+directories:
+  output: release
+  buildResources: build-resources
+
+# Only the shell itself. The renderer is not in app.asar — it is in the shared
+# root, because the plugin has to be able to read the same files and cannot
+# read an asar.
+files:
+  - electron/**/*
+  - package.json
+
+extraResources:
+  # The staged root. An ALLOWLIST, not a copy: build/wasm also holds
+  # testonly.wasm (test fixtures) and 46 MB of per-arch AOT sidecars, and the
+  # mac block below adds back only the ones this architecture can use.
+  # `from` is relative to this file (web/).
+  - from: ../build
+    to: nano
+    filter:
+      - nano-resources.json
+      - app/**/*
+      - fonts/**/*
+      - wasm/core.wasm
+      - wasm/nano.wasm
+      - wasm/lights.wasm
+      - wasm/text.wasm
+      - wasm/richtext.wasm
+      - wasm/legacy.wasm
+      - wasm/executor.wasm
+      - wasm/bridge_core.wasm
+      - wasm/dxv_decoder.wasm
+      - wasm/text_engine.wasm
+      - wasm/text_blitz.wasm
+      - wasm/naga_spv.wasm
+
+mac:
+  category: public.app-category.graphics-design
+  # arm64 ONLY, deliberately. NanoBarrel.bundle and libbridge_server.dylib are
+  # single-architecture (whatever CMake built), so an x64 package would ship an
+  # arm64 plugin that Resolume simply cannot load — a broken build that looks
+  # fine until someone tries it. Add x64/universal here once the native side
+  # produces a fat binary.
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  # Ad-hoc for now. Set CSC_NAME / NANOBARREL_CODESIGN_IDENTITY for a real
+  # Developer ID; notarization is a separate follow-up.
+  identity: null
+  # Hardened runtime is OFF deliberately: it is incompatible with the
+  # nodeIntegration the renderer needs for real filesystem paths (see
+  # electron/main.cjs). Enabling it belongs with the notarization work, not
+  # half-done now.
+  hardenedRuntime: false
+  extraResources:
+    # The FFGL plugin. libbridge_server.dylib MUST stay a direct sibling of the
+    # bundle: dlopen shares one image only for the same path, so two copies
+    # means two WsServers fighting over :8081.
+    - from: ../build/ffgl
+      to: nano/ffgl
+      filter: ["**/*"]
+    # AOT sidecars the native barrel prefers over the .wasm, for the six
+    # bundles it actually loads (kBundleNames in barrel_runtime.mm). Only this
+    # slice's arch — the other would never be selected, and costs 20 MB.
+    - from: ../build/wasm
+      to: nano/wasm
+      filter:
+        - core-aarch64.aot
+        - nano-aarch64.aot
+        - lights-aarch64.aot
+        - text-aarch64.aot
+        - richtext-aarch64.aot
+        - legacy-aarch64.aot
+
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false

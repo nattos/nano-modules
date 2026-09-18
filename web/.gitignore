@@ -7,3 +7,9 @@ public/fonts/*.ttc
 # CJK parity-test faces — fetched but NOT served (the app resolves OS CJK via
 # Local Font Access); used only by the native parity harness.
 test-fonts/
+
+# Vite build output, and the electron-builder artifacts built from it. Both are
+# derived: `npm run build:stage` regenerates dist/ and the staged resource root,
+# `npm run package` regenerates release/ (hundreds of MB of Electron runtime).
+dist/
+release/
