@@ -28,8 +28,8 @@
 #pragma once
 
 #include <fstream>
+#include <iterator>
 #include <string>
-#include <vector>
 
 #include "platform/paths.h"
 
@@ -51,7 +51,7 @@ inline bool looksLikeResourceRoot(const std::string& dir) {
 /// this header is included by plugins that don't otherwise link nlohmann/json,
 /// and the file has exactly one field we care about.
 inline std::string installRecordRoot() {
-  const std::string dir = supportDir();
+  const std::string dir = supportDirPath();   // read-only: do not create it
   if (dir.empty()) return {};
   std::ifstream f(joinPath(dir, "electron_app.json"));
   if (!f.good()) return {};

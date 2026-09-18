@@ -125,7 +125,7 @@ inline bool ensureDir(const std::string& p) {
 }
 
 /**
- * Our per-user WRITABLE state directory, created on demand:
+ * Our per-user WRITABLE state directory:
  *   macOS   ~/Library/Application Support/NanoBarrel
  *   Windows %APPDATA%\NanoBarrel
  * Empty when the environment doesn't say where home is.
@@ -138,18 +138,24 @@ inline bool ensureDir(const std::string& p) {
  * Deliberately the SAME name on both platforms and the same directory Electron
  * reaches via `app.getPath('appData')`, so the two halves need no negotiation.
  */
-inline std::string supportDir() {
+inline std::string supportDirPath() {
 #ifdef _WIN32
   const char* base = getenv("APPDATA");
   if (!base || !*base) return {};
-  const std::string dir = joinPath(base, "NanoBarrel");
+  return joinPath(base, "NanoBarrel");
 #else
   const char* home = getenv("HOME");
   if (!home || !*home) return {};
-  const std::string dir =
-      joinPath(joinPath(home, "Library/Application Support"), "NanoBarrel");
+  return joinPath(joinPath(home, "Library/Application Support"), "NanoBarrel");
 #endif
-  ensureDir(dir);
+}
+
+/// As above, created on demand. Readers should prefer `supportDirPath()` —
+/// resolving a resource root should not leave a directory behind in the home
+/// folder of every host process that merely loads the plugin.
+inline std::string supportDir() {
+  const std::string dir = supportDirPath();
+  if (!dir.empty()) ensureDir(dir);
   return dir;
 }
 
