@@ -275,6 +275,23 @@ TEST_CASE("full core.wasm bundle registers every effect under Metal", "[effect_r
   INFO("effects with non-empty schema: " << withSchema << "/" << n);
   CHECK(withSchema == n);
 
+  // Picker METADATA survives registration. A remote editor (Live mode) loads
+  // no wasm of its own, so the registry record is the only place the barrel can
+  // read an effect's display name / category from — without it every card in
+  // Live was labelled with the raw id's last segment.
+  const auto* bc = registry.find("color.tone.brightness_contrast");
+  REQUIRE(bc != nullptr);
+  CHECK(bc->metadata.value("name", std::string()) == "Brightness & Contrast");
+  CHECK(bc->metadata.value("icon", std::string()) == "la-adjust");
+  CHECK(!bc->metadata.value("category", std::string()).empty());
+  int named = 0;
+  for (const auto& [mt, reg] : registry.entries()) {
+    const std::string nm = reg.metadata.value("name", std::string());
+    if (!nm.empty() && nm != mt) ++named;
+  }
+  INFO("effects with a display name: " << named << "/" << n);
+  CHECK(named == n);
+
   host.shutdown();
 }
 

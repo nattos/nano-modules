@@ -66,9 +66,12 @@ using AudioTriggerCallback = void (*)(int channel, void* userdata);
 struct WasmEffectDesc {
   std::string id;
   std::string name;
-  std::string description;
-  std::string category;
-  std::string keywords;
+  // Every OTHER metadata string the effect registered, keyed by the name it
+  // registered it under: description, category, keywords, icon, thumbnail —
+  // and whatever a future effect adds. Kept generic (the web host keeps the
+  // same shape as a Map) so a new picker field costs nothing on this boundary.
+  // `id` and `name` stay named because the registry keys on them.
+  std::unordered_map<std::string, std::string> meta;
   std::unordered_map<std::string, uint32_t> fns;
   // Host<->effect ABI version of the bundle this effect came from (copied from
   // WasmContext::abi_version at register time). 0 = legacy bundle that exports

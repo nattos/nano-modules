@@ -965,13 +965,23 @@ std::string BarrelRuntime::schemasJson() {
   std::lock_guard<std::mutex> lk(impl_->render_mu);
   nlohmann::json out = nlohmann::json::object();
   if (!impl_->registry) return out.dump();
-  for (const auto& [module_type, schema_fields] : impl_->registry->schemas()) {
-    out[module_type] = {
+  for (const auto& [module_type, reg] : impl_->registry->entries()) {
+    nlohmann::json entry = {
       {"key", module_type},
       {"id", module_type},
       {"version", "0.0.0"},
-      {"schema", schema_fields},
+      {"schema", reg.schemaFields},
     };
+    // The effect's own picker metadata (name / description / category /
+    // keywords / icon / thumbnail). A remote editor loads no wasm, so this is
+    // its ONLY source for them — without it Live mode labelled every card with
+    // the raw id's last segment ("brightness_contrast").
+    for (auto it = reg.metadata.begin(); it != reg.metadata.end(); ++it) {
+      if (it.key() == "id" || it.key() == "key" || it.key() == "schema" ||
+          it.key() == "version") continue;
+      entry[it.key()] = it.value();
+    }
+    out[module_type] = std::move(entry);
   }
   return out.dump();
 }

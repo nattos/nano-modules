@@ -24,6 +24,13 @@ struct RegisteredModule {
   /** Parsed schema `fields` sub-object. Fed to the augmenter so it knows every
    *  module's structured I/O shape. */
   nlohmann::json schemaFields;
+  /** Picker metadata the effect declared at registration: `name` (the human
+   *  display name), plus whatever else it published — `description`,
+   *  `category`, `keywords`, `icon`, `thumbnail`. A JSON object of strings,
+   *  carried so a REMOTE editor (Live mode, which runs no wasm of its own)
+   *  can label and colour its cards exactly as the local editor does. Empty
+   *  for an effect registered without any. */
+  nlohmann::json metadata = nlohmann::json::object();
   /** Declarative capability tags from the schema's top-level `capabilities`
    *  array (e.g. "modulation_source", "modulation_source_single"). Classifies
    *  what the effect is FOR; see state::Capability in host.h. Carried so the

@@ -51,6 +51,7 @@ bool ModuleRegistry::registerEffect(
   // Native built-in (non-wasm) effects are linked against the current headers,
   // so they implicitly speak the current ABI.
   reg.abiVersion = NANO_ABI_VERSION;
+  reg.metadata["name"] = displayName;
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());
@@ -94,6 +95,10 @@ bool ModuleRegistry::registerWasmEffect(
   RegisteredModule reg;
   reg.moduleInitTrapped = proto->moduleInitTrapped();
   reg.abiVersion = wd.abi_version;  // 0 for a legacy bundle (no export)
+  // Carry the effect's own picker metadata through verbatim, so a remote
+  // editor with no wasm of its own (Live mode) can label its cards.
+  reg.metadata["name"] = displayName;
+  for (const auto& [k, v] : wd.meta) reg.metadata[k] = v;
   auto parsed = nlohmann::json::parse(proto->schemaJson(), nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     reg.schemaFields = parsed.value("fields", nlohmann::json::object());

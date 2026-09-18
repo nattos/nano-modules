@@ -1899,10 +1899,7 @@ static void module_register_effect_str(wasm_exec_env_t env, int32_t handle,
   WasmEffectDesc& d = it->second;
   if (name == "id") d.id = std::move(val);
   else if (name == "name") d.name = std::move(val);
-  else if (name == "description") d.description = std::move(val);
-  else if (name == "category") d.category = std::move(val);
-  else if (name == "keywords") d.keywords = std::move(val);
-  // Unknown metadata names are ignored (forward-compatible).
+  else d.meta[std::move(name)] = std::move(val);  // description/category/keywords/icon/...
 }
 
 static void module_register_effect_fn(wasm_exec_env_t env, int32_t handle,

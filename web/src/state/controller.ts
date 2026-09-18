@@ -3122,7 +3122,13 @@ export class AppController {
    * picker has something to show — the per-column "Drop effect" UI
    * queries it.
    */
-  setBarrelPlugins(remotePlugins: Array<{ id: string; key?: string; version?: string; schema?: Record<string, any> }>) {
+  setBarrelPlugins(remotePlugins: Array<{
+      id: string; key?: string; version?: string; schema?: Record<string, any>;
+      /** The effect's own picker metadata, forwarded verbatim by the barrel
+       *  (name / description / category / keywords / icon / thumbnail). */
+      name?: string; description?: string; category?: string; keywords?: string;
+      icon?: string; thumbnail?: string;
+    }>) {
     const plugins: PluginInfo[] = remotePlugins.map(rp => {
       const schema = rp.schema ?? {};
       const params: PluginInfo['params'] = [];
@@ -3178,13 +3184,24 @@ export class AppController {
       };
     });
 
-    const availableEffects: AvailableEffect[] = plugins.map(p => ({
-      id: p.id,
-      name: shortName(p.id),
-      description: '',
-      category: '',
-      keywords: [],
-    }));
+    // The barrel forwards each effect's own picker metadata alongside its
+    // schema (BarrelRuntime::schemasJson), because a remote editor runs no
+    // wasm and has no other source for it. Fall back to the id's last segment
+    // for a barrel too old to send any.
+    const availableEffects: AvailableEffect[] = plugins.map((p, i) => {
+      const rp = remotePlugins[i] as Record<string, unknown>;
+      const str = (k: string) => typeof rp?.[k] === 'string' ? rp[k] as string : '';
+      const kw = str('keywords');
+      return {
+        id: p.id,
+        name: str('name') || shortName(p.id),
+        description: str('description'),
+        category: str('category'),
+        keywords: kw ? kw.split(',').filter(k => k.length > 0) : [],
+        icon: str('icon') || undefined,
+        thumbnail: str('thumbnail') || undefined,
+      };
+    });
 
     runInAction(() => {
       appState.local.plugins = plugins;

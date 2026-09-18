@@ -102,6 +102,13 @@ class ModuleRegistry {
    */
   std::unordered_map<std::string, nlohmann::json> schemas() const;
 
+  /** Every registered module by module_type. Used by hosts that publish the
+   *  whole catalog (the barrel's `plugin_schemas`) and need more than the
+   *  schema fields — the picker metadata rides along on each record. */
+  const std::unordered_map<std::string, RegisteredModule>& entries() const {
+    return entries_;
+  }
+
   /** Number of effects registered. */
   size_t size() const { return entries_.size(); }
 
