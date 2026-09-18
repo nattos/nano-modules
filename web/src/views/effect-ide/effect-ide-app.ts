@@ -14,6 +14,7 @@ import { appController } from '../../state/controller';
 import { dragHasFiles } from '../../utils/drag-drop';
 import type { ShellConfig } from '../../widgets/app-shell';
 
+import '../../widgets/app-titlebar';
 import '../../widgets/app-shell';
 import './ide-explorer';
 import './ide-project-editor';
@@ -135,6 +136,7 @@ export class EffectIdeApp extends MobxLitElement {
     // reusing this surface's own trace point, so no extra registration.
     const monitorFloats = devicesActive || (canvasOpen && leftTab === 'project_editor');
     return html`
+      <app-titlebar label="Nano Modules — Effect Dev"></app-titlebar>
       <app-shell .config=${config}></app-shell>
       ${monitorFloats ? html`
         <devices-float-monitor

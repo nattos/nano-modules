@@ -94,6 +94,19 @@ app.whenReady().then(async () => {
         core: await head('/wasm/core.wasm'),
         naga: await head('/wasm/naga_spv.wasm'),
         effects: Array.isArray(eff) ? eff.length : (eff ? Object.keys(eff).length : 0),
+        titlebar: (() => {
+          const root = document.querySelector('sketch-app');
+          const tb = root && root.shadowRoot && root.shadowRoot.querySelector('app-titlebar');
+          if (!tb) return null;
+          const bar = tb.shadowRoot && tb.shadowRoot.querySelector('.bar');
+          const cs = bar && getComputedStyle(bar);
+          return {
+            desktop: tb.hasAttribute('desktop'),
+            platform: tb.getAttribute('platform'),
+            region: cs ? cs.getPropertyValue('-webkit-app-region').trim() : null,
+            height: Math.round(tb.getBoundingClientRect().height),
+          };
+        })(),
       };
     })()\`);
   } catch (e) { probe = { error: String(e) }; }
@@ -133,6 +146,19 @@ describe('packaged app (no dev server)', () => {
     expect(probe.core).toBe(200);
     // Without this one a packaged build has NO shader pipeline at all.
     expect(probe.naga).toBe(200);
+  });
+
+  // Without a drag region the window cannot be moved AT ALL: the shell hides
+  // the OS title bar and hands the whole frame to the page.
+  it('gives the window a draggable title bar', () => {
+    if (!STAGED) return;
+    expect(probe.titlebar).not.toBeNull();
+    expect(probe.titlebar.desktop).toBe(true);
+    expect(probe.titlebar.region).toBe('drag');
+    // It has to take real layout space too — the macOS traffic lights are
+    // drawn over the top-left of our content otherwise.
+    expect(probe.titlebar.height).toBeGreaterThan(20);
+    if (process.platform === 'darwin') expect(probe.titlebar.platform).toBe('darwin');
   });
 
   it('boots the sketch editor and loads effects from the bundles', () => {

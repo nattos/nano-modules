@@ -16,6 +16,7 @@ import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import type { ShellConfig } from '../widgets/app-shell';
 
+import '../widgets/app-titlebar';
 import '../widgets/app-shell';
 import '../widgets/sketch-column-editor';
 import '../widgets/sketch-monitor';
@@ -111,6 +112,7 @@ export class SketchApp extends MobxLitElement {
     // never a double mount and no extra readback.
     const monitorFloats = devicesActive || (canvasOpen && activeTab === 'edit');
     return html`
+      <app-titlebar label=${appState.local.barrelMode ? 'Nano Modules — Live' : 'Nano Modules'}></app-titlebar>
       <app-shell .config=${config}></app-shell>
       ${monitorFloats ? html`<devices-float-monitor></devices-float-monitor>` : nothing}
       ${devicesActive ? html`<device-wire-overlay></device-wire-overlay>` : nothing}

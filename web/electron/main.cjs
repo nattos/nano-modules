@@ -91,7 +91,23 @@ function createWindow(surface, search = '') {
     height: spec.height,
     title: spec.title,
     backgroundColor: '#111111',
-    titleBarStyle: 'hiddenInset',
+    // The page owns the frame; <app-titlebar> draws the strip and marks it
+    // `-webkit-app-region: drag` so the window can be moved at all.
+    //
+    // 'hiddenInset' is macOS-only — everywhere else it means 'hidden', which on
+    // Windows is a window with NO minimise/maximise/close at all unless
+    // titleBarOverlay asks for them back. So: inset traffic lights on macOS,
+    // native overlay buttons on Windows, and <app-titlebar> keeps a gutter
+    // clear for whichever it is.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    ...(process.platform === 'darwin' ? {
+      // Pin the traffic lights rather than inheriting the inset default, which
+      // is positioned for a full-height title bar and hangs below a 28px one.
+      // Keep this in step with --app-titlebar-h in widgets/app-titlebar.ts.
+      trafficLightPosition: { x: 16, y: 7 },
+    } : {
+      titleBarOverlay: { color: '#1a1a1a', symbolColor: '#b0b0b0', height: 28 },
+    }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       // `fs` straight from the renderer, as nano-player does. That's what

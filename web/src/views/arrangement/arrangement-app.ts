@@ -33,6 +33,7 @@ import {
 import { snackbars } from '../../widgets/snackbars';
 import '../../widgets/snackbars';
 
+import '../../widgets/app-titlebar';
 import './surfaces/transport-bar';
 import './surfaces/arr-ruler';
 import './surfaces/arr-grid';
@@ -66,8 +67,12 @@ export class ArrangementApp extends MobxLitElement {
          '1fr' is minmax(auto, 1fr), whose 'auto' min keeps the timeline at its
          content width and lets the side panel overflow off-screen. */
       grid-template-columns: minmax(0, 1fr) auto auto;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto auto 1fr auto;
+      /* The titlebar spans everything: it is the window's drag strip, so it
+         must reach the edges (and clear the OS controls itself). It collapses
+         to zero height in a browser. */
       grid-template-areas:
+        'titlebar titlebar titlebar'
         'transport side tabbar'
         'main      side tabbar'
         'clipview  side tabbar';
@@ -90,6 +95,7 @@ export class ArrangementApp extends MobxLitElement {
       -webkit-user-select: text;
       user-select: text;
     }
+    app-titlebar { grid-area: titlebar; }
     .transport-row {
       grid-area: transport;
       border-bottom: 1px solid var(--app-tint-3);
@@ -600,6 +606,7 @@ export class ArrangementApp extends MobxLitElement {
 
   render() {
     return html`
+      <app-titlebar label="Nano Arrangement"></app-titlebar>
       <div class="transport-row"><transport-bar></transport-bar></div>
       <div class="main">
         <arr-ruler></arr-ruler>
