@@ -687,6 +687,17 @@ export class ColumnGroup extends MobxLitElement {
     .effect-card-name-wrapper > smart-input {
       flex: 1;
       min-width: 0;
+      /* The type editor must never widen the column. The card sits in an
+       * absolutely-positioned, shrink-to-fit column, so the header's
+       * MIN-CONTENT width is what the column resolves to — and a CodeMirror
+       * holding a full dotted id (source.mesh.three_planes) reports a much
+       * bigger min-content than the short display name it replaced, which
+       * pushed the whole column past the panel's right edge for as long as the
+       * editor was open. min-width:0 only sets the shrink FLOOR; size
+       * containment is what stops the field reporting a content-derived
+       * intrinsic width at all. It stays a flex item with flex: 1 1 0%, so the
+       * header still hands it every spare pixel. */
+      contain: inline-size;
     }
     /* Gear toggle (right of the opacity slider): reveals the per-effect
      * options row below the header. Lit up while the row is open OR while a
