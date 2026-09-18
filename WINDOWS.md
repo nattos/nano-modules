@@ -23,7 +23,16 @@ script in this repo is bash.
 | Native barrel / FFGL plugin / Resolume integration | ❌ macOS only (Metal, ObjC++, CoreMIDI) |
 | `cmake -B native/build` | ❌ the project declares `OBJCXX` |
 | Catch2 native tests, `wamrc` AOT sidecars | ❌ (AOT is a native-only speed bonus; `.wasm` is always the fallback) |
-| Electron shell | untested |
+| Electron shell + packaged app (`npm run package:win`) | ✅ builds; see DESKTOP.md |
+
+> The Windows **installer** cross-builds from macOS (there are no native node
+> modules). Run under CrossOver it gets a long way: the resource root resolves,
+> the install record lands in `%APPDATA%\NanoBarrel\`, the `nano://` scheme
+> serves the app and the renderer runs. **WebGPU does not work there** — the GPU
+> process crashes during init (`DCompositionCreateDevice3 ... Not implemented`),
+> which is a CrossOver limitation and not something a flag works around. So
+> CrossOver validates packaging and paths but not rendering; that needs real
+> hardware. Details in [DESKTOP.md](DESKTOP.md).
 
 > **Not verified on real hardware.** The portability work below was done and
 > tested on macOS: the build scripts were made host-agnostic and every macOS

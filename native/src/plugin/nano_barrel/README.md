@@ -132,8 +132,9 @@ loads those bundles at startup through WAMR.
    `effect_runtime::EffectRuntime`, `ModuleRegistry`.
 2. `sketch_executor::WasmEffectBundles` — `init()` brings up the (refcounted,
    process-global) WAMR runtime + registers the host-import namespaces, then
-   `loadBundleFile(...)` loads each bundle from `Contents/Resources/wasm/`:
-   **`core`, `lights`, `nano`, `text`, `richtext`**. Each bundle's
+   `loadBundleFile(...)` loads each bundle from the **shared resource root**'s
+   `wasm/` (see below): **`core`, `lights`, `nano`, `text`, `richtext`,
+   `legacy`**. Each bundle's
    `nano_module_main` runs, registering every effect it carries into the
    `ModuleRegistry` (schema publish + SPV→MSL shader compile + PSO build, on the
    real Metal backend). There is **no static fallback** — a load failure means a
@@ -145,7 +146,7 @@ loads those bundles at startup through WAMR.
    barrel — only the *effects* are; see `../../sketch/README.md` for why).
 
 **Per-arch AOT sidecar.** When a `<bundle>-<arch>.aot` sits next to the `.wasm`
-in `Resources/wasm/` (produced at build time by `wasm_modules/build_aot.sh` via
+(produced at build time by `wasm_modules/build_aot.sh` via
 `wamrc`, gated on `NANO_WASM_AOT`), the loader prefers it — it runs at ~native
 speed. The portable `.wasm` is always the floor and the graceful fallback; AOT is
 an optional per-platform speed bonus (nothing ships per-user beyond the small
@@ -169,6 +170,59 @@ Per-instance state: each chain entry gets its own `EffectInstance`
 render independently. An effect that exposes `is_identity()` is skipped (input
 aliased to output, dropped from any fused group) when it reports a pure
 passthrough — see EFFECTS_STYLE_GUIDE.md.
+
+### Where the WASM and fonts come from — the shared resource root
+
+The barrel used to carry its own copy of every bundle inside
+`Contents/Resources/wasm/`. It doesn't any more. One directory now serves both
+the plugin and the Electron app:
+
+```
+<root>/nano-resources.json     marker; both halves look for it
+<root>/app/                    the built web app  (Electron only)
+<root>/wasm/*.wasm             effect bundles     (both)
+<root>/wasm/*-<arch>.aot       AOT sidecars       (native only)
+<root>/fonts/default.ttf       primary text face  (native only; the web app
+                               carries its own copy inside app/)
+<root>/ffgl/NanoBarrel.bundle          this plugin
+<root>/ffgl/libbridge_server.dylib     its SIBLING — see "Bridge wiring"
+```
+
+In a dev tree `<root>` is the repo's `build/`, which is exactly where
+`wasm_modules/build_all.sh` already writes. In a release it is
+`Nano Modules.app/Contents/Resources/nano/`.
+
+**Why bother:** a copy inside the bundle had to be re-deployed *and re-signed*
+every time an effect was rebuilt, because any write into `Contents/Resources`
+after `codesign` breaks the ad-hoc seal and Resolume then refuses the load.
+That forgotten step is what `wasm_modules/refresh_barrel.sh` exists to paper
+over. With the payload outside, rebuilding an effect can't invalidate anything,
+and 60 MB is stored once instead of twice.
+
+**Resolution order** (`src/platform/resource_root.h`), first hit wins, each
+candidate checked for an actual `wasm/core.wasm`:
+
+1. `NANO_RESOURCE_ROOT` — explicit; tests, CI and tools.
+2. `NANO_BARREL_WASM_DIR` — back-compat. Names the **wasm dir**, not the root.
+3. **Walk up from our own loaded image**, looking for the marker at each
+   ancestor and at `<ancestor>/build`. Finds the dev tree and an in-app plugin
+   alike, with nothing configured.
+4. The legacy in-bundle `Contents/Resources` — so an old deployment still runs.
+5. The Electron app's install record,
+   `~/Library/Application Support/NanoBarrel/electron_app.json`
+   (`%APPDATA%\NanoBarrel\` on Windows), written on every app launch.
+
+**Step 5 is last on purpose.** `tools/barrel_host_portability.sh` (a registered
+ctest) and `tools/soak_test.py` run the dev-built bundle with no env override
+and inherit whatever the plugin resolves. If an installed app outranked the
+image-relative walk, a dev-tree test run would load a *released* app's effects
+and report a pass against code that was never built here. That ordering is
+pinned by `tests/test_resource_root.cpp`, and verified against a real installed
+app rather than a synthetic one.
+
+The record only matters when the plugin has been **copied out** of the app into
+a host's own plug-ins folder — the normal Resolume setup — at which point there
+is no app above it to walk up to.
 
 ### Text effects
 

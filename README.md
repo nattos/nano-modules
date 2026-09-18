@@ -69,8 +69,14 @@ walkthrough.
 
 ```bash
 rustup update stable
+rustup target add wasm32-wasip1
 cargo install naga-cli    # SPIR-V → WGSL, spawned by the dev server
 ```
+
+`naga-cli` is the dev-server fallback. The path that actually ships is
+`native/naga_spv/` — the same crate built to `wasm32-wasip1` and called in
+process, which is why the target above is needed. `build_all.sh` builds it;
+without it a packaged app has no shader pipeline at all.
 
 ### Node.js
 
@@ -103,6 +109,14 @@ Native (macOS only — the barrel, the C++ executor, Catch2 tests):
 cmake -B native/build -S native
 cmake --build native/build
 ctest --test-dir native/build --output-on-failure
+```
+
+Desktop app (Electron, macOS + Windows) — see **[DESKTOP.md](DESKTOP.md)**:
+
+```bash
+cd web
+npm run build:stage              # vite build + assemble the shared resource root
+npm run package:mac              # or package:win (cross-builds from a Mac)
 ```
 
 ### Toolchain overrides
