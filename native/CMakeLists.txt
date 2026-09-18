@@ -1526,6 +1526,17 @@ if(APPLE)
   )
   target_compile_options(ffgl_runner PRIVATE -Wno-attributes -Wno-deprecated-declarations)
 
+  # Does the barrel still work in a host that isn't Resolume? Drives it through
+  # ffgl_runner with a plain GL_TEXTURE_2D input (what most FFGL hosts hand you)
+  # and with Resolume's IOSurface-backed GL_TEXTURE_RECTANGLE, and requires the
+  # two to be pixel-identical — with nothing listening on Resolume's API port,
+  # which doubles as the "Resolume webserver switched off" case.
+  add_test(NAME barrel_host_portability
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/barrel_host_portability.sh
+            ${CMAKE_CURRENT_BINARY_DIR})
+  set_tests_properties(barrel_host_portability PROPERTIES
+    LABELS "integration" SKIP_RETURN_CODE 77 TIMEOUT 180)
+
   # --- preview_bench: simulated-editor benchmark for the barrel preview path ---
   # Drives bridge_executor_render (the exact FFGL entry: rail publish, capture
   # hooks, fusion barriers, preview readback+broadcast) while an in-process
