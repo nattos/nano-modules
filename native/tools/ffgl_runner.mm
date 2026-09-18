@@ -345,6 +345,10 @@ int main(int argc, const char* argv[]) {
     // does not tell a plugin the texture target, so every plugin guesses — and
     // hosts differ. This is what a non-Resolume host looks like.
     bool input2D = false;
+    // --no-time: never send FF_SET_TIME, like an FFGL host that doesn't
+    // implement it. FFGL makes SetTime optional, so a plugin that treats the
+    // host clock as the only clock simply stops moving in such a host.
+    bool sendTime = true;
     int positional = 0;
     for (int i = 2; i < argc; ++i) {
       std::string arg = argv[i];
@@ -358,6 +362,8 @@ int main(int argc, const char* argv[]) {
         serveHz = std::stod(argv[i + 1]);
         serveSeconds = std::stod(argv[i + 2]);
         i += 2;
+      } else if (arg == "--no-time") {
+        sendTime = false;
       } else if (arg == "--input-target" && i + 1 < argc) {
         input2D = (std::string(argv[i + 1]) == "2d");
         i += 1;
@@ -634,7 +640,7 @@ int main(int argc, const char* argv[]) {
         ps.HostFBO = fbos[n];
         glBindFramebuffer(GL_FRAMEBUFFER, fbos[n]);
         glViewport(0, 0, width, height);
-        plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &tMs}, instances[n]);
+        if (sendTime) plugMain(FF_SET_TIME, (FFMixed){.PointerValue = &tMs}, instances[n]);
         setBeatFn(tMs, instances[n]);
         plugMain(FF_PROCESS_OPENGL, (FFMixed){.PointerValue = &ps}, instances[n]);
       }

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # barrel_host_portability.sh — does NanoBarrel still work in a host that isn't
-# Resolume? Runs the same sketch through ffgl_runner twice and asserts the two
-# outputs are byte-identical:
+# Resolume? Two checks, both through ffgl_runner, both with no Resolume.
+#
+# 1. INPUT TEXTURE TARGET. Renders the same sketch twice and requires the two
+#    outputs to be byte-identical:
 #
 #   rect : an IOSurface-backed GL_TEXTURE_RECTANGLE input — Resolume on macOS.
 #   2d   : a plain GL_TEXTURE_2D input — what most other FFGL hosts hand you.
@@ -82,9 +84,7 @@ fi
 
 ae="$(magick compare -metric AE "$tmp/rect.png" "$tmp/2d.png" "$tmp/diff.png" 2>&1 || true)"
 echo "rect colors: $colors | AE (differing pixels): $ae"
-if [ "$ae" = "0" ]; then
-  echo "PASS: GL_TEXTURE_2D host == GL_TEXTURE_RECTANGLE host, with no Resolume"
-else
+if [ "$ae" != "0" ]; then
   cp "$tmp/diff.png" /tmp/barrel_host_portability_diff.png 2>/dev/null || true
   cp "$tmp/2d.png" /tmp/barrel_host_portability_2d.png 2>/dev/null || true
   echo "FAIL: a GL_TEXTURE_2D host renders differently ($ae px)"
@@ -92,3 +92,55 @@ else
   echo "      2d   -> /tmp/barrel_host_portability_2d.png"
   exit 1
 fi
+echo "PASS: GL_TEXTURE_2D host == GL_TEXTURE_RECTANGLE host, with no Resolume"
+
+# ---------------------------------------------------------------------------
+# 2. Does time still move in a host that never sends FF_SET_TIME?
+#
+# FFGL makes it optional. Reading only the host clock froze every time-driven
+# effect in such a host (and CFFGLPlugin::hostTime isn't even initialized by its
+# constructor, so there was nothing to read). The barrel now falls back to its
+# own monotonic clock.
+#
+# Shape of the check, so neither half can pass vacuously: with --no-time the
+# clock is the WALL clock, so two runs of the same length must DIFFER; with the
+# host clock they must stay byte-identical, which is what proves the fallback
+# didn't leak into the Resolume path and make it non-deterministic.
+# ---------------------------------------------------------------------------
+timesketch="$tmp/time.json"
+cat > "$timesketch" <<'JSON'
+{ "chain": [
+    { "type": "module", "module_type": "source.solid_color", "instance_key": "s" },
+    { "type": "module", "module_type": "filter.glow.vcr_halo", "instance_key": "h" } ],
+  "instances": {
+    "s": { "module_type": "source.solid_color", "state": { "color": [0.5, 0.3, 0.7, 1.0] } },
+    "h": { "module_type": "filter.glow.vcr_halo", "state": {} } },
+  "wires": [] }
+JSON
+
+runtime() {  # $1=out_png  $2=host|none
+  if [ "$2" = none ]; then
+    "$runner" "$bundle" 64 64 40 "$1" --config "$timesketch" --no-time >/dev/null 2>&1
+  else
+    "$runner" "$bundle" 64 64 40 "$1" --config "$timesketch" >/dev/null 2>&1
+  fi
+}
+
+runtime "$tmp/notime_a.png" none
+runtime "$tmp/notime_b.png" none
+ae_free="$(magick compare -metric AE "$tmp/notime_a.png" "$tmp/notime_b.png" null: 2>&1 || true)"
+if [ "$ae_free" = "0" ]; then
+  echo "FAIL: with no FF_SET_TIME the output is frozen — two wall-clock runs came"
+  echo "      back byte-identical, so time-driven effects do not advance"
+  exit 1
+fi
+
+runtime "$tmp/hosttime_a.png" host
+runtime "$tmp/hosttime_b.png" host
+ae_host="$(magick compare -metric AE "$tmp/hosttime_a.png" "$tmp/hosttime_b.png" null: 2>&1 || true)"
+if [ "$ae_host" != "0" ]; then
+  echo "FAIL: with FF_SET_TIME two identical runs differ ($ae_host px) — the host"
+  echo "      clock is no longer authoritative, so the fallback leaked into it"
+  exit 1
+fi
+echo "PASS: clock free-runs without FF_SET_TIME ($ae_free px apart), host clock still exact"

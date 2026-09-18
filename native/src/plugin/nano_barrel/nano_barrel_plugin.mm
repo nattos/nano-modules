@@ -241,8 +241,17 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
   }
 
+  // FFGL makes SetTime and SetBeatInfo OPTIONAL, and hosts differ on whether
+  // they send them. Note which ones actually arrive; ProcessOpenGL falls back
+  // to its own clock for the rest (see hostElapsedSeconds / hostBarPhase).
   FFResult SetTime(double t) override {
+    host_time_seen_ = true;
     return CFFGLPlugin::SetTime(t);
+  }
+
+  void SetBeatInfo(float bpm_, float barPhase_) override {
+    host_beat_seen_ = true;
+    CFFGLPlugin::SetBeatInfo(bpm_, barPhase_);
   }
 
   // -- Parameter callbacks --------------------------------------------
@@ -386,7 +395,24 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // like every other derived-dt surface — a host stall or transport jump
     // advances accumulators/simulations by at most 0.1 s instead of exploding
     // them.
-    double hostT = hostTime / 1000.0;
+    // The host clock when the host provides one, our own monotonic clock when it
+    // doesn't. A plugin that only ever reads `hostTime` stops dead in a host
+    // that never sends FF_SET_TIME — LFOs, particle sims, text animation, every
+    // `host::time()` reader — and looks like a broken plugin rather than a
+    // missing host feature.
+    double hostT;
+    if (host_time_seen_) {
+      hostT = hostTime / 1000.0;
+    } else {
+      static const auto wall_epoch = std::chrono::steady_clock::now();
+      hostT = std::chrono::duration<double>(
+                  std::chrono::steady_clock::now() - wall_epoch).count();
+      if (!fallback_clock_logged_) {
+        BARREL_LOG("clock", "host sends no FF_SET_TIME — running off a local "
+                            "monotonic clock");
+        fallback_clock_logged_ = true;
+      }
+    }
     if (!time_initialized_) {
       time_start_ = hostT;
       time_prev_  = hostT;
@@ -419,13 +445,22 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // the host musical clock so beat-synced effects (the looper) advance. bpm 0
     // means "no transport" — normalize to a sane default.
     const double hostBpm = this->bpm > 0.0f ? (double)this->bpm : 120.0;
+    // Same for the musical clock: with no FF_SET_BEATINFO the base class's
+    // barPhase sits at 0 forever and every beat-synced effect holds its first
+    // step. Free-run it off the elapsed clock at hostBpm (4 beats/bar) so the
+    // host merely loses SYNC, not motion.
+    double barPhaseNow = (double)this->barPhase;
+    if (!host_beat_seen_) {
+      const double beats = (hostT - time_start_) * hostBpm / 60.0;
+      barPhaseNow = (beats / 4.0) - std::floor(beats / 4.0);
+    }
     int outputUsed = loader_.bridge_executor_render(
         bridge_, barrel_plugin_key_.c_str(),
         (__bridge void*)input_interop_->getMetalTexture(),
         (__bridge void*)output_interop_->getMetalTexture(),
         (int)W, (int)H, dt, hostT - time_start_, dirty ? 1 : 0,
         macros_snapshot.data(), (int)N_MACROS,
-        (double)this->barPhase, hostBpm);
+        barPhaseNow, hostBpm);
 
     blitInteropToGlOutput(pGL, outputUsed != 0);
     return FF_SUCCESS;
@@ -1117,6 +1152,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   double                           time_start_ = 0.0;
   double                           time_prev_  = 0.0;
   bool                             time_initialized_ = false;
+  // Did the host ever send FF_SET_TIME / FF_SET_BEATINFO? Both are optional in
+  // FFGL. Resolume sends both; a host that sends neither used to freeze every
+  // time-driven effect, because the barrel read the host clock unconditionally
+  // — and CFFGLPlugin::hostTime is not even initialized by its constructor, so
+  // with no SetTime it was an uninitialized double.
+  bool                             host_time_seen_ = false;
+  bool                             host_beat_seen_ = false;
+  bool                             fallback_clock_logged_ = false;
 
   std::string  config_blob_;
   std::array<float, N_MACROS> macros_{};
