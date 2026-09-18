@@ -77,12 +77,15 @@ export const resolumeSetup = observable.object<ResolumeSetupState>({
 const RETRY_MS = 2000;
 const SLOW_RETRY_MS = 10000;
 const FAST_ATTEMPTS = 10;
+const REFETCH_DEBOUNCE_MS = 300;
 
 let refs = 0;
 let ws: WebSocket | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let stopped = true;
 let attempts = 0;
+const pendingFetch = new Set<string>();
+let fetchTimer: ReturnType<typeof setTimeout> | null = null;
 
 function countBarrels(plugins: unknown): number {
   if (!Array.isArray(plugins)) return 0;
@@ -104,6 +107,11 @@ function ingest(path: string, data: any) {
 
 const WATCHED = ['/global/host', '/global/plugins', '/global/composition_barrel_ids'];
 
+function clearFetchTimer() {
+  if (fetchTimer != null) { clearTimeout(fetchTimer); fetchTimer = null; }
+  pendingFetch.clear();
+}
+
 function scheduleRetry() {
   if (stopped || retryTimer != null) return;
   const delay = attempts < FAST_ATTEMPTS ? RETRY_MS : SLOW_RETRY_MS;
@@ -117,6 +125,10 @@ function open() {
   // takes effect within one interval — same contract as barrel-probe.ts. The
   // retry loop keeps ticking so turning it back on doesn't need a remount.
   if (!appState.local.userSettings.barrelRemoteEnabled) {
+    // Keep ticking (so re-enabling elsewhere is picked up) but on the slow
+    // cadence — the toggle in this very page calls back explicitly, so there
+    // is nothing to be quick about here.
+    attempts = FAST_ATTEMPTS;
     runInAction(() => { resolumeSetup.probe = 'idle'; });
     scheduleRetry();
     return;
@@ -145,19 +157,28 @@ function open() {
       ingest(msg.path, msg.data);
     } else if (msg.type === 'patch' && Array.isArray(msg.ops)) {
       // Patches arrive as ops against arbitrary sub-paths; re-fetching the
-      // whole (tiny) doc is simpler than applying them, and these change on
-      // the order of once per user action, not per frame.
-      const touched = new Set<string>();
+      // whole (small) doc is simpler than applying them. Coalesced, because
+      // /global/plugins carries every instance's params and churns while
+      // someone is turning knobs — we only care that the COUNT changed.
       for (const op of msg.ops) {
         const p = String(op?.path ?? '');
-        for (const w of WATCHED) if (p === w || p.startsWith(w + '/')) touched.add(w);
+        for (const w of WATCHED) if (p === w || p.startsWith(w + '/')) pendingFetch.add(w);
       }
-      for (const w of touched) sock.send(JSON.stringify({ action: 'get', path: w }));
+      if (pendingFetch.size > 0 && fetchTimer == null) {
+        fetchTimer = setTimeout(() => {
+          fetchTimer = null;
+          const paths = [...pendingFetch];
+          pendingFetch.clear();
+          if (ws !== sock || sock.readyState !== WebSocket.OPEN) return;
+          for (const w of paths) sock.send(JSON.stringify({ action: 'get', path: w }));
+        }, REFETCH_DEBOUNCE_MS);
+      }
     }
   };
   const down = () => {
     if (ws !== sock) return;
     ws = null;
+    clearFetchTimer();
     runInAction(() => {
       resolumeSetup.probe = 'closed';
       // Everything below is knowledge the server held. Keeping a stale plugin
@@ -183,6 +204,7 @@ export function watchResolumeSetup(): () => void {
     released = true;
     if (--refs > 0) return;
     stopped = true;
+    clearFetchTimer();
     if (retryTimer != null) { clearTimeout(retryTimer); retryTimer = null; }
     if (ws) { const s = ws; ws = null; try { s.close(); } catch { /* ignore */ } }
     runInAction(() => { resolumeSetup.probe = 'idle'; });
@@ -208,6 +230,7 @@ export function resolumeRemoteSettingChanged() {
     return;
   }
   if (ws) { const s = ws; ws = null; try { s.close(); } catch { /* ignore */ } }
+  clearFetchTimer();
   runInAction(() => {
     resolumeSetup.probe = 'idle';
     resolumeSetup.plugin = null;
@@ -222,6 +245,7 @@ export function resetResolumeSetup() {
   refs = 0;
   stopped = true;
   attempts = 0;
+  clearFetchTimer();
   if (retryTimer != null) { clearTimeout(retryTimer); retryTimer = null; }
   if (ws) { const s = ws; ws = null; try { s.close(); } catch { /* ignore */ } }
   runInAction(() => {
