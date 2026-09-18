@@ -39,7 +39,7 @@ interface SketchCanvasHost extends HTMLElement {
   beginInsertOnWire?(wireId: string, clientX: number, clientY: number): void;
 }
 import { execPositions, wireIsDelayed } from '../state/exec-order';
-import { tapsConnect } from './taps-connect';
+import { connectGestureActive, tapsConnect } from './taps-connect';
 import './spark-chart';
 
 type Pt = { x: number; y: number };
@@ -278,6 +278,11 @@ export class TapsOverlay extends MobxLitElement {
       font-size: var(--app-fs-md);
       will-change: transform;
     }
+    /* Mid-gesture the card is in the way: it is anchored beside the SOURCE
+     * field, and the target the user is reaching for is very often underneath
+     * it. Fade it out and stop it taking the pointer for the gesture's
+     * duration — it comes back the moment the wire commits or cancels. */
+    .field-card.connecting { opacity: 0.18; pointer-events: none; }
     /* Inspector field rows reused inside the card (mirrors edit-tab styles). */
     .section-header { font-size: var(--app-fs-sm); text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--app-text-color2, #b0b0b0); margin: 4px 0; }
@@ -527,7 +532,7 @@ export class TapsOverlay extends MobxLitElement {
         })}
         <line class="connect-line" style="display:none"></line>
       </svg>
-      ${cardContent ? html`<div class="field-card">${cardContent}</div>` : nothing}
+      ${cardContent ? html`<div class="field-card ${connectGestureActive() ? 'connecting' : ''}">${cardContent}</div>` : nothing}
     `;
   }
 
