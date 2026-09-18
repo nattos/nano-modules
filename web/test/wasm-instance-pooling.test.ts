@@ -97,6 +97,22 @@ describe('WASM instance pooling', () => {
 
     console.log(`[pooling] ${built.wanted} concurrent effect instances across `
       + `${built.keys.length} sketches; preview mean = ${JSON.stringify(mean)}`);
+    // Tear the load back down BEFORE asserting: jest-puppeteer shares one page
+    // across suites, and leaving 384 effects rendering starves whatever runs
+    // next (it shows up as unrelated suites timing out on fixed waits).
+    await page.evaluate(`(() => {
+      const ac = window.appController;
+      for (const inst of [...window.appState.local.barrelInstances]) {
+        ac.deletePlaygroundInstanceById(inst.key);
+      }
+    })()`);
+    // ...and unload the app entirely, so the engine worker, its GPU device and
+    // every pooled WASM instance are gone before the next suite boots. Without
+    // this the load bleeds into whatever runs next, which shows up as unrelated
+    // fixed-wait UI suites timing out.
+    await page.goto('about:blank');
+    await new Promise(r => setTimeout(r, 1500));
+
     expect(mean).not.toBeNull();
     // Flat grey (r ≈ g ≈ b) is the transparent checkerboard — i.e. the chain
     // died. Green dominance proves every stage really ran.
