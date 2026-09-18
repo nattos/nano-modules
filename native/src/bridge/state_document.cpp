@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <functional>
+#include <string>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -513,7 +515,6 @@ void StateDocument::set_at(const std::string& path, const json& value) {
     return;
   }
 
-  // Find or create the parent path
   auto* target = json_patch::resolve_pointer(doc_, path);
   if (target) {
     // Path exists — diff and emit patches
@@ -523,33 +524,52 @@ void StateDocument::set_at(const std::string& path, const json& value) {
       pending_.push_back(op);
     }
     *target = value;
-  } else {
-    // Path doesn't exist — create via add
-    // Split into parent + key
-    auto last_slash = path.rfind('/');
-    if (last_slash == std::string::npos) return;
-    std::string parent_path = path.substr(0, last_slash);
-    std::string key = path.substr(last_slash + 1);
-
-    // Ensure parent exists (create as objects)
-    auto* parent = json_patch::resolve_pointer(doc_, parent_path);
-    if (!parent) {
-      // Create parent chain — walk from root
-      auto tokens = parent_path;
-      // Simple: set the entire path with a single add
-      // This works because json_patch::apply_op handles nested creation
-      json_patch::PatchOp add_op;
-      add_op.op = "add";
-      add_op.path = path;
-      add_op.value = value;
-      json_patch::apply_op(doc_, add_op);
-      pending_.push_back(add_op);
-      return;
-    }
-
-    (*parent)[key] = value;
-    emit("add", path, value);
+    return;
   }
+
+  // The path doesn't exist, so some prefix of it has to be created. Walk down
+  // from the root to the deepest ancestor that DOES exist, then create the
+  // whole remaining chain in one write.
+  //
+  // Both halves of that matter. `(*parent)[key] = value` can't reach
+  // "/global/host/server" while "/global/host" is missing, and neither can a
+  // single `add` op at the full path — json_patch::apply_op resolves the
+  // parent and gives up when it isn't there (it does NOT create intermediates,
+  // whatever this function used to claim). Worse, the CLIENT is missing the
+  // same parent, so a patch emitted at the full path would be un-appliable on
+  // their side even if we had written it locally. The patch therefore has to
+  // be emitted at the SHALLOWEST level we actually created, carrying the
+  // nested object with it.
+  std::vector<std::string> tokens;
+  for (size_t i = 0; i < path.size();) {
+    if (path[i] != '/') return;              // not a JSON pointer
+    size_t j = path.find('/', i + 1);
+    if (j == std::string::npos) j = path.size();
+    tokens.push_back(path.substr(i + 1, j - i - 1));
+    i = j;
+  }
+  if (tokens.empty()) return;
+
+  std::string prefix;                        // "" is the root
+  size_t depth = 0;
+  for (; depth + 1 < tokens.size(); ++depth) {
+    const std::string next = prefix + "/" + tokens[depth];
+    if (!json_patch::resolve_pointer(doc_, next)) break;
+    prefix = next;
+  }
+  json* parent = json_patch::resolve_pointer(doc_, prefix);
+  // Only objects grow new keys. An array parent would need an index, and
+  // nothing addresses a not-yet-existing array slot this way.
+  if (!parent || !parent->is_object()) return;
+
+  json nested = value;
+  for (size_t k = tokens.size(); k-- > depth + 1;) {
+    json wrapper = json::object();
+    wrapper[tokens[k]] = std::move(nested);
+    nested = std::move(wrapper);
+  }
+  (*parent)[tokens[depth]] = nested;
+  emit("add", prefix + "/" + tokens[depth], nested);
 }
 
 std::vector<json_patch::PatchOp> StateDocument::drain_patches() {

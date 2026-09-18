@@ -294,3 +294,51 @@ TEST_CASE("set_plugin_state preserves editor-owned preview_requests",
   CHECK(state["preview_requests"].contains("other"));
   CHECK(!state["preview_requests"].contains("inst_thumb"));
 }
+
+// set_at into a path whose PARENT doesn't exist yet. This used to be a silent
+// no-op: the fallback built a single `add` op at the full path and handed it to
+// json_patch::apply_op, which resolves the parent and gives up when it's
+// missing. Nothing checked the return, so "/global/host/server" simply never
+// landed — and the editor's setup checklist, whose whole job is to explain why
+// Resolume isn't answering, saw null.
+TEST_CASE("set_at creates missing intermediate objects", "[state_document]") {
+  StateDocument doc;
+  doc.drain_patches();
+
+  doc.set_at("/global/host/server", json{{"port", 8081}, {"connected", false}});
+  auto d = doc.document();
+  REQUIRE(d["global"].contains("host"));
+  REQUIRE(d["global"]["host"]["server"]["port"] == 8081);
+
+  // The patch has to be appliable by a client that is ALSO missing "host", so
+  // it must be emitted at the shallowest level we created, carrying the nested
+  // object — not at the full path.
+  auto ops = doc.drain_patches();
+  REQUIRE(ops.size() == 1);
+  CHECK(ops[0].op == "add");
+  CHECK(ops[0].path == "/global/host");
+  CHECK(ops[0].value["server"]["port"] == 8081);
+
+  // A SIBLING write now finds its parent and lands as a plain leaf add.
+  doc.set_at("/global/host/plugin", json{{"path", "/x/NanoBarrel.bundle"}});
+  d = doc.document();
+  CHECK(d["global"]["host"]["server"]["port"] == 8081);   // sibling untouched
+  CHECK(d["global"]["host"]["plugin"]["path"] == "/x/NanoBarrel.bundle");
+  ops = doc.drain_patches();
+  REQUIRE(ops.size() == 1);
+  CHECK(ops[0].path == "/global/host/plugin");
+
+  // Re-setting an existing path still diffs rather than re-adding.
+  doc.set_at("/global/host/server", json{{"port", 8081}, {"connected", true}});
+  ops = doc.drain_patches();
+  REQUIRE(ops.size() == 1);
+  CHECK(ops[0].op == "replace");
+  CHECK(ops[0].path == "/global/host/server/connected");
+
+  // Deeper than one missing level, from the root down.
+  doc.set_at("/a/b/c/d", json(7));
+  CHECK(doc.document()["a"]["b"]["c"]["d"] == 7);
+  ops = doc.drain_patches();
+  REQUIRE(ops.size() == 1);
+  CHECK(ops[0].path == "/a");
+}
