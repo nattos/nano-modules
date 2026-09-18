@@ -228,8 +228,8 @@ app.whenReady().then(async () => {
     appProtocol.serve(resourceRoot);
   }
 
-  // Tell a copied-out FFGL plugin where we are. Best-effort, and deliberately
-  // ranked LAST on the native side — see resources.cjs.
+  // Tell a copied-out FFGL plugin where we are. Packaged builds only, and
+  // deliberately ranked LAST on the native side — see resources.cjs.
   const record = writeInstallRecord(resourceRoot);
   console.log(`[electron] mode=${loadMode} root=${resourceRoot ?? '(none)'}` +
               (record ? ` record=${record}` : ''));

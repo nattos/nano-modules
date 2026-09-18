@@ -65,9 +65,16 @@ function resolveResourceRoot() {
  * hijack a dev-tree test run. Writing it is therefore best-effort: a failure
  * costs a copied-out plugin its resources, nothing else, so it must never keep
  * the app from starting.
+ *
+ * ONLY A PACKAGED APP WRITES IT. Running the shell from a source tree would
+ * otherwise repoint an installed user's record at a developer's build/
+ * directory — a directory that can be half-rebuilt, or deleted — and they would
+ * have no idea why their plugin started loading different effects. A dev tree
+ * needs no record anyway: the plugin finds it by walking up from its own image.
  */
 function writeInstallRecord(root) {
   if (!root) return null;
+  if (!app.isPackaged && process.env.NANO_WRITE_INSTALL_RECORD !== '1') return null;
   try {
     // app.getPath('appData') is ~/Library/Application Support on macOS and
     // %APPDATA% on Windows — the same directories nano_paths::supportDir()
