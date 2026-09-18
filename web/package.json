@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "stage": "bash scripts/stage_resources.sh",
+    "build:stage": "npm run build && npm run stage",
     "test": "vitest --run",
     "test:e2e": "jest",
     "electron": "electron electron/main.cjs"

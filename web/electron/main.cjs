@@ -1,37 +1,95 @@
 /**
- * Electron main process — the desktop shell for the arrangement app.
+ * Electron main process — the desktop shell.
  *
- * The point of running under Electron is the FILESYSTEM: the renderer gets real
- * `fs` and real absolute paths, which is the only way a library path can carry
- * the `absolutePath` the native executor resolves media with (see
- * web/src/state/paths.ts and web/src/state/library-paths.ts).
+ * Two surfaces, one installable. `index.html` boots the effect IDE, Playground
+ * or Live (chosen by the persisted appMode; see src/main.ts) and
+ * `arrangement.html` is the video editor. They share an engine worker, the
+ * effect bundles and the fonts, so shipping them as two apps would mean two
+ * copies of ~40 MB and two install records for the FFGL plugin to disagree
+ * about. They get a window each instead.
  *
- * Deliberately loads the VITE DEV SERVER rather than a built bundle. Shader
- * translation (SPIR-V → WGSL) runs through `/__naga/wgsl`, which is a
- * dev-server-only Vite plugin that spawns the `naga` CLI — a packaged build
- * would have no shader pipeline at all. Packaging is a separate problem; see
- * the plan's "known follow-ups". Point NANO_URL elsewhere to override.
+ * Two ways to load, in priority order:
+ *
+ *   1. NANO_URL, or an unpackaged tree with a dev server reachable — the
+ *      supported development path, unchanged: `npm run dev` then
+ *      `npm run electron`. HMR, the cpp-build plugin and the naga bridge all
+ *      keep working.
+ *   2. The shared resource root over `nano://app/` — what a packaged app does.
+ *      See app-protocol.cjs for why it is a custom scheme and not file:// or a
+ *      localhost server.
+ *
+ * The renderer needs REAL FILESYSTEM ACCESS: a library path can only carry the
+ * `absolutePath` the native executor resolves media with if the renderer can
+ * see actual paths (state/paths.ts, state/library-paths.ts). That is what
+ * nodeIntegration is for here.
  *
  * Plain CJS with no build step, so it can't drift out of sync with a compile
- * pipeline. Run it with `npm run electron` (from web/), with `npm run dev`
- * already serving.
+ * pipeline.
  */
 
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 
-const URL = process.env.NANO_URL || 'http://localhost:5173/arrangement.html';
+const appProtocol = require('./app-protocol.cjs');
+const { resolveResourceRoot, writeInstallRecord, ffglPluginPath } = require('./resources.cjs');
 
 /** WebGPU is not optional here — the whole renderer is dead without it. */
 app.commandLine.appendSwitch('enable-unsafe-webgpu');
 app.commandLine.appendSwitch('enable-experimental-web-platform-features');
 
-let mainWindow = null;
+// MUST happen before whenReady(): Chromium reads the scheme registry during
+// startup and ignores a later registration, with no error.
+appProtocol.registerScheme();
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1600,
-    height: 1000,
+const DEV_URL = process.env.NANO_URL || null;
+const DEV_SERVER = 'http://localhost:5173';
+
+let resourceRoot = null;
+/** 'dev' (a Vite server) or 'packaged' (the nano:// scheme). */
+let loadMode = 'packaged';
+
+/** The two surfaces, keyed by the page they load. */
+const SURFACES = {
+  studio: { file: 'index.html', title: 'Nano Modules', width: 1600, height: 1000 },
+  arrangement: { file: 'arrangement.html', title: 'Nano Arrangement', width: 1600, height: 1000 },
+};
+
+/** One window per surface; re-focus rather than open a second. */
+const windows = new Map();
+
+function urlFor(surface, search = '') {
+  const { file } = SURFACES[surface];
+  const base = loadMode === 'dev'
+    ? `${DEV_URL ? new URL(DEV_URL).origin : DEV_SERVER}/${file}`
+    : `${appProtocol.ORIGIN}/${file}`;
+  return base + search;
+}
+
+/** Is a dev server actually answering? Avoids an unpackaged launch hanging on
+ *  a blank window when the developer forgot `npm run dev`. */
+async function devServerReachable(origin) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1500);
+    const res = await fetch(origin, { signal: ctrl.signal });
+    clearTimeout(t);
+    return res.ok || res.status === 404;  // answering at all is enough
+  } catch {
+    return false;
+  }
+}
+
+function createWindow(surface, search = '') {
+  const existing = windows.get(surface);
+  if (existing && !existing.isDestroyed()) {
+    existing.focus();
+    return existing;
+  }
+  const spec = SURFACES[surface];
+  const win = new BrowserWindow({
+    width: spec.width,
+    height: spec.height,
+    title: spec.title,
     backgroundColor: '#111111',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
@@ -40,43 +98,93 @@ function createWindow() {
       // state/paths.ts reaches through window.require — it deliberately never
       // imports 'fs', because Vite has no electron-renderer target and would
       // try to resolve the specifier at build time.
+      //
+      // Kept on deliberately: isElectron() (state/paths.ts) is a bare `require`
+      // probe, so turning this off silently removes the absolute-path feature
+      // rather than breaking loudly. We only ever load our own content, from
+      // our own scheme. Tightening it means moving fs + the pickers behind
+      // contextBridge in preload.cjs, which that file is already marked for.
       nodeIntegration: true,
       contextIsolation: false,
-      // Media is read through fs into a Blob, so this isn't needed for the
-      // decode path; it's here so a file:// asset in a dev page doesn't trip
-      // the origin check while we're pointed at http://localhost.
-      webSecurity: false,
+      // Only needed against a dev server on a different origin. Under
+      // nano://app/ everything is same-origin and the default applies.
+      webSecurity: loadMode !== 'dev',
     },
   });
 
-  mainWindow.loadURL(URL);
-  mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
-    console.error(`[electron] failed to load ${URL}: ${desc} (${code})`);
-    console.error('[electron] is the Vite dev server running? (cd web && npm run dev)');
+  const url = urlFor(surface, search);
+  win.loadURL(url);
+
+  win.webContents.on('did-fail-load', (_e, code, desc) => {
+    console.error(`[electron] failed to load ${url}: ${desc} (${code})`);
+    if (loadMode === 'dev') {
+      console.error('[electron] is the Vite dev server running? (cd web && npm run dev)');
+    } else {
+      console.error(`[electron] resource root: ${resourceRoot}`);
+    }
   });
   // Report the GPU situation early — a renderer without WebGPU looks like a
-  // hang, not an error.
-  mainWindow.webContents.once('did-finish-load', async () => {
+  // hang, not an error. This is the single most likely thing to go wrong on a
+  // machine whose driver stack can't give Dawn an adapter.
+  win.webContents.once('did-finish-load', async () => {
     try {
-      const ok = await mainWindow.webContents.executeJavaScript('!!navigator.gpu');
+      const ok = await win.webContents.executeJavaScript('!!navigator.gpu');
       if (!ok) console.error('[electron] navigator.gpu is missing — WebGPU unavailable');
     } catch { /* window closed mid-check */ }
   });
   // External links open in the real browser, not a chrome-less app window.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    shell.openExternal(target);
     return { action: 'deny' };
   });
-  mainWindow.on('closed', () => { mainWindow = null; });
+  win.on('closed', () => windows.delete(surface));
+
+  windows.set(surface, win);
+  return win;
+}
+
+function buildMenu() {
+  const plugin = ffglPluginPath(resourceRoot);
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Studio Window', accelerator: 'CmdOrCtrl+1', click: () => createWindow('studio') },
+        { label: 'Arrangement Window', accelerator: 'CmdOrCtrl+2', click: () => createWindow('arrangement') },
+        { type: 'separator' },
+        {
+          label: 'Playground (new window)',
+          click: () => createWindow('studio', '?playground'),
+        },
+        ...(plugin ? [
+          { type: 'separator' },
+          {
+            // Pointing Resolume at the plugin is otherwise a hunt through an
+            // opaque app bundle.
+            label: 'Reveal FFGL Plugin in Finder',
+            click: () => shell.showItemInFolder(plugin),
+          },
+        ] : []),
+        { type: 'separator' },
+        process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 /**
  * The native directory picker. Returns an ABSOLUTE PATH — unlike the browser's
- * `showDirectoryPicker`, which hands back an opaque handle. This is the whole
+ * showDirectoryPicker, which hands back an opaque handle. This is the whole
  * reason the desktop build exists.
  */
-ipcMain.handle('paths.showDirectoryPicker', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle('paths.showDirectoryPicker', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openDirectory', 'createDirectory'],
   });
   return canceled ? undefined : filePaths[0];
@@ -84,10 +192,54 @@ ipcMain.handle('paths.showDirectoryPicker', async () => {
 
 ipcMain.handle('paths.showItemInFolder', (_e, absPath) => shell.showItemInFolder(absPath));
 
-app.whenReady().then(createWindow);
+/** Let the renderer find the bundles/fonts without guessing at layout. */
+ipcMain.handle('nano.resourceRoot', () => resourceRoot);
+
+app.whenReady().then(async () => {
+  resourceRoot = resolveResourceRoot();
+
+  const devOrigin = DEV_URL ? new URL(DEV_URL).origin : DEV_SERVER;
+  if (process.env.NANO_FORCE_PACKAGED === '1') {
+    // Exercise the shipping path from a source tree — a dev server is usually
+    // running on this machine, and without this there is no way to test the
+    // nano:// scheme short of building an installer.
+    loadMode = 'packaged';
+  } else if (DEV_URL) {
+    loadMode = 'dev';
+  } else if (!app.isPackaged && await devServerReachable(devOrigin)) {
+    // Unpackaged with a server up: prefer it, so HMR and the C++ rebuild
+    // plugin keep working during development.
+    loadMode = 'dev';
+  } else {
+    loadMode = 'packaged';
+  }
+
+  if (loadMode === 'packaged') {
+    if (!resourceRoot) {
+      dialog.showErrorBox(
+        'Missing resources',
+        'Could not find the shared resource root (wasm bundles and fonts).\n\n' +
+        'In a development tree, build them with native/wasm_modules/build_all.sh ' +
+        'and the web app with `npm run build`, or start the dev server and ' +
+        'relaunch.');
+      app.quit();
+      return;
+    }
+    appProtocol.serve(resourceRoot);
+  }
+
+  // Tell a copied-out FFGL plugin where we are. Best-effort, and deliberately
+  // ranked LAST on the native side — see resources.cjs.
+  const record = writeInstallRecord(resourceRoot);
+  console.log(`[electron] mode=${loadMode} root=${resourceRoot ?? '(none)'}` +
+              (record ? ` record=${record}` : ''));
+
+  buildMenu();
+  createWindow('studio');
+});
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) createWindow('studio');
 });
 
 app.on('window-all-closed', () => {
