@@ -329,6 +329,22 @@ bool BridgeServer::key_observed(const std::string& key) {
   return core_.observers().is_anyone_observing("/plugins/" + key + "/state");
 }
 
+void BridgeServer::subscribe_unresolved_barrel_configs() {
+  if (!resolume_client_) return;
+  // A barrel whose `config` is still empty has no identity we can read out of
+  // the composition. Subscribing to that param means Resolume pushes its value
+  // the moment the plugin writes one (the plugin raises FF_EVENT_FLAG_VALUE on
+  // P_CONFIG), instead of the identity waiting for the next unrelated
+  // composition change — which is what made a newly-added instance sit in the
+  // editor's "Other" row under a raw UUID prefix until you touched something
+  // else. Subscribe-once per param id; ids leave the set only with the
+  // composition, and a redundant subscribe is harmless anyway.
+  for (int64_t id : instance_locator_.unresolved_config_param_ids()) {
+    if (!subscribed_config_params_.insert(id).second) continue;
+    resolume_client_->subscribe_by_id(id);
+  }
+}
+
 void BridgeServer::apply_resolume_messages(
     std::vector<resolume::IncomingMessage>& messages) {
   for (auto& msg : messages) {
@@ -342,6 +358,7 @@ void BridgeServer::apply_resolume_messages(
       uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       instance_locator_.update(cs->data, core_.state_document(), now_ms);
+      subscribe_unresolved_barrel_configs();
       if (cs->data.contains("tempocontroller") &&
           cs->data["tempocontroller"].contains("tempo")) {
         auto& tempo = cs->data["tempocontroller"]["tempo"];
@@ -351,9 +368,17 @@ void BridgeServer::apply_resolume_messages(
       }
     } else if (auto* ps = std::get_if<resolume::ParameterSubscribed>(&msg)) {
       if (ps->value.is_number()) core_.param_cache().set(ps->id, ps->value.get<double>());
+      if (ps->value.is_string())
+        instance_locator_.ingest_config_value(ps->id, ps->value.get<std::string>());
       core_.set_param_path(ps->id, ps->path);
     } else if (auto* pu = std::get_if<resolume::ParameterUpdate>(&msg)) {
       if (pu->value.is_number()) core_.param_cache().set(pu->id, pu->value.get<double>());
+      // A `config` blob arriving as a subscription update rather than inside a
+      // composition snapshot: the identity of a freshly-added barrel, which
+      // Resolume never re-broadcasts the composition for. The locator re-points
+      // its maps; the pump's per-tick publish_placements then names it.
+      if (pu->value.is_string())
+        instance_locator_.ingest_config_value(pu->id, pu->value.get<std::string>());
     }
   }
 }

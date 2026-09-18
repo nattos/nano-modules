@@ -200,6 +200,7 @@ void FakeResolumeServer::handle_message(ix::WebSocket& ws, const std::string& ms
     ParamInfo info;
     {
       std::lock_guard lock(mu_);
+      subscribes_.push_back(id);
       auto it = params_by_id_.find(id);
       if (it == params_by_id_.end()) return;
       info = it->second;
@@ -306,12 +307,40 @@ std::vector<FakeResolumeServer::SetRecord> FakeResolumeServer::recorded_sets() c
   return sets_;
 }
 
+std::vector<int64_t> FakeResolumeServer::recorded_subscribes() const {
+  std::lock_guard lock(mu_);
+  return subscribes_;
+}
+
+void FakeResolumeServer::push_param_update(int64_t id, const json& value) {
+  std::string frame;
+  {
+    std::lock_guard lock(mu_);
+    auto it = params_by_id_.find(id);
+    if (it == params_by_id_.end()) return;
+    it->second.value = value;
+    if (!it->second.path.empty()) {
+      json::json_pointer ptr(it->second.path);
+      if (composition_.contains(ptr) && composition_[ptr].is_object())
+        composition_[ptr]["value"] = value;
+    }
+    composition_str_ = composition_.dump();
+    frame = json{{"type", "parameter_update"},
+                 {"id", id},
+                 {"valuetype", it->second.valuetype},
+                 {"value", value},
+                 {"path", it->second.path}}.dump();
+  }
+  if (server_) for (auto& client : server_->getClients()) client->send(frame);
+}
+
 std::vector<std::string> FakeResolumeServer::recorded_triggers() const {
   std::lock_guard lock(mu_);
   return triggers_;
 }
 
-json FakeResolumeServer::make_default_composition(const std::vector<std::string>& uuids) {
+json FakeResolumeServer::make_default_composition(
+    const std::vector<std::string>& uuids, bool empty_config) {
   json comp;
   comp["name"] = make_name("Fake Comp");
   comp["video"] = {{"width", 1920}, {"height", 1080}, {"effects", json::array()}};
@@ -320,7 +349,11 @@ json FakeResolumeServer::make_default_composition(const std::vector<std::string>
   int64_t next_id = 100000;
   for (size_t i = 0; i < uuids.size(); i++) {
     json env = {{"sketch", {{"chain", json::array()}}}, {"uuid", uuids[i]}};
-    std::string blob = barrel_codec::wrap_config(env.dump());
+    // A freshly-added barrel broadcasts an EMPTY config: the FFGL FILE param's
+    // default is "", and the blob the plugin writes to itself never makes it
+    // back into a composition broadcast.
+    std::string blob =
+        empty_config ? std::string() : barrel_codec::wrap_config(env.dump());
     int64_t config_id = next_id++;
     json barrel = {
       {"id", next_id++},

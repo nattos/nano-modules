@@ -200,3 +200,77 @@ TEST_CASE("BridgeServer forks a dormant duplicate over the fake Resolume WS",
   CHECK_FALSE(new_uuid.empty());
   CHECK(new_uuid != uuid);
 }
+
+// A FRESHLY ADDED NanoBarrel: Resolume broadcasts the composition with the
+// effect present but its `config` still empty (the FFGL FILE param's default),
+// so there is no identity to read and the instance sat in the editor's "Other"
+// row under a raw UUID prefix. The plugin writes its identity into the param
+// moments later and raises FF_EVENT_FLAG_VALUE — but that is a param change,
+// not a composition change, so nothing rebroadcasts the composition and the
+// name used to wait for the next unrelated edit.
+//
+// The server now SUBSCRIBES to every unresolved barrel `config` param, so
+// Resolume pushes the value as a parameter_update and the placement lands on
+// the very next tick.
+TEST_CASE("a freshly-added barrel is named as soon as it writes its config",
+          "[instance_locator][e2e]") {
+  const int kFakePort = 19092;
+  const std::string uuid = "4A0F71C2-0B37-4C2E-9E34-6A1E1D5C9A10";
+
+  bridge::FakeResolumeServer fake;
+  fake.set_composition(
+      bridge::FakeResolumeServer::make_default_composition({uuid},
+                                                           /*empty_config=*/true));
+  REQUIRE(fake.start(kFakePort));
+
+  std::string url = "ws://127.0.0.1:" + std::to_string(kFakePort) + "/api/v1";
+  setenv("NANO_RESOLUME_URL", url.c_str(), 1);
+  setenv("NANO_BRIDGE_PORT", "19093", 1);
+
+  auto& server = bridge::BridgeServer::instance();
+  server.acquire();
+  std::string key = server.register_plugin("com.nano.nanobarrel", 0, 1, 0, "", uuid);
+  REQUIRE(key == uuid);
+
+  // The server must ask Resolume to push that config param.
+  std::vector<int64_t> subs;
+  for (int i = 0; i < 400 && subs.empty(); i++) {
+    subs = fake.recorded_subscribes();
+    if (subs.empty()) std::this_thread::sleep_for(25ms);
+  }
+  REQUIRE_FALSE(subs.empty());
+
+  // Nothing is named yet — there is no identity in the composition.
+  json before = json::parse(server.get_at("/global/plugins/0"), nullptr, false);
+  CHECK_FALSE(before.contains("resolume"));
+
+  // The plugin writes its identity; Resolume pushes it on the subscription.
+  json env = {{"sketch", {{"chain", json::array()}}}, {"uuid", uuid}};
+  fake.push_param_update(subs.front(),
+                         barrel_codec::wrap_config(env.dump()));
+
+  json resolume;
+  for (int i = 0; i < 400; i++) {
+    json entry = json::parse(server.get_at("/global/plugins/0"), nullptr, false);
+    if (!entry.is_discarded() && entry.is_object() && entry.contains("resolume")) {
+      resolume = entry["resolume"];
+      break;
+    }
+    std::this_thread::sleep_for(25ms);
+  }
+
+  // The composition-member list (placeholder cards + offline scoping) has to
+  // pick it up on the same route — it is published from the same pass.
+  json members = json::parse(server.get_at("/global/composition_barrel_ids"),
+                             nullptr, false);
+
+  server.release();
+  fake.stop();
+
+  REQUIRE_FALSE(resolume.is_null());
+  CHECK(resolume["location"] == "/layers/0/clips/0/video/effects/0");
+  CHECK(resolume["placement"]["track_name"] == "Layer 1");
+  REQUIRE(members.is_array());
+  REQUIRE(members.size() == 1);
+  CHECK(members[0]["uuid"] == uuid);
+}

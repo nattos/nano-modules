@@ -100,6 +100,9 @@ private:
   // so the pump can poll (and destroy the batch) OUTSIDE tick_mutex_ — see
   // pump_loop.
   void apply_resolume_messages(std::vector<resolume::IncomingMessage>& messages);
+  /// Ask Resolume to push updates for every composition barrel whose `config`
+  /// we could not resolve an identity from (i.e. every freshly-added one).
+  void subscribe_unresolved_barrel_configs();
   void flush_outbox();
   // Drain the trigger rail + reconcile Resolume clip launches (pump thread).
   void drive_clip_launches();
@@ -146,6 +149,9 @@ private:
   // (drives per-instance default display names). Only touched from the pump
   // thread under tick_mutex_.
   InstanceLocator instance_locator_;
+  // Barrel `config` param ids we've already asked Resolume to push updates for
+  // (see subscribe_unresolved_barrel_configs). Pump thread only.
+  std::set<int64_t> subscribed_config_params_;
   // Turns trigger-rail events into Resolume clip launches with a reconcile loop
   // (the piano-trigger stuck-on fix). Only touched from the pump thread.
   ClipLauncher clip_launcher_;

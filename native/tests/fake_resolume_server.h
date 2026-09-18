@@ -55,11 +55,31 @@ public:
   };
   std::vector<SetRecord> recorded_sets() const;
   std::vector<std::string> recorded_triggers() const;
+  /// Param ids a client has subscribed to, in arrival order.
+  std::vector<int64_t> recorded_subscribes() const;
+
+  /// Push a `parameter_update` for one param WITHOUT rebroadcasting the
+  /// composition — how Resolume surfaces a value an FFGL plugin wrote to
+  /// ITSELF (it raises FF_EVENT_FLAG_VALUE; the composition does not change,
+  /// so nothing rebroadcasts it). The composition + by-id index are updated so
+  /// a later broadcast agrees. This is the only route by which a freshly-added
+  /// NanoBarrel's identity reaches the server, and only if it subscribed.
+  void push_param_update(int64_t id, const nlohmann::json& value);
 
   /// Build a canned composition mirroring the live capture: one NanoBarrel per
   /// layer (on `clips[0]`), each with an inline `nanobarrel://config?<base64>`
   /// blob carrying the corresponding UUID.
-  static nlohmann::json make_default_composition(const std::vector<std::string>& uuids);
+  ///
+  /// `empty_config` instead leaves every barrel's `config` param EMPTY — a
+  /// FRESHLY ADDED barrel, which is what Resolume actually broadcasts before
+  /// the plugin has written its identity (the FILE param's default is "").
+  static nlohmann::json make_default_composition(
+      const std::vector<std::string>& uuids, bool empty_config);
+
+  /// Overload keeping the (non-empty config) default for existing callers.
+  static nlohmann::json make_default_composition(const std::vector<std::string>& uuids) {
+    return make_default_composition(uuids, /*empty_config=*/false);
+  }
 
   // --- NanoLooper Ch scene markers (headless twins of the live setup) ---
 
@@ -154,6 +174,7 @@ private:
   std::map<std::string, ClipRuntime> clip_rt_;  // keyed by connect action path
   std::vector<SetRecord> sets_;
   std::vector<std::string> triggers_;
+  std::vector<int64_t> subscribes_;
 };
 
 }  // namespace bridge

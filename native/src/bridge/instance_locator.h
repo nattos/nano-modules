@@ -104,6 +104,23 @@ public:
   /// timestamp; pass 0 to disable.
   void tick(uint64_t now_ms);
 
+  /// Config param ids of composition barrels we could NOT resolve a UUID for —
+  /// i.e. a NanoBarrel node whose `config` is still empty. That is every
+  /// freshly-added barrel: the plugin's FILE param defaults to "", and the
+  /// value it later writes to ITSELF is not something Resolume re-broadcasts,
+  /// so the identity (and with it the "Layer 3 / Clip 2" name) used to arrive
+  /// only on the next unrelated composition change. BridgeServer subscribes to
+  /// these ids so Resolume pushes the value the moment the plugin raises its
+  /// param event, and feeds it back through `ingest_config_value`.
+  std::vector<int64_t> unresolved_config_param_ids() const;
+
+  /// Adopt a `config` param value that arrived as a subscription update rather
+  /// than inside a composition snapshot. Re-resolves the UUID and re-points the
+  /// path<->uuid maps for every placement backed by that param. Returns true if
+  /// anything changed — the caller's next `publish_placements` then names the
+  /// instance. A value that still resolves to no UUID is ignored.
+  bool ingest_config_value(int64_t config_param_id, const std::string& value);
+
   /// Publish `{default_name, location, placement}` onto every registered plugin
   /// we have a placement for, from the LAST ingested composition. Idempotent and
   /// self-deduping (StateDocument no-ops when the info is unchanged), so the
@@ -121,6 +138,10 @@ public:
   ///     under the catch-all "Other" row instead of its layer's row.
   /// Re-registration (a plugin that drops out and comes back) loses its
   /// `resolume` field the same way, and is likewise restored by this pass.
+  ///
+  /// Also republishes `/global/composition_barrel_ids` (change-gated), so a
+  /// barrel whose identity arrived OUTSIDE a composition snapshot — see
+  /// `ingest_config_value` — reaches the web on the same tick.
   void publish_placements(StateDocument& doc);
 
   // --- Phase 2: copy-paste collision forking ---
