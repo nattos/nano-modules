@@ -21,6 +21,7 @@ import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { TARGET_FPS_OPTIONS } from './gpu-headroom';
 import {
   resolumeSetup, setupStatuses, watchResolumeSetup, resolumeApiPort,
+  resolumeRemoteSettingChanged,
   type SetupStepId, type SetupStepStatus,
 } from '../state/resolume-setup';
 import { appResourceRoot, revealInFolder } from '../state/paths';
@@ -438,6 +439,8 @@ export class AppSettings extends MobxLitElement {
 
   private onToggleRemote = (e: Event) => {
     appController.setUserSetting('barrelRemoteEnabled', (e.target as HTMLInputElement).checked);
+    // Off has to drop the live probe socket too, not just stop reconnecting.
+    resolumeRemoteSettingChanged();
   };
 
   private onTargetChange = (e: Event) => {

@@ -72,12 +72,17 @@ export const resolumeSetup = observable.object<ResolumeSetupState>({
   compositionInstances: 0,
 });
 
+/** Fast while someone is following the instructions, then backed off so an
+ *  abandoned Settings tab isn't dialling a dead port forever. */
 const RETRY_MS = 2000;
+const SLOW_RETRY_MS = 10000;
+const FAST_ATTEMPTS = 10;
 
 let refs = 0;
 let ws: WebSocket | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let stopped = true;
+let attempts = 0;
 
 function countBarrels(plugins: unknown): number {
   if (!Array.isArray(plugins)) return 0;
@@ -101,11 +106,22 @@ const WATCHED = ['/global/host', '/global/plugins', '/global/composition_barrel_
 
 function scheduleRetry() {
   if (stopped || retryTimer != null) return;
-  retryTimer = setTimeout(() => { retryTimer = null; open(); }, RETRY_MS);
+  const delay = attempts < FAST_ATTEMPTS ? RETRY_MS : SLOW_RETRY_MS;
+  retryTimer = setTimeout(() => { retryTimer = null; open(); }, delay);
 }
 
 function open() {
   if (stopped || ws) return;
+  // The kill-switch means what it says: OFF is "never try to reach Resolume,
+  // in any mode". Re-checked per attempt rather than at start, so toggling it
+  // takes effect within one interval — same contract as barrel-probe.ts. The
+  // retry loop keeps ticking so turning it back on doesn't need a remount.
+  if (!appState.local.userSettings.barrelRemoteEnabled) {
+    runInAction(() => { resolumeSetup.probe = 'idle'; });
+    scheduleRetry();
+    return;
+  }
+  attempts++;
   const url = appState.local.barrelUrl;
   let sock: WebSocket;
   try { sock = new WebSocket(url); }
@@ -114,6 +130,7 @@ function open() {
   runInAction(() => { resolumeSetup.probe = 'connecting'; });
 
   sock.onopen = () => {
+    attempts = 0;   // back to the fast cadence after any success
     runInAction(() => { resolumeSetup.probe = 'open'; });
     for (const p of WATCHED) {
       sock.send(JSON.stringify({ action: 'observe', path: p }));
@@ -159,7 +176,7 @@ function open() {
 /** Start watching (ref-counted). Returns the matching stop function. */
 export function watchResolumeSetup(): () => void {
   refs++;
-  if (refs === 1) { stopped = false; open(); }
+  if (refs === 1) { stopped = false; attempts = 0; open(); }
   let released = false;
   return () => {
     if (released) return;
@@ -172,10 +189,39 @@ export function watchResolumeSetup(): () => void {
   };
 }
 
+/**
+ * The Resolume Remote setting just changed — apply it NOW.
+ *
+ * `open()` re-checks the setting per attempt, so turning it off already stops
+ * the next connection, but an ALREADY-OPEN socket would survive until the
+ * barrel went away. "Never try to reach Resolume" has to mean the live one
+ * too. Called from the toggle rather than driven by a reaction: reactions are
+ * for UI, and this is a side effect of a specific user action.
+ */
+export function resolumeRemoteSettingChanged() {
+  if (stopped) return;
+  if (appState.local.userSettings.barrelRemoteEnabled) {
+    // Back on: reconnect promptly instead of waiting out a backed-off timer.
+    attempts = 0;
+    if (retryTimer != null) { clearTimeout(retryTimer); retryTimer = null; }
+    open();
+    return;
+  }
+  if (ws) { const s = ws; ws = null; try { s.close(); } catch { /* ignore */ } }
+  runInAction(() => {
+    resolumeSetup.probe = 'idle';
+    resolumeSetup.plugin = null;
+    resolumeSetup.server = null;
+    resolumeSetup.liveInstances = 0;
+    resolumeSetup.compositionInstances = 0;
+  });
+}
+
 /** Test seam: drop all state and connections, whatever the ref count. */
 export function resetResolumeSetup() {
   refs = 0;
   stopped = true;
+  attempts = 0;
   if (retryTimer != null) { clearTimeout(retryTimer); retryTimer = null; }
   if (ws) { const s = ws; ws = null; try { s.close(); } catch { /* ignore */ } }
   runInAction(() => {
