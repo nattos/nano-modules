@@ -100,9 +100,38 @@ a host's own plug-ins folder, where there is no app above it to find.
 4. Restart Resolume, add a NanoBarrel effect to a clip.
 5. Back in the app, switch to Live mode. It connects on `ws://localhost:8081`.
 
+**Settings → Resolume Remote** walks all of this as a live checklist, with a
+checkmark per step, so you can see which one isn't satisfied rather than
+guessing. It works from any surface, including Effect Dev and Playground.
+
+An instance added to a **clip or a layer does not register until that content
+actually plays** — the plugin's first `ProcessOpenGL` is what registers it. So
+add it, then trigger the clip (or any clip on that layer) once. A
+composition-level effect is live immediately. The checklist says so, and
+distinguishes "N in the composition" from "N running" — but the composition
+scan needs Resolume's webserver, so with that off the only thing it can see is
+what has rendered.
+
 Resolume's own webserver (port 8080) is a **separate** thing and is optional —
 see "Running outside Resolume" in `native/src/plugin/nano_barrel/README.md` for
-what its absence costs. None of it is in the render path.
+what its absence costs. None of it is in the render path. The dylib now
+publishes whether its client to that webserver is connected
+(`/global/host/server.resolumeConnected`), which is what lets the checklist
+tell "Resolume isn't running" apart from "Resolume is running with its
+webserver off" — two states that used to look identical from the editor.
+
+### When Resolume loads the wrong plugin
+
+`/global/host/plugin` carries the `.bundle` path Resolume actually loaded and
+the resource root it resolved. The Settings checklist compares that root
+against the app's own and warns when they differ, because an old copy of the
+plugin left in a Resolume plugin folder loads happily, renders happily, and
+silently runs a **different build of every effect** than the app in front of
+you. There is no other symptom.
+
+It compares the ROOT rather than the bundle path on purpose: a plugin copied
+out of the app resolves back to the app's resources through the install record
+(see the resolution order below), and that configuration is correct.
 
 ---
 

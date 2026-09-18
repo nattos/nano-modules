@@ -325,6 +325,17 @@ What stops working, none of it in the render path:
   UUID still get a unique key — the server remints on collision — they just
   aren't proactively forked.
 
+The dylib publishes the state of that client at
+`/global/host/server.resolumeConnected`, change-gated, alongside its own image
+path, the bridge port and the resource root it resolved. Everything above
+degrades SILENTLY, so without the flag the editor could not tell "Resolume
+isn't running" from "Resolume is running with its webserver off" — the
+Settings-tab setup checklist is the consumer. The FFGL plugin writes the
+sibling `/global/host/plugin` (its `.bundle` path + resolved root) once, at
+load, from the ctor/prototype pass — before any clip is launched, so the
+checklist can answer "is Resolume loading the plugin that shipped with this
+app?" with no live instance.
+
 ### The other host-portability question: does it persist?
 
 The sketch lives in parameter 0, an `FF_TYPE_FILE` the host is expected to save
