@@ -236,6 +236,50 @@ logs were used during bring-up and have been removed. Re-add ad-hoc
 `BARREL_LOG` calls during debugging; library code (`sketch_augment`,
 `sketch_executor`, `module_registry`) is silent by design.
 
+## Running outside Resolume
+
+Nothing in the render path needs Resolume. `tools/ffgl_runner.mm` is a plain
+FFGL host and drives the whole stack — effects, bridge server, web editor —
+with no Arena running and nothing on Resolume's API port. `ctest -R
+barrel_host_portability` (`tools/barrel_host_portability.sh`) is the regression
+gate; run it after touching anything in `ProcessOpenGL`.
+
+Two things FFGL leaves to the host that the barrel has to cope with itself:
+
+| | What FFGL says | What the barrel does |
+|---|---|---|
+| **Input texture target** | Nothing — `FFGLTextureStruct` has no target field | Attaches and checks FBO completeness, `GL_TEXTURE_RECTANGLE` (Resolume/IOSurface on macOS) or `GL_TEXTURE_2D` (most others), caching the answer. See `attachHostInput`. |
+| **`SetTime` / `SetBeatInfo`** | Both optional | Tracks whether either ever arrived; falls back to a local monotonic clock and a free-running barPhase at `hostBpm`. A host with no transport loses SYNC, not motion. |
+
+### What Resolume's API adds (and what its absence costs)
+
+Separately from hosting, the shared dylib opens a WebSocket CLIENT to Resolume's
+own API (`ws://127.0.0.1:8080/api/v1`, override with `NANO_RESOLUME_URL`). That
+is a different thing from the barrel's own server on 8081, and it is the
+connection that goes away both in a third-party host AND when Arena's webserver
+is switched off in preferences. It never blocks: `ix::WebSocket` retries on its
+own thread, `poll()` returns nothing, and every writer is guarded.
+
+What stops working, none of it in the render path:
+
+- **Instance names and placement.** `InstanceLocator`'s composition scan is what
+  resolves "Layer 3 / Clip 2"; without it `/global/composition_barrel_ids` is
+  never published and the editor labels instances by their UUID prefix.
+- **Placeholder cards** for composition members that haven't been launched.
+- **Clip launching** from trigger rails, and **channel reassignment**.
+- **Copy-paste fork detection.** Duplicated clips carrying the same persisted
+  UUID still get a unique key — the server remints on collision — they just
+  aren't proactively forked.
+
+### The other host-portability question: does it persist?
+
+The sketch lives in parameter 0, an `FF_TYPE_FILE` the host is expected to save
+and restore via `SetTextParameter`/`GetTextParameter`. Whether a given host
+actually round-trips a FILE param through its project file is a host capability,
+not something this plugin can arrange. In a host that doesn't, the barrel comes
+up with an empty sketch and whatever the editor authors lives only in the bridge
+document for that session.
+
 ## Known limitations / future work
 
 - **No HTTP-serve of the editor JS bundle.** The editor is hosted
