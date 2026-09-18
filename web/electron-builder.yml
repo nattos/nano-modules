@@ -31,9 +31,15 @@ directories:
 # Only the shell itself. The renderer is not in app.asar — it is in the shared
 # root, because the plugin has to be able to read the same files and cannot
 # read an asar.
+#
+# node_modules is excluded explicitly. electron-builder ships `dependencies` by
+# default, but the main process requires nothing but electron and node builtins
+# — codemirror, immer, marked and mp4-muxer are RENDERER deps that rollup has
+# already bundled into app/. Shipping them again cost 14 MB of dead weight.
 files:
   - electron/**/*
   - package.json
+  - "!node_modules/**/*"
 
 extraResources:
   # The staged root. An ALLOWLIST, not a copy: build/wasm also holds
