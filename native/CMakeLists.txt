@@ -1153,7 +1153,29 @@ if(NANO_HAS_GPU_BACKEND)
   else()
     set(NANO_FONT_PROVIDER src/runtime/host_impls_font_stub.cpp)
   endif()
+  # The text compositor's shaders: one authored HLSL (src/text/shaders), six
+  # entry points, baked to SPIR-V here and translated by the host per backend.
+  # Same story as the executor's shaders above — they used to be a hand-written
+  # MSL string only Metal could compile.
+  set(TEXT_SHADER_DIR "${CMAKE_SOURCE_DIR}/src/text/shaders")
+  set(TEXT_SHADER_HEADER "${CMAKE_SOURCE_DIR}/build/tmp/text_composite_spv.h")
+  add_custom_command(
+    OUTPUT "${TEXT_SHADER_HEADER}"
+    COMMAND "${TEXT_SHADER_DIR}/build_shaders.sh" "${CMAKE_SOURCE_DIR}/build/tmp"
+    DEPENDS "${TEXT_SHADER_DIR}/build_shaders.sh"
+            "${TEXT_SHADER_DIR}/text_composite.hlsli"
+            "${TEXT_SHADER_DIR}/text_bg_vs.hlsl"
+            "${TEXT_SHADER_DIR}/text_bg_fs.hlsl"
+            "${TEXT_SHADER_DIR}/text_box_vs.hlsl"
+            "${TEXT_SHADER_DIR}/text_box_fs.hlsl"
+            "${TEXT_SHADER_DIR}/text_glyph_vs.hlsl"
+            "${TEXT_SHADER_DIR}/text_glyph_fs.hlsl"
+            "${CMAKE_SOURCE_DIR}/cmake/spv_bake.sh"
+    COMMENT "Baking text compositor shaders (DXC: bg + box + glyph, vs+fs)"
+    VERBATIM)
+
   add_library(effect_runtime STATIC
+    "${TEXT_SHADER_HEADER}"
     src/runtime/effect_runtime.cpp
     src/runtime/host_impls.cpp
     src/runtime/host_impls_text.cpp
@@ -1166,6 +1188,8 @@ if(NANO_HAS_GPU_BACKEND)
     ${CMAKE_SOURCE_DIR}/src
     ${EFFECTS_NATIVE_INC}
   )
+  # Where the baked SPIR-V headers land (text_composite_spv.h).
+  target_include_directories(effect_runtime PRIVATE ${CMAKE_SOURCE_DIR}/build/tmp)
   target_link_libraries(effect_runtime PUBLIC
     gpu_backend
     text_engine
@@ -1214,6 +1238,7 @@ if(NANO_HAS_GPU_BACKEND)
             "${EXEC_SHADER_DIR}/blend.hlsl"
             "${EXEC_SHADER_DIR}/output_blit.hlsl"
             "${EXEC_SHADER_DIR}/sidechannel_blit.hlsl"
+            "${CMAKE_SOURCE_DIR}/cmake/spv_bake.sh"
     COMMENT "Baking executor shaders (DXC: blend + output_blit + sidechannel_blit)"
     VERBATIM)
 

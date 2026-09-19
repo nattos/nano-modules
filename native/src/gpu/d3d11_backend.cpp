@@ -191,7 +191,7 @@ struct Resource {
   // Texture
   Com<ID3D11Resource> texture;    // ID3D11Texture2D or Texture3D
   DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-  uint32_t width = 0, height = 0, depth = 1, mips = 1;
+  uint32_t width = 0, height = 0, depth = 1, mips = 1, layers = 1;
   Com<ID3D11ShaderResourceView> texSrv;
   std::unordered_map<int32_t, ID3D11UnorderedAccessView*> texUavByMip;
   Com<ID3D11RenderTargetView> texRtv;
@@ -327,6 +327,51 @@ class D3D11Backend : public GPUBackend {
 
     makeTextureViews(r);
     return store(std::move(r));
+  }
+
+  // 2D-ARRAY texture: `layers` slices, one mip, sampled as Texture2DArray.
+  // The host text compositor's multi-page MSDF atlas is the only user, and it
+  // uploads per layer through writeTextureLayer. Not a UAV and not a render
+  // target — a null SRV desc on an ArraySize>1 texture gives D3D11 the array
+  // view it needs on its own.
+  int32_t createTextureArray(uint32_t w, uint32_t h, int32_t format,
+                             int32_t layers) override {
+    if (!device_ || !w || !h) return -1;
+    const DXGI_FORMAT f = resolveFormat(format);
+    if (f == DXGI_FORMAT_UNKNOWN) return -1;
+
+    Resource r;
+    r.kind = Kind::Texture;
+    r.format = f; r.width = w; r.height = h; r.depth = 1; r.mips = 1;
+    r.layers = layers > 0 ? (uint32_t)layers : 1;
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w; td.Height = h;
+    td.MipLevels = 1; td.ArraySize = r.layers;
+    td.Format = f;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    Com<ID3D11Texture2D> tex;
+    HRESULT hr = device_->CreateTexture2D(&td, nullptr, tex.put());
+    if (FAILED(hr)) { hrFail("CreateTexture2D(array)", hr); return -1; }
+    r.texture.p = tex.p; tex.p = nullptr;
+
+    makeTextureViews(r);
+    return store(std::move(r));
+  }
+
+  void writeTextureLayer(int32_t textureHandle, int32_t layer, uint32_t w,
+                         uint32_t h, const uint8_t* bytes,
+                         uint32_t byteCount) override {
+    Resource* r = get(textureHandle, Kind::Texture);
+    if (!r || !r->texture || !bytes) return;
+    if (layer < 0 || (uint32_t)layer >= r->layers) return;
+    if (byteCount < w * h * 4) return;
+    // Subresource index for (mip 0, slice `layer`) with one mip level.
+    ctx_->UpdateSubresource(r->texture.get(), (UINT)layer, nullptr, bytes,
+                            w * 4, w * h * 4);
   }
 
   int32_t createTexture3D(uint32_t w, uint32_t h, uint32_t d,
@@ -913,7 +958,7 @@ class D3D11Backend : public GPUBackend {
     HRESULT hr = device_->CreateShaderResourceView(r.texture.get(), nullptr,
                                                    r.texSrv.put());
     if (FAILED(hr)) hrFail("CreateShaderResourceView(texture)", hr);
-    if (!isBlockCompressed(r.format) && r.depth == 1) {
+    if (!isBlockCompressed(r.format) && r.depth == 1 && r.layers == 1) {
       hr = device_->CreateRenderTargetView(r.texture.get(), nullptr,
                                            r.texRtv.put());
       if (FAILED(hr)) hrFail("CreateRenderTargetView", hr);

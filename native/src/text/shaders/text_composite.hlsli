@@ -1,4 +1,12 @@
-// text_composite.hlsl — quad-based MSDF text compositor.
+// text_composite.hlsli — everything the six text-compositor stages share.
+//
+// Each stage is its own tiny .hlsl next to this one, with an entry point named
+// `main`, because that is the convention the whole tree runs on: DXC bakes one
+// SPIR-V blob per entry, spirv-cross emits HLSL whose function is ALWAYS called
+// `main` whatever the SPIR-V entry was named, and the host maps "main" →
+// "main0" for Metal (gpu_impls.cpp's mapEntryName). Six entry points in one
+// blob would have to be six differently-named ones, and the HLSL leg would
+// collapse them all onto `main` and find none of them.
 //
 // Authored ONCE here and translated per backend by the host (spv_to_msl /
 // spv_to_hlsl / naga), the way effect shaders already are. It used to be a
@@ -191,14 +199,14 @@ float4 px_to_clip(float2 px) {
 // ---- background (fullscreen) ------------------------------------------------
 struct BgOut { float4 pos : SV_Position; };
 
-BgOut bg_vs(uint vid : SV_VertexID) {
+BgOut bg_vs_impl(uint vid) {
   // Single oversized triangle covering the [-1,1] viewport (either winding —
   // the backends rasterize with culling off).
   float2 p = float2((vid == 2u) ? 3.0 : -1.0, (vid == 1u) ? 3.0 : -1.0);
   BgOut o; o.pos = float4(p, 0.0, 1.0); return o;
 }
 
-float4 bg_fs(BgOut inp) : SV_Target {
+float4 bg_fs_impl(BgOut inp) {
   // SV_Position.xy is the pixel center (X+0.5, Y+0.5) — same as the old compute
   // kernel's bg_uv = (gid+0.5)/canvas. alpha=1 → alpha-over replaces the clear.
   float2 uv = inp.pos.xy / float2(float(canvas_w), float(canvas_h));
@@ -217,7 +225,7 @@ struct BoxOut {
   nointerpolation float4 bcol   : TEXCOORD6;
 };
 
-BoxOut box_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
+BoxOut box_vs_impl(uint vid, uint iid) {
   Box b = boxes[iid];
   float2 corner = quad_corner(vid);
   // Expand the quad 1px on every side so the SDF anti-aliased edge (coverage
@@ -232,7 +240,7 @@ BoxOut box_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   return o;
 }
 
-float4 box_fs(BoxOut inp) : SV_Target {
+float4 box_fs_impl(BoxOut inp) {
   float2 p = inp.pos.xy;
   float2 c = float2(inp.rect.x + origin_x + inp.rect.z * 0.5,
                     inp.rect.y + origin_y + inp.rect.w * 0.5);
@@ -268,7 +276,7 @@ struct GlyphOut {
   nointerpolation float4 clipr : TEXCOORD9;
 };
 
-GlyphOut glyph_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
+GlyphOut glyph_vs_impl(uint vid, uint iid) {
   Glyph g = glyphs[iid];
   float2 corner = quad_corner(vid);
   float gx = g.rect.x + origin_x, gy = g.rect.y + origin_y;
@@ -295,7 +303,7 @@ GlyphOut glyph_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID) {
   return o;
 }
 
-float4 glyph_fs(GlyphOut inp) : SV_Target {
+float4 glyph_fs_impl(GlyphOut inp) {
   float4 texel = atlas_arr.SampleLevel(samp, float3(inp.auv, inp.page), 0.0);
   float cov;
   if (atlas_kind == 0u) {                    // MSDF: median + screenPxRange AA

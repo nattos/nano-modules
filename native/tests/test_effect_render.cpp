@@ -2396,7 +2396,8 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   inst->setParamJson("italic", "true");
   const InkStats ital = inkStats();
   INFO("regular lit " << reg.lit << " slant " << reg.slant
-       << " | bold lit " << bold.lit << " | italic slant " << ital.slant);
+       << " | bold lit " << bold.lit
+       << " | italic lit " << ital.lit << " slant " << ital.slant);
   CHECK(bold.lit > reg.lit + reg.lit / 20);       // faux bold: visibly more ink
   CHECK(ital.slant > reg.slant + 2.0);            // faux oblique: top leans right
 }

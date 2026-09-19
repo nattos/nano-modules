@@ -139,14 +139,10 @@ decodeConstants(const unsigned char* p, int len) {
 
 // MSL reserves the name "main" for kernel functions; spirv-cross
 // renames our shaders' "main" → "main0" during SPV→MSL translation.
-// Effects (matching the WebGPU side) ask for "main" — translate here
-// so the per-effect code doesn't need to know about the rename.
-static std::string mapEntryName(const char* entry, int len) {
-  std::string e(entry, len);
-  auto* b = backend();
-  if (b && b->getBackend() == 0 /*Metal*/ && e == "main") return "main0";
-  return e;
-}
+// Entry names go to the backend verbatim. There USED to be a "main" → "main0"
+// rename here for Metal; it lives in metal_backend.mm now (fnName), because it
+// is a property of MSL + spirv-cross rather than of any caller, and hosts that
+// build PSOs against the backend directly — host_impls_text.cpp — need it too.
 
 // Metal doesn't need pre-declared binding layouts — the per-dispatch
 // setBuffer/setTexture/setSampler calls determine the actual binding.
@@ -158,10 +154,10 @@ int gpu_create_compute_pso_v2(int shader, const char* entry, int entry_len,
   if (!b) return -1;
   auto consts = decodeConstants(constants, constants_len);
   if (consts.empty()) {
-    return b->createComputePSO(shader, mapEntryName(entry, entry_len));
+    return b->createComputePSO(shader, std::string(entry, entry_len));
   }
   return b->createComputePSOWithConstants(shader,
-                                           mapEntryName(entry, entry_len),
+                                           std::string(entry, entry_len),
                                            consts);
 }
 
@@ -170,16 +166,16 @@ int gpu_create_render_pso_layout(int vs, const char* vse, int vsl,
                                   int fmt, int /*bcount*/, const int* /*bindings*/) {
   auto* b = backend();
   if (!b) return -1;
-  return b->createRenderPSO(vs, mapEntryName(vse, vsl),
-                            fs, mapEntryName(fse, fsl), fmt);
+  return b->createRenderPSO(vs, std::string(vse, vsl),
+                            fs, std::string(fse, fsl), fmt);
 }
 int gpu_create_instanced_render_pso_layout(int vs, const char* vse, int vsl,
                                             int fs, const char* fse, int fsl,
                                             int fmt, int /*bcount*/, const int* /*bindings*/) {
   auto* b = backend();
   if (!b) return -1;
-  return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
-                                     fs, mapEntryName(fse, fsl), fmt, /*blend=*/0);
+  return b->createInstancedRenderPSO(vs, std::string(vse, vsl),
+                                     fs, std::string(fse, fsl), fmt, /*blend=*/0);
 }
 int gpu_create_instanced_render_pso_mrt_layout(int vs, const char* vse, int vsl,
                                                 int fs, const char* fse, int fsl,
@@ -188,8 +184,8 @@ int gpu_create_instanced_render_pso_mrt_layout(int vs, const char* vse, int vsl,
                                                 const int* target_blends) {
   auto* b = backend();
   if (!b) return -1;
-  return b->createInstancedRenderPSOMRT(vs, mapEntryName(vse, vsl),
-                                        fs, mapEntryName(fse, fsl),
+  return b->createInstancedRenderPSOMRT(vs, std::string(vse, vsl),
+                                        fs, std::string(fse, fsl),
                                         target_count, target_formats, target_blends);
 }
 int gpu_create_instanced_render_pso_blend_layout(int vs, const char* vse, int vsl,
@@ -198,8 +194,8 @@ int gpu_create_instanced_render_pso_blend_layout(int vs, const char* vse, int vs
                                                   const int* /*bindings*/, int blend_mode) {
   auto* b = backend();
   if (!b) return -1;
-  return b->createInstancedRenderPSO(vs, mapEntryName(vse, vsl),
-                                     fs, mapEntryName(fse, fsl), fmt, blend_mode);
+  return b->createInstancedRenderPSO(vs, std::string(vse, vsl),
+                                     fs, std::string(fse, fsl), fmt, blend_mode);
 }
 
 void gpu_write_buffer(int buf, int offset, const void* data, int data_len) {
@@ -339,11 +335,7 @@ void gpu_end_submit_batch(void) {
 }
 int gpu_create_compute_pso(int shader, const char* entry, int entry_len) {
   auto* b = backend();
-  // mapEntryName, same as the _v2 form: the executor's own shaders now come
-  // through here too, and they are SPIR-V whose entry point spirv-cross renames
-  // "main" → "main0" for Metal. (The fused-chain path, the other caller, asks
-  // for "fused_main" — a name the host itself generated, so it passes through.)
-  return b ? b->createComputePSO(shader, mapEntryName(entry, entry_len)) : -1;
+  return b ? b->createComputePSO(shader, std::string(entry, entry_len)) : -1;
 }
 
 int gpu_get_input_texture(int idx) {

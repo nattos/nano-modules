@@ -32,6 +32,14 @@ std::vector<uint8_t> readFile(const std::string& path) {
                               std::istreambuf_iterator<char>());
 }
 
+// It is not only *missing* families that this costs. The layout engine resolves
+// its own font stack through the same provider, so without one the LINE METRICS
+// differ too: "Hello Hamburg" at size 40 lays out 267.4 px wide with a 39.1 px
+// first baseline on macOS and 282.3 / 34.8 here, from the same default.ttf. Ink
+// therefore lands a few pixels higher and wider, which is enough to move any
+// measurement taken off the ink's extents — test_effect_render's faux-oblique
+// slant check is the one that notices. The GLYPHS themselves are right; the box
+// they are laid into is not.
 void warnOnce() {
   static bool warned = false;
   if (warned) return;

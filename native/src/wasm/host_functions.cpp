@@ -1412,19 +1412,13 @@ static int32_t gpu_create_texture(wasm_exec_env_t env, int32_t w, int32_t h, int
   return g ? g->createTexture(w, h, fmt) : -1;
 }
 
-static std::string map_entry_name(gpu::GPUBackend* g, const char* entry, int len);
-
 static int32_t gpu_create_compute_pso(wasm_exec_env_t env, int32_t shader, int32_t entry_ptr, int32_t entry_len) {
   auto* g = get_gpu(env);
   if (!g) return -1;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
   char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
-  // map_entry_name, same as the _v2 form: the executor's own shaders now come
-  // through here too, and they are SPIR-V whose entry point spirv-cross renames
-  // "main" → "main0" for Metal. (The fused-chain path, the other caller, asks
-  // for "fused_main" — a name the host itself generated, so it passes through.)
-  return e ? g->createComputePSO(shader, map_entry_name(g, e, entry_len)) : -1;
+  return e ? g->createComputePSO(shader, std::string(e, entry_len)) : -1;
 }
 
 static int32_t gpu_create_render_pso(wasm_exec_env_t env,
@@ -1583,14 +1577,8 @@ static void gpu_end_submit_batch(wasm_exec_env_t env) {
   auto* g = get_gpu(env); if (g) g->endSubmitBatch();
 }
 
-// MSL reserves "main"; spirv-cross renames our shaders' entry "main"→"main0".
-// Effects ask for "main" (matching WebGPU); map it for Metal — mirrors
-// gpu_impls::mapEntryName on the native static path.
-static std::string map_entry_name(gpu::GPUBackend* g, const char* entry, int len) {
-  std::string e(entry, len);
-  if (g && g->getBackend() == 0 /*Metal*/ && e == "main") return "main0";
-  return e;
-}
+// Entry names go to the backend verbatim — the "main" → "main0" rename Metal
+// needs lives in metal_backend.mm (fnName), where the quirk actually is.
 
 // gpu.create_shader_module_named — resolve a SPV shader the effect registered
 // (state.register_shader_spv) into a backend module. The runtime owns the
@@ -1654,7 +1642,7 @@ static int32_t gpu_create_compute_pso_v2(wasm_exec_env_t env,
   if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
   char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
   if (!e) return -1;
-  std::string entry = map_entry_name(g, e, entry_len);
+  std::string entry = std::string(e, entry_len);
 
   std::vector<gpu::GPUBackend::SpecConstant> consts;
   if (constants_len >= 4 &&
@@ -1736,8 +1724,8 @@ static int32_t gpu_create_instanced_render_pso_blend_layout(wasm_exec_env_t env,
   char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
   char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
   if (!vse || !fse) return -1;
-  return g->createInstancedRenderPSO(vs, map_entry_name(g, vse, vs_len),
-                                     fs, map_entry_name(g, fse, fs_len),
+  return g->createInstancedRenderPSO(vs, std::string(vse, vs_len),
+                                     fs, std::string(fse, fs_len),
                                      format, blend_mode);
 }
 static int32_t gpu_begin_render_pass_load(wasm_exec_env_t env, int32_t tex) {
@@ -1764,8 +1752,8 @@ static int32_t gpu_create_render_pso_layout(wasm_exec_env_t env,
   char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
   char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
   if (!vse || !fse) return -1;
-  return g->createRenderPSO(vs, map_entry_name(g, vse, vs_len),
-                            fs, map_entry_name(g, fse, fs_len), format);
+  return g->createRenderPSO(vs, std::string(vse, vs_len),
+                            fs, std::string(fse, fs_len), format);
 }
 static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
     int32_t vs, int32_t vs_ptr, int32_t vs_len, int32_t fs, int32_t fs_ptr,
@@ -1779,8 +1767,8 @@ static int32_t gpu_create_instanced_render_pso_layout(wasm_exec_env_t env,
   char* vse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, vs_ptr));
   char* fse = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, fs_ptr));
   if (!vse || !fse) return -1;
-  return g->createInstancedRenderPSO(vs, map_entry_name(g, vse, vs_len),
-                                     fs, map_entry_name(g, fse, fs_len),
+  return g->createInstancedRenderPSO(vs, std::string(vse, vs_len),
+                                     fs, std::string(fse, fs_len),
                                      format, /*blend=*/0);
 }
 static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
@@ -1804,8 +1792,8 @@ static int32_t gpu_create_instanced_render_pso_mrt_layout(wasm_exec_env_t env,
   int* fmts = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, target_formats_ptr));
   int* blends = static_cast<int*>(wasm_runtime_addr_app_to_native(inst, target_blends_ptr));
   if (!vse || !fse || !fmts || !blends) return -1;
-  return g->createInstancedRenderPSOMRT(vs, map_entry_name(g, vse, vs_len),
-                                        fs, map_entry_name(g, fse, fs_len),
+  return g->createInstancedRenderPSOMRT(vs, std::string(vse, vs_len),
+                                        fs, std::string(fse, fs_len),
                                         target_count, fmts, blends);
 }
 static int32_t gpu_begin_render_pass_mrt(wasm_exec_env_t env, int32_t count,

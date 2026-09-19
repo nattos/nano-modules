@@ -182,11 +182,23 @@ public:
          bytesPerImage:(NSUInteger)w * h * 4];
   }
 
+  // MSL reserves `main`, so spirv-cross renames our shaders' entry to `main0`
+  // on the way out (spv_to_msl.cpp). Every SPIR-V blob in the tree is baked
+  // with `dxc -E main` (cmake/spv_bake.sh, wasm_build_env.sh), so this rename
+  // is a property of THIS backend, not of any caller — which is why it lives
+  // here rather than being repeated by everyone who builds a PSO. A caller that
+  // already passed "main0", or a host-generated kernel with its own name
+  // (effrt_build_fused_source's "fused_main"), passes through untouched.
+  static NSString* fnName(const std::string& entry) {
+    return [NSString stringWithUTF8String:(entry == "main" ? "main0"
+                                                           : entry.c_str())];
+  }
+
   int32_t createComputePSO(int32_t shaderHandle, const std::string& entryPoint) override {
     @autoreleasepool {
       id<MTLLibrary> lib = getAs<id<MTLLibrary>>(shaderHandle);
       if (!lib) return -1;
-      NSString* name = [NSString stringWithUTF8String:entryPoint.c_str()];
+      NSString* name = fnName(entryPoint);
       id<MTLFunction> func = [lib newFunctionWithName:name];
       if (!func) return -1;
       NSError* error = nil;
@@ -207,7 +219,7 @@ public:
     @autoreleasepool {
       id<MTLLibrary> lib = getAs<id<MTLLibrary>>(shaderHandle);
       if (!lib) return -1;
-      NSString* name = [NSString stringWithUTF8String:entryPoint.c_str()];
+      NSString* name = fnName(entryPoint);
       MTLFunctionConstantValues* values =
           [[MTLFunctionConstantValues alloc] init];
       // spirv-cross emits Metal function constants with anonymous
@@ -449,10 +461,8 @@ public:
       id<MTLLibrary> fsLib = getAs<id<MTLLibrary>>(fsHandle);
       if (!vsLib || !fsLib) return -1;
 
-      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:
-          [NSString stringWithUTF8String:vsEntry.c_str()]];
-      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:
-          [NSString stringWithUTF8String:fsEntry.c_str()]];
+      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:fnName(vsEntry)];
+      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:fnName(fsEntry)];
       if (!vsFunc || !fsFunc) return -1;
 
       MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
@@ -497,10 +507,8 @@ public:
       id<MTLLibrary> fsLib = getAs<id<MTLLibrary>>(fsHandle);
       if (!vsLib || !fsLib) return -1;
 
-      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:
-          [NSString stringWithUTF8String:vsEntry.c_str()]];
-      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:
-          [NSString stringWithUTF8String:fsEntry.c_str()]];
+      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:fnName(vsEntry)];
+      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:fnName(fsEntry)];
       if (!vsFunc || !fsFunc) return -1;
 
       MTLPixelFormat fmt = pixelFormatFromCode(format);
@@ -545,10 +553,8 @@ public:
       id<MTLLibrary> fsLib = getAs<id<MTLLibrary>>(fsHandle);
       if (!vsLib || !fsLib) return -1;
 
-      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:
-          [NSString stringWithUTF8String:vsEntry.c_str()]];
-      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:
-          [NSString stringWithUTF8String:fsEntry.c_str()]];
+      id<MTLFunction> vsFunc = [vsLib newFunctionWithName:fnName(vsEntry)];
+      id<MTLFunction> fsFunc = [fsLib newFunctionWithName:fnName(fsEntry)];
       if (!vsFunc || !fsFunc) return -1;
 
       MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];

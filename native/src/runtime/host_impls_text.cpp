@@ -21,7 +21,13 @@
 #include "gpu/gpu_backend.h"
 #include "text/text_engine.h"
 #include "text/text_blitz.h"
-#include "text/shaders/text_composite_quad_msl.h"
+#include "runtime/shader_from_spv.h"
+
+// Baked from src/text/shaders/text_composite.hlsl (shaders/build_shaders.sh) —
+// six entry points, six SPIR-V blobs. The host translates each to the live
+// backend's language, so this file no longer ships a hand-written MSL string
+// that only Metal could ever compile.
+#include "text_composite_spv.h"
 
 #include <cctype>
 #include <cstdint>
@@ -214,7 +220,11 @@ struct QuadPSOs { int bg = -1, box = -1, glyph = -1; };
 struct TextGpu {
   gpu::GPUBackend* backend = nullptr;  // cache is valid only for this backend
   uint64_t backendSerial = 0;
-  int quadShader = -1, sampler = -1, bg = -1;
+  // One shader module per stage — SPIR-V carries a single entry point, unlike
+  // the MSL string all six used to share.
+  int shBgVs = -1, shBgFs = -1, shBoxVs = -1, shBoxFs = -1;
+  int shGlyphVs = -1, shGlyphFs = -1;
+  int sampler = -1, bg = -1;
   std::unordered_map<int, QuadPSOs> psos;  // keyed by TextureFormat enum
   int atlas = -1, atlasLayers = 0, atlasW = 0, atlasH = 0;
   int glyphBuf = -1; uint32_t glyphCap = 0;
@@ -226,7 +236,8 @@ struct TextGpu {
 
   void reset() {
     backend = nullptr;
-    quadShader = sampler = bg = atlas = -1;
+    shBgVs = shBgFs = shBoxVs = shBoxFs = shGlyphVs = shGlyphFs = -1;
+    sampler = bg = atlas = -1;
     psos.clear();
     atlasLayers = atlasW = atlasH = 0;
     glyphBuf = boxBuf = uniBuf = -1; glyphCap = boxCap = 0;
@@ -264,9 +275,20 @@ void ensureBackend(gpu::GPUBackend* b) {
 
 const QuadPSOs* ensurePipeline(gpu::GPUBackend* b, int fmt) {
   ensureBackend(b);
-  if (g_gpu.quadShader < 0) {
-    g_gpu.quadShader = b->createShaderModule(kTextCompositeQuadMSL);
-    if (g_gpu.quadShader < 0) return nullptr;
+  if (g_gpu.shGlyphFs < 0) {
+    auto mod = [&](const unsigned char* spv, int len, const char* name) {
+      return effect_runtime::createShaderModuleFromSpv(b, spv, (size_t)len, name);
+    };
+    g_gpu.shBgVs    = mod(BG_VS_SPV,    BG_VS_SPV_SIZE,    "text bg_vs");
+    g_gpu.shBgFs    = mod(BG_FS_SPV,    BG_FS_SPV_SIZE,    "text bg_fs");
+    g_gpu.shBoxVs   = mod(BOX_VS_SPV,   BOX_VS_SPV_SIZE,   "text box_vs");
+    g_gpu.shBoxFs   = mod(BOX_FS_SPV,   BOX_FS_SPV_SIZE,   "text box_fs");
+    g_gpu.shGlyphVs = mod(GLYPH_VS_SPV, GLYPH_VS_SPV_SIZE, "text glyph_vs");
+    g_gpu.shGlyphFs = mod(GLYPH_FS_SPV, GLYPH_FS_SPV_SIZE, "text glyph_fs");
+    if (g_gpu.shBgVs < 0 || g_gpu.shBgFs < 0 || g_gpu.shBoxVs < 0 ||
+        g_gpu.shBoxFs < 0 || g_gpu.shGlyphVs < 0 || g_gpu.shGlyphFs < 0) {
+      return nullptr;
+    }
   }
   if (g_gpu.sampler < 0)
     g_gpu.sampler = b->createSampler(gpu::GPUBackend::SamplerDesc{});  // linear/clamp defaults
@@ -279,10 +301,14 @@ const QuadPSOs* ensurePipeline(gpu::GPUBackend* b, int fmt) {
   auto it = g_gpu.psos.find(fmt);
   if (it == g_gpu.psos.end()) {
     QuadPSOs p;
-    int sh = g_gpu.quadShader;
-    p.bg    = b->createInstancedRenderPSO(sh, "bg_vs",    sh, "bg_fs",    fmt, 0);
-    p.box   = b->createInstancedRenderPSO(sh, "box_vs",   sh, "box_fs",   fmt, 0);
-    p.glyph = b->createInstancedRenderPSO(sh, "glyph_vs", sh, "glyph_fs", fmt, 0);
+    // Entry "main" in every one of them — see cmake/spv_bake.sh for why, and
+    // mapEntryName for how Metal's "main0" rename is absorbed.
+    p.bg    = b->createInstancedRenderPSO(g_gpu.shBgVs,    "main",
+                                          g_gpu.shBgFs,    "main", fmt, 0);
+    p.box   = b->createInstancedRenderPSO(g_gpu.shBoxVs,   "main",
+                                          g_gpu.shBoxFs,   "main", fmt, 0);
+    p.glyph = b->createInstancedRenderPSO(g_gpu.shGlyphVs, "main",
+                                          g_gpu.shGlyphFs, "main", fmt, 0);
     if (p.bg < 0 || p.box < 0 || p.glyph < 0) return nullptr;
     it = g_gpu.psos.emplace(fmt, p).first;
   }
@@ -322,13 +348,18 @@ int ensureAtlas(gpu::GPUBackend* b, int /*id*/) {
   return g_gpu.atlas;
 }
 
-// Grow-or-create a storage buffer to hold `need` bytes; writes `data` into it.
+// Grow-or-create a buffer to hold `need` bytes; writes `data` into it.
+// `usage` is gpu.h's BufferUsage — 1 = Storage (the glyph/box/outline arenas,
+// read through an SRV), 2 = Uniform (the UBO, which MUST say so: D3D11 gives a
+// constant buffer its own bind flag and its own register space, and one created
+// as Storage binds at t2 where the shader declares b2 and reads nothing).
+// Metal, where every buffer is just bytes, never noticed the difference.
 int ensureBuffer(gpu::GPUBackend* b, int handle, uint32_t& cap,
-                 const void* data, uint32_t need) {
+                 const void* data, uint32_t need, int usage = 1) {
   uint32_t want = need < 16 ? 16 : need;   // never zero-size
   if (handle < 0 || cap < want) {
     if (handle >= 0) b->release(handle);
-    handle = b->createBuffer(want, 0);
+    handle = b->createBuffer(want, usage);
     cap = want;
   }
   if (data && need > 0)
@@ -518,7 +549,8 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   u.atlas_px_range = m.atlas_px_range;
   u.box_count = (uint32_t)boxesWritten;
   uint32_t uniCap = sizeof(UBO);
-  g_gpu.uniBuf = ensureBuffer(b, g_gpu.uniBuf, uniCap, &u, sizeof(UBO));
+  g_gpu.uniBuf = ensureBuffer(b, g_gpu.uniBuf, uniCap, &u, sizeof(UBO),
+                              /*Uniform*/ 2);
 
   // Background sampled behind the text: a caller-supplied input texture to
   // overlay text onto. When unconnected, source.text.plain/richtext are pure generators —
@@ -538,8 +570,8 @@ void text_render(int layout_id, int target_tex, int bg_tex,
   if (hasInput) {
     b->renderSetPSO(pass, pso->bg);
     b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
-    b->renderSetTexture(pass, bg_tex, 1, /*read*/0);
-    b->renderSetSampler(pass, g_gpu.sampler, 0);
+    b->renderSetTexture(pass, bg_tex, 5, /*read*/0);
+    b->renderSetSampler(pass, g_gpu.sampler, 6);
     b->renderDraw(pass, 3, 1);
   }
   // background boxes (fill + border ring), document order.
@@ -555,8 +587,8 @@ void text_render(int layout_id, int target_tex, int bg_tex,
     b->renderSetBuffer(pass, g_gpu.glyphBuf, 0);
     b->renderSetBuffer(pass, g_gpu.uniBuf, 2);
     b->renderSetBuffer(pass, g_gpu.outlineBuf, 3);
-    b->renderSetTexture(pass, atlas, 0, /*read*/0);
-    b->renderSetSampler(pass, g_gpu.sampler, 0);
+    b->renderSetTexture(pass, atlas, 4, /*read*/0);
+    b->renderSetSampler(pass, g_gpu.sampler, 6);
     b->renderDraw(pass, 6, (uint32_t)written);
   }
   b->endRenderPass(pass);
