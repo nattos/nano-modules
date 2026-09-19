@@ -50,6 +50,33 @@ WebGPU scales monotonically with particle count. Metal **plateaus at ~256 partic
 - The `// nano_threadgroup:` hint is present for this shader; the 8×8 fallback warning does not fire, so `[numthreads(64,1,1)]` is honoured.
 - `writeBuffer`'s version-on-write-after-bind copies old contents into the new backing buffer, and only fires for CPU writes — the particle buffer is GPU-written only.
 
+**D3D11 settles where the fault is (2026-09-20).** Running the same sweep on the
+native D3D11 backend under CrossOver — `./build-win/test_effect_render "probe:
+d_wave*"`, the hidden instrument now living at the bottom of
+`native/tests/test_effect_render.cpp` — gives, at 40 ticks, ratios of the
+field-alone baseline:
+
+| `damp_count` | 64 | 128 | 256 | 400 | 1500 | 4096 |
+|---|---|---|---|---|---|---|
+| D3D11 | 0.983 | 0.913 | 0.896 | 0.750 | **0.434** | **0.216** |
+| Metal | 1.034 | 0.940 | 1.000 | 0.914 | 0.950 | 0.963 |
+
+D3D11 falls monotonically, exactly as WebGPU does. Metal is flat — and flat past
+64, not just past 256. Two independent backends running the SAME SPIR-V through
+the SAME effect behave correctly, so this is not the effect, not the shader, and
+not the abstraction: **it is metal_backend.mm.** Anyone picking this up should
+start there rather than in `d_wave/`.
+
+That also puts the write-after-bind versioning hack (`metal_backend.mm`'s
+`writeBuffer`, which swaps in a fresh backing buffer and memcpys when a CPU
+write lands on a buffer that already has dispatched readers) back under
+suspicion despite being on the ruled-out list above: it is precisely the thing
+D3D11 does NOT have — queued `UpdateSubresource` gives the same ordering
+semantics for free, which `test_effect_render`'s "write-after-bind versions the
+buffer inside a submit batch" now confirms on both backends — and it is the only
+place in either backend where a buffer's backing allocation can change between
+frames.
+
 **Leading hypothesis**, unproven: the GPU-written contents of a storage buffer aren't what the next frame's dispatch reads — either the pool is being re-seeded every frame (the shader's `seed != 0` branch returns before integrating, which would explain rate-independence exactly), or the backing allocation the encoded compute pass wrote isn't the one the following frame binds. The ~256 plateau suggests only a small prefix of the pool ever holds valid positions, with the rest stacked at a degenerate spot. Start by dumping the particle buffer after two frames and comparing it against the seed-only contents.
 
 **When fixed**, flip these back: `double-chamber-interactions.test.ts` and legacy `double_chamber`'s multi-frame describe to the default backend list, and `d-wave.test.ts`'s dampening case to a single shared threshold.

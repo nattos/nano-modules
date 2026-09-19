@@ -22,6 +22,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 
 static double mean_rgb(const std::vector<uint8_t>& px) {
@@ -60,7 +62,7 @@ TEST_CASE("external scalar (midi:) wires fold through the tap pipeline",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -161,7 +163,7 @@ TEST_CASE("wire-driven __enable__ wake applies the persisted state",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -226,7 +228,7 @@ TEST_CASE("midi: wire into a dashboard knob relays through the knob's own wire",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;

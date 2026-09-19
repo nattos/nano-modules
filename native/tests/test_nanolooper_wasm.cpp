@@ -7,6 +7,8 @@
 #include "canvas/draw_list.h"
 #include "wasm/wasm_host.h"
 
+#include "wasm_paths.h"
+
 using bridge::ParamCache;
 using canvas::DrawList;
 using canvas::DrawCmd;
@@ -29,7 +31,7 @@ static std::vector<uint8_t> load_file(const char* path) {
 #endif
 
 TEST_CASE("nanolooper.wasm loads successfully", "[nanolooper]") {
-  auto bytecode = load_file(NANOLOOPER_WASM_PATH);
+  auto bytecode = load_file(kNanolooperWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -44,7 +46,7 @@ TEST_CASE("nanolooper.wasm loads successfully", "[nanolooper]") {
 }
 
 TEST_CASE("nanolooper.wasm init runs without error", "[nanolooper]") {
-  auto bytecode = load_file(NANOLOOPER_WASM_PATH);
+  auto bytecode = load_file(kNanolooperWasm);
   ParamCache cache;
   WasmHost host(cache);
   REQUIRE(host.init());
@@ -66,7 +68,7 @@ TEST_CASE("nanolooper.wasm init runs without error", "[nanolooper]") {
 }
 
 TEST_CASE("nanolooper.wasm tick runs without error", "[nanolooper]") {
-  auto bytecode = load_file(NANOLOOPER_WASM_PATH);
+  auto bytecode = load_file(kNanolooperWasm);
   ParamCache cache;
   WasmHost host(cache);
   REQUIRE(host.init());
@@ -90,7 +92,7 @@ TEST_CASE("nanolooper.wasm tick runs without error", "[nanolooper]") {
 }
 
 TEST_CASE("nanolooper.wasm render produces draw commands", "[nanolooper]") {
-  auto bytecode = load_file(NANOLOOPER_WASM_PATH);
+  auto bytecode = load_file(kNanolooperWasm);
   ParamCache cache;
   WasmHost host(cache);
   REQUIRE(host.init());
@@ -129,7 +131,7 @@ TEST_CASE("nanolooper.wasm render produces draw commands", "[nanolooper]") {
 }
 
 TEST_CASE("nanolooper.wasm on_param_change triggers events", "[nanolooper]") {
-  auto bytecode = load_file(NANOLOOPER_WASM_PATH);
+  auto bytecode = load_file(kNanolooperWasm);
   ParamCache cache;
   WasmHost host(cache);
   REQUIRE(host.init());

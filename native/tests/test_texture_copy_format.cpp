@@ -31,6 +31,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 
 namespace {
@@ -87,7 +89,7 @@ TEST_CASE("wire out of util.dashboard keeps channel order across a BGRA8 boundar
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16;
@@ -173,7 +175,7 @@ TEST_CASE("control: same wired dashboard chain, all-RGBA8, no swap",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16;
@@ -224,7 +226,7 @@ TEST_CASE("wire out of control.barrel_macros (last entry) keeps channel order",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16;

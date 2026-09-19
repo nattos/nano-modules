@@ -16,6 +16,8 @@
 #include "sketch/wasm_bundles.h"
 #include "sketch/wasm_executor_driver.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 using sketch_executor::ModuleRegistry;
 using sketch_executor::SketchExecutor;
@@ -36,9 +38,10 @@ static double mean_rgb(const std::vector<uint8_t>& px) {
 }
 
 // Directory holding executor.wasm (the driver appends executor.aot / .wasm).
+// Both separators: nanoWasmPath rewrites to a Windows path for a cross run.
 static std::string executorWasmDir() {
-  std::string p = EXECUTOR_WASM_PATH;
-  auto slash = p.find_last_of('/');
+  std::string p = kExecutorWasm;
+  auto slash = p.find_last_of("/\\");
   return slash == std::string::npos ? std::string(".") : p.substr(0, slash);
 }
 
@@ -51,7 +54,7 @@ TEST_CASE("executor.wasm renders pixel-identical to the native executor", "[exec
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   // Load + prime executor.wasm through the shared driver (registers the effrt
   // host functions, creates the executor, pushes every schema).
@@ -112,7 +115,7 @@ TEST_CASE("a trailing effect keeps rendering on CLEAN (non-dirty) frames", "[exe
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   WasmExecutorDriver driver;
   REQUIRE(driver.init(executorWasmDir(), &rt, backend.get(), registry.schemas()));
 
@@ -161,7 +164,7 @@ TEST_CASE("a trailing effect AFTER a composite.blend renders on clean frames (ma
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   WasmExecutorDriver driver;
   REQUIRE(driver.init(executorWasmDir(), &rt, backend.get(), registry.schemas()));
 
@@ -213,7 +216,7 @@ TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[exec
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   // White input → dashboard (knob_0 = 0.5, no input wire) → brightness_contrast.
   // The knob's AUTHORED value drives brightness via the output wire: 0.5 folds to
@@ -261,7 +264,7 @@ TEST_CASE("multiple wires into one field accumulate per combine (not last-wins)"
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16, RGBA8 = 1;
   int inTex = backend->createTexture(W, H, RGBA8);
@@ -331,7 +334,7 @@ TEST_CASE("a delayed wire keeps its history when a sibling wire shares the field
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16, RGBA8 = 1;
   int inTex = backend->createTexture(W, H, RGBA8);
@@ -395,7 +398,7 @@ TEST_CASE("signed return rail carries bipolar values (no clamp at the relay)", "
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16, RGBA8 = 1;
   int inTex = backend->createTexture(W, H, RGBA8);
@@ -447,7 +450,7 @@ TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", 
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   // White input → dashboard (knob_0 = 0.5, the PRODUCER) → util.sketch_output.
   // The wire writes the knob value INTO the sketch-output trace out_0. The image
@@ -510,7 +513,7 @@ TEST_CASE("host-injected scalars reach an instance's published state", "[executo
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const std::string sketch = R"JSON({
     "chain": [

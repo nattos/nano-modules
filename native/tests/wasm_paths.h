@@ -6,9 +6,14 @@
 // under CrossOver cannot see any of them, so NANO_WASM_DIR names the directory
 // the bundles were copied into and the basename is kept.
 //
-// Tests opt in by redefining their path macros through nanoWasmPath() — see
-// the block at the top of test_effect_render.cpp. Unset, this is the identity,
-// so a native run is untouched.
+// Tests opt in by including this header and using the kXxxWasm bindings below
+// instead of the raw macros. Unset, nanoWasmPath is the identity, so a native
+// run is untouched.
+//
+// A test that keeps using the baked macro doesn't fail loudly under CrossOver —
+// loadBundleFile just returns 0 and the case either fails on a REQUIRE or, if
+// it guards with SKIP, quietly reports success having done nothing. That is
+// what hid four of test_sketch_output_format's five cases.
 
 #include <cstdlib>
 #include <cstring>
@@ -30,3 +35,32 @@ inline const char* nanoWasmPath(const char* baked) {
   store.push_back(std::move(joined));
   return store.back().c_str();
 }
+
+// The bundle paths are baked as absolute source-tree paths, which a Windows
+// build running under CrossOver cannot see. Bind each one ONCE, here, so every
+// test spells it the same way. Each is guarded: a target only defines the
+// macros for the bundles it links against.
+#ifdef CORE_WASM_PATH
+inline const char* const kCoreWasm = nanoWasmPath(CORE_WASM_PATH);
+#endif
+#ifdef TESTONLY_WASM_PATH
+inline const char* const kTestonlyWasm = nanoWasmPath(TESTONLY_WASM_PATH);
+#endif
+#ifdef NANO_WASM_PATH
+inline const char* const kNanoWasm = nanoWasmPath(NANO_WASM_PATH);
+#endif
+#ifdef LIGHTS_WASM_PATH
+inline const char* const kLightsWasm = nanoWasmPath(LIGHTS_WASM_PATH);
+#endif
+#ifdef LEGACY_WASM_PATH
+inline const char* const kLegacyWasm = nanoWasmPath(LEGACY_WASM_PATH);
+#endif
+#ifdef TEXT_WASM_PATH
+inline const char* const kTextWasm = nanoWasmPath(TEXT_WASM_PATH);
+#endif
+#ifdef EXECUTOR_WASM_PATH
+inline const char* const kExecutorWasm = nanoWasmPath(EXECUTOR_WASM_PATH);
+#endif
+#ifdef NANOLOOPER_WASM_PATH
+inline const char* const kNanolooperWasm = nanoWasmPath(NANOLOOPER_WASM_PATH);
+#endif

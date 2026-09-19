@@ -22,6 +22,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 using sketch_executor::ModuleRegistry;
 using sketch_executor::SketchExecutor;
@@ -59,7 +61,7 @@ TEST_CASE("two namespaced executors isolate effect state in one shared runtime",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   REQUIRE(rt.instancePoolSize() == 0);
 
@@ -135,7 +137,7 @@ TEST_CASE("final passthrough copies into a BGRA output without swapping R/B",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 32, H = 32;
   const int RGBA8 = 1, BGRA8 = 0;

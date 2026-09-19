@@ -30,6 +30,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 using json = nlohmann::json;
 
@@ -64,7 +66,7 @@ struct Harness {
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
-    return bundles.loadBundleFile(CORE_WASM_PATH, *registry, backend.get(), nullptr) > 1;
+    return bundles.loadBundleFile(kCoreWasm, *registry, backend.get(), nullptr) > 1;
   }
 
   /** Seed a CompExecutor's catalog (+ its internal executor) from the loaded
@@ -2131,7 +2133,7 @@ TEST_CASE("transport pre-pass: probe publishes same-frame resolved rows (Metal)"
           "[comp_transport][comp_render]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  REQUIRE(hx.bundles.loadBundleFile(TESTONLY_WASM_PATH, *hx.registry,
+  REQUIRE(hx.bundles.loadBundleFile(kTestonlyWasm, *hx.registry,
                                     hx.backend.get(), nullptr) > 0);
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
@@ -2204,7 +2206,7 @@ TEST_CASE("transport_ended stops a driven scene (Metal)",
           "[comp_transport][comp_render]") {
   Harness hx;
   if (!hx.init()) SKIP("No GPU device available");
-  REQUIRE(hx.bundles.loadBundleFile(TESTONLY_WASM_PATH, *hx.registry,
+  REQUIRE(hx.bundles.loadBundleFile(kTestonlyWasm, *hx.registry,
                                     hx.backend.get(), nullptr) > 0);
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());

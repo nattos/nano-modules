@@ -21,6 +21,8 @@
 #include "wasm/effect_host_sink.h"
 #include "wasm/wasm_host.h"
 
+#include "wasm_paths.h"
+
 using bridge::ParamCache;
 using bridge::StateDocument;
 using json = nlohmann::json;
@@ -78,7 +80,7 @@ struct ProbeHarness {
   std::string pluginKey;
 
   bool init() {
-    auto bytecode = load_file(TESTONLY_WASM_PATH);
+    auto bytecode = load_file(kTestonlyWasm);
     if (bytecode.empty() || !host.init()) return false;
     moduleId = host.load_module(bytecode.data(), bytecode.size());
     if (moduleId < 0) return false;

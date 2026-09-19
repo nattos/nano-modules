@@ -26,6 +26,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 using nlohmann::json;
 
@@ -78,7 +80,7 @@ TEST_CASE("a colour crosses a wire as a vec rail", "[vec_rail]") {
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16;

@@ -379,6 +379,21 @@ if(CMAKE_CROSSCOMPILING)
   endfunction()
 endif()
 
+# Every test target can reach tests/ for the shared test-only headers —
+# wasm_paths.h above all, which turns the baked absolute bundle paths into
+# something a cross-compiled run can find. Directory-scoped so the ~90 targets
+# below don't each need a line; nothing in tests/ shadows a real header.
+include_directories(${CMAKE_SOURCE_DIR}/tests)
+
+if(WIN32)
+  # Catch2 seeds its RNG from std::random_device, which libc++ implements on
+  # Windows with BCryptGenRandom. Most test targets drag bcrypt in through
+  # text_blitz's interface link list; the ones that link neither the runtime
+  # nor the text engine (test_effect_abi) have to name it. Directory-scoped,
+  # for the same reason as the include above.
+  link_libraries(bcrypt)
+endif()
+
 add_executable(test_param_cache tests/test_param_cache.cpp)
 target_link_libraries(test_param_cache PRIVATE param_cache Catch2::Catch2WithMain)
 catch_discover_tests(test_param_cache)
@@ -1470,7 +1485,7 @@ if(NANO_HAS_GPU_BACKEND)
         TEXT_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/text.wasm")
     endif()
     target_include_directories(test_effect_render PRIVATE
-      ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/build/tmp)
+      ${CMAKE_SOURCE_DIR}/build/tmp)
     # The test's own kernel (tests/shaders/copy_word.hlsl), baked like the rest.
     set(TEST_SHADER_HEADER "${CMAKE_SOURCE_DIR}/build/tmp/test_shaders_spv.h")
     add_custom_command(
@@ -1710,7 +1725,6 @@ if(NANO_HAS_GPU_BACKEND)
 )
     target_compile_definitions(test_sketch_output_format PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
-    target_include_directories(test_sketch_output_format PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_compile_options(test_sketch_output_format PRIVATE -Wno-attributes)
     catch_discover_tests(test_sketch_output_format)
   endif()

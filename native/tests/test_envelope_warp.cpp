@@ -16,6 +16,8 @@
 #include "sketch/module_registry.h"
 #include "wasm/wasm_host.h"
 
+#include "wasm_paths.h"
+
 using bridge::ParamCache;
 using wasm::WasmHost;
 using wasm::WasmEffectDesc;
@@ -66,7 +68,7 @@ static int alpha(const std::vector<uint8_t>& px, uint32_t W, uint32_t x, uint32_
 static EffectInstance* setup(WasmHost& host, EffectRuntime& rt,
                              sketch_executor::ModuleRegistry& registry,
                              gpu::GPUBackend* backend, int32_t& moduleId) {
-  auto bytecode = load_file(NANO_WASM_PATH);
+  auto bytecode = load_file(kNanoWasm);
   REQUIRE(!bytecode.empty());
   REQUIRE(host.init());
   moduleId = host.load_module(bytecode.data(), bytecode.size());

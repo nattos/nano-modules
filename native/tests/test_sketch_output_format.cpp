@@ -37,9 +37,6 @@ using sketch_executor::WasmEffectBundles;
 #ifndef CORE_WASM_PATH
 #error "CORE_WASM_PATH must be defined"
 #endif
-// Bound once: NANO_WASM_DIR redirects the baked source-tree path for a
-// cross-compiled run (wasm_paths.h). Identity when it's unset.
-static const char* const kCoreWasm = nanoWasmPath(CORE_WASM_PATH);
 
 namespace {
 

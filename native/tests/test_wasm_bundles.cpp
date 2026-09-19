@@ -18,6 +18,8 @@
 #include "wasm/wasm_host.h"
 #include "../wasm_modules/include/module_api.h"  // NANO_ABI_VERSION
 
+#include "wasm_paths.h"
+
 using sketch_executor::WasmEffectBundles;
 using sketch_executor::ModuleRegistry;
 using effect_runtime::EffectRuntime;
@@ -33,7 +35,7 @@ using effect_runtime::EffectRuntime;
 // load — and B must stay usable.
 TEST_CASE("WAMR runtime survives overlapping WasmHost lifetimes", "[wasm_bundles]") {
   auto load_count = [](wasm::WasmHost& h) -> int {
-    std::ifstream f(CORE_WASM_PATH, std::ios::binary | std::ios::ate);
+    std::ifstream f(kCoreWasm, std::ios::binary | std::ios::ate);
     if (!f) return -1;
     auto size = f.tellg(); f.seekg(0);
     std::vector<uint8_t> buf(static_cast<size_t>(size));
@@ -72,7 +74,7 @@ TEST_CASE("WasmEffectBundles loads core.wasm and registers its effects", "[wasm_
   EffectRuntime rt(nullptr);  // no GPU — effects publish schema, skip shaders
   ModuleRegistry registry(&rt);
 
-  int n = bundles.loadBundleFile(CORE_WASM_PATH, registry, nullptr, nullptr);
+  int n = bundles.loadBundleFile(kCoreWasm, registry, nullptr, nullptr);
   INFO("registered " << n << " effect(s)");
   REQUIRE(n > 1);
   REQUIRE(registry.size() == static_cast<size_t>(n));
@@ -92,7 +94,7 @@ TEST_CASE("temporal capabilities round-trip from schema to the registry", "[wasm
   REQUIRE(bundles.init());
   EffectRuntime rt(nullptr);  // no GPU — schema still publishes
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, nullptr, nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, nullptr, nullptr) > 1);
 
   auto has = [&](const char* id, const char* cap) -> bool {
     const auto* m = registry.find(id);
@@ -136,7 +138,7 @@ TEST_CASE("bundle reports its host<->effect ABI version", "[wasm_bundles]") {
   REQUIRE(bundles.init());
   EffectRuntime rt(nullptr);
   ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, nullptr, nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, nullptr, nullptr) > 1);
 
   // core.wasm is built against the current headers, so every effect it
   // registers carries the current NANO_ABI_VERSION (read from the bundle's

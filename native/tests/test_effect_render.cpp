@@ -18,16 +18,16 @@
 #include "bridge/param_cache.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
-#include "wasm_paths.h"
-
 #include "runtime/shader_from_spv.h"
-#include "test_shaders_spv.h"
 #include "runtime/text_host.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
 #include "sketch/trigger_bus.h"
 #include "sketch/wasm_bundles.h"
 #include "wasm/wasm_host.h"
+
+#include "test_shaders_spv.h"   // COPY_WORD_SPV — see tests/shaders/
+#include "wasm_paths.h"         // kCoreWasm & co. — see there
 
 using bridge::ParamCache;
 using wasm::WasmHost;
@@ -56,29 +56,6 @@ static double mean_rgb(const std::vector<uint8_t>& px) {
 
 #ifndef CORE_WASM_PATH
 #error "CORE_WASM_PATH must be defined"
-#endif
-
-// The bundle paths are baked as absolute source-tree paths, which a Windows
-// build running under CrossOver cannot see. Bind each one once, through
-// nanoWasmPath(), so NANO_WASM_DIR can point at wherever the bundles were
-// copied. Unset, it is the identity and a native run is unchanged.
-#ifdef CORE_WASM_PATH
-static const char* const kCoreWasm = nanoWasmPath(CORE_WASM_PATH);
-#endif
-#ifdef TESTONLY_WASM_PATH
-static const char* const kTestonlyWasm = nanoWasmPath(TESTONLY_WASM_PATH);
-#endif
-#ifdef NANO_WASM_PATH
-static const char* const kNanoWasm = nanoWasmPath(NANO_WASM_PATH);
-#endif
-#ifdef LIGHTS_WASM_PATH
-static const char* const kLightsWasm = nanoWasmPath(LIGHTS_WASM_PATH);
-#endif
-#ifdef LEGACY_WASM_PATH
-static const char* const kLegacyWasm = nanoWasmPath(LEGACY_WASM_PATH);
-#endif
-#ifdef TEXT_WASM_PATH
-static const char* const kTextWasm = nanoWasmPath(TEXT_WASM_PATH);
 #endif
 
 TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_render]") {
@@ -4841,4 +4818,66 @@ TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]"
   auto lum = [](const std::array<int, 3>& c) { return (c[0] + c[1] + c[2]) / 3.0; };
   CHECK(std::abs(lum(at(W / 2 - 25, 104)) - lum(top)) < lum(top) * 0.10);
   CHECK(lum(at(6, 104)) < lum(top) * 0.35);
+}
+
+// Instrument for the open persistent-storage-buffer bug (web/KNOWN_ISSUES.md).
+// warp.legacy.d_wave carries BOTH mechanisms — a stateful wave field in
+// ping-pong textures and a pool of dampening flashes in a RWStructuredBuffer
+// the vertex shader splats — so the ratio between "flashes on" and "field
+// alone" isolates the buffer. On a healthy backend it falls monotonically with
+// damp_count; on Metal it plateaus around 256 particles and stops moving.
+//
+// Hidden (the leading `.` in the tag) because it ASSERTS NOTHING — it prints
+// numbers for a human to compare across backends. Run it by name:
+//   ./build/test_effect_render "probe: d_wave*"
+TEST_CASE("probe: d_wave persistent storage buffer", "[.probe]") {
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
+  sketch_executor::WasmEffectBundles bundles;
+  REQUIRE(bundles.init());
+  EffectRuntime rt(backend.get());
+  sketch_executor::ModuleRegistry registry(&rt);
+  REQUIRE(bundles.loadBundleFile(kLegacyWasm, registry, backend.get(), nullptr) > 1);
+
+  const uint32_t W = 128, H = 128; const int RGBA8 = 1;
+  int inTex = backend->createTexture(W, H, RGBA8);
+  int outTex = backend->createTexture(W, H, RGBA8);
+  backend->clearTexture(inTex, 0, 0, 0, 1);
+
+  auto run = [&](double damp, int count, double rate, int ticks) -> double {
+    sketch_executor::SketchExecutor ex(&rt, &registry, backend.get());
+    auto sketch = nlohmann::json::parse(R"JSON({
+      "chain": [
+        { "type": "module", "module_type": "warp.legacy.d_wave", "instance_key": "dw" }
+      ],
+      "instances": { "dw": { "module_type": "warp.legacy.d_wave", "state": {
+        "debug_field": 1.0, "distortion": 0.5, "rate": 0.5, "wave_speed": 0.3
+      } } }
+    })JSON");
+    auto& st = sketch["instances"]["dw"]["state"];
+    st["damp"] = damp; st["damp_count"] = count; st["damp_rate"] = rate;
+    for (int f = 0; f < ticks; ++f) {
+      ex.execute(sketch, inTex, outTex, (int)W, (int)H, 1.0 / 60.0, /*dirty=*/f == 0);
+      backend->submit();
+    }
+    auto px = backend->readbackTexture(outTex, W, H);
+    long s = 0, n = 0;
+    for (size_t i = 0; i < px.size(); i += 4) { s += px[i]; ++n; }
+    return n ? (double)s / n : 0.0;
+  };
+
+  for (int ticks : {1, 4, 14, 40}) {
+    const double base = run(0.0, 0, 0.5, ticks);
+    std::fprintf(stderr, "[probe] ticks=%2d  field-alone mean red %.2f\n", ticks, base);
+    if (ticks != 40) continue;
+    for (int c : {64, 128, 256, 400, 1500, 4096}) {
+      const double v = run(0.5, c, 0.5, ticks);
+      std::fprintf(stderr, "[probe]   damp_count %4d -> %.2f  ratio %.3f\n",
+                   c, v, base > 0 ? v / base : 0.0);
+    }
+    for (double r : {0.0, 1.0}) {
+      const double v = run(0.5, 1500, r, ticks);
+      std::fprintf(stderr, "[probe]   damp_rate %.1f (count 1500) -> %.2f\n", r, v);
+    }
+  }
 }

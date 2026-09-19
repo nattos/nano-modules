@@ -28,6 +28,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 using nlohmann::json;
 
@@ -68,7 +70,7 @@ TEST_CASE("a wire drives one lane of a vector field", "[vec_lane]") {
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16;
   const int RGBA8 = 1;
@@ -183,7 +185,7 @@ TEST_CASE("automation drives one lane of a vector field", "[vec_lane]") {
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16;
   const int RGBA8 = 1;
@@ -244,7 +246,7 @@ TEST_CASE("a vector source reaching a scalar field takes component 0", "[vec_lan
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16;
   const int RGBA8 = 1;

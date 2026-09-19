@@ -19,6 +19,8 @@
 #include "sketch/module_registry.h"
 #include "wasm/wasm_host.h"
 
+#include "wasm_paths.h"
+
 using bridge::ParamCache;
 using bridge::StateDocument;
 using wasm::WasmHost;
@@ -43,7 +45,7 @@ static std::vector<uint8_t> load_file(const char* path) {
 #endif
 
 TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -132,7 +134,7 @@ TEST_CASE("WASM effect driven through EffectInstance (mod.source.lfo)", "[effect
 }
 
 TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -187,7 +189,7 @@ TEST_CASE("WASM effect receives params via on_state_patched (mod.source.lfo)", "
 }
 
 TEST_CASE("mod.source.lfo Period mode remaps the speed knob (env_lfo)", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -246,7 +248,7 @@ TEST_CASE("mod.source.lfo Period mode remaps the speed knob (env_lfo)", "[effect
 }
 
 TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -281,7 +283,7 @@ TEST_CASE("WASM ModuleRegistry registers a bundle with parsed schema", "[effect_
 // characteristic signature (style guide §2.1 shapes). All outputs must stay in
 // the declared [0,1] range; `shape` morphs the active waveform.
 TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -429,7 +431,7 @@ TEST_CASE("mod.source.lfo waveforms produce characteristic shapes", "[effect_dri
 // ADSR that plateaus at the sustain level then releases, and the Reset-vs-Legato
 // retrigger distinction (Reset restarts the attack from 0; Legato does not).
 TEST_CASE("mod.source.adsr envelope phases + retrigger", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -539,7 +541,7 @@ TEST_CASE("mod.source.adsr envelope phases + retrigger", "[effect_driver]") {
 // Off by default (a fresh drop never self-fires), Random = the Poisson stream,
 // Beats = locked to the host transport's bar phase.
 TEST_CASE("mod.source.adsr auto-trigger: Off default / Random / Beats", "[effect_driver]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;

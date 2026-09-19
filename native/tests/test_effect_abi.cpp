@@ -18,6 +18,8 @@
 #include "bridge/state_document.h"
 #include "wasm/wasm_host.h"
 
+#include "wasm_paths.h"
+
 using bridge::ParamCache;
 using bridge::StateDocument;
 using wasm::WasmHost;
@@ -39,7 +41,7 @@ static std::vector<uint8_t> load_file(const char* path) {
 #endif
 
 TEST_CASE("testonly.wasm registers mod.source.lfo via nano_module_main", "[effect_abi]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -82,7 +84,7 @@ TEST_CASE("testonly.wasm registers mod.source.lfo via nano_module_main", "[effec
 }
 
 TEST_CASE("mod.source.lfo executes via call_indirect and writes output", "[effect_abi]") {
-  auto bytecode = load_file(TESTONLY_WASM_PATH);
+  auto bytecode = load_file(kTestonlyWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;

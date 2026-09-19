@@ -27,6 +27,8 @@
 #include "sketch/sketch_executor.h"
 #include "sketch/wasm_bundles.h"
 
+#include "wasm_paths.h"
+
 using effect_runtime::EffectRuntime;
 using nlohmann::json;
 
@@ -56,7 +58,7 @@ struct Harness {
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
-    if (bundles.loadBundleFile(CORE_WASM_PATH, *registry, backend.get(), nullptr) <= 1)
+    if (bundles.loadBundleFile(kCoreWasm, *registry, backend.get(), nullptr) <= 1)
       return false;
     executor = std::make_unique<sketch_executor::SketchExecutor>(
         rt.get(), registry.get(), backend.get());
