@@ -55,8 +55,8 @@ struct Harness {
   int inTex = -1, outTex = -1;
 
   bool init() {
-    backend = gpu::createMetalBackend();
-    if (!backend || backend->getBackend() != 0) return false;
+    backend = gpu::createBackend();
+    if (!backend) return false;
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
@@ -122,7 +122,7 @@ json sketchOf(json chain, json wires = json::array()) {
 
 TEST_CASE("exec order: absent execOrder is plain chain order", "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   json sketch = sketchOf(json::array({sourceEntry("src", 0.25),
                                      linearEntry("b0", 0.25)}));
@@ -139,7 +139,7 @@ TEST_CASE("exec order: absent execOrder is plain chain order", "[exec_order]") {
 
 TEST_CASE("exec order: an explicit order reorders execution", "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   // brightness THEN source: the source overwrites the image, so the lift is lost.
   json srcLast = sketchOf(json::array({linearEntry("b0", 0.4),
@@ -161,7 +161,7 @@ TEST_CASE("exec order: an explicit order reorders execution", "[exec_order]") {
 TEST_CASE("exec order: a canvas stage never touches the linear image chain",
           "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   // The reference: grey source, no lift anywhere.
   json linearOnly = sketchOf(json::array({sourceEntry("src", 0.25)}));
@@ -193,7 +193,7 @@ TEST_CASE("exec order: a canvas stage never touches the linear image chain",
 TEST_CASE("exec order: an all-canvas sketch passes its input through",
           "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   // Nothing linear renders, so the sketch must return its INPUT (white),
   // not whatever the canvas node happened to draw.
@@ -205,7 +205,7 @@ TEST_CASE("exec order: an all-canvas sketch passes its input through",
 TEST_CASE("exec order: texture wires route the image through a canvas node",
           "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   // Reference: source → lift, entirely linear.
   json linear = sketchOf(json::array({sourceEntry("src", 0.25),
@@ -234,7 +234,7 @@ TEST_CASE("exec order: texture wires route the image through a canvas node",
 TEST_CASE("exec order: causality follows execution position, not chain position",
           "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   // A canvas dashboard knob (a constant producer) wired into a linear
   // brightness. Position in the MERGED order — not in the chain — decides
@@ -286,7 +286,7 @@ TEST_CASE("exec order: causality follows execution position, not chain position"
 TEST_CASE("exec order: an order-only edit rebuilds the plan exactly once",
           "[exec_order]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   json sketch = sketchOf(json::array({sourceEntry("src", 0.25),
                                      linearEntry("b0", 0.25),

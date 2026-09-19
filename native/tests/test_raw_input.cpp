@@ -93,8 +93,8 @@ struct Harness {
 
 TEST_CASE("a `raw` dest skips the magnitude fold; its plain twin does not",
           "[raw_input]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

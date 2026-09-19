@@ -80,8 +80,8 @@ std::array<double, 3> logical_rgb(const std::vector<uint8_t>& px,
 // ---------------------------------------------------------------------------
 TEST_CASE("wire out of util.dashboard keeps channel order across a BGRA8 boundary",
           "[texture_copy_format]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
@@ -166,8 +166,8 @@ TEST_CASE("wire out of util.dashboard keeps channel order across a BGRA8 boundar
 // ---------------------------------------------------------------------------
 TEST_CASE("control: same wired dashboard chain, all-RGBA8, no swap",
           "[texture_copy_format]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
@@ -217,8 +217,8 @@ TEST_CASE("control: same wired dashboard chain, all-RGBA8, no swap",
 // ---------------------------------------------------------------------------
 TEST_CASE("wire out of control.barrel_macros (last entry) keeps channel order",
           "[texture_copy_format]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());

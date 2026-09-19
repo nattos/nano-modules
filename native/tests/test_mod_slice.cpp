@@ -81,8 +81,8 @@ struct Harness {
 }  // namespace
 
 TEST_CASE("mod.shaper.slice cuts one signal into windowed outputs", "[mod_slice]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

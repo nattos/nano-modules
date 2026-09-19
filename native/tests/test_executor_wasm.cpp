@@ -43,8 +43,8 @@ static std::string executorWasmDir() {
 }
 
 TEST_CASE("executor.wasm renders pixel-identical to the native executor", "[executor_wasm]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   // Native runtime + effects (shared by both executors via the effrt binding).
   WasmEffectBundles bundles;
@@ -106,8 +106,8 @@ TEST_CASE("a trailing effect keeps rendering on CLEAN (non-dirty) frames", "[exe
   // the bus FX is the FINAL chain entry over the composite. On the dirty frame
   // (sketch re-issued) it renders; the worry is a later CLEAN frame (dirty=0,
   // cached plan, state not re-applied) collapsing to identity → passthrough.
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -155,8 +155,8 @@ TEST_CASE("a trailing effect AFTER a composite.blend renders on clean frames (ma
   // composite.blend, then a trailing brightness_contrast (the master FX bus) as
   // the final entry. Reproduces the arrangement composite verbatim, over a dirty
   // then several clean frames.
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -207,8 +207,8 @@ TEST_CASE("a trailing effect AFTER a composite.blend renders on clean frames (ma
 }
 
 TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[executor_wasm]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -255,8 +255,8 @@ TEST_CASE("util.dashboard pure-output knob publishes its authored value", "[exec
 }
 
 TEST_CASE("multiple wires into one field accumulate per combine (not last-wins)", "[executor_wasm]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -325,8 +325,8 @@ TEST_CASE("a delayed wire keeps its history when a sibling wire shares the field
   // a zero-delay wire into the same field ran applyModDelay's pass-through
   // erase every frame, wiping the delayed sibling's line — its `delay` then
   // read back the just-pushed sample, i.e. never delayed at all.
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -389,8 +389,8 @@ TEST_CASE("a delayed wire keeps its history when a sibling wire shares the field
 }
 
 TEST_CASE("signed return rail carries bipolar values (no clamp at the relay)", "[executor_wasm]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -441,8 +441,8 @@ TEST_CASE("signed return rail carries bipolar values (no clamp at the relay)", "
 }
 
 TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", "[executor_wasm]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -504,8 +504,8 @@ TEST_CASE("util.sketch_output captures a producer's scalar on an output trace", 
 // tick and publish. The executor publishes them on the effect's behalf
 // (effrt_publish_scalar); without that the trace pins at 0 while the wire moves.
 TEST_CASE("host-injected scalars reach an instance's published state", "[executor_wasm]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

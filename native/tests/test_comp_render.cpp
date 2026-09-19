@@ -59,8 +59,8 @@ struct Harness {
   std::unique_ptr<sketch_executor::ModuleRegistry> registry;
 
   bool init() {
-    backend = gpu::createMetalBackend();
-    if (!backend || backend->getBackend() != 0) return false;
+    backend = gpu::createBackend();
+    if (!backend) return false;
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
@@ -140,7 +140,7 @@ json mkComposition(json tracks) {
 TEST_CASE("comp executor renders pixel-identical to a plain executor on its built sketch",
           "[comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   // Two source tracks: white solid over the black bg, then a half-level solid.
   const json doc = mkComposition(json::array({
@@ -202,7 +202,7 @@ TEST_CASE("comp executor renders pixel-identical to a plain executor on its buil
 TEST_CASE("param cheap-op re-renders without a plan rebuild; boundary crossing rebuilds",
           "[comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   const json doc = mkComposition(json::array({
       mkTrack("t1", json::array({mkClip(
@@ -250,7 +250,7 @@ TEST_CASE("param cheap-op re-renders without a plan rebuild; boundary crossing r
 
 TEST_CASE("automation lane drives a param across beats", "[comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   // White source; the clip's own brightness_contrast is automated 0→1 over the
   // clip span (unsigned replace into brightness's [-1,1]): dark early, bright late.
@@ -290,7 +290,7 @@ TEST_CASE("automation lane drives a param across beats", "[comp_render]") {
 
 TEST_CASE("live LFO→param wire folds via effrt_published_scalar", "[comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   // The web forward-wire repro, driven through the comp document: white solid →
   // lfo (rate 0, resting output 0) → brightness_contrast(brightness 1,
@@ -344,7 +344,7 @@ TEST_CASE("automation baseline yields to a live wire on the same field", "[comp_
   // must win on a shared field, else the writer's fold is clobbered every
   // frame (rails sat pinned at base; read wires downstream never moved).
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   // white -> lfo (resting output 0.5 baked into instance state, the host
   // mirror's shape) -> brightness_contrast. Wire lfo.output -> bc.brightness
@@ -649,7 +649,7 @@ TEST_CASE("engine-reserved __opacity__/__enable__ accept wires + automation", "[
   // white solid -> color.invert. Inverted white = black, so the invert's
   // effective opacity IS the output brightness: 1 -> ~0, 0.5 -> ~127, 0 -> 255.
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   auto sketch = json::parse(R"JSON({
     "chain": [
@@ -864,7 +864,7 @@ TEST_CASE("layer targets resolve per bake site (and a lane forces the elided ble
 TEST_CASE("a __layer__ opacity lane and a track-level rail read reach the pixels",
           "[comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   SECTION("track lane fades the layer (blend opacity 1 -> 0 across the clip)") {
     // White solid over the black bg; a track lane drives __layer__/opacity from
@@ -1022,7 +1022,7 @@ TEST_CASE("a dynamically-bypassed track keeps its video decode warm", "[comp_byp
 TEST_CASE("a return rail structurally toggles another track's bypass (1-frame loop)",
           "[comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   // Writer: an LFO clip on t1 exporting onto rail R. Reader: t2 (a white
   // solid) carries a TRACK-level read {R, __layer__, bypass} — never an
@@ -1102,7 +1102,7 @@ TEST_CASE("a TRACK-chain LFO wire folds through the published-state mirror",
   // -0.5 contrast alone -> grey ~128. A dropped track wire leaves brightness
   // 1 -> much brighter.
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   json t1 = mkTrack("t1", json::array({mkClip(
       "c1", 0, 8,
@@ -1145,7 +1145,7 @@ TEST_CASE("a TRACK-chain mod source wires to its OWN layer opacity", "[comp_rend
   // after the layer composites — pushOwnerLayerWires). White clip over black
   // bg; the track LFO rests at 0 (signed decl → unsigned 0.5) → half fade.
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   json t1 = mkTrack("t1", json::array({mkClip(
       "c1", 0, 8,
@@ -1812,7 +1812,7 @@ json triggerFrame(comp::CompExecutor& cx, Harness& hx, int32_t inTex, int32_t ou
 
 TEST_CASE("triggers: ring events launch scenes by channel", "[comp_trigger]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
   // The LFO doubles as the test's trigger source (routes rebuild on load).
@@ -1871,7 +1871,7 @@ TEST_CASE("triggers: ring events launch scenes by channel", "[comp_trigger]") {
 
 TEST_CASE("triggers: rail routing overrides the global default", "[comp_trigger]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
   cx.registerCapabilities("mod.source.lfo",
@@ -1937,7 +1937,7 @@ TEST_CASE("triggers: mod.trigger.beat ships in core.wasm with the trigger_source
   // This pins the BUNDLE: the effect registers, and its capability + schema
   // reach the comp catalog (what rebuildTriggerRoutes and the UI key off).
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   const auto* reg = hx.registry->find("mod.trigger.beat");
   REQUIRE(reg != nullptr);
   bool hasTrig = false;
@@ -2130,7 +2130,7 @@ TEST_CASE("transport pre-pass: an inert section (no controller) never drives",
 TEST_CASE("transport pre-pass: probe publishes same-frame resolved rows (Metal)",
           "[comp_transport][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   REQUIRE(hx.bundles.loadBundleFile(TESTONLY_WASM_PATH, *hx.registry,
                                     hx.backend.get(), nullptr) > 0);
 
@@ -2203,7 +2203,7 @@ TEST_CASE("videoDescFor: a driven clip ships transport:true and no loop",
 TEST_CASE("transport_ended stops a driven scene (Metal)",
           "[comp_transport][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   REQUIRE(hx.bundles.loadBundleFile(TESTONLY_WASM_PATH, *hx.registry,
                                     hx.backend.get(), nullptr) > 0);
 
@@ -2243,7 +2243,7 @@ TEST_CASE("transport_ended stops a driven scene (Metal)",
 TEST_CASE("core.transport.time matches clipSourceTimeAt (Metal)",
           "[comp_transport][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -2295,7 +2295,7 @@ TEST_CASE("core.transport.time matches clipSourceTimeAt (Metal)",
 TEST_CASE("core.transport.beat_sync consumes per-beat, BPM-locked (Metal)",
           "[comp_transport][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
   // Slice [0,8] over 4 beats: at beat 2 the mapping sits at 8*(2/4) = 4 s.
@@ -2735,7 +2735,7 @@ std::string stepUntilChange(comp::CompExecutor& cx, const std::string& from,
 TEST_CASE("follow: Next wraps within the contiguous group; gaps excluded (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -2769,7 +2769,7 @@ TEST_CASE("follow: Next wraps within the contiguous group; gaps excluded (Metal)
 TEST_CASE("follow: Group = TOUCHING cells — unaligned spans group, a gap splits (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -2807,7 +2807,7 @@ TEST_CASE("follow announces its target: a Last jump OUTSIDE the proximity set pr
           "fast-commits (Metal)",
           "[comp_follow][comp_announce][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -2880,7 +2880,7 @@ TEST_CASE("transition.xfade: announced launch triggers early, forks the outgoing
           "fades, releases (Metal)",
           "[comp_fork][comp_xfade][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -2974,7 +2974,7 @@ TEST_CASE("transition.xfade: announced launch triggers early, forks the outgoing
 TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -3005,7 +3005,7 @@ TEST_CASE("follow: Track scope crosses gaps; Stop ends the track (Metal)",
 TEST_CASE("follow: an EMPTY gap scene is launchable and its section executes (Metal)",
           "[comp_follow][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   comp::CompExecutor cx(hx.rt.get(), hx.registry.get(), hx.backend.get());
   hx.seed(cx);
@@ -3046,7 +3046,7 @@ TEST_CASE("transition.xfade: SHORT scenes fade on every hop — no settle blacko
           "no same-tick arm/seek race (Metal)",
           "[comp_fork][comp_xfade][comp_render]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   // Regression (user repro): fadeSec 0.3, scene A fires at ~1.83 s, scene B
   // fires at `bFireSec`. Two past failure modes:
@@ -3697,7 +3697,7 @@ TEST_CASE("sequence renders its interior to real pixels (GPU)", "[comp_render][c
   // If a sequence renders transparent/black while the same clip on a plain
   // track renders red, the bug is in compositeSequence, not the decode path.
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   auto redClip = [](const std::string& id, double start, double len) {
     return mkClip(id, start, len,
@@ -3857,7 +3857,7 @@ TEST_CASE("a live modulation wire keeps flowing across a structural change",
   // alive (any clip edit, scene launch, or eval-boundary crossing) to poison the
   // cached doc — which is why this test warms first, then reloads.
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   json clip = mkClip("c1", 0, 16,
                      json::array({mkDevice("d1", "source.solid_color",

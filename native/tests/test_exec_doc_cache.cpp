@@ -51,8 +51,8 @@ struct Harness {
   int inTex = -1, outTex = -1;
 
   bool init() {
-    backend = gpu::createMetalBackend();
-    if (!backend || backend->getBackend() != 0) return false;
+    backend = gpu::createBackend();
+    if (!backend) return false;
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<sketch_executor::ModuleRegistry>(rt.get());
@@ -80,7 +80,7 @@ struct Harness {
 TEST_CASE("exec-doc cache: live producer wires keep modulating on clean frames",
           "[exec_doc_cache]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   // Slow triangle LFO (unsynced) wired replace → brightness [-1,1]. As the LFO
   // sweeps 0→1 the folded brightness sweeps -1→1, so the frame luma must MOVE
@@ -116,7 +116,7 @@ TEST_CASE("exec-doc cache: live producer wires keep modulating on clean frames",
 TEST_CASE("exec-doc cache: injected scalars (barrel macros) flow on clean frames",
           "[exec_doc_cache]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   auto sketch = json::parse(R"({
     "chain": [
@@ -153,7 +153,7 @@ TEST_CASE("exec-doc cache: injected scalars (barrel macros) flow on clean frames
 TEST_CASE("exec-doc cache: __enable__ toggles rebuild in both directions",
           "[exec_doc_cache]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   auto mk = [](bool enabled) {
     json sk = json::parse(R"({
@@ -192,7 +192,7 @@ TEST_CASE("exec-doc cache: __enable__ toggles rebuild in both directions",
 TEST_CASE("exec-doc cache: a wire added on a dirty frame takes effect",
           "[exec_doc_cache]") {
   Harness h;
-  if (!h.init()) SKIP("No Metal device available");
+  if (!h.init()) SKIP("No GPU device available");
 
   json base = json::parse(R"({
     "chain": [

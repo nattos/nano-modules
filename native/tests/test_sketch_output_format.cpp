@@ -84,8 +84,8 @@ struct Harness {
   std::unique_ptr<ModuleRegistry> registry;
 
   bool init() {
-    backend = gpu::createMetalBackend();
-    if (!backend || backend->getBackend() != 0) return false;
+    backend = gpu::createBackend();
+    if (!backend) return false;
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<ModuleRegistry>(rt.get());
@@ -98,7 +98,7 @@ struct Harness {
 TEST_CASE("no outputFormat: zero output blits, direct render into output",
           "[output_format]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device / core.wasm");
+  if (!hx.init()) SKIP("No GPU device / core.wasm");
 
   const uint32_t W = 64, H = 64;
   const int RGBA8 = 1;
@@ -124,7 +124,7 @@ TEST_CASE("no outputFormat: zero output blits, direct render into output",
 TEST_CASE("resolution override renders internally scaled, output at host size",
           "[output_format]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device / core.wasm");
+  if (!hx.init()) SKIP("No GPU device / core.wasm");
 
   const uint32_t W = 64, H = 64;
   const int RGBA8 = 1;
@@ -217,7 +217,7 @@ TEST_CASE("resolution override renders internally scaled, output at host size",
 TEST_CASE("16F bit depth: format-3 intermediates, 8-bit output, no banding",
           "[output_format]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device / core.wasm");
+  if (!hx.init()) SKIP("No GPU device / core.wasm");
 
   // Horizontal ramp input, 256 px wide so every 8-bit level appears once.
   const uint32_t W = 256, H = 8;
@@ -285,8 +285,8 @@ TEST_CASE("16F bit depth: format-3 intermediates, 8-bit output, no banding",
 // blit before scaling — see host_output_blit.h.)
 TEST_CASE("preview scaled readback converts a 16F source to 8-bit",
           "[output_format]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   const uint32_t W = 64, H = 64;
   const int RGBA16F = 3;
@@ -308,7 +308,7 @@ TEST_CASE("preview scaled readback converts a 16F source to 8-bit",
 
 TEST_CASE("partial opacity blends into 16F intermediates", "[output_format]") {
   Harness hx;
-  if (!hx.init()) SKIP("No Metal device / core.wasm");
+  if (!hx.init()) SKIP("No GPU device / core.wasm");
 
   const uint32_t W = 32, H = 32;
   const int RGBA8 = 1;

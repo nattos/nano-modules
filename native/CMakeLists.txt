@@ -127,6 +127,12 @@ if(WIN32)
   # — one of which declares a cmake_minimum_required modern CMake refuses.
   # Costs some wasm memory-access speed; buys a build with no disassembler in it.
   set(WAMR_DISABLE_HW_BOUND_CHECK 1)
+  # With the bound check off, WAMR compiles out its thread-local "current
+  # exec_env" entirely — along with the "invalid exec env" rejection that TLS
+  # exists to serve. wasm_host.cpp's NestedCallScope works around that
+  # rejection, so it has nothing to work around here, and the two accessors it
+  # calls do not exist to link against.
+  add_compile_definitions(NANO_WAMR_EXEC_ENV_TLS=0)
 elseif(APPLE)
   set(WAMR_BUILD_PLATFORM "darwin")
 else()
@@ -359,6 +365,16 @@ target_link_libraries(bridge_server PUBLIC miniz)
 # --- Tests ---
 include(CTest)
 include(Catch)
+
+# catch_discover_tests RUNS the built binary to enumerate its test names, which
+# a macOS host cannot do for a Windows exe — it fails the build with "Unknown
+# system error -8". Cross builds are driven by hand under CrossOver instead
+# (see cmake/README.md), so make discovery a no-op there rather than teaching
+# every one of the ~90 test targets about it.
+if(CMAKE_CROSSCOMPILING)
+  function(catch_discover_tests)
+  endfunction()
+endif()
 
 add_executable(test_param_cache tests/test_param_cache.cpp)
 target_link_libraries(test_param_cache PRIVATE param_cache Catch2::Catch2WithMain)
@@ -619,9 +635,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/build/tmp/brightness_contrast_compute.spv")
   target_link_libraries(test_spv_to_hlsl PRIVATE spv_translate Catch2::Catch2WithMain)
   target_compile_definitions(test_spv_to_hlsl PRIVATE
     SPV_DIR="${CMAKE_SOURCE_DIR}/build/tmp")
-  if(NOT CMAKE_CROSSCOMPILING)
-    catch_discover_tests(test_spv_to_hlsl)
-  endif()
+  catch_discover_tests(test_spv_to_hlsl)
 endif()
 
 # Effect v2 ABI load path (barrel-loads-WASM migration). Requires testonly.wasm
@@ -674,12 +688,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_gpu_conformance PRIVATE
 )
   endif()
-  # Discovery RUNS the binary to enumerate test names, which the build host
-  # cannot do for a Windows exe. Cross builds are driven by hand under
-  # CrossOver instead (see cmake/README.md).
-  if(NOT CMAKE_CROSSCOMPILING)
-    catch_discover_tests(test_gpu_conformance)
-  endif()
+  catch_discover_tests(test_gpu_conformance)
 endif()
 
 # GPU→CPU buffer readback (backend readBuffer) — no WASM module needed.
@@ -1339,9 +1348,7 @@ if(NANO_HAS_GPU_BACKEND)
   target_compile_options(test_text_blitz_abi PRIVATE -Wno-attributes)
   target_compile_definitions(test_text_blitz_abi PRIVATE
     NANO_DEFAULT_FONT_PATH="${CMAKE_SOURCE_DIR}/../build/fonts/default.ttf")
-  if(NOT CMAKE_CROSSCOMPILING)
-    catch_discover_tests(test_text_blitz_abi)
-  endif()
+  catch_discover_tests(test_text_blitz_abi)
 
   add_executable(test_text_fonts tests/test_text_fonts.cpp)
   target_link_libraries(test_text_fonts PRIVATE
@@ -1412,6 +1419,7 @@ if(NANO_HAS_GPU_BACKEND)
       target_compile_definitions(test_effect_render PRIVATE
         TEXT_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/text.wasm")
     endif()
+    target_include_directories(test_effect_render PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_compile_options(test_effect_render PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_render)
 

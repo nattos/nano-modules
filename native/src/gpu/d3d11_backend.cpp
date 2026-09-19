@@ -23,6 +23,7 @@
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -40,6 +41,29 @@ bool strictMode() {
     return e && *e == '1';
   }();
   return s;
+}
+
+// Log every bind and dispatch when NANO_D3D_TRACE=1. Same reasoning as strict
+// mode: with no validation layer and no PIX, a dispatch that binds nothing
+// looks exactly like a dispatch that computes zero, and the only way to tell
+// them apart is to watch the calls go by.
+bool traceMode() {
+  static const bool s = [] {
+    const char* e = getenv("NANO_D3D_TRACE");
+    return e && *e == '1';
+  }();
+  return s;
+}
+
+void trace(const char* fmt, ...) {
+  if (!traceMode()) return;
+  va_list ap;
+  va_start(ap, fmt);
+  std::fprintf(stderr, "[d3d11] ");
+  std::vfprintf(stderr, fmt, ap);
+  std::fputc('\n', stderr);
+  va_end(ap);
+  std::fflush(stderr);
 }
 
 void hrFail(const char* what, HRESULT hr) {
@@ -323,11 +347,16 @@ class D3D11Backend : public GPUBackend {
   int32_t createComputePSO(int32_t shaderHandle,
                            const std::string& entryPoint) override {
     Resource* sh = get(shaderHandle, Kind::Shader);
-    if (!sh || !device_) return -1;
+    if (!sh || !device_) {
+      trace("createComputePSO shader=%d -> NO SUCH SHADER", shaderHandle);
+      return -1;
+    }
     Com<ID3DBlob> blob;
     if (!compile(sh->source, entryPoint, "cs_5_0", blob)) return -1;
     Resource r;
     r.kind = Kind::ComputePSO;
+    trace("createComputePSO shader=%d entry=%s -> %zu bytes of DXBC",
+          shaderHandle, entryPoint.c_str(), (size_t)blob->GetBufferSize());
     HRESULT hr = device_->CreateComputeShader(blob->GetBufferPointer(),
                                               blob->GetBufferSize(), nullptr,
                                               r.cs.put());
@@ -443,6 +472,7 @@ class D3D11Backend : public GPUBackend {
   void computeSetPSO(int32_t pass, int32_t pso) override {
     (void)pass;
     Resource* r = get(pso, Kind::ComputePSO);
+    trace("computeSetPSO %d -> %s", pso, (r && r->cs) ? "ok" : "MISSING");
     if (r && r->cs) ctx_->CSSetShader(r->cs.get(), nullptr, 0);
   }
 
@@ -450,6 +480,9 @@ class D3D11Backend : public GPUBackend {
                         int32_t slot) override {
     (void)pass; (void)offset;
     Resource* r = get(buf, Kind::Buffer);
+    trace("computeSetBuffer buf=%d slot=%d usage=%d -> %s", buf, slot,
+          r ? r->usage : -1,
+          !r ? "MISSING" : (r->usage == 2 ? "cbuffer" : (r->bufUav ? "uav" : "NO UAV")));
     if (!r) return;
     if (r->usage == 2) {
       ID3D11Buffer* b = r->buffer.get();
@@ -475,9 +508,13 @@ class D3D11Backend : public GPUBackend {
     // descriptors — so `access` finally matters here. 0=read 1=write 2=rw.
     if (access == 0) {
       ID3D11ShaderResourceView* srv = r->texSrv.get();
+      trace("computeSetTexture tex=%d slot=t%d -> %s", textureHandle, slot,
+            srv ? "srv" : "NO SRV");
       ctx_->CSSetShaderResources((UINT)slot, 1, &srv);
     } else {
       ID3D11UnorderedAccessView* uav = uavForMip(*r, mipLevel);
+      trace("computeSetTexture tex=%d slot=u%d mip=%d -> %s", textureHandle,
+            slot, mipLevel, uav ? "uav" : "NO UAV");
       if (uav) ctx_->CSSetUnorderedAccessViews((UINT)slot, 1, &uav, nullptr);
     }
   }
@@ -497,6 +534,7 @@ class D3D11Backend : public GPUBackend {
     // Group COUNTS, exactly like Metal's dispatchThreadgroups. The workgroup
     // size itself is baked into the HLSL by [numthreads], so none of the
     // `// nano_threadgroup:` hint machinery the Metal path needs applies here.
+    trace("dispatch %ux%ux%u", x, y, z);
     if (x && y && z) ctx_->Dispatch(x, y, z);
   }
 
@@ -619,7 +657,7 @@ class D3D11Backend : public GPUBackend {
 
   // --- lifetime ------------------------------------------------------------
   void release(int32_t handle) override {
-    if (handle < 0 || (size_t)handle >= resources_.size()) return;
+    if (handle <= 0 || (size_t)handle >= resources_.size()) return;
     Resource& r = resources_[handle];
     for (auto& kv : r.texUavByMip) if (kv.second) kv.second->Release();
     r.texUavByMip.clear();
@@ -811,7 +849,14 @@ class D3D11Backend : public GPUBackend {
     return true;
   }
 
+  // Handle 0 is NEVER issued. The effect ABI's Handle::valid() is `id > 0`
+  // (wasm_modules/include/gpu.h), so an effect handed 0 treats a perfectly
+  // good resource as a failure — brightness_contrast's module_init bailed at
+  // "shader compile failed" with a shader that had compiled fine, left its PSO
+  // unset, and rendered black with nothing logged. Metal's backend starts at 1
+  // for the same reason; slot 0 here is a permanent placeholder.
   int32_t store(Resource&& r) {
+    if (resources_.empty()) resources_.emplace_back();  // burn slot 0
     if (!free_.empty()) {
       const int32_t h = free_.back();
       free_.pop_back();
@@ -823,7 +868,7 @@ class D3D11Backend : public GPUBackend {
   }
 
   Resource* get(int32_t h, Kind k) {
-    if (h < 0 || (size_t)h >= resources_.size()) return nullptr;
+    if (h <= 0 || (size_t)h >= resources_.size()) return nullptr;
     Resource* r = &resources_[h];
     return r->kind == k ? r : nullptr;
   }

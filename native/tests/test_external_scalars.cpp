@@ -54,8 +54,8 @@ static nlohmann::json deviceWireSketch(const char* wireExtra = "") {
 
 TEST_CASE("external scalar (midi:) wires fold through the tap pipeline",
           "[external_scalars]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -155,8 +155,8 @@ TEST_CASE("external scalar (midi:) wires fold through the tap pipeline",
 // the wrong thing until any editor patch lands while it happens to be enabled".
 TEST_CASE("wire-driven __enable__ wake applies the persisted state",
           "[external_scalars]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -220,8 +220,8 @@ TEST_CASE("wire-driven __enable__ wake applies the persisted state",
 // external source.
 TEST_CASE("midi: wire into a dashboard knob relays through the knob's own wire",
           "[external_scalars]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

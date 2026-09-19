@@ -105,8 +105,8 @@ static EffectInstance* setup(WasmHost& host, EffectRuntime& rt,
 }
 
 TEST_CASE("plane_shear shears the image and opens a transparent rift", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -164,8 +164,8 @@ TEST_CASE("plane_shear shears the image and opens a transparent rift", "[plane_s
 }
 
 TEST_CASE("plane_shear runs every algorithm and stays stiff between updates", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -216,8 +216,8 @@ TEST_CASE("plane_shear runs every algorithm and stays stiff between updates", "[
 }
 
 TEST_CASE("plane_shear center_weight pulls an off-center plane toward the center", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -290,8 +290,8 @@ TEST_CASE("plane_shear center_weight pulls an off-center plane toward the center
 }
 
 TEST_CASE("plane_shear per-side colour tint changes the output", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -338,8 +338,8 @@ TEST_CASE("plane_shear per-side colour tint changes the output", "[plane_shear]"
 }
 
 TEST_CASE("plane_shear defaults to opaque-black rift fill", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -385,8 +385,8 @@ TEST_CASE("plane_shear defaults to opaque-black rift fill", "[plane_shear]") {
 }
 
 TEST_CASE("plane_shear edge_fill controls the viewport-border reveal", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -441,8 +441,8 @@ TEST_CASE("plane_shear edge_fill controls the viewport-border reveal", "[plane_s
 }
 
 TEST_CASE("plane_shear trigger button restarts the shear animation", "[plane_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);

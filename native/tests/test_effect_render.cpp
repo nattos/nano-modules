@@ -18,6 +18,7 @@
 #include "bridge/param_cache.h"
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
+#include "wasm_paths.h"
 #include "runtime/text_host.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
@@ -54,13 +55,36 @@ static double mean_rgb(const std::vector<uint8_t>& px) {
 #error "CORE_WASM_PATH must be defined"
 #endif
 
+// The bundle paths are baked as absolute source-tree paths, which a Windows
+// build running under CrossOver cannot see. Bind each one once, through
+// nanoWasmPath(), so NANO_WASM_DIR can point at wherever the bundles were
+// copied. Unset, it is the identity and a native run is unchanged.
+#ifdef CORE_WASM_PATH
+static const char* const kCoreWasm = nanoWasmPath(CORE_WASM_PATH);
+#endif
+#ifdef TESTONLY_WASM_PATH
+static const char* const kTestonlyWasm = nanoWasmPath(TESTONLY_WASM_PATH);
+#endif
+#ifdef NANO_WASM_PATH
+static const char* const kNanoWasm = nanoWasmPath(NANO_WASM_PATH);
+#endif
+#ifdef LIGHTS_WASM_PATH
+static const char* const kLightsWasm = nanoWasmPath(LIGHTS_WASM_PATH);
+#endif
+#ifdef LEGACY_WASM_PATH
+static const char* const kLegacyWasm = nanoWasmPath(LEGACY_WASM_PATH);
+#endif
+#ifdef TEXT_WASM_PATH
+static const char* const kTextWasm = nanoWasmPath(TEXT_WASM_PATH);
+#endif
+
 TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
-  auto bytecode = load_file(CORE_WASM_PATH);
+  auto bytecode = load_file(kCoreWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -135,12 +159,12 @@ TEST_CASE("WASM GPU effect renders via Metal (brightness_contrast)", "[effect_re
 // and GPUBackend::setSurface → getSurfaceTexture). Without it the effect bails
 // to black; texture wires into multi-input effects depend on it.
 TEST_CASE("WASM slot-based input ABI blends two textures (composite.blend)", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
-  auto bytecode = load_file(CORE_WASM_PATH);
+  auto bytecode = load_file(kCoreWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -238,12 +262,12 @@ TEST_CASE("full core.wasm bundle registers every effect under Metal", "[effect_r
   // The barrel cutover gate: loading the bundle and registering ALL of its
   // effects runs each one's module_init (schema publish + shader/PSO compile).
   // None may trip on an unimplemented host import.
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
-  auto bytecode = load_file(CORE_WASM_PATH);
+  auto bytecode = load_file(kCoreWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -304,16 +328,16 @@ TEST_CASE("full core.wasm bundle registers every effect under Metal", "[effect_r
 // never accumulates, so observing monotonic convergence to the input proves
 // the retained-copy feedback delivers.
 TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -402,16 +426,16 @@ TEST_CASE("positional-delay feedback wire converges (blend accumulator)", "[effe
 //   - mid disabled: tail skips mid, connects to lfo → tail.input = lfo.output (0.5).
 // Only __enable__ on mid differs, so the 0.9 -> 0.5 flip isolates the re-route.
 TEST_CASE("disabled shaper is skipped by modulation auto-connect", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -467,16 +491,16 @@ TEST_CASE("disabled shaper is skipped by modulation auto-connect", "[effect_rend
 // change (adding a chain entry) DOES force a rebuild.
 TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -562,16 +586,16 @@ TEST_CASE("param-only edits reuse the plan; topology changes rebuild it",
 // output == tex_a (red). Run once with named dests, once with numeric.
 TEST_CASE("entry.params + named/numeric input wires drive composite.blend",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -639,13 +663,13 @@ TEST_CASE("entry.params + named/numeric input wires drive composite.blend",
 // all-or-nothing skip, contrast stays default 0.0 (1×) → the white passes through.
 TEST_CASE("entry.params merges per-field over partial instance state",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -677,14 +701,14 @@ TEST_CASE("entry.params merges per-field over partial instance state",
 // contrast -0.5 (0.5x scale) on white -> output grey ~128.
 TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -726,14 +750,14 @@ TEST_CASE("forward scalar wire lfo.output -> brightness (web repro)",
 // (remap/envelope) reshapes the value + band; its output flows through directly
 // (NO re-fold into the dest range) — see the per-section notes.
 TEST_CASE("executor records modulated-input value + swing band", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -930,14 +954,14 @@ TEST_CASE("executor records modulated-input value + swing band", "[effect_render
 // non-adjacent generator does nothing. Same lfo(output 0.5) probe as the wire
 // tests (hand-mirrored into state).
 TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1026,14 +1050,14 @@ TEST_CASE("modulation shaper auto-connects to a preceding generator", "[effect_r
 // (observed via lastModulationData); the producer outputs are hand-mirrored into
 // instance state since the native test harness doesn't run the live mirror.
 TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1079,14 +1103,14 @@ TEST_CASE("modulation shapers chain via auto-connect", "[effect_render]") {
 // into state. The sink is color.posterize.amount (an UNSIGNED [0,1] field) — the
 // distinction only shows on an unsigned dest, and brightness_contrast is signed.
 TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1169,13 +1193,13 @@ TEST_CASE("shaper output polarity inherits its input (inherit mode)", "[effect_r
 // jump to brightness 1.0; after enough frames it catches up.
 TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1240,14 +1264,14 @@ TEST_CASE("engine FieldOptions.smoothing ramps a stepped param in the executor",
 // the editor's modulation palettes. Exercises host.h .capability() emission →
 // schema JSON → native ModuleRegistry parse, end to end.
 TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
 
   // mod.source.lfo (env_lfo lifecycle) → single-channel modulation source: declares
   // both the umbrella and the single-channel specialization, not the multi one.
@@ -1336,13 +1360,13 @@ TEST_CASE("effects expose declarative capability tags", "[effect_render]") {
 // to web/test/particles.test.ts.)
 TEST_CASE("bundle registration survives a trapping module_init (full PSO surface)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
 
   // debug.spinningtris and the particles effects all register AFTER
   // debug.gpu_test; before the PSO-surface fix their schemas came back empty.
@@ -1380,13 +1404,13 @@ TEST_CASE("bundle registration survives a trapping module_init (full PSO surface
 // WGSL, which the MSL-only backend couldn't compile).
 TEST_CASE("particles_emitter → particles_renderer draws tinted particles (buffer rail)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 64, H = 64; const int RGBA8 = 1;
@@ -1441,13 +1465,13 @@ TEST_CASE("particles_emitter → particles_renderer draws tinted particles (buff
 // path had none (the effects calling these factories were assumed web-only).
 TEST_CASE("debug.gpu_test renders a solid color via create_render_pso_layout",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 32, H = 32; const int RGBA8 = 1;
@@ -1484,13 +1508,13 @@ TEST_CASE("debug.gpu_test renders a solid color via create_render_pso_layout",
 // pixels appear.
 TEST_CASE("debug.spinningtris rasterizes its triangles (native vertex-buffer render)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 64, H = 64; const int RGBA8 = 1;
@@ -1528,13 +1552,13 @@ TEST_CASE("debug.spinningtris rasterizes its triangles (native vertex-buffer ren
 // Metal (web covers it via platform-features.test.ts).
 TEST_CASE("debug.mrt_test writes both MRT attachments (native yellow round-trip)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 32, H = 32; const int RGBA8 = 1;
@@ -1570,13 +1594,13 @@ TEST_CASE("debug.mrt_test writes both MRT attachments (native yellow round-trip)
 // platform-features.test.ts).
 TEST_CASE("debug.lut3d_test round-trips colors through a native 3D LUT",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1627,13 +1651,13 @@ TEST_CASE("debug.lut3d_test round-trips colors through a native 3D LUT",
 // exercise of the Metal read-write storage path (web: platform-features).
 TEST_CASE("debug.rw_storage_test does an in-place r32f read-write RMW (native)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1666,13 +1690,13 @@ TEST_CASE("debug.rw_storage_test does an in-place r32f read-write RMW (native)",
 // effect, and that the real effects all registered intact.
 TEST_CASE("a trapping module_init is detected and flagged, not silent",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
 
   // trap_test is flagged as trapped, and still published its pre-trap schema.
   const auto* trap = registry.find("debug.trap_test");
@@ -1695,13 +1719,13 @@ TEST_CASE("a trapping module_init is detected and flagged, not silent",
 // arithmetic (gpuDispatches = standalone + fusedRuns; dispatchesSaved =
 // fusedStages − fusedRuns) holds.
 TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1805,13 +1829,13 @@ TEST_CASE("debug stats count fused / standalone / identity stages", "[effect_ren
 // rendering on alpha. If this passes, the breakage is in compositing/display,
 // not the executor.
 TEST_CASE("fractional input alpha does not break downstream rendering", "[effect_render][alpha]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1919,13 +1943,13 @@ TEST_CASE("fractional input alpha does not break downstream rendering", "[effect
 // effect opacity (__opacity__ = 0.9). Changing the SECOND's color must update
 // the output every frame — the user reports it freezes at the last frame.
 TEST_CASE("partial-opacity first stage does not freeze downstream output", "[effect_render][alpha]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -1971,13 +1995,13 @@ TEST_CASE("partial-opacity first stage does not freeze downstream output", "[eff
 // and 0.0 must be exactly the previous stage's output.
 TEST_CASE("per-effect opacity endpoints follow mix(prev, fx, opacity)",
           "[effect_render][alpha]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -2212,8 +2236,8 @@ TEST_CASE("per-effect opacity endpoints follow mix(prev, fx, opacity)",
 // bundle: render "Hello" over a solid-red input via tex_in/tex_out, assert the
 // text texels brighten the output AND the red background shows through behind it.
 TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   // Fonts are a HOST concern (the text.* service owns the TextEngine); install
   // the system UI font + CJK fallbacks before rendering — null primary path.
@@ -2223,7 +2247,7 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
   REQUIRE(bundles.init());  // also registers the "text" WAMR namespace
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TEXT_WASM_PATH, registry, backend.get(), nullptr) >= 1);
+  REQUIRE(bundles.loadBundleFile(kTextWasm, registry, backend.get(), nullptr) >= 1);
 
   EffectInstance* inst = rt.instanceFor("source.text.plain", "k0");
   REQUIRE(inst != nullptr);
@@ -2388,15 +2412,15 @@ TEST_CASE("text.wasm renders source.text.plain via the native text bridge", "[ef
 // that, so it's asserted here too).
 TEST_CASE("source.text.plain is resolution-independent under a declared reference",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   effect_runtime::textInstallDefaultFonts(nullptr);
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(TEXT_WASM_PATH, registry, backend.get(), nullptr) >= 1);
+  REQUIRE(bundles.loadBundleFile(kTextWasm, registry, backend.get(), nullptr) >= 1);
   EffectInstance* inst = rt.instanceFor("source.text.plain", "k0");
   REQUIRE(inst != nullptr);
 
@@ -2455,10 +2479,10 @@ static double stddev_luma(const std::vector<uint8_t>& px) {
 }
 
 TEST_CASE("WASM GPU effect renders topology triangulation (triangulate)", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
-  auto bytecode = load_file(NANO_WASM_PATH);
+  auto bytecode = load_file(kNanoWasm);
   REQUIRE(!bytecode.empty());
 
   ParamCache cache;
@@ -2567,9 +2591,9 @@ TEST_CASE("WASM GPU effect renders topology triangulation (triangulate)", "[effe
 #include "sketch/sidechannel_bus.h"
 
 TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][sidechannel]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sidechannel_bus::resetForTest();  // process-global — scrub prior state
@@ -2578,7 +2602,7 @@ TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][s
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor A(&rt, &registry, backend.get());
   A.setKeyNamespace("A/");
@@ -2847,15 +2871,15 @@ TEST_CASE("sidechannel bus passes textures across executors", "[effect_render][s
 #ifdef NANO_WASM_PATH
 TEST_CASE("arena repro: brutal_fold + shape_burst chains survive regenerate churn",
           "[effect_render][arena_repro]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor A(&rt, &registry, backend.get());
   A.setKeyNamespace("A/");
@@ -2945,15 +2969,15 @@ TEST_CASE("arena repro: brutal_fold + shape_burst chains survive regenerate chur
 // or deployment issue, not the emit code.
 TEST_CASE("control.nanolooper emits a trigger onto the rail when fired",
           "[effect_render][nanolooper][trigger_rail]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
   const uint32_t W = 64, H = 64;
@@ -3003,15 +3027,15 @@ TEST_CASE("control.nanolooper emits a trigger onto the rail when fired",
 // authoring path effect-schema → publish → drain → bus for the new payload.
 TEST_CASE("control.nanolooper strict_deadline authors the precision payload",
           "[effect_render][nanolooper][trigger_rail]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
   const uint32_t W = 64, H = 64;
@@ -3059,15 +3083,15 @@ TEST_CASE("control.nanolooper strict_deadline authors the precision payload",
 // fed the wasm effects' host.barPhase.
 TEST_CASE("control.nanolooper replays a recorded note as the beat clock loops",
           "[effect_render][nanolooper][trigger_rail]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
   const uint32_t W = 64, H = 64;
@@ -3129,15 +3153,15 @@ TEST_CASE("control.nanolooper replays a recorded note as the beat clock loops",
 // This is what strict mode then holds a frame of "off" between.
 TEST_CASE("control.nanolooper retriggers at an abutting-note boundary",
           "[effect_render][nanolooper][trigger_rail]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
   const uint32_t W = 64, H = 64;
@@ -3213,15 +3237,15 @@ TEST_CASE("control.nanolooper retriggers at an abutting-note boundary",
 //                        effect owns the output texture now and must forward it).
 TEST_CASE("control.nanolooper composites its overlay over the passthrough input",
           "[effect_render][nanolooper]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
   const uint32_t W = 480, H = 270;
@@ -3312,15 +3336,15 @@ TEST_CASE("control.nanolooper composites its overlay over the passthrough input"
 #ifdef LEGACY_WASM_PATH
 TEST_CASE("arena repro: pasted legacy filter chain survives viewport thrash",
           "[effect_render][arena_repro]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(LEGACY_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kLegacyWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor ex(&rt, &registry, backend.get());
 
@@ -3399,8 +3423,8 @@ TEST_CASE("arena repro: pasted legacy filter chain survives viewport thrash",
 // bug class).
 TEST_CASE("write-after-bind versions the buffer inside a submit batch",
           "[effect_render][gpu_backend]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   const char* kCopyMSL = R"MSL(
 #include <metal_stdlib>
@@ -3459,13 +3483,13 @@ kernel void copy_word(const device uint* src [[buffer(0)]],
 // and distinct presets must render distinct pixels.
 TEST_CASE("lut_collection presets bake distinct cubes in one batched frame",
           "[effect_render][lut]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(LEGACY_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kLegacyWasm, registry, backend.get(), nullptr) > 1);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 64, H = 64; const int RGBA8 = 1;
@@ -3542,15 +3566,15 @@ TEST_CASE("lut_collection presets bake distinct cubes in one batched frame",
 // the native twin, so a native-only rail regression can't hide.
 TEST_CASE("motion rail: double_chamber drives motion.blur natively",
           "[effect_render][motion_rail]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(LEGACY_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kLegacyWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 128, H = 128;
   const int RGBA8 = 1;
@@ -3620,15 +3644,15 @@ TEST_CASE("motion rail: double_chamber drives motion.blur natively",
 // only be real velocity over the rail.
 TEST_CASE("sweep_chamber renders and drives motion.blur natively",
           "[effect_render][motion_rail][sweep_chamber]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(NANO_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kNanoWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 128, H = 128;
   const int RGBA8 = 1;
@@ -3712,14 +3736,14 @@ TEST_CASE("sweep_chamber renders and drives motion.blur natively",
 // value is available from its published state — that's the source of truth here.
 TEST_CASE("wire from a wasm mod source works with no state mirror (barrel repro)",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(TESTONLY_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kTestonlyWasm, registry, backend.get(), nullptr) > 0);
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
   const uint32_t W = 16, H = 16; const int RGBA8 = 1;
@@ -3769,8 +3793,8 @@ TEST_CASE("wire from a wasm mod source works with no state mirror (barrel repro)
 // twin of the texture side's transparent black).
 TEST_CASE("scalar sidechannel bus passes values across executors",
           "[effect_render][sidechannel]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   sidechannel_bus::resetForTest();  // process-global — scrub prior state
 
@@ -3778,7 +3802,7 @@ TEST_CASE("scalar sidechannel bus passes values across executors",
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor A(&rt, &registry, backend.get());
   A.setKeyNamespace("A/");
@@ -3917,16 +3941,16 @@ TEST_CASE("scalar sidechannel bus passes values across executors",
 // this pins is that the port agrees with the C++ on the pipeline's shape —
 // window normalize, curve, output window, scale — and that RGB is left alone.
 TEST_CASE("alpha remap reshapes alpha and leaves RGB alone", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4033,16 +4057,16 @@ TEST_CASE("alpha remap reshapes alpha and leaves RGB alone", "[effect_render]") 
 // it holds only as much video as the delay actually in use — 30 frames of 1080p
 // is a few hundred MB, so the memory discipline IS the feature.
 TEST_CASE("frame delay replays the frame from N renders ago", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4109,9 +4133,9 @@ TEST_CASE("frame delay replays the frame from N renders ago", "[effect_render]")
 // bookkeeping, so this catches both a per-frame allocation leak (a count that
 // climbs while nothing changes) and a failure to hand frames back.
 TEST_CASE("frame delay only holds the frames its delay needs", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
   if (backend->liveResourceCount() < 0) {
     SKIP("Backend does not track live resources");
@@ -4121,7 +4145,7 @@ TEST_CASE("frame delay only holds the frames its delay needs", "[effect_render]"
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   const uint32_t W = 16, H = 16;
   const int RGBA8 = 1;
@@ -4238,16 +4262,16 @@ TEST_CASE("frame delay only holds the frames its delay needs", "[effect_render]"
 // tail.input is exactly inv.output — 0.3 passed through, 0.7 inverted.
 TEST_CASE("invert shaper XORs its param against a trigger-toggled latch",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4339,17 +4363,17 @@ TEST_CASE("invert shaper XORs its param against a trigger-toggled latch",
 // on the other silently reads the wrong texture, and the symptom is a black
 // frame nobody attributes to the binding table.
 TEST_CASE("a wired mask cuts the neon on Metal too", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(LIGHTS_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kLightsWasm, registry, backend.get(), nullptr) > 0);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4431,17 +4455,17 @@ TEST_CASE("a wired mask cuts the neon on Metal too", "[effect_render]") {
 // Read the way the web reads a secondary output: wire it into a sidechannel
 // send override and put the receive after it, so the sketch output IS the map.
 TEST_CASE("the LED map is the same map on Metal", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(LIGHTS_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kLightsWasm, registry, backend.get(), nullptr) > 0);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4535,16 +4559,16 @@ TEST_CASE("the LED map is the same map on Metal", "[effect_render]") {
 // web/test/triptych.test.ts.
 TEST_CASE("triptych keeps the row aligned over its LED strip on Metal too",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4630,16 +4654,16 @@ TEST_CASE("triptych keeps the row aligned over its LED strip on Metal too",
 // a byte.
 TEST_CASE("room_wrap opens its side panel toward the viewer on Metal",
           "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 
@@ -4732,17 +4756,17 @@ TEST_CASE("room_wrap opens its side panel toward the viewer on Metal",
 // wrong one. The shape is pinned in web/test/three_planes_walls.test.ts; what
 // is here is that Metal agrees about WHERE the light lands and in what colour.
 TEST_CASE("the impact light lands on the same walls on Metal", "[effect_render]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) {
-    SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) {
+    SKIP("No GPU device available");
   }
 
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
   sketch_executor::ModuleRegistry registry(&rt);
-  REQUIRE(bundles.loadBundleFile(CORE_WASM_PATH, registry, backend.get(), nullptr) > 1);
-  REQUIRE(bundles.loadBundleFile(LIGHTS_WASM_PATH, registry, backend.get(), nullptr) > 0);
+  REQUIRE(bundles.loadBundleFile(kCoreWasm, registry, backend.get(), nullptr) > 1);
+  REQUIRE(bundles.loadBundleFile(kLightsWasm, registry, backend.get(), nullptr) > 0);
 
   sketch_executor::SketchExecutor executor(&rt, &registry, backend.get());
 

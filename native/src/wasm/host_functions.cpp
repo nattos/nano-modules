@@ -1592,7 +1592,14 @@ static std::string map_entry_name(gpu::GPUBackend* g, const char* entry, int len
 static int32_t gpu_create_shader_module_named(wasm_exec_env_t env,
     int32_t name_ptr, int32_t name_len) {
   auto* ctx = get_ctx(env);
-  if (!ctx || !ctx->effect_instance || !ctx->gpu_backend) return -1;
+  if (!ctx || !ctx->effect_instance || !ctx->gpu_backend) {
+    // A -1 here reaches the effect as "shader compile failed" and ends as a
+    // black frame with nothing logged, so name which half is missing.
+    std::fprintf(stderr, "[shader] create_shader_module_named: no %s\n",
+                 !ctx ? "context" : (!ctx->effect_instance ? "effect instance"
+                                                           : "gpu backend"));
+    return -1;
+  }
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, name_ptr, name_len)) return -1;
   char* name = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, name_ptr));

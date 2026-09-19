@@ -72,8 +72,8 @@ RGB meanRGB(const std::vector<uint8_t>& px) {
 }  // namespace
 
 TEST_CASE("a colour crosses a wire as a vec rail", "[vec_rail]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

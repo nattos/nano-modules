@@ -10,10 +10,21 @@
 // (executor.wasm's effrt_*/gpu_* imports) calls into ANOTHER module (the effect
 // bundles' lifecycle fns). These TLS getters/setters live in WAMR's internal
 // header; declare them here (they're regular exported symbols in vmlib).
+//
+// Both the TLS and the rejection live behind OS_ENABLE_HW_BOUND_CHECK, which
+// the Windows build turns off (see the note at CMakeLists.txt's
+// WAMR_DISABLE_HW_BOUND_CHECK). There, nesting is simply allowed and these
+// symbols are not linkable.
+#ifndef NANO_WAMR_EXEC_ENV_TLS
+#define NANO_WAMR_EXEC_ENV_TLS 1
+#endif
+
+#if NANO_WAMR_EXEC_ENV_TLS
 extern "C" {
 void wasm_runtime_set_exec_env_tls(wasm_exec_env_t exec_env);
 wasm_exec_env_t wasm_runtime_get_exec_env_tls(void);
 }
+#endif
 
 namespace wasm {
 
@@ -34,6 +45,7 @@ int g_runtime_refs = 0;
 // so WAMR adopts `target`, then restore the outer one on scope exit. A no-op at
 // top level (prev == nullptr) and for same-module reentry (prev == target).
 struct NestedCallScope {
+#if NANO_WAMR_EXEC_ENV_TLS
   wasm_exec_env_t prev_;
   bool swapped_;
   explicit NestedCallScope(wasm_exec_env_t target)
@@ -44,6 +56,9 @@ struct NestedCallScope {
   ~NestedCallScope() {
     if (swapped_) wasm_runtime_set_exec_env_tls(prev_);
   }
+#else
+  explicit NestedCallScope(wasm_exec_env_t) {}
+#endif
 };
 }  // namespace
 

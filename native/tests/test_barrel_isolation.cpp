@@ -51,8 +51,8 @@ static std::string brightSketch(double brightness) {
 
 TEST_CASE("two namespaced executors isolate effect state in one shared runtime",
           "[barrel_isolation]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   // ONE runtime + effect set, shared by both executors (the dylib model).
   WasmEffectBundles bundles;
@@ -128,8 +128,8 @@ TEST_CASE("two namespaced executors isolate effect state in one shared runtime",
 // pins a BGRA8 output and compares the copy path against a direct render.
 TEST_CASE("final passthrough copies into a BGRA output without swapping R/B",
           "[barrel_isolation]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   WasmEffectBundles bundles;
   REQUIRE(bundles.init());

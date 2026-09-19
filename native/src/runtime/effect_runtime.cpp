@@ -399,7 +399,13 @@ int EffectInstance::createShaderModuleByName(const std::string& name,
                                              gpu::GPUBackend* backend) {
   if (!backend) return -1;
   auto it = shaders_by_name_.find(name);
-  if (it == shaders_by_name_.end()) return -1;
+  if (it == shaders_by_name_.end()) {
+    // Silent until now, and it looks exactly like a GPU fault downstream: the
+    // PSO comes back -1, the dispatch binds no shader, and the output is black.
+    std::fprintf(stderr, "[shader] '%s' was never registered (%zu known)\n",
+                 name.c_str(), shaders_by_name_.size());
+    return -1;
+  }
   const RegisteredShader& sh = it->second;
   // WASM effects ship SPIR-V; translate at load time to whatever this backend
   // speaks. (The native static path uses build-time pre-baked MSL via

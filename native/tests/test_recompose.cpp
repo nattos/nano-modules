@@ -160,8 +160,8 @@ static void applyBase(EffectInstance* inst) {
 }
 
 TEST_CASE("recompose: correct = 0 is a passthrough", "[recompose]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -199,8 +199,8 @@ TEST_CASE("recompose: correct = 0 is a passthrough", "[recompose]") {
 
 TEST_CASE("recompose: correction moves the centre of mass toward the power point",
           "[recompose]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -260,8 +260,8 @@ TEST_CASE("recompose: correction moves the centre of mass toward the power point
 
 TEST_CASE("recompose: spread changes the image without disturbing the balance",
           "[recompose]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -314,8 +314,8 @@ TEST_CASE("recompose: spread changes the image without disturbing the balance",
 }
 
 TEST_CASE("recompose: axis restrict moves only the enabled axis", "[recompose]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -367,8 +367,8 @@ TEST_CASE("recompose: axis restrict moves only the enabled axis", "[recompose]")
 }
 
 TEST_CASE("recompose: publishes a real imbalance measurement", "[recompose]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -430,8 +430,8 @@ TEST_CASE("recompose: publishes a real imbalance measurement", "[recompose]") {
 }
 
 TEST_CASE("recompose: holds its analysis between updates", "[recompose]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);

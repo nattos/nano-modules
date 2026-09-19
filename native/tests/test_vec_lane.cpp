@@ -62,8 +62,8 @@ std::string sketchWith(const std::string& wires, const std::string& fieldOptions
 }  // namespace
 
 TEST_CASE("a wire drives one lane of a vector field", "[vec_lane]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -177,8 +177,8 @@ TEST_CASE("a wire drives one lane of a vector field", "[vec_lane]") {
 }
 
 TEST_CASE("automation drives one lane of a vector field", "[vec_lane]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());
@@ -238,8 +238,8 @@ TEST_CASE("automation drives one lane of a vector field", "[vec_lane]") {
 TEST_CASE("a vector source reaching a scalar field takes component 0", "[vec_lane]") {
   // The "never refuse" rule in the direction the vector path doesn't cover: the
   // float branch must accept a vec rail rather than drop the wire silently.
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

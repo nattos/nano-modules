@@ -112,8 +112,8 @@ double rail(sketch_executor::SketchExecutor& ex, const char* wireId) {
 
 TEST_CASE("an `any` port resolves to the rail its producer actually carries",
           "[any_ports]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
   sketch_executor::WasmEffectBundles bundles;
   REQUIRE(bundles.init());
   EffectRuntime rt(backend.get());

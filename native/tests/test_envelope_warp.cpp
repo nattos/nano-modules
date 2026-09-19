@@ -84,8 +84,8 @@ static EffectInstance* setup(WasmHost& host, EffectRuntime& rt,
 }
 
 TEST_CASE("envelope_warp: identity, squeeze, edge fills and fold-over on Metal", "[envelope_warp]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -161,8 +161,8 @@ TEST_CASE("envelope_warp: identity, squeeze, edge fills and fold-over on Metal",
 }
 
 TEST_CASE("envelope_warp: radial mode warps by center distance on Metal", "[envelope_warp]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);

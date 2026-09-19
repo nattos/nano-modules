@@ -26,7 +26,7 @@ namespace {
 struct GpuHarness {
   std::unique_ptr<gpu::GPUBackend> backend;
   bool init() {
-    backend = gpu::createMetalBackend();
+    backend = gpu::createBackend();
     return backend && backend->getBackend() == 0;
   }
 };
@@ -93,7 +93,7 @@ TEST_CASE("a missing file fails cleanly", "[dxv]") {
 
 TEST_CASE("DXV frames decode to real pixels through the BC1 blit", "[dxv][gpu]") {
   GpuHarness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
 
   DxvSource src;
   REQUIRE(src.open(mediaPath("test_dxv.mov")));
@@ -140,7 +140,7 @@ TEST_CASE("DXV frames decode to real pixels through the BC1 blit", "[dxv][gpu]")
 
 TEST_CASE("an out-of-range frame index fails without touching the GPU", "[dxv][gpu]") {
   GpuHarness hx;
-  if (!hx.init()) SKIP("No Metal device available");
+  if (!hx.init()) SKIP("No GPU device available");
   DxvSource src;
   REQUIRE(src.open(mediaPath("test_dxv.mov")));
   const int32_t out = hx.backend->createTexture(src.info().width, src.info().height, 1);

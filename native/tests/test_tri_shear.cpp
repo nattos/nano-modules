@@ -76,8 +76,8 @@ static EffectInstance* setup(WasmHost& host, EffectRuntime& rt,
 }
 
 TEST_CASE("tri_shear shears the ramp and holds stiff", "[tri_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -132,8 +132,8 @@ TEST_CASE("tri_shear shears the ramp and holds stiff", "[tri_shear]") {
 }
 
 TEST_CASE("tri_shear size and algorithm change the discovered triangle", "[tri_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -190,8 +190,8 @@ TEST_CASE("tri_shear size and algorithm change the discovered triangle", "[tri_s
 }
 
 TEST_CASE("tri_shear obliqueness_jitter re-rolls per update", "[tri_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -243,8 +243,8 @@ TEST_CASE("tri_shear obliqueness_jitter re-rolls per update", "[tri_shear]") {
 }
 
 TEST_CASE("tri_shear: update_rate 0 never auto-updates; trigger re-analyzes", "[tri_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -294,8 +294,8 @@ TEST_CASE("tri_shear: update_rate 0 never auto-updates; trigger re-analyzes", "[
 }
 
 TEST_CASE("tri_shear per-region colour tint changes the output", "[tri_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
@@ -344,8 +344,8 @@ TEST_CASE("tri_shear per-region colour tint changes the output", "[tri_shear]") 
 }
 
 TEST_CASE("tri_shear defaults to opaque-black fills", "[tri_shear]") {
-  auto backend = gpu::createMetalBackend();
-  if (!backend || backend->getBackend() != 0) SKIP("No Metal device available");
+  auto backend = gpu::createBackend();
+  if (!backend) SKIP("No GPU device available");
 
   ParamCache cache;
   WasmHost host(cache);
