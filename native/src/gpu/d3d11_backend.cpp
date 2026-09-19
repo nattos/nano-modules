@@ -195,6 +195,10 @@ struct Resource {
   Com<ID3D11ShaderResourceView> texSrv;
   std::unordered_map<int32_t, ID3D11UnorderedAccessView*> texUavByMip;
   Com<ID3D11RenderTargetView> texRtv;
+  // The texture's actual D3D11_BIND_* flags. Views are gated on these: an
+  // ADOPTED texture is whatever its creator made it, and asking D3D11 for a
+  // view a texture wasn't bound for is a hard failure, not a soft one.
+  uint32_t bindFlags = 0;
 
   // Shader module: the HLSL source, compiled per entry point on demand.
   std::string source;
@@ -320,6 +324,7 @@ class D3D11Backend : public GPUBackend {
     if (canBeUav(f)) td.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
     if (!isBlockCompressed(f)) td.BindFlags |= D3D11_BIND_RENDER_TARGET;
 
+    r.bindFlags = td.BindFlags;
     Com<ID3D11Texture2D> tex;
     HRESULT hr = device_->CreateTexture2D(&td, nullptr, tex.put());
     if (FAILED(hr)) { hrFail("CreateTexture2D", hr); return -1; }
@@ -353,6 +358,7 @@ class D3D11Backend : public GPUBackend {
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
+    r.bindFlags = td.BindFlags;
     Com<ID3D11Texture2D> tex;
     HRESULT hr = device_->CreateTexture2D(&td, nullptr, tex.put());
     if (FAILED(hr)) { hrFail("CreateTexture2D(array)", hr); return -1; }
@@ -390,6 +396,7 @@ class D3D11Backend : public GPUBackend {
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     if (canBeUav(f)) td.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+    r.bindFlags = td.BindFlags;
 
     Com<ID3D11Texture3D> tex;
     HRESULT hr = device_->CreateTexture3D(&td, nullptr, tex.put());
@@ -890,6 +897,37 @@ class D3D11Backend : public GPUBackend {
     return out;
   }
 
+  // Adopt a texture created OUTSIDE the backend — the FFGL barrel's interop
+  // pair — and hand back a handle that binds that exact texture. The caller
+  // keeps ownership: we AddRef for as long as the handle lives and Release on
+  // release(), matching COM's rules rather than the raw-pointer transfer
+  // createTexture does internally.
+  //
+  // The width/height/format come from the texture's own desc, so a caller
+  // cannot mis-describe it. It must carry the bind flags the runtime needs
+  // (SHADER_RESOURCE, plus UNORDERED_ACCESS for anything a compute effect
+  // writes) — the views below are what fail loudly if it doesn't, since D3D11
+  // has no way to add a bind flag after creation.
+  int32_t adoptExternalTexture(void* nativeTexture) override {
+    if (!device_ || !nativeTexture) return -1;
+    auto* tex = static_cast<ID3D11Texture2D*>(nativeTexture);
+    D3D11_TEXTURE2D_DESC td{};
+    tex->GetDesc(&td);
+
+    Resource r;
+    r.kind = Kind::Texture;
+    r.format = td.Format;
+    r.width = td.Width; r.height = td.Height; r.depth = 1;
+    r.mips = td.MipLevels ? td.MipLevels : 1;
+    r.layers = td.ArraySize ? td.ArraySize : 1;
+    r.bindFlags = td.BindFlags;
+
+    tex->AddRef();
+    r.texture.p = tex;
+    makeTextureViews(r);
+    return store(std::move(r));
+  }
+
   // --- lifetime ------------------------------------------------------------
   void* nativeDevice() const override { return device_.get(); }
 
@@ -957,12 +995,15 @@ class D3D11Backend : public GPUBackend {
   }
 
   void makeTextureViews(Resource& r) {
-    HRESULT hr = device_->CreateShaderResourceView(r.texture.get(), nullptr,
-                                                   r.texSrv.put());
-    if (FAILED(hr)) hrFail("CreateShaderResourceView(texture)", hr);
-    if (!isBlockCompressed(r.format) && r.depth == 1 && r.layers == 1) {
-      hr = device_->CreateRenderTargetView(r.texture.get(), nullptr,
-                                           r.texRtv.put());
+    if (r.bindFlags & D3D11_BIND_SHADER_RESOURCE) {
+      HRESULT hr = device_->CreateShaderResourceView(r.texture.get(), nullptr,
+                                                     r.texSrv.put());
+      if (FAILED(hr)) hrFail("CreateShaderResourceView(texture)", hr);
+    }
+    if ((r.bindFlags & D3D11_BIND_RENDER_TARGET) &&
+        !isBlockCompressed(r.format) && r.depth == 1 && r.layers == 1) {
+      HRESULT hr = device_->CreateRenderTargetView(r.texture.get(), nullptr,
+                                                   r.texRtv.put());
       if (FAILED(hr)) hrFail("CreateRenderTargetView", hr);
     }
   }
@@ -970,7 +1011,8 @@ class D3D11Backend : public GPUBackend {
   /// One UAV per mip, cached. Reading mip N while writing mip M of the same
   /// texture has to touch different subresources or D3D11 unbinds one of them.
   ID3D11UnorderedAccessView* uavForMip(Resource& r, int32_t mip) {
-    if (!canBeUav(r.format)) return nullptr;
+    if (!canBeUav(r.format) || !(r.bindFlags & D3D11_BIND_UNORDERED_ACCESS))
+      return nullptr;
     auto it = r.texUavByMip.find(mip);
     if (it != r.texUavByMip.end()) return it->second;
     D3D11_UNORDERED_ACCESS_VIEW_DESC ud{};

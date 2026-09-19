@@ -29,10 +29,13 @@ A single FFGL bundle that:
 
 | Path | Role |
 |---|---|
-| `nano_barrel_plugin.mm` | The `CFFGLPlugin` subclass + all FFGL/Metal interop glue. ~700 lines now that the executor was extracted. |
+| `nano_barrel_plugin.cpp` | The `CFFGLPlugin` subclass + all FFGL/GL glue. Platform-neutral: it names no graphics API of its own. |
 | `barrel_codec.h` | Header-only base64 + the `nanobarrel://config?<base64>` wrapper format the FILE param uses. |
-| `barrel_log.h` | `BARREL_LOG(event, fmt, ...)` macro. Writes to `~/Library/Logs/NanoBarrel/run-<pid>-<ms>.log` and `os_log` subsystem `com.nano.NanoBarrel`. |
-| `InteropTexture.{h,m}` | CVPixelBuffer-backed GL↔Metal texture pair. The canonical copy — `ffgl_runner` (the headless host) borrows this same source. |
+| `barrel_log.h` | `BARREL_LOG(event, fmt, ...)` macro. Writes to the platform log dir as `run-<pid>-<ms>.log`, plus `os_log` subsystem `com.nano.NanoBarrel` (macOS) / `OutputDebugString` (Windows). |
+| `interop_texture.h` | The seam: one texture both the host's GL and the engine's graphics API can see. `ffgl_runner` and `benchmark_barrel` build against the same interface. |
+| `interop_texture_metal.mm` | CVPixelBuffer/IOSurface backed. Sharing is implicit, so `lockForGL`/`unlockForGL` are no-ops. |
+| `interop_texture_d3d11.cpp` | `WGL_NV_DX_interop2`. Sharing is explicit — GL only while locked, D3D only while not. **The one untested file in the port** (see below). |
+| `interop_texture_desc_d3d11.h` | The D3D11 descriptor, shared with the test harness so the two cannot drift. |
 | `Info.plist.in` (via parent dir) | Boilerplate bundle metadata. |
 
 ## Parameter layout (always 17)
@@ -128,17 +131,20 @@ loads those bundles at startup through WAMR.
 
 `initEffectRuntime()` (called from the ctor) bootstraps:
 
-1. `MTLCreateSystemDefaultDevice()`, `gpu::createMetalBackend()`,
-   `effect_runtime::EffectRuntime`, `ModuleRegistry`.
+1. `gpu::createBackend()` (Metal or D3D11), `effect_runtime::EffectRuntime`,
+   `ModuleRegistry`. The plugin then asks the runtime for that backend's OWN
+   device (`bridge_rt_gpu_device`) to build its interop pair against — not a
+   second device made the same way, which on D3D11 would be a different device
+   and therefore useless.
 2. `sketch_executor::WasmEffectBundles` — `init()` brings up the (refcounted,
    process-global) WAMR runtime + registers the host-import namespaces, then
    `loadBundleFile(...)` loads each bundle from the **shared resource root**'s
    `wasm/` (see below): **`core`, `lights`, `nano`, `text`, `richtext`,
    `legacy`**. Each bundle's
    `nano_module_main` runs, registering every effect it carries into the
-   `ModuleRegistry` (schema publish + SPV→MSL shader compile + PSO build, on the
-   real Metal backend). There is **no static fallback** — a load failure means a
-   broken install and is logged.
+   `ModuleRegistry` (schema publish + SPV -> MSL/HLSL translation + PSO build,
+   on the real backend). There is **no static fallback** — a load failure means
+   a broken install and is logged.
 3. `effect_runtime::textInstallDefaultFonts(...)` — fonts are a host concern (see
    *Text effects* below).
 4. `SketchExecutor` constructed against the runtime + registry + GPUBackend. The
@@ -358,3 +364,29 @@ document for that session.
 - **Macros are not yet routed by the executor.** They're persisted to
   bridge state; the editor handles mapping to sketch fields. The
   executor honors whatever state the editor mirrors.
+
+## Windows
+
+The plugin is the same source. FFGL on Windows is a plain `NanoBarrel.dll`
+exporting `plugMain`, so the entire `.bundle` / `Info.plist` / codesign / deploy
+apparatus simply does not exist there; the DLL goes into Resolume's FFGL folder
+beside ONE copy of `libbridge_server.dll`, for the same reason the bundle sits
+beside one copy of the dylib — same path, same image, one shared singleton.
+
+What is proven, under CrossOver:
+
+* `libbridge_server.dll` builds and runs — 151 effects across six bundles, a
+  D3D11 device at feature level 11_1, the WS server and its preview lanes.
+* `test_bridge_loader` loads it by hand and binds all 36 ABI symbols.
+* `test_barrel_render` drives the exact per-frame entry the plugin drives
+  (`bridge_executor_render`) with textures made from the interop's own
+  descriptor, and checks the pixels that come back.
+
+What is **not** proven, and cannot be here: the share itself.
+`wglDXOpenDeviceNV` needs one driver behind both OpenGL and D3D11, and
+CrossOver's are two separate translation layers over Metal. The first run on
+real hardware is where `interop_texture_d3d11.cpp` gets its first real
+execution; its header comment lists what to check.
+
+Not ported: `ffgl_runner` and `benchmark_barrel`. Both exist to drive the plugin
+through a real GL context, which is the part CrossOver cannot do.

@@ -42,12 +42,14 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+// opengl32.dll exports GL 1.1 and nothing later, so everything this file calls
+// past glBindTexture comes through GLEW. The FFGL SDK runs glewInit() in its
+// own InitGL, before ours.
+#include <GL/glew.h>
+#else
 #include <OpenGL/gl3.h>
-
-#import <Metal/Metal.h>
-#import <CoreVideo/CoreVideo.h>
-#import <Foundation/Foundation.h>
-#import <AppKit/AppKit.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -59,10 +61,11 @@
 #include "bridge/bridge_api.h"
 #include "platform/resource_root.h"
 
-#include <dlfcn.h>
 #include <fstream>
 
-#import "InteropTexture.h"
+#include "platform/uuid.h"
+
+#include "interop_texture.h"
 #include "barrel_log.h"
 #include "barrel_codec.h"
 
@@ -70,8 +73,8 @@
 // runtime (Metal backend + WAMR + effect bundles + executor) lives in
 // libbridge_server.dylib as a process singleton (bridge::BarrelRuntime), reached
 // purely through the C ABI in bridge_api.h. This plugin owns only its FFGL shell,
-// identity/persistence, the GL↔Metal InteropTexture pair (built against the
-// dylib's shared MTLDevice), and the bridge loader.
+// identity/persistence, the interop texture pair (built against the shared
+// runtime's own GPU device - see interop_texture.h), and the bridge loader.
 
 namespace {
 
@@ -457,8 +460,8 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     }
     int outputUsed = loader_.bridge_executor_render(
         bridge_, barrel_plugin_key_.c_str(),
-        (__bridge void*)input_interop_->getMetalTexture(),
-        (__bridge void*)output_interop_->getMetalTexture(),
+        input_interop_->getNativeTexture(),
+        output_interop_->getNativeTexture(),
         (int)W, (int)H, dt, hostT - time_start_, dirty ? 1 : 0,
         macros_snapshot.data(), (int)N_MACROS,
         barPhaseNow, hostBpm);
@@ -507,10 +510,19 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     const std::string self = nano_paths::imagePathContaining(
         reinterpret_cast<const void*>(&resourceAnchor));
     if (self.empty()) return "";
+#ifdef _WIN32
+    // No bundle to climb out of: the plugin is a plain NanoBarrel.dll dropped
+    // into Resolume's FFGL folder, and the shared runtime sits beside it. Same
+    // rule as macOS in the part that matters — ONE copy per folder, so every
+    // plugin in it dlopens the same image and shares the one singleton.
+    return nano_paths::joinPath(nano_paths::parentDir(self),
+                                "libbridge_server.dll");
+#else
     auto pos = self.rfind(".bundle");
     if (pos == std::string::npos) return "";
     return nano_paths::joinPath(nano_paths::parentDir(self.substr(0, pos)),
                                 "libbridge_server.dylib");
+#endif
   }
 
   // Start the shared bridge server as EARLY as possible — at Resolume launch,
@@ -569,12 +581,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     });
   }
 
-  static std::string generateUuid() {
-    @autoreleasepool {
-      NSString* u = [[NSUUID UUID] UUIDString];
-      return u ? std::string(u.UTF8String) : std::string();
-    }
-  }
+  static std::string generateUuid() { return nano_platform::generateUuid(); }
 
   // Register `candidate_uuid` with the shared bridge server. Returns the
   // ACTUAL key the server assigned — normally `candidate_uuid` verbatim,
@@ -737,8 +744,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       rt_ready_ = loader_.bridge_rt_acquire(bridge_, wasmDir.c_str(),
                                             fontPath.c_str()) != 0;
       if (rt_ready_) {
-        shared_device_ =
-            (__bridge id<MTLDevice>)loader_.bridge_rt_gpu_device(bridge_);
+        shared_device_ = loader_.bridge_rt_gpu_device(bridge_);
       }
       BARREL_LOG("setupBridge", "rt_acquire=%d wasmDir=%s device=%p",
                  rt_ready_ ? 1 : 0, wasmDir.c_str(), (void*)shared_device_);
@@ -766,7 +772,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (rt_ready_ && loader_.bridge_rt_release)
       loader_.bridge_rt_release(bridge_);
     rt_ready_ = false;
-    shared_device_ = nil;
+    shared_device_ = nullptr;
     if (loader_.bridge_unregister_plugin)
       loader_.bridge_unregister_plugin(bridge_, barrel_plugin_key_.c_str());
     if (loader_.bridge_release)
@@ -910,22 +916,19 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     if (!input_interop_ ||
         input_interop_->getWidth() != inW ||
         input_interop_->getHeight() != inH) {
-      input_interop_ = std::make_unique<InteropTexture>(
-          shared_device_, [NSOpenGLContext currentContext], true,
-          MTLPixelFormatBGRA8Unorm, inW, inH);
+      input_interop_ = createInteropTexture(shared_device_, inW, inH);
+      if (input_interop_ && !input_interop_->valid()) input_interop_.reset();
     }
     if (!output_interop_ ||
         output_interop_->getWidth() != outW ||
         output_interop_->getHeight() != outH) {
-      output_interop_ = std::make_unique<InteropTexture>(
-          shared_device_, [NSOpenGLContext currentContext], true,
-          MTLPixelFormatBGRA8Unorm, outW, outH);
+      output_interop_ = createInteropTexture(shared_device_, outW, outH);
+      if (output_interop_ && !output_interop_->valid()) output_interop_.reset();
     }
   }
 
   // -- GL bridge helpers ----------------------------------------------
-  // Blit the host's GL input texture into the input InteropTexture's
-  // GL-side FBO. Zero shader work — just glBlitFramebuffer between two
+  // Blit the host's GL input texture into the input interop's GL-side FBO. Zero shader work — just glBlitFramebuffer between two
   // FBOs. Handles both GL_TEXTURE_2D and GL_TEXTURE_RECTANGLE inputs;
   // glFramebufferTexture2D's target argument is the texture target.
   //
@@ -1008,6 +1011,11 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       return;
     }
     input_attach_failed_ = false;
+    // GL may only touch a shared texture while it is locked, and the engine may
+    // only touch it while it is not. Both blits are therefore bracketed, and
+    // the unlock has to happen BEFORE bridge_executor_render, not at the end of
+    // the frame. No-op where the share is implicit (see interop_texture.h).
+    input_interop_->lockForGL();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, input_interop_->getOpenGLFBO());
     glBlitFramebuffer(0, 0, (GLint)pInput->Width, (GLint)pInput->Height,
                       0, (GLint)input_interop_->getHeight(),
@@ -1015,28 +1023,37 @@ class NanoBarrelPlugin : public CFFGLPlugin {
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevRead);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
+    // The flush is what completes the cross-API ordering on the Apple path: the
+    // backend commits its frame waitUntilSCHEDULED, leaving the driver to order
+    // IOSurface access by submission.
     glFlush();
+    input_interop_->unlockForGL();
   }
 
-  // Blit the output InteropTexture back to the host FBO (Y-flipped so
-  // GL bottom-left and Metal top-left line up).
+  // Blit the output interop back to the host FBO (Y-flipped so GL's
+  // bottom-left origin and the engine's top-left origin line up).
   void blitInteropToGlOutput(ProcessOpenGLStruct* pGL, bool outputUsed) {
     if (!output_interop_) return;
     const unsigned int W = currentViewport.width;
     const unsigned int H = currentViewport.height;
 
+    // Whichever interop we are about to read from has to be locked for GL
+    // first. On a passthrough frame that is the INPUT one, not the output.
+    InteropTexture* src = outputUsed ? output_interop_.get() : input_interop_.get();
+    if (!src) return;
+
     GLint prevRead = 0, prevDraw = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER,
-                      outputUsed ? output_interop_->getOpenGLFBO()
-                                 : input_interop_->getOpenGLFBO());
+    src->lockForGL();
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src->getOpenGLFBO());
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, pGL->HostFBO);
     glBlitFramebuffer(0, (GLint)H, (GLint)W, 0,
                       0, 0, (GLint)W, (GLint)H,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevRead);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
+    src->unlockForGL();
   }
 
   // "Alive, but not rendering" marker: a green corner square, drawn on the
@@ -1159,7 +1176,7 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // is the dylib's MTLDevice that our InteropTexture pair is built against (it
   // MUST match the device the executor renders on). Both cleared in teardownBridge.
   bool                             rt_ready_ = false;
-  id<MTLDevice>                    shared_device_ = nil;
+  void*                            shared_device_ = nullptr;
 
   // GL ↔ Metal interop (the only Metal the barrel itself owns).
   std::unique_ptr<InteropTexture>  input_interop_;

@@ -62,7 +62,7 @@
 #include "sketch/wasm_bundles.h"
 #include "sketch/wasm_executor_driver.h"
 
-#include "plugin/nano_barrel/InteropTexture.h"
+#include "plugin/nano_barrel/interop_texture.h"
 
 // Effect entry points (these come out of the effects_native bundle the
 // barrel links against). Effects load as WASM bundles (core.wasm) — the same
@@ -693,12 +693,11 @@ int main(int argc, char** argv) {
     DestFbo hostFbo = makeDestFbo(args.width, args.height);
 
     // -- Interop pair -----------------------------------------------
-    auto inputInterop = std::make_unique<InteropTexture>(
-        device, glCtx, true, MTLPixelFormatBGRA8Unorm,
-        args.width, args.height);
-    auto outputInterop = std::make_unique<InteropTexture>(
-        device, glCtx, true, MTLPixelFormatBGRA8Unorm,
-        args.width, args.height);
+    // The factory builds against the CURRENT GL context, which glCtx is.
+    auto inputInterop = createInteropTexture((__bridge void*)device,
+                                             args.width, args.height);
+    auto outputInterop = createInteropTexture((__bridge void*)device,
+                                              args.width, args.height);
 
     // -- Sketch JSON -------------------------------------------------
     json instanceState = json::object();
@@ -746,9 +745,9 @@ int main(int argc, char** argv) {
       auto t1 = clock_type::now();
 
       int32_t inputHandle = gpu->adoptExternalTexture(
-          (__bridge void*)inputInterop->getMetalTexture());
+          inputInterop->getNativeTexture());
       int32_t outputHandle = gpu->adoptExternalTexture(
-          (__bridge void*)outputInterop->getMetalTexture());
+          outputInterop->getNativeTexture());
 
       // dirty only on the first frame — the sketch is constant, so steady state
       // reuses the cached plan (both executors gate the plan rebuild on dirty).

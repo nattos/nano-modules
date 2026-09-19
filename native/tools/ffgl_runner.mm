@@ -7,7 +7,7 @@
 // — same shape; simplified output (PNG file instead of base64 JSON so
 // it's easy to open from the terminal).
 
-#import "../src/plugin/nano_barrel/InteropTexture.h"
+#include "../src/plugin/nano_barrel/interop_texture.h"
 #import <AppKit/AppKit.h>
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
@@ -543,9 +543,8 @@ int main(int argc, const char* argv[]) {
     std::vector<std::unique_ptr<InteropTexture>> outputInterops;
     std::vector<GLuint> fbos;
     for (int n = 0; n < numInstances; ++n) {
-      outputInterops.push_back(std::make_unique<InteropTexture>(
-          device, context, /*createOpenGLFBO=*/ true,
-          MTLPixelFormatBGRA8Unorm, width, height));
+      outputInterops.push_back(
+          createInteropTexture((__bridge void*)device, width, height));
       fbos.push_back(outputInterops.back()->getOpenGLFBO());
       glBindFramebuffer(GL_FRAMEBUFFER, fbos.back());
       if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -589,9 +588,9 @@ int main(int argc, const char* argv[]) {
       glBindTexture(GL_TEXTURE_2D, 0);
       std::cerr << "[ffgl_runner] input target: GL_TEXTURE_2D (non-Resolume host)\n";
     } else {
-      inputInterop = std::make_unique<InteropTexture>(
-          device, context, /*createOpenGLFBO=*/ false,
-          MTLPixelFormatBGRA8Unorm, width, height);
+      // (An FBO comes with it now and goes unused here; this path uploads
+      // through the texture name instead.)
+      inputInterop = createInteropTexture((__bridge void*)device, width, height);
       glBindTexture(GL_TEXTURE_RECTANGLE, inputInterop->getOpenGLTexture());
       glTexSubImage2D(GL_TEXTURE_RECTANGLE, 0, 0, 0, width, height,
                       GL_RGBA, GL_UNSIGNED_BYTE, inputPixels.data());

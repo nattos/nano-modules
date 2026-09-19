@@ -846,8 +846,21 @@ struct BarrelRuntime::Impl {
 };
 
 BarrelRuntime& BarrelRuntime::instance() {
-  static BarrelRuntime inst;
-  return inst;
+  // Intentionally leaked, for the same reason MidiHost is (see its instance()).
+  // A Meyers singleton destructs from __cxa_finalize_ranges at exit(), and the
+  // teardown path it would run hangs there: stopFanoutLanes() -> WsServer::stop()
+  // -> ix::SocketServer::stop() -> thread::join(), on a listener thread that
+  // never comes back once the runtime is going away underneath it. A process
+  // that got as far as acquiring the runtime then simply never exits.
+  //
+  // Nothing is lost by skipping it. release() already declines to tear the
+  // runtime down (the singleton is meant to live for the process), so the
+  // destructor's only job was to stop threads the OS is about to reclaim
+  // anyway. Not leaking it is what cost us: it is why a bare
+  // `test_barrel_render` hung after its last assertion passed, and it is what
+  // a host would do on quit with a barrel loaded.
+  static BarrelRuntime* inst = new BarrelRuntime();
+  return *inst;
 }
 
 BarrelRuntime::BarrelRuntime() : impl_(std::make_unique<Impl>()) {}

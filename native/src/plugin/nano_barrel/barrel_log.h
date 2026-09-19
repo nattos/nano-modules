@@ -1,11 +1,15 @@
 // barrel_log.h — sibling of the probe_log headers, for NanoBarrel.
 //
-// One line per event to ~/Library/Logs/NanoBarrel/run-<pid>-<unixms>.log
-// AND os_log subsystem com.nano.NanoBarrel. Monotonic timestamp from
-// plugin construction; per-instance frame counter set in ProcessOpenGL.
+// One line per event to the platform log dir as run-<pid>-<unixms>.log, and to
+// whatever a GUI-hosted plugin can be read with live: os_log on macOS
+// (subsystem com.nano.NanoBarrel), OutputDebugString on Windows. Monotonic
+// timestamp from plugin construction; per-instance frame counter set in
+// ProcessOpenGL.
 
 #pragma once
 
+#include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -17,29 +21,33 @@
 #include <sys/stat.h>
 
 #include "platform/paths.h"
-#include <unistd.h>
 
-#include <mach/mach_time.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
 #include <os/log.h>
+#endif
 
 namespace nano_barrel_log {
 
+// steady_clock, not mach_absolute_time: the same monotonic tick with the same
+// resolution, minus a platform branch.
+inline double steady_ms() {
+  using clock = std::chrono::steady_clock;
+  return std::chrono::duration<double, std::milli>(clock::now().time_since_epoch()).count();
+}
+
 inline double now_ms_since_start(double start_ms = -1) {
-  static mach_timebase_info_data_t tb = {0, 0};
-  if (tb.denom == 0) mach_timebase_info(&tb);
-  uint64_t t = mach_absolute_time();
-  double ms = (double)t * tb.numer / tb.denom / 1e6;
+  const double ms = steady_ms();
   static double start = ms;
   if (start_ms >= 0) start = start_ms;
   return ms - start;
 }
 
-inline double now_ms() {
-  static mach_timebase_info_data_t tb = {0, 0};
-  if (tb.denom == 0) mach_timebase_info(&tb);
-  uint64_t t = mach_absolute_time();
-  return (double)t * tb.numer / tb.denom / 1e6;
-}
+inline double now_ms() { return steady_ms(); }
 
 struct Context {
   int frame = 0;
@@ -60,10 +68,20 @@ inline FILE*& file() {
   return f;
 }
 
+// The live channel a GUI host can be watched on, where there is no console:
+// Console.app on macOS, a debugger or DebugView on Windows.
+#ifdef _WIN32
+inline void log_live(const char* line) {
+  OutputDebugStringA(line);
+  OutputDebugStringA("\n");
+}
+#else
 inline os_log_t& oslog() {
   static os_log_t l = os_log_create("com.nano.NanoBarrel", "barrel");
   return l;
 }
+inline void log_live(const char* line) { os_log(oslog(), "%{public}s", line); }
+#endif
 
 inline void ensure_open() {
   if (file()) return;
@@ -100,7 +118,7 @@ inline void log_line(const char* event, const char* fmt, ...) {
     fprintf(file(), "%s\n", line);
     fflush(file());
   }
-  os_log(oslog(), "%{public}s", line);
+  log_live(line);
 }
 
 inline std::string redact(const char* s, size_t n_chars = 80) {

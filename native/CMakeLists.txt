@@ -35,6 +35,15 @@ else()
   set(NANO_HAS_GPU_BACKEND FALSE)
 endif()
 
+# The platform half of the GL interop (src/plugin/nano_barrel/interop_texture.h)
+# — the one piece of the FFGL barrel that has no headless test, because it is
+# the share between the host's OpenGL and the engine's graphics API.
+if(APPLE)
+  set(NANO_INTEROP_TEXTURE src/plugin/nano_barrel/interop_texture_metal.mm)
+else()
+  set(NANO_INTEROP_TEXTURE src/plugin/nano_barrel/interop_texture_d3d11.cpp)
+endif()
+
 # The platform half of the native MIDI host (src/midi/midi_port_backend.h).
 # Everything else about MIDI — matching, drivers, the hardware/sim/alias merge —
 # is neutral C++ in midi_host.cpp. Windows gets the null backend, so a barrel
@@ -203,19 +212,57 @@ target_link_libraries(spv_translate PUBLIC spirv-cross-msl spirv-cross-hlsl)
 # GIT_SHALLOW is off deliberately: shallow fetch of a bare commit hash is not
 # guaranteed to work, and the repo is small.
 #
-# Only the FFGL plugin targets need this, and those are macOS-only today. Off
-# Windows the SDK additionally wants GLEW (its CMakeLists does
-# `if(NOT APPLE) find_package(GLEW REQUIRED)`), so fetching it during an
-# engine-only Windows build costs a dependency for something nothing links.
-option(NANO_BUILD_FFGL "Fetch the FFGL SDK and build the plugin bundles" ${APPLE})
+# Only the FFGL plugin targets need this, so an engine-only build can skip the
+# fetch entirely.
+option(NANO_BUILD_FFGL "Fetch the FFGL SDK and build the plugin bundles"
+       ${NANO_HAS_GPU_BACKEND})
 if(NANO_BUILD_FFGL)
-  set(FFGL_BUILD_EXAMPLE_PLUGINS OFF CACHE BOOL "" FORCE)
+  # SOURCE_SUBDIR names a directory that does not exist, which makes
+  # MakeAvailable download and populate WITHOUT add_subdirectory. We then build
+  # the SDK ourselves below. The SDK is two files, and its own CMakeLists does
+  # `if(NOT APPLE) find_package(GLEW REQUIRED)` against a GLEW that no
+  # cross-compile has installed — it ships an MSVC-ABI glew32s.lib in deps/ and
+  # nothing else. Building it here instead means Windows and macOS compile the
+  # same two files the same way, with the GLEW question answered once, below.
   FetchContent_Declare(
     ffgl
     GIT_REPOSITORY https://github.com/resolume/ffgl.git
     GIT_TAG b1afaf9399ff4ed75ff42611ce99db68a124869b
+    SOURCE_SUBDIR no-cmake-here
   )
   FetchContent_MakeAvailable(ffgl)
+
+  # GLEW. Apple's GL headers declare everything the SDK uses, so only Windows
+  # needs it — there opengl32.dll exports GL 1.1 and nothing later, so every
+  # entry point past that is a wglGetProcAddress lookup, which is precisely
+  # what GLEW is. The release zip ships the generated sources (the git repo
+  # does not: it would have to be run through auto/ first).
+  if(NOT APPLE)
+    FetchContent_Declare(
+      glew
+      URL https://github.com/nigels-com/glew/releases/download/glew-2.2.0/glew-2.2.0.zip
+      URL_HASH SHA256=a9046a913774395a095edcc0b0ac2d81c3aacca61787b39839b941e9be14e0d4
+      SOURCE_SUBDIR no-cmake-here
+    )
+    FetchContent_MakeAvailable(glew)
+    add_library(nano_glew STATIC ${glew_SOURCE_DIR}/src/glew.c)
+    target_include_directories(nano_glew PUBLIC ${glew_SOURCE_DIR}/include)
+    # PUBLIC: glew.h itself keys off GLEW_STATIC to drop the dllimport
+    # decorations, so every consumer must see it too or the link fails on
+    # __imp_ prefixes.
+    target_compile_definitions(nano_glew PUBLIC GLEW_STATIC)
+    target_link_libraries(nano_glew PUBLIC opengl32)
+    add_library(GLEW::GLEW ALIAS nano_glew)
+  endif()
+
+  add_library(ffgl_sdk STATIC ${ffgl_SOURCE_DIR}/source/lib/FFGLSDK.cpp)
+  add_library(ffgl::sdk ALIAS ffgl_sdk)
+  target_include_directories(ffgl_sdk PUBLIC ${ffgl_SOURCE_DIR}/source/lib)
+  target_compile_features(ffgl_sdk PUBLIC cxx_std_11)
+  target_compile_options(ffgl_sdk PRIVATE -Wno-attributes -Wno-deprecated-declarations)
+  if(NOT APPLE)
+    target_link_libraries(ffgl_sdk PUBLIC nano_glew)
+  endif()
 endif()
 
 # --- Canvas Renderer library ---
@@ -434,6 +481,44 @@ add_library(bridge_loader STATIC
   src/plugin/bridge_loader.cpp
 )
 target_include_directories(bridge_loader PUBLIC ${CMAKE_SOURCE_DIR}/src)
+
+# The FFGL barrel's render path through the shared library's C ABI — the one
+# path nothing else covers, because every other GPU test links the engine
+# directly and so skips the library boundary, the state document and
+# BarrelRuntime entirely. Needs a GPU backend and the built bundles.
+if(NANO_HAS_GPU_BACKEND AND TARGET Catch2::Catch2WithMain AND
+   EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+  if(APPLE)
+    set(_barrel_probe_tex tests/barrel_probe_tex_metal.mm)
+  else()
+    set(_barrel_probe_tex tests/barrel_probe_tex_d3d11.cpp)
+  endif()
+  add_executable(test_barrel_render tests/test_barrel_render.cpp ${_barrel_probe_tex})
+  target_link_libraries(test_barrel_render PRIVATE bridge_loader Catch2::Catch2WithMain)
+  if(APPLE)
+    target_link_libraries(test_barrel_render PRIVATE "-framework Metal" "-framework Foundation")
+  else()
+    # The probe harness makes its textures with the interop's own descriptor
+    # (plugin/nano_barrel/interop_texture_desc_d3d11.h), so it needs src/ on
+    # its include path as well as tests/.
+    target_include_directories(test_barrel_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_barrel_render PRIVATE d3d11)
+  endif()
+  # It loads the library at runtime rather than linking it (as the plugin
+  # does), so the only dependency is that the library exists by then.
+  add_dependencies(test_barrel_render bridge_server)
+  target_compile_definitions(test_barrel_render PRIVATE
+    BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
+    BARREL_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
+  # Each case builds the whole shared runtime, which binds a WS server and
+  # eight preview fanout lanes. Serial so three of them don't fight over the
+  # ports under `ctest -j`, and off the default 8081 so none of them fights a
+  # live Resolume or a running editor either.
+  catch_discover_tests(test_barrel_render PROPERTIES
+    RUN_SERIAL TRUE
+    ENVIRONMENT "NANO_BRIDGE_PORT=8171"
+    TIMEOUT 120)
+endif()
 
 # Pass built dylib path to bridge loader test
 add_executable(test_bridge_loader tests/test_bridge_loader.cpp)
@@ -858,7 +943,7 @@ if(APPLE)
   # audio_bus fan-out. Live-only (nothing persisted).
   add_library(NanoLooper MODULE
     src/plugin/looper_plugin.mm
-    src/plugin/nano_barrel/InteropTexture.m
+    ${NANO_INTEROP_TEXTURE}
     src/plugin/bridge_loader.cpp
     src/plugin/synth.mm
   )
@@ -1771,6 +1856,52 @@ if(NANO_HAS_GPU_BACKEND)
     catch_discover_tests(test_executor_wasm)
   endif()
 
+  # --- NanoBarrel.dll (Windows) ---
+  # The same plugin, minus everything macOS needed and Windows does not. No
+  # .bundle, no Info.plist, no codesign, no deploy stamp: FFGL on Windows is a
+  # plain DLL exporting plugMain, which the SDK already declares
+  # __declspec(dllexport) __stdcall. It goes into Resolume's FFGL folder beside
+  # ONE copy of libbridge_server.dll, exactly as the bundle sits beside one copy
+  # of the dylib -- same path, same image, one shared singleton.
+  #
+  # The headless hosts (ffgl_runner, benchmark_barrel) do NOT come across.
+  # Their whole job is to drive the plugin through a real GL context, which is
+  # the part CrossOver cannot do. tests/test_barrel_render.cpp covers the engine
+  # side of the seam instead, without GL.
+  if(WIN32)
+    add_library(NanoBarrel MODULE
+      src/plugin/nano_barrel/nano_barrel_plugin.cpp
+      ${NANO_INTEROP_TEXTURE}
+      src/plugin/bridge_loader.cpp
+    )
+    add_dependencies(NanoBarrel bridge_server)
+    target_include_directories(NanoBarrel PRIVATE
+      ${CMAKE_SOURCE_DIR}/src
+      ${CMAKE_SOURCE_DIR}/src/plugin/nano_barrel
+    )
+    # Thin client, same as the bundle: NO engine. rpcrt4 is UuidCreate (the
+    # persisted instance identity), d3d11 is the interop texture; opengl32 and
+    # GLEW arrive through ffgl::sdk.
+    target_link_libraries(NanoBarrel PRIVATE
+      miniz
+      nlohmann_json::nlohmann_json
+      ffgl::sdk
+      d3d11
+      rpcrt4
+    )
+    target_compile_options(NanoBarrel PRIVATE -Wno-attributes -Wno-deprecated-declarations)
+    # A MODULE library picks up the GNU toolchain's "lib" prefix; Resolume
+    # looks for NanoBarrel.dll.
+    set_target_properties(NanoBarrel PROPERTIES PREFIX "" SUFFIX ".dll")
+    # The runtime beside the plugin, the way NanoBarrelDeploy stages the dylib.
+    add_custom_command(TARGET NanoBarrel POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "$<TARGET_FILE:bridge_server>"
+              "$<TARGET_FILE_DIR:NanoBarrel>/libbridge_server.dll"
+      VERBATIM)
+  endif()
+
+
   # --- The FFGL plugin and its hosts (Apple only) ---
   # Everything below is Objective-C++ over the Metal barrel: the plugin bundle,
   # the two headless hosts that drive it and the benchmarks. A Windows port is
@@ -1784,7 +1915,7 @@ if(NANO_HAS_GPU_BACKEND)
   # GL↔Metal InteropTexture from the nano_barrel plugin source.
   add_executable(ffgl_runner
     tools/ffgl_runner.mm
-    src/plugin/nano_barrel/InteropTexture.m
+    ${NANO_INTEROP_TEXTURE}
   )
   target_include_directories(ffgl_runner PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -1844,8 +1975,8 @@ if(NANO_HAS_GPU_BACKEND)
   # WasmEffectBundles. InteropTexture supplies the GL↔Metal bridge.
   set(FFGL_BUNDLE_LINK_FLAGS_BARREL "-undefined dynamic_lookup")
   add_library(NanoBarrel MODULE
-    src/plugin/nano_barrel/nano_barrel_plugin.mm
-    src/plugin/nano_barrel/InteropTexture.m
+    src/plugin/nano_barrel/nano_barrel_plugin.cpp
+    ${NANO_INTEROP_TEXTURE}
     src/plugin/bridge_loader.cpp
   )
   # The shared dylib is dlopen'd at runtime, not linked — but it must be built
@@ -1966,7 +2097,7 @@ if(NANO_HAS_GPU_BACKEND)
   # micro-benchmark optimizations in isolation.
   add_executable(benchmark_barrel
     tests/benchmark_barrel.mm
-    src/plugin/nano_barrel/InteropTexture.m
+    ${NANO_INTEROP_TEXTURE}
   )
   target_include_directories(benchmark_barrel PRIVATE
     ${CMAKE_SOURCE_DIR}/src

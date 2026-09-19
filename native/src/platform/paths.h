@@ -20,6 +20,21 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+// This header needs MultiByteToWideChar/WideCharToMultiByte and CP_UTF8, all
+// of which <winnls.h> puts behind NONLS. A TU that reached windows.h FIRST with
+// NONLS set -- which the FFGL SDK's headers do, and the barrel is how this was
+// found -- ran winnls.h with its whole body skipped and its include guard left
+// closed, so including it again normally is a no-op and the names never appear.
+//
+// CP_UTF8's absence is the reliable signal that this happened, and since
+// nothing was declared on that pass, reopening the header now cannot duplicate
+// anything. In the ordinary case the body was emitted, CP_UTF8 exists, and none
+// of this runs.
+#ifndef CP_UTF8
+#undef NONLS
+#undef _WINNLS_
+#include <winnls.h>
+#endif
 #else
 #include <dlfcn.h>
 #include <sys/stat.h>

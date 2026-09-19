@@ -56,7 +56,7 @@
 #include "platform/resource_root.h"
 #include "plugin/synth.h"
 
-#import "nano_barrel/InteropTexture.h"
+#include "nano_barrel/interop_texture.h"
 
 namespace {
 
@@ -251,8 +251,8 @@ class LooperPlugin : public CFFGLPlugin {
     const double hostBpm = this->bpm > 0.0f ? (double)this->bpm : 120.0;
     int outputUsed = loader_.bridge_executor_render(
         bridge_, barrel_plugin_key_.c_str(),
-        (__bridge void*)input_interop_->getMetalTexture(),
-        (__bridge void*)output_interop_->getMetalTexture(),
+        input_interop_->getNativeTexture(),
+        output_interop_->getNativeTexture(),
         (int)W, (int)H, dt, hostT - time_start_, dirty ? 1 : 0,
         nullptr, 0, (double)this->barPhase, hostBpm);
 
@@ -458,14 +458,10 @@ class LooperPlugin : public CFFGLPlugin {
   void ensureInterop(int inW, int inH, int outW, int outH) {
     if (!shared_device_) return;
     if (!input_interop_ || input_interop_->getWidth() != inW || input_interop_->getHeight() != inH) {
-      input_interop_ = std::make_unique<InteropTexture>(
-          shared_device_, [NSOpenGLContext currentContext], true,
-          MTLPixelFormatBGRA8Unorm, inW, inH);
+      input_interop_ = createInteropTexture((__bridge void*)shared_device_, inW, inH);
     }
     if (!output_interop_ || output_interop_->getWidth() != outW || output_interop_->getHeight() != outH) {
-      output_interop_ = std::make_unique<InteropTexture>(
-          shared_device_, [NSOpenGLContext currentContext], true,
-          MTLPixelFormatBGRA8Unorm, outW, outH);
+      output_interop_ = createInteropTexture((__bridge void*)shared_device_, outW, outH);
     }
   }
 
