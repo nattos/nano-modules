@@ -173,7 +173,10 @@ using PFN_D3DCompile_t = HRESULT(WINAPI*)(
 class D3D11Backend : public GPUBackend {
  public:
   D3D11Backend() { init(); }
-  ~D3D11Backend() override { resources_.clear(); }
+  ~D3D11Backend() override {
+    resources_.clear();
+    for (auto& kv : blobCache_) if (kv.second) kv.second->Release();
+  }
 
   bool ok() const { return device_.get() != nullptr; }
 
@@ -761,9 +764,20 @@ class D3D11Backend : public GPUBackend {
     ctx_->RSSetScissorRects(1, &sc);
   }
 
+  // FXC is slow, and the same source gets compiled repeatedly: every effect
+  // instance builds its own PSOs, and an effect with six entry points in one
+  // shader compiles that source six times. The suite spends most of its wall
+  // clock here under wine. Cache on (source, entry, target) — the compiler is
+  // a pure function of exactly those three.
   bool compile(const std::string& src, const std::string& entry,
                const char* target, Com<ID3DBlob>& out) {
     if (!compile_) return false;
+    const std::string key = entry + '\0' + target + '\0' + src;
+    if (auto it = blobCache_.find(key); it != blobCache_.end()) {
+      out.p = it->second;
+      out.p->AddRef();
+      return true;
+    }
     Com<ID3DBlob> err;
     HRESULT hr = compile_(src.data(), src.size(), "nano", nullptr, nullptr,
                           entry.c_str(), target, 0, 0, out.put(), err.put());
@@ -775,6 +789,8 @@ class D3D11Backend : public GPUBackend {
       if (strictMode()) std::abort();
       return false;
     }
+    out.p->AddRef();              // the cache holds a reference of its own
+    blobCache_.emplace(key, out.p);
     return true;
   }
 
@@ -879,6 +895,7 @@ class D3D11Backend : public GPUBackend {
   PFN_D3DCompile_t compile_ = nullptr;
   std::vector<Resource> resources_;
   std::vector<int32_t> free_;
+  std::unordered_map<std::string, ID3DBlob*> blobCache_;
   int32_t passCounter_ = 0;
   int32_t surface_ = -1;
   uint32_t surfaceW_ = 0, surfaceH_ = 0;
