@@ -9,11 +9,17 @@
 #   <root>/wasm/*-<arch>.aot     per-arch sidecars, native only
 #   <root>/fonts/default.ttf     the text service's primary face, native side
 #   <root>/ffgl/                 NanoBarrel.bundle + libbridge_server.dylib
+#   <root>/ffgl-win/             NanoBarrel.dll + libbridge_server.dll
 #
 # In a dev tree the root IS the repo's build/, which is where the wasm already
 # lands and where the plugin finds it by walking up from its own image — so this
-# script only has to add app/ and, on macOS, ffgl/. The packaging step
-# (electron-builder) ships the same layout under Contents/Resources/nano.
+# script only has to add app/ and the plugin directories. The packaging step
+# (electron-builder) ships the same layout under Contents/Resources/nano, and
+# maps ONE of the two plugin directories to nano/ffgl per target.
+#
+# ffgl-win/ is staged on macOS too, because the Windows package cross-builds
+# from here: the Windows barrel is a cross-compiled artifact of this same tree
+# (native/build-win), not something a Windows machine produces.
 #
 # Run after `npm run build` (from web/). Idempotent.
 #
@@ -81,6 +87,35 @@ if [ "${SKIP_FFGL:-0}" != "1" ] && [ "$(uname -s)" = "Darwin" ]; then
     bash "$repo/native/tools/codesign_bundle.sh" "$id" "$root/ffgl/NanoBarrel.bundle" >/dev/null 2>&1 || true
   else
     echo "note: no built NanoBarrel.bundle — staging the app without the plugin"
+  fi
+fi
+
+# The WINDOWS plugin, into its own directory. Kept apart from ffgl/ rather than
+# merged: the mac package copies ffgl/ wholesale, and a stray pair of .dll files
+# inside a signed .app is 30 MB of something the notary has to be told about.
+# electron-builder's win block maps this to nano/ffgl, so the layout the plugin
+# walks up into is identical on both platforms.
+#
+# No .aot sidecars go with it: the Windows build sets NANO_WASM_AOT=OFF because
+# a sidecar is per-ABI as well as per-arch, so the barrel loads the portable
+# .wasm there. Nothing to stage, nothing to keep in step.
+if [ "${SKIP_FFGL:-0}" != "1" ]; then
+  wb="$repo/native/build-win"
+  if [ -f "$wb/NanoBarrel.dll" ] && [ -f "$wb/libbridge_server.dll" ]; then
+    mkdir -p "$root/ffgl-win"
+    cp -f "$wb/NanoBarrel.dll" "$root/ffgl-win/NanoBarrel.dll"
+    cp -f "$wb/libbridge_server.dll" "$root/ffgl-win/libbridge_server.dll"
+    # Same strip the standalone diag package does — these carry full DWARF
+    # otherwise, and libbridge_server.dll alone is 29 MB of it.
+    strip_bin="$(command -v llvm-strip || echo /opt/homebrew/opt/llvm/bin/llvm-strip)"
+    if [ -x "$strip_bin" ]; then
+      "$strip_bin" --strip-all "$root/ffgl-win/NanoBarrel.dll" 2>/dev/null || true
+      "$strip_bin" --strip-all "$root/ffgl-win/libbridge_server.dll" 2>/dev/null || true
+    fi
+  else
+    # Not an error on a mac-only build, but `npm run package:win` needs it.
+    echo "note: no built native/build-win/NanoBarrel.dll — a Windows package"
+    echo "      from this root would carry no plugin (Live mode offline only)"
   fi
 fi
 

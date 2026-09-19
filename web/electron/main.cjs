@@ -177,8 +177,10 @@ function buildMenu() {
           { type: 'separator' },
           {
             // Pointing Resolume at the plugin is otherwise a hunt through an
-            // opaque app bundle.
-            label: 'Reveal FFGL Plugin in Finder',
+            // opaque app bundle (or, on Windows, through Program Files).
+            label: process.platform === 'darwin'
+              ? 'Reveal FFGL Plugin in Finder'
+              : 'Show FFGL Plugin in Explorer',
             click: () => shell.showItemInFolder(plugin),
           },
         ] : []),

@@ -7,11 +7,13 @@ no rust, no dxc, no wasi-sdk on the user's machine. macOS and Windows.
 |---|---|---|
 | Effect IDE, Playground, Arrangement | ✅ | ✅ |
 | Live mode, offline/read-only | ✅ | ✅ |
-| NanoBarrel FFGL plugin + Resolume | ✅ | ❌ |
+| NanoBarrel FFGL plugin + Resolume | ✅ | ✅ |
 
-Windows is **app-only**. The barrel is Metal + Objective-C++ — one
-`GPUBackend`, and `native/CMakeLists.txt` declares `OBJCXX`, so the native tree
-will not even configure off macOS. See `WINDOWS.md`.
+Both platforms ship the plugin. The Windows one is `NanoBarrel.dll` on the
+D3D11 backend — a plain DLL exporting `plugMain`, with no bundle, plist or
+codesign step — and it is **cross-compiled from macOS**, like the rest of the
+Windows package. `native/CMakeLists.txt` still declares `OBJCXX`, so the native
+tree does not configure *on* Windows; see `WINDOWS.md`.
 
 ---
 
@@ -22,8 +24,13 @@ will not even configure off macOS. See `WINDOWS.md`.
 SERVED_ONLY=1 bash web/scripts/fetch_fonts.sh
 bash native/wasm_modules/build_all.sh
 
-# 2. The native plugin (macOS only).
+# 2. The native plugin. Both are built from macOS; the Windows one needs
+#    NANO_BUILD_FFGL explicitly, because the option's value is cached.
 cmake --build native/build
+cmake -B native/build-win \
+      -DCMAKE_TOOLCHAIN_FILE=native/cmake/toolchain-win-zig.cmake \
+      -DCMAKE_BUILD_TYPE=Release -DNANO_BUILD_FFGL=ON
+cmake --build native/build-win --target NanoBarrel bridge_server
 
 # 3. The web app, staged into the shared resource root.
 cd web
@@ -52,8 +59,10 @@ One directory serves the Electron renderer *and* the native FFGL plugin:
 <root>/wasm/*.wasm             effect bundles          (both)
 <root>/wasm/*-<arch>.aot       AOT sidecars            (native only)
 <root>/fonts/default.ttf       primary text face       (native only)
-<root>/ffgl/NanoBarrel.bundle        the plugin        (macOS only)
+<root>/ffgl/NanoBarrel.bundle        the plugin        (macOS package)
 <root>/ffgl/libbridge_server.dylib   its SIBLING
+<root>/ffgl/NanoBarrel.dll           the plugin        (Windows package)
+<root>/ffgl/libbridge_server.dll     its SIBLING
 ```
 
 In a dev tree `<root>` is the repo's `build/` — where `build_all.sh` already

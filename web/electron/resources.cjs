@@ -96,10 +96,20 @@ function writeInstallRecord(root) {
   }
 }
 
-/** The bundled FFGL plugin, or null where there isn't one (Windows). */
+/**
+ * The bundled FFGL plugin, or null when this build carries none.
+ *
+ * Both platforms stage it at <root>/ffgl; only the artifact differs — a
+ * .bundle directory on macOS, a plain .dll on Windows, which is the whole
+ * shape of the FFGL plugin there (no bundle, no plist, no codesign).
+ */
 function ffglPluginPath(root) {
-  if (!root || process.platform !== 'darwin') return null;
-  const p = path.join(root, 'ffgl', 'NanoBarrel.bundle');
+  if (!root) return null;
+  const name = process.platform === 'darwin' ? 'NanoBarrel.bundle'
+             : process.platform === 'win32'  ? 'NanoBarrel.dll'
+             : null;
+  if (!name) return null;
+  const p = path.join(root, 'ffgl', name);
   return fs.existsSync(p) ? p : null;
 }
 

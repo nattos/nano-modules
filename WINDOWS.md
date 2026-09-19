@@ -3,8 +3,13 @@
 The **web app is the whole editor** — the linear effects list, the arrangement
 timeline, the sidecar canvas — and it runs the same `executor.wasm` and the same
 effect bundles as the native barrel, on WebGPU instead of Metal. That part is
-portable. The Resolume barrel (FFGL + Metal + CoreMIDI) is not, and is not
-attempted here.
+portable.
+
+The Resolume barrel used to be the part that was not. It is now: the engine has
+a D3D11 backend and `NanoBarrel.dll` is a plain DLL exporting `plugMain`, proven
+on real hardware (an Intel UHD 630, 2026-09-19). It is **cross-compiled from
+macOS**, though — this page is about what a Windows machine itself can do, and
+configuring the native tree there is still not one of those things.
 
 Everything below runs in **Git Bash**, not PowerShell or `cmd`. Every build
 script in this repo is bash.
@@ -20,9 +25,10 @@ script in this repo is bash.
 | Vitest unit tests | ✅ |
 | Jest + Puppeteer E2E (incl. the GPU suites) | ✅ |
 | Arrangement, sidecar canvas, wires, MIDI via Web MIDI | ✅ |
-| Native barrel / FFGL plugin / Resolume integration | ❌ macOS only (Metal, ObjC++, CoreMIDI) |
-| `cmake -B native/build` | ❌ the project declares `OBJCXX` |
-| Catch2 native tests, `wamrc` AOT sidecars | ❌ (AOT is a native-only speed bonus; `.wasm` is always the fallback) |
+| Native barrel / FFGL plugin / Resolume integration | ✅ `NanoBarrel.dll` on D3D11 — **cross-built from macOS**, not built here |
+| `cmake -B native/build` **on Windows** | ❌ the project declares `OBJCXX`; cross-compile with `native/cmake/toolchain-win-zig.cmake` from a Mac instead |
+| Catch2 native tests | ✅ cross-built and run under CrossOver; see `native/tools/nano_diag/` for the real-hardware runner |
+| `wamrc` AOT sidecars | ❌ `NANO_WASM_AOT=OFF` — a sidecar is per-ABI as well as per-arch, so the Windows barrel loads the portable `.wasm` |
 | Electron shell + packaged app (`npm run package:win`) | ✅ builds; see DESKTOP.md |
 
 > The Windows **installer** cross-builds from macOS (there are no native node

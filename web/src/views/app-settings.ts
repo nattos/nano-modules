@@ -26,12 +26,22 @@ import {
 } from '../state/resolume-setup';
 import { appResourceRoot, copyText, revealInFolder } from '../state/paths';
 
-/** macOS, from Electron's own `process` when we have it. The FFGL plug-in is
- *  macOS-only, so the install step's paths and buttons hang off this. */
+/** macOS, from Electron's own `process` when we have it. Both platforms ship a
+ *  plug-in now, but they are different ARTEFACTS — a `.bundle` directory plus a
+ *  `.dylib` against a plain pair of DLLs — and the install step has to name the
+ *  files the person is actually looking for. */
 function isMac(): boolean {
   const plat = (globalThis as any).process?.platform;
   if (typeof plat === 'string') return plat === 'darwin';
   return /Mac/i.test(navigator.platform || '');
+}
+
+/** Windows, by the same route. Neither is true in a plain browser tab, where
+ *  there is no bundled plug-in to point at at all. */
+function isWindows(): boolean {
+  const plat = (globalThis as any).process?.platform;
+  if (typeof plat === 'string') return plat === 'win32';
+  return /Win/i.test(navigator.platform || '');
 }
 
 const MODE_OPTIONS: { id: AppMode; label: string; description: string }[] = [
@@ -318,9 +328,17 @@ export class AppSettings extends MobxLitElement {
     });
     const apiPort = resolumeApiPort(server?.resolumeUrl) || '8080';
     // The folder to hand Resolume: the app's own `ffgl/`, which holds the
-    // bundle and its sibling dylib. macOS only — there is no native plug-in
-    // on Windows yet.
-    const pluginDir = this.appRoot && isMac() ? `${this.appRoot}/ffgl` : null;
+    // plug-in and its sibling runtime. Both desktop platforms have one; a
+    // browser tab has neither, so there is nothing to reveal there.
+    const desktop = isMac() || isWindows();
+    const pluginDir = this.appRoot && desktop ? `${this.appRoot}/ffgl` : null;
+    // The two files that must travel together. The runtime is dlopen'd/
+    // LoadLibrary'd by path, so a plug-in without its sibling simply does not
+    // start — which is the one thing this step exists to prevent.
+    const pluginFiles = isMac()
+      ? html`<code>NanoBarrel.bundle</code> <b>and</b> <code>libbridge_server.dylib</code>`
+      : html`<code>NanoBarrel.dll</code> <b>and</b> <code>libbridge_server.dll</code>`;
+    const revealLabel = isMac() ? 'Reveal in Finder' : 'Show in Explorer';
 
     return html`
       <h2 style="margin-top:var(--app-sp-4)">Set up Resolume</h2>
@@ -333,13 +351,12 @@ export class AppSettings extends MobxLitElement {
         ${this.renderStep('plugin', st.plugin, 'Install the NanoBarrel plug-in', html`
           Resolume loads FFGL plug-ins from the folders under
           <b>Preferences → Video → FFGL plug-in folders</b>. Add this app's
-          <code>ffgl</code> folder there, or copy <code>NanoBarrel.bundle</code>
-          <b>and</b> <code>libbridge_server.dylib</code> side by side into a
-          folder that is already listed — the bundle on its own will not start.
-          Restart Resolume afterwards.
+          <code>ffgl</code> folder there, or copy ${pluginFiles} side by side
+          into a folder that is already listed — the plug-in on its own will not
+          start. Restart Resolume afterwards.
         `, pluginDir ? html`
           <div class="actions">
-            <button class="small" @click=${() => void revealInFolder(pluginDir)}>Reveal in Finder</button>
+            <button class="small" @click=${() => void revealInFolder(pluginDir)}>${revealLabel}</button>
             <button class="small" @click=${() => this.onCopy(pluginDir)}>
               ${this.copied === pluginDir ? 'Copied' : 'Copy path'}
             </button>

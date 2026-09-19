@@ -90,16 +90,49 @@ function fsMod(): any {
   return fs;
 }
 
-/** POSIX-ish join that tolerates a trailing separator on `base`. */
+/**
+ * Is `\` a path separator here?
+ *
+ * Only on Windows, and deliberately not by sniffing the string: `\` is a
+ * perfectly legal character in a POSIX filename, so a macOS file genuinely
+ * called `a\b` must not be read as a directory `a` containing `b`. Electron's
+ * own `process` is the authority; a browser tab has no absolute paths at all,
+ * so the answer there does not matter.
+ *
+ * This exists because the native directory picker hands back
+ * `C:\Users\me\Videos`, and everything below used to look for `/` alone —
+ * which made a library root display as its own full path instead of `Videos`.
+ * Reads still worked, because Windows accepts `/` as a separator too, so the
+ * only symptom was in the UI.
+ */
+const WIN_SEPARATORS = (() => {
+  const plat = (globalThis as any).process?.platform;
+  return plat === 'win32';
+})();
+
+/** Index of the last separator, honouring `\` only where it is one. */
+function lastSeparator(p: string): number {
+  const fwd = p.lastIndexOf('/');
+  if (!WIN_SEPARATORS) return fwd;
+  return Math.max(fwd, p.lastIndexOf('\\'));
+}
+
+function endsWithSeparator(p: string): boolean {
+  return p.endsWith('/') || (WIN_SEPARATORS && p.endsWith('\\'));
+}
+
+/** POSIX-ish join that tolerates a trailing separator on `base`. Always joins
+ *  with `/`: Windows accepts it everywhere, and one separator in the strings we
+ *  build keeps `relativePathTo`'s split honest. */
 function joinPath(base: string, name: string): string {
-  return base.endsWith('/') ? base + name : `${base}/${name}`;
+  return endsWithSeparator(base) ? base + name : `${base}/${name}`;
 }
 
 function baseName(absPath: string): string {
-  const trimmed = absPath.endsWith('/') && absPath.length > 1
+  const trimmed = endsWithSeparator(absPath) && absPath.length > 1
     ? absPath.slice(0, -1)
     : absPath;
-  const i = trimmed.lastIndexOf('/');
+  const i = lastSeparator(trimmed);
   return i >= 0 ? trimmed.slice(i + 1) : trimmed;
 }
 
@@ -107,7 +140,7 @@ function baseName(absPath: string): string {
  *  we compare and store. */
 export function normalizeAbsPath(absPath: string): string {
   let p = absPath.trim();
-  while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  while (p.length > 1 && endsWithSeparator(p)) p = p.slice(0, -1);
   return p;
 }
 
@@ -255,10 +288,21 @@ class FsDirectoryHandle extends FsHandle implements PathsDirectoryHandle {
     if (!o?.isFsHandle) return null;
     if (o.absPath === this.absPath) return []; // the directory itself
     // Compare on a separator boundary — a bare startsWith would call
-    // /foo/barbaz a descendant of /foo/bar.
-    const prefix = this.absPath === '/' ? '/' : `${this.absPath}/`;
-    if (!o.absPath.startsWith(prefix)) return null;
-    return o.absPath.slice(prefix.length).split('/').filter((s) => s.length > 0);
+    // /foo/barbaz a descendant of /foo/bar. On Windows the boundary may be
+    // either separator: we always JOIN with `/`, but a root can arrive from the
+    // native picker as `C:\Users\me\Videos` and be compared against a child
+    // built anywhere.
+    const base = this.absPath === '/' ? '' : this.absPath;
+    for (const sep of WIN_SEPARATORS ? ['/', '\\'] : ['/']) {
+      const prefix = `${base}${sep}`;
+      if (!o.absPath.startsWith(prefix)) continue;
+      // Split on `\` too only where it IS a separator — a POSIX file really
+      // can be called `a\b`, and splitting it would invent a directory.
+      const rest = o.absPath.slice(prefix.length);
+      return (WIN_SEPARATORS ? rest.split(/[\\/]/) : rest.split('/'))
+        .filter((s) => s.length > 0);
+    }
+    return null;
   }
 
   static deserialize(rec: { absPath: string }): FsDirectoryHandle {
