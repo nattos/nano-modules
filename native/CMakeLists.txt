@@ -9,14 +9,21 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "No CMAKE_BUILD_TYPE set — defaulting to RelWithDebInfo (-O2 -g)")
 endif()
 
-project(nano-repatch-native LANGUAGES C CXX OBJCXX ASM)
+# OBJCXX is enabled BELOW, not listed here. Naming it in LANGUAGES makes CMake
+# probe for an Objective-C++ compiler during project(), which fails outright off
+# macOS — that single word is why `cmake -B native/build` could not even
+# CONFIGURE on Windows. See cmake/README.md.
+project(nano-repatch-native LANGUAGES C CXX ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OBJCXX_STANDARD 17)
 
-# Silence macOS OpenGL deprecation warnings
-add_compile_definitions(GL_SILENCE_DEPRECATION)
+if(APPLE)
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 17)
+  # Silence macOS OpenGL deprecation warnings
+  add_compile_definitions(GL_SILENCE_DEPRECATION)
+endif()
 
 # --- Dependencies via FetchContent ---
 include(FetchContent)
@@ -48,6 +55,11 @@ FetchContent_Declare(
 # Disable IXWebSocket TLS to avoid OpenSSL dependency
 set(USE_TLS OFF CACHE BOOL "" FORCE)
 set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "" FORCE)
+# ...and zlib, which it only needs for per-message deflate. We disable that at
+# runtime anyway (ws_server.cpp:26 — preview frames are high-entropy and the
+# codec just burns CPU on them), so this is dead weight that would otherwise
+# need a zlib in the cross-compile sysroot.
+set(USE_ZLIB OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(nlohmann_json ixwebsocket Catch2)
 
@@ -58,6 +70,9 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/bytecodealliance/wasm-micro-runtime.git
   GIT_TAG WAMR-2.2.0
   GIT_SHALLOW TRUE
+  # WAMR's Windows layer only ever built under MSVC; see the script for why it
+  # does not survive clang. No-op on macOS (the file is not compiled there).
+  PATCH_COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/cmake/patch-wamr-windows.sh
 )
 FetchContent_Populate(wamr)
 
@@ -95,6 +110,13 @@ set(WAMR_BUILD_BULK_MEMORY 1)
 # macOS-gated, so this alone does NOT make the native tree configure off macOS.
 if(WIN32)
   set(WAMR_BUILD_PLATFORM "windows")
+  # Software bounds checks instead of guard pages + a vectored exception
+  # handler. On x86_64/Windows the hardware path makes WAMR fetch and build
+  # Zydis + Zycore just to decode the faulting instruction (see
+  # core/iwasm/aot/iwasm_aot.cmake:39-59), which drags in two more dependencies
+  # — one of which declares a cmake_minimum_required modern CMake refuses.
+  # Costs some wasm memory-access speed; buys a build with no disassembler in it.
+  set(WAMR_DISABLE_HW_BOUND_CHECK 1)
 elseif(APPLE)
   set(WAMR_BUILD_PLATFORM "darwin")
 else()
@@ -104,7 +126,14 @@ endif()
 include(${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake)
 add_library(vmlib STATIC ${WAMR_RUNTIME_LIB_SOURCE})
 target_include_directories(vmlib PUBLIC ${WAMR_ROOT_DIR}/core/iwasm/include)
-target_link_libraries(vmlib PUBLIC -lm -ldl ${CMAKE_THREAD_LIBS_INIT})
+# -ldl is POSIX; on Windows the equivalent is in kernel32, and WAMR's own
+# `#pragma comment(lib, ...)` directives for ws2_32/Pathcch are ignored by
+# everything that is not MSVC, so name them here.
+if(WIN32)
+  target_link_libraries(vmlib PUBLIC ws2_32 Pathcch ${CMAKE_THREAD_LIBS_INIT})
+else()
+  target_link_libraries(vmlib PUBLIC -lm -ldl ${CMAKE_THREAD_LIBS_INIT})
+endif()
 
 # --- SPIRV-Cross (runtime SPV→MSL for dynamically-loaded WASM effects) ---
 # Effects load as WASM and ship SPIR-V, which must be translated to MSL at load
@@ -139,13 +168,21 @@ target_link_libraries(spv_to_msl PUBLIC spirv-cross-msl)
 # symlink resolved to (b1afaf9, v2.2-34 — the SDK has no tag past v2.2).
 # GIT_SHALLOW is off deliberately: shallow fetch of a bare commit hash is not
 # guaranteed to work, and the repo is small.
-set(FFGL_BUILD_EXAMPLE_PLUGINS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  ffgl
-  GIT_REPOSITORY https://github.com/resolume/ffgl.git
-  GIT_TAG b1afaf9399ff4ed75ff42611ce99db68a124869b
-)
-FetchContent_MakeAvailable(ffgl)
+#
+# Only the FFGL plugin targets need this, and those are macOS-only today. Off
+# Windows the SDK additionally wants GLEW (its CMakeLists does
+# `if(NOT APPLE) find_package(GLEW REQUIRED)`), so fetching it during an
+# engine-only Windows build costs a dependency for something nothing links.
+option(NANO_BUILD_FFGL "Fetch the FFGL SDK and build the plugin bundles" ${APPLE})
+if(NANO_BUILD_FFGL)
+  set(FFGL_BUILD_EXAMPLE_PLUGINS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    ffgl
+    GIT_REPOSITORY https://github.com/resolume/ffgl.git
+    GIT_TAG b1afaf9399ff4ed75ff42611ce99db68a124869b
+  )
+  FetchContent_MakeAvailable(ffgl)
+endif()
 
 # --- Canvas Renderer library ---
 add_library(canvas_renderer STATIC
