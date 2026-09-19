@@ -17,7 +17,14 @@
 #include <sys/stat.h>
 
 #include "platform/paths.h"
+#ifdef _WIN32
+// zig's any-windows-any <unistd.h> is a broken shim (its ftruncate calls an
+// undeclared _chsize), so never let it in. getpid lives in <process.h> here.
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 namespace bridge {
 

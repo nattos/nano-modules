@@ -1,7 +1,5 @@
 #include "bridge/barrel_runtime.h"
 
-#import <Metal/Metal.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -27,6 +25,7 @@
 #include "bridge/preview_codec.h"
 #include "bridge/ws_server.h"
 #include "platform/paths.h"
+#include "platform/scoped_pool.h"
 #include "gpu/gpu_backend.h"
 #include "midi/midi_host.h"
 #include "artnet/artnet_host.h"
@@ -209,7 +208,6 @@ struct BarrelRuntime::Impl {
   bool built = false;
   bool usable = false;
 
-  id<MTLDevice> device = nil;
   std::unique_ptr<gpu::GPUBackend> gpu;
   // bundles owns the WasmHost; declared before rt so it is destroyed AFTER rt
   // (EffectInstance dtors call_indirect into the WasmHost).
@@ -861,13 +859,8 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
   if (impl_->built) return impl_->usable;
   impl_->built = true;
 
-  @autoreleasepool {
-    impl_->device = MTLCreateSystemDefaultDevice();
-  }
-  if (!impl_->device) { BRT_LOG("MTLCreateSystemDefaultDevice failed"); return false; }
-
-  impl_->gpu = gpu::createMetalBackend();
-  if (!impl_->gpu) { BRT_LOG("createMetalBackend failed"); return false; }
+  impl_->gpu = gpu::createBackend();
+  if (!impl_->gpu) { BRT_LOG("createBackend failed"); return false; }
 
   impl_->rt = std::make_unique<effect_runtime::EffectRuntime>(impl_->gpu.get());
   impl_->registry = std::make_unique<sketch_executor::ModuleRegistry>(impl_->rt.get());
@@ -952,8 +945,8 @@ void BarrelRuntime::release() {
   // destroyed in destroyExecutor.)
 }
 
-void* BarrelRuntime::metalDevice() {
-  return (__bridge void*)impl_->device;
+void* BarrelRuntime::gpuDevice() {
+  return impl_->gpu ? impl_->gpu->nativeDevice() : nullptr;
 }
 
 std::string BarrelRuntime::schemasJson() {
@@ -1065,16 +1058,10 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   auto it = impl_->executors.find(key);
   if (it == impl_->executors.end()) return false;
   Impl::PerExecutor& pe = it->second;
-  // Per-frame autorelease pool. The Metal render path creates autoreleased
-  // objects every frame (MTLRenderPassDescriptor + command encoders and their
-  // AGX backing contexts). A plugin must NOT rely on the host draining a pool
-  // around each render: Resolume's render thread isn't guaranteed to, and
-  // ffgl_runner's serve loop runs thousands of frames inside one outer pool — so
-  // without this those objects pile up unbounded (~5/frame → a steady multi-
-  // MB/min heap climb, caught by the soak test). Draining here keeps every
-  // frame's Metal temporaries self-contained. (All exits below are `return`s, so
-  // the pool drains on each.)
-  @autoreleasepool {
+  // Per-frame pool for the graphics API's temporaries — see scoped_pool.h for
+  // why the host's own pool cannot be relied on. Every exit below is a `return`,
+  // so it drains on each.
+  nano_platform::ScopedPool pool;
   ++pe.frame;
   // Best-effort present proxy: a new frame is being produced, so the previous
   // one was consumed by Resolume (it asked for the next). Bump the process-global
@@ -1322,7 +1309,6 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
   impl_->gpu->release(outputHandle);
 
   return finalHandle == outputHandle;
-  }  // @autoreleasepool
 }
 
 }  // namespace bridge

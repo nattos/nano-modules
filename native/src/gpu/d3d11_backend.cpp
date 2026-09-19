@@ -891,6 +891,8 @@ class D3D11Backend : public GPUBackend {
   }
 
   // --- lifetime ------------------------------------------------------------
+  void* nativeDevice() const override { return device_.get(); }
+
   void release(int32_t handle) override {
     if (handle <= 0 || (size_t)handle >= resources_.size()) return;
     Resource& r = resources_[handle];

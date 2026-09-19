@@ -202,9 +202,9 @@ void bridge_rt_release(BridgeHandle h) {
   bridge::BarrelRuntime::instance().release();
 }
 
-void* bridge_rt_metal_device(BridgeHandle h) {
+void* bridge_rt_gpu_device(BridgeHandle h) {
   if (!h) return nullptr;
-  return bridge::BarrelRuntime::instance().metalDevice();
+  return bridge::BarrelRuntime::instance().gpuDevice();
 }
 
 char* bridge_rt_schemas(BridgeHandle h) {

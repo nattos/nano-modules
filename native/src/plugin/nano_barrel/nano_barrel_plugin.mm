@@ -731,14 +731,14 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // against (the executor renders on that device). Without these symbols the
     // dylib is too old — we stay render-only (badge).
     if (loader_.bridge_rt_acquire && loader_.bridge_executor_create &&
-        loader_.bridge_executor_render && loader_.bridge_rt_metal_device) {
+        loader_.bridge_executor_render && loader_.bridge_rt_gpu_device) {
       std::string wasmDir  = bundleWasmDir();
       std::string fontPath = bundleFontPath("default.ttf");
       rt_ready_ = loader_.bridge_rt_acquire(bridge_, wasmDir.c_str(),
                                             fontPath.c_str()) != 0;
       if (rt_ready_) {
         shared_device_ =
-            (__bridge id<MTLDevice>)loader_.bridge_rt_metal_device(bridge_);
+            (__bridge id<MTLDevice>)loader_.bridge_rt_gpu_device(bridge_);
       }
       BARREL_LOG("setupBridge", "rt_acquire=%d wasmDir=%s device=%p",
                  rt_ready_ ? 1 : 0, wasmDir.c_str(), (void*)shared_device_);

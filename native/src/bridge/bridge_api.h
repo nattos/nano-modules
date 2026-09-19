@@ -93,8 +93,9 @@ int  bridge_key_observed(BridgeHandle h, const char* key);
 // the text font from `font_path` on first call. Returns 1 if usable.
 int  bridge_rt_acquire(BridgeHandle h, const char* wasm_dir, const char* font_path);
 void bridge_rt_release(BridgeHandle h);
-// The shared MTLDevice (id<MTLDevice> as void*) for the barrel's InteropTexture.
-void* bridge_rt_metal_device(BridgeHandle h);
+// The runtime backend's own native device (id<MTLDevice> / ID3D11Device*) —
+// what the barrel's InteropTexture pair must be built against.
+void* bridge_rt_gpu_device(BridgeHandle h);
 // Effect schema catalog JSON ({module_type:{key,id,version,schema}}); free with
 // bridge_free_string.
 char* bridge_rt_schemas(BridgeHandle h);
@@ -152,7 +153,7 @@ typedef int (*BridgeKeyObservedFn)(BridgeHandle, const char*);
 
 typedef int (*BridgeRtAcquireFn)(BridgeHandle, const char*, const char*);
 typedef void (*BridgeRtReleaseFn)(BridgeHandle);
-typedef void* (*BridgeRtMetalDeviceFn)(BridgeHandle);
+typedef void* (*BridgeRtGpuDeviceFn)(BridgeHandle);
 typedef char* (*BridgeRtSchemasFn)(BridgeHandle);
 typedef void (*BridgeExecutorCreateFn)(BridgeHandle, const char*);
 typedef void (*BridgeExecutorDestroyFn)(BridgeHandle, const char*);

@@ -1394,6 +1394,8 @@ public:
            bytesPerRow:w * 4];
   }
 
+  void* nativeDevice() const override { return (__bridge void*)device_; }
+
   int32_t adoptExternalTexture(void* nativeTexture) override {
     // The caller hands us an id<MTLTexture> (cast through void*). We
     // store it in the resource table the same way locally-allocated

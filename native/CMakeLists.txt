@@ -35,6 +35,17 @@ else()
   set(NANO_HAS_GPU_BACKEND FALSE)
 endif()
 
+# The platform half of the native MIDI host (src/midi/midi_port_backend.h).
+# Everything else about MIDI — matching, drivers, the hardware/sim/alias merge —
+# is neutral C++ in midi_host.cpp. Windows gets the null backend, so a barrel
+# there still serves the editor's simulated values and control aliases; only a
+# physical controller is missing. See midi_host_null.cpp for the WinMM notes.
+if(APPLE)
+  set(NANO_MIDI_PORT_BACKEND src/midi/midi_host_coremidi.mm)
+else()
+  set(NANO_MIDI_PORT_BACKEND src/midi/midi_host_null.cpp)
+endif()
+
 # --- Dependencies via FetchContent ---
 include(FetchContent)
 
@@ -1302,23 +1313,32 @@ if(NANO_HAS_GPU_BACKEND)
   # link list). sketch_executor PUBLIC-pulls effect_runtime/gpu_backend/
   # wasm_host/text_engine/spv_translate transitively.
   target_sources(bridge_server PRIVATE
-    src/bridge/barrel_runtime.mm
-    src/midi/midi_host.mm
+    src/bridge/barrel_runtime.cpp
+    src/midi/midi_host.cpp
+    ${NANO_MIDI_PORT_BACKEND}
     src/artnet/artnet_host.cpp)
-  target_link_libraries(bridge_server PRIVATE sketch_executor "-framework CoreMIDI")
-  set_source_files_properties(src/bridge/barrel_runtime.mm src/midi/midi_host.mm
-    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(bridge_server PRIVATE sketch_executor)
+  if(APPLE)
+    target_link_libraries(bridge_server PRIVATE "-framework CoreMIDI")
+    set_source_files_properties(${NANO_MIDI_PORT_BACKEND}
+      PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  endif()
 
   # Headless MidiHost goldens (library/alias/sim table logic; never start()s
   # CoreMIDI). Compiles midi_host.mm directly — it lives in bridge_server,
   # which a test can't link (process-global executor state).
   if(TARGET Catch2::Catch2WithMain)
-    add_executable(test_midi_host tests/test_midi_host.cpp src/midi/midi_host.mm)
+    add_executable(test_midi_host tests/test_midi_host.cpp src/midi/midi_host.cpp
+      ${NANO_MIDI_PORT_BACKEND})
     target_include_directories(test_midi_host PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(test_midi_host PRIVATE
-      nlohmann_json::nlohmann_json Catch2::Catch2WithMain
-      "-framework CoreMIDI" "-framework CoreFoundation" "-framework Foundation")
-    set_source_files_properties(src/midi/midi_host.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+      nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+    if(APPLE)
+      target_link_libraries(test_midi_host PRIVATE
+        "-framework CoreMIDI" "-framework CoreFoundation" "-framework Foundation")
+      set_source_files_properties(${NANO_MIDI_PORT_BACKEND}
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    endif()
     catch_discover_tests(test_midi_host)
   endif()
 

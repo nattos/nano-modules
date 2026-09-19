@@ -1,54 +1,31 @@
-// midi_host.mm — CoreMIDI implementation of the native MIDI host.
+// midi_host.cpp — the native MIDI host: matching, drivers, and the merged
+// value table. Platform-neutral; the OS's ports arrive through
+// MidiPortBackend (midi_port_backend.h), which is the only part that differs.
 //
-// Threading: CoreMIDI wants a run loop for hot-plug (setup-changed)
-// notifications, so the client + input port live on a dedicated thread
-// running CFRunLoopRun(); MIDI read callbacks arrive on CoreMIDI's own I/O
-// thread. All shared state (library, connections, value tables) is guarded
-// by one mutex; consumers (the render loop) read a version counter and pull
-// the merged table only when it changed.
+// Threading: port discovery and message delivery both arrive on whatever
+// thread the backend uses (on CoreMIDI, a run-loop thread and the MIDI I/O
+// thread respectively). All shared state (library, connections, value tables)
+// is guarded by one mutex; consumers (the render loop) read a version counter
+// and pull the merged table only when it changed.
 
 #include "midi/midi_host.h"
-
-#include <CoreFoundation/CoreFoundation.h>
-#include <CoreMIDI/CoreMIDI.h>
 
 #include <map>
 #include <mutex>
 #include <set>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "midi/driver_registry.h"
+#include "midi/midi_port_backend.h"
 
 namespace nano_midi {
-namespace {
-
-std::string cfStringProp(MIDIObjectRef obj, CFStringRef prop) {
-  CFStringRef value = nullptr;
-  if (MIDIObjectGetStringProperty(obj, prop, &value) != noErr || !value) return {};
-  char buf[256] = {0};
-  CFStringGetCString(value, buf, sizeof(buf), kCFStringEncodingUTF8);
-  CFRelease(value);
-  return buf;
-}
-
-int32_t intProp(MIDIObjectRef obj, CFStringRef prop) {
-  SInt32 value = 0;
-  if (MIDIObjectGetIntegerProperty(obj, prop, &value) != noErr) return 0;
-  return value;
-}
-
-}  // namespace
 
 struct MidiHost::Impl {
   std::mutex mu;
   uint64_t version = 1;
 
-  MIDIClientRef client = 0;
-  MIDIPortRef inPort = 0;
-  std::thread runLoopThread;
-  CFRunLoopRef runLoop = nullptr;
+  std::unique_ptr<MidiPortBackend> backend = createMidiPortBackend();
   bool started = false;
 
   nlohmann::json library = nlohmann::json::array();
@@ -56,7 +33,6 @@ struct MidiHost::Impl {
 
   struct Connection {
     std::string instanceId;
-    MIDIEndpointRef source = 0;
     std::unique_ptr<DeviceDriver> driver;
     // Split multi-message packets: partial CC assembly across packet bounds.
     std::vector<uint8_t> pending;
@@ -108,23 +84,18 @@ struct MidiHost::Impl {
     std::set<std::string> taken;
     std::map<int32_t, std::unique_ptr<Connection>> next;
 
-    const ItemCount n = MIDIGetNumberOfSources();
-    for (ItemCount i = 0; i < n; ++i) {
-      MIDIEndpointRef src = MIDIGetSource(i);
-      if (!src) continue;
-      const std::string name = cfStringProp(src, kMIDIPropertyDisplayName);
-      const std::string manufacturer = cfStringProp(src, kMIDIPropertyManufacturer);
-      const int32_t uid = intProp(src, kMIDIPropertyUniqueID);
-      const nlohmann::json* inst = matchInstance(name, manufacturer, uid, taken);
+    for (const MidiSourceInfo& src : backend->enumerateSources()) {
+      const nlohmann::json* inst =
+          matchInstance(src.name, src.manufacturer, src.uniqueId, taken);
       if (!inst) continue;
       const std::string instanceId = inst->value("id", std::string());
       taken.insert(instanceId);
 
-      auto existing = connections.find(uid);
+      auto existing = connections.find(src.uniqueId);
       if (existing != connections.end() && existing->second->instanceId == instanceId) {
         // Keep the live pairing; refresh the driver config (cheap).
         existing->second->driver->setConfig(inst->value("config", nlohmann::json::object()));
-        next[uid] = std::move(existing->second);
+        next[src.uniqueId] = std::move(existing->second);
         connections.erase(existing);
         continue;
       }
@@ -134,32 +105,25 @@ struct MidiHost::Impl {
       if (!driver) continue;
       auto conn = std::make_unique<Connection>();
       conn->instanceId = instanceId;
-      conn->source = src;
       conn->driver = std::move(driver);
-      if (inPort) {
-        MIDIPortConnectSource(inPort, src, conn.get());
-      }
-      next[uid] = std::move(conn);
+      backend->connect(src.uniqueId);
+      next[src.uniqueId] = std::move(conn);
     }
 
     // Anything left lost its port / instance this pass.
-    for (auto& [uid, conn] : connections) {
-      if (inPort && conn->source) MIDIPortDisconnectSource(inPort, conn->source);
-    }
+    for (auto& [uid, conn] : connections) backend->disconnect(uid);
     connections = std::move(next);
     bump();
   }
 
-  /// MIDI read callback (CoreMIDI I/O thread). Splits packets into messages
-  /// and feeds the connection's driver.
-  void onPackets(const MIDIPacketList* list, Connection* conn) {
+  /// Bytes from one port (backend thread). Splits them into status-aligned
+  /// channel messages and feeds the connection's driver.
+  void onBytes(int32_t uniqueId, const uint8_t* data, int len) {
     std::lock_guard<std::mutex> lk(mu);
     // The connection may have been torn down between dispatch and lock.
-    bool live = false;
-    for (const auto& [uid, c] : connections) {
-      if (c.get() == conn) { live = true; break; }
-    }
-    if (!live) return;
+    auto found = connections.find(uniqueId);
+    if (found == connections.end()) return;
+    Connection* conn = found->second.get();
 
     auto& table = hardware[conn->instanceId];
     const auto getValue = [&](const std::string& ep) {
@@ -174,21 +138,15 @@ struct MidiHost::Impl {
       changed = true;
     };
 
-    const MIDIPacket* packet = &list->packet[0];
-    for (UInt32 p = 0; p < list->numPackets; ++p) {
-      // Walk status-aligned channel messages; skip anything that isn't a
-      // 3-byte channel voice message (sysex, realtime).
-      const uint8_t* data = packet->data;
-      const int len = packet->length;
-      int i = 0;
-      while (i < len) {
-        const uint8_t status = data[i];
-        if (status < 0x80 || status >= 0xf0) { ++i; continue; }
-        if (i + 2 >= len) break;
-        conn->driver->onMessage(data + i, 3, getValue, emit);
-        i += 3;
-      }
-      packet = MIDIPacketNext(packet);
+    // Walk status-aligned channel messages; skip anything that isn't a
+    // 3-byte channel voice message (sysex, realtime).
+    int i = 0;
+    while (i < len) {
+      const uint8_t status = data[i];
+      if (status < 0x80 || status >= 0xf0) { ++i; continue; }
+      if (i + 2 >= len) break;
+      conn->driver->onMessage(data + i, 3, getValue, emit);
+      i += 3;
     }
     if (changed) bump();
   }
@@ -279,13 +237,13 @@ struct MidiHost::Impl {
 };
 
 MidiHost& MidiHost::instance() {
-  // Intentionally leaked — never destructed. This singleton owns a CoreMIDI
-  // client thread running CFRunLoopRun(). If it were a Meyers singleton, its
-  // destructor would run from __cxa_finalize_ranges at exit(), *after*
-  // CoreFoundation has finalized: CFRunLoopStop() would then dereference a
-  // dead CFRunLoopRef and trap in __CFCheckCFInfoPACSignature (a shutdown
-  // crash observed in Arena). Leaking skips the destructor entirely; the OS
-  // reclaims the thread, client, and run loop at process exit anyway.
+  // Intentionally leaked — never destructed. This singleton owns the backend's
+  // client thread (on CoreMIDI, one running CFRunLoopRun()). If it were a
+  // Meyers singleton, its destructor would run from __cxa_finalize_ranges at
+  // exit(), *after* CoreFoundation has finalized: CFRunLoopStop() would then
+  // dereference a dead CFRunLoopRef and trap in __CFCheckCFInfoPACSignature (a
+  // shutdown crash observed in Arena). Leaking skips the destructor entirely;
+  // the OS reclaims the thread and its ports at process exit anyway.
   static MidiHost* host = new MidiHost();
   return *host;
 }
@@ -293,9 +251,9 @@ MidiHost& MidiHost::instance() {
 MidiHost::MidiHost() : impl_(std::make_unique<Impl>()) {}
 
 // Never invoked in practice — see instance(). Defined so the type stays
-// complete for unique_ptr<Impl>. Deliberately does NOT touch CoreFoundation,
-// since the only path that could reach it is atexit teardown where the run
-// loop is already gone.
+// complete for unique_ptr<Impl>. Deliberately does NOT tear the backend down,
+// since the only path that could reach it is atexit teardown where the
+// platform's run loop is already gone.
 MidiHost::~MidiHost() = default;
 
 void MidiHost::start() {
@@ -305,22 +263,10 @@ void MidiHost::start() {
     impl_->started = true;
   }
   Impl* impl = impl_.get();
-  impl->runLoopThread = std::thread([impl] {
-    impl->runLoop = CFRunLoopGetCurrent();
-    MIDIClientCreateWithBlock(CFSTR("NanoBarrel MIDI"), &impl->client,
-        ^(const MIDINotification* note) {
-          if (note->messageID == kMIDIMsgSetupChanged) impl->refreshMatching();
-        });
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    MIDIInputPortCreateWithBlock(impl->client, CFSTR("NanoBarrel In"), &impl->inPort,
-        ^(const MIDIPacketList* list, void* refCon) {
-          impl->onPackets(list, static_cast<Impl::Connection*>(refCon));
-        });
-#pragma clang diagnostic pop
-    impl->refreshMatching();
-    CFRunLoopRun();
-  });
+  impl->backend->start([impl] { impl->refreshMatching(); },
+                       [impl](int32_t uid, const uint8_t* bytes, int len) {
+                         impl->onBytes(uid, bytes, len);
+                       });
 }
 
 void MidiHost::setLibrary(const nlohmann::json& instances) {

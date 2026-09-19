@@ -40,9 +40,14 @@ class BarrelRuntime {
   bool acquire(const std::string& wasm_dir, const std::string& font_path);
   void release();
 
-  // The shared MTLDevice (as void* / id<MTLDevice>) for the barrel to build its
-  // InteropTexture pair against — must match the backend's device.
-  void* metalDevice();
+  // The backend's own native device (`id<MTLDevice>` / `ID3D11Device*`), for
+  // the barrel to build its InteropTexture pair against. It IS the backend's
+  // device, not a second one made the same way: on D3D11 every
+  // `D3D11CreateDevice` call yields a distinct device and a texture is only
+  // bindable by its creator, so "ask the system for the default again" — which
+  // is invisibly correct on Metal — would hand back textures the runtime
+  // cannot touch.
+  void* gpuDevice();
 
   // The effect schema catalog as a JSON object string
   // ({ module_type: {key,id,version,schema} }), for the barrel to publish into

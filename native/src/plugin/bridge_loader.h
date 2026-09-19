@@ -51,7 +51,7 @@ public:
   // Shared effect runtime (barrel render service)
   BridgeRtAcquireFn bridge_rt_acquire = nullptr;
   BridgeRtReleaseFn bridge_rt_release = nullptr;
-  BridgeRtMetalDeviceFn bridge_rt_metal_device = nullptr;
+  BridgeRtGpuDeviceFn bridge_rt_gpu_device = nullptr;
   BridgeRtSchemasFn bridge_rt_schemas = nullptr;
   BridgeExecutorCreateFn bridge_executor_create = nullptr;
   BridgeExecutorDestroyFn bridge_executor_destroy = nullptr;

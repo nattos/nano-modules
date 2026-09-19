@@ -314,7 +314,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  id<MTLDevice> device = (__bridge id<MTLDevice>)bridge_rt_metal_device(h);
+  id<MTLDevice> device = (__bridge id<MTLDevice>)bridge_rt_gpu_device(h);
   if (!device) { fprintf(stderr, "no metal device\n"); return 1; }
 
   auto makeTex = [&](int w, int hgt) -> id<MTLTexture> {

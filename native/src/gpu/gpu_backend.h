@@ -373,6 +373,16 @@ public:
     (void)textureHandle; (void)w; (void)h; (void)bytes; (void)byteCount;
   }
 
+  // The backend's own native device, as an opaque pointer:
+  // `id<MTLDevice>` on Metal, `ID3D11Device*` on D3D11. Anything that
+  // builds a resource to hand back through `adoptExternalTexture` MUST
+  // build it against THIS device, not one it made itself. On Metal that
+  // distinction is invisible — `MTLCreateSystemDefaultDevice()` returns
+  // the same object every time — but `D3D11CreateDevice` hands out a
+  // fresh device per call, and a texture is only bindable by the device
+  // that created it. Default nullptr (no native device to share).
+  virtual void* nativeDevice() const { return nullptr; }
+
   // Adopt an external native texture (Metal `id<MTLTexture>` cast to
   // void*; ignored by non-Metal backends) — returns a handle that
   // points at the EXACT same underlying texture. Lets the FFGL plugin
