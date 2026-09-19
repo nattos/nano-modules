@@ -71,13 +71,13 @@ int gpu_create_shader_module_named(const char* name, int name_len) {
   auto* b = backend();
   if (!rt || !b) return -1;
   std::string nameStr(name, name_len);
-  std::string msl;
-  if (!rt->lookupMSL(nameStr, &msl)) {
-    std::cerr << "[effect_runtime] no MSL registered for shader name: "
+  std::string src;
+  if (!rt->lookupFragmentSource(nameStr, &src)) {
+    std::cerr << "[effect_runtime] no shader source registered for name: "
               << nameStr << std::endl;
     return -1;
   }
-  return b->createShaderModule(msl);
+  return b->createShaderModule(src);
 }
 
 int gpu_create_buffer(long long size, int usage) {

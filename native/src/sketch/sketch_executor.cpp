@@ -1545,11 +1545,14 @@ int32_t SketchExecutor::execute(
     struct Group { size_t firstK; size_t lastK; bool fused; };
     std::vector<Group> groups;
     {
-      // Metal's compute-stage [[buffer(N)]] indices cap at 30. We bind
-      // one uniform per fused stage starting at slot 2, so the group
-      // size cap is 28. Beyond that, the planner just starts a new
-      // group; no observable behavior change.
-      static constexpr size_t kMaxFusionStages = 28;
+      // One uniform per fused stage, bound from slot 2 up — so the cap is the
+      // backend's last usable uniform slot minus 2. Metal's compute-stage
+      // [[buffer(N)]] indices run to 30, giving 28; D3D11 has only 14 constant
+      // buffers, b0..b13, giving 12. Beyond the cap the planner just starts a
+      // new group; no observable behavior change, but exceeding it on D3D11
+      // would produce a kernel that cannot be bound at all.
+      const size_t kMaxFusionStages =
+          (gpu_get_backend() == 2 /*D3D11*/) ? 12 : 28;
       // Eligibility is cached in the plan (structural + enable/opacity, all
       // dirty-gated). Only the barrier predicate is re-evaluated per frame — the
       // host flips it as preview-monitor subscriptions change, independent of any

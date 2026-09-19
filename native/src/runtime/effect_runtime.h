@@ -406,13 +406,13 @@ class EffectRuntime {
   // captures the descriptors.
   void registerFromDesc(const void* desc_v1_ptr);
 
-  // Pre-register MSL source for a shader name. When an effect later
-  // calls state::registerShaderSPV(name, spv, ...), the runtime
-  // ignores the SPV bytes and uses the pre-registered MSL string for
-  // Metal shader module creation. Build pipeline emits these alongside
-  // the SPV blobs.
-  void registerShaderMSL(const std::string& name, std::string msl);
-  bool lookupMSL(const std::string& name, std::string* out) const;
+  // Pre-register translated shader source for a shader name, in the LIVE
+  // BACKEND's language (MSL on Metal, HLSL on D3D11). Populated when an effect
+  // calls state::registerShaderSPV; the fusion path splices these fragments
+  // together textually, so they must already be in the language the fused
+  // kernel will be compiled as.
+  void registerFragmentSource(const std::string& name, std::string source);
+  bool lookupFragmentSource(const std::string& name, std::string* out) const;
 
   // Console log capture — every state::log call appends here, runtime
   // user (CLI / FFGL plugin) can drain after each render.
@@ -440,7 +440,7 @@ class EffectRuntime {
   std::unordered_map<std::string, EffectInstance*> by_id_;
   // Per-(type, instance_key) render instances, created lazily.
   std::unordered_map<std::string, std::unique_ptr<EffectInstance>> instance_pool_;
-  std::unordered_map<std::string, std::string> msl_by_name_;
+  std::unordered_map<std::string, std::string> fragment_source_by_name_;
   std::vector<std::string> console_log_;
   EffectInstance* active_ = nullptr;
 };

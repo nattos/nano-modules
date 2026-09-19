@@ -13,6 +13,7 @@
 
 #include "gpu/gpu_backend.h"
 #include "runtime/shader_from_spv.h"
+#include "runtime/spv_to_hlsl.h"
 #include "runtime/spv_to_msl.h"
 #include "wasm/wasm_host.h"
 
@@ -370,15 +371,25 @@ void EffectInstance::hostRegisterShaderSpv(std::string_view name,
   slot.spv.assign(spv, spv + spv_len);
   slot.format = std::string(format);
   slot.access = std::string(access);
-  // Also publish the SPV→MSL under the runtime's "<moduleType>::<name>" key so
-  // the executor's fusion path (which looks up the "pixel" fragment MSL via
-  // EffectRuntime::lookupMSL, exactly as for native effects) finds it. Because
-  // spvToMsl mirrors the build-time conversion, the fused kernel is identical
-  // to the statically-baked one → pixel parity.
+  // Also publish the translated fragment under the runtime's
+  // "<moduleType>::<name>" key so the executor's fusion path (which looks it up
+  // via EffectRuntime::lookupFragmentSource, exactly as for native effects)
+  // finds it. The translation mirrors the build-time conversion, so the fused
+  // kernel is identical to the statically-baked one → pixel parity.
+  //
+  // It is the LIVE BACKEND's language, not always MSL: fusion_codegen splices
+  // these fragments together textually, so they have to be in whatever the
+  // fused kernel will be compiled as.
   if (runtime_ && !desc_.id.empty()) {
-    std::string msl = spvToMsl(slot.spv.data(), slot.spv.size());
-    if (!msl.empty())
-      runtime_->registerShaderMSL(desc_.id + "::" + std::string(name), msl);
+    gpu::GPUBackend* b = runtime_->gpu();
+    std::string src;
+    if (b && b->getBackend() == 2 /*D3D11*/) {
+      src = spvToHlsl(slot.spv.data(), slot.spv.size(), nullptr);
+    } else {
+      src = spvToMsl(slot.spv.data(), slot.spv.size());
+    }
+    if (!src.empty())
+      runtime_->registerFragmentSource(desc_.id + "::" + std::string(name), src);
   }
 }
 
@@ -632,12 +643,15 @@ void EffectRuntime::destroyInstancesWithKeyPrefix(const std::string& prefix) {
   }
 }
 
-void EffectRuntime::registerShaderMSL(const std::string& name, std::string msl) {
-  msl_by_name_[name] = std::move(msl);
+void EffectRuntime::registerFragmentSource(const std::string& name,
+                                           std::string source) {
+  fragment_source_by_name_[name] = std::move(source);
 }
-bool EffectRuntime::lookupMSL(const std::string& name, std::string* out) const {
-  auto it = msl_by_name_.find(name);
-  if (it == msl_by_name_.end()) return false;
+
+bool EffectRuntime::lookupFragmentSource(const std::string& name,
+                                         std::string* out) const {
+  auto it = fragment_source_by_name_.find(name);
+  if (it == fragment_source_by_name_.end()) return false;
   *out = it->second;
   return true;
 }

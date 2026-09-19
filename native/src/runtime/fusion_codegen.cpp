@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <cctype>
 #include <string_view>
 #include <vector>
 
@@ -122,7 +123,190 @@ std::string extractAndRenameFunction(const std::string& src, int idx) {
   return block;
 }
 
+// ---------------------------------------------------------------------------
+// HLSL (D3D11). spirv-cross's HLSL output is a different shape from its MSL:
+// the fuse uniforms come back as a `cbuffer` whose members are GLOBALS, not a
+// struct passed by reference, and there is no `always_inline))` marker to find
+// functions by. So neither anchor above survives, and this half scans the
+// top-level structure instead: spirv-cross emits a flat sequence of resource
+// declarations, a `struct SPIRV_Cross_Input`, the user's functions, and finally
+// `comp_main` + `main`. Everything before `comp_main` that is a FUNCTION is
+// what we want; everything else in that range is a declaration we re-emit or
+// drop.
+// ---------------------------------------------------------------------------
+
+// One top-level item: `[begin, end)` plus what it is.
+struct TopItem {
+  size_t begin = 0, end = 0;
+  bool isFunction = false;
+  bool isCbuffer = false;
+};
+
+bool isIdentChar(char c) { return isalnum((unsigned char)c) || c == '_'; }
+
+// Split `src[0 .. limit)` into top-level items. A declaration runs to its `;`;
+// a block runs to the `}` that closes it (plus a trailing `;` if present).
+std::vector<TopItem> topLevelItems(const std::string& src, size_t limit) {
+  std::vector<TopItem> items;
+  size_t i = 0;
+  while (i < limit) {
+    while (i < limit && isspace((unsigned char)src[i])) ++i;
+    if (i >= limit) break;
+    TopItem item;
+    item.begin = i;
+    int braces = 0, parens = 0;
+    bool sawParenBeforeBrace = false, sawBrace = false;
+    size_t j = i;
+    for (; j < limit; ++j) {
+      char c = src[j];
+      if (c == '(') { ++parens; if (!sawBrace) sawParenBeforeBrace = true; }
+      else if (c == ')') { --parens; }
+      else if (c == '{') { ++braces; sawBrace = true; }
+      else if (c == '}') {
+        if (--braces == 0) {
+          ++j;
+          if (j < limit && src[j] == ';') ++j;
+          break;
+        }
+      } else if (c == ';' && braces == 0 && parens == 0) {
+        ++j;
+        break;
+      }
+    }
+    item.end = j < limit ? j : limit;
+    const std::string head = src.substr(item.begin,
+                                        item.end - item.begin < 16
+                                            ? item.end - item.begin : 16);
+    item.isCbuffer = head.compare(0, 7, "cbuffer") == 0;
+    item.isFunction = sawBrace && sawParenBeforeBrace && !item.isCbuffer &&
+                      head.compare(0, 6, "struct") != 0;
+    items.push_back(item);
+    i = item.end;
+  }
+  return items;
+}
+
+// Member identifiers of a `cbuffer ... { ... };` block: the token before the
+// `:` of a packoffset (or before the `;` when spirv-cross omits one).
+std::vector<std::string> cbufferMembers(const std::string& block) {
+  std::vector<std::string> names;
+  size_t open = block.find('{');
+  size_t close = block.rfind('}');
+  if (open == std::string::npos || close == std::string::npos) return names;
+  size_t i = open + 1;
+  while (i < close) {
+    size_t semi = block.find(';', i);
+    if (semi == std::string::npos || semi > close) break;
+    size_t declEnd = semi;
+    size_t colon = block.find(':', i);
+    if (colon != std::string::npos && colon < semi) declEnd = colon;
+    size_t e = declEnd;
+    while (e > i && isspace((unsigned char)block[e - 1])) --e;
+    size_t s = e;
+    while (s > i && isIdentChar(block[s - 1])) --s;
+    if (e > s) names.push_back(block.substr(s, e - s));
+    i = semi + 1;
+  }
+  return names;
+}
+
+// One fused stage's HLSL, renamed so N of them can share a translation unit.
+// Returns false if the source doesn't look like a fuse fragment.
+bool rewriteStageHLSL(const std::string& src, int idx, std::string* cbufOut,
+                      std::string* funcsOut) {
+  const size_t limit = src.find("void comp_main()");
+  if (limit == std::string::npos) return false;
+
+  std::string cbuf, funcs;
+  std::vector<std::string> funcNames;
+  for (const TopItem& it : topLevelItems(src, limit)) {
+    const std::string body = src.substr(it.begin, it.end - it.begin);
+    if (it.isCbuffer) {
+      if (!cbuf.empty()) return false;          // only one fuse cbuffer
+      cbuf = body;
+    } else if (it.isFunction) {
+      // The name is the identifier before the first top-level `(`.
+      size_t paren = body.find('(');
+      if (paren == std::string::npos) return false;
+      size_t e = paren;
+      while (e > 0 && isspace((unsigned char)body[e - 1])) --e;
+      size_t b = e;
+      while (b > 0 && isIdentChar(body[b - 1])) --b;
+      if (e <= b) return false;
+      funcNames.push_back(body.substr(b, e - b));
+      funcs += body;
+      funcs += "\n\n";
+    }
+    // Everything else (the SPIRV_Cross_Input struct, `static uint3
+    // gl_GlobalInvocationID;`, the `_fuse_out` UAV) belongs to the synthetic
+    // wrapper entry and is dropped with it.
+  }
+  if (cbuf.empty() || funcNames.empty()) return false;
+
+  const std::string sfx = "_" + std::to_string(idx);
+  // Members first: a member could otherwise be shadowed by a function rename.
+  for (const auto& m : cbufferMembers(cbuf)) {
+    renameIdent(cbuf, m, m + sfx);
+    renameIdent(funcs, m, m + sfx);
+  }
+  bool sawTransform = false;
+  for (const auto& fn : funcNames) {
+    if (fn == "fuse_transform") { sawTransform = true; continue; }
+    renameIdent(funcs, fn, fn + sfx);
+  }
+  if (!sawTransform) return false;
+  renameIdent(funcs, "fuse_transform", "ft_" + std::to_string(idx));
+  renameIdent(cbuf, "type_ConstantBuffer_FuseUniforms", "FU_" + std::to_string(idx));
+  // Each stage's uniform buffer binds at slot 2 + idx (sketch_executor.cpp).
+  const std::string reg = "register(b" + std::to_string(2 + idx) + ")";
+  size_t at = cbuf.find("register(b");
+  if (at == std::string::npos) return false;
+  size_t close = cbuf.find(')', at);
+  if (close == std::string::npos) return false;
+  cbuf.replace(at, close + 1 - at, reg);
+
+  *cbufOut = std::move(cbuf);
+  *funcsOut = std::move(funcs);
+  return true;
+}
+
 }  // namespace
+
+std::string generateFusedHLSL(const std::vector<std::string>& pixelHLSLs) {
+  if (pixelHLSLs.empty()) return "";
+  std::string cbuffers, functions;
+  for (size_t i = 0; i < pixelHLSLs.size(); ++i) {
+    std::string cb, fn;
+    if (!rewriteStageHLSL(pixelHLSLs[i], (int)i, &cb, &fn)) return "";
+    cbuffers += cb + "\n\n";
+    functions += fn;
+  }
+
+  std::string out;
+  out.reserve(cbuffers.size() + functions.size() + 1024);
+  out += "Texture2D<float4>   tex_in  : register(t0);\n";
+  out += "RWTexture2D<float4> tex_out : register(u1);\n\n";
+  out += cbuffers;
+  out += functions;
+  // `fused_main` is OUR name in OUR HLSL, so unlike a spirv-cross entry (always
+  // `main`) it survives to FXC — which is what the executor asks for.
+  out += "[numthreads(8, 8, 1)]\n";
+  out += "void fused_main(uint3 gid_in : SV_DispatchThreadID)\n";
+  out += "{\n";
+  out += "  uint W, H;\n";
+  out += "  tex_out.GetDimensions(W, H);\n";
+  out += "  uint2 gid = gid_in.xy;\n";
+  out += "  if (gid.x >= W || gid.y >= H) return;\n";
+  out += "  float4 c = tex_in.Load(int3(int2(gid), 0));\n";
+  for (size_t i = 0; i < pixelHLSLs.size(); ++i) {
+    char line[64];
+    std::snprintf(line, sizeof(line), "  c = ft_%zu(gid, c);\n", i);
+    out += line;
+  }
+  out += "  tex_out[gid] = c;\n";
+  out += "}\n";
+  return out;
+}
 
 std::string generateFusedMSL(const std::vector<std::string>& pixelMSLs) {
   if (pixelMSLs.empty()) return "";

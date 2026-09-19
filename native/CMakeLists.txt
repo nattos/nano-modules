@@ -1469,7 +1469,20 @@ if(NANO_HAS_GPU_BACKEND)
       target_compile_definitions(test_effect_render PRIVATE
         TEXT_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/text.wasm")
     endif()
-    target_include_directories(test_effect_render PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_include_directories(test_effect_render PRIVATE
+      ${CMAKE_SOURCE_DIR}/tests ${CMAKE_SOURCE_DIR}/build/tmp)
+    # The test's own kernel (tests/shaders/copy_word.hlsl), baked like the rest.
+    set(TEST_SHADER_HEADER "${CMAKE_SOURCE_DIR}/build/tmp/test_shaders_spv.h")
+    add_custom_command(
+      OUTPUT "${TEST_SHADER_HEADER}"
+      COMMAND "${CMAKE_SOURCE_DIR}/tests/shaders/build_shaders.sh"
+              "${CMAKE_SOURCE_DIR}/build/tmp"
+      DEPENDS "${CMAKE_SOURCE_DIR}/tests/shaders/build_shaders.sh"
+              "${CMAKE_SOURCE_DIR}/tests/shaders/copy_word.hlsl"
+              "${CMAKE_SOURCE_DIR}/cmake/spv_bake.sh"
+      COMMENT "Baking test shaders (DXC: copy_word)"
+      VERBATIM)
+    target_sources(test_effect_render PRIVATE "${TEST_SHADER_HEADER}")
     target_compile_options(test_effect_render PRIVATE -Wno-attributes)
     catch_discover_tests(test_effect_render)
 

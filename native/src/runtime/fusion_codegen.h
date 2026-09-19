@@ -1,5 +1,5 @@
 // fusion_codegen.h — turn N per-pixel effect fragments into a single
-// Metal compute kernel.
+// compute kernel, in the language the live backend speaks.
 //
 // Every fusion-eligible effect (PerPixelMapper) registers a "pixel"
 // shader via state::registerShaderSPV / registerShaderMSL whose MSL
@@ -18,12 +18,20 @@
 // reads the input texture once, runs each fuse_transform in sequence,
 // and writes the output texture once.
 //
-// Slot layout in the emitted kernel:
+// `generateFusedHLSL` does the same for D3D11, from spirv-cross's HLSL of the
+// same SPIR-V. That output is a different shape — the fuse uniforms come back
+// as a `cbuffer` whose members are GLOBALS rather than a struct passed by
+// reference, and there is no `always_inline))` marker — so it finds the user's
+// functions by scanning top-level structure instead. See the .cpp.
+//
+// Slot layout in the emitted kernel (both languages; the executor binds these):
 //   texture(0) — tex_in   (read)
-//   texture(1) — tex_out  (access::write, RGBA8)
+//   texture(1) — tex_out  (write)
 //   buffer(2)  — effect[0] uniforms
 //   buffer(3)  — effect[1] uniforms
 //   ...
+// D3D11 stops at b13, which is why the fused group size is capped lower there
+// (sketch_executor.cpp's kMaxFusionStages).
 
 #pragma once
 
@@ -37,5 +45,9 @@ namespace fusion_codegen {
 /// string if any fragment couldn't be parsed (in which case the
 /// caller should fall back to the standalone-per-effect path).
 std::string generateFusedMSL(const std::vector<std::string>& pixelMSLs);
+
+/// The D3D11 twin: same contract, HLSL in and HLSL out. The entry point is
+/// `fused_main` in both.
+std::string generateFusedHLSL(const std::vector<std::string>& pixelHLSLs);
 
 }  // namespace fusion_codegen

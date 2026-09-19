@@ -19,6 +19,9 @@
 #include "gpu/gpu_backend.h"
 #include "runtime/effect_runtime.h"
 #include "wasm_paths.h"
+
+#include "runtime/shader_from_spv.h"
+#include "test_shaders_spv.h"
 #include "runtime/text_host.h"
 #include "sketch/module_registry.h"
 #include "sketch/sketch_executor.h"
@@ -3427,18 +3430,13 @@ TEST_CASE("write-after-bind versions the buffer inside a submit batch",
   auto backend = gpu::createBackend();
   if (!backend) SKIP("No GPU device available");
 
-  const char* kCopyMSL = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
-kernel void copy_word(const device uint* src [[buffer(0)]],
-                      device uint* dst       [[buffer(1)]],
-                      uint3 gid [[thread_position_in_grid]]) {
-  if (gid.x == 0 && gid.y == 0) dst[0] = src[0];
-}
-)MSL";
-  int32_t shader = backend->createShaderModule(kCopyMSL);
+  // tests/shaders/copy_word.hlsl, baked to SPIR-V and translated for whatever
+  // backend is live — the semantic below is reached by different means on each
+  // (see the shader's header), so the case must not be Metal-only.
+  int32_t shader = effect_runtime::createShaderModuleFromSpv(
+      backend.get(), COPY_WORD_SPV, (size_t)COPY_WORD_SPV_SIZE, "copy_word");
   REQUIRE(shader > 0);
-  int32_t pso = backend->createComputePSO(shader, "copy_word");
+  int32_t pso = backend->createComputePSO(shader, "main");
   REQUIRE(pso > 0);
 
   int32_t src  = backend->createBuffer(4, 0);
