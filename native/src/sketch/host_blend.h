@@ -261,6 +261,16 @@ class WetDryBlend {
   // the format); a single format-agnostic MSL PSO (key 0) on Metal.
   int32_t ensurePso(int32_t outTex) {
     // 1 = gpu::Backend::WebGPU → WGSL; anything else (Metal) → MSL.
+    //
+    // KNOWN BROKEN ON D3D11 (backend 2): `else` here means Metal, so a D3D11
+    // host is handed MSL and D3DCompile fails on `#include <metal_stdlib>`
+    // ("X1505: No include handler specified"). The fix is not a third
+    // hand-written twin — it is to author this once as HLSL and let the host
+    // translate the SPIR-V, the way effects already do (spv_to_msl.cpp /
+    // spv_to_hlsl.cpp / naga). That needs one new host ABI call,
+    // create_shader_module_spv, landing in executor.wasm and BOTH hosts in the
+    // same commit: a wasm module importing a function its host lacks fails to
+    // instantiate at all.
     const bool web = (gpu_get_backend() == 1);
     int32_t key = 0;
     if (web) {

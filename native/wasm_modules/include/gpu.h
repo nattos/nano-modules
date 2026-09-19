@@ -186,7 +186,12 @@ namespace gpu {
 
 // --- Enums ---
 
-enum class Backend : int { Metal = 0, WebGPU = 1, None = -1 };
+// The value gpu_get_backend() reports. Effects only ever test for None — a
+// shader is picked by what the HOST translates SPIR-V into, not by the effect —
+// so adding a member here needs no bundle rebuild. Executor-side code that
+// picks a shader language must test these by EQUALITY: an `else` branch means
+// "Metal" to whoever wrote it and reaches every future backend instead.
+enum class Backend : int { Metal = 0, WebGPU = 1, D3D11 = 2, None = -1 };
 
 enum class BufferUsage : int { Vertex = 0, Storage = 1, Uniform = 2 };
 
