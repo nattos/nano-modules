@@ -22,6 +22,7 @@
 #include "text/text_engine.h"
 #include "text/text_blitz.h"
 #include "runtime/shader_from_spv.h"
+#include "platform/resource_root.h"
 
 // Baked from src/text/shaders/text_composite.hlsl (shaders/build_shaders.sh) —
 // six entry points, six SPIR-V blobs. The host translates each to the live
@@ -78,9 +79,36 @@ bool ensureFonts() {
   if (g_fonts_ready) return true;
   ensureBlitz();
 
-  const char* fontPath = std::getenv("TE_FONT");
-  if (!fontPath) fontPath = "/System/Library/Fonts/Helvetica.ttc";
-  if (FILE* f = std::fopen(fontPath, "rb")) {
+  // Last-resort primary face, tried in order. A host that knows better calls
+  // textInstallDefaultFonts() first and never reaches here; this is the floor
+  // for tests and tools that don't.
+  //
+  // The macOS system font stays FIRST on Apple because every macOS text golden
+  // is calibrated against Helvetica's metrics — demoting it would shift them
+  // all. Everywhere else the bundled default.ttf leads, which is also what the
+  // shipping plugin installs, so a tool and the plugin agree on one face.
+  //
+  // This list used to be the single hardcoded Helvetica path. Under CrossOver
+  // that quietly resolved through wine's Z: drive to the HOST Mac's Helvetica,
+  // so the text tests looked healthy while the same binary on real Windows
+  // found nothing and rendered zero glyphs.
+  static int anchor = 0;
+  std::vector<std::string> candidates;
+  if (const char* e = std::getenv("TE_FONT"); e && *e) candidates.emplace_back(e);
+#if defined(__APPLE__)
+  candidates.emplace_back("/System/Library/Fonts/Helvetica.ttc");
+#endif
+  if (std::string bundled = nano_paths::fontPath(&anchor, "default.ttf");
+      !bundled.empty())
+    candidates.push_back(std::move(bundled));
+#if defined(_WIN32)
+  if (const char* w = std::getenv("WINDIR"); w && *w)
+    candidates.emplace_back(std::string(w) + "\\Fonts\\segoeui.ttf");
+#endif
+
+  for (const std::string& path : candidates) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) continue;
     std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
     std::vector<uint8_t> fb(n > 0 ? n : 0);
     if (n > 0 && std::fread(fb.data(), 1, n, f) == (size_t)n) {
@@ -89,6 +117,7 @@ bool ensureFonts() {
       g_fonts_ready = true;
     }
     std::fclose(f);
+    if (g_fonts_ready) break;
   }
   if (!g_fonts_ready) return false;
 

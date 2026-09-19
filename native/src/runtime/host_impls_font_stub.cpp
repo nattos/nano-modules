@@ -15,6 +15,7 @@
 // mirroring sfntFromCTFont. Out of scope while the port is engine-only.
 
 #include "runtime/text_host.h"
+#include "platform/resource_root.h"
 
 #include <cstdio>
 #include <fstream>
@@ -78,6 +79,25 @@ void textInstallDefaultFonts(const char* primaryPath) {
     std::vector<uint8_t> bytes = readFile(primaryPath);
     if (!bytes.empty()) {
       textInstallPrimaryFont(bytes.data(), (int)bytes.size());
+      return;
+    }
+  }
+  // A null path means "the system UI font", which is exactly what this platform
+  // cannot answer. Falling through with nothing installed left textFontsReady()
+  // false and every glyph unrendered — for the plugin that never showed,
+  // because it passes an explicit path, but for every test and tool that asks
+  // for the default it meant silently no text at all.
+  //
+  // The bundled face is the honest substitute: it ships beside the wasm
+  // bundles, the plugin installs the same file, and it is what the web build
+  // uses, so tools and the plugin agree on one face rather than on none.
+  static int anchor = 0;
+  const std::string bundled = nano_paths::fontPath(&anchor, "default.ttf");
+  if (!bundled.empty()) {
+    std::vector<uint8_t> bytes = readFile(bundled);
+    if (!bytes.empty()) {
+      textInstallPrimaryFont(bytes.data(), (int)bytes.size());
+      warnOnce();   // families/CJK are still missing; say so once
       return;
     }
   }

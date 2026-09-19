@@ -26,7 +26,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cmath>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -245,6 +248,66 @@ class D3D11Backend : public GPUBackend {
     return store(std::move(r));
   }
 
+  // A storage buffer asks for more than it usually needs: VERTEX_BUFFER and
+  // DRAWINDIRECT_ARGS go on every one of them because the `usage` code the
+  // caller passed says nothing about whether the IA or an indirect draw will
+  // later read it (see createBuffer). wined3d accepts that combination at any
+  // size; a real driver does not always, and the first Windows machine to run
+  // this rejected three 4-byte buffers with E_INVALIDARG while every larger
+  // one succeeded.
+  //
+  // Rather than guess which rule bites, drop the speculative parts one at a
+  // time and keep the first set the device accepts. Only UAV|SRV|ALLOW_RAW_VIEWS
+  // is actually load-bearing — that is what SPIRV-Cross's ByteAddressBuffer
+  // needs — so every tier below the first still renders correctly; a buffer
+  // that later turns out to need the dropped flag fails at bind time with its
+  // own message, not silently.
+  //
+  // The accepted tier is logged once, which is how the next machine tells us
+  // what the rule was. The ladder is re-walked per buffer rather than latched,
+  // because what failed was size-dependent — latching the first machine's
+  // answer would strip flags from every large buffer that never needed it.
+  // bd is taken by REFERENCE: a tier that pads ByteWidth changes the raw
+  // view element counts the caller derives from it.
+  HRESULT createStorageBufferFallback(D3D11_BUFFER_DESC& bd, Resource& r) {
+    struct Tier { const char* what; UINT bind; UINT misc; UINT minWidth; };
+    const UINT kRaw = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+    const UINT kUavSrv = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+    const Tier tiers[] = {
+      {"padded to 16 bytes",      bd.BindFlags, bd.MiscFlags, 16},
+      {"without DRAWINDIRECT_ARGS", bd.BindFlags, kRaw, 0},
+      {"without VERTEX_BUFFER",   kUavSrv, bd.MiscFlags, 0},
+      {"UAV|SRV raw only",        kUavSrv, kRaw, 0},
+      {"UAV|SRV raw, 16-byte",    kUavSrv, kRaw, 16},
+    };
+    const UINT want = bd.ByteWidth;
+    for (const Tier& t : tiers) {
+      D3D11_BUFFER_DESC try_bd = bd;
+      try_bd.BindFlags = t.bind;
+      try_bd.MiscFlags = t.misc;
+      if (t.minWidth && try_bd.ByteWidth < t.minWidth) try_bd.ByteWidth = t.minWidth;
+      if (try_bd.BindFlags == bd.BindFlags && try_bd.MiscFlags == bd.MiscFlags &&
+          try_bd.ByteWidth == want)
+        continue;   // identical to the attempt that already failed
+      const HRESULT hr = device_->CreateBuffer(&try_bd, nullptr, r.buffer.put());
+      if (SUCCEEDED(hr)) {
+        static bool told = false;
+        if (!told) {
+          told = true;
+          std::fprintf(stderr,
+              "[d3d11] this driver rejects the full storage-buffer flag set at "
+              "%u bytes; falling back to '%s' (reported once)\n",
+              want, t.what);
+          std::fflush(stderr);
+        }
+        bd = try_bd;
+        return hr;
+      }
+    }
+    r.buffer.reset();
+    return E_INVALIDARG;
+  }
+
   int32_t createBuffer(uint64_t size, int32_t usage) override {
     if (!device_ || size == 0) return -1;
     Resource r;
@@ -276,6 +339,7 @@ class D3D11Backend : public GPUBackend {
       bd.ByteWidth = (UINT)((size + 3) & ~(uint64_t)3);  // raw views need 4-byte multiples
     }
     HRESULT hr = device_->CreateBuffer(&bd, nullptr, r.buffer.put());
+    if (FAILED(hr) && usage != 2) hr = createStorageBufferFallback(bd, r);
     if (FAILED(hr)) { hrFail("CreateBuffer", hr); return -1; }
 
     if (usage != 2) {
@@ -947,6 +1011,93 @@ class D3D11Backend : public GPUBackend {
   }
 
  private:
+  /// CreateDXGIFactory1 without an import library, matching this file's rule
+  /// that every D3D entry point is resolved at runtime (see CMakeLists).
+  static IDXGIFactory1* makeDxgiFactory() {
+    HMODULE dxgi = LoadLibraryA("dxgi.dll");
+    if (!dxgi) return nullptr;
+    using PFN = HRESULT(WINAPI*)(REFIID, void**);
+    auto fn = (PFN)GetProcAddress(dxgi, "CreateDXGIFactory1");
+    if (!fn) return nullptr;
+    IDXGIFactory1* f = nullptr;
+    return SUCCEEDED(fn(__uuidof(IDXGIFactory1), (void**)&f)) ? f : nullptr;
+  }
+
+  /// Resolve NANO_D3D_ADAPTER: a decimal DXGI index, or a case-insensitive
+  /// fragment of the adapter description. Software adapters are skipped for a
+  /// name match (nobody means WARP by "basic"), but an explicit index can
+  /// still reach one. Returns null — meaning "use the default" — if nothing
+  /// matches, and says so, because silently ignoring the variable would look
+  /// exactly like the bug it was set to work around.
+  Com<IDXGIAdapter> adapterMatching(const char* spec) {
+    Com<IDXGIAdapter> out;
+    IDXGIFactory1* factory = makeDxgiFactory();
+    if (!factory) {
+      std::fprintf(stderr, "[d3d11] NANO_D3D_ADAPTER set but DXGI is "
+                           "unavailable; using the default adapter\n");
+      return out;
+    }
+    char* end = nullptr;
+    const long index = std::strtol(spec, &end, 10);
+    const bool byIndex = end && *end == '\0' && end != spec && index >= 0;
+
+    std::string needle(spec);
+    for (char& c : needle) c = (char)std::tolower((unsigned char)c);
+
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+      DXGI_ADAPTER_DESC1 desc{};
+      adapter->GetDesc1(&desc);
+      char name[256] = {0};
+      WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name,
+                          sizeof(name) - 1, nullptr, nullptr);
+      std::string lower(name);
+      for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+
+      const bool hit = byIndex
+          ? ((long)i == index)
+          : (lower.find(needle) != std::string::npos &&
+             !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE));
+      if (hit) {
+        std::fprintf(stderr, "[d3d11] NANO_D3D_ADAPTER='%s' selected [%u] %s\n",
+                     spec, i, name);
+        adapter->QueryInterface(__uuidof(IDXGIAdapter), (void**)out.put());
+        adapter->Release();
+        break;
+      }
+      adapter->Release();
+    }
+    factory->Release();
+    if (!out.get())
+      std::fprintf(stderr, "[d3d11] NANO_D3D_ADAPTER='%s' matched no adapter; "
+                           "using the default\n", spec);
+    std::fflush(stderr);
+    return out;
+  }
+
+  /// The description of the adapter the live device is actually on.
+  std::string deviceAdapterName() const {
+    if (!device_.get()) return "(no device)";
+    IDXGIDevice* dxgiDev = nullptr;
+    if (FAILED(device_.get()->QueryInterface(__uuidof(IDXGIDevice),
+                                             (void**)&dxgiDev)))
+      return "(unknown adapter)";
+    std::string out = "(unknown adapter)";
+    IDXGIAdapter* a = nullptr;
+    if (SUCCEEDED(dxgiDev->GetAdapter(&a)) && a) {
+      DXGI_ADAPTER_DESC d{};
+      if (SUCCEEDED(a->GetDesc(&d))) {
+        char name[256] = {0};
+        WideCharToMultiByte(CP_UTF8, 0, d.Description, -1, name,
+                            sizeof(name) - 1, nullptr, nullptr);
+        out = name;
+      }
+      a->Release();
+    }
+    dxgiDev->Release();
+    return out;
+  }
+
   void init() {
     HMODULE d3d11 = LoadLibraryA("d3d11.dll");
     if (!d3d11) { std::fprintf(stderr, "[d3d11] d3d11.dll not found\n"); return; }
@@ -961,19 +1112,43 @@ class D3D11Backend : public GPUBackend {
           "Ship Microsoft's copy beside the binary.\n");
     }
 
+    // Which GPU. A null adapter means "the default", which on a hybrid laptop
+    // is the integrated one — and that is usually right, because the engine
+    // renders offscreen and never presents.
+    //
+    // It is NOT right when the barrel is in play. WGL_NV_DX_interop2 requires
+    // the GL context and the D3D device to be on the SAME GPU, and the host's
+    // GL context goes wherever the driver's application profile sends it,
+    // which for a known VJ application is typically the discrete GPU. The two
+    // choices disagreeing is a share that fails for a reason neither API
+    // reports. NANO_D3D_ADAPTER is the escape hatch for exactly that: a
+    // decimal DXGI index, or any case-insensitive fragment of the adapter
+    // description ("nvidia", "quadro", "intel").
+    Com<IDXGIAdapter> chosen;
+    if (const char* pick = std::getenv("NANO_D3D_ADAPTER"); pick && *pick)
+      chosen = adapterMatching(pick);
+
     // 11_1 specifically, not 11_0: feature level 11_0 caps compute UAVs at 8,
     // and line_reconstruct/features.hlsl already binds u8/u9/u10. Failing here
     // is far better than mis-binding silently at dispatch time.
     const D3D_FEATURE_LEVEL want[] = { D3D_FEATURE_LEVEL_11_1 };
     D3D_FEATURE_LEVEL got{};
-    HRESULT hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, want, 1,
+    // Naming an adapter REQUIRES driver type UNKNOWN; HARDWARE with a non-null
+    // adapter is E_INVALIDARG.
+    HRESULT hr = create(chosen.get(),
+                        chosen.get() ? D3D_DRIVER_TYPE_UNKNOWN
+                                     : D3D_DRIVER_TYPE_HARDWARE,
+                        nullptr, 0, want, 1,
                         D3D11_SDK_VERSION, device_.put(), &got, ctx_.put());
     if (FAILED(hr)) {
       hrFail("D3D11CreateDevice(HARDWARE, 11_1)", hr);
       return;
     }
-    std::fprintf(stderr, "[d3d11] device up at feature level 0x%04x\n",
-                 (unsigned)got);
+    // Always say which GPU won. On a one-GPU machine this is noise; on a
+    // hybrid laptop it is the first thing anybody reading a black-output
+    // report needs to know.
+    std::fprintf(stderr, "[d3d11] device up at feature level 0x%04x on %s\n",
+                 (unsigned)got, deviceAdapterName().c_str());
     std::fflush(stderr);
 
     D3D11_RASTERIZER_DESC rd{};

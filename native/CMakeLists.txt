@@ -1915,7 +1915,11 @@ if(NANO_HAS_GPU_BACKEND)
   # It links the real thing throughout: the plugin's own interop, the plugin's
   # own loader, the test tree's texture probe, and at runtime the shipping
   # NanoBarrel.dll and libbridge_server.dll. Nothing here is a stand-in.
-  if(NANO_BUILD_FFGL)
+  #
+  # WIN32 is part of the gate, not just NANO_BUILD_FFGL: every source here
+  # opens with <windows.h>, and the macOS tree builds the FFGL plugin too, so
+  # the FFGL option alone put this target into a build that cannot compile it.
+  if(WIN32 AND NANO_BUILD_FFGL)
     add_executable(nano_diag
       tools/nano_diag/nano_diag.cpp
       tools/nano_diag/diag_log.cpp

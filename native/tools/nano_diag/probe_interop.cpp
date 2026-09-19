@@ -17,6 +17,7 @@
 #include <GL/wglew.h>
 
 #include <d3d11.h>
+#include <dxgi1_2.h>
 
 #include "diag.h"
 
@@ -113,25 +114,119 @@ double agreement(const std::vector<uint8_t>& px, bool flipped) {
   return total ? (double)hits / total : 0.0;
 }
 
-// Describe the mapping GL reports for a texture D3D wrote, rather than
-// asserting one. Returns true if either orientation is a clean match.
+// Describe the row mapping the share gives, rather than asserting one. Which
+// way round it is does NOT decide whether the plugin is correct -- the check
+// with an absolute reference is the blit below, which knows which end of the
+// host image is its top. This one just records the convention so a machine
+// that differs is recognisable in the log.
+//
+// Returns true if either orientation is a clean match.
 bool reportOrientation(const char* direction, const std::vector<uint8_t>& px) {
   const double upright = agreement(px, false);
   const double flipped = agreement(px, true);
   if (flipped > 0.95) {
-    check(true, direction, "pixels match, rows flipped (GL row 0 = last D3D "
-                           "row) -- the expected convention");
+    check(true, direction, "pixels match, rows reversed (GL row 0 = last D3D row)");
     return true;
   }
   if (upright > 0.95) {
-    check(true, direction, "pixels match, rows NOT flipped -- note this, the "
-                           "plugin's blits assume the flip");
+    check(true, direction, "pixels match, rows in step (GL row 0 = D3D row 0)");
     return true;
   }
   check(false, direction, "pixels do not match the pattern (%.0f%% upright, "
                           "%.0f%% flipped)", upright * 100.0, flipped * 100.0);
   dumpCorners(direction, px);
   return false;
+}
+
+// Which GPUs can this GL context share with?
+//
+// The engine builds its device with D3D11CreateDevice(nullptr, ...) -- the
+// DEFAULT adapter, which on a hybrid laptop is the integrated one. The GL
+// context, meanwhile, lands wherever the driver's application profile puts it,
+// and for a known application like Resolume that is usually the discrete GPU.
+// WGL_NV_DX_interop2 requires both on the SAME GPU, so those two choices
+// disagreeing is a share that fails for a reason neither API reports.
+//
+// nano_diag is an unknown executable, so its own GL context gets the
+// integrated GPU and the default adapter happens to match -- which is exactly
+// why the main probe above can pass on a machine where the plugin would still
+// fail inside a real host. So ask the question directly: build a device on
+// every hardware adapter in turn and see which ones this GL context will open.
+// If only one does, adapter choice is load-bearing and the engine must stop
+// taking the default.
+void reportAdapterSharing(ID3D11Device* defaultDevice) {
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) return;
+
+  // Which adapter did the default-adapter call actually land on?
+  LUID defaultLuid{};
+  bool haveDefaultLuid = false;
+  if (IDXGIDevice* dxgiDev = nullptr;
+      SUCCEEDED(defaultDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev))) {
+    IDXGIAdapter* a = nullptr;
+    if (SUCCEEDED(dxgiDev->GetAdapter(&a)) && a) {
+      DXGI_ADAPTER_DESC d{};
+      if (SUCCEEDED(a->GetDesc(&d))) { defaultLuid = d.AdapterLuid; haveDefaultLuid = true; }
+      a->Release();
+    }
+    dxgiDev->Release();
+  }
+
+  logf("\n      which GPUs this GL context can share with:\n");
+  int sharers = 0, hardware = 0;
+  IDXGIAdapter1* adapter = nullptr;
+  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+    DXGI_ADAPTER_DESC1 desc{};
+    adapter->GetDesc1(&desc);
+    char name[256] = {0};
+    WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name) - 1,
+                        nullptr, nullptr);
+    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) { adapter->Release(); continue; }
+    ++hardware;
+
+    const bool isDefault = haveDefaultLuid &&
+                           desc.AdapterLuid.LowPart == defaultLuid.LowPart &&
+                           desc.AdapterLuid.HighPart == defaultLuid.HighPart;
+
+    // A device on THIS adapter, then the plugin's own open call.
+    const D3D_FEATURE_LEVEL want[] = {D3D_FEATURE_LEVEL_11_1};
+    ID3D11Device* d = nullptr;
+    // D3D_DRIVER_TYPE_UNKNOWN is required when an adapter is named -- passing
+    // HARDWARE with a non-null adapter is E_INVALIDARG.
+    HRESULT hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0,
+                                   want, 1, D3D11_SDK_VERSION, &d, nullptr, nullptr);
+    const char* verdict;
+    if (FAILED(hr)) {
+      verdict = "no D3D11 11_1 device";
+    } else if (HANDLE h = wglDXOpenDeviceNV(d); h != nullptr) {
+      wglDXCloseDeviceNV(h);
+      verdict = "CAN share";
+      ++sharers;
+    } else {
+      verdict = "cannot share with this GL context";
+    }
+    if (d) d->Release();
+    logf("        [%u] %-44s %s%s\n", i, name, verdict,
+         isDefault ? "   <- the engine's default adapter" : "");
+    adapter->Release();
+  }
+  factory->Release();
+
+  if (hardware > 1 && sharers == 1) {
+    logf("      Only one GPU can share, and the engine picks the default "
+         "adapter rather than\n"
+         "      the one its GL context is on. In a host whose GL context "
+         "lands on the OTHER\n"
+         "      GPU -- which is what a driver profile for a known VJ "
+         "application does -- the\n"
+         "      share would fail even though it works here. This is the "
+         "single most important\n"
+         "      line in the log on a two-GPU machine.\n");
+  } else if (hardware > 1 && sharers > 1) {
+    logf("      More than one GPU can share with this context, so the "
+         "engine's default-adapter\n"
+         "      choice is not fatal here.\n");
+  }
 }
 
 }  // namespace
@@ -267,20 +362,38 @@ bool probeInterop() {
     check(false, "host FBO -blit-> interop", "staging readback failed");
     ok = false;
   } else {
-    // GL read row 0 is the bottom of hostFbo, and the destination Y is
-    // reversed, so the two cancel: D3D row 0 should hold pattern row 0.
+    // What the engine needs is D3D row 0 = the TOP of the host image, because
+    // that is what every D3D texture in the engine means by row 0.
+    //
+    // The host texture was uploaded array-row-r-to-GL-row-r, and GL row 0 is
+    // the BOTTOM of a framebuffer, so pattern row 0 is the host image's bottom
+    // and pattern row kH-1 is its top. D3D row 0 should therefore hold pattern
+    // row kH-1 -- which is exactly what agreement(flipped) measures.
+    //
+    // (An earlier version of this check expected `upright`, on the theory that
+    // the blit's Y reversal cancelled a second reversal in the share. There is
+    // no second reversal: "GL row 0 is the bottom" is a coordinate convention,
+    // not a flip. The first real machine to run this reported UPSIDE DOWN for
+    // a stack that was in fact correct, which the ffgl probe's own orientation
+    // check -- passing on the same run -- contradicted.)
     const double upright = agreement(viaD3d, false);
     const double flipped = agreement(viaD3d, true);
-    const bool good = upright > 0.95;
-    check(good, "host FBO -blit-> interop", "%s (%.0f%% upright, %.0f%% flipped)",
-          good ? "arrived upright, as the plugin intends"
-               : (flipped > 0.95 ? "arrived UPSIDE DOWN -- the Y-flip nets the "
-                                   "wrong way on this stack"
+    const bool good = flipped > 0.95;
+    check(good, "host FBO -blit-> interop", "%s (%.0f%% top-first, %.0f%% bottom-first)",
+          good ? "D3D row 0 holds the top of the host image, as the engine expects"
+               : (upright > 0.95 ? "UPSIDE DOWN -- D3D row 0 holds the BOTTOM of "
+                                   "the host image, so every effect with a top "
+                                   "and a bottom is inverted"
                                  : "did not arrive"),
-          upright * 100.0, flipped * 100.0);
+          flipped * 100.0, upright * 100.0);
     if (!good) dumpCorners("interop after blit", viaD3d);
     ok &= good;
   }
+
+  // Informational, and on a hybrid laptop the most consequential thing here:
+  // the checks above all ran on ONE adapter pairing, the one this executable
+  // happens to get. See reportAdapterSharing.
+  reportAdapterSharing(dev);
 
   glDeleteFramebuffers(1, &hostFbo);
   glDeleteTextures(1, &hostTex);

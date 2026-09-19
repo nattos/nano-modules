@@ -45,6 +45,14 @@ nano_diag.exe --strict        NANO_D3D_STRICT=1 (abort on a bad HRESULT)
 nano_diag.exe --list          what there is to run
 ```
 
+`NANO_D3D_ADAPTER` is inherited by every child, so a hybrid-GPU machine can be
+re-run on the other GPU without a new build:
+
+```
+set NANO_D3D_ADAPTER=nvidia
+nano_diag.exe --only interop
+```
+
 The driver runs **every check as a child process** — its own probes by
 re-executing itself with `--probe`, the suites as they are. That is not
 ceremony: the headline check is code running for the first time anywhere, and
@@ -82,6 +90,51 @@ line per check.
 
 A `FAIL` on `gl` cascades into `interop`, `barrel` and `ffgl` — four failures,
 one cause. Each says so in its own words; read the first one.
+
+## What the first real machine said
+
+Run on 2026-09-19: Windows 10.0.26200, i7-9750H, an Intel UHD 630 **and** an
+NVIDIA Quadro RTX 5000, driver 26.20.100.7985.
+
+**The share works.** `WGL_NV_DX_interop2` present; `createInteropTexture`
+registered and the FBO came up complete; both directions carried the right
+pixels with the right channels; `barrel` rendered a frame GL-in/GL-out with the
+GL and D3D readbacks agreeing; and `ffgl` drove the shipping `NanoBarrel.dll`
+through `plugMain` for 60 frames with the input surviving the round trip.
+`interop_texture_d3d11.cpp` is no longer unproven code.
+
+Four things that run gave wrong answers, and all four are now fixed:
+
+1. **The interop probe's own orientation expectation was inverted** — it
+   reported UPSIDE DOWN for a stack that was correct, which the `ffgl` probe's
+   orientation check contradicted in the same run. There is no second Y
+   reversal to cancel the blit's: "GL row 0 is the bottom" is a coordinate
+   convention, not a flip. The check now asks the question with an absolute
+   reference — does D3D row 0 hold the *top* of the host image.
+2. **Text rendered nothing.** The fallback primary face was one hardcoded
+   macOS path. Under CrossOver that quietly resolved through wine's `Z:` drive
+   to the host Mac's Helvetica, so the text tests looked healthy here while the
+   same binary on real Windows found no font at all. It now falls back to the
+   bundled `default.ttf` — which is also what the plugin installs, so a tool
+   and the plugin agree on one face. (The plugin was never affected: it always
+   passed an explicit path.)
+3. **`CreateBuffer` rejected three 4-byte storage buffers** with `E_INVALIDARG`
+   where every larger one succeeded. wined3d accepts the flag set at any size;
+   that driver does not. The backend now walks a ladder of progressively
+   smaller flag sets and logs which one the driver took — the next log names
+   the rule.
+4. **`nano_diag` was gated on `NANO_BUILD_FFGL` but not `WIN32`**, so it broke
+   the macOS build as soon as that option was on.
+
+**The open question is which GPU.** The engine builds its device with
+`D3D11CreateDevice(nullptr, ...)` — the default adapter, which on that laptop
+is the Intel. `nano_diag` is an unknown executable, so its GL context landed on
+the Intel too and the two matched by luck. Inside Resolume, whose driver
+profile almost certainly puts GL on the Quadro, they would not, and the share
+requires both on the same GPU. The `interop` probe now builds a device on every
+hardware adapter and reports which ones the live GL context will actually open,
+which settles it; `NANO_D3D_ADAPTER` (a DXGI index, or a fragment of the
+description such as `nvidia`) is the escape hatch in the meantime.
 
 ## What it does not do
 
