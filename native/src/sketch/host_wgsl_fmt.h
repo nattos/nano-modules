@@ -1,17 +1,24 @@
 #pragma once
 /*
- * host_wgsl_fmt.h — per-format templating for the executor's inline WGSL
- * kernels (host_blend.h, host_sidechannel_blit.h, host_output_blit.h).
+ * host_wgsl_fmt.h — the storage-texture format the executor's own shaders
+ * (host_blend.h, host_sidechannel_blit.h, host_output_blit.h) declare.
  *
- * The executor's twin shader sources declare their storage outputs as
- * `rgba8unorm` — historically the only stage format. With per-sketch bit
- * depth the output texture can be rgba16float, and WGSL storage textures
- * bake the format into the declaration, so WebGPU needs one PSO per
- * concrete output format. MSL never bakes storage formats, so the Metal
- * side keeps a single PSO regardless.
+ * Those shaders are authored once as HLSL (src/sketch/shaders/) and translated
+ * per backend at PSO-build time. WGSL is the only one of the three target
+ * languages that BAKES a storage format into the declaration — MSL and HLSL
+ * take it from the view at bind time — so WebGPU needs one shader module per
+ * concrete output format (a 16F sketch writes rgba16float intermediates) while
+ * Metal and D3D11 need exactly one for all of them.
+ *
+ * This is the last thing the executor still asks gpu_get_backend() about, and
+ * the reason it is phrased as a named question rather than an inline `== 1`:
+ * every site that used to read `gpu_get_backend() == 1 ? WGSL : MSL` handed MSL
+ * to D3D11 the day that backend existed. A backend this predicate doesn't
+ * recognize gets the single-module answer, which is right for every language
+ * that isn't WGSL.
  */
 
-#include <string>
+#include <cstdint>
 
 namespace sketch_executor {
 
@@ -25,19 +32,8 @@ inline const char* wgslStorageFormatName(int32_t code) {
   }
 }
 
-// Rewrite every `rgba8unorm` in an inline WGSL source to the storage format
-// for `code`. Code 1 (or unknown) returns the source unchanged.
-inline std::string wgslWithStorageFormat(const char* src, int32_t code) {
-  std::string s(src);
-  const char* to = wgslStorageFormatName(code);
-  if (std::string(to) == "rgba8unorm") return s;
-  const std::string from = "rgba8unorm";
-  size_t pos = 0;
-  while ((pos = s.find(from, pos)) != std::string::npos) {
-    s.replace(pos, from.size(), to);
-    pos += std::string(to).size();
-  }
-  return s;
-}
+// Does `backend` (gpu::Backend, from gpu_get_backend()) compile a shader
+// language that bakes the storage-texture format? 1 = WebGPU/WGSL.
+inline bool backendBakesStorageFormat(int32_t backend) { return backend == 1; }
 
 }  // namespace sketch_executor

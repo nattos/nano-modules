@@ -10,74 +10,27 @@
  * override is a quality/perf knob, the output always fills the host surface)
  * while converting the format (e.g. rgba16float → the 8-bit output).
  *
- * Structure mirrors host_sidechannel_blit.h: lock-step MSL/WGSL sources, a
- * lazily built PSO, one dispatch encoded into the executor's per-frame
- * command batch. Bilinear is done with 4 manual textureLoad taps (the exec
- * ABI has no sampler imports, and manual taps keep the two sources
- * byte-equivalent in behavior). Same-size same-format pairs take the
- * gpu_copy_texture fast path.
+ * Structure mirrors host_sidechannel_blit.h: a lazily built PSO, one dispatch
+ * encoded into the executor's per-frame command batch. Bilinear is done with 4
+ * manual taps (the exec ABI has no sampler imports). Same-size same-format
+ * pairs take the gpu_copy_texture fast path.
  *
- * The WGSL storage output is templated per concrete output format via
- * host_wgsl_fmt.h (one PSO per format code on WebGPU; Metal's MSL is
- * format-agnostic and keeps a single PSO).
+ * The kernel is authored ONCE as HLSL (shaders/output_blit.hlsl), baked to
+ * SPIR-V at build time and translated by the host per backend — see exec_gpu.h's
+ * create_shader_module_spv. The only thing left that varies per backend is how
+ * many modules are needed: WGSL bakes the storage format into the declaration,
+ * so WebGPU gets one per concrete output format (host_wgsl_fmt.h).
  */
 
 #include "sketch/exec_gpu.h"
 #include "sketch/host_wgsl_fmt.h"
 
+#include "exec_output_blit_spv.h"  // OUTPUT_BLIT_SPV — see shaders/build_shaders.sh
+
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace sketch_executor {
-
-inline constexpr const char* kOutputBlitMSL = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
-struct U { uint dw; uint dh; uint sw; uint sh; };
-kernel void output_blit(
-    uint2 gid [[thread_position_in_grid]],
-    texture2d<float, access::read>  src_tex [[texture(0)]],
-    texture2d<float, access::write> out_tex [[texture(1)]],
-    constant U& u [[buffer(2)]]) {
-  if (gid.x >= u.dw || gid.y >= u.dh) return;
-  float2 srcPos = (float2(gid) + 0.5f) * float2(u.sw, u.sh) / float2(u.dw, u.dh) - 0.5f;
-  float2 f = fract(srcPos);
-  int2 p0 = int2(floor(srcPos));
-  int2 p1 = min(p0 + 1, int2(u.sw - 1, u.sh - 1));
-  p0 = max(p0, int2(0));
-  float4 c00 = src_tex.read(uint2(p0));
-  float4 c10 = src_tex.read(uint2(p1.x, p0.y));
-  float4 c01 = src_tex.read(uint2(p0.x, p1.y));
-  float4 c11 = src_tex.read(uint2(p1));
-  float4 c = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-  out_tex.write(c, gid);
-}
-)MSL";
-
-// WGSL twin of kOutputBlitMSL — same math + binding layout.
-inline constexpr const char* kOutputBlitWGSL = R"WGSL(
-struct U { dw: u32, dh: u32, sw: u32, sh: u32 };
-@group(0) @binding(0) var src_tex: texture_2d<f32>;
-@group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(2) var<uniform> u: U;
-@compute @workgroup_size(8, 8, 1)
-fn output_blit(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x >= u.dw || gid.y >= u.dh) { return; }
-  let srcPos = (vec2<f32>(f32(gid.x), f32(gid.y)) + 0.5) *
-      vec2<f32>(f32(u.sw), f32(u.sh)) / vec2<f32>(f32(u.dw), f32(u.dh)) - 0.5;
-  let f = fract(srcPos);
-  var p0 = vec2<i32>(floor(srcPos));
-  let p1 = min(p0 + 1, vec2<i32>(i32(u.sw) - 1, i32(u.sh) - 1));
-  p0 = max(p0, vec2<i32>(0));
-  let c00 = textureLoad(src_tex, p0, 0);
-  let c10 = textureLoad(src_tex, vec2<i32>(p1.x, p0.y), 0);
-  let c01 = textureLoad(src_tex, vec2<i32>(p0.x, p1.y), 0);
-  let c11 = textureLoad(src_tex, p1, 0);
-  let c = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-  textureStore(out_tex, vec2<i32>(i32(gid.x), i32(gid.y)), c);
-}
-)WGSL";
 
 class OutputBlit {
  public:
@@ -121,24 +74,23 @@ class OutputBlit {
  private:
   struct PsoEntry { int32_t fmtKey; int32_t shader; int32_t pso; };
 
-  // One PSO per WGSL storage format on WebGPU; a single format-agnostic PSO
-  // (key 0) on Metal.
+  // One PSO per storage format where the shader language bakes it (WGSL); a
+  // single format-agnostic PSO (key 0) everywhere else.
   int32_t ensurePso(int32_t outTex) {
-    const bool web = (gpu_get_backend() == 1);
     int32_t key = 0;
-    if (web) {
+    if (backendBakesStorageFormat(gpu_get_backend())) {
       key = gpu_get_texture_format(outTex);
       if (key < 0) key = 1;
     }
     for (const auto& e : psos_) {
       if (e.fmtKey == key) return e.pso;
     }
-    const std::string src = web ? wgslWithStorageFormat(kOutputBlitWGSL, key)
-                                : std::string(kOutputBlitMSL);
-    int32_t shader = gpu_create_shader_module(src.c_str(), (int32_t)src.size());
+    const char* fmt = wgslStorageFormatName(key);
+    int32_t shader = gpu_create_shader_module_spv(
+        OUTPUT_BLIT_SPV, OUTPUT_BLIT_SPV_SIZE,
+        fmt, (int32_t)__builtin_strlen(fmt), "write", 5);
     if (shader < 0) return -1;
-    int32_t pso = gpu_create_compute_pso(shader, "output_blit",
-                                         (int32_t)__builtin_strlen("output_blit"));
+    int32_t pso = gpu_create_compute_pso(shader, "main", 4);
     if (pso < 0) { gpu_release(shader); return -1; }
     psos_.push_back({key, shader, pso});
     return pso;

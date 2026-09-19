@@ -14,6 +14,11 @@ NLOHMANN_DIR=../../build/_deps/nlohmann_json-src/include
 
 source ../wasm_build_env.sh
 
+# The executor's OWN shaders (blend / output blit / sidechannel blit) — one
+# authored HLSL each, baked to SPIR-V and translated by the host per backend.
+# The native CMake build runs the same script into the same TMP_DIR.
+"$SRC_DIR/sketch/shaders/build_shaders.sh" "$(cd "$TMP_DIR" && pwd)"
+
 # nlohmann/json — see bridge_core/build.sh. CMake normally fetches it; a
 # web-only (or non-macOS) checkout has no native configure step, so fetch here.
 ensure_nlohmann "$(dirname "$NLOHMANN_DIR")"
@@ -47,6 +52,7 @@ SOURCES=(
 echo "Building $MODULE_NAME.wasm..."
 "$CLANG" "${WASM_CXXFLAGS[@]}" \
   -I"$SRC_DIR" \
+  -I"$TMP_DIR" \
   -I"$NLOHMANN_DIR" \
   "${WASM_LDFLAGS[@]}" \
   "${WASM_EXPORTS[@]}" \

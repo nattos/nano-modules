@@ -34,171 +34,33 @@
  * transparency); its endpoints stay exact (t=0 → dry, t=1 → fx) at every
  * shape, preserving the copyToOutput invariant.
  *
- * The executor runs as executor.wasm on BOTH backends, so the blend ships in
- * two languages and picks one from gpu_get_backend() at PSO-build time: MSL on
- * Metal (native), WGSL on WebGPU (web). `gpu_create_shader_module` compiles the
- * source verbatim in the host's native language, so a single hardcoded language
- * fails on the other backend (feeding MSL to WebGPU traps with "invalid
- * character #include <metal_stdlib>", which broke partial opacity on web). The
- * two sources are kept in LOCK-STEP. Bindings: dry = texture 0, fx = texture 1,
- * out = texture 2 (write), uniform = slot 3 — textures first, then the uniform,
- * matching the fused-kernel convention so WebGPU's auto-layout (one binding
- * namespace per group) has no texture/buffer @binding collision.
+ * The kernel is authored ONCE as HLSL (shaders/blend.hlsl), baked to SPIR-V at
+ * build time and translated by the HOST per backend — see exec_gpu.h's
+ * create_shader_module_spv. It used to ship as hand-written MSL + WGSL twins
+ * picked by `gpu_get_backend() == 1 ? WGSL : MSL`, which failed twice for
+ * mirror-image reasons: MSL fed to WebGPU traps on "#include <metal_stdlib>"
+ * (partial opacity froze the web output), and the `else` branch meaning "Metal"
+ * fed the same MSL to D3D11 the day that backend existed (FXC: "X1505: No
+ * include handler specified" — no blending at all on Windows).
+ *
+ * Bindings: dry = texture 0, fx = texture 1, out = texture 2 (write), uniform =
+ * slot 3 — textures first, then the uniform, matching the fused-kernel
+ * convention so WebGPU's auto-layout (one binding namespace per group) has no
+ * texture/buffer @binding collision. In the HLSL those ARE the register
+ * numbers (t0/t1/u2/b3); DXC maps register N to SPIR-V binding N, and every
+ * translator maps it back.
  */
 
 #include "sketch/exec_gpu.h"
 #include "sketch/host_wgsl_fmt.h"
 #include "sketch/xfade_shape.h"
 
+#include "exec_blend_spv.h"  // BLEND_SPV — see shaders/build_shaders.sh
+
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace sketch_executor {
-
-// MSL kernel. mode 0: out = mix(dry, fx, opacity) full RGBA, morphed toward a
-// weighted over by `shape`. mode 1..15: blend math + source-over by wB
-// (lock-step with video_blend/compute.hlsl). The fade weights wA/wB are
-// CPU-computed (xfade_shape.h). Out-of-range reads are gated by the canvas
-// dims in the uniform.
-inline constexpr const char* kWetDryBlendMSL = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
-struct U { uint w; uint h; float opacity; uint mode; float wA; float wB; float shape; float pad; };
-static float3 b_screen(float3 a, float3 b)    { return 1.0f - (1.0f - a) * (1.0f - b); }
-static float3 b_overlay(float3 a, float3 b)   { return mix(2.0f*a*b, 1.0f - 2.0f*(1.0f-a)*(1.0f-b), step(float3(0.5f), a)); }
-static float3 b_dodge(float3 a, float3 b)     { return min(float3(1.0f), a / max(1.0f - b, float3(1e-4f))); }
-static float3 b_burn(float3 a, float3 b)      { return 1.0f - min(float3(1.0f), (1.0f - a) / max(b, float3(1e-4f))); }
-static float3 b_softlight(float3 a, float3 b) { return (1.0f - 2.0f*b) * a * a + 2.0f * b * a; }
-static float3 b_divide(float3 a, float3 b)    { return min(float3(1.0f), a / max(b, float3(1e-4f))); }
-static float3 blend_mode(uint m, float3 a, float3 b) {
-  switch (m) {
-    case 1:  return min(a + b, float3(1.0f));     // Add (linear dodge)
-    case 2:  return a * b;                        // Multiply
-    case 3:  return b_screen(a, b);               // Screen
-    case 4:  return b_overlay(a, b);              // Overlay
-    case 5:  return min(a, b);                    // Darken
-    case 6:  return max(a, b);                    // Lighten
-    case 7:  return b_dodge(a, b);                // Color Dodge
-    case 8:  return b_burn(a, b);                 // Color Burn
-    case 9:  return b_overlay(b, a);              // Hard Light (overlay, swapped)
-    case 10: return b_softlight(a, b);            // Soft Light
-    case 11: return abs(a - b);                   // Difference
-    case 12: return a + b - 2.0f*a*b;             // Exclusion
-    case 13: return max(a - b, float3(0.0f));     // Subtract
-    case 14: return b_divide(a, b);               // Divide
-    case 15: return max(a + b - 1.0f, float3(0.0f)); // Linear Burn
-    default: return b;                            // 0: Normal
-  }
-}
-kernel void wet_dry_blend(
-    uint2 gid [[thread_position_in_grid]],
-    texture2d<float, access::read>  dry_tex [[texture(0)]],
-    texture2d<float, access::read>  fx_tex  [[texture(1)]],
-    texture2d<float, access::write> out_tex [[texture(2)]],
-    constant U& u [[buffer(3)]]) {
-  if (gid.x >= u.w || gid.y >= u.h) return;
-  float4 a = dry_tex.read(gid);
-  float4 b = fx_tex.read(gid);
-  if (u.mode == 0u) {
-    float4 m = mix(a, b, u.opacity);
-    if (u.shape <= 0.0f) {          // legacy lerp, bit-exact (incl. copyToOutput)
-      out_tex.write(m, gid);
-      return;
-    }
-    // Weighted straight-alpha over: b(alpha*wB) over a(alpha*wA), morphed in
-    // by shape (see the header comment).
-    float topA = saturate(b.a * u.wB);
-    float baseA = a.a * u.wA;
-    float overA = topA + baseA * (1.0f - topA);
-    float3 overc = (overA > 1e-5f)
-        ? (b.rgb * topA + a.rgb * baseA * (1.0f - topA)) / overA
-        : float3(0.0f);
-    out_tex.write(mix(m, float4(overc, overA), u.shape), gid);
-    return;
-  }
-  float3 blended = saturate(blend_mode(u.mode, a.rgb, b.rgb));
-  float topA = saturate(b.a * u.wB);
-  float outA = topA + a.a * (1.0f - topA);
-  float3 outc = (outA > 1e-5f)
-      ? (blended * topA + a.rgb * a.a * (1.0f - topA)) / outA
-      : float3(0.0f);
-  out_tex.write(float4(outc, outA), gid);
-}
-)MSL";
-
-// WGSL twin of kWetDryBlendMSL (WebGPU). Same math + binding layout: read
-// textures at @binding 0/1, a write storage texture at @binding 2, and the
-// uniform at @binding 3 (after the textures — no auto-layout collision).
-// The rgba8unorm storage declaration is a TEMPLATE — re-instantiated per
-// concrete output format via host_wgsl_fmt.h (16F sketches write rgba16float
-// intermediates).
-inline constexpr const char* kWetDryBlendWGSL = R"WGSL(
-struct U { w: u32, h: u32, opacity: f32, mode: u32, wA: f32, wB: f32, shape: f32, pad: f32 };
-@group(0) @binding(0) var dry_tex: texture_2d<f32>;
-@group(0) @binding(1) var fx_tex:  texture_2d<f32>;
-@group(0) @binding(2) var out_tex: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(3) var<uniform> u: U;
-fn b_screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>    { return 1.0 - (1.0 - a) * (1.0 - b); }
-fn b_overlay(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>   { return mix(2.0*a*b, 1.0 - 2.0*(1.0-a)*(1.0-b), step(vec3<f32>(0.5), a)); }
-fn b_dodge(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>     { return min(vec3<f32>(1.0), a / max(1.0 - b, vec3<f32>(1e-4))); }
-fn b_burn(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>      { return 1.0 - min(vec3<f32>(1.0), (1.0 - a) / max(b, vec3<f32>(1e-4))); }
-fn b_softlight(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return (1.0 - 2.0*b) * a * a + 2.0 * b * a; }
-fn b_divide(a: vec3<f32>, b: vec3<f32>) -> vec3<f32>    { return min(vec3<f32>(1.0), a / max(b, vec3<f32>(1e-4))); }
-fn blend_mode(m: u32, a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
-  switch m {
-    case 1u:  { return min(a + b, vec3<f32>(1.0)); }      // Add (linear dodge)
-    case 2u:  { return a * b; }                           // Multiply
-    case 3u:  { return b_screen(a, b); }                  // Screen
-    case 4u:  { return b_overlay(a, b); }                 // Overlay
-    case 5u:  { return min(a, b); }                       // Darken
-    case 6u:  { return max(a, b); }                       // Lighten
-    case 7u:  { return b_dodge(a, b); }                   // Color Dodge
-    case 8u:  { return b_burn(a, b); }                    // Color Burn
-    case 9u:  { return b_overlay(b, a); }                 // Hard Light (overlay, swapped)
-    case 10u: { return b_softlight(a, b); }               // Soft Light
-    case 11u: { return abs(a - b); }                      // Difference
-    case 12u: { return a + b - 2.0*a*b; }                 // Exclusion
-    case 13u: { return max(a - b, vec3<f32>(0.0)); }      // Subtract
-    case 14u: { return b_divide(a, b); }                  // Divide
-    case 15u: { return max(a + b - 1.0, vec3<f32>(0.0)); } // Linear Burn
-    default:  { return b; }                               // 0: Normal
-  }
-}
-@compute @workgroup_size(8, 8, 1)
-fn wet_dry_blend(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x >= u.w || gid.y >= u.h) { return; }
-  let p = vec2<i32>(i32(gid.x), i32(gid.y));
-  let a = textureLoad(dry_tex, p, 0);
-  let b = textureLoad(fx_tex,  p, 0);
-  if (u.mode == 0u) {
-    let m = mix(a, b, u.opacity);
-    if (u.shape <= 0.0) {           // legacy lerp, bit-exact (incl. copyToOutput)
-      textureStore(out_tex, p, m);
-      return;
-    }
-    // Weighted straight-alpha over: b(alpha*wB) over a(alpha*wA), morphed in
-    // by shape (see the header comment).
-    let topA0 = clamp(b.a * u.wB, 0.0, 1.0);
-    let baseA = a.a * u.wA;
-    let overA = topA0 + baseA * (1.0 - topA0);
-    var overc = vec3<f32>(0.0);
-    if (overA > 1e-5) {
-      overc = (b.rgb * topA0 + a.rgb * baseA * (1.0 - topA0)) / overA;
-    }
-    textureStore(out_tex, p, mix(m, vec4<f32>(overc, overA), u.shape));
-    return;
-  }
-  let blended = clamp(blend_mode(u.mode, a.rgb, b.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
-  let topA = clamp(b.a * u.wB, 0.0, 1.0);
-  let outA = topA + a.a * (1.0 - topA);
-  var outc = vec3<f32>(0.0);
-  if (outA > 1e-5) {
-    outc = (blended * topA + a.rgb * a.a * (1.0 - topA)) / outA;
-  }
-  textureStore(out_tex, p, vec4<f32>(outc, outA));
-}
-)WGSL";
 
 class WetDryBlend {
  public:
@@ -257,35 +119,23 @@ class WetDryBlend {
 
   struct PsoEntry { int32_t fmtKey; int32_t shader; int32_t pso; };
 
-  // One PSO per WGSL storage output format on WebGPU (the storage decl bakes
-  // the format); a single format-agnostic MSL PSO (key 0) on Metal.
+  // One PSO per storage format where the shader language bakes it (WGSL); a
+  // single format-agnostic PSO (key 0) everywhere else.
   int32_t ensurePso(int32_t outTex) {
-    // 1 = gpu::Backend::WebGPU → WGSL; anything else (Metal) → MSL.
-    //
-    // KNOWN BROKEN ON D3D11 (backend 2): `else` here means Metal, so a D3D11
-    // host is handed MSL and D3DCompile fails on `#include <metal_stdlib>`
-    // ("X1505: No include handler specified"). The fix is not a third
-    // hand-written twin — it is to author this once as HLSL and let the host
-    // translate the SPIR-V, the way effects already do (spv_to_msl.cpp /
-    // spv_to_hlsl.cpp / naga). That needs one new host ABI call,
-    // create_shader_module_spv, landing in executor.wasm and BOTH hosts in the
-    // same commit: a wasm module importing a function its host lacks fails to
-    // instantiate at all.
-    const bool web = (gpu_get_backend() == 1);
     int32_t key = 0;
-    if (web) {
+    if (backendBakesStorageFormat(gpu_get_backend())) {
       key = gpu_get_texture_format(outTex);
       if (key < 0) key = 1;
     }
     for (const auto& e : psos_) {
       if (e.fmtKey == key) return e.pso;
     }
-    const std::string src = web ? wgslWithStorageFormat(kWetDryBlendWGSL, key)
-                                : std::string(kWetDryBlendMSL);
-    int32_t shader = gpu_create_shader_module(src.c_str(), (int32_t)src.size());
+    const char* fmt = wgslStorageFormatName(key);
+    int32_t shader = gpu_create_shader_module_spv(
+        BLEND_SPV, BLEND_SPV_SIZE,
+        fmt, (int32_t)__builtin_strlen(fmt), "write", 5);
     if (shader < 0) return -1;
-    int32_t pso = gpu_create_compute_pso(shader, "wet_dry_blend",
-                                         (int32_t)__builtin_strlen("wet_dry_blend"));
+    int32_t pso = gpu_create_compute_pso(shader, "main", 4);
     if (pso < 0) { gpu_release(shader); return -1; }
     psos_.push_back({key, shader, pso});
     return pso;

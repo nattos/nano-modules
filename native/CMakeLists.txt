@@ -305,7 +305,10 @@ add_library(wasm_host STATIC
 target_include_directories(wasm_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(wasm_host PUBLIC param_cache vmlib state_system)
 if(NANO_HAS_GPU_BACKEND)
-  target_link_libraries(wasm_host PUBLIC gpu_backend)
+  # spv_translate: gpu.create_shader_module_spv translates the executor's own
+  # SPIR-V shaders here (shader_from_spv.h) — there is no effect instance to
+  # route them through, the way create_shader_module_named does.
+  target_link_libraries(wasm_host PUBLIC gpu_backend spv_translate)
 endif()
 
 # --- Resolume WS Client library ---
@@ -1194,6 +1197,26 @@ if(NANO_HAS_GPU_BACKEND)
   target_include_directories(sketch_augment PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sketch_augment PUBLIC nlohmann_json::nlohmann_json)
 
+  # The executor's OWN shaders: one authored HLSL each (src/sketch/shaders/),
+  # baked to SPIR-V here and translated by the host at PSO-build time — the same
+  # pipeline effects use. Both build systems run this one script into the same
+  # build/tmp (wasm_modules/executor/build.sh does it for executor.wasm), so the
+  # baked headers can't go stale against the HLSL.
+  set(EXEC_SHADER_DIR "${CMAKE_SOURCE_DIR}/src/sketch/shaders")
+  set(EXEC_SHADER_HEADERS
+      "${CMAKE_SOURCE_DIR}/build/tmp/exec_blend_spv.h"
+      "${CMAKE_SOURCE_DIR}/build/tmp/exec_output_blit_spv.h"
+      "${CMAKE_SOURCE_DIR}/build/tmp/exec_sidechannel_blit_spv.h")
+  add_custom_command(
+    OUTPUT ${EXEC_SHADER_HEADERS}
+    COMMAND "${EXEC_SHADER_DIR}/build_shaders.sh" "${CMAKE_SOURCE_DIR}/build/tmp"
+    DEPENDS "${EXEC_SHADER_DIR}/build_shaders.sh"
+            "${EXEC_SHADER_DIR}/blend.hlsl"
+            "${EXEC_SHADER_DIR}/output_blit.hlsl"
+            "${EXEC_SHADER_DIR}/sidechannel_blit.hlsl"
+    COMMENT "Baking executor shaders (DXC: blend + output_blit + sidechannel_blit)"
+    VERBATIM)
+
   # --- Shared sketch executor ---
   # Walks an augmented sketch graph, dispatching effects through the
   # EffectRuntime. Reusable by the FFGL barrel plugin and the future
@@ -1202,6 +1225,7 @@ if(NANO_HAS_GPU_BACKEND)
   # tap routing, intermediate pool management, and the augmentation
   # step internally.
   add_library(sketch_executor STATIC
+    ${EXEC_SHADER_HEADERS}
     src/sketch/module_registry.cpp
     src/sketch/sketch_executor.cpp
     src/sketch/sidechannel_bus.cpp
@@ -1215,6 +1239,7 @@ if(NANO_HAS_GPU_BACKEND)
     src/sketch/comp/comp_api.cpp
   )
   target_include_directories(sketch_executor PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_include_directories(sketch_executor PRIVATE ${CMAKE_SOURCE_DIR}/build/tmp)
   target_link_libraries(sketch_executor PUBLIC
     sketch_augment
     effect_runtime

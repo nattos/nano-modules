@@ -6,58 +6,31 @@
  * `util.sidechannel_in` stage's output texture, nearest-scaling on size
  * mismatch. A same-size same-format pair takes the cheap gpu_copy_texture
  * path with no PSO at all; everything else goes through a tiny compute
- * kernel. Structure mirrors host_blend.h's WetDryBlend exactly: two lock-step
- * shader sources (MSL for Metal, WGSL for WebGPU — the executor runs on both
- * backends), a lazily-built PSO, one dispatch encoded into the executor's
- * per-frame command batch (never submitted here).
+ * kernel. Structure mirrors host_blend.h's WetDryBlend exactly: a lazily-built
+ * PSO, one dispatch encoded into the executor's per-frame command batch (never
+ * submitted here).
  *
- * The WGSL storage output declaration is a TEMPLATE (host_wgsl_fmt.h): the
- * rgba8unorm literal is rewritten to the concrete output format at PSO build
- * time, one PSO per format (16F sketches write rgba16float intermediates).
- * The float read/write path also absorbs a BGRA↔RGBA channel-order
- * difference between the bus texture and the output (native interop textures
- * are BGRA), which a raw byte copy would swap — the copy fast path is
- * therefore gated on format EQUALITY.
+ * The kernel is authored ONCE as HLSL (shaders/sidechannel_blit.hlsl), baked to
+ * SPIR-V at build time and translated by the host per backend — see exec_gpu.h's
+ * create_shader_module_spv. WGSL bakes the storage format into the declaration,
+ * so WebGPU gets one module per concrete output format (16F sketches write
+ * rgba16float intermediates); Metal and D3D11 need one for all of them.
+ *
+ * The float read/write path also absorbs a BGRA↔RGBA channel-order difference
+ * between the bus texture and the output (native interop textures are BGRA),
+ * which a raw byte copy would swap — the copy fast path is therefore gated on
+ * format EQUALITY.
  */
 
 #include "sketch/exec_gpu.h"
 #include "sketch/host_wgsl_fmt.h"
 
+#include "exec_sidechannel_blit_spv.h"  // SIDECHANNEL_BLIT_SPV — shaders/build_shaders.sh
+
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace sketch_executor {
-
-inline constexpr const char* kSidechannelBlitMSL = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
-struct U { uint dw; uint dh; uint sw; uint sh; };
-kernel void sidechannel_blit(
-    uint2 gid [[thread_position_in_grid]],
-    texture2d<float, access::read>  src_tex [[texture(0)]],
-    texture2d<float, access::write> out_tex [[texture(1)]],
-    constant U& u [[buffer(2)]]) {
-  if (gid.x >= u.dw || gid.y >= u.dh) return;
-  uint2 sp = uint2(gid.x * u.sw / u.dw, gid.y * u.sh / u.dh);
-  out_tex.write(src_tex.read(sp), gid);
-}
-)MSL";
-
-// WGSL twin of kSidechannelBlitMSL — same math + binding layout (textures
-// first, uniform after, per the fused-kernel convention host_blend.h uses).
-inline constexpr const char* kSidechannelBlitWGSL = R"WGSL(
-struct U { dw: u32, dh: u32, sw: u32, sh: u32 };
-@group(0) @binding(0) var src_tex: texture_2d<f32>;
-@group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(2) var<uniform> u: U;
-@compute @workgroup_size(8, 8, 1)
-fn sidechannel_blit(@builtin(global_invocation_id) gid: vec3<u32>) {
-  if (gid.x >= u.dw || gid.y >= u.dh) { return; }
-  let sp = vec2<i32>(i32(gid.x * u.sw / u.dw), i32(gid.y * u.sh / u.dh));
-  textureStore(out_tex, vec2<i32>(i32(gid.x), i32(gid.y)), textureLoad(src_tex, sp, 0));
-}
-)WGSL";
 
 class SidechannelBlit {
  public:
@@ -104,35 +77,23 @@ class SidechannelBlit {
  private:
   struct PsoEntry { int32_t fmtKey; int32_t shader; int32_t pso; };
 
-  // One PSO per WGSL storage output format on WebGPU; a single
-  // format-agnostic MSL PSO (key 0) on Metal.
+  // One PSO per storage format where the shader language bakes it (WGSL); a
+  // single format-agnostic PSO (key 0) everywhere else.
   int32_t ensurePso(int32_t outTex) {
-    // 1 = gpu::Backend::WebGPU → WGSL; anything else (Metal) → MSL.
-    //
-    // KNOWN BROKEN ON D3D11 (backend 2): `else` here means Metal, so a D3D11
-    // host is handed MSL and D3DCompile fails on `#include <metal_stdlib>`
-    // ("X1505: No include handler specified"). The fix is not a third
-    // hand-written twin — it is to author this once as HLSL and let the host
-    // translate the SPIR-V, the way effects already do (spv_to_msl.cpp /
-    // spv_to_hlsl.cpp / naga). That needs one new host ABI call,
-    // create_shader_module_spv, landing in executor.wasm and BOTH hosts in the
-    // same commit: a wasm module importing a function its host lacks fails to
-    // instantiate at all.
-    const bool web = (gpu_get_backend() == 1);
     int32_t key = 0;
-    if (web) {
+    if (backendBakesStorageFormat(gpu_get_backend())) {
       key = gpu_get_texture_format(outTex);
       if (key < 0) key = 1;
     }
     for (const auto& e : psos_) {
       if (e.fmtKey == key) return e.pso;
     }
-    const std::string src = web ? wgslWithStorageFormat(kSidechannelBlitWGSL, key)
-                                : std::string(kSidechannelBlitMSL);
-    int32_t shader = gpu_create_shader_module(src.c_str(), (int32_t)src.size());
+    const char* fmt = wgslStorageFormatName(key);
+    int32_t shader = gpu_create_shader_module_spv(
+        SIDECHANNEL_BLIT_SPV, SIDECHANNEL_BLIT_SPV_SIZE,
+        fmt, (int32_t)__builtin_strlen(fmt), "write", 5);
     if (shader < 0) return -1;
-    int32_t pso = gpu_create_compute_pso(shader, "sidechannel_blit",
-                                         (int32_t)__builtin_strlen("sidechannel_blit"));
+    int32_t pso = gpu_create_compute_pso(shader, "main", 4);
     if (pso < 0) { gpu_release(shader); return -1; }
     psos_.push_back({key, shader, pso});
     return pso;

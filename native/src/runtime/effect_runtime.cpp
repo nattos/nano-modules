@@ -12,7 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "gpu/gpu_backend.h"
-#include "runtime/spv_to_hlsl.h"
+#include "runtime/shader_from_spv.h"
 #include "runtime/spv_to_msl.h"
 #include "wasm/wasm_host.h"
 
@@ -410,22 +410,8 @@ int EffectInstance::createShaderModuleByName(const std::string& name,
   // WASM effects ship SPIR-V; translate at load time to whatever this backend
   // speaks. (The native static path uses build-time pre-baked MSL via
   // EffectRuntime::lookupMSL instead.)
-  std::string src;
-  if (backend->getBackend() == 2 /*D3D11*/) {
-    // Back to HLSL, which is what these shaders were authored in — D3D11 takes
-    // neither SPIR-V nor DXIL, and DXBC can only be produced on Windows.
-    std::string err;
-    src = spvToHlsl(sh.spv.data(), sh.spv.size(), &err);
-    if (src.empty()) {
-      std::fprintf(stderr, "[shader] SPV->HLSL failed for '%s': %s\n",
-                   name.c_str(), err.c_str());
-      return -1;
-    }
-  } else {
-    src = spvToMsl(sh.spv.data(), sh.spv.size());
-  }
-  if (src.empty()) return -1;
-  return backend->createShaderModule(src);
+  return createShaderModuleFromSpv(backend, sh.spv.data(), sh.spv.size(),
+                                   name.c_str());
 }
 
 void EffectInstance::hostSetOnStateReady(void (*fn)(void* self)) {

@@ -37,17 +37,34 @@ EXEC_GPU_IMPORT("get_texture_format") int32_t gpu_get_texture_format(int32_t han
 // to): 1 = RGBA8, 3 = RGBA16F. Called once per execute() from the sketch's
 // outputFormat.bitDepth; effect texture/PSO creation resolves against it.
 EXEC_GPU_IMPORT("set_default_texture_format") void gpu_set_default_texture_format(int32_t format);
-// Live backend: 0 = Metal, 1 = WebGPU, -1 = none (gpu::Backend). Executor-side
-// shader sources (the wet/dry blend) pick MSL vs WGSL from this — the executor
-// runs as executor.wasm on BOTH backends, and create_shader_module compiles the
-// source verbatim in the host's native language.
+// Live backend: 0 = Metal, 1 = WebGPU, 2 = D3D11, -1 = none (gpu::Backend).
+// Test this by EQUALITY, never with an `else`: every executor-side site used to
+// read `gpu_get_backend() == 1 ? WGSL : MSL`, which handed MSL to D3D11 the day
+// it existed. What the executor's own shaders still need it for is narrower —
+// whether the backend's shader language BAKES a storage-texture format (only
+// WGSL does), see host_wgsl_fmt.h.
 EXEC_GPU_IMPORT("get_backend")        int32_t gpu_get_backend(void);
 EXEC_GPU_IMPORT("begin_submit_batch") void    gpu_begin_submit_batch(void);
 EXEC_GPU_IMPORT("end_submit_batch")   void    gpu_end_submit_batch(void);
 
 // Fused-chain compute kernel (no-layout PSO + shader module from generated src).
+// The source is host-generated per backend (effrt_build_fused_source), so it is
+// already in the host's language — unlike the executor's OWN shaders, below.
 EXEC_GPU_IMPORT("create_shader_module") int32_t gpu_create_shader_module(const char* src, int32_t src_len);
 EXEC_GPU_IMPORT("create_compute_pso")   int32_t gpu_create_compute_pso(int32_t shader, const char* entry, int32_t entry_len);
+
+// The executor's own shaders (blend / output blit / sidechannel blit), baked to
+// SPIR-V at build time from src/sketch/shaders/*.hlsl and translated by the
+// HOST — spvToMsl, spvToHlsl or naga — so there is one authored source per
+// shader instead of one hand-written twin per backend. Same shape as the
+// effects' state.register_shader_spv, minus the name: `fmt` / `access` are the
+// WGSL storage-texture declaration naga must emit ("rgba16float", "write"), and
+// are ignored by backends that take the format from the view instead. Pass
+// fmt_len 0 for naga's default. Returns a shader-module handle, or -1.
+EXEC_GPU_IMPORT("create_shader_module_spv")
+int32_t gpu_create_shader_module_spv(const void* spv, int32_t spv_len,
+                                     const char* fmt, int32_t fmt_len,
+                                     const char* access, int32_t access_len);
 
 // Small uniform buffers (the wet/dry opacity blend pass).
 EXEC_GPU_IMPORT("create_buffer") int32_t gpu_create_buffer(int64_t size, int32_t usage);

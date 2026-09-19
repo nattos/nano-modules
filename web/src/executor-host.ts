@@ -24,7 +24,8 @@
  * driving the wasm executor; effrt_instance_for then just looks one up.
  */
 import { GPUHost } from './gpu-host';
-import { WasmHost, WasmModule, PatchOp } from './wasm-host';
+import { WasmHost, WasmModule, PatchOp, fnv1a32 } from './wasm-host';
+import { spvToWgsl } from './naga-wgsl';
 import { composeWgsl, FusionStage } from './fusion-dispatcher';
 import { sketchChain, Sketch } from './sketch-types';
 import { createWasiShim } from './wasi-shim';
@@ -1681,6 +1682,37 @@ export class WasmSketchExecutor {
       end_submit_batch: () => g.endBatch(),
       create_shader_module: (srcPtr: number, srcLen: number): number =>
         g.createShaderModule(this.readString(srcPtr, srcLen)),
+      // The executor's OWN shaders (blend / output blit / sidechannel blit),
+      // authored once as HLSL and baked to SPIR-V at build time. naga does the
+      // WGSL leg here, the same translator effects go through; `fmt`/`access`
+      // pin the storage-texture declaration, which WGSL — alone among the three
+      // backends' languages — bakes into the shader source.
+      create_shader_module_spv: (spvPtr: number, spvLen: number,
+                                 fmtPtr: number, fmtLen: number,
+                                 accPtr: number, accLen: number): number => {
+        if (spvLen <= 0) return -1;
+        const spv = new Uint8Array(this.memory.buffer, spvPtr, spvLen).slice();
+        const fmt = fmtLen > 0 ? this.readString(fmtPtr, fmtLen) : 'rgba8unorm';
+        const acc = accLen > 0 ? this.readString(accPtr, accLen) : 'write';
+        // Same content-keyed cache the effect path uses (WasmHost.fetchShaderWgsl):
+        // translation is a pure function of the bytes + storage decl, and every
+        // engine restart would otherwise re-pay it.
+        const key = `${spvLen}:${fnv1a32(spv)}:${fmt}:${acc}:compute`;
+        let wgsl = WasmHost.spvWgslCache.get(key);
+        if (wgsl === undefined) {
+          let out: string | null = null;
+          try {
+            out = spvToWgsl(spv, fmt, acc);
+          } catch (err) {
+            console.error('[executor-host] naga_spv failed for an executor shader:', err);
+            return -1;
+          }
+          if (out === null) return -1;
+          wgsl = out;
+          WasmHost.spvWgslCache.set(key, wgsl);
+        }
+        return g.createShaderModule(wgsl);
+      },
       create_compute_pso: (shader: number, entryPtr: number, entryLen: number): number =>
         g.createComputePipelineAuto(shader, this.readString(entryPtr, entryLen)),
       // exec_gpu.h create_buffer carries an i64 size → BigInt here.

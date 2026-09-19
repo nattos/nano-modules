@@ -15,6 +15,7 @@
 #include <string>
 
 #include "gpu/gpu_backend.h"
+#include "runtime/shader_from_spv.h"
 
 using effect_runtime::currentRuntime;
 using effect_runtime::EffectInstance;
@@ -48,6 +49,21 @@ int gpu_create_shader_module(const char* src, int src_len) {
   auto* b = backend();
   if (!b) return -1;
   return b->createShaderModule(std::string(src, src_len));
+}
+
+// The executor's own shaders (exec_gpu.h). SPIR-V in, backend module out —
+// see shader_from_spv.h. `fmt`/`access` are the WGSL storage-texture
+// declaration naga needs on the web; MSL and HLSL take the storage format from
+// the view at bind time, so they're ignored here.
+int gpu_create_shader_module_spv(const void* spv, int spv_len,
+                                 const char* fmt, int fmt_len,
+                                 const char* access, int access_len) {
+  (void)fmt; (void)fmt_len; (void)access; (void)access_len;
+  auto* b = backend();
+  if (!b || !spv || spv_len <= 0) return -1;
+  return effect_runtime::createShaderModuleFromSpv(
+      b, static_cast<const unsigned char*>(spv), (size_t)spv_len,
+      "executor");
 }
 
 int gpu_create_shader_module_named(const char* name, int name_len) {
@@ -323,7 +339,11 @@ void gpu_end_submit_batch(void) {
 }
 int gpu_create_compute_pso(int shader, const char* entry, int entry_len) {
   auto* b = backend();
-  return b ? b->createComputePSO(shader, std::string(entry, entry_len)) : -1;
+  // mapEntryName, same as the _v2 form: the executor's own shaders now come
+  // through here too, and they are SPIR-V whose entry point spirv-cross renames
+  // "main" → "main0" for Metal. (The fused-chain path, the other caller, asks
+  // for "fused_main" — a name the host itself generated, so it passes through.)
+  return b ? b->createComputePSO(shader, mapEntryName(entry, entry_len)) : -1;
 }
 
 int gpu_get_input_texture(int idx) {

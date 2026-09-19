@@ -7,6 +7,7 @@
 #include "bridge/state_document.h"
 #include "gpu/gpu_backend.h"
 #include "json/json_doc.h"
+#include "runtime/shader_from_spv.h"
 #include "sketch/comp/streams_table.h"
 
 #include <algorithm>
@@ -1411,13 +1412,19 @@ static int32_t gpu_create_texture(wasm_exec_env_t env, int32_t w, int32_t h, int
   return g ? g->createTexture(w, h, fmt) : -1;
 }
 
+static std::string map_entry_name(gpu::GPUBackend* g, const char* entry, int len);
+
 static int32_t gpu_create_compute_pso(wasm_exec_env_t env, int32_t shader, int32_t entry_ptr, int32_t entry_len) {
   auto* g = get_gpu(env);
   if (!g) return -1;
   wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
   if (!wasm_runtime_validate_app_addr(inst, entry_ptr, entry_len)) return -1;
   char* e = static_cast<char*>(wasm_runtime_addr_app_to_native(inst, entry_ptr));
-  return e ? g->createComputePSO(shader, std::string(e, entry_len)) : -1;
+  // map_entry_name, same as the _v2 form: the executor's own shaders now come
+  // through here too, and they are SPIR-V whose entry point spirv-cross renames
+  // "main" → "main0" for Metal. (The fused-chain path, the other caller, asks
+  // for "fused_main" — a name the host itself generated, so it passes through.)
+  return e ? g->createComputePSO(shader, map_entry_name(g, e, entry_len)) : -1;
 }
 
 static int32_t gpu_create_render_pso(wasm_exec_env_t env,
@@ -1606,6 +1613,27 @@ static int32_t gpu_create_shader_module_named(wasm_exec_env_t env,
   if (!name) return -1;
   return ctx->effect_instance->createShaderModuleByName(
       std::string(name, name_len), ctx->gpu_backend);
+}
+
+// gpu.create_shader_module_spv — the EXECUTOR's own shaders (exec_gpu.h).
+// Effects reach the same translation through create_shader_module_named, which
+// needs an effect instance to own the registry; the executor hands the SPIR-V
+// over directly, so this needs only a backend. `fmt`/`access` are the WGSL
+// storage-texture declaration naga must emit on the web — Metal and D3D11 take
+// the storage format from the view, so they're accepted and ignored.
+static int32_t gpu_create_shader_module_spv(wasm_exec_env_t env,
+    int32_t spv_ptr, int32_t spv_len, int32_t fmt_ptr, int32_t fmt_len,
+    int32_t acc_ptr, int32_t acc_len) {
+  (void)fmt_ptr; (void)fmt_len; (void)acc_ptr; (void)acc_len;
+  auto* g = get_gpu(env);
+  if (!g || spv_len <= 0) return -1;
+  wasm_module_inst_t inst = wasm_runtime_get_module_inst(env);
+  if (!wasm_runtime_validate_app_addr(inst, spv_ptr, spv_len)) return -1;
+  const auto* spv = static_cast<const unsigned char*>(
+      wasm_runtime_addr_app_to_native(inst, spv_ptr));
+  if (!spv) return -1;
+  return effect_runtime::createShaderModuleFromSpv(g, spv, (size_t)spv_len,
+                                                   "executor");
 }
 
 // gpu.create_compute_pso_v2 — layout + packed spec constants. The binding
@@ -1812,6 +1840,7 @@ static void gpu_render_draw_indirect(wasm_exec_env_t env, int32_t pass,
 static NativeSymbol gpu_symbols[] = {
     {"get_backend", reinterpret_cast<void*>(gpu_get_backend), "()i", nullptr},
     {"create_shader_module_named", reinterpret_cast<void*>(gpu_create_shader_module_named), "(ii)i", nullptr},
+    {"create_shader_module_spv", reinterpret_cast<void*>(gpu_create_shader_module_spv), "(iiiiii)i", nullptr},
     {"create_sampler", reinterpret_cast<void*>(gpu_create_sampler), "(i)i", nullptr},
     {"create_texture_mips", reinterpret_cast<void*>(gpu_create_texture_mips), "(iiii)i", nullptr},
     {"create_texture_3d", reinterpret_cast<void*>(gpu_create_texture_3d), "(iiii)i", nullptr},
