@@ -1,0 +1,6 @@
+#!/bin/sh
+# CMake wants ONE executable for CMAKE_C_COMPILER, and `zig cc` is two words.
+# The target lives here rather than in CMAKE_C_FLAGS so CMake's own try-compile
+# steps get it too — without that, compiler detection probes the HOST and the
+# whole configure decides it is building for macOS.
+exec zig cc -target "${NANO_ZIG_TARGET:-x86_64-windows-gnu}" "$@"
