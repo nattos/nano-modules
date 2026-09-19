@@ -202,7 +202,7 @@ NANO_URL=http://localhost:5174/ ...      # point at a specific server
 ## Windows, and what CrossOver actually showed
 
 The Windows installer cross-builds from macOS and its contents are correct, but
-nobody has run it on real Windows hardware. It *was* run under CrossOver
+nobody has run it on real Windows hardware. It *was* run under CrossOver 26
 (a `win11_64` bottle — a `win32` one cannot load an x64 Electron at all), and
 the result splits cleanly in two.
 
@@ -222,26 +222,62 @@ So on Windows: the resource root resolves, the install record lands in
 computes, with neither side told about the other), the custom scheme is
 registered and serving, and the renderer boots and runs the app's own JavaScript.
 
-**WebGPU does not.** The GPU process crashes on startup, repeatedly:
+### CrossOver *does* accelerate graphics — just not through D3D
+
+CrossOver is marketed at games, so "no GPU" deserved a harder look than the
+first GPU-process crash suggested. It was spiked with a standalone Electron
+probe swapped in for `app.asar`, across every ANGLE and Dawn backend. The
+picture is much sharper than "DirectComposition is missing":
+
+| Path | Result |
+|---|---|
+| `--use-angle=vulkan` | **Real GPU.** `ANGLE (Apple, Vulkan 1.2.290 (Apple M5 Max), MoltenVK)` — WebGL on the actual hardware, via `winevulkan` → MoltenVK → Metal. WebGL **1.0 / ES 2.0** only, and ANGLE still logs `initMemoryAndNonZeroFillIfNeeded ... A requested feature is not supported`. |
+| `--use-angle=swiftshader --enable-unsafe-swiftshader` | WebGL **2.0**, on the CPU. |
+| `--use-angle=d3d11` (the default path) | Nothing. No WebGL at all, and this is what crashes the GPU process. |
+| WebGPU, any backend | **No adapter, ever.** |
+
+Two things follow.
+
+**The repeated GPU-process crash is the D3D11/DirectComposition path, and it is
+avoidable.** `--use-angle=vulkan --disable-direct-composition` launches with
+*zero* crash strikes, where the default config dies three times
+(`exit_code=-1073741819`, an access violation) before Chromium gives up and
+falls back to software. That is worth knowing purely to keep the log readable
+while testing anything else.
+
+**WebGPU is the part that genuinely does not exist here.** `navigator.gpu` is
+present, but `requestAdapter()` returns `null` — "No available adapters." —
+under every Dawn backend there is: `d3d11`, `d3d12`, `vulkan`, `opengles` and
+`swiftshader`. Chromium's own GPU info explains why:
 
 ```
-ERROR: DCompositionCreateDevice3 failed: Not implemented. (0x80004001)
-ERROR: GPU process exited unexpectedly: exit_code=-1073741819   (0xC0000005)
-CONSOLE: "Failed to create WebGPU Context Provider"
-CONSOLE: "[engine] No GPU adapter available"
+supportsDx12: false        dx12FeatureLevel: "Not supported"
+supportsVulkan: false      vulkanVersion: "Not supported"
+supportsD3dSharedImages: false
 ```
 
-CrossOver does not implement DirectComposition, and the crash is an access
-violation during GPU-process init — *before* anything WebGPU-specific runs.
-`--use-webgpu-adapter=swiftshader` and `--disable-direct-composition` make no
-difference for that reason.
+Chromium's Windows WebGPU stack hangs off D3D — for the device itself and for
+the shared-image interop — and CrossOver's D3D translation does not satisfy it,
+even though the bottle ships `d3d12.dll` + `libvkd3d-*.dll` and ANGLE reaches
+the same GPU happily through Vulkan. Even the pure-CPU `swiftshader` adapter is
+refused, which is the clearest sign the rejection is above Dawn, not inside it.
 
-**This is a CrossOver limitation, not a packaging bug**, and it means CrossOver
-can validate packaging, paths, the scheme, IndexedDB and file dialogs but
-**cannot validate rendering**. Real Windows hardware or a VM with GPU
-passthrough is needed for that. When you try it there, a renderer with no
+**So CrossOver can validate packaging, paths, the scheme, IndexedDB and file
+dialogs, and it can now validate that WebGL reaches the real GPU — but it
+cannot validate this app's rendering**, which is WebGPU end to end. Real
+Windows hardware or a VM with GPU passthrough is still needed for that. There,
+D3D11/D3D12 are the native path and none of the flags above should be shipped;
+they are CrossOver-only debugging aids. When you do try it, a renderer with no
 adapter looks like a hang rather than an error — the shell logs a missing
 `navigator.gpu`, so check the console first.
+
+> **Probing trap.** `about:blank` and `file://` are **not secure contexts**, and
+> WebGPU is secure-context-only, so `navigator.gpu` is `undefined` on them even
+> on a perfectly healthy machine. A probe that loads either one reports "no
+> WebGPU" everywhere and proves nothing. Serve it over a registered
+> `standard` + `secure` scheme — which is what the app itself does with
+> `nano://app` — and check against a native macOS run of the *same* probe before
+> believing any negative result.
 
 The test bottle is at
 `~/Library/Application Support/CrossOver/Bottles/NanoModulesTest` (725 MB).
