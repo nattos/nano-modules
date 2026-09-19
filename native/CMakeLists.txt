@@ -1672,6 +1672,7 @@ if(NANO_HAS_GPU_BACKEND)
 )
     target_compile_definitions(test_sketch_output_format PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
+    target_include_directories(test_sketch_output_format PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_compile_options(test_sketch_output_format PRIVATE -Wno-attributes)
     catch_discover_tests(test_sketch_output_format)
   endif()

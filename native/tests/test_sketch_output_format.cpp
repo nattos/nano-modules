@@ -32,9 +32,14 @@ using sketch_executor::ModuleRegistry;
 using sketch_executor::SketchExecutor;
 using sketch_executor::WasmEffectBundles;
 
+#include "wasm_paths.h"
+
 #ifndef CORE_WASM_PATH
 #error "CORE_WASM_PATH must be defined"
 #endif
+// Bound once: NANO_WASM_DIR redirects the baked source-tree path for a
+// cross-compiled run (wasm_paths.h). Identity when it's unset.
+static const char* const kCoreWasm = nanoWasmPath(CORE_WASM_PATH);
 
 namespace {
 
@@ -89,7 +94,7 @@ struct Harness {
     if (!bundles.init()) return false;
     rt = std::make_unique<EffectRuntime>(backend.get());
     registry = std::make_unique<ModuleRegistry>(rt.get());
-    return bundles.loadBundleFile(CORE_WASM_PATH, *registry, backend.get(), nullptr) > 1;
+    return bundles.loadBundleFile(kCoreWasm, *registry, backend.get(), nullptr) > 1;
   }
 };
 

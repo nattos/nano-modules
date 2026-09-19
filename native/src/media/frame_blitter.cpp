@@ -8,6 +8,13 @@
 namespace nano_media {
 namespace {
 
+/// STILL MSL-ONLY: the whole nano_media target is Apple-gated, so there is no
+/// D3D11 path for this to be wrong on yet. When the video pipeline comes to
+/// Windows this wants the same HLSL→SPIR-V treatment the executor's shaders got
+/// (src/sketch/shaders/), and the bindings below have to move: `place` sits at
+/// buffer slot 0, which collides with texture slot 0 once they share SPIR-V's
+/// one binding namespace.
+///
 /// The MSL twin of frame-blitter.ts's BLIT_SHADER. Web runs it as a
 /// full-screen-triangle fragment pass; here it's a compute kernel, which lands
 /// on the same pixel centres: the fragment's interpolated uv at pixel p is

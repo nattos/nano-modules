@@ -25,6 +25,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -119,6 +120,51 @@ uint32_t bytesPerPixel(DXGI_FORMAT f) {
     case DXGI_FORMAT_R16G16B16A16_FLOAT: return 8;
     case DXGI_FORMAT_R32_FLOAT:          return 4;
     default:                             return 4;
+  }
+}
+
+/// IEEE half → float. Enough for a readback conversion: denormals flush and
+/// NaN/Inf land on the clamp below, which is all a thumbnail needs.
+float halfToFloat(uint16_t h) {
+  const int sign = (h >> 15) & 1;
+  const int exp = (h >> 10) & 0x1f;
+  const int mant = h & 0x3ff;
+  float v;
+  if (exp == 0)        v = std::ldexp((float)mant, -24);
+  else if (exp == 31)  v = mant ? 0.0f : 1e30f;   // NaN → 0, Inf → clamps to 1
+  else                 v = std::ldexp((float)(mant + 1024), exp - 25);
+  return sign ? -v : v;
+}
+
+/// One pixel of any format we readback, written as RGBA8. Float channels are
+/// clamped to [0,1] and scaled — the same thing Metal's RGBA8 scratch does.
+void toRgba8(DXGI_FORMAT f, const uint8_t* src, uint8_t* dst) {
+  auto enc = [](float v) -> uint8_t {
+    if (!(v > 0.0f)) return 0;                 // also catches NaN
+    return v >= 1.0f ? 255 : (uint8_t)(v * 255.0f + 0.5f);
+  };
+  switch (f) {
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: {
+      uint16_t h[4];
+      std::memcpy(h, src, sizeof(h));
+      for (int c = 0; c < 4; ++c) dst[c] = enc(halfToFloat(h[c]));
+      return;
+    }
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: {
+      float v[4];
+      std::memcpy(v, src, sizeof(v));
+      for (int c = 0; c < 4; ++c) dst[c] = enc(v[c]);
+      return;
+    }
+    case DXGI_FORMAT_R32_FLOAT: {
+      float v;
+      std::memcpy(&v, src, sizeof(v));
+      dst[0] = enc(v); dst[1] = 0; dst[2] = 0; dst[3] = 255;
+      return;
+    }
+    default:
+      std::memcpy(dst, src, 4);
+      return;
   }
 }
 
@@ -642,17 +688,25 @@ class D3D11Backend : public GPUBackend {
     // Metal uses MPSImageLanczosScale; there is no D3D equivalent, and the one
     // consumer in scope (preview thumbnails) checks a flat-colour mean, so a
     // box filter is sufficient and obviously correct.
+    //
+    // The output is ALWAYS RGBA8, whatever the source format — the callers
+    // (barrel preview capture) read 4 bytes per pixel. Metal gets that for free
+    // by scaling into an RGBA8 scratch; here a float source has to be converted,
+    // not reinterpreted, or a 16F sketch's thumbnail comes back at double size
+    // and every channel is garbage.
     auto full = readbackTexture(textureHandle, srcW, srcH);
     if (full.empty() || !dstW || !dstH) return {};
     Resource* r = get(textureHandle, Kind::Texture);
-    const uint32_t bpp = r ? bytesPerPixel(r->format) : 4;
-    std::vector<uint8_t> out((size_t)dstW * dstH * bpp);
+    const DXGI_FORMAT fmt = r ? r->format : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const uint32_t bpp = bytesPerPixel(fmt);
+    std::vector<uint8_t> out((size_t)dstW * dstH * 4);
     for (uint32_t y = 0; y < dstH; ++y) {
       const uint32_t sy = srcH ? (y * srcH / dstH) : 0;
       for (uint32_t x = 0; x < dstW; ++x) {
         const uint32_t sx = srcW ? (x * srcW / dstW) : 0;
-        std::memcpy(out.data() + ((size_t)y * dstW + x) * bpp,
-                    full.data() + ((size_t)sy * srcW + sx) * bpp, bpp);
+        const uint8_t* src = full.data() + ((size_t)sy * srcW + sx) * bpp;
+        uint8_t* dst = out.data() + ((size_t)y * dstW + x) * 4;
+        toRgba8(fmt, src, dst);
       }
     }
     return out;

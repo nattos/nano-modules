@@ -10,6 +10,11 @@
 namespace nano_media {
 namespace {
 
+/// STILL MSL-ONLY, for the same reason as frame_blitter.cpp: nano_media is
+/// Apple-gated and has no D3D11 path yet. Note for whoever ports it — HLSL
+/// cannot `Load` a block-compressed texture, so the sampler here stops being an
+/// inline `constexpr sampler` and becomes a real binding.
+///
 /// BC1 staging → RGBA8. `read()` isn't defined for block-compressed textures in
 /// MSL, so this SAMPLES with pixel coordinates instead; the hardware BC1 unit
 /// decompresses on the way out. Raw MSL because this is host-only code that

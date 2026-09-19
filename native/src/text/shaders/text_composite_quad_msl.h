@@ -36,6 +36,20 @@
 //
 // Record layouts are byte-identical to text_engine::GlyphQuad (96B),
 // text_engine::BoxQuad (112B), and the UBO in host_impls_text.cpp.
+//
+// STILL MSL-ONLY, and so still broken on D3D11: the backend is handed this
+// source verbatim and FXC reports "X1505: No include handler specified" for all
+// three vertex stages. The executor's compute shaders were unified through
+// HLSL→SPIR-V (src/sketch/shaders/), and this one belongs in that pipeline too
+// — but it is a RENDER path, and D3D11's render PSOs are still at the -1
+// defaults, so converting it now would rewrite a pixel-exact-golden Metal path
+// (spirv-cross MSL in place of this hand-written source) with nothing on the
+// other side able to prove it bought anything. It goes with the render stage.
+//
+// Its bindings will have to be renumbered when it does: MSL gives buffers,
+// textures and samplers their own index spaces, so buffer(0..3) + texture(0..1)
+// + sampler(0) all collide in the single binding namespace SPIR-V uses. The
+// host slots in host_impls_text.cpp move in lock-step.
 
 static const char* kTextCompositeQuadMSL = R"MSL(
 #include <metal_stdlib>
