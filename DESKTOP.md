@@ -262,6 +262,53 @@ even though the bottle ships `d3d12.dll` + `libvkd3d-*.dll` and ANGLE reaches
 the same GPU happily through Vulkan. Even the pure-CPU `swiftshader` adapter is
 refused, which is the clearest sign the rejection is above Dawn, not inside it.
 
+### It is a Chromium limitation, not a CrossOver one
+
+That distinction was settled directly, with three headless D3D programs
+cross-compiled from macOS — `native/tools/win_gpu_probe/`, built with zig, no
+Windows SDK and no Windows machine involved. No window, no swapchain, no
+present: everything renders offscreen and is verified by reading buffers and
+pixels back, precisely so that "the GPU works" and "Windows desktop integration
+works" can be told apart.
+
+**Plain D3D works completely under CrossOver, on both APIs:**
+
+```
+D3D11: feature level 11_1
+D3D12: binding tier 3, tiled tier 2, shader model 6.6, wave ops yes (32..32)
+  compute: groupshared + barrier + parallel reduction   -> correct
+  compute: RWByteAddressBuffer InterlockedAdd x4 groups -> 256, exact
+  raster : triangle, interpolated varyings, clear colour preserved
+```
+
+Both APIs produce byte-identical results, and D3D12 advertises **shader model
+6.6 and wave ops** — everything Dawn asks for. Chromium nevertheless reports
+`supportsDx12: false`, which tells you that value is a downstream consequence of
+its GPU process having already died, not an independent measurement.
+
+**What actually fails is the Windows desktop integration Chromium layers on
+top:**
+
+```
+ok    D3D11CreateDevice with BGRA_SUPPORT
+ok    QueryInterface ID3D11Device5
+ok    CreateTexture2D SHARED_NTHANDLE|KEYEDMUTEX
+FAIL  QueryInterface IDXGIResource1              hr=0x80004002  E_NOINTERFACE
+FAIL  DCompositionCreateDevice                   hr=0x80004001  E_NOTIMPL
+```
+
+Those two are the whole story. Chromium composites through
+**DirectComposition**, which is a stub here, and it moves every texture between
+its GPU process, the renderer and the compositor as a **shared NT handle** —
+which needs `IDXGIResource1`, and CrossOver's DXGI does not implement it. A
+WebGPU texture has no route to the screen without them. Rendering was never the
+problem.
+
+So this is a **Chromium + CrossOver** limitation, not a CrossOver graphics
+limitation. A native Windows renderer using D3D12 directly would be fine here;
+Chromium will not be until wine implements `IDXGIResource1` and
+DirectComposition.
+
 **So CrossOver can validate packaging, paths, the scheme, IndexedDB and file
 dialogs, and it can now validate that WebGL reaches the real GPU — but it
 cannot validate this app's rendering**, which is WebGPU end to end. Real
