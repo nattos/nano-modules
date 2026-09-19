@@ -412,5 +412,19 @@ public:
 
 // Factory
 std::unique_ptr<GPUBackend> createMetalBackend();
+std::unique_ptr<GPUBackend> createD3D11Backend();
+
+/// This platform's backend, or nullptr if the device could not be created.
+/// Prefer this over naming a backend directly — a caller that says
+/// createMetalBackend() is a caller that cannot run anywhere else.
+inline std::unique_ptr<GPUBackend> createBackend() {
+#if defined(_WIN32)
+  return createD3D11Backend();
+#elif defined(__APPLE__)
+  return createMetalBackend();
+#else
+  return nullptr;
+#endif
+}
 
 } // namespace gpu

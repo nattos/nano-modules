@@ -25,6 +25,16 @@ if(APPLE)
   add_compile_definitions(GL_SILENCE_DEPRECATION)
 endif()
 
+# Does this platform have a gpu::GPUBackend implementation? Metal on macOS,
+# D3D11 on Windows. A great deal of the tree below was gated on APPLE when what
+# it actually needed was "a backend exists" — text_engine, sketch_augment and
+# sketch_executor are platform-neutral and were only trapped there by proximity.
+if(APPLE OR WIN32)
+  set(NANO_HAS_GPU_BACKEND TRUE)
+else()
+  set(NANO_HAS_GPU_BACKEND FALSE)
+endif()
+
 # --- Dependencies via FetchContent ---
 include(FetchContent)
 
@@ -233,6 +243,17 @@ target_include_directories(resolume_protocol PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(resolume_protocol PUBLIC nlohmann_json::nlohmann_json)
 
 # --- GPU Backend library ---
+if(WIN32)
+  add_library(gpu_backend STATIC
+    src/gpu/d3d11_backend.cpp
+  )
+  target_include_directories(gpu_backend PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  # No import libraries: the backend LoadLibrary's d3d11.dll and
+  # d3dcompiler_47.dll itself. That keeps the cross-compile from macOS honest,
+  # and turns a missing d3dcompiler into a clear runtime message rather than a
+  # link error on a machine that cannot reproduce it.
+  target_link_libraries(gpu_backend PUBLIC nlohmann_json::nlohmann_json)
+endif()
 if(APPLE)
   add_library(gpu_backend STATIC
     src/gpu/metal_backend.mm
@@ -274,7 +295,7 @@ add_library(wasm_host STATIC
 )
 target_include_directories(wasm_host PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(wasm_host PUBLIC param_cache vmlib state_system)
-if(APPLE)
+if(NANO_HAS_GPU_BACKEND)
   target_link_libraries(wasm_host PUBLIC gpu_backend)
 endif()
 
@@ -627,6 +648,25 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm")
     NANOLOOPER_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nanolooper.wasm"
   )
   catch_discover_tests(test_nanolooper_wasm)
+endif()
+
+# Dual-backend GPU conformance: the SAME assertions on Metal and on D3D11.
+# This is the acceptance harness for the Windows port, so it is gated on having
+# a backend rather than on being macOS.
+if(NANO_HAS_GPU_BACKEND)
+  add_executable(test_gpu_conformance tests/test_gpu_conformance.cpp)
+  target_link_libraries(test_gpu_conformance PRIVATE
+    gpu_backend Catch2::Catch2WithMain)
+  if(APPLE)
+    target_link_libraries(test_gpu_conformance PRIVATE
+      "-framework Metal" "-framework Foundation")
+  endif()
+  # Discovery RUNS the binary to enumerate test names, which the build host
+  # cannot do for a Windows exe. Cross builds are driven by hand under
+  # CrossOver instead (see cmake/README.md).
+  if(NOT CMAKE_CROSSCOMPILING)
+    catch_discover_tests(test_gpu_conformance)
+  endif()
 endif()
 
 # GPU→CPU buffer readback (backend readBuffer) — no WASM module needed.
@@ -987,7 +1027,8 @@ endif()
 # `EFFECTS_NATIVE_INC` is just the effect ABI header dir (host.h/gpu.h/...), used
 # by effect_runtime + the bench/test tools that include those headers.
 
-if(APPLE)
+# Everything below needs a GPU backend, not macOS specifically.
+if(NANO_HAS_GPU_BACKEND)
   set(EFFECTS_NATIVE_INC "${CMAKE_SOURCE_DIR}/wasm_modules/include")
 
   # ==========================================================================
@@ -1055,11 +1096,18 @@ if(APPLE)
   # The in-process runtime: implements every host-import C symbol the WASM
   # effects + executor reference (host/gpu/text/val/io services). Statically
   # linked into the test runner CLI, the bench tools, and the NanoBarrel plugin.
+  # System font DISCOVERY is OS-specific; rasterization (FreeType + msdfgen) is
+  # not, so bundled faces render identically either way.
+  if(APPLE)
+    set(NANO_FONT_PROVIDER src/runtime/host_impls_font.mm)
+  else()
+    set(NANO_FONT_PROVIDER src/runtime/host_impls_font_stub.cpp)
+  endif()
   add_library(effect_runtime STATIC
     src/runtime/effect_runtime.cpp
     src/runtime/host_impls.cpp
     src/runtime/host_impls_text.cpp
-    src/runtime/host_impls_font.mm
+    ${NANO_FONT_PROVIDER}
     src/runtime/gpu_impls.cpp
     src/runtime/fusion_codegen.cpp
   )
@@ -1075,12 +1123,16 @@ if(APPLE)
     wasm_host
     spv_to_msl
     nlohmann_json::nlohmann_json
-    # Core Text font provider (host_impls_font.mm).
-    "-framework CoreText"
-    # Rust staticlib pulls these macOS system frameworks/libs.
-    "-framework CoreFoundation" "-framework Security"
-    "-framework SystemConfiguration" "-liconv" "-lobjc"
   )
+  if(APPLE)
+    target_link_libraries(effect_runtime PUBLIC
+      # Core Text font provider (host_impls_font.mm).
+      "-framework CoreText"
+      # Rust staticlib pulls these macOS system frameworks/libs.
+      "-framework CoreFoundation" "-framework Security"
+      "-framework SystemConfiguration" "-liconv" "-lobjc"
+    )
+  endif()
   # Suppress noise about ignored WASM-only __attribute__((import_module))
   # annotations on the effect host-import declarations.
   target_compile_options(effect_runtime PRIVATE -Wno-attributes)
