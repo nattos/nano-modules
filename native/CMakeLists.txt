@@ -1901,6 +1901,61 @@ if(NANO_HAS_GPU_BACKEND)
       VERBATIM)
   endif()
 
+  # --- nano_diag.exe (Windows) ---
+  # One executable to hand to somebody who HAS a Windows machine. It runs the
+  # checks we cannot run from here and writes a single log to send back.
+  #
+  # It exists because of one file. interop_texture_d3d11.cpp -- the
+  # WGL_NV_DX_interop2 share that is the entire Windows barrel -- shipped
+  # having never executed, and it cannot execute under CrossOver at all (GL and
+  # D3D11 are separate translation layers over Metal there, with no shared
+  # resource path between them). Everything else in this target is context for
+  # reading that one result.
+  #
+  # It links the real thing throughout: the plugin's own interop, the plugin's
+  # own loader, the test tree's texture probe, and at runtime the shipping
+  # NanoBarrel.dll and libbridge_server.dll. Nothing here is a stand-in.
+  if(NANO_BUILD_FFGL)
+    add_executable(nano_diag
+      tools/nano_diag/nano_diag.cpp
+      tools/nano_diag/diag_log.cpp
+      tools/nano_diag/diag_gl.cpp
+      tools/nano_diag/probe_system.cpp
+      tools/nano_diag/probe_interop.cpp
+      tools/nano_diag/probe_barrel.cpp
+      tools/nano_diag/probe_ffgl.cpp
+      ${NANO_INTEROP_TEXTURE}
+      src/plugin/bridge_loader.cpp
+      tests/barrel_probe_tex_d3d11.cpp
+    )
+    target_include_directories(nano_diag PRIVATE
+      ${CMAKE_SOURCE_DIR}/src
+      ${CMAKE_SOURCE_DIR}/tests
+      # FFGL.h only, for probe_ffgl -- ffgl_sdk itself is deliberately NOT
+      # linked, because FFGLSDK.cpp defines plugMain and this is a host.
+      $<TARGET_PROPERTY:ffgl_sdk,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+    target_link_libraries(nano_diag PRIVATE
+      nano_glew        # opengl32 rides along; GL past 1.1 needs the loader
+      d3d11
+      dxgi             # adapter enumeration, for the hybrid-GPU question
+      version          # the driver and d3dcompiler version strings
+    )
+    target_compile_options(nano_diag PRIVATE -Wno-attributes -Wno-deprecated-declarations)
+    # Which build produced a given log. Baked here because -Wdate-time (an
+    # error in this tree) rules out __DATE__/__TIME__ in the source.
+    string(TIMESTAMP _diag_stamp "%Y-%m-%d %H:%M UTC" UTC)
+    execute_process(COMMAND jj log -r @ --no-graph -T "change_id.short()"
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE _diag_rev
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    configure_file(tools/nano_diag/diag_build.h.in
+                   ${CMAKE_CURRENT_BINARY_DIR}/nano_diag_gen/diag_build.h @ONLY)
+    target_include_directories(nano_diag PRIVATE
+      ${CMAKE_CURRENT_BINARY_DIR}/nano_diag_gen)
+  endif()
+
 
   # --- The FFGL plugin and its hosts (Apple only) ---
   # Everything below is Objective-C++ over the Metal barrel: the plugin bundle,
