@@ -150,12 +150,13 @@ else()
 endif()
 
 # --- SPIRV-Cross (runtime SPV→MSL for dynamically-loaded WASM effects) ---
-# Effects load as WASM and ship SPIR-V, which must be translated to MSL at load
-# time, so we link the library (spv_to_msl.cpp). Only core + glsl + msl are
-# needed (CompilerMSL derives from CompilerGLSL).
+# Effects load as WASM and ship SPIR-V, which must be translated at load time —
+# to MSL for Metal, back to HLSL for D3D11 (D3D11 takes neither SPIR-V nor
+# DXIL). Both backends are enabled on every platform so the round-trip test can
+# run on macOS, where the goldens are.
 set(SPIRV_CROSS_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_CLI           OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_HLSL   OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_HLSL   ON  CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_ENABLE_CPP    OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_ENABLE_C_API  OFF CACHE BOOL "" FORCE)
@@ -170,10 +171,12 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spirv_cross)
 
-# Runtime SPV→MSL helper (platform-agnostic; built everywhere).
-add_library(spv_to_msl STATIC src/runtime/spv_to_msl.cpp)
-target_include_directories(spv_to_msl PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(spv_to_msl PUBLIC spirv-cross-msl)
+# Runtime SPV→{MSL,HLSL} helpers (platform-agnostic; built everywhere).
+add_library(spv_translate STATIC
+  src/runtime/spv_to_msl.cpp
+  src/runtime/spv_to_hlsl.cpp)
+target_include_directories(spv_translate PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(spv_translate PUBLIC spirv-cross-msl spirv-cross-hlsl)
 
 # --- FFGL SDK ---
 # Fetched rather than vendored: this used to be `add_subdirectory(modules/ffgl)`
@@ -605,10 +608,20 @@ catch_discover_tests(test_canvas_host)
 # Runtime SPV→MSL translation (barrel-loads-WASM). Uses a build-time .spv.
 if(EXISTS "${CMAKE_SOURCE_DIR}/build/tmp/brightness_contrast_compute.spv")
   add_executable(test_spv_to_msl tests/test_spv_to_msl.cpp)
-  target_link_libraries(test_spv_to_msl PRIVATE spv_to_msl Catch2::Catch2WithMain)
+  target_link_libraries(test_spv_to_msl PRIVATE spv_translate Catch2::Catch2WithMain)
   target_compile_definitions(test_spv_to_msl PRIVATE
     BRIGHTNESS_SPV_PATH="${CMAKE_SOURCE_DIR}/build/tmp/brightness_contrast_compute.spv")
   catch_discover_tests(test_spv_to_msl)
+
+  # The SPV→HLSL round trip, swept over every baked shader in build/tmp. Runs
+  # on macOS deliberately: it is a property of the shaders, not of Windows.
+  add_executable(test_spv_to_hlsl tests/test_spv_to_hlsl.cpp)
+  target_link_libraries(test_spv_to_hlsl PRIVATE spv_translate Catch2::Catch2WithMain)
+  target_compile_definitions(test_spv_to_hlsl PRIVATE
+    SPV_DIR="${CMAKE_SOURCE_DIR}/build/tmp")
+  if(NOT CMAKE_CROSSCOMPILING)
+    catch_discover_tests(test_spv_to_hlsl)
+  endif()
 endif()
 
 # Effect v2 ABI load path (barrel-loads-WASM migration). Requires testonly.wasm
@@ -659,7 +672,7 @@ if(NANO_HAS_GPU_BACKEND)
     gpu_backend Catch2::Catch2WithMain)
   if(APPLE)
     target_link_libraries(test_gpu_conformance PRIVATE
-      "-framework Metal" "-framework Foundation")
+)
   endif()
   # Discovery RUNS the binary to enumerate test names, which the build host
   # cannot do for a Windows exe. Cross builds are driven by hand under
@@ -674,7 +687,6 @@ if(APPLE)
   add_executable(test_gpu_readback tests/test_gpu_readback.mm)
   target_link_libraries(test_gpu_readback PRIVATE
     gpu_backend Catch2::Catch2WithMain
-    "-framework Metal" "-framework Foundation"
   )
   catch_discover_tests(test_gpu_readback)
 endif()
@@ -684,7 +696,6 @@ if(APPLE AND EXISTS "${CMAKE_SOURCE_DIR}/../build/wasm/gpu_test.wasm")
   add_executable(test_gpu_metal tests/test_gpu_metal.mm)
   target_link_libraries(test_gpu_metal PRIVATE
     wasm_host gpu_backend Catch2::Catch2WithMain
-    "-framework Metal" "-framework Foundation"
   )
   target_compile_definitions(test_gpu_metal PRIVATE
     GPU_TEST_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/gpu_test.wasm"
@@ -1148,7 +1159,7 @@ if(NANO_HAS_GPU_BACKEND)
     text_engine
     text_blitz
     wasm_host
-    spv_to_msl
+    spv_translate
     nlohmann_json::nlohmann_json
   )
   if(APPLE)
@@ -1215,7 +1226,7 @@ if(NANO_HAS_GPU_BACKEND)
   # process-global state (g_runtime, the effrt frame table, g_host_*), only ONE
   # image may link it — the dylib here; the barrel bundle must NOT (see its
   # link list). sketch_executor PUBLIC-pulls effect_runtime/gpu_backend/
-  # wasm_host/text_engine/spv_to_msl transitively.
+  # wasm_host/text_engine/spv_translate transitively.
   target_sources(bridge_server PRIVATE
     src/bridge/barrel_runtime.mm
     src/midi/midi_host.mm
@@ -1261,8 +1272,6 @@ if(NANO_HAS_GPU_BACKEND)
     effect_runtime
     gpu_backend
     nlohmann_json::nlohmann_json
-    "-framework Metal"
-    "-framework Foundation"
   )
   target_compile_options(native_test_runner PRIVATE -Wno-attributes)
   # Effects load from their WASM bundles, never statically linked.
@@ -1282,8 +1291,6 @@ if(NANO_HAS_GPU_BACKEND)
     nano_media        # the DXV decode pump
     gpu_backend
     nlohmann_json::nlohmann_json
-    "-framework Metal"
-    "-framework Foundation"
   )
   target_compile_options(comp_test_runner PRIVATE -Wno-attributes)
   target_compile_definitions(comp_test_runner PRIVATE
@@ -1363,7 +1370,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_comp_render PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_comp_render PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
@@ -1375,14 +1382,14 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_comp_media_ref PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     catch_discover_tests(test_comp_media_ref)
 
     # Native DXV decode against the real test asset.
     add_executable(test_dxv_source tests/test_dxv_source.cpp)
     target_link_libraries(test_dxv_source PRIVATE
       nano_media gpu_backend Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_dxv_source PRIVATE
       TEST_MEDIA_DIR="${CMAKE_SOURCE_DIR}/../web/public/media")
     catch_discover_tests(test_dxv_source)
@@ -1391,7 +1398,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_effect_render PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_effect_render PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm"
@@ -1413,7 +1420,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_texture_copy_format PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_texture_copy_format PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_texture_copy_format PRIVATE -Wno-attributes)
@@ -1424,7 +1431,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_external_scalars PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_external_scalars PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_external_scalars PRIVATE -Wno-attributes)
@@ -1436,7 +1443,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_raw_input PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_raw_input PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
@@ -1476,7 +1483,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_any_ports PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_any_ports PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       TESTONLY_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/testonly.wasm")
@@ -1491,7 +1498,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_vec_lane PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_vec_lane PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_vec_lane PRIVATE -Wno-attributes)
@@ -1501,7 +1508,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_vec_rail PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_vec_rail PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_vec_rail PRIVATE -Wno-attributes)
@@ -1513,7 +1520,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_mod_switch PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_mod_switch PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_mod_switch PRIVATE -Wno-attributes)
@@ -1525,7 +1532,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_mod_slice PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_mod_slice PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_mod_slice PRIVATE -Wno-attributes)
@@ -1537,7 +1544,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_exec_doc_cache PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_exec_doc_cache PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_exec_doc_cache PRIVATE -Wno-attributes)
@@ -1549,7 +1556,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_exec_order PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_exec_order PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       EXEC_ORDER_FIXTURE="${CMAKE_SOURCE_DIR}/../web/test/fixtures/exec-order-cases.json")
@@ -1563,7 +1570,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_plane_shear PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_plane_shear PRIVATE
       NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
     target_compile_options(test_plane_shear PRIVATE -Wno-attributes)
@@ -1576,7 +1583,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_tri_shear PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_tri_shear PRIVATE
       NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
     target_compile_options(test_tri_shear PRIVATE -Wno-attributes)
@@ -1589,7 +1596,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_recompose PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_recompose PRIVATE
       NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
     target_compile_options(test_recompose PRIVATE -Wno-attributes)
@@ -1602,7 +1609,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_envelope_warp PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_envelope_warp PRIVATE
       NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
     target_compile_options(test_envelope_warp PRIVATE -Wno-attributes)
@@ -1615,7 +1622,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_barrel_isolation PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_barrel_isolation PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_barrel_isolation PRIVATE -Wno-attributes)
@@ -1629,7 +1636,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_sketch_output_format PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_sketch_output_format PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm")
     target_compile_options(test_sketch_output_format PRIVATE -Wno-attributes)
@@ -1643,7 +1650,7 @@ if(NANO_HAS_GPU_BACKEND)
     target_link_libraries(test_executor_wasm PRIVATE
       effect_runtime sketch_executor wasm_host gpu_backend
       Catch2::Catch2WithMain
-      "-framework Metal" "-framework Foundation")
+)
     target_compile_definitions(test_executor_wasm PRIVATE
       CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
       EXECUTOR_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
@@ -1651,6 +1658,13 @@ if(NANO_HAS_GPU_BACKEND)
     catch_discover_tests(test_executor_wasm)
   endif()
 
+  # --- The FFGL plugin and its hosts (Apple only) ---
+  # Everything below is Objective-C++ over the Metal barrel: the plugin bundle,
+  # the two headless hosts that drive it and the benchmarks. A Windows port is
+  # a separate piece of work — the GL<->D3D interop it needs (WGL_NV_DX_interop2)
+  # is the one thing CrossOver can never validate, so it does not sit on the
+  # engine's critical path.
+  if(APPLE)
   # --- ffgl_runner: standalone host that dlopens an FFGL bundle ---
   # Headless FFGL host for iterating on NanoBarrel without Resolume — feed
   # it a bundle path, get back stderr logs + an output PNG. Borrows the
@@ -1861,4 +1875,5 @@ if(NANO_HAS_GPU_BACKEND)
   target_compile_definitions(benchmark_barrel PRIVATE
     CORE_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/core.wasm"
     EXECUTOR_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
+  endif()  # APPLE (FFGL plugin + hosts)
 endif()

@@ -20,10 +20,15 @@ Texture2D<float4>   sdTex      : register(t7);   // (delta_shared, trust, -, -)
 Texture2D<float4>   m2Tex      : register(t8);   // (dbx, dby, r_est, sigma_s)
 Texture2D<float4>   m1Tex      : register(t9);   // (w_line, w_point, w_grad, polarity)
 Texture2D<float4>   armsTex    : register(t10);  // blur(w_line_s, 2)  (crossing suppress)
-Texture2D<float4>   wideTex    : register(t11);  // sep_gauss(img, 5.6) (deband + wide bg)
+Texture2D<float4>   wideTex    : register(t14);  // sep_gauss(img, 5.6) (deband + wide bg)
 SamplerState        samp       : register(s12);
 RWTexture2D<float4> outputTex  : register(u13);
-cbuffer Uniforms : register(b14) { LRUniforms u; };
+// b11 rather than the b14 this sequence would otherwise land on: D3D11 gives
+// a stage only 14 constant-buffer slots, b0..b13, while t-space has 128. So
+// the cbuffer takes the low number and wideTex takes the high one. The flat
+// numbering across letters is what the host binds by, so they must still be
+// unique across ALL the resources here.
+cbuffer Uniforms : register(b11) { LRUniforms u; };
 
 float3 texBilinear(Texture2D<float4> t, float2 pix, float2 dim) {
   return t.SampleLevel(samp, (pix + 0.5) / dim, 0.0).rgb;

@@ -236,8 +236,8 @@ void module_init() {
       .tex2d(0).storageTex2d(1, F16).storageTex2d(2, F16));
   s_pso_reconstruct = gpu::Device::createComputePSO(cs_rc, "main", gpu::Bindings()
       .tex2d(0).tex2d(1).tex2d(2).tex2d(3).tex2d(4).tex2d(5).tex2d(6).tex2d(7)
-      .tex2d(8).tex2d(9).tex2d(10).tex2d(11).sampler(12)
-      .storageTex2d(13, gpu::TextureFormat::RGBA8).uniform(14));
+      .tex2d(8).tex2d(9).tex2d(10).uniform(11).sampler(12)
+      .storageTex2d(13, gpu::TextureFormat::RGBA8).tex2d(14));
   s_blur.init();
 
   gpu::ComputePSO* psos[] = { &s_pso_stats, &s_pso_cstar, &s_pso_tensor_grad,
@@ -454,9 +454,9 @@ void render(void* self, int vp_w, int vp_h) {
     cp.setTexture(s->cmn, 2, 0); cp.setTexture(s->cmx, 3, 0); cp.setTexture(s->cstar, 4, 0);
     cp.setTexture(s->s0, 5, 0); cp.setTexture(s->s1, 6, 0); cp.setTexture(s->sd, 7, 0);
     cp.setTexture(s->m2, 8, 0); cp.setTexture(s->m1, 9, 0);
-    cp.setTexture(s->arms, 10, 0); cp.setTexture(s->color_wide, 11, 0);
+    cp.setTexture(s->arms, 10, 0); cp.setBuffer(s->uniform_buf, 11);
     cp.setSampler(s->sampler, 12);
-    cp.setTexture(out, 13, 1); cp.setBuffer(s->uniform_buf, 14);
+    cp.setTexture(out, 13, 1); cp.setTexture(s->color_wide, 14, 0);
     cp.dispatch(gx, gy); cp.end(); }
 
   gpu::Device::submit();
