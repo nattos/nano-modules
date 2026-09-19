@@ -4,12 +4,13 @@
 
 namespace plugin {
 
-/// Wraps dlopen/dlsym to load the bridge dylib at runtime.
+/// Loads the shared bridge runtime at runtime and binds its C ABI:
+/// libbridge_server.dylib on macOS, libbridge_server.dll on Windows.
 class BridgeLoader {
 public:
   ~BridgeLoader();
 
-  bool load(const char* dylib_path);
+  bool load(const char* lib_path);
   bool is_loaded() const;
   void unload();
 

@@ -1,10 +1,11 @@
 #pragma once
-// wasm_paths.h — redirect the baked bundle paths for a cross-compiled run.
+// wasm_paths.h — redirect the baked asset paths for a cross-compiled run.
 //
-// Test targets bake absolute source-tree paths for the .wasm bundles, which is
-// right for a binary that runs where it was built. A Windows binary running
-// under CrossOver cannot see any of them, so NANO_WASM_DIR names the directory
-// the bundles were copied into and the basename is kept.
+// Test targets bake absolute source-tree paths for the .wasm bundles and for
+// the shared bridge runtime, which is right for a binary that runs where it was
+// built. A Windows binary running under CrossOver cannot see any of them, so
+// NANO_WASM_DIR / NANO_LIB_DIR name the directory each was copied into and the
+// basename is kept.
 //
 // Tests opt in by including this header and using the kXxxWasm bindings below
 // instead of the raw macros. Unset, nanoWasmPath is the identity, so a native
@@ -20,8 +21,8 @@
 #include <deque>
 #include <string>
 
-inline const char* nanoWasmPath(const char* baked) {
-  const char* dir = std::getenv("NANO_WASM_DIR");
+inline const char* nanoStagedPath(const char* baked, const char* env_var) {
+  const char* dir = std::getenv(env_var);
   if (!dir || !*dir || !baked) return baked;
   // The returned pointer has to outlive the call — callers pass it straight
   // into loadBundleFile — so the rewritten paths are kept, and a deque so that
@@ -34,6 +35,10 @@ inline const char* nanoWasmPath(const char* baked) {
   joined += (slash ? slash + 1 : baked);
   store.push_back(std::move(joined));
   return store.back().c_str();
+}
+
+inline const char* nanoWasmPath(const char* baked) {
+  return nanoStagedPath(baked, "NANO_WASM_DIR");
 }
 
 // The bundle paths are baked as absolute source-tree paths, which a Windows
@@ -63,4 +68,11 @@ inline const char* const kExecutorWasm = nanoWasmPath(EXECUTOR_WASM_PATH);
 #endif
 #ifdef NANOLOOPER_WASM_PATH
 inline const char* const kNanolooperWasm = nanoWasmPath(NANOLOOPER_WASM_PATH);
+#endif
+
+// The shared bridge runtime the barrel loads at startup. Same redirect, its own
+// env var: a staged run puts a .dll somewhere else again, and its basename
+// differs from the .dylib's.
+#ifdef BRIDGE_DYLIB_PATH
+inline const char* const kBridgeLib = nanoStagedPath(BRIDGE_DYLIB_PATH, "NANO_LIB_DIR");
 #endif

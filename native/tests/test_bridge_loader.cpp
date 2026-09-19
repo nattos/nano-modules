@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "plugin/bridge_loader.h"
+#include "wasm_paths.h"
 
 #ifndef BRIDGE_DYLIB_PATH
 #error "BRIDGE_DYLIB_PATH must be defined at compile time"
@@ -14,13 +15,13 @@ TEST_CASE("load fails gracefully for nonexistent path", "[bridge_loader]") {
 
 TEST_CASE("load succeeds for built bridge dylib", "[bridge_loader]") {
   plugin::BridgeLoader loader;
-  REQUIRE(loader.load(BRIDGE_DYLIB_PATH));
+  REQUIRE(loader.load(kBridgeLib));
   REQUIRE(loader.is_loaded());
 }
 
 TEST_CASE("function pointers are non-null after successful load", "[bridge_loader]") {
   plugin::BridgeLoader loader;
-  REQUIRE(loader.load(BRIDGE_DYLIB_PATH));
+  REQUIRE(loader.load(kBridgeLib));
 
   REQUIRE(loader.bridge_init != nullptr);
   REQUIRE(loader.bridge_release != nullptr);
@@ -34,7 +35,7 @@ TEST_CASE("function pointers are non-null after successful load", "[bridge_loade
 
 TEST_CASE("round-trip through loaded dylib", "[bridge_loader]") {
   plugin::BridgeLoader loader;
-  REQUIRE(loader.load(BRIDGE_DYLIB_PATH));
+  REQUIRE(loader.load(kBridgeLib));
 
   BridgeHandle h = loader.bridge_init();
   REQUIRE(h != nullptr);
@@ -48,11 +49,11 @@ TEST_CASE("round-trip through loaded dylib", "[bridge_loader]") {
 
 TEST_CASE("unload then reload works", "[bridge_loader]") {
   plugin::BridgeLoader loader;
-  REQUIRE(loader.load(BRIDGE_DYLIB_PATH));
+  REQUIRE(loader.load(kBridgeLib));
   loader.unload();
   REQUIRE_FALSE(loader.is_loaded());
 
-  REQUIRE(loader.load(BRIDGE_DYLIB_PATH));
+  REQUIRE(loader.load(kBridgeLib));
   REQUIRE(loader.is_loaded());
 
   BridgeHandle h = loader.bridge_init();

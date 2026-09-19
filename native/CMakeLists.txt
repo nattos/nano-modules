@@ -1351,6 +1351,13 @@ if(NANO_HAS_GPU_BACKEND)
     target_include_directories(test_artnet_host PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(test_artnet_host PRIVATE
       nlohmann_json::nlohmann_json Catch2::Catch2WithMain)
+    # socket_compat.h maps the BSD calls onto Winsock; the import library is
+    # the one thing it can't supply. (The host never binds here — the goldens
+    # feed packets through ingestForTest — but the symbols still have to
+    # resolve.)
+    if(WIN32)
+      target_link_libraries(test_artnet_host PRIVATE ws2_32)
+    endif()
     catch_discover_tests(test_artnet_host)
   endif()
 
