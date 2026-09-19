@@ -1082,16 +1082,43 @@ if(NANO_HAS_GPU_BACKEND)
   # to a native staticlib by cargo and imported. Drives the source.text.rich mode.
   # ==========================================================================
   set(TEXT_BLITZ_DIR "${CMAKE_SOURCE_DIR}/text_blitz")
-  set(TEXT_BLITZ_LIB "${TEXT_BLITZ_DIR}/target/release/libtext_blitz.a")
+  if(CMAKE_CROSSCOMPILING AND WIN32)
+    # Cross to the mingw ABI so the staticlib matches what zig cc emits.
+    # Rust shells out to binutils' dlltool BY NAME for raw-dylib crates
+    # (parking_lot_core is the first), and we have no binutils cross
+    # toolchain — cmake/x86_64-w64-mingw32-dlltool forwards to zig's
+    # llvm-dlltool under the name Rust looks for.
+    set(TEXT_BLITZ_TARGET x86_64-pc-windows-gnu)
+    set(TEXT_BLITZ_LIB
+        "${TEXT_BLITZ_DIR}/target/${TEXT_BLITZ_TARGET}/release/libtext_blitz.a")
+    # `cargo rustc --crate-type staticlib` rather than `cargo build`: the crate
+    # also declares a cdylib, and only THAT needs a linker. We consume the
+    # staticlib, so building just it skips linking altogether.
+    set(TEXT_BLITZ_CMD ${CMAKE_COMMAND} -E env
+        "PATH=${CMAKE_CURRENT_LIST_DIR}/cmake:$ENV{PATH}"
+        cargo rustc --release --lib --target ${TEXT_BLITZ_TARGET}
+                    --crate-type staticlib)
+  else()
+    set(TEXT_BLITZ_LIB "${TEXT_BLITZ_DIR}/target/release/libtext_blitz.a")
+    set(TEXT_BLITZ_CMD cargo build --release)
+  endif()
   add_custom_command(
     OUTPUT "${TEXT_BLITZ_LIB}"
-    COMMAND cargo build --release
+    COMMAND ${TEXT_BLITZ_CMD}
     WORKING_DIRECTORY "${TEXT_BLITZ_DIR}"
     COMMENT "Building libtext_blitz.a (Rust: Stylo + Taffy + parley)"
     VERBATIM)
   add_custom_target(text_blitz_build DEPENDS "${TEXT_BLITZ_LIB}")
   add_library(text_blitz STATIC IMPORTED GLOBAL)
   set_target_properties(text_blitz PROPERTIES IMPORTED_LOCATION "${TEXT_BLITZ_LIB}")
+  if(WIN32)
+    # Rust's std pulls these in on windows-gnu. On macOS the equivalent set is
+    # Security/SystemConfiguration/iconv/objc, declared on effect_runtime.
+    # userenv is the one that bites first: GetUserProfileDirectoryW, via
+    # std::env::home_dir.
+    set_target_properties(text_blitz PROPERTIES INTERFACE_LINK_LIBRARIES
+      "userenv;ws2_32;bcrypt;ntdll;advapi32;kernel32;dbghelp;api-ms-win-core-synch-l1-2-0")
+  endif()
 
   # The in-process runtime: implements every host-import C symbol the WASM
   # effects + executor reference (host/gpu/text/val/io services). Statically
@@ -1296,6 +1323,19 @@ if(NANO_HAS_GPU_BACKEND)
 
   # Native OS-font resolution for the text.* service (Core Text provider +
   # the text_layout spec scan). CPU-only — no GPU backend, no wasm bundles.
+  # text_blitz was the dependency expected to block Windows outright. It does
+  # not — but a Rust staticlib that LINKS can still fall over on first call, so
+  # drive the real cascade (Stylo + Taffy + parley) and check it came back.
+  add_executable(test_text_blitz_abi tests/test_text_blitz_abi.cpp)
+  target_link_libraries(test_text_blitz_abi PRIVATE
+    effect_runtime Catch2::Catch2WithMain)
+  target_compile_options(test_text_blitz_abi PRIVATE -Wno-attributes)
+  target_compile_definitions(test_text_blitz_abi PRIVATE
+    NANO_DEFAULT_FONT_PATH="${CMAKE_SOURCE_DIR}/../build/fonts/default.ttf")
+  if(NOT CMAKE_CROSSCOMPILING)
+    catch_discover_tests(test_text_blitz_abi)
+  endif()
+
   add_executable(test_text_fonts tests/test_text_fonts.cpp)
   target_link_libraries(test_text_fonts PRIVATE
     effect_runtime Catch2::Catch2WithMain)

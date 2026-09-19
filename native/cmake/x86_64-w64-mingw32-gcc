@@ -1,0 +1,6 @@
+#!/bin/sh
+# Rust's windows-gnu target invokes the mingw gcc driver BY NAME to link
+# (text_blitz declares a cdylib crate-type alongside the staticlib we actually
+# consume). zig cc is a drop-in for it, and is already what compiles the C++
+# side, so both halves end up on the same toolchain.
+exec zig cc -target x86_64-windows-gnu "$@"

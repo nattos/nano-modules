@@ -1,0 +1,6 @@
+#!/bin/sh
+# Rust's x86_64-pc-windows-gnu target shells out to binutils' dlltool by this
+# exact name to build import libraries for raw-dylib crates (parking_lot_core
+# is the first to need it). We have no binutils cross-toolchain, but zig ships
+# llvm-dlltool, which is a drop-in — so give Rust the name it is looking for.
+exec zig dlltool "$@"
