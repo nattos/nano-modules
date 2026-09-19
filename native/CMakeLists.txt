@@ -130,7 +130,11 @@ target_include_directories(vmlib PUBLIC ${WAMR_ROOT_DIR}/core/iwasm/include)
 # `#pragma comment(lib, ...)` directives for ws2_32/Pathcch are ignored by
 # everything that is not MSVC, so name them here.
 if(WIN32)
-  target_link_libraries(vmlib PUBLIC ws2_32 Pathcch ${CMAKE_THREAD_LIBS_INIT})
+  # WAMR's win_file.c calls PathCchCombine. MSVC gets that from Pathcch.lib,
+  # which mingw does not ship — the symbol actually lives in the API-set DLL,
+  # so name that directly.
+  target_link_libraries(vmlib PUBLIC
+    ws2_32 api-ms-win-core-path-l1-1-0 ${CMAKE_THREAD_LIBS_INIT})
 else()
   target_link_libraries(vmlib PUBLIC -lm -ldl ${CMAKE_THREAD_LIBS_INIT})
 endif()
