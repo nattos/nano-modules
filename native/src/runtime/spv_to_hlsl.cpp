@@ -70,16 +70,23 @@ std::string spvToHlsl(const uint8_t* spv, size_t byteCount, std::string* error) 
   try {
     spirv_cross::CompilerHLSL compiler(std::move(ir));
 
+    const spv::ExecutionModel stage = compiler.get_execution_model();
+
     spirv_cross::CompilerHLSL::Options opts;
     // 5.0 is what D3D11 consumes. 5.1 exists in FXC but only D3D12 can bind
     // it (it is the one that introduced register spaces).
     opts.shader_model = 50;
-    // A storage buffer the shader only reads would otherwise be declared as a
-    // ByteAddressBuffer in t-space, while the host binds every storage buffer
-    // through a UAV in u-space (d3d11_backend.cpp's computeSetBuffer). That
-    // mismatch binds nothing and reads zeros, so force the UAV form and keep
-    // one rule for all storage buffers.
-    opts.force_storage_buffer_as_uav = true;
+    // COMPUTE ONLY, and the asymmetry is forced by D3D11, not chosen.
+    //
+    // In a compute pass the host binds every storage buffer through a UAV
+    // (d3d11_backend.cpp's computeSetBuffer), so a read-only one declared as a
+    // ByteAddressBuffer in t-space would bind nothing and read zeros — hence
+    // the force. In a RASTER pass the opposite is true: D3D11 cannot bind a UAV
+    // to the vertex stage at all, and pixel-stage UAVs share the u-space the
+    // render targets occupy. The dominant raster idiom here is a procedural
+    // vertex shader pulling instances out of a StructuredBuffer, which must
+    // therefore be an SRV. renderSetBuffer binds it at t<slot> to match.
+    opts.force_storage_buffer_as_uav = (stage == spv::ExecutionModelGLCompute);
     compiler.set_hlsl_options(opts);
 
     // Same clip-space flip as the MSL path, for the same reason: SPIR-V's NDC
@@ -92,7 +99,6 @@ std::string spvToHlsl(const uint8_t* spv, size_t byteCount, std::string* error) 
       compiler.set_common_options(common);
     }
 
-    const spv::ExecutionModel stage = compiler.get_execution_model();
     spirv_cross::ShaderResources res = compiler.get_shader_resources();
     for (const auto* list : {
              &res.uniform_buffers, &res.storage_buffers, &res.storage_images,

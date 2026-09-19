@@ -205,6 +205,10 @@ struct Resource {
   Com<ID3D11PixelShader> ps;
   int32_t blendMode = 0;
   Com<ID3D11BlendState> blend;
+  // Non-null only for the fixed-vertex-format pipelines (createRenderPSO);
+  // procedural/instanced ones draw with a null input layout.
+  Com<ID3D11InputLayout> inputLayout;
+  uint32_t vertexStride = 0;
 
   Com<ID3D11SamplerState> sampler;
 };
@@ -252,10 +256,17 @@ class D3D11Backend : public GPUBackend {
     if (usage == 2) {
       bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     } else {
-      // Storage AND vertex buffers both arrive as raw byte address buffers:
-      // SPIRV-Cross emits ByteAddressBuffer for every SPIR-V storage buffer,
-      // and the vertex path here is procedural (pull from an SRV, no IA).
-      bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+      // Storage buffers arrive as raw byte address buffers — SPIRV-Cross emits
+      // ByteAddressBuffer for every SPIR-V storage buffer, read through an SRV
+      // in raster and a UAV in compute (spv_to_hlsl.cpp).
+      //
+      // VERTEX_BUFFER goes on all of them, not just usage 0. The one buffer
+      // that reaches IASetVertexBuffers (debug.gpu_test's) is FILLED by a
+      // compute shader through a UAV first, so the usage code it was created
+      // with says nothing about whether the IA will also read it. The flag is
+      // free on a buffer nobody binds that way.
+      bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE |
+                     D3D11_BIND_VERTEX_BUFFER;
       bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS |
                      D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS;
       bd.ByteWidth = (UINT)((size + 3) & ~(uint64_t)3);  // raw views need 4-byte multiples
@@ -413,11 +424,19 @@ class D3D11Backend : public GPUBackend {
     return store(std::move(r));
   }
 
+  // The fixed vertex format: float2 position + float4 color, stride 24 — the
+  // SAME layout metal_backend.mm hardcodes in its createRenderPSO, which is
+  // what makes this the "there IS a vertex buffer" entry point as against
+  // createInstancedRenderPSO's procedural one. The semantics are TEXCOORD0/1,
+  // not POSITION/COLOR: SPIR-V carries only Location decorations, and
+  // spirv-cross names every stage input TEXCOORD<location> on the way back out
+  // (dump the HLSL for gpu_test/vertex.hlsl and you can read them off).
   int32_t createRenderPSO(int32_t vsHandle, const std::string& vsEntry,
                           int32_t fsHandle, const std::string& fsEntry,
                           int32_t format) override {
     (void)format;
-    return makeRenderPSO(vsHandle, vsEntry, fsHandle, fsEntry, /*blend*/0);
+    return makeRenderPSO(vsHandle, vsEntry, fsHandle, fsEntry, /*blend*/0,
+                         /*withVertexLayout=*/true);
   }
 
   int32_t createInstancedRenderPSO(int32_t vsHandle, const std::string& vsEntry,
@@ -425,6 +444,37 @@ class D3D11Backend : public GPUBackend {
                                    int32_t format, int32_t blendMode) override {
     (void)format;
     return makeRenderPSO(vsHandle, vsEntry, fsHandle, fsEntry, blendMode);
+  }
+
+  // MRT: the fragment shader's SV_Target<i> goes to attachment i, each with its
+  // own blend mode. `targetFormats` is unused — unlike Metal and WebGPU, a
+  // D3D11 PSO carries no attachment formats; they come from the RTVs bound at
+  // draw time (bindTargets), and a mismatch is the driver's problem, not the
+  // pipeline's.
+  int32_t createInstancedRenderPSOMRT(int32_t vsHandle, const std::string& vsEntry,
+                                      int32_t fsHandle, const std::string& fsEntry,
+                                      int32_t targetCount,
+                                      const int32_t* targetFormats,
+                                      const int32_t* targetBlends) override {
+    (void)targetFormats;
+    if (targetCount <= 0 || targetCount > 8) return -1;
+    const int32_t pso = makeRenderPSO(vsHandle, vsEntry, fsHandle, fsEntry,
+                                      targetBlends ? targetBlends[0] : 0);
+    if (pso < 0) return pso;
+    if (targetCount == 1) return pso;
+    // Per-target blend needs IndependentBlendEnable; replace the single-target
+    // state makeRenderPSO built.
+    D3D11_BLEND_DESC bd{};
+    bd.IndependentBlendEnable = TRUE;
+    for (int32_t i = 0; i < targetCount; ++i)
+      fillBlendTarget(bd.RenderTarget[i], targetBlends ? targetBlends[i] : 0);
+    Resource* r = get(pso, Kind::RenderPSO);
+    if (!r) return pso;
+    Com<ID3D11BlendState> blend;
+    HRESULT hr = device_->CreateBlendState(&bd, blend.put());
+    if (FAILED(hr)) { hrFail("CreateBlendState(MRT)", hr); return pso; }
+    r->blend = std::move(blend);
+    return pso;
   }
 
   // --- writes / copies -----------------------------------------------------
@@ -596,46 +646,129 @@ class D3D11Backend : public GPUBackend {
 
   void endComputePass(int32_t pass) override { (void)pass; unbindCompute(); }
 
-  // --- render (Stage 6; deliberately inert for now) ------------------------
+  // --- render --------------------------------------------------------------
+  //
+  // Everything here is PROCEDURAL: no input layout, no vertex buffer. The
+  // vertex shader reads SV_VertexID / SV_InstanceID and pulls its geometry out
+  // of a StructuredBuffer (see flash_particles/vs.hlsl and flow_swarm/vs.hlsl,
+  // the canonical shape). That is why renderSetBuffer binds storage buffers as
+  // SRVs rather than UAVs — D3D11 cannot give the vertex stage a UAV at all,
+  // and spv_to_hlsl.cpp declares them accordingly for non-compute stages.
   int32_t beginRenderPass(int32_t textureHandle, float cr, float cg, float cb,
                           float ca) override {
-    Resource* r = get(textureHandle, Kind::Texture);
-    if (!r || !r->texRtv) return -1;
-    const float c[4] = { cr, cg, cb, ca };
-    ctx_->ClearRenderTargetView(r->texRtv.get(), c);
-    ID3D11RenderTargetView* rtv = r->texRtv.get();
-    ctx_->OMSetRenderTargets(1, &rtv, nullptr);
-    setViewport(r->width, r->height);
-    return ++passCounter_;
+    const float clear[4] = { cr, cg, cb, ca };
+    const int32_t load = 0;
+    return bindTargets(1, &textureHandle, clear, &load);
+  }
+
+  int32_t beginRenderPassLoad(int32_t textureHandle) override {
+    const float clear[4] = { 0, 0, 0, 0 };
+    const int32_t load = 1;
+    return bindTargets(1, &textureHandle, clear, &load);
+  }
+
+  int32_t beginRenderPassMRT(int32_t count, const int32_t* texHandles,
+                             const float* clears, const int32_t* loads) override {
+    return bindTargets(count, texHandles, clears, loads);
   }
 
   void renderSetPSO(int32_t pass, int32_t pso) override {
     (void)pass;
     Resource* r = get(pso, Kind::RenderPSO);
+    trace("renderSetPSO %d -> %s", pso, (r && r->vs) ? "ok" : "MISSING");
     if (!r) return;
     ctx_->VSSetShader(r->vs.get(), nullptr, 0);
     ctx_->PSSetShader(r->ps.get(), nullptr, 0);
-    ctx_->IASetInputLayout(nullptr);
+    ctx_->IASetInputLayout(r->inputLayout.get());   // null = procedural
+    vertexStride_ = r->vertexStride;
     ctx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     if (r->blend) ctx_->OMSetBlendState(r->blend.get(), nullptr, 0xffffffff);
   }
 
+  // Only the fixed-format pipelines use this; the instanced ones pull their
+  // geometry from an SRV instead and never call it. The stride comes from the
+  // PSO bound just before (renderSetPSO), because the ABI doesn't carry one —
+  // Metal gets it from the pipeline's vertex descriptor for the same reason.
   void renderSetVertexBuffer(int32_t pass, int32_t buf, uint32_t offset,
                              int32_t slot) override {
-    (void)pass; (void)buf; (void)offset; (void)slot;
+    (void)pass;
+    Resource* r = get(buf, Kind::Buffer);
+    trace("renderSetVertexBuffer buf=%d slot=%d stride=%u -> %s", buf, slot,
+          vertexStride_, (r && r->buffer) ? "ok" : "MISSING");
+    if (!r || !r->buffer || !vertexStride_) return;
+    ID3D11Buffer* b = r->buffer.get();
+    UINT stride = vertexStride_, off = offset;
+    ctx_->IASetVertexBuffers((UINT)slot, 1, &b, &stride, &off);
+  }
+
+  // Bound to BOTH stages, matching metal_backend.mm: a WGSL bind group is
+  // stage-unified, and our shaders number registers across the whole VS+FS
+  // pair (vs.hlsl takes t0/b1, fs.hlsl takes b2), so there is no collision.
+  void renderSetBuffer(int32_t pass, int32_t buf, int32_t slot) override {
+    (void)pass;
+    Resource* r = get(buf, Kind::Buffer);
+    trace("renderSetBuffer buf=%d slot=%d usage=%d -> %s", buf, slot,
+          r ? r->usage : -1,
+          !r ? "MISSING" : (r->usage == 2 ? "cbuffer" : (r->bufSrv ? "srv" : "NO SRV")));
+    if (!r) return;
+    if (r->usage == 2) {
+      ID3D11Buffer* b = r->buffer.get();
+      ctx_->VSSetConstantBuffers((UINT)slot, 1, &b);
+      ctx_->PSSetConstantBuffers((UINT)slot, 1, &b);
+    } else if (r->bufSrv) {
+      ID3D11ShaderResourceView* srv = r->bufSrv.get();
+      ctx_->VSSetShaderResources((UINT)slot, 1, &srv);
+      ctx_->PSSetShaderResources((UINT)slot, 1, &srv);
+    }
+  }
+
+  // Fragment stage only — the procedural vertex shaders never sample, and
+  // metal_backend.mm binds it the same way. `access` is accepted for symmetry
+  // with computeSetTexture; a render target is read-only here by construction.
+  void renderSetTexture(int32_t pass, int32_t textureHandle, int32_t slot,
+                        int32_t access) override {
+    (void)pass; (void)access;
+    Resource* r = get(textureHandle, Kind::Texture);
+    if (!r) return;
+    ID3D11ShaderResourceView* srv = r->texSrv.get();
+    trace("renderSetTexture tex=%d slot=t%d -> %s", textureHandle, slot,
+          srv ? "srv" : "NO SRV");
+    ctx_->PSSetShaderResources((UINT)slot, 1, &srv);
+  }
+
+  void renderSetSampler(int32_t pass, int32_t samplerHandle,
+                        int32_t slot) override {
+    (void)pass;
+    Resource* r = get(samplerHandle, Kind::Sampler);
+    if (!r || !r->sampler) return;
+    ID3D11SamplerState* smp = r->sampler.get();
+    ctx_->PSSetSamplers((UINT)slot, 1, &smp);
   }
 
   void renderDraw(int32_t pass, uint32_t vertexCount,
                   uint32_t instanceCount) override {
     (void)pass;
+    trace("renderDraw verts=%u instances=%u", vertexCount, instanceCount);
     if (!vertexCount) return;
     ctx_->DrawInstanced(vertexCount, instanceCount ? instanceCount : 1, 0, 0);
   }
 
+  // Args are 4 × u32 {vertex_count, instance_count, first_vertex,
+  // first_instance} — the WebGPU drawIndirect layout, which is byte-identical
+  // to both MTLDrawPrimitivesIndirectArguments and what DrawInstancedIndirect
+  // wants, so the buffer passes straight through.
+  void renderDrawIndirect(int32_t pass, int32_t argsBuf,
+                          uint64_t offset) override {
+    (void)pass;
+    Resource* r = get(argsBuf, Kind::Buffer);
+    trace("renderDrawIndirect buf=%d offset=%llu -> %s", argsBuf,
+          (unsigned long long)offset, (r && r->buffer) ? "ok" : "MISSING");
+    if (r && r->buffer) ctx_->DrawInstancedIndirect(r->buffer.get(), (UINT)offset);
+  }
+
   void endRenderPass(int32_t pass) override {
     (void)pass;
-    ID3D11RenderTargetView* none = nullptr;
-    ctx_->OMSetRenderTargets(1, &none, nullptr);
+    unbindRender();
   }
 
   // --- submit / surface ----------------------------------------------------
@@ -757,6 +890,14 @@ class D3D11Backend : public GPUBackend {
     std::fprintf(stderr, "[d3d11] device up at feature level 0x%04x\n",
                  (unsigned)got);
     std::fflush(stderr);
+
+    D3D11_RASTERIZER_DESC rd{};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;     // Metal parity — see bindTargets
+    rd.DepthClipEnable = TRUE;
+    rd.ScissorEnable = TRUE;           // setViewport sets a matching rect
+    hr = device_->CreateRasterizerState(&rd, raster_.put());
+    if (FAILED(hr)) hrFail("CreateRasterizerState", hr);
   }
 
   DXGI_FORMAT resolveFormat(int32_t code) {
@@ -800,6 +941,50 @@ class D3D11Backend : public GPUBackend {
     if (FAILED(hr)) { hrFail("CreateUnorderedAccessView(texture)", hr); return nullptr; }
     r.texUavByMip[mip] = uav;
     return uav;
+  }
+
+  // Bind `count` render targets, clearing or loading each. Returns a pass id,
+  // or -1 if any target has no RTV (a block-compressed texture, say).
+  int32_t bindTargets(int32_t count, const int32_t* handles,
+                      const float* clears, const int32_t* loads) {
+    if (count <= 0 || count > 8 || !handles) return -1;
+    ID3D11RenderTargetView* rtvs[8] = {};
+    uint32_t w = 0, h = 0;
+    for (int32_t i = 0; i < count; ++i) {
+      Resource* r = get(handles[i], Kind::Texture);
+      if (!r || !r->texRtv) {
+        trace("beginRenderPass target %d (tex=%d) -> NO RTV", i, handles[i]);
+        return -1;
+      }
+      rtvs[i] = r->texRtv.get();
+      if (i == 0) { w = r->width; h = r->height; }
+      if (!loads || !loads[i]) {
+        const float black[4] = { 0, 0, 0, 0 };
+        ctx_->ClearRenderTargetView(rtvs[i], clears ? clears + i * 4 : black);
+      }
+    }
+    // A render target that is still bound as a compute SRV/UAV would be
+    // silently unbound by D3D11 the moment it becomes an RTV, and the warning
+    // that says so only exists with the debug layer, which wine has no copy of.
+    unbindCompute();
+    ctx_->OMSetRenderTargets((UINT)count, rtvs, nullptr);
+    // Metal rasterizes with no culling by default; D3D11 culls BACK faces. On
+    // top of that the clip-space Y flip (spv_to_hlsl.cpp) REVERSES winding, so
+    // leaving the default in place drops every triangle of a procedural quad
+    // whose author never thought about winding — which is all of them.
+    if (raster_) ctx_->RSSetState(raster_.get());
+    setViewport(w, h);
+    return ++passCounter_;
+  }
+
+  void unbindRender() {
+    ID3D11RenderTargetView* noRtv[8] = {};
+    ID3D11ShaderResourceView* noSrv[8] = {};
+    ctx_->OMSetRenderTargets(8, noRtv, nullptr);
+    ctx_->VSSetShaderResources(0, 8, noSrv);
+    ctx_->PSSetShaderResources(0, 8, noSrv);
+    ctx_->VSSetShader(nullptr, nullptr, 0);
+    ctx_->PSSetShader(nullptr, nullptr, 0);
   }
 
   void unbindCompute() {
@@ -850,7 +1035,7 @@ class D3D11Backend : public GPUBackend {
 
   int32_t makeRenderPSO(int32_t vsHandle, const std::string& vsEntry,
                         int32_t fsHandle, const std::string& fsEntry,
-                        int32_t blendMode) {
+                        int32_t blendMode, bool withVertexLayout = false) {
     Resource* v = get(vsHandle, Kind::Shader);
     Resource* f = get(fsHandle, Kind::Shader);
     if (!v || !f || !device_) return -1;
@@ -869,8 +1054,30 @@ class D3D11Backend : public GPUBackend {
                                     nullptr, r.ps.put());
     if (FAILED(hr)) { hrFail("CreatePixelShader", hr); return -1; }
 
+    if (withVertexLayout) {
+      const D3D11_INPUT_ELEMENT_DESC elems[] = {
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 0,
+          D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 8,
+          D3D11_INPUT_PER_VERTEX_DATA, 0 },
+      };
+      hr = device_->CreateInputLayout(elems, 2, vb->GetBufferPointer(),
+                                      vb->GetBufferSize(), r.inputLayout.put());
+      if (FAILED(hr)) { hrFail("CreateInputLayout", hr); return -1; }
+      r.vertexStride = 24;
+    }
+
     D3D11_BLEND_DESC bd{};
-    auto& t = bd.RenderTarget[0];
+    fillBlendTarget(bd.RenderTarget[0], blendMode);
+    hr = device_->CreateBlendState(&bd, r.blend.put());
+    if (FAILED(hr)) hrFail("CreateBlendState", hr);
+    return store(std::move(r));
+  }
+
+  // BlendMode → one D3D11 render-target blend description.
+  // 0 = alpha-over, 1 = additive, 2 = replace (gpu_backend.h).
+  static void fillBlendTarget(D3D11_RENDER_TARGET_BLEND_DESC& t,
+                              int32_t blendMode) {
     t.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     t.BlendOp = D3D11_BLEND_OP_ADD;
     t.BlendOpAlpha = D3D11_BLEND_OP_ADD;
@@ -893,9 +1100,6 @@ class D3D11Backend : public GPUBackend {
         t.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
         break;
     }
-    hr = device_->CreateBlendState(&bd, r.blend.put());
-    if (FAILED(hr)) hrFail("CreateBlendState", hr);
-    return store(std::move(r));
   }
 
   bool ensureFormatCopyPso() {
@@ -946,6 +1150,13 @@ class D3D11Backend : public GPUBackend {
   Com<ID3D11Device> device_;
   Com<ID3D11DeviceContext> ctx_;
   Com<ID3D11ComputeShader> formatCopyCs_;
+  // One rasterizer state for every render pass — see bindTargets for why the
+  // default is wrong (D3D11 culls back faces; Metal culls nothing).
+  Com<ID3D11RasterizerState> raster_;
+  // Stride of the vertex buffer the currently-bound render PSO expects; 0 for
+  // the procedural pipelines. Set by renderSetPSO, read by
+  // renderSetVertexBuffer — see there.
+  uint32_t vertexStride_ = 0;
   PFN_D3DCompile_t compile_ = nullptr;
   std::vector<Resource> resources_;
   std::vector<int32_t> free_;
