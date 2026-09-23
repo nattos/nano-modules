@@ -111,6 +111,11 @@ void bridge_executor_destroy(BridgeHandle h, const char* key);
 // for this key — the barrel does none of that anymore. Returns 1 if the output
 // texture was written, 0 if the sketch passed through (caller should present the
 // INPUT texture instead).
+// `in_tex` MUST be w x hgt, the same as `out_tex`: the executor renders at one
+// size and effects read their input by pixel position, so a mismatched input is
+// CROPPED (larger) or runs off its edge (smaller), never scaled. A host whose
+// input texture is another size stretches it first — the FFGL plugin does, in
+// its GL blit into the input interop. A mismatch is logged once per key.
 // `bar_phase` (0..1 over one bar) + `bpm` carry the host musical clock (FFGL
 // SetBeatInfo) into the executor's host::barPhase/bpm imports — beat-synced
 // effects (control.nanolooper) advance off these. 0/120 when the host has no

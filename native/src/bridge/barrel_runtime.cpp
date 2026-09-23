@@ -219,6 +219,9 @@ struct BarrelRuntime::Impl {
     std::unique_ptr<sketch_executor::SketchExecutor> executor;
     nlohmann::json sketch;          // cached parse, updated on dirty frames
     bool haveSketch = false;
+    // Set once this key has been told its input is the wrong size, so the
+    // warning is one line rather than one per frame.
+    bool warnedInputSize = false;
     // Preview machinery (single-writer: only touched on the render thread,
     // under render_mu). Hooks capture a stable pointer to this PerExecutor
     // (unordered_map nodes are pointer-stable across rehash).
@@ -1218,6 +1221,23 @@ bool BarrelRuntime::render(const std::string& key, void* in_tex, void* out_tex,
 
   int32_t inputHandle = impl_->gpu->adoptExternalTexture(in_tex);
   int32_t outputHandle = impl_->gpu->adoptExternalTexture(out_tex);
+
+  // The executor renders at w x h and requires its input at exactly that size:
+  // effects read the input by pixel position, so a larger input shows as its
+  // top-left corner blown up and a smaller one runs off its edge. That is the
+  // contract (bridge_api.h), and the plugin keeps it by stretching the host
+  // input into a viewport-sized interop — but a broken one looks like a zoom or
+  // a black frame rather than an error, so say so, once.
+  if (!pe.warnedInputSize) {
+    const int iw = impl_->gpu->getTextureWidth(inputHandle);
+    const int ih = impl_->gpu->getTextureHeight(inputHandle);
+    if (iw > 0 && ih > 0 && (iw != w || ih != h)) {
+      BRT_LOG("key=%s: input texture is %dx%d but the render size is %dx%d -- "
+             "the executor needs them equal; effects will read a crop of it",
+             key.c_str(), iw, ih, w, h);
+      pe.warnedInputSize = true;
+    }
+  }
 
   int32_t finalHandle =
       pe.executor->execute(pe.sketch, inputHandle, outputHandle, w, h, dt, dirty);

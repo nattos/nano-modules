@@ -137,8 +137,15 @@ struct Barrel {
   }
 
   int render(void* in_tex, void* out_tex, bool dirty) {
+    return renderAt(in_tex, out_tex, kW, kH, dirty);
+  }
+
+  // The viewport is the OUTPUT size. The input texture may be any size — the
+  // plugin sizes its input interop from the host's input texture and its
+  // output interop from the viewport, and nothing in FFGL says they agree.
+  int renderAt(void* in_tex, void* out_tex, int w, int hgt, bool dirty) {
     const float macros[8] = {0};
-    return loader.bridge_executor_render(h, key.c_str(), in_tex, out_tex, kW, kH,
+    return loader.bridge_executor_render(h, key.c_str(), in_tex, out_tex, w, hgt,
                                          1.0 / 60.0, 0.0, dirty ? 1 : 0,
                                          macros, 8, 0.0, 120.0);
   }
@@ -248,4 +255,85 @@ TEST_CASE("the runtime publishes an effect catalog for the editor",
 
   REQUIRE(schemas.size() > 2);
   REQUIRE(schemas.find("color.tone.brightness_contrast") != std::string::npos);
+}
+
+// The runtime's input contract, which the first Windows Resolume run broke:
+// the input arrived zoomed into a corner, while generators (which ignore the
+// input) were fine. The cause was the PLUGIN sizing its input interop from the
+// host texture while the executor renders at the viewport; macOS Resolume always handed a viewport-sized input, so it had
+// never shown. The plugin now stretches the host input to the viewport in its
+// GL blit (nano_barrel_plugin.cpp, ensureInterop), and nano_diag's ffgl probe
+// drives that stretch end to end. What is pinned HERE is the runtime side:
+//
+//   at the viewport size, the WHOLE input frame reaches the effect, and the
+//   effect actually runs on it — a gradient, so a crop or a flip shows; the
+//   flat fill every earlier case used hides both.
+//
+// What the runtime does with a WRONG-sized input is deliberately not pinned:
+// effects read their input by pixel position at the render size, so an input
+// twice the viewport shows as its top-left quarter blown up 2x — the Windows
+// "zoom" exactly. That is a contract violation the runtime now logs, not a
+// behaviour to preserve.
+namespace {
+
+std::vector<uint8_t> gradientBgra(int w, int h) {
+  // Red ramps left→right, green top→bottom, both 32..223.
+  std::vector<uint8_t> bgra((size_t)w * h * 4);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x) {
+      uint8_t* p = &bgra[((size_t)y * w + x) * 4];
+      p[0] = 64;
+      p[1] = (uint8_t)(32 + 191 * y / (h - 1));
+      p[2] = (uint8_t)(32 + 191 * x / (w - 1));
+      p[3] = 255;
+    }
+  return bgra;
+}
+
+}  // namespace
+
+TEST_CASE("the whole input frame reaches the effect, and the effect runs on it",
+          "[barrel_render]") {
+  Barrel b;
+  if (!b.start("test-barrel-gradient")) {
+    if (b.device) FAIL(b.failure);
+    SKIP("no GPU device");
+  }
+  void* in_tex = barrel_probe::createTexture(b.device, kW, kH);
+  void* out_tex = barrel_probe::createTexture(b.device, kW, kH);
+  REQUIRE(in_tex != nullptr);
+  REQUIRE(out_tex != nullptr);
+  const std::vector<uint8_t> grad = gradientBgra(kW, kH);
+  barrel_probe::uploadTexture(b.device, in_tex, kW, kH, grad.data());
+
+  // The geometry probe has to be NEAR-identity but not identity: brightness 0 /
+  // contrast 0 is recognised as an identity stage and skipped, which reports
+  // passthrough (0) and would make this test measure nothing.
+  b.setSketch(brightSketch(0.02));
+  REQUIRE(b.render(in_tex, out_tex, true) == 1);
+  std::vector<uint8_t> id;
+  REQUIRE(barrel_probe::readTexture(b.device, out_tex, kW, kH, id));
+  auto at = [&](const std::vector<uint8_t>& px, int x, int y) {
+    return &px[((size_t)y * kW + x) * 4];
+  };
+  const int rLeft = at(id, 1, kH / 2)[0], rRight = at(id, kW - 2, kH / 2)[0];
+  const int gTop = at(id, kW / 2, 1)[1], gBottom = at(id, kW / 2, kH - 2)[1];
+  INFO("R left " << rLeft << " right " << rRight << ", G top " << gTop
+       << " bottom " << gBottom << " (input spans 32..223 on both)");
+  // A 2x centre crop would pull both spans in to roughly 80..175.
+  CHECK(rLeft < 60);
+  CHECK(rRight > 195);
+  CHECK(gTop < 60);        // row 0 is the top: not flipped
+  CHECK(gBottom > 195);
+
+  // And the effect does something to THIS input — not merely "returned 1".
+  b.setSketch(brightSketch(0.5));
+  REQUIRE(b.render(in_tex, out_tex, true) == 1);
+  std::vector<uint8_t> lit;
+  REQUIRE(barrel_probe::readTexture(b.device, out_tex, kW, kH, lit));
+  INFO("mean at brightness 0.02: " << meanRgb(id) << ", at +0.5: " << meanRgb(lit));
+  CHECK(meanRgb(lit) > meanRgb(id) + 20.0);
+
+  barrel_probe::releaseTexture(in_tex);
+  barrel_probe::releaseTexture(out_tex);
 }

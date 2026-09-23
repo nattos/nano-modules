@@ -385,7 +385,9 @@ class NanoBarrelPlugin : public CFFGLPlugin {
       return FF_SUCCESS;
     }
 
-    ensureInterop((int)pInput->Width, (int)pInput->Height, (int)W, (int)H);
+    ensureInterop((int)pInput->Width, (int)pInput->Height,
+                  (int)pInput->HardwareWidth, (int)pInput->HardwareHeight,
+                  (int)W, (int)H);
     if (!input_interop_ || !output_interop_) {
       drawBadgeOnly(pGL);
       return FF_SUCCESS;
@@ -907,16 +909,38 @@ class NanoBarrelPlugin : public CFFGLPlugin {
 
   // -- Interop management ---------------------------------------------
   // (Re)create the input/output `InteropTexture` pair on viewport size
-  // changes. Both interops are CVPixelBuffer-backed so the GL FBO side
-  // and the Metal MTLTexture side share IOSurface storage — zero-copy
-  // ping-pong between the host's GL pipeline and the executor's Metal
-  // dispatches.
-  void ensureInterop(int inW, int inH, int outW, int outH) {
+  // changes. Each is one texture both APIs see (IOSurface on macOS,
+  // WGL_NV_DX_interop2 on Windows) — zero-copy ping-pong between the host's GL
+  // pipeline and the engine's dispatches.
+  //
+  // BOTH are viewport-sized. The executor's contract is that its input is the
+  // size it renders at: effects read the input by pixel position, so an input
+  // twice the viewport shows as its top-left quarter blown up 2x. The host's
+  // input texture, meanwhile, need not match the viewport at all (FFGL
+  // promises nothing of the sort). The mismatch is absorbed where it is free:
+  // blitGlInputToInterop's glBlitFramebuffer stretches whatever the host hands
+  // over into this viewport-sized interop, exactly as a plugin drawing its input
+  // on a fullscreen quad would.
+  //
+  // This used to size the input interop from the host texture. On macOS
+  // Resolume the two always matched, so it never showed; the first Windows
+  // Resolume run showed the input zoomed into a corner — through effects, and
+  // on passthrough frames too, since that blit reads the input interop with
+  // VIEWPORT rects.
+  void ensureInterop(int inW, int inH, int hwW, int hwH, int outW, int outH) {
     if (!shared_device_) return;
+    if (inW != last_host_in_w_ || inH != last_host_in_h_ ||
+        outW != last_view_w_ || outH != last_view_h_) {
+      BARREL_LOG("input-size", "host input %dx%d (allocated %dx%d), viewport %dx%d%s",
+                 inW, inH, hwW, hwH, outW, outH,
+                 (inW == outW && inH == outH) ? "" : " (stretched to fit)");
+      last_host_in_w_ = inW; last_host_in_h_ = inH;
+      last_view_w_ = outW;   last_view_h_ = outH;
+    }
     if (!input_interop_ ||
-        input_interop_->getWidth() != inW ||
-        input_interop_->getHeight() != inH) {
-      input_interop_ = createInteropTexture(shared_device_, inW, inH);
+        input_interop_->getWidth() != outW ||
+        input_interop_->getHeight() != outH) {
+      input_interop_ = createInteropTexture(shared_device_, outW, outH);
       if (input_interop_ && !input_interop_->valid()) input_interop_.reset();
     }
     if (!output_interop_ ||
@@ -1017,6 +1041,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
     // the frame. No-op where the share is implicit (see interop_texture.h).
     input_interop_->lockForGL();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, input_interop_->getOpenGLFBO());
+    // Source is the host's CONTENT rect (Width x Height — a padded texture's
+    // spare HardwareWidth/Height is not image); destination is the whole
+    // viewport-sized interop. When the two differ this is the stretch that
+    // keeps the executor's input at its render size — see ensureInterop.
     glBlitFramebuffer(0, 0, (GLint)pInput->Width, (GLint)pInput->Height,
                       0, (GLint)input_interop_->getHeight(),
                       (GLint)input_interop_->getWidth(), 0,
@@ -1218,6 +1246,10 @@ class NanoBarrelPlugin : public CFFGLPlugin {
   // 0 = not yet known / re-probe.
   GLenum input_target_ = 0;
   bool   input_attach_failed_ = false;
+  // Last sizes logged by ensureInterop, so the log names a change once rather
+  // than every frame.
+  int last_host_in_w_ = -1, last_host_in_h_ = -1;
+  int last_view_w_ = -1, last_view_h_ = -1;
 };
 
 // ============================================================================

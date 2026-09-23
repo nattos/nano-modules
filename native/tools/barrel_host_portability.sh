@@ -154,3 +154,71 @@ if [ "$ae_host" != "0" ]; then
   exit 1
 fi
 echo "PASS: clock free-runs without FF_SET_TIME ($ae_free px apart), host clock still exact"
+
+# ---------------------------------------------------------------------------
+# 3. An input texture that is NOT the viewport's size.
+#
+# FFGL does not promise they match. The plugin used to size its input interop
+# from the host texture while the executor renders at the viewport and reads its
+# input by pixel position — so a 2x input came out as its top-left quarter
+# blown up (through effects AND on passthrough frames), and a 1/2x input ran off
+# the edge and looked like the effect did nothing. macOS Resolume always handed
+# a viewport-sized input, so nothing here saw it; the first Windows Resolume run
+# showed both. The plugin now stretches the host input into a viewport-sized
+# interop in its GL blit.
+#
+# A real, non-identity effect, because brightness 0 / contrast 0 is recognised as
+# an identity stage and skipped — which would test the passthrough blit only.
+# Two conditions, so neither can pass vacuously:
+#   * the effect RAN: every run is clearly brighter than the passthrough;
+#   * the WHOLE frame arrived: 2x and 1/2x inputs match the 1x run to within
+#     resampling error (a crop or an off-edge read is nowhere near).
+# ---------------------------------------------------------------------------
+lit="$tmp/lit.json"
+cat > "$lit" <<'JSON'
+{ "chain": [
+    { "type": "module", "module_type": "color.tone.brightness_contrast",
+      "instance_key": "k0" } ],
+  "instances": { "k0": { "module_type": "color.tone.brightness_contrast",
+      "state": { "brightness": 0.25, "contrast": 0.0 } } },
+  "wires": [] }
+JSON
+runscale() {  # $1=out_png  $2=scale  $3=sketch (empty = none)
+  if [ -n "$3" ]; then
+    "$runner" "$bundle" 128 96 20 "$1" --input-target 2d --input-scale "$2" \
+      --config "$3" >/dev/null 2>&1
+  else
+    "$runner" "$bundle" 128 96 20 "$1" --input-target 2d --input-scale "$2" >/dev/null 2>&1
+  fi
+}
+mean() { magick "$1" -format "%[fx:mean]" info:; }
+
+runscale "$tmp/s_pass.png" 1 ""
+runscale "$tmp/s1.png"     1 "$lit"
+runscale "$tmp/s2.png"     2 "$lit"
+runscale "$tmp/s05.png"  0.5 "$lit"
+m_pass="$(mean "$tmp/s_pass.png")"
+fail=0
+for s in 1 2 05; do
+  m="$(mean "$tmp/s$s.png")"
+  if ! awk -v a="$m" -v b="$m_pass" 'BEGIN { exit !(a > b + 0.08) }'; then
+    echo "FAIL: input scale $s — no effect (mean $m vs passthrough $m_pass)"
+    fail=1
+  fi
+done
+for s in 2 05; do
+  # RMSE prints "abs (normalized)"; take the normalized figure.
+  rmse="$(magick compare -metric RMSE "$tmp/s1.png" "$tmp/s$s.png" null: 2>&1 \
+          | sed -E 's/.*\(([0-9.e+-]+)\).*/\1/' || true)"
+  if ! awk -v r="$rmse" 'BEGIN { exit !(r < 0.04) }'; then
+    cp "$tmp/s$s.png" "/tmp/barrel_host_portability_scale$s.png" 2>/dev/null || true
+    echo "FAIL: input scale $s does not match the 1x frame (RMSE $rmse) — the"
+    echo "      host input is not being fitted to the viewport; see"
+    echo "      /tmp/barrel_host_portability_scale$s.png"
+    fail=1
+  else
+    echo "input scale $s vs 1x: RMSE $rmse"
+  fi
+done
+[ "$fail" = 0 ] || exit 1
+echo "PASS: 2x and 1/2x host inputs fill the viewport and the effect runs on them"

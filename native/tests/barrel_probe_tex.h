@@ -29,6 +29,10 @@ void releaseTexture(void* texture);
 void fillTexture(void* device, void* texture, int w, int h,
                  uint8_t b, uint8_t g, uint8_t r, uint8_t a);
 
+/// Upload `bgra` (w*h*4 bytes, row 0 = top) verbatim — for a pattern that a
+/// crop, a scale or a flip would visibly change, which a flat fill cannot show.
+void uploadTexture(void* device, void* texture, int w, int h, const uint8_t* bgra);
+
 /// Read the texture back as RGBA8, row-major, w*h*4 bytes. False on failure.
 bool readTexture(void* device, void* texture, int w, int h,
                  std::vector<uint8_t>& outRgba);

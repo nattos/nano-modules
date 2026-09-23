@@ -49,6 +49,15 @@ void fillTexture(void* device, void* texture, int w, int h,
   ctx->Release();
 }
 
+void uploadTexture(void* device, void* texture, int w, int h, const uint8_t* bgra) {
+  auto* dev = static_cast<ID3D11Device*>(device);
+  auto* tex = static_cast<ID3D11Texture2D*>(texture);
+  if (!dev || !tex || !bgra || w <= 0 || h <= 0) return;
+  ID3D11DeviceContext* ctx = immediateContext(dev);
+  ctx->UpdateSubresource(tex, 0, nullptr, bgra, (UINT)(w * 4), 0);
+  ctx->Release();
+}
+
 bool readTexture(void* device, void* texture, int w, int h,
                  std::vector<uint8_t>& outRgba) {
   auto* dev = static_cast<ID3D11Device*>(device);

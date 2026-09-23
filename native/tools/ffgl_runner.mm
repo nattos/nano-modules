@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -345,6 +346,11 @@ int main(int argc, const char* argv[]) {
     // does not tell a plugin the texture target, so every plugin guesses — and
     // hosts differ. This is what a non-Resolume host looks like.
     bool input2D = false;
+    // --input-scale S: hand the plugin an input S times the viewport's size. FFGL
+    // does not promise the host's input texture matches the viewport, and the
+    // first Windows Resolume run did not — the plugin sized its input interop from
+    // the host texture and the executor read it as a corner crop.
+    double inputScale = 1.0;
     // --no-time: never send FF_SET_TIME, like an FFGL host that doesn't
     // implement it. FFGL makes SetTime optional, so a plugin that treats the
     // host clock as the only clock simply stops moving in such a host.
@@ -364,6 +370,9 @@ int main(int argc, const char* argv[]) {
         i += 2;
       } else if (arg == "--no-time") {
         sendTime = false;
+      } else if (arg == "--input-scale" && i + 1 < argc) {
+        inputScale = std::stod(argv[i + 1]);
+        i += 1;
       } else if (arg == "--input-target" && i + 1 < argc) {
         input2D = (std::string(argv[i + 1]) == "2d");
         i += 1;
@@ -559,12 +568,17 @@ int main(int argc, const char* argv[]) {
     // 5. One InteropTexture as the plugin's input (also IOSurface-backed) —
     // filled with a 2D gradient (R = x, G = y) so we can tell input handoff
     // apart from pure-output cases AND detect X/Y orientation flips.
-    std::vector<uint8_t> inputPixels((size_t)width * height * 4);
-    for (int y = 0; y < height; ++y) {
-      for (int x = 0; x < width; ++x) {
-        size_t idx = (size_t)(y * width + x) * 4;
-        inputPixels[idx + 0] = (uint8_t)((float)x / width * 255.0f);   // R ramps L→R
-        inputPixels[idx + 1] = (uint8_t)((float)y / height * 255.0f);  // G ramps row0→last
+    const int inW = std::max(1, (int)std::lround(width * inputScale));
+    const int inH = std::max(1, (int)std::lround(height * inputScale));
+    if (inW != width || inH != height)
+      std::cerr << "[ffgl_runner] input " << inW << "x" << inH << " into a "
+                << width << "x" << height << " viewport\n";
+    std::vector<uint8_t> inputPixels((size_t)inW * inH * 4);
+    for (int y = 0; y < inH; ++y) {
+      for (int x = 0; x < inW; ++x) {
+        size_t idx = (size_t)(y * inW + x) * 4;
+        inputPixels[idx + 0] = (uint8_t)((float)x / inW * 255.0f);   // R ramps L→R
+        inputPixels[idx + 1] = (uint8_t)((float)y / inH * 255.0f);  // G ramps row0→last
         inputPixels[idx + 2] = 0;
         inputPixels[idx + 3] = 255;
       }
@@ -583,25 +597,25 @@ int main(int argc, const char* argv[]) {
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, inW, inH, 0,
                    GL_RGBA, GL_UNSIGNED_BYTE, inputPixels.data());
       glBindTexture(GL_TEXTURE_2D, 0);
       std::cerr << "[ffgl_runner] input target: GL_TEXTURE_2D (non-Resolume host)\n";
     } else {
       // (An FBO comes with it now and goes unused here; this path uploads
       // through the texture name instead.)
-      inputInterop = createInteropTexture((__bridge void*)device, width, height);
+      inputInterop = createInteropTexture((__bridge void*)device, inW, inH);
       glBindTexture(GL_TEXTURE_RECTANGLE, inputInterop->getOpenGLTexture());
-      glTexSubImage2D(GL_TEXTURE_RECTANGLE, 0, 0, 0, width, height,
+      glTexSubImage2D(GL_TEXTURE_RECTANGLE, 0, 0, 0, inW, inH,
                       GL_RGBA, GL_UNSIGNED_BYTE, inputPixels.data());
       inputTex = inputInterop->getOpenGLTexture();
     }
 
     FFGLTextureStruct inputStr;
-    inputStr.Width = width;
-    inputStr.Height = height;
-    inputStr.HardwareWidth = width;
-    inputStr.HardwareHeight = height;
+    inputStr.Width = inW;
+    inputStr.Height = inH;
+    inputStr.HardwareWidth = inW;
+    inputStr.HardwareHeight = inH;
     inputStr.Handle = inputTex;
     FFGLTextureStruct* inputs[] = {&inputStr};
 

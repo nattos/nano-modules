@@ -43,6 +43,16 @@ void fillTexture(void* device, void* texture, int w, int h,
          bytesPerRow:(NSUInteger)(w * 4)];
 }
 
+void uploadTexture(void* device, void* texture, int w, int h, const uint8_t* bgra) {
+  (void)device;
+  id<MTLTexture> tex = (__bridge id<MTLTexture>)texture;
+  if (!tex || !bgra || w <= 0 || h <= 0) return;
+  [tex replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h)
+         mipmapLevel:0
+           withBytes:bgra
+         bytesPerRow:(NSUInteger)(w * 4)];
+}
+
 bool readTexture(void* device, void* texture, int w, int h,
                  std::vector<uint8_t>& outRgba) {
   (void)device;
