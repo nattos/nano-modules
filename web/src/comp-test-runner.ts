@@ -21,7 +21,7 @@
  */
 
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
-import { EFFECT_BUNDLES } from './effect-bundles';
+import { REPO_EFFECT_BUNDLES } from './effect-bundles';
 import type { CompFrameInfo } from './engine-types';
 import { CompTestPump, type PumpClipTelemetry } from './comp-test-pump';
 import { thumbnailController } from './views/arrangement/media/thumbnail-controller';
@@ -229,7 +229,7 @@ async function ensureEngine(width: number, height: number): Promise<ArrEngine> {
     const e = new ArrEngine(width, height);
     e.onError = (m) => console.error('[comp-test-runner]', m);
     await e.ready;
-    await e.warmBundles(EFFECT_BUNDLES);
+    await e.warmBundles(REPO_EFFECT_BUNDLES);
     // Wait for effect discovery to SETTLE, not merely to be non-empty: the
     // worker seeds each discovered plugin's schema into the comp catalog before
     // the first update, and a module type that isn't in the catalog yet renders

@@ -73,6 +73,11 @@ export function isElectron(): boolean {
   return typeof (globalThis as any).require === 'function';
 }
 
+/** Electron's ipcRenderer in the desktop app, else undefined. */
+export function electronIpc(): any | undefined {
+  return isElectron() ? nodeRequire<any>('electron')?.ipcRenderer : undefined;
+}
+
 /** `require` without letting Vite see a static module specifier. */
 function nodeRequire<T = any>(mod: string): T | undefined {
   const req = (globalThis as any).require as ((m: string) => T) | undefined;

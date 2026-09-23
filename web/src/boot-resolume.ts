@@ -47,7 +47,7 @@ import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo, type ResolumePlacement }
 import { parseBarrelInstances, parseResolumePlacement } from './state/barrel-instances';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
-import { EFFECT_BUNDLES } from './effect-bundles';
+import { discoverEffectBundles } from './effect-bundles';
 
 // Import the root component (self-registering)
 import './views/sketch-app';
@@ -125,7 +125,7 @@ async function bootPlaygroundMode(barrelUrl: string): Promise<void> {
   // Load every effect bundle so all effects are reachable. Barrel mode
   // skips this — the worker never instantiates anything; the plugin list
   // comes from the barrel's WS state subtree (see connectBarrel).
-  for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+  for (const bundle of await discoverEffectBundles()) appController.loadModule(bundle);
 
   // Selecting a playground instance just opens its sketch (the barrel-mode
   // twin of this handler rewires the WS transport instead). Register BEFORE
@@ -179,7 +179,7 @@ async function bootLiveOffline(barrelUrl: string): Promise<void> {
   // since live-cache keys are real UUIDs with no common prefix to match on.
   appController.setEngineSketchFilter(
     (id) => appController.isLiveSketch(id) || id === appState.local.editingSketchId);
-  for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+  for (const bundle of await discoverEffectBundles()) appController.loadModule(bundle);
 
   // Direct switch, no network rewiring needed — the sketch is already
   // loaded locally (same as Playground's select handler).

@@ -186,7 +186,8 @@ the plugin and the Electron app:
 ```
 <root>/nano-resources.json     marker; both halves look for it
 <root>/app/                    the built web app  (Electron only)
-<root>/wasm/*.wasm             effect bundles     (both)
+<root>/wasm/*.wasm             built-in effect bundles (both); more come from the
+                               module folders -- see bridge/module_dirs.h
 <root>/wasm/*-<arch>.aot       AOT sidecars       (native only)
 <root>/fonts/default.ttf       primary text face  (native only; the web app
                                carries its own copy inside app/)

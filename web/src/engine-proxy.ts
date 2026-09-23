@@ -3,6 +3,7 @@
  * Receives ImageBitmap frames for display and provides a clean API for the UI.
  */
 
+import { bundleUrl } from './effect-bundles';
 import type { WorkerCommand, WorkerEvent, EngineState, EffectInfo, TracePoint, ParamValue, DebugStats, DebugConsoleEntry, FontRequest, CompFrameInfo } from './engine-types';
 import type { Sketch } from './sketch-types';
 
@@ -137,7 +138,9 @@ export class EngineProxy {
   }
 
   loadModule(moduleType: string) {
-    this.send({ type: 'loadModule', moduleType });
+    // The bundle may live in a module directory outside the app; discovery
+    // (effect-bundles.ts) knows its URL, the worker doesn't.
+    this.send({ type: 'loadModule', moduleType, url: bundleUrl(moduleType) });
   }
 
   instantiateEffect(effectId: string) {

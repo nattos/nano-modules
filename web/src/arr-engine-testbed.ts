@@ -9,7 +9,7 @@
 import { ArrEngine } from './views/arrangement/engine/arr-engine';
 import { gpuTestSketch, invertSketch, brightnessWhiteSketch, solidSketch } from './views/arrangement/engine/slice-sketches';
 import { clipInstanceKey, trackInstanceKey } from './views/arrangement/engine/instance-keys';
-import { EFFECT_BUNDLES } from './effect-bundles';
+import { REPO_EFFECT_BUNDLES } from './effect-bundles';
 import { store } from './views/arrangement/state/store';
 
 const canvas = document.getElementById('mon') as HTMLCanvasElement;
@@ -40,7 +40,7 @@ engine.onError = (m) => { status.textContent = `error: ${m}`; };
 engine.onPlugins = (plugins) => store.setEnginePlugins(plugins);
 const settle = () => new Promise<void>((r) => setTimeout(r, 800));
 engine.ready
-  .then(() => engine.warmBundles(EFFECT_BUNDLES))
+  .then(() => engine.warmBundles(REPO_EFFECT_BUNDLES))
   .then(settle)
   .then(() => { status.textContent = 'ready'; });
 

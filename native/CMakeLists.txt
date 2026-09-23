@@ -1854,6 +1854,19 @@ if(NANO_HAS_GPU_BACKEND)
       EXECUTOR_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
     target_compile_options(test_executor_wasm PRIVATE -Wno-attributes)
     catch_discover_tests(test_executor_wasm)
+
+    # Effect bundles from the built-in / default / mapped module directories
+    # (bridge/module_dirs.h): resolution on temp dirs, plus one real bundle
+    # loaded out of a mapped directory.
+    add_executable(test_module_dirs tests/test_module_dirs.cpp)
+    target_link_libraries(test_module_dirs PRIVATE
+      effect_runtime sketch_executor wasm_host gpu_backend
+      Catch2::Catch2WithMain
+)
+    target_compile_definitions(test_module_dirs PRIVATE
+      NANO_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/nano.wasm")
+    target_compile_options(test_module_dirs PRIVATE -Wno-attributes)
+    catch_discover_tests(test_module_dirs)
   endif()
 
   # --- NanoBarrel.dll (Windows) ---

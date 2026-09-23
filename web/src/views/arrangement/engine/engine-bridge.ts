@@ -32,7 +32,7 @@ import { videoInputsReady as gateVideoReady } from './precise-gate';
 import { store } from '../state/store';
 import { deviceIsSource } from '../model/composition';
 import type { TracePoint } from '../../../engine-types';
-import { EFFECT_BUNDLES } from '../../../effect-bundles';
+import { discoverEffectBundles } from '../../../effect-bundles';
 import type { TraceRegistration, TraceSource } from '../../../state/trace-controller';
 
 /** Fired once per rendered frame after the latest engine frame is retained. */
@@ -294,7 +294,7 @@ export class EngineBridge {
     };
     // Eagerly load every shipping effect bundle (shared list, testonly excluded) so
     // all effects are reachable — not just those a clip already references.
-    void e.warmBundles(EFFECT_BUNDLES);
+    void discoverEffectBundles().then((ids) => e.warmBundles(ids));
     e.onCompInfo = (info) => this.handleCompInfo(info);
     void e.compEnable(COMPOSITE_ID);
     this.engine = e;

@@ -301,7 +301,7 @@ async function handleCommand(cmd: WorkerCommand) {
       // In barrel mode the worker never instantiates effects. Schemas
       // come from the WS bridge.
       if (barrelMode) break;
-      await loadModule(cmd.moduleType);
+      await loadModule(cmd.moduleType, cmd.url);
       break;
     case 'instantiateEffect':
       if (barrelMode) break;
@@ -1502,15 +1502,15 @@ async function reloadWasmModule(wasmUrl: string) {
  * Load a WASM module and discover its available effects.
  * Does NOT instantiate any effects — call instantiateEffect() separately.
  */
-async function loadModule(moduleType: string) {
+async function loadModule(moduleType: string, url?: string) {
   if (!bridgeCore || !gpuHost) return;
 
-  // Derive WASM filename from module type. We strip any
-  // `com.<vendor>.` prefix (matches `com.nano.nano`, `com.nano.lights`,
-  // etc) so the wasm file's short name is the last meaningful segment.
+  // The main thread resolves the URL (effect-bundles.ts): a bundle may live in
+  // a module directory served at /modules/<n>/. Absent one, derive the
+  // built-in path from the id, stripping any `com.<vendor>.` prefix.
   const stripped = moduleType.replace(/^com\.[^.]+\./, '');
   const moduleName = stripped.replace(/\./g, '_');
-  const wasmUrl = `/wasm/${moduleName}.wasm`;
+  const wasmUrl = url ?? `/wasm/${moduleName}.wasm`;
 
   // Don't reload if already registered
   if (moduleRegistry.has(wasmUrl)) {

@@ -65,14 +65,22 @@ if (!product) {
  * per-arch AOT sidecars.
  */
 const SHIPPED_WASM = [
-  'core', 'nano', 'lights', 'text', 'richtext', 'legacy',
+  'core', 'text', 'richtext',
   'executor', 'bridge_core', 'dxv_decoder', 'text_engine', 'text_blitz', 'naga_spv',
 ].map((n) => `wasm/${n}.wasm`);
 
-/** AOT sidecars the native barrel prefers over the .wasm, for the bundles it
- *  loads (kBundleNames in barrel_runtime.cpp). Only this slice's arch. */
-const MAC_AOT = ['core', 'nano', 'lights', 'text', 'richtext', 'legacy']
-  .map((n) => `${n}-aarch64.aot`);
+/**
+ * The bundles a package CARRIES but does not load from its own wasm/: they are
+ * seeded into the per-user modules directory on first launch
+ * (module-dirs.cjs seedDefaultModules), where both apps and the native barrel
+ * find them — and where a user can delete or replace them. Both products carry
+ * the same set, since whichever launches first seeds it.
+ */
+const EXTRA_BUNDLES = ['nano', 'lights', 'legacy'];
+
+/** AOT sidecars the native barrel prefers over a .wasm beside them. Only this
+ *  slice's arch — the other would never be selected, and costs 20 MB. */
+const aot = (stems) => stems.map((n) => `${n}-aarch64.aot`);
 
 module.exports = {
   appId: product.appId,
@@ -99,6 +107,11 @@ module.exports = {
       to: 'nano',
       filter: ['nano-resources.json', 'app/**/*', 'fonts/**/*', ...SHIPPED_WASM],
     },
+    {
+      from: '../build/wasm',
+      to: 'nano/extra-modules',
+      filter: EXTRA_BUNDLES.map((n) => `${n}.wasm`),
+    },
   ],
 
   mac: {
@@ -116,13 +129,17 @@ module.exports = {
     // OFF deliberately: incompatible with the nodeIntegration the renderer
     // needs for real filesystem paths (see electron/main.cjs).
     hardenedRuntime: false,
-    extraResources: product.plugin ? [
-      // libbridge_server.dylib MUST stay a direct sibling of the bundle:
-      // dlopen shares one image only for the same path, so two copies means
-      // two WsServers fighting over :8081.
-      { from: '../build/ffgl', to: 'nano/ffgl', filter: ['**/*'] },
-      { from: '../build/wasm', to: 'nano/wasm', filter: MAC_AOT },
-    ] : [],
+    extraResources: [
+      // Seeded beside their .wasm, for the barrel — whichever app seeds.
+      { from: '../build/wasm', to: 'nano/extra-modules', filter: aot(EXTRA_BUNDLES) },
+      ...(product.plugin ? [
+        // libbridge_server.dylib MUST stay a direct sibling of the bundle:
+        // dlopen shares one image only for the same path, so two copies means
+        // two WsServers fighting over :8081.
+        { from: '../build/ffgl', to: 'nano/ffgl', filter: ['**/*'] },
+        { from: '../build/wasm', to: 'nano/wasm', filter: aot(['core', 'text', 'richtext']) },
+      ] : []),
+    ],
   },
 
   dmg: {

@@ -35,14 +35,14 @@ import {
 import { standardKeymap } from '@codemirror/commands';
 import type { AvailableEffect } from '../state/types';
 import { effectDomain, categoryColor } from './category-color';
-import { EFFECT_BUNDLE_NAMES } from '../effect-bundles';
+import { bundleLabel } from '../effect-bundles';
 import { sanitizeIconName, thumbnailDataUri } from './effect-glyph';
 import './ui-icon';
 
 function shortName(id: string) { return id.split('.').pop() ?? id; }
 
 /** Human-readable label for a bundle folder row (falls back to the raw id). */
-function bundleName(id: string): string { return EFFECT_BUNDLE_NAMES[id] ?? id; }
+function bundleName(id: string): string { return bundleLabel(id); }
 
 /** Simple fuzzy match: all query chars must appear in order in the target. */
 function fuzzyMatch(q: string, t: string): boolean {

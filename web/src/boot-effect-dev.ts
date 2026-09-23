@@ -9,7 +9,7 @@
 import { boot } from './boot';
 import { appState } from './state/app-state';
 import { appController } from './state/controller';
-import { EFFECT_BUNDLES } from './effect-bundles';
+import { discoverEffectBundles } from './effect-bundles';
 import { DEFAULT_BARREL_URL } from './resolume-mode';
 import { startBarrelProbe } from './barrel-probe';
 import { installModeOffers } from './live-offers';
@@ -39,8 +39,8 @@ export async function bootEffectDev(): Promise<void> {
     (id) => id === appState.local.userSettings.selectedProjectId,
   );
 
-  // The IDE loads the shipping effect bundles (shared list; `testonly` excluded).
-  for (const bundle of EFFECT_BUNDLES) appController.loadModule(bundle);
+  // The IDE loads every discovered effect bundle (`testonly` is never listed).
+  for (const bundle of await discoverEffectBundles()) appController.loadModule(bundle);
 
   // Effect Dev has no barrel connection of its own, but still watches for
   // Resolume coming up (and drives the resulting offer) so it can offer

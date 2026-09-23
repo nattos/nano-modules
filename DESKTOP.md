@@ -73,7 +73,8 @@ One directory serves the Electron renderer *and* the native FFGL plugin:
 ```
 <root>/nano-resources.json     marker; both halves look for it
 <root>/app/                    the built web app
-<root>/wasm/*.wasm             effect bundles          (both)
+<root>/wasm/*.wasm             core, text, richtext + services (both)
+<root>/extra-modules/          nano, lights, legacy — seeded into the modules folder
 <root>/wasm/*-<arch>.aot       AOT sidecars            (native only)
 <root>/fonts/default.ttf       primary text face       (native only)
 <root>/ffgl/NanoBarrel.bundle        the plugin        (macOS Remote Control)
@@ -88,6 +89,28 @@ writes. Packaged, it is `Contents/Resources/nano` (Windows: `resources\nano`).
 `libbridge_server.dylib` must stay the bundle's **direct sibling**: `dlopen`
 shares one image only for the same path, so two copies means two WebSocket
 servers fighting over port 8081.
+
+## Effect modules
+
+A package loads only **core, text and richtext** from its own `wasm/`.
+Everything else is a *module*: a `<name>.wasm` bundle (id `com.nano.<name>`) in
+a folder the app, the dev server and the native plugin all scan the same way —
+`native/src/bridge/module_dirs.h` and `web/electron/module-dirs.cjs`, pinned by
+`native/tests/test_module_dirs.cpp` and `web/src/module-dirs.test.ts`.
+
+| Folder | What it holds | Precedence |
+|---|---|---|
+| `<root>/wasm/` | the built-ins (a dev tree: all six repo bundles) | lowest |
+| **Modules folder** — `~/Library/Application Support/Nano Modules/Modules`, `%APPDATA%\Nano Modules\Modules` | nano, lights, legacy, copied from `extra-modules/` on first launch of each new app version | fills in only what `wasm/` lacks, so a seeded release copy never shadows a dev tree's build |
+| Folders added in **Settings → Modules** (`NanoBarrel/module_paths.json`) | your own bundles | replaces the same name from anywhere below; later folders win |
+
+A mapped folder hot-reloads: rebuild a bundle into it and the running app swaps
+it in. Resolume reads the folders when it loads the plugin, so it needs a
+restart to see a change. `NANO_MODULES_DIR` and `NANO_MODULE_PATHS_FILE`
+override both locations (tests, CI).
+
+Launch either app once after installing, so the modules folder is seeded before
+Resolume first loads the plugin.
 
 ### How the plugin finds it
 

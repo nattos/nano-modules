@@ -28,7 +28,7 @@ import { ExportVideoPump } from './export-video-pump';
 import { videoDescFor } from './video-compositor';
 import { makeWarpClock, type WarpClock } from './warp-clock';
 import { store } from '../state/store';
-import { EFFECT_BUNDLES } from '../../../effect-bundles';
+import { discoverEffectBundles } from '../../../effect-bundles';
 import { compositionLengthBeats, exportFps, type BackgroundConfig } from '../model/composition';
 
 /** The comp executor publishes its output under this fixed sketch id. */
@@ -220,7 +220,7 @@ export async function exportComposition(opts: ExportOptions = {}): Promise<Expor
   // then mirror the document once. The transport stays PAUSED in Fluid mode: each
   // frame is an explicit seek + step, and decode is awaited host-side, so the
   // Precise gate has nothing to guard.
-  await engine.warmBundles(EFFECT_BUNDLES);
+  await engine.warmBundles(await discoverEffectBundles());
   await (async () => {
     const t0 = Date.now();
     let last = -1;

@@ -23,6 +23,7 @@ const { protocol, net } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const moduleDirs = require('./module-dirs.cjs');
 
 const SCHEME = 'nano';
 /** Everything is served under one host so the origin is `nano://app`. */
@@ -86,6 +87,17 @@ function serve(root) {
     if (url.hostname !== HOST) {
       return new Response('not found', { status: 404 });
     }
+    // `/modules/<n>/<file>.wasm` — an effect bundle from the per-user or a
+    // mapped module directory (module-dirs.cjs), which live OUTSIDE the root.
+    // Resolved against the config on every request, so a newly mapped
+    // directory is servable without a restart; only the configured
+    // directories, only .wasm files, never a `..` escape.
+    if (url.pathname.startsWith('/modules/')) {
+      const mod = moduleDirs.resolveModuleUrl(url.pathname);
+      if (!mod || !fs.existsSync(mod)) return new Response('not found', { status: 404 });
+      return net.fetch(pathToFileURL(mod).toString());
+    }
+
     const file = resolveRequestPath(root, url.pathname);
     if (!file) return new Response('forbidden', { status: 403 });
 

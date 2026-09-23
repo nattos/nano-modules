@@ -18,6 +18,10 @@ import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
 import { availableModes } from '../product';
+import {
+  bundleLabel, listModules, setModulePaths,
+  type ModuleListing, type ModulePathRow,
+} from '../effect-bundles';
 import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { TARGET_FPS_OPTIONS } from './gpu-headroom';
 import {
@@ -25,7 +29,9 @@ import {
   resolumeRemoteSettingChanged,
   type SetupStepId, type SetupStepStatus,
 } from '../state/resolume-setup';
-import { appResourceRoot, copyText, revealInFolder } from '../state/paths';
+import {
+  absPathOf, appResourceRoot, copyText, isElectron, revealInFolder, showDirectoryPicker,
+} from '../state/paths';
 
 /** macOS, from Electron's own `process` when we have it. Both platforms ship a
  *  plug-in now, but they are different ARTEFACTS — a `.bundle` directory plus a
@@ -219,6 +225,34 @@ export class AppSettings extends MobxLitElement {
       cursor: pointer;
     }
     button.small:hover { border-color: var(--app-text-color2); }
+    .module-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--app-sp-2);
+    }
+    .module-row {
+      display: flex;
+      align-items: center;
+      gap: var(--app-sp-3);
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color2);
+      min-width: 0;
+    }
+    .module-row .grow { flex: 1; min-width: 0; word-break: break-all; }
+    .module-row .origin { color: var(--app-text-color2); opacity: 0.7; }
+    .module-row input[type='text'] {
+      flex: 1;
+      font-family: inherit;
+      font-size: var(--app-fs-sm);
+      color: var(--app-text-color1);
+      background: var(--app-bg-color2);
+      border: 1px solid var(--app-tint-4);
+      border-radius: 3px;
+      padding: 2px var(--app-sp-2);
+    }
     .note {
       font-size: var(--app-fs-sm);
       color: var(--app-text-color2);
@@ -233,6 +267,11 @@ export class AppSettings extends MobxLitElement {
   @state() private appRoot: string | null = null;
   /** Feedback for the copy-path button, cleared on a timer. */
   @state() private copied = '';
+  /** Effect bundles and module directories (null until listed). */
+  @state() private modules: ModuleListing | null = null;
+  @state() private modulesError = '';
+  /** Browser-only: a path typed in, since the web picker yields no paths. */
+  @state() private typedModulePath = '';
   private stopWatch: (() => void) | null = null;
   private copyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -242,6 +281,7 @@ export class AppSettings extends MobxLitElement {
     // settings page nobody is looking at.
     this.stopWatch = watchResolumeSetup();
     void appResourceRoot().then((root) => { this.appRoot = root; });
+    void listModules().then((l) => { this.modules = l; });
   }
 
   disconnectedCallback() {
@@ -287,6 +327,7 @@ export class AppSettings extends MobxLitElement {
           </div>
           ${this.renderSetupChecklist()}
         </section>
+        ${this.renderModules()}
         <section>
           <h2>Target Framerate</h2>
           <div class="hint">
@@ -316,6 +357,95 @@ export class AppSettings extends MobxLitElement {
    * later one can be green while an earlier one isn't (a plug-in installed by
    * hand, say).
    */
+  private renderModules() {
+    const m = this.modules;
+    if (!m) return nothing;
+    const loaded = m.bundles.filter((b) => b.origin !== 'builtin');
+    return html`
+      <section>
+        <h2>Modules</h2>
+        <div class="hint">
+          Effect bundles beyond the built-in ones load from the modules folder
+          and from any folder you add here — e.g. where you build your own
+          effects. A bundle in an added folder replaces a built-in one of the
+          same name, and reloads live when it is rebuilt.
+        </div>
+        ${m.defaultDir ? html`
+          <div class="module-row">
+            <span class="grow">Modules folder: <code>${m.defaultDir}</code></span>
+            ${isElectron() ? html`<button class="small"
+              @click=${() => { void revealInFolder(m.defaultDir!); }}>Reveal</button>` : nothing}
+          </div>` : nothing}
+        ${m.editable ? html`
+          <ul class="module-list">
+            ${m.paths.map((row, i) => html`
+              <li class="module-row">
+                <input type="checkbox" .checked=${row.enabled}
+                  title="Load bundles from this folder"
+                  @change=${(e: Event) => this.updateModulePaths(m.paths.map((r, j) =>
+                    j === i ? { ...r, enabled: (e.target as HTMLInputElement).checked } : r))}>
+                <span class="grow"><code>${row.path}</code></span>
+                ${isElectron() ? html`<button class="small"
+                  @click=${() => { void revealInFolder(row.path); }}>Reveal</button>` : nothing}
+                <button class="small"
+                  @click=${() => this.updateModulePaths(m.paths.filter((_, j) => j !== i))}>Remove</button>
+              </li>`)}
+            <li class="module-row">
+              ${isElectron() ? html`
+                <button class="small" @click=${this.onAddModuleFolder}>Add folder…</button>` : html`
+                <input type="text" placeholder="/absolute/path/to/modules"
+                  .value=${this.typedModulePath}
+                  @input=${(e: Event) => { this.typedModulePath = (e.target as HTMLInputElement).value; }}>
+                <button class="small" ?disabled=${!this.typedModulePath.trim()}
+                  @click=${() => {
+                    const p = this.typedModulePath.trim();
+                    this.typedModulePath = '';
+                    this.updateModulePaths([...m.paths, { path: p, enabled: true }]);
+                  }}>Add</button>`}
+            </li>
+          </ul>` : html`
+          <div class="note">Module folders need the desktop app (or the dev server).</div>`}
+        ${this.modulesError ? html`<div class="note">${this.modulesError}</div>` : nothing}
+        ${loaded.length ? html`
+          <ul class="module-list">
+            ${loaded.map((b) => html`
+              <li class="module-row">
+                <span>${bundleLabel(b.id)}</span>
+                <span class="grow"><code>${b.path ?? b.url}</code></span>
+                <span class="origin">${b.origin === 'mapped' ? 'added folder' : 'modules folder'}</span>
+              </li>`)}
+          </ul>` : html`<div class="hint">No extra bundles found.</div>`}
+        <div class="hint">
+          Removing a folder takes effect the next time the app starts. Resolume
+          picks up any change the next time it loads the plugin.
+        </div>
+      </section>
+    `;
+  }
+
+  private onAddModuleFolder = async () => {
+    const m = this.modules;
+    if (!m) return;
+    try {
+      const dir = absPathOf(await showDirectoryPicker());
+      if (!dir || m.paths.some((r) => r.path === dir)) return;
+      this.updateModulePaths([...m.paths, { path: dir, enabled: true }]);
+    } catch (e) {
+      this.modulesError = String(e);
+    }
+  };
+
+  /** Persist the mapped folders, then load whatever they newly provide — an
+   *  added folder's bundles are usable at once; the worker ignores bundles it
+   *  already has. */
+  private updateModulePaths(rows: ModulePathRow[]) {
+    this.modulesError = '';
+    void setModulePaths(rows).then((listing) => {
+      this.modules = listing;
+      for (const b of listing.bundles) appController.loadModule(b.id);
+    }).catch((e) => { this.modulesError = String(e); });
+  }
+
   private renderSetupChecklist() {
     const settings = appState.local.userSettings;
     const { probe, plugin, server, liveInstances, compositionInstances } = resolumeSetup;

@@ -22,6 +22,7 @@
 
 #include "bridge/bridge_server.h"
 #include "bridge/library_paths.h"
+#include "bridge/module_dirs.h"
 #include "bridge/preview_codec.h"
 #include "bridge/ws_server.h"
 #include "platform/paths.h"
@@ -51,7 +52,6 @@ static std::atomic<uint64_t> g_barrel_present_seq{0};
 uint64_t barrelPresentSeq() { return g_barrel_present_seq.load(std::memory_order_relaxed); }
 
 namespace {
-constexpr const char* kBundleNames[] = {"core", "lights", "nano", "text", "richtext", "legacy"};
 constexpr unsigned kNumMacros = 16;
 
 #define BRT_LOG(fmt, ...) \
@@ -882,15 +882,23 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
   impl_->registry = std::make_unique<sketch_executor::ModuleRegistry>(impl_->rt.get());
 
   impl_->bundles = std::make_unique<sketch_executor::WasmEffectBundles>();
+  // The built-in directory, then the per-user modules directory and whatever
+  // the user mapped — see bridge/module_dirs.h for the precedence rules. What
+  // loaded (and what didn't) is published at /global/modules for Settings.
   int total = 0;
+  nlohmann::json loaded = nlohmann::json::array();
   if (impl_->bundles->init()) {
-    for (const char* name : kBundleNames) {
-      std::string path = wasm_dir + "/" + name + ".wasm";
-      int n = impl_->bundles->loadBundleFile(path, *impl_->registry, impl_->gpu.get(), nullptr);
-      BRT_LOG("wasm bundle '%s': %d effect(s) from %s", name, n, path.c_str());
+    for (const auto& src : nano_modules::resolveBundlesForHost(wasm_dir)) {
+      int n = impl_->bundles->loadBundleFile(src.path, *impl_->registry, impl_->gpu.get(), nullptr);
+      BRT_LOG("wasm bundle '%s' (%s): %d effect(s) from %s", src.stem.c_str(),
+              nano_modules::originName(src.origin), n, src.path.c_str());
+      loaded.push_back({{"id", "com.nano." + src.stem}, {"path", src.path},
+                        {"origin", nano_modules::originName(src.origin)},
+                        {"effects", n}});
       total += n;
     }
   }
+  BridgeServer::instance().set_at("/global/modules", loaded.dump());
   if (total == 0) {
     BRT_LOG("ERROR: no WASM effects loaded (wasm_dir=%s)", wasm_dir.c_str());
     impl_->bundles.reset();

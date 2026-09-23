@@ -13,9 +13,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdlib>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -36,6 +38,7 @@
 #include <winnls.h>
 #endif
 #else
+#include <dirent.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
 #endif
@@ -91,6 +94,50 @@ inline bool dirExists(const std::string& p) {
   struct stat st;
   return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 #endif
+}
+
+/**
+ * The names (not paths) of the regular files directly inside `dir`, sorted, so
+ * a caller that picks among them is deterministic across filesystems. Empty
+ * when the directory is missing or unreadable. UTF-8 in and out on every
+ * platform -- a user's module directory is exactly the kind of path that has a
+ * non-ASCII name in it.
+ */
+inline std::vector<std::string> listFiles(const std::string& dir) {
+  std::vector<std::string> out;
+  if (dir.empty()) return out;
+#ifdef _WIN32
+  const std::string pattern = joinPath(dir, "*");
+  const int wlen = MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, nullptr, 0);
+  if (wlen <= 0) return out;
+  std::wstring wpattern(static_cast<size_t>(wlen), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, pattern.c_str(), -1, wpattern.data(), wlen);
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(wpattern.c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return out;
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    const int need = WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, nullptr, 0,
+                                         nullptr, nullptr);
+    if (need <= 1) continue;
+    std::string name(static_cast<size_t>(need - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name.data(), need, nullptr,
+                        nullptr);
+    out.push_back(std::move(name));
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+#else
+  DIR* d = ::opendir(dir.c_str());
+  if (!d) return out;
+  while (dirent* e = ::readdir(d)) {
+    const std::string name = e->d_name;
+    if (name == "." || name == "..") continue;
+    if (fileExists(joinPath(dir, name))) out.push_back(name);
+  }
+  ::closedir(d);
+#endif
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 /**

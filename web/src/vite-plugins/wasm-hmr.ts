@@ -19,6 +19,11 @@
 import type { Plugin } from 'vite';
 import { resolve, normalize, sep, join } from 'path';
 import { createReadStream, existsSync, statSync } from 'fs';
+import { createRequire } from 'module';
+
+// The module-directory rules are shared with the Electron main process, which
+// is plain CJS; see electron/module-dirs.cjs.
+const moduleDirs = createRequire(import.meta.url)('../../electron/module-dirs.cjs');
 
 /**
  * What a BUILD must ship. Everything the web actually fetches from /wasm/,
@@ -33,12 +38,15 @@ import { createReadStream, existsSync, statSync } from 'fs';
  * nothing; a bundle there but not here ships one nothing validated.
  */
 export const SHIPPED_WASM = [
-  // Effect bundles — must stay in step with src/effect-bundles.ts.
+  // Effect bundles the app loads from its own wasm/ — SHIPPED_EFFECT_BUNDLES in
+  // src/effect-bundles.ts. (nano, lights and legacy ride along as
+  // extra-modules/ for seeding the per-user modules directory; see
+  // electron-builder.config.cjs.)
   'core.wasm',
-  'nano.wasm',
-  'lights.wasm',
   'text.wasm',
   'richtext.wasm',
+  'nano.wasm',
+  'lights.wasm',
   'legacy.wasm',
   // Hosts + services.
   'executor.wasm',
@@ -115,11 +123,59 @@ export function wasmHmrPlugin(): Plugin {
         createReadStream(file).pipe(res);
       });
 
+      // Effect module directories (electron/module-dirs.cjs), the same way the
+      // packaged app serves them: a listing, `/modules/<n>/<file>`, and an
+      // editor for the mapped set so Settings works against the dev server.
+      server.middlewares.use('/__nano/modules', (req, res) => {
+        const send = () => {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.end(JSON.stringify({
+            bundles: moduleDirs.resolveBundles(wasmDir),
+            defaultDir: moduleDirs.defaultModulesDir(),
+            paths: moduleDirs.readModulePaths(),
+          }));
+        };
+        if (req.method !== 'POST') return send();
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+          try {
+            moduleDirs.writeModulePaths(JSON.parse(body));
+            watchServedDirs();
+            send();
+          } catch (e) {
+            res.statusCode = 400;
+            res.end(String(e));
+          }
+        });
+      });
+      server.middlewares.use('/modules', (req, res, next) => {
+        const file = moduleDirs.resolveModuleUrl('/modules' + (req.url ?? ''));
+        if (!file || !existsSync(file) || !statSync(file).isFile()) return next();
+        res.setHeader('Content-Type', 'application/wasm');
+        res.setHeader('Cache-Control', 'no-cache');
+        createReadStream(file).pipe(res);
+      });
+      const watchServedDirs = () => {
+        for (const dir of moduleDirs.servedDirs()) {
+          if (existsSync(dir)) server.watcher.add(resolve(dir, '*.wasm'));
+        }
+      };
+      watchServedDirs();
+
       // Watch the real directory (the symlink may not exist).
       server.watcher.add(resolve(wasmDir, '**/*.wasm'));
 
       const fire = (file: string) => {
         if (!file.endsWith('.wasm')) return;
+        // A module-directory bundle is served at /modules/<n>/..., not /wasm/.
+        const moduleUrl = moduleDirs.urlForModuleFile(file);
+        if (moduleUrl) {
+          server.ws.send({ type: 'custom', event: 'wasm:reload', data: { url: moduleUrl } });
+          server.config.logger.info(`[wasm-hmr] reload ${moduleUrl}`);
+          return;
+        }
         // Convert absolute file path to served URL — slice everything from
         // (and including) `/wasm/`. Cross-platform: handle both `/` and `\`.
         const norm = file.replace(/\\/g, '/');

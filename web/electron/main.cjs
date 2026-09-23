@@ -36,9 +36,11 @@
  */
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const fs = require('fs');
 const path = require('path');
 
 const appProtocol = require('./app-protocol.cjs');
+const moduleDirs = require('./module-dirs.cjs');
 const { resolveResourceRoot, writeInstallRecord, ffglPluginPath } = require('./resources.cjs');
 
 /** WebGPU is not optional here — the whole renderer is dead without it. */
@@ -224,6 +226,58 @@ ipcMain.handle('paths.showItemInFolder', (_e, absPath) => shell.showItemInFolder
 /** Let the renderer find the bundles/fonts without guessing at layout. */
 ipcMain.handle('nano.resourceRoot', () => resourceRoot);
 
+// -- Effect module directories (module-dirs.cjs) ---------------------------
+// The renderer asks which bundles exist and where to fetch them; Settings
+// reads and edits the mapped directories. The same module_paths.json is what
+// the native barrel reads at startup.
+ipcMain.handle('nano.listModules', () => ({
+  bundles: moduleDirs.resolveBundles(resourceRoot ? path.join(resourceRoot, 'wasm') : null),
+  defaultDir: moduleDirs.defaultModulesDir(),
+  paths: moduleDirs.readModulePaths(),
+}));
+ipcMain.handle('nano.setModulePaths', (_e, rows) => {
+  const written = moduleDirs.writeModulePaths(Array.isArray(rows) ? rows : []);
+  watchModuleDirs();
+  return written;
+});
+
+/**
+ * Hot reload for module directories, in a PACKAGED app. (Against a dev server
+ * the vite plugin already watches them and fires the same event over HMR.) A
+ * changed `.wasm` is sent to the renderer as `nano:wasm-reload` with the URL it
+ * is served at; src/wasm-hmr-client.ts forwards it to the engine worker.
+ */
+const moduleWatchers = new Map();
+const reloadTimers = new Map();
+function watchModuleDirs() {
+  if (loadMode !== 'packaged') return;
+  const dirs = moduleDirs.servedDirs();
+  for (const [dir, w] of moduleWatchers) {
+    if (!dirs.includes(dir)) { w.close(); moduleWatchers.delete(dir); }
+  }
+  for (const dir of dirs) {
+    if (moduleWatchers.has(dir) || !fs.existsSync(dir)) continue;
+    try {
+      const w = fs.watch(dir, (_event, name) => {
+        if (!name || !String(name).endsWith('.wasm')) return;
+        const file = path.join(dir, String(name));
+        // A build writes the file in several steps; settle before reloading.
+        clearTimeout(reloadTimers.get(file));
+        reloadTimers.set(file, setTimeout(() => {
+          reloadTimers.delete(file);
+          const url = moduleDirs.urlForModuleFile(file);
+          if (url && fs.existsSync(file) && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('nano:wasm-reload', { url });
+          }
+        }, 250));
+      });
+      moduleWatchers.set(dir, w);
+    } catch (err) {
+      console.warn(`[electron] cannot watch ${dir}: ${err.message}`);
+    }
+  }
+}
+
 app.whenReady().then(async () => {
   resourceRoot = resolveResourceRoot();
 
@@ -259,6 +313,19 @@ app.whenReady().then(async () => {
 
   // Tell a copied-out FFGL plugin where we are. Packaged builds only, and
   // deliberately ranked LAST on the native side — see resources.cjs.
+  // Seed the per-user modules directory with the bundles the package carries
+  // but doesn't load itself (module-dirs.cjs). Packaged only — a dev tree
+  // already has them in build/wasm, and must not write into the user's folder.
+  if (app.isPackaged || process.env.NANO_SEED_MODULES === '1') {
+    try {
+      const seeded = moduleDirs.seedDefaultModules(
+        resourceRoot && path.join(resourceRoot, 'extra-modules'), app.getVersion());
+      if (seeded.length) console.log(`[electron] seeded ${seeded.length} module file(s) into ${moduleDirs.defaultModulesDir()}`);
+    } catch (err) {
+      console.warn('[electron] could not seed the modules directory:', err.message);
+    }
+  }
+
   // Remote Control only: it owns the plugin, and two apps writing one record
   // would repoint a copied-out plugin at whichever launched last.
   const record = PRODUCT === 'remote' ? writeInstallRecord(resourceRoot) : null;
@@ -266,6 +333,7 @@ app.whenReady().then(async () => {
               (record ? ` record=${record}` : ''));
 
   buildMenu();
+  watchModuleDirs();
   createWindow();
 });
 

@@ -167,7 +167,7 @@ export type WorkerCommand =
   // on them.
   | { type: 'init'; width: number; height: number; barrelMode?: boolean }
   | { type: 'resize'; width: number; height: number }
-  | { type: 'loadModule'; moduleType: string }
+  | { type: 'loadModule'; moduleType: string; url?: string }
   | { type: 'instantiateEffect'; effectId: string }
   | { type: 'changeInstanceType'; sketchId: string; colIdx: number; chainIdx: number; newModuleType: string }
   | { type: 'createSketch'; sketchId: string; sketch: Sketch }
