@@ -3345,14 +3345,7 @@ export class AppController {
     if (buf.byteLength < headerEnd + pixelBytes) return;
     const key = new TextDecoder().decode(new Uint8Array(buf, 14, keyLen));
     const traceId = new TextDecoder().decode(new Uint8Array(buf, keyEnd, idLen));
-    // Route: accept the edited instance's frames (edit preview, chain-entry
-    // monitors), any instance's own Instances-tab thumbnail (its trace id
-    // embeds the key), and sidechannel thumbnails (keyed by whichever
-    // instance WRITES the channel). Everything else is another client's
-    // preview traffic.
-    if (key !== appState.local.selectedBarrelKey &&
-        instanceKeyFromThumbTraceId(traceId) !== key &&
-        !isSidechannelThumbTraceId(traceId)) return;
+    if (!this.acceptsBarrelPreview(key, traceId)) return;
     // Fast path: upload the RGBA8 pixels straight to a per-trace GPUTexture —
     // no CPU copy, no ImageData, no createImageBitmap decode. `writeTexture`
     // reads this subview over the received buffer directly; the texture is
@@ -3376,6 +3369,36 @@ export class AppController {
     } else {
       return;  // WebGPU device still initializing (first ms at boot) — drop
     }
+    this.commitBarrelPreview(traceId, frame);
+  }
+
+  /**
+   * A barrel preview frame that arrived as a shared GPU surface (NBPS, the
+   * desktop app's transport — see preview-surfaces.ts) rather than as bytes.
+   * Same routing and bookkeeping as ingestBarrelPreviewFrame; the pixels go
+   * GPU to GPU. Returns false when the frame was not taken (another client's
+   * traffic, or the preview device isn't up yet).
+   */
+  ingestBarrelPreviewSurface(key: string, traceId: string, source: VideoFrame,
+                             width: number, height: number): boolean {
+    if (!this.acceptsBarrelPreview(key, traceId)) return false;
+    const frame = previewGpu.uploadVideoFrame(traceId, source, width, height);
+    if (!frame) return false;
+    this.commitBarrelPreview(traceId, frame);
+    return true;
+  }
+
+  /** Route: accept the edited instance's frames (edit preview, chain-entry
+   *  monitors), any instance's own Instances-tab thumbnail (its trace id
+   *  embeds the key), and sidechannel thumbnails (keyed by whichever instance
+   *  WRITES the channel). Everything else is another client's preview traffic. */
+  acceptsBarrelPreview(key: string, traceId: string): boolean {
+    return key === appState.local.selectedBarrelKey ||
+        instanceKeyFromThumbTraceId(traceId) === key ||
+        isSidechannelThumbTraceId(traceId);
+  }
+
+  private commitBarrelPreview(traceId: string, frame: import('../preview-gpu').PreviewFrame) {
     runInAction(() => {
       const prev = appState.local.engine.tracedFrames[traceId];
       // Only ImageBitmaps (local-engine frames) are one-shot resources needing

@@ -35,7 +35,7 @@
  * pipeline.
  */
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, sharedTexture, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -241,6 +241,86 @@ ipcMain.handle('nano.setModulePaths', (_e, rows) => {
   return written;
 });
 
+// -- Barrel previews as shared GPU surfaces (src/preview-surfaces.ts) -------
+// The FFGL plugin scales each preview into a surface this process can open
+// (a global IOSurface on macOS) and announces its token. Importing one into
+// Chromium is MAIN-PROCESS ONLY (sharedTexture.importSharedTexture), and needs
+// the surface as a handle LOCAL to this process — which is what the
+// nano_shared_surface addon's lookup(token) returns. Each token is imported
+// once and handed to the page, which then reads it every frame.
+let surfaceAddon = null;
+function loadSurfaceAddon() {
+  if (!resourceRoot || !sharedTexture) return;
+  const file = path.join(resourceRoot, 'native', `${process.platform}-${process.arch}`,
+                         'nano_shared_surface.node');
+  if (!fs.existsSync(file)) return;
+  try {
+    surfaceAddon = require(file);
+  } catch (err) {
+    console.warn(`[electron] shared-surface addon failed to load (${file}): ${err.message}`);
+  }
+}
+
+/** webContents id -> token -> the main-side import (released on request or
+ *  when the page goes away). */
+const surfaceImports = new Map();
+function importsFor(contents) {
+  let m = surfaceImports.get(contents.id);
+  if (!m) {
+    m = new Map();
+    surfaceImports.set(contents.id, m);
+    const dropAll = () => {
+      for (const imported of m.values()) { try { imported.release(); } catch { /* gone */ } }
+      m.clear();
+    };
+    contents.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) dropAll(); });
+    contents.once('destroyed', () => { dropAll(); surfaceImports.delete(contents.id); });
+  }
+  return m;
+}
+
+// NANO_DISABLE_SURFACES=1 keeps the socket transport — for comparing the two
+// (web/test-tools/surface_profile.mjs) and as a field workaround.
+ipcMain.handle('nano.surfaceSupport', () =>
+  !!surfaceAddon && process.env.NANO_DISABLE_SURFACES !== '1');
+
+ipcMain.handle('nano.importSurface', async (event, { token, width, height } = {}) => {
+  if (!surfaceAddon || !(token > 0) || !(width > 0) || !(height > 0)) return false;
+  const imports = importsFor(event.sender);
+  let imported = imports.get(token);
+  if (!imported) {
+    const handle = surfaceAddon.lookup(token);
+    if (!handle) return false;
+    try {
+      imported = sharedTexture.importSharedTexture({
+        textureInfo: {
+          pixelFormat: 'bgra',
+          codedSize: { width, height },
+          handle: { ioSurface: handle },
+        },
+        // Every process has let go: drop the addon's reference too.
+        allReferencesReleased: () => surfaceAddon.release(handle),
+      });
+    } catch (err) {
+      surfaceAddon.release(handle);
+      console.warn(`[electron] importSharedTexture(${token}) failed: ${err.message}`);
+      return false;
+    }
+    imports.set(token, imported);
+  }
+  await sharedTexture.sendSharedTexture(
+    { frame: event.sender.mainFrame, importedSharedTexture: imported }, token);
+  return true;
+});
+
+ipcMain.handle('nano.releaseSurface', (event, token) => {
+  const imports = surfaceImports.get(event.sender.id);
+  const imported = imports?.get(token);
+  if (!imported) return;
+  imports.delete(token);
+  try { imported.release(); } catch { /* already gone */ }
+});
+
 /**
  * Hot reload for module directories, in a PACKAGED app. (Against a dev server
  * the vite plugin already watches them and fires the same event over HMR.) A
@@ -334,6 +414,7 @@ app.whenReady().then(async () => {
 
   buildMenu();
   watchModuleDirs();
+  loadSurfaceAddon();
   createWindow();
 });
 

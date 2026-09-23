@@ -65,6 +65,9 @@ struct PreviewRequest {
   std::string targetKey;
   uint32_t    width  = 128;
   uint32_t    height = 72;
+  // `"transport": "surface"` — the requester is the desktop app and wants the
+  // frame as a cross-process GPU surface (NBPS), not read-back bytes (NBPV).
+  bool        surface = false;
 };
 struct CaptureSlot {
   int32_t handle = -1;
@@ -709,6 +712,7 @@ struct BarrelRuntime::Impl {
       req.traceId = it.key();
       req.width   = (uint32_t)entry.value("width",  128);
       req.height  = (uint32_t)entry.value("height", 72);
+      req.surface = entry.value("transport", std::string()) == "surface";
       const auto& target = entry.value("target", nlohmann::json::object());
       const std::string ttype = target.value("type", std::string());
       if (ttype == "sketch_output") {
@@ -736,17 +740,182 @@ struct BarrelRuntime::Impl {
     }
   }
 
+  // --- Shared-surface previews (the desktop app's transport) ----------------
+  //
+  // A request with transport "surface" never touches the CPU: each frame is
+  // scaled on the GPU into one of a small RING of cross-process surfaces
+  // (GPUBackend::createSharedSurface — a global IOSurface on macOS), and once
+  // the GPU has finished writing it the editor is told which one, in an NBPS
+  // message on the MAIN socket (tiny, so it needs no lanes):
+  //
+  //   [0..3] "NBPS"  [4] u8 version=1  [5] u8 slot  [6..7] u16 keyLen
+  //   [8..9] u16 idLen  [10..11] u16 w  [12..13] u16 h  [14..17] u32 seq
+  //   [18..25] u64 token  [26..] key, traceId          (little-endian)
+  //
+  // The editor imports a token once (Electron sharedTexture), copies each frame
+  // out, and answers {"action":"preview_release","token":N} once its GPU copy
+  // has COMPLETED. Only then is the slot written again — nothing else orders
+  // the two processes' GPU work on one surface. A slot not released within a
+  // second (editor gone, message lost; NANO_SURFACE_RECLAIM_MS) is reclaimed. All slots busy = the frame
+  // is skipped, the same latest-wins degradation as NBPV's in-flight gate.
+  //
+  // A backend that can't share (createSharedSurface -> -1; D3D11 today) flips
+  // surfaces_unsupported and every request falls back to NBPV.
+  struct SurfaceSlot {
+    int32_t  handle = -1;
+    uint64_t token  = 0;
+    enum State { Free, Writing, Held } state = Free;
+    double   since  = 0.0;
+  };
+  static constexpr int kSurfaceRing = 3;
+  struct SurfaceRing {
+    uint32_t w = 0, h = 0;
+    SurfaceSlot slots[kSurfaceRing];
+    uint32_t seq = 0;
+  };
+  std::mutex surf_mu;
+  std::unordered_map<std::string, SurfaceRing> surface_rings;  // route -> ring
+  std::atomic<bool> surfaces_unsupported{false};
+  bool release_handler_installed = false;
+
+  void installSurfaceReleaseHandler() {
+    if (release_handler_installed) return;
+    release_handler_installed = true;
+    BridgeServer::instance().set_action_handler("preview_release",
+        [this](int, const std::string& msg) {
+          auto j = nlohmann::json::parse(msg, nullptr, false);
+          if (j.is_discarded() || !j["token"].is_number_unsigned()) return;
+          const uint64_t token = j["token"].get<uint64_t>();
+          std::lock_guard<std::mutex> lk(surf_mu);
+          for (auto& [_, ring] : surface_rings)
+            for (auto& slot : ring.slots)
+              if (slot.token == token && slot.state == SurfaceSlot::Held)
+                slot.state = SurfaceSlot::Free;
+        });
+  }
+
+  // How long a Held slot waits for its preview_release before it is reclaimed
+  // anyway (an editor that went away, a lost message). NANO_SURFACE_RECLAIM_MS
+  // overrides; a test raises it to observe the ring cap without the reclaim.
+  static double surfaceReclaimMs() {
+    static const double ms = [] {
+      const char* e = getenv("NANO_SURFACE_RECLAIM_MS");
+      const double v = e ? atof(e) : 0.0;
+      return v > 0.0 ? v : 1000.0;
+    }();
+    return ms;
+  }
+
+  static void appendLe(std::vector<uint8_t>& out, uint64_t v, int bytes) {
+    for (int i = 0; i < bytes; ++i) out.push_back((uint8_t)(v >> (8 * i)));
+  }
+
+  /// Returns false only when the backend can't share at all (caller falls back
+  /// to NBPV). A skipped frame (ring busy) is still `true` — handled.
+  bool publishSurfaceFrame(const std::string& key, const std::string& traceId,
+                           const std::string& route, const CaptureSlot& src,
+                           uint32_t outW, uint32_t outH) {
+    int slotIdx = -1;
+    int32_t surface = -1;
+    uint64_t token = 0;
+    uint32_t seq = 0;
+    {
+      std::lock_guard<std::mutex> lk(surf_mu);
+      auto& ring = surface_rings[route];
+      if (ring.w != outW || ring.h != outH) {
+        // A new size: new surfaces. The editor holds its own references to
+        // the old ones (IOSurfaces are refcounted across processes), so
+        // dropping ours never pulls one out from under it.
+        for (auto& sl : ring.slots) if (sl.handle > 0) gpu->release(sl.handle);
+        ring = SurfaceRing{};
+        ring.w = outW;
+        ring.h = outH;
+      }
+      const double now = epochMsNow();
+      for (int i = 0; i < kSurfaceRing; ++i) {
+        auto& sl = ring.slots[i];
+        if (sl.state == SurfaceSlot::Held && now - sl.since > surfaceReclaimMs())
+          sl.state = SurfaceSlot::Free;
+        if (sl.state == SurfaceSlot::Free) { slotIdx = i; break; }
+      }
+      if (slotIdx < 0) return true;
+      auto& sl = ring.slots[slotIdx];
+      if (sl.handle <= 0) {
+        sl.handle = gpu->createSharedSurface(outW, outH, &sl.token);
+        if (sl.handle <= 0) {
+          sl = SurfaceSlot{};
+          surfaces_unsupported.store(true);
+          BRT_LOG("shared surfaces unsupported on this backend -- previews use NBPV");
+          return false;
+        }
+      }
+      sl.state = SurfaceSlot::Writing;
+      sl.since = now;
+      surface = sl.handle;
+      token = sl.token;
+      seq = ++ring.seq;
+    }
+    const bool ok = gpu->blitScaledToSurfaceAsync(src.handle, surface,
+        [this, key, traceId, route, slotIdx, token, seq, outW, outH]() {
+          {
+            std::lock_guard<std::mutex> lk(surf_mu);
+            auto it = surface_rings.find(route);
+            if (it == surface_rings.end()) return;
+            auto& sl = it->second.slots[slotIdx];
+            if (sl.token != token) return;  // ring was rebuilt meanwhile
+            sl.state = SurfaceSlot::Held;
+            sl.since = epochMsNow();
+          }
+          std::vector<uint8_t> msg;
+          msg.reserve(26 + key.size() + traceId.size());
+          msg.insert(msg.end(), {'N', 'B', 'P', 'S', 1, (uint8_t)slotIdx});
+          appendLe(msg, key.size(), 2);
+          appendLe(msg, traceId.size(), 2);
+          appendLe(msg, outW, 2);
+          appendLe(msg, outH, 2);
+          appendLe(msg, seq, 4);
+          appendLe(msg, token, 8);
+          msg.insert(msg.end(), key.begin(), key.end());
+          msg.insert(msg.end(), traceId.begin(), traceId.end());
+          BridgeServer::instance().broadcast_binary(msg.data(), msg.size());
+        });
+    if (!ok) {
+      std::lock_guard<std::mutex> lk(surf_mu);
+      auto it = surface_rings.find(route);
+      if (it != surface_rings.end() && it->second.slots[slotIdx].token == token)
+        it->second.slots[slotIdx].state = SurfaceSlot::Free;
+    }
+    return true;
+  }
+
+  /// Drop the rings of `key`'s routes that are no longer requested.
+  void gcSurfaceRings(const std::string& key, const PerExecutor& pe) {
+    const std::string prefix = key + '\n';
+    std::lock_guard<std::mutex> lk(surf_mu);
+    for (auto it = surface_rings.begin(); it != surface_rings.end();) {
+      if (it->first.rfind(prefix, 0) == 0 &&
+          !pe.preview_requests.count(it->first.substr(prefix.size()))) {
+        for (auto& sl : it->second.slots) if (sl.handle > 0) gpu->release(sl.handle);
+        it = surface_rings.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   // Encode + commit this frame's preview readbacks for `key`. Runs under
   // render_mu, immediately after submit() (GPU work complete). The async
   // completion handlers ship bytes via the send worker. Frequency is bounded by
   // the render()-side rate limiter (previewIntervalSec); size by previewMaxDim.
   void publishPreviewFrames(const std::string& key, PerExecutor& pe) {
     if (!gpu) return;
+    gcSurfaceRings(key, pe);
     if (pe.preview_requests.empty()) return;
-    // Pixels flow only over the lanes; capturing is pointless unless a JSON
-    // client is on the main socket AND someone is connected to the lanes.
+    // Capturing is pointless unless a JSON client is on the main socket. NBPV
+    // pixels flow only over the lanes, so those need a lane client too; NBPS
+    // (shared-surface) requests ride the main socket and don't.
     if (!BridgeServer::instance().has_clients()) return;
-    if (!lanesHaveClients()) return;
+    const bool lanes = lanesHaveClients();
     const uint32_t maxDim = previewMaxDim();
     gpu->beginPreviewBatch();
     for (const auto& [_, req] : pe.preview_requests) {
@@ -763,14 +932,17 @@ struct BarrelRuntime::Impl {
         slot = it->second;
       }
       if (slot.handle <= 0 || slot.width <= 0 || slot.height <= 0) continue;
-      // Back-pressure gate: if this monitor's previous frame is anywhere in
-      // the pipeline — readback stage OR send queue — skip the capture
-      // entirely. No GPU scale/readback for pixels that would only pile up
-      // behind an unfinished frame (see inflight_routes).
       std::string route = key;
       route += '\n';
       route += req.traceId;
-      if (routeInFlight(route)) continue;
+      const bool surface = req.surface && !surfaces_unsupported.load();
+      if (!surface && !lanes) continue;
+      // Back-pressure gate: if this monitor's previous frame is anywhere in
+      // the pipeline — readback stage OR send queue — skip the capture
+      // entirely. No GPU scale/readback for pixels that would only pile up
+      // behind an unfinished frame (see inflight_routes). The surface path
+      // has its own gate: the ring.
+      if (!surface && routeInFlight(route)) continue;
       uint32_t outW = req.width  ? req.width  : (uint32_t)slot.width;
       uint32_t outH = req.height ? req.height : (uint32_t)slot.height;
       // Never read back more pixels than the source has — a request larger
@@ -789,6 +961,9 @@ struct BarrelRuntime::Impl {
         outW = std::max(1u, (uint32_t)(outW * s));
         outH = std::max(1u, (uint32_t)(outH * s));
       }
+      if (surface && publishSurfaceFrame(key, req.traceId, route, slot, outW, outH))
+        continue;
+      if (!lanes || routeInFlight(route)) continue;  // fell back from surfaces
       std::string traceId = req.traceId;
       std::string keyCopy = key;
       markRouteInFlight(route);
@@ -907,6 +1082,7 @@ bool BarrelRuntime::acquire(const std::string& wasm_dir, const std::string& font
   if (!font_path.empty()) effect_runtime::textInstallDefaultFonts(font_path.c_str());
 
   impl_->startSendWorker();
+  impl_->installSurfaceReleaseHandler();
   impl_->rt->drainConsoleLog();
   impl_->usable = (total > 0);
 

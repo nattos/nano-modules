@@ -108,6 +108,12 @@ export class WsBridgeClient {
     this.send({ action: 'reassign_channel', key, channel });
   }
 
+  /** Hand a shared preview surface back to the barrel once this client's GPU
+   *  copy of it has completed (NBPS transport — see preview-surfaces.ts). */
+  previewRelease(token: number): void {
+    this.send({ action: 'preview_release', token });
+  }
+
   onPatch(handler: (ops: any[]) => void): void {
     this.patchHandlers.push(handler);
   }

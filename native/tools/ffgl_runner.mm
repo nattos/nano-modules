@@ -699,6 +699,17 @@ int main(int argc, const char* argv[]) {
       std::fprintf(stderr, "[ffgl_runner] serving at %.1f Hz for %s\n",
                    serveHz, serveSeconds > 0 ? std::to_string(serveSeconds).c_str()
                                              : "ever");
+      // A background process's timers get coalesced (App Nap): sleep_until
+      // overshot by ~100 ms, so frames came in bursts — 0.3 ms apart, then a
+      // 110 ms gap — and everything keyed off host time (the barrel's preview
+      // rate, animations) ran at ~10 Hz. A real host is display-linked and
+      // foreground; say we are latency-critical so the pacing is honest.
+      // (No ARC in this file: the token comes back autoreleased, and the
+      // activity ends the moment a pool drains it — retain it for the serve.)
+      id<NSObject> servingActivity = [[[NSProcessInfo processInfo]
+          beginActivityWithOptions:NSActivityLatencyCritical | NSActivityUserInitiated
+                            reason:@"ffgl_runner --serve paces frames like a host"] retain];
+      (void)servingActivity;
       const auto step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(1.0 / serveHz));
       const auto start = std::chrono::steady_clock::now();
@@ -706,9 +717,12 @@ int main(int argc, const char* argv[]) {
       long served = 0;
       long lastReport = 0;
       double lastReportSec = 0, busyMs = 0;
+      double prevSec = 0, maxGapMs = 0;  // pacing: the worst frame-to-frame gap
       for (;;) {
         const double elapsedSec =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        if (served > 0) maxGapMs = std::max(maxGapMs, (elapsedSec - prevSec) * 1000.0);
+        prevSec = elapsedSec;
         if (serveSeconds > 0 && elapsedSec >= serveSeconds) break;
         double tMs = elapsedSec * 1000.0;
         const auto f0 = std::chrono::steady_clock::now();
@@ -718,10 +732,10 @@ int main(int argc, const char* argv[]) {
         ++served;
         if (elapsedSec - lastReportSec >= 5.0) {
           std::fprintf(stderr,
-              "[ffgl_runner] serve: %.1f fps, ProcessOpenGL avg %.2f ms\n",
+              "[ffgl_runner] serve: %.1f fps, ProcessOpenGL avg %.2f ms, max gap %.1f ms\n",
               (served - lastReport) / (elapsedSec - lastReportSec),
-              busyMs / (served - lastReport));
-          lastReport = served; lastReportSec = elapsedSec; busyMs = 0;
+              busyMs / (served - lastReport), maxGapMs);
+          lastReport = served; lastReportSec = elapsedSec; busyMs = 0; maxGapMs = 0;
         }
         next += step;
         std::this_thread::sleep_until(next);

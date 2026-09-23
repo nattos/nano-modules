@@ -47,6 +47,7 @@ import { PLAYGROUND_ID_PREFIX, type BarrelInstanceInfo, type ResolumePlacement }
 import { parseBarrelInstances, parseResolumePlacement } from './state/barrel-instances';
 import { WsBridgeClient } from './ws-bridge-client';
 import { normalizeSketchChains } from './sketch-types';
+import { previewSurfaces, type SurfaceSink } from './preview-surfaces';
 import { discoverEffectBundles } from './effect-bundles';
 
 // Import the root component (self-registering)
@@ -740,13 +741,26 @@ function connectBarrel(url: string) {
   // requests all went away get one explicit `{}` push so the native side
   // stops capturing.
   const lastPushedRequests = new Map<string, string>();
+  // In the desktop app, previews come as shared GPU surfaces instead of bytes
+  // over the lanes (preview-surfaces.ts). Support is an IPC round-trip away;
+  // until it answers, requests go out without the flag, and the answer
+  // re-flushes them (the per-key dedup sees the changed JSON and re-pushes).
+  let surfaces = false;
+  (window as any).__previewSurfaces = previewSurfaces;
+  void previewSurfaces.init().then((ok) => {
+    if (!ok) return;
+    surfaces = true;
+    console.log('[barrel] previews: shared GPU surfaces');
+    traceController.requestFlush();
+  });
   appController.setBarrelPreviewPusher((tracePoints) => {
     // Sidechannel thumbnails route to each channel's writer instance.
     const writers: Record<string, string> = {};
     for (const [ch, info] of Object.entries(appState.local.engine.sidechannels)) {
       if (info?.writer) writers[ch] = info.writer;
     }
-    const groups = groupPreviewRequests(tracePoints, currentKey, writers);
+    const groups = groupPreviewRequests(tracePoints, currentKey, writers,
+      surfaces ? 'surface' : undefined);
 
     // Every instance we push requests AT must be observed for the native
     // watched-gate — thumbnailed instances plus sidechannel writers.
@@ -970,9 +984,16 @@ function connectBarrel(url: string) {
   };
   barrel.onSnapshot('/global/preview_transport', reconcileLanes);
 
-  // Binary frames on the MAIN socket only occur with an old server (pre-lane
-  // protocol, whole NBPV frames) — keep decoding them for back-compat.
+  // Binary frames on the MAIN socket: NBPS surface announcements (the desktop
+  // app's transport), or — from an old, pre-lane server — whole NBPV frames.
+  const surfaceSink: SurfaceSink = {
+    wants: (key, traceId) => appController.acceptsBarrelPreview(key, traceId),
+    ingest: (key, traceId, frame, w, h) =>
+      appController.ingestBarrelPreviewSurface(key, traceId, frame, w, h),
+    release: (token) => barrel.previewRelease(token),
+  };
   barrel.onBinaryFrame = (buf) => {
+    if (previewSurfaces.handle(buf, surfaceSink)) return;
     void appController.ingestBarrelPreviewFrame(buf);
   };
 

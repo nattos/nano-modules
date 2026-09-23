@@ -210,6 +210,9 @@ export interface BarrelPreviewRequest {
     | { type: 'sidechannel'; channel: string };
   width: number;
   height: number;
+  /** `'surface'`: deliver frames as shared GPU surfaces (NBPS) — the desktop
+   *  app. Absent: read-back bytes over the lanes (NBPV). */
+  transport?: 'surface';
 }
 
 /**
@@ -226,6 +229,7 @@ export function groupPreviewRequests(
   tracePoints: TracePoint[],
   currentKey: string | null,
   sidechannelWriters: Record<string, string> = {},
+  transport?: 'surface',
 ): Map<string, Record<string, BarrelPreviewRequest>> {
   const groups = new Map<string, Record<string, BarrelPreviewRequest>>();
   for (const tp of tracePoints) {
@@ -260,6 +264,7 @@ export function groupPreviewRequests(
       target: serialized,
       width: tp.size?.width ?? 0,
       height: tp.size?.height ?? 0,
+      ...(transport ? { transport } : {}),
     };
   }
   return groups;

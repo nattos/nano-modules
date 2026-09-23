@@ -184,6 +184,45 @@ out of the app resolves back to the app's resources through the install record
 
 ---
 
+## Live previews: shared GPU surfaces
+
+In a browser, Remote Control's previews are read back to the CPU inside
+Resolume, striped across eight WebSockets (the *lanes*), reassembled and
+uploaded again — two full copies each way, per frame, per monitor. The desktop
+app skips all of it: the plugin scales each preview into one of a ring of three
+**cross-process GPU surfaces** per monitor and announces which in a 26-byte
+`NBPS` message on the main socket; the app imports each surface once with
+Electron's `sharedTexture` and copies frames GPU to GPU.
+
+| 1080p, one full-size monitor (`web/test-tools/surface_profile.mjs`) | lanes | surfaces |
+|---|---|---|
+| bytes into the page | ~315 MB/s | ~0 |
+| Electron CPU (all processes) | ~400% | ~15% |
+| plugin host CPU | ~25% | ~4% |
+
+At 4K the lanes leave the page unresponsive; surfaces hold 30 fps at ~18% CPU.
+
+How it fits together:
+- **Plugin** (`native/src/bridge/barrel_runtime.cpp`, `publishSurfaceFrame`): a
+  preview request with `"transport": "surface"` gets the ring; a slot is written
+  again only after the app answers `{"action":"preview_release","token":N}`,
+  sent once its GPU copy has *completed* — nothing else orders the two
+  processes' GPU work. Unreleased slots are reclaimed after a second
+  (`NANO_SURFACE_RECLAIM_MS`).
+- **Surfaces** (`GPUBackend::createSharedSurface`): global IOSurfaces on macOS,
+  opened by ID the way Syphon's are.
+- **Main process** (`electron/main.cjs`): the `nano_shared_surface` addon
+  (`web/native/`, built by `stage_resources.sh` into `build/native/`) turns a
+  token into a process-local handle; `importSharedTexture` is main-only, so the
+  page asks over IPC and receives the texture once.
+- **Page** (`web/src/preview-surfaces.ts`): per announcement, a `VideoFrame`
+  over the held import → `copyExternalImageToTexture` → wait for the GPU →
+  release.
+
+Anything that can't share falls back to the lanes per request: a browser
+editor, a missing addon, `NANO_DISABLE_SURFACES=1`, and **Windows** (the D3D11
+backend doesn't implement shared surfaces yet — named NT handles, next).
+
 ## How the app is served
 
 Packaged, the renderer loads from a custom `nano://app/` scheme, not `file://`

@@ -2,6 +2,7 @@
 
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#import <IOSurface/IOSurface.h>
 #include <map>
 #include <string>
 #include <cstdio>
@@ -1153,6 +1154,68 @@ public:
     }
   }
 
+  int32_t createSharedSurface(uint32_t w, uint32_t h, uint64_t* shareToken) override {
+    if (shareToken) *shareToken = 0;
+    if (w == 0 || h == 0) return -1;
+    @autoreleasepool {
+      // GLOBAL, so another process can IOSurfaceLookup it by ID. Apple
+      // deprecated the flag in favour of passing mach ports, but it is what
+      // Syphon's surfaces use and it still works for unsandboxed processes —
+      // and a Resolume plugin talking to its own companion app is exactly that.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      NSDictionary* attrs = @{
+        (NSString*)kIOSurfaceIsGlobal: @YES,
+        (NSString*)kIOSurfaceWidth: @(w),
+        (NSString*)kIOSurfaceHeight: @(h),
+        (NSString*)kIOSurfaceBytesPerElement: @4,
+        (NSString*)kIOSurfacePixelFormat: @((uint32_t)'BGRA'),
+      };
+#pragma clang diagnostic pop
+      IOSurfaceRef surf = IOSurfaceCreate((__bridge CFDictionaryRef)attrs);
+      if (!surf) return -1;
+      MTLTextureDescriptor* desc =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                             width:w height:h mipmapped:NO];
+      desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite |
+                   MTLTextureUsageRenderTarget;
+      desc.storageMode = MTLStorageModeShared;
+      id<MTLTexture> tex = [device_ newTextureWithDescriptor:desc iosurface:surf plane:0];
+      const uint64_t token = IOSurfaceGetID(surf);
+      CFRelease(surf);  // the texture holds its own reference
+      if (!tex) return -1;
+      if (shareToken) *shareToken = token;
+      return alloc(ResourceType::Texture, tex);
+    }
+  }
+
+  bool blitScaledToSurfaceAsync(int32_t src, int32_t surface,
+                                std::function<void()> done) override {
+    id<MTLTexture> srcTex = getAs<id<MTLTexture>>(src);
+    id<MTLTexture> dst = getAs<id<MTLTexture>>(surface);
+    if (!srcTex || !dst || !done) return false;
+    @autoreleasepool {
+      if (!scaler_) scaler_ = [[MPSImageLanczosScale alloc] initWithDevice:device_];
+      // Always through the scaler, even 1:1 — it is also the RGBA -> BGRA
+      // conversion, which a blit copy would refuse.
+      if (async_batch_cb_) {
+        [scaler_ encodeToCommandBuffer:async_batch_cb_ sourceTexture:srcTex
+                    destinationTexture:dst];
+        async_batch_pending_.push_back({nil, nil, 0, 0, nullptr, std::move(done)});
+        return true;
+      }
+      id<MTLCommandBuffer> cb = [queue_ commandBuffer];
+      [scaler_ encodeToCommandBuffer:cb sourceTexture:srcTex destinationTexture:dst];
+      __block auto cb_done = std::move(done);
+      [cb addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+        if ([finished status] == MTLCommandBufferStatusError) return;
+        dispatch_async(previewReadbackQueue(), ^{ cb_done(); });
+      }];
+      [cb commit];
+      return true;
+    }
+  }
+
   void commitPreviewBatch() override {
     if (!async_batch_cb_) return;
     if (async_batch_pending_.empty()) {
@@ -1201,6 +1264,7 @@ public:
           const double tHop = kPreviewTsLog ? nowMs() : 0.0;
           std::vector<uint8_t> staging;  // only for the no-buffer fallback
           for (auto& p : *pending) {
+            if (p.done) { p.done(); continue; }  // a shared-surface write
             const size_t byteCount = (size_t)p.dstW * p.dstH * 4;
             const double ti0 = kPreviewTsLog ? nowMs() : 0.0;
             if (p.buf) {
@@ -1503,6 +1567,9 @@ private:
     id<MTLBuffer> buf;   // linear GPU-blitted copy; nil → getBytes fallback
     uint32_t dstW, dstH;
     std::function<void(const uint8_t*, size_t)> callback;
+    // Set instead of `callback` for blitScaledToSurfaceAsync: nothing to read
+    // back, just "the GPU is done with it".
+    std::function<void()> done;
   };
   id<MTLCommandBuffer> async_batch_cb_ = nil;
   std::vector<BatchPendingReadback> async_batch_pending_;

@@ -334,6 +334,7 @@ if(APPLE)
     "-framework Metal"
     "-framework MetalPerformanceShaders"
     "-framework Foundation"
+    "-framework IOSurface"
   )
 
   # --- Media (host-side video decode + cache policy) ---
@@ -518,6 +519,24 @@ if(NANO_HAS_GPU_BACKEND AND TARGET Catch2::Catch2WithMain AND
     RUN_SERIAL TRUE
     ENVIRONMENT "NANO_BRIDGE_PORT=8171"
     TIMEOUT 120)
+
+  # The shared-surface preview transport (NBPS) through the real plugin path,
+  # with a WebSocket client as the desktop editor. macOS: the consumer side
+  # opens surfaces with IOSurfaceLookup, as the Electron addon does.
+  if(APPLE)
+    add_executable(test_barrel_preview_surface
+      tests/test_barrel_preview_surface.mm ${_barrel_probe_tex})
+    target_link_libraries(test_barrel_preview_surface PRIVATE bridge_loader ixwebsocket
+      nlohmann_json::nlohmann_json Catch2::Catch2WithMain
+      "-framework Metal" "-framework Foundation" "-framework IOSurface")
+    target_compile_options(test_barrel_preview_surface PRIVATE -fobjc-arc)
+    add_dependencies(test_barrel_preview_surface bridge_server)
+    target_compile_definitions(test_barrel_preview_surface PRIVATE
+      BRIDGE_DYLIB_PATH="$<TARGET_FILE:bridge_server>"
+      BARREL_WASM_DIR="${CMAKE_SOURCE_DIR}/../build/wasm")
+    catch_discover_tests(test_barrel_preview_surface PROPERTIES
+      RUN_SERIAL TRUE TIMEOUT 120)
+  endif()
 endif()
 
 # Pass built dylib path to bridge loader test
@@ -1854,6 +1873,16 @@ if(NANO_HAS_GPU_BACKEND)
       EXECUTOR_WASM_PATH="${CMAKE_SOURCE_DIR}/../build/wasm/executor.wasm")
     target_compile_options(test_executor_wasm PRIVATE -Wno-attributes)
     catch_discover_tests(test_executor_wasm)
+
+    # Cross-process shared surfaces (the desktop preview transport): write
+    # through the backend, read back by share token as the consumer would.
+    if(APPLE)
+      add_executable(test_shared_surface tests/test_shared_surface.mm)
+      target_link_libraries(test_shared_surface PRIVATE gpu_backend
+        "-framework IOSurface" "-framework CoreFoundation" Catch2::Catch2WithMain)
+      target_compile_options(test_shared_surface PRIVATE -fobjc-arc)
+      catch_discover_tests(test_shared_surface)
+    endif()
 
     # Effect bundles from the built-in / default / mapped module directories
     # (bridge/module_dirs.h): resolution on temp dirs, plus one real bundle

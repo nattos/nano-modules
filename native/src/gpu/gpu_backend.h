@@ -364,6 +364,34 @@ public:
   // backends that run callbacks synchronously.
   virtual void drainPreviewReadbacks() {}
 
+  // --- Cross-process shared surfaces (the desktop app's preview transport) --
+  //
+  // A BGRA8 texture that ANOTHER PROCESS can open by `shareToken`, so a preview
+  // reaches the Electron renderer GPU-to-GPU instead of as read-back bytes over
+  // a socket. On Metal it is a global IOSurface and the token its IOSurfaceID —
+  // the consumer calls IOSurfaceLookup, exactly as Syphon clients do.
+  //
+  // Returns a texture handle (free it with release()) and sets *shareToken, or
+  // returns -1 where the backend cannot share (the caller falls back to
+  // readbackTextureScaledAsync). Nothing synchronises the two processes: the
+  // caller must not write a surface the consumer may still be reading.
+  virtual int32_t createSharedSurface(uint32_t w, uint32_t h, uint64_t* shareToken) {
+    (void)w; (void)h;
+    if (shareToken) *shareToken = 0;
+    return -1;
+  }
+
+  // Scale `src` into shared surface `surface` — the same resampler as
+  // readbackTextureScaled, no CPU copy. Joins the open preview batch if there
+  // is one. `done` runs once the GPU has FINISHED writing the surface (off the
+  // render thread); only then may the consumer be told to read it. False when
+  // unsupported or either handle is invalid (`done` never runs).
+  virtual bool blitScaledToSurfaceAsync(int32_t src, int32_t surface,
+                                        std::function<void()> done) {
+    (void)src; (void)surface; (void)done;
+    return false;
+  }
+
   // Upload pixel bytes into a texture (for tests / FFGL input handoff
   // without going through a full render path). RGBA8 / BGRA8 in row-
   // major order; bytes.size() must be w*h*4. No-op for invalid handles.

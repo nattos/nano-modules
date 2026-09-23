@@ -115,6 +115,39 @@ class PreviewGpu {
     this.ensureInit();
     const device = this.device;
     if (!device) return null;
+    const frame = this.textureFor(device, traceId, width, height);
+    device.queue.writeTexture(
+      { texture: frame.texture },
+      data,
+      { bytesPerRow: width * 4, rowsPerImage: height },
+      [width, height, 1],
+    );
+    return frame;
+  }
+
+  /**
+   * Copy a frame that is already on the GPU — a VideoFrame over a surface the
+   * FFGL plugin shared with this process (preview-surfaces.ts) — into this
+   * trace's reused texture. GPU to GPU; the pixels never touch the CPU. The
+   * caller keeps ownership of `source` and may close it as soon as this
+   * returns; `whenCopied()` says when the GPU has actually read it.
+   */
+  uploadVideoFrame(traceId: string, source: VideoFrame, width: number, height: number): GpuPreviewFrame | null {
+    this.ensureInit();
+    const device = this.device;
+    if (!device) return null;
+    const frame = this.textureFor(device, traceId, width, height);
+    device.queue.copyExternalImageToTexture({ source }, { texture: frame.texture }, [width, height]);
+    return frame;
+  }
+
+  /** Resolves once every copy submitted so far has run on the GPU — the point
+   *  after which a shared surface may be handed back to its producer. */
+  whenCopied(): Promise<void> {
+    return this.device ? this.device.queue.onSubmittedWorkDone() : Promise.resolve();
+  }
+
+  private textureFor(device: GPUDevice, traceId: string, width: number, height: number): GpuPreviewFrame {
     let frame = this.textures.get(traceId);
     if (!frame || frame.width !== width || frame.height !== height) {
       frame?.texture.destroy();
@@ -126,12 +159,6 @@ class PreviewGpu {
       frame = { kind: 'gpu', texture, width, height };
       this.textures.set(traceId, frame);
     }
-    device.queue.writeTexture(
-      { texture: frame.texture },
-      data,
-      { bytesPerRow: width * 4, rowsPerImage: height },
-      [width, height, 1],
-    );
     return frame;
   }
 

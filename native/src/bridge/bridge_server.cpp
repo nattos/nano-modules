@@ -563,11 +563,27 @@ void BridgeServer::publish_host_status() {
   }
 }
 
-bool BridgeServer::handle_client_command(int /*client_id*/, const std::string& msg) {
+void BridgeServer::set_action_handler(const std::string& action, ActionHandler handler) {
+  std::lock_guard lock(action_handlers_mu_);
+  if (handler) action_handlers_[action] = std::move(handler);
+  else action_handlers_.erase(action);
+}
+
+bool BridgeServer::handle_client_command(int client_id, const std::string& msg) {
   auto j = nlohmann::json::parse(msg, nullptr, /*allow_exceptions=*/false);
   if (j.is_discarded() || !j.contains("action") || !j["action"].is_string())
     return false;
   const std::string action = j["action"].get<std::string>();
+
+  {
+    ActionHandler handler;
+    {
+      std::lock_guard lock(action_handlers_mu_);
+      auto it = action_handlers_.find(action);
+      if (it != action_handlers_.end()) handler = it->second;
+    }
+    if (handler) { handler(client_id, msg); return true; }
+  }
 
   // Connect (`on`) / disconnect a clip. Addressed by marker uuid (`key`) OR by
   // 0-based composition layer/clip indices.

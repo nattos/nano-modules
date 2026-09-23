@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <atomic>
 #include <cstddef>
 #include <map>
@@ -67,6 +69,15 @@ public:
   std::string get_at(const std::string& path);
 
   void broadcast_binary(const void* data, size_t len);
+
+  /// Handle client messages whose `action` is `action`, ahead of BridgeCore's
+  /// generic dispatch. For host-side protocol that BridgeCore (which is also
+  /// compiled into bridge_core.wasm) has no business knowing — e.g. the
+  /// barrel's `preview_release`. Runs on the pump thread with the bridge's
+  /// tick lock held: do only cheap, non-blocking work, and never call back
+  /// into set_at/get_at from it. One handler per action; nullptr removes it.
+  using ActionHandler = std::function<void(int client_id, const std::string& msg)>;
+  void set_action_handler(const std::string& action, ActionHandler handler);
   bool has_clients();
   /// True if any connected client observes `/plugins/<key>/state` (or an
   /// ancestor of it). Lets an instance skip per-frame telemetry/preview work
@@ -125,6 +136,8 @@ private:
   // before it reaches BridgeCore. Returns true if it consumed the message.
   // Pump thread, under tick_mutex_ (resolume_client_ in scope).
   bool handle_client_command(int client_id, const std::string& msg);
+  std::mutex action_handlers_mu_;
+  std::unordered_map<std::string, ActionHandler> action_handlers_;
   void pump_loop();
 
   BridgeCore core_;

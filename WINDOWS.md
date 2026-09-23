@@ -30,6 +30,7 @@ script in this repo is bash.
 | Catch2 native tests | ✅ cross-built and run under CrossOver; see `native/tools/nano_diag/` for the real-hardware runner |
 | `wamrc` AOT sidecars | ❌ `NANO_WASM_AOT=OFF` — a sidecar is per-ABI as well as per-arch, so the Windows barrel loads the portable `.wasm` |
 | Electron shell + packaged app (`npm run package:{remote,arrangement}:win`) | ✅ builds; see DESKTOP.md |
+| GPU-shared Live previews (`NBPS`) | ❌ not yet — D3D11 `createSharedSurface` (named NT handles) and the addon's Windows side are unwritten; previews use the socket lanes |
 
 > The Windows **installer** cross-builds from macOS (there are no native node
 > modules). Run under CrossOver it gets a long way: the resource root resolves,

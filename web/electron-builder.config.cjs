@@ -138,6 +138,11 @@ module.exports = {
         // two WsServers fighting over :8081.
         { from: '../build/ffgl', to: 'nano/ffgl', filter: ['**/*'] },
         { from: '../build/wasm', to: 'nano/wasm', filter: aot(['core', 'text', 'richtext']) },
+        // The addon that opens the plugin's shared preview surfaces for
+        // Electron's sharedTexture import (web/native/, src/preview-surfaces.ts).
+        // Without it the app keeps the socket transport.
+        { from: '../build/native/darwin-arm64', to: 'nano/native/darwin-arm64',
+          filter: ['nano_shared_surface.node'] },
       ] : []),
     ],
   },

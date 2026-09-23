@@ -119,5 +119,11 @@ if [ "${SKIP_FFGL:-0}" != "1" ]; then
   fi
 fi
 
+# The desktop app's native addon (shared preview surfaces). macOS only for
+# now; the script is a no-op elsewhere, and the app falls back without it.
+if [ "${SKIP_NATIVE_ADDON:-0}" != "1" ]; then
+  bash "$web/native/build.sh" || echo "note: native addon not built — previews will use the socket transport"
+fi
+
 echo "staged resource root: $root"
 du -sh "$root/app" "$root/wasm" 2>/dev/null || true
