@@ -91,7 +91,7 @@ export function installModeOffers() {
         timeoutMs: 5000,
         dedupeKey: 'mode-offer',
         actions: [
-          { label: 'Switch to Live', run: () => { void appController.switchAppMode('live'); } },
+          { label: 'Switch to Remote Control', run: () => { void appController.switchAppMode('live'); } },
           { label: 'Stay offline', run: dismiss },
         ],
       });

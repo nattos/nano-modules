@@ -21,6 +21,7 @@ import { loadUserSettings } from './state/user-settings';
 import { DEFAULT_BARREL_URL, modeOverrideFromUrl } from './resolume-mode';
 import { runInAction } from 'mobx';
 import { appState } from './state/app-state';
+import { coerceMode } from './product';
 
 async function main() {
   // Only used to decide which surface to boot — `boot()` (called from
@@ -29,7 +30,9 @@ async function main() {
   const settings = await loadUserSettings();
 
   const override = modeOverrideFromUrl(location.search);
-  const mode = override?.mode ?? settings.appMode;
+  // The Remote Control app has no Effect Dev: an inherited or deep-linked
+  // `effect-dev` lands in Remote Control instead (see product.ts).
+  const mode = coerceMode(override?.mode ?? settings.appMode);
   const barrelUrl = override?.barrelUrl ?? DEFAULT_BARREL_URL;
   // Every surface, not just Live: the Settings-page setup checklist probes
   // this same server from Effect Dev and Playground, which is exactly when

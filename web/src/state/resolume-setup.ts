@@ -376,9 +376,9 @@ export function setupStatuses(i: SetupInput): Record<SetupStepId, SetupStepStatu
   if (i.barrelMode && i.barrelConnection === 'open') {
     connect = { state: 'ok', detail: 'Editing the live composition.' };
   } else if (i.barrelMode) {
-    connect = { state: 'pending', detail: 'In Live mode, still connecting.' };
+    connect = { state: 'pending', detail: 'In Remote Control mode, still connecting.' };
   } else {
-    connect = { state: 'pending', detail: 'Not in Live mode.' };
+    connect = { state: 'pending', detail: 'Not in Remote Control mode.' };
   }
 
   return { plugin, webserver, instance, connect };

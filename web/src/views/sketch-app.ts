@@ -112,7 +112,7 @@ export class SketchApp extends MobxLitElement {
     // never a double mount and no extra readback.
     const monitorFloats = devicesActive || (canvasOpen && activeTab === 'edit');
     return html`
-      <app-titlebar label=${appState.local.barrelMode ? 'Nano Modules — Live' : 'Nano Modules'}></app-titlebar>
+      <app-titlebar label=${appState.local.barrelMode ? 'Nano Modules — Remote Control' : 'Nano Modules'}></app-titlebar>
       <app-shell .config=${config}></app-shell>
       ${monitorFloats ? html`<devices-float-monitor></devices-float-monitor>` : nothing}
       ${devicesActive ? html`<device-wire-overlay></device-wire-overlay>` : nothing}

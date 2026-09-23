@@ -7,12 +7,18 @@
     "build": "vite build",
     "stage": "bash scripts/stage_resources.sh",
     "build:stage": "npm run build && npm run stage",
-    "package": "electron-builder --config electron-builder.yml",
-    "package:mac": "electron-builder --config electron-builder.yml --mac",
-    "package:win": "electron-builder --config electron-builder.yml --win",
+    "package:arrangement": "NANO_PRODUCT=arrangement electron-builder --config electron-builder.config.cjs",
+    "package:arrangement:mac": "NANO_PRODUCT=arrangement electron-builder --config electron-builder.config.cjs --mac",
+    "package:arrangement:win": "NANO_PRODUCT=arrangement electron-builder --config electron-builder.config.cjs --win",
+    "package:remote": "NANO_PRODUCT=remote electron-builder --config electron-builder.config.cjs",
+    "package:remote:mac": "NANO_PRODUCT=remote electron-builder --config electron-builder.config.cjs --mac",
+    "package:remote:win": "NANO_PRODUCT=remote electron-builder --config electron-builder.config.cjs --win",
+    "package": "npm run package:arrangement && npm run package:remote",
     "test": "vitest --run",
     "test:e2e": "jest",
-    "electron": "electron electron/main.cjs"
+    "electron": "electron electron/main.cjs",
+    "electron:remote": "NANO_PRODUCT=remote electron electron/main.cjs",
+    "electron:arrangement": "NANO_PRODUCT=arrangement electron electron/main.cjs"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.28.5",
@@ -44,7 +50,7 @@
     "marked": "^12.0.2",
     "mp4-muxer": "^5.2.2"
   },
-  "description": "Nano Repatch \u2014 live visual synthesis",
+  "description": "Nano Repatch — live visual synthesis",
   "author": "nattos",
   "main": "electron/main.cjs"
 }

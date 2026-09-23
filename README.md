@@ -116,7 +116,7 @@ Desktop app (Electron, macOS + Windows) — see **[DESKTOP.md](DESKTOP.md)**:
 ```bash
 cd web
 npm run build:stage              # vite build + assemble the shared resource root
-npm run package:mac              # or package:win (cross-builds from a Mac)
+npm run package:remote:mac       # or :win (cross-builds from a Mac); package:arrangement:* for NanoModules
 ```
 
 ### Toolchain overrides

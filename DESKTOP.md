@@ -1,15 +1,25 @@
-# Building the desktop app
+# Building the desktop apps
 
-A double-clickable Nano Modules with **no installed dependencies** — no node,
-no rust, no dxc, no wasi-sdk on the user's machine. macOS and Windows.
+Two double-clickable apps with **no installed dependencies** — no node, no
+rust, no dxc, no wasi-sdk on the user's machine. macOS and Windows.
+
+| App | What it is | `NANO_PRODUCT` |
+|---|---|---|
+| **NanoModules** | the arrangement / video editor | `arrangement` |
+| **NanoModules Remote Control** | the live-show app: Remote Control (bound to Resolume) and Playground, plus the FFGL plugin | `remote` |
+
+Both are the same Electron shell and the same vite build; the product decides
+which page opens and what the package carries (`web/electron-builder.config.cjs`).
+Effect Dev is in neither — it keeps running from the dev server, and gets its
+own app later. Each app has its own user data, so settings are not shared.
 
 | | macOS | Windows |
 |---|---|---|
-| Effect IDE, Playground, Arrangement | ✅ | ✅ |
-| Live mode, offline/read-only | ✅ | ✅ |
-| NanoBarrel FFGL plugin + Resolume | ✅ | ✅ |
+| NanoModules (arrangement) | ✅ | ✅ |
+| Remote Control, Playground | ✅ | ✅ |
+| NanoBarrel FFGL plugin + Resolume (Remote Control only) | ✅ | ✅ |
 
-Both platforms ship the plugin. The Windows one is `NanoBarrel.dll` on the
+Both platforms ship the plugin, inside Remote Control. The Windows one is `NanoBarrel.dll` on the
 D3D11 backend — a plain DLL exporting `plugMain`, with no bundle, plist or
 codesign step — and it is **cross-compiled from macOS**, like the rest of the
 Windows package. `native/CMakeLists.txt` still declares `OBJCXX`, so the native
@@ -36,12 +46,19 @@ cmake --build native/build-win --target NanoBarrel bridge_server
 cd web
 npm run build:stage
 
-# 4. The installer.
-npm run package:mac      # dmg + zip, arm64
-npm run package:win      # nsis + portable, x64 — cross-builds from a Mac
+# 4. The installers.
+npm run package:remote:mac         # dmg + zip, arm64
+npm run package:remote:win         # nsis + portable, x64 — cross-builds from a Mac
+npm run package:arrangement:mac    # likewise for NanoModules
+npm run package:arrangement:win
+npm run package                    # both products, both platforms
 ```
 
-Artifacts land in `web/release/`.
+Artifacts land in `web/release/<product>/`.
+
+From a source tree, `npm run electron:remote` / `npm run electron:arrangement`
+run either shell against the dev server (or the staged root, with
+`NANO_FORCE_PACKAGED=1`).
 
 `npm run build` alone is **not** a runnable app: `dist/` deliberately contains
 no wasm, because the native plugin reads the same bundles and a second copy
@@ -59,9 +76,9 @@ One directory serves the Electron renderer *and* the native FFGL plugin:
 <root>/wasm/*.wasm             effect bundles          (both)
 <root>/wasm/*-<arch>.aot       AOT sidecars            (native only)
 <root>/fonts/default.ttf       primary text face       (native only)
-<root>/ffgl/NanoBarrel.bundle        the plugin        (macOS package)
+<root>/ffgl/NanoBarrel.bundle        the plugin        (macOS Remote Control)
 <root>/ffgl/libbridge_server.dylib   its SIBLING
-<root>/ffgl/NanoBarrel.dll           the plugin        (Windows package)
+<root>/ffgl/NanoBarrel.dll           the plugin        (Windows Remote Control)
 <root>/ffgl/libbridge_server.dll     its SIBLING
 ```
 
@@ -107,7 +124,7 @@ a host's own plug-ins folder, where there is no app above it to find.
    **both** `NanoBarrel.bundle` *and* `libbridge_server.dylib` into your plugin
    directory — they must stay side by side.
 4. Restart Resolume, add a NanoBarrel effect to a clip.
-5. Back in the app, switch to Live mode. It connects on `ws://localhost:8081`.
+5. Back in NanoModules Remote Control (it opens in Remote Control mode). It connects on `ws://localhost:8081`.
 
 **Settings → Resolume Remote** walks all of this as a live checklist, with a
 checkmark per step, so you can see which one isn't satisfied rather than
@@ -351,7 +368,7 @@ Remove it with:
 - **macOS is arm64 only.** `NanoBarrel.bundle` and `libbridge_server.dylib` are
   single-architecture, so an x64 DMG would ship an arm64 plugin Resolume cannot
   load — a broken package that looks fine until someone tries it. Add
-  x64/universal to `electron-builder.yml` once the native side builds fat.
+  x64/universal to `electron-builder.config.cjs` once the native side builds fat.
 - **Signing is ad-hoc.** Good enough for you and for testers; everyone else
   gets a Gatekeeper prompt. Developer ID + notarization needs hardened runtime,
   which currently conflicts with the `nodeIntegration` the renderer uses for

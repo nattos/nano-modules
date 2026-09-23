@@ -1,6 +1,6 @@
 /**
  * <app-settings> — the universal "Settings" tab, mounted (full-takeover) on
- * every top-level surface: Effect Dev, Playground, Live.
+ * every top-level surface: Effect Dev, Playground, Remote Control (`live`).
  *
  * Houses cross-surface preferences that don't belong to any one surface:
  *   - The mode selector (which of the three surfaces this session prefers).
@@ -17,6 +17,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { MobxLitElement } from '../mobx-lit-element';
 import { appState } from '../state/app-state';
 import { appController } from '../state/controller';
+import { availableModes } from '../product';
 import { LIVE_OFFLINE_KEY, type AppMode } from '../resolume-mode';
 import { TARGET_FPS_OPTIONS } from './gpu-headroom';
 import {
@@ -46,7 +47,7 @@ function isWindows(): boolean {
 
 const MODE_OPTIONS: { id: AppMode; label: string; description: string }[] = [
   { id: 'effect-dev', label: 'Effect Dev', description: 'Author and test individual effects in isolation.' },
-  { id: 'live', label: 'Live', description: 'Bound to the shared NanoBarrel server (Resolume).' },
+  { id: 'live', label: 'Remote Control', description: 'Bound to the shared NanoBarrel server (Resolume).' },
   { id: 'playground', label: 'Playground', description: 'Simulate the shared server locally, without Resolume.' },
 ];
 
@@ -259,7 +260,7 @@ export class AppSettings extends MobxLitElement {
           <h2>Mode</h2>
           <div class="hint">Switching reloads the page into the matching surface.</div>
           <div class="mode-row">
-            ${MODE_OPTIONS.map(o => html`
+            ${MODE_OPTIONS.filter(o => availableModes().includes(o.id)).map(o => html`
               <button class="mode-btn"
                 ?active=${settings.appMode === o.id}
                 @click=${() => appController.switchAppMode(o.id)}>
@@ -272,9 +273,9 @@ export class AppSettings extends MobxLitElement {
         <section>
           <h2>Resolume Remote</h2>
           <div class="hint">
-            Off: never try to reach Resolume, in any mode (Live falls back to
-            editing its offline copy). On: also watch quietly from Effect Dev
-            and Playground, so either can offer switching to Live.
+            Off: never try to reach Resolume, in any mode (Remote Control falls
+            back to editing its offline copy). On: also watch quietly from the
+            other modes, so they can offer switching to Remote Control.
           </div>
           <div class="toggle-row">
             <label>
@@ -377,12 +378,12 @@ export class AppSettings extends MobxLitElement {
         `)}
 
         ${this.renderStep('connect', st.connect, 'Connect this app', html`
-          Switch to Live and the editor binds to the instances above: sketch
+          Switch to Remote Control and the editor binds to the instances above: sketch
           chains, wiring and MIDI all edit the running composition.
         `, appState.local.barrelMode ? nothing : html`
           <div class="actions">
             <button class="small" @click=${() => { void appController.switchAppMode('live'); }}>
-              Switch to Live
+              Switch to Remote Control
             </button>
           </div>`)}
       </ol>

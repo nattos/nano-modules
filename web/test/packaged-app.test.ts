@@ -29,8 +29,11 @@ const ROOT = resolve(REPO, 'build');
 const STAGED = existsSync(resolve(ROOT, 'app', 'index.html')) &&
                existsSync(resolve(ROOT, 'wasm', 'core.wasm'));
 
-/** Run a probe script under electron and return what it printed after PROBE. */
-function runElectronProbe(script: string, timeoutMs: number): Promise<any> {
+/** Run a probe script under electron, as the given desktop product (see
+ *  electron/main.cjs), and return what it printed after PROBE. */
+function runElectronProbe(
+  script: string, timeoutMs: number, product: 'remote' | 'arrangement' = 'remote',
+): Promise<any> {
   // electron's CLI takes an app PATH, not `-e` like node's — a `-e` is treated
   // as a path, the app never starts, and the probe just times out silently.
   const dir = mkdtempSync(join(tmpdir(), 'nano-pkg-probe-'));
@@ -43,7 +46,7 @@ function runElectronProbe(script: string, timeoutMs: number): Promise<any> {
       [scriptPath],
       {
         cwd: resolve(__dirname, '..'),
-        env: { ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '' },
+        env: { ...process.env, NANO_FORCE_PACKAGED: '1', NANO_URL: '', NANO_PRODUCT: product },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -115,6 +118,130 @@ app.whenReady().then(async () => {
   app.exit(0);
 });
 `;
+
+/** Every top-level File-menu label, so a probe can assert what a product offers. */
+const MENU_LABELS = `
+const { Menu } = require('electron');
+const menuLabels = () => (Menu.getApplicationMenu()?.items ?? [])
+  .flatMap((i) => [i.label, ...((i.submenu?.items ?? []).map((s) => s.label))])
+  .filter(Boolean);
+`;
+
+/**
+ * Remote Control: the window opens index.html, and Effect Dev is not part of
+ * this product — an install that persisted `effect-dev` (or a fresh one, whose
+ * default is still effect-dev) must boot into Remote Control, and Settings
+ * must offer exactly Remote Control and Playground.
+ */
+const REMOTE_PROBE = `
+const { app, BrowserWindow } = require('electron');
+require(${JSON.stringify(resolve(__dirname, '..', 'electron', 'main.cjs'))});
+${MENU_LABELS}
+app.whenReady().then(async () => {
+  await new Promise((r) => setTimeout(r, 2000));
+  const win = BrowserWindow.getAllWindows()[0];
+  const opened = win.webContents.getURL();
+  let probe = {};
+  try {
+    await win.loadURL('nano://app/index.html?playground');
+    await new Promise((r) => setTimeout(r, 8000));
+    await win.webContents.executeJavaScript(\`(async () => {
+      window.appController.setUserSetting('appMode', 'effect-dev');
+      await window.appController.flushUserSettings();
+    })()\`);
+    await win.loadURL('nano://app/index.html');
+    await new Promise((r) => setTimeout(r, 10000));
+    probe = await win.webContents.executeJavaScript(\`(async () => {
+      const el = document.createElement('app-settings');
+      document.body.appendChild(el);
+      await el.updateComplete;
+      const modes = [...el.shadowRoot.querySelectorAll('.mode-row .mode-btn .label')].map((n) => n.textContent.trim());
+      el.remove();
+      return {
+        product: window.nanoProduct ?? null,
+        tag: document.body.firstElementChild ? document.body.firstElementChild.tagName : null,
+        appMode: window.appState.local.userSettings.appMode,
+        modes,
+      };
+    })()\`);
+  } catch (e) { probe = { error: String(e) }; }
+  console.log('PROBE ' + JSON.stringify({ ...probe, opened, menu: menuLabels() }));
+  app.exit(0);
+});
+`;
+
+/** NanoModules: the arrangement editor alone, with no plugin in its menu. */
+const ARRANGEMENT_PROBE = `
+const { app, BrowserWindow } = require('electron');
+require(${JSON.stringify(resolve(__dirname, '..', 'electron', 'main.cjs'))});
+${MENU_LABELS}
+app.whenReady().then(async () => {
+  await new Promise((r) => setTimeout(r, 10000));
+  const win = BrowserWindow.getAllWindows()[0];
+  let probe = {};
+  try {
+    probe = await win.webContents.executeJavaScript(\`({
+      product: window.nanoProduct ?? null,
+      path: location.pathname,
+      tag: document.body.firstElementChild ? document.body.firstElementChild.tagName : null,
+    })\`);
+  } catch (e) { probe = { error: String(e) }; }
+  console.log('PROBE ' + JSON.stringify({
+    ...probe, windows: BrowserWindow.getAllWindows().length, menu: menuLabels() }));
+  app.exit(0);
+});
+`;
+
+describe('packaged Remote Control: modes', () => {
+  jest.setTimeout(120000);
+  let probe: any;
+  beforeAll(async () => {
+    if (!STAGED) return;
+    probe = await runElectronProbe(REMOTE_PROBE, 100000, 'remote');
+  });
+
+  it('opens index.html and tells the page it is Remote Control', () => {
+    if (!STAGED) return;
+    expect(probe.error).toBeUndefined();
+    expect(probe.opened).toBe('nano://app/index.html');
+    expect(probe.product).toBe('remote');
+  });
+
+  it('boots a persisted effect-dev into Remote Control', () => {
+    if (!STAGED) return;
+    expect(probe.tag).toBe('SKETCH-APP');
+    expect(probe.appMode).toBe('live');
+  });
+
+  it('offers exactly Remote Control and Playground', () => {
+    if (!STAGED) return;
+    expect(probe.modes).toEqual(['Remote Control', 'Playground']);
+    expect(probe.menu).not.toContain('Studio Window');
+  });
+});
+
+describe('packaged NanoModules: arrangement only', () => {
+  jest.setTimeout(120000);
+  let probe: any;
+  beforeAll(async () => {
+    if (!STAGED) return;
+    probe = await runElectronProbe(ARRANGEMENT_PROBE, 100000, 'arrangement');
+  });
+
+  it('opens the arrangement editor in its one window', () => {
+    if (!STAGED) return;
+    expect(probe.error).toBeUndefined();
+    expect(probe.product).toBe('arrangement');
+    expect(probe.path).toBe('/arrangement.html');
+    expect(probe.tag).toBe('ARRANGEMENT-APP');
+    expect(probe.windows).toBe(1);
+  });
+
+  it('does not offer the FFGL plugin, which only Remote Control carries', () => {
+    if (!STAGED) return;
+    expect(probe.menu.some((l: string) => /FFGL/.test(l))).toBe(false);
+  });
+});
 
 describe('packaged app (no dev server)', () => {
   jest.setTimeout(120000);

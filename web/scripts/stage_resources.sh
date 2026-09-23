@@ -113,7 +113,7 @@ if [ "${SKIP_FFGL:-0}" != "1" ]; then
       "$strip_bin" --strip-all "$root/ffgl-win/libbridge_server.dll" 2>/dev/null || true
     fi
   else
-    # Not an error on a mac-only build, but `npm run package:win` needs it.
+    # Not an error on a mac-only build, but `npm run package:remote:win` needs it.
     echo "note: no built native/build-win/NanoBarrel.dll — a Windows package"
     echo "      from this root would carry no plugin (Live mode offline only)"
   fi

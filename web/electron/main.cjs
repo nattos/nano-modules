@@ -1,12 +1,20 @@
 /**
  * Electron main process — the desktop shell.
  *
- * Two surfaces, one installable. `index.html` boots the effect IDE, Playground
- * or Live (chosen by the persisted appMode; see src/main.ts) and
- * `arrangement.html` is the video editor. They share an engine worker, the
- * effect bundles and the fonts, so shipping them as two apps would mean two
- * copies of ~40 MB and two install records for the FFGL plugin to disagree
- * about. They get a window each instead.
+ * One shell, TWO PRODUCTS. Which one this is comes from NANO_PRODUCT (dev) or
+ * the `nanoProduct` field electron-builder injects into package.json per
+ * config (electron-builder.{arrangement,remote}.yml):
+ *
+ *   - `arrangement` — NanoModules: `arrangement.html`, the video editor.
+ *   - `remote`      — NanoModules Remote Control: `index.html`, restricted to
+ *                     Remote Control (the `live` app mode) and Playground, and
+ *                     the owner of the bundled FFGL plugin.
+ *
+ * They used to be one app with a window per surface, to share one copy of the
+ * wasm and fonts. That saved little (the payload is mostly fonts) and cost a
+ * confusing app, so each product now ships its own resource root and gets ONE
+ * window. The renderer learns the product through the preload
+ * (`window.nanoProduct`, see src/product.ts).
  *
  * Two ways to load, in priority order:
  *
@@ -48,17 +56,26 @@ let resourceRoot = null;
 /** 'dev' (a Vite server) or 'packaged' (the nano:// scheme). */
 let loadMode = 'packaged';
 
-/** The two surfaces, keyed by the page they load. */
-const SURFACES = {
-  studio: { file: 'index.html', title: 'Nano Modules', width: 1600, height: 1000 },
-  arrangement: { file: 'arrangement.html', title: 'Nano Arrangement', width: 1600, height: 1000 },
+/** The products, keyed by `nanoProduct`. */
+const PRODUCTS = {
+  arrangement: { file: 'arrangement.html', title: 'NanoModules', width: 1600, height: 1000 },
+  remote: { file: 'index.html', title: 'NanoModules Remote Control', width: 1600, height: 1000 },
 };
 
-/** One window per surface; re-focus rather than open a second. */
-const windows = new Map();
+function resolveProduct() {
+  let fromPackage = null;
+  try { fromPackage = require('../package.json').nanoProduct; } catch { /* no package.json */ }
+  const p = process.env.NANO_PRODUCT || fromPackage || 'remote';
+  if (!PRODUCTS[p]) throw new Error(`unknown NANO_PRODUCT '${p}' (expected arrangement or remote)`);
+  return p;
+}
+const PRODUCT = resolveProduct();
 
-function urlFor(surface, search = '') {
-  const { file } = SURFACES[surface];
+/** The one window; re-focus rather than open a second. */
+let mainWindow = null;
+
+function urlFor(search = '') {
+  const { file } = PRODUCTS[PRODUCT];
   const base = loadMode === 'dev'
     ? `${DEV_URL ? new URL(DEV_URL).origin : DEV_SERVER}/${file}`
     : `${appProtocol.ORIGIN}/${file}`;
@@ -79,13 +96,12 @@ async function devServerReachable(origin) {
   }
 }
 
-function createWindow(surface, search = '') {
-  const existing = windows.get(surface);
-  if (existing && !existing.isDestroyed()) {
-    existing.focus();
-    return existing;
+function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus();
+    return mainWindow;
   }
-  const spec = SURFACES[surface];
+  const spec = PRODUCTS[PRODUCT];
   const win = new BrowserWindow({
     width: spec.width,
     height: spec.height,
@@ -110,6 +126,8 @@ function createWindow(surface, search = '') {
     }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
+      // The preload reads this back and sets window.nanoProduct.
+      additionalArguments: [`--nano-product=${PRODUCT}`],
       // `fs` straight from the renderer, as nano-player does. That's what
       // state/paths.ts reaches through window.require — it deliberately never
       // imports 'fs', because Vite has no electron-renderer target and would
@@ -128,7 +146,7 @@ function createWindow(surface, search = '') {
     },
   });
 
-  const url = urlFor(surface, search);
+  const url = urlFor();
   win.loadURL(url);
 
   win.webContents.on('did-fail-load', (_e, code, desc) => {
@@ -153,28 +171,21 @@ function createWindow(surface, search = '') {
     shell.openExternal(target);
     return { action: 'deny' };
   });
-  win.on('closed', () => windows.delete(surface));
+  win.on('closed', () => { mainWindow = null; });
 
-  windows.set(surface, win);
+  mainWindow = win;
   return win;
 }
 
 function buildMenu() {
-  const plugin = ffglPluginPath(resourceRoot);
+  // Only Remote Control carries (and advertises) the plugin.
+  const plugin = PRODUCT === 'remote' ? ffglPluginPath(resourceRoot) : null;
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     {
       label: 'File',
       submenu: [
-        { label: 'Studio Window', accelerator: 'CmdOrCtrl+1', click: () => createWindow('studio') },
-        { label: 'Arrangement Window', accelerator: 'CmdOrCtrl+2', click: () => createWindow('arrangement') },
-        { type: 'separator' },
-        {
-          label: 'Playground (new window)',
-          click: () => createWindow('studio', '?playground'),
-        },
         ...(plugin ? [
-          { type: 'separator' },
           {
             // Pointing Resolume at the plugin is otherwise a hunt through an
             // opaque app bundle (or, on Windows, through Program Files).
@@ -248,16 +259,18 @@ app.whenReady().then(async () => {
 
   // Tell a copied-out FFGL plugin where we are. Packaged builds only, and
   // deliberately ranked LAST on the native side — see resources.cjs.
-  const record = writeInstallRecord(resourceRoot);
-  console.log(`[electron] mode=${loadMode} root=${resourceRoot ?? '(none)'}` +
+  // Remote Control only: it owns the plugin, and two apps writing one record
+  // would repoint a copied-out plugin at whichever launched last.
+  const record = PRODUCT === 'remote' ? writeInstallRecord(resourceRoot) : null;
+  console.log(`[electron] product=${PRODUCT} mode=${loadMode} root=${resourceRoot ?? '(none)'}` +
               (record ? ` record=${record}` : ''));
 
   buildMenu();
-  createWindow('studio');
+  createWindow();
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow('studio');
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
 app.on('window-all-closed', () => {
